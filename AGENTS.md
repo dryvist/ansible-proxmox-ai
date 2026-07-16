@@ -67,12 +67,15 @@ RBAC) is documented on the docs site, not here.
 ## Deploy orchestration (follow-up)
 
 This repo currently ships **roles only** — there is no `site.yml`, no
-`load_tofu.yml`, and no playbook wiring yet. Deploy orchestration (the
-site playbook, the dynamic inventory loader, and the shared
-`docker_engine` / base-setup role dependency every Docker-based role here
-assumes is already applied to the host) is a tracked follow-up, not part of
-this repo yet. Until then, these roles are consumed by `ansible-proxmox-apps`
-or invoked directly against a prepared host.
+`load_tofu.yml`, and no playbook wiring yet. Deploy orchestration (the site
+playbook and the dynamic inventory loader) is a tracked follow-up, not part
+of this repo yet. Until then, these roles are consumed by
+`ansible-proxmox-apps` or invoked directly against a prepared host.
+
+The Docker-based roles meta-depend on a local `docker_engine` copy (imported
+from `ansible-proxmox-apps`, which keeps its own for its remaining Docker
+roles). De-duplicating that shared bootstrap role into one home is part of
+the same follow-up.
 
 ## Testing
 
