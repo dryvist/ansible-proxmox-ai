@@ -15,7 +15,16 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
 - `ollama` — Ollama model server
 - `llama_cpp` — llama.cpp + llama-swap (GPU-tier serving)
 - `llm_router` — LiteLLM proxy, the single OpenAI-compatible front door for
-  the large/light serving tiers
+  the large/light serving tiers.
+  **Alias rule (hard): consumer-facing model aliases (`ai-default`,
+  `ai-deep-analysis`, `claude-*`, any future tier name) live ONLY in
+  `llm_router_model_group_aliases` (rendered as LiteLLM
+  `router_settings.model_group_alias`). Registering an alias as its own
+  `model_list` deployment entry — duplicating a physical entry's
+  context_window/extra_body/api_base under a second name — is BANNED: the
+  duplicate config silently drifts from the real backend every time the
+  model changes (root cause of the #1004 diagnosis cost). One physical
+  entry per backend; every other name is a literal alias with zero config.**
 - `open_webui` — Open WebUI chat frontend
 
 ### RAG (retrieval-augmented generation)
