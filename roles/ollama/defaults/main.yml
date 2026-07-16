@@ -1,0 +1,51 @@
+---
+# ollama role defaults — Ollama LLM inference with AMD ROCm, in an LXC (CT 167).
+#
+# GPU device nodes (/dev/kfd, /dev/dri) are passed into the container UPSTREAM by
+# ansible-proxmox (role lxc_gpu_features); this role assumes they already exist
+# and makes the `ollama` service user able to open them. Install uses the
+# official script (which creates the `ollama` user + systemd unit), then overlays
+# the ROCm runtime for AMD GPUs. Restart-on-failure is applied DRY by the
+# shared systemd_restart_policy role via group_vars (Phase 9), not here.
+
+ollama_install_url: "https://ollama.com/install.sh"
+# AMD ROCm runtime overlay (the installer ships CPU/NVIDIA libs only).
+ollama_rocm_tarball_url: "https://ollama.com/download/ollama-linux-amd64-rocm.tar.zst"
+
+ollama_user: ollama
+# Active-model store — backed by the 120 GB local-zfs mount on CT 167.
+ollama_models_dir: /var/lib/ollama
+
+# Bind all interfaces so hermes-chat (Open WebUI) + Traefik reach it on the ai VLAN.
+# Port comes from the tofu ports registry (no hardcoded ports — see ip-addressing rule).
+ollama_api_port: "{{ tofu_data.constants.service_ports.ollama_api }}"
+ollama_listen: "0.0.0.0:{{ ollama_api_port }}"
+
+# AMD RX 6800 = Navi 21 / gfx1030; ROCm needs the gfx-version override for this card.
+ollama_hsa_override_gfx_version: "10.3.0"
+ollama_flash_attention: "1"
+ollama_keep_alive: "30m"
+ollama_num_parallel: "1"
+
+# GPU device nodes passed into the container by ansible-proxmox lxc_gpu_features.
+# The role stats these at runtime and adds the ollama user to whatever groups own
+# them, so device access works regardless of how host GIDs map to container groups.
+ollama_gpu_device_nodes:
+  - /dev/kfd
+  - /dev/dri/card0
+  - /dev/dri/renderD128
+
+# Model: Hermes 4 14B (Qwen3 base) Q4_K_M GGUF, aliased to `hermes4`.
+# The GGUF is staged as a local file (one ~8.4 GB blob) and registered via
+# `ollama create` against a Modelfile whose FROM points at that file — this
+# avoids re-pulling 8+ GB from HuggingFace on every converge and survives a
+# container rebuild as long as the import dir is on the persistent volume.
+ollama_model_name: hermes4
+
+# Staging dir for the raw GGUF (on the 120 GB persistent volume, beside the
+# active model store). get_url downloads here only when the file is absent.
+ollama_import_dir: "{{ ollama_models_dir }}/import"
+ollama_gguf_filename: "NousResearch_Hermes-4-14B-Q4_K_M.gguf"
+ollama_gguf_path: "{{ ollama_import_dir }}/{{ ollama_gguf_filename }}"
+ollama_gguf_repo_url: "https://huggingface.co/bartowski/NousResearch_Hermes-4-14B-GGUF/resolve/main"
+ollama_gguf_url: "{{ ollama_gguf_repo_url }}/{{ ollama_gguf_filename }}"

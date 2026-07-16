@@ -1,0 +1,179 @@
+---
+# Langfuse v3 — LLM observability (traces, evals, prompt management) deployed as
+# a Docker-Compose-in-LXC stack. Bundled stack: langfuse-web + langfuse-worker +
+# postgres + clickhouse + redis. The upstream-bundled MinIO is intentionally
+# DROPPED — blob storage points at the homelab RustFS S3 instead (see the
+# langfuse_docker_s3_* vars). All literals live here; the template references
+# vars only (DRY).
+#
+# OTLP trace ingest is served by langfuse-web at :3000/api/public/otel — no
+# extra service or env is required for OpenTelemetry clients.
+
+# =============================================================================
+# Container images — pinned. Bump via Renovate or manual review.
+# web and worker MUST share the same Langfuse version.
+# =============================================================================
+langfuse_docker_web_image: "langfuse/langfuse:3.212.0"
+langfuse_docker_worker_image: "langfuse/langfuse-worker:3.212.0"
+langfuse_docker_postgres_image: "postgres:17"
+# ClickHouse 24.8 is an upstream LTS line and satisfies Langfuse v3's minimum.
+langfuse_docker_clickhouse_image: "clickhouse/clickhouse-server:26.6"
+langfuse_docker_redis_image: "redis:7-alpine"
+
+langfuse_docker_container_name: langfuse-web
+langfuse_docker_worker_container_name: langfuse-worker
+
+# Restart policy applied to every service in the stack.
+langfuse_docker_restart_policy: unless-stopped
+
+# =============================================================================
+# Persistent state (bind-mounted to /opt/langfuse — durable, snapshotted).
+# =============================================================================
+langfuse_docker_data_dir: /opt/langfuse
+langfuse_docker_postgres_data_dir: "{{ langfuse_docker_data_dir }}/postgres"
+langfuse_docker_clickhouse_data_dir: "{{ langfuse_docker_data_dir }}/clickhouse/data"
+langfuse_docker_clickhouse_logs_dir: "{{ langfuse_docker_data_dir }}/clickhouse/logs"
+langfuse_docker_redis_data_dir: "{{ langfuse_docker_data_dir }}/redis"
+
+# ClickHouse runs as uid/gid 101 (the image's `clickhouse` user). Because the
+# service pins `user: 101:101`, the bind-mounted host dirs must be pre-owned by
+# 101 — the root entrypoint chown is bypassed.
+langfuse_docker_clickhouse_uid: "101"
+
+# Data dirs to create, with ownership. ClickHouse dirs are pre-owned by uid 101
+# (see above); Postgres and Redis dirs stay root-owned because those images
+# chown their bind mount via the root entrypoint.
+langfuse_docker_directories:
+  - path: "{{ langfuse_docker_data_dir }}"
+    owner: root
+    group: root
+  - path: "{{ langfuse_docker_postgres_data_dir }}"
+    owner: root
+    group: root
+  - path: "{{ langfuse_docker_clickhouse_data_dir }}"
+    owner: "{{ langfuse_docker_clickhouse_uid }}"
+    group: "{{ langfuse_docker_clickhouse_uid }}"
+  - path: "{{ langfuse_docker_clickhouse_logs_dir }}"
+    owner: "{{ langfuse_docker_clickhouse_uid }}"
+    group: "{{ langfuse_docker_clickhouse_uid }}"
+  # redis-server drops to the image's redis user (uid 999) and the entrypoint
+  # chown does not take effect on this bind mount — a root-owned /data makes
+  # every RDB save fail (MISCONF) and the container goes unhealthy.
+  - path: "{{ langfuse_docker_redis_data_dir }}"
+    owner: "999"
+    group: "999"
+
+# Compose service names — also the Docker DNS hostnames used in the URLs below.
+langfuse_docker_postgres_service: postgres
+langfuse_docker_clickhouse_service: clickhouse
+langfuse_docker_redis_service: redis
+
+# Container-internal wire ports (image contracts — the protocol ports baked into
+# each image, NOT the externally-published tofu service_ports). Used only for
+# in-network service-to-service URLs.
+langfuse_docker_postgres_internal_port: 5432
+langfuse_docker_clickhouse_http_port: 8123
+langfuse_docker_clickhouse_native_port: 9000
+langfuse_docker_redis_internal_port: 6379
+
+# Externally-published web port — pulled from the OpenTofu pipeline_constants
+# (DRY: no port literal here). Only langfuse-web is published; every other
+# service stays on the internal compose network.
+_langfuse_docker_web_port_err: >-
+  tofu_data.constants.service_ports.langfuse_web missing —
+  regenerate tofu_inventory.json via
+  `tofu output -json ansible_inventory`.
+langfuse_docker_web_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['langfuse_web']
+     | mandatory(_langfuse_docker_web_port_err) }}
+
+# Public URL via Traefik — derived from PROXMOX_SUBDOMAIN, never hardcoded.
+# Matches the `langfuse` ingress entry in terraform-proxmox locals.tf.
+langfuse_docker_hostname: "langfuse.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
+langfuse_docker_nextauth_url: "https://{{ langfuse_docker_hostname }}"
+
+# =============================================================================
+# Database identity + connection URLs (composed here; template stays literal).
+# =============================================================================
+langfuse_docker_postgres_user: langfuse
+langfuse_docker_postgres_db: langfuse
+langfuse_docker_clickhouse_user: clickhouse
+langfuse_docker_clickhouse_db: default
+
+langfuse_docker_database_url: >-
+  postgresql://{{ langfuse_docker_postgres_user }}:{{ langfuse_docker_postgres_password }}@{{
+  langfuse_docker_postgres_service }}:{{ langfuse_docker_postgres_internal_port }}/{{
+  langfuse_docker_postgres_db }}
+langfuse_docker_clickhouse_url: >-
+  http://{{ langfuse_docker_clickhouse_service }}:{{ langfuse_docker_clickhouse_http_port }}
+langfuse_docker_clickhouse_migration_url: >-
+  clickhouse://{{ langfuse_docker_clickhouse_service }}:{{ langfuse_docker_clickhouse_native_port }}
+
+# =============================================================================
+# External blob storage — homelab RustFS S3 (replaces the bundled MinIO).
+# Endpoint is a group_var contract (ai_orchestration_s3_endpoint); credentials
+# from runtime env. Event and media uploads are configured independently but
+# share one bucket + credential pair.
+# =============================================================================
+langfuse_docker_s3_endpoint: >-
+  {{ ai_orchestration_s3_endpoint
+     | mandatory('ai_orchestration_s3_endpoint must be set in group_vars (homelab RustFS S3 endpoint URL)') }}
+langfuse_docker_s3_bucket: langfuse
+# RustFS/MinIO ignore the region but the AWS SDK requires a non-empty value.
+langfuse_docker_s3_region: us-east-1
+langfuse_docker_s3_event_prefix: "events/"
+langfuse_docker_s3_media_prefix: "media/"
+langfuse_docker_s3_access_key_id: >-
+  {{ lookup('env', 'LANGFUSE_S3_ACCESS_KEY_ID')
+     | mandatory('LANGFUSE_S3_ACCESS_KEY_ID unset') }}
+langfuse_docker_s3_secret_access_key: >-
+  {{ lookup('env', 'LANGFUSE_S3_SECRET_ACCESS_KEY')
+     | mandatory('LANGFUSE_S3_SECRET_ACCESS_KEY unset') }}
+
+# =============================================================================
+# Datastore passwords — from runtime env; never generated, so the same value
+# is reused across runs without invalidating existing data.
+# =============================================================================
+langfuse_docker_postgres_password: >-
+  {{ lookup('env', 'LANGFUSE_POSTGRES_PASSWORD')
+     | mandatory('LANGFUSE_POSTGRES_PASSWORD unset') }}
+langfuse_docker_clickhouse_password: >-
+  {{ lookup('env', 'LANGFUSE_CLICKHOUSE_PASSWORD')
+     | mandatory('LANGFUSE_CLICKHOUSE_PASSWORD unset') }}
+langfuse_docker_redis_auth: >-
+  {{ lookup('env', 'LANGFUSE_REDIS_AUTH')
+     | mandatory('LANGFUSE_REDIS_AUTH unset') }}
+
+# =============================================================================
+# Application secrets — generated once on the LXC and persisted under the data
+# dir (root:root 0600), then reused. Regenerating them per run would invalidate
+# all sessions (NEXTAUTH_SECRET) and make stored data undecryptable
+# (ENCRYPTION_KEY). ENCRYPTION_KEY must be 64 hex chars (256-bit).
+# =============================================================================
+langfuse_docker_generated_secrets:
+  - { name: nextauth_secret, file: .nextauth_secret, length: 48, hex: false }
+  - { name: salt, file: .salt, length: 48, hex: false }
+  - { name: encryption_key, file: .encryption_key, length: 32, hex: true }
+
+# =============================================================================
+# Headless first-run provisioning (LANGFUSE_INIT_*): org, project, an admin
+# user, and the project API keypair are created on first boot, so the OTLP
+# fan-out and router callbacks have working keys with no UI onboarding.
+# Applied only on a fresh database; Langfuse ignores them once initialized.
+# From runtime env; never committed.
+# =============================================================================
+langfuse_docker_init_org: homelab
+langfuse_docker_init_project: homelab
+langfuse_docker_init_user_email: >-
+  {{ lookup('env', 'LANGFUSE_INIT_USER_EMAIL')
+     | mandatory('LANGFUSE_INIT_USER_EMAIL unset') }}
+langfuse_docker_init_user_password: >-
+  {{ lookup('env', 'LANGFUSE_INIT_USER_PASSWORD')
+     | mandatory('LANGFUSE_INIT_USER_PASSWORD unset') }}
+langfuse_docker_init_public_key: >-
+  {{ lookup('env', 'LANGFUSE_PUBLIC_KEY')
+     | mandatory('LANGFUSE_PUBLIC_KEY unset') }}
+langfuse_docker_init_secret_key: >-
+  {{ lookup('env', 'LANGFUSE_SECRET_KEY')
+     | mandatory('LANGFUSE_SECRET_KEY unset') }}

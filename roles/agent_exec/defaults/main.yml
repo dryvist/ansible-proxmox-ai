@@ -1,0 +1,46 @@
+---
+# agent_exec role — plain LXC Python runtime for user-supplied CrewAI + LangChain
+# agent code, with OpenLLMetry (OTLP/HTTP) tracing. No Docker: a venv + a systemd
+# service. Ansible owns the PLATFORM (user, venv, instrumentation, unit); the
+# agent scripts themselves are user-supplied (drop them in agent_exec_home and
+# replace main.py). Restart-on-failure is set directly in the unit because this
+# role must not edit the shared systemd_restart_policy role.
+#
+# ai_orchestration_otel_endpoint (the shared AI-orchestration OTLP collector base
+# URL) is a group var defined at the inventory level — consumed here, never
+# defaulted, so a missing endpoint fails loud rather than tracing into the void.
+
+agent_exec_user: agent-exec
+agent_exec_home: /var/lib/agent-exec   # runtime user home + systemd WorkingDirectory
+agent_exec_venv: /opt/agent-exec-venv  # Python venv (root-owned; world-readable)
+agent_exec_service: agent-exec
+
+# Installed into the venv (state: present — pinned by the ecosystem, never here).
+# crewai/crewai-tools pull deep dep trees; the opentelemetry-instrumentation-*
+# pair is the OpenLLMetry (Traceloop) auto-tracing for CrewAI + LangChain.
+#
+# opentelemetry-instrumentation-langchain is pinned: its exported class name
+# ("LangchainInstrumentor", lowercase "c") has drifted casing across releases
+# and otel_bootstrap.py.j2 aliases around it — an unpinned resolve could
+# reintroduce an ImportError crash-loop if a future release renames it again.
+agent_exec_pip_packages:
+  - crewai
+  - crewai-tools
+  - langchain
+  - opentelemetry-api
+  - opentelemetry-sdk
+  - opentelemetry-exporter-otlp
+  - opentelemetry-instrumentation-crewai
+  - opentelemetry-instrumentation-langchain==0.62.1
+
+# Autonomy seed loop: every interval the seed runs a tiny traced crew against
+# BOTH model tiers (large = real work; light = soak path). Override
+# the model names to match what each endpoint serves; the loop is resilient to a
+# single failed run. The large/light base URLs come from the ai_orchestration
+# group vars (ai_orchestration_model_large_base_url / ai_orchestration_ollama_base_url).
+agent_exec_interval_seconds: 900
+agent_exec_model_large: "openai/default"
+agent_exec_model_light: "openai/hermes4"
+# OpenAI-compatible API key for the model endpoints. The local runners ignore it;
+# override via SOPS only if an endpoint enforces auth.
+agent_exec_api_key: "sk-noauth"

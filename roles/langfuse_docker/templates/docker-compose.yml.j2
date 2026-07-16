@@ -1,0 +1,129 @@
+---
+# Langfuse v3 (LLM observability) via Docker Compose in an LXC.
+# Rendered by ansible-proxmox-apps/roles/langfuse_docker — do not edit by hand.
+#
+# Blob storage points at the homelab RustFS S3 (the upstream-bundled MinIO is
+# dropped); postgres + clickhouse + redis bind-mount their data under
+# {{ langfuse_docker_data_dir }} (durable, snapshotted). Only langfuse-web is
+# published — every other service stays on the internal compose network.
+#
+# OTLP trace ingest is served by langfuse-web at :3000/api/public/otel; no
+# extra service or env is needed for OpenTelemetry clients.
+services:
+  {{ langfuse_docker_postgres_service }}:
+    image: {{ langfuse_docker_postgres_image }}
+    restart: {{ langfuse_docker_restart_policy }}
+    environment:
+      POSTGRES_USER: {{ langfuse_docker_postgres_user }}
+      POSTGRES_PASSWORD: "{{ langfuse_docker_postgres_password }}"
+      POSTGRES_DB: {{ langfuse_docker_postgres_db }}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - {{ langfuse_docker_postgres_data_dir }}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ langfuse_docker_postgres_user }}"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  {{ langfuse_docker_clickhouse_service }}:
+    image: {{ langfuse_docker_clickhouse_image }}
+    restart: {{ langfuse_docker_restart_policy }}
+    user: "{{ langfuse_docker_clickhouse_uid }}:{{ langfuse_docker_clickhouse_uid }}"
+    environment:
+      CLICKHOUSE_DB: {{ langfuse_docker_clickhouse_db }}
+      CLICKHOUSE_USER: {{ langfuse_docker_clickhouse_user }}
+      CLICKHOUSE_PASSWORD: "{{ langfuse_docker_clickhouse_password }}"
+    volumes:
+      - {{ langfuse_docker_clickhouse_data_dir }}:/var/lib/clickhouse
+      - {{ langfuse_docker_clickhouse_logs_dir }}:/var/log/clickhouse-server
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+
+  {{ langfuse_docker_redis_service }}:
+    image: {{ langfuse_docker_redis_image }}
+    restart: {{ langfuse_docker_restart_policy }}
+    command: >-
+      --requirepass {{ langfuse_docker_redis_auth }}
+      --maxmemory-policy noeviction
+    volumes:
+      - {{ langfuse_docker_redis_data_dir }}:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a '{{ langfuse_docker_redis_auth }}' --no-auth-warning ping | grep -q PONG"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+
+  langfuse-worker:
+    image: {{ langfuse_docker_worker_image }}
+    container_name: {{ langfuse_docker_worker_container_name }}
+    restart: {{ langfuse_docker_restart_policy }}
+    depends_on:
+      {{ langfuse_docker_postgres_service }}:
+        condition: service_healthy
+      {{ langfuse_docker_clickhouse_service }}:
+        condition: service_healthy
+      {{ langfuse_docker_redis_service }}:
+        condition: service_healthy
+    environment: &langfuse_env
+      # Headless first-run provisioning — no-op once the DB is initialized.
+      LANGFUSE_INIT_ORG_ID: "{{ langfuse_docker_init_org }}"
+      LANGFUSE_INIT_ORG_NAME: "{{ langfuse_docker_init_org }}"
+      LANGFUSE_INIT_PROJECT_ID: "{{ langfuse_docker_init_project }}"
+      LANGFUSE_INIT_PROJECT_NAME: "{{ langfuse_docker_init_project }}"
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: "{{ langfuse_docker_init_public_key }}"
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: "{{ langfuse_docker_init_secret_key }}"
+      LANGFUSE_INIT_USER_EMAIL: "{{ langfuse_docker_init_user_email }}"
+      LANGFUSE_INIT_USER_NAME: "admin"
+      LANGFUSE_INIT_USER_PASSWORD: "{{ langfuse_docker_init_user_password }}"
+      DATABASE_URL: "{{ langfuse_docker_database_url }}"
+      SALT: "{{ langfuse_docker_secrets.salt }}"
+      ENCRYPTION_KEY: "{{ langfuse_docker_secrets.encryption_key }}"
+      NEXTAUTH_URL: "{{ langfuse_docker_nextauth_url }}"
+      CLICKHOUSE_MIGRATION_URL: "{{ langfuse_docker_clickhouse_migration_url }}"
+      CLICKHOUSE_URL: "{{ langfuse_docker_clickhouse_url }}"
+      CLICKHOUSE_USER: "{{ langfuse_docker_clickhouse_user }}"
+      CLICKHOUSE_PASSWORD: "{{ langfuse_docker_clickhouse_password }}"
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: "{{ langfuse_docker_redis_service }}"
+      REDIS_PORT: "{{ langfuse_docker_redis_internal_port }}"
+      REDIS_AUTH: "{{ langfuse_docker_redis_auth }}"
+      # Event uploads → homelab RustFS S3 (independent of media uploads).
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: "{{ langfuse_docker_s3_bucket }}"
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: "{{ langfuse_docker_s3_region }}"
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: "{{ langfuse_docker_s3_endpoint }}"
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: "{{ langfuse_docker_s3_access_key_id }}"
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: "{{ langfuse_docker_s3_secret_access_key }}"
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: "{{ langfuse_docker_s3_event_prefix }}"
+      # Media uploads → homelab RustFS S3 (independent of event uploads).
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: "{{ langfuse_docker_s3_bucket }}"
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: "{{ langfuse_docker_s3_region }}"
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: "{{ langfuse_docker_s3_endpoint }}"
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: "{{ langfuse_docker_s3_access_key_id }}"
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: "{{ langfuse_docker_s3_secret_access_key }}"
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: "{{ langfuse_docker_s3_media_prefix }}"
+
+  langfuse-web:
+    image: {{ langfuse_docker_web_image }}
+    container_name: {{ langfuse_docker_container_name }}
+    restart: {{ langfuse_docker_restart_policy }}
+    depends_on:
+      {{ langfuse_docker_postgres_service }}:
+        condition: service_healthy
+      {{ langfuse_docker_clickhouse_service }}:
+        condition: service_healthy
+      {{ langfuse_docker_redis_service }}:
+        condition: service_healthy
+    ports:
+      - "{{ langfuse_docker_web_port }}:3000"
+    environment:
+      # Inherit the full worker env, then add the web-only NextAuth secret.
+      <<: *langfuse_env
+      NEXTAUTH_SECRET: "{{ langfuse_docker_secrets.nextauth_secret }}"

@@ -1,0 +1,138 @@
+---
+# Open WebUI native install (uv venv + systemd) in CT 168. Idempotent.
+
+- name: Assert the Open WebUI secret key is provided
+  ansible.builtin.assert:
+    that:
+      - open_webui_secret_key | length >= 32
+    fail_msg: >-
+      OPEN_WEBUI_SECRET_KEY is unset/too short. Generate once with
+      `openssl rand -hex 32` and store it in Doppler or SOPS.
+    quiet: true
+  no_log: true
+
+- name: Create the open-webui system user
+  ansible.builtin.user:
+    name: "{{ open_webui_user }}"
+    home: "{{ open_webui_home }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: true
+
+# A minimal LXC template ships without curl or sudo: the uv installer is fetched
+# via `curl | sh`, and the venv/pip tasks below drop to the open-webui user with
+# become_user, which uses sudo (the default become_method). Install both first.
+- name: Install role prerequisites (uv installer + privilege drop)
+  ansible.builtin.apt:
+    name:
+      - curl
+      - ca-certificates
+      - sudo
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install uv (Python venv/package manager)
+  ansible.builtin.shell:
+    cmd: "set -o pipefail && curl -LsSf {{ open_webui_uv_install_url }} | env UV_INSTALL_DIR=/usr/local/bin sh"
+    creates: /usr/local/bin/uv
+  args:
+    executable: /bin/bash
+
+- name: Create the persistent data directory
+  ansible.builtin.file:
+    path: "{{ open_webui_data_dir }}"
+    state: directory
+    owner: "{{ open_webui_user }}"
+    group: "{{ open_webui_user }}"
+    mode: "0750"
+
+- name: Create the Open WebUI virtualenv
+  ansible.builtin.command:
+    cmd: "uv venv --python {{ open_webui_python }} {{ open_webui_venv }}"
+    creates: "{{ open_webui_venv }}/bin/python"
+  become: true
+  become_user: "{{ open_webui_user }}"
+
+- name: Install/upgrade Open WebUI into the venv
+  ansible.builtin.command:
+    # Open WebUI imports its OTEL instrumentors at boot when ENABLE_OTEL=true.
+    # Install the full instrumentation set so the service can start under the
+    # pip/uv deployment path without runtime import failures.
+    cmd: >-
+      uv pip install --python {{ open_webui_venv }}/bin/python --upgrade
+      open-webui
+      opentelemetry-exporter-otlp-proto-http
+      opentelemetry-instrumentation-aiohttp-client
+      opentelemetry-instrumentation-fastapi
+      opentelemetry-instrumentation-httpx
+      opentelemetry-instrumentation-logging
+      opentelemetry-instrumentation-redis
+      opentelemetry-instrumentation-requests
+      opentelemetry-instrumentation-sqlalchemy
+      opentelemetry-instrumentation-system-metrics
+  become: true
+  become_user: "{{ open_webui_user }}"
+  register: open_webui_pip
+  changed_when: "'Installed' in open_webui_pip.stderr or 'Prepared' in open_webui_pip.stderr"
+
+- name: Deploy the Open WebUI environment file
+  ansible.builtin.template:
+    src: open-webui.env.j2
+    dest: /etc/open-webui.env
+    owner: root
+    group: "{{ open_webui_user }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart open-webui
+
+- name: Deploy the Open WebUI systemd unit
+  ansible.builtin.template:
+    src: open-webui.service.j2
+    dest: /etc/systemd/system/open-webui.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart open-webui
+
+- name: Enable and start Open WebUI
+  ansible.builtin.systemd:
+    name: open-webui
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Verify Open WebUI is healthy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ open_webui_port }}/health"
+    status_code: 200
+  register: open_webui_health
+  retries: 30
+  delay: 5
+  until: open_webui_health.status == 200
+
+# --- Headless first-run provisioning ------------------------------------------
+# Open WebUI reports onboarding=true until a first user exists; the first
+# signup becomes the admin. Provision it here so the UI never shows the
+# wizard. Skipped on every converge after the first.
+- name: Check whether Open WebUI is onboarded
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ open_webui_port }}/api/config"
+    return_content: true
+  register: open_webui_cfg
+
+- name: Create the admin account (first signup)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ open_webui_port }}/api/v1/auths/signup"
+    method: POST
+    body_format: json
+    body:
+      name: admin
+      email: "{{ open_webui_admin_email }}"
+      password: "{{ open_webui_admin_password }}"
+    status_code: 200
+  # json is absent when the endpoint returns non-JSON (proxy error page);
+  # guard it so the check degrades to "skip" instead of a templating error.
+  when: (open_webui_cfg.json | default({})).onboarding | default(false)
+  changed_when: true
+  no_log: true

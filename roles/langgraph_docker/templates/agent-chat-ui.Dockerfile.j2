@@ -1,0 +1,25 @@
+# {{ ansible_managed }}
+# agent-chat-ui image: the langchain-ai/agent-chat-ui Next.js app, built from a
+# pinned commit. NEXT_PUBLIC_* are inlined at build time (Next.js contract);
+# LANGGRAPH_API_URL is read at runtime by the app's API-passthrough route.
+FROM {{ langgraph_docker_node_image }}
+
+RUN corepack enable && corepack prepare pnpm@{{ langgraph_docker_chat_ui_pnpm_version }} --activate
+WORKDIR /app
+
+COPY . .
+RUN pnpm install --frozen-lockfile
+
+# Client-side config must be present at build time.
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_ASSISTANT_ID
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
+    NEXT_PUBLIC_ASSISTANT_ID=$NEXT_PUBLIC_ASSISTANT_ID \
+    NEXT_TELEMETRY_DISABLED=1
+RUN pnpm build
+
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT={{ langgraph_docker_chat_ui_port }}
+EXPOSE {{ langgraph_docker_chat_ui_port }}
+CMD ["pnpm", "start"]

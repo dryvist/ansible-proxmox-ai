@@ -1,0 +1,167 @@
+---
+# Layer 1 — render-time contract assertions for the Hermes Agent brain wiring.
+#
+# Every production break on 2026-07-08 was a config-level mistake that was
+# machine-detectable BEFORE the converge reached the running daemon. These
+# asserts encode those invariants and fail the play at the top of the role,
+# before any config is deployed — so a known-bad config never converges.
+#
+# Imported (not included) at the very top of tasks/main.yml so the checks inherit
+# the play's `hermes_agent` tag and ALWAYS run with the role they guard, even
+# under `--tags hermes_agent`. Read-only; safe in check mode.
+
+- name: Assert Hermes Agent brain-wiring contracts hold before converging
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # (1) Hermes Agent HARD context floor. The agent refuses to start against
+      #     any model declaring under 64,000 tokens ("below the minimum 64,000
+      #     required"); at 60,000 every seeded cron failed on 2026-07-08.
+      #     context_length is declared explicitly in config.yaml.j2 because
+      #     custom/vLLM providers carry no context catalog Hermes can probe.
+      - hermes_agent_model_context_length | int >= 64000
+      # (3) Client-is-decider timeout chain. The Hermes stream read timeout must
+      #     sit BELOW the router's per-attempt timeout so the CLIENT gives up
+      #     first (by design) while the router keeps waiting on a healthy
+      #     generation. Both values are the single-source constants in all.yml;
+      #     the outermost link (nix-darwin vllm-mlx server guard, 3600s) lives
+      #     out of this repo's reach and is not assertable here.
+      - hermes_agent_stream_read_timeout | int < ai_router_request_timeout_seconds | int
+      # (4) Job-API concurrency cap must be a real cap. Upstream treats 0 as
+      #     "cap disabled" — on a single shared serving deployment that means
+      #     an unbounded request flood lands directly on the brain, which is
+      #     exactly what the cap exists to prevent. Negative values clamp to
+      #     0 upstream, so they are equally forbidden.
+      - hermes_agent_api_max_concurrent_runs | int >= 1
+    fail_msg: >-
+      Hermes Agent brain-wiring contract violated (roles/hermes_agent/tasks/assert.yml).
+      (1) model.context_length is {{ hermes_agent_model_context_length }}; it must be
+      >= 64000 — the Hermes Agent hard floor that rejected 60000 at startup and
+      failed every seeded cron on 2026-07-08 (raise hermes_agent_model_context_length).
+      (3) stream read timeout is {{ hermes_agent_stream_read_timeout }} and the router
+      per-attempt timeout is {{ ai_router_request_timeout_seconds }}; read must be < router
+      so the client decides (chain: hermes read < router attempt < nix-darwin server
+      guard 3600). Fix the offending value in all.yml / roles/hermes_agent/defaults.
+      (4) hermes_agent_api_max_concurrent_runs is
+      {{ hermes_agent_api_max_concurrent_runs }}; it must be >= 1 — 0 disables the
+      upstream cap entirely and exposes the single shared brain to request floods.
+    success_msg: >-
+      Hermes Agent brain-wiring contracts hold (context_length
+      {{ hermes_agent_model_context_length }} >= 64000; read
+      {{ hermes_agent_stream_read_timeout }} < router {{ ai_router_request_timeout_seconds }};
+      api cap {{ hermes_agent_api_max_concurrent_runs }} >= 1).
+
+# Curriculum manifest contracts. The manifest is the machine-readable side of
+# the graded curriculum; these checks guarantee every job the queue would
+# execute has a prompt file that exists, a unique id, and at least one
+# machine-checkable success gate — so a manifest edit can never silently ship
+# an unexecutable or ungradeable job.
+- name: Load the curriculum manifest for contract checks
+  ansible.builtin.set_fact:
+    hermes_agent_curriculum: >-
+      {{ lookup('ansible.builtin.file', role_path ~ '/files/curriculum/curriculum.yml')
+         | from_yaml }}
+
+- name: Assert every curriculum job is executable and machine-checkable
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_curriculum.jobs | length > 0
+      # Unique ids — duplicate ids would make run results ungradeable.
+      - >-
+        hermes_agent_curriculum.jobs | map(attribute='id') | list | unique | length
+        == hermes_agent_curriculum.jobs | length
+      # Every job names a prompt file (existence is checked per-file below).
+      - >-
+        hermes_agent_curriculum.jobs
+        | selectattr('prompt_file', 'undefined') | list | length == 0
+      # Every job has at least one machine-checkable success gate.
+      - >-
+        hermes_agent_curriculum.jobs
+        | selectattr('success_checks', 'undefined') | list | length == 0
+      - >-
+        hermes_agent_curriculum.jobs
+        | map(attribute='success_checks', default=[])
+        | map('length') | min > 0
+    fail_msg: >-
+      Curriculum manifest contract violated
+      (roles/hermes_agent/files/curriculum/curriculum.yml): every job needs a
+      unique id, a prompt_file, and a non-empty success_checks list. Jobs seen:
+      {{ hermes_agent_curriculum.jobs | map(attribute='id') | list }}.
+    success_msg: >-
+      Curriculum manifest contracts hold
+      ({{ hermes_agent_curriculum.jobs | length }} jobs, all with prompt files
+      and machine-checkable success gates).
+
+- name: Assert every curriculum prompt file exists in the role
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - (role_path ~ '/files/curriculum/' ~ item.prompt_file) is file
+    fail_msg: >-
+      Curriculum job '{{ item.id }}' names prompt_file '{{ item.prompt_file }}',
+      which does not exist under roles/hermes_agent/files/curriculum/.
+  loop: "{{ hermes_agent_curriculum.jobs }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+# H-17 tool-policy contracts. Negative regression checks: these confirm the
+# safety net actually excludes what it exists to exclude, so a future edit
+# that quietly re-adds a persistence or injection surface fails the play
+# before the config deploys.
+- name: Assert the runner-enforced tool policy excludes what it must exclude
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # Both job-class allowlists must be real (non-empty) lists — an empty
+      # allowlist silently falls back to upstream's platform default, which
+      # is the opposite of a policy.
+      - hermes_agent_api_server_toolsets | length > 0
+      - hermes_agent_cron_toolsets | length > 0
+      # An API-submitted (untrusted-input) run must never be able to schedule
+      # persistent jobs, drive a browser, delegate sub-agents, or block on a
+      # clarifying question. Cron gets the same envelope.
+      - >-
+        ['cronjob', 'browser', 'delegation', 'clarify']
+        | intersect(hermes_agent_api_server_toolsets) | length == 0
+      - >-
+        ['cronjob', 'browser', 'delegation', 'clarify']
+        | intersect(hermes_agent_cron_toolsets) | length == 0
+      # A toolset cannot be both globally denied and platform-allowlisted:
+      # upstream resolves that contradiction by silently dropping the tool,
+      # which reads as a mysterious "Unknown tool" at run time. Catch it here.
+      - >-
+        hermes_agent_disabled_toolsets
+        | intersect(hermes_agent_api_server_toolsets) | length == 0
+      - >-
+        hermes_agent_disabled_toolsets
+        | intersect(hermes_agent_cron_toolsets) | length == 0
+    fail_msg: >-
+      Hermes tool-policy contract violated (roles/hermes_agent/tasks/assert.yml).
+      The api_server/cron allowlists must be non-empty, must not contain any of
+      cronjob/browser/delegation/clarify, and must be disjoint from
+      hermes_agent_disabled_toolsets (api_server:
+      {{ hermes_agent_api_server_toolsets }}; cron: {{ hermes_agent_cron_toolsets }};
+      denied: {{ hermes_agent_disabled_toolsets }}). Fix the lists in
+      roles/hermes_agent/defaults/main.yml.
+    success_msg: >-
+      Hermes tool-policy contracts hold ({{ hermes_agent_api_server_toolsets | length }}
+      api_server toolsets, {{ hermes_agent_cron_toolsets | length }} cron toolsets,
+      {{ hermes_agent_disabled_toolsets | length }} globally denied).
+
+# The dryvist skills + SOUL.md come from the pinned nix-hermes bundle, built
+# on the CONTROLLER during converge — fail here, before any config deploys,
+# when the controller has no nix. (Read-only; safe in check mode.)
+- name: Assert the controller has nix for the content-bundle build
+  ansible.builtin.command:
+    cmd: nix --version
+  delegate_to: localhost
+  # become must be disabled via the VARIABLE, not just the keyword: group_vars
+  # sets the connection var ansible_become: true, and connection vars outrank
+  # task keywords — with only the keyword this task sudo-prompts on the
+  # controller and kills the converge.
+  become: false
+  vars:
+    ansible_become: false
+  run_once: true
+  changed_when: false

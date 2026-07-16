@@ -1,0 +1,55 @@
+---
+# Repo-specific data-contract checks for ansible-proxmox-ai.
+#
+# ansible-lint is centralized in dryvist/.github/_ansible-ci.yml. The job here
+# asserts THIS repo's data contract — playbook syntax. It is not generic
+# ansible CI, so it stays local and is aggregated by the wrapper's
+# "Merge Gate".
+#
+# This repo is roles-only today (deploy orchestration — site.yml/load_tofu.yml
+# and the shared tofu inventory contract — is a tracked follow-up; see
+# AGENTS.md). Inventory-schema and inventory-load checks live upstream in
+# ansible-proxmox-apps, which owns that contract; this repo is a read-only
+# consumer and does not duplicate it, so those jobs are not replicated here.
+
+name: Data Contract
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax-check:
+    name: Syntax Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+
+      - name: Install Ansible
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible
+
+      - name: Install Ansible collections
+        run: |
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Syntax check playbooks
+        run: |
+          for playbook in playbooks/**/*.{yml,yaml}; do
+            if [ -f "$playbook" ]; then
+              echo "Checking syntax: $playbook"
+              ansible-playbook "$playbook" --syntax-check
+            fi
+          done
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: 'false'

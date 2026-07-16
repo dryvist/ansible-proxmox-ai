@@ -1,0 +1,41 @@
+---
+# Layer 1 — render-time contract assertions for the LiteLLM router config.
+#
+# Guards the "compress-death trap": if the model a consumer requests (the Hermes
+# brain, Open WebUI's default) is NOT a first-class alias carrying a non-null
+# context_window, the request falls through to the "*" wildcard passthrough,
+# LiteLLM resolves max_input_tokens to null, and every downstream caller
+# compresses its context to death. This is the render-time half of the check;
+# the hermes_agent Layer 2 gate proves it end-to-end against the live router.
+#
+# Imported at the top of tasks/main.yml so it inherits the `llm_router` tag and
+# always runs with the role. Read-only; safe in check mode.
+
+- name: Assert every brain model consumers request is a real router alias (not the wildcard)
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # The fabric default the agent/UI actually request must resolve to a
+      # first-class alias with a non-null context_window.
+      - _llm_router_required_safe_models | difference(_llm_router_safe_aliases) | length == 0
+    fail_msg: >-
+      Compress-death trap (roles/llm_router/tasks/assert.yml): model(s)
+      [{{ _llm_router_required_safe_models | difference(_llm_router_safe_aliases) | join(', ') }}]
+      are requested as the fabric brain but are NOT first-class aliases in
+      llm_router_large_models with a non-null context_window. They would fall
+      through to the "*" wildcard passthrough, LiteLLM would resolve
+      max_input_tokens to null, and Hermes/Open WebUI would compress every request
+      to death (outage 2026-07-08). Add each as an aliased entry with an explicit
+      context_window. Constraint: config.yaml.j2 model_info.max_input_tokens.
+    success_msg: >-
+      Router brain aliases carry real context windows
+      ({{ _llm_router_required_safe_models | join(', ') }}).
+  vars:
+    # Large-tier aliases that declare a non-null context_window (the safe set).
+    _llm_router_safe_aliases: >-
+      {{ llm_router_large_models
+         | selectattr('context_window', 'defined')
+         | rejectattr('context_window', 'none')
+         | map(attribute='alias') | list }}
+    # The model id consumers actually request as the fabric brain.
+    _llm_router_required_safe_models: "{{ [ai_default_model] }}"

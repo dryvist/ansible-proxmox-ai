@@ -1,0 +1,587 @@
+---
+# hermes_agent role — NousResearch Hermes Agent (the autonomous agent), run
+# headless 24/7 in a dedicated LXC. NOT the hermes-infer/hermes-chat LLM serving
+# stack (that just serves the Hermes-4 *model*). Native install (install.sh
+# bundles Python/uv + Node) system-wide as root; the gateway runs as a dedicated
+# non-root 'hermes' user whose HERMES_HOME is on a persisted ZFS data volume.
+# Restart-on-failure is applied DRY by systemd_restart_policy (Phase 9).
+
+hermes_agent_user: hermes
+# Dedicated ZFS data volume mount (deployment.json mount_point). Holds the whole
+# agent home — memory, skills, profiles, Kanban DB, sessions, logs — so it is
+# snapshotted + replicated pve->pve3.
+hermes_agent_home: /var/lib/hermes
+hermes_agent_hermes_home: "{{ hermes_agent_home }}/.hermes" # $HERMES_HOME
+hermes_agent_bin: /usr/local/bin/hermes                     # system-wide install
+# install.sh's root-FHS layout: the app checkout (editable install target) and
+# its uv-managed venv. uv itself lands only at this root-owned path — the
+# installer never symlinks it onto the system PATH.
+hermes_agent_install_dir: /usr/local/lib/hermes-agent
+hermes_agent_venv_python: "{{ hermes_agent_install_dir }}/venv/bin/python"
+hermes_agent_uv_bin: /root/.hermes/bin/uv
+
+# --- Pinned, checksum-verified installer (NO curl|bash of a moving remote script) ---
+# Hermes ships as a Python app built from a git checkout (uv venv + editable pip),
+# not a released binary — so there is no binary artifact to checksum. What we CAN
+# pin is (a) the installer script, fetched from the tag's immutable raw URL and
+# sha256-verified, and (b) the app checkout, via the installer's --branch <tag>.
+#
+# Ansible pins the PLATFORM version for the ONE-TIME install (creates guard on the
+# binary); the Hermes daemon self-updates the app thereafter (`hermes update`).
+# To move the pinned floor: bump hermes_agent_version AND refresh the sha256
+# (curl the URL below, `sha256sum`). A stale checksum fails the converge loudly —
+# by design, that is the tamper/rug-pull guard.
+hermes_agent_version: "v2026.7.7.2"
+hermes_agent_installer_url: >-
+  https://raw.githubusercontent.com/NousResearch/hermes-agent/{{
+  hermes_agent_version }}/scripts/install.sh
+hermes_agent_installer_sha256: "a93c65b01ea392e179cf872e182bd01a2b65c0c15f17833e9f9569033ef10e07"
+# Version-stamped so a version bump downloads (and re-verifies) a fresh copy
+# instead of reusing a stale cached file.
+hermes_agent_installer_path: "/usr/local/lib/hermes-agent-installer-{{ hermes_agent_version }}.sh"
+
+# --- Pinned nix-hermes content bundle (skills + SOUL persona) -----------------
+# The dryvist skills and SOUL.md are CONTENT owned by the nix-hermes flake
+# (github:dryvist/nix-hermes); the converge builds this pinned ref on the
+# CONTROLLER (which has nix) and byte-copies the result to the guest. SOUL.md
+# is composed there at build time from ai-assistant-instructions'
+# autonomous-base.md + the Hermes variant — no vendored copy to drift.
+# Bump the tag deliberately: renovate opens the PR on each nix-hermes release;
+# a bad ref fails the converge loudly at the controller build step.
+hermes_agent_bundle_flake_ref: "github:dryvist/nix-hermes/nix-hermes-v0.4.0#hermes-bundle"
+
+# --- Brain: the LiteLLM router (the fabric front door, OpenAI-compatible /v1) ---
+# Reached by its neutral Traefik FQDN — never a hardcoded IP. The router routes by
+# model alias, so the agent just names the model it wants. The api key is the
+# router master key, env-sourced (SOPS/Doppler).
+# The model itself comes from the fabric-wide ai_default_model single source
+# (inventory/group_vars/all.yml) — shared with open_webui_default_model so the
+# agent brain and the human chat UI always run the same default. Change it
+# THERE (PR #753's why-Qwen3.6 rationale moved there with the value); a
+# per-role re-pin here would silently fork the two again.
+hermes_agent_model: "{{ ai_default_model }}"
+hermes_agent_model_base_url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1"
+hermes_agent_model_api_mode: chat_completions
+# Context-compression summary model. Hermes hard-requires >=64K context on the
+# compression model, and `ai-default` cannot promise that: its rotating backend
+# is whatever the phase brain is, and the stock 35B twin serves a 32,768-token
+# window — cron fleet failed on exactly this 2026-07-16 ("Auxiliary compression
+# model ai-default has a context window of 32,768"). Pin compression to the
+# OptiQ tuned alias: 65,536-token serving window, resident on the serving host,
+# carries its own repetition-penalty guard. Named by model family on purpose —
+# a generic alias must not be used where a >=64K window is a hard requirement.
+hermes_agent_compression_model: Qwen3.6-35B-A3B-OptiQ-4bit
+# The context window Hermes budgets against and compacts under (it compresses at
+# hermes_agent_context_compression_threshold * this value). The model's TRUE
+# native window is 262144 (Qwen3.6-35B-A3B), but we deliberately DECLARE a
+# smaller 60000 to BOUND PREFILL TIME and break a stale-stream kill/re-prompt
+# spiral confirmed under load: the router's prefix cache is not reused
+# turn-to-turn, so every turn re-prefills the FULL prompt, and prefill emits no
+# stream chunks. A 70-90K-token re-prefill can run longer than
+# hermes_agent_stream_stale_timeout (900s) with zero chunks in flight, tripping a
+# FALSE "stream stale" kill; Hermes then re-prompts "continue where you left
+# off", the context grows, the next re-prefill is longer, and it spirals.
+# Constraints this number traces to (do not change it without re-checking all
+# FOUR): (1) HARD FLOOR — Hermes Agent refuses any model declaring under
+# 64000 ("below the minimum 64,000 required"; every cron failed at 60000 on
+# 2026-07-08). (2) Native window 262144 (config.json). (3) A full re-prefill
+# of the declared window must finish inside the 900s stream-stale budget
+# (65536 needs >=73 tok/s prefill — trivially safe). (4) NEW, and binding:
+# the ROUTER enforces the serving window as max_input_tokens on the
+# ai-default alias (enable_pre_call_checks) — OptiQ serves 65,536. A
+# declaration ABOVE the served window creates a dead zone: Hermes budgets
+# past it and only compacts at threshold*declared, so every request between
+# the served window and the compaction point is router-rejected
+# (ContextWindowExceededError) before compression ever runs — observed live
+# 2026-07-16 at 34k tokens against the then-32k stock brain. Declare exactly
+# the served window so compaction (0.85 * 65536 ≈ 55.7k) fires BELOW the
+# router's rejection point.
+# (Custom providers carry no context catalog Hermes can probe, so this is
+# declared as model.context_length in config.yaml.j2.)
+hermes_agent_model_context_length: 65536
+# ROOT-CAUSE fix for the "Context length exceeded (18/19 tokens). Cannot
+# compress further." death loop confirmed in ~/.hermes/logs/agent.log: the
+# router/backend hard-caps a single completion at 8192 output tokens
+# ("max_tokens exceeds server limit (8192)"), but the `custom` provider
+# profile's built-in default_max_tokens is 65536. Hermes' error_classifier
+# misclassifies that 400 as a context overflow (it matches the bare
+# substring "max_tokens" in any error text) and dies trying to compress an
+# already-minimal conversation instead of lowering the output request.
+# 32768 stays at/below the serving side's per-request token cap. The winning
+# OptiQ-4bit brain (ai_default_model, 2026-07-08 agentic bench) serves with
+# --max-request-tokens 65536 on the Mac Studio, so a 32768 output request plus
+# hermes-agent's own retry-boost ceiling (max(32768, requested)) never exceeds
+# what the server accepts. (The prior stock/coder brains capped at 32768, where
+# this value matched the server exactly; against OptiQ it is a safe margin below.)
+# Capping max_tokens here means an oversized request is never sent.
+hermes_agent_model_max_tokens: 32768
+# Hermes classifies the brain endpoint by HOSTNAME STRING, never by DNS
+# resolution (agent/model_metadata.py is_local_endpoint: loopback, RFC-1918
+# IP literals, container suffixes, dot-less names). Our router base_url is an
+# FQDN, so Hermes applies its strict REMOTE-provider timeouts — 120s stream
+# read, 180s stale-stream kill — to a local model whose thinking-mode prefill
+# on a 20-60K context legitimately exceeds both. Confirmed live 2026-07-08:
+# "Stream stale for 180s (threshold 180s) ... Killing connection" followed by
+# a 0-char truncated stub that surfaces as "Model generated invalid tool
+# call". These overrides restore the values Hermes itself auto-applies to
+# endpoints it recognizes as local (read 1800s; stale kept enabled but far
+# above any healthy prefill).
+# The read value is the innermost link of the fabric-wide timeout chain, so it is
+# sourced from the single-source-of-truth constant (all.yml) that the Layer-1
+# assert checks against the router's per-attempt timeout — resolves to 1800.
+hermes_agent_stream_read_timeout: "{{ ai_stream_read_timeout_seconds }}"
+hermes_agent_stream_stale_timeout: 900
+# The api key IS the LiteLLM router master key; source it from the canonical
+# LLM_ROUTER_MASTER_KEY env (same as the llm_router role) so no per-run mapping
+# is needed. HERMES_AGENT_MODEL_API_KEY still overrides if explicitly set.
+hermes_agent_model_api_key: >-
+  {{ lookup('env', 'HERMES_AGENT_MODEL_API_KEY')
+     | default(lookup('env', 'LLM_ROUTER_MASTER_KEY'), true) }}
+
+# --- Slack gateway (Socket Mode) ---
+# Sourced the same way as the model key: plain env lookup, fed by Doppler at
+# converge time (iac-conf-mgmt/prd, where these were added alongside
+# LLM_ROUTER_MASTER_KEY). Empty-string defaults keep the role inert — and the
+# gateway Slack-free — until all five are actually set.
+hermes_agent_slack_bot_token: "{{ lookup('env', 'SLACK_HERMES_BOT_TOKEN') | default('', true) }}"
+hermes_agent_slack_app_token: "{{ lookup('env', 'SLACK_HERMES_APP_TOKEN') | default('', true) }}"
+hermes_agent_slack_allowed_users: "{{ lookup('env', 'SLACK_MEMBER_ID') | default('', true) }}"
+hermes_agent_slack_home_channel: "{{ lookup('env', 'SLACK_HOME_CHANNEL') | default('', true) }}"
+hermes_agent_slack_home_channel_name: "{{ lookup('env', 'SLACK_HOME_CHANNEL_NAME') | default('', true) }}"
+
+# Post scheduled (cron) output as FRESH top-level channel messages, not threaded
+# replies under one ever-growing root. Each cron run is already an isolated
+# session; this makes its Slack surface match. reply_in_thread=false → flat
+# top-level posts; cron_continuable_surface=in_channel → those flat posts stay
+# continuable (an in-channel reply continues that run's session) with no thread.
+# Rendered into config.yaml's platforms.slack block only when Slack is configured.
+hermes_agent_slack_reply_in_thread: false
+hermes_agent_slack_cron_continuable_surface: in_channel
+
+# Daily Slack status report seeded into Hermes' built-in cron scheduler. The
+# role creates the job on converge; the gateway starts executing it on the next
+# daemon run once the Slack gateway is configured.
+hermes_agent_daily_status_cron_name: homelab-ai-fabric-status
+hermes_agent_daily_status_cron_schedule: "0 9 * * *"
+hermes_agent_daily_status_cron_prompt: >-
+  Summarize the homelab AI fabric status, including router health, Hermes
+  gateway health, DNS readiness, and any merge-ready PRs. Keep it concise.
+
+# --- Inbound webhook receiver (event-driven agent trigger) ------------------
+# The `hermes gateway` webhook platform: an HTTP receiver (/webhooks/<name>,
+# HMAC-signed) so any homelab agent/system can trigger Hermes without speaking
+# A2A. Traefik fronts it as https://hermes.<sub>/webhooks/<name>; the guest
+# firewall opens the port from internal only (modules/firewall in terraform-proxmox).
+# The adapter binds 0.0.0.0 by default (Traefik reaches it from another guest).
+# Port is DRY from the tofu pipeline constant — never a literal. The global HMAC
+# secret is bao-first (group_vars) and injected via .env (WEBHOOK_SECRET), never
+# config.yaml; the platform only renders when a secret is present (a route with
+# no secret and no global secret fails the adapter at startup, by design).
+hermes_agent_webhook_enabled: true
+hermes_agent_webhook_port: >-
+  {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['hermes_webhook']
+     | mandatory('tofu_data.constants.service_ports.hermes_webhook missing — regenerate tofu_inventory.json') }}
+
+# --- Persona: the shared behavioral base (SOUL.md) ----------------------------
+# Deploy templates/SOUL.md.j2 (shared autonomous base prompt + Hermes variant,
+# vendored from ai-assistant-instructions agentsmd/prompts/autonomous-base.md)
+# over the upstream-default persona. Upstream reloads SOUL.md per message.
+# Flip false to hand the file back to manual/agent ownership.
+hermes_agent_soul_managed: true
+
+# --- Inbound job-submission API (`api_server` platform) ----------------------
+# The `hermes gateway` api_server platform: a bearer-authenticated HTTP API
+# (POST /v1/runs enqueues an agent run -> 202 + run_id; /api/jobs is cron CRUD;
+# GET /health). The SANCTIONED non-exec path to submit work to the agent — the
+# webhook above is event-trigger-only (pre-declared routes, no job submission).
+# Traefik fronts it as https://hermes-api.<sub>; the guest firewall opens the
+# port from internal only (modules/firewall in terraform-proxmox). Enablement is
+# key-presence (empty key = platform off, port closed) — the same contract as
+# the Slack tokens; upstream also refuses to start the platform without a key.
+# Key is bao-first (group_vars); port DRY from the tofu constant. Upstream
+# defaults to a loopback bind, so the non-loopback host below only takes effect
+# when the key-gated platform renders at all.
+hermes_agent_api_server_key: "{{ lookup('env', 'HERMES_API_SERVER_KEY') | default('', true) }}"
+hermes_agent_api_server_host: "0.0.0.0"
+hermes_agent_api_server_port: >-
+  {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['hermes_api']
+     | mandatory('tofu_data.constants.service_ports.hermes_api missing — regenerate tofu_inventory.json') }}
+# Queue hardening: cap in-flight agent runs across ALL of the platform's
+# agent-serving endpoints (/v1/runs, /v1/chat/completions, /v1/responses).
+# Upstream reads this from config.yaml (gateway.api_server.max_concurrent_runs)
+# and refuses over-cap submissions with 429 + Retry-After — the submitter
+# retries, nothing stacks unbounded prefills on the shared brain. Upstream's
+# default (10) is sized for cloud brains; ours is a SINGLE serving deployment
+# the cron fleet already shares, and the serving tier runs one stream well
+# but does not batch (measured 2-stream aggregate ~0.71x of single-stream,
+# 2026-07-11 bench). 2 = one operator submission + one background/curriculum
+# run in flight; anything more waits at the door, not in the GPU queue.
+# 0 would disable the cap entirely — assert.yml forbids that.
+hermes_agent_api_max_concurrent_runs: 2
+
+# --- Memory: best self-hostable as of June 2026 (Agy-validated) ---
+# Hindsight: local knowledge-graph + multi-strategy retrieval. Runs alongside the
+# always-on built-in MEMORY.md/USER.md. The whole HERMES_HOME is the durable surface.
+# The provider name alone is NOT enough: hindsight defaults to CLOUD mode, and
+# with no HINDSIGHT_API_KEY its is_available() returns false — every memory
+# tool call warns "Memory is not available" (the recurring digest warning).
+# local_embedded runs the daemon in-guest (hindsight-all, ~200 MB, installed
+# below) and needs an LLM for entity extraction — pointed at the same router
+# alias the agent brain uses, so memory never adds an external dependency.
+hermes_agent_memory_provider: hindsight
+hermes_agent_memory_mode: local_embedded
+hermes_agent_memory_llm_model: "{{ ai_default_model }}"
+
+# --- Safety: cap the agentic loop so a runaway can't pin the GPU overnight ---
+hermes_agent_max_turns: 90
+
+# --- Runner-enforced per-job-class tool policy (H-17) -------------------------
+# The RUNNER (upstream toolset resolution), not the prompt, decides which tools
+# each job class may load — injected text in a job's input can rewrite
+# instructions, but it cannot widen a toolset list the runner never registered.
+# Three layers, all plain data rendered into config.yaml; toolset names are the
+# upstream configurable keys (hermes_cli/tools_config.py CONFIGURABLE_TOOLSETS,
+# verified against the pinned hermes_agent_version):
+#
+#  1. agent.disabled_toolsets — the GLOBAL deny floor. Applies to every agent
+#     the gateway spawns and cannot be widened back by any per-job or
+#     per-platform allowlist (upstream layers it on top of per-job lists —
+#     cron/scheduler.py, upstream #25752). Entries here are capabilities no
+#     job class on this platform uses: media generation/analysis, desktop
+#     control, and messaging/media integrations that are not deployed.
+#  2. platform_toolsets.api_server — allowlist for API-submitted runs. The
+#     API's `input` (and everything a run retrieves) is untrusted text; this
+#     bounds what an injected instruction can reach. Deliberately ABSENT:
+#     `cronjob` (an injected one-off run must not schedule persistent jobs),
+#     `browser` (the widest tool attack surface; the `web` toolset covers
+#     research), `delegation` (cost amplification), and `clarify` (headless).
+#     Enabled MCP servers (splunk/context7/codex) are layered on by upstream's
+#     platform-tools semantics — the allowlist scopes native toolsets only.
+#  3. platform_toolsets.cron — allowlist for the scheduled fleet, same shape.
+#     Upstream additionally hard-disables cronjob/messaging/clarify in every
+#     cron context regardless of this list.
+#
+# The interactive Slack surface is deliberately NOT allowlisted: it is
+# operator-driven (allowed-users gate), so it keeps the upstream platform
+# default minus the global floor. Per-JOB granularity below these classes
+# (e.g. a read-only reposweep run) needs per-job enabled_toolsets, which the
+# CLI seeding path cannot set — tracked as a build-out issue; these platform
+# lists are the enforced envelope every job class runs inside.
+hermes_agent_disabled_toolsets:
+  - image_gen
+  - video_gen
+  - video
+  - tts
+  - x_search
+  - computer_use
+  - homeassistant
+  - spotify
+  - discord
+  - discord_admin
+  - yuanbao
+hermes_agent_api_server_toolsets:
+  - web
+  - terminal
+  - file
+  - code_execution
+  - skills
+  - todo
+  - memory
+  - context_engine
+  - session_search
+hermes_agent_cron_toolsets: "{{ hermes_agent_api_server_toolsets }}"
+
+# Pinned to UTC (workspace policy: no custom timezones), independent of the
+# target host's configured zone.
+hermes_agent_timezone: "UTC"
+
+# --- Observability: bundled OTLP/HTTP plugin (Cribl Edge fan-out) -----------
+hermes_agent_otel_endpoint: "{{ ai_orchestration_otel_endpoint }}"
+hermes_agent_otel_service_name: hermes-agent
+hermes_agent_otel_timeout: 5
+
+# systemd ExecStart: the long-running gateway daemon. It drives the built-in cron
+# scheduler + the Kanban dispatcher even with no messaging platform configured.
+# `gateway start` is for interactive/manual use — it shells out to manage its
+# own systemd/launchd service and requires root when no user session is
+# present ("System gateway start requires root"). `gateway run --replace` is
+# the foreground-supervised form the CLI's own --help calls out as "useful for
+# systemd" — it runs in-process under our unit instead of trying to manage one.
+hermes_agent_gateway_cmd: "{{ hermes_agent_bin }} gateway run --replace"
+
+# --- llm-wiki knowledge base ---
+hermes_agent_wiki_enabled: true
+hermes_agent_wiki_path: "{{ hermes_agent_home }}/wiki"
+hermes_agent_context_compression_enabled: true
+hermes_agent_context_compression_threshold: 0.85
+hermes_agent_nightly_wiki_cron_name: hermes-nightly-wiki
+hermes_agent_nightly_wiki_cron_schedule: "0 2 * * *"
+hermes_agent_nightly_wiki_cron_prompt: "Run a lint and health-check on the wiki."
+
+# --- autonomous GitHub docs-contributor ---
+hermes_agent_github_app_id: ""
+hermes_agent_github_app_installation_id: ""
+hermes_agent_github_app_private_key: ""
+
+# --- GitHub issues + org projects PAT (fine-grained) ---
+# Grants read/write GitHub Issues across ALL repos and read/write Projects (v2)
+# in the dryvist org — for triaging/creating/updating issues and managing project
+# boards. NOT for code commits (that is the signed docs-pr / GitHub App path) and
+# NOT for merges. Bao-first (local-llm domain, secret/ai/hermes), env fallback
+# (see group_vars); empty until the token is present. The bundled
+# dryvist/github-issues skill documents how the agent should use it.
+hermes_agent_github_issues_pat: ""
+
+# --- Splunk MCP client (read/search access to the SIEM) ---
+# Registers the Splunk MCP Server as an HTTP MCP server in config.yaml so Hermes
+# can query the environment (run_splunk_query, get_indexes, ...) with its own
+# scoped token. Bao-first, env fallback (see group_vars). An empty URL disables
+# the server entry, so the agent starts cleanly before the Splunk creds exist.
+hermes_agent_splunk_mcp_enabled: true
+hermes_agent_splunk_mcp_url: ""
+hermes_agent_splunk_mcp_token: ""
+
+# Zammad ITSM client (dryvist/zammad-incidents skill — the incident-management
+# system of record). Bao-first, env fallback (see group_vars). An empty URL or
+# token means the skill simply has nothing to call until Zammad is deployed and
+# its API token is seeded; the agent still starts cleanly.
+hermes_agent_zammad_url: ""
+hermes_agent_zammad_api_token: ""
+
+# --- Splunk monitor: 24/7 self-directed SIEM analyst -----------------------
+# Seeds a small fleet of Hermes cron jobs, each carrying the dryvist/splunk-monitor
+# skill. That skill encodes the HARD query-safety rails (bounded queries only —
+# tstats/stats/head, narrow time windows) plus a self-directed investigative
+# method: Hermes decides what to hunt for, remembers baselines, and alerts only on
+# confirmed anomalies. Every cron job runs in a FRESH isolated agent session, so
+# context never builds up run-to-run.
+#
+# Routing (user decision): anomaly alerts DM the operator, the routine digest
+# posts to the Slack home channel. Delivery of anomaly jobs is suppressed
+# whenever the run ends in the `[SILENT]` marker (skill contract), so a normal
+# run costs zero notifications.
+#
+# Gated (in tasks) on BOTH the Splunk MCP URL being set (can query) AND the Slack
+# tokens being set (can deliver) — a job that can't do both is never created.
+hermes_agent_splunk_monitor_enabled: true
+
+# DM target for anomaly alerts: `slack:<member-id>` when the operator's Slack
+# member id is known, else fall back to the home channel (`slack`). The digest
+# always goes to the home channel.
+hermes_agent_splunk_alert_deliver: >-
+  {{ 'slack:' ~ hermes_agent_slack_allowed_users
+     if (hermes_agent_slack_allowed_users | length > 0)
+     else 'slack' }}
+hermes_agent_splunk_digest_deliver: slack
+
+# Per-job cron definitions. Prompts stay short — the skill carries the discipline;
+# the prompt only sets each run's posture (a lens, not a checklist) and reinforces
+# the [SILENT]-unless-anomaly / always-deliver-the-digest delivery contract.
+# Minutes are staggered so no two monitoring runs fire in the same minute
+# (bounds concurrent load on the shared LLM serving tier).
+#
+# Cadence calmed 2026-07-16 (operator decision): the old fleet (triage every
+# 15 min, security 2x/hr, parsing+digest hourly) generated most of the
+# concurrent load on the single serving engine — the load that triggered the
+# vllm-mlx batch-scheduler wedge (nix-ai#1234) and the llama-swap 429 bursts.
+# Homelab triage does not need 15-minute latency; ~85% fewer LLM calls with
+# zero overlapping start minutes.
+hermes_agent_splunk_triage_cron_name: splunk-triage
+hermes_agent_splunk_triage_cron_schedule: "7 * * * *"
+hermes_agent_splunk_triage_cron_prompt: >-
+  Do a broad, self-directed anomaly sweep of Splunk right now using only bounded
+  queries. Recall your known baselines first, confirm anything surprising with
+  follow-up bounded queries, and record notable findings and updated baselines to
+  memory. If nothing is genuinely off, reply with exactly [SILENT]; otherwise send
+  one concise, numbers-backed alert.
+
+hermes_agent_splunk_security_cron_name: splunk-security
+hermes_agent_splunk_security_cron_schedule: "22 */6 * * *"
+hermes_agent_splunk_security_cron_prompt: >-
+  Sweep Splunk with a security lens this run — firewall-drop spikes, auth-failure
+  spikes, honeypot index hits, unexpected source IPs — all as bounded stats,
+  compared against your remembered baselines. You are not limited to these; flag
+  anything that looks like a threat. Record findings to memory. Reply exactly
+  [SILENT] if clean; otherwise one concise, numbers-backed alert.
+
+hermes_agent_splunk_parsing_cron_name: splunk-parsing
+hermes_agent_splunk_parsing_cron_schedule: "37 2 * * *"
+hermes_agent_splunk_parsing_cron_prompt: >-
+  Sweep Splunk with a data-quality lens this run — timestamp-extraction failures,
+  events dated far in the past/future, line-merge anomalies, new or unknown
+  sourcetypes, mis-sized or unparsed events, splunkd parsing warnings — all
+  bounded. Record findings and baselines to memory. Reply exactly [SILENT] if
+  clean; otherwise one concise, numbers-backed alert.
+
+# Quiet research run: builds long-term knowledge (RAG) rather than alerting.
+hermes_agent_splunk_deepdive_cron_name: splunk-deepdive
+hermes_agent_splunk_deepdive_cron_schedule: "11 3 * * *"
+hermes_agent_splunk_deepdive_cron_prompt: >-
+  Pick ONE index or sourcetype you have not yet characterized well (check your
+  wiki/memory for gaps). Using only bounded queries, learn its normal shape,
+  volume and purpose, then write or update a page in the `splunk` area of your
+  wiki plus a memory baseline. This is a quiet research run — no alert needed.
+
+# Routine status post: always delivered (never [SILENT]).
+hermes_agent_splunk_digest_cron_name: splunk-digest
+# HOURLY by operator law (2026-07-16): Hermes must deliver useful information
+# at least once per hour, 24/7 — this digest IS that heartbeat (and its silence
+# is the outage signal). Anomaly sweeps stay silent-unless-anomaly; only they
+# were calmed.
+hermes_agent_splunk_digest_cron_schedule: "52 * * * *"
+hermes_agent_splunk_digest_cron_prompt: >-
+  Post a concise Splunk digest to the home channel: what you looked at recently,
+  the current normal (top indexes/sourcetypes by volume and their freshness), any
+  anomalies still open, and any splunk-auto-* checks you have added or removed.
+  Bounded queries only. This is a routine status post — ALWAYS write the digest
+  and NEVER reply [SILENT] for this job; [SILENT] is only for the anomaly sweeps.
+
+# Aggregate list the seed loop iterates. Alert jobs DM the operator; the digest
+# posts to the home channel; the quiet deep-dive research run saves locally only.
+hermes_agent_splunk_cron_jobs:
+  - name: "{{ hermes_agent_splunk_triage_cron_name }}"
+    schedule: "{{ hermes_agent_splunk_triage_cron_schedule }}"
+    prompt: "{{ hermes_agent_splunk_triage_cron_prompt }}"
+    deliver: "{{ hermes_agent_splunk_alert_deliver }}"
+  - name: "{{ hermes_agent_splunk_security_cron_name }}"
+    schedule: "{{ hermes_agent_splunk_security_cron_schedule }}"
+    prompt: "{{ hermes_agent_splunk_security_cron_prompt }}"
+    deliver: "{{ hermes_agent_splunk_alert_deliver }}"
+  - name: "{{ hermes_agent_splunk_parsing_cron_name }}"
+    schedule: "{{ hermes_agent_splunk_parsing_cron_schedule }}"
+    prompt: "{{ hermes_agent_splunk_parsing_cron_prompt }}"
+    deliver: "{{ hermes_agent_splunk_alert_deliver }}"
+  - name: "{{ hermes_agent_splunk_deepdive_cron_name }}"
+    schedule: "{{ hermes_agent_splunk_deepdive_cron_schedule }}"
+    prompt: "{{ hermes_agent_splunk_deepdive_cron_prompt }}"
+    deliver: local
+  - name: "{{ hermes_agent_splunk_digest_cron_name }}"
+    schedule: "{{ hermes_agent_splunk_digest_cron_schedule }}"
+    prompt: "{{ hermes_agent_splunk_digest_cron_prompt }}"
+    deliver: "{{ hermes_agent_splunk_digest_deliver }}"
+
+# --- GitHub monitor: periodic read-only org-triage sweep -------------------
+# The poll-based counterpart to the Splunk fleet, reusing the existing
+# dryvist/github-issues skill + its PAT — no webhook ingress, no new skill.
+# Each run is a fresh isolated agent session (context never builds up run to
+# run). Read-only by contract: it reports, it never comments/labels/closes.
+# Minute 12 keeps it clear of the Splunk minutes above (bounds concurrent load
+# on the shared serving tier). Gated in tasks on BOTH the github-issues PAT
+# (can query) AND the Slack tokens (can deliver) — same shape as splunk.
+hermes_agent_github_monitor_enabled: true
+hermes_agent_github_monitor_cron_name: github-triage
+hermes_agent_github_monitor_cron_schedule: "26 */6 * * *"
+hermes_agent_github_monitor_cron_prompt: >-
+  Do a read-only triage sweep of the dryvist GitHub org right now using your
+  github-issues skill. Enumerate open PRs and issues across non-archived repos;
+  flag PRs older than 7 days as stale, Renovate/bot PRs open >7 days, and issues
+  untouched for 30+ days. NEVER comment on, label, close, or edit anything — you
+  are producing a report, not acting on it. If nothing genuinely needs a human
+  decision, reply with exactly [SILENT]; otherwise post one concise top-5 action
+  list (repo, number, why) plus totals to the home channel.
+hermes_agent_github_monitor_cron_deliver: slack
+
+hermes_agent_github_cron_jobs:
+  - name: "{{ hermes_agent_github_monitor_cron_name }}"
+    schedule: "{{ hermes_agent_github_monitor_cron_schedule }}"
+    prompt: "{{ hermes_agent_github_monitor_cron_prompt }}"
+    deliver: "{{ hermes_agent_github_monitor_cron_deliver }}"
+
+# Every cron job this role seeds. The model-drift recovery task (tasks/main.yml)
+# only ever removes jobs on this list — user- and agent-created jobs are never
+# touched.
+hermes_agent_seeded_cron_names: >-
+  {{ [hermes_agent_daily_status_cron_name, hermes_agent_nightly_wiki_cron_name]
+     + (hermes_agent_splunk_cron_jobs | map(attribute='name') | list)
+     + (hermes_agent_github_cron_jobs | map(attribute='name') | list) }}
+
+# --- Context7 MCP client (current library/framework docs on demand) ---
+# Registers Context7 so Hermes can pull up-to-date, version-specific docs
+# mid-task. Bao-first, env fallback (see group_vars); the entry is omitted
+# until the API key is set. Dialed through the shared agentgateway MCP plane
+# (one governed front door per target; the gateway federates outbound HTTPS
+# to Context7) — set the URL back to https://mcp.context7.com/mcp to bypass
+# the gateway.
+hermes_agent_context7_mcp_enabled: true
+hermes_agent_context7_mcp_url: >-
+  https://mcp.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}/context7/mcp
+hermes_agent_context7_api_key: ""
+
+# --- Escalation (Codex via MCP) ---
+# A deliberate, agent-invoked path for problems worth a stronger model or a
+# stuck/looping session — NOT automatic on-error retry (that's
+# fallback_providers, an upstream Hermes feature intentionally unused here).
+# Registers `codex mcp-server` as an MCP tool; tool use is inherently a
+# per-call, model-chosen decision, so the agent reaches for this only when it
+# judges it worth it, same as any other tool.
+#
+# Codex runs under a SEPARATE, isolated OS user (codex_runner role,
+# colocated on this host) — Hermes invokes it via a single-command sudo
+# grant, never gaining filesystem access to that user's ChatGPT-OAuth
+# credential. codex_runner_user/codex_runner_mcp_command come from that
+# role's defaults (same host, same play — see playbooks/site.yml).
+#
+# Inert until a human completes the one-time Codex OAuth bootstrap
+# (roles/codex_runner/README.md) — the MCP entry renders regardless, and
+# simply errors on use until then; the daemon itself is unaffected.
+#
+# Named after the tool (matching the sibling hermes_agent_splunk_mcp_enabled /
+# hermes_agent_context7_mcp_enabled flags above), not the broader "escalation"
+# concept — OPENROUTER_API_KEY is already parked as a candidate SECOND
+# escalation tool (see README), which will need its own independent flag when
+# wired, not a shared one.
+hermes_agent_codex_mcp_enabled: true
+
+# --- Layer 2 post-converge verification gate (tasks/verify.yml) --------------
+# After the gateway (re)starts, a real end-to-end probe proves the brain wiring
+# actually works before the converge is called done — every 2026-07-08 breakage
+# was a config mistake that a single tool-call probe (or a journal grep) would
+# have surfaced immediately. Disable only where there is no live brain to reach
+# (mirrors llamaindex_verify_router); default on for real converges.
+hermes_agent_verify_enabled: true
+# journalctl tail scanned for fatal config-rejection lines since the restart.
+hermes_agent_verify_journal_lines: 200
+# Fatal startup/config-rejection substrings Hermes emits when the brain wiring is
+# wrong: the context floor rejection ("below the minimum 64,000 required") and an
+# unknown/mis-aliased model ("Model <id> does not exist"). Match => gate fails.
+hermes_agent_verify_fatal_log_patterns:
+  - "below the minimum"
+  - "does not exist"
+# The live tool-call probe forces a tool call through the router at the resolved
+# brain and asserts a structurally valid tool_call comes back (non-empty
+# function.name — the exact "invalid tool call" shape of the outage). Generous
+# per-attempt timeout: the swap-tier brain may be loading on first hit.
+hermes_agent_verify_probe_timeout: 300
+hermes_agent_verify_probe_retries: 3
+hermes_agent_verify_probe_delay: 10
+
+# --- Brain-health watchdog: stop cron-failure spam during brain outages -------
+# ai-default is a single-deployment brain (llm_router role) with no viable
+# fallback, and upstream Hermes ALWAYS delivers a cron failure ("Failed jobs
+# always deliver regardless of the [SILENT] marker"). So a brain outage makes the
+# stateless seeded fleet fail-and-DM the operator twice an hour per job, while
+# nothing pages that the brain is even down (service_deadman watches DNS/Traefik/
+# HAProxy/OpenBao, not the LLM fabric). This watchdog closes both gaps: a systemd
+# timer probes the brain end-to-end and, on a DEBOUNCED transition, pauses/resumes
+# the seeded cron fleet and alerts EXACTLY ONCE per edge. See templates/ +
+# tasks/main.yml and the README.
+hermes_agent_brain_watchdog_enabled: true
+hermes_agent_brain_watchdog_script_path: /usr/local/bin/hermes-brain-watchdog.sh
+# Probe cadence (systemd OnUnitActiveSec). 60s matches service_deadman.
+hermes_agent_brain_watchdog_interval: "60s"
+# Per-probe curl deadline. Comfortably covers a warm 1-token completion; a hung or
+# unreachable brain trips it and counts as one failure toward the debounce.
+hermes_agent_brain_watchdog_probe_timeout: 15
+# Hysteresis: consecutive failures before declaring DOWN (pause+alert), and
+# consecutive successes before declaring UP (resume+alert). down_after=3 over the
+# 60s cadence (~3 min) rides rotation-flip bounces and cold reloads so the
+# watchdog never becomes a new source of spam; up_after=2 damps flapping.
+hermes_agent_brain_watchdog_down_after: 3
+hermes_agent_brain_watchdog_up_after: 2
+# Urgent page target. Same topic service_deadman pages on ("same feed as other
+# homelab outages", operator decision) — the brain is now a keystone.
+# FQDN-first: the Traefik-fronted ntfy service name; DHCP/DNS own the address.
+hermes_agent_brain_watchdog_ntfy_topic: "keystone"
+hermes_agent_brain_watchdog_ntfy_url: >-
+  https://ntfy.{{ tofu_data.domain }}/{{ hermes_agent_brain_watchdog_ntfy_topic }}

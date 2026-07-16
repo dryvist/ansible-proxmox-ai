@@ -1,0 +1,31 @@
+{{ ansible_managed | comment }}
+"""OpenLLMetry tracing bootstrap for agent-exec (managed by Ansible).
+
+Import this FIRST from your agent entrypoint so CrewAI + LangChain runs are
+exported to the homelab OTLP/HTTP collector:
+
+    import otel_bootstrap  # noqa: F401  (sets up tracing on import)
+"""
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+from opentelemetry.instrumentation.crewai import CrewAIInstrumentor
+# opentelemetry-instrumentation-langchain exports "LangchainInstrumentor" (lowercase c),
+# not "LangChainInstrumentor" -- alias to match this file's usage below.
+from opentelemetry.instrumentation.langchain import LangchainInstrumentor as LangChainInstrumentor
+
+_provider = TracerProvider(
+    resource=Resource.create({"service.name": "{{ agent_exec_service }}"})
+)
+_provider.add_span_processor(
+    BatchSpanProcessor(
+        OTLPSpanExporter(endpoint="{{ ai_orchestration_otel_endpoint }}/v1/traces")
+    )
+)
+trace.set_tracer_provider(_provider)
+
+CrewAIInstrumentor().instrument()
+LangChainInstrumentor().instrument()

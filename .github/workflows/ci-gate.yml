@@ -1,0 +1,68 @@
+---
+# CI Gate — wrapper around the shared ansible CI gate.
+#
+# ansible-lint and the standardized change filter live in
+# dryvist/.github/.github/workflows/_ansible-ci.yml so lint runs identically
+# across ansible-proxmox, ansible-splunk and this repo.
+#
+# Molecule stays LOCAL here: this repo's molecule job has a deliberate
+# least-privilege Doppler handling (it maps only the secret the scenarios
+# consume into the test step, never inject-env-vars). Routing it through the
+# shared molecule (which uses inject-env-vars) would regress that. So the
+# shared workflow runs lint only (molecule:false) and this wrapper keeps
+# _molecule.yml and _data-contract.yml local, aggregating everything in its
+# own required "Merge Gate". All local jobs gate on the shared workflow's
+# exported filter outputs — one change-detection definition.
+#
+# No e2e job: this repo is roles-only (deploy orchestration is a tracked
+# follow-up), so there is nothing to exercise end-to-end yet.
+
+name: CI Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  ci:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: dryvist/.github/.github/workflows/_ansible-ci.yml@main
+    with:
+      # Molecule is owned locally (see header); the shared workflow runs lint only.
+      molecule: false
+      emit_gate: false
+
+  data-contract:
+    name: Data Contract
+    needs: ci
+    if: ${{ needs.ci.outputs.ansible == 'true' }}
+    uses: ./.github/workflows/_data-contract.yml
+
+  molecule:
+    name: Molecule
+    needs: ci
+    if: ${{ needs.ci.outputs.molecule == 'true' }}
+    uses: ./.github/workflows/_molecule.yml
+    secrets: inherit
+
+  gate:
+    name: Merge Gate
+    needs: [ci, data-contract, molecule]
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all results
+        uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # release/v1
+        with:
+          allowed-skips: data-contract, molecule
+          jobs: ${{ toJSON(needs) }}

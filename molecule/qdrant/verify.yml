@@ -1,0 +1,132 @@
+---
+# Molecule verification playbook
+# Validates that the qdrant_docker role executed correctly
+
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    qdrant_docker_data_dir: /opt/qdrant
+    qdrant_docker_image: "qdrant/qdrant:v1.18.2"
+    qdrant_docker_container_name: qdrant
+    qdrant_docker_http_port: 6333
+
+  tasks:
+    - name: Check qdrant data directories exist
+      ansible.builtin.stat:
+        path: "{{ qdrant_docker_data_dir }}/{{ item }}"
+      register: qdrant_dir_check
+      loop:
+        - storage
+        - snapshots
+        - config
+
+    - name: Assert qdrant data directories exist
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isdir
+        fail_msg: "Qdrant directory not found: {{ item.item }}"
+      loop: "{{ qdrant_dir_check.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Check docker-compose.yml was deployed
+      ansible.builtin.stat:
+        path: "{{ qdrant_docker_data_dir }}/docker-compose.yml"
+      register: compose_file
+
+    - name: Assert docker-compose.yml exists
+      ansible.builtin.assert:
+        that:
+          - compose_file.stat.exists
+        fail_msg: "docker-compose.yml not found - template was not deployed"
+
+    - name: Read docker-compose.yml content
+      ansible.builtin.slurp:
+        src: "{{ qdrant_docker_data_dir }}/docker-compose.yml"
+      register: compose_content
+
+    - name: Assert docker-compose.yml references correct qdrant image
+      ansible.builtin.assert:
+        that:
+          - "qdrant_docker_image in (compose_content.content | b64decode)"
+        fail_msg: "docker-compose.yml does not reference expected image {{ qdrant_docker_image }}"
+
+    - name: Assert docker-compose.yml has correct container name
+      ansible.builtin.assert:
+        that:
+          - "qdrant_docker_container_name in (compose_content.content | b64decode)"
+        fail_msg: "docker-compose.yml does not have expected container name"
+
+    - name: Assert docker-compose.yml mounts required volumes
+      ansible.builtin.assert:
+        that:
+          - "'/qdrant/storage' in (compose_content.content | b64decode)"
+          - "'/qdrant/snapshots' in (compose_content.content | b64decode)"
+          - "'/qdrant/config/production.yaml' in (compose_content.content | b64decode)"
+        fail_msg: "docker-compose.yml is missing required Qdrant volume mounts"
+
+    - name: Check config.yaml was deployed
+      ansible.builtin.stat:
+        path: "{{ qdrant_docker_data_dir }}/config/config.yaml"
+      register: config_file
+
+    - name: Assert config.yaml exists
+      ansible.builtin.assert:
+        that:
+          - config_file.stat.exists
+        fail_msg: "config.yaml not found - template was not deployed"
+
+    - name: Read config.yaml content
+      ansible.builtin.slurp:
+        src: "{{ qdrant_docker_data_dir }}/config/config.yaml"
+      register: config_content
+
+    - name: Assert config.yaml has expected content
+      ansible.builtin.assert:
+        that:
+          - "'storage_path: /qdrant/storage' in (config_content.content | b64decode)"
+          - "'snapshots_path: /qdrant/snapshots' in (config_content.content | b64decode)"
+          - "'http_port: 6333' in (config_content.content | b64decode)"
+          - "'grpc_port: 6334' in (config_content.content | b64decode)"
+        fail_msg: "config.yaml does not contain expected Qdrant configuration"
+
+    - name: Check Docker service is running
+      ansible.builtin.systemd:
+        name: docker
+      register: docker_status
+      failed_when: false
+
+    - name: Assert Docker service is active
+      ansible.builtin.assert:
+        that:
+          - docker_status.status.ActiveState == 'active'
+        fail_msg: >-
+          Docker service is not running
+          (ActiveState: {{ docker_status.status.ActiveState | default('unknown') }})
+
+    - name: Check qdrant container was started
+      ansible.builtin.shell: >
+        docker ps -a --filter "name=^qdrant$" --quiet
+      register: container_exists
+      changed_when: false
+
+    - name: Assert qdrant container was created and started
+      ansible.builtin.assert:
+        that:
+          - container_exists.stdout | length > 0
+        fail_msg: "Qdrant container was never started by docker-compose"
+
+    - name: Verify qdrant health endpoint
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ qdrant_docker_http_port }}/healthz"
+        method: GET
+        status_code: 200
+      register: qdrant_health
+      retries: 10
+      delay: 5
+      until: qdrant_health.status == 200
+      changed_when: false

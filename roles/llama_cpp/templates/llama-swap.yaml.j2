@@ -1,0 +1,61 @@
+{{ ansible_managed | comment }}
+# llama-swap config (managed by the llama_cpp role). One OpenAI-compatible endpoint
+# in front of llama.cpp's llama-server. The models below are kept co-resident (a
+# group with swap:false), so there is no per-request reload churn.
+
+healthCheckTimeout: {{ llama_cpp_health_check_timeout }}
+startPort: {{ llama_cpp_start_port }}
+logLevel: info
+
+# Shared llama-server invocation. ${PORT} is assigned per model by llama-swap.
+macros:
+  "server-base": >-
+    {{ llama_cpp_server_bin }}
+    --host 127.0.0.1 --port ${PORT}
+    -ngl {{ llama_cpp_ngl }}
+
+groups:
+  # VRAM discipline (learned the hard way: full co-residency of the models
+  # + their KV caches once included a 14B chat model and exceeded the 16 GB
+  # card — the amdgpu eviction path hard-hangs the HOST. That 14B model was
+  # removed; see the ABSOLUTE >=14B rule in roles/llama_cpp/defaults/main.yml).
+  # Only the tiny embeddings model stays permanently resident; the chat models
+  # swap against each other, so peak pressure is one chat model + embeddings +
+  # KV. --no-mmap was also dropped from the shared invocation: mmap streaming
+  # halves the load spike.
+  "embeddings":
+    swap: false
+    exclusive: false
+    members:
+{% for m in llama_cpp_models if m.embeddings %}
+      - "{{ m.name }}"
+{% endfor %}
+  "chat":
+    swap: true
+    exclusive: false
+    members:
+{% for m in llama_cpp_models if not m.embeddings %}
+      - "{{ m.name }}"
+{% endfor %}
+
+models:
+{% for m in llama_cpp_models %}
+  "{{ m.name }}":
+{% if m.aliases | length > 0 %}
+    aliases:
+{% for a in m.aliases %}
+      - "{{ a }}"
+{% endfor %}
+{% endif %}
+    cmd: |
+      ${server-base}
+      --model {{ llama_cpp_models_dir }}/{{ m.gguf }}
+      --ctx-size {{ llama_cpp_ctx_size }}
+{% if m.embeddings %}
+      --embeddings
+      --pooling mean
+{% else %}
+      --flash-attn on
+      --jinja
+{% endif %}
+{% endfor %}

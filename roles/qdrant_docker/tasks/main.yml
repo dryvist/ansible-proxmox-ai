@@ -1,0 +1,115 @@
+---
+# Qdrant Docker Deployment Tasks
+# Deploys Qdrant vector database as a Docker container
+
+# =============================================================================
+# Validation
+# =============================================================================
+
+- name: Validate Qdrant API key is set
+  ansible.builtin.assert:
+    that:
+      - qdrant_docker_api_key | length > 0
+    fail_msg: "QDRANT_API_KEY environment variable is not set. Add it to Doppler before deploying."
+    quiet: true
+
+# Docker itself (docker-ce + compose plugin, LXC-conditional fuse-overlayfs, the
+# daemon.json pinning qdrant_docker_storage_driver) is installed by the
+# docker_engine meta dependency (meta/main.yml). No venv: Qdrant deploys via
+# docker_compose_v2, which uses the docker compose CLI (not the docker SDK), so
+# compose runs under the system interpreter.
+
+# =============================================================================
+# Qdrant Data Directories
+# =============================================================================
+
+- name: Create qdrant storage directory
+  ansible.builtin.file:
+    path: "{{ qdrant_docker_data_dir }}/storage"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Create qdrant snapshots directory
+  ansible.builtin.file:
+    path: "{{ qdrant_docker_data_dir }}/snapshots"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Create qdrant config directory
+  ansible.builtin.file:
+    path: "{{ qdrant_docker_data_dir }}/config"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+# =============================================================================
+# Qdrant Configuration
+# =============================================================================
+
+- name: Deploy qdrant server configuration
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ qdrant_docker_data_dir }}/config/config.yaml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart qdrant
+
+- name: Deploy qdrant docker-compose template
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ qdrant_docker_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart qdrant
+
+# =============================================================================
+# Deploy via Docker Compose
+# =============================================================================
+
+- name: Check if qdrant container is running
+  ansible.builtin.command: docker ps -q --filter name={{ qdrant_docker_container_name }} --filter status=running
+  register: qdrant_docker_running_check
+  changed_when: false
+  failed_when: false
+
+- name: Clean stale qdrant Docker state before fresh deployment
+  ansible.builtin.command:
+    cmd: docker compose down --volumes --remove-orphans
+    chdir: "{{ qdrant_docker_data_dir }}"
+  when: qdrant_docker_running_check.stdout == ''
+  changed_when: true
+  failed_when: false
+
+- name: Deploy qdrant via docker compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ qdrant_docker_data_dir }}"
+    state: present
+
+# =============================================================================
+# Health Check
+# =============================================================================
+
+- name: Wait for qdrant HTTP port to be ready
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ qdrant_docker_http_port }}"
+    timeout: 60
+
+- name: Verify qdrant health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ qdrant_docker_http_port }}/healthz"
+    method: GET
+    status_code: 200
+  register: qdrant_docker_health
+  retries: 10
+  delay: 5
+  until: qdrant_docker_health.status == 200
+  changed_when: false

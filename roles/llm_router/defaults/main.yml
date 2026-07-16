@@ -1,0 +1,302 @@
+---
+# llm_router role defaults — a LiteLLM proxy (the fabric's single OpenAI-compatible
+# front door) on each guest tagged `llm-router`. Native install: a Python venv +
+# systemd, config at /etc/litellm/config.yaml. Fronted by Traefik at
+# https://llm.<subdomain>; consumers select a tier purely by model alias.
+#
+# Two tiers, both reached through this one proxy:
+#   large — gpt-oss-120b / Qwen3-Coder-30B-A3B / Qwen3.6-35B-A3B-4bit /
+#           claude-sonnet-5 on the neutral `llm-large` runner (bearer auth).
+#           One deployment each; no cross-tier fallback.
+#   light — qwen3-4b / embeddings / claude-haiku-4-5. TWO deployments per
+#           alias: the GPU `llm-fast` box AND the CPU `llm-light` standby, same
+#           model_name. LiteLLM load-balances the pair and cools a failed
+#           deployment down, so a GPU outage drains to CPU automatically.
+#
+# Restart-on-failure is applied DRY by the shared systemd_restart_policy role via
+# group_vars, not here.
+
+llm_router_user: litellm
+llm_router_group: litellm
+llm_router_home: /var/lib/litellm
+llm_router_venv: /opt/litellm-venv
+llm_router_service: litellm
+llm_router_config_dir: /etc/litellm
+llm_router_config_file: "{{ llm_router_config_dir }}/config.yaml"
+llm_router_env_file: "{{ llm_router_config_dir }}/litellm.env"
+
+# Installed into the venv (state: present — pinned by the ecosystem, never here).
+# The opentelemetry exporter backs the single OTLP logging callback below.
+# No direct langfuse SDK: LiteLLM's "langfuse" callback needs the v2 SDK
+# (pip resolves v3, which errors on init), and Langfuse ingestion already
+# arrives via the designed OTLP -> Cribl Edge fan-out path.
+llm_router_pip_packages:
+  - "litellm[proxy]"
+  # LiteLLM's auth-error handler unconditionally `import prisma`s to classify
+  # whether a failed request is a DB outage, but litellm[proxy] no longer pulls
+  # prisma. On this DB-less proxy the import raised ModuleNotFoundError, turning
+  # every rejected/absent key into a 500 instead of a 401 (masking real auth
+  # failures as opaque errors). We use no database; prisma is present only so the
+  # handler's isinstance checks resolve and it returns the correct 401.
+  - prisma
+  - opentelemetry-api
+  - opentelemetry-sdk
+  - opentelemetry-exporter-otlp
+
+# Internal subdomain (pve.<apex>), never hardcoded — the derived model endpoints
+# and the Langfuse host are built from it.
+llm_router_subdomain: >-
+  {{ lookup('env', 'PROXMOX_SUBDOMAIN') | mandatory('PROXMOX_SUBDOMAIN required') }}
+
+# --- Ports (DRY from the tofu ports registry; no hardcodes) ------------------
+# The proxy's own listen port + the two backend tiers' ports. Hard-required like
+# every other role's port so a missing constant fails loud rather than guessing.
+# NOTE: service_ports.llm_router_api and service_ports.llm_fast_api are added by
+# the parallel terraform-proxmox constants PR — this role depends on both.
+llm_router_api_port: "{{ tofu_data.constants.service_ports.llm_router_api }}"
+llm_router_light_port: "{{ tofu_data.constants.service_ports.llm_fast_api }}"
+# llm-large speaks the Ollama-compatible API on the standard Ollama port.
+llm_router_large_port: "{{ tofu_data.constants.service_ports.ollama_api }}"
+
+# --- Backend base URLs (derived; never a hardcoded IP) -----------------------
+llm_router_llm_fast_base_url: "http://llm-fast.{{ llm_router_subdomain }}:{{ llm_router_light_port }}/v1"
+llm_router_llm_light_base_url: "http://llm-light.{{ llm_router_subdomain }}:{{ llm_router_light_port }}/v1"
+# The large-tier gate (a caddy TLS front on the Mac Studio, apex-level cert via
+# Route53 DNS-01) reverse-proxies to the host's llama-swap. It has always been
+# addressed apex-level (one label under the subdomain's parent), because the
+# ACME client locates the hosted zone by stripping a single label — an
+# <alias>.<subdomain> name fails the TLS handshake (no SNI cert).
+#
+# The host is reached by its OWN permanent name, not a floating `llm-large`
+# service alias. The alias needed a *second* DNS record published + maintained
+# by something outside this fabric; on 2026-07-06 that record silently vanished
+# (resolved fine at 21:51, NXDOMAIN by 22:42) and every brain request 500'd with
+# ClientConnectorDNSError — a single point of failure with no benefit while there
+# is exactly one serving host. `jevans-ms.<apex>` is that host's canonical record
+# (stable, also its SSH name) and is on the very same caddy cert, so it satisfies
+# the apex-cert constraint identically with no extra record to keep alive.
+# (Restoring/decoupling behind an alias again is a DNS follow-up, not a router
+# concern — see PR notes.)
+llm_router_apex_domain: "{{ llm_router_subdomain | split('.', 1) | last }}"
+# Host comes from the `llm_large_serving_host` single source (all.yml,
+# env-overridable) so the Studio's name is not a literal repeated across roles —
+# still its own permanent per-host record, NOT the floating alias (see above).
+llm_router_llm_large_host: "{{ llm_large_serving_host }}"
+llm_router_llm_large_fqdn: "{{ llm_router_llm_large_host }}.{{ llm_router_apex_domain }}"
+llm_router_llm_large_base_url: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_router_large_port }}/v1"
+
+# --- Model groups ------------------------------------------------------------
+# large: exposed alias -> the backend's own model id (the serving gate lists
+# models under their full MLX repo ids). One deployment each, bearer-authed.
+# context_window on EVERY entry = the backend's EFFECTIVE SERVING window —
+# what its KV-cache budget (nix-ai catalog cacheMemoryMb) sustains — NOT the
+# model's native max_position_embeddings. vllm-mlx enforces no input-length
+# ceiling at all (--max-request-tokens caps OUTPUT tokens; a 113K-token
+# prompt passed a "65536 cap" untouched, 2026-07-09), so this value is the
+# fabric's ONLY input enforcement (enable_pre_call_checks) AND what sizes
+# client behavior: hermes-agent auto-compaction triggers at ~75% of it.
+# Advertising native windows (previously 262144) let agent sessions grow far
+# past the serving ceiling and die mid-stream (Metal buffer exhaustion)
+# instead of compacting. OptiQ gets 65536 (16 GB KV; 113K single-stream
+# validated, 65K leaves 4-way-concurrency headroom); the small-cache tiers
+# get 32768. Native windows for reference: gpt-oss 131072, Qwen3* 262144.
+# LiteLLM has no built-in entry for these mlx-community backend ids, so an
+# unset context_window resolves max_input_tokens to null — clients that read
+# that (e.g. Hermes, OpenWebUI) fall back to a near-zero context guess and
+# compress every request to death (see config.yaml.j2 for the failure mode).
+llm_router_large_models:
+  - { alias: gpt-oss-120b, backend: mlx-community/gpt-oss-120b-MXFP4-Q8, context_window: 32768 }
+  - { alias: Qwen3-Coder-30B-A3B, backend: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit, context_window: 32768 }
+  - { alias: Qwen3.6-35B-A3B-4bit, backend: mlx-community/Qwen3.6-35B-A3B-4bit, context_window: 32768 }
+  # OptiQ-4bit: the agentic-bench-winning brain (ai_default_model, all.yml). A
+  # first-class alias — NOT passthrough — so the default model carries an
+  # explicit max_input_tokens: the wildcard "*" entry below sets none, and a
+  # null there makes Hermes/OpenWebUI fall back to a near-zero context guess and
+  # compress every request to death.
+  #
+  # extra_body.repetition_penalty: the anti-repetition-loop fix. In long agentic
+  # sessions this brain emitted ~37 IDENTICAL tool calls per turn (Hermes dedups
+  # + executes once, the model re-emits next turn, the task never advances). The
+  # 20/20-clean agentic bench and the looping production sessions differ only in
+  # sampling. Hermes omits temperature/repetition_penalty, so the serving engine
+  # (vllm-mlx 0.4.0) applies its request-absent fallbacks — temperature 0.7 (NOT
+  # greedy; --default-temperature is unset) and repetition_penalty 1.0 (OFF). A
+  # gentle 1.05 penalty is the one lever whose current effective value is
+  # loop-permitting: it directly taxes verbatim re-emission while staying mild
+  # enough to preserve tool-call JSON validity. extra_body carries it past the
+  # router's drop_params to vllm-mlx, whose chat path honors a request-supplied
+  # repetition_penalty. (temperature is deliberately NOT pinned here: 0.7 would
+  # merely restate the engine fallback the loop already runs under. If 1.05 is
+  # insufficient, the next lever is to match the clean bench's sampling —
+  # temperature ~1.0 / presence_penalty 0.0 — added to this same extra_body.)
+  - alias: Qwen3.6-35B-A3B-OptiQ-4bit
+    backend: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
+    context_window: 65536
+    extra_body: { repetition_penalty: 1.05 }
+  # ai-default: THE stable fabric-brain alias every consumer (Hermes, Open
+  # WebUI, the cron fleet) points at permanently. Statically bound since
+  # 2026-07-16: the daily 00/12 UTC rotation was deleted once both phases
+  # pointed at the same model (a no-op flip whose timers still restarted
+  # litellm twice a day). Re-pointing the fabric brain = edit this one
+  # backend line. Carries its own repetition_penalty because extra_body on
+  # the physical alias above never reaches a distinct model_name.
+  - alias: ai-default
+    backend: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
+    context_window: 65536
+    extra_body: { repetition_penalty: 1.05 }
+  # Qwen3-Next-80B Thinking: served from the nix-ai catalog swap tier, loaded
+  # on demand (reachable directly and via ai-deep-analysis below). Block style
+  # (not the flow one-liner above) only to stay under the 120-char limit.
+  - alias: Qwen3-Next-80B-A3B-Thinking-4bit
+    backend: mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit
+    context_window: 32768
+    extra_body: { repetition_penalty: 1.05 }
+  # ai-deep-analysis: the STABLE tier alias for the escalation rubric's
+  # deep-analysis tier (ai_escalation_rubric, all.yml) — "what else breaks /
+  # find what the author missed" second-order analysis. A tier NAME decoupled
+  # from the physical model (same pattern as ai-default) so re-pinning the
+  # tier is one data edit here, no consumer changes. Currently the 80B
+  # thinking brain; rubric constraint: invoke only while the backend is
+  # resident, with a generous output-token budget. The cluster deep tier gets
+  # its alias only when a cluster window is up (blocked-upstream — see the
+  # rubric data).
+  - alias: ai-deep-analysis
+    backend: mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit
+    context_window: 32768
+    extra_body: { repetition_penalty: 1.05 }
+  # claude-sonnet-5 is a Claude Code alias deliberately mapped to a local Qwen3.6
+  # backend (PR #624) — not a mis-map; it inherits that backend's serving window.
+  - { alias: claude-sonnet-5, backend: mlx-community/Qwen3.6-35B-A3B-4bit, context_window: 32768 }
+# light: exposed aliases -> the llama-swap model_name they map to. Each becomes two
+# same-name deployments (llm-fast GPU + llm-light CPU) in the rendered config.
+# `embedding: true` marks the entry as an embeddings model_group.
+llm_router_light_models:
+  - { alias: qwen3-4b, backend: qwen3-4b }
+  - { alias: embeddings, backend: embeddings, embedding: true }
+  # claude-haiku-4-5 is the Claude Code light-tier alias; it maps to the live
+  # light backend (the hermes-4-14b backend it previously targeted is no
+  # longer served anywhere — >=14B GPU serving is barred from the fast tier).
+  - { alias: claude-haiku-4-5, backend: qwen3-4b }
+
+# --- OpenRouter egress tier (paid-SaaS; one key per MODEL) --------------------
+# Explicitly-named aliases to OpenRouter-hosted models. NEVER part of the
+# ai-default rotation or any fallback chain — a flaky/rate-limited upstream
+# must not be able to degrade the local brain; consumers opt in by alias.
+# Key model (deliberate): ONE OpenRouter API key PER MODEL, irrespective of
+# which harness/caller makes the request. key_field names the per-model field
+# in OpenBao secret/ai/saas/openrouter (fetched into bao_local_llm_secrets by
+# the openbao_secrets pre-play via the ai-saas-openrouter policy leaf; env
+# fallback OPENROUTER_API_KEY_<KEY_FIELD upper-snaked>). An entry whose key is
+# not seeded renders nothing (inert-until-creds), so the list is safe to
+# extend ahead of key seeding. context_window is the model's real serving
+# window (never null — the compress-death rule applies to every alias).
+llm_router_openrouter_models:
+  # Free endpoint: rate-limited, and NVIDIA logs prompt/session data on the
+  # :free variant — never send confidential material through this alias.
+  - alias: openrouter-free
+    model: nvidia/nemotron-3-ultra-550b-a55b:free
+    key_field: nvidia-nemotron-3-ultra-550b-a55b-free
+    context_window: 1000000
+  # Cheap paid egress: efficiency-optimized MoE, $0.09/$0.18 per 1M tokens.
+  - alias: deepseek-v4-flash
+    model: deepseek/deepseek-v4-flash
+    key_field: deepseek-deepseek-v4-flash
+    context_window: 1000000
+
+# --- Routing behaviour -------------------------------------------------------
+# Load-balance across same-name deployments; cool a failed one down so traffic
+# drains to its sibling (GPU -> CPU). No cross-tier fallbacks.
+llm_router_routing_strategy: simple-shuffle
+llm_router_allowed_fails: 2
+llm_router_cooldown_time: 30
+# The large tier has ONE deployment per alias (no sibling to fail over to), so
+# a bare TCP hiccup between this router and the mac-studio gate surfaces
+# straight to the caller as a 500. num_retries makes LiteLLM retry the SAME
+# deployment a couple of times before giving up — cheap insurance against a
+# transient connection blip, distinct from Hermes's own client-side retries
+# (which retry the identical request and hit the identical transient error).
+# request_timeout_seconds bounds a single attempt; large-tier generations can
+# legitimately run for minutes, so this is generous, not a tight SLA.
+# Timeout chain — each OUTER layer outlives the inner one, so no intermediate
+# guard kills a still-healthy generation and the CLIENT is the sole decider:
+#   vllm-mlx server guard 3600s (nix-darwin) > router attempt 2400s >
+#   Hermes client stream read 1800s.
+# 2400 (was 1200, was 300): guards are set to realistic ceilings on the
+# assumption the request almost always completes even at unusually high
+# limits. A 32k-token large-tier generation runs ~1560s at 21 tok/s and longer
+# when requests batch; the old 300s server guard masked everything (proven
+# cause of the 18:27 UTC cron failures) and 1200 here would have been the next
+# binding kill. At 2400 the router now sits ABOVE the client's 1800s ceiling,
+# so the client times out first (by design) while the router waits — and
+# below the 3600s server guard, so num_retries still cover a genuine transient
+# connection blip (which fails fast, well under any of these).
+# The per-attempt timeout is the MIDDLE link of the fabric-wide timeout chain
+# (server guard > this > Hermes client read), so it is sourced from the
+# single-source-of-truth constant (all.yml) the Layer-1 assert checks — resolves
+# to 2400.
+llm_router_num_retries: 2
+llm_router_request_timeout_seconds: "{{ ai_router_request_timeout_seconds }}"
+# 429 absorption (queue-by-retry). The serving proxies (llama-swap
+# concurrencyLimit) 429 anything past their in-flight cap. Two failure modes
+# without special handling: (a) the 429 surfaces raw to the caller, which
+# retries into the same wall (the 2026-07-08 bench collapse: 9,262 429s ->
+# session death); (b) worse, with allowed_fails=2/min the router COOLS DOWN
+# the single large deployment, escalating a momentary queue into
+# "no deployments available". So rate-limit errors get their own budget:
+# retried more times with LiteLLM's backoff, and effectively never counted
+# toward cooldown. Real faults (auth, 5xx, timeouts) still cool down via
+# allowed_fails. Retries=6 with exponential backoff spans ~1-2 min of queue
+# pressure — roughly one long large-tier generation ahead in line.
+llm_router_rate_limit_retries: 6
+llm_router_rate_limit_allowed_fails: 1000
+# Background health checks send REAL test requests to every deployment — on the
+# llama-swap fast tier each probe spawns the target model, and with 3 routers
+# probing every model this both churns VRAM constantly and (pre swap-groups)
+# triple-loaded the 16 GB card and hard-hung the GPU host. Passive recovery
+# (allowed_fails + cooldown_time) already re-admits drained deployments, so
+# active probing stays OFF by default.
+llm_router_background_health_checks: false
+llm_router_health_check_interval: 300
+
+# --- Secrets (from runtime env) -----------------------------------------------
+# Mandatory, fail-loud (mirrors the ai_orchestration group_vars pattern).
+llm_router_master_key: >-
+  {{ lookup('env', 'LLM_ROUTER_MASTER_KEY')
+     | mandatory('LLM_ROUTER_MASTER_KEY must be set') }}
+llm_router_llm_large_bearer: >-
+  {{ lookup('env', 'LLM_LARGE_BEARER_TOKEN')
+     | mandatory('LLM_LARGE_BEARER_TOKEN must be set') }}
+# The GPU/CPU light backends need no auth; a placeholder keeps the OpenAI client happy.
+llm_router_light_api_key: "sk-noauth"
+
+# --- Observability -----------------------------------------------------------
+# OTLP traces only. Cribl Edge is the OTLP/HTTP receiver (base URL; the
+# exporter appends the signal path) and fans the spans out to Langfuse (and
+# Splunk) — the router holds no Langfuse credentials.
+llm_router_otel_http_port: >-
+  {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['otel_traces_http'] }}
+llm_router_otel_endpoint: "http://cribl-edge.{{ llm_router_subdomain }}:{{ llm_router_otel_http_port }}"
+
+# Whether the routers carry the llm-fast (GPU) deployments. False while the
+# GPU host is frozen (see llama_cpp_service_enabled): the firewall DROPs
+# traffic to the dead backend, so a shuffled request hangs the full client
+# timeout instead of failing over — routing to it at all is worse than
+# serving CPU-only. Flip together with the llm-fast unfreeze.
+llm_router_llm_fast_enabled: true
+
+# Large-tier passthrough: expose EVERY model the serving gate advertises,
+# not just the aliased ones above. Exposure policy is blocklist-shaped and
+# enforced at the source — the serving host auto-registers every downloaded,
+# memory-fitting MLX model minus its declarative blocklist (nix-ai
+# programs.mlx.discover.blocklist) — so adding a model to the fleet is a
+# download, and removing one is a blocklist entry; the router never needs a
+# per-model edit. llm_router_large_models stays as the stable consumer-facing
+# alias set (exact-match aliases win over the wildcard).
+llm_router_large_passthrough_enabled: true
+
+# Daily brain rotation + night-cluster deployment shapes were deleted
+# 2026-07-16 (no-op since both phases served the same model; night cluster not
+# provisioned). `ai-default` is a static first-class alias above. Night-cluster
+# shape, if it returns, rebuilds against this static config (old design:
+# tasks/rotation.yml + docs/BRAIN_ROTATION.md at 97ae96a). Incident history:
+# Zammad (AI/LLM Serving).

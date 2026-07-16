@@ -1,0 +1,59 @@
+---
+# codex_runner role defaults — a dedicated, low-privilege OS identity that
+# owns the OpenAI Codex CLI install + its ChatGPT-OAuth credential
+# (~/.codex/auth.json), isolated from the `hermes` user Hermes Agent itself
+# runs as. Hermes reaches Codex only through `codex mcp-server`, invoked via a
+# narrow, single-command sudo grant — Hermes' own filesystem access never
+# includes this user's home, so its OAuth token is not directly readable by
+# the agent even though the agent can still fully USE the tool.
+#
+# This role only makes sense colocated with hermes_agent on the same host
+# (see playbooks/site.yml — added to the same `hermes_agent_group` play,
+# before the hermes_agent role) — nothing else consumes it.
+
+codex_runner_user: codex-runner
+codex_runner_group: codex-runner
+codex_runner_home: /var/lib/codex-runner
+
+# The user Hermes Agent's daemon runs as (roles/hermes_agent's
+# hermes_agent_user) — the ONLY identity granted sudo to run Codex as
+# codex_runner_user. Not hardcoded so the grant stays correct if that role's
+# user is ever renamed.
+codex_runner_sudo_grantee: hermes
+
+# --- Pinned Codex CLI install ------------------------------------------------
+# @openai/codex is a first-party npm package (not a raw-binary release), so
+# there is no upstream sha256 to pin the way hermes_agent's installer is
+# pinned — an exact version string is npm's equivalent lock. 0.130.0 is
+# hermes-agent's own documented floor for its Codex integration; bump this
+# deliberately, not to a floating "latest".
+codex_runner_codex_version: "0.130.0"
+codex_runner_npm_package: "@openai/codex@{{ codex_runner_codex_version }}"
+
+# Debian's packaged nodejs/npm (no NodeSource repo — one fewer external apt
+# source to trust). If the packaged version proves too old for the pinned
+# Codex floor on first converge, that is a documented follow-up, not silently
+# worked around here (see README "Not yet live-validated").
+codex_runner_apt_packages:
+  - nodejs
+  - npm
+
+# npm's global-install location varies by distro packaging; pin it explicitly
+# (--prefix below) instead of trusting whatever the packaged npm defaults to,
+# so this path is a known, stable fact rather than a guess.
+codex_runner_npm_prefix: /usr/local
+codex_runner_codex_bin: "{{ codex_runner_npm_prefix }}/bin/codex"
+
+# Exact command the sudo grant covers — deliberately a single, fixed
+# invocation (no wildcard args): Hermes' `mcp_servers.codex` entry in
+# config.yaml must match this exactly (roles/hermes_agent/templates/config.yaml.j2).
+codex_runner_mcp_command: "{{ codex_runner_codex_bin }} mcp-server"
+
+# --- Auth bootstrap (optional) ----------------------------------------------
+# ChatGPT-OAuth token (~/.codex/auth.json content) used to seed auth on first
+# converge. Empty by default; wired Bao-first with env fallback in group_vars.
+# The materialize task is deliberately create-only — Codex rotates its refresh
+# token guest-side after first login, so this bootstrap snapshot must NEVER
+# overwrite a live, already-refreshed token. Leave empty to use the manual
+# bootstrap paths (README "Manual bootstrap") instead.
+codex_runner_auth_json: ""

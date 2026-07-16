@@ -1,0 +1,28 @@
+{{ ansible_managed | comment }}
+"""OpenLLMetry tracing bootstrap for the LangGraph seed (managed by Ansible).
+
+Imported FIRST from agent.py so LangGraph/LangChain runs are exported over
+OTLP/HTTP to the Cribl Edge receiver, which forks traces to Langfuse + Splunk.
+No LangSmith, no cloud egress — all telemetry rides the homelab Cribl pipeline.
+"""
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+# opentelemetry-instrumentation-langchain exports "LangchainInstrumentor"
+# (lowercase c) -- alias to match this file's usage below.
+from opentelemetry.instrumentation.langchain import LangchainInstrumentor as LangChainInstrumentor
+
+_provider = TracerProvider(
+    resource=Resource.create({"service.name": "{{ langgraph_docker_otel_service_name }}"})
+)
+_provider.add_span_processor(
+    BatchSpanProcessor(
+        OTLPSpanExporter(endpoint="{{ langgraph_docker_otel_endpoint }}/v1/traces")
+    )
+)
+trace.set_tracer_provider(_provider)
+
+LangChainInstrumentor().instrument()

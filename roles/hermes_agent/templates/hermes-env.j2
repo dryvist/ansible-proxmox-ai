@@ -1,0 +1,87 @@
+{{ ansible_managed | comment }}
+# Secrets for the Hermes Agent, referenced from config.yaml via ${VAR}, sourced from
+# SOPS/Doppler at converge time — never commit real values.
+# Brain API key = the LiteLLM router master key.
+HERMES_AGENT_MODEL_API_KEY={{ hermes_agent_model_api_key }}
+
+{% if hermes_agent_memory_provider == 'hindsight' and hermes_agent_memory_mode == 'local_embedded' %}
+# Hindsight local-embedded daemon: its entity-extraction LLM is the same
+# router brain, so it authenticates with the same router master key.
+# Mode/base-url/model live in $HERMES_HOME/hindsight/config.json.
+HINDSIGHT_LLM_API_KEY={{ hermes_agent_model_api_key }}
+{% endif %}
+
+# Slack gateway (Socket Mode). Read directly by the Slack adapter — no
+# config.yaml wiring. Empty when unset, so the gateway simply runs without
+# the Slack platform enabled.
+SLACK_BOT_TOKEN={{ hermes_agent_slack_bot_token }}
+SLACK_APP_TOKEN={{ hermes_agent_slack_app_token }}
+SLACK_ALLOWED_USERS={{ hermes_agent_slack_allowed_users }}
+SLACK_HOME_CHANNEL={{ hermes_agent_slack_home_channel }}
+SLACK_HOME_CHANNEL_NAME={{ hermes_agent_slack_home_channel_name }}
+
+# Built-in OTLP/HTTP observability plugin. Cribl Edge receives the spans and
+# fans them out downstream; no direct Langfuse export.
+HERMES_OTEL_ENABLED=1
+HERMES_OTEL_ENDPOINT={{ hermes_agent_otel_endpoint }}/v1/traces
+HERMES_OTEL_TIMEOUT={{ hermes_agent_otel_timeout }}
+OTEL_SERVICE_NAME={{ hermes_agent_otel_service_name }}
+
+# Local-grade streaming timeouts. The FQDN router base_url defeats Hermes'
+# local-endpoint auto-detection (hostname-string check, no DNS resolution),
+# leaving remote defaults (120s read / 180s stale) that kill slow local
+# thinking-mode streams mid-tool-call. See defaults/main.yml.
+HERMES_STREAM_READ_TIMEOUT={{ hermes_agent_stream_read_timeout }}
+HERMES_STREAM_STALE_TIMEOUT={{ hermes_agent_stream_stale_timeout }}
+
+# llm-wiki
+{% if hermes_agent_wiki_enabled | bool %}
+WIKI_PATH={{ hermes_agent_wiki_path }}
+{% endif %}
+
+# GitHub docs-contributor
+GITHUB_APP_ID={{ hermes_agent_github_app_id }}
+GITHUB_APP_INSTALLATION_ID={{ hermes_agent_github_app_installation_id }}
+GITHUB_APP_PRIVATE_KEY_PATH={{ hermes_agent_hermes_home }}/github-app.pem
+
+# GitHub issues + org projects PAT — read/write Issues (all repos) + Projects v2
+# (dryvist org). Consumed at use time from .env by the dryvist/github-issues
+# skill (Authorization: Bearer $GH_PAT_WRITE_PROJECT_ISSUES). Empty until set.
+GH_PAT_WRITE_PROJECT_ISSUES={{ hermes_agent_github_issues_pat }}
+
+# Splunk MCP client — config.yaml's mcp_servers.splunk resolves these ${VARS} at
+# connect time. Empty until ansible-splunk mints + publishes the token.
+SPLUNK_MCP_URL={{ hermes_agent_splunk_mcp_url }}
+SPLUNK_MCP_TOKEN={{ hermes_agent_splunk_mcp_token }}
+
+# Context7 MCP client — config.yaml's mcp_servers.context7 resolves this ${VAR}.
+CONTEXT7_API_KEY={{ hermes_agent_context7_api_key }}
+
+# Zammad ITSM client — the dryvist/zammad-incidents skill reads these from .env
+# at use time (Authorization: Token token=$ZAMMAD_API_TOKEN). Empty until Zammad
+# is deployed and its API token is seeded.
+ZAMMAD_URL={{ hermes_agent_zammad_url }}
+ZAMMAD_API_TOKEN={{ hermes_agent_zammad_api_token }}
+
+# Inbound webhook receiver. The gateway env-bridge (gateway/config.py) enables the
+# webhook adapter and injects the global HMAC secret + port here when
+# WEBHOOK_ENABLED is truthy — the secret stays in this 0600/no_log file, never
+# config.yaml. Routes are declared declaratively in config.yaml (platforms.webhook).
+# Rendered only when the platform is enabled AND a secret is set.
+{% if hermes_agent_webhook_enabled | bool and hermes_agent_webhook_secret | length > 0 %}
+WEBHOOK_ENABLED=true
+WEBHOOK_PORT={{ hermes_agent_webhook_port }}
+WEBHOOK_SECRET={{ hermes_agent_webhook_secret }}
+{% endif %}
+
+# Inbound job-submission API (api_server platform). Key presence enables the
+# platform via the gateway env bridge (gateway/config.py); the bearer key stays
+# in this 0600/no_log file, never config.yaml. Non-loopback bind so Traefik
+# (hermes-api.<sub>) reaches it from the ingress guest; the guest firewall
+# scopes the port to internal sources.
+{% if hermes_agent_api_server_key | length > 0 %}
+API_SERVER_ENABLED=1
+API_SERVER_KEY={{ hermes_agent_api_server_key }}
+API_SERVER_HOST={{ hermes_agent_api_server_host }}
+API_SERVER_PORT={{ hermes_agent_api_server_port }}
+{% endif %}

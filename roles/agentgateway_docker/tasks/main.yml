@@ -1,0 +1,73 @@
+---
+# agentgateway Docker deployment.
+#
+# Installs Docker + Compose on the target LXC (docker_engine meta dependency),
+# renders the gateway config from vars (config as code — regenerated every
+# converge), and deploys the single agentgateway container via Docker Compose.
+# The gateway is stateless: recovery = re-apply the LXC + re-run this role.
+
+- name: Create agentgateway data directory
+  ansible.builtin.file:
+    path: "{{ agentgateway_docker_data_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy agentgateway config
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ agentgateway_docker_data_dir }}/config.yaml"
+    owner: root
+    group: root
+    # ponytail: 0644 — the distroless image runs nonroot and must read the
+    # ro-mounted config; today it holds no secrets. When backendAuth keys land,
+    # switch to 0640 + the container uid as group (or move keys to env).
+    mode: "0644"
+  notify: Restart agentgateway
+
+- name: Deploy agentgateway docker-compose template
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ agentgateway_docker_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart agentgateway
+
+- name: Deploy agentgateway via docker compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ agentgateway_docker_data_dir }}"
+    state: present
+  register: agentgateway_docker_compose_result
+  changed_when: >-
+    (agentgateway_docker_compose_result.actions | default([]))
+    | selectattr('status', 'in', ['Creating', 'Recreating', 'Pulling', 'Building'])
+    | list | length > 0
+
+# Apply any pending config-change restart before health-checking, so the
+# checks validate the NEW config rather than the previous container.
+- name: Flush handlers (restart on config change before health check)
+  ansible.builtin.meta: flush_handlers
+
+# =============================================================================
+# Health check — the image is distroless (no shell), so liveness is verified
+# from the LXC, not via an in-container Docker healthcheck.
+# =============================================================================
+
+- name: Wait for agentgateway proxy port to be ready
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ agentgateway_docker_proxy_port | int }}"
+    timeout: 120
+
+- name: Verify agentgateway stats metrics endpoint responds
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ agentgateway_docker_metrics_port }}/metrics"
+    method: GET
+    status_code: 200
+  register: agentgateway_docker_health
+  retries: 12
+  delay: 5
+  until: agentgateway_docker_health.status == 200
+  changed_when: false

@@ -1,0 +1,54 @@
+# Rendered by Ansible (dify_docker role). Do NOT edit on the host.
+# Dify reverse-proxy routing: API paths to the `api` service, everything else to
+# the `web` Next.js service. Trimmed from the upstream nginx template machinery
+# (envsubst entrypoint, HTTPS/ACME blocks, and the plugin_daemon `/e/` route) —
+# TLS is terminated by the homelab reverse proxy upstream, and plugin_daemon is
+# not part of this stack.
+server {
+    listen 80;
+    server_name _;
+
+    client_max_body_size {{ dify_docker_nginx_client_max_body_size }};
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_http_version 1.1;
+
+    location /console/api {
+        proxy_pass http://api:{{ dify_docker_api_port }};
+    }
+
+    location /api {
+        proxy_pass http://api:{{ dify_docker_api_port }};
+    }
+
+    location /v1 {
+        proxy_pass http://api:{{ dify_docker_api_port }};
+    }
+
+    location /files {
+        proxy_pass http://api:{{ dify_docker_api_port }};
+    }
+
+    location /explore {
+        proxy_pass http://web:{{ dify_docker_web_internal_port }};
+    }
+
+    location /socket.io/ {
+        proxy_pass http://api:{{ dify_docker_api_port }};
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+
+    # Plugin endpoint webhooks (the {hook_id} routes) -> plugin_daemon.
+    location /e/ {
+        proxy_pass http://plugin_daemon:{{ dify_docker_plugin_daemon_port }};
+        proxy_set_header Dify-Hook-Url $scheme://$host$request_uri;
+    }
+
+    location / {
+        proxy_pass http://web:{{ dify_docker_web_internal_port }};
+    }
+}

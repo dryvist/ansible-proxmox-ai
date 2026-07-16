@@ -1,0 +1,143 @@
+---
+# LlamaIndex RAG Engine Deployment Tasks
+# Python venv + config pointing embeddings at the fabric router (llm-fast).
+
+# =============================================================================
+# System Dependencies
+# =============================================================================
+
+- name: Install Python and build dependencies
+  ansible.builtin.apt:
+    name:
+      - python3
+      - python3-pip
+      - python3-venv
+      - python3-full
+    state: present
+    update_cache: true
+
+# =============================================================================
+# Retire the legacy local-Ollama embeddings sidecar (no-op on fresh guests;
+# cleans up pre-fabric installs on converge)
+# =============================================================================
+
+- name: Remove legacy Ollama systemd service
+  ansible.builtin.systemd:
+    name: ollama
+    state: stopped
+    enabled: false
+  failed_when: false
+
+- name: Remove legacy Ollama binary and install script
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /usr/local/bin/ollama
+    - /tmp/ollama-install.sh
+
+# =============================================================================
+# LlamaIndex Application Directory
+# =============================================================================
+
+- name: Create LlamaIndex data directory
+  ansible.builtin.file:
+    path: "{{ llamaindex_data_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Create Python virtual environment
+  ansible.builtin.command:
+    cmd: "python3 -m venv {{ llamaindex_data_dir }}/venv"
+    creates: "{{ llamaindex_data_dir }}/venv/bin/python"
+
+- name: Install LlamaIndex packages in virtual environment
+  ansible.builtin.pip:
+    name:
+      - llama-index-core
+      - llama-index-vector-stores-qdrant
+      - llama-index-embeddings-openai
+      # index_docs.py reads the rendered config.yaml; qdrant-client arrives via
+      # llama-index-vector-stores-qdrant, PyYAML is not guaranteed transitively.
+      - pyyaml
+    state: present
+    virtualenv: "{{ llamaindex_data_dir }}/venv"
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+- name: Deploy LlamaIndex configuration
+  ansible.builtin.template:
+    src: llamaindex-config.yaml.j2
+    dest: "{{ llamaindex_data_dir }}/config.yaml"
+    owner: root
+    group: root
+    mode: "0640"
+
+# =============================================================================
+# RAG Indexer (the consumer that makes Qdrant a live index)
+# =============================================================================
+
+- name: Deploy the RAG indexer script
+  ansible.builtin.copy:
+    src: index_docs.py
+    dest: "{{ llamaindex_data_dir }}/index_docs.py"
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Render the service-registry document for indexing
+  ansible.builtin.template:
+    src: registry.json.j2
+    dest: "{{ llamaindex_data_dir }}/registry.json"
+    owner: root
+    group: root
+    mode: "0640"
+  when:
+    - llamaindex_registry_enabled | default(true)
+    - tofu_data is defined
+
+- name: Install the RAG index refresh systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - llamaindex-index.service
+    - llamaindex-index.timer
+  when: llamaindex_index_enabled | default(true)
+
+- name: Enable the RAG index refresh timer
+  ansible.builtin.systemd:
+    name: llamaindex-index.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: llamaindex_index_enabled | default(true)
+
+# =============================================================================
+# Health Checks
+# =============================================================================
+
+- name: Verify the router serves the embeddings model
+  ansible.builtin.uri:
+    url: "{{ llamaindex_router_base_url }}/models"
+    headers:
+      Authorization: "Bearer {{ llamaindex_router_api_key }}"
+    return_content: true
+  register: llamaindex_router_models
+  # The router pool may still be converging on a first full-site run, and a
+  # reachable router can answer before the embeddings deployment registers —
+  # retry on the content, not just the connection.
+  retries: 3
+  delay: 10
+  until: llamaindex_embed_model in (llamaindex_router_models.content | default(''))
+  failed_when: llamaindex_embed_model not in (llamaindex_router_models.content | default(''))
+  no_log: true
+  # Molecule has no live router; the scenario disables this check.
+  when: llamaindex_verify_router | default(true)

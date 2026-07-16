@@ -1,0 +1,197 @@
+---
+# llm_router — a LiteLLM proxy in a plain LXC (no Docker): a Python venv + a systemd
+# service. Ansible owns the whole platform (user, venv, config, unit). Idempotent.
+
+# Layer 1 — render-time contract assertions. Imported FIRST so a brain alias that
+# would fall through to the null-context wildcard fails the play before the config
+# is rendered or the service restarts. Inherits the play's llm_router tag.
+- name: Assert brain aliases carry real context windows before converging
+  ansible.builtin.import_tasks: assert.yml
+
+- name: Install the Python runtime and git
+  ansible.builtin.apt:
+    name:
+      - python3
+      - python3-pip
+      - python3-venv
+      - git
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the litellm service group
+  ansible.builtin.group:
+    name: "{{ llm_router_group }}"
+    system: true
+
+- name: Create the litellm service user
+  ansible.builtin.user:
+    name: "{{ llm_router_user }}"
+    group: "{{ llm_router_group }}"
+    home: "{{ llm_router_home }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: true
+
+- name: Ensure the litellm config directory exists
+  ansible.builtin.file:
+    path: "{{ llm_router_config_dir }}"
+    state: directory
+    owner: root
+    group: "{{ llm_router_group }}"
+    mode: "0750"
+
+# One idempotent task: virtualenv_command builds the venv with the stdlib `venv`
+# module (no `virtualenv` pip package on a minimal LXC), then pip populates it.
+# Re-runs are no-ops once the packages are present.
+- name: Create the venv and install LiteLLM (proxy extras)
+  ansible.builtin.pip:
+    name: "{{ llm_router_pip_packages }}"
+    state: present
+    virtualenv: "{{ llm_router_venv }}"
+    virtualenv_command: python3 -m venv
+
+- name: Deploy the LiteLLM secrets env file
+  ansible.builtin.template:
+    src: litellm.env.j2
+    dest: "{{ llm_router_env_file }}"
+    owner: root
+    group: "{{ llm_router_group }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart litellm
+
+# The retired daily-rotation deployment (deleted 2026-07-16) left a config.yaml
+# symlink + per-phase configs + flip timers on converged routers; these cleanup
+# tasks are idempotent no-ops once a host is clean.
+- name: Stat the LiteLLM config path
+  ansible.builtin.stat:
+    path: "{{ llm_router_config_file }}"
+  register: llm_router_config_stat
+
+- name: Drop the retired rotation symlink so the render below writes a real file
+  ansible.builtin.file:
+    path: "{{ llm_router_config_file }}"
+    state: absent
+  when: llm_router_config_stat.stat.islnk | default(false)
+
+- name: Remove the retired rotation timers, units, per-phase configs and sentinel
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/litellm-rotate-large.timer
+    - /etc/systemd/system/litellm-rotate-large.service
+    - /etc/systemd/system/litellm-rotate-optimized.timer
+    - /etc/systemd/system/litellm-rotate-optimized.service
+    - "{{ llm_router_config_dir }}/config-large.yaml"
+    - "{{ llm_router_config_dir }}/config-optimized.yaml"
+    - "{{ llm_router_config_dir }}/rotation-paused"
+  register: llm_router_rotation_cleanup
+
+# systemd only forgets a deleted unit after a reload; stop is best-effort since
+# the timer may already be gone or never deployed.
+- name: Stop the retired rotation timers
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop:
+    - litellm-rotate-large.timer
+    - litellm-rotate-optimized.timer
+  failed_when: false
+  when:
+    - llm_router_rotation_cleanup is changed
+    - ansible_virtualization_type | default('') != 'docker'
+
+- name: Reload systemd after removing the rotation units
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when:
+    - llm_router_rotation_cleanup is changed
+    - ansible_virtualization_type | default('') != 'docker'
+
+- name: Deploy the LiteLLM proxy config
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ llm_router_config_file }}"
+    owner: root
+    group: "{{ llm_router_group }}"
+    mode: "0640"
+  notify: Restart litellm
+
+- name: Resolve the Mac Studio apex IP for LiteLLM host pinning
+  # Reuse the same single-source Studio reservation the DNS role publishes;
+  # fall back to controller-side DNS only when the env leaves the IP empty.
+  ansible.builtin.set_fact:
+    llm_router_llm_large_ip: >-
+      {{
+        llm_large_serving_ip
+        | default(lookup('pipe', 'dig +short ' ~ llm_router_llm_large_fqdn ~ ' | head -n1'), true)
+        | trim
+      }}
+
+- name: Assert the Mac Studio apex resolved for LiteLLM host pinning
+  ansible.builtin.assert:
+    that:
+      - llm_router_llm_large_ip | length > 0
+    fail_msg: >-
+      Could not resolve {{ llm_router_llm_large_fqdn }} to an IPv4 address for
+      the LiteLLM /etc/hosts pin.
+
+- name: Pin the Mac Studio apex in /etc/hosts for LiteLLM
+  # Keep a local resolver pin here so the router hosts do not depend on their
+  # own DNS path before they can reach the gate.
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    owner: root
+    group: root
+    mode: "0644"
+    regexp: >-
+      ^{{ llm_router_llm_large_ip | regex_escape }}\s+.*\b{{ llm_router_llm_large_fqdn | regex_escape }}\b
+    line: >-
+      {{ llm_router_llm_large_ip }}
+      {{ llm_router_llm_large_fqdn }}
+    create: true
+    state: present
+  notify: Restart litellm
+
+- name: Deploy the litellm systemd unit
+  ansible.builtin.template:
+    src: litellm.service.j2
+    dest: "/etc/systemd/system/{{ llm_router_service }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart litellm
+
+- name: Enable and start litellm
+  ansible.builtin.systemd:
+    name: "{{ llm_router_service }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Flush handlers so config / unit changes apply before verification
+  ansible.builtin.meta: flush_handlers
+
+# Type=simple reports 'active' the instant the process forks; poll until it settles
+# so a proxy that crashes a moment later fails loud here (mirrors roles/agent_exec).
+- name: Verify the litellm service is active
+  ansible.builtin.systemd:
+    name: "{{ llm_router_service }}"
+  register: llm_router_service_state
+  until: llm_router_service_state.status.ActiveState | default('') == 'active'
+  retries: 5
+  delay: 3
+
+# /health/liveliness is unauthenticated by design (LiteLLM load-balancer probe),
+# so this confirms the proxy is serving without needing the master key.
+- name: Verify the LiteLLM liveness endpoint answers
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/health/liveliness"
+    status_code: 200
+  register: llm_router_liveness
+  until: llm_router_liveness.status == 200
+  retries: 5
+  delay: 3

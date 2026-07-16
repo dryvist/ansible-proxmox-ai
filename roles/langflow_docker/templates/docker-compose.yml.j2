@@ -1,0 +1,37 @@
+---
+# Self-hosted LangFlow (postgres + app) via Docker Compose.
+# Rendered by ansible-proxmox-apps/roles/langflow_docker.
+services:
+  {{ langflow_docker_db_service }}:
+    image: {{ langflow_docker_postgres_image }}
+    environment:
+      POSTGRES_USER: {{ langflow_docker_db_user }}
+      POSTGRES_PASSWORD: "{{ langflow_docker_db_password }}"
+      POSTGRES_DB: {{ langflow_docker_db_name }}
+    volumes:
+      - {{ langflow_docker_postgres_data_dir }}:{{ langflow_docker_postgres_internal_data }}
+    restart: {{ langflow_docker_restart_policy }}
+
+  {{ langflow_docker_app_service }}:
+    image: {{ langflow_docker_app_image }}
+    container_name: "{{ langflow_docker_container_name }}"
+    depends_on:
+      - {{ langflow_docker_db_service }}
+    environment:
+      LANGFLOW_DATABASE_URL: "{{ langflow_docker_database_url }}"
+      LANGFLOW_SUPERUSER: "{{ langflow_docker_superuser }}"
+      LANGFLOW_SUPERUSER_PASSWORD: "{{ langflow_docker_superuser_password }}"
+      LANGFLOW_SECRET_KEY: "{{ langflow_docker_secret_key }}"
+      # Disable auto-login so the superuser above is actually enforced; with
+      # auto-login on, LangFlow signs everyone in as a default user and ignores
+      # the superuser credentials.
+      LANGFLOW_AUTO_LOGIN: "False"
+      # Bind all interfaces inside the container so the published port is
+      # reachable (LangFlow otherwise binds the loopback in some builds).
+      LANGFLOW_HOST: "0.0.0.0"
+      LANGFLOW_PORT: "{{ langflow_docker_web_port }}"
+    ports:
+      - "{{ langflow_docker_web_port }}:{{ langflow_docker_web_port }}"
+    volumes:
+      - {{ langflow_docker_app_data_dir }}:{{ langflow_docker_app_internal_data }}
+    restart: {{ langflow_docker_restart_policy }}

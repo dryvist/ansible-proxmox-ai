@@ -1,0 +1,51 @@
+# {{ ansible_managed }}
+# agentgateway static config — regenerated on every converge (config as code).
+# Schema: https://agentgateway.dev/schema/config
+#
+# One route PER target (path-scoped, e.g. /splunk/mcp) instead of one
+# multiplexed route: auth is passthrough, and a shared route would forward a
+# caller's Authorization header to EVERY backend a tool resolves to — leaking
+# the Splunk token to external targets. Path isolation keeps each credential
+# on its own backend; clients configure one MCP server entry per path.
+config:
+  # Bind the admin UI (Traefik-fronted) and the stats server (Prometheus
+  # /metrics) on all interfaces so the LXC can publish them; the guest
+  # firewall scopes both internal-only. Ports are DRY from pipeline_constants.
+  adminAddr: "0.0.0.0:{{ agentgateway_docker_admin_port }}"
+  statsAddr: "0.0.0.0:{{ agentgateway_docker_metrics_port }}"
+  tracing:
+    # OTLP/HTTP to the shared Cribl Edge receiver; Cribl forks to
+    # Langfuse + Splunk (no direct exporters — telemetry always via Cribl).
+    otlpEndpoint: "{{ agentgateway_docker_otlp_endpoint }}"
+    otlpProtocol: http
+    randomSampling: {{ agentgateway_docker_trace_sampling }}
+
+binds:
+- port: {{ agentgateway_docker_proxy_port }}
+  listeners:
+  - routes:
+{% for target in agentgateway_docker_mcp_targets %}
+    - matches:
+      - path:
+          exact: /{{ target.name }}/mcp
+      backends:
+      - mcp:
+          targets:
+          - name: {{ target.name }}
+            mcp:
+              host: {{ target.host }}
+{% if target.tls_insecure | default(false) %}
+            policies:
+              backendTLS:
+                insecure: true
+{% endif %}
+{% endfor %}
+{% for target in agentgateway_docker_a2a_targets | default([]) %}
+    - matches:
+      - path:
+          pathPrefix: {{ target.path_prefix }}
+      policies:
+        a2a: {}
+      backends:
+      - host: {{ target.host }}
+{% endfor %}

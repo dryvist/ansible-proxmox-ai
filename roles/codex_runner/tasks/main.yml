@@ -1,0 +1,149 @@
+---
+# codex_runner — installs the OpenAI Codex CLI under a dedicated, low-privilege
+# system user, isolated from `hermes` (see defaults/main.yml). Idempotent.
+
+- name: Install Node.js/npm (packaged, no NodeSource repo)
+  ansible.builtin.apt:
+    name: "{{ codex_runner_apt_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the codex-runner service group
+  ansible.builtin.group:
+    name: "{{ codex_runner_group }}"
+    system: true
+
+# No login shell: this user only ever runs `codex mcp-server`, invoked by
+# Hermes via the sudo grant below — it never needs an interactive session.
+- name: Create the codex-runner service user
+  ansible.builtin.user:
+    name: "{{ codex_runner_user }}"
+    group: "{{ codex_runner_group }}"
+    home: "{{ codex_runner_home }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: true
+
+# 0700: this is the whole isolation boundary. ~/.codex/auth.json (the ChatGPT
+# OAuth token, populated by the manual bootstrap in README.md) must never be
+# readable by the `hermes` user — only by codex-runner itself and root.
+- name: Lock down the codex-runner home directory
+  ansible.builtin.file:
+    path: "{{ codex_runner_home }}"
+    state: directory
+    owner: "{{ codex_runner_user }}"
+    group: "{{ codex_runner_group }}"
+    mode: "0700"
+
+# @openai/codex is a first-party npm package (no raw-binary release to
+# sha256-pin the way hermes_agent's installer is pinned) — an exact version
+# string is npm's equivalent lock. `--prefix` is explicit rather than trusting
+# whatever the packaged npm's default global prefix happens to be, so
+# codex_runner_codex_bin is a known fact, not a guess.
+#
+# `creates` guards a one-time install, same idiom (and same limitation) as
+# hermes_agent's own installer: bumping codex_runner_codex_version does NOT
+# by itself trigger a reinstall — remove the existing binary first, or add an
+# explicit upgrade task, if the pinned floor moves.
+- name: Install the pinned Codex CLI (npm, global, explicit prefix)
+  ansible.builtin.command:
+    cmd: >-
+      npm install -g --prefix {{ codex_runner_npm_prefix }}
+      {{ codex_runner_npm_package }}
+    creates: "{{ codex_runner_codex_bin }}"
+  register: codex_runner_install
+
+# Only runs the converge that actually installed/upgraded Codex — the
+# version can't drift once the `creates` guard above is satisfied, so
+# re-verifying it every run would fork a Node process for nothing. Inline
+# rather than a handler (noqa: no-handler): this must fail the converge
+# immediately, before the sudoers grant below is installed for a binary that
+# might be older than the pinned floor — a handler would defer the check to
+# end-of-play, after that already happened. Mirrors roles/radarr/tasks/api_key.yml's
+# same-justification inline restart.
+- name: Confirm the installed Codex CLI meets the pinned version floor  # noqa: no-handler
+  when: codex_runner_install.changed
+  block:
+    - name: Read the installed Codex CLI version
+      ansible.builtin.command:
+        cmd: "{{ codex_runner_codex_bin }} --version"
+      register: codex_runner_version_check
+      changed_when: false
+
+    - name: Assert the installed version meets the pinned floor
+      ansible.builtin.assert:
+        that:
+          - codex_runner_version_check.stdout is search('\d+\.\d+\.\d+')
+          - (codex_runner_version_check.stdout | regex_search('\d+\.\d+\.\d+'))
+            is version(codex_runner_codex_version, '>=')
+        fail_msg: >-
+          Installed Codex CLI ({{ codex_runner_version_check.stdout }}) is older
+          than the pinned floor {{ codex_runner_codex_version }} — bump
+          codex_runner_codex_version or investigate why npm resolved an older
+          release.
+        quiet: true
+
+# Single-command, no-password grant: `hermes` may run exactly
+# `{{ codex_runner_mcp_command }}` as codex-runner — nothing broader. Validated
+# with visudo before it is ever installed; a malformed sudoers file can lock
+# sudo out entirely.
+- name: Install the narrow sudoers grant (hermes -> codex-runner, mcp-server only)
+  ansible.builtin.template:
+    src: codex-runner-sudoers.j2
+    dest: /etc/sudoers.d/codex-runner-mcp
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+
+# Optional bootstrap: seed ~/.codex/auth.json from the Bao-sourced snapshot
+# (codex_runner_auth_json) when present. Deliberately create-only
+# (force: false): Codex rotates its refresh token guest-side after the first
+# login, so a live, already-refreshed token must NEVER be clobbered by this
+# stale bootstrap copy — Bao holds only the one-time snapshot. When the var is
+# empty, both tasks skip and the manual bootstrap paths (README) still apply.
+- name: Ensure the codex-runner .codex directory exists
+  ansible.builtin.file:
+    path: "{{ codex_runner_home }}/.codex"
+    state: directory
+    owner: "{{ codex_runner_user }}"
+    group: "{{ codex_runner_group }}"
+    mode: "0700"
+  when: codex_runner_auth_json | length > 0
+
+- name: Seed Codex auth from the Bao snapshot (create-only, never overwrite)
+  ansible.builtin.copy:
+    content: "{{ codex_runner_auth_json }}"
+    dest: "{{ codex_runner_home }}/.codex/auth.json"
+    owner: "{{ codex_runner_user }}"
+    group: "{{ codex_runner_group }}"
+    mode: "0600"
+    force: false
+  no_log: true
+  when: codex_runner_auth_json | length > 0
+
+# Auth is otherwise a one-time, interactive, human step (ChatGPT OAuth
+# device-code or browser flow) that cannot be scripted here — see README.md for
+# both manual bootstrap options. This check is informational only: it never
+# fails the converge, it just tells the operator whether the step is still
+# pending, mirroring the repo's existing "report missing creds, don't fail"
+# idiom (roles/openbao_secrets/tasks/fetch_domain.yml).
+- name: Check whether Codex auth has been bootstrapped for codex-runner
+  ansible.builtin.stat:
+    path: "{{ codex_runner_home }}/.codex/auth.json"
+  register: codex_runner_auth_file
+
+- name: Report Codex auth is bootstrapped
+  ansible.builtin.debug:
+    msg: >-
+      Codex auth already present for {{ codex_runner_user }} — escalation is live.
+  when: codex_runner_auth_file.stat.exists
+
+- name: Report Codex auth is NOT yet bootstrapped
+  ansible.builtin.debug:
+    msg: >-
+      {{ codex_runner_home }}/.codex/auth.json does not exist yet — Hermes
+      escalation via Codex will error until an operator completes the
+      one-time login (see roles/codex_runner/README.md).
+  when: not codex_runner_auth_file.stat.exists

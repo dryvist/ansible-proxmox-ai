@@ -1,0 +1,609 @@
+---
+# NousResearch Hermes Agent — native install + headless gateway daemon. Idempotent.
+#
+# The agent runs arbitrary terminal + web tools, so it runs as a NON-root dedicated
+# user; the LXC is the blast-radius boundary. Ansible owns the PLATFORM (user,
+# install, config, systemd); the Hermes daemon owns its own app lifecycle
+# (`hermes update`) — install once behind a `creates` guard and never pin a moving
+# 'latest' (Agy: avoids the self-update vs idempotency conflict).
+#
+# NOT YET LIVE-VALIDATED (verify on first converge): (a) install.sh running clean
+# non-interactively as root on a minimal Debian LXC; (b) `hermes gateway run
+# --replace` staying up headless with no messaging platform; (c) Hindsight
+# provider init from config.yaml alone (it may need its client package on
+# first run).
+
+# Layer 1 — render-time contract assertions. Imported FIRST so a known-bad brain
+# config (context below the 64k floor, inverted timeout chain) fails the play
+# before anything is installed or deployed. Inherits the play's hermes_agent tag.
+- name: Assert brain-wiring contracts before converging
+  ansible.builtin.import_tasks: assert.yml
+
+- name: Install role prerequisites (installer + clone)
+  ansible.builtin.apt:
+    name:
+      - curl
+      - ca-certificates
+      - git
+      - sudo
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# Fetch the installer from the pinned release tag's immutable raw URL and verify
+# its sha256 BEFORE running it — no `curl <url> | bash` of a moving remote script.
+# A checksum mismatch (upstream changed the tag, MITM, rug-pull) fails here, loud.
+- name: Fetch the pinned Hermes installer (checksum-verified)
+  ansible.builtin.get_url:
+    url: "{{ hermes_agent_installer_url }}"
+    dest: "{{ hermes_agent_installer_path }}"
+    checksum: "sha256:{{ hermes_agent_installer_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+# Run the VERIFIED local installer (root + play become: true) -> system-wide FHS
+# layout: binary /usr/local/bin/hermes, code /usr/local/lib/hermes-agent. Do NOT
+# pass --dir: an explicit dir disables the root-FHS auto-layout and drops the
+# launcher in /root/.local/bin instead of /usr/local/bin (breaks hermes_agent_bin).
+# --branch {{ version }}: the installer git-clones the app at this release TAG
+# (`git clone --depth 1 --branch <tag>`), pinning the app checkout too. The
+# installer handles its own Python/uv/venv/Node/ripgrep/ffmpeg deps.
+# `creates` guard installs once; the Hermes daemon self-updates the app after.
+# --skip-setup: the installer's final step is an INTERACTIVE `hermes setup` wizard
+# that reads /dev/tty and hangs forever under Ansible (no controlling TTY). We skip
+# it and configure declaratively via the config.yaml/.env templates below;
+# --non-interactive defaults any remaining prompt instead of blocking.
+- name: Install Hermes Agent system-wide (once; daemon self-updates thereafter)
+  ansible.builtin.command:
+    cmd: >-
+      bash {{ hermes_agent_installer_path }}
+      --branch {{ hermes_agent_version }} --skip-setup --non-interactive
+    creates: "{{ hermes_agent_bin }}"
+
+# Upstream bug (NousResearch/hermes-agent, agent/conversation_loop.py):
+# the length-continuation and truncated-tool-call retry paths boost
+# max_tokens on each retry, but floor the boost ceiling at
+# `max(32768, requested_cap)` — so when the configured output cap is set
+# below that hardcoded 32768 floor (as `model.max_tokens` was at 8192
+# historically), the first truncation retry re-sends a request above the
+# ceiling, which a server enforcing a lower per-request limit 400s
+# identically ("max_tokens exceeds server limit"), burning all retries and
+# surfacing the error instead of completing. Today `model.max_tokens` is
+# 32768 and the OptiQ brain serves `--max-request-tokens 65536`, so the patch
+# now holds the boost at the configured 32768 rather than a coincidental
+# floor — keeping it correct if the output cap is ever lowered again.
+# `agent.max_tokens` is already the user's explicit config-level ceiling;
+# treat it as absolute instead of a floor for the boost. Runs every
+# converge (idempotent regexp match) because `hermes update` self-updates
+# the app out from under this checkout and would silently drop the patch
+# otherwise.
+- name: Patch hermes-agent retry boost to respect the configured max_tokens ceiling
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
+    regexp: '^(\s*)_tc_boost_cap = max\(32768, _tc_requested_cap or 0\)$'
+    replace: '\1_tc_boost_cap = agent.max_tokens if agent.max_tokens else max(32768, _tc_requested_cap or 0)'
+  notify: Restart hermes-gateway
+
+- name: Patch hermes-agent length-continuation boost to respect the configured max_tokens ceiling
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
+    regexp: '^(\s*)_boost_cap = max\(32768, _requested_cap or 0\)$'
+    replace: '\1_boost_cap = agent.max_tokens if agent.max_tokens else max(32768, _requested_cap or 0)'
+  notify: Restart hermes-gateway
+
+- name: Check whether the Hermes OTEL plugin file exists
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_install_dir }}/plugins/observability/otel/__init__.py"
+  register: hermes_agent_otel_plugin
+
+- name: Patch Hermes OTEL spans to carry the configured service name
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/plugins/observability/otel/__init__.py"
+    regexp: '^(\s*)attrs = \[_attr\(_GEN_AI_SESSION, session_id\), _attr\(_GEN_AI_EXECUTION, exec_id\)\]$'
+    replace: >-
+      \1attrs = [_attr(_GEN_AI_SESSION, session_id),
+      _attr(_GEN_AI_EXECUTION, exec_id),
+      _attr("service.name", os.environ.get("OTEL_SERVICE_NAME", "hermes-agent"))]
+  notify: Restart hermes-gateway
+  when: hermes_agent_otel_plugin.stat.exists
+
+# The base install skips optional messaging-platform extras (they pull in
+# platform SDKs like slack-bolt that most converges never need). Without this,
+# the gateway logs "Platform 'Slack' requirements not met" and refuses to
+# create the Slack adapter even with valid tokens configured. `uv pip install`
+# is a no-op re-run when already satisfied; changed_when keys off its own
+# "Installed"/"Uninstalled" summary line so idempotency reporting stays honest.
+# uv writes that summary to STDERR, not stdout — check stderr (an empty-repo
+# reinstall of nothing leaves both blank, correctly reporting ok/unchanged).
+- name: Install the Slack platform extra into the Hermes venv
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_uv_bin }} pip install
+      --python {{ hermes_agent_venv_python }}
+      "hermes-agent[slack] @ {{ hermes_agent_install_dir }}"
+  register: hermes_agent_slack_extra_install
+  changed_when: >-
+    'Installed' in hermes_agent_slack_extra_install.stderr
+    or 'Uninstalled' in hermes_agent_slack_extra_install.stderr
+  when: hermes_agent_slack_bot_token | length > 0 and hermes_agent_slack_app_token | length > 0
+- name: Create the hermes runtime user (HERMES_HOME on the data volume)
+  ansible.builtin.user:
+    name: "{{ hermes_agent_user }}"
+    home: "{{ hermes_agent_home }}"
+    system: true
+    shell: /bin/bash # the agent's terminal tool needs a real shell
+    create_home: true
+
+# The home is a pre-existing ZFS data-volume mount (deployment.json mount_point),
+# so `create_home` above is a no-op for it — the dir already exists, owned by
+# root:root from the mount. Claim it for the hermes user explicitly, or the agent
+# can't write its own $HOME (shell sessions, tool scratch, hermes self-update).
+- name: Ensure the hermes home directory is owned by the runtime user
+  ansible.builtin.file:
+    path: "{{ hermes_agent_home }}"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+
+- name: Ensure HERMES_HOME exists
+  ansible.builtin.file:
+    path: "{{ hermes_agent_hermes_home }}"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+
+- name: Deploy the Hermes secrets file (.env)
+  ansible.builtin.template:
+    src: hermes-env.j2
+    dest: "{{ hermes_agent_hermes_home }}/.env"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart hermes-gateway
+
+- name: Deploy the Hermes config.yaml (brain -> LiteLLM router, memory -> Hindsight, budget)
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ hermes_agent_hermes_home }}/config.yaml"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+  notify: Restart hermes-gateway
+
+# --- nix-hermes content bundle: SOUL.md + the dryvist skills ------------------
+# Content is built by the pinned nix-hermes flake ref on the CONTROLLER (the
+# only side with nix; the guest never needs it) and byte-copied over. First
+# build needs network; the nix store caches re-runs. changed_when: false —
+# building never mutates the guest.
+- name: Build the nix-hermes content bundle on the controller
+  ansible.builtin.command:
+    cmd: nix build --no-link --print-out-paths "{{ hermes_agent_bundle_flake_ref }}"
+  delegate_to: localhost
+  # See assert.yml: the ansible_become connection var outranks the keyword.
+  become: false
+  vars:
+    ansible_become: false
+  run_once: true
+  register: hermes_agent_bundle_build
+  changed_when: false
+
+- name: Resolve the nix-hermes bundle store path
+  ansible.builtin.set_fact:
+    hermes_agent_bundle_path: "{{ hermes_agent_bundle_build.stdout_lines | last }}"
+
+# SOUL.md = the persona/behavior surface upstream loads FRESH on every message
+# (no restart needed) — the role the AGENTS.md chain plays for Claude Code.
+# The bundle composes it at BUILD time from ai-assistant-instructions'
+# agentsmd/prompts/autonomous-base.md + nix-hermes data/soul/hermes-variant.md
+# (edit intent in those sources, never a vendored copy here). Ansible owns the
+# file; Hermes self-edits MEMORY.md, not SOUL.md, so no agent-written state is
+# overwritten. backup:true preserves the pre-management content once on first
+# converge.
+- name: Deploy the Hermes SOUL.md (shared behavioral base + Hermes variant)
+  ansible.builtin.copy:
+    src: "{{ hermes_agent_bundle_path }}/SOUL.md"
+    dest: "{{ hermes_agent_hermes_home }}/SOUL.md"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0644"
+    backup: true
+  when: hermes_agent_soul_managed | bool
+
+# --- Hindsight memory: local embedded daemon ---------------------------------
+# The provider name in config.yaml is not enough: hindsight defaults to CLOUD
+# mode, and with no HINDSIGHT_API_KEY its is_available() is false — every
+# memory tool call fails with "Memory is not available" (the recurring digest
+# warning). local_embedded needs (a) the hindsight-all package in the venv,
+# (b) $HERMES_HOME/hindsight/config.json selecting the mode + the extraction
+# LLM (the same router brain), (c) HINDSIGHT_LLM_API_KEY in .env (rendered by
+# hermes-env.j2).
+- name: Install the Hindsight local-embedded stack into the Hermes venv
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_uv_bin }} pip install
+      --python {{ hermes_agent_venv_python }}
+      hindsight-all
+  register: hermes_agent_hindsight_install
+  changed_when: >-
+    'Installed' in hermes_agent_hindsight_install.stderr
+    or 'Uninstalled' in hermes_agent_hindsight_install.stderr
+  when: hermes_agent_memory_provider == 'hindsight' and hermes_agent_memory_mode == 'local_embedded'
+
+- name: Ensure the hindsight config dir exists
+  ansible.builtin.file:
+    path: "{{ hermes_agent_hermes_home }}/hindsight"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+  when: hermes_agent_memory_provider == 'hindsight'
+
+- name: Deploy the hindsight provider config (mode + embedded-daemon LLM)
+  ansible.builtin.template:
+    src: hindsight-config.json.j2
+    dest: "{{ hermes_agent_hermes_home }}/hindsight/config.json"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+  notify: Restart hermes-gateway
+  when: hermes_agent_memory_provider == 'hindsight'
+
+# --- Guest SSH hardening ------------------------------------------------------
+# Flagged by the agent's own security self-audit: password auth was accepted on
+# the guest's sshd. Ansible reaches this guest via proxmox_pct_remote (through
+# the PVE host), not sshd, so this cannot lock out converges.
+- name: Disable SSH password authentication
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PasswordAuthentication\s'
+    line: PasswordAuthentication no
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Restart sshd
+
+# --- Cron model-drift recovery ------------------------------------------------
+# Unpinned cron jobs snapshot the global default model at creation and FAIL
+# CLOSED when model.default later changes: every subsequent fire is skipped
+# with a provider/model-drift alert (upstream spend guard, hermes-agent
+# #44585), so a brain repoint silently stops the entire seeded fleet. The CLI
+# cannot re-pin an existing job's model, so recovery is: remove the drifted
+# job here and let the create-if-absent seeding below recreate it, snapshotting
+# the new model. No drift means nothing is removed (idempotent).
+- name: Read the cron job store to detect model-snapshot drift
+  ansible.builtin.slurp:
+    src: "{{ hermes_agent_hermes_home }}/cron/jobs.json"
+  register: hermes_agent_cron_store
+  failed_when: false
+
+- name: Remove role-seeded cron jobs whose model snapshot drifted
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron remove {{ item }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  # The loop expression is templated before `when` would be evaluated
+  # (per-item semantics), so it must be self-safe: default the slurped
+  # content to base64("{}") when jobs.json does not exist yet (fresh
+  # install) — the loop resolves to [] and the task is a no-op.
+  loop: >-
+    {{ (hermes_agent_cron_store.content | default('e30=', true) | b64decode | from_json).jobs
+       | default([])
+       | selectattr('name', 'in', hermes_agent_seeded_cron_names)
+       | selectattr('model_snapshot', 'defined')
+       | rejectattr('model_snapshot', 'none')
+       | rejectattr('model_snapshot', 'equalto', hermes_agent_model)
+       | map(attribute='name') | list }}
+  changed_when: true
+
+# Hermes ships its own cron scheduler. Seed the daily Slack status report here so
+# the next gateway run picks it up without any manual post-install step.
+- name: Check whether the daily Slack status cron job already exists
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_daily_status_cron_list
+  changed_when: false
+  failed_when: false
+  when:
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+    - hermes_agent_slack_home_channel | length > 0
+
+- name: Seed the daily Slack status cron job
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_bin }} cron create "{{ hermes_agent_daily_status_cron_schedule }}"
+      "{{ hermes_agent_daily_status_cron_prompt }}"
+      --name "{{ hermes_agent_daily_status_cron_name }}"
+      --deliver slack
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_daily_status_cron_create
+  changed_when: true
+  when:
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+    - hermes_agent_slack_home_channel | length > 0
+    - hermes_agent_daily_status_cron_name not in (hermes_agent_daily_status_cron_list.stdout | default(''))
+
+- name: Ensure the wiki directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_agent_wiki_path }}"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+  when: hermes_agent_wiki_enabled | bool
+
+- name: Materialize llm-wiki skill
+  ansible.builtin.copy:
+    src: "{{ hermes_agent_install_dir }}/skills/research/llm-wiki"
+    dest: "{{ hermes_agent_hermes_home }}/skills/"
+    remote_src: true
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: preserve
+  when: hermes_agent_wiki_enabled | bool
+
+- name: Check whether the nightly wiki cron job already exists
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_wiki_cron_list
+  changed_when: false
+  failed_when: false
+  when: hermes_agent_wiki_enabled | bool
+
+- name: Seed the nightly wiki cron job
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_bin }} cron create "{{ hermes_agent_nightly_wiki_cron_schedule }}"
+      "{{ hermes_agent_nightly_wiki_cron_prompt }}"
+      --name "{{ hermes_agent_nightly_wiki_cron_name }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_wiki_cron_create
+  changed_when: true
+  when:
+    - hermes_agent_wiki_enabled | bool
+    - hermes_agent_nightly_wiki_cron_name not in (hermes_agent_wiki_cron_list.stdout | default(''))
+
+- name: Deploy the GitHub App private key
+  ansible.builtin.copy:
+    content: "{{ hermes_agent_github_app_private_key }}"
+    dest: "{{ hermes_agent_hermes_home }}/github-app.pem"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0600"
+  no_log: true
+  when: hermes_agent_github_app_private_key | length > 0
+
+- name: Install githubkit into the Hermes venv
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_uv_bin }} pip install
+      --python {{ hermes_agent_venv_python }}
+      'githubkit[auth-app]'
+  register: hermes_agent_githubkit_install
+  changed_when: >-
+    'Installed' in hermes_agent_githubkit_install.stderr
+    or 'Uninstalled' in hermes_agent_githubkit_install.stderr
+  when: hermes_agent_github_app_private_key | length > 0
+
+- name: Materialize upstream github skills
+  ansible.builtin.copy:
+    src: "{{ hermes_agent_install_dir }}/skills/github"
+    dest: "{{ hermes_agent_hermes_home }}/skills/"
+    remote_src: true
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: preserve
+
+# All dryvist skills (docs-pr, github-issues, zammad-incidents, splunk-monitor)
+# arrive in one copy from the nix-hermes bundle built above. This deploys
+# BEFORE the curriculum and every cron-seeding step, so `cron create --skill
+# dryvist/splunk-monitor` (and zammad-incidents delivery references) always
+# resolve. splunk-monitor is present even when the monitor fleet is disabled —
+# an unreferenced skill on disk is inert.
+- name: Deploy the dryvist skills from the nix-hermes bundle
+  ansible.builtin.copy:
+    src: "{{ hermes_agent_bundle_path }}/skills/dryvist/"
+    dest: "{{ hermes_agent_hermes_home }}/skills/dryvist/"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+    directory_mode: "0750"
+
+# The versioned curriculum (H-9): the graded five-job set the job API
+# executes, plus the grading sheet, rubric schema and submission runbook.
+# curriculum.yml is the canonical manifest — prompts, order, budgets and each
+# job's machine-checkable success_checks (contract-asserted in assert.yml).
+# Materialized on the guest so the agent can read its own curriculum (the
+# `improve` job reviews it) and so a future recurring eval can execute it
+# locally; submissions themselves arrive via the inbound job API.
+- name: Deploy the versioned curriculum (manifest, jobs, grading, runbook)
+  ansible.builtin.copy:
+    src: curriculum/
+    dest: "{{ hermes_agent_hermes_home }}/curriculum/"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+    directory_mode: "0750"
+
+# --- Splunk monitor: self-directed 24/7 SIEM analyst cron fleet --------------
+# The dryvist/splunk-monitor skill (hard query-safety rails + investigative
+# method) was materialized with the bundle copy above, so `cron create
+# --skill dryvist/splunk-monitor` resolves.
+# Seed the monitoring cron fleet idempotently (create-if-absent), gated on the
+# agent being able to BOTH query Splunk (MCP URL set) AND deliver to Slack
+# (tokens + home channel set). Each job runs in a fresh isolated agent session.
+- name: Check which Splunk monitor cron jobs already exist
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_splunk_cron_list
+  changed_when: false
+  failed_when: false
+  when:
+    - hermes_agent_splunk_monitor_enabled | bool
+    - hermes_agent_splunk_mcp_url | length > 0
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+    - hermes_agent_slack_home_channel | length > 0
+
+- name: Seed the Splunk monitor cron jobs
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_bin }} cron create "{{ item.schedule }}"
+      "{{ item.prompt }}"
+      --name "{{ item.name }}"
+      --skill dryvist/splunk-monitor
+      --deliver "{{ item.deliver }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  loop: "{{ hermes_agent_splunk_cron_jobs }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: hermes_agent_splunk_cron_create
+  changed_when: true
+  when:
+    - hermes_agent_splunk_monitor_enabled | bool
+    - hermes_agent_splunk_mcp_url | length > 0
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+    - hermes_agent_slack_home_channel | length > 0
+    - item.name not in (hermes_agent_splunk_cron_list.stdout | default(''))
+
+# --- GitHub monitor: poll-based read-only org-triage cron --------------------
+# The dryvist/github-issues skill is already materialized unconditionally above,
+# so no per-job skill step is needed here. Seed idempotently (create-if-absent),
+# gated on the agent being able to BOTH query GitHub (the issues PAT is set) AND
+# deliver to Slack (tokens + home channel) — same shape as the Splunk fleet.
+- name: Check which GitHub monitor cron jobs already exist
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_github_cron_list
+  changed_when: false
+  failed_when: false
+  when:
+    - hermes_agent_github_monitor_enabled | bool
+    - hermes_agent_github_issues_pat | length > 0
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+    - hermes_agent_slack_home_channel | length > 0
+
+- name: Seed the GitHub monitor cron jobs
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_bin }} cron create "{{ item.schedule }}"
+      "{{ item.prompt }}"
+      --name "{{ item.name }}"
+      --skill dryvist/github-issues
+      --deliver "{{ item.deliver }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  loop: "{{ hermes_agent_github_cron_jobs }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: hermes_agent_github_cron_create
+  changed_when: true
+  when:
+    - hermes_agent_github_monitor_enabled | bool
+    - hermes_agent_github_issues_pat | length > 0
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+    - hermes_agent_slack_home_channel | length > 0
+    - item.name not in (hermes_agent_github_cron_list.stdout | default(''))
+
+- name: Deploy the hermes-gateway systemd unit
+  ansible.builtin.template:
+    src: hermes-gateway.service.j2
+    dest: /etc/systemd/system/hermes-gateway.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart hermes-gateway
+
+- name: Enable and start the Hermes gateway
+  ansible.builtin.systemd:
+    name: hermes-gateway
+    state: started
+    enabled: true
+    daemon_reload: true
+
+# --- Brain-health watchdog ---------------------------------------------------
+# A single-deployment brain (ai-default) with no fallback + upstream that ALWAYS
+# delivers cron failures means a brain outage DMs the operator twice an hour per
+# seeded job while nothing pages that the brain is down. This timer probes the
+# brain end-to-end and, on a debounced transition, pauses/resumes the seeded
+# fleet and alerts once per edge (Slack DM + urgent ntfy). Gated on the Slack
+# tokens that seed the spammy fleet in the first place — no fleet, nothing to
+# guard. ponytail: no disable-cleanup path; flip the flag + `systemctl disable
+# --now hermes-brain-watchdog.timer` if ever turned off.
+- name: Deploy the Hermes brain-health watchdog script
+  ansible.builtin.template:
+    src: hermes-brain-watchdog.sh.j2
+    dest: "{{ hermes_agent_brain_watchdog_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart hermes-brain-watchdog timer
+  when:
+    - hermes_agent_brain_watchdog_enabled | bool
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+
+- name: Deploy the Hermes brain-health watchdog systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - hermes-brain-watchdog.service
+    - hermes-brain-watchdog.timer
+  notify: Restart hermes-brain-watchdog timer
+  when:
+    - hermes_agent_brain_watchdog_enabled | bool
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+
+- name: Enable and start the Hermes brain-health watchdog timer
+  ansible.builtin.systemd:
+    name: hermes-brain-watchdog.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+  when:
+    - hermes_agent_brain_watchdog_enabled | bool
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+
+- name: Flush handlers so config/unit changes apply before verification
+  ansible.builtin.meta: flush_handlers
+
+# Layer 2 — post-converge verification gate (gateway up + clean journal + a real
+# tool-call probe through the router), with a rollback recipe on any failure.
+- name: Verify the brain wiring end-to-end after converge
+  ansible.builtin.import_tasks: verify.yml

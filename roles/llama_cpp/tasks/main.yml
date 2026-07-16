@@ -1,0 +1,363 @@
+---
+# llama.cpp (llama-server) + llama-swap on AMD ROCm in an LXC. Idempotent.
+# Prereqs (upstream): ansible-proxmox lxc_gpu_features has bound /dev/kfd + /dev/dri
+# into this CT (GPU build only). We only need the service user to be able to use them.
+
+- name: Install llama.cpp / llama-swap prerequisites
+  ansible.builtin.apt:
+    name:
+      - curl
+      - ca-certificates
+      - tar
+      - gzip
+      # OpenMP runtime: the prebuilt llama-server links libgomp.so.1, which
+      # the minimal Debian LXC template does not ship.
+      - libgomp1
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# Best-effort ROCm runtime for the container (prebuilt ROCm build links against it).
+# Empty by default — a no-op until a validated package list is supplied per host.
+- name: Install ROCm runtime packages (GPU build)
+  ansible.builtin.apt:
+    name: "{{ llama_cpp_rocm_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when:
+    - llama_cpp_gpu | bool
+    - llama_cpp_rocm_packages | length > 0
+
+# --- Absolute GPU-size guardrail ---------------------------------------------
+# pve1 (llm-fast, RX 6800, 16 GB VRAM) has hard-locked 5x under GPU load; VRAM
+# eviction of a large model is the documented hard-hang cause (see the ABSOLUTE
+# RULE comment in defaults/main.yml). Scoped to the llm_fast_group ONLY — this
+# must never block a model served elsewhere (e.g. Qwen3.6-35B-A3B on the Mac
+# Studio, a completely different host/inventory). Do not remove the group_names
+# guard even though playbooks/site.yml only ever wires this role to
+# llm_fast_group today; the guard is what keeps a future re-use of this role
+# safe.
+- name: Assert every llm-fast model declares param_billions
+  ansible.builtin.assert:
+    that:
+      - (llama_cpp_models | rejectattr('param_billions', 'defined') | list | length) == 0
+    fail_msg: >-
+      One or more llama_cpp_models entries is missing param_billions
+      ({{ llama_cpp_models | rejectattr('param_billions', 'defined')
+          | map(attribute='name') | list }}) — required so the >=14B GPU
+      guardrail below can evaluate it. Add a param_billions value.
+  when: "'llm_fast_group' in group_names"
+
+- name: Assert no llm-fast model is >= 14B params (ABSOLUTE pve1 GPU rule)
+  ansible.builtin.assert:
+    that:
+      - (llama_cpp_models | map(attribute='param_billions', default=0) | select('ge', 14) | list | length) == 0
+    fail_msg: >-
+      One or more llama_cpp_models entries has param_billions >= 14
+      ({{ llama_cpp_models | selectattr('param_billions', 'defined')
+          | selectattr('param_billions', 'ge', 14)
+          | map(attribute='name') | list }}). pve1 (llm-fast) has hard-locked
+      repeatedly serving models this large — see defaults/main.yml. Do not add
+      a >=14B model to this GPU; serve it elsewhere.
+    success_msg: "No >=14B model configured for llm-fast — GPU guardrail OK."
+  when: "'llm_fast_group' in group_names"
+
+- name: Create the llama-cpp service group
+  ansible.builtin.group:
+    name: "{{ llama_cpp_group }}"
+    system: true
+
+- name: Create the llama-cpp service user
+  ansible.builtin.user:
+    name: "{{ llama_cpp_user }}"
+    group: "{{ llama_cpp_group }}"
+    home: "{{ llama_cpp_data_dir }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: true
+
+- name: Create the install, models and config directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ llama_cpp_install_dir }}", owner: root, group: root, mode: "0755" }
+    - { path: "{{ llama_cpp_config_dir }}", owner: root, group: root, mode: "0755" }
+    - path: "{{ llama_cpp_models_dir }}"
+      owner: "{{ llama_cpp_user }}"
+      group: "{{ llama_cpp_group }}"
+      mode: "0750"
+
+# --- GPU device access (clone of roles/ollama; GPU build only) ---------------
+# lxc_gpu_features binds the device nodes in with the HOST's group GIDs, which
+# rarely match the container's own render/video groups. Instead of forcing GIDs
+# (which collides), add the service user to whatever groups actually own the nodes,
+# resolved at runtime from the files themselves.
+- name: Stat the GPU device nodes to learn their owning groups
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ llama_cpp_gpu_device_nodes }}"
+  register: llama_cpp_gpu_dev_stat
+  when: llama_cpp_gpu | bool
+
+- name: Assert the GPU device nodes are present (passed in by lxc_gpu_features)
+  ansible.builtin.assert:
+    that:
+      - llama_cpp_gpu_dev_stat.results | rejectattr('stat.exists') | list | length == 0
+    fail_msg: >-
+      One or more GPU device nodes are missing in this container
+      ({{ llama_cpp_gpu_device_nodes | join(', ') }}). Run ansible-proxmox
+      lxc_gpu_features against this CT first.
+  when: llama_cpp_gpu | bool
+
+- name: Add the llama-cpp user to the GPU device-owning groups
+  ansible.builtin.user:
+    name: "{{ llama_cpp_user }}"
+    groups: "{{ llama_cpp_gpu_dev_stat.results | map(attribute='stat.gr_name') | list | unique }}"
+    append: true
+  when: llama_cpp_gpu | bool
+  notify: Restart llama-swap
+
+# --- llama.cpp release (resolve latest, install once) ------------------------
+# Presence-guarded: the build tag moves every release, so we install once behind
+# the binary's existence and let operators refresh by removing it. The GitHub API
+# call only runs on first install, so re-converge does not spend rate limit.
+# A binary that exists but cannot resolve its bundled libs (broken/missing
+# SONAME symlinks) counts as not installed, so a converge self-heals it.
+- name: Check whether the installed llama-server runs
+  ansible.builtin.command:
+    cmd: "{{ llama_cpp_server_bin }} --version"
+  register: llama_cpp_server_check
+  changed_when: false
+  failed_when: false
+
+- name: Install the llama.cpp release binary
+  when: llama_cpp_server_check.rc != 0
+  block:
+    - name: Resolve recent llama.cpp release metadata
+      ansible.builtin.uri:
+        url: "{{ llama_cpp_llamacpp_releases_api }}"
+        return_content: true
+        headers:
+          Accept: application/vnd.github+json
+      register: llama_cpp_llamacpp_release
+
+    # llama.cpp cuts a release every few hours and CI uploads assets minutes
+    # later, so the newest release is routinely asset-less. Scan newest-first
+    # across the last few releases and take the first matching asset.
+    - name: Select the llama.cpp release asset by name pattern
+      ansible.builtin.set_fact:
+        llama_cpp_llamacpp_asset_url: >-
+          {{ llama_cpp_llamacpp_release.json
+             | map(attribute='assets') | flatten
+             | selectattr('name', 'match', llama_cpp_llamacpp_asset_regex)
+             | map(attribute='browser_download_url') | list
+             | first | default('') }}
+
+    - name: Assert a matching llama.cpp asset was found
+      ansible.builtin.assert:
+        that:
+          - llama_cpp_llamacpp_asset_url | length > 0
+        fail_msg: >-
+          No llama.cpp release asset matched {{ llama_cpp_llamacpp_asset_regex }}
+          in {{ llama_cpp_llamacpp_releases_api }} — the asset naming may have changed.
+
+    - name: Create a temporary extraction directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: llama-cpp
+      register: llama_cpp_extract_tmp
+
+    - name: Download and extract the llama.cpp release tarball
+      ansible.builtin.unarchive:
+        src: "{{ llama_cpp_llamacpp_asset_url }}"
+        dest: "{{ llama_cpp_extract_tmp.path }}"
+        remote_src: true
+
+    - name: Locate the extracted llama-server binary
+      ansible.builtin.find:
+        paths: "{{ llama_cpp_extract_tmp.path }}"
+        patterns: llama-server
+        file_type: file
+        recurse: true
+      register: llama_cpp_server_find
+
+    - name: Assert the llama-server binary was found in the archive
+      ansible.builtin.assert:
+        that:
+          - llama_cpp_server_find.matched | int > 0
+        fail_msg: "No 'llama-server' binary found in the llama.cpp release archive — the layout may have changed."
+
+    # Flatten the release's bin dir into the install dir so the binary and its
+    # bundled .so files share one directory (also LD_LIBRARY_PATH in the unit).
+    # cp -a, not ansible.builtin.copy: the release ships SONAME symlinks
+    # (libllama-common.so.0 -> libllama-common.so.0.0.NNNN) that copy with
+    # remote_src drops, leaving the binary unable to resolve its own libs.
+    - name: Install the llama.cpp bin directory contents
+      ansible.builtin.command:
+        cmd: >-
+          cp -a {{ llama_cpp_server_find.files[0].path | dirname }}/.
+          {{ llama_cpp_install_dir }}/
+      changed_when: true
+      notify: Restart llama-swap
+
+    - name: Remove the temporary extraction directory
+      ansible.builtin.file:
+        path: "{{ llama_cpp_extract_tmp.path }}"
+        state: absent
+
+# --- llama-swap release (resolve latest, install once) -----------------------
+- name: Check whether the llama-swap binary is already installed
+  ansible.builtin.stat:
+    path: "{{ llama_cpp_swap_bin }}"
+  register: llama_cpp_swap_stat
+
+- name: Install the llama-swap release binary
+  when: not llama_cpp_swap_stat.stat.exists
+  block:
+    - name: Resolve the latest llama-swap release metadata
+      ansible.builtin.uri:
+        url: "{{ llama_cpp_swap_releases_api }}"
+        return_content: true
+        headers:
+          Accept: application/vnd.github+json
+      register: llama_cpp_swap_release
+
+    - name: Select the llama-swap release asset by name pattern
+      ansible.builtin.set_fact:
+        llama_cpp_swap_asset_url: >-
+          {{ llama_cpp_swap_release.json.assets
+             | selectattr('name', 'match', llama_cpp_swap_asset_regex)
+             | map(attribute='browser_download_url') | list
+             | first | default('') }}
+
+    - name: Assert a matching llama-swap asset was found
+      ansible.builtin.assert:
+        that:
+          - llama_cpp_swap_asset_url | length > 0
+        fail_msg: >-
+          No llama-swap release asset matched {{ llama_cpp_swap_asset_regex }}
+          in {{ llama_cpp_swap_releases_api }} — the asset naming may have changed.
+
+    - name: Create a temporary llama-swap extraction directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: llama-swap
+      register: llama_cpp_swap_tmp
+
+    - name: Download and extract the llama-swap release tarball
+      ansible.builtin.unarchive:
+        src: "{{ llama_cpp_swap_asset_url }}"
+        dest: "{{ llama_cpp_swap_tmp.path }}"
+        remote_src: true
+
+    - name: Locate the extracted llama-swap binary
+      ansible.builtin.find:
+        paths: "{{ llama_cpp_swap_tmp.path }}"
+        patterns: llama-swap
+        file_type: file
+        recurse: true
+      register: llama_cpp_swap_find
+
+    - name: Assert the llama-swap binary was found in the archive
+      ansible.builtin.assert:
+        that:
+          - llama_cpp_swap_find.matched | int > 0
+        fail_msg: "No 'llama-swap' binary found in the release archive — the layout may have changed."
+
+    - name: Install the llama-swap binary
+      ansible.builtin.copy:
+        src: "{{ llama_cpp_swap_find.files[0].path }}"
+        dest: "{{ llama_cpp_swap_bin }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      notify: Restart llama-swap
+
+    - name: Remove the temporary llama-swap extraction directory
+      ansible.builtin.file:
+        path: "{{ llama_cpp_swap_tmp.path }}"
+        state: absent
+
+# --- Model staging -----------------------------------------------------------
+# get_url alone is not "only if absent": with dest present it still issues the
+# request, and the HF CDN ignores If-Modified-Since — every converge re-pulled
+# the full multi-GB files. A stat gate makes presence the skip condition.
+- name: Check which model GGUFs are already staged
+  ansible.builtin.stat:
+    path: "{{ llama_cpp_models_dir }}/{{ item.gguf }}"
+    get_checksum: false
+  loop: "{{ llama_cpp_models }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.gguf }})"
+  register: llama_cpp_gguf_stat
+
+- name: Stage the model GGUFs (download only if absent)
+  ansible.builtin.get_url:
+    url: "{{ llama_cpp_hf_base }}/{{ item.item.hf_repo }}/resolve/main/{{ item.item.gguf }}"
+    dest: "{{ llama_cpp_models_dir }}/{{ item.item.gguf }}"
+    owner: "{{ llama_cpp_user }}"
+    group: "{{ llama_cpp_group }}"
+    mode: "0640"
+  loop: "{{ llama_cpp_gguf_stat.results }}"
+  loop_control:
+    label: "{{ item.item.name }} ({{ item.item.gguf }})"
+  when: not item.stat.exists
+  register: llama_cpp_gguf_download
+  until: llama_cpp_gguf_download is succeeded
+  retries: 3
+  delay: 10
+
+# --- Config + service --------------------------------------------------------
+- name: Deploy the llama-swap configuration
+  ansible.builtin.template:
+    src: llama-swap.yaml.j2
+    dest: "{{ llama_cpp_config_file }}"
+    owner: root
+    group: "{{ llama_cpp_group }}"
+    mode: "0640"
+  notify: Restart llama-swap
+
+- name: Deploy the llama-swap systemd unit
+  ansible.builtin.template:
+    src: llama-swap.service.j2
+    dest: /etc/systemd/system/llama-swap.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart llama-swap
+
+- name: Enable and start llama-swap
+  ansible.builtin.systemd:
+    name: llama-swap
+    state: "{{ llama_cpp_service_enabled | ternary('started', 'stopped') }}"
+    enabled: "{{ llama_cpp_service_enabled }}"
+    daemon_reload: true
+
+- name: Flush handlers so config / unit changes apply before verification
+  ansible.builtin.meta: flush_handlers
+  when: llama_cpp_service_enabled
+
+# --- Verify ------------------------------------------------------------------
+# Type=simple reports 'active' the instant the process forks; poll until it settles
+# so a service that crashes a moment later fails loud here (mirrors roles/agent_exec).
+- name: Verify the llama-swap service is active
+  ansible.builtin.systemd:
+    name: llama-swap
+  register: llama_cpp_service_state
+  until: llama_cpp_service_state.status.ActiveState | default('') == 'active'
+  retries: 5
+  delay: 3
+  when: llama_cpp_service_enabled
+
+- name: Verify the llama-swap API is listening
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ llama_cpp_api_port }}"
+    timeout: 60
+  when: llama_cpp_service_enabled

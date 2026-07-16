@@ -1,0 +1,61 @@
+---
+# Molecule preparation playbook
+# Sets up the test container before running the qdrant_docker role
+
+- name: Prepare
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Wait for container to be ready
+      ansible.builtin.wait_for_connection:
+        timeout: 30
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+    - name: Update apt cache (Debian/Ubuntu)
+      # cache_valid_time removed: pulled Docker images can have stale or
+      # corrupt /var/lib/apt/lists that passes the timestamp freshness check
+      # but contains no package metadata (observed when the upstream image's
+      # :latest tag was re-pushed minutes before a CI run). Forcing update
+      # every run is the correct behavior for CI; retries handle transient
+      # mirror failures.
+      ansible.builtin.apt:
+        update_cache: true
+      register: _apt_update_result
+      until: _apt_update_result is succeeded
+      retries: 3
+      delay: 10
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Install base packages for Docker role
+      ansible.builtin.apt:
+        name:
+          - curl
+          - gnupg
+          - ca-certificates
+          - procps
+          - systemd
+          - iptables
+          - python3-pip
+          - python3-venv
+          - python3-full
+        state: present
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Create Docker config directory
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        mode: "0755"
+
+    - name: Configure Docker vfs storage driver for Docker-in-Docker
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "storage-driver": "vfs"
+          }
+        mode: "0644"

@@ -1,0 +1,41 @@
+---
+llamaindex_data_dir: /opt/llamaindex
+# Embeddings come from the fabric router (llm-fast serves the `embeddings`
+# model, OpenAI-compatible); the local Ollama sidecar is retired.
+llamaindex_embed_model: "embeddings"
+llamaindex_router_base_url: >-
+  https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required') }}/v1
+llamaindex_router_api_key: >-
+  {{ lookup('env', 'LLM_ROUTER_MASTER_KEY')
+  | mandatory('LLM_ROUTER_MASTER_KEY required') }}
+llamaindex_qdrant_api_key: "{{ lookup('env', 'QDRANT_API_KEY') }}"
+# llamaindex_qdrant_host is injected from hostvars (inventory) and
+# llamaindex_qdrant_port from tofu_data.constants at the playbook
+# level (see playbooks/site.yml) to keep the role decoupled from inventory.
+
+# --- RAG indexing ------------------------------------------------------------
+# The indexer (index_docs.py) turns the otherwise-idle Qdrant into a queryable
+# index. It embeds each source via the router and rebuilds one collection.
+llamaindex_qdrant_collection: homelab_docs
+# Install + enable the systemd timer that periodically rebuilds the index.
+llamaindex_index_enabled: true
+# systemd OnCalendar for the refresh timer (daily; off the :00 mark).
+llamaindex_index_on_calendar: "*-*-* 04:17:00"
+# Documents to index. Each source has a name and either a `url` or a `path`.
+# A url source may name a Cloudflare Access service-token env pair; the indexer
+# skips that source (non-fatal) when the env is absent, so a converge without
+# the token still indexes every reachable source.
+llamaindex_sources:
+  - name: public-docs
+    url: "https://docs.jacobpevans.com/llms-full.txt"
+  - name: dryvist-docs
+    url: "https://docs.dryvist.com/llms-full.txt"
+    cf_access_client_id_env: CF_ACCESS_CLIENT_ID
+    cf_access_client_secret_env: CF_ACCESS_CLIENT_SECRET
+  - name: ai-stack-registry
+    path: "{{ llamaindex_data_dir }}/registry.json"
+# Render the service-registry doc (ports/endpoints from tofu_data.constants) so
+# the index also covers the service registry. Skipped when tofu_data is absent
+# (e.g. molecule), leaving the ai-stack-registry source to skip its missing file.
+llamaindex_registry_enabled: true

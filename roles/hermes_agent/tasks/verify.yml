@@ -1,0 +1,172 @@
+---
+# Layer 2 — post-converge verification gate.
+#
+# Runs after the gateway (re)start settles (main.yml flushes handlers first).
+# Proves the brain wiring actually WORKS before the converge is called done: the
+# daemon stays up, its journal shows no fatal config rejection, and one real
+# tool-call round-trips through the router at the resolved brain. Any failure
+# rolls the whole play back with an explicit recovery recipe — none of the
+# 2026-07-08 breakages would have reached "converge succeeded" through this gate.
+#
+# The gate steps live in a block so a failure at ANY step surfaces the same loud
+# rollback hint (rescue) instead of a bare task error. The memory-provider report
+# below is deliberately OUTSIDE the block: it is best-effort telemetry, not a gate.
+
+- name: Post-converge verification gate
+  when: hermes_agent_verify_enabled | bool
+  block:
+    # Type=simple reports 'active' the instant the daemon forks, so a single
+    # check can pass a service that crashes a moment later (exactly how a
+    # context-floor rejection dies). Poll until ActiveState settles on 'active'.
+    - name: Gate — the Hermes gateway is active and stays up
+      ansible.builtin.systemd:
+        name: hermes-gateway
+      register: hermes_agent_gateway_state
+      until: hermes_agent_gateway_state.status.ActiveState | default('') == 'active'
+      retries: 5
+      delay: 2
+
+    # Bound the read to THIS process start: a bare `-n 200` straddles the
+    # restart and re-matches errors the converge just fixed — a false gate
+    # failure observed 2026-07-16 (pre-fix "context window below minimum"
+    # lines from the old config failed the verify of the config that fixed
+    # them). ActiveEnterTimestamp is authoritative for the running unit.
+    - name: Read the gateway journal since the restart
+      ansible.builtin.shell: >-
+        journalctl -u hermes-gateway
+        --since "$(systemctl show -p ActiveEnterTimestamp --value hermes-gateway)"
+        -n {{ hermes_agent_verify_journal_lines }} --no-pager -o cat
+      register: hermes_agent_gateway_journal
+      changed_when: false
+
+    - name: Gate — the journal shows no fatal config-rejection lines
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            hermes_agent_gateway_journal.stdout
+            | regex_findall(hermes_agent_verify_fatal_log_patterns | join('|'))
+            | length == 0
+        fail_msg: >-
+          The Hermes gateway journal contains a fatal config-rejection line
+          (matched one of {{ hermes_agent_verify_fatal_log_patterns | join(', ') }}).
+          This is the daemon refusing the rendered config at startup — e.g. a
+          context_length below the 64,000 floor, or a brain alias the router does
+          not serve. Inspect: journalctl -u hermes-gateway -n
+          {{ hermes_agent_verify_journal_lines }}.
+        success_msg: Gateway journal is clean of fatal config-rejection lines.
+
+    # One REAL end-to-end probe: force a tool call through the router at the
+    # resolved brain and require a structurally valid tool_call back. This is the
+    # exact failure shape of the outage ("Model generated invalid tool call" /
+    # empty function.name). Runs on the hermes host itself — the same network
+    # path and credential the agent uses — not the controller. no_log hides the
+    # bearer token; the separate assert below inspects the (token-free) result.
+    - name: Gate — a real tool call round-trips through the router at the brain
+      ansible.builtin.uri:
+        url: "{{ hermes_agent_model_base_url }}/chat/completions"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ hermes_agent_model_api_key }}"
+        body_format: json
+        body:
+          model: "{{ hermes_agent_model }}"
+          messages:
+            - role: user
+              content: "What is the weather in Paris right now? Use the get_weather tool to find out."
+          tools:
+            - type: function
+              function:
+                name: get_weather
+                description: Get the current weather for a location.
+                parameters:
+                  type: object
+                  properties:
+                    location:
+                      type: string
+                      description: City name, e.g. "Paris".
+                  required:
+                    - location
+          tool_choice: required
+          max_tokens: 256
+          stream: false
+        timeout: "{{ hermes_agent_verify_probe_timeout }}"
+        return_content: true
+      register: hermes_agent_verify_probe
+      retries: "{{ hermes_agent_verify_probe_retries }}"
+      delay: "{{ hermes_agent_verify_probe_delay }}"
+      until: hermes_agent_verify_probe.status | default(0) == 200
+      # no_log protects the bearer token, which Ansible would otherwise echo in
+      # the task invocation on failure; failed_when keeps a non-200 from hard-
+      # failing HERE (that would skip the descriptive assert below and leave the
+      # operator only the no_log'd, opaque module error). The visible assert next
+      # is the actual gate and prints the diagnostic.
+      failed_when: false
+      no_log: true
+
+    - name: Gate — the probe returned a valid tool call with a non-empty function name
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - hermes_agent_verify_probe.status == 200
+          - >-
+            (hermes_agent_verify_probe.json.choices[0].message.tool_calls | default([]))
+            | map(attribute='function.name') | select('truthy') | list | length > 0
+        fail_msg: >-
+          The brain at {{ hermes_agent_model_base_url }} (model
+          {{ hermes_agent_model }}) did not return a structurally valid tool call
+          (HTTP {{ hermes_agent_verify_probe.status | default('?') }}, no non-empty
+          function.name). This is the outage signature — invalid/empty tool calls
+          from a mis-wired brain (wrong parser, null context, unroutable alias).
+        success_msg: "Brain returned a valid tool call ({{ hermes_agent_model }})."
+
+    # Inbound job-submission API (api_server platform), only when the key is
+    # seeded: the platform must be listening (health 200 on the guest) AND must
+    # refuse unauthenticated submissions (401 on a keyless POST /v1/runs) — the
+    # negative half proves the bearer gate is actually on, not just the port.
+    - name: Gate — the job-submission API answers its health check
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ hermes_agent_api_server_port }}/health"
+        method: GET
+      register: hermes_agent_api_health
+      retries: "{{ hermes_agent_verify_probe_retries }}"
+      delay: "{{ hermes_agent_verify_probe_delay }}"
+      until: hermes_agent_api_health.status | default(0) == 200
+      when: hermes_agent_api_server_key | length > 0
+
+    - name: Gate — an unauthenticated job submission is refused (401)
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ hermes_agent_api_server_port }}/v1/runs"
+        method: POST
+        body_format: json
+        body:
+          input: "unauthenticated probe — must be refused"
+        status_code: 401
+      when: hermes_agent_api_server_key | length > 0
+
+  rescue:
+    - name: Verification gate failed — fail loudly with a rollback recipe
+      ansible.builtin.fail:
+        msg: >-
+          Hermes Agent post-converge verification gate FAILED — the brain wiring
+          is not serving correctly, so this converge must NOT be trusted in
+          production. Roll back to the previous release and re-converge:
+          `git checkout $(git describe --tags --abbrev=0)~ && doppler run --
+          ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags
+          hermes_agent`. Original failure is in the task output above.
+
+# Best-effort telemetry (NOT a gate): surface the active memory provider so a
+# Hindsight first-run hiccup is visible without failing the converge.
+- name: Check the active memory provider (non-fatal)
+  ansible.builtin.command: "{{ hermes_agent_bin }} memory status"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_memory_status
+  changed_when: false
+  failed_when: false
+
+- name: Report the active memory provider
+  ansible.builtin.debug:
+    var: hermes_agent_memory_status.stdout_lines

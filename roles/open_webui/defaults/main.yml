@@ -1,0 +1,49 @@
+---
+# open_webui role defaults — Open WebUI chat front-end (CT 168 hermes-chat).
+# Talks to Ollama (CT 167) and is fronted by Traefik at https://llm.<subdomain>.
+# Native install via uv into a venv + systemd (no Docker). Restart-on-failure is
+# applied DRY by the shared systemd_restart_policy role (Phase 9) via group_vars.
+
+open_webui_user: open-webui
+open_webui_home: /opt/open-webui
+open_webui_venv: /opt/open-webui/venv
+open_webui_data_dir: /var/lib/open-webui   # persistent DB/config (DATA_DIR)
+open_webui_python: "3.11"
+open_webui_uv_install_url: "https://astral.sh/uv/install.sh"
+
+open_webui_listen_host: "0.0.0.0"
+# Port comes from the tofu ports registry (no hardcodes).
+open_webui_port: "{{ tofu_data.constants.service_ports.open_webui_web }}"
+
+# Backend = the LiteLLM router (the fabric front door), OpenAI-compatible, reached
+# by its neutral FQDN — never a hardcoded IP. The router routes by model alias, so
+# Open WebUI sees every tier through this one endpoint. The api key is the router
+# master key, env-sourced (SOPS/Doppler).
+open_webui_openai_api_base_url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1"
+open_webui_openai_api_key: "{{ lookup('env', 'OPEN_WEBUI_OPENAI_API_KEY') }}"
+# The chat box default follows the fabric-wide ai_default_model single source
+# (inventory/group_vars/all.yml) — the SAME value the Hermes Agent brain uses,
+# by construction. Change it there, never re-pin here.
+open_webui_default_model: "{{ ai_default_model }}"
+
+# Public URL via Traefik — derived from the PROXMOX_SUBDOMAIN var (pve.<apex>),
+# never hardcoded. Matches the `llm` ingress entry in terraform-proxmox locals.tf.
+open_webui_hostname: "chat.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
+open_webui_url: "https://{{ open_webui_hostname }}"
+
+# Stable secret key for JWT/data encryption — generate once (openssl rand -hex 32),
+# store in Doppler/SOPS. Must NOT change between runs or sessions invalidate.
+open_webui_secret_key: "{{ lookup('env', 'OPEN_WEBUI_SECRET_KEY') }}"
+
+# --- Observability: native OTLP/HTTP to the shared Cribl Edge receiver --------
+open_webui_otel_endpoint: "{{ ai_orchestration_otel_endpoint }}"
+open_webui_otel_service_name: open-webui
+
+# Headless first-run admin (the first signup becomes the admin account), so
+# the UI never shows the "Create Admin Account" wizard.
+open_webui_admin_email: >-
+  {{ lookup('env', 'OPEN_WEBUI_ADMIN_EMAIL')
+     | mandatory('OPEN_WEBUI_ADMIN_EMAIL must be set (Doppler)') }}
+open_webui_admin_password: >-
+  {{ lookup('env', 'OPEN_WEBUI_ADMIN_PASSWORD')
+     | mandatory('OPEN_WEBUI_ADMIN_PASSWORD must be set (Doppler; openssl rand -base64 24)') }}

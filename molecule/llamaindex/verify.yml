@@ -1,0 +1,117 @@
+---
+# Molecule verification playbook
+# Validates that the llamaindex role executed correctly
+
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    llamaindex_data_dir: /opt/llamaindex
+
+  tasks:
+    - name: Check LlamaIndex data directory exists
+      ansible.builtin.stat:
+        path: "{{ llamaindex_data_dir }}"
+      register: data_dir
+
+    - name: Assert LlamaIndex data directory exists
+      ansible.builtin.assert:
+        that:
+          - data_dir.stat.exists
+          - data_dir.stat.isdir
+        fail_msg: "LlamaIndex data directory not found at {{ llamaindex_data_dir }}"
+
+    - name: Check Python venv exists
+      ansible.builtin.stat:
+        path: "{{ llamaindex_data_dir }}/venv/bin/python"
+      register: venv_python
+
+    - name: Assert Python venv exists
+      ansible.builtin.assert:
+        that:
+          - venv_python.stat.exists
+        fail_msg: "Python venv not found at {{ llamaindex_data_dir }}/venv/bin/python"
+
+    - name: Check llama-index-core is installed in venv
+      ansible.builtin.command:
+        cmd: "{{ llamaindex_data_dir }}/venv/bin/pip show llama-index-core"
+      register: pip_show
+      changed_when: false
+      failed_when: false
+
+    - name: Assert llama-index-core is installed
+      ansible.builtin.assert:
+        that:
+          - pip_show.rc == 0
+        fail_msg: "llama-index-core is not installed in the virtual environment"
+
+    - name: Check config.yaml was deployed
+      ansible.builtin.stat:
+        path: "{{ llamaindex_data_dir }}/config.yaml"
+      register: config_file
+
+    - name: Assert config.yaml exists
+      ansible.builtin.assert:
+        that:
+          - config_file.stat.exists
+        fail_msg: "config.yaml not found - template was not deployed"
+
+    - name: Read config.yaml content
+      ansible.builtin.slurp:
+        src: "{{ llamaindex_data_dir }}/config.yaml"
+      register: config_content
+
+    - name: Assert config.yaml has expected content
+      ansible.builtin.assert:
+        that:
+          - "'embeddings' in (config_content.content | b64decode)"
+          - "'qdrant' in (config_content.content | b64decode)"
+        fail_msg: "config.yaml does not contain expected LlamaIndex configuration"
+
+    - name: Check the legacy Ollama binary is gone
+      ansible.builtin.stat:
+        path: /usr/local/bin/ollama
+      register: ollama_binary
+
+    - name: Assert the legacy Ollama binary is gone
+      ansible.builtin.assert:
+        that:
+          - not ollama_binary.stat.exists
+        fail_msg: "Legacy Ollama binary still present at /usr/local/bin/ollama"
+
+    - name: Assert config.yaml declares the index collection and sources
+      ansible.builtin.assert:
+        that:
+          - "'collection' in (config_content.content | b64decode)"
+          - "'sources' in (config_content.content | b64decode)"
+        fail_msg: "config.yaml is missing the index collection/sources block"
+
+    - name: Check the RAG indexer script was deployed
+      ansible.builtin.stat:
+        path: "{{ llamaindex_data_dir }}/index_docs.py"
+      register: indexer_script
+
+    - name: Assert the RAG indexer script exists and is executable
+      ansible.builtin.assert:
+        that:
+          - indexer_script.stat.exists
+          - indexer_script.stat.executable
+        fail_msg: "index_docs.py missing or not executable"
+
+    - name: Byte-compile the RAG indexer script
+      ansible.builtin.command:
+        cmd: "{{ llamaindex_data_dir }}/venv/bin/python -m py_compile {{ llamaindex_data_dir }}/index_docs.py"
+      changed_when: false
+
+    - name: Check the RAG index timer unit was installed
+      ansible.builtin.stat:
+        path: /etc/systemd/system/llamaindex-index.timer
+      register: index_timer_unit
+
+    - name: Assert the RAG index timer unit exists
+      ansible.builtin.assert:
+        that:
+          - index_timer_unit.stat.exists
+        fail_msg: "llamaindex-index.timer was not installed"

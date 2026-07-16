@@ -1,0 +1,72 @@
+---
+# LangGraph — self-hosted, ZERO-CLOUD. Runs the open-source `langgraph dev`
+# in-memory server (MIT langgraph-cli[inmem]) serving a seed ReAct graph, plus a
+# self-hosted Agent Chat UI built from source. NO LangSmith key, NO cloud egress.
+# https://langchain-ai.github.io/langgraph/
+#
+# Two Docker images are BUILT on the host (no published images exist for either):
+#   - langgraph-api  : python + langgraph-cli[inmem] + the seed graph
+#   - agent-chat-ui  : the langchain-ai/agent-chat-ui Next.js app, pinned commit
+#
+# Tracing: the seed graph imports otel_bootstrap, which exports LangChain/LangGraph
+# spans over OTLP/HTTP to the Cribl Edge receiver (ai_orchestration_otel_endpoint);
+# Cribl forks to Langfuse + Splunk. State is in-memory (resets on restart) — this
+# is a playground, not a durable deployment.
+#
+# All literals live here; templates reference vars only (DRY).
+
+# --- Pins (bump via Renovate or manual review) ---------------------------------
+langgraph_docker_python_image: "python:3.14-slim"
+langgraph_docker_node_image: "node:24-alpine"
+langgraph_docker_cli_version: "0.4.30"          # langgraph-cli[inmem]
+langgraph_docker_langgraph_version: "1.2.8"
+langgraph_docker_langchain_openai_version: "1.3.3"
+langgraph_docker_openllmetry_version: "0.62.1"  # opentelemetry-instrumentation-langchain
+# Agent Chat UI: no tags exist upstream, so pin an exact commit for reproducibility.
+langgraph_docker_chat_ui_repo: "https://github.com/langchain-ai/agent-chat-ui.git"
+langgraph_docker_chat_ui_ref: "1cbd509d387b1e9602a80f05e638058b7543d7cc"
+langgraph_docker_chat_ui_pnpm_version: "10.5.1"
+
+# --- Paths ---------------------------------------------------------------------
+langgraph_docker_data_dir: /opt/langgraph
+langgraph_docker_graph_dir: "{{ langgraph_docker_data_dir }}/graph"      # langgraph-api build context
+langgraph_docker_chat_ui_dir: "{{ langgraph_docker_data_dir }}/agent-chat-ui"  # UI build context (clone)
+
+# --- Compose service names -----------------------------------------------------
+langgraph_docker_api_service: langgraph-api
+langgraph_docker_chat_ui_service: agent-chat-ui
+langgraph_docker_restart_policy: unless-stopped
+
+# --- Public FQDNs (Traefik wildcard cert) --------------------------------------
+langgraph_docker_subdomain: >-
+  {{ lookup('env', 'PROXMOX_SUBDOMAIN') | mandatory('PROXMOX_SUBDOMAIN required') }}
+langgraph_docker_api_fqdn: "langgraph.{{ langgraph_docker_subdomain }}"
+langgraph_docker_chat_ui_fqdn: "langgraph-chat.{{ langgraph_docker_subdomain }}"
+
+# --- Ports (DRY from tofu pipeline_constants; no literals) ----------------------
+_langgraph_docker_api_port_err: >-
+  tofu_data.constants.service_ports.langgraph_api missing —
+  regenerate tofu_inventory.json via `tofu output -json ansible_inventory`.
+langgraph_docker_api_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['langgraph_api']
+     | mandatory(_langgraph_docker_api_port_err) }}
+_langgraph_docker_chat_ui_port_err: >-
+  tofu_data.constants.service_ports.agent_chat_ui_web missing —
+  regenerate tofu_inventory.json via `tofu output -json ansible_inventory`.
+langgraph_docker_chat_ui_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['agent_chat_ui_web']
+     | mandatory(_langgraph_docker_chat_ui_port_err) }}
+
+# --- Assistant id (matches langgraph.json graph key + Chat UI config) -----------
+langgraph_docker_assistant_id: agent
+
+# --- Model backend: the LiteLLM router (inherited from ai_orchestration_group) ---
+langgraph_docker_llm_base_url: "{{ ai_orchestration_ollama_base_url }}"
+langgraph_docker_llm_api_key: "{{ ai_orchestration_model_api_key }}"
+langgraph_docker_model: "gpt-oss-120b"
+
+# --- OTEL: reuse the shared Cribl Edge endpoint (inherited group var) -----------
+langgraph_docker_otel_endpoint: "{{ ai_orchestration_otel_endpoint }}"
+langgraph_docker_otel_service_name: langgraph

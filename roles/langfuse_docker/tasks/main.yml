@@ -1,0 +1,163 @@
+---
+# Langfuse v3 Docker deployment.
+#
+# Installs Docker + Compose on the target LXC, generates (and persists) the
+# three application secrets on first run, then deploys langfuse-web +
+# langfuse-worker + postgres + clickhouse + redis via Docker Compose with
+# bind-mounted data under /opt/langfuse. Blob storage points at the homelab
+# RustFS S3 (the bundled MinIO is dropped).
+#
+# Docker itself (docker-ce + compose plugin, fuse-overlayfs, the fuse-overlayfs
+# daemon.json) is installed by the docker_engine meta dependency (meta/main.yml).
+# No venv: Langfuse deploys via docker_compose_v2, which uses the docker compose
+# CLI (not the docker SDK), so compose runs under the system interpreter.
+
+# =============================================================================
+# Langfuse Data Directories
+# =============================================================================
+# ClickHouse dirs are pre-owned by uid 101 because the service pins user 101:101
+# (bypassing the image's root-entrypoint chown). Postgres and Redis dirs stay
+# root-owned — those images chown their bind mount via the root entrypoint.
+
+- name: Create Langfuse data directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "0755"
+  loop: "{{ langfuse_docker_directories }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+# =============================================================================
+# Application secrets (generate-once, persist on disk)
+# =============================================================================
+# NEXTAUTH_SECRET, SALT and ENCRYPTION_KEY must be stable across runs; persist
+# each in a root-only file the first time the role runs and reuse it thereafter.
+# ENCRYPTION_KEY must be 64 hex chars — SHA-256 of a random string yields exactly
+# that; SALT / NEXTAUTH_SECRET accept any high-entropy string.
+
+- name: Check for existing generated Langfuse secrets
+  ansible.builtin.stat:
+    path: "{{ langfuse_docker_data_dir }}/{{ item.file }}"
+  loop: "{{ langfuse_docker_generated_secrets }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: langfuse_docker_secret_stats
+
+- name: Generate Langfuse secrets (first run only)
+  ansible.builtin.copy:
+    dest: "{{ langfuse_docker_data_dir }}/{{ item.item.file }}"
+    content: >-
+      {{ (lookup('community.general.random_string', length=item.item.length,
+                 upper=true, lower=true, numbers=true, special=false) | hash('sha256'))
+         if item.item.hex
+         else lookup('community.general.random_string', length=item.item.length,
+                     upper=true, lower=true, numbers=true, special=false) }}
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ langfuse_docker_secret_stats.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: not item.stat.exists
+  no_log: true
+
+- name: Read generated Langfuse secrets into memory
+  ansible.builtin.slurp:
+    src: "{{ langfuse_docker_data_dir }}/{{ item.file }}"
+  loop: "{{ langfuse_docker_generated_secrets }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: langfuse_docker_secret_slurps
+  no_log: true
+
+- name: Resolve generated Langfuse secrets into a fact
+  ansible.builtin.set_fact:
+    langfuse_docker_secrets: "{{ dict(_langfuse_docker_secret_names | zip(_langfuse_docker_secret_values)) }}"
+  vars:
+    _langfuse_docker_secret_names: "{{ langfuse_docker_generated_secrets | map(attribute='name') | list }}"
+    _langfuse_docker_secret_values: >-
+      {{ langfuse_docker_secret_slurps.results
+         | map(attribute='content') | map('b64decode') | map('trim') | list }}
+  no_log: true
+
+# =============================================================================
+# Compose Deployment
+# =============================================================================
+
+- name: Deploy Langfuse docker-compose template
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ langfuse_docker_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0600"  # contains datastore passwords + app secrets
+  no_log: true
+  notify: Restart langfuse
+
+# =============================================================================
+# Compose Deployment (continued)
+# =============================================================================
+
+- name: Deploy Langfuse via docker compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ langfuse_docker_data_dir }}"
+    state: present
+  register: langfuse_docker_compose_result
+  changed_when: >-
+    (langfuse_docker_compose_result.actions | default([]))
+    | selectattr('status', 'in', ['Creating', 'Recreating', 'Pulling', 'Building'])
+    | list | length > 0
+  no_log: true
+
+# =============================================================================
+# Health Check
+# =============================================================================
+# First boot runs postgres + clickhouse migrations before the web server listens,
+# so the port wait and the health poll are both generous.
+
+- name: Wait for Langfuse web port to be ready
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ langfuse_docker_web_port }}"
+    timeout: 180
+
+- name: Verify Langfuse health endpoint responds
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ langfuse_docker_web_port }}/api/public/health"
+    method: GET
+    status_code: 200
+  register: langfuse_docker_health
+  retries: 30
+  delay: 10
+  until: langfuse_docker_health.status == 200
+  changed_when: false
+
+# =============================================================================
+# Headless Provisioning of LLM Provider
+# =============================================================================
+
+- name: Provision LiteLLM router in Langfuse
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ langfuse_docker_web_port }}/api/public/llm-connections"
+    method: PUT
+    url_username: "{{ langfuse_docker_init_public_key }}"
+    url_password: "{{ langfuse_docker_init_secret_key }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      provider: "litellm-router"
+      adapter: "openai"
+      baseURL: "{{ ai_orchestration_ollama_base_url }}"
+      secretKey: >-
+        {{
+          ai_orchestration_model_api_key |
+          default(bao_local_llm_secrets.LLM_ROUTER_MASTER_KEY, true) |
+          default(lookup('env', 'LLM_ROUTER_MASTER_KEY'), true)
+        }}
+    status_code: 200
+  changed_when: false
+  no_log: true
+  failed_when: false # Avoid failing the whole playbook if this fails, as UI is the primary method

@@ -1,0 +1,37 @@
+---
+# Self-hosted, zero-cloud LangGraph: in-memory `langgraph dev` server + a
+# self-hosted Agent Chat UI. Both images are built from the local contexts below.
+# Rendered by ansible-proxmox-apps/roles/langgraph_docker.
+services:
+  {{ langgraph_docker_api_service }}:
+    build:
+      context: ./graph
+    image: homelab/langgraph-seed:local
+    container_name: "{{ langgraph_docker_api_service }}"
+    environment:
+      # LiteLLM router (fabric front door) — langchain-openai reads these.
+      OPENAI_API_BASE: "{{ langgraph_docker_llm_base_url }}"
+      OPENAI_API_KEY: "{{ langgraph_docker_llm_api_key }}"
+      LLM_MODEL: "{{ langgraph_docker_model }}"
+    ports:
+      - "{{ langgraph_docker_api_port }}:{{ langgraph_docker_api_port }}"
+    restart: {{ langgraph_docker_restart_policy }}
+
+  {{ langgraph_docker_chat_ui_service }}:
+    build:
+      context: ./agent-chat-ui
+      args:
+        # NEXT_PUBLIC_* are inlined at build time (Next.js contract).
+        NEXT_PUBLIC_API_URL: "https://{{ langgraph_docker_chat_ui_fqdn }}/api"
+        NEXT_PUBLIC_ASSISTANT_ID: "{{ langgraph_docker_assistant_id }}"
+    image: homelab/agent-chat-ui:local
+    container_name: "{{ langgraph_docker_chat_ui_service }}"
+    depends_on:
+      - {{ langgraph_docker_api_service }}
+    environment:
+      # Server-side: the API-passthrough route proxies here (no LangSmith key —
+      # the langgraph server is unauthenticated on the internal ai VLAN).
+      LANGGRAPH_API_URL: "http://{{ langgraph_docker_api_service }}:{{ langgraph_docker_api_port }}"
+    ports:
+      - "{{ langgraph_docker_chat_ui_port }}:{{ langgraph_docker_chat_ui_port }}"
+    restart: {{ langgraph_docker_restart_policy }}

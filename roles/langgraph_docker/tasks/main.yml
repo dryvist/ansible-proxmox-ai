@@ -1,0 +1,167 @@
+---
+# LangGraph (zero-cloud) Docker deployment.
+#
+# Installs Docker + Compose on the target LXC, assembles two local build contexts
+# (the seed graph for `langgraph dev`, and the agent-chat-ui clone), then builds +
+# runs both via Docker Compose. State is in-memory; there is no postgres/redis.
+#
+# Docker itself (docker-ce + compose plugin, fuse-overlayfs, the fuse-overlayfs
+# daemon.json) is installed by the docker_engine meta dependency (meta/main.yml).
+# No venv: LangGraph deploys via docker_compose_v2, which uses the docker compose
+# CLI (not the docker SDK), so compose runs under the system interpreter. The
+# OTEL/seed pattern is borrowed from agent_exec (OpenLLMetry -> Cribl OTLP).
+
+# =============================================================================
+# git (for the agent-chat-ui clone)
+# =============================================================================
+
+- name: Install git for the agent-chat-ui clone
+  ansible.builtin.apt:
+    name: git
+    state: present
+    update_cache: true
+
+# =============================================================================
+# Build context 1: the seed graph (langgraph-api image)
+# =============================================================================
+
+- name: Create LangGraph directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ langgraph_docker_data_dir }}"
+    - "{{ langgraph_docker_graph_dir }}"
+
+- name: Install the seed graph sources (static)
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ langgraph_docker_graph_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - agent.py
+    - langgraph.json
+
+- name: Render the seed graph project files (templated pins + OTLP endpoint)
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ langgraph_docker_graph_dir }}/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { src: pyproject.toml.j2, dest: pyproject.toml }
+    - { src: otel_bootstrap.py.j2, dest: otel_bootstrap.py }
+    - { src: langgraph.Dockerfile.j2, dest: Dockerfile }
+  notify: Rebuild langgraph stack
+
+# =============================================================================
+# Build context 2: the Agent Chat UI (clone at a pinned commit, then Dockerfile)
+# =============================================================================
+
+- name: Clone agent-chat-ui at the pinned commit
+  ansible.builtin.git:
+    repo: "{{ langgraph_docker_chat_ui_repo }}"
+    dest: "{{ langgraph_docker_chat_ui_dir }}"
+    version: "{{ langgraph_docker_chat_ui_ref }}"
+    depth: 1
+  notify: Rebuild langgraph stack
+
+- name: Render the Agent Chat UI Dockerfile
+  ansible.builtin.template:
+    src: agent-chat-ui.Dockerfile.j2
+    dest: "{{ langgraph_docker_chat_ui_dir }}/Dockerfile"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Rebuild langgraph stack
+
+# =============================================================================
+# Compose file
+# =============================================================================
+
+- name: Render LangGraph docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ langgraph_docker_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0600"  # contains the LiteLLM router key
+  no_log: true
+  notify: Rebuild langgraph stack
+
+# =============================================================================
+# Build + deploy via Docker Compose
+# Layer caching keeps rebuilds cheap: the pinned UI clone and seed graph only
+# rebuild when their sources actually change.
+# =============================================================================
+
+- name: Build and deploy LangGraph via docker compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ langgraph_docker_data_dir }}"
+    state: present
+    build: always
+  register: langgraph_docker_compose_result
+  changed_when: >-
+    (langgraph_docker_compose_result.actions | default([]))
+    | selectattr('status', 'in', ['Creating', 'Recreating', 'Pulling', 'Building'])
+    | list | length > 0
+  no_log: true
+
+# =============================================================================
+# Health checks
+# =============================================================================
+
+- name: Wait for the LangGraph API port to accept TCP connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ langgraph_docker_api_port }}"
+    timeout: 300
+
+- name: Verify the LangGraph server /ok endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ langgraph_docker_api_port }}/ok"
+    method: GET
+    status_code: 200
+  register: langgraph_docker_ok
+  retries: 30
+  delay: 10
+  until: langgraph_docker_ok.status == 200
+  changed_when: false
+
+- name: Confirm the seed assistant graph is registered
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ langgraph_docker_api_port }}/assistants/search"
+    method: POST
+    body_format: json
+    body: {}
+    status_code: 200
+  register: langgraph_docker_assistants
+  changed_when: false
+  failed_when: >-
+    langgraph_docker_assistants.status != 200
+    or (langgraph_docker_assistants.json
+        | selectattr('graph_id', 'equalto', langgraph_docker_assistant_id)
+        | list | length) < 1
+
+- name: Wait for the Agent Chat UI port to accept TCP connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ langgraph_docker_chat_ui_port }}"
+    timeout: 300
+
+- name: Verify the Agent Chat UI responds
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ langgraph_docker_chat_ui_port }}/"
+    method: GET
+    status_code: 200
+  register: langgraph_docker_ui
+  retries: 20
+  delay: 10
+  until: langgraph_docker_ui.status == 200
+  changed_when: false

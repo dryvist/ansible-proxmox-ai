@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+#
+# Hermes brain-health watchdog. Rendered by the hermes_agent role and run on a
+# systemd timer (every {{ hermes_agent_brain_watchdog_interval }}) as the hermes
+# user. It exists because Hermes cron runs are stateless and upstream ALWAYS
+# delivers a failure notification ("Failed jobs always deliver regardless of the
+# [SILENT] marker") — so when the single-deployment brain (ai-default) is
+# unreachable, every seeded cron fires, 500s, and DMs the operator, twice an hour
+# per job, with nobody getting one clean "the brain is down" signal.
+#
+# Fix: probe the brain end-to-end; on a DEBOUNCED transition, `hermes cron
+# pause`/`resume` the role-seeded fleet and alert EXACTLY ONCE per edge (Slack DM
+# + urgent ntfy). Paused jobs don't fire, so a brain outage stops producing spam
+# instead of amplifying it. Pausing loses no coverage a run would otherwise
+# achieve — the brain is down either way — it just makes the gap visible once.
+set -uo pipefail
+
+# --- Rendered config ---------------------------------------------------------
+HERMES_BIN="{{ hermes_agent_bin }}"
+MODEL="{{ hermes_agent_model }}"
+BASE_URL="{{ hermes_agent_model_base_url }}"
+PROBE_URL="${BASE_URL}/chat/completions"
+PROBE_TIMEOUT="{{ hermes_agent_brain_watchdog_probe_timeout }}"
+DOWN_AFTER="{{ hermes_agent_brain_watchdog_down_after }}"
+UP_AFTER="{{ hermes_agent_brain_watchdog_up_after }}"
+NTFY_URL="{{ hermes_agent_brain_watchdog_ntfy_url }}"
+STATE_DIR="{{ hermes_agent_hermes_home }}/brain-watchdog"
+# Rendered at template time (the seeded list is static) so the script avoids
+# bash's array-length parameter form, whose brace-hash opener would be misread as
+# a Jinja comment start in this .j2 and mangle the template.
+JOB_COUNT="{{ hermes_agent_seeded_cron_names | length }}"
+
+# Role-seeded, brain-dependent cron fleet — the only jobs this watchdog touches
+# (never user/agent-created jobs). Same list the model-drift recovery uses.
+SEEDED_JOBS=(
+{% for job in hermes_agent_seeded_cron_names %}
+  "{{ job }}"
+{% endfor %}
+)
+
+# Secrets arrive via the systemd unit's EnvironmentFile (the same $HERMES_HOME/.env
+# the gateway loads): HERMES_AGENT_MODEL_API_KEY (probe auth), SLACK_BOT_TOKEN +
+# SLACK_ALLOWED_USERS (DM alert). Defaulted empty so `set -u` is safe when unset.
+API_KEY="${HERMES_AGENT_MODEL_API_KEY:-}"
+SLACK_TOKEN="${SLACK_BOT_TOKEN:-}"
+SLACK_USER="${SLACK_ALLOWED_USERS:-}"
+
+# --- Probe: a tiny real completion, mirroring what the crons actually do ------
+# Healthy iff HTTP 200 AND the body carries a real finish_reason. HTTP code
+# alone is NOT health: when the MLX engine's batch scheduler wedges (2026-07-16
+# broadcast_shapes incident) every completion returns HTTP 200 with
+# `"finish_reason":"error"` and zero tokens — the code-only probe stayed green
+# for hours while every cron failed. A connection error (curl fails -> 000), a
+# 5xx, an auth 4xx, a hang past PROBE_TIMEOUT, or a 200-wrapped error body all
+# read as DOWN — the same failures that would fail a cron. It hits the
+# already-active rotation model (no cold-model spawn), and probing on this
+# cadence keeps the brain warm, which matches the intended 24/7 posture.
+# ponytail: grep on the body, no jq and no temp file on the guest.
+probe_ok() {
+  local response code body
+  # Body and status code in one call: -w appends the code on its own line
+  # after the body, so no temp file is needed on a 60s cadence.
+  response="$(curl -sS -w '\n%{http_code}' --max-time "${PROBE_TIMEOUT}" \
+    -X POST "${PROBE_URL}" \
+    -H "Authorization: Bearer ${API_KEY}" \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"${MODEL}\",\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}" \
+    2>/dev/null)" || return 1
+  code="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  # stop|length|tool_calls = the model really generated; "error" (or a body
+  # with no finish_reason at all) = broken regardless of the 200. The
+  # finish_reason check alone is not enough: LiteLLM can remap an upstream
+  # finish_reason "error" to "stop" (core_helpers "Unmapped finish_reason
+  # 'error', defaulting to 'stop'", seen live 2026-07-16), so also require
+  # completion_tokens >= 1 — a wedged engine always reports 0.
+  [[ "${code}" == "200" ]] \
+    && grep -Eq '"finish_reason"[[:space:]]*:[[:space:]]*"(stop|length|tool_calls)"' <<< "${body}" \
+    && grep -Eq '"completion_tokens"[[:space:]]*:[[:space:]]*[1-9]' <<< "${body}"
+}
+
+# --- Cron fleet control (best-effort; idempotent) ----------------------------
+# HERMES_HOME comes from the unit's Environment=. pause/resume are no-ops on an
+# already-paused/active job; a missing job just logs and is ignored.
+cron_do() {
+  local verb="$1" job
+  for job in "${SEEDED_JOBS[@]}"; do
+    if "${HERMES_BIN}" cron "${verb}" "${job}" >/dev/null 2>&1; then
+      logger -t hermes-brain-watchdog "${verb}d ${job}"
+    else
+      logger -t hermes-brain-watchdog "${verb} skipped (missing/already ${verb}d): ${job}"
+    fi
+  done
+}
+
+# --- Alerting: one Slack DM + one urgent ntfy per transition -----------------
+# Messages are kept JSON-safe (no double quotes / backslashes) so the Slack body
+# can be built with printf — the guest has no jq, and adding one for two strings
+# is not worth a dependency (ponytail).
+slack_post() {
+  local text="$1" channel
+  [[ -n "${SLACK_TOKEN}" && -n "${SLACK_USER}" ]] || return 0
+  channel="${SLACK_USER%%,*}"   # first member id; channel=<user id> DMs them
+  curl -fsS --max-time 10 -X POST https://slack.com/api/chat.postMessage \
+    -H "Authorization: Bearer ${SLACK_TOKEN}" \
+    -H "Content-Type: application/json; charset=utf-8" \
+    --data "$(printf '{"channel":"%s","text":"%s"}' "${channel}" "${text}")" \
+    >/dev/null 2>&1 || true
+}
+
+ntfy_push() {
+  local kind="$1" text="$2" prio tags title
+  [[ -n "${NTFY_URL}" ]] || return 0
+  if [[ "${kind}" == "down" ]]; then
+    prio="urgent"; tags="rotating_light"; title="hermes brain down"
+  else
+    prio="default"; tags="white_check_mark"; title="hermes brain recovered"
+  fi
+  curl -fsS --max-time 8 -H "Title: ${title}" -H "Priority: ${prio}" \
+    -H "Tags: ${tags}" -d "${text}" "${NTFY_URL}" >/dev/null 2>&1 || true
+}
+
+alert() {
+  local kind="$1" msg now
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if [[ "${kind}" == "down" ]]; then
+    msg=":warning: Hermes brain unreachable (${MODEL} via ${BASE_URL}) since ${now} -- paused ${JOB_COUNT} seeded cron jobs; will auto-resume on recovery."
+  else
+    msg=":white_check_mark: Hermes brain recovered at ${now} -- resumed ${JOB_COUNT} seeded cron jobs."
+  fi
+  logger -t hermes-brain-watchdog "${msg}"
+  slack_post "${msg}"
+  ntfy_push "${kind}" "${msg}"
+}
+
+# --- Debounced state machine -------------------------------------------------
+# state: up|down (default up so a fresh start never emits a spurious recovery).
+# streak: signed run of consecutive same-result probes (+ok / -fail). A DOWN edge
+# needs DOWN_AFTER consecutive fails, an UP edge UP_AFTER consecutive oks — this
+# rides brief bounces (rotation flips, cold reloads) so the watchdog never becomes
+# a new source of spam. ponytail: if state is ever lost while paused (persistent
+# ZFS makes this rare), the next real down->up cycle or a converge re-resumes.
+mkdir -p "${STATE_DIR}"
+STATE_FILE="${STATE_DIR}/state"
+STREAK_FILE="${STATE_DIR}/streak"
+state="$(cat "${STATE_FILE}" 2>/dev/null || echo up)"
+[[ -n "${state}" ]] || state=up
+streak="$(cat "${STREAK_FILE}" 2>/dev/null || echo 0)"
+[[ "${streak}" =~ ^-?[0-9]+$ ]] || streak=0
+
+if probe_ok; then
+  if (( streak < 0 )); then streak=1; else streak=$(( streak + 1 )); fi
+  if [[ "${state}" == "down" ]] && (( streak >= UP_AFTER )); then
+    cron_do resume
+    alert up
+    state="up"; streak=0
+  fi
+else
+  if (( streak > 0 )); then streak=-1; else streak=$(( streak - 1 )); fi
+  if [[ "${state}" == "up" ]] && (( streak <= -DOWN_AFTER )); then
+    cron_do pause
+    alert down
+    state="down"; streak=0
+  fi
+fi
+
+printf '%s\n' "${state}" > "${STATE_FILE}"
+printf '%s\n' "${streak}" > "${STREAK_FILE}"
+exit 0

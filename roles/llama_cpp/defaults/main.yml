@@ -1,0 +1,131 @@
+---
+# llama_cpp role defaults — the light serving tier: llama.cpp (llama-server) behind
+# llama-swap, on an AMD ROCm GPU inside a privileged LXC (guest `llm-fast`, RX 6800
+# = gfx1030). llama-swap presents ONE OpenAI-compatible endpoint and keeps the
+# configured models co-resident (a group with swap:false), so a small general
+# model + an embeddings model fit in 16 GB at Q4 and answer without reload churn.
+#
+# ABSOLUTE RULE: never serve a model with param_billions >= 14 on this GPU
+# (llm-fast, RX 6800, 16 GB VRAM). A single Hermes-4-14B (Q4, ~8.4 GB) load
+# hard-locked the pve1 HOST twice even alone, on top of two earlier co-resident
+# load hard-locks (see llama_cpp_service_enabled below). The `param_billions`
+# field on every llama_cpp_models entry + the converge-time assert in
+# tasks/main.yml enforce this; never add a model here without a param_billions
+# value.
+#
+# GPU device nodes (/dev/kfd, /dev/dri) are passed into the container UPSTREAM by
+# ansible-proxmox (role lxc_gpu_features); this role assumes they already exist and
+# makes the `llama-cpp` service user able to open them (same runtime-group-resolution
+# idiom as roles/ollama). Restart-on-failure is applied DRY by the shared
+# systemd_restart_policy role via group_vars, not here.
+#
+# NOT YET LIVE-VALIDATED (verify on first converge, W6): (a) the ROCm llama.cpp
+# release tarball runs against the container's ROCm userspace — the prebuilt
+# `ubuntu-rocm` binary is dynamically linked to the ROCm runtime, so the LXC must
+# provide it (see llama_cpp_rocm_packages); (b) HSA_OVERRIDE_GFX_VERSION=10.3.0 is
+# honoured by the release build for gfx1030; (c) the exact GGUF asset filenames
+# below still resolve on HuggingFace.
+
+llama_cpp_user: llama-cpp
+llama_cpp_group: llama-cpp
+
+# Release binaries land here (flattened: the binary + its bundled .so files share
+# one dir, which also becomes LD_LIBRARY_PATH). Models live on the persistent
+# data volume beside them.
+llama_cpp_install_dir: /opt/llama-cpp
+llama_cpp_server_bin: "{{ llama_cpp_install_dir }}/llama-server"
+llama_cpp_swap_bin: /usr/local/bin/llama-swap
+llama_cpp_data_dir: /var/lib/llama-cpp
+llama_cpp_models_dir: "{{ llama_cpp_data_dir }}/models"
+llama_cpp_config_dir: /etc/llama-swap
+llama_cpp_config_file: "{{ llama_cpp_config_dir }}/config.yaml"
+
+# --- GPU toggle -------------------------------------------------------------
+# true  -> ROCm build, all layers offloaded (-ngl 99), gfx-version override.
+# false -> CPU-only standby (future `llm-light` guest): skips every ROCm/GPU task,
+#          runs -ngl 0 with a smaller context so it still answers on CPU.
+llama_cpp_gpu: true
+
+# AMD RX 6800 = Navi 21 / gfx1030; ROCm needs the gfx-version override for this card.
+llama_cpp_hsa_override_gfx_version: "10.3.0"
+
+# GPU-layer offload + context: full offload + full context on GPU; none + a smaller
+# context on CPU (a large model at Q4 is slow on CPU, so keep the working set small).
+llama_cpp_ngl: "{{ 99 if llama_cpp_gpu | bool else 0 }}"
+llama_cpp_ctx_size: "{{ 8192 if llama_cpp_gpu | bool else 2048 }}"
+
+# GPU device nodes passed in by ansible-proxmox lxc_gpu_features. The role stats
+# these at runtime and adds the service user to whatever groups own them, so device
+# access works regardless of how host GIDs map to container groups.
+llama_cpp_gpu_device_nodes:
+  - /dev/kfd
+  - /dev/dri/card0
+  - /dev/dri/renderD128
+
+# Best-effort ROCm runtime packages for the container (the prebuilt ROCm llama.cpp
+# binary links against them). Left empty by default: exact provisioning is resolved
+# at the first live converge (the LXC template may already ship ROCm, or an AMD apt
+# repo may be needed). Override per host/group as validated.
+llama_cpp_rocm_packages: []
+
+# --- Release resolution (never pin a version — resolve latest at converge) ----
+# Query the GitHub "latest release" and pick the asset by NAME pattern, so both the
+# build tag AND the embedded ROCm version can move without a role change.
+llama_cpp_llamacpp_releases_api: "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=5"
+llama_cpp_swap_releases_api: "https://api.github.com/repos/mostlygeek/llama-swap/releases/latest"
+# GPU build -> the ubuntu ROCm tarball; CPU build -> the plain ubuntu x64 tarball.
+llama_cpp_llamacpp_asset_regex: >-
+  {{ '^llama-.*-bin-ubuntu-rocm-.*-x64[.]tar[.]gz$'
+     if llama_cpp_gpu | bool
+     else '^llama-.*-bin-ubuntu-x64[.]tar[.]gz$' }}
+llama_cpp_swap_asset_regex: '^llama-swap_.*_linux_amd64[.]tar[.]gz$'
+
+# --- llama-swap listener -----------------------------------------------------
+# The single OpenAI-compatible port llama-swap listens on. From the tofu ports
+# registry (no hardcoded ports — see the ip-addressing rule); hard-required like
+# every other role's port so a missing constant fails loud rather than guessing.
+llama_cpp_api_port: "{{ tofu_data.constants.service_ports.llm_fast_api }}"
+
+# Per-model upstream ports llama-swap hands to each llama-server it spawns start here
+# (well clear of the public API port). llama-swap assigns ${PORT} from this base.
+llama_cpp_start_port: 9200
+
+# How long llama-swap waits for a model to become healthy before declaring it
+# unhealthy (a cold model load from disk into VRAM needs headroom).
+llama_cpp_health_check_timeout: 300
+
+# --- Models (co-resident) ----------------------------------------------------
+# Both stay loaded together (see the group in the template): a small general
+# model + a tiny embeddings model fit in 16 GB at Q4. Each entry: the served
+# model_name, extra OpenAI aliases, the HuggingFace repo + GGUF filename (the
+# URL is composed in the task), the model's approximate parameter count in
+# billions (param_billions — REQUIRED, drives the >=14B converge-time assert
+# below; extend the assert's denylist too if a model ever ships without a
+# reliable size in its name), and whether it is an embeddings server. Repo/quant
+# are role vars so a change needs no task edit.
+#
+# hermes-4-14b (NousResearch Hermes-4-14B) was removed from this list — it is a
+# 14B model and violates the ABSOLUTE >=14B rule above. Do not re-add it here.
+llama_cpp_hf_base: "https://huggingface.co"
+llama_cpp_models:
+  - name: qwen3-4b
+    aliases: []
+    hf_repo: "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF"
+    gguf: "Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    param_billions: 4
+    embeddings: false
+  - name: embeddings
+    aliases: [nomic-embed-text-v1.5]
+    hf_repo: "nomic-ai/nomic-embed-text-v1.5-GGUF"
+    gguf: "nomic-embed-text-v1.5.Q4_K_M.gguf"
+    param_billions: 0.137
+    embeddings: true
+
+# Whether llama-swap actually serves. llm-fast is FROZEN (false in host_vars):
+# four host hard-locks — two from co-resident triple loads (which included the
+# now-removed hermes-4-14b), two from a SINGLE Hermes-4-14B (8.4 GB) load with
+# every software fix applied — put the fault at the host/hardware level under
+# large GPU allocations (qwen3-4b at 2.5 GB is fine). Do NOT re-enable on
+# llm-fast until the hardware question is settled (BIOS/PSU/memtest); the light
+# tier serves from llm-light (CPU) meanwhile.
+llama_cpp_service_enabled: true

@@ -1,0 +1,194 @@
+{{ ansible_managed | comment }}
+# Hermes Agent runtime config (managed by Ansible; the daemon owns app updates).
+# Brain = the LiteLLM router (OpenAI-compatible front door at https://llm.<sub>/v1;
+# it routes the model alias to whichever backend serves it). Memory = Hindsight
+# (best self-hostable, June 2026) alongside the always-on MEMORY.md/USER.md.
+
+model:
+  provider: custom
+  default: {{ hermes_agent_model }}
+  base_url: '{{ hermes_agent_model_base_url }}'
+  api_mode: {{ hermes_agent_model_api_mode }}
+  # Custom/vLLM-style providers have no context-window catalog Hermes can
+  # probe. Without this, Hermes' own auto-detect logs "Could not detect
+  # context length ... defaulting to 256,000 (probe-down)" before falling
+  # back to a hardcoded catalog guess. We declare it explicitly — and
+  # deliberately BELOW the model's native window — to bound per-turn prefill
+  # time and break the stale-stream kill spiral (see the value's rationale in
+  # defaults/main.yml). model.context_length is read at agent_init.py as the
+  # highest-precedence override in get_model_context_length (verified against
+  # the installed Hermes 0.18.0 source, not just --help/docs).
+  context_length: {{ hermes_agent_model_context_length }}
+  # ROOT CAUSE of the "Context length exceeded (18/19 tokens). Cannot
+  # compress further." death loop: the router/backend hard-caps a single
+  # response to 8192 output tokens ("max_tokens exceeds server limit
+  # (8192)" — confirmed in ~/.hermes/logs/agent.log), but the `custom`
+  # provider profile's built-in default_max_tokens is 65536. Hermes'
+  # error_classifier misclassifies that 400 as a context overflow (its
+  # pattern list matches the literal substring "max_tokens" in ANY error),
+  # so it tries to compress a 1-message conversation with nothing left to
+  # compress instead of just lowering the output request. Capping
+  # model.max_tokens at the server's real limit means the oversized
+  # request is never sent, so the misclassification never triggers.
+  max_tokens: {{ hermes_agent_model_max_tokens }}
+  # Resolved from .env at runtime (the LiteLLM router master key).
+  api_key: '${HERMES_AGENT_MODEL_API_KEY}'
+
+memory:
+  provider: {{ hermes_agent_memory_provider }}
+  memory_enabled: true
+  user_profile_enabled: true
+
+# Cap the agentic loop — a runaway must not pin the GPU all night (Agy's budget).
+agent:
+  max_turns: {{ hermes_agent_max_turns }}
+  tool_use_enforcement: auto
+  # H-17 global deny floor: toolsets NO agent this gateway spawns may load,
+  # regardless of any per-platform or per-job allowlist (upstream layers this
+  # on top — see defaults/main.yml for the policy rationale).
+  disabled_toolsets: {{ hermes_agent_disabled_toolsets | to_json }}
+
+# Local execution backend (the LXC is the blast-radius boundary).
+terminal:
+  backend: local
+  timeout: 180
+
+# Headless daemon: no TUI streaming.
+display:
+  streaming: false
+  tool_progress: all
+
+# Keep Hermes' own secret redaction + scanning on.
+security:
+  redact_secrets: true
+  tirith_enabled: true
+
+# Auto-shrink long autonomous sessions. summary_model MUST be a model our router
+# serves — the upstream default (google/gemini-3-flash-preview) is unreachable
+# here (no external egress/key), which would make compression fail mid-session.
+# It must also serve a >=64K window (Hermes hard minimum), which the rotating
+# `ai-default` alias cannot promise — see hermes_agent_compression_model.
+compression:
+  enabled: {{ hermes_agent_context_compression_enabled | to_json }}
+  threshold: {{ hermes_agent_context_compression_threshold }}
+  summary_model: {{ hermes_agent_compression_model }}
+
+plugins:
+  enabled:
+    - observability/otel
+
+{% if hermes_agent_api_server_key | length > 0 %}
+# Inbound job-submission API queue hardening. The platform itself is enabled by
+# key presence via the .env bridge (API_SERVER_* in hermes-env.j2); this caps
+# in-flight agent runs across all its agent-serving endpoints. Over-cap
+# submissions are refused up front (429 + Retry-After) instead of stacking
+# prefills on the single shared serving deployment — see defaults/main.yml
+# for the measured-envelope rationale behind the value.
+gateway:
+  api_server:
+    max_concurrent_runs: {{ hermes_agent_api_max_concurrent_runs }}
+{% endif %}
+
+# H-17 per-job-class tool policy, enforced by the runner's toolset resolution
+# (never the prompt). Each list is the NATIVE-toolset envelope for that job
+# class; enabled MCP servers are layered on by upstream's platform-tools
+# semantics. The interactive Slack platform is deliberately absent (operator-
+# driven; upstream default minus the deny floor above). Policy rationale and
+# the per-class exclusions live in defaults/main.yml.
+platform_toolsets:
+  cron: {{ hermes_agent_cron_toolsets | to_json }}
+{% if hermes_agent_api_server_key | length > 0 %}
+  api_server: {{ hermes_agent_api_server_toolsets | to_json }}
+{% endif %}
+
+{% set _slack_on = hermes_agent_slack_bot_token | length > 0 %}
+{% set _webhook_on = (hermes_agent_webhook_enabled | bool) and (hermes_agent_webhook_secret | length > 0) %}
+{% if _slack_on or _webhook_on %}
+platforms:
+{% if _slack_on %}
+  # Slack delivery behavior. Every scheduled (cron) run is an isolated, fresh
+  # session, so its Slack post should read that way too — a NEW top-level channel
+  # message, not another reply threaded under one ever-growing root. Upstream
+  # defaults reply_in_thread=true, which makes cron deliveries continue in a single
+  # thread; reply_in_thread=false posts them flat/top-level, and
+  # cron_continuable_surface=in_channel keeps those flat posts continuable (a reply
+  # in the channel still continues that run's session) without a dedicated thread.
+  # These are bridged from platforms.<p> by gateway/config.py; Slack enablement
+  # still comes from the SLACK_* tokens in .env, so this block only tunes behavior.
+  slack:
+    reply_in_thread: {{ hermes_agent_slack_reply_in_thread | to_json }}
+    cron_continuable_surface: {{ hermes_agent_slack_cron_continuable_surface }}
+{% endif %}
+{% if _webhook_on %}
+  # Inbound webhook receiver (event-driven agent trigger). `enabled` + the global
+  # HMAC secret + port arrive via .env (WEBHOOK_ENABLED/SECRET/PORT), injected by
+  # gateway/config.py's env bridge — which merges those keys and preserves the
+  # `routes` declared here. Keeping the secret in .env (0600, no_log) means it
+  # never lands in this 0640 file. The `inbound` route is a zero-LLM demo of the
+  # inter-agent trigger path: a signed POST to https://hermes.<sub>/webhooks/inbound
+  # relays its rendered payload straight to Slack (deliver_only skips the agent).
+  # It inherits the global secret (no per-route secret). Real agent-triggering
+  # routes are added per concrete producer later — scaffolding a paid agent run
+  # with no producer is YAGNI.
+  webhook:
+    enabled: true
+    extra:
+      port: {{ hermes_agent_webhook_port }}
+{% if _slack_on %}
+      routes:
+        inbound:
+          deliver: slack
+          deliver_only: true
+          prompt: "Inbound webhook ping: {__raw__}"
+{% endif %}
+{% endif %}
+{% endif %}
+{% set _mcp_splunk = (hermes_agent_splunk_mcp_enabled | bool) and (hermes_agent_splunk_mcp_url | length > 0) %}
+{# Context7's hosted MCP serves unauthenticated requests (verified: keyless
+   `initialize` returns 200); a key only raises the shared rate limit. So this
+   entry renders whenever enabled — the API-key header is added only when a key
+   is actually set, below. #}
+{% set _mcp_context7 = (hermes_agent_context7_mcp_enabled | bool) %}
+{% set _mcp_escalation = (hermes_agent_codex_mcp_enabled | bool) %}
+{% if _mcp_splunk or _mcp_context7 or _mcp_escalation %}
+# MCP servers. ${VARS} resolve from .env at connect time, so tokens/endpoints
+# never land in this file. The Splunk entry is omitted until its creds are
+# present; Context7 is keyless so it renders whenever enabled.
+mcp_servers:
+{% if _mcp_splunk %}
+  # Splunk MCP Server — read/search the SIEM (run_splunk_query, get_indexes, ...).
+  splunk:
+    url: "${SPLUNK_MCP_URL}"
+    headers:
+      Authorization: "Bearer ${SPLUNK_MCP_TOKEN}"
+{% endif %}
+{% if _mcp_context7 %}
+  # Context7 — current, version-specific library/framework docs on demand,
+  # via the shared agentgateway MCP plane (see defaults).
+  context7:
+    url: "{{ hermes_agent_context7_mcp_url }}"
+{% if hermes_agent_context7_api_key | length > 0 %}
+    headers:
+      CONTEXT7_API_KEY: "${CONTEXT7_API_KEY}"
+{% endif %}
+{% endif %}
+{% if _mcp_escalation %}
+  # Escalation: Codex (ChatGPT-OAuth-backed reasoning), for problems worth a
+  # stronger model or a stuck/looping session — a deliberate per-call tool
+  # choice, not automatic on-error fallback. Runs under a SEPARATE, isolated
+  # OS user (codex_runner role) — this sudo invocation is the only capability
+  # Hermes has; it never gains filesystem access to that user's OAuth
+  # credential. Errors on use (not at daemon startup) until an operator
+  # completes the one-time Codex login — see roles/codex_runner/README.md.
+  codex:
+    command: sudo
+    args:
+      - "-u"
+      - "{{ codex_runner_user }}"
+      - "--"
+{% for _arg in codex_runner_mcp_command.split(' ') %}
+      - "{{ _arg }}"
+{% endfor %}
+{% endif %}
+{% endif %}
+timezone: '{{ hermes_agent_timezone }}'

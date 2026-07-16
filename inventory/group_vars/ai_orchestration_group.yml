@@ -1,0 +1,28 @@
+---
+# Shared config for the AI-orchestration emitters (Dify, LangFlow, agent-exec).
+# These guests carry the `ai-orchestration` tag → ai_orchestration_group (load_tofu.yml).
+# Langfuse is NOT here — it receives telemetry, it does not emit.
+#
+# ai_subdomain / ai_orchestration_otel_endpoint moved to group_vars/all.yml: the
+# Cribl Edge OTLP receiver is shared by every OTEL-emitting component, not just
+# this tier (hermes_agent/open_webui hit an undefined-var fatal referencing it
+# here before the move, since they aren't ai-orchestration-tagged hosts).
+
+# OpenAI-compatible model endpoint — the LiteLLM router (the fabric front door) at
+# https://llm.<subdomain>/v1. The tier is now expressed by the MODEL ALIAS the tool
+# requests (large: gpt-oss-120b/qwen3-coder; light: hermes-4-14b/qwen3-4b/embeddings),
+# so both endpoints below point at the SAME router — the host topology behind each
+# alias is swappable with no app change and no IP is stored. Both var NAMES are kept
+# so downstream app/systemd configs that read them don't churn.
+ai_orchestration_ollama_base_url: "https://llm.{{ ai_subdomain }}/v1"
+ai_orchestration_model_large_base_url: "https://llm.{{ ai_subdomain }}/v1"
+# Router API key (master key), OpenBao-first with env (SOPS/Doppler) fallback.
+# The router role provisions this as LLM_ROUTER_MASTER_KEY, and the AI
+# orchestration consumers expect the same canonical key value.
+ai_orchestration_model_api_key: >-
+  {{ bao_local_llm_secrets.LLM_ROUTER_MASTER_KEY
+     | default(lookup('env', 'LLM_ROUTER_MASTER_KEY'), true) }}
+
+# Restart the Docker stack on failure (Phase 9 systemd restart policy).
+systemd_restart_policy_services:
+  - docker

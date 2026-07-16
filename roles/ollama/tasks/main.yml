@@ -1,0 +1,152 @@
+---
+# Ollama LLM inference (AMD ROCm) in an LXC. Idempotent; safe to re-run.
+# Prereqs (upstream): ansible-proxmox lxc_gpu_features has bound /dev/kfd +
+# /dev/dri into this CT. We only need the ollama user to be able to use them.
+
+# A minimal LXC template ships without curl/zstd; the install.sh pipe and the
+# ROCm tarball overlay (curl | tar --use-compress-program=unzstd) both need them.
+- name: Install Ollama install/overlay prerequisites
+  ansible.builtin.apt:
+    name:
+      - curl
+      - ca-certificates
+      - zstd
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install Ollama (creates the ollama user + systemd unit)
+  ansible.builtin.shell:
+    cmd: "set -o pipefail && curl -fsSL {{ ollama_install_url }} | sh"
+    creates: /usr/local/bin/ollama
+  args:
+    executable: /bin/bash
+
+# The installer ships CPU/NVIDIA libs; overlay the ROCm runtime for the RX 6800.
+- name: Install the ROCm runtime overlay (AMD GPU)
+  ansible.builtin.shell:
+    cmd: "set -o pipefail && curl -fsSL {{ ollama_rocm_tarball_url }} | tar -x --use-compress-program=unzstd -C /usr"
+    creates: /usr/lib/ollama/rocm
+  args:
+    executable: /bin/bash
+  notify: Restart ollama
+
+# ansible-proxmox (lxc_gpu_features) binds the device nodes in with the HOST's
+# group GIDs (e.g. render=104, video=44). Those rarely match the container's own
+# render/video groups (here render=992), and the host GID may already be owned by
+# an unrelated container group (here 104=postdrop). So instead of forcing group
+# GIDs — which collides — add the ollama user to whatever groups actually own the
+# device nodes, resolved at runtime from the files themselves.
+- name: Stat the GPU device nodes to learn their owning groups
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ ollama_gpu_device_nodes }}"
+  register: ollama_gpu_dev_stat
+
+- name: Assert the GPU device nodes are present (passed in by lxc_gpu_features)
+  ansible.builtin.assert:
+    that:
+      - ollama_gpu_dev_stat.results | rejectattr('stat.exists') | list | length == 0
+    fail_msg: >-
+      One or more GPU device nodes are missing in this container
+      ({{ ollama_gpu_device_nodes | join(', ') }}). Run ansible-proxmox
+      lxc_gpu_features against this CT first.
+
+- name: Add the ollama user to the GPU device-owning groups
+  ansible.builtin.user:
+    name: "{{ ollama_user }}"
+    groups: "{{ ollama_gpu_dev_stat.results | map(attribute='stat.gr_name') | list | unique }}"
+    append: true
+  notify: Restart ollama
+
+- name: Create the models + GGUF import directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ ollama_user }}"
+    group: "{{ ollama_user }}"
+    mode: "0750"
+  loop:
+    - "{{ ollama_models_dir }}"
+    - "{{ ollama_import_dir }}"
+
+# The Ollama installer ships ollama.service but not a drop-in dir; create it
+# so the environment override below has somewhere to land.
+- name: Ensure the Ollama systemd drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/ollama.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy Ollama systemd environment drop-in
+  ansible.builtin.template:
+    src: ollama-env.conf.j2
+    dest: /etc/systemd/system/ollama.service.d/10-environment.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart ollama
+
+- name: Enable and start Ollama
+  ansible.builtin.systemd:
+    name: ollama
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Flush handlers so the environment + GPU groups apply before model pull
+  ansible.builtin.meta: flush_handlers
+
+# --- model provisioning (Hermes 4 14B) ---
+
+- name: List installed Ollama models
+  ansible.builtin.command: ollama list
+  register: ollama_model_list
+  changed_when: false
+  retries: 10
+  delay: 3
+  until: ollama_model_list.rc == 0
+
+- name: Register Hermes 4 14B from the local GGUF  # ~8.4 GB; only when absent
+  when: ollama_model_name not in ollama_model_list.stdout
+  block:
+    - name: Stage the Hermes 4 14B GGUF (download only if absent)
+      ansible.builtin.get_url:
+        url: "{{ ollama_gguf_url }}"
+        dest: "{{ ollama_gguf_path }}"
+        owner: "{{ ollama_user }}"
+        group: "{{ ollama_user }}"
+        mode: "0640"
+      register: ollama_gguf_download
+      until: ollama_gguf_download is succeeded
+      retries: 3
+      delay: 10
+
+    - name: Render the Modelfile (alias + params)
+      ansible.builtin.template:
+        src: Modelfile.j2
+        dest: "{{ ollama_models_dir }}/Modelfile.{{ ollama_model_name }}"
+        owner: "{{ ollama_user }}"
+        group: "{{ ollama_user }}"
+        mode: "0640"
+
+    - name: "Create the local-GGUF Ollama model {{ ollama_model_name }}"
+      ansible.builtin.command:
+        cmd: "ollama create {{ ollama_model_name }} -f {{ ollama_models_dir }}/Modelfile.{{ ollama_model_name }}"
+      changed_when: true
+
+# --- verify ---
+
+- name: Verify Ollama service is active
+  ansible.builtin.systemd:
+    name: ollama
+  register: ollama_service_state
+  failed_when: ollama_service_state.status.ActiveState != 'active'
+
+- name: Verify the model is registered
+  ansible.builtin.command: ollama list
+  register: ollama_verify_list
+  changed_when: false
+  failed_when: ollama_model_name not in ollama_verify_list.stdout

@@ -1,0 +1,113 @@
+---
+# agentgateway — AI-first data plane (agentgateway.dev, AAIF/Linux Foundation).
+# Unifies MCP, LLM, and A2A traffic behind one governed proxy. Deployed as a
+# single-container Docker-Compose-in-LXC stack. MCP-first: only MCP/tool
+# traffic flows through the gateway; agents keep dialing the LiteLLM router
+# directly for inference (LLM routing through the gateway is a later opt-in).
+#
+# The gateway config is fully regenerated from the template on every converge
+# (config as code — no state on the guest worth backing up).
+
+# =============================================================================
+# Container image — pinned. Bump via Renovate or manual review.
+# cr.agentgateway.dev is the upstream-documented registry (mirrors ghcr.io).
+# =============================================================================
+agentgateway_docker_image: "cr.agentgateway.dev/agentgateway:v1.3.1"
+
+agentgateway_docker_container_name: agentgateway
+
+# Restart policy for the gateway service.
+agentgateway_docker_restart_policy: unless-stopped
+
+# =============================================================================
+# Filesystem layout — config only; the gateway itself is stateless.
+# =============================================================================
+agentgateway_docker_data_dir: /opt/agentgateway
+
+# =============================================================================
+# Ports — pulled from the OpenTofu pipeline_constants (DRY: no port literals).
+# proxy   = MCP/LLM/A2A traffic port callers dial (Traefik-fronted as
+#           https://mcp.<domain>)
+# admin   = admin UI / xDS config dump (Traefik-fronted, internal-only)
+# metrics = stats server Prometheus /metrics (scraped directly, internal-only)
+# =============================================================================
+_agentgateway_docker_port_err: >-
+  tofu_data.constants.service_ports.agentgateway_* missing —
+  regenerate tofu_inventory.json via
+  `tofu output -json ansible_inventory`.
+agentgateway_docker_proxy_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['agentgateway_proxy']
+     | mandatory(_agentgateway_docker_port_err) }}
+agentgateway_docker_admin_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['agentgateway_admin']
+     | mandatory(_agentgateway_docker_port_err) }}
+agentgateway_docker_metrics_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['agentgateway_metrics']
+     | mandatory(_agentgateway_docker_port_err) }}
+
+# =============================================================================
+# MCP targets — the tool servers the gateway serves on the proxy port. Each
+# target gets its own path-scoped route (/<name>/mcp), so every runtime
+# (Claude Code, Codex, Hermes, ...) configures one MCP server entry per path.
+#
+# Auth: passthrough, and per-target routes keep it safe — the caller's
+# Authorization header only ever reaches the one backend behind its path.
+# The Splunk MCP target keeps its own token contract (tokens minted by
+# Splunk's GET /services/mcp_token, aud=mcp). A gateway-held backendAuth key
+# (from OpenBao) is a planned follow-up so callers need no per-backend
+# credential.
+#
+# tls_insecure skips backend certificate verification — required for the
+# Splunk management port's self-signed cert; never set it for public targets.
+# =============================================================================
+# The Splunk VM's A record lives in the PROXMOX_SUBDOMAIN zone (the DNS zone
+# Technitium is authoritative for), not the apex domain — same derivation as
+# every other role (cribl_edge, hermes_agent, ...).
+agentgateway_docker_splunk_mcp_host: >-
+  https://{{ hostvars['localhost']['tofu_data']['splunk_vm']['splunk']['hostname'] }}.{{
+  lookup('env', 'PROXMOX_SUBDOMAIN') | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}:{{
+  hostvars['localhost']['tofu_data']['constants']['service_ports']['splunk_mgmt']
+  }}/services/mcp
+
+agentgateway_docker_mcp_targets:
+  - name: splunk
+    host: "{{ agentgateway_docker_splunk_mcp_host }}"
+    tls_insecure: true
+  # Context7 (library docs MCP) — proves the outbound-HTTPS federation path.
+  # Keyless tier; add a backendAuth key via OpenBao if rate limits bite.
+  - name: context7
+    host: "https://mcp.context7.com/mcp"
+
+# =============================================================================
+# A2A targets — native Agent2Agent (JSON-RPC) endpoints the gateway fronts on
+# the same proxy port. Each gets a prefix-matched route marked `a2a: {}`, so the
+# gateway parses the JSON-RPC and rewrites the agent card's `url` to point back
+# at itself. LangGraph is the only A2A-native agent today.
+#
+# host reaches the LangGraph CONTAINER directly on its API port.
+# tofu_data.containers.langgraph.ip is ALREADY the resolvable FQDN — the same
+# address Traefik uses as its own langgraph backend — so it hits the container
+# directly. Do NOT use langgraph.<sub> (the Traefik ingress alias on :443, a
+# needless double-hop). Bare host:port → HTTP, which is what `langgraph dev`
+# serves (no TLS), so no backendTLS policy.
+# =============================================================================
+agentgateway_docker_a2a_targets:
+  - name: langgraph
+    path_prefix: /a2a/
+    host: >-
+      {{ hostvars['localhost']['tofu_data']['containers']['langgraph']['ip'] }}:{{
+      hostvars['localhost']['tofu_data']['constants']['service_ports']['langgraph_api']
+      | mandatory('tofu_data.constants.service_ports.langgraph_api missing — regenerate tofu_inventory.json') }}
+
+# =============================================================================
+# Tracing — OTLP/HTTP to the shared Cribl Edge receiver (telemetry always via
+# Cribl; Cribl forks to Langfuse + Splunk). Endpoint contract comes from
+# group_vars/all.yml. Sampling: keep everything while traffic is low.
+# =============================================================================
+agentgateway_docker_otlp_endpoint: >-
+  {{ ai_orchestration_otel_endpoint
+     | mandatory('ai_orchestration_otel_endpoint must be set in group_vars (Cribl Edge OTLP receiver URL)') }}
+agentgateway_docker_trace_sampling: "true"

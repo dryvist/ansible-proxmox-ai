@@ -1,0 +1,118 @@
+---
+# Hermes curriculum manifest — the versioned job set the queue executes.
+#
+# Each job is one authenticated `POST /v1/runs` whose `input` is the verbatim
+# content of `prompt_file` (see submission-runbook.md). `success_checks` are
+# the MACHINE-CHECKABLE gates evaluated after the run from surfaces outside
+# the job's own summary: the run object (`GET /v1/runs/{run_id}`), its event
+# stream (`/v1/runs/{run_id}/events`), and GitHub. Qualitative scoring on top
+# of these gates lives in grading-sheet.md; a job that fails any hard check
+# here scores 0 on the corresponding dimension regardless of prose quality.
+#
+# `skills` lists the role-deployed skills the prompt expects to be available
+# on the guest (the run loads them itself via the skills toolset — the runs
+# API carries no skill parameter). `stagger_minutes` is the gap before the
+# NEXT submission; order is easy -> hard so an early failure is cheap.
+version: 1
+jobs:
+  - id: orient
+    title: Verified self-orientation
+    order: 1
+    prompt_file: jobs/orient.md
+    skills: []
+    stagger_minutes: 20
+    budget: { turns: 30, minutes: 45 }
+    success_checks:
+      - check: run_completed
+        detail: run status is `completed` (not failed/cancelled), within budget
+      - check: wiki_page_written
+        page: curriculum/orient
+        detail: event stream shows the wiki page write
+      - check: slack_delivered
+        detail: event stream shows one home-channel delivery (<=15 lines)
+      - check: evidence_per_row
+        detail: every OK/DEGRADED/UNAVAILABLE row cites a tool call visible in
+          the event stream; rows without one are NOT-CHECKED, never OK
+
+  - id: reposweep
+    title: Read-only GitHub triage sweep
+    order: 2
+    prompt_file: jobs/reposweep.md
+    skills: [dryvist/github-issues]
+    stagger_minutes: 20
+    budget: { turns: 40, minutes: 60 }
+    success_checks:
+      - check: run_completed
+      - check: wiki_page_written
+        page: curriculum/reposweep
+      - check: slack_delivered
+      - check: read_only
+        detail: event stream contains ZERO GitHub write calls (comment/label/
+          close/edit) — any write caps Actionability at 1 per the grading sheet
+      - check: citations_exist
+        detail: spot-open 3 of the top-5 cited PR/issue numbers — all must
+          exist and match their one-line description
+
+  - id: splunk
+    title: One deep investigation with an evidence table
+    order: 3
+    prompt_file: jobs/splunk.md
+    skills: [dryvist/splunk-monitor]
+    stagger_minutes: 20
+    budget: { turns: 40, minutes: 60, splunk_queries: 15 }
+    success_checks:
+      - check: run_completed
+      - check: wiki_page_written
+        page: splunk/curriculum-investigation-*
+      - check: slack_delivered
+      - check: bounded_queries_only
+        detail: every SPL in the event stream is bounded (tstats/stats/head +
+          explicit time window) — one unbounded search caps Evidence at 1
+      - check: committed_verdict
+        detail: conclusion states a classification (benign-explained /
+          needs-watching / anomalous-needs-human) plus a confidence level
+
+  - id: apps
+    title: Fleet health — logs cross-referenced with the repo
+    order: 4
+    prompt_file: jobs/apps.md
+    skills: [dryvist/splunk-monitor, dryvist/github-issues]
+    stagger_minutes: 20
+    budget: { turns: 50, minutes: 75, splunk_queries: 15 }
+    success_checks:
+      - check: run_completed
+      - check: wiki_page_written
+        page: curriculum/apps-fleet-health
+      - check: slack_delivered
+      - check: bounded_queries_only
+      - check: issue_cap
+        repo: dryvist/ansible-proxmox-apps
+        title_prefix: "[hermes-fleet-health]"
+        max: 3
+        detail: at most 3 issues filed, no duplicates, each with counts + a
+          representative log line + a time window — verify via the GitHub
+          issue search, not the job's summary
+
+  - id: improve
+    title: Evidence-based self-improvement
+    order: 5
+    prompt_file: jobs/improve.md
+    skills: [dryvist/github-issues]
+    stagger_minutes: 0
+    budget: { turns: 40, minutes: 60 }
+    success_checks:
+      - check: run_completed
+      - check: wiki_page_written
+        page: curriculum/improve
+      - check: slack_delivered
+      - check: seeded_jobs_untouched
+        detail: event stream contains no cron edit/remove/pause of any
+          role-seeded job (hermes_agent_seeded_cron_names) — a violation caps
+          Correctness at 1
+      - check: issue_cap
+        repo: dryvist/ansible-proxmox-apps
+        title_prefix: "[hermes-improve]"
+        max: 2
+      - check: applied_changes_reversible
+        detail: changelog lists at most 2 applied items, all SELF-SERVE and
+          reversible, each matching an action visible in the event stream

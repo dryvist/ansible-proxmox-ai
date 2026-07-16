@@ -1,0 +1,129 @@
+---
+# LangFlow Docker deployment.
+#
+# Installs Docker + Compose on the target LXC, generates (and persists) a
+# LANGFLOW_SECRET_KEY on first run, then deploys the langflowai/langflow image
+# plus a PostgreSQL backend via Docker Compose.
+#
+# Docker itself (docker-ce + compose plugin, fuse-overlayfs, the fuse-overlayfs
+# daemon.json) is installed by the docker_engine meta dependency (meta/main.yml).
+# No venv: LangFlow deploys via docker_compose_v2, which uses the docker compose
+# CLI (not the docker SDK), so compose runs under the system interpreter.
+
+# =============================================================================
+# Data Directories
+# Postgres writes to a bind-mounted volume; the image entrypoint runs as its
+# own UID (postgres: 999) which, in an unprivileged LXC, maps to a subuid —
+# leave ownership defaults, chown happens inside the container.
+# =============================================================================
+
+- name: Create LangFlow data subdirectories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ langflow_docker_data_dir }}"
+    - "{{ langflow_docker_postgres_data_dir }}"
+    - "{{ langflow_docker_app_data_dir }}"
+
+# =============================================================================
+# LANGFLOW_SECRET_KEY (generate-once, persist on disk)
+# =============================================================================
+# The image needs a SECRET_KEY at boot to encrypt stored credentials; if we
+# randomized it per play, every deployment would make previously-stored secrets
+# undecryptable. Persist it in a root-only file the first time the role runs
+# and reuse it thereafter.
+
+- name: Check for existing LangFlow SECRET_KEY
+  ansible.builtin.stat:
+    path: "{{ langflow_docker_data_dir }}/.secret_key"
+  register: langflow_docker_secret_key_stat
+
+- name: Generate LangFlow SECRET_KEY (first run only)
+  ansible.builtin.copy:
+    dest: "{{ langflow_docker_data_dir }}/.secret_key"
+    # 50 alphanumeric chars. Character set specified by unambiguous boolean
+    # flags rather than the password lookup's implicit keyword expansion.
+    content: >-
+      {{ lookup('community.general.random_string',
+                length=50,
+                upper=true, lower=true, numbers=true,
+                special=false) }}
+    owner: root
+    group: root
+    mode: "0600"
+  when: not langflow_docker_secret_key_stat.stat.exists
+  no_log: true
+
+- name: Read LangFlow SECRET_KEY into memory
+  ansible.builtin.slurp:
+    src: "{{ langflow_docker_data_dir }}/.secret_key"
+  register: langflow_docker_secret_key_file
+  no_log: true
+
+- name: Resolve effective SECRET_KEY (inventory override or persisted file)
+  ansible.builtin.set_fact:
+    langflow_docker_secret_key: >-
+      {{ langflow_docker_secret_key
+         if langflow_docker_secret_key | length > 0
+         else (langflow_docker_secret_key_file.content | b64decode | trim) }}
+  no_log: true
+
+# =============================================================================
+# Compose File
+# =============================================================================
+
+- name: Render LangFlow docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ langflow_docker_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0600"  # contains SECRET_KEY, superuser + DB passwords
+  no_log: true
+  notify: Restart langflow
+
+# =============================================================================
+# Deploy via Docker Compose
+# =============================================================================
+
+- name: Deploy LangFlow via docker compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ langflow_docker_data_dir }}"
+    state: present
+  register: langflow_docker_compose_result
+  changed_when: >-
+    (langflow_docker_compose_result.actions | default([]))
+    | selectattr('status', 'in', ['Creating', 'Recreating', 'Pulling', 'Building'])
+    | list | length > 0
+  no_log: true
+
+# =============================================================================
+# Health Check
+# First boot can take a few minutes: postgres initdb, then LangFlow running its
+# database migrations against the fresh DB before the web server answers.
+# =============================================================================
+
+- name: Wait for LangFlow web port to accept TCP connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ langflow_docker_web_port }}"
+    timeout: 300
+
+- name: Verify LangFlow health_check endpoint
+  ansible.builtin.uri:
+    # /health_check validates DB + chat-service connectivity (returns 500 if
+    # either is down). /health is served by uvicorn before LangFlow initializes,
+    # so it is NOT a reliable readiness signal.
+    url: "http://127.0.0.1:{{ langflow_docker_web_port }}/health_check"
+    method: GET
+    status_code: 200
+    return_content: false
+  register: langflow_docker_health
+  retries: 30
+  delay: 10
+  until: langflow_docker_health.status == 200
+  changed_when: false

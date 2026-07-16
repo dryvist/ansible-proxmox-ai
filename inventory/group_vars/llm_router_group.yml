@@ -1,0 +1,20 @@
+---
+# LLM router fleet config (llm_router_group).
+#
+# llm-fast GPU serving is FROZEN (four pve1 hard-locks under large GPU loads;
+# see roles/llama_cpp defaults + host_vars/llm-fast.yml). Routers must not
+# carry its deployments meanwhile — the firewall DROPs traffic to the dead
+# backend and a shuffled request hangs the whole client timeout. The light
+# tier serves from llm-light (CPU on the DR node, pinned awake) only.
+# Flip to true together with the llm-fast unfreeze.
+llm_router_llm_fast_enabled: false
+
+# Ship the LiteLLM router logs to the homelab_llm AI ingest listener
+# (-> Cribl Stream ai_stamp -> Splunk index=llm) instead of the linux/os
+# catch-all. $programname 'litellm' verified locally via
+# `journalctl -o verbose -u litellm | grep _COMM`. Port from tofu constants
+# ai_log_routing; guarded default = homelab_llm's assigned port for
+# inventories that predate the map.
+syslog_forwarder_program_routes:
+  - program: litellm
+    port: "{{ tofu_data.constants.ai_log_routing.homelab_llm.port | default(10323) }}"

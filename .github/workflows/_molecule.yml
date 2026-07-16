@@ -1,0 +1,77 @@
+---
+name: Molecule
+
+on:
+  workflow_call:
+    secrets:
+      DOPPLER_TOKEN:
+        description: Doppler service token
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Molecule (${{ matrix.scenario }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - llamaindex
+          - qdrant
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "latest"
+
+      - name: Install Molecule and dependencies
+        run: |
+          uv pip install --system \
+            molecule \
+            'molecule-plugins[docker]>=23.0.0' \
+            'ansible-core>=2.16' \
+            'docker>=7.0.0' \
+            netaddr \
+            ansible-lint
+
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install -r requirements.yml --force
+
+      # Least-privilege secret handling: this action (pinned v2.0.0) has NO
+      # allowlist input — it always fetches the token's entire config.
+      # With inject-env-vars it would export EVERY key into the job environment
+      # for every subsequent step. We deliberately omit inject-env-vars so no
+      # secret lands in the ambient job env, then map ONLY the key the
+      # molecule scenarios actually consume into the test step's own env below.
+      # The value is still registered with the runner's mask (the action calls
+      # core.setSecret per key), so it is redacted in logs. The value remains
+      # available as a masked step output (steps.doppler.outputs.<KEY>).
+      - name: Fetch secrets from Doppler
+        uses: dopplerhq/secrets-fetch-action@451892f16195f9ac360e1a5bcbf0b5fd0e957534 # v2.0.0
+        id: doppler
+        with:
+          doppler-token: ${{ secrets.DOPPLER_TOKEN }}
+
+      - name: Run molecule tests
+        env:
+          PY_COLORS: "1"
+          ANSIBLE_FORCE_COLOR: "1"
+          MOLECULE_SCENARIO: ${{ matrix.scenario }}
+          # Only the secret the scenarios reference (verified against
+          # molecule/*/molecule.yml provisioner.env):
+          #   qdrant      -> QDRANT_API_KEY
+          #   llamaindex  -> QDRANT_API_KEY
+          QDRANT_API_KEY: ${{ steps.doppler.outputs.QDRANT_API_KEY }}
+        run: molecule test -s "$MOLECULE_SCENARIO"

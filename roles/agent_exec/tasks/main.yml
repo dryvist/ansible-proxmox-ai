@@ -1,0 +1,94 @@
+---
+# agent_exec — Python runtime + OpenLLMetry tracing for user-supplied CrewAI /
+# LangChain agents in a plain LXC (no Docker). Ansible owns the PLATFORM (user,
+# venv, instrumentation, systemd); the agent code in main.py is user-supplied and
+# deployed once as an idling placeholder so the first converge comes up green.
+
+- name: Install the Python runtime and git
+  ansible.builtin.apt:
+    name:
+      - python3
+      - python3-pip
+      - python3-venv
+      - git
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the agent-exec runtime user
+  ansible.builtin.user:
+    name: "{{ agent_exec_user }}"
+    home: "{{ agent_exec_home }}"
+    system: true
+    # CrewAI tools shell out, so the runtime user needs a real shell; the LXC is
+    # the blast-radius boundary.
+    shell: /bin/bash
+    create_home: true
+
+- name: Ensure the agent-exec home is owned by the runtime user
+  ansible.builtin.file:
+    path: "{{ agent_exec_home }}"
+    state: directory
+    owner: "{{ agent_exec_user }}"
+    group: "{{ agent_exec_user }}"
+    mode: "0750"
+
+# One idempotent task: virtualenv_command builds the venv with the stdlib `venv`
+# module (no `virtualenv` pip package needed on a minimal Debian LXC), then pip
+# populates it. Re-runs are no-ops once the packages are present.
+- name: Create the venv and install the agent runtime + OpenLLMetry packages
+  ansible.builtin.pip:
+    name: "{{ agent_exec_pip_packages }}"
+    state: present
+    virtualenv: "{{ agent_exec_venv }}"
+    virtualenv_command: python3 -m venv
+
+- name: Deploy the OpenLLMetry tracing bootstrap
+  ansible.builtin.template:
+    src: otel_bootstrap.py.j2
+    dest: "{{ agent_exec_home }}/otel_bootstrap.py"
+    owner: "{{ agent_exec_user }}"
+    group: "{{ agent_exec_user }}"
+    mode: "0644"
+  notify: Restart agent-exec
+
+- name: Deploy the placeholder agent entrypoint (written once; user replaces it)
+  ansible.builtin.template:
+    src: main.py.j2
+    dest: "{{ agent_exec_home }}/main.py"
+    owner: "{{ agent_exec_user }}"
+    group: "{{ agent_exec_user }}"
+    mode: "0644"
+    force: false # never clobber the user's real agent code on re-converge
+  notify: Restart agent-exec
+
+- name: Deploy the agent-exec systemd unit
+  ansible.builtin.template:
+    src: agent-exec.service.j2
+    dest: "/etc/systemd/system/{{ agent_exec_service }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart agent-exec
+
+- name: Enable and start the agent-exec service
+  ansible.builtin.systemd:
+    name: "{{ agent_exec_service }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Flush handlers so unit / bootstrap changes apply now
+  ansible.builtin.meta: flush_handlers
+
+# Type=simple reports 'active' the instant the process forks, so a single check
+# can pass a service that crashes a moment later. Poll until ActiveState settles
+# (mirrors roles/hermes_agent). The placeholder entrypoint idles, so a healthy
+# converge stays active; real agent code that crashes on boot fails loud here.
+- name: Verify the agent-exec service is active
+  ansible.builtin.systemd:
+    name: "{{ agent_exec_service }}"
+  register: agent_exec_service_state
+  until: agent_exec_service_state.status.ActiveState | default('') == 'active'
+  retries: 5
+  delay: 2

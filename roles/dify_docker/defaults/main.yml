@@ -1,0 +1,166 @@
+---
+# Dify (LLMOps platform) self-hosted via Docker Compose in an LXC.
+# https://docs.dify.ai/getting-started/install-self-hosted/docker-compose
+#
+# Bundled stack (mirrors the upstream docker/ compose, trimmed to the services
+# this homelab runs): api + worker + worker_beat (share one env), web, db
+# (postgres), redis, weaviate (the BUNDLED default vector store), sandbox,
+# ssrf_proxy, and an nginx entrypoint.
+#
+# All literals live here; templates reference vars only (DRY). Var names carry
+# the role prefix to satisfy ansible-lint's production profile.
+
+# Image tags — single source of truth, Renovate-trackable. Bump here.
+dify_docker_api_image: "langgenius/dify-api:1.15.0"
+dify_docker_web_image: "langgenius/dify-web:1.15.0"
+dify_docker_plugin_daemon_image: "langgenius/dify-plugin-daemon:0.6.3-local"
+dify_docker_sandbox_image: "langgenius/dify-sandbox:0.2.15"
+dify_docker_weaviate_image: "semitechnologies/weaviate:1.38.3"
+dify_docker_postgres_image: "postgres:15-alpine"
+dify_docker_redis_image: "redis:7-alpine"
+dify_docker_nginx_image: "nginx:1.31-alpine"
+# ponytail: squid publishes no semver Docker Hub tag; ubuntu/squid:latest is
+# the upstream Dify pin. Renovate can still digest-pin it.
+dify_docker_ssrf_proxy_image: "ubuntu/squid:latest"
+
+# Container name applied to the nginx entrypoint (the user-facing service).
+dify_docker_container_name: dify
+dify_docker_data_dir: /opt/dify
+
+# Restart policy applied to every service in the stack.
+dify_docker_restart_policy: unless-stopped
+
+# Database identity. POSTGRES_USER is created as the superuser of its own DB,
+# which lets Dify's migrations create the extensions they need. The plugin
+# daemon uses a SECOND database created by the initdb script (see tasks).
+dify_docker_db_user: dify
+dify_docker_db_name: dify
+dify_docker_plugin_db_name: dify_plugin
+
+# Weaviate identity user (owns the API key; upstream default).
+dify_docker_weaviate_user: "hello@dify.ai"
+
+# Web UI port — published by nginx (container :80). From the OpenTofu
+# pipeline_constants (DRY: no port literal here). The downstream reverse proxy
+# (Traefik/HAProxy) targets this host port.
+_dify_docker_web_port_err: >-
+  tofu_data.constants.service_ports.dify_web missing —
+  regenerate tofu_inventory.json via
+  `tofu output -json ansible_inventory`.
+dify_docker_web_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['dify_web']
+     | mandatory(_dify_docker_web_port_err) }}
+
+# Internal Postgres/Redis ports also come from constants (these exist in
+# tofu_data, so they must not be hardcoded).
+_dify_docker_postgres_port_err: >-
+  tofu_data.constants.service_ports.postgres_default missing —
+  regenerate tofu_inventory.json via
+  `tofu output -json ansible_inventory`.
+dify_docker_postgres_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['postgres_default']
+     | mandatory(_dify_docker_postgres_port_err) }}
+_dify_docker_redis_port_err: >-
+  tofu_data.constants.service_ports.redis_default missing —
+  regenerate tofu_inventory.json via
+  `tofu output -json ansible_inventory`.
+dify_docker_redis_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['redis_default']
+     | mandatory(_dify_docker_redis_port_err) }}
+
+# Internal image-contract ports — fixed by the upstream images, internal-only
+# (no Traefik/DNS, not in tofu_data constants), so literals are correct here.
+dify_docker_api_port: 5001
+dify_docker_plugin_daemon_port: 5002
+dify_docker_web_internal_port: 3000
+dify_docker_weaviate_port: 8080
+dify_docker_sandbox_port: 8194
+dify_docker_ssrf_proxy_port: 3128
+
+# nginx upload ceiling (datasets/documents can be large).
+dify_docker_nginx_client_max_body_size: "100M"
+
+# Django-style SECRET_KEY. Generated once on the LXC and persisted to
+# {{ dify_docker_data_dir }}/.secret_key (root:root 0600), reused thereafter so
+# redeploys don't invalidate sessions. Override only to pin an explicit value.
+dify_docker_secret_key: ""
+
+# Secrets (sourced from SOPS via `sops exec-env secrets.enc.yaml ...`).
+# Same precedent as roles/mssql_docker: lookup('env')
+# + mandatory. Generate each locally with `openssl rand -base64 24`, then
+# `sops secrets.enc.yaml` and paste.
+dify_docker_db_password: >-
+  {{ lookup('env', 'DIFY_DB_PASSWORD')
+     | mandatory('DIFY_DB_PASSWORD must be set (openssl rand -base64 24; store in SOPS)') }}
+dify_docker_redis_password: >-
+  {{ lookup('env', 'DIFY_REDIS_PASSWORD')
+     | mandatory('DIFY_REDIS_PASSWORD must be set (openssl rand -base64 24; store in SOPS)') }}
+dify_docker_sandbox_api_key: >-
+  {{ lookup('env', 'DIFY_SANDBOX_API_KEY')
+     | mandatory('DIFY_SANDBOX_API_KEY must be set (openssl rand -base64 24; store in SOPS)') }}
+dify_docker_weaviate_api_key: >-
+  {{ lookup('env', 'DIFY_WEAVIATE_API_KEY')
+     | mandatory('DIFY_WEAVIATE_API_KEY must be set (openssl rand -base64 24; store in SOPS)') }}
+# Two distinct shared secrets between the api and the plugin_daemon, per the
+# upstream standard: one authenticates api->daemon (PLUGIN_DAEMON_KEY ==
+# daemon SERVER_KEY), the other authenticates daemon->api callbacks
+# (INNER_API_KEY_FOR_PLUGIN == daemon DIFY_INNER_API_KEY).
+dify_docker_plugin_daemon_key: >-
+  {{ lookup('env', 'DIFY_PLUGIN_DAEMON_KEY')
+     | mandatory('DIFY_PLUGIN_DAEMON_KEY must be set (openssl rand -base64 24; store in SOPS)') }}
+dify_docker_inner_api_key: >-
+  {{ lookup('env', 'DIFY_INNER_API_KEY')
+     | mandatory('DIFY_INNER_API_KEY must be set (openssl rand -base64 24; store in SOPS)') }}
+
+# Public fronted URL (Traefik). The web container's SSR needs absolute API
+# URLs — the current dify-web image no longer treats blank as same-origin
+# (server-side fetches fall back to localhost inside the container).
+dify_docker_public_url: >-
+  https://dify.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required') }}
+
+# Model-provider provisioning. Dify 1.x model providers are plugins; the
+# legacy OPENAI_API_BASE env var alone does not configure usable models.
+dify_docker_provision_model_provider: true
+dify_docker_model_provider_plugin_id: langgenius/openai_api_compatible
+dify_docker_model_provider_plugin_unique_identifier: >-
+  langgenius/openai_api_compatible:0.0.53@a0dfb462961a03c6a6415d4185043185b01017c64da93cf82a9e5ecaf59f8ed0
+dify_docker_model_provider_id: langgenius/openai_api_compatible/openai_api_compatible
+dify_docker_model_endpoint_url: "{{ ai_orchestration_ollama_base_url }}"
+dify_docker_model_api_key: >-
+  {{ ai_orchestration_model_api_key
+     | default(lookup('env', 'LLM_ROUTER_MASTER_KEY'), true)
+     | mandatory('Dify model provider key unset') }}
+dify_docker_default_llm_model: gpt-oss-120b
+dify_docker_llm_models:
+  - name: gpt-oss-120b
+    display_name: gpt-oss-120b
+    context_size: "131072"
+  - name: qwen3-coder
+    display_name: qwen3-coder
+    context_size: "131072"
+  - name: hermes-4-14b
+    display_name: hermes-4-14b
+    context_size: "32768"
+  - name: qwen3-4b
+    display_name: qwen3-4b
+    context_size: "32768"
+
+# Headless first-run setup (POST /console/api/setup creates the admin and
+# finishes installation), so the UI never shows the /install wizard.
+dify_docker_admin_email: >-
+  {{ lookup('env', 'DIFY_ADMIN_EMAIL')
+     | mandatory('DIFY_ADMIN_EMAIL must be set (Doppler)') }}
+dify_docker_admin_password: >-
+  {{ lookup('env', 'DIFY_ADMIN_PASSWORD')
+     | mandatory('DIFY_ADMIN_PASSWORD must be set (Doppler; openssl rand -base64 24)') }}
+
+# Seed a minimal chat app on first run so there is something to open immediately.
+# Best-effort + idempotent (skipped if an app of this name already exists) and
+# non-fatal (the console app-create shape drifts across Dify minors). Requires
+# model-provider provisioning (it reuses that console session + default model).
+dify_docker_seed_app: true
+dify_docker_seed_app_name: "Homelab Assistant"

@@ -1,0 +1,81 @@
+---
+# LangFlow visual flow-builder for LLM agents — self-hosted via Docker Compose
+# in an LXC. Bundled stack: postgres + langflow app.
+# https://docs.langflow.org/deployment-docker
+#
+# All literals live here; the template references vars only (DRY).
+#
+# Observability note: LangFlow-as-a-service emits NO native OpenTelemetry
+# traces. The running service is not observable via OTEL; individual flows are
+# traced only when a flow explicitly exports to the agent-exec box. Do not add
+# OTEL_* env here expecting traces — there is no exporter to feed.
+
+# Image tags — single source of truth. Bump via Renovate or manual review.
+langflow_docker_app_image: "langflowai/langflow:1.10.2"
+langflow_docker_postgres_image: "postgres:16-alpine"
+
+langflow_docker_container_name: langflow
+langflow_docker_data_dir: /opt/langflow
+langflow_docker_postgres_data_dir: "{{ langflow_docker_data_dir }}/postgres"
+langflow_docker_app_data_dir: "{{ langflow_docker_data_dir }}/data"
+
+# Container-internal mount paths (image contracts — set once, referenced in template).
+langflow_docker_postgres_internal_data: /var/lib/postgresql/data
+langflow_docker_app_internal_data: /app/langflow
+
+# Compose service names (also the Docker DNS hostnames used in the DB URL).
+langflow_docker_db_service: postgres
+langflow_docker_app_service: langflow
+
+# Database identity.
+langflow_docker_db_name: langflow
+langflow_docker_db_user: langflow
+
+# Restart policy applied to every service in the stack. Also absorbs the
+# first-boot race where langflow starts before postgres finishes initdb —
+# langflow restarts until the DB accepts connections.
+langflow_docker_restart_policy: unless-stopped
+
+# Ports pulled from the OpenTofu pipeline_constants (DRY: no port literal here).
+_langflow_docker_web_port_err: >-
+  tofu_data.constants.service_ports.langflow_web missing —
+  regenerate tofu_inventory.json via
+  `tofu output -json ansible_inventory`.
+langflow_docker_web_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['langflow_web']
+     | mandatory(_langflow_docker_web_port_err) }}
+_langflow_docker_postgres_port_err: >-
+  tofu_data.constants.service_ports.postgres_default missing —
+  regenerate tofu_inventory.json via
+  `tofu output -json ansible_inventory`.
+langflow_docker_postgres_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['postgres_default']
+     | mandatory(_langflow_docker_postgres_port_err) }}
+
+# Database URL — the postgres service name is the in-compose DNS host; no port
+# literal (references the constant above). LangFlow requires the postgresql://
+# scheme.
+langflow_docker_database_url: >-
+  postgresql://{{ langflow_docker_db_user }}:{{ langflow_docker_db_password }}@{{
+  langflow_docker_db_service }}:{{ langflow_docker_postgres_port }}/{{
+  langflow_docker_db_name }}
+
+# Secrets — from runtime env; never committed. Whatever injects the env
+# (Doppler, OpenBao, etc.) is a deployment-time concern, not this role's.
+langflow_docker_superuser: >-
+  {{ lookup('env', 'LANGFLOW_SUPERUSER')
+     | mandatory('LANGFLOW_SUPERUSER unset') }}
+langflow_docker_superuser_password: >-
+  {{ lookup('env', 'LANGFLOW_SUPERUSER_PASSWORD')
+     | mandatory('LANGFLOW_SUPERUSER_PASSWORD unset') }}
+langflow_docker_db_password: >-
+  {{ lookup('env', 'LANGFLOW_DB_PASSWORD')
+     | mandatory('LANGFLOW_DB_PASSWORD unset') }}
+
+# LANGFLOW_SECRET_KEY (Fernet key for stored credentials) — generated once on
+# the LXC and persisted to {{ langflow_docker_data_dir }}/.secret_key
+# (root:root 0600), then reused so a redeploy does not invalidate encrypted
+# secrets. Override only to share an explicit value across hosts.
+langflow_docker_secret_key: ""

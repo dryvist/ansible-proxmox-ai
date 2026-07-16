@@ -1,0 +1,153 @@
+{{ ansible_managed | comment }}
+# LiteLLM proxy config (managed by the llm_router role). One OpenAI-compatible front
+# door for the whole fabric; consumers pick a tier by model alias. Secrets come from
+# the systemd EnvironmentFile via os.environ/ — no credential literal lives here.
+
+model_list:
+  # --- large tier: one deployment each, bearer-authed to llm-large ---
+  # Each tuned model is registered under BOTH its consumer-facing alias AND
+  # its physical id: exact model_name matches beat the "*" wildcard below, so
+  # a request naming the physical id still routes to the TUNED deployment
+  # (llama-swap: parsers, preload, batching) instead of falling through to
+  # the zero-config dynamic tier and double-loading the same weights.
+{% set _ns = namespace(seen=[]) %}
+{% for m in llm_router_large_models %}
+{% for _name in ([m.alias, m.backend] | unique) %}
+{% if _name not in _ns.seen %}
+{% set _ns.seen = _ns.seen + [_name] %}
+  - model_name: {{ _name }}
+    litellm_params:
+      model: openai/{{ m.backend }}
+      api_base: {{ llm_router_llm_large_base_url }}
+      api_key: os.environ/LLM_LARGE_BEARER_TOKEN
+{% if m.extra_body is defined %}
+      # Per-model sampling defaults pinned at the router. extra_body is forwarded
+      # to the OpenAI-compatible backend VERBATIM (litellm_settings.drop_params
+      # would otherwise strip a non-OpenAI param like repetition_penalty before
+      # it reaches the server). See the model entry in defaults for the evidence.
+      extra_body:
+{% for _pk, _pv in m.extra_body.items() %}
+        {{ _pk }}: {{ _pv }}
+{% endfor %}
+{% endif %}
+{% if m.context_window is defined %}
+    model_info:
+      # These mlx-community backend ids are unknown to LiteLLM's built-in
+      # model cost/context map, so without an explicit value here
+      # max_input_tokens resolves to null — enable_pre_call_checks then has
+      # nothing to check against and callers seeing that null (e.g. Hermes)
+      # fall back to a near-zero context guess and compress a request to
+      # death. Value = the model's real served context length.
+      max_input_tokens: {{ m.context_window }}
+      max_tokens: {{ m.context_window }}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% if llm_router_large_passthrough_enabled | bool %}
+  # --- large tier passthrough: every model the serving gate advertises ---
+  # Exposure is blocklist-shaped, enforced at the source: the serving host
+  # auto-registers every downloaded, memory-fitting MLX model MINUS its
+  # declarative blocklist (nix-ai programs.mlx.discover.blocklist), and this
+  # wildcard forwards any model id not explicitly aliased above to that gate.
+  # No per-model router edit is ever needed; the aliases above remain as
+  # stable consumer-facing names and win over the wildcard on exact match.
+  - model_name: "*"
+    litellm_params:
+      model: openai/*
+      api_base: {{ llm_router_llm_large_base_url }}
+      api_key: os.environ/LLM_LARGE_BEARER_TOKEN
+{% endif %}
+  # --- OpenRouter egress tier: explicit opt-in aliases, one key per MODEL ---
+  # Never chained into ai-default rotation or fallbacks (see defaults). Keys
+  # come from OpenBao ai/saas/openrouter via the EnvironmentFile; an unseeded
+  # model renders no entry at all.
+{% for m in llm_router_openrouter_models %}
+{% set _or_env = 'OPENROUTER_API_KEY_' ~ (m.key_field | upper | replace('-', '_')) %}
+{% set _or_key = bao_local_llm_secrets[m.key_field] | default(lookup('env', _or_env), true) %}
+{% if _or_key | length > 0 %}
+  - model_name: {{ m.alias }}
+    litellm_params:
+      model: openrouter/{{ m.model }}
+      api_key: os.environ/{{ _or_env }}
+    model_info:
+      max_input_tokens: {{ m.context_window }}
+      max_tokens: {{ m.context_window }}
+{% endif %}
+{% endfor %}
+  # --- light tier: two deployments per alias (GPU llm-fast + CPU llm-light) ---
+  # Same model_name => LiteLLM load-balances the pair and cools a failed deployment
+  # down, so a GPU outage drains to the CPU standby automatically.
+{% for m in llm_router_light_models %}
+{% if llm_router_llm_fast_enabled %}
+  - model_name: {{ m.alias }}
+    litellm_params:
+      model: openai/{{ m.backend }}
+      api_base: {{ llm_router_llm_fast_base_url }}
+      api_key: {{ llm_router_light_api_key }}
+{% if m.embedding | default(false) %}
+    model_info:
+      mode: embedding
+{% endif %}
+{% endif %}
+  - model_name: {{ m.alias }}
+    litellm_params:
+      model: openai/{{ m.backend }}
+      api_base: {{ llm_router_llm_light_base_url }}
+      api_key: {{ llm_router_light_api_key }}
+{% if m.embedding | default(false) %}
+    model_info:
+      mode: embedding
+{% endif %}
+{% endfor %}
+
+router_settings:
+  routing_strategy: {{ llm_router_routing_strategy }}
+  allowed_fails: {{ llm_router_allowed_fails }}
+  cooldown_time: {{ llm_router_cooldown_time }}
+  # No cross-tier fallbacks for ai-default, on purpose: a fallback serving a
+  # smaller context than the primary poisons callers instead of degrading them
+  # (incident history: Zammad, AI/LLM Serving). Fail loud; the watchdog pauses.
+  # Pre-call context-window checks so an over-long request is not routed to a model
+  # that cannot serve it (no cross-tier fallback masks the error).
+  enable_pre_call_checks: true
+  # Retry the same deployment on a transient failure (single-deployment large
+  # tier has no sibling to fail over to — see llm_router_num_retries) and bound
+  # how long one attempt waits before LiteLLM calls it a connection failure.
+  num_retries: {{ llm_router_num_retries }}
+  timeout: {{ llm_router_request_timeout_seconds }}
+  # 429 absorption. The serving tiers cap in-flight requests at the proxy
+  # (llama-swap concurrencyLimit) and 429 the excess; without this, a burst of
+  # concurrent agents trips allowed_fails ({{ llm_router_allowed_fails }}/min)
+  # and cools down the SINGLE large deployment — turning a momentary queue into
+  # a hard "no deployments available" cascade (the 2026-07-08 bench collapse
+  # signature). Rate-limit errors instead retry with backoff (queue-by-retry)
+  # and never count toward cooldown; real faults still cool down via
+  # allowed_fails above.
+  retry_policy:
+    RateLimitErrorRetries: {{ llm_router_rate_limit_retries }}
+  allowed_fails_policy:
+    RateLimitErrorAllowedFails: {{ llm_router_rate_limit_allowed_fails }}
+
+general_settings:
+  master_key: os.environ/LLM_ROUTER_MASTER_KEY
+  # Active probes spawn models on the llama-swap tier (see defaults) — passive
+  # recovery via allowed_fails/cooldown_time is the default; health_check_interval
+  # is a general_settings field (LiteLLM rejects it under router_settings).
+  background_health_checks: {{ llm_router_background_health_checks | to_json }}
+{% if llm_router_background_health_checks %}
+  health_check_interval: {{ llm_router_health_check_interval }}
+{% endif %}
+
+litellm_settings:
+  # OTLP traces to the Cribl Edge collector (endpoint from the EnvironmentFile);
+  # Cribl fans out to Langfuse + Splunk. No direct "langfuse" callback — it
+  # requires the v2 SDK and errors on init with the v3 pip resolves.
+  callbacks: ["otel"]
+  drop_params: true
+{% if llm_router_large_passthrough_enabled | bool %}
+  # Resolve the wildcard against the gate's live /v1/models so this proxy's
+  # own /v1/models lists every passthrough model (not just the aliases) —
+  # Open WebUI's picker and Hermes both read that listing.
+  check_provider_endpoint: true
+{% endif %}

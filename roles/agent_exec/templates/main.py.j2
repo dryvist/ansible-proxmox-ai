@@ -1,0 +1,79 @@
+"""agent-exec entrypoint — autonomy seed (CrewAI, OpenLLMetry-traced).
+
+Deployed ONCE (force: false), so your edits survive re-converges — extend this
+with your own crews. Keep `import otel_bootstrap` first so every CrewAI run is
+traced to the homelab OTLP collector (and on to Langfuse + Splunk).
+
+Each interval the loop exercises BOTH model tiers: the large tier for real work
+and the light tier as the continuous soak path. It is resilient —
+a failed run is logged and the loop continues, so the systemd service stays
+active. Endpoints, model names, cadence, and key come from the systemd unit
+environment (re-rendered by the agent_exec role each converge), so the inference
+backend is swappable without editing this file.
+"""
+import logging
+import os
+import time
+
+import otel_bootstrap  # noqa: F401  initialises OpenLLMetry tracing on import
+
+from crewai import LLM, Agent, Crew, Task
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
+)
+log = logging.getLogger("agent-exec")
+
+INTERVAL = int(os.environ.get("AGENT_EXEC_INTERVAL_SECONDS", "900"))
+API_KEY = os.environ.get("OPENAI_API_KEY", "sk-noauth")
+
+# (tier label, model name, base URL) — both tiers stay exercised every cycle.
+TIERS = [
+    (
+        "large",
+        os.environ.get("AGENT_EXEC_MODEL_LARGE", "openai/default"),
+        os.environ.get("AGENT_EXEC_MODEL_LARGE_BASE_URL", ""),
+    ),
+    (
+        "light",
+        os.environ.get("AGENT_EXEC_MODEL_LIGHT", "openai/hermes4"),
+        os.environ.get("AGENT_EXEC_MODEL_LIGHT_BASE_URL", ""),
+    ),
+]
+
+
+def run_tier(name: str, model: str, base_url: str) -> None:
+    """Run one tiny traced crew against a model tier; failures bubble to caller."""
+    if not base_url:
+        log.warning("tier %s has no base URL set; skipping", name)
+        return
+    llm = LLM(model=model, base_url=base_url, api_key=API_KEY)
+    agent = Agent(
+        role="Homelab heartbeat reporter",
+        goal=f"Confirm the {name} model tier is serving and responsive",
+        backstory=f"A minimal autonomy seed that keeps the {name} tier exercised.",
+        llm=llm,
+        verbose=False,
+    )
+    task = Task(
+        description=f"Reply with one short status sentence naming the '{name}' tier.",
+        expected_output="A single short status sentence.",
+        agent=agent,
+    )
+    result = Crew(agents=[agent], tasks=[task], verbose=False).kickoff()
+    log.info("tier %s ok: %s", name, str(result).strip()[:200])
+
+
+def main() -> None:
+    log.info("agent-exec autonomy seed starting; interval=%ss", INTERVAL)
+    while True:
+        for name, model, base_url in TIERS:
+            try:
+                run_tier(name, model, base_url)
+            except Exception:  # noqa: BLE001  resilient loop — never exit on a run
+                log.exception("tier %s run failed; continuing", name)
+        time.sleep(INTERVAL)
+
+
+if __name__ == "__main__":
+    main()
