@@ -82,6 +82,42 @@ agentgateway_docker_mcp_targets:
     host: "https://mcp.context7.com/mcp"
 
 # =============================================================================
+# Qdrant MCP sidecar — the official mcp-server-qdrant, run as a second compose
+# service on this LXC so agents get vector-memory tools (qdrant-store /
+# qdrant-find) through the same governed /qdrant/mcp route. The SIDECAR holds
+# the Qdrant API key; callers need no credential (same keyless posture as the
+# context7 route). Container-to-container over the compose network — no host
+# port, no new tofu constant, no DNS record.
+#
+# Upstream publishes no container image, so the pinned uv base image runs the
+# pinned PyPI release via uvx (Renovate tracks both pins).
+#
+# Inert-until-creds: an empty API key omits both the sidecar service and its
+# gateway route, so the role converges cleanly before the key is seeded.
+# =============================================================================
+agentgateway_docker_qdrant_mcp_enabled: true
+agentgateway_docker_qdrant_mcp_image: "ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
+agentgateway_docker_qdrant_mcp_version: "0.8.1"
+# Compose-network-internal port only (FastMCP default) — never published on
+# the LXC, so it is deliberately NOT a tofu pipeline_constant.
+agentgateway_docker_qdrant_mcp_port: 8000
+# The MCP server's own working collection (its fastembed vectors are not
+# compatible with llamaindex's homelab_docs collection — keep them separate).
+agentgateway_docker_qdrant_mcp_collection: agent_memories
+# tofu_data.containers.qdrant.ip is ALREADY the resolvable FQDN (same
+# precedent as the langgraph A2A target below); port from tofu constants.
+agentgateway_docker_qdrant_url: >-
+  http://{{ hostvars['localhost']['tofu_data']['containers']['qdrant']['ip'] }}:{{
+  hostvars['localhost']['tofu_data']['constants']['vector_db_ports']['qdrant_http']
+  | mandatory('tofu_data.constants.vector_db_ports.qdrant_http missing — regenerate tofu_inventory.json') }}
+# Bao-first (ai/qdrant → QDRANT_API_KEY, when the site play publishes
+# bao_local_llm_secrets to this host), controller-env fallback (Doppler) —
+# identical resolution to qdrant_docker itself.
+agentgateway_docker_qdrant_api_key: >-
+  {{ (bao_local_llm_secrets | default({}))['QDRANT_API_KEY']
+     | default(lookup('env', 'QDRANT_API_KEY'), true) }}
+
+# =============================================================================
 # A2A targets — native Agent2Agent (JSON-RPC) endpoints the gateway fronts on
 # the same proxy port. Each gets a prefix-matched route marked `a2a: {}`, so the
 # gateway parses the JSON-RPC and rewrites the agent card's `url` to point back
