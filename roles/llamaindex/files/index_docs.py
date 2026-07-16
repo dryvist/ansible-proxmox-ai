@@ -94,12 +94,24 @@ def build_index(cfg: dict, docs: list) -> None:
         model_name=emb["model"],
         api_base=emb["base_url"],
         api_key=emb["api_key"],
+        # The embeddings tier is a single-slot llama.cpp server: keep request
+        # batches small and retry through transient 429s instead of dying.
+        embed_batch_size=8,
+        max_retries=8,
     )
+    # The serving tier embeds one input per physical batch (512 tokens); a
+    # chunk above that 500s. Stay under it with margin for tokenizer skew
+    # between llama-index's estimate and the model's actual tokenizer.
+    Settings.chunk_size = 384
+    Settings.chunk_overlap = 40
 
     client = qdrant_client.QdrantClient(
         host=qdrant["host"],
         port=int(qdrant["port"]),
         api_key=qdrant.get("api_key") or None,
+        # qdrant-client silently flips to TLS when api_key is set; this Qdrant
+        # speaks plain HTTP inside the VLAN, so pin the scheme explicitly.
+        https=False,
     )
     # Full rebuild: drop the collection first so re-runs replace rather than
     # duplicate points.
