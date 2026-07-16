@@ -49,11 +49,25 @@ this role. The first entry is `openrouter-free` →
 `nvidia/nemotron-3-ultra-550b-a55b:free` (rate-limited; NVIDIA logs prompts on
 the `:free` endpoint — never send confidential material through it).
 
-## The fabric brain alias
+## Model aliases (literal only — duplicate entries are banned)
+
+Every consumer-facing alias (`ai-default`, `ai-deep-analysis`, `claude-*`,
+any future tier name) lives in `llm_router_model_group_aliases`, rendered as
+LiteLLM `router_settings.model_group_alias`: a pure name → model-group
+pointer with **zero config of its own** — context window, `extra_body`
+tuning, and endpoint all come from the target's physical entry verbatim, so
+an alias can never drift out of sync with its backend.
+
+**Banned:** registering an alias as its own `model_list` deployment entry
+(a second copy of a physical entry's `context_window`/`extra_body`/
+`api_base` under a different name). The duplicate silently drifts on every
+model change; that duplication is exactly what slowed the #1004 outage
+diagnosis. One physical entry per backend — every other name is a literal
+alias.
 
 `ai-default` is the one stable alias every consumer (Hermes, Open WebUI, the
 cron fleet) points at permanently; re-pointing the fabric brain is a one-line
-backend edit on its `llm_router_large_models` entry. The daily 00/12 UTC
+target edit in `llm_router_model_group_aliases`. The daily 00/12 UTC
 rotation machinery was deleted 2026-07-16 as a no-op (both phases had served
 the same model); incident/decision history lives in Zammad (AI/LLM Serving).
 
