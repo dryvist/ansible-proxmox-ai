@@ -71,10 +71,10 @@ molecule test -s qdrant
 ## Deploy orchestration (follow-up)
 
 This repository currently ships **roles only** — there is no `site.yml` and no
-inventory-loading playbook yet. Deploy orchestration (the site playbook, the
-dynamic tofu-inventory loader, and the shared `docker_engine` / base-setup
-role dependency the Docker-based roles here assume is already applied to the
-host) is a tracked follow-up.
+inventory-loading playbook yet. Deploy orchestration (the site playbook and
+the dynamic tofu-inventory loader) is a tracked follow-up, as is
+de-duplicating the local `docker_engine` bootstrap copy the Docker-based
+roles depend on (imported from `ansible-proxmox-apps`).
 
 ## Contributing
 
