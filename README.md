@@ -4,7 +4,7 @@ Ansible roles for the homelab's AI/LLM stack on Proxmox VMs and LXC containers.
 Extracted from `ansible-proxmox-apps`; granular pre-split commit history for
 each role lives in that repo's git log (`git log --follow <path>`).
 
-![CI](https://img.shields.io/badge/CI-ci--gate-blue)
+[![CI][ci-badge]][ci-workflow]
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 
 ## Installation
@@ -89,3 +89,6 @@ Apache License 2.0 — see [LICENSE](LICENSE) for details.
 ---
 
 <https://docs.jacobpevans.com>
+
+[ci-badge]: https://github.com/dryvist/ansible-proxmox-ai/actions/workflows/ci-gate.yml/badge.svg
+[ci-workflow]: https://github.com/dryvist/ansible-proxmox-ai/actions/workflows/ci-gate.yml
