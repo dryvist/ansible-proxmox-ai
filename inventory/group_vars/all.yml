@@ -1,0 +1,124 @@
+---
+# Global variables for all hosts
+
+# System
+ansible_become: true
+ansible_become_method: sudo
+
+# Shared Cribl Edge OTLP/HTTP receiver — every OTEL-emitting component points
+# here, so this is global rather than scoped to ai_orchestration_group.yml
+# (roles outside that group, e.g. hermes_agent/open_webui, reference it too).
+# Split out so the composed URL stays under the 120-char yaml line limit.
+ai_subdomain: "{{ lookup('env', 'PROXMOX_SUBDOMAIN') | mandatory('PROXMOX_SUBDOMAIN required') }}"
+ai_otel_http_port: >-
+  {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['otel_traces_http'] }}
+ai_orchestration_otel_endpoint: "http://cribl-edge.{{ ai_subdomain }}:{{ ai_otel_http_port }}"
+
+# Heavy-tier LLM serving host (the Mac Studio) — single source for its short
+# hostname and reserved IP so neither literal is repeated across roles
+# (llm_router). The host is a tofu-unifi fixed_ips.json reservation and is NOT
+# a PVE guest, so it is absent from the tofu ansible inventory; parameterize
+# it from the environment instead (LLM_LARGE_RUNNER_HOST is the FQDN used for
+# the llm-large alias — take its short host here). The defaults are the
+# current live values, so with the env unset the rendered output is
+# byte-identical to before. NOTE: the `llm-large` DNS records themselves are
+# owned by ansible-proxmox-apps (technitium_dns group_vars), which keeps its
+# own copy of these two values — change both together.
+llm_large_serving_host: "{{ (lookup('env', 'LLM_LARGE_RUNNER_HOST') or 'jevans-ms') | split('.') | first }}"
+llm_large_serving_ip: >-
+  {{ lookup('env', 'LLM_LARGE_RUNNER_IP')
+     or ('' if lookup('env', 'LLM_LARGE_RUNNER_HOST') else '10.0.50.10') }}
+
+# SINGLE SOURCE OF TRUTH for the fabric's default chat/agent model. Both the
+# Hermes Agent brain (hermes_agent_model) and Open WebUI's default chat model
+# (open_webui_default_model) resolve to this, so the human chat UI and the
+# autonomous agent always run the same default by construction. The value is a
+# router model id (alias or passthrough physical id) served via
+# https://llm.<subdomain>/v1. Change it here — never re-pin it per consumer.
+#
+# `ai-default` is a literal router alias (llm_router_model_group_aliases)
+# backed by the current agentic-bench-winning brain. Re-point the brain by
+# editing the alias target in llm_router defaults — never per consumer.
+ai_default_model: ai-default
+
+# Escalation rubric v1 — WHICH tier a task deserves, encoded as data (from the
+# 2026-07-12 document benchmark: two planted traps, three model classes).
+# Consumers: the llm_router renders a stable alias per active tier, and the
+# curriculum loop re-fits decision_rule from graded 30B-vs-deep run deltas —
+# the feature definitions (F1-F8) live with the curriculum
+# (roles/hermes_agent/files/curriculum/escalation-rubric-schema.md). This
+# block is the single source the fitted values update; nothing here changes
+# routing until a consumer reads it.
+ai_escalation_rubric:
+  version: 1
+  fitted: false # decision_rule holds PRIORS until curriculum grade deltas land
+  tiers:
+    # Default for everything, including "is this claim true" verification —
+    # benchmark: caught the arithmetic trap with correct math in 50 s wall.
+    # Known ceiling: shallow on second-order effects (flagged the hidden
+    # constraint as a bullet, never did the math).
+    - id: broad
+      router_alias: ai-default
+      status: active
+    # "What else breaks / find what the author missed" second-order analysis —
+    # benchmark: caught BOTH traps and dissected the source's own
+    # contradiction, a class deeper than broad. Constraints are hard: only
+    # worth invoking while the backend is RESIDENT (a cold escalation pays a
+    # multi-minute swap load and can wedge the serving proxy), and with a
+    # generous output-token budget (thinking output truncates at small caps).
+    - id: deep-analysis
+      router_alias: ai-deep-analysis
+      status: active
+      constraint: resident-only
+    # The cluster-served deep tier: queued deep packets during a cluster
+    # window; the latency veto below already excluded anything that cannot
+    # wait, so an unavailable window DEFERS a deep task, never silently
+    # downgrades it.
+    - id: cluster-deep
+      router_alias: null # registered only when a window is up (gated build-out)
+      status: blocked-upstream
+      blocked_by:
+        - mlx-lm pipeline-generate bug (upstream fix drafted)
+        - serving-host wired-memory headroom mitigation required
+  decision_rule:
+    # Prospective F1-F7 difficulty scores (0-3 each) are weighted below; F8
+    # latency_tolerance is the routing veto after the weighted score. Reasoning
+    # depth + cross-source synthesis are weighted highest (hypothesis: where a
+    # bigger brain most outperforms; long tool chains are executor-bound, not
+    # brain-bound).
+    weights:
+      reasoning_depth: 2.0
+      cross_source_synthesis: 1.5
+      context_breadth: 1.0
+      ambiguity: 1.0
+      tool_chain_length: 0.5
+      error_recovery_demand: 0.5
+      output_structure_complexity: 0.5
+    deep_threshold: 12 # score >= 12 -> deep
+    broad_threshold: 6 # score <= 6 -> broad; between -> either (by availability)
+    latency_veto:
+      latency_tolerance: 0
+      target_tier: broad
+
+# AI serving timeout chain (client-is-decider). Each OUTER layer must OUTLIVE the
+# inner one, so no intermediate guard kills a still-healthy generation and the
+# CLIENT alone decides when to give up:
+#   nix-darwin vllm-mlx server guard 3600s (external to this repo, not assertable)
+#     > llm_router per-attempt timeout  (ai_router_request_timeout_seconds)
+#       > Hermes client stream read     (ai_stream_read_timeout_seconds)
+# The two in-repo layers are named ONCE here (not as bare literals in each role)
+# so the ordering invariant is a single source of truth AND the hermes_agent
+# Layer-1 assert can verify `read < router` across two roles that never share a
+# play — see roles/hermes_agent/tasks/assert.yml. Consumers:
+# hermes_agent_stream_read_timeout and llm_router_request_timeout_seconds resolve
+# to these, so the rendered configs stay byte-identical to the prior literals.
+ai_stream_read_timeout_seconds: 1800
+ai_router_request_timeout_seconds: 2400
+
+# Resource-domain secrets fetched from OpenBao by the openbao_secrets pre-play.
+# Defaults to an empty dict so every consumer's
+# `bao_local_llm_secrets.X | default(lookup('env','X'), true)` resolves even
+# when the fetch is skipped (BAO_ADDR unset, or the domain's role_id/secret_id
+# envs unset) or the host is outside the openbao_secrets play. The pre-play
+# overrides this per host when active.
+bao_local_llm_secrets: {}

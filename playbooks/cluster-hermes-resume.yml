@@ -1,0 +1,63 @@
+---
+# Reverses cluster-hermes-pause.yml — run at teardown (~05:45 EDT) ONLY AFTER the
+# OptiQ brain is confirmed back up on the Studio day-proxy (else resumed jobs fire
+# into a still-dead brain and fail-DM). The 05:45 teardown verifies day residents
+# ready BEFORE this runs. Restarts the seeded cron fleet + the brain-watchdog timer.
+- name: Load OpenTofu infrastructure inventory
+  import_playbook: ../inventory/load_tofu.yml
+
+- name: Resume Hermes seeded fleet + restart brain-watchdog after the cluster window
+  hosts: hermes_agent_group
+  become: true
+  gather_facts: false
+  vars:
+    hermes_bin: /usr/local/bin/hermes
+    hermes_home: /var/lib/hermes/.hermes
+    hermes_user: hermes
+    seeded_jobs:
+      - homelab-ai-fabric-status
+      - hermes-nightly-wiki
+      - splunk-triage
+      - splunk-security
+      - splunk-parsing
+      - splunk-deepdive
+      - splunk-digest
+  tasks:
+    - name: Resume each role-seeded cron job
+      ansible.builtin.command: "{{ hermes_bin }} cron resume {{ item }}"
+      environment:
+        HERMES_HOME: "{{ hermes_home }}"
+      become: true
+      become_user: "{{ hermes_user }}"
+      loop: "{{ seeded_jobs }}"
+      changed_when: true
+      failed_when: false
+
+    - name: Restart + re-enable the brain-health watchdog timer
+      ansible.builtin.systemd:
+        name: hermes-brain-watchdog.timer
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Verify watchdog timer active
+      ansible.builtin.systemd:
+        name: hermes-brain-watchdog.timer
+      register: wd_state
+      changed_when: false
+      failed_when: false
+
+    - name: Verify cron fleet resumed
+      ansible.builtin.command: "{{ hermes_bin }} cron list --all"
+      environment:
+        HERMES_HOME: "{{ hermes_home }}"
+      become: true
+      become_user: "{{ hermes_user }}"
+      register: cron_list
+      changed_when: false
+
+    - name: Report verification (grep this in the run output)
+      ansible.builtin.debug:
+        msg: >-
+          CLUSTER_RESUME_VERIFY watchdog_is_active={{ wd_state.status.ActiveState | default('unknown', true) }}
+          (want active) ---CRON_LIST--- {{ cron_list.stdout }}
