@@ -114,6 +114,10 @@ def build_index(cfg: dict, docs: list) -> None:
         # qdrant-client silently flips to TLS when api_key is set; this Qdrant
         # speaks plain HTTP inside the VLAN, so pin the scheme explicitly.
         https=False,
+        # Collection create/delete can exceed the client's 5s default when
+        # Qdrant's storage is busy — and a timeout on create_collection after
+        # the ~50-min embed phase throws the whole run away.
+        timeout=120,
     )
     # Full rebuild: drop the collection first so re-runs replace rather than
     # duplicate points.
