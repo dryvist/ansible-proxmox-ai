@@ -1,0 +1,88 @@
+---
+# Hindsight agent-memory deployment (Docker in LXC). One stateless replica per
+# hindsight-tagged guest; Traefik load-balances the pool at hindsight.<domain>.
+
+# =============================================================================
+# Validation
+# =============================================================================
+
+- name: Validate required Hindsight secrets are set
+  ansible.builtin.assert:
+    that:
+      - hindsight_docker_db_password | length > 0
+      - hindsight_docker_llm_api_key | length > 0
+      - hindsight_docker_cp_access_key | length > 0
+    fail_msg: >-
+      Hindsight secrets missing — hindsight_db_password / hindsight_cp_access_key
+      come bao-first from apps/hindsight (env fallback HINDSIGHT_DB_PASSWORD /
+      HINDSIGHT_CP_ACCESS_KEY); the LLM key falls back to LLM_ROUTER_MASTER_KEY.
+    quiet: true
+
+# Docker itself (docker-ce + compose plugin, LXC-conditional fuse-overlayfs,
+# daemon.json) is installed by the docker_engine meta dependency.
+
+# =============================================================================
+# Data directory (rebuildable cache only — state lives in Postgres)
+# =============================================================================
+
+- name: Create hindsight cache directory
+  ansible.builtin.file:
+    path: "{{ hindsight_docker_data_dir }}/cache"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+# =============================================================================
+# Configuration + deploy via Docker Compose
+# =============================================================================
+
+- name: Deploy hindsight docker-compose template
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ hindsight_docker_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart hindsight
+
+- name: Check if hindsight container is running
+  ansible.builtin.command: docker ps -q --filter name={{ hindsight_docker_container_name }} --filter status=running
+  register: hindsight_docker_running_check
+  changed_when: false
+  failed_when: false
+
+- name: Clean stale hindsight Docker state before fresh deployment
+  ansible.builtin.command:
+    cmd: docker compose down --volumes --remove-orphans
+    chdir: "{{ hindsight_docker_data_dir }}"
+  when: hindsight_docker_running_check.stdout == ''
+  changed_when: true
+  failed_when: false
+
+- name: Deploy hindsight via docker compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ hindsight_docker_data_dir }}"
+    state: present
+
+# =============================================================================
+# Health check — /health is the same endpoint Traefik's pool check uses
+# =============================================================================
+
+- name: Wait for hindsight API port to be ready
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ hindsight_docker_api_port }}"
+    timeout: 120
+
+- name: Verify hindsight health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ hindsight_docker_api_port }}/health"
+    method: GET
+    status_code: 200
+  register: hindsight_docker_health
+  retries: 12
+  delay: 10
+  until: hindsight_docker_health.status == 200
+  changed_when: false

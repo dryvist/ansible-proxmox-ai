@@ -1,0 +1,59 @@
+---
+# Molecule converge playbook
+# Tests the hindsight_docker role against the test container. Hindsight is
+# stateless except Postgres, so the scenario boots a pgvector container first
+# (via the same docker_engine bootstrap the role depends on) and points the
+# role at it through the Docker bridge gateway.
+
+- name: Converge
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    # Override storage driver for Docker-in-Docker (vfs required, not fuse-overlayfs)
+    hindsight_docker_storage_driver: vfs
+    # Values normally injected from tofu_data.constants / OpenBao
+    hindsight_docker_api_port: 8888
+    hindsight_docker_cp_port: 9999
+    hindsight_docker_db_port: 5432
+    hindsight_docker_db_password: molecule-test-password
+    hindsight_docker_cp_access_key: molecule-test-cp-key
+    hindsight_docker_llm_api_key: molecule-test-llm-key
+    hindsight_docker_llm_base_url: "http://127.0.0.1:9/v1"  # never called during converge
+    hindsight_docker_llm_model: ai-default
+    hindsight_docker_worker_id: hindsight-test
+
+  tasks:
+    - name: Bootstrap Docker (same role the hindsight_docker meta dependency uses)
+      ansible.builtin.include_role:
+        name: docker_engine
+      vars:
+        docker_engine_configure_daemon_json: true
+        docker_engine_storage_driver: vfs
+
+    - name: Start a pgvector Postgres for the API to persist into
+      community.docker.docker_container:
+        name: hindsight-postgres
+        image: pgvector/pgvector:pg17
+        state: started
+        restart_policy: unless-stopped
+        published_ports:
+          - "5432:5432"
+        env:
+          POSTGRES_USER: hindsight
+          POSTGRES_PASSWORD: molecule-test-password
+          POSTGRES_DB: hindsight
+
+    - name: Discover the Docker bridge gateway (compose -> host-published ports)
+      ansible.builtin.command: >-
+        docker network inspect bridge
+        --format {% raw %}'{{ (index .IPAM.Config 0).Gateway }}'{% endraw %}
+      register: hindsight_molecule_bridge_gw
+      changed_when: false
+
+    - name: Include hindsight_docker role
+      ansible.builtin.include_role:
+        name: hindsight_docker
+      vars:
+        hindsight_docker_db_host: "{{ hindsight_molecule_bridge_gw.stdout | trim }}"

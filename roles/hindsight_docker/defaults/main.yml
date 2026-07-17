@@ -1,0 +1,63 @@
+---
+# Hindsight agent-memory service (vectorize-io/hindsight) — one stateless API
+# replica per hindsight-tagged LXC, all state in the dedicated ai-VLAN
+# PostgreSQL cluster (postgres_ai_group, ansible-proxmox-apps). The REST API
+# also serves the built-in MCP endpoint (/mcp single-bank, /mcp/ multi-bank).
+hindsight_docker_image: "ghcr.io/vectorize-io/hindsight:v0.8.4"
+hindsight_docker_container_name: hindsight
+hindsight_docker_data_dir: /opt/hindsight
+hindsight_docker_storage_driver: "fuse-overlayfs"
+
+# Ports come from the tofu-owned pipeline constants (memory_ports) — never
+# literals here. mandatory() fails the play loudly on a stale inventory.
+_hindsight_docker_port_err: >-
+  tofu_data.constants.memory_ports.hindsight_* missing —
+  regenerate tofu_inventory.json (apply tofu-proxmox)
+hindsight_docker_api_port: >-
+  {{ (tofu_data | mandatory(_hindsight_docker_port_err))
+     ['constants']['memory_ports']['hindsight_api']
+     | mandatory(_hindsight_docker_port_err) }}
+hindsight_docker_cp_port: >-
+  {{ (tofu_data | mandatory(_hindsight_docker_port_err))
+     ['constants']['memory_ports']['hindsight_cp']
+     | mandatory(_hindsight_docker_port_err) }}
+
+# --- Database (dedicated ai-VLAN Postgres cluster) --------------------------
+# Primary's FQDN by name, never an address; DB/user/database all `hindsight`.
+hindsight_docker_db_host: "postgres-ai-1.{{ tofu_data.domain }}"
+hindsight_docker_db_port: >-
+  {{ tofu_data['constants']['service_ports']['postgres_default']
+     | mandatory('tofu_data.constants.service_ports.postgres_default missing — regenerate tofu_inventory.json') }}
+hindsight_docker_db_name: hindsight
+hindsight_docker_db_user: hindsight
+# bao-first (apps/hindsight, generated at source) with an env fallback for
+# molecule / Doppler runs.
+hindsight_docker_db_password: >-
+  {{ bao_apps_secrets.hindsight_db_password
+     | default(lookup('env', 'HINDSIGHT_DB_PASSWORD'), true) }}
+
+# --- LLM (fact extraction / reflection) --------------------------------------
+# The LiteLLM router is THE fabric endpoint; the key is the router master key,
+# same sourcing as hermes_agent/llm_router.
+hindsight_docker_llm_base_url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1"
+hindsight_docker_llm_model: "{{ ai_default_model | default('ai-default') }}"
+hindsight_docker_llm_api_key: >-
+  {{ lookup('env', 'HINDSIGHT_LLM_API_KEY')
+     | default(lookup('env', 'LLM_ROUTER_MASTER_KEY'), true) }}
+
+# --- Control Plane UI ---------------------------------------------------------
+# Access-key gated (the API itself is unauthenticated inside the default-deny
+# firewall). bao-first, generated at source.
+hindsight_docker_cp_access_key: >-
+  {{ bao_apps_secrets.hindsight_cp_access_key
+     | default(lookup('env', 'HINDSIGHT_CP_ACCESS_KEY'), true) }}
+
+# --- HA ------------------------------------------------------------------------
+# Stable per-replica worker identity: background tasks (reflection, fact
+# extraction) are claimed in Postgres under this id; a random hostname would
+# orphan previously-claimed tasks across restarts. inventory_hostname is
+# stable per LXC, which is exactly what upstream requires.
+hindsight_docker_worker_id: "{{ inventory_hostname }}"
+
+# Local ONNX embeddings (bundled BGE model) — no external embedding dependency.
+hindsight_docker_embeddings_provider: local
