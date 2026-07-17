@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.4.0...v0.5.0) (2026-07-17)
+
+
+### Features
+
+* **agentgateway:** drop transitional /&lt;name&gt;/mcp route aliases ([325ec2c](https://github.com/dryvist/ansible-proxmox-ai/commit/325ec2c3f399fc91927372f83ce49da80a9cbfea))
+* **agentgateway:** read-only docs-search MCP route over the RAG collection ([c308a4b](https://github.com/dryvist/ansible-proxmox-ai/commit/c308a4b8af5fa3a9f2406e8c7e69206dfef21792)), closes [#22](https://github.com/dryvist/ansible-proxmox-ai/issues/22)
+
+
+### Bug Fixes
+
+* **agentgateway:** embed docs-search queries via the router, not in-container ([85c2f96](https://github.com/dryvist/ansible-proxmox-ai/commit/85c2f96ccb76cfc7b7ab87bd74187a9bd91ab02a)), closes [#22](https://github.com/dryvist/ansible-proxmox-ai/issues/22)
+* **agentgateway:** pin the docs-search server path to /mcp/ ([72a587f](https://github.com/dryvist/ansible-proxmox-ai/commit/72a587f91dd7afc548bfde29b4c97ff7b9e59d20))
+* **agentgateway:** search the docs collection's unnamed dense vector ([fd68cee](https://github.com/dryvist/ansible-proxmox-ai/commit/fd68ceec0e778c55df9c4dcc2d5b6a63302960bb))
+* **hindsight:** publish bao_apps_secrets so the memory role resolves its credentials ([#30](https://github.com/dryvist/ansible-proxmox-ai/issues/30)) ([3ba4851](https://github.com/dryvist/ansible-proxmox-ai/commit/3ba4851e815a126c150bb77b9204a3b483bcc15e))
+* **llamaindex:** raise the indexer's Qdrant client timeout ([bb32c61](https://github.com/dryvist/ansible-proxmox-ai/commit/bb32c614900e1d3adf7be2d154b717f501a82ef3))
+
 ## [0.4.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.3.0...v0.4.0) (2026-07-17)
 
 
