@@ -100,10 +100,13 @@ def build_index(cfg: dict, docs: list) -> None:
         max_retries=8,
     )
     # The serving tier embeds one input per physical batch (512 tokens); a
-    # chunk above that 500s. Stay under it with margin for tokenizer skew
-    # between llama-index's estimate and the model's actual tokenizer.
-    Settings.chunk_size = 384
-    Settings.chunk_overlap = 40
+    # chunk above that 500s. llama-index counts chunk_size in tiktoken tokens
+    # but the nomic tokenizer runs ~1.6x that on technical text (384 -> 614
+    # observed), so stay well under: 256 * 1.6 = ~410 < 512.
+    # ponytail: right fix is --ubatch-size 2048 on the embeddings llama-server
+    # (llm_fast role); shrink chunks here until that serving change lands.
+    Settings.chunk_size = 256
+    Settings.chunk_overlap = 32
 
     client = qdrant_client.QdrantClient(
         host=qdrant["host"],
