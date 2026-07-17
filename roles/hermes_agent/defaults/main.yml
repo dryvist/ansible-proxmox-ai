@@ -63,14 +63,14 @@ hermes_agent_model: "{{ ai_default_model }}"
 hermes_agent_model_base_url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1"
 hermes_agent_model_api_mode: chat_completions
 # Context-compression summary model. Hermes hard-requires >=64K context on the
-# compression model, and `ai-default` cannot promise that: its rotating backend
-# is whatever the phase brain is, and the stock 35B twin serves a 32,768-token
-# window — cron fleet failed on exactly this 2026-07-16 ("Auxiliary compression
-# model ai-default has a context window of 32,768"). Pin compression to the
-# OptiQ tuned alias: 65,536-token serving window, resident on the serving host,
-# carries its own repetition-penalty guard. Named by model family on purpose —
-# a generic alias must not be used where a >=64K window is a hard requirement.
-hermes_agent_compression_model: Qwen3.6-35B-A3B-OptiQ-4bit
+# compression model — the cron fleet failed on exactly this 2026-07-16 when
+# compression rode a 32,768-token brain ("Auxiliary compression model ... has
+# a context window of 32,768"). Pin compression to the OptiQ tuned entry by
+# its REAL id: 65,536-token serving window, resident on the serving host,
+# carries its own repetition-penalty guard. Deliberately a literal (not
+# ai_default_model): re-pointing the fabric brain to a smaller-window model
+# must not silently drag the >=64K-required compression path with it.
+hermes_agent_compression_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
 # The context window Hermes budgets against and compacts under (it compresses at
 # hermes_agent_context_compression_threshold * this value). The model's TRUE
 # native window is 262144 (Qwen3.6-35B-A3B), but we deliberately DECLARE a
@@ -87,8 +87,8 @@ hermes_agent_compression_model: Qwen3.6-35B-A3B-OptiQ-4bit
 # 2026-07-08). (2) Native window 262144 (config.json). (3) A full re-prefill
 # of the declared window must finish inside the 900s stream-stale budget
 # (65536 needs >=73 tok/s prefill — trivially safe). (4) NEW, and binding:
-# the ROUTER enforces the serving window as max_input_tokens on the
-# ai-default alias (enable_pre_call_checks) — OptiQ serves 65,536. A
+# the ROUTER enforces the serving window as max_input_tokens on the brain's
+# tuned entry (enable_pre_call_checks) — OptiQ serves 65,536. A
 # declaration ABOVE the served window creates a dead zone: Hermes budgets
 # past it and only compacts at threshold*declared, so every request between
 # the served window and the compaction point is router-rejected
@@ -581,7 +581,7 @@ hermes_agent_verify_probe_retries: 3
 hermes_agent_verify_probe_delay: 10
 
 # --- Brain-health watchdog: stop cron-failure spam during brain outages -------
-# ai-default is a single-deployment brain (llm_router role) with no viable
+# The default brain (ai_default_model) is a single-deployment model (llm_router role) with no viable
 # fallback, and upstream Hermes ALWAYS delivers a cron failure ("Failed jobs
 # always deliver regardless of the [SILENT] marker"). So a brain outage makes the
 # stateless seeded fleet fail-and-DM the operator twice an hour per job, while

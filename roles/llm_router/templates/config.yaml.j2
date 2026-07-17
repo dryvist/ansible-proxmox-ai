@@ -1,21 +1,17 @@
 {{ ansible_managed | comment }}
 # LiteLLM proxy config (managed by the llm_router role). One OpenAI-compatible front
-# door for the whole fabric; consumers pick a tier by model alias. Secrets come from
-# the systemd EnvironmentFile via os.environ/ — no credential literal lives here.
+# door for the whole fabric; consumers request REAL model ids — no aliases are
+# served (design rule 2026-07-17). Secrets come from the systemd EnvironmentFile
+# via os.environ/ — no credential literal lives here.
 
 model_list:
   # --- large tier: one deployment each, bearer-authed to llm-large ---
-  # Each tuned model is registered under BOTH its consumer-facing alias AND
-  # its physical id: exact model_name matches beat the "*" wildcard below, so
-  # a request naming the physical id still routes to the TUNED deployment
-  # (llama-swap: parsers, preload, batching) instead of falling through to
-  # the zero-config dynamic tier and double-loading the same weights.
-{% set _ns = namespace(seen=[]) %}
+  # Each tuned model is registered under its physical id: exact model_name
+  # matches beat the "*" wildcard below, so the request routes to the TUNED
+  # deployment (llama-swap: parsers, preload, batching) instead of falling
+  # through to the zero-config dynamic tier.
 {% for m in llm_router_large_models %}
-{% for _name in ([m.alias, m.backend] | unique) %}
-{% if _name not in _ns.seen %}
-{% set _ns.seen = _ns.seen + [_name] %}
-  - model_name: {{ _name }}
+  - model_name: {{ m.backend }}
     litellm_params:
       model: openai/{{ m.backend }}
       api_base: {{ llm_router_llm_large_base_url }}
@@ -41,32 +37,30 @@ model_list:
       max_input_tokens: {{ m.context_window }}
       max_tokens: {{ m.context_window }}
 {% endif %}
-{% endif %}
-{% endfor %}
 {% endfor %}
 {% if llm_router_large_passthrough_enabled | bool %}
   # --- large tier passthrough: every model the serving gate advertises ---
   # Exposure is blocklist-shaped, enforced at the source: the serving host
   # auto-registers every downloaded, memory-fitting MLX model MINUS its
   # declarative blocklist (nix-ai programs.mlx.discover.blocklist), and this
-  # wildcard forwards any model id not explicitly aliased above to that gate.
-  # No per-model router edit is ever needed; the aliases above remain as
-  # stable consumer-facing names and win over the wildcard on exact match.
+  # wildcard forwards any model id not explicitly tuned above to that gate.
+  # No per-model router edit is ever needed; the tuned entries above win over
+  # the wildcard on exact match.
   - model_name: "*"
     litellm_params:
       model: openai/*
       api_base: {{ llm_router_llm_large_base_url }}
       api_key: os.environ/LLM_LARGE_BEARER_TOKEN
 {% endif %}
-  # --- OpenRouter egress tier: explicit opt-in aliases, one key per MODEL ---
-  # Never chained into ai-default rotation or fallbacks (see defaults). Keys
-  # come from OpenBao ai/saas/openrouter via the EnvironmentFile; an unseeded
-  # model renders no entry at all.
+  # --- OpenRouter egress tier: explicit opt-in by real upstream id, one key per MODEL ---
+  # Never chained into any fallbacks (see defaults). Keys come from OpenBao
+  # ai/saas/openrouter via the EnvironmentFile; an unseeded model renders no
+  # entry at all.
 {% for m in llm_router_openrouter_models %}
 {% set _or_env = 'OPENROUTER_API_KEY_' ~ (m.key_field | upper | replace('-', '_')) %}
 {% set _or_key = bao_local_llm_secrets[m.key_field] | default(lookup('env', _or_env), true) %}
 {% if _or_key | length > 0 %}
-  - model_name: {{ m.alias }}
+  - model_name: {{ m.model }}
     litellm_params:
       model: openrouter/{{ m.model }}
       api_key: os.environ/{{ _or_env }}
@@ -75,12 +69,12 @@ model_list:
       max_tokens: {{ m.context_window }}
 {% endif %}
 {% endfor %}
-  # --- light tier: two deployments per alias (GPU llm-fast + CPU llm-light) ---
+  # --- light tier: two deployments per model name (GPU llm-fast + CPU llm-light) ---
   # Same model_name => LiteLLM load-balances the pair and cools a failed deployment
   # down, so a GPU outage drains to the CPU standby automatically.
 {% for m in llm_router_light_models %}
 {% if llm_router_llm_fast_enabled %}
-  - model_name: {{ m.alias }}
+  - model_name: {{ m.backend }}
     litellm_params:
       model: openai/{{ m.backend }}
       api_base: {{ llm_router_llm_fast_base_url }}
@@ -90,7 +84,7 @@ model_list:
       mode: embedding
 {% endif %}
 {% endif %}
-  - model_name: {{ m.alias }}
+  - model_name: {{ m.backend }}
     litellm_params:
       model: openai/{{ m.backend }}
       api_base: {{ llm_router_llm_light_base_url }}
@@ -105,19 +99,12 @@ router_settings:
   routing_strategy: {{ llm_router_routing_strategy }}
   allowed_fails: {{ llm_router_allowed_fails }}
   cooldown_time: {{ llm_router_cooldown_time }}
-{% if llm_router_model_group_aliases | default({}) | length > 0 %}
-  # Literal aliases: pure name -> model group indirection. An alias carries NO
-  # config of its own — the target entry's litellm_params/model_info (context
-  # window, extra_body tuning, api_base) apply verbatim, so an alias can never
-  # drift out of sync with its backend. Aliases still appear in /v1/models.
-  model_group_alias:
-{% for _alias, _target in llm_router_model_group_aliases.items() %}
-    {{ _alias }}: {{ _target }}
-{% endfor %}
-{% endif %}
-  # No cross-tier fallbacks for ai-default, on purpose: a fallback serving a
-  # smaller context than the primary poisons callers instead of degrading them
-  # (incident history: Zammad, AI/LLM Serving). Fail loud; the watchdog pauses.
+  # No model_group_alias block, on purpose: the router serves ONLY real model
+  # ids (design rule 2026-07-17).
+  # No cross-tier fallbacks for the default brain, on purpose: a fallback
+  # serving a smaller context than the primary poisons callers instead of
+  # degrading them (incident history: Zammad, AI/LLM Serving). Fail loud; the
+  # watchdog pauses.
   # Pre-call context-window checks so an over-long request is not routed to a model
   # that cannot serve it (no cross-tier fallback masks the error).
   enable_pre_call_checks: true

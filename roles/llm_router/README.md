@@ -14,13 +14,17 @@ tofu inventory). Tools come from the repo's Nix dev shell (`direnv allow`).
 
 ## Tiers (one proxy, two backends)
 
-| Alias(es) | Backend | Auth |
-| --- | --- | --- |
-| `ai-default`, `ai-deep-analysis`, `gpt-oss-120b`, and other large aliases | `llm-large` runner (`/v1`, bearer) | `LLM_LARGE_BEARER_TOKEN` |
-| `qwen3-4b`, `embeddings`, `claude-haiku-4-5` | `llm-fast` (GPU) **and** `llm-light` (CPU) | none |
-| `openrouter-free` (extensible list) | OpenRouter (paid-SaaS egress) | one key **per model** |
+The router serves **real model ids only** — no alias/indirection names (design
+rule 2026-07-17). Consumers request the id they want; re-pointing the fabric
+brain is a one-line edit to `ai_default_model` in `group_vars/all.yml`.
 
-Each light alias is registered as **two deployments** with the same `model_name`
+| Model ids | Backend | Auth |
+| --- | --- | --- |
+| `mlx-community/*` large models (`Qwen3.6-35B-A3B-OptiQ-4bit`, `gpt-oss-120b-MXFP4-Q8`, …) | `llm-large` runner (`/v1`, bearer) | `LLM_LARGE_BEARER_TOKEN` |
+| `qwen3-4b`, `embeddings` | `llm-fast` (GPU) **and** `llm-light` (CPU) | none |
+| `nvidia/nemotron-3-ultra-550b-a55b:free` (extensible list) | OpenRouter (paid-SaaS egress) | one key **per model** |
+
+Each light model id is registered as **two deployments** with the same `model_name`
 (the GPU `llm-fast` box and the CPU `llm-light` standby). LiteLLM load-balances the
 pair and cools a failed deployment down (`allowed_fails` / `cooldown_time`), so a GPU
 outage drains to CPU automatically. There is **no** cross-tier fallback — a large
@@ -28,8 +32,8 @@ request that fails surfaces the error rather than silently degrading to a small 
 
 ## OpenRouter egress tier (optional, per-model keys)
 
-`llm_router_openrouter_models` registers explicitly-named aliases for
-OpenRouter-hosted models. Deliberate properties:
+`llm_router_openrouter_models` registers OpenRouter-hosted models under their
+real upstream ids. Deliberate properties:
 
 - **One OpenRouter API key per MODEL** (never per harness/caller). Each entry's
   `key_field` names its field in the OpenBao paid-SaaS key area
@@ -38,38 +42,31 @@ OpenRouter-hosted models. Deliberate properties:
   carries it as `OPENROUTER_API_KEY_<KEY_FIELD upper-snaked>`.
 - **Inert until seeded** — an entry whose key is absent renders nothing, so
   the list is safe to extend before the key exists.
-- **Opt-in only** — OpenRouter aliases are never chained into `ai-default`
-  fallbacks; consumers (Hermes, Open WebUI, workstation harnesses)
-  must name the alias to reach the SaaS egress.
+- **Opt-in only** — OpenRouter models are never chained into a fallback;
+  consumers (Hermes, Open WebUI, workstation harnesses) must name the real
+  upstream id to reach the SaaS egress.
 
 Seeding a new model (operator, once per model): mint a scoped key in the
 OpenRouter console, then
 `bao kv patch secret/ai/saas/openrouter <model-slug>=<key>` and re-converge
-this role. The first entry is `openrouter-free` →
-`nvidia/nemotron-3-ultra-550b-a55b:free` (rate-limited; NVIDIA logs prompts on
-the `:free` endpoint — never send confidential material through it).
+this role. The first entry is `nvidia/nemotron-3-ultra-550b-a55b:free`
+(rate-limited; NVIDIA logs prompts on the `:free` endpoint — never send
+confidential material through it).
 
-## Model aliases (literal only — duplicate entries are banned)
+## No aliases — real model ids only
 
-Every consumer-facing alias (`ai-default`, `ai-deep-analysis`, `claude-*`,
-any future tier name) lives in `llm_router_model_group_aliases`, rendered as
-LiteLLM `router_settings.model_group_alias`: a pure name → model-group
-pointer with **zero config of its own** — context window, `extra_body`
-tuning, and endpoint all come from the target's physical entry verbatim, so
-an alias can never drift out of sync with its backend.
+The router serves **only real model ids** (design rule 2026-07-17). There is
+no `model_group_alias` block and no indirection names: the earlier
+`ai-default` / `ai-deep-analysis` / `claude-*` aliases were removed because a
+name that hides what actually serves a request confuses consumers and rots
+(the `claude-*` aliases misrepresented local Qwen backends as Anthropic
+models). Each backend has exactly one `model_list` entry keyed by its real id.
 
-**Banned:** registering an alias as its own `model_list` deployment entry
-(a second copy of a physical entry's `context_window`/`extra_body`/
-`api_base` under a different name). The duplicate silently drifts on every
-model change; that duplication is exactly what slowed the #1004 outage
-diagnosis. One physical entry per backend — every other name is a literal
-alias.
-
-`ai-default` is the one stable alias every consumer (Hermes, Open WebUI, the
-cron fleet) points at permanently; re-pointing the fabric brain is a one-line
-target edit in `llm_router_model_group_aliases`. The daily 00/12 UTC
-rotation machinery was deleted 2026-07-16 as a no-op (both phases had served
-the same model); incident/decision history lives in Zammad (AI/LLM Serving).
+Re-pointing the fabric brain is a one-line edit to `ai_default_model` in
+`group_vars/all.yml` (a config var holding a real id — not a served alias),
+which every consumer resolves. The daily 00/12 UTC rotation machinery was
+deleted 2026-07-16 as a no-op (both phases had served the same model);
+incident/decision history lives in Zammad (AI/LLM Serving).
 
 ## Observability
 
