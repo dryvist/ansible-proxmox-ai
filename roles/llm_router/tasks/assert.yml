@@ -31,11 +31,22 @@
       Router brain aliases carry real context windows
       ({{ _llm_router_required_safe_models | join(', ') }}).
   vars:
-    # Large-tier aliases that declare a non-null context_window (the safe set).
+    # Safe set = large-tier names (alias AND backend id — the template
+    # registers both) with a non-null context_window, PLUS every literal
+    # alias (llm_router_model_group_aliases) whose TARGET is in that set —
+    # a model_group_alias carries no config of its own, so LiteLLM serves
+    # the target's model_info (context window) for requests naming it.
     _llm_router_safe_aliases: >-
-      {{ llm_router_large_models
-         | selectattr('context_window', 'defined')
-         | rejectattr('context_window', 'none')
-         | map(attribute='alias') | list }}
+      {%- set _safe = (llm_router_large_models
+           | selectattr('context_window', 'defined')
+           | rejectattr('context_window', 'none')
+           | map(attribute='alias') | list)
+         + (llm_router_large_models
+           | selectattr('context_window', 'defined')
+           | rejectattr('context_window', 'none')
+           | map(attribute='backend') | list) -%}
+      {{ _safe + (llm_router_model_group_aliases | default({}) | dict2items
+          | selectattr('value', 'in', _safe)
+          | map(attribute='key') | list) }}
     # The model id consumers actually request as the fabric brain.
     _llm_router_required_safe_models: "{{ [ai_default_model] }}"

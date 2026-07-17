@@ -15,7 +15,16 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
 - `ollama` — Ollama model server
 - `llama_cpp` — llama.cpp + llama-swap (GPU-tier serving)
 - `llm_router` — LiteLLM proxy, the single OpenAI-compatible front door for
-  the large/light serving tiers
+  the large/light serving tiers.
+  **Alias rule (hard): consumer-facing model aliases (`ai-default`,
+  `ai-deep-analysis`, `claude-*`, any future tier name) live ONLY in
+  `llm_router_model_group_aliases` (rendered as LiteLLM
+  `router_settings.model_group_alias`). Registering an alias as its own
+  `model_list` deployment entry — duplicating a physical entry's
+  context_window/extra_body/api_base under a second name — is BANNED: the
+  duplicate config silently drifts from the real backend every time the
+  model changes (root cause of the #1004 diagnosis cost). One physical
+  entry per backend; every other name is a literal alias with zero config.**
 - `open_webui` — Open WebUI chat frontend
 
 ### RAG (retrieval-augmented generation)
@@ -67,12 +76,15 @@ RBAC) is documented on the docs site, not here.
 ## Deploy orchestration (follow-up)
 
 This repo currently ships **roles only** — there is no `site.yml`, no
-`load_tofu.yml`, and no playbook wiring yet. Deploy orchestration (the
-site playbook, the dynamic inventory loader, and the shared
-`docker_engine` / base-setup role dependency every Docker-based role here
-assumes is already applied to the host) is a tracked follow-up, not part of
-this repo yet. Until then, these roles are consumed by `ansible-proxmox-apps`
-or invoked directly against a prepared host.
+`load_tofu.yml`, and no playbook wiring yet. Deploy orchestration (the site
+playbook and the dynamic inventory loader) is a tracked follow-up, not part
+of this repo yet. Until then, these roles are consumed by
+`ansible-proxmox-apps` or invoked directly against a prepared host.
+
+The Docker-based roles meta-depend on a local `docker_engine` copy (imported
+from `ansible-proxmox-apps`, which keeps its own for its remaining Docker
+roles). De-duplicating that shared bootstrap role into one home is part of
+the same follow-up.
 
 ## Testing
 

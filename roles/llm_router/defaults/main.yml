@@ -133,17 +133,6 @@ llm_router_large_models:
     backend: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
     context_window: 65536
     extra_body: { repetition_penalty: 1.05 }
-  # ai-default: THE stable fabric-brain alias every consumer (Hermes, Open
-  # WebUI, the cron fleet) points at permanently. Statically bound since
-  # 2026-07-16: the daily 00/12 UTC rotation was deleted once both phases
-  # pointed at the same model (a no-op flip whose timers still restarted
-  # litellm twice a day). Re-pointing the fabric brain = edit this one
-  # backend line. Carries its own repetition_penalty because extra_body on
-  # the physical alias above never reaches a distinct model_name.
-  - alias: ai-default
-    backend: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
-    context_window: 65536
-    extra_body: { repetition_penalty: 1.05 }
   # Qwen3-Next-80B Thinking: served from the nix-ai catalog swap tier, loaded
   # on demand (reachable directly and via ai-deep-analysis below). Block style
   # (not the flow one-liner above) only to stay under the 120-char limit.
@@ -151,32 +140,41 @@ llm_router_large_models:
     backend: mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit
     context_window: 32768
     extra_body: { repetition_penalty: 1.05 }
+# Literal aliases (LiteLLM router_settings.model_group_alias): pure name -> model
+# group indirection with ZERO config of their own — context_window, extra_body,
+# api_base, everything comes from the target entry above, so re-pointing an
+# alias can never drift out of sync with its backend's tuning. Consumer-facing
+# names that duplicate a physical entry's config are BANNED — every alias in
+# this fabric lives in this map and nowhere else.
+llm_router_model_group_aliases:
+  # ai-default: THE stable fabric-brain alias every consumer (Hermes, Open
+  # WebUI, the cron fleet) points at permanently. Statically bound since
+  # 2026-07-16 (the daily 00/12 UTC rotation was deleted as a no-op flip).
+  # Re-pointing the fabric brain = edit this one target name.
+  ai-default: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
   # ai-deep-analysis: the STABLE tier alias for the escalation rubric's
   # deep-analysis tier (ai_escalation_rubric, all.yml) — "what else breaks /
-  # find what the author missed" second-order analysis. A tier NAME decoupled
-  # from the physical model (same pattern as ai-default) so re-pinning the
-  # tier is one data edit here, no consumer changes. Currently the 80B
+  # find what the author missed" second-order analysis. Currently the 80B
   # thinking brain; rubric constraint: invoke only while the backend is
   # resident, with a generous output-token budget. The cluster deep tier gets
   # its alias only when a cluster window is up (blocked-upstream — see the
   # rubric data).
-  - alias: ai-deep-analysis
-    backend: mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit
-    context_window: 32768
-    extra_body: { repetition_penalty: 1.05 }
-  # claude-sonnet-5 is a Claude Code alias deliberately mapped to a local Qwen3.6
-  # backend (PR #624) — not a mis-map; it inherits that backend's serving window.
-  - { alias: claude-sonnet-5, backend: mlx-community/Qwen3.6-35B-A3B-4bit, context_window: 32768 }
+  ai-deep-analysis: mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit
+  # claude-sonnet-5 is a Claude Code alias deliberately mapped to a local
+  # Qwen3.6 backend (PR #624) — not a mis-map; it inherits that backend's
+  # serving window and tuning.
+  claude-sonnet-5: mlx-community/Qwen3.6-35B-A3B-4bit
+  # claude-haiku-4-5 is the Claude Code light-tier alias; it points at the live
+  # light model group (the load-balanced GPU llm-fast + CPU llm-light pair).
+  # The hermes-4-14b backend it previously targeted is no longer served
+  # anywhere — >=14B GPU serving is barred from the fast tier.
+  claude-haiku-4-5: qwen3-4b
 # light: exposed aliases -> the llama-swap model_name they map to. Each becomes two
 # same-name deployments (llm-fast GPU + llm-light CPU) in the rendered config.
 # `embedding: true` marks the entry as an embeddings model_group.
 llm_router_light_models:
   - { alias: qwen3-4b, backend: qwen3-4b }
   - { alias: embeddings, backend: embeddings, embedding: true }
-  # claude-haiku-4-5 is the Claude Code light-tier alias; it maps to the live
-  # light backend (the hermes-4-14b backend it previously targeted is no
-  # longer served anywhere — >=14B GPU serving is barred from the fast tier).
-  - { alias: claude-haiku-4-5, backend: qwen3-4b }
 
 # --- OpenRouter egress tier (paid-SaaS; one key per MODEL) --------------------
 # Explicitly-named aliases to OpenRouter-hosted models. NEVER part of the

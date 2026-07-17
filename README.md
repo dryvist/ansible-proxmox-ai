@@ -4,7 +4,7 @@ Ansible roles for the homelab's AI/LLM stack on Proxmox VMs and LXC containers.
 Extracted from `ansible-proxmox-apps`; granular pre-split commit history for
 each role lives in that repo's git log (`git log --follow <path>`).
 
-![CI](https://img.shields.io/badge/CI-ci--gate-blue)
+[![CI][ci-badge]][ci-workflow]
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 
 ## Installation
@@ -71,10 +71,10 @@ molecule test -s qdrant
 ## Deploy orchestration (follow-up)
 
 This repository currently ships **roles only** — there is no `site.yml` and no
-inventory-loading playbook yet. Deploy orchestration (the site playbook, the
-dynamic tofu-inventory loader, and the shared `docker_engine` / base-setup
-role dependency the Docker-based roles here assume is already applied to the
-host) is a tracked follow-up.
+inventory-loading playbook yet. Deploy orchestration (the site playbook and
+the dynamic tofu-inventory loader) is a tracked follow-up, as is
+de-duplicating the local `docker_engine` bootstrap copy the Docker-based
+roles depend on (imported from `ansible-proxmox-apps`).
 
 ## Contributing
 
@@ -89,3 +89,6 @@ Apache License 2.0 — see [LICENSE](LICENSE) for details.
 ---
 
 <https://docs.jacobpevans.com>
+
+[ci-badge]: https://github.com/dryvist/ansible-proxmox-ai/actions/workflows/ci-gate.yml/badge.svg
+[ci-workflow]: https://github.com/dryvist/ansible-proxmox-ai/actions/workflows/ci-gate.yml

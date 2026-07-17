@@ -1,0 +1,153 @@
+---
+# docker_engine — install Docker CE + the compose plugin on a Debian/Ubuntu
+# host and (optionally) a Python venv with the docker SDK for the SDK-based
+# community.docker modules. Consumed as a meta dependency by every *_docker app
+# role so the Docker bootstrap lives in exactly one place.
+
+# =============================================================================
+# Docker installation
+# =============================================================================
+
+# Gather every fact the role uses so it is safe under gather_facts: false plays:
+# ansible_distribution* (GPG/repo), ansible_architecture (repo arch), and
+# ansible_virtualization_type (the fuse-overlayfs LXC guard).
+- name: Gather OS facts
+  ansible.builtin.setup:
+    filter:
+      - ansible_distribution*
+      - ansible_architecture
+      - ansible_virtualization_type
+
+# Skip the apt install work on hosts that already have Docker. The storage
+# driver, service state, and optional venv below always run so drift is still
+# reconciled.
+- name: Check whether Docker is already installed
+  ansible.builtin.command: docker --version
+  register: docker_engine_installed
+  changed_when: false
+  failed_when: false
+
+- name: Install Docker prerequisites
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+    update_cache: true
+  when: docker_engine_installed.rc | default(1) != 0
+
+- name: Create keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+  when: docker_engine_installed.rc | default(1) != 0
+
+- name: Set Docker repository distribution
+  ansible.builtin.set_fact:
+    docker_engine_distro: "{{ ansible_distribution | lower }}"
+  when: docker_engine_installed.rc | default(1) != 0
+
+- name: Add Docker GPG key
+  ansible.builtin.get_url:
+    url: "https://download.docker.com/linux/{{ docker_engine_distro }}/gpg"
+    dest: /etc/apt/keyrings/docker.asc
+    mode: "0644"
+    force: false
+  when: docker_engine_installed.rc | default(1) != 0
+
+- name: Add Docker repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ 'arm64' if ansible_architecture in ['aarch64', 'arm64']
+        else 'amd64' }} signed-by=/etc/apt/keyrings/docker.asc]
+      https://download.docker.com/linux/{{ docker_engine_distro }}
+      {{ ansible_distribution_release }} stable
+    state: present
+    filename: docker
+  when: docker_engine_installed.rc | default(1) != 0
+
+- name: Install Docker packages
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    update_cache: true
+  when: docker_engine_installed.rc | default(1) != 0
+
+# fuse-overlayfs is required for Docker on ZFS-backed LXC containers only;
+# VMs (and molecule's Docker-in-Docker) use their native storage driver.
+- name: Install fuse-overlayfs for Docker on ZFS-backed LXC
+  ansible.builtin.apt:
+    name: fuse-overlayfs
+    state: present
+  when:
+    - docker_engine_install_fuse_overlayfs | bool
+    - ansible_virtualization_type | default('') == 'lxc'
+
+- name: Configure Docker storage driver
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    content: |
+      {
+        "storage-driver": "{{ docker_engine_storage_driver }}"
+      }
+    owner: root
+    group: root
+    mode: "0644"
+  register: docker_engine_daemon_config
+  when: docker_engine_configure_daemon_json | bool
+
+- name: Restart Docker to apply the storage-driver configuration
+  ansible.builtin.systemd:  # noqa: no-handler
+    name: docker
+    state: restarted
+  when: docker_engine_configure_daemon_json | bool and docker_engine_daemon_config.changed
+
+- name: Ensure Docker service is running
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+
+# =============================================================================
+# Python venv for the SDK-based community.docker modules (default off)
+# =============================================================================
+# docker_compose_v2 shells out to the `docker compose` CLI and does not need
+# this venv; only the SDK-based modules (docker_container/_exec/_info,
+# docker_image, docker_swarm/_stack, docker_prune) do.
+
+- name: Install Python venv and pip for dependencies
+  ansible.builtin.apt:
+    name:
+      - python3-pip
+      - python3-venv
+      - python3-full
+    state: present
+    update_cache: true
+  when: docker_engine_manage_venv | bool
+
+- name: Create virtualenv for Ansible Python dependencies
+  ansible.builtin.pip:
+    name: "{{ ['docker'] + docker_engine_venv_extra_packages }}"
+    state: present
+    virtualenv: /opt/ansible-venv
+    virtualenv_command: python3 -m venv
+  when: docker_engine_manage_venv | bool
+
+# Optional: pin the venv interpreter for every later task on this host. Roles
+# that scope the interpreter per docker_compose_v2 task (to keep system Python
+# for their own apt/dbus tasks) leave this false.
+- name: Set Python interpreter to use the venv for subsequent tasks
+  ansible.builtin.set_fact:
+    ansible_python_interpreter: /opt/ansible-venv/bin/python
+  when:
+    - docker_engine_manage_venv | bool
+    - docker_engine_set_global_interpreter | bool

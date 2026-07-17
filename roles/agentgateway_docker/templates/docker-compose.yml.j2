@@ -11,3 +11,30 @@ services:
       - "{{ agentgateway_docker_metrics_port }}:{{ agentgateway_docker_metrics_port }}"
     volumes:
       - "{{ agentgateway_docker_data_dir }}/config.yaml:/config.yaml:ro"
+{% if agentgateway_docker_qdrant_mcp_enabled | bool
+      and agentgateway_docker_qdrant_api_key | length > 0 %}
+
+  # Qdrant vector-memory MCP sidecar (see defaults). Reached only by the
+  # gateway over the compose network — no host port published.
+  mcp-qdrant:
+    image: {{ agentgateway_docker_qdrant_mcp_image }}
+    container_name: mcp-qdrant
+    restart: {{ agentgateway_docker_restart_policy }}
+    entrypoint: ["uvx"]
+    command:
+      - "mcp-server-qdrant=={{ agentgateway_docker_qdrant_mcp_version }}"
+      - "--transport"
+      - "streamable-http"
+    environment:
+      FASTMCP_SERVER_HOST: "0.0.0.0"
+      FASTMCP_SERVER_PORT: "{{ agentgateway_docker_qdrant_mcp_port }}"
+      QDRANT_URL: "{{ agentgateway_docker_qdrant_url }}"
+      QDRANT_API_KEY: "{{ agentgateway_docker_qdrant_api_key }}"
+      COLLECTION_NAME: "{{ agentgateway_docker_qdrant_mcp_collection }}"
+    volumes:
+      # Cache the uvx-resolved package + fastembed model across restarts.
+      - mcp_qdrant_cache:/root/.cache
+
+volumes:
+  mcp_qdrant_cache:
+{% endif %}
