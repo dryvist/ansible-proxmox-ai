@@ -6,8 +6,8 @@ the SAME model deployment the indexer used to build the collection — so no
 embedding model is loaded in this container.
 
 Configuration (env): ROUTER_BASE_URL, ROUTER_API_KEY, EMBED_MODEL,
-QDRANT_URL, QDRANT_API_KEY, COLLECTION_NAME, DENSE_VECTOR_NAME,
-FASTMCP_SERVER_HOST, FASTMCP_SERVER_PORT.
+QDRANT_URL, QDRANT_API_KEY, COLLECTION_NAME, FASTMCP_SERVER_HOST,
+FASTMCP_SERVER_PORT.
 """
 
 import json
@@ -37,11 +37,9 @@ async def search_docs(query: str, limit: int = 5) -> list[dict]:
             f"{os.environ['QDRANT_URL']}/collections/{os.environ['COLLECTION_NAME']}"
             "/points/search",
             headers={"api-key": os.environ["QDRANT_API_KEY"]},
-            json={
-                "vector": {"name": os.environ["DENSE_VECTOR_NAME"], "vector": vector},
-                "limit": limit,
-                "with_payload": True,
-            },
+            # llama-index creates the collection with a single unnamed dense
+            # vector, so the search addresses it without a vector name.
+            json={"vector": vector, "limit": limit, "with_payload": True},
         )
         search.raise_for_status()
 
