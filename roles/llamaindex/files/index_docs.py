@@ -123,8 +123,9 @@ def build_index(cfg: dict, docs: list) -> None:
         client=client,
         collection_name=collection,
         # Named vector matching mcp-server-qdrant's FastEmbedProvider
-        # convention (fast-<lowercased model>), so the gateway's read-only
-        # docs-search sidecar can query this collection directly.
+        # convention (fast-<lowercased model name after the '/'>), so the
+        # gateway's read-only docs-search sidecar can query this collection
+        # directly.
         dense_vector_name=cfg["index"]["dense_vector_name"],
     )
     storage = StorageContext.from_defaults(vector_store=vector_store)
