@@ -6,9 +6,11 @@
 
 # =============================================================================
 # Phase 0: OpenBao resource-domain secrets pre-fetch
-# Reads the local-llm domain's KV subtree (its own least-privilege AppRole)
-# into the `bao_local_llm_secrets` fact so every consumer role can resolve
-# its secrets bao-first with an env fallback. Runs once on the controller
+# Reads each resource domain's KV subtree (its own least-privilege AppRole)
+# into a `bao_<domain>_secrets` fact — local-llm for the LLM/RAG stack, apps
+# for the Hindsight memory-service credentials (apps/hindsight) — so every
+# consumer role can resolve its secrets bao-first with an env fallback. Runs
+# once on the controller
 # and publishes to every AI group; it SKIPS CLEANLY when BAO_ADDR or the
 # domain's role_id/secret_id envs are unset.
 #
@@ -21,7 +23,7 @@
 
 - name: Pre-fetch resource-domain secrets from OpenBao
   hosts: >-
-    qdrant_group:llamaindex_group:ollama_group:open_webui_group:
+    qdrant_group:hindsight_group:llamaindex_group:ollama_group:open_webui_group:
     hermes_agent_group:llm_fast_group:llm_router_group:
     dify_group:langflow_group:langgraph_group:agent_exec_group:
     langfuse_group:agentgateway_group:ai_orchestration_group
@@ -37,9 +39,10 @@
     # computed once on the delegated controller; a domain that was skipped
     # (BAO_ADDR or its creds unset) is simply absent from the dict, so
     # `default({})` covers it the same as a host outside this play.
-    - name: Publish the local-llm domain's merged secrets to every host in this play
+    - name: Publish each domain's merged secrets to every host in this play
       ansible.builtin.set_fact:
         bao_local_llm_secrets: "{{ openbao_secrets_by_domain['local-llm'] | default({}) }}"
+        bao_apps_secrets: "{{ openbao_secrets_by_domain['apps'] | default({}) }}"
       vars:
         openbao_secrets_by_domain: "{{ hostvars['localhost'].openbao_secrets_by_domain | default({}) }}"
       no_log: true
