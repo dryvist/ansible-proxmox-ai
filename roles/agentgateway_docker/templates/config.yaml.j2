@@ -2,11 +2,18 @@
 # agentgateway static config — regenerated on every converge (config as code).
 # Schema: https://agentgateway.dev/schema/config
 #
-# One route PER target (path-scoped, e.g. /splunk/mcp) instead of one
+# One route PER target (path-scoped, e.g. /splunk) instead of one
 # multiplexed route: auth is passthrough, and a shared route would forward a
 # caller's Authorization header to EVERY backend a tool resolves to — leaking
 # the Splunk token to external targets. Path isolation keeps each credential
 # on its own backend; clients configure one MCP server entry per path.
+#
+# Route naming: the vhost is already mcp.<sub>, so the canonical path is just
+# the capability name (/splunk, /context7, /memory, /hindsight) — the /mcp
+# suffix carried no protocol meaning (Streamable HTTP POSTs to whatever URL
+# the client is given). Every capability also keeps a legacy /<name>/mcp
+# alias until Hermes + the nix-ai client configs migrate; drop the aliases
+# after that (tracked in #22).
 config:
   # Bind the admin UI (Traefik-fronted) and the stats server (Prometheus
   # /metrics) on all interfaces so the LXC can publish them; the guest
@@ -27,6 +34,8 @@ binds:
 {% for target in agentgateway_docker_mcp_targets %}
     - matches:
       - path:
+          exact: /{{ target.name }}
+      - path:
           exact: /{{ target.name }}/mcp
       backends:
       - mcp:
@@ -42,17 +51,22 @@ binds:
 {% endfor %}
 {% if agentgateway_docker_qdrant_mcp_enabled | bool
       and agentgateway_docker_qdrant_api_key | length > 0 %}
-{# Qdrant vector-memory MCP — backend is the mcp-server-qdrant sidecar in this
-   compose stack (service name on the compose network, no host port). #}
+{# Vector-memory MCP (capability route /memory) — backend is the
+   mcp-server-qdrant sidecar in this compose stack (service name on the
+   compose network, no host port). Trailing slash on the backend path is
+   REQUIRED: FastMCP 307-redirects /mcp -> /mcp/, and the redirect escaped
+   the route (the live /qdrant/mcp dead-end in #22). #}
     - matches:
+      - path:
+          exact: /memory
       - path:
           exact: /qdrant/mcp
       backends:
       - mcp:
           targets:
-          - name: qdrant
+          - name: memory
             mcp:
-              host: http://mcp-qdrant:{{ agentgateway_docker_qdrant_mcp_port }}/mcp
+              host: http://mcp-qdrant:{{ agentgateway_docker_qdrant_mcp_port }}/mcp/
 {% endif %}
 {% for target in agentgateway_docker_a2a_targets | default([]) %}
     - matches:
