@@ -1,0 +1,76 @@
+---
+# Fetches ONE domain's KV subtree from OpenBao, invoked once per entry in
+# openbao_secrets_domains (the loop var is `openbao_domain`; delegation and
+# run_once are set by the caller's enclosing block in main.yml, so every task
+# here inherits them). SKIPS CLEANLY when this specific domain's role_id/
+# secret_id envs are unset — an operator can migrate one domain at a time
+# onto OpenBao while the rest still fall back to env/SOPS via the
+# group_vars/all.yml `{}` defaults.
+
+- name: Resolve role_id/secret_id from env for {{ openbao_domain.name }}
+  ansible.builtin.set_fact:
+    openbao_secrets_domain_role_id: "{{ lookup('env', openbao_domain.role_id_env) | default('', true) }}"
+    openbao_secrets_domain_secret_id: "{{ lookup('env', openbao_domain.secret_id_env) | default('', true) }}"
+  no_log: true
+
+- name: Report missing credentials (env/SOPS fallback) for {{ openbao_domain.name }}
+  ansible.builtin.debug:
+    msg: >-
+      {{ openbao_domain.role_id_env }} / {{ openbao_domain.secret_id_env }}
+      not both set — skipping the {{ openbao_domain.name }} domain; its
+      consumer roles fall back to env/SOPS secrets.
+  when: >-
+    openbao_secrets_domain_role_id | length == 0
+    or openbao_secrets_domain_secret_id | length == 0
+
+- name: Fetch and merge secrets for {{ openbao_domain.name }}
+  when:
+    - openbao_secrets_domain_role_id | length > 0
+    - openbao_secrets_domain_secret_id | length > 0
+  no_log: true
+  block:
+    # set_fact persists for the rest of the play, so without an explicit reset
+    # here the SECOND domain's merge would start from the FIRST domain's
+    # leftover data (facts aren't automatically scoped per loop iteration).
+    - name: Reset the per-domain merge accumulator for {{ openbao_domain.name }}
+      ansible.builtin.set_fact:
+        openbao_secrets_domain_merged: {}
+
+    - name: Log in with the AppRole for {{ openbao_domain.name }}
+      community.hashi_vault.vault_login:
+        url: "{{ hostvars['localhost'].openbao_secrets_active_addr | default(openbao_secrets_bao_addr, true) }}"
+        auth_method: approle
+        role_id: "{{ openbao_secrets_domain_role_id }}"
+        secret_id: "{{ openbao_secrets_domain_secret_id }}"
+        validate_certs: "{{ openbao_secrets_validate_certs }}"
+      register: openbao_secrets_domain_login
+
+    - name: Read each KV path, tolerating not-yet-seeded ones, for {{ openbao_domain.name }}
+      community.hashi_vault.vault_kv2_get:
+        url: "{{ hostvars['localhost'].openbao_secrets_active_addr | default(openbao_secrets_bao_addr, true) }}"
+        auth_method: token
+        token: "{{ openbao_secrets_domain_login.login.auth.client_token }}"
+        engine_mount_point: "{{ openbao_secrets_kv_mount }}"
+        path: "{{ item }}"
+        validate_certs: "{{ openbao_secrets_validate_certs }}"
+      loop: "{{ openbao_domain.paths }}"
+      register: openbao_secrets_domain_reads
+      failed_when: false
+
+    - name: Merge readable paths into one dict for {{ openbao_domain.name }}
+      ansible.builtin.set_fact:
+        openbao_secrets_domain_merged: "{{ openbao_secrets_domain_merged | combine(item.secret) }}"
+      loop: "{{ openbao_secrets_domain_reads.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.secret is defined and item.secret is mapping
+
+    # delegate_facts + reading hostvars['localhost'] keep the single accumulator
+    # on localhost (see the note on the init task in main.yml). Reading the bare
+    # var here would resolve the play-host copy and silently drop earlier domains.
+    - name: Accumulate into the by-domain dict for {{ openbao_domain.name }}
+      ansible.builtin.set_fact:
+        openbao_secrets_by_domain: >-
+          {{ hostvars['localhost'].openbao_secrets_by_domain
+             | combine({ openbao_domain.name: openbao_secrets_domain_merged }) }}
+      delegate_facts: true

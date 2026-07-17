@@ -1,0 +1,200 @@
+---
+# Pre-playbook that loads OpenTofu infrastructure data dynamically.
+# Runs first to populate the Ansible inventory from the published tofu
+# inventory, eliminating hardcoded VM IDs and IPs from Ansible configuration.
+# Every AI guest this repo manages is an LXC container, so only the
+# containers section of the inventory contract is mapped here — VM/Splunk/
+# docker-VM mapping stays upstream in ansible-proxmox-apps.
+
+- name: Load OpenTofu Infrastructure Inventory
+  hosts: localhost
+  become: false
+  gather_facts: false
+  tags: always
+
+  # Inventory source resolution (priority order, first that resolves wins):
+  #   1. TOFU_INVENTORY_PATH  — explicit local path / pin (tests, overrides)
+  #   2. RustFS published artifact — the tofu-proxmox Terrakube workspace
+  #      publishes the raw inventory; the shared role reads store credentials
+  #      natively from OpenBao and fetches it with amazon.aws.
+  #   3. inventory/tofu_inventory.json — the local gitignored cache the
+  #      terraform-proxmox after-hook writes (requires the explicit
+  #      TOFU_INVENTORY_ALLOW_STALE=1 opt-in).
+  vars:
+    # Override global ansible_become for localhost tasks
+    ansible_become: false
+    # The global inventory pins ansible_python_interpreter to /usr/bin/python3
+    # (correct for the Debian LXC targets). That system python lacks boto3, so
+    # the amazon.aws S3 fetch below fails to import it. Discover the interpreter
+    # for this localhost play instead, so it picks the dev-shell python that
+    # carries boto3/botocore. Scoped to this play only — remote-host resolution
+    # is untouched.
+    ansible_python_interpreter: auto_silent
+
+  tasks:
+    # Inventory resolution (TOFU_INVENTORY_PATH -> RustFS via OpenBao ->
+    # opt-in local cache) is delegated to the shared inventory_resolve
+    # role (dryvist/homelab-contracts), which ends with `tofu_data` loaded.
+    # The repo-specific asserts and add_host group mapping stay below.
+    - name: Resolve the published OpenTofu inventory
+      ansible.builtin.include_role:
+        name: inventory_resolve
+      vars:
+        inventory_resolve_required_keys: [constants, nodes, domain]
+
+    - name: Validate tofu_data constants structure
+      ansible.builtin.assert:
+        that:
+          - tofu_data is defined
+          - tofu_data.constants is defined
+          - tofu_data.constants.service_ports is defined
+        fail_msg: |
+          tofu_data.constants is missing or incomplete in the resolved
+          inventory. Re-run the tofu-proxmox Terrakube workspace so the
+          inventory is republished (including pipeline_constants) to RustFS.
+
+    - name: Validate tofu_data carries the node-FQDN derivation inputs
+      ansible.builtin.assert:
+        that:
+          - tofu_data.nodes is defined
+          - tofu_data.domain is defined
+          - tofu_data.domain | length > 0
+        fail_msg: |
+          tofu_data.nodes and/or tofu_data.domain are missing from the
+          resolved inventory. Every LXC container's ansible_host is DERIVED as
+          {node-role}.{domain} (the per-node management FQDN) — a missing or
+          empty domain would silently produce a broken host (a bare
+          "{node-role}." with no domain suffix).
+
+          Re-run the tofu-proxmox Terrakube workspace so the inventory is
+          republished with `nodes` and `domain` populated.
+
+    - name: Add AI LXC containers to inventory (proxmox_pct_remote connection)
+      ansible.builtin.add_host:
+        name: "{{ item.key }}"
+        groups: >-
+          {{
+            ['lxc_containers', 'all'] +
+            (
+              ['qdrant_group']
+              if 'vectordb' in (item.value.tags | default([]))
+              else []
+            ) +
+            (
+              ['llamaindex_group']
+              if 'rag' in (item.value.tags | default([]))
+              else []
+            ) +
+            (
+              ['ollama_group']
+              if 'ollama' in (item.value.tags | default([]))
+              else []
+            ) +
+            (
+              ['open_webui_group']
+              if 'open-webui' in (item.value.tags | default([]))
+              else []
+            ) +
+            (
+              ['hermes_agent_group']
+              if 'hermes-agent' in (item.value.tags | default([]))
+              else []
+            ) +
+            (
+              ['llm_fast_group']
+              if 'llm-fast' in (item.value.tags | default([]))
+              else []
+            ) +
+            (
+              ['llm_router_group']
+              if 'llm-router' in (item.value.tags | default([]))
+              else []
+            ) +
+            (
+              ['dify_group']
+              if 'dify' in (item.value.tags | default([]))
+              else []
+            ) +
+            (
+              ['langflow_group']
+              if 'langflow' in (item.value.tags | default([]))
+              else []
+            ) +
+            (
+              ['langgraph_group']
+              if 'langgraph' in (item.value.tags | default([]))
+              else []
+            ) +
+            (
+              ['agent_exec_group']
+              if 'agent-exec' in (item.value.tags | default([]))
+              else []
+            ) +
+            (
+              ['langfuse_group']
+              if 'langfuse' in (item.value.tags | default([]))
+              else []
+            ) +
+            (
+              ['agentgateway_group']
+              if 'agentgateway' in (item.value.tags | default([]))
+              else []
+            ) +
+            (
+              ['ai_orchestration_group']
+              if 'ai-orchestration' in (item.value.tags | default([]))
+              else []
+            )
+          }}
+        proxmox_vmid: "{{ item.value.vmid }}"
+        # Per-node management FQDN, DERIVED — never a hand-pinned global host.
+        # A guest reaches its own node at {node-role}.{domain}; those names
+        # resolve internally while the bare cluster member name does not. The
+        # nodes-map lookup corrects a legacy bare node key to its role, and
+        # falls back to the node value itself when the map omits the key
+        # (e.g. the generic test-fixture node key).
+        ansible_host: >-
+          {{ (tofu_data.nodes[item.value.node] | default({})).role
+             | default(item.value.node, true) }}.{{ tofu_data.domain }}
+        ansible_connection: "{{ item.value.ansible_connection }}"
+        ansible_user: root
+        ansible_ssh_private_key_file: "{{ lookup('env', 'PROXMOX_SSH_KEY_PATH') }}"
+        # NOTE: no `hostname:` here — add_host treats it as an alias of `name`
+        # and silently consumes it (it never becomes a hostvar). The hostname
+        # fact is set for every guest by the propagate task at the bottom.
+        container_ip: "{{ item.value.ip }}"
+        # DHCP-first guests (tofu contract): `ip` carries the FQDN (DNS-first),
+        # `reserved_ip` the DHCP-reservation address an A record must point at.
+        # Static guests carry reserved_ip = null (or pre-contract inventories
+        # omit it entirely) — both normalize to '' here.
+        container_reserved_ip: "{{ item.value.reserved_ip | default('', true) }}"
+        host_tags: "{{ item.value.tags | default([]) }}"
+      loop: "{{ tofu_data.containers | dict2items }}"
+      changed_when: false
+      when:
+        - tofu_data.containers is defined
+        - tofu_data.containers | length > 0
+
+    # Push tofu_data onto every dynamically-added host so roles can access
+    # tofu_data.constants.* directly without hostvars['localhost'] indirection.
+    - name: Propagate tofu_data to all inventory hosts
+      ansible.builtin.set_fact:
+        tofu_data: "{{ tofu_data }}"
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      loop: "{{ groups['all'] | reject('equalto', 'localhost') | list }}"
+      when: tofu_data is defined
+
+    # add_host CANNOT set a host var literally named `hostname`: it is an alias
+    # of add_host's `name` option (aliases: host, hostname) and gets silently
+    # consumed instead of becoming a hostvar. Set it as a real per-host fact.
+    - name: Set the guest hostname fact on all inventory hosts
+      vars:
+        tofu_guests: "{{ tofu_data.containers | default({}) }}"
+      ansible.builtin.set_fact:
+        hostname: "{{ tofu_guests[item].hostname }}"
+        container_reserved_ip: "{{ tofu_guests[item].reserved_ip | default('', true) }}"
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      loop: "{{ groups['all'] | reject('equalto', 'localhost') | list }}"
+      when: item in tofu_guests

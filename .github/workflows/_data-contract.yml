@@ -6,11 +6,11 @@
 # ansible CI, so it stays local and is aggregated by the wrapper's
 # "Merge Gate".
 #
-# This repo is roles-only today (deploy orchestration — site.yml/load_tofu.yml
-# and the shared tofu inventory contract — is a tracked follow-up; see
-# AGENTS.md). Inventory-schema and inventory-load checks live upstream in
-# ansible-proxmox-apps, which owns that contract; this repo is a read-only
-# consumer and does not duplicate it, so those jobs are not replicated here.
+# Two jobs: playbook syntax, and an inventory-load check that runs
+# inventory/load_tofu.yml against the committed sample fixture and asserts
+# the tag -> group mapping. The inventory SCHEMA itself stays owned upstream
+# by ansible-proxmox-apps; this repo is a read-only consumer and only tests
+# its own mapping of that contract.
 
 name: Data Contract
 
@@ -52,4 +52,44 @@ jobs:
             fi
           done
         env:
+          ANSIBLE_HOST_KEY_CHECKING: 'false'
+
+  verify-inventory-load:
+    name: Verify Inventory Load
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+
+      - name: Install Ansible
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible
+
+      - name: Install Ansible collections
+        run: |
+          ansible-galaxy collection install -r requirements.yml
+
+      # load_tofu.yml (imported by verify_inventory.yml) include_role's the
+      # shared inventory_resolve role, so it must be installed before the run.
+      - name: Install Ansible roles
+        run: |
+          ansible-galaxy role install -r requirements.yml
+
+      - name: Verify inventory loads and groups are assigned correctly
+        run: >-
+          ansible-playbook tests/inventory_load/verify_inventory.yml
+          -i inventory/hosts.yml -c local
+        env:
+          # Pin the fixture explicitly (resolution priority 1) so the test is
+          # hermetic even on a runner with ambient AWS creds — the S3 artifact
+          # (priority 2) must never feed a test.
+          TOFU_INVENTORY_PATH: ${{ github.workspace }}/tests/inventory_load/tofu_inventory.json
+          PROXMOX_SSH_KEY_PATH: /dev/null
           ANSIBLE_HOST_KEY_CHECKING: 'false'
