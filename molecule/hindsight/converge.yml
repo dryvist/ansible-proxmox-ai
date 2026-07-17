@@ -58,8 +58,32 @@
       register: hindsight_molecule_bridge_gw
       changed_when: false
 
-    - name: Include hindsight_docker role
-      ansible.builtin.include_role:
-        name: hindsight_docker
-      vars:
-        hindsight_docker_db_host: "{{ hindsight_molecule_bridge_gw.stdout | trim }}"
+    - name: Converge hindsight with container-log capture on failure
+      block:
+        - name: Include hindsight_docker role
+          ansible.builtin.include_role:
+            name: hindsight_docker
+          vars:
+            hindsight_docker_db_host: "{{ hindsight_molecule_bridge_gw.stdout | trim }}"
+      rescue:
+        - name: Dump hindsight container logs (diagnosis)
+          ansible.builtin.command: docker logs --tail 80 hindsight
+          register: hindsight_molecule_logs
+          changed_when: false
+          failed_when: false
+
+        - name: Dump docker state (diagnosis)
+          ansible.builtin.command: docker ps -a
+          register: hindsight_molecule_ps
+          changed_when: false
+          failed_when: false
+
+        - name: Fail with the captured diagnostics
+          ansible.builtin.fail:
+            msg: |
+              hindsight converge failed.
+              docker ps -a:
+              {{ hindsight_molecule_ps.stdout | default('') }}
+              container logs:
+              {{ hindsight_molecule_logs.stdout | default('') }}
+              {{ hindsight_molecule_logs.stderr | default('') }}
