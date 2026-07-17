@@ -8,12 +8,11 @@
 # the Splunk token to external targets. Path isolation keeps each credential
 # on its own backend; clients configure one MCP server entry per path.
 #
-# Route naming: the vhost is already mcp.<sub>, so the canonical path is just
-# the capability name (/splunk, /context7, /memory, /hindsight) — the /mcp
-# suffix carried no protocol meaning (Streamable HTTP POSTs to whatever URL
-# the client is given). Every capability also keeps a legacy /<name>/mcp
-# alias until Hermes + the nix-ai client configs migrate; drop the aliases
-# after that (tracked in #22).
+# Route naming: the vhost is already mcp.<sub>, so the path is just the
+# capability name (/splunk, /context7, /memory, /docs, /hindsight) — the
+# /mcp suffix carried no protocol meaning (Streamable HTTP POSTs to whatever
+# URL the client is given). The transitional /<name>/mcp aliases were
+# removed once Hermes and the workstation client configs migrated (#22).
 config:
   # Bind the admin UI (Traefik-fronted) and the stats server (Prometheus
   # /metrics) on all interfaces so the LXC can publish them; the guest
@@ -35,8 +34,6 @@ binds:
     - matches:
       - path:
           exact: /{{ target.name }}
-      - path:
-          exact: /{{ target.name }}/mcp
       backends:
       - mcp:
           targets:
@@ -59,14 +56,25 @@ binds:
     - matches:
       - path:
           exact: /memory
-      - path:
-          exact: /qdrant/mcp
       backends:
       - mcp:
           targets:
           - name: memory
             mcp:
               host: http://mcp-qdrant:{{ agentgateway_docker_qdrant_mcp_port }}/mcp/
+{% if agentgateway_docker_docs_mcp_enabled | bool %}
+{# Docs-search MCP (capability route /docs) — read-only sidecar over the
+   llamaindex homelab_docs collection. Same trailing-slash rule as /memory. #}
+    - matches:
+      - path:
+          exact: /docs
+      backends:
+      - mcp:
+          targets:
+          - name: docs
+            mcp:
+              host: http://mcp-docs:{{ agentgateway_docker_docs_mcp_port }}/mcp/
+{% endif %}
 {% endif %}
 {% for target in agentgateway_docker_a2a_targets | default([]) %}
     - matches:
