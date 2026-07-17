@@ -99,12 +99,11 @@ def build_index(cfg: dict, docs: list) -> None:
         embed_batch_size=8,
         max_retries=8,
     )
-    # The serving tier embeds one input per physical batch (512 tokens); a
-    # chunk above that 500s. llama-index counts chunk_size in tiktoken tokens
-    # but the nomic tokenizer runs ~1.6x that on technical text (384 -> 614
-    # observed), so stay well under: 256 * 1.6 = ~410 < 512.
-    # ponytail: right fix is --ubatch-size 2048 on the embeddings llama-server
-    # (llm_fast role); shrink chunks here until that serving change lands.
+    # The serving tier embeds one input per ubatch (now sized to ctx via the
+    # llama_cpp template). Chunks are still kept small because llama-index
+    # counts tiktoken tokens while the nomic tokenizer runs 1.6-2.4x that on
+    # dense technical text (384 tiktoken -> 614 nomic observed), and small
+    # chunks retrieve better for terse infra docs anyway.
     Settings.chunk_size = 256
     Settings.chunk_overlap = 32
 
