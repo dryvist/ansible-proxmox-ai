@@ -58,4 +58,7 @@ if __name__ == "__main__":
         transport="http",
         host=os.environ.get("FASTMCP_SERVER_HOST", "0.0.0.0"),
         port=int(os.environ.get("FASTMCP_SERVER_PORT", "8001")),
+        # Serve exactly at /mcp/ — the gateway route dials this path, and
+        # FastMCP 3's default (/mcp) would 307 it out of the route.
+        path="/mcp/",
     )
