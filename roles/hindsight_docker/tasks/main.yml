@@ -66,14 +66,24 @@
     state: present
 
 # =============================================================================
-# Health check — /health is the same endpoint Traefik's pool check uses
+# Health check — /health is the same endpoint Traefik's pool check uses.
+#
+# The window is sized for a COLD start, not a warm one. On a fresh guest the
+# API does not listen until it has: downloaded the local embeddings + reranker
+# models from HuggingFace, initialized both, and verified the LLM connection
+# against the fabric router — and that last step blocks on a llama-swap model
+# load that can take minutes. Measured cold start: the LLM verification alone
+# had not returned 2m07s in. A 2-minute window therefore failed EVERY first
+# converge (and with serial: 1 that aborted the play before the second replica
+# ever deployed). A warm converge returns 200 on the first try, so the longer
+# ceiling costs nothing on the idempotent path.
 # =============================================================================
 
 - name: Wait for hindsight API port to be ready
   ansible.builtin.wait_for:
     host: 127.0.0.1
     port: "{{ hindsight_docker_api_port }}"
-    timeout: 120
+    timeout: "{{ hindsight_docker_startup_timeout }}"
 
 - name: Verify hindsight health endpoint
   ansible.builtin.uri:
@@ -81,7 +91,7 @@
     method: GET
     status_code: 200
   register: hindsight_docker_health
-  retries: 12
-  delay: 10
+  retries: "{{ hindsight_docker_health_retries }}"
+  delay: "{{ hindsight_docker_health_delay }}"
   until: hindsight_docker_health.status == 200
   changed_when: false
