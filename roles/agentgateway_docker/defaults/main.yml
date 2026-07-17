@@ -131,22 +131,35 @@ agentgateway_docker_qdrant_api_key: >-
      | default(lookup('env', 'QDRANT_API_KEY'), true) }}
 
 # =============================================================================
-# Docs-search MCP sidecar — a second mcp-server-qdrant instance, READ-ONLY
-# (QDRANT_READ_ONLY=true disables qdrant-store), pointed at llamaindex's
-# homelab_docs collection. Works because the indexer writes its dense vectors
-# under the fastembed naming convention (fast-nomic-embed-text-v1.5) and both
-# sides embed with nomic-embed-text-v1.5 (768 dims). Served at the /docs
-# capability route; same inert-until-creds gating as the memory sidecar.
+# Docs-search MCP sidecar — a ~60-line FastMCP server (files/mcp_docs_server.py)
+# exposing one read-only search_docs tool over llamaindex's homelab_docs
+# collection. It embeds each query through the LLM router's OpenAI-compatible
+# /embeddings endpoint — the SAME deployment the indexer used to build the
+# collection — and searches Qdrant over REST, so this container loads no
+# embedding model. (mcp-server-qdrant with a local fastembed nomic model was
+# tried first and OOM-killed on this LXC's memory budget; router-side
+# embedding also removes the fastembed-vs-GGUF implementation skew.)
+# Served at the /docs capability route; same inert-until-creds gating as the
+# memory sidecar.
 # =============================================================================
 agentgateway_docker_docs_mcp_enabled: true
+# FastMCP release the sidecar runs via `uv run --with` (Renovate-visible pin).
+agentgateway_docker_docs_mcp_fastmcp_version: "3.4.4"
 # Compose-network-internal only, like the memory sidecar's port.
 agentgateway_docker_docs_mcp_port: 8001
 agentgateway_docker_docs_mcp_collection: homelab_docs
-agentgateway_docker_docs_mcp_embedding_model: "nomic-ai/nomic-embed-text-v1.5"
-agentgateway_docker_docs_mcp_find_description: >-
-  Search the homelab documentation (infrastructure, services, runbooks,
-  conventions). The 'query' parameter takes a natural-language question;
-  returns the most relevant documentation chunks.
+# Must match llamaindex_qdrant_dense_vector_name (the named vector the
+# indexer writes).
+agentgateway_docker_docs_mcp_dense_vector_name: fast-nomic-embed-text-v1.5
+# Router endpoint + model alias — identical contract to the llamaindex role.
+agentgateway_docker_docs_mcp_router_base_url: >-
+  https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}/v1
+agentgateway_docker_docs_mcp_embed_model: "embeddings"
+# Bao-first, controller-env fallback — same resolution as the Qdrant key.
+agentgateway_docker_docs_mcp_router_api_key: >-
+  {{ (bao_local_llm_secrets | default({}))['LLM_ROUTER_MASTER_KEY']
+     | default(lookup('env', 'LLM_ROUTER_MASTER_KEY'), true) }}
 
 # =============================================================================
 # A2A targets — native Agent2Agent (JSON-RPC) endpoints the gateway fronts on

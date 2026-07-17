@@ -36,27 +36,31 @@ services:
       - mcp_qdrant_cache:/root/.cache
 {% if agentgateway_docker_docs_mcp_enabled | bool %}
 
-  # Docs-search MCP sidecar (see defaults) — read-only mcp-server-qdrant over
-  # llamaindex's docs collection. Same image/version pins as mcp-qdrant.
+  # Docs-search MCP sidecar (see defaults) — FastMCP search_docs server that
+  # embeds via the LLM router and searches Qdrant over REST (no local model).
   mcp-docs:
     image: {{ agentgateway_docker_qdrant_mcp_image }}
     container_name: mcp-docs
     restart: {{ agentgateway_docker_restart_policy }}
-    entrypoint: ["uvx"]
+    entrypoint: ["uv"]
     command:
-      - "mcp-server-qdrant=={{ agentgateway_docker_qdrant_mcp_version }}"
-      - "--transport"
-      - "streamable-http"
+      - "run"
+      - "--no-project"
+      - "--with"
+      - "fastmcp=={{ agentgateway_docker_docs_mcp_fastmcp_version }}"
+      - "/app/mcp_docs_server.py"
     environment:
       FASTMCP_SERVER_HOST: "0.0.0.0"
       FASTMCP_SERVER_PORT: "{{ agentgateway_docker_docs_mcp_port }}"
+      ROUTER_BASE_URL: "{{ agentgateway_docker_docs_mcp_router_base_url }}"
+      ROUTER_API_KEY: "{{ agentgateway_docker_docs_mcp_router_api_key }}"
+      EMBED_MODEL: "{{ agentgateway_docker_docs_mcp_embed_model }}"
       QDRANT_URL: "{{ agentgateway_docker_qdrant_url }}"
       QDRANT_API_KEY: "{{ agentgateway_docker_qdrant_api_key }}"
-      QDRANT_READ_ONLY: "true"
       COLLECTION_NAME: "{{ agentgateway_docker_docs_mcp_collection }}"
-      EMBEDDING_MODEL: "{{ agentgateway_docker_docs_mcp_embedding_model }}"
-      TOOL_FIND_DESCRIPTION: "{{ agentgateway_docker_docs_mcp_find_description }}"
+      DENSE_VECTOR_NAME: "{{ agentgateway_docker_docs_mcp_dense_vector_name }}"
     volumes:
+      - "{{ agentgateway_docker_data_dir }}/mcp_docs_server.py:/app/mcp_docs_server.py:ro"
       - mcp_qdrant_cache:/root/.cache
 {% endif %}
 
