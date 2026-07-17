@@ -1,0 +1,51 @@
+---
+# CI check for inventory/load_tofu.yml: loads the committed sample fixture
+# (pinned via TOFU_INVENTORY_PATH) and asserts the tag -> group mapping,
+# tofu_data propagation, and the hostname fact all behave.
+#
+# Run locally:
+#   TOFU_INVENTORY_PATH=$PWD/tests/inventory_load/tofu_inventory.json \
+#     ansible-playbook tests/inventory_load/verify_inventory.yml \
+#     -i inventory/hosts.yml -c local
+
+- name: Load inventory under test
+  import_playbook: ../../inventory/load_tofu.yml
+
+- name: Verify inventory groups and facts
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_become: false
+  tasks:
+    - name: Assert every AI tag mapped to its group
+      ansible.builtin.assert:
+        that:
+          - "'qdrant' in groups['qdrant_group']"
+          - "'llamaindex' in groups['llamaindex_group']"
+          - "'llm-router-1' in groups['llm_router_group']"
+          - "'llm-fast' in groups['llm_fast_group']"
+          - "'hermes-agent' in groups['hermes_agent_group']"
+          - "'open-webui' in groups['open_webui_group']"
+          - "'langfuse' in groups['langfuse_group']"
+          - "'agentgateway' in groups['agentgateway_group']"
+          - "'dify' in groups['dify_group']"
+          - "'dify' in groups['ai_orchestration_group']"
+          - groups['lxc_containers'] | length == 9
+        fail_msg: "tag -> group mapping in inventory/load_tofu.yml is broken"
+
+    - name: Assert tofu_data was propagated to a dynamic host
+      ansible.builtin.assert:
+        that:
+          - hostvars['qdrant'].tofu_data is defined
+          - hostvars['qdrant'].tofu_data.constants.vector_db_ports.qdrant_http == '6333'
+          - hostvars['qdrant'].tofu_data.domain == 'example.com'
+        fail_msg: "tofu_data was not propagated to dynamically-added hosts"
+
+    - name: Assert the hostname fact and derived connection vars
+      ansible.builtin.assert:
+        that:
+          - hostvars['hermes-agent'].hostname == 'hermes-agent'
+          - hostvars['hermes-agent'].ansible_host == 'proxmox1.example.com'
+          - hostvars['hermes-agent'].container_ip == 'hermes-agent.example.com'
+          - hostvars['hermes-agent'].container_reserved_ip == '192.0.2.15'
+        fail_msg: "per-host facts (hostname/ansible_host/container_*) are wrong"

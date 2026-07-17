@@ -1,0 +1,68 @@
+---
+# Maintenance-window op for the 02:00-05:45 EDT TB5 GLM-4.7 cluster window: the
+# window unloads the OptiQ brain (ai_default_model) off the Mac Studio day-proxy,
+# which would otherwise (a) make every seeded cron 500 and DM the operator
+# (upstream "failed jobs always deliver") and (b) trip the brain-watchdog's
+# one-shot down alert (Slack DM + urgent ntfy) — waking the sleeping operator.
+# Reversed by cluster-hermes-resume.yml at teardown.
+#
+# Values below are copied verbatim from roles/hermes_agent/defaults/main.yml as of
+# 2026-07-11. ponytail: hardcoded per cluster-window run; a committed
+# hermes-maintenance.yml should load them via vars_files (no converge during the
+# window so the seeded list can't drift under us).
+- name: Load OpenTofu infrastructure inventory
+  import_playbook: ../inventory/load_tofu.yml
+
+- name: Pause Hermes seeded fleet + stop brain-watchdog for the cluster window
+  hosts: hermes_agent_group
+  become: true
+  gather_facts: false
+  vars:
+    hermes_bin: /usr/local/bin/hermes
+    hermes_home: /var/lib/hermes/.hermes
+    hermes_user: hermes
+    seeded_jobs:
+      - homelab-ai-fabric-status   # 0 9 * * * UTC = 05:00 EDT — fires MID-window
+      - hermes-nightly-wiki
+      - splunk-triage
+      - splunk-security
+      - splunk-parsing
+      - splunk-deepdive
+      - splunk-digest              # 50 * * * * — always delivers, 3 hits mid-window
+  tasks:
+    - name: Stop the brain-health watchdog timer (kills the down-alert + auto-resume)
+      ansible.builtin.systemd:
+        name: hermes-brain-watchdog.timer
+        state: stopped
+
+    - name: Pause each role-seeded cron job (stops failure-DM spam into the dead brain)
+      ansible.builtin.command: "{{ hermes_bin }} cron pause {{ item }}"
+      environment:
+        HERMES_HOME: "{{ hermes_home }}"
+      become: true
+      become_user: "{{ hermes_user }}"
+      loop: "{{ seeded_jobs }}"
+      changed_when: true
+      failed_when: false   # a missing/already-paused job must not fail the play
+
+    - name: Verify watchdog timer is inactive
+      ansible.builtin.systemd:
+        name: hermes-brain-watchdog.timer
+      register: wd_state
+      changed_when: false
+      failed_when: false
+
+    - name: Verify cron fleet state (each seeded job should read paused)
+      ansible.builtin.command: "{{ hermes_bin }} cron list --all"
+      environment:
+        HERMES_HOME: "{{ hermes_home }}"
+      become: true
+      become_user: "{{ hermes_user }}"
+      register: cron_list
+      changed_when: false
+
+    - name: Report verification (grep this in the run output)
+      ansible.builtin.debug:
+        msg: >-
+          CLUSTER_PAUSE_VERIFY watchdog_is_active={{ wd_state.status.ActiveState | default('unknown', true) }}
+          (want inactive/failed) ---CRON_LIST--- {{ cron_list.stdout }}

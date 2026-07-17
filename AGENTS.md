@@ -55,11 +55,12 @@ config (`ansible-proxmox`).
 This repo is a **read-only consumer** of the shared published tofu inventory
 contract — the same `ansible-inventory-v1` schema (RustFS-published artifact,
 `tofu_data.constants`, `TOFU_INVENTORY_PATH` override) that
-`ansible-proxmox-apps` consumes. The schema, its resolution priority, and the
-upstream desired-state contract are documented once, upstream — this repo
-does not duplicate them. `inventory/group_vars/*.yml` here only carries this
-repo's AI-role group defaults (restart policies, subdomain/API-key lookups);
-it does not define or own the inventory schema itself.
+`ansible-proxmox-apps` consumes. The schema and the upstream desired-state
+contract are documented once, upstream — this repo does not duplicate them.
+`inventory/load_tofu.yml` here maps the containers section of that contract
+onto this repo's AI groups (tag -> group); `inventory/group_vars/*.yml` only
+carries this repo's AI-role group defaults (restart policies, subdomain/
+API-key lookups). Neither defines or owns the inventory schema itself.
 
 ## Secrets Management
 
@@ -73,25 +74,79 @@ from — never bake a specific backend (OpenBao, Doppler, SOPS) into a role
 default. The secrets architecture itself (which store holds what, per-domain
 RBAC) is documented on the docs site, not here.
 
-## Deploy orchestration (follow-up)
+## Deploy orchestration
 
-This repo currently ships **roles only** — there is no `site.yml`, no
-`load_tofu.yml`, and no playbook wiring yet. Deploy orchestration (the site
-playbook and the dynamic inventory loader) is a tracked follow-up, not part
-of this repo yet. Until then, these roles are consumed by
-`ansible-proxmox-apps` or invoked directly against a prepared host.
+This repo is fully self-sufficient: `playbooks/site.yml` +
+`inventory/load_tofu.yml` converge the AI fleet with no dependency on
+`ansible-proxmox-apps`. The shared `inventory_resolve` galaxy role is
+gitignored — install it once per fresh worktree:
 
-The Docker-based roles meta-depend on a local `docker_engine` copy (imported
-from `ansible-proxmox-apps`, which keeps its own for its remaining Docker
-roles). De-duplicating that shared bootstrap role into one home is part of
-the same follow-up.
+```bash
+ansible-galaxy collection install -r requirements.yml
+ansible-galaxy role install -r requirements.yml   # -> roles/inventory_resolve
+```
+
+### Commands
+
+```bash
+# Converge everything (Doppler injects BAO_ADDR + the local-llm AppRole creds,
+# PROXMOX_SUBDOMAIN, PROXMOX_SSH_KEY_PATH, ...)
+doppler run -- ansible-playbook -i inventory/hosts.yml playbooks/site.yml --forks 25
+
+# Scoped converge — --limit MUST include localhost (the inventory loader runs
+# on localhost via add_host; without it no hosts are added and every play
+# reports "no hosts matched")
+doppler run -- ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
+  --tags llm_router --limit llm_router_group,localhost --forks 25
+
+# Lint
+ansible-lint
+```
+
+The OpenBao secrets pre-fetch play is tagged `always`, so scoped `--tags`
+runs get their secrets automatically — no `--tags openbao_secrets,<role>`
+pairing is needed (unlike ansible-proxmox-apps).
+
+### Two execution paths
+
+1. **Provisioning-driven (tofu-proxmox first).** Guest shells, DNS, and the
+   published inventory come from the `tofu-proxmox` Terrakube workspace: an
+   apply publishes `ansible_inventory` to the RustFS S3 store and its
+   after-hook refreshes the local gitignored cache. After any infra change,
+   run that workspace first, then converge from here — `load_tofu.yml`
+   resolves the fresh artifact automatically.
+2. **Direct local converge (day-to-day app changes).** No tofu run needed
+   when guests haven't changed: converge directly with the commands above.
+   Inventory resolution order is `TOFU_INVENTORY_PATH` (explicit pin) →
+   RustFS published artifact → local gitignored cache (only with
+   `TOFU_INVENTORY_ALLOW_STALE=1`). While the published artifact is missing
+   (apps#975), pin explicitly:
+   `TOFU_INVENTORY_PATH=$HOME/git/public/homelab/ansible-proxmox-apps/main/inventory/tofu_inventory.json`.
+
+### Shared-role duplication (deliberate)
+
+- `docker_engine`: local copy; apps keeps its own for its remaining Docker
+  roles.
+- `openbao_secrets`: local copy trimmed to the `local-llm` domain; apps keeps
+  the full multi-domain copy. Promoting both into `homelab-contracts` is a
+  tracked follow-up.
 
 ## Testing
 
 | Check | Command | When |
 | --- | --- | --- |
-| Ansible lint | `ansible-lint roles/` | pre-commit, every PR |
+| Ansible lint | `ansible-lint` | pre-commit, every PR |
+| Playbook syntax | `ansible-playbook playbooks/site.yml --syntax-check` | every PR (CI) |
+| Inventory load | see below | every PR (CI) |
 | Molecule (per scenario) | `molecule test -s llamaindex` / `-s qdrant` | every PR (CI); locally before merging role changes (needs Docker) |
+
+**Inventory-load validation locally:**
+
+```bash
+TOFU_INVENTORY_PATH=$PWD/tests/inventory_load/tofu_inventory.json \
+  ansible-playbook tests/inventory_load/verify_inventory.yml \
+  -i inventory/hosts.yml -c local
+```
 
 ```bash
 # Install Ansible Galaxy dependencies (once)

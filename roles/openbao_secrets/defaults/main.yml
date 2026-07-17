@@ -1,0 +1,72 @@
+---
+# openbao_secrets role defaults — a controller-side pre-play that logs in to
+# OpenBao, once per resource-domain identity, and reads that domain's KV
+# subtree into a per-domain fact (`bao_<domain>_secrets`, hyphens become
+# underscores — e.g. `local-cloud` -> `bao_local_cloud_secrets`). Consumer
+# roles then read bao-first with an env fallback:
+#   X: "{{ bao_<domain>_secrets.X | default(lookup('env','X'), true) }}"
+#
+# Each domain authenticates with its OWN least-privilege AppRole (see
+# terraform-proxmox docs/SECRETS_HIERARCHY.md) rather than one broad shared
+# identity — a domain's credentials only ever unlock that domain's KV subtree.
+#
+# SKIPS CLEANLY at two levels: the whole role no-ops when BAO_ADDR is unset
+# (no OpenBao configured at all), and each domain independently no-ops when
+# its own role_id/secret_id envs are unset (lets an operator migrate one
+# domain at a time onto OpenBao while the rest still fall back to env/SOPS).
+
+# Shared connection inputs.
+openbao_secrets_bao_addr: "{{ lookup('env', 'BAO_ADDR') | default('', true) }}"
+# TLS terminates at the OpenBao Traefik ingress (a real cert), so verify by
+# default; override only for a direct-to-node http bootstrap endpoint.
+openbao_secrets_validate_certs: true
+openbao_secrets_kv_mount: secret
+# Client failover across the OpenBao nodes: probe an ordered candidate list and
+# use the first reachable endpoint. See README for the full ordering + rationale.
+openbao_secrets_openbao_api_port: "{{ tofu_data['constants']['service_ports']['openbao_api'] | default(8200) }}"
+openbao_secrets_node_addrs: >-
+  {{ tofu_data['containers'] | default({}) | dict2items
+     | selectattr('value.tags', 'defined')
+     | selectattr('value.tags', 'contains', 'openbao')
+     | map(attribute='value.ip', default='') | reject('equalto', '')
+     | map('regex_replace', '^(.+)$', 'http://\1:' ~ (openbao_secrets_openbao_api_port | string))
+     | list }}
+openbao_secrets_bao_addr_candidates: >-
+  {{ (([openbao_secrets_bao_addr] if openbao_secrets_bao_addr | length > 0 else [])
+      + openbao_secrets_node_addrs) | unique }}
+
+# One entry per resource-domain identity this Ansible converge fetches for.
+# Each domain's role_id/secret_id come from its own env vars — sourced from
+# the operator's keychain-backed resolver on macOS, or a root-only systemd
+# credential on Linux (never a shared/broad credential). Add a domain here as
+# new consumer roles are wired to read bao-first; each needs a matching
+# AppRole + policy in ansible-proxmox-apps' roles/openbao
+# (`openbao_approles`/`openbao_policies`) — the OpenBao server config stays
+# in that repo; this repo only CONSUMES the local-llm domain.
+openbao_secrets_domains:
+  - name: local-llm
+    role_id_env: LOCAL_LLM_VAULT_ROLE_ID
+    secret_id_env: LOCAL_LLM_VAULT_SECRET_ID
+    paths:
+      - ai/llm         # LLM_ROUTER_MASTER_KEY, LLM_LARGE_BEARER_TOKEN (single seeded KV path)
+      - ai/qdrant      # QDRANT_API_KEY
+      - ai/open-webui  # OPEN_WEBUI_SECRET_KEY, OPEN_WEBUI_OPENAI_API_KEY
+      - ai/hermes      # GH_PAT_WRITE_PROJECT_ISSUES, HERMES_GITHUB_APP_{ID,INSTALLATION_ID,
+                       #   PRIVATE_KEY}. The old account-wide OPENROUTER_API_KEY
+                       #   was transferred to the deepseek-deepseek-v4-flash
+                       #   per-model field in ai/saas/openrouter and removed
+                       #   from this path (2026-07-16).
+      - ai/saas/openrouter  # Paid-SaaS provider key area (ai/saas/<provider>).
+                       #   One field per OpenRouter MODEL (field name = model
+                       #   slug, e.g. nvidia-nemotron-3-ultra-550b-a55b-free),
+                       #   consumed by llm_router's OpenRouter egress tier.
+                       #   Readable via the ai-saas-openrouter policy leaf only —
+                       #   local-llm's broad ai/* read explicitly denies the rest
+                       #   of ai/saas/* (sibling providers: anthropic/google/
+                       #   openai seeded later for workstation consumers).
+      - ai/mcp/splunk  # SPLUNK_MCP_URL, SPLUNK_MCP_TOKEN; merged into the same
+                       #   bao_local_llm_secrets fact consumed by Hermes
+      - ai/langfuse    # LANGFUSE_{POSTGRES_PASSWORD,CLICKHOUSE_PASSWORD,REDIS_AUTH,
+                       #   S3_ACCESS_KEY_ID,S3_SECRET_ACCESS_KEY,PUBLIC_KEY,SECRET_KEY,
+                       #   INIT_USER_EMAIL,INIT_USER_PASSWORD} — fully seeded 2026-07-05
+      - ai/langflow    # LANGFLOW_{SUPERUSER,SUPERUSER_PASSWORD,DB_PASSWORD}

@@ -1,0 +1,233 @@
+---
+# Import OpenTofu infrastructure data before running application playbooks.
+# This populates the inventory dynamically from the published tofu inventory.
+- name: Load OpenTofu infrastructure inventory
+  import_playbook: ../inventory/load_tofu.yml
+
+# =============================================================================
+# Phase 0: OpenBao resource-domain secrets pre-fetch
+# Reads the local-llm domain's KV subtree (its own least-privilege AppRole)
+# into the `bao_local_llm_secrets` fact so every consumer role can resolve
+# its secrets bao-first with an env fallback. Runs once on the controller
+# and publishes to every AI group; it SKIPS CLEANLY when BAO_ADDR or the
+# domain's role_id/secret_id envs are unset.
+#
+# tags: always — the pre-fetch must precede ANY consumer role, so a scoped
+# run (`--tags llm_router`) still gets its secrets without having to remember
+# a `--tags openbao_secrets,llm_router` pairing (the trap the upstream apps
+# repo still has). The fetch is a handful of controller-side API reads, so
+# running it on every scoped converge is cheap.
+# =============================================================================
+
+- name: Pre-fetch resource-domain secrets from OpenBao
+  hosts: >-
+    qdrant_group:llamaindex_group:ollama_group:open_webui_group:
+    hermes_agent_group:llm_fast_group:llm_router_group:
+    dify_group:langflow_group:langgraph_group:agent_exec_group:
+    langfuse_group:agentgateway_group:ai_orchestration_group
+  gather_facts: false
+  tags: always
+  tasks:
+    - name: Fetch each resource-domain's KV subtree via its own AppRole
+      ansible.builtin.include_role:
+        name: openbao_secrets
+
+    # Publish the domain's shared, un-prefixed fact at the playbook layer
+    # (like tofu_data in load_tofu.yml). openbao_secrets_by_domain was
+    # computed once on the delegated controller; a domain that was skipped
+    # (BAO_ADDR or its creds unset) is simply absent from the dict, so
+    # `default({})` covers it the same as a host outside this play.
+    - name: Publish the local-llm domain's merged secrets to every host in this play
+      ansible.builtin.set_fact:
+        bao_local_llm_secrets: "{{ openbao_secrets_by_domain['local-llm'] | default({}) }}"
+      vars:
+        openbao_secrets_by_domain: "{{ hostvars['localhost'].openbao_secrets_by_domain | default({}) }}"
+      no_log: true
+
+# =============================================================================
+# Phase 1: Qdrant Vector Database
+# AI RAG vector database — Docker in LXC container
+# =============================================================================
+
+- name: Configure Qdrant vector database
+  hosts: qdrant_group
+  become: true
+  gather_facts: false
+  tags:
+    - qdrant_docker
+    - vectordb
+    - ai
+  vars:
+    _vdb_ports: >-
+      {{ hostvars['localhost']['tofu_data']['constants']['vector_db_ports'] }}
+    qdrant_docker_http_port: "{{ _vdb_ports.qdrant_http }}"
+    qdrant_docker_grpc_port: "{{ _vdb_ports.qdrant_grpc }}"
+  roles:
+    - role: qdrant_docker
+
+# =============================================================================
+# Phase 2: Local LLM — Ollama inference (AMD ROCm) + Open WebUI chat
+# Ollama serves models on the ai VLAN; Open WebUI is the chat front-end,
+# fronted by Traefik at https://llm.<subdomain>. Ollama stays internal.
+# =============================================================================
+
+- name: Configure Ollama LLM inference (AMD ROCm)
+  hosts: ollama_group
+  become: true
+  gather_facts: true
+  tags:
+    - ollama
+    - llm
+    - ai
+  roles:
+    - role: ollama
+
+- name: Configure Open WebUI chat front-end
+  hosts: open_webui_group
+  become: true
+  gather_facts: true
+  tags:
+    - open_webui
+    - llm
+    - ai
+  roles:
+    - role: open_webui
+
+# =============================================================================
+# Phase 3: Hermes Agent — the NousResearch autonomous agent (NOT the serving
+# stack above). Headless `hermes gateway` daemon; brain = the fabric router;
+# memory = Hindsight; HERMES_HOME on a persisted ZFS volume.
+# =============================================================================
+
+- name: Configure Hermes Agent (autonomous agent)
+  hosts: hermes_agent_group
+  become: true
+  gather_facts: true
+  tags:
+    - hermes_agent
+    - agent
+    - ai
+  roles:
+    # codex_runner MUST run first — hermes_agent's config.yaml references its
+    # sudo grant + resolved Codex binary path (the escalation MCP entry).
+    - role: codex_runner
+    - role: hermes_agent
+
+# =============================================================================
+# Phase 4: LLM serving fabric — llama.cpp light tier + LiteLLM front door.
+# llama.cpp + llama-swap (llm-fast) serves the co-resident light models;
+# the LiteLLM proxy (llm-router x3) is the single OpenAI-compatible endpoint,
+# fronted by Traefik at https://llm.<subdomain>, routing large vs light by alias.
+# =============================================================================
+
+- name: Configure llama.cpp light-tier serving (llama-swap, AMD ROCm)
+  hosts: llm_fast_group
+  become: true
+  gather_facts: true
+  tags:
+    - llama_cpp
+    - llm
+    - ai
+  roles:
+    - role: llama_cpp
+
+- name: Configure the LiteLLM router (fabric front door)
+  hosts: llm_router_group
+  become: true
+  gather_facts: true
+  tags:
+    - llm_router
+    - llm
+    - ai
+  roles:
+    - role: llm_router
+
+# =============================================================================
+# Phase 5: LlamaIndex RAG Engine
+# Embeddings via the fabric router — must converge AFTER the router play;
+# its health check queries https://llm.<subdomain>/v1/models.
+# =============================================================================
+
+- name: Configure LlamaIndex RAG engine
+  hosts: llamaindex_group
+  become: true
+  gather_facts: true
+  tags:
+    - llamaindex
+    - rag
+    - ai
+  vars:
+    _vdb_ports: >-
+      {{ hostvars['localhost']['tofu_data']['constants']['vector_db_ports'] }}
+    llamaindex_qdrant_host: "{{ hostvars['qdrant']['container_ip'] }}"
+    llamaindex_qdrant_port: "{{ _vdb_ports.qdrant_http }}"
+  roles:
+    - role: llamaindex
+
+# =============================================================================
+# Phase 6: AI orchestration platforms + observability
+# Visual builders (Dify, LangFlow) + a CrewAI/LangChain runtime on the ai
+# VLAN; Langfuse LLM-observability on siem. Docker-in-LXC except agent-exec
+# (plain Python venv). Each emits OpenTelemetry to the Cribl Edge OTLP
+# endpoint (ai_orchestration_otel_endpoint).
+# =============================================================================
+
+- name: Configure Dify LLMOps platform
+  hosts: dify_group
+  become: true
+  gather_facts: true
+  tags:
+    - dify_docker
+    - ai-orchestration
+  roles:
+    - role: dify_docker
+
+- name: Configure LangFlow visual prototyping
+  hosts: langflow_group
+  become: true
+  gather_facts: true
+  tags:
+    - langflow_docker
+    - ai-orchestration
+  roles:
+    - role: langflow_docker
+
+- name: Configure LangGraph server + Agent Chat UI (zero-cloud)
+  hosts: langgraph_group
+  become: true
+  gather_facts: true
+  tags:
+    - langgraph_docker
+    - ai-orchestration
+  roles:
+    - role: langgraph_docker
+
+- name: Configure agent-exec runtime (CrewAI + LangChain)
+  hosts: agent_exec_group
+  become: true
+  gather_facts: true
+  tags:
+    - agent_exec
+    - ai-orchestration
+  roles:
+    - role: agent_exec
+
+- name: Configure Langfuse LLM observability
+  hosts: langfuse_group
+  become: true
+  gather_facts: true
+  tags:
+    - langfuse_docker
+    - observability
+  roles:
+    - role: langfuse_docker
+
+- name: Configure agentgateway MCP/LLM/A2A data plane
+  hosts: agentgateway_group
+  become: true
+  gather_facts: true
+  tags:
+    - agentgateway_docker
+    - ai-orchestration
+  roles:
+    - role: agentgateway_docker
