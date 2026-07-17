@@ -1,0 +1,63 @@
+---
+# Molecule verification playbook
+# Validates that the hindsight_docker role executed correctly
+
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    hindsight_docker_data_dir: /opt/hindsight
+    hindsight_docker_api_port: 8888
+
+  tasks:
+    - name: Stat the rendered docker-compose file
+      ansible.builtin.stat:
+        path: "{{ hindsight_docker_data_dir }}/docker-compose.yml"
+      register: hindsight_compose_stat
+
+    - name: Assert compose file exists with restricted mode
+      ansible.builtin.assert:
+        that:
+          - hindsight_compose_stat.stat.exists
+          - hindsight_compose_stat.stat.mode == '0600'
+
+    - name: Read the rendered compose file
+      ansible.builtin.slurp:
+        src: "{{ hindsight_docker_data_dir }}/docker-compose.yml"
+      register: hindsight_compose_content
+      no_log: true
+
+    - name: Assert compose wiring (image, worker id, pgvector, local embeddings)
+      ansible.builtin.assert:
+        that:
+          - "'ghcr.io/vectorize-io/hindsight' in hindsight_compose_rendered"
+          - "'HINDSIGHT_API_WORKER_ID' in hindsight_compose_rendered"
+          - "'HINDSIGHT_API_VECTOR_EXTENSION: pgvector' in hindsight_compose_rendered"
+          - "'HINDSIGHT_API_EMBEDDINGS_PROVIDER: \"local\"' in hindsight_compose_rendered"
+      vars:
+        hindsight_compose_rendered: "{{ hindsight_compose_content.content | b64decode }}"
+      no_log: true
+
+    - name: Check hindsight container is running
+      ansible.builtin.command: >-
+        docker ps --filter name=hindsight --filter status=running
+        --format {% raw %}'{{ .Names }}'{% endraw %}
+      register: hindsight_ps
+      changed_when: false
+
+    - name: Assert hindsight container is running
+      ansible.builtin.assert:
+        that:
+          - "'hindsight' in hindsight_ps.stdout"
+
+    - name: Verify hindsight health endpoint answers 200
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ hindsight_docker_api_port }}/health"
+        method: GET
+        status_code: 200
+      retries: 12
+      delay: 10
+      register: hindsight_verify_health
+      until: hindsight_verify_health.status == 200
