@@ -39,23 +39,28 @@ removed and re-seeded (`tasks/main.yml`); the canonical set is
 
 ## Memory
 
-- **Provider:** Hindsight (local knowledge-graph + multi-strategy retrieval) in
-  `local_embedded` mode, running alongside the always-on built-in
-  `MEMORY.md` / `USER.md`. Set in `defaults/main.yml`
+- **Provider:** Hindsight (knowledge-graph + multi-strategy retrieval) in
+  `local_external` mode — the standalone HA Hindsight service (two stateless
+  replicas behind the Traefik pool at `hindsight.<sub>`, state in the
+  dedicated ai-VLAN Postgres cluster), running alongside the always-on
+  built-in `MEMORY.md` / `USER.md`. Set in `defaults/main.yml`
   (`hermes_agent_memory_provider: hindsight`, `hermes_agent_memory_mode:
-  local_embedded`). The Hindsight daemon config is rendered to
-  `$HERMES_HOME/hindsight/config.json`; its entity-extraction LLM points at the
-  same router the agent uses.
-- **Persistence:** the entire `HERMES_HOME` (`/var/lib/hermes/.hermes`) is the
-  durable surface — memory, skills, profiles, the Kanban DB, sessions and logs
-  all live there, on a dedicated ZFS dataset that is snapshotted and replicated
-  between nodes.
-- **`local_embedded` matters:** Hindsight defaults to a *cloud* mode that needs
-  an API key. With no key, `is_available()` returns false and every memory tool
+  local_external`, `hermes_agent_memory_api_url`). The plugin config is
+  rendered to `$HERMES_HOME/hindsight/config.json` (`mode` + `api_url`).
+  Rollback: set `hermes_agent_memory_mode: local_embedded` and converge — the
+  embedded-daemon path (hindsight-all in the venv, extraction LLM at the
+  router) is still fully wired.
+- **Persistence:** memory now lives in the ai-VLAN Postgres cluster (backed
+  up under the database DR standard). The rest of `HERMES_HOME`
+  (`/var/lib/hermes/.hermes`) — skills, profiles, the Kanban DB, sessions,
+  logs, `MEMORY.md`/`USER.md` — remains the guest's durable surface on its
+  snapshotted, replicated ZFS dataset.
+- **Mode matters:** Hindsight defaults to a *cloud* mode that needs an API
+  key. With no key, `is_available()` returns false and every memory tool
   call warns "Memory is not available" — a repeated, useless status line.
-  `local_embedded` + the rendered `hindsight/config.json` is what makes memory
-  actually work. Verify with a non-fatal `hermes memory status` probe (run in
-  `verify.yml`).
+  An explicit mode (`local_external` today) + the rendered
+  `hindsight/config.json` is what makes memory actually work. Verify with a
+  non-fatal `hermes memory status` probe (run in `verify.yml`).
 
 > If you see a runtime loop of a repeated memory status line (e.g.
 > `Opening memory…Opening memory…`), that is the **brain degenerating**, not a
