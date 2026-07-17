@@ -311,8 +311,9 @@ upstream default (operator-driven, allowed-users gate) minus the deny floor.
 
 ## Brain-health watchdog (no cron-failure spam)
 
-The cron fleet above talks to a **single-deployment brain** (`ai-default`, served
-by one Mac Studio via the `llm_router` proxy) with **no viable fallback**. When
+The cron fleet above talks to a **single-deployment brain** (the real model id in
+`ai_default_model`, served by one Mac Studio via the `llm_router` proxy) with
+**no viable fallback**. When
 that brain is unreachable, two upstream facts combine badly: each cron run is a
 **fresh, stateless session**, and upstream *always* delivers a failure —
 *"Failed jobs always deliver regardless of the `[SILENT]` marker; only successful
@@ -324,7 +325,7 @@ the LLM fabric.
 This watchdog closes both gaps with a small `systemd` timer
 (`hermes-brain-watchdog.timer`, every 60s, run as the `hermes` user):
 
-1. **Probe** `ai-default` end-to-end through the same router URL the crons use — a
+1. **Probe** the default brain end-to-end through the same router URL the crons use — a
    1-token completion, so it catches a connection error *and* a reachable-but-
    wedged brain. It hits the already-active model (no cold-model spawn) and keeps
    it warm, matching the intended 24/7 posture.
@@ -390,12 +391,12 @@ options (fresh `codex login`, or copying an already-authenticated
 call to it errors; the daemon itself starts and runs normally regardless.
 
 OpenRouter is reachable with **no Hermes-side wiring**: the `llm_router` role
-registers OpenRouter models as explicit router aliases (first:
-`openrouter-free`), with one OpenBao-held key **per model** under
-`secret/ai/saas/openrouter` — Hermes just names the alias like any other
-model. The old account-wide `OPENROUTER_API_KEY` parked in `secret/ai/hermes`
-is superseded by those per-model keys and should be retired once they are
-seeded.
+registers OpenRouter models under their real upstream ids (first:
+`nvidia/nemotron-3-ultra-550b-a55b:free`), with one OpenBao-held key **per
+model** under `secret/ai/saas/openrouter` — Hermes just names the real model
+id like any other. The old account-wide `OPENROUTER_API_KEY` parked in
+`secret/ai/hermes` is superseded by those per-model keys and should be retired
+once they are seeded.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

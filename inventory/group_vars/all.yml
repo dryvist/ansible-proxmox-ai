@@ -32,19 +32,17 @@ llm_large_serving_ip: >-
 # SINGLE SOURCE OF TRUTH for the fabric's default chat/agent model. Both the
 # Hermes Agent brain (hermes_agent_model) and Open WebUI's default chat model
 # (open_webui_default_model) resolve to this, so the human chat UI and the
-# autonomous agent always run the same default by construction. The value is a
-# router model id (alias or passthrough physical id) served via
-# https://llm.<subdomain>/v1. Change it here — never re-pin it per consumer.
-#
-# `ai-default` is a literal router alias (llm_router_model_group_aliases)
-# backed by the current agentic-bench-winning brain. Re-point the brain by
-# editing the alias target in llm_router defaults — never per consumer.
-ai_default_model: ai-default
+# autonomous agent always run the same default by construction. The value is
+# the REAL model id served via https://llm.<subdomain>/v1 — the router serves
+# no aliases (design rule 2026-07-17). Re-point the fabric brain by editing
+# this one value — never per consumer, never via a served alias.
+ai_default_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
 
 # Escalation rubric v1 — WHICH tier a task deserves, encoded as data (from the
 # 2026-07-12 document benchmark: two planted traps, three model classes).
-# Consumers: the llm_router renders a stable alias per active tier, and the
-# curriculum loop re-fits decision_rule from graded 30B-vs-deep run deltas —
+# Consumers: each tier names the REAL router model id it escalates to (no
+# aliases), and the curriculum loop re-fits decision_rule from graded
+# 30B-vs-deep run deltas —
 # the feature definitions (F1-F8) live with the curriculum
 # (roles/hermes_agent/files/curriculum/escalation-rubric-schema.md). This
 # block is the single source the fitted values update; nothing here changes
@@ -58,7 +56,7 @@ ai_escalation_rubric:
     # Known ceiling: shallow on second-order effects (flagged the hidden
     # constraint as a bullet, never did the math).
     - id: broad
-      router_alias: ai-default
+      router_model: "{{ ai_default_model }}"
       status: active
     # "What else breaks / find what the author missed" second-order analysis —
     # benchmark: caught BOTH traps and dissected the source's own
@@ -67,7 +65,7 @@ ai_escalation_rubric:
     # multi-minute swap load and can wedge the serving proxy), and with a
     # generous output-token budget (thinking output truncates at small caps).
     - id: deep-analysis
-      router_alias: ai-deep-analysis
+      router_model: mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit
       status: active
       constraint: resident-only
     # The cluster-served deep tier: queued deep packets during a cluster
@@ -75,7 +73,7 @@ ai_escalation_rubric:
     # wait, so an unavailable window DEFERS a deep task, never silently
     # downgrades it.
     - id: cluster-deep
-      router_alias: null # registered only when a window is up (gated build-out)
+      router_model: null # registered only when a window is up (gated build-out)
       status: blocked-upstream
       blocked_by:
         - mlx-lm pipeline-generate bug (upstream fix drafted)
