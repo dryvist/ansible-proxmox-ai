@@ -353,6 +353,43 @@ Gated on the same Slack tokens that seed the fleet (no fleet → nothing to guar
 | `hermes_agent_brain_watchdog_up_after` | `2` | Consecutive oks → resume + alert |
 | `hermes_agent_brain_watchdog_ntfy_topic` | `keystone` | ntfy topic for the urgent page |
 
+### Watchdog self-monitoring ("who watches the watchdog")
+
+The watchdog above only alerts when its *probe* detects the brain down — it
+says nothing if the watchdog **script itself crashes** or its timer gets
+disabled/masked. This homelab's real deadman/heartbeat mechanism,
+`service_deadman`, cannot be wired in from this repo: that role lives entirely
+in the sibling `ansible-proxmox-apps` repo, is a closed dict of exactly 4
+keystone groups (DNS/Traefik/HAProxy/OpenBao), and its `healthchecks_docker`
+provisioning role is apps-owned too. Extending it needs a cross-repo PR and a
+design call (new group name, healthchecks check + secret provisioning) — see
+the tracked `ansible-proxmox-apps` issue *"service_deadman: add
+hermes-brain-watchdog as a monitored check"*.
+
+Until that lands, this repo ships a **same-repo stopgap**: a systemd
+`OnFailure=` on `hermes-brain-watchdog.service` triggers
+`hermes-brain-watchdog-alert.service`, which fires an urgent ntfy push. It
+only triggers on a **crashed probe cycle** (an unhandled script error) —
+normal brain up/down transitions always `exit 0` and are alerted separately by
+the watchdog script itself, so this never doubles up with the alert above.
+The alert script runs as root with no dependency on the hermes user or
+`.env`, so a broken watchdog environment can't also silence it.
+
+**Partial coverage — not the real fix.** This catches the watchdog *process*
+crashing. It does **not** catch the timer being disabled/masked, or systemd
+itself wedging — those need true deadman semantics (a healthchecks-style
+missed-ping page), which only the apps-owned `healthchecks_docker` role can
+provision. Repeat alerts are rate-limited by systemd's own `StartLimit*` on
+the alert unit (not the watchdog's probe cadence: `StartLimitIntervalSec=1h`,
+`StartLimitBurst=1`), so a persistently crashing watchdog pages once per hour
+instead of every probe cycle.
+
+The alert script path (`/usr/local/bin/hermes-brain-watchdog-alert.sh`) and
+the `StartLimit*` thresholds are literals in
+`templates/hermes-brain-watchdog-alert.service.j2` and `tasks/main.yml`, not
+role variables — they are operational constants tied 1:1 to this alert unit
+that nothing currently overrides per-host.
+
 ## Live docs (Context7)
 
 Registers Context7's hosted HTTP MCP server (`mcp_servers.context7`) so Hermes
