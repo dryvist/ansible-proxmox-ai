@@ -168,12 +168,25 @@ hermes_agent_slack_cron_continuable_surface: in_channel
 # Slack at least once an hour during waking hours even when nothing else fires
 # (the var name keeps "daily" for stability — the schedule is the source of
 # truth). Keep the prompt cheap: a short status line, no heavy tool fan-out.
+#
+# Delta discipline (2026-07-18): every fresh session used to re-post the same
+# 4 static status lines every single hour even when nothing changed. Memory
+# (already an always-available cron toolset) is the reuse target — no new
+# state infrastructure — so the job fingerprints its own findings and checks
+# them against its last post before deciding how much to say.
 hermes_agent_daily_status_cron_name: homelab-ai-fabric-status
 hermes_agent_daily_status_cron_schedule: "0 8-22 * * *"
 hermes_agent_daily_status_cron_prompt: >-
-  Post a concise one-paragraph homelab AI-fabric heartbeat: LLM router health,
-  Hermes gateway health, Hindsight memory-pool health, and any merge-ready PRs.
-  A few sentences is plenty — this runs hourly, so keep it short.
+  Check the homelab AI-fabric status: LLM router health, Hermes gateway
+  health, Hindsight memory-pool health, and any merge-ready PRs. Recall your
+  last posted fingerprint and its timestamp from memory (key
+  "fabric-status-last"). If today's status is unchanged from that fingerprint
+  AND it has been under 24h since the fingerprint's timestamp, post ONLY a
+  one-line update: "No change since <timestamp> — still <short status>." and
+  save nothing new. Otherwise post the full one-paragraph heartbeat as before,
+  and save today's fingerprint + timestamp to memory under that key. A few
+  sentences is plenty when you do post the full version — this runs hourly,
+  so keep it short either way.
 
 # --- Inbound webhook receiver (event-driven agent trigger) ------------------
 # The `hermes gateway` webhook platform: an HTTP receiver (/webhooks/<name>,
@@ -414,8 +427,14 @@ hermes_agent_splunk_triage_cron_prompt: >-
   Do a broad, self-directed anomaly sweep of Splunk right now using only bounded
   queries. Recall your known baselines first, confirm anything surprising with
   follow-up bounded queries, and record notable findings and updated baselines to
-  memory. If nothing is genuinely off, reply with exactly [SILENT]; otherwise send
-  one concise, numbers-backed alert.
+  memory. Before you alert, also recall the splunk-digest job's last-posted
+  findings from memory (key "splunk-digest-last"): the channel digest is the
+  canonical surface for ongoing/known issues, this DM is for NEW or ESCALATING
+  findings only. If your top finding is already covered there and has not
+  gotten worse, do not re-derive or re-alert it — reply with exactly [SILENT]
+  (this DM has nothing to add beyond the digest). If nothing is genuinely off,
+  also reply with exactly [SILENT]. Otherwise send one concise, numbers-backed
+  alert covering only what is new or escalating.
 
 hermes_agent_splunk_security_cron_name: splunk-security
 hermes_agent_splunk_security_cron_schedule: "22 */6 * * *"
@@ -450,13 +469,28 @@ hermes_agent_splunk_digest_cron_name: splunk-digest
 # at least once per hour, 24/7 — this digest IS that heartbeat (and its silence
 # is the outage signal). Anomaly sweeps stay silent-unless-anomaly; only they
 # were calmed.
+#
+# Delta discipline (2026-07-18): the same CRITICAL finding was getting restated
+# in full 24x/day for 2+ days straight. Memory is the canonical last-posted
+# state (also read by splunk-triage above, so the two surfaces stop
+# independently re-deriving and re-posting the same finding). A full report
+# still goes out at least once/day (the anchor hour) even with zero change, so
+# "still CRITICAL" never silently rots off everyone's radar.
 hermes_agent_splunk_digest_cron_schedule: "52 * * * *"
 hermes_agent_splunk_digest_cron_prompt: >-
-  Post a concise Splunk digest to the home channel: what you looked at recently,
-  the current normal (top indexes/sourcetypes by volume and their freshness), any
-  anomalies still open, and any splunk-auto-* checks you have added or removed.
-  Bounded queries only. This is a routine status post — ALWAYS write the digest
-  and NEVER reply [SILENT] for this job; [SILENT] is only for the anomaly sweeps.
+  Gather the current normal (top indexes/sourcetypes by volume and freshness)
+  and any anomalies still open. Recall your last-posted digest state from
+  memory (key "splunk-digest-last": fingerprint, first-seen timestamp, post
+  date). If nothing has materially changed since that post AND today's UTC
+  hour is not 00 (the daily anchor hour), post ONLY a one-line update: "No
+  change — still <one-line state>, Day N since <first-seen date>, see
+  <wiki/memory reference>." If something changed OR it is the 00:52 UTC anchor
+  post, post the FULL digest — what you looked at, the current normal, open
+  anomalies, and any splunk-auto-* checks added or removed — and save the new
+  fingerprint (resetting first-seen if the state actually changed) to memory
+  under that key. Bounded queries only. This job ALWAYS posts something and
+  NEVER replies [SILENT] — the one-line update satisfies that contract just
+  as the full digest does; [SILENT] is only for the anomaly sweeps.
 
 # Aggregate list the seed loop iterates. Alert jobs DM the operator; the digest
 # posts to the home channel; the quiet deep-dive research run saves locally only.
@@ -493,14 +527,23 @@ hermes_agent_splunk_cron_jobs:
 hermes_agent_github_monitor_enabled: true
 hermes_agent_github_monitor_cron_name: github-triage
 hermes_agent_github_monitor_cron_schedule: "26 */6 * * *"
+# Delta discipline (2026-07-18): the same top-5 + counts were getting restated
+# in full every sweep even when the list hadn't moved. Memory carries the
+# last-posted list across runs (same reuse-what-exists pattern as the Splunk
+# jobs above) so an unchanged sweep costs one line instead of a full repost.
 hermes_agent_github_monitor_cron_prompt: >-
   Do a read-only triage sweep of the dryvist GitHub org right now using your
   github-issues skill. Enumerate open PRs and issues across non-archived repos;
   flag PRs older than 7 days as stale, Renovate/bot PRs open >7 days, and issues
   untouched for 30+ days. NEVER comment on, label, close, or edit anything — you
   are producing a report, not acting on it. If nothing genuinely needs a human
-  decision, reply with exactly [SILENT]; otherwise post one concise top-5 action
-  list (repo, number, why) plus totals to the home channel.
+  decision, reply with exactly [SILENT]. Otherwise, recall your last-posted
+  top-5 list and totals from memory (key "github-triage-last"): if today's
+  top-5 + totals are identical to that last post, post ONLY a one-line update
+  ("No change since <timestamp> — same N items still open") instead of
+  restating the list. If the list or totals changed, post the full top-5
+  action list (repo, number, why) plus totals to the home channel, and save
+  the new list + totals + timestamp to memory under that key.
 hermes_agent_github_monitor_cron_deliver: slack
 
 hermes_agent_github_cron_jobs:
@@ -611,6 +654,14 @@ hermes_agent_brain_watchdog_probe_timeout: 15
 # watchdog never becomes a new source of spam; up_after=2 damps flapping.
 hermes_agent_brain_watchdog_down_after: 3
 hermes_agent_brain_watchdog_up_after: 2
+# Flap coalescing (2026-07-18): down_after/up_after debounce brief bounces, but
+# a genuinely UNSTABLE backend still produces one clean alert per edge — a
+# confirmed 31h-unstable backend produced dozens of up/down DM pairs. Once a
+# down/up cycle completes, further edges within this cooldown are coalesced
+# (counted, cooldown extended) into one eventual summary instead of alerting
+# individually. 3600s (60 min) is long enough to absorb a flapping episode
+# without swallowing a second, genuinely independent outage hours later.
+hermes_agent_brain_watchdog_flap_cooldown_seconds: 3600
 # Urgent page target. Same topic service_deadman pages on ("same feed as other
 # homelab outages", operator decision) — the brain is now a keystone.
 # FQDN-first: the Traefik-fronted ntfy service name; DHCP/DNS own the address.
