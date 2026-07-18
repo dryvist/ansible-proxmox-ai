@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+#
+# Fired by hermes-brain-watchdog.service's OnFailure= -- the watchdog PROCESS
+# itself crashed (an unhandled error under `set -uo pipefail`), NOT a detected
+# brain-down edge: normal brain up/down transitions in
+# hermes-brain-watchdog.sh always `exit 0` and are alerted by that script's
+# own alert(), so this never fires for an ordinary outage.
+#
+# Runs as root with no dependency on the hermes user, $HERMES_HOME, or .env --
+# deliberately independent of the stack that just broke, so a broken watchdog
+# environment can't also silence this alert.
+#
+# PARTIAL COVERAGE (stopgap, not the deadman fix): this only catches the
+# watchdog process crashing. It does NOT catch the timer being disabled or
+# masked, or systemd itself wedging -- those need true deadman/heartbeat
+# semantics (a healthchecks-style missed-ping page), which requires the
+# apps-owned healthchecks_docker provisioning role. See
+# roles/hermes_agent/README.md "Watchdog self-monitoring" for the tracked
+# follow-up.
+set -uo pipefail
+
+NTFY_URL="{{ hermes_agent_brain_watchdog_ntfy_url }}"
+HOST="$(hostname)"
+MSG=":rotating_light: hermes-brain-watchdog crashed on ${HOST} -- brain up/down alerting may be blind until this is fixed. journalctl -u hermes-brain-watchdog.service for the error."
+
+logger -t hermes-brain-watchdog-alert "${MSG}"
+
+[[ -n "${NTFY_URL}" ]] || exit 0
+curl -fsS --max-time 8 -H "Title: hermes-brain-watchdog crashed" -H "Priority: urgent" \
+  -H "Tags: rotating_light,skull" -d "${MSG}" "${NTFY_URL}" >/dev/null 2>&1 || true
+exit 0

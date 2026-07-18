@@ -577,6 +577,25 @@
     - hermes_agent_slack_bot_token | length > 0
     - hermes_agent_slack_app_token | length > 0
 
+# Who watches the watchdog (stopgap -- see README.md "Watchdog
+# self-monitoring"): fired by hermes-brain-watchdog.service's OnFailure= only
+# when a probe cycle crashes. Runs as root, independent of the hermes
+# user/.env. dest: is a literal, not a role variable, so it never touches
+# defaults/main.yml -- keep it in sync with the ExecStart= path in
+# templates/hermes-brain-watchdog-alert.service.j2 if either one moves.
+- name: Deploy the Hermes brain-health watchdog self-check alert script
+  ansible.builtin.template:
+    src: hermes-brain-watchdog-alert.sh.j2
+    dest: /usr/local/bin/hermes-brain-watchdog-alert.sh
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart hermes-brain-watchdog timer
+  when:
+    - hermes_agent_brain_watchdog_enabled | bool
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+
 - name: Deploy the Hermes brain-health watchdog systemd units
   ansible.builtin.template:
     src: "{{ item }}.j2"
@@ -587,6 +606,7 @@
   loop:
     - hermes-brain-watchdog.service
     - hermes-brain-watchdog.timer
+    - hermes-brain-watchdog-alert.service
   notify: Restart hermes-brain-watchdog timer
   when:
     - hermes_agent_brain_watchdog_enabled | bool
