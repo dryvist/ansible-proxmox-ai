@@ -59,6 +59,9 @@ llm_router_api_port: "{{ tofu_data.constants.service_ports.llm_router_api }}"
 llm_router_light_port: "{{ tofu_data.constants.service_ports.llm_fast_api }}"
 # llm-large speaks the Ollama-compatible API on the standard Ollama port.
 llm_router_large_port: "{{ tofu_data.constants.service_ports.ollama_api }}"
+# The gate's second TLS site fronting the two-Mac cluster endpoint (mlx-lm
+# rank 0); live only while a cluster window is up.
+llm_router_cluster_port: "{{ tofu_data.constants.service_ports.llm_night_api }}"
 
 # --- Backend base URLs (derived; never a hardcoded IP) -----------------------
 llm_router_llm_fast_base_url: "http://llm-fast.{{ llm_router_subdomain }}:{{ llm_router_light_port }}/v1"
@@ -146,6 +149,16 @@ llm_router_large_models:
   # agentic-bench winner, resident on the serving host with a 65536 window
   # (also Hermes' compression model, which hard-requires >=64K).
   - backend: mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit
+    context_window: 65536
+    extra_body: { repetition_penalty: 1.05 }
+  # The two-Mac cluster brain (JACCL pipeline across Studio + MacBook,
+  # ~256 GB combined), served by mlx-lm rank 0 behind the gate's :11440 TLS
+  # site — a DIFFERENT port on the same host, hence the per-entry api_base
+  # override. Reachable only while a cluster window is up (cable in); normal
+  # serving on :11434 quiesces during windows, so this entry is what keeps a
+  # brain reachable then. Same bearer token as the main gate site.
+  - backend: mlx-community/GLM-4.7-REAP-50-mxfp4
+    api_base: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_router_cluster_port }}/v1"
     context_window: 65536
     extra_body: { repetition_penalty: 1.05 }
 # Aliases were removed 2026-07-17 (design rule: the router serves ONLY real
