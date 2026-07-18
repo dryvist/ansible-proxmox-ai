@@ -65,12 +65,14 @@ hermes_agent_model_api_mode: chat_completions
 # Context-compression summary model. Hermes hard-requires >=64K context on the
 # compression model — the cron fleet failed on exactly this 2026-07-16 when
 # compression rode a 32,768-token brain ("Auxiliary compression model ... has
-# a context window of 32,768"). Pin compression to the OptiQ tuned entry by
-# its REAL id: 65,536-token serving window, resident on the serving host,
-# carries its own repetition-penalty guard. Deliberately a literal (not
-# ai_default_model): re-pointing the fabric brain to a smaller-window model
-# must not silently drag the >=64K-required compression path with it.
-hermes_agent_compression_model: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
+# a context window of 32,768").
+# STABILITY STOPGAP (2026-07-17): moved off the local OptiQ-4bit (65,536 window
+# but flapping 429/timeout on the Mac Studio for hours) to deepseek-v4-flash
+# (OpenRouter, 1,000,000 window, cloud so it can't be starved by local serving
+# pressure). Still a deliberate literal, not ai_default_model, so a future
+# fabric-brain re-point can't silently drag a sub-64K model into compression.
+# Revert to mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit when the Studio is stable.
+hermes_agent_compression_model: deepseek/deepseek-v4-flash
 # The context window Hermes budgets against and compacts under (it compresses at
 # hermes_agent_context_compression_threshold * this value). The model's TRUE
 # native window is 262144 (Qwen3.6-35B-A3B), but we deliberately DECLARE a
@@ -158,14 +160,19 @@ hermes_agent_slack_home_channel_name: "{{ lookup('env', 'SLACK_HOME_CHANNEL_NAME
 hermes_agent_slack_reply_in_thread: false
 hermes_agent_slack_cron_continuable_surface: in_channel
 
-# Daily Slack status report seeded into Hermes' built-in cron scheduler. The
-# role creates the job on converge; the gateway starts executing it on the next
-# daemon run once the Slack gateway is configured.
+# Hourly (waking-hours) Slack status report seeded into Hermes' built-in cron
+# scheduler. The role creates the job on converge; the gateway starts executing
+# it on the next daemon run once the Slack gateway is configured. Runs at the
+# top of every hour from 08:00–22:00 local so there is a fresh heartbeat in
+# Slack at least once an hour during waking hours even when nothing else fires
+# (the var name keeps "daily" for stability — the schedule is the source of
+# truth). Keep the prompt cheap: a short status line, no heavy tool fan-out.
 hermes_agent_daily_status_cron_name: homelab-ai-fabric-status
-hermes_agent_daily_status_cron_schedule: "0 9 * * *"
+hermes_agent_daily_status_cron_schedule: "0 8-22 * * *"
 hermes_agent_daily_status_cron_prompt: >-
-  Summarize the homelab AI fabric status, including router health, Hermes
-  gateway health, DNS readiness, and any merge-ready PRs. Keep it concise.
+  Post a concise one-paragraph homelab AI-fabric heartbeat: LLM router health,
+  Hermes gateway health, Hindsight memory-pool health, and any merge-ready PRs.
+  A few sentences is plenty — this runs hourly, so keep it short.
 
 # --- Inbound webhook receiver (event-driven agent trigger) ------------------
 # The `hermes gateway` webhook platform: an HTTP receiver (/webhooks/<name>,
