@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+#
+# Open WebUI brain runtime sync. Mirrors roles/hermes_agent's identically
+# named mechanism (see that role's README for the full design note). Fired
+# by open-webui-brain-sync.timer every {{ open_webui_brain_sync_interval }}.
+# Polls the ai-public OpenBao domain's non-secret
+# secret/{{ open_webui_brain_sync_bao_path }} (field
+# {{ open_webui_brain_sync_bao_field }}) and, ONLY when the value both
+# CHANGED from the currently-configured default AND validates live against
+# the router's own /v1/model/info (a tuned entry with a real
+# max_input_tokens — never the "*" wildcard passthrough; the live
+# counterpart to the converge-time compress-death-trap guard in
+# roles/llm_router/tasks/assert.yml), rewrites /etc/open-webui.env's
+# DEFAULT_MODELS and restarts open-webui.
+#
+# open_webui_default_model (bao-first via ai_default_model since 2026-07-18)
+# is only the COLD-START seed, and the value this script falls back to when
+# OpenBao or the router cannot be reached — never overwritten by a failed cycle.
+set -uo pipefail
+
+BAO_ADDR="{{ open_webui_brain_sync_bao_addr }}"
+BAO_PATH="{{ open_webui_brain_sync_bao_path }}"
+BAO_FIELD="{{ open_webui_brain_sync_bao_field }}"
+ROLE_ID="${AI_PUBLIC_VAULT_ROLE_ID:-}"
+SECRET_ID="${AI_PUBLIC_VAULT_SECRET_ID:-}"
+ROUTER_BASE_URL="{{ open_webui_openai_api_base_url }}"
+ENV_FILE="/etc/open-webui.env"
+STATE_FILE="{{ open_webui_brain_sync_state_file }}"
+FALLBACK_MODEL="{{ open_webui_default_model }}"
+
+mkdir -p "{{ open_webui_brain_sync_state_dir }}"
+[[ -f "${STATE_FILE}" ]] || printf '%s\n' "${FALLBACK_MODEL}" > "${STATE_FILE}"
+CURRENT="$(cat "${STATE_FILE}")"
+
+# The router bearer key is already deployed to /etc/open-webui.env — read it
+# rather than duplicating the secret into this script's own env file.
+ROUTER_KEY="$(grep -m1 '^OPENAI_API_KEY=' "${ENV_FILE}" 2>/dev/null | cut -d= -f2-)"
+
+# Any missing input skips the cycle silently (next timer tick retries) — a
+# brain-sync outage must never touch the currently-configured, already-valid default.
+if [[ -z "${BAO_ADDR}" || -z "${ROLE_ID}" || -z "${SECRET_ID}" ]]; then
+  logger -t open-webui-brain-sync "skip: OpenBao ai-public credentials not configured"
+  exit 0
+fi
+
+TOKEN="$(curl -fsS --max-time 10 -X POST "${BAO_ADDR}/v1/auth/approle/login" \
+  -d "{\"role_id\":\"${ROLE_ID}\",\"secret_id\":\"${SECRET_ID}\"}" \
+  | jq -r '.auth.client_token // empty')"
+if [[ -z "${TOKEN}" ]]; then
+  logger -t open-webui-brain-sync "skip: OpenBao AppRole login failed (${BAO_ADDR})"
+  exit 0
+fi
+
+CANDIDATE="$(curl -fsS --max-time 10 -H "X-Vault-Token: ${TOKEN}" \
+  "${BAO_ADDR}/v1/secret/data/${BAO_PATH}" \
+  | jq -r ".data.data.${BAO_FIELD} // empty")"
+if [[ -z "${CANDIDATE}" ]]; then
+  logger -t open-webui-brain-sync "skip: secret/${BAO_PATH} has no ${BAO_FIELD} yet"
+  exit 0
+fi
+
+if [[ "${CANDIDATE}" == "${CURRENT}" ]]; then
+  exit 0 # no change
+fi
+
+# Validate: the candidate must be a TUNED router entry with a real context
+# window, never the "*" wildcard passthrough — checked LIVE against the
+# router's own /v1/model/info (see roles/llm_router/tasks/assert.yml for the
+# converge-time counterpart of this guard).
+if [[ -z "${ROUTER_KEY}" ]]; then
+  logger -t open-webui-brain-sync "skip: router key unavailable, cannot validate ${CANDIDATE}"
+  exit 0
+fi
+
+SAFE="$(curl -fsS --max-time 10 -H "Authorization: Bearer ${ROUTER_KEY}" \
+  "${ROUTER_BASE_URL}/model/info" \
+  | jq -r --arg m "${CANDIDATE}" \
+    '[.data[]? | select(.model_name==$m) | select(.model_info.max_input_tokens != null)] | length > 0')"
+if [[ "${SAFE}" != "true" ]]; then
+  logger -t open-webui-brain-sync "REJECTED ${CANDIDATE}: not a tuned router entry with a real context window (compress-death trap) -- staying on ${CURRENT}"
+  exit 0
+fi
+
+sed -i "s|^DEFAULT_MODELS=.*|DEFAULT_MODELS=${CANDIDATE}|" "${ENV_FILE}"
+# sed -i replaces the file via a new inode owned by this (root) process —
+# restore the ansible-managed owner/mode (root:{{ open_webui_user }}, 0640).
+chown "root:{{ open_webui_user }}" "${ENV_FILE}"
+chmod 0640 "${ENV_FILE}"
+
+printf '%s\n' "${CANDIDATE}" > "${STATE_FILE}"
+logger -t open-webui-brain-sync "default model repointed ${CURRENT} -> ${CANDIDATE} (source: OpenBao secret/${BAO_PATH}); restarting open-webui"
+systemctl restart open-webui
+exit 0

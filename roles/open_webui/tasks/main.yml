@@ -28,6 +28,7 @@
       - curl
       - ca-certificates
       - sudo
+      - jq # open-webui-brain-sync.sh JSON parsing (OpenBao KV, router /v1/model/info)
     state: present
     update_cache: true
     cache_valid_time: 3600
@@ -110,6 +111,74 @@
   retries: 30
   delay: 5
   until: open_webui_health.status == 200
+
+# --- Brain runtime source: OpenBao (no rebuild to re-point) ------------------
+# Mirrors roles/hermes_agent's identically-named mechanism (see its README).
+# The seed file is re-templated every converge to whatever
+# open_webui_default_model resolves to right now (itself bao-first — see
+# inventory/group_vars/all.yml) so a converge and a live OpenBao change never
+# disagree.
+- name: Ensure the Open WebUI brain-sync state directory exists
+  ansible.builtin.file:
+    path: "{{ open_webui_brain_sync_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: open_webui_brain_sync_enabled | bool
+
+- name: Seed the Open WebUI brain-sync state file with the converge-time default
+  ansible.builtin.copy:
+    content: "{{ open_webui_default_model }}\n"
+    dest: "{{ open_webui_brain_sync_state_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: open_webui_brain_sync_enabled | bool
+
+- name: Deploy the Open WebUI brain-sync OpenBao credential file (root-only)
+  ansible.builtin.template:
+    src: open-webui-brain-sync.env.j2
+    dest: "{{ open_webui_brain_sync_env_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: open_webui_brain_sync_enabled | bool
+
+- name: Deploy the Open WebUI brain-sync script
+  ansible.builtin.template:
+    src: open-webui-brain-sync.sh.j2
+    dest: "{{ open_webui_brain_sync_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart open-webui-brain-sync timer
+  when: open_webui_brain_sync_enabled | bool
+
+- name: Deploy the Open WebUI brain-sync systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - open-webui-brain-sync.service
+    - open-webui-brain-sync.timer
+  notify: Restart open-webui-brain-sync timer
+  when: open_webui_brain_sync_enabled | bool
+
+- name: Enable and start the Open WebUI brain-sync timer
+  ansible.builtin.systemd:
+    name: open-webui-brain-sync.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: open_webui_brain_sync_enabled | bool
+
+- name: Flush handlers so brain-sync unit changes apply before first-run provisioning
+  ansible.builtin.meta: flush_handlers
 
 # --- Headless first-run provisioning ------------------------------------------
 # Open WebUI reports onboarding=true until a first user exists; the first

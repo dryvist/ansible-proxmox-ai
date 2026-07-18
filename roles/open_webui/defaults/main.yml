@@ -47,3 +47,33 @@ open_webui_admin_email: >-
 open_webui_admin_password: >-
   {{ lookup('env', 'OPEN_WEBUI_ADMIN_PASSWORD')
      | mandatory('OPEN_WEBUI_ADMIN_PASSWORD must be set (Doppler; openssl rand -base64 24)') }}
+
+# --- Brain runtime source: OpenBao, no converge needed to re-point ----------
+# Mirrors roles/hermes_agent's identically-named mechanism (see that role's
+# README for the full design note) — a root-run systemd timer polls the
+# ai-public OpenBao domain's non-secret secret/ai/public/brain (field
+# active_model) and, only when the value both CHANGED and validates live
+# against the router's own /v1/model/info (a tuned entry with a real
+# max_input_tokens — never the "*" wildcard passthrough), rewrites
+# /etc/open-webui.env's DEFAULT_MODELS and restarts open-webui. A poll
+# failure always just keeps the currently-running default; open_webui_default_model
+# (bao-first via ai_default_model, same ai-public domain) is the converge-time
+# seed and the fallback.
+open_webui_brain_sync_enabled: true
+open_webui_brain_sync_script_path: /usr/local/bin/open-webui-brain-sync.sh
+open_webui_brain_sync_env_path: /etc/open-webui-brain-sync.env
+open_webui_brain_sync_state_dir: /etc/open-webui-brain-sync
+open_webui_brain_sync_state_file: "{{ open_webui_brain_sync_state_dir }}/current-model"
+open_webui_brain_sync_interval: "5min"
+open_webui_brain_sync_bao_path: ai/public/brain
+open_webui_brain_sync_bao_field: active_model
+# ponytail: single endpoint, no client-side failover on the guest — see the
+# identical note in roles/hermes_agent/defaults/main.yml.
+open_webui_brain_sync_bao_addr: >-
+  {{ hostvars['localhost'].openbao_secrets_active_addr
+     | default(lookup('env', 'BAO_ADDR'), true) }}
+# The ai-public domain's OWN AppRole (read-only on ai/public/*) — see
+# roles/openbao_secrets/README.md for why this is not local-llm's broader
+# credential. Empty until the companion AppRole/policy exists.
+open_webui_brain_sync_role_id: "{{ lookup('env', 'AI_PUBLIC_VAULT_ROLE_ID') | default('', true) }}"
+open_webui_brain_sync_secret_id: "{{ lookup('env', 'AI_PUBLIC_VAULT_SECRET_ID') | default('', true) }}"

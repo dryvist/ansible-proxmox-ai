@@ -617,3 +617,59 @@ hermes_agent_brain_watchdog_up_after: 2
 hermes_agent_brain_watchdog_ntfy_topic: "keystone"
 hermes_agent_brain_watchdog_ntfy_url: >-
   https://ntfy.{{ tofu_data.domain }}/{{ hermes_agent_brain_watchdog_ntfy_topic }}
+
+# --- Brain runtime source: OpenBao, no converge needed to re-point ----------
+# tofu/Ansible seed the STARTING brain (ai_default_model, config.yaml.j2) but
+# do not OWN it: this timer polls the ai-public OpenBao domain's non-secret
+# secret/ai/public/brain (field active_model — see roles/openbao_secrets) and,
+# only when the value both CHANGED and validates live against the router's
+# own /v1/model/info (a tuned entry with a real max_input_tokens — never the
+# "*" wildcard passthrough; the same compress-death-trap guard as
+# roles/llm_router/tasks/assert.yml, but checked against the RUNNING router,
+# not a converge-time snapshot), rewrites config.yaml's model.default and
+# restarts hermes-gateway. Runs as ROOT on its own timer/env-file, deliberately
+# separate from the hermes user's own gateway process and .env — the OpenBao
+# AppRole credential below must never enter the agent's own environment,
+# where an injected prompt could someday try to read it (same blast-radius
+# reasoning as the LXC / non-root-user split at the top of this file).
+# Disabling this falls back to converge-time-only re-pointing (pre-2026-07-18
+# behavior) — a poll failure always just keeps the currently-running brain,
+# so there is no OpenBao hard-dependency either way.
+#
+# Deliberately NOT extended to hermes_agent_compression_model (pinned to a
+# literal on purpose — see its own comment: a brain repoint must not silently
+# drag the >=64K-context compression path with it) or to
+# hermes_agent_memory_llm_model (only rendered under the local_embedded
+# Hindsight mode, which is not the live default — see hindsight-config.json.j2
+# and hermes_agent_memory_mode; extend brain-sync to it if that mode returns).
+hermes_agent_brain_sync_enabled: true
+hermes_agent_brain_sync_script_path: /usr/local/bin/hermes-brain-sync.sh
+hermes_agent_brain_sync_env_path: /etc/hermes-brain-sync.env
+hermes_agent_brain_sync_state_dir: /etc/hermes-brain-sync
+hermes_agent_brain_sync_state_file: "{{ hermes_agent_brain_sync_state_dir }}/current-model"
+# 5 minutes: cheap enough for a KV read + one /v1/model/info probe, and "no
+# rebuild" only has to mean minutes — this polls a value an OPERATOR changes
+# deliberately, not a live-health signal (contrast the watchdog's 60s).
+hermes_agent_brain_sync_interval: "5min"
+# KV v2 data path (mount: secret) + field — see roles/openbao_secrets
+# openbao_secrets_domains (ai-public) and inventory/group_vars/all.yml
+# (ai_default_model).
+hermes_agent_brain_sync_bao_path: ai/public/brain
+hermes_agent_brain_sync_bao_field: active_model
+# ponytail: single endpoint, no client-side failover on the guest (unlike the
+# controller's openbao_secrets probe-and-pin across every openbao-tagged
+# node). Reuses whichever address the controller itself pinned this converge;
+# add the same candidate-list/probe logic here if guest-side OpenBao HA is
+# ever needed.
+hermes_agent_brain_sync_bao_addr: >-
+  {{ hostvars['localhost'].openbao_secrets_active_addr
+     | default(lookup('env', 'BAO_ADDR'), true) }}
+# The ai-public domain's OWN AppRole (read-only on ai/public/*) — deliberately
+# NOT local-llm's broader credential (see roles/openbao_secrets/README.md: a
+# guest holding a live, reusable local-llm credential could pull every other
+# ai/* secret, not just the ones already baked into its own .env). Empty
+# until the companion AppRole/policy exists in ansible-proxmox-apps, at which
+# point the script skips cleanly every cycle — same "unconfigured domain"
+# skip as the controller-side fetch.
+hermes_agent_brain_sync_role_id: "{{ lookup('env', 'AI_PUBLIC_VAULT_ROLE_ID') | default('', true) }}"
+hermes_agent_brain_sync_secret_id: "{{ lookup('env', 'AI_PUBLIC_VAULT_SECRET_ID') | default('', true) }}"

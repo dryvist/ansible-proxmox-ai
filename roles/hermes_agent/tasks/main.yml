@@ -26,6 +26,7 @@
       - ca-certificates
       - git
       - sudo
+      - jq # hermes-brain-sync.sh JSON parsing (OpenBao KV, router /v1/model/info)
     state: present
     update_cache: true
     cache_valid_time: 3600
@@ -623,6 +624,72 @@
     - hermes_agent_brain_watchdog_enabled | bool
     - hermes_agent_slack_bot_token | length > 0
     - hermes_agent_slack_app_token | length > 0
+
+# --- Brain runtime source: OpenBao (no rebuild to re-point) ------------------
+# See defaults/main.yml for the full design note. State dir is root-owned;
+# the seed file is re-templated every converge to whatever ai_default_model
+# resolves to right now (itself bao-first — see inventory/group_vars/all.yml)
+# so a converge and a live OpenBao change never disagree. brain-sync only
+# ever moves the file FURTHER from here via a live-validated change; it never
+# reverts one, since a bao-reachable converge resolves the SAME live value.
+- name: Ensure the brain-sync state directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_agent_brain_sync_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: hermes_agent_brain_sync_enabled | bool
+
+- name: Seed the brain-sync state file with the converge-time default
+  ansible.builtin.copy:
+    content: "{{ hermes_agent_model }}\n"
+    dest: "{{ hermes_agent_brain_sync_state_file }}"
+    owner: root
+    group: root
+    mode: "0644" # world-readable: the hermes-owned brain-watchdog reads this too
+  when: hermes_agent_brain_sync_enabled | bool
+
+- name: Deploy the brain-sync OpenBao credential file (root-only, separate from .env)
+  ansible.builtin.template:
+    src: hermes-brain-sync.env.j2
+    dest: "{{ hermes_agent_brain_sync_env_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: hermes_agent_brain_sync_enabled | bool
+
+- name: Deploy the Hermes brain-sync script
+  ansible.builtin.template:
+    src: hermes-brain-sync.sh.j2
+    dest: "{{ hermes_agent_brain_sync_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart hermes-brain-sync timer
+  when: hermes_agent_brain_sync_enabled | bool
+
+- name: Deploy the Hermes brain-sync systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - hermes-brain-sync.service
+    - hermes-brain-sync.timer
+  notify: Restart hermes-brain-sync timer
+  when: hermes_agent_brain_sync_enabled | bool
+
+- name: Enable and start the Hermes brain-sync timer
+  ansible.builtin.systemd:
+    name: hermes-brain-sync.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: hermes_agent_brain_sync_enabled | bool
 
 - name: Flush handlers so config/unit changes apply before verification
   ansible.builtin.meta: flush_handlers

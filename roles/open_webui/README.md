@@ -38,10 +38,26 @@ Requires `OPEN_WEBUI_SECRET_KEY` in Doppler/SOPS (generate once: `openssl rand -
 | `open_webui_port` | `tofu_data.constants.service_ports.open_webui_web` | Listen port (no hardcode) |
 | `open_webui_openai_api_base_url` | `https://llm.{{ PROXMOX_SUBDOMAIN }}/v1` | Backend (the LiteLLM router) |
 | `open_webui_openai_api_key` | `OPEN_WEBUI_OPENAI_API_KEY` (Doppler/SOPS) | Router API key |
-| `open_webui_default_model` | `gpt-oss-120b` | Default chat model (large tier) |
+| `open_webui_default_model` | `ai_default_model` (bao-first — see below) | Default chat model |
 | `open_webui_hostname` | `llm.{{ PROXMOX_SUBDOMAIN }}` | Public FQDN via Traefik |
 | `open_webui_data_dir` | `/var/lib/open-webui` | Persistent data |
 | `open_webui_secret_key` | `OPEN_WEBUI_SECRET_KEY` (Doppler/SOPS) | Stable JWT/encryption key |
+
+## Brain runtime source (OpenBao — no rebuild to re-point)
+
+`open_webui_default_model` seeds `DEFAULT_MODELS` at converge, but does not
+own it afterward. `open-webui-brain-sync.timer` (every
+`open_webui_brain_sync_interval`, default 5 min, root) independently polls
+the `ai-public` OpenBao domain's non-secret `secret/ai/public/brain` (field
+`active_model`) and, only when the value both changed and validates live
+against the router's own `GET /v1/model/info` (a tuned entry with a real
+`max_input_tokens` — never the `"*"` wildcard passthrough), rewrites
+`/etc/open-webui.env`'s `DEFAULT_MODELS` and restarts `open-webui`. Mirrors
+`roles/hermes_agent`'s identically-named mechanism exactly — see that role's
+README for the full design note and `roles/openbao_secrets/README.md` for
+the `ai-public` domain (and the companion `ansible-proxmox-apps` AppRole/
+policy it still needs before it resolves live). A poll failure always keeps
+the currently-configured default; it never blanks it.
 
 ## Usage
 
