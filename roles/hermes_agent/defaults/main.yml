@@ -65,14 +65,15 @@ hermes_agent_model_api_mode: chat_completions
 # Context-compression summary model. Hermes hard-requires >=64K context on the
 # compression model — the cron fleet failed on exactly this 2026-07-16 when
 # compression rode a 32,768-token brain ("Auxiliary compression model ... has
-# a context window of 32,768").
-# STABILITY STOPGAP (2026-07-17): moved off the local OptiQ-4bit (65,536 window
-# but flapping 429/timeout on the Mac Studio for hours) to deepseek-v4-flash
-# (OpenRouter, 1,000,000 window, cloud so it can't be starved by local serving
-# pressure). Still a deliberate literal, not ai_default_model, so a future
-# fabric-brain re-point can't silently drag a sub-64K model into compression.
-# Revert to mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit when the Studio is stable.
-hermes_agent_compression_model: deepseek/deepseek-v4-flash
+# a context window of 32,768"). Pinned to the RESIDENT 80B Instruct brain by
+# its real id (65,536-token serving window; OptiQ dropped to the 32K swap
+# class when residency moved, so it no longer qualifies). The 2026-07-17
+# deepseek cloud stopgap is superseded — the local-serving flap that
+# motivated it is root-caused and fixed (nix-darwin#1742/#1743). Deliberately
+# a literal (not ai_default_model): a future brain re-point to a
+# smaller-window model must not silently drag the >=64K-required compression
+# path with it.
+hermes_agent_compression_model: mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit
 # The context window Hermes budgets against and compacts under (it compresses at
 # hermes_agent_context_compression_threshold * this value). The model's TRUE
 # native window is 262144 (Qwen3.6-35B-A3B), but we deliberately DECLARE a
@@ -90,7 +91,7 @@ hermes_agent_compression_model: deepseek/deepseek-v4-flash
 # of the declared window must finish inside the 900s stream-stale budget
 # (65536 needs >=73 tok/s prefill — trivially safe). (4) NEW, and binding:
 # the ROUTER enforces the serving window as max_input_tokens on the brain's
-# tuned entry (enable_pre_call_checks) — OptiQ serves 65,536. A
+# tuned entry (enable_pre_call_checks) — the 80B brain serves 65,536. A
 # declaration ABOVE the served window creates a dead zone: Hermes budgets
 # past it and only compacts at threshold*declared, so every request between
 # the served window and the compaction point is router-rejected
