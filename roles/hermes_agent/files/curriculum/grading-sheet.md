@@ -7,7 +7,7 @@ Slack home channel posts, and the run transcript/events
 first: evaluate each job's `success_checks` from `curriculum.yml` before
 scoring the dimensions below.
 
-## Job interpretations (see jobs/*.md for the verbatim prompts)
+## Job interpretations (see the deployed jobs/*.md catalog prompts)
 
 - **orient** — Verified self-orientation: probe every configured capability
   live, report OK/DEGRADED/UNAVAILABLE with evidence.

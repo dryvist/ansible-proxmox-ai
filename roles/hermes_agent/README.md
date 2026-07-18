@@ -287,15 +287,15 @@ are upstream feature gaps tracked as a build-out issue, not role config.
 
 ## Curriculum (graded five-job eval, versioned)
 
-`files/curriculum/` is the versioned home of the graded curriculum — the
-repeatable job set that measures whether the agent is actually useful and
-feeds the escalation rubric with datapoints. Deployed to
-`$HERMES_HOME/curriculum/` on every converge.
+`files/curriculum/` owns the manifest, grading, and submission workflow for
+the repeatable job set that measures whether the agent is actually useful.
+Prompt bodies come from the pinned `ai-llm-prompts` catalog. The complete
+curriculum is deployed to `$HERMES_HOME/curriculum/` on every converge.
 
 | Artifact | Role |
 | --- | --- |
 | `curriculum.yml` | Canonical manifest: order, budgets, expected skills, and each job's **machine-checkable `success_checks`** |
-| `jobs/*.md` | The five prompts, submitted verbatim as `POST /v1/runs` input |
+| `jobs/*.md` | Five catalog-backed prompts, materialized during converge and submitted verbatim as `POST /v1/runs` input |
 | `grading-sheet.md` | Four 0-3 dimensions per job + verified-claim spot checks + the cross-job omissions check |
 | `escalation-rubric-schema.md` | The feature schema (F1-F8) the graded runs populate to fit deep-vs-broad tier routing |
 | `submission-runbook.md` | Turnkey submission: preflight gates, key fetch, staggered submits, collection, grading |
@@ -309,8 +309,8 @@ capped `[hermes-improve]` issues). `success_checks` are evaluated from the
 run object, event stream, and GitHub — never the job's own summary.
 
 Layer-1 asserts guarantee the manifest is always executable: unique job ids,
-every `prompt_file` present in the role, and a non-empty `success_checks`
-list per job. Job ids follow clustered/normal naming (the original
+every `prompt_file` mapped to an immutable catalog artifact, and a non-empty
+`success_checks` list per job. Job ids follow clustered/normal naming (the original
 `night-orient` draft id shipped here as `orient`).
 
 ## Runner-enforced tool policy (per job class)

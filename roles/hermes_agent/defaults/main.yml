@@ -12,6 +12,7 @@ hermes_agent_user: hermes
 # snapshotted + replicated pve->pve3.
 hermes_agent_home: /var/lib/hermes
 hermes_agent_hermes_home: "{{ hermes_agent_home }}/.hermes" # $HERMES_HOME
+hermes_agent_managed_cron_state_dir: "{{ hermes_agent_hermes_home }}/managed-cron"
 hermes_agent_bin: /usr/local/bin/hermes                     # system-wide install
 # install.sh's root-FHS layout: the app checkout (editable install target) and
 # its uv-managed venv. uv itself lands only at this root-owned path — the
@@ -49,6 +50,15 @@ hermes_agent_installer_path: "/usr/local/lib/hermes-agent-installer-{{ hermes_ag
 # Bump the tag deliberately: renovate opens the PR on each nix-hermes release;
 # a bad ref fails the converge loudly at the controller build step.
 hermes_agent_bundle_flake_ref: "github:dryvist/nix-hermes/nix-hermes-v0.6.0#hermes-bundle"
+hermes_agent_prompts_flake_ref: >-
+  github:dryvist/ai-llm-prompts/0431be6994d51169b9f705ddeba958eb8a4d0fc4#auto-ai-agent
+hermes_agent_webhook_prompt_file: hermes-inbound-webhook.md
+hermes_agent_curriculum_prompt_files:
+  orient: hermes-curriculum-orient.md
+  reposweep: hermes-curriculum-reposweep.md
+  splunk: hermes-curriculum-splunk.md
+  apps: hermes-curriculum-apps.md
+  improve: hermes-curriculum-improve.md
 
 # --- Brain: the LiteLLM router (the fabric front door, OpenAI-compatible /v1) ---
 # Reached by its neutral Traefik FQDN — never a hardcoded IP. The router routes by
@@ -191,17 +201,7 @@ hermes_agent_daily_status_cron_name: homelab-ai-fabric-status
 # channel now, so the full 24h schedule adds no operator noise — and a fabric
 # failure in the former 22:00-08:00 gap is seen within the hour, not at 08:00.
 hermes_agent_daily_status_cron_schedule: "0 * * * *"
-hermes_agent_daily_status_cron_prompt: >-
-  Check the homelab AI-fabric status: LLM router health, Hermes gateway
-  health, Hindsight memory-pool health, and any merge-ready PRs. Recall your
-  last posted fingerprint and its timestamp from memory (key
-  "fabric-status-last"). If today's status is unchanged from that fingerprint
-  AND it has been under 24h since the fingerprint's timestamp, post ONLY a
-  one-line update: "No change since <timestamp> — still <short status>." and
-  save nothing new. Otherwise post the full one-paragraph heartbeat as before,
-  and save today's fingerprint + timestamp to memory under that key. A few
-  sentences is plenty when you do post the full version — this runs hourly,
-  so keep it short either way.
+hermes_agent_daily_status_cron_prompt_file: hermes-daily-fabric-status.md
 
 # --- Inbound webhook receiver (event-driven agent trigger) ------------------
 # The `hermes gateway` webhook platform: an HTTP receiver (/webhooks/<name>,
@@ -383,7 +383,7 @@ hermes_agent_context_compression_enabled: true
 hermes_agent_context_compression_threshold: 0.85
 hermes_agent_nightly_wiki_cron_name: hermes-nightly-wiki
 hermes_agent_nightly_wiki_cron_schedule: "0 2 * * *"
-hermes_agent_nightly_wiki_cron_prompt: "Run a lint and health-check on the wiki."
+hermes_agent_nightly_wiki_cron_prompt_file: hermes-nightly-wiki-health.md
 
 # --- autonomous GitHub docs-contributor ---
 hermes_agent_github_app_id: ""
@@ -456,45 +456,20 @@ hermes_agent_splunk_digest_deliver: "{{ hermes_agent_firehose_deliver }}"
 # zero overlapping start minutes.
 hermes_agent_splunk_triage_cron_name: splunk-triage
 hermes_agent_splunk_triage_cron_schedule: "7 * * * *"
-hermes_agent_splunk_triage_cron_prompt: >-
-  Do a broad, self-directed anomaly sweep of Splunk right now using only bounded
-  queries. Recall your known baselines first, confirm anything surprising with
-  follow-up bounded queries, and record notable findings and updated baselines to
-  memory. Before you alert, also recall the splunk-digest job's last-posted
-  findings from memory (key "splunk-digest-last"): the channel digest is the
-  canonical surface for ongoing/known issues, this DM is for NEW or ESCALATING
-  findings only. If your top finding is already covered there and has not
-  gotten worse, do not re-derive or re-alert it — reply with exactly [SILENT]
-  (this DM has nothing to add beyond the digest). If nothing is genuinely off,
-  also reply with exactly [SILENT]. Otherwise send one concise, numbers-backed
-  alert covering only what is new or escalating.
+hermes_agent_splunk_triage_cron_prompt_file: hermes-splunk-triage.md
 
 hermes_agent_splunk_security_cron_name: splunk-security
 hermes_agent_splunk_security_cron_schedule: "22 */6 * * *"
-hermes_agent_splunk_security_cron_prompt: >-
-  Sweep Splunk with a security lens this run — firewall-drop spikes, auth-failure
-  spikes, honeypot index hits, unexpected source IPs — all as bounded stats,
-  compared against your remembered baselines. You are not limited to these; flag
-  anything that looks like a threat. Record findings to memory. Reply exactly
-  [SILENT] if clean; otherwise one concise, numbers-backed alert.
+hermes_agent_splunk_security_cron_prompt_file: hermes-splunk-security.md
 
 hermes_agent_splunk_parsing_cron_name: splunk-parsing
 hermes_agent_splunk_parsing_cron_schedule: "37 2 * * *"
-hermes_agent_splunk_parsing_cron_prompt: >-
-  Sweep Splunk with a data-quality lens this run — timestamp-extraction failures,
-  events dated far in the past/future, line-merge anomalies, new or unknown
-  sourcetypes, mis-sized or unparsed events, splunkd parsing warnings — all
-  bounded. Record findings and baselines to memory. Reply exactly [SILENT] if
-  clean; otherwise one concise, numbers-backed alert.
+hermes_agent_splunk_parsing_cron_prompt_file: hermes-splunk-parsing.md
 
 # Quiet research run: builds long-term knowledge (RAG) rather than alerting.
 hermes_agent_splunk_deepdive_cron_name: splunk-deepdive
 hermes_agent_splunk_deepdive_cron_schedule: "11 3 * * *"
-hermes_agent_splunk_deepdive_cron_prompt: >-
-  Pick ONE index or sourcetype you have not yet characterized well (check your
-  wiki/memory for gaps). Using only bounded queries, learn its normal shape,
-  volume and purpose, then write or update a page in the `splunk` area of your
-  wiki plus a memory baseline. This is a quiet research run — no alert needed.
+hermes_agent_splunk_deepdive_cron_prompt_file: hermes-splunk-deepdive.md
 
 # Routine status post: always delivered (never [SILENT]).
 hermes_agent_splunk_digest_cron_name: splunk-digest
@@ -510,20 +485,7 @@ hermes_agent_splunk_digest_cron_name: splunk-digest
 # still goes out at least once/day (the anchor hour) even with zero change, so
 # "still CRITICAL" never silently rots off everyone's radar.
 hermes_agent_splunk_digest_cron_schedule: "52 * * * *"
-hermes_agent_splunk_digest_cron_prompt: >-
-  Gather the current normal (top indexes/sourcetypes by volume and freshness)
-  and any anomalies still open. Recall your last-posted digest state from
-  memory (key "splunk-digest-last": fingerprint, first-seen timestamp, post
-  date). If nothing has materially changed since that post AND today's UTC
-  hour is not 00 (the daily anchor hour), post ONLY a one-line update: "No
-  change — still <one-line state>, Day N since <first-seen date>, see
-  <wiki/memory reference>." If something changed OR it is the 00:52 UTC anchor
-  post, post the FULL digest — what you looked at, the current normal, open
-  anomalies, and any splunk-auto-* checks added or removed — and save the new
-  fingerprint (resetting first-seen if the state actually changed) to memory
-  under that key. Bounded queries only. This job ALWAYS posts something and
-  NEVER replies [SILENT] — the one-line update satisfies that contract just
-  as the full digest does; [SILENT] is only for the anomaly sweeps.
+hermes_agent_splunk_digest_cron_prompt_file: hermes-splunk-digest.md
 
 # Aggregate list the seed loop iterates. Alert jobs DM the operator; the digest
 # posts to the home channel; the quiet deep-dive research run saves locally only.
@@ -532,22 +494,57 @@ hermes_agent_splunk_cron_jobs:
     schedule: "{{ hermes_agent_splunk_triage_cron_schedule }}"
     prompt: "{{ hermes_agent_splunk_triage_cron_prompt }}"
     deliver: "{{ hermes_agent_splunk_alert_deliver }}"
+    skills: [dryvist/splunk-monitor]
+    enabled: >-
+      {{ hermes_agent_splunk_monitor_enabled | bool
+         and hermes_agent_splunk_mcp_url | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
   - name: "{{ hermes_agent_splunk_security_cron_name }}"
     schedule: "{{ hermes_agent_splunk_security_cron_schedule }}"
     prompt: "{{ hermes_agent_splunk_security_cron_prompt }}"
     deliver: "{{ hermes_agent_splunk_alert_deliver }}"
+    skills: [dryvist/splunk-monitor]
+    enabled: >-
+      {{ hermes_agent_splunk_monitor_enabled | bool
+         and hermes_agent_splunk_mcp_url | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
   - name: "{{ hermes_agent_splunk_parsing_cron_name }}"
     schedule: "{{ hermes_agent_splunk_parsing_cron_schedule }}"
     prompt: "{{ hermes_agent_splunk_parsing_cron_prompt }}"
     deliver: "{{ hermes_agent_splunk_alert_deliver }}"
+    skills: [dryvist/splunk-monitor]
+    enabled: >-
+      {{ hermes_agent_splunk_monitor_enabled | bool
+         and hermes_agent_splunk_mcp_url | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
   - name: "{{ hermes_agent_splunk_deepdive_cron_name }}"
     schedule: "{{ hermes_agent_splunk_deepdive_cron_schedule }}"
     prompt: "{{ hermes_agent_splunk_deepdive_cron_prompt }}"
     deliver: local
+    skills: [dryvist/splunk-monitor]
+    enabled: >-
+      {{ hermes_agent_splunk_monitor_enabled | bool
+         and hermes_agent_splunk_mcp_url | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
   - name: "{{ hermes_agent_splunk_digest_cron_name }}"
     schedule: "{{ hermes_agent_splunk_digest_cron_schedule }}"
     prompt: "{{ hermes_agent_splunk_digest_cron_prompt }}"
     deliver: "{{ hermes_agent_splunk_digest_deliver }}"
+    skills: [dryvist/splunk-monitor]
+    enabled: >-
+      {{ hermes_agent_splunk_monitor_enabled | bool
+         and hermes_agent_splunk_mcp_url | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
 
 # --- GitHub monitor: periodic read-only org-triage sweep -------------------
 # The poll-based counterpart to the Splunk fleet, reusing the existing
@@ -564,19 +561,7 @@ hermes_agent_github_monitor_cron_schedule: "26 */6 * * *"
 # in full every sweep even when the list hadn't moved. Memory carries the
 # last-posted list across runs (same reuse-what-exists pattern as the Splunk
 # jobs above) so an unchanged sweep costs one line instead of a full repost.
-hermes_agent_github_monitor_cron_prompt: >-
-  Do a read-only triage sweep of the dryvist GitHub org right now using your
-  github-issues skill. Enumerate open PRs and issues across non-archived repos;
-  flag PRs older than 7 days as stale, Renovate/bot PRs open >7 days, and issues
-  untouched for 30+ days. NEVER comment on, label, close, or edit anything — you
-  are producing a report, not acting on it. If nothing genuinely needs a human
-  decision, reply with exactly [SILENT]. Otherwise, recall your last-posted
-  top-5 list and totals from memory (key "github-triage-last"): if today's
-  top-5 + totals are identical to that last post, post ONLY a one-line update
-  ("No change since <timestamp> — same N items still open") instead of
-  restating the list. If the list or totals changed, post the full top-5
-  action list (repo, number, why) plus totals to the home channel, and save
-  the new list + totals + timestamp to memory under that key.
+hermes_agent_github_monitor_cron_prompt_file: hermes-github-triage.md
 # Routine triage report — firehose (3-tier routing).
 hermes_agent_github_monitor_cron_deliver: "{{ hermes_agent_firehose_deliver }}"
 
@@ -585,6 +570,13 @@ hermes_agent_github_cron_jobs:
     schedule: "{{ hermes_agent_github_monitor_cron_schedule }}"
     prompt: "{{ hermes_agent_github_monitor_cron_prompt }}"
     deliver: "{{ hermes_agent_github_monitor_cron_deliver }}"
+    skills: [dryvist/github-issues]
+    enabled: >-
+      {{ hermes_agent_github_monitor_enabled | bool
+         and hermes_agent_github_issues_pat | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
 
 # --- Daily operator summary: the home channel's ONE curated post ------------
 # 3-tier routing gives the verbose crons the firehose channel; this job is what
