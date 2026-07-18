@@ -202,6 +202,16 @@ dedup), and durable knowledge is captured as `llm-wiki` pages (RAG).
 digest posts to the Slack home channel. The quiet deep-dive research run saves
 locally only (`--deliver local`).
 
+**Delta discipline (canonical surface, not double-reported).** The digest is
+the canonical surface for ongoing/known findings; `splunk-triage`'s DM recalls
+the digest's last-posted state from memory before alerting and stays silent
+when its top finding is already covered there — the DM is for genuinely NEW
+or ESCALATING findings only. The digest itself fingerprints its own findings
+against its last post: unchanged → a one-line "still open" update; changed, or
+once per day (the anchor hour), → the full digest. `github-triage` applies the
+same fingerprint-and-collapse pattern to its top-5 list. All three reuse the
+existing memory tool for this — no new state infrastructure.
+
 **Fresh posts, not one thread.** Each cron run is an isolated session, so its Slack
 output is delivered **flat/top-level** (a new message each time) rather than threaded
 under a single ever-growing root. This is set in `config.yaml`'s `platforms.slack`
@@ -340,10 +350,30 @@ This watchdog closes both gaps with a small `systemd` timer
    spam was) and an **urgent ntfy** push (the `keystone` feed other homelab
    outages page on). Paused jobs don't fire, so the outage stops producing spam
    instead of amplifying it.
+4. **Flap coalescing** — debounce alone doesn't stop a genuinely *unstable*
+   backend from alerting on every edge (confirmed live: a 31h-unstable backend
+   produced dozens of up/down DM pairs). Completing the first down/up cycle
+   opens a `flap_cooldown_seconds` cooldown window; any further edge inside it
+   is coalesced (counted, window extended) instead of alerting. Once the
+   window finally elapses with the brain stable, one summary reports the whole
+   episode ("unstable since X, N flaps, stabilized at Y"); a clean single
+   cycle with nothing coalesced clears silently since its two normal alerts
+   already told the story.
 
 Pausing loses no coverage a run would otherwise achieve — the brain is down either
 way — it just makes the gap visible **once** instead of drowning it in 500s.
 Gated on the same Slack tokens that seed the fleet (no fleet → nothing to guard).
+
+Cron-failure delivery text itself (raw exception strings like a mid-stream
+fallback error or "no available server") comes from Hermes Agent's own
+always-deliver cron failure path — upstream, not rendered by this role — and
+offers no config hook to translate or filter it (verified against the pinned
+version's docs: error tracebacks are explicitly never touched by any
+user-facing translation setting). This watchdog's pause/resume already
+suppresses that spam for a full brain outage; a single transient error on an
+otherwise-healthy brain can still deliver its raw text once. Tracked as an
+upstream ask, not fixable from this role without inventing a delivery-layer
+proxy this repo doesn't otherwise need.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -352,6 +382,7 @@ Gated on the same Slack tokens that seed the fleet (no fleet → nothing to guar
 | `hermes_agent_brain_watchdog_probe_timeout` | `15` | Per-probe curl deadline (seconds) |
 | `hermes_agent_brain_watchdog_down_after` | `3` | Consecutive fails → pause + alert |
 | `hermes_agent_brain_watchdog_up_after` | `2` | Consecutive oks → resume + alert |
+| `hermes_agent_brain_watchdog_flap_cooldown_seconds` | `3600` | Post-cycle window that coalesces further edges into one summary |
 | `hermes_agent_brain_watchdog_ntfy_topic` | `keystone` | ntfy topic for the urgent page |
 
 ### Watchdog self-monitoring ("who watches the watchdog")

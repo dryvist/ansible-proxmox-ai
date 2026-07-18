@@ -30,6 +30,10 @@ DOWN_AFTER="{{ hermes_agent_brain_watchdog_down_after }}"
 UP_AFTER="{{ hermes_agent_brain_watchdog_up_after }}"
 NTFY_URL="{{ hermes_agent_brain_watchdog_ntfy_url }}"
 STATE_DIR="{{ hermes_agent_hermes_home }}/brain-watchdog"
+# Flap coalescing: once a down/up cycle completes cleanly, further edges
+# within this many seconds are coalesced (counted, window extended) instead of
+# each firing its own alert. See "Flap coalescing" below.
+FLAP_COOLDOWN_SECONDS="{{ hermes_agent_brain_watchdog_flap_cooldown_seconds }}"
 # Rendered at template time (the seeded list is static) so the script avoids
 # bash's array-length parameter form, whose brace-hash opener would be misread as
 # a Jinja comment start in this .j2 and mangle the template.
@@ -138,6 +142,69 @@ alert() {
   ntfy_push "${kind}" "${msg}"
 }
 
+# --- Flap coalescing: one summary instead of dozens of up/down DM pairs ------
+# The debounce above rides brief bounces, but a genuinely UNSTABLE backend
+# (rotation flapping for hours) still produces one clean alert per edge --
+# confirmed live as dozens of DM pairs over 31h. Fix: the first down/up cycle
+# alerts normally (unchanged UX for the common case), and completing it opens
+# a cooldown window. Any further edge inside that window is coalesced (counted,
+# window extended) instead of alerting; once the window finally elapses with
+# the brain stable, one summary covers everything that was coalesced.
+FLAP_COOLDOWN_FILE="${STATE_DIR}/flap_cooldown_until"
+FLAP_COUNT_FILE="${STATE_DIR}/flap_count"
+FLAP_SINCE_FILE="${STATE_DIR}/flap_since"
+
+handle_edge() {
+  local kind="$1" now_epoch cooldown_until flap_count
+  now_epoch="$(date -u +%s)"
+  cooldown_until="$(cat "${FLAP_COOLDOWN_FILE}" 2>/dev/null || echo 0)"
+  [[ "${cooldown_until}" =~ ^[0-9]+$ ]] || cooldown_until=0
+  if (( now_epoch < cooldown_until )); then
+    # Inside an active cooldown from a just-completed cycle: coalesce this
+    # edge silently -- count it and extend the window.
+    flap_count="$(cat "${FLAP_COUNT_FILE}" 2>/dev/null || echo 0)"
+    [[ "${flap_count}" =~ ^[0-9]+$ ]] || flap_count=0
+    flap_count=$(( flap_count + 1 ))
+    printf '%s\n' "${flap_count}" > "${FLAP_COUNT_FILE}"
+    printf '%s\n' "$(( now_epoch + FLAP_COOLDOWN_SECONDS ))" > "${FLAP_COOLDOWN_FILE}"
+    logger -t hermes-brain-watchdog "coalesced ${kind} edge during cooldown (flap #${flap_count})"
+  else
+    # No active cooldown: either the very first down of a fresh episode, or
+    # the up that completes a cycle -- both alert normally.
+    alert "${kind}"
+    if [[ "${kind}" == "up" ]]; then
+      # A down->up cycle just completed cleanly. Open the cooldown window so
+      # near-term flapping gets coalesced instead of spamming.
+      printf '%s\n' "$(( now_epoch + FLAP_COOLDOWN_SECONDS ))" > "${FLAP_COOLDOWN_FILE}"
+      printf '0\n' > "${FLAP_COUNT_FILE}"
+      printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${FLAP_SINCE_FILE}"
+    fi
+  fi
+}
+
+# Runs every invocation (not just on a transition): once a cooldown window
+# elapses with the brain stable, report anything that was coalesced during it
+# in ONE summary, then clear the episode. A clean single cycle (nothing
+# coalesced) clears silently -- its two normal alerts already told the story.
+flap_summary_check() {
+  local cooldown_until now_epoch flap_count since msg
+  cooldown_until="$(cat "${FLAP_COOLDOWN_FILE}" 2>/dev/null || echo 0)"
+  [[ "${cooldown_until}" =~ ^[0-9]+$ ]] || cooldown_until=0
+  (( cooldown_until > 0 )) || return 0
+  now_epoch="$(date -u +%s)"
+  (( now_epoch >= cooldown_until )) || return 0
+  flap_count="$(cat "${FLAP_COUNT_FILE}" 2>/dev/null || echo 0)"
+  [[ "${flap_count}" =~ ^[0-9]+$ ]] || flap_count=0
+  if [[ "${state}" == "up" ]] && (( flap_count > 0 )); then
+    since="$(cat "${FLAP_SINCE_FILE}" 2>/dev/null || echo unknown)"
+    msg=":large_yellow_circle: Hermes brain was unstable since ${since} (${flap_count} additional flap(s) after the initial recovery) -- stabilized at $(date -u +%Y-%m-%dT%H:%M:%SZ)."
+    logger -t hermes-brain-watchdog "${msg}"
+    slack_post "${msg}"
+    ntfy_push up "${msg}"
+  fi
+  rm -f "${FLAP_COOLDOWN_FILE}" "${FLAP_COUNT_FILE}" "${FLAP_SINCE_FILE}"
+}
+
 # --- Debounced state machine -------------------------------------------------
 # state: up|down (default up so a fresh start never emits a spurious recovery).
 # streak: signed run of consecutive same-result probes (+ok / -fail). A DOWN edge
@@ -157,18 +224,19 @@ if probe_ok; then
   if (( streak < 0 )); then streak=1; else streak=$(( streak + 1 )); fi
   if [[ "${state}" == "down" ]] && (( streak >= UP_AFTER )); then
     cron_do resume
-    alert up
+    handle_edge up
     state="up"; streak=0
   fi
 else
   if (( streak > 0 )); then streak=-1; else streak=$(( streak - 1 )); fi
   if [[ "${state}" == "up" ]] && (( streak <= -DOWN_AFTER )); then
     cron_do pause
-    alert down
+    handle_edge down
     state="down"; streak=0
   fi
 fi
 
 printf '%s\n' "${state}" > "${STATE_FILE}"
 printf '%s\n' "${streak}" > "${STREAK_FILE}"
+flap_summary_check
 exit 0
