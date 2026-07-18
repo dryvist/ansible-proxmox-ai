@@ -91,8 +91,9 @@ curl "${CURL_TIMEOUTS[@]}" -sS -H "Authorization: Bearer $HERMES_API_SERVER_KEY"
 - **Slack home channel** — each job ends with a summary post (delivery proof).
 - **Hermes wiki** — the substantive artifacts (pages named in each job's
   `success_checks`).
-- **GitHub** — `apps`/`improve` may file capped issue sets in
-  `dryvist/ansible-proxmox-apps` (prefixes `[hermes-fleet-health]`,
+- **GitHub** — `apps` may file capped issue sets in
+  `dryvist/ansible-proxmox-apps` (prefix `[hermes-fleet-health]`); `improve`
+  may file capped issue sets in `dryvist/ansible-proxmox-ai` (prefix
   `[hermes-improve]`).
 
 Save each run's final status JSON to `$CURR/results/<job>.json` for the

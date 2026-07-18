@@ -32,7 +32,7 @@ the safe subset already applied.
    role manages — propose changes to those as ROLE-CHANGE items instead.
    Record exactly what you changed.
 5. **File ROLE-CHANGE items**: for up to 2 ROLE-CHANGE proposals, file a
-   GitHub issue in `dryvist/ansible-proxmox-apps` (title prefix
+   GitHub issue in `dryvist/ansible-proxmox-ai` (title prefix
    `[hermes-improve]`, evidence included, duplicate-checked). If the GitHub
    token is unavailable, put the full issue drafts on the wiki page and
    say so.

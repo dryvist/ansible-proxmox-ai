@@ -35,9 +35,10 @@ VLAN.
 
 ## Installation
 
-This role ships in the `ansible-proxmox-apps` repository — no separate
-installation. The role itself fetches and sha256-verifies the pinned Hermes
-installer on the target, so the LXC only needs base connectivity and apt.
+This role ships as part of this repository (`ansible-proxmox-ai`) — no
+separate installation. The role itself fetches and sha256-verifies the pinned
+Hermes installer on the target, so the LXC only needs base connectivity and
+apt.
 
 ## Usage
 
