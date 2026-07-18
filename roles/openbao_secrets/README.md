@@ -81,6 +81,7 @@ server-side quorum HA needs a fourth node and is out of scope.
 
 | Domain | AppRole env vars | KV paths | Consumers |
 | --- | --- | --- | --- |
+| `ai-public` | `AI_PUBLIC_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/public/brain` (non-secret) | `ai_default_model` + brain-sync timers (below) |
 | `local-llm` | `LOCAL_LLM_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/*` (see the defaults for the path list) | every AI role in this repo |
 
 Other resource domains (observability, media, apps, ...) are fetched by the
@@ -91,6 +92,17 @@ Other resource domains (observability, media, apps, ...) are fetched by the
 identities (Claude/codex-style agents), not the serving stack itself; keeping
 them separate means an agent's credentials can never be used to read the
 serving stack's own secrets, and vice versa.
+
+`ai-public` is deliberately its OWN domain rather than another `local-llm`
+path: it is the one domain whose role_id/secret_id also gets copied onto
+consumer guests (see [Wiring](#wiring)) for a runtime poll, so its policy
+must stay narrowly read-only on non-secret data — never local-llm's broader
+`ai/*` grant, which a compromised guest could otherwise ride to every other
+`ai/*` secret. **Needs a companion AppRole + read-only policy on
+`secret/data/ai/public/*` in `ansible-proxmox-apps`' `roles/openbao`
+(`openbao_approles`/`openbao_policies`) before it resolves live** — until
+then it skips cleanly like any other unconfigured domain, and
+`ai_default_model` falls back to its static literal.
 
 All readable path keys for a domain are merged flat into that domain's
 `bao_<domain>_secrets`, keyed by the field name, so a consumer default reads
@@ -125,4 +137,8 @@ logins from being split across multiple domain-scoped plays.
 
 Verify at the first bao-backed converge: each domain's AppRole login against
 the Traefik ingress, and that `vault_kv2_get` returns the expected field names
-once that domain's `secret/<path>` is seeded.
+once that domain's `secret/<path>` is seeded. `ai-public` additionally needs
+its AppRole/policy created upstream (see above) and its role_id/secret_id
+copied onto the `hermes_agent`/`open_webui` guests for their brain-sync
+timers — the controller-side fetch and the guest-side runtime poll are two
+separate consumers of the same identity.

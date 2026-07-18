@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+#
+# Hermes brain runtime sync. Fired by hermes-brain-sync.timer every
+# {{ hermes_agent_brain_sync_interval }}. Polls the ai-public OpenBao domain's
+# non-secret secret/{{ hermes_agent_brain_sync_bao_path }} (field
+# {{ hermes_agent_brain_sync_bao_field }}) and, ONLY when the value both
+# CHANGED from the currently-running brain AND validates live against the
+# router's own /v1/model/info (a tuned entry with a real max_input_tokens —
+# never the "*" wildcard passthrough; the live counterpart to the
+# converge-time compress-death-trap guard in
+# roles/llm_router/tasks/assert.yml), rewrites config.yaml's model.default
+# and restarts hermes-gateway. This is what lets the operator repoint the
+# fabric brain from OpenBao alone — no tofu/ansible rebuild.
+#
+# ai_default_model (inventory/group_vars/all.yml, itself bao-first since
+# 2026-07-18) is only the COLD-START seed baked into config.yaml at converge,
+# and the value this script falls back to when OpenBao or the router cannot
+# be reached — never overwritten by a failed cycle.
+#
+# Runs as ROOT (see hermes-brain-sync.service), separate from the hermes
+# user's own gateway process: the OpenBao AppRole credential
+# ({{ hermes_agent_brain_sync_env_path }}) never enters the agent's own
+# environment.
+set -uo pipefail
+
+BAO_ADDR="{{ hermes_agent_brain_sync_bao_addr }}"
+BAO_PATH="{{ hermes_agent_brain_sync_bao_path }}"
+BAO_FIELD="{{ hermes_agent_brain_sync_bao_field }}"
+ROLE_ID="${AI_PUBLIC_VAULT_ROLE_ID:-}"
+SECRET_ID="${AI_PUBLIC_VAULT_SECRET_ID:-}"
+ROUTER_BASE_URL="{{ hermes_agent_model_base_url }}"
+CONFIG_FILE="{{ hermes_agent_hermes_home }}/config.yaml"
+CONFIG_OWNER="{{ hermes_agent_user }}"
+STATE_FILE="{{ hermes_agent_brain_sync_state_file }}"
+FALLBACK_MODEL="{{ hermes_agent_model }}"
+
+mkdir -p "{{ hermes_agent_brain_sync_state_dir }}"
+# World-readable (0644): the hermes-owned brain-watchdog process reads this
+# same file to know which model it is currently probing.
+[[ -f "${STATE_FILE}" ]] || { printf '%s\n' "${FALLBACK_MODEL}" > "${STATE_FILE}"; chmod 0644 "${STATE_FILE}"; }
+CURRENT="$(cat "${STATE_FILE}")"
+
+# The router bearer key is already deployed to Hermes' own .env
+# (HERMES_AGENT_MODEL_API_KEY) — read it rather than duplicating the secret
+# into this script's own env file.
+ROUTER_KEY="$(grep -m1 '^HERMES_AGENT_MODEL_API_KEY=' "{{ hermes_agent_hermes_home }}/.env" 2>/dev/null | cut -d= -f2-)"
+
+# Any missing input skips the cycle silently (next timer tick retries) — a
+# brain-sync outage must never touch the currently-running, already-valid brain.
+if [[ -z "${BAO_ADDR}" || -z "${ROLE_ID}" || -z "${SECRET_ID}" ]]; then
+  logger -t hermes-brain-sync "skip: OpenBao ai-public credentials not configured"
+  exit 0
+fi
+
+TOKEN="$(curl -fsS --max-time 10 -X POST "${BAO_ADDR}/v1/auth/approle/login" \
+  -d "{\"role_id\":\"${ROLE_ID}\",\"secret_id\":\"${SECRET_ID}\"}" \
+  | jq -r '.auth.client_token // empty')"
+if [[ -z "${TOKEN}" ]]; then
+  logger -t hermes-brain-sync "skip: OpenBao AppRole login failed (${BAO_ADDR})"
+  exit 0
+fi
+
+CANDIDATE="$(curl -fsS --max-time 10 -H "X-Vault-Token: ${TOKEN}" \
+  "${BAO_ADDR}/v1/secret/data/${BAO_PATH}" \
+  | jq -r ".data.data.${BAO_FIELD} // empty")"
+if [[ -z "${CANDIDATE}" ]]; then
+  logger -t hermes-brain-sync "skip: secret/${BAO_PATH} has no ${BAO_FIELD} yet"
+  exit 0
+fi
+
+if [[ "${CANDIDATE}" == "${CURRENT}" ]]; then
+  exit 0 # no change
+fi
+
+# Validate: the candidate must be a TUNED router entry with a real context
+# window, never the "*" wildcard passthrough (compress-death trap — see
+# roles/llm_router/tasks/assert.yml). Checked LIVE against the router's own
+# /v1/model/info so a candidate ahead of the router's own last converge is
+# caught too, not just one ahead of Hermes' own last converge.
+if [[ -z "${ROUTER_KEY}" ]]; then
+  logger -t hermes-brain-sync "skip: router key unavailable, cannot validate ${CANDIDATE}"
+  exit 0
+fi
+
+SAFE="$(curl -fsS --max-time 10 -H "Authorization: Bearer ${ROUTER_KEY}" \
+  "${ROUTER_BASE_URL}/model/info" \
+  | jq -r --arg m "${CANDIDATE}" \
+    '[.data[]? | select(.model_name==$m) | select(.model_info.max_input_tokens != null)] | length > 0')"
+if [[ "${SAFE}" != "true" ]]; then
+  logger -t hermes-brain-sync "REJECTED ${CANDIDATE}: not a tuned router entry with a real context window (compress-death trap) -- staying on ${CURRENT}"
+  exit 0
+fi
+
+sed -i "s|^  default: .*|  default: ${CANDIDATE}|" "${CONFIG_FILE}"
+# sed -i replaces the file via a new inode owned by this (root) process —
+# restore the ansible-managed owner/mode so hermes-gateway (User={{ hermes_agent_user }})
+# can still read its own config after the restart below.
+chown "${CONFIG_OWNER}:${CONFIG_OWNER}" "${CONFIG_FILE}"
+chmod 0640 "${CONFIG_FILE}"
+
+printf '%s\n' "${CANDIDATE}" > "${STATE_FILE}"
+chmod 0644 "${STATE_FILE}"
+logger -t hermes-brain-sync "brain repointed ${CURRENT} -> ${CANDIDATE} (source: OpenBao secret/${BAO_PATH}); restarting hermes-gateway"
+systemctl restart hermes-gateway
+exit 0

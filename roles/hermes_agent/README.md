@@ -391,6 +391,60 @@ the `StartLimit*` thresholds are literals in
 role variables — they are operational constants tied 1:1 to this alert unit
 that nothing currently overrides per-host.
 
+## Brain runtime source (OpenBao — no rebuild to re-point)
+
+tofu/Ansible seed the **starting** brain (`ai_default_model`, baked into
+`config.yaml` at converge) but do not **own** it. A second, independent
+`systemd` timer — `hermes-brain-sync.timer`, every
+`hermes_agent_brain_sync_interval` (default 5 min), run as **root**, separate
+from the `hermes` user's own gateway process and `.env` — polls the
+`ai-public` OpenBao domain's non-secret `secret/ai/public/brain` (field
+`active_model`; see `roles/openbao_secrets`) and, only when the value both
+**changed** and **validates live** against the router's own
+`GET /v1/model/info` (a tuned entry with a real `max_input_tokens` — never
+the `"*"` wildcard passthrough; the live counterpart to the converge-time
+compress-death-trap guard in `roles/llm_router/tasks/assert.yml`), rewrites
+`config.yaml`'s `model.default` and restarts `hermes-gateway`.
+
+Re-pointing the fabric brain day-to-day is now an OpenBao write, not a
+converge:
+
+```sh
+bao kv patch secret/ai/public/brain active_model=<new-model-id>
+```
+
+The change reaches Hermes within one poll interval, with no tofu/ansible run.
+A poll failure (OpenBao unreachable, router unreachable, candidate not a
+tuned router entry) always just **keeps the currently-running brain** — it
+never blanks it — and `ai_default_model` (itself bao-first since 2026-07-18,
+same `ai-public` domain) is both the converge-time seed and the fallback a
+sync cycle falls back to. The brain-health watchdog above reads the same
+live state file (`hermes_agent_brain_sync_state_file`), so it always probes
+whichever model is actually configured right now, not a stale converge-time
+value.
+
+The `ai-public` domain deliberately uses its **own**, narrowly read-only
+AppRole — never `local-llm`'s broader `ai/*` credential — because its
+role_id/secret_id are the ones copied onto this guest (a dedicated
+`0600` env file, kept out of Hermes' own `.env` so the credential never
+enters the agent's own environment). See `roles/openbao_secrets/README.md`
+for the rationale and the companion `ansible-proxmox-apps` AppRole/policy
+this domain still needs before it resolves live.
+
+**Deliberately NOT extended** to `hermes_agent_compression_model` (pinned to
+a literal so a brain repoint can never silently drag the ≥64K-context
+compression path with it) or to `hermes_agent_memory_llm_model` (only
+rendered under the `local_embedded` Hindsight mode, not the live
+`local_external` default).
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `hermes_agent_brain_sync_enabled` | `true` | Deploy + start the brain-sync timer |
+| `hermes_agent_brain_sync_interval` | `5min` | Poll cadence (`OnUnitActiveSec`) |
+| `hermes_agent_brain_sync_bao_path` | `ai/public/brain` | KV v2 data path (mount `secret`) |
+| `hermes_agent_brain_sync_bao_field` | `active_model` | Field holding the candidate model id |
+| `hermes_agent_brain_sync_state_file` | `/etc/hermes-brain-sync/current-model` | Live pointer, world-readable, shared with the watchdog |
+
 ## Live docs (Context7)
 
 Registers Context7's hosted HTTP MCP server (`mcp_servers.context7`) so Hermes

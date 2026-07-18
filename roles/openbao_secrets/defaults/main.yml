@@ -53,6 +53,27 @@ openbao_secrets_domains:
     secret_id_env: APPS_VAULT_SECRET_ID
     paths:
       - apps/hindsight  # hindsight_db_password, hindsight_cp_access_key (+ replication)
+  # Public (non-secret) fabric coordination data — mirrors the "non-secret
+  # coordination path" precedent in tofu-proxmox's SECRETS_HIERARCHY.md
+  # (secret/platform/terrakube/main). Read-only, own least-privilege AppRole
+  # (NOT local-llm's broader ai/* grant): this is the one domain whose
+  # role_id/secret_id is also handed to CONSUMER GUESTS (hermes_agent,
+  # open_webui — see their *_brain_sync_* vars) for a runtime systemd-timer
+  # poll, so it must stay narrowly scoped to non-secret data even though
+  # local-llm's existing ai/* policy would technically also cover this path —
+  # a guest holding a live, reusable copy of local-llm's credential could
+  # pull every OTHER ai/* secret (Langfuse/Langflow DB passwords, GitHub App
+  # key, ...) it does not otherwise have, not just the ones already baked
+  # into its own .env. Needs a companion AppRole + read-only policy on
+  # secret/data/ai/public/* in ansible-proxmox-apps' roles/openbao
+  # (openbao_approles/openbao_policies) before this domain resolves live.
+  - name: ai-public
+    role_id_env: AI_PUBLIC_VAULT_ROLE_ID
+    secret_id_env: AI_PUBLIC_VAULT_SECRET_ID
+    paths:
+      - ai/public/brain  # active_model — the runtime fabric-brain override;
+                          #   see inventory/group_vars/all.yml (ai_default_model)
+                          #   and roles/hermes_agent + roles/open_webui brain-sync.
   - name: local-llm
     role_id_env: LOCAL_LLM_VAULT_ROLE_ID
     secret_id_env: LOCAL_LLM_VAULT_SECRET_ID
