@@ -3,8 +3,10 @@
 The Hermes agent is an autonomous LLM operator that runs a fleet of scheduled
 jobs (Splunk sweeps, a daily fabric-status digest, GitHub triage, a nightly
 wiki job) and answers ad-hoc requests over Slack. It reaches its brain through
-the same serving fabric documented in [DEPLOYMENT.md](DEPLOYMENT.md) and
-[BRAIN_ROTATION.md](BRAIN_ROTATION.md); this doc covers the agent itself — its
+the same serving fabric documented in [DEPLOYMENT.md](DEPLOYMENT.md); the brain
+model itself is an OpenBao runtime value re-pointed with no rebuild — see "Brain
+runtime source (OpenBao)" in the [`hermes_agent` role
+README](../roles/hermes_agent/README.md). This doc covers the agent itself — its
 cron fleet, its memory, the credentials it needs, and how the serving path
 self-heals.
 
