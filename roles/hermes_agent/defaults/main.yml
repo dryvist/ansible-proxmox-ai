@@ -255,6 +255,16 @@ hermes_agent_api_server_port: >-
 # 0 would disable the cap entirely — assert.yml forbids that.
 hermes_agent_api_max_concurrent_runs: 2
 
+# --- Kanban dispatcher bounds (config.yaml `kanban:` block) -------------------
+# Upstream (>=v0.13) runs the board dispatcher inside the gateway BY DEFAULT,
+# unbounded (dispatch_in_progress/auto_decompose default true, no concurrency
+# cap). These caps bound spawned workers against the same single serving
+# deployment as the API cap above (same measured-envelope rationale: one
+# stream serves well, 2-stream aggregate ~0.71x, beyond that thrash). Workers
+# + API runs + the cron fleet all share that envelope — keep the SUM small.
+hermes_agent_kanban_max_in_progress: 2
+hermes_agent_kanban_max_in_progress_per_profile: 1
+
 # --- Memory: best self-hostable as of June 2026 (Agy-validated) ---
 # Hindsight: local knowledge-graph + multi-strategy retrieval. Runs alongside the
 # always-on built-in MEMORY.md/USER.md. The whole HERMES_HOME is the durable surface.
@@ -304,10 +314,17 @@ hermes_agent_max_turns: 90
 #     bounds what an injected instruction can reach. Deliberately ABSENT:
 #     `cronjob` (an injected one-off run must not schedule persistent jobs),
 #     `browser` (the widest tool attack surface; the `web` toolset covers
-#     research), `delegation` (cost amplification), and `clarify` (headless).
+#     research), `delegation` (cost amplification), `kanban` (same cost-
+#     amplification shape — an injected run must not file board cards that
+#     spawn workers), and `clarify` (headless).
 #     Enabled MCP servers (splunk/context7/codex) are layered on by upstream's
 #     platform-tools semantics — the allowlist scopes native toolsets only.
-#  3. platform_toolsets.cron — allowlist for the scheduled fleet, same shape.
+#  3. platform_toolsets.cron — allowlist for the scheduled fleet, same shape,
+#     PLUS `kanban`: role-authored cron probes may file board cards
+#     (kanban_create) for follow-up work they cannot finish in-run — that is
+#     the deliberate card-creation surface feeding the bounded dispatcher
+#     (kanban: block in config.yaml.j2). The toolset is upstream-opt-in
+#     (never included by `all`/`*`), so naming it here is the only grant.
 #     Upstream additionally hard-disables cronjob/messaging/clarify in every
 #     cron context regardless of this list.
 #
@@ -339,7 +356,7 @@ hermes_agent_api_server_toolsets:
   - memory
   - context_engine
   - session_search
-hermes_agent_cron_toolsets: "{{ hermes_agent_api_server_toolsets }}"
+hermes_agent_cron_toolsets: "{{ hermes_agent_api_server_toolsets + ['kanban'] }}"
 
 # Pinned to UTC (workspace policy: no custom timezones), independent of the
 # target host's configured zone.
