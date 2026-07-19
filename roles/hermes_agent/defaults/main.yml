@@ -152,6 +152,18 @@ hermes_agent_slack_allowed_users: "{{ lookup('env', 'SLACK_MEMBER_ID') | default
 hermes_agent_slack_home_channel: "{{ lookup('env', 'SLACK_HOME_CHANNEL') | default('', true) }}"
 hermes_agent_slack_home_channel_name: "{{ lookup('env', 'SLACK_HOME_CHANNEL_NAME') | default('', true) }}"
 
+# 3-tier Slack routing (operator decision 2026-07-18): verbose routine cron
+# output (full working reports, every run) goes to the FIREHOSE channel; the
+# home channel above becomes the curated summary surface (the once-daily
+# delta-only rollup, plus anything a human must act on); DMs stay urgent-only
+# (anomaly sweeps + new incidents). Empty firehose → those jobs fall back to
+# the home channel, i.e. the original single-channel behavior.
+hermes_agent_slack_firehose_channel: "{{ lookup('env', 'SLACK_FIREHOSE_CHANNEL') | default('', true) }}"
+hermes_agent_firehose_deliver: >-
+  {{ 'slack:' ~ hermes_agent_slack_firehose_channel
+     if (hermes_agent_slack_firehose_channel | length > 0)
+     else 'slack' }}
+
 # Post scheduled (cron) output as FRESH top-level channel messages, not threaded
 # replies under one ever-growing root. Each cron run is already an isolated
 # session; this makes its Slack surface match. reply_in_thread=false → flat
@@ -175,7 +187,10 @@ hermes_agent_slack_cron_continuable_surface: in_channel
 # state infrastructure — so the job fingerprints its own findings and checks
 # them against its last post before deciding how much to say.
 hermes_agent_daily_status_cron_name: homelab-ai-fabric-status
-hermes_agent_daily_status_cron_schedule: "0 8-22 * * *"
+# 24/7 (operator decision 2026-07-18): the heartbeat posts to the firehose
+# channel now, so the full 24h schedule adds no operator noise — and a fabric
+# failure in the former 22:00-08:00 gap is seen within the hour, not at 08:00.
+hermes_agent_daily_status_cron_schedule: "0 * * * *"
 hermes_agent_daily_status_cron_prompt: >-
   Check the homelab AI-fabric status: LLM router health, Hermes gateway
   health, Hindsight memory-pool health, and any merge-ready PRs. Recall your
@@ -407,7 +422,8 @@ hermes_agent_splunk_alert_deliver: >-
   {{ 'slack:' ~ hermes_agent_slack_allowed_users
      if (hermes_agent_slack_allowed_users | length > 0)
      else 'slack' }}
-hermes_agent_splunk_digest_deliver: slack
+# The digest is a verbose full report every hour — firehose (3-tier routing).
+hermes_agent_splunk_digest_deliver: "{{ hermes_agent_firehose_deliver }}"
 
 # Per-job cron definitions. Prompts stay short — the skill carries the discipline;
 # the prompt only sets each run's posture (a lens, not a checklist) and reinforces
@@ -544,7 +560,8 @@ hermes_agent_github_monitor_cron_prompt: >-
   restating the list. If the list or totals changed, post the full top-5
   action list (repo, number, why) plus totals to the home channel, and save
   the new list + totals + timestamp to memory under that key.
-hermes_agent_github_monitor_cron_deliver: slack
+# Routine triage report — firehose (3-tier routing).
+hermes_agent_github_monitor_cron_deliver: "{{ hermes_agent_firehose_deliver }}"
 
 hermes_agent_github_cron_jobs:
   - name: "{{ hermes_agent_github_monitor_cron_name }}"
@@ -552,11 +569,60 @@ hermes_agent_github_cron_jobs:
     prompt: "{{ hermes_agent_github_monitor_cron_prompt }}"
     deliver: "{{ hermes_agent_github_monitor_cron_deliver }}"
 
+# --- Daily operator summary: the home channel's ONE curated post ------------
+# 3-tier routing gives the verbose crons the firehose channel; this job is what
+# the home channel is FOR now — a once-daily, delta-only rollup across every
+# domain Hermes watches. It reads its own recent findings (memory/wiki), not
+# the world — no new queries beyond what a claim needs to be current.
+hermes_agent_summary_cron_name: daily-summary
+# 12:00 UTC — start of the operator's day; the previous 24h of findings are in.
+hermes_agent_summary_cron_schedule: "0 12 * * *"
+hermes_agent_summary_cron_prompt: >-
+  Post the once-daily operator summary to this channel, built from your own
+  last-24h cron findings and memory (Splunk, Zammad incidents
+  opened/updated/resolved, fabric health, GitHub org findings). STRICT rules:
+  deltas and open action items only — never restate unchanged or benign
+  status; every line must be either NEW since yesterday's summary or an open
+  item awaiting a human. Lead with anything needing operator action. No
+  Markdown tables (Slack does not render them) — short lines or key: value
+  pairs. At most 15 lines. Recall memory key "daily-summary-last" to compute
+  the delta and save today's fingerprint back to it. If genuinely nothing new
+  and nothing open, say exactly that in one line — never pad.
+hermes_agent_summary_cron_deliver: slack
+
+# --- Zammad review: proactive incident lifecycle across ALL queues ----------
+# Operator directive 2026-07-18: Hermes proactively READS open Zammad
+# incidents (not just its own), proves finished ones complete, enriches open
+# ones, resolves what it can prove, and DMs genuinely NEW incidents. The
+# working report always posts to the firehose; the DM is reserved for new
+# incidents so it stays an urgent-only surface. Gated (in tasks) on the Zammad
+# URL + token being set alongside the Slack gates.
+hermes_agent_zammad_review_cron_name: zammad-review
+# Every 2h at :41 — staggered clear of the other cron minutes (0,7,22,26,52).
+hermes_agent_zammad_review_cron_schedule: "41 */2 * * *"
+hermes_agent_zammad_review_cron_prompt: >-
+  Review open Zammad incidents across ALL groups and queues, not just your
+  own. Recall memory key "zammad-review-last" (incident ids + states you saw
+  last run) and work the DELTA. For each open incident: (1) check whether
+  evidence now proves it complete — verify with your tools (Splunk queries,
+  fabric probes, GitHub state), and if proven, RESOLVE the ticket yourself
+  with a closing article stating the evidence — never just recommend closing;
+  (2) if you find genuinely NEW information or a plausible solution, append
+  ONE article with it — never repeat what an earlier article already says;
+  (3) leave incidents you cannot advance untouched. If any incident is NEW
+  since your last run, DM the operator immediately: one line per incident —
+  id, title, severity, why it matters. Then post your working report here:
+  what you reviewed, advanced, resolved (with evidence), and skipped. No
+  Markdown tables. Save the updated id+state map back to
+  "zammad-review-last".
+hermes_agent_zammad_review_cron_deliver: "{{ hermes_agent_firehose_deliver }}"
+
 # Every cron job this role seeds. The model-drift recovery task (tasks/main.yml)
 # only ever removes jobs on this list — user- and agent-created jobs are never
 # touched.
 hermes_agent_seeded_cron_names: >-
-  {{ [hermes_agent_daily_status_cron_name, hermes_agent_nightly_wiki_cron_name]
+  {{ [hermes_agent_daily_status_cron_name, hermes_agent_nightly_wiki_cron_name,
+      hermes_agent_summary_cron_name, hermes_agent_zammad_review_cron_name]
      + (hermes_agent_splunk_cron_jobs | map(attribute='name') | list)
      + (hermes_agent_github_cron_jobs | map(attribute='name') | list) }}
 

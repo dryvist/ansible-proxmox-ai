@@ -325,7 +325,7 @@
       {{ hermes_agent_bin }} cron create "{{ hermes_agent_daily_status_cron_schedule }}"
       "{{ hermes_agent_daily_status_cron_prompt }}"
       --name "{{ hermes_agent_daily_status_cron_name }}"
-      --deliver slack
+      --deliver "{{ hermes_agent_firehose_deliver }}"
   environment:
     HERMES_HOME: "{{ hermes_agent_hermes_home }}"
   become: true
@@ -337,6 +337,51 @@
     - hermes_agent_slack_app_token | length > 0
     - hermes_agent_slack_home_channel | length > 0
     - hermes_agent_daily_status_cron_name not in (hermes_agent_daily_status_cron_list.stdout | default(''))
+
+# 3-tier routing companions (see defaults): the once-daily curated summary is
+# what the home channel is for now, and the Zammad review works the incident
+# lifecycle proactively. Both reuse the `cron list --all` snapshot above for
+# their create-if-absent check.
+- name: Seed the daily operator summary cron job
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_bin }} cron create "{{ hermes_agent_summary_cron_schedule }}"
+      "{{ hermes_agent_summary_cron_prompt }}"
+      --name "{{ hermes_agent_summary_cron_name }}"
+      --deliver "{{ hermes_agent_summary_cron_deliver }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_summary_cron_create
+  changed_when: true
+  when:
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+    - hermes_agent_slack_home_channel | length > 0
+    - hermes_agent_summary_cron_name not in (hermes_agent_daily_status_cron_list.stdout | default(''))
+
+- name: Seed the Zammad review cron job
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_bin }} cron create "{{ hermes_agent_zammad_review_cron_schedule }}"
+      "{{ hermes_agent_zammad_review_cron_prompt }}"
+      --name "{{ hermes_agent_zammad_review_cron_name }}"
+      --skill dryvist/zammad-incidents
+      --deliver "{{ hermes_agent_zammad_review_cron_deliver }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_zammad_review_cron_create
+  changed_when: true
+  when:
+    - hermes_agent_zammad_url | length > 0
+    - hermes_agent_zammad_api_token | length > 0
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+    - hermes_agent_slack_home_channel | length > 0
+    - hermes_agent_zammad_review_cron_name not in (hermes_agent_daily_status_cron_list.stdout | default(''))
 
 - name: Ensure the wiki directory exists
   ansible.builtin.file:
