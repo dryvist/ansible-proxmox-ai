@@ -69,6 +69,18 @@ model_list:
       max_tokens: {{ m.context_window }}
 {% endif %}
 {% endfor %}
+{% set _or_wc_env = 'OPENROUTER_API_KEY_' ~ (llm_router_openrouter_wildcard_key_field | upper | replace('-', '_')) %}
+{% set _or_wc_key = bao_local_llm_secrets[llm_router_openrouter_wildcard_key_field] | default(lookup('env', _or_wc_env), true) %}
+{% if llm_router_openrouter_wildcard_enabled | bool and _or_wc_key | length > 0 %}
+  # --- OpenRouter dynamic tier: `openrouter/<exact-upstream-id>` passthrough ---
+  # Budget-gated at the CALLER (persona + openrouter-models skill, $1/day), not
+  # here — see defaults for the operator-disclosure rationale. The prefix keeps
+  # it disjoint from tuned entries and from the local `*` catch-all.
+  - model_name: "openrouter/*"
+    litellm_params:
+      model: "openrouter/*"
+      api_key: os.environ/{{ _or_wc_env }}
+{% endif %}
   # --- light tier: two deployments per model name (GPU llm-fast + CPU llm-light) ---
   # Same model_name => LiteLLM load-balances the pair and cools a failed deployment
   # down, so a GPU outage drains to the CPU standby automatically.
