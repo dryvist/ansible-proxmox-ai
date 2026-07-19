@@ -727,6 +727,12 @@ hermes_agent_brain_watchdog_probe_timeout: 15
 # consecutive successes before declaring UP (resume+alert). down_after=3 over the
 # 60s cadence (~3 min) rides rotation-flip bounces and cold reloads so the
 # watchdog never becomes a new source of spam; up_after=2 damps flapping.
+# Both are role vars — tune per environment. TRADEOFF: for an INTERMITTENT
+# serving-stack wedge (INC-17083: brain briefly recovers then re-freezes), a
+# higher up_after (e.g. 4-6) keeps the fleet paused LONGER across brief-recovery
+# windows so fewer crons fire at a re-wedging brain — at the cost of slower
+# resume after a genuine recovery. Default stays 2 (fast recovery); raise it if
+# a flapping-wedge class dominates.
 hermes_agent_brain_watchdog_down_after: 3
 hermes_agent_brain_watchdog_up_after: 2
 # Flap coalescing (2026-07-18): down_after/up_after debounce brief bounces, but
@@ -737,6 +743,17 @@ hermes_agent_brain_watchdog_up_after: 2
 # individually. 3600s (60 min) is long enough to absorb a flapping episode
 # without swallowing a second, genuinely independent outage hours later.
 hermes_agent_brain_watchdog_flap_cooldown_seconds: 3600
+# Sustained-flap escalation (INC-17083, 2026-07-19): the coalescer above only
+# emits a summary once the brain STABILIZES (flap_summary_check). A wedge that
+# flaps for hours without a clean recovery never stabilizes, so no summary ever
+# fires and a multi-hour instability is SILENT to the operator — observed live
+# as 15 flaps over ~2.5h with zero alert (every edge coalesced). Fix: while
+# STILL flapping, fire ONE loud page once the episode crosses either threshold
+# below, then re-arm with a long cooldown so a genuine long wedge pages at most
+# hourly, not per-flap. Set threshold to 0 to disable.
+hermes_agent_brain_watchdog_sustained_flap_threshold: 5       # coalesced flaps, or
+hermes_agent_brain_watchdog_sustained_flap_seconds: 1800      # unstable this long (30m)
+hermes_agent_brain_watchdog_sustained_flap_rearm_seconds: 3600  # re-page at most hourly
 # Urgent page target. Same topic service_deadman pages on ("same feed as other
 # homelab outages", operator decision) — the brain is now a keystone.
 # FQDN-first: the Traefik-fronted ntfy service name; DHCP/DNS own the address.
