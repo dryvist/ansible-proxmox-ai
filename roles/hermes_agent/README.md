@@ -198,9 +198,23 @@ the `[SILENT]` marker suppresses delivery entirely, so a normal sweep costs zero
 notifications. Findings are written to memory (baselines + open issues, for
 dedup), and durable knowledge is captured as `llm-wiki` pages (RAG).
 
-**Routing:** anomaly alerts DM the operator (`slack:<member-id>`); the routine
-digest posts to the Slack home channel. The quiet deep-dive research run saves
-locally only (`--deliver local`).
+**Routing (3-tier, 2026-07-18):** Slack output is split by audience, not by
+job. The **firehose channel** (`SLACK_FIREHOSE_CHANNEL` →
+`hermes_agent_firehose_deliver`) receives every verbose routine report —
+`splunk-digest`, `github-triage`, `homelab-ai-fabric-status` (now 24/7), and
+the `zammad-review` working report — posted every run, in full. The **home
+channel** is the curated operator surface: the once-daily `daily-summary`
+rollup (delta-only, no tables, ≤15 lines) and nothing routine. **DMs stay
+urgent-only**: anomaly alerts (`slack:<member-id>`, silent-unless-anomaly) and
+newly appeared Zammad incidents. The quiet deep-dive research run still saves
+locally only (`--deliver local`). With no firehose channel configured, firehose
+jobs fall back to the home channel (the original single-channel behavior).
+
+**Zammad review (`zammad-review`, every 2h):** proactively reads open
+incidents across ALL queues, proves finished ones complete (resolving them
+with evidence — not recommending), enriches open ones with genuinely new
+findings, and DMs the operator about incidents that appeared since its last
+run. Gated on the Zammad URL + token alongside the Slack gates.
 
 **Delta discipline (canonical surface, not double-reported).** The digest is
 the canonical surface for ongoing/known findings; `splunk-triage`'s DM recalls
@@ -225,7 +239,7 @@ rendered only when Slack is configured.
 | `splunk-security` | `9,39 * * * *` | DM, silent-unless-anomaly | security lens |
 | `splunk-parsing` | `24 * * * *` | DM, silent-unless-anomaly | data-quality / parsing lens |
 | `splunk-deepdive` | `44 */6 * * *` | local (quiet) | characterize one index → wiki + memory |
-| `splunk-digest` | `50 * * * *` | home channel (always) | hourly "what I'm seeing + current normal" heartbeat |
+| `splunk-digest` | `50 * * * *` | firehose channel (always) | hourly "what I'm seeing + current normal" heartbeat |
 
 Cron seeding is idempotent (create-if-absent) and gated on Hermes being able to
 **both** query Splunk (`hermes_agent_splunk_mcp_url` set) **and** deliver to Slack
