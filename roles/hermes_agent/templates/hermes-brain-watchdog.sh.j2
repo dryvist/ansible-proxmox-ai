@@ -34,6 +34,11 @@ STATE_DIR="{{ hermes_agent_hermes_home }}/brain-watchdog"
 # within this many seconds are coalesced (counted, window extended) instead of
 # each firing its own alert. See "Flap coalescing" below.
 FLAP_COOLDOWN_SECONDS="{{ hermes_agent_brain_watchdog_flap_cooldown_seconds }}"
+# Sustained-flap escalation: fire ONE loud page while STILL flapping once the
+# episode crosses either threshold, then re-arm (see "Sustained-flap" below).
+SUSTAINED_FLAP_THRESHOLD="{{ hermes_agent_brain_watchdog_sustained_flap_threshold }}"
+SUSTAINED_FLAP_SECONDS="{{ hermes_agent_brain_watchdog_sustained_flap_seconds }}"
+SUSTAINED_FLAP_REARM="{{ hermes_agent_brain_watchdog_sustained_flap_rearm_seconds }}"
 # Rendered at template time (the seeded list is static) so the script avoids
 # bash's array-length parameter form, whose brace-hash opener would be misread as
 # a Jinja comment start in this .j2 and mangle the template.
@@ -153,6 +158,36 @@ alert() {
 FLAP_COOLDOWN_FILE="${STATE_DIR}/flap_cooldown_until"
 FLAP_COUNT_FILE="${STATE_DIR}/flap_count"
 FLAP_SINCE_FILE="${STATE_DIR}/flap_since"
+FLAP_SINCE_EPOCH_FILE="${STATE_DIR}/flap_since_epoch"
+SUSTAINED_REARM_FILE="${STATE_DIR}/sustained_rearm_until"
+
+# --- Sustained-flap escalation -----------------------------------------------
+# The coalescer only emits a summary on STABILIZE (flap_summary_check). A wedge
+# that flaps for hours never stabilizes -> the summary never fires and the
+# instability is SILENT (INC-17083: 15 flaps over ~2.5h, zero operator alert).
+# This fires ONE loud page WHILE STILL FLAPPING once the episode crosses either
+# threshold, then re-arms for SUSTAINED_FLAP_REARM so a long wedge pages at most
+# hourly (not per-flap). The coalescer's Splunk-visible edge logging is
+# unchanged. Disabled when SUSTAINED_FLAP_THRESHOLD is 0.
+maybe_escalate_sustained_flap() {
+  local flap_count="$1" now_epoch rearm_until since_epoch elapsed mins msg
+  (( SUSTAINED_FLAP_THRESHOLD > 0 )) || return 0
+  now_epoch="$(date -u +%s)"
+  rearm_until="$(cat "${SUSTAINED_REARM_FILE}" 2>/dev/null || echo 0)"
+  [[ "${rearm_until}" =~ ^[0-9]+$ ]] || rearm_until=0
+  (( now_epoch < rearm_until )) && return 0   # already paged this window
+  since_epoch="$(cat "${FLAP_SINCE_EPOCH_FILE}" 2>/dev/null || echo "${now_epoch}")"
+  [[ "${since_epoch}" =~ ^[0-9]+$ ]] || since_epoch="${now_epoch}"
+  elapsed=$(( now_epoch - since_epoch ))
+  if (( flap_count >= SUSTAINED_FLAP_THRESHOLD )) || (( elapsed >= SUSTAINED_FLAP_SECONDS )); then
+    mins=$(( elapsed / 60 ))
+    msg=":rotating_light: Hermes brain UNSTABLE for ~${mins} min and still flapping (${flap_count} coalesced flaps) -- ${MODEL} via ${BASE_URL}. Seeded crons pause during down phases but resume into brief-recovery windows; probable serving-stack wedge, needs operator attention (INC-17083 class)."
+    logger -t hermes-brain-watchdog "${msg}"
+    slack_post "${msg}"
+    ntfy_push down "${msg}"
+    printf '%s\n' "$(( now_epoch + SUSTAINED_FLAP_REARM ))" > "${SUSTAINED_REARM_FILE}"
+  fi
+}
 
 handle_edge() {
   local kind="$1" now_epoch cooldown_until flap_count
@@ -168,6 +203,8 @@ handle_edge() {
     printf '%s\n' "${flap_count}" > "${FLAP_COUNT_FILE}"
     printf '%s\n' "$(( now_epoch + FLAP_COOLDOWN_SECONDS ))" > "${FLAP_COOLDOWN_FILE}"
     logger -t hermes-brain-watchdog "coalesced ${kind} edge during cooldown (flap #${flap_count})"
+    # Break the silence on a genuinely sustained (never-stabilizing) flap.
+    maybe_escalate_sustained_flap "${flap_count}"
   else
     # No active cooldown: either the very first down of a fresh episode, or
     # the up that completes a cycle -- both alert normally.
@@ -178,6 +215,10 @@ handle_edge() {
       printf '%s\n' "$(( now_epoch + FLAP_COOLDOWN_SECONDS ))" > "${FLAP_COOLDOWN_FILE}"
       printf '0\n' > "${FLAP_COUNT_FILE}"
       printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${FLAP_SINCE_FILE}"
+      # Fresh episode: stamp its epoch start and re-arm sustained escalation so
+      # a NEW instability can page again (independent of a prior episode's page).
+      printf '%s\n' "${now_epoch}" > "${FLAP_SINCE_EPOCH_FILE}"
+      rm -f "${SUSTAINED_REARM_FILE}"
     fi
   fi
 }
@@ -202,7 +243,8 @@ flap_summary_check() {
     slack_post "${msg}"
     ntfy_push up "${msg}"
   fi
-  rm -f "${FLAP_COOLDOWN_FILE}" "${FLAP_COUNT_FILE}" "${FLAP_SINCE_FILE}"
+  rm -f "${FLAP_COOLDOWN_FILE}" "${FLAP_COUNT_FILE}" "${FLAP_SINCE_FILE}" \
+        "${FLAP_SINCE_EPOCH_FILE}" "${SUSTAINED_REARM_FILE}"
 }
 
 # --- Debounced state machine -------------------------------------------------
