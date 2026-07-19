@@ -90,6 +90,32 @@ llm_router_llm_large_host: "{{ llm_large_serving_host }}"
 llm_router_llm_large_fqdn: "{{ llm_router_llm_large_host }}.{{ llm_router_apex_domain }}"
 llm_router_llm_large_base_url: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_router_large_port }}/v1"
 
+# --- Standby brain backend (default OFF) -------------------------------------
+# A SAME-MODEL, SAME-CONTEXT failover sibling for the default brain, addressing
+# the single-Studio brain SPOF (Zammad INC-17080: a Studio reboot takes the sole
+# large-tier backend unreachable, so Hermes' brain-watchdog pauses the cron
+# fleet). This is NOT a cross-tier alias: the standby serves the IDENTICAL model
+# id at the IDENTICAL context window, so it fails over without the
+# smaller-context "poison the caller" failure the no-cross-tier-fallback rule
+# guards against (a smaller-context fallback is still forbidden).
+#
+# Default empty = DISABLED: with no URL set, the rendered config.yaml is
+# byte-identical to today (no standby deployment, no extra env var). To enable:
+#   1. Stand up an authenticated large-tier gate on a second serving host — its
+#      OWN permanent name + caddy TLS + bearer, same shape as the Studio gate
+#      above (a floating alias is banned; see the llm-large host note above).
+#   2. Set llm_router_llm_large_standby_base_url to that gate's /v1 URL.
+#   3. Seed llm_router_llm_large_standby_bearer (OpenBao, same pattern as the
+#      large bearer).
+#   4. Mark the intended brain entry in llm_router_large_models with
+#      `standby: true` — it MUST be the current ai_default_model id (no alias),
+#      so the standby and primary share a model_name and LiteLLM treats them as
+#      one failover group.
+# Host-side (nix) prerequisites and the workstation-uptime caveat (a roaming
+# laptop is an opportunistic, not guaranteed, standby) are in the PR notes.
+llm_router_llm_large_standby_base_url: ""
+llm_router_llm_large_standby_bearer: ""
+
 # --- Model groups ------------------------------------------------------------
 # large: each entry is registered under the backend's OWN model id (the
 # serving gate lists models under their full MLX repo ids) — no alias names.
