@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.7.1...v0.8.0) (2026-07-20)
+
+
+### Features
+
+* **hermes_agent:** set agent log level to DEBUG for pre-error context ([#92](https://github.com/dryvist/ansible-proxmox-ai/issues/92)) ([0b36733](https://github.com/dryvist/ansible-proxmox-ai/commit/0b367335e7fd4fd89263d7762e0e5664d9a37a39))
+
+
+### Bug Fixes
+
+* **hermes_agent:** halve reserved output tokens to widen usable context ([#91](https://github.com/dryvist/ansible-proxmox-ai/issues/91)) ([644a825](https://github.com/dryvist/ansible-proxmox-ai/commit/644a825117b96b02f3bf163628349defd883ff58))
+* **hermes:** restart the gateway on resume, before the cron fleet wakes ([#93](https://github.com/dryvist/ansible-proxmox-ai/issues/93)) ([bb81405](https://github.com/dryvist/ansible-proxmox-ai/commit/bb81405aa073bd0c03c37b29612fe823e1598274))
+
 ## [0.7.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.7.0...v0.7.1) (2026-07-20)
 
 
