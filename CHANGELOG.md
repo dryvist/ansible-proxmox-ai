@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.7.0...v0.7.1) (2026-07-20)
+
+
+### Bug Fixes
+
+* **hermes_agent:** own gateway Restart=always in the unit; drop stale policy drop-in ([#87](https://github.com/dryvist/ansible-proxmox-ai/issues/87)) ([1f1d5ff](https://github.com/dryvist/ansible-proxmox-ai/commit/1f1d5ff0207a7b2f7a49c7c10a3f4e84455435d3))
+* **hermes_agent:** pin session_reset policy + always-restart gateway ([#85](https://github.com/dryvist/ansible-proxmox-ai/issues/85)) ([99b8b67](https://github.com/dryvist/ansible-proxmox-ai/commit/99b8b6775d1a63339fed8e2144d9eafac81c4fed))
+* **qdrant:** stop pinning molecule verify to a full image tag ([#84](https://github.com/dryvist/ansible-proxmox-ai/issues/84)) ([29c694f](https://github.com/dryvist/ansible-proxmox-ai/commit/29c694fb696682c74b164e7abcc184e1529ee338))
+
 ## [0.7.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.6.0...v0.7.0) (2026-07-20)
 
 
