@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.6.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.5.0...v0.6.0) (2026-07-20)
+
+
+### Features
+
+* **ai:** make the fabric brain an OpenBao runtime var, not a converge value ([#49](https://github.com/dryvist/ansible-proxmox-ai/issues/49)) ([ec4ad81](https://github.com/dryvist/ansible-proxmox-ai/commit/ec4ad81a429df565da3bdf040843613b3db45dbf))
+* consume central application prompts (pinned ai-llm-prompts catalog) ([#56](https://github.com/dryvist/ansible-proxmox-ai/issues/56)) ([b4be970](https://github.com/dryvist/ansible-proxmox-ai/commit/b4be970a112c52311b2fd067a6a5ba599fd3a58c))
+* **hermes_agent:** alert when the brain-health watchdog itself crashes ([f0ecfe8](https://github.com/dryvist/ansible-proxmox-ai/commit/f0ecfe802e35e997b598a0250ddbf39a26ff7412))
+* **hermes_agent:** brain-watchdog sustained-flap escalation (INC-17083) ([#60](https://github.com/dryvist/ansible-proxmox-ai/issues/60)) ([814e2a8](https://github.com/dryvist/ansible-proxmox-ai/commit/814e2a8ec5ec6702b298886513008c2d85603930))
+* **hermes_agent:** delta-discipline cron prompts and watchdog flap coalescing ([5125af5](https://github.com/dryvist/ansible-proxmox-ai/commit/5125af596d44bf785d73a9af584fdeeb0f854bda))
+* **hermes:** 3-tier Slack routing + daily summary + proactive Zammad review ([#51](https://github.com/dryvist/ansible-proxmox-ai/issues/51)) ([9c20309](https://github.com/dryvist/ansible-proxmox-ai/commit/9c2030951a195c8fdf4b03bd2ea6bb7c8df99c5b))
+* **hermes:** bound the kanban dispatcher and open cron card-creation ([#52](https://github.com/dryvist/ansible-proxmox-ai/issues/52)) ([f380aec](https://github.com/dryvist/ansible-proxmox-ai/commit/f380aec57a1beadfc6232784316a7b0b1f7d3571))
+* **llm_router:** openrouter/* dynamic tier — any current model, budget-gated ([#55](https://github.com/dryvist/ansible-proxmox-ai/issues/55)) ([4dd46ee](https://github.com/dryvist/ansible-proxmox-ai/commit/4dd46ee675f0ad0f3eb507a681506923dc3d32c5))
+* **llm_router:** register the two-Mac cluster brain behind the gate's :11440 site ([4304255](https://github.com/dryvist/ansible-proxmox-ai/commit/43042558476da83f5204ff7b081439a05725854e))
+* Qwen3-Next-80B-A3B-Instruct becomes the fleet brain + compression model ([7d63a60](https://github.com/dryvist/ansible-proxmox-ai/commit/7d63a609a63a99086a4e0f4ebcc8e943c98f4bfb))
+
+
+### Bug Fixes
+
+* **ai:** point fabric default + Hermes compression at deepseek-v4-flash (stability stopgap); hourly Slack heartbeat ([#44](https://github.com/dryvist/ansible-proxmox-ai/issues/44)) ([74e54a4](https://github.com/dryvist/ansible-proxmox-ai/commit/74e54a4db1fbe97912978306390f78cb47a21c4d))
+* **hermes_agent:** correct role's repo-of-record after ansible-proxmox-apps split ([92ea41b](https://github.com/dryvist/ansible-proxmox-ai/commit/92ea41b7ca8d1062d6d1353e310185b71e1bda6c))
+* **hermes:** seed cron jobs via argv — prompt punctuation broke cmd splitting ([#53](https://github.com/dryvist/ansible-proxmox-ai/issues/53)) ([8b020fb](https://github.com/dryvist/ansible-proxmox-ai/commit/8b020fbf35139a0bbf1405b0d1a19c57a97cf375))
+* **hindsight_docker:** size the readiness gate for a cold start ([303b55d](https://github.com/dryvist/ansible-proxmox-ai/commit/303b55d84b5e114f861194c145f7dac0b79bf9b5))
+* **hindsight:** run MCP stateless so the HA pool needs no session affinity ([#42](https://github.com/dryvist/ansible-proxmox-ai/issues/42)) ([d07d480](https://github.com/dryvist/ansible-proxmox-ai/commit/d07d4802ed78b7dc2c0386e6c962af33d65190fb))
+* **hindsight:** wire up the memory service that never ran ([be6a92a](https://github.com/dryvist/ansible-proxmox-ai/commit/be6a92a690e45ce3a656ae97dfdccf223cde2796))
+
 ## [0.5.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.4.0...v0.5.0) (2026-07-17)
 
 
