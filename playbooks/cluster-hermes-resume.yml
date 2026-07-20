@@ -23,6 +23,48 @@
       - splunk-deepdive
       - splunk-digest
   tasks:
+    # Restart BEFORE resuming crons, so the first resumed job talks to a gateway
+    # that has re-read the upstream rather than one still holding stale state.
+    #
+    # The gateway caches upstream properties in-process. When the brain changes
+    # underneath it — a cluster window, or a darwin-rebuild on the Studio that
+    # bounces dev.vllm-mlx.server — those cached values survive the outage and
+    # are not corrected by resuming crons or by the watchdog. The known case is
+    # a context window adopted from a fallback backend and then applied to
+    # full-size requests, which fails every completion until the service is
+    # restarted. Pausing and resuming the fleet does not clear it; only a
+    # restart of this unit does.
+    - name: Restart the Hermes gateway so it re-reads the recovered upstream
+      ansible.builtin.systemd:
+        name: hermes-gateway
+        state: restarted
+        daemon_reload: true
+
+    # The gateway is a Type=simple queue-driven dispatcher, not a listener, so
+    # there is no port to wait on. Restart=always also means systemd reports it
+    # active while it crash-loops, so confirm it is still up a moment later
+    # rather than trusting the state immediately after the restart returns.
+    - name: Give the gateway a moment to fail if it is going to
+      ansible.builtin.pause:
+        seconds: 10
+
+    - name: Confirm the gateway is running and has not entered a restart loop
+      ansible.builtin.systemd:
+        name: hermes-gateway
+      register: gw_state
+      changed_when: false
+
+    - name: Fail loudly if the gateway did not come back
+      ansible.builtin.assert:
+        that:
+          - gw_state.status.ActiveState == 'active'
+          - gw_state.status.NRestarts | int <= 1
+        fail_msg: >-
+          hermes-gateway is {{ gw_state.status.ActiveState }} with
+          {{ gw_state.status.NRestarts }} restarts — resuming the cron fleet now
+          would fire every seeded job into a dead gateway and DM the operator.
+        success_msg: "hermes-gateway active, NRestarts={{ gw_state.status.NRestarts }}"
+
     - name: Resume each role-seeded cron job
       ansible.builtin.command: "{{ hermes_bin }} cron resume {{ item }}"
       environment:

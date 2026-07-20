@@ -124,14 +124,23 @@ hermes_agent_model_context_length: 65536
 # misclassifies that 400 as a context overflow (it matches the bare
 # substring "max_tokens" in any error text) and dies trying to compress an
 # already-minimal conversation instead of lowering the output request.
-# 32768 stays at/below the serving side's per-request token cap. The winning
+# 16384 stays at/below the serving side's per-request token cap. The winning
 # OptiQ-4bit brain (ai_default_model, 2026-07-08 agentic bench) serves with
-# --max-request-tokens 65536 on the Mac Studio, so a 32768 output request plus
-# hermes-agent's own retry-boost ceiling (max(32768, requested)) never exceeds
+# --max-request-tokens 65536 on the Mac Studio, so a 16384 output request plus
+# hermes-agent's own retry-boost ceiling (max(16384, requested)) never exceeds
 # what the server accepts. (The prior stock/coder brains capped at 32768, where
-# this value matched the server exactly; against OptiQ it is a safe margin below.)
+# that value matched the server exactly; against OptiQ it is a safe margin below.)
 # Capping max_tokens here means an oversized request is never sent.
-hermes_agent_model_max_tokens: 32768
+#
+# Halved 2026-07-20 (input-headroom fix): Hermes budgets input as
+# context_length - max_tokens - safety, so reserving 32768 for output on the
+# 65536-token declared window (hermes_agent_model_context_length above) left
+# only ~29.5k tokens for INPUT — observed live as repeated "Pre-API
+# compression: ~29,558 tokens" near-limit loops in Slack on 2026-07-20. Agent
+# turns rarely need >16k output tokens; halving the reservation to 16384
+# raises usable input headroom to ~45k against the same served window, with
+# no change to serving-side memory or the declared context length.
+hermes_agent_model_max_tokens: 16384
 # Hermes classifies the brain endpoint by HOSTNAME STRING, never by DNS
 # resolution (agent/model_metadata.py is_local_endpoint: loopback, RFC-1918
 # IP literals, container suffixes, dot-less names). Our router base_url is an
@@ -295,6 +304,16 @@ hermes_agent_memory_llm_model: "{{ ai_default_model }}"
 # hindsight-all's newer client resolved, every memory call fails "Memory is
 # not available". Pin what the plugin pins; bump with the hermes-agent package.
 hermes_agent_hindsight_client_pin: "==0.6.1"
+
+# --- Logging: config.yaml `logging.level` (installed hermes-agent's
+# hermes_logging.py reads cfg["logging"]["level"], default "INFO" if unset).
+# DEBUG (not the noisier "trace" — hermes-agent has no such level) so the
+# rsyslog->Cribl->Splunk index=hermes chain carries pre-error context and
+# config-at-point-in-time lines. rsyslog forwards by programname ('hermes'),
+# unaffected by log level, so this only raises event volume, not routing —
+# index=hermes runs ~1.3k events/4h at INFO; expect a multiple of that at
+# DEBUG (Splunk ingestion has headroom; noted here for visibility).
+hermes_agent_log_level: DEBUG
 
 # --- Safety: cap the agentic loop so a runaway can't pin the GPU overnight ---
 hermes_agent_max_turns: 90
