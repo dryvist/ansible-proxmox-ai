@@ -59,6 +59,14 @@ llm_router_api_port: "{{ tofu_data.constants.service_ports.llm_router_api }}"
 llm_router_light_port: "{{ tofu_data.constants.service_ports.llm_fast_api }}"
 # llm-large speaks the Ollama-compatible API on the standard Ollama port.
 llm_router_large_port: "{{ tofu_data.constants.service_ports.ollama_api }}"
+# The gate's third TLS site: a DIRECT route to the resident 80B fleet brain's
+# vllm-mlx backend, bypassing llama-swap (nix-darwin llm-gate
+# brainUpstreamPort). Exists because the swap proxy's in-flight accounting
+# leaks under client aborts and hard-429s an idle backend until restarted
+# (INC-17097) — the production brain path must not traverse it. Literal port
+# pending a service_ports constant in terraform-proxmox (follow-up; the
+# mirrored loopback port is fixed by the nix-ai catalog's backend layout).
+llm_router_brain_port: 11437
 # The gate's second TLS site fronting the two-Mac cluster endpoint (mlx-lm
 # rank 0); live only while a cluster window is up.
 llm_router_cluster_port: "{{ tofu_data.constants.service_ports.llm_night_api }}"
@@ -148,7 +156,12 @@ llm_router_large_models:
   # Instruct sibling: the fleet brain (ai_default_model) since 2026-07-17 —
   # agentic-bench winner, resident on the serving host with a 65536 window
   # (also Hermes' compression model, which hard-requires >=64K).
+  # Served via the gate's brain-direct :11437 site (NOT the llama-swap
+  # :11434 site): the fleet brain is resident with a fixed backend port, and
+  # the swap proxy's abort-leak failure mode (INC-17097) must not sit in the
+  # production SLO path. Same bearer token as the other gate sites.
   - backend: mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit
+    api_base: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_router_brain_port }}/v1"
     context_window: 65536
     extra_body: { repetition_penalty: 1.05 }
   # The two-Mac cluster brain (JACCL pipeline across Studio + MacBook,
