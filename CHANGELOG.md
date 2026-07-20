@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.6.0...v0.7.0) (2026-07-20)
+
+
+### Features
+
+* **hermes_agent:** forward hermes unit logs to dedicated hermes index ([#74](https://github.com/dryvist/ansible-proxmox-ai/issues/74)) ([132aa89](https://github.com/dryvist/ansible-proxmox-ai/commit/132aa89f291d730372c4a99c8067532be2a6b32b))
+
 ## [0.6.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.5.0...v0.6.0) (2026-07-20)
 
 
