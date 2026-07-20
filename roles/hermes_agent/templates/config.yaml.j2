@@ -73,6 +73,22 @@ compression:
   threshold: {{ hermes_agent_context_compression_threshold }}
   summary_model: {{ hermes_agent_compression_model }}
 
+# Session lifetime bound (SessionResetPolicy). PIN the upstream default
+# explicitly: "both" = daily reset at at_hour local time OR idle_minutes of
+# inactivity, whichever first. Bounded sessions are the proactive guard against
+# unbounded history growth and against carrying corrupted compression
+# bookkeeping forward — the 2026-07-20 splunk-* cron crash loop (INC-17089:
+# IndexError in _find_latest_context_summary from a stale compression window)
+# persisted precisely because bloated sessions outlived the incident that
+# corrupted them. NOTE (upstream gap, tracked in nix-hermes): cron-scheduler
+# sessions currently bypass this gateway-side reset guard; the policy is pinned
+# here so the fix inherits the declared bound the moment upstream honors it.
+session_reset:
+  mode: both
+  at_hour: {{ hermes_agent_session_reset_at_hour }}
+  idle_minutes: {{ hermes_agent_session_reset_idle_minutes }}
+  notify: true
+
 plugins:
   enabled:
     - observability/otel
