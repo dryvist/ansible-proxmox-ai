@@ -121,7 +121,7 @@ pairing is needed (unlike ansible-proxmox-apps).
    RustFS published artifact → local gitignored cache (only with
    `TOFU_INVENTORY_ALLOW_STALE=1`). While the published artifact is missing
    (apps#975), pin explicitly:
-   `TOFU_INVENTORY_PATH=$HOME/git/public/homelab/ansible-proxmox-apps/main/inventory/tofu_inventory.json`.
+   `TOFU_INVENTORY_PATH=<path-to>/tofu_inventory.json`.
 
 ### Shared-role duplication (deliberate)
 

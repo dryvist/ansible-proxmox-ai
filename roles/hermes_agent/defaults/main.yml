@@ -816,3 +816,23 @@ hermes_agent_brain_sync_bao_addr: >-
 # skip as the controller-side fetch.
 hermes_agent_brain_sync_role_id: "{{ lookup('env', 'AI_PUBLIC_VAULT_ROLE_ID') | default('', true) }}"
 hermes_agent_brain_sync_secret_id: "{{ lookup('env', 'AI_PUBLIC_VAULT_SECRET_ID') | default('', true) }}"
+
+# --- Ship the hermes-* unit logs to the dedicated hermes Splunk index ---------
+# The gateway (hermes) and the brain watchdog/sync units all log to the journal
+# under a hermes-* programname. A dedicated rsyslog ruleset forwards just those
+# lines over TCP to the hermes_agent AI ingest listener -> HAProxy -> Cribl
+# Stream (ai_stamp) -> Splunk index=hermes. Mirrors the openbao_audit shipping
+# pattern; the ruleset's `stop` keeps hermes lines off any syslog_forwarder
+# catch-all so they never also double-ship into index=os.
+hermes_agent_syslog_route_enabled: true
+# Numbered 05- so the drop-in is evaluated before any 10-forward-cribl.conf
+# catch-all rsyslog may render on this guest.
+hermes_agent_syslog_rsyslog_config_path: /etc/rsyslog.d/05-hermes-agent.conf
+hermes_agent_syslog_host: "syslog.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
+# hermes_agent AI ingest port from tofu constants. Mandatory (not defaulted):
+# the key is new, so no inventory predates it — fail loudly rather than ship to
+# a guessed port.
+hermes_agent_syslog_port: >-
+  {{ tofu_data.constants.ai_log_routing.hermes_agent.port
+     | mandatory('ai_log_routing.hermes_agent.port missing from tofu constants') }}
+hermes_agent_syslog_queue_max_disk_space: 256m

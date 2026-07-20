@@ -155,6 +155,24 @@ and GraphQL (Projects v2) calls and the usage guardrails.
 | --- | --- | --- |
 | `hermes_agent_github_issues_pat` | `""` | issues + org-projects PAT (bao/env) |
 
+## Operational log shipping (index=hermes)
+
+Ships the `hermes-*` systemd units' journal logs (gateway, brain watchdog, brain
+sync) to a dedicated Splunk `index=hermes`, so agent health is searchable apart
+from the shared `os` index. A drop-in rsyslog ruleset forwards only lines whose
+`programname` starts with `hermes` over TCP to the `hermes_agent` AI ingest
+listener (`syslog.${PROXMOX_SUBDOMAIN}`, port from `tofu_data`), then `stop`s
+them so they never also double-ship into `os`. Mirrors the `openbao_audit`
+shipping pattern. The port/index/sourcetype are the single tofu-constants
+source of truth (`ai_log_routing.hermes_agent`); Cribl Stream's syslog input and
+the `hermes` index are provisioned by `ansible-proxmox-apps` / `ansible-splunk`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `hermes_agent_syslog_route_enabled` | `true` | Deploy the rsyslog forward |
+| `hermes_agent_syslog_host` | `syslog.{{ PROXMOX_SUBDOMAIN }}` | ingest FQDN |
+| `hermes_agent_syslog_port` | `ai_log_routing.hermes_agent.port` (tofu) | ingest TCP port |
+
 ## Splunk search access
 
 Registers the **Splunk MCP Server** (Splunkbase 7931, deployed by `ansible-splunk`)

@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+# Ship the hermes-* systemd unit logs to the hermes_agent AI ingest listener:
+#   journald (hermes-gateway / hermes-brain-watchdog / hermes-brain-sync)
+#   -> {{ hermes_agent_syslog_host }}:{{ hermes_agent_syslog_port }} (tcp)
+#   -> HAProxy -> Cribl Stream (ai_stamp) -> Splunk index=hermes.
+#
+# rsyslog ingests the journal by default on Debian, so every hermes-* unit's
+# lines arrive on the default ruleset tagged with its programname. The DEDICATED
+# ruleset below is load-bearing: `call`-ed only for programname startswith
+# 'hermes', it forwards those lines and `stop`s them, so they never also hit a
+# syslog_forwarder catch-all and double-ship into the os index. (The `stop`
+# also keeps hermes lines out of local /var/log/syslog — journald still retains
+# them, and index=hermes is the search surface.) This drop-in is numbered 05-
+# so it is evaluated before any 10-forward-cribl.conf catch-all.
+
+ruleset(name="hermes_agent") {
+  action(type="omfwd"
+         target="{{ hermes_agent_syslog_host }}"
+         port="{{ hermes_agent_syslog_port }}"
+         protocol="tcp"
+         queue.type="LinkedList"
+         queue.filename="hermes_agent_fwd"
+         queue.maxDiskSpace="{{ hermes_agent_syslog_queue_max_disk_space }}"
+         queue.saveOnShutdown="on"
+         action.resumeRetryCount="-1")
+  stop
+}
+
+if ($programname startswith 'hermes') then {
+  call hermes_agent
+}
