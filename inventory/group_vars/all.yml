@@ -32,19 +32,41 @@ llm_large_serving_ip: >-
 # SINGLE SOURCE OF TRUTH for the fabric's default chat/agent model. Both the
 # Hermes Agent brain (hermes_agent_model) and Open WebUI's default chat model
 # (open_webui_default_model) resolve to this, so the human chat UI and the
-# autonomous agent always run the same default by construction. The value is a
-# router model id (alias or passthrough physical id) served via
-# https://llm.<subdomain>/v1. Change it here — never re-pin it per consumer.
+# autonomous agent always run the same default by construction. The value is
+# the REAL model id served via https://llm.<subdomain>/v1 — the router serves
+# no aliases (design rule 2026-07-17).
 #
-# `ai-default` is a literal router alias (llm_router_model_group_aliases)
-# backed by the current agentic-bench-winning brain. Re-point the brain by
-# editing the alias target in llm_router defaults — never per consumer.
-ai_default_model: ai-default
+# 2026-07-18: tofu/Ansible no longer OWN the active brain — this is now
+# bao-first (secret/ai/public/brain, field active_model, the ai-public
+# OpenBao domain — see roles/openbao_secrets), with the literal below as the
+# fallback ONLY. Re-pointing the fabric brain day-to-day is an OpenBao write,
+# not a converge: `bao kv patch secret/ai/public/brain active_model=<id>`,
+# picked up by the hermes_agent/open_webui brain-sync systemd timers on their
+# next poll (minutes, no rebuild) — see those roles' *_brain_sync_* vars and
+# READMEs. This var (and the literal fallback) still matter for THREE cases
+# a runtime poll can't cover: (1) the value config.yaml/DEFAULT_MODELS is
+# rendered with at converge/first boot, before any poll has run; (2) what a
+# brain-sync timer falls back to if OpenBao or the router is unreachable;
+# (3) the value llm_router/tasks/assert.yml checks at converge time (that
+# check is necessarily a point-in-time proof against WHATEVER this resolves
+# to at converge — it cannot see a later OpenBao-only change, which is why
+# brain-sync re-validates live against the router's own /v1/model/info
+# before ever switching — see roles/hermes_agent's brain-sync script).
+#
+# 2026-07-18: the deepseek-v4-flash STOPGAP (cloud egress while local serving
+# flapped) is superseded — the flap's root causes are fixed and verified
+# (llm-gate secret-zero env-file, nix-darwin#1742; macOS Local Network
+# privacy platform-curl, #1743), and the resident 80B Instruct brain is the
+# 2026-07-17 agentic-bench winner (nix-ai#1272). Local >=75B mandate stands.
+ai_default_model: >-
+  {{ bao_ai_public_secrets.active_model
+     | default('mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit', true) }}
 
 # Escalation rubric v1 — WHICH tier a task deserves, encoded as data (from the
 # 2026-07-12 document benchmark: two planted traps, three model classes).
-# Consumers: the llm_router renders a stable alias per active tier, and the
-# curriculum loop re-fits decision_rule from graded 30B-vs-deep run deltas —
+# Consumers: each tier names the REAL router model id it escalates to (no
+# aliases), and the curriculum loop re-fits decision_rule from graded
+# 30B-vs-deep run deltas —
 # the feature definitions (F1-F8) live with the curriculum
 # (roles/hermes_agent/files/curriculum/escalation-rubric-schema.md). This
 # block is the single source the fitted values update; nothing here changes
@@ -58,7 +80,7 @@ ai_escalation_rubric:
     # Known ceiling: shallow on second-order effects (flagged the hidden
     # constraint as a bullet, never did the math).
     - id: broad
-      router_alias: ai-default
+      router_model: "{{ ai_default_model }}"
       status: active
     # "What else breaks / find what the author missed" second-order analysis —
     # benchmark: caught BOTH traps and dissected the source's own
@@ -67,7 +89,7 @@ ai_escalation_rubric:
     # multi-minute swap load and can wedge the serving proxy), and with a
     # generous output-token budget (thinking output truncates at small caps).
     - id: deep-analysis
-      router_alias: ai-deep-analysis
+      router_model: mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit
       status: active
       constraint: resident-only
     # The cluster-served deep tier: queued deep packets during a cluster
@@ -75,7 +97,7 @@ ai_escalation_rubric:
     # wait, so an unavailable window DEFERS a deep task, never silently
     # downgrades it.
     - id: cluster-deep
-      router_alias: null # registered only when a window is up (gated build-out)
+      router_model: null # registered only when a window is up (gated build-out)
       status: blocked-upstream
       blocked_by:
         - mlx-lm pipeline-generate bug (upstream fix drafted)
@@ -120,5 +142,9 @@ ai_router_request_timeout_seconds: 2400
 # `bao_local_llm_secrets.X | default(lookup('env','X'), true)` resolves even
 # when the fetch is skipped (BAO_ADDR unset, or the domain's role_id/secret_id
 # envs unset) or the host is outside the openbao_secrets play. The pre-play
-# overrides this per host when active.
+# overrides this per host when active. bao_ai_public_secrets is the same
+# shape for the `ai-public` domain (see ai_default_model above): empty here
+# resolves to the ai_default_model literal fallback until that domain's
+# AppRole exists and secret/ai/public/brain is seeded.
 bao_local_llm_secrets: {}
+bao_ai_public_secrets: {}

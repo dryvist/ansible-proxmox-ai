@@ -2,16 +2,18 @@
 # llm_router role defaults — a LiteLLM proxy (the fabric's single OpenAI-compatible
 # front door) on each guest tagged `llm-router`. Native install: a Python venv +
 # systemd, config at /etc/litellm/config.yaml. Fronted by Traefik at
-# https://llm.<subdomain>; consumers select a tier purely by model alias.
+# https://llm.<subdomain>; consumers request REAL model ids only — the router
+# serves no alias/indirection names (design rule, 2026-07-17: fake names hide
+# what actually serves a request; re-pointing consumers happens via the
+# ai_default_model ansible var, never via a served alias).
 #
 # Two tiers, both reached through this one proxy:
-#   large — gpt-oss-120b / Qwen3-Coder-30B-A3B / Qwen3.6-35B-A3B-4bit /
-#           claude-sonnet-5 on the neutral `llm-large` runner (bearer auth).
-#           One deployment each; no cross-tier fallback.
-#   light — qwen3-4b / embeddings / claude-haiku-4-5. TWO deployments per
-#           alias: the GPU `llm-fast` box AND the CPU `llm-light` standby, same
-#           model_name. LiteLLM load-balances the pair and cools a failed
-#           deployment down, so a GPU outage drains to CPU automatically.
+#   large — the mlx-community/* models on the neutral `llm-large` runner
+#           (bearer auth). One deployment each; no cross-tier fallback.
+#   light — qwen3-4b / embeddings. TWO deployments per model name: the GPU
+#           `llm-fast` box AND the CPU `llm-light` standby, same model_name.
+#           LiteLLM load-balances the pair and cools a failed deployment
+#           down, so a GPU outage drains to CPU automatically.
 #
 # Restart-on-failure is applied DRY by the shared systemd_restart_policy role via
 # group_vars, not here.
@@ -57,6 +59,9 @@ llm_router_api_port: "{{ tofu_data.constants.service_ports.llm_router_api }}"
 llm_router_light_port: "{{ tofu_data.constants.service_ports.llm_fast_api }}"
 # llm-large speaks the Ollama-compatible API on the standard Ollama port.
 llm_router_large_port: "{{ tofu_data.constants.service_ports.ollama_api }}"
+# The gate's second TLS site fronting the two-Mac cluster endpoint (mlx-lm
+# rank 0); live only while a cluster window is up.
+llm_router_cluster_port: "{{ tofu_data.constants.service_ports.llm_night_api }}"
 
 # --- Backend base URLs (derived; never a hardcoded IP) -----------------------
 llm_router_llm_fast_base_url: "http://llm-fast.{{ llm_router_subdomain }}:{{ llm_router_light_port }}/v1"
@@ -86,8 +91,9 @@ llm_router_llm_large_fqdn: "{{ llm_router_llm_large_host }}.{{ llm_router_apex_d
 llm_router_llm_large_base_url: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_router_large_port }}/v1"
 
 # --- Model groups ------------------------------------------------------------
-# large: exposed alias -> the backend's own model id (the serving gate lists
-# models under their full MLX repo ids). One deployment each, bearer-authed.
+# large: each entry is registered under the backend's OWN model id (the
+# serving gate lists models under their full MLX repo ids) — no alias names.
+# One deployment each, bearer-authed.
 # context_window on EVERY entry = the backend's EFFECTIVE SERVING window —
 # what its KV-cache budget (nix-ai catalog cacheMemoryMb) sustains — NOT the
 # model's native max_position_embeddings. vllm-mlx enforces no input-length
@@ -97,7 +103,7 @@ llm_router_llm_large_base_url: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_r
 # client behavior: hermes-agent auto-compaction triggers at ~75% of it.
 # Advertising native windows (previously 262144) let agent sessions grow far
 # past the serving ceiling and die mid-stream (Metal buffer exhaustion)
-# instead of compacting. OptiQ gets 65536 (16 GB KV; 113K single-stream
+# instead of compacting. The resident brain gets 65536 (16 GB KV; 113K single-stream
 # validated, 65K leaves 4-way-concurrency headroom); the small-cache tiers
 # get 32768. Native windows for reference: gpt-oss 131072, Qwen3* 262144.
 # LiteLLM has no built-in entry for these mlx-community backend ids, so an
@@ -105,11 +111,11 @@ llm_router_llm_large_base_url: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_r
 # that (e.g. Hermes, OpenWebUI) fall back to a near-zero context guess and
 # compress every request to death (see config.yaml.j2 for the failure mode).
 llm_router_large_models:
-  - { alias: gpt-oss-120b, backend: mlx-community/gpt-oss-120b-MXFP4-Q8, context_window: 32768 }
-  - { alias: Qwen3-Coder-30B-A3B, backend: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit, context_window: 32768 }
-  - { alias: Qwen3.6-35B-A3B-4bit, backend: mlx-community/Qwen3.6-35B-A3B-4bit, context_window: 32768 }
+  - { backend: mlx-community/gpt-oss-120b-MXFP4-Q8, context_window: 32768 }
+  - { backend: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit, context_window: 32768 }
+  - { backend: mlx-community/Qwen3.6-35B-A3B-4bit, context_window: 32768 }
   # OptiQ-4bit: the agentic-bench-winning brain (ai_default_model, all.yml). A
-  # first-class alias — NOT passthrough — so the default model carries an
+  # first-class entry — NOT passthrough — so the default model carries an
   # explicit max_input_tokens: the wildcard "*" entry below sets none, and a
   # null there makes Hermes/OpenWebUI fall back to a near-zero context guess and
   # compress every request to death.
@@ -129,57 +135,46 @@ llm_router_large_models:
   # merely restate the engine fallback the loop already runs under. If 1.05 is
   # insufficient, the next lever is to match the clean bench's sampling —
   # temperature ~1.0 / presence_penalty 0.0 — added to this same extra_body.)
-  - alias: Qwen3.6-35B-A3B-OptiQ-4bit
-    backend: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
+  - backend: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
     context_window: 65536
     extra_body: { repetition_penalty: 1.05 }
   # Qwen3-Next-80B Thinking: served from the nix-ai catalog swap tier, loaded
-  # on demand (reachable directly and via ai-deep-analysis below). Block style
-  # (not the flow one-liner above) only to stay under the 120-char limit.
-  - alias: Qwen3-Next-80B-A3B-Thinking-4bit
-    backend: mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit
+  # on demand — the escalation rubric's deep-analysis tier (ai_escalation_rubric,
+  # all.yml) requests it by this real id. Block style (not the flow one-liner
+  # above) only to stay under the 120-char limit.
+  - backend: mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit
     context_window: 32768
     extra_body: { repetition_penalty: 1.05 }
-# Literal aliases (LiteLLM router_settings.model_group_alias): pure name -> model
-# group indirection with ZERO config of their own — context_window, extra_body,
-# api_base, everything comes from the target entry above, so re-pointing an
-# alias can never drift out of sync with its backend's tuning. Consumer-facing
-# names that duplicate a physical entry's config are BANNED — every alias in
-# this fabric lives in this map and nowhere else.
-llm_router_model_group_aliases:
-  # ai-default: THE stable fabric-brain alias every consumer (Hermes, Open
-  # WebUI, the cron fleet) points at permanently. Statically bound since
-  # 2026-07-16 (the daily 00/12 UTC rotation was deleted as a no-op flip).
-  # Re-pointing the fabric brain = edit this one target name.
-  ai-default: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
-  # ai-deep-analysis: the STABLE tier alias for the escalation rubric's
-  # deep-analysis tier (ai_escalation_rubric, all.yml) — "what else breaks /
-  # find what the author missed" second-order analysis. Currently the 80B
-  # thinking brain; rubric constraint: invoke only while the backend is
-  # resident, with a generous output-token budget. The cluster deep tier gets
-  # its alias only when a cluster window is up (blocked-upstream — see the
-  # rubric data).
-  ai-deep-analysis: mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit
-  # claude-sonnet-5 is a Claude Code alias deliberately mapped to a local
-  # Qwen3.6 backend (PR #624) — not a mis-map; it inherits that backend's
-  # serving window and tuning.
-  claude-sonnet-5: mlx-community/Qwen3.6-35B-A3B-4bit
-  # claude-haiku-4-5 is the Claude Code light-tier alias; it points at the live
-  # light model group (the load-balanced GPU llm-fast + CPU llm-light pair).
-  # The hermes-4-14b backend it previously targeted is no longer served
-  # anywhere — >=14B GPU serving is barred from the fast tier.
-  claude-haiku-4-5: qwen3-4b
-# light: exposed aliases -> the llama-swap model_name they map to. Each becomes two
-# same-name deployments (llm-fast GPU + llm-light CPU) in the rendered config.
+  # Instruct sibling: the fleet brain (ai_default_model) since 2026-07-17 —
+  # agentic-bench winner, resident on the serving host with a 65536 window
+  # (also Hermes' compression model, which hard-requires >=64K).
+  - backend: mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit
+    context_window: 65536
+    extra_body: { repetition_penalty: 1.05 }
+  # The two-Mac cluster brain (JACCL pipeline across Studio + MacBook,
+  # ~256 GB combined), served by mlx-lm rank 0 behind the gate's :11440 TLS
+  # site — a DIFFERENT port on the same host, hence the per-entry api_base
+  # override. Reachable only while a cluster window is up (cable in); normal
+  # serving on :11434 quiesces during windows, so this entry is what keeps a
+  # brain reachable then. Same bearer token as the main gate site.
+  - backend: mlx-community/GLM-4.7-REAP-50-mxfp4
+    api_base: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_router_cluster_port }}/v1"
+    context_window: 65536
+    extra_body: { repetition_penalty: 1.05 }
+# Aliases were removed 2026-07-17 (design rule: the router serves ONLY real
+# model ids; ai-default / ai-deep-analysis / claude-* are gone). Consumers are
+# re-pointed via the ai_default_model / rubric vars in group_vars/all.yml.
+# light: the llama-swap model names, served as-is. Each becomes two same-name
+# deployments (llm-fast GPU + llm-light CPU) in the rendered config.
 # `embedding: true` marks the entry as an embeddings model_group.
 llm_router_light_models:
-  - { alias: qwen3-4b, backend: qwen3-4b }
-  - { alias: embeddings, backend: embeddings, embedding: true }
+  - { backend: qwen3-4b }
+  - { backend: embeddings, embedding: true }
 
 # --- OpenRouter egress tier (paid-SaaS; one key per MODEL) --------------------
-# Explicitly-named aliases to OpenRouter-hosted models. NEVER part of the
-# ai-default rotation or any fallback chain — a flaky/rate-limited upstream
-# must not be able to degrade the local brain; consumers opt in by alias.
+# OpenRouter-hosted models, served under their REAL upstream ids. NEVER part
+# of any fallback chain — a flaky/rate-limited upstream must not be able to
+# degrade the local brain; consumers opt in by requesting the id explicitly.
 # Key model (deliberate): ONE OpenRouter API key PER MODEL, irrespective of
 # which harness/caller makes the request. key_field names the per-model field
 # in OpenBao secret/ai/saas/openrouter (fetched into bao_local_llm_secrets by
@@ -187,19 +182,30 @@ llm_router_light_models:
 # fallback OPENROUTER_API_KEY_<KEY_FIELD upper-snaked>). An entry whose key is
 # not seeded renders nothing (inert-until-creds), so the list is safe to
 # extend ahead of key seeding. context_window is the model's real serving
-# window (never null — the compress-death rule applies to every alias).
+# window (never null — the compress-death rule applies to every entry).
 llm_router_openrouter_models:
   # Free endpoint: rate-limited, and NVIDIA logs prompt/session data on the
-  # :free variant — never send confidential material through this alias.
-  - alias: openrouter-free
-    model: nvidia/nemotron-3-ultra-550b-a55b:free
+  # :free variant — never send confidential material through this model.
+  - model: nvidia/nemotron-3-ultra-550b-a55b:free
     key_field: nvidia-nemotron-3-ultra-550b-a55b-free
     context_window: 1000000
   # Cheap paid egress: efficiency-optimized MoE, $0.09/$0.18 per 1M tokens.
-  - alias: deepseek-v4-flash
-    model: deepseek/deepseek-v4-flash
+  - model: deepseek/deepseek-v4-flash
     key_field: deepseek-deepseek-v4-flash
     context_window: 1000000
+
+# --- OpenRouter dynamic tier: any current upstream model, budget-gated -------
+# Operator disclosure 2026-07-19: the ai/saas/openrouter keys are ACCOUNT-WIDE
+# (the per-model field names were a naming-level guardrail, not a technical
+# one). The real permission model is now explicit policy: Hermes' persona +
+# dryvist/openrouter-models skill (deliberate escalation only, hard $1.00/day
+# memory-tracked budget, :free rules) — so this wildcard exposes the full
+# current OpenRouter catalog as `openrouter/<exact-upstream-id>` without a
+# per-model router edit. Tuned entries above still win on exact match; the
+# local `*` catch-all is untouched (bare ids still route to local serving).
+# Reuses an existing seeded key field; disable to fall back to tuned-only.
+llm_router_openrouter_wildcard_enabled: true
+llm_router_openrouter_wildcard_key_field: deepseek-deepseek-v4-flash
 
 # --- Routing behaviour -------------------------------------------------------
 # Load-balance across same-name deployments; cool a failed one down so traffic
@@ -283,18 +289,19 @@ llm_router_otel_endpoint: "http://cribl-edge.{{ llm_router_subdomain }}:{{ llm_r
 llm_router_llm_fast_enabled: true
 
 # Large-tier passthrough: expose EVERY model the serving gate advertises,
-# not just the aliased ones above. Exposure policy is blocklist-shaped and
+# not just the tuned entries above. Exposure policy is blocklist-shaped and
 # enforced at the source — the serving host auto-registers every downloaded,
 # memory-fitting MLX model minus its declarative blocklist (nix-ai
 # programs.mlx.discover.blocklist) — so adding a model to the fleet is a
 # download, and removing one is a blocklist entry; the router never needs a
-# per-model edit. llm_router_large_models stays as the stable consumer-facing
-# alias set (exact-match aliases win over the wildcard).
+# per-model edit. llm_router_large_models stays as the tuned set (exact-match
+# registrations win over the wildcard).
 llm_router_large_passthrough_enabled: true
 
 # Daily brain rotation + night-cluster deployment shapes were deleted
 # 2026-07-16 (no-op since both phases served the same model; night cluster not
-# provisioned). `ai-default` is a static first-class alias above. Night-cluster
-# shape, if it returns, rebuilds against this static config (old design:
-# tasks/rotation.yml + docs/BRAIN_ROTATION.md at 97ae96a). Incident history:
+# provisioned). The default brain is a real model id served directly (no
+# alias). Night-cluster shape, if it returns, rebuilds against this static
+# config (old design: tasks/rotation.yml + docs/BRAIN_ROTATION.md at 97ae96a).
+# Incident history:
 # Zammad (AI/LLM Serving).

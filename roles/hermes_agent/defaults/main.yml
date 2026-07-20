@@ -12,6 +12,7 @@ hermes_agent_user: hermes
 # snapshotted + replicated pve->pve3.
 hermes_agent_home: /var/lib/hermes
 hermes_agent_hermes_home: "{{ hermes_agent_home }}/.hermes" # $HERMES_HOME
+hermes_agent_managed_cron_state_dir: "{{ hermes_agent_hermes_home }}/managed-cron"
 hermes_agent_bin: /usr/local/bin/hermes                     # system-wide install
 # install.sh's root-FHS layout: the app checkout (editable install target) and
 # its uv-managed venv. uv itself lands only at this root-owned path — the
@@ -48,7 +49,16 @@ hermes_agent_installer_path: "/usr/local/lib/hermes-agent-installer-{{ hermes_ag
 # autonomous-base.md + the Hermes variant — no vendored copy to drift.
 # Bump the tag deliberately: renovate opens the PR on each nix-hermes release;
 # a bad ref fails the converge loudly at the controller build step.
-hermes_agent_bundle_flake_ref: "github:dryvist/nix-hermes/nix-hermes-v0.4.0#hermes-bundle"
+hermes_agent_bundle_flake_ref: "github:dryvist/nix-hermes/nix-hermes-v0.6.0#hermes-bundle"
+hermes_agent_prompts_flake_ref: >-
+  github:dryvist/ai-llm-prompts/0431be6994d51169b9f705ddeba958eb8a4d0fc4#auto-ai-agent
+hermes_agent_webhook_prompt_file: hermes-inbound-webhook.md
+hermes_agent_curriculum_prompt_files:
+  orient: hermes-curriculum-orient.md
+  reposweep: hermes-curriculum-reposweep.md
+  splunk: hermes-curriculum-splunk.md
+  apps: hermes-curriculum-apps.md
+  improve: hermes-curriculum-improve.md
 
 # --- Brain: the LiteLLM router (the fabric front door, OpenAI-compatible /v1) ---
 # Reached by its neutral Traefik FQDN — never a hardcoded IP. The router routes by
@@ -63,14 +73,17 @@ hermes_agent_model: "{{ ai_default_model }}"
 hermes_agent_model_base_url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1"
 hermes_agent_model_api_mode: chat_completions
 # Context-compression summary model. Hermes hard-requires >=64K context on the
-# compression model, and `ai-default` cannot promise that: its rotating backend
-# is whatever the phase brain is, and the stock 35B twin serves a 32,768-token
-# window — cron fleet failed on exactly this 2026-07-16 ("Auxiliary compression
-# model ai-default has a context window of 32,768"). Pin compression to the
-# OptiQ tuned alias: 65,536-token serving window, resident on the serving host,
-# carries its own repetition-penalty guard. Named by model family on purpose —
-# a generic alias must not be used where a >=64K window is a hard requirement.
-hermes_agent_compression_model: Qwen3.6-35B-A3B-OptiQ-4bit
+# compression model — the cron fleet failed on exactly this 2026-07-16 when
+# compression rode a 32,768-token brain ("Auxiliary compression model ... has
+# a context window of 32,768"). Pinned to the RESIDENT 80B Instruct brain by
+# its real id (65,536-token serving window; OptiQ dropped to the 32K swap
+# class when residency moved, so it no longer qualifies). The 2026-07-17
+# deepseek cloud stopgap is superseded — the local-serving flap that
+# motivated it is root-caused and fixed (nix-darwin#1742/#1743). Deliberately
+# a literal (not ai_default_model): a future brain re-point to a
+# smaller-window model must not silently drag the >=64K-required compression
+# path with it.
+hermes_agent_compression_model: mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit
 # The context window Hermes budgets against and compacts under (it compresses at
 # hermes_agent_context_compression_threshold * this value). The model's TRUE
 # native window is 262144 (Qwen3.6-35B-A3B), but we deliberately DECLARE a
@@ -87,8 +100,8 @@ hermes_agent_compression_model: Qwen3.6-35B-A3B-OptiQ-4bit
 # 2026-07-08). (2) Native window 262144 (config.json). (3) A full re-prefill
 # of the declared window must finish inside the 900s stream-stale budget
 # (65536 needs >=73 tok/s prefill — trivially safe). (4) NEW, and binding:
-# the ROUTER enforces the serving window as max_input_tokens on the
-# ai-default alias (enable_pre_call_checks) — OptiQ serves 65,536. A
+# the ROUTER enforces the serving window as max_input_tokens on the brain's
+# tuned entry (enable_pre_call_checks) — the 80B brain serves 65,536. A
 # declaration ABOVE the served window creates a dead zone: Hermes budgets
 # past it and only compacts at threshold*declared, so every request between
 # the served window and the compaction point is router-rejected
@@ -149,6 +162,18 @@ hermes_agent_slack_allowed_users: "{{ lookup('env', 'SLACK_MEMBER_ID') | default
 hermes_agent_slack_home_channel: "{{ lookup('env', 'SLACK_HOME_CHANNEL') | default('', true) }}"
 hermes_agent_slack_home_channel_name: "{{ lookup('env', 'SLACK_HOME_CHANNEL_NAME') | default('', true) }}"
 
+# 3-tier Slack routing (operator decision 2026-07-18): verbose routine cron
+# output (full working reports, every run) goes to the FIREHOSE channel; the
+# home channel above becomes the curated summary surface (the once-daily
+# delta-only rollup, plus anything a human must act on); DMs stay urgent-only
+# (anomaly sweeps + new incidents). Empty firehose → those jobs fall back to
+# the home channel, i.e. the original single-channel behavior.
+hermes_agent_slack_firehose_channel: "{{ lookup('env', 'SLACK_FIREHOSE_CHANNEL') | default('', true) }}"
+hermes_agent_firehose_deliver: >-
+  {{ 'slack:' ~ hermes_agent_slack_firehose_channel
+     if (hermes_agent_slack_firehose_channel | length > 0)
+     else 'slack' }}
+
 # Post scheduled (cron) output as FRESH top-level channel messages, not threaded
 # replies under one ever-growing root. Each cron run is already an isolated
 # session; this makes its Slack surface match. reply_in_thread=false → flat
@@ -158,14 +183,25 @@ hermes_agent_slack_home_channel_name: "{{ lookup('env', 'SLACK_HOME_CHANNEL_NAME
 hermes_agent_slack_reply_in_thread: false
 hermes_agent_slack_cron_continuable_surface: in_channel
 
-# Daily Slack status report seeded into Hermes' built-in cron scheduler. The
-# role creates the job on converge; the gateway starts executing it on the next
-# daemon run once the Slack gateway is configured.
+# Hourly (waking-hours) Slack status report seeded into Hermes' built-in cron
+# scheduler. The role creates the job on converge; the gateway starts executing
+# it on the next daemon run once the Slack gateway is configured. Runs at the
+# top of every hour from 08:00–22:00 local so there is a fresh heartbeat in
+# Slack at least once an hour during waking hours even when nothing else fires
+# (the var name keeps "daily" for stability — the schedule is the source of
+# truth). Keep the prompt cheap: a short status line, no heavy tool fan-out.
+#
+# Delta discipline (2026-07-18): every fresh session used to re-post the same
+# 4 static status lines every single hour even when nothing changed. Memory
+# (already an always-available cron toolset) is the reuse target — no new
+# state infrastructure — so the job fingerprints its own findings and checks
+# them against its last post before deciding how much to say.
 hermes_agent_daily_status_cron_name: homelab-ai-fabric-status
-hermes_agent_daily_status_cron_schedule: "0 9 * * *"
-hermes_agent_daily_status_cron_prompt: >-
-  Summarize the homelab AI fabric status, including router health, Hermes
-  gateway health, DNS readiness, and any merge-ready PRs. Keep it concise.
+# 24/7 (operator decision 2026-07-18): the heartbeat posts to the firehose
+# channel now, so the full 24h schedule adds no operator noise — and a fabric
+# failure in the former 22:00-08:00 gap is seen within the hour, not at 08:00.
+hermes_agent_daily_status_cron_schedule: "0 * * * *"
+hermes_agent_daily_status_cron_prompt_file: hermes-daily-fabric-status.md
 
 # --- Inbound webhook receiver (event-driven agent trigger) ------------------
 # The `hermes gateway` webhook platform: an HTTP receiver (/webhooks/<name>,
@@ -219,6 +255,16 @@ hermes_agent_api_server_port: >-
 # 0 would disable the cap entirely — assert.yml forbids that.
 hermes_agent_api_max_concurrent_runs: 2
 
+# --- Kanban dispatcher bounds (config.yaml `kanban:` block) -------------------
+# Upstream (>=v0.13) runs the board dispatcher inside the gateway BY DEFAULT,
+# unbounded (dispatch_in_progress/auto_decompose default true, no concurrency
+# cap). These caps bound spawned workers against the same single serving
+# deployment as the API cap above (same measured-envelope rationale: one
+# stream serves well, 2-stream aggregate ~0.71x, beyond that thrash). Workers
+# + API runs + the cron fleet all share that envelope — keep the SUM small.
+hermes_agent_kanban_max_in_progress: 2
+hermes_agent_kanban_max_in_progress_per_profile: 1
+
 # --- Memory: best self-hostable as of June 2026 (Agy-validated) ---
 # Hindsight: local knowledge-graph + multi-strategy retrieval. Runs alongside the
 # always-on built-in MEMORY.md/USER.md. The whole HERMES_HOME is the durable surface.
@@ -268,10 +314,17 @@ hermes_agent_max_turns: 90
 #     bounds what an injected instruction can reach. Deliberately ABSENT:
 #     `cronjob` (an injected one-off run must not schedule persistent jobs),
 #     `browser` (the widest tool attack surface; the `web` toolset covers
-#     research), `delegation` (cost amplification), and `clarify` (headless).
+#     research), `delegation` (cost amplification), `kanban` (same cost-
+#     amplification shape — an injected run must not file board cards that
+#     spawn workers), and `clarify` (headless).
 #     Enabled MCP servers (splunk/context7/codex) are layered on by upstream's
 #     platform-tools semantics — the allowlist scopes native toolsets only.
-#  3. platform_toolsets.cron — allowlist for the scheduled fleet, same shape.
+#  3. platform_toolsets.cron — allowlist for the scheduled fleet, same shape,
+#     PLUS `kanban`: role-authored cron probes may file board cards
+#     (kanban_create) for follow-up work they cannot finish in-run — that is
+#     the deliberate card-creation surface feeding the bounded dispatcher
+#     (kanban: block in config.yaml.j2). The toolset is upstream-opt-in
+#     (never included by `all`/`*`), so naming it here is the only grant.
 #     Upstream additionally hard-disables cronjob/messaging/clarify in every
 #     cron context regardless of this list.
 #
@@ -303,7 +356,7 @@ hermes_agent_api_server_toolsets:
   - memory
   - context_engine
   - session_search
-hermes_agent_cron_toolsets: "{{ hermes_agent_api_server_toolsets }}"
+hermes_agent_cron_toolsets: "{{ hermes_agent_api_server_toolsets + ['kanban'] }}"
 
 # Pinned to UTC (workspace policy: no custom timezones), independent of the
 # target host's configured zone.
@@ -330,7 +383,7 @@ hermes_agent_context_compression_enabled: true
 hermes_agent_context_compression_threshold: 0.85
 hermes_agent_nightly_wiki_cron_name: hermes-nightly-wiki
 hermes_agent_nightly_wiki_cron_schedule: "0 2 * * *"
-hermes_agent_nightly_wiki_cron_prompt: "Run a lint and health-check on the wiki."
+hermes_agent_nightly_wiki_cron_prompt_file: hermes-nightly-wiki-health.md
 
 # --- autonomous GitHub docs-contributor ---
 hermes_agent_github_app_id: ""
@@ -386,7 +439,8 @@ hermes_agent_splunk_alert_deliver: >-
   {{ 'slack:' ~ hermes_agent_slack_allowed_users
      if (hermes_agent_slack_allowed_users | length > 0)
      else 'slack' }}
-hermes_agent_splunk_digest_deliver: slack
+# The digest is a verbose full report every hour — firehose (3-tier routing).
+hermes_agent_splunk_digest_deliver: "{{ hermes_agent_firehose_deliver }}"
 
 # Per-job cron definitions. Prompts stay short — the skill carries the discipline;
 # the prompt only sets each run's posture (a lens, not a checklist) and reinforces
@@ -402,39 +456,20 @@ hermes_agent_splunk_digest_deliver: slack
 # zero overlapping start minutes.
 hermes_agent_splunk_triage_cron_name: splunk-triage
 hermes_agent_splunk_triage_cron_schedule: "7 * * * *"
-hermes_agent_splunk_triage_cron_prompt: >-
-  Do a broad, self-directed anomaly sweep of Splunk right now using only bounded
-  queries. Recall your known baselines first, confirm anything surprising with
-  follow-up bounded queries, and record notable findings and updated baselines to
-  memory. If nothing is genuinely off, reply with exactly [SILENT]; otherwise send
-  one concise, numbers-backed alert.
+hermes_agent_splunk_triage_cron_prompt_file: hermes-splunk-triage.md
 
 hermes_agent_splunk_security_cron_name: splunk-security
 hermes_agent_splunk_security_cron_schedule: "22 */6 * * *"
-hermes_agent_splunk_security_cron_prompt: >-
-  Sweep Splunk with a security lens this run — firewall-drop spikes, auth-failure
-  spikes, honeypot index hits, unexpected source IPs — all as bounded stats,
-  compared against your remembered baselines. You are not limited to these; flag
-  anything that looks like a threat. Record findings to memory. Reply exactly
-  [SILENT] if clean; otherwise one concise, numbers-backed alert.
+hermes_agent_splunk_security_cron_prompt_file: hermes-splunk-security.md
 
 hermes_agent_splunk_parsing_cron_name: splunk-parsing
 hermes_agent_splunk_parsing_cron_schedule: "37 2 * * *"
-hermes_agent_splunk_parsing_cron_prompt: >-
-  Sweep Splunk with a data-quality lens this run — timestamp-extraction failures,
-  events dated far in the past/future, line-merge anomalies, new or unknown
-  sourcetypes, mis-sized or unparsed events, splunkd parsing warnings — all
-  bounded. Record findings and baselines to memory. Reply exactly [SILENT] if
-  clean; otherwise one concise, numbers-backed alert.
+hermes_agent_splunk_parsing_cron_prompt_file: hermes-splunk-parsing.md
 
 # Quiet research run: builds long-term knowledge (RAG) rather than alerting.
 hermes_agent_splunk_deepdive_cron_name: splunk-deepdive
 hermes_agent_splunk_deepdive_cron_schedule: "11 3 * * *"
-hermes_agent_splunk_deepdive_cron_prompt: >-
-  Pick ONE index or sourcetype you have not yet characterized well (check your
-  wiki/memory for gaps). Using only bounded queries, learn its normal shape,
-  volume and purpose, then write or update a page in the `splunk` area of your
-  wiki plus a memory baseline. This is a quiet research run — no alert needed.
+hermes_agent_splunk_deepdive_cron_prompt_file: hermes-splunk-deepdive.md
 
 # Routine status post: always delivered (never [SILENT]).
 hermes_agent_splunk_digest_cron_name: splunk-digest
@@ -442,13 +477,15 @@ hermes_agent_splunk_digest_cron_name: splunk-digest
 # at least once per hour, 24/7 — this digest IS that heartbeat (and its silence
 # is the outage signal). Anomaly sweeps stay silent-unless-anomaly; only they
 # were calmed.
+#
+# Delta discipline (2026-07-18): the same CRITICAL finding was getting restated
+# in full 24x/day for 2+ days straight. Memory is the canonical last-posted
+# state (also read by splunk-triage above, so the two surfaces stop
+# independently re-deriving and re-posting the same finding). A full report
+# still goes out at least once/day (the anchor hour) even with zero change, so
+# "still CRITICAL" never silently rots off everyone's radar.
 hermes_agent_splunk_digest_cron_schedule: "52 * * * *"
-hermes_agent_splunk_digest_cron_prompt: >-
-  Post a concise Splunk digest to the home channel: what you looked at recently,
-  the current normal (top indexes/sourcetypes by volume and their freshness), any
-  anomalies still open, and any splunk-auto-* checks you have added or removed.
-  Bounded queries only. This is a routine status post — ALWAYS write the digest
-  and NEVER reply [SILENT] for this job; [SILENT] is only for the anomaly sweeps.
+hermes_agent_splunk_digest_cron_prompt_file: hermes-splunk-digest.md
 
 # Aggregate list the seed loop iterates. Alert jobs DM the operator; the digest
 # posts to the home channel; the quiet deep-dive research run saves locally only.
@@ -457,22 +494,57 @@ hermes_agent_splunk_cron_jobs:
     schedule: "{{ hermes_agent_splunk_triage_cron_schedule }}"
     prompt: "{{ hermes_agent_splunk_triage_cron_prompt }}"
     deliver: "{{ hermes_agent_splunk_alert_deliver }}"
+    skills: [dryvist/splunk-monitor]
+    enabled: >-
+      {{ hermes_agent_splunk_monitor_enabled | bool
+         and hermes_agent_splunk_mcp_url | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
   - name: "{{ hermes_agent_splunk_security_cron_name }}"
     schedule: "{{ hermes_agent_splunk_security_cron_schedule }}"
     prompt: "{{ hermes_agent_splunk_security_cron_prompt }}"
     deliver: "{{ hermes_agent_splunk_alert_deliver }}"
+    skills: [dryvist/splunk-monitor]
+    enabled: >-
+      {{ hermes_agent_splunk_monitor_enabled | bool
+         and hermes_agent_splunk_mcp_url | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
   - name: "{{ hermes_agent_splunk_parsing_cron_name }}"
     schedule: "{{ hermes_agent_splunk_parsing_cron_schedule }}"
     prompt: "{{ hermes_agent_splunk_parsing_cron_prompt }}"
     deliver: "{{ hermes_agent_splunk_alert_deliver }}"
+    skills: [dryvist/splunk-monitor]
+    enabled: >-
+      {{ hermes_agent_splunk_monitor_enabled | bool
+         and hermes_agent_splunk_mcp_url | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
   - name: "{{ hermes_agent_splunk_deepdive_cron_name }}"
     schedule: "{{ hermes_agent_splunk_deepdive_cron_schedule }}"
     prompt: "{{ hermes_agent_splunk_deepdive_cron_prompt }}"
     deliver: local
+    skills: [dryvist/splunk-monitor]
+    enabled: >-
+      {{ hermes_agent_splunk_monitor_enabled | bool
+         and hermes_agent_splunk_mcp_url | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
   - name: "{{ hermes_agent_splunk_digest_cron_name }}"
     schedule: "{{ hermes_agent_splunk_digest_cron_schedule }}"
     prompt: "{{ hermes_agent_splunk_digest_cron_prompt }}"
     deliver: "{{ hermes_agent_splunk_digest_deliver }}"
+    skills: [dryvist/splunk-monitor]
+    enabled: >-
+      {{ hermes_agent_splunk_monitor_enabled | bool
+         and hermes_agent_splunk_mcp_url | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
 
 # --- GitHub monitor: periodic read-only org-triage sweep -------------------
 # The poll-based counterpart to the Splunk fleet, reusing the existing
@@ -485,27 +557,81 @@ hermes_agent_splunk_cron_jobs:
 hermes_agent_github_monitor_enabled: true
 hermes_agent_github_monitor_cron_name: github-triage
 hermes_agent_github_monitor_cron_schedule: "26 */6 * * *"
-hermes_agent_github_monitor_cron_prompt: >-
-  Do a read-only triage sweep of the dryvist GitHub org right now using your
-  github-issues skill. Enumerate open PRs and issues across non-archived repos;
-  flag PRs older than 7 days as stale, Renovate/bot PRs open >7 days, and issues
-  untouched for 30+ days. NEVER comment on, label, close, or edit anything — you
-  are producing a report, not acting on it. If nothing genuinely needs a human
-  decision, reply with exactly [SILENT]; otherwise post one concise top-5 action
-  list (repo, number, why) plus totals to the home channel.
-hermes_agent_github_monitor_cron_deliver: slack
+# Delta discipline (2026-07-18): the same top-5 + counts were getting restated
+# in full every sweep even when the list hadn't moved. Memory carries the
+# last-posted list across runs (same reuse-what-exists pattern as the Splunk
+# jobs above) so an unchanged sweep costs one line instead of a full repost.
+hermes_agent_github_monitor_cron_prompt_file: hermes-github-triage.md
+# Routine triage report — firehose (3-tier routing).
+hermes_agent_github_monitor_cron_deliver: "{{ hermes_agent_firehose_deliver }}"
 
 hermes_agent_github_cron_jobs:
   - name: "{{ hermes_agent_github_monitor_cron_name }}"
     schedule: "{{ hermes_agent_github_monitor_cron_schedule }}"
     prompt: "{{ hermes_agent_github_monitor_cron_prompt }}"
     deliver: "{{ hermes_agent_github_monitor_cron_deliver }}"
+    skills: [dryvist/github-issues]
+    enabled: >-
+      {{ hermes_agent_github_monitor_enabled | bool
+         and hermes_agent_github_issues_pat | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+
+# --- Daily operator summary: the home channel's ONE curated post ------------
+# 3-tier routing gives the verbose crons the firehose channel; this job is what
+# the home channel is FOR now — a once-daily, delta-only rollup across every
+# domain Hermes watches. It reads its own recent findings (memory/wiki), not
+# the world — no new queries beyond what a claim needs to be current.
+hermes_agent_summary_cron_name: daily-summary
+# 12:00 UTC — start of the operator's day; the previous 24h of findings are in.
+hermes_agent_summary_cron_schedule: "0 12 * * *"
+hermes_agent_summary_cron_prompt: >-
+  Post the once-daily operator summary to this channel, built from your own
+  last-24h cron findings and memory (Splunk, Zammad incidents
+  opened/updated/resolved, fabric health, GitHub org findings). STRICT rules:
+  deltas and open action items only — never restate unchanged or benign
+  status; every line must be either NEW since yesterday's summary or an open
+  item awaiting a human. Lead with anything needing operator action. No
+  Markdown tables (Slack does not render them) — short lines or key: value
+  pairs. At most 15 lines. Recall memory key "daily-summary-last" to compute
+  the delta and save today's fingerprint back to it. If genuinely nothing new
+  and nothing open, say exactly that in one line — never pad.
+hermes_agent_summary_cron_deliver: slack
+
+# --- Zammad review: proactive incident lifecycle across ALL queues ----------
+# Operator directive 2026-07-18: Hermes proactively READS open Zammad
+# incidents (not just its own), proves finished ones complete, enriches open
+# ones, resolves what it can prove, and DMs genuinely NEW incidents. The
+# working report always posts to the firehose; the DM is reserved for new
+# incidents so it stays an urgent-only surface. Gated (in tasks) on the Zammad
+# URL + token being set alongside the Slack gates.
+hermes_agent_zammad_review_cron_name: zammad-review
+# Every 2h at :41 — staggered clear of the other cron minutes (0,7,22,26,52).
+hermes_agent_zammad_review_cron_schedule: "41 */2 * * *"
+hermes_agent_zammad_review_cron_prompt: >-
+  Review open Zammad incidents across ALL groups and queues, not just your
+  own. Recall memory key "zammad-review-last" (incident ids + states you saw
+  last run) and work the DELTA. For each open incident: (1) check whether
+  evidence now proves it complete — verify with your tools (Splunk queries,
+  fabric probes, GitHub state), and if proven, RESOLVE the ticket yourself
+  with a closing article stating the evidence — never just recommend closing;
+  (2) if you find genuinely NEW information or a plausible solution, append
+  ONE article with it — never repeat what an earlier article already says;
+  (3) leave incidents you cannot advance untouched. If any incident is NEW
+  since your last run, DM the operator immediately: one line per incident —
+  id, title, severity, why it matters. Then post your working report here:
+  what you reviewed, advanced, resolved (with evidence), and skipped. No
+  Markdown tables. Save the updated id+state map back to
+  "zammad-review-last".
+hermes_agent_zammad_review_cron_deliver: "{{ hermes_agent_firehose_deliver }}"
 
 # Every cron job this role seeds. The model-drift recovery task (tasks/main.yml)
 # only ever removes jobs on this list — user- and agent-created jobs are never
 # touched.
 hermes_agent_seeded_cron_names: >-
-  {{ [hermes_agent_daily_status_cron_name, hermes_agent_nightly_wiki_cron_name]
+  {{ [hermes_agent_daily_status_cron_name, hermes_agent_nightly_wiki_cron_name,
+      hermes_agent_summary_cron_name, hermes_agent_zammad_review_cron_name]
      + (hermes_agent_splunk_cron_jobs | map(attribute='name') | list)
      + (hermes_agent_github_cron_jobs | map(attribute='name') | list) }}
 
@@ -581,7 +707,7 @@ hermes_agent_verify_probe_retries: 3
 hermes_agent_verify_probe_delay: 10
 
 # --- Brain-health watchdog: stop cron-failure spam during brain outages -------
-# ai-default is a single-deployment brain (llm_router role) with no viable
+# The default brain (ai_default_model) is a single-deployment model (llm_router role) with no viable
 # fallback, and upstream Hermes ALWAYS delivers a cron failure ("Failed jobs
 # always deliver regardless of the [SILENT] marker"). So a brain outage makes the
 # stateless seeded fleet fail-and-DM the operator twice an hour per job, while
@@ -601,11 +727,92 @@ hermes_agent_brain_watchdog_probe_timeout: 15
 # consecutive successes before declaring UP (resume+alert). down_after=3 over the
 # 60s cadence (~3 min) rides rotation-flip bounces and cold reloads so the
 # watchdog never becomes a new source of spam; up_after=2 damps flapping.
+# Both are role vars — tune per environment. TRADEOFF: for an INTERMITTENT
+# serving-stack wedge (INC-17083: brain briefly recovers then re-freezes), a
+# higher up_after (e.g. 4-6) keeps the fleet paused LONGER across brief-recovery
+# windows so fewer crons fire at a re-wedging brain — at the cost of slower
+# resume after a genuine recovery. Default stays 2 (fast recovery); raise it if
+# a flapping-wedge class dominates.
 hermes_agent_brain_watchdog_down_after: 3
 hermes_agent_brain_watchdog_up_after: 2
+# Flap coalescing (2026-07-18): down_after/up_after debounce brief bounces, but
+# a genuinely UNSTABLE backend still produces one clean alert per edge — a
+# confirmed 31h-unstable backend produced dozens of up/down DM pairs. Once a
+# down/up cycle completes, further edges within this cooldown are coalesced
+# (counted, cooldown extended) into one eventual summary instead of alerting
+# individually. 3600s (60 min) is long enough to absorb a flapping episode
+# without swallowing a second, genuinely independent outage hours later.
+hermes_agent_brain_watchdog_flap_cooldown_seconds: 3600
+# Sustained-flap escalation (INC-17083, 2026-07-19): the coalescer above only
+# emits a summary once the brain STABILIZES (flap_summary_check). A wedge that
+# flaps for hours without a clean recovery never stabilizes, so no summary ever
+# fires and a multi-hour instability is SILENT to the operator — observed live
+# as 15 flaps over ~2.5h with zero alert (every edge coalesced). Fix: while
+# STILL flapping, fire ONE loud page once the episode crosses either threshold
+# below, then re-arm with a long cooldown so a genuine long wedge pages at most
+# hourly, not per-flap. Set threshold to 0 to disable.
+hermes_agent_brain_watchdog_sustained_flap_threshold: 5       # coalesced flaps, or
+hermes_agent_brain_watchdog_sustained_flap_seconds: 1800      # unstable this long (30m)
+hermes_agent_brain_watchdog_sustained_flap_rearm_seconds: 3600  # re-page at most hourly
 # Urgent page target. Same topic service_deadman pages on ("same feed as other
 # homelab outages", operator decision) — the brain is now a keystone.
 # FQDN-first: the Traefik-fronted ntfy service name; DHCP/DNS own the address.
 hermes_agent_brain_watchdog_ntfy_topic: "keystone"
 hermes_agent_brain_watchdog_ntfy_url: >-
   https://ntfy.{{ tofu_data.domain }}/{{ hermes_agent_brain_watchdog_ntfy_topic }}
+
+# --- Brain runtime source: OpenBao, no converge needed to re-point ----------
+# tofu/Ansible seed the STARTING brain (ai_default_model, config.yaml.j2) but
+# do not OWN it: this timer polls the ai-public OpenBao domain's non-secret
+# secret/ai/public/brain (field active_model — see roles/openbao_secrets) and,
+# only when the value both CHANGED and validates live against the router's
+# own /v1/model/info (a tuned entry with a real max_input_tokens — never the
+# "*" wildcard passthrough; the same compress-death-trap guard as
+# roles/llm_router/tasks/assert.yml, but checked against the RUNNING router,
+# not a converge-time snapshot), rewrites config.yaml's model.default and
+# restarts hermes-gateway. Runs as ROOT on its own timer/env-file, deliberately
+# separate from the hermes user's own gateway process and .env — the OpenBao
+# AppRole credential below must never enter the agent's own environment,
+# where an injected prompt could someday try to read it (same blast-radius
+# reasoning as the LXC / non-root-user split at the top of this file).
+# Disabling this falls back to converge-time-only re-pointing (pre-2026-07-18
+# behavior) — a poll failure always just keeps the currently-running brain,
+# so there is no OpenBao hard-dependency either way.
+#
+# Deliberately NOT extended to hermes_agent_compression_model (pinned to a
+# literal on purpose — see its own comment: a brain repoint must not silently
+# drag the >=64K-context compression path with it) or to
+# hermes_agent_memory_llm_model (only rendered under the local_embedded
+# Hindsight mode, which is not the live default — see hindsight-config.json.j2
+# and hermes_agent_memory_mode; extend brain-sync to it if that mode returns).
+hermes_agent_brain_sync_enabled: true
+hermes_agent_brain_sync_script_path: /usr/local/bin/hermes-brain-sync.sh
+hermes_agent_brain_sync_env_path: /etc/hermes-brain-sync.env
+hermes_agent_brain_sync_state_dir: /etc/hermes-brain-sync
+hermes_agent_brain_sync_state_file: "{{ hermes_agent_brain_sync_state_dir }}/current-model"
+# 5 minutes: cheap enough for a KV read + one /v1/model/info probe, and "no
+# rebuild" only has to mean minutes — this polls a value an OPERATOR changes
+# deliberately, not a live-health signal (contrast the watchdog's 60s).
+hermes_agent_brain_sync_interval: "5min"
+# KV v2 data path (mount: secret) + field — see roles/openbao_secrets
+# openbao_secrets_domains (ai-public) and inventory/group_vars/all.yml
+# (ai_default_model).
+hermes_agent_brain_sync_bao_path: ai/public/brain
+hermes_agent_brain_sync_bao_field: active_model
+# ponytail: single endpoint, no client-side failover on the guest (unlike the
+# controller's openbao_secrets probe-and-pin across every openbao-tagged
+# node). Reuses whichever address the controller itself pinned this converge;
+# add the same candidate-list/probe logic here if guest-side OpenBao HA is
+# ever needed.
+hermes_agent_brain_sync_bao_addr: >-
+  {{ hostvars['localhost'].openbao_secrets_active_addr
+     | default(lookup('env', 'BAO_ADDR'), true) }}
+# The ai-public domain's OWN AppRole (read-only on ai/public/*) — deliberately
+# NOT local-llm's broader credential (see roles/openbao_secrets/README.md: a
+# guest holding a live, reusable local-llm credential could pull every other
+# ai/* secret, not just the ones already baked into its own .env). Empty
+# until the companion AppRole/policy exists in ansible-proxmox-apps, at which
+# point the script skips cleanly every cycle — same "unconfigured domain"
+# skip as the controller-side fetch.
+hermes_agent_brain_sync_role_id: "{{ lookup('env', 'AI_PUBLIC_VAULT_ROLE_ID') | default('', true) }}"
+hermes_agent_brain_sync_secret_id: "{{ lookup('env', 'AI_PUBLIC_VAULT_SECRET_ID') | default('', true) }}"

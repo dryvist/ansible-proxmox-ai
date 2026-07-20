@@ -25,6 +25,26 @@
 # Build context 1: the seed graph (langgraph-api image)
 # =============================================================================
 
+- name: Build the pinned prompt catalog on the controller
+  ansible.builtin.command:
+    cmd: nix build --no-link --print-out-paths "{{ langgraph_docker_prompts_flake_ref }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  run_once: true
+  register: langgraph_docker_prompts_build
+  changed_when: false
+
+- name: Load the LangGraph system prompt from the immutable catalog
+  ansible.builtin.set_fact:
+    langgraph_docker_system_prompt: >-
+      {{ lookup('ansible.builtin.file',
+         (langgraph_docker_prompts_build.stdout_lines | last)
+         ~ '/share/ai-llm-prompts/applications/'
+         ~ langgraph_docker_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+
 - name: Create LangGraph directories
   ansible.builtin.file:
     path: "{{ item }}"
@@ -44,8 +64,16 @@
     group: root
     mode: "0644"
   loop:
-    - agent.py
     - langgraph.json
+
+- name: Render the catalog-backed seed graph agent
+  ansible.builtin.template:
+    src: agent.py.j2
+    dest: "{{ langgraph_docker_graph_dir }}/agent.py"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Rebuild langgraph stack
 
 - name: Render the seed graph project files (templated pins + OTLP endpoint)
   ansible.builtin.template:

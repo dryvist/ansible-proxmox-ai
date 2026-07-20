@@ -43,6 +43,7 @@
       ansible.builtin.set_fact:
         bao_local_llm_secrets: "{{ openbao_secrets_by_domain['local-llm'] | default({}) }}"
         bao_apps_secrets: "{{ openbao_secrets_by_domain['apps'] | default({}) }}"
+        bao_ai_public_secrets: "{{ openbao_secrets_by_domain['ai-public'] | default({}) }}"
       vars:
         openbao_secrets_by_domain: "{{ hostvars['localhost'].openbao_secrets_by_domain | default({}) }}"
       no_log: true
@@ -67,6 +68,27 @@
     qdrant_docker_grpc_port: "{{ _vdb_ports.qdrant_grpc }}"
   roles:
     - role: qdrant_docker
+
+# =============================================================================
+# Phase 1b: Hindsight agent-memory service
+# Two stateless API replicas (Docker in LXC) behind the Traefik pool at
+# hindsight.<domain>; state lives in the ai-VLAN Postgres cluster. serial: 1
+# keeps the converge rolling so the pool always has a healthy member. The role
+# reads its own ports from tofu_data.constants.memory_ports and uses no host
+# facts, so gather_facts stays off like qdrant.
+# =============================================================================
+
+- name: Configure Hindsight agent-memory service
+  hosts: hindsight_group
+  become: true
+  gather_facts: false
+  serial: 1
+  tags:
+    - hindsight_docker
+    - memory
+    - ai
+  roles:
+    - role: hindsight_docker
 
 # =============================================================================
 # Phase 2: Local LLM — Ollama inference (AMD ROCm) + Open WebUI chat

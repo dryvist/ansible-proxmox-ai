@@ -19,6 +19,76 @@
 - name: Assert brain-wiring contracts before converging
   ansible.builtin.import_tasks: assert.yml
 
+- name: Build the pinned prompt catalog on the controller
+  ansible.builtin.command:
+    cmd: nix build --no-link --print-out-paths "{{ hermes_agent_prompts_flake_ref }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  run_once: true
+  register: hermes_agent_prompts_build
+  changed_when: false
+
+- name: Resolve the prompt catalog package path
+  ansible.builtin.set_fact:
+    hermes_agent_prompts_path: >-
+      {{ hermes_agent_prompts_build.stdout_lines | last
+         }}/share/ai-llm-prompts/auto-ai-agent
+
+- name: Load active Hermes prompts from the immutable catalog
+  ansible.builtin.set_fact:
+    hermes_agent_daily_status_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_daily_status_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_nightly_wiki_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_nightly_wiki_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_splunk_triage_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_splunk_triage_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_splunk_security_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_splunk_security_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_splunk_parsing_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_splunk_parsing_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_splunk_deepdive_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_splunk_deepdive_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_splunk_digest_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_splunk_digest_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_github_monitor_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_github_monitor_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_webhook_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_webhook_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+
+- name: Assert every curriculum prompt resolves from the catalog
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - item.id in hermes_agent_curriculum_prompt_files
+      - >-
+        (hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_curriculum_prompt_files[item.id]) is file
+    fail_msg: >-
+      Curriculum job '{{ item.id }}' has no prompt in the pinned catalog package.
+  loop: "{{ hermes_agent_curriculum.jobs }}"
+  loop_control:
+    label: "{{ item.id }}"
+
 - name: Install role prerequisites (installer + clone)
   ansible.builtin.apt:
     name:
@@ -26,6 +96,7 @@
       - ca-certificates
       - git
       - sudo
+      - jq # hermes-brain-sync.sh JSON parsing (OpenBao KV, router /v1/model/info)
     state: present
     update_cache: true
     cache_valid_time: 3600
@@ -150,6 +221,14 @@
 - name: Ensure HERMES_HOME exists
   ansible.builtin.file:
     path: "{{ hermes_agent_hermes_home }}"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+
+- name: Ensure managed cron state directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_agent_managed_cron_state_dir }}"
     state: directory
     owner: "{{ hermes_agent_user }}"
     group: "{{ hermes_agent_user }}"
@@ -302,40 +381,58 @@
        | map(attribute='name') | list }}
   changed_when: true
 
-# Hermes ships its own cron scheduler. Seed the daily Slack status report here so
-# the next gateway run picks it up without any manual post-install step.
-- name: Check whether the daily Slack status cron job already exists
-  ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
-  environment:
-    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
-  become: true
-  become_user: "{{ hermes_agent_user }}"
-  register: hermes_agent_daily_status_cron_list
-  changed_when: false
-  failed_when: false
-  when:
-    - hermes_agent_slack_bot_token | length > 0
-    - hermes_agent_slack_app_token | length > 0
-    - hermes_agent_slack_home_channel | length > 0
+# Hermes ships its own cron scheduler. Reconcile the daily job by name so a
+# catalog or schedule change updates the persisted job instead of being ignored.
+# Delivery routes to the firehose channel (3-tier routing, #51/#52).
+- name: Reconcile the daily Slack status cron job
+  ansible.builtin.include_tasks: reconcile_cron_job.yml
+  vars:
+    item:
+      name: "{{ hermes_agent_daily_status_cron_name }}"
+      schedule: "{{ hermes_agent_daily_status_cron_schedule }}"
+      prompt: "{{ hermes_agent_daily_status_cron_prompt }}"
+      deliver: "{{ hermes_agent_firehose_deliver }}"
+      skills: []
+      enabled: >-
+        {{ hermes_agent_slack_bot_token | length > 0
+           and hermes_agent_slack_app_token | length > 0
+           and hermes_agent_slack_home_channel | length > 0 }}
 
-- name: Seed the daily Slack status cron job
-  ansible.builtin.command:
-    cmd: >-
-      {{ hermes_agent_bin }} cron create "{{ hermes_agent_daily_status_cron_schedule }}"
-      "{{ hermes_agent_daily_status_cron_prompt }}"
-      --name "{{ hermes_agent_daily_status_cron_name }}"
-      --deliver slack
-  environment:
-    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
-  become: true
-  become_user: "{{ hermes_agent_user }}"
-  register: hermes_agent_daily_status_cron_create
-  changed_when: true
-  when:
-    - hermes_agent_slack_bot_token | length > 0
-    - hermes_agent_slack_app_token | length > 0
-    - hermes_agent_slack_home_channel | length > 0
-    - hermes_agent_daily_status_cron_name not in (hermes_agent_daily_status_cron_list.stdout | default(''))
+# 3-tier routing companions (see defaults): the once-daily curated summary is
+# what the home channel is for now, and the Zammad review works the incident
+# lifecycle proactively. Both reconcile by name via the same include as the
+# other managed jobs. Their prompt bodies stay role-local (inline vars): the
+# pinned ai-llm-prompts catalog predates #51 and has no file for either yet
+# (tracked as a catalog gap — a follow-up PR seeds the bodies upstream).
+- name: Reconcile the daily operator summary cron job
+  ansible.builtin.include_tasks: reconcile_cron_job.yml
+  vars:
+    item:
+      name: "{{ hermes_agent_summary_cron_name }}"
+      schedule: "{{ hermes_agent_summary_cron_schedule }}"
+      prompt: "{{ hermes_agent_summary_cron_prompt }}"
+      deliver: "{{ hermes_agent_summary_cron_deliver }}"
+      skills: []
+      enabled: >-
+        {{ hermes_agent_slack_bot_token | length > 0
+           and hermes_agent_slack_app_token | length > 0
+           and hermes_agent_slack_home_channel | length > 0 }}
+
+- name: Reconcile the Zammad review cron job
+  ansible.builtin.include_tasks: reconcile_cron_job.yml
+  vars:
+    item:
+      name: "{{ hermes_agent_zammad_review_cron_name }}"
+      schedule: "{{ hermes_agent_zammad_review_cron_schedule }}"
+      prompt: "{{ hermes_agent_zammad_review_cron_prompt }}"
+      deliver: "{{ hermes_agent_zammad_review_cron_deliver }}"
+      skills: [dryvist/zammad-incidents]
+      enabled: >-
+        {{ hermes_agent_zammad_url | length > 0
+           and hermes_agent_zammad_api_token | length > 0
+           and hermes_agent_slack_bot_token | length > 0
+           and hermes_agent_slack_app_token | length > 0
+           and hermes_agent_slack_home_channel | length > 0 }}
 
 - name: Ensure the wiki directory exists
   ansible.builtin.file:
@@ -356,32 +453,16 @@
     mode: preserve
   when: hermes_agent_wiki_enabled | bool
 
-- name: Check whether the nightly wiki cron job already exists
-  ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
-  environment:
-    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
-  become: true
-  become_user: "{{ hermes_agent_user }}"
-  register: hermes_agent_wiki_cron_list
-  changed_when: false
-  failed_when: false
-  when: hermes_agent_wiki_enabled | bool
-
-- name: Seed the nightly wiki cron job
-  ansible.builtin.command:
-    cmd: >-
-      {{ hermes_agent_bin }} cron create "{{ hermes_agent_nightly_wiki_cron_schedule }}"
-      "{{ hermes_agent_nightly_wiki_cron_prompt }}"
-      --name "{{ hermes_agent_nightly_wiki_cron_name }}"
-  environment:
-    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
-  become: true
-  become_user: "{{ hermes_agent_user }}"
-  register: hermes_agent_wiki_cron_create
-  changed_when: true
-  when:
-    - hermes_agent_wiki_enabled | bool
-    - hermes_agent_nightly_wiki_cron_name not in (hermes_agent_wiki_cron_list.stdout | default(''))
+- name: Reconcile the nightly wiki cron job
+  ansible.builtin.include_tasks: reconcile_cron_job.yml
+  vars:
+    item:
+      name: "{{ hermes_agent_nightly_wiki_cron_name }}"
+      schedule: "{{ hermes_agent_nightly_wiki_cron_schedule }}"
+      prompt: "{{ hermes_agent_nightly_wiki_cron_prompt }}"
+      deliver: local
+      skills: []
+      enabled: "{{ hermes_agent_wiki_enabled | bool }}"
 
 - name: Deploy the GitHub App private key
   ansible.builtin.copy:
@@ -445,99 +526,51 @@
     mode: "0640"
     directory_mode: "0750"
 
+- name: Ensure the catalog-backed curriculum jobs directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_agent_hermes_home }}/curriculum/jobs"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+
+- name: Deploy curriculum prompt bodies from the immutable catalog
+  ansible.builtin.copy:
+    content: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_curriculum_prompt_files[item.id], rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') }}
+    dest: "{{ hermes_agent_hermes_home }}/curriculum/{{ item.prompt_file }}"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+  loop: "{{ hermes_agent_curriculum.jobs }}"
+  loop_control:
+    label: "{{ item.id }}"
+
 # --- Splunk monitor: self-directed 24/7 SIEM analyst cron fleet --------------
 # The dryvist/splunk-monitor skill (hard query-safety rails + investigative
 # method) was materialized with the bundle copy above, so `cron create
 # --skill dryvist/splunk-monitor` resolves.
-# Seed the monitoring cron fleet idempotently (create-if-absent), gated on the
+# Reconcile the monitoring cron fleet by name, gated on the
 # agent being able to BOTH query Splunk (MCP URL set) AND deliver to Slack
 # (tokens + home channel set). Each job runs in a fresh isolated agent session.
-- name: Check which Splunk monitor cron jobs already exist
-  ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
-  environment:
-    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
-  become: true
-  become_user: "{{ hermes_agent_user }}"
-  register: hermes_agent_splunk_cron_list
-  changed_when: false
-  failed_when: false
-  when:
-    - hermes_agent_splunk_monitor_enabled | bool
-    - hermes_agent_splunk_mcp_url | length > 0
-    - hermes_agent_slack_bot_token | length > 0
-    - hermes_agent_slack_app_token | length > 0
-    - hermes_agent_slack_home_channel | length > 0
-
-- name: Seed the Splunk monitor cron jobs
-  ansible.builtin.command:
-    cmd: >-
-      {{ hermes_agent_bin }} cron create "{{ item.schedule }}"
-      "{{ item.prompt }}"
-      --name "{{ item.name }}"
-      --skill dryvist/splunk-monitor
-      --deliver "{{ item.deliver }}"
-  environment:
-    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
-  become: true
-  become_user: "{{ hermes_agent_user }}"
+- name: Reconcile the Splunk monitor cron jobs
+  ansible.builtin.include_tasks: reconcile_cron_job.yml
   loop: "{{ hermes_agent_splunk_cron_jobs }}"
   loop_control:
     label: "{{ item.name }}"
-  register: hermes_agent_splunk_cron_create
-  changed_when: true
-  when:
-    - hermes_agent_splunk_monitor_enabled | bool
-    - hermes_agent_splunk_mcp_url | length > 0
-    - hermes_agent_slack_bot_token | length > 0
-    - hermes_agent_slack_app_token | length > 0
-    - hermes_agent_slack_home_channel | length > 0
-    - item.name not in (hermes_agent_splunk_cron_list.stdout | default(''))
 
 # --- GitHub monitor: poll-based read-only org-triage cron --------------------
 # The dryvist/github-issues skill is already materialized unconditionally above,
 # so no per-job skill step is needed here. Seed idempotently (create-if-absent),
 # gated on the agent being able to BOTH query GitHub (the issues PAT is set) AND
 # deliver to Slack (tokens + home channel) — same shape as the Splunk fleet.
-- name: Check which GitHub monitor cron jobs already exist
-  ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
-  environment:
-    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
-  become: true
-  become_user: "{{ hermes_agent_user }}"
-  register: hermes_agent_github_cron_list
-  changed_when: false
-  failed_when: false
-  when:
-    - hermes_agent_github_monitor_enabled | bool
-    - hermes_agent_github_issues_pat | length > 0
-    - hermes_agent_slack_bot_token | length > 0
-    - hermes_agent_slack_app_token | length > 0
-    - hermes_agent_slack_home_channel | length > 0
-
-- name: Seed the GitHub monitor cron jobs
-  ansible.builtin.command:
-    cmd: >-
-      {{ hermes_agent_bin }} cron create "{{ item.schedule }}"
-      "{{ item.prompt }}"
-      --name "{{ item.name }}"
-      --skill dryvist/github-issues
-      --deliver "{{ item.deliver }}"
-  environment:
-    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
-  become: true
-  become_user: "{{ hermes_agent_user }}"
+- name: Reconcile the GitHub monitor cron jobs
+  ansible.builtin.include_tasks: reconcile_cron_job.yml
   loop: "{{ hermes_agent_github_cron_jobs }}"
   loop_control:
     label: "{{ item.name }}"
-  register: hermes_agent_github_cron_create
-  changed_when: true
-  when:
-    - hermes_agent_github_monitor_enabled | bool
-    - hermes_agent_github_issues_pat | length > 0
-    - hermes_agent_slack_bot_token | length > 0
-    - hermes_agent_slack_app_token | length > 0
-    - hermes_agent_slack_home_channel | length > 0
-    - item.name not in (hermes_agent_github_cron_list.stdout | default(''))
 
 - name: Deploy the hermes-gateway systemd unit
   ansible.builtin.template:
@@ -556,7 +589,7 @@
     daemon_reload: true
 
 # --- Brain-health watchdog ---------------------------------------------------
-# A single-deployment brain (ai-default) with no fallback + upstream that ALWAYS
+# A single-deployment brain (ai_default_model) with no fallback + upstream that ALWAYS
 # delivers cron failures means a brain outage DMs the operator twice an hour per
 # seeded job while nothing pages that the brain is down. This timer probes the
 # brain end-to-end and, on a debounced transition, pauses/resumes the seeded
@@ -577,6 +610,25 @@
     - hermes_agent_slack_bot_token | length > 0
     - hermes_agent_slack_app_token | length > 0
 
+# Who watches the watchdog (stopgap -- see README.md "Watchdog
+# self-monitoring"): fired by hermes-brain-watchdog.service's OnFailure= only
+# when a probe cycle crashes. Runs as root, independent of the hermes
+# user/.env. dest: is a literal, not a role variable, so it never touches
+# defaults/main.yml -- keep it in sync with the ExecStart= path in
+# templates/hermes-brain-watchdog-alert.service.j2 if either one moves.
+- name: Deploy the Hermes brain-health watchdog self-check alert script
+  ansible.builtin.template:
+    src: hermes-brain-watchdog-alert.sh.j2
+    dest: /usr/local/bin/hermes-brain-watchdog-alert.sh
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart hermes-brain-watchdog timer
+  when:
+    - hermes_agent_brain_watchdog_enabled | bool
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+
 - name: Deploy the Hermes brain-health watchdog systemd units
   ansible.builtin.template:
     src: "{{ item }}.j2"
@@ -587,6 +639,7 @@
   loop:
     - hermes-brain-watchdog.service
     - hermes-brain-watchdog.timer
+    - hermes-brain-watchdog-alert.service
   notify: Restart hermes-brain-watchdog timer
   when:
     - hermes_agent_brain_watchdog_enabled | bool
@@ -603,6 +656,72 @@
     - hermes_agent_brain_watchdog_enabled | bool
     - hermes_agent_slack_bot_token | length > 0
     - hermes_agent_slack_app_token | length > 0
+
+# --- Brain runtime source: OpenBao (no rebuild to re-point) ------------------
+# See defaults/main.yml for the full design note. State dir is root-owned;
+# the seed file is re-templated every converge to whatever ai_default_model
+# resolves to right now (itself bao-first — see inventory/group_vars/all.yml)
+# so a converge and a live OpenBao change never disagree. brain-sync only
+# ever moves the file FURTHER from here via a live-validated change; it never
+# reverts one, since a bao-reachable converge resolves the SAME live value.
+- name: Ensure the brain-sync state directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_agent_brain_sync_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: hermes_agent_brain_sync_enabled | bool
+
+- name: Seed the brain-sync state file with the converge-time default
+  ansible.builtin.copy:
+    content: "{{ hermes_agent_model }}\n"
+    dest: "{{ hermes_agent_brain_sync_state_file }}"
+    owner: root
+    group: root
+    mode: "0644" # world-readable: the hermes-owned brain-watchdog reads this too
+  when: hermes_agent_brain_sync_enabled | bool
+
+- name: Deploy the brain-sync OpenBao credential file (root-only, separate from .env)
+  ansible.builtin.template:
+    src: hermes-brain-sync.env.j2
+    dest: "{{ hermes_agent_brain_sync_env_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: hermes_agent_brain_sync_enabled | bool
+
+- name: Deploy the Hermes brain-sync script
+  ansible.builtin.template:
+    src: hermes-brain-sync.sh.j2
+    dest: "{{ hermes_agent_brain_sync_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart hermes-brain-sync timer
+  when: hermes_agent_brain_sync_enabled | bool
+
+- name: Deploy the Hermes brain-sync systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - hermes-brain-sync.service
+    - hermes-brain-sync.timer
+  notify: Restart hermes-brain-sync timer
+  when: hermes_agent_brain_sync_enabled | bool
+
+- name: Enable and start the Hermes brain-sync timer
+  ansible.builtin.systemd:
+    name: hermes-brain-sync.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: hermes_agent_brain_sync_enabled | bool
 
 - name: Flush handlers so config/unit changes apply before verification
   ansible.builtin.meta: flush_handlers

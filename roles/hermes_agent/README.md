@@ -35,9 +35,10 @@ VLAN.
 
 ## Installation
 
-This role ships in the `ansible-proxmox-apps` repository — no separate
-installation. The role itself fetches and sha256-verifies the pinned Hermes
-installer on the target, so the LXC only needs base connectivity and apt.
+This role ships as part of this repository (`ansible-proxmox-ai`) — no
+separate installation. The role itself fetches and sha256-verifies the pinned
+Hermes installer on the target, so the LXC only needs base connectivity and
+apt.
 
 ## Usage
 
@@ -197,9 +198,33 @@ the `[SILENT]` marker suppresses delivery entirely, so a normal sweep costs zero
 notifications. Findings are written to memory (baselines + open issues, for
 dedup), and durable knowledge is captured as `llm-wiki` pages (RAG).
 
-**Routing:** anomaly alerts DM the operator (`slack:<member-id>`); the routine
-digest posts to the Slack home channel. The quiet deep-dive research run saves
-locally only (`--deliver local`).
+**Routing (3-tier, 2026-07-18):** Slack output is split by audience, not by
+job. The **firehose channel** (`SLACK_FIREHOSE_CHANNEL` →
+`hermes_agent_firehose_deliver`) receives every verbose routine report —
+`splunk-digest`, `github-triage`, `homelab-ai-fabric-status` (now 24/7), and
+the `zammad-review` working report — posted every run, in full. The **home
+channel** is the curated operator surface: the once-daily `daily-summary`
+rollup (delta-only, no tables, ≤15 lines) and nothing routine. **DMs stay
+urgent-only**: anomaly alerts (`slack:<member-id>`, silent-unless-anomaly) and
+newly appeared Zammad incidents. The quiet deep-dive research run still saves
+locally only (`--deliver local`). With no firehose channel configured, firehose
+jobs fall back to the home channel (the original single-channel behavior).
+
+**Zammad review (`zammad-review`, every 2h):** proactively reads open
+incidents across ALL queues, proves finished ones complete (resolving them
+with evidence — not recommending), enriches open ones with genuinely new
+findings, and DMs the operator about incidents that appeared since its last
+run. Gated on the Zammad URL + token alongside the Slack gates.
+
+**Delta discipline (canonical surface, not double-reported).** The digest is
+the canonical surface for ongoing/known findings; `splunk-triage`'s DM recalls
+the digest's last-posted state from memory before alerting and stays silent
+when its top finding is already covered there — the DM is for genuinely NEW
+or ESCALATING findings only. The digest itself fingerprints its own findings
+against its last post: unchanged → a one-line "still open" update; changed, or
+once per day (the anchor hour), → the full digest. `github-triage` applies the
+same fingerprint-and-collapse pattern to its top-5 list. All three reuse the
+existing memory tool for this — no new state infrastructure.
 
 **Fresh posts, not one thread.** Each cron run is an isolated session, so its Slack
 output is delivered **flat/top-level** (a new message each time) rather than threaded
@@ -214,7 +239,7 @@ rendered only when Slack is configured.
 | `splunk-security` | `9,39 * * * *` | DM, silent-unless-anomaly | security lens |
 | `splunk-parsing` | `24 * * * *` | DM, silent-unless-anomaly | data-quality / parsing lens |
 | `splunk-deepdive` | `44 */6 * * *` | local (quiet) | characterize one index → wiki + memory |
-| `splunk-digest` | `50 * * * *` | home channel (always) | hourly "what I'm seeing + current normal" heartbeat |
+| `splunk-digest` | `50 * * * *` | firehose channel (always) | hourly "what I'm seeing + current normal" heartbeat |
 
 Cron seeding is idempotent (create-if-absent) and gated on Hermes being able to
 **both** query Splunk (`hermes_agent_splunk_mcp_url` set) **and** deliver to Slack
@@ -262,15 +287,15 @@ are upstream feature gaps tracked as a build-out issue, not role config.
 
 ## Curriculum (graded five-job eval, versioned)
 
-`files/curriculum/` is the versioned home of the graded curriculum — the
-repeatable job set that measures whether the agent is actually useful and
-feeds the escalation rubric with datapoints. Deployed to
-`$HERMES_HOME/curriculum/` on every converge.
+`files/curriculum/` owns the manifest, grading, and submission workflow for
+the repeatable job set that measures whether the agent is actually useful.
+Prompt bodies come from the pinned `ai-llm-prompts` catalog. The complete
+curriculum is deployed to `$HERMES_HOME/curriculum/` on every converge.
 
 | Artifact | Role |
 | --- | --- |
 | `curriculum.yml` | Canonical manifest: order, budgets, expected skills, and each job's **machine-checkable `success_checks`** |
-| `jobs/*.md` | The five prompts, submitted verbatim as `POST /v1/runs` input |
+| `jobs/*.md` | Five catalog-backed prompts, materialized during converge and submitted verbatim as `POST /v1/runs` input |
 | `grading-sheet.md` | Four 0-3 dimensions per job + verified-claim spot checks + the cross-job omissions check |
 | `escalation-rubric-schema.md` | The feature schema (F1-F8) the graded runs populate to fit deep-vs-broad tier routing |
 | `submission-runbook.md` | Turnkey submission: preflight gates, key fetch, staggered submits, collection, grading |
@@ -284,8 +309,8 @@ capped `[hermes-improve]` issues). `success_checks` are evaluated from the
 run object, event stream, and GitHub — never the job's own summary.
 
 Layer-1 asserts guarantee the manifest is always executable: unique job ids,
-every `prompt_file` present in the role, and a non-empty `success_checks`
-list per job. Job ids follow clustered/normal naming (the original
+every `prompt_file` mapped to an immutable catalog artifact, and a non-empty
+`success_checks` list per job. Job ids follow clustered/normal naming (the original
 `night-orient` draft id shipped here as `orient`).
 
 ## Runner-enforced tool policy (per job class)
@@ -311,8 +336,9 @@ upstream default (operator-driven, allowed-users gate) minus the deny floor.
 
 ## Brain-health watchdog (no cron-failure spam)
 
-The cron fleet above talks to a **single-deployment brain** (`ai-default`, served
-by one Mac Studio via the `llm_router` proxy) with **no viable fallback**. When
+The cron fleet above talks to a **single-deployment brain** (the real model id in
+`ai_default_model`, served by one Mac Studio via the `llm_router` proxy) with
+**no viable fallback**. When
 that brain is unreachable, two upstream facts combine badly: each cron run is a
 **fresh, stateless session**, and upstream *always* delivers a failure —
 *"Failed jobs always deliver regardless of the `[SILENT]` marker; only successful
@@ -324,7 +350,7 @@ the LLM fabric.
 This watchdog closes both gaps with a small `systemd` timer
 (`hermes-brain-watchdog.timer`, every 60s, run as the `hermes` user):
 
-1. **Probe** `ai-default` end-to-end through the same router URL the crons use — a
+1. **Probe** the default brain end-to-end through the same router URL the crons use — a
    1-token completion, so it catches a connection error *and* a reachable-but-
    wedged brain. It hits the already-active model (no cold-model spawn) and keeps
    it warm, matching the intended 24/7 posture.
@@ -338,10 +364,30 @@ This watchdog closes both gaps with a small `systemd` timer
    spam was) and an **urgent ntfy** push (the `keystone` feed other homelab
    outages page on). Paused jobs don't fire, so the outage stops producing spam
    instead of amplifying it.
+4. **Flap coalescing** — debounce alone doesn't stop a genuinely *unstable*
+   backend from alerting on every edge (confirmed live: a 31h-unstable backend
+   produced dozens of up/down DM pairs). Completing the first down/up cycle
+   opens a `flap_cooldown_seconds` cooldown window; any further edge inside it
+   is coalesced (counted, window extended) instead of alerting. Once the
+   window finally elapses with the brain stable, one summary reports the whole
+   episode ("unstable since X, N flaps, stabilized at Y"); a clean single
+   cycle with nothing coalesced clears silently since its two normal alerts
+   already told the story.
 
 Pausing loses no coverage a run would otherwise achieve — the brain is down either
 way — it just makes the gap visible **once** instead of drowning it in 500s.
 Gated on the same Slack tokens that seed the fleet (no fleet → nothing to guard).
+
+Cron-failure delivery text itself (raw exception strings like a mid-stream
+fallback error or "no available server") comes from Hermes Agent's own
+always-deliver cron failure path — upstream, not rendered by this role — and
+offers no config hook to translate or filter it (verified against the pinned
+version's docs: error tracebacks are explicitly never touched by any
+user-facing translation setting). This watchdog's pause/resume already
+suppresses that spam for a full brain outage; a single transient error on an
+otherwise-healthy brain can still deliver its raw text once. Tracked as an
+upstream ask, not fixable from this role without inventing a delivery-layer
+proxy this repo doesn't otherwise need.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -350,7 +396,99 @@ Gated on the same Slack tokens that seed the fleet (no fleet → nothing to guar
 | `hermes_agent_brain_watchdog_probe_timeout` | `15` | Per-probe curl deadline (seconds) |
 | `hermes_agent_brain_watchdog_down_after` | `3` | Consecutive fails → pause + alert |
 | `hermes_agent_brain_watchdog_up_after` | `2` | Consecutive oks → resume + alert |
+| `hermes_agent_brain_watchdog_flap_cooldown_seconds` | `3600` | Post-cycle window that coalesces further edges into one summary |
 | `hermes_agent_brain_watchdog_ntfy_topic` | `keystone` | ntfy topic for the urgent page |
+
+### Watchdog self-monitoring ("who watches the watchdog")
+
+The watchdog above only alerts when its *probe* detects the brain down — it
+says nothing if the watchdog **script itself crashes** or its timer gets
+disabled/masked. This homelab's real deadman/heartbeat mechanism,
+`service_deadman`, cannot be wired in from this repo: that role lives entirely
+in the sibling `ansible-proxmox-apps` repo, is a closed dict of exactly 4
+keystone groups (DNS/Traefik/HAProxy/OpenBao), and its `healthchecks_docker`
+provisioning role is apps-owned too. Extending it needs a cross-repo PR and a
+design call (new group name, healthchecks check + secret provisioning) — see
+the tracked `ansible-proxmox-apps` issue *"service_deadman: add
+hermes-brain-watchdog as a monitored check"*.
+
+Until that lands, this repo ships a **same-repo stopgap**: a systemd
+`OnFailure=` on `hermes-brain-watchdog.service` triggers
+`hermes-brain-watchdog-alert.service`, which fires an urgent ntfy push. It
+only triggers on a **crashed probe cycle** (an unhandled script error) —
+normal brain up/down transitions always `exit 0` and are alerted separately by
+the watchdog script itself, so this never doubles up with the alert above.
+The alert script runs as root with no dependency on the hermes user or
+`.env`, so a broken watchdog environment can't also silence it.
+
+**Partial coverage — not the real fix.** This catches the watchdog *process*
+crashing. It does **not** catch the timer being disabled/masked, or systemd
+itself wedging — those need true deadman semantics (a healthchecks-style
+missed-ping page), which only the apps-owned `healthchecks_docker` role can
+provision. Repeat alerts are rate-limited by systemd's own `StartLimit*` on
+the alert unit (not the watchdog's probe cadence: `StartLimitIntervalSec=1h`,
+`StartLimitBurst=1`), so a persistently crashing watchdog pages once per hour
+instead of every probe cycle.
+
+The alert script path (`/usr/local/bin/hermes-brain-watchdog-alert.sh`) and
+the `StartLimit*` thresholds are literals in
+`templates/hermes-brain-watchdog-alert.service.j2` and `tasks/main.yml`, not
+role variables — they are operational constants tied 1:1 to this alert unit
+that nothing currently overrides per-host.
+
+## Brain runtime source (OpenBao — no rebuild to re-point)
+
+tofu/Ansible seed the **starting** brain (`ai_default_model`, baked into
+`config.yaml` at converge) but do not **own** it. A second, independent
+`systemd` timer — `hermes-brain-sync.timer`, every
+`hermes_agent_brain_sync_interval` (default 5 min), run as **root**, separate
+from the `hermes` user's own gateway process and `.env` — polls the
+`ai-public` OpenBao domain's non-secret `secret/ai/public/brain` (field
+`active_model`; see `roles/openbao_secrets`) and, only when the value both
+**changed** and **validates live** against the router's own
+`GET /v1/model/info` (a tuned entry with a real `max_input_tokens` — never
+the `"*"` wildcard passthrough; the live counterpart to the converge-time
+compress-death-trap guard in `roles/llm_router/tasks/assert.yml`), rewrites
+`config.yaml`'s `model.default` and restarts `hermes-gateway`.
+
+Re-pointing the fabric brain day-to-day is now an OpenBao write, not a
+converge:
+
+```sh
+bao kv patch secret/ai/public/brain active_model=<new-model-id>
+```
+
+The change reaches Hermes within one poll interval, with no tofu/ansible run.
+A poll failure (OpenBao unreachable, router unreachable, candidate not a
+tuned router entry) always just **keeps the currently-running brain** — it
+never blanks it — and `ai_default_model` (itself bao-first since 2026-07-18,
+same `ai-public` domain) is both the converge-time seed and the fallback a
+sync cycle falls back to. The brain-health watchdog above reads the same
+live state file (`hermes_agent_brain_sync_state_file`), so it always probes
+whichever model is actually configured right now, not a stale converge-time
+value.
+
+The `ai-public` domain deliberately uses its **own**, narrowly read-only
+AppRole — never `local-llm`'s broader `ai/*` credential — because its
+role_id/secret_id are the ones copied onto this guest (a dedicated
+`0600` env file, kept out of Hermes' own `.env` so the credential never
+enters the agent's own environment). See `roles/openbao_secrets/README.md`
+for the rationale and the companion `ansible-proxmox-apps` AppRole/policy
+this domain still needs before it resolves live.
+
+**Deliberately NOT extended** to `hermes_agent_compression_model` (pinned to
+a literal so a brain repoint can never silently drag the ≥64K-context
+compression path with it) or to `hermes_agent_memory_llm_model` (only
+rendered under the `local_embedded` Hindsight mode, not the live
+`local_external` default).
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `hermes_agent_brain_sync_enabled` | `true` | Deploy + start the brain-sync timer |
+| `hermes_agent_brain_sync_interval` | `5min` | Poll cadence (`OnUnitActiveSec`) |
+| `hermes_agent_brain_sync_bao_path` | `ai/public/brain` | KV v2 data path (mount `secret`) |
+| `hermes_agent_brain_sync_bao_field` | `active_model` | Field holding the candidate model id |
+| `hermes_agent_brain_sync_state_file` | `/etc/hermes-brain-sync/current-model` | Live pointer, world-readable, shared with the watchdog |
 
 ## Live docs (Context7)
 
@@ -390,12 +528,12 @@ options (fresh `codex login`, or copying an already-authenticated
 call to it errors; the daemon itself starts and runs normally regardless.
 
 OpenRouter is reachable with **no Hermes-side wiring**: the `llm_router` role
-registers OpenRouter models as explicit router aliases (first:
-`openrouter-free`), with one OpenBao-held key **per model** under
-`secret/ai/saas/openrouter` — Hermes just names the alias like any other
-model. The old account-wide `OPENROUTER_API_KEY` parked in `secret/ai/hermes`
-is superseded by those per-model keys and should be retired once they are
-seeded.
+registers OpenRouter models under their real upstream ids (first:
+`nvidia/nemotron-3-ultra-550b-a55b:free`), with one OpenBao-held key **per
+model** under `secret/ai/saas/openrouter` — Hermes just names the real model
+id like any other. The old account-wide `OPENROUTER_API_KEY` parked in
+`secret/ai/hermes` is superseded by those per-model keys and should be retired
+once they are seeded.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

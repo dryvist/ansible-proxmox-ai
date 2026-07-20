@@ -10,10 +10,10 @@ production and each took the fabric down:
 | Breakage | Root cause | Caught by |
 | --- | --- | --- |
 | Agent refused to start | `context_length` 60000, below Hermes' hard 64,000 floor | L1 context-floor assert; L2 gateway-down + "below the minimum" in journal |
-| Every request compressed to death | brain alias fell through the `*` wildcard → null `max_input_tokens` | L1 router-alias assert; L2 tool-call probe fails |
+| Every request compressed to death | brain model id fell through the `*` wildcard → null `max_input_tokens` | L1 brain-entry assert; L2 tool-call probe fails |
 | Generations killed mid-stream | server guard below generation time / inverted timeout chain | L1 timeout-ordering assert |
 | "invalid tool call" loop | wrong tool parser / mis-wired brain | L2 tool-call probe returns no valid `function.name` |
-| Cron output loops/repeats | `ai-default` alias ran with `repetition_penalty` off (`extra_body` misses the distinct `model_name`) | Cron-cycle watch |
+| Cron output loops/repeats | brain ran with `repetition_penalty` off (hit the `*` wildcard, not the tuned entry) | Cron-cycle watch |
 
 Every one was **machine-detectable before or immediately after converge**. The
 two guardrail layers below make that detection automatic, so an unvalidated

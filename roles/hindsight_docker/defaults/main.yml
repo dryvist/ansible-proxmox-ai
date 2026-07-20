@@ -40,7 +40,7 @@ hindsight_docker_db_password: >-
 # The LiteLLM router is THE fabric endpoint; the key is the router master key,
 # same sourcing as hermes_agent/llm_router.
 hindsight_docker_llm_base_url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1"
-hindsight_docker_llm_model: "{{ ai_default_model | default('ai-default') }}"
+hindsight_docker_llm_model: "{{ ai_default_model }}"
 hindsight_docker_llm_api_key: >-
   {{ lookup('env', 'HINDSIGHT_LLM_API_KEY')
      | default(lookup('env', 'LLM_ROUTER_MASTER_KEY'), true) }}
@@ -61,3 +61,17 @@ hindsight_docker_worker_id: "{{ inventory_hostname }}"
 
 # Local ONNX embeddings (bundled BGE model) — no external embedding dependency.
 hindsight_docker_embeddings_provider: local
+
+# POST-only stateless MCP so the two-replica pool needs no session affinity
+# (see the compose template comment). Only flip to false for a single-replica
+# deployment that wants SSE streaming.
+hindsight_docker_mcp_stateless: true
+
+# Cold-start budget for the readiness gate. A fresh guest must download the
+# local embeddings + reranker models and verify the LLM connection (which
+# blocks on a llama-swap model load) before /health answers; a warm converge
+# answers immediately, so these ceilings only bite on first deploy. Molecule
+# overrides them down — its scenario has no fabric router to wait on.
+hindsight_docker_startup_timeout: 600
+hindsight_docker_health_retries: 60
+hindsight_docker_health_delay: 10
