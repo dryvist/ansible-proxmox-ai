@@ -1,0 +1,37 @@
+---
+# Ship the hermes-* systemd unit logs to the dedicated hermes Splunk index via a
+# dedicated rsyslog ruleset (full flow in the template header). Mirrors the
+# openbao_audit rsyslog shipping plumbing; gated by hermes_agent_syslog_route_enabled.
+
+# rsyslog may not be present on this guest (the AI stack does not apply the
+# shared syslog_forwarder role), so install it defensively — the role stands
+# alone. update_cache stays false: these guests reach internal mirrors only.
+- name: Install rsyslog
+  ansible.builtin.apt:
+    name: rsyslog
+    state: present
+    update_cache: false
+
+- name: Deploy the hermes-agent rsyslog forwarding ruleset
+  ansible.builtin.template:
+    src: hermes-agent-rsyslog.conf.j2
+    dest: "{{ hermes_agent_syslog_rsyslog_config_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart rsyslog
+
+# Full-config check, not a fragment `-f %s`: the drop-in's omfwd disk queue
+# needs the global workDirectory from the base config in scope, which a
+# standalone fragment lacks. Checking the master config picks the fragment up
+# with globals applied; on failure the play aborts here so the notified restart
+# never flushes a broken config.
+- name: Validate the full rsyslog configuration
+  ansible.builtin.command: rsyslogd -N1
+  changed_when: false
+
+- name: Enable and start rsyslog
+  ansible.builtin.systemd:
+    name: rsyslog
+    state: started
+    enabled: true
