@@ -78,6 +78,23 @@ compression:
   threshold: {{ hermes_agent_context_compression_threshold }}
   summary_model: {{ hermes_agent_compression_model }}
 
+{% if hermes_agent_kanban_goal_mode | bool %}
+# Auxiliary-task model overrides. goal_judge is the per-turn verdict call in the
+# kanban goal loop (see hermes_agent_kanban_goal_mode in defaults). Pinned to the
+# light serving tier so the loop's judging never contends for the resident large
+# brain's single-stream deployment — the judge only needs a small continue/done
+# verdict, and on the happy path the worker finalizes before it is ever called.
+# base_url/api_key mirror the main model block (same router front door); the id
+# must be one the router actually serves (real ids only).
+auxiliary:
+  goal_judge:
+    provider: custom
+    model: {{ hermes_agent_kanban_goal_judge_model }}
+    base_url: '{{ hermes_agent_model_base_url }}'
+    api_key: '${HERMES_AGENT_MODEL_API_KEY}'
+    api_mode: {{ hermes_agent_model_api_mode }}
+{% endif %}
+
 # Session lifetime bound (SessionResetPolicy). PIN the upstream default
 # explicitly: "both" = daily reset at at_hour local time OR idle_minutes of
 # inactivity, whichever first. Bounded sessions are the proactive guard against
