@@ -437,10 +437,16 @@ hermes_agent_github_issues_pat: ""
 # --- Splunk MCP client (read/search access to the SIEM) ---
 # Registers the Splunk MCP Server as an HTTP MCP server in config.yaml so Hermes
 # can query the environment (run_splunk_query, get_indexes, ...) with its own
-# scoped token. Bao-first, env fallback (see group_vars). An empty URL disables
-# the server entry, so the agent starts cleanly before the Splunk creds exist.
+# scoped token. Dialed through the shared agentgateway MCP plane (one governed
+# front door per target; the gateway federates to the Splunk MCP Server), same
+# posture as the context7/qdrant routes below — the URL is the gateway route,
+# not a secret. The scoped bearer token stays bao-first (see group_vars) and is
+# the remaining credential; empty until seeded, so queries simply fail to
+# authenticate until then while the agent still starts cleanly.
 hermes_agent_splunk_mcp_enabled: true
-hermes_agent_splunk_mcp_url: ""
+hermes_agent_splunk_mcp_url: >-
+  https://mcp.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}/splunk
 hermes_agent_splunk_mcp_token: ""
 
 # Zammad ITSM client (dryvist/zammad-incidents skill — the incident-management
@@ -568,7 +574,9 @@ hermes_agent_summary_cron_prompt: >-
   Markdown tables (Slack does not render them) — short lines or key: value
   pairs. At most 15 lines. Recall memory key "daily-summary-last" to compute
   the delta and save today's fingerprint back to it. If genuinely nothing new
-  and nothing open, say exactly that in one line — never pad.
+  and nothing open, say exactly that in one line — never pad. Self-check before
+  posting: every line is a delta or an open action item — drop anything that is
+  unchanged or benign status.
 hermes_agent_summary_cron_deliver: slack
 
 # --- Zammad review: proactive incident lifecycle across ALL queues ----------
@@ -594,7 +602,9 @@ hermes_agent_zammad_review_cron_prompt: >-
   since your last run, DM the operator immediately: one line per incident —
   id, title, severity, why it matters. Then post your working report here:
   what you reviewed, advanced, resolved (with evidence), and skipped. No
-  Markdown tables. Save the updated id+state map back to
+  Markdown tables. Self-check before finishing: every article you appended
+  carries NEW information not already in the ticket, and every resolution cites
+  the evidence that proved it. Save the updated id+state map back to
   "zammad-review-last".
 hermes_agent_zammad_review_cron_deliver: "{{ hermes_agent_firehose_deliver }}"
 
@@ -635,11 +645,149 @@ hermes_agent_reviewer_card_prompt: >-
   right skill and a clear body. (3) Post a short digest to #hermes-all (channel
   {{ hermes_agent_slack_hermes_all_channel }}): what ran, what failed or is
   blocked, what you filed — deltas and action items only, no Markdown tables.
-  (4) Continue the chain: compute the NEXT slot key as review-<UTC-date>-s<N>
+  Self-check before posting: every gap in step 2 has a follow-up card, and the
+  digest names each one. (4) Continue the chain: compute the NEXT slot key as
+  review-<UTC-date>-s<N>
   (after s2, use s0 of the NEXT UTC day) and call kanban_create with that exact
   idempotency-key, the same title as this card, the SAME body as this card, and
   initial_status=blocked so it cannot run before its slot. (5) Call
   kanban_complete with a one-line summary and metadata.
+
+# --- Work-supply cards (Track C): give the agent proactive, self-directed work --
+# Five recurring Kanban workloads that widen what Hermes does for the operator
+# beyond the monitor/triage fleet: hunt the observability unknown-unknowns, study
+# the public docs for drift, scout AI news, propose one novel improvement a day,
+# and self-retiringly seed the app platforms. Same card contract as every entry
+# above (name + schedule + inline prompt_var); enqueued by the same script-only
+# `--no-agent` fleet, so each run is a fresh isolated worker session. Minutes are
+# staggered clear of the existing cron minutes (0,7,11,22,26,33,37,41,52) so no
+# two enqueuers fire in the same minute. Prompts are retrieval-first (recall a
+# memory key so a run never re-reports/re-files what it already saw), carry an
+# explicit output contract, and end with a self-check. The enqueuer appends the
+# shared "post a one-line summary to #hermes-all, then kanban_complete" footer,
+# so the prompts own the WORK + primary delivery, not the completion mechanics.
+
+# Anomaly hunt: the unknown-unknowns lens the scheduled Splunk/GitHub lenses do
+# not cover. Splunk-monitor skill carries the bounded-query safety rails;
+# github-issues lets it file confirmed findings.
+hermes_agent_anomaly_hunt_cron_name: anomaly-hunt
+hermes_agent_anomaly_hunt_cron_schedule: "13 */12 * * *"
+hermes_agent_anomaly_hunt_cron_prompt: >-
+  You are the Hermes 12-hour anomaly hunt: find the UNKNOWN-unknowns in the
+  observability fabric that the scheduled Splunk and GitHub lenses are not
+  already looking for. Retrieval first: recall memory key "anomaly-hunt-last"
+  (the signatures and sources you already flagged) so you never re-report a
+  known issue. Then hunt with BOUNDED queries ONLY (tstats/stats/head, narrow
+  time windows — the dryvist/splunk-monitor skill's hard rails apply): (1) NEW
+  error signatures absent from your baseline; (2) sources that fell SILENT or
+  stopped — a host or sourcetype that reported yesterday and not today, an
+  ingest gap; (3) volume anomalies — a source spiking or collapsing. Confirm
+  every candidate against a SECOND query before calling it real; one noisy
+  sample is not an anomaly. Output contract: for each CONFIRMED new finding,
+  file a GitHub issue via the dryvist/github-issues skill (respect its issue
+  caps — if the cap is reached, open no more and flag the overflow for a Zammad
+  incident instead), each with a one-paragraph description and the exact bounded
+  query that shows it. DM the operator only for a confirmed HIGH-severity
+  finding; otherwise stay quiet. Self-check before finishing: did every finding
+  survive a second confirming query, and is it genuinely absent from
+  "anomaly-hunt-last"? Drop any that fail. Save the updated signature/source
+  fingerprint back to "anomaly-hunt-last". If nothing new is confirmed, say so
+  in one line.
+
+# Docs study: read the public docs for drift/gaps/broken claims via the web
+# toolset, file at most 2 issues, Slack summary.
+hermes_agent_docs_study_cron_name: docs-study
+hermes_agent_docs_study_cron_schedule: "43 5 * * *"
+hermes_agent_docs_study_cron_prompt: >-
+  You are the Hermes daily docs-study pass: read the operator's public
+  documentation and find where it has drifted from reality. Retrieval first:
+  recall memory key "docs-study-last" (pages and claims you already checked and
+  filed) so you do not re-file a known gap, and rotate to a DIFFERENT area each
+  run (record which). Using the web toolset, read the public documentation site
+  and the repository docs it is built from. Look for: claims that no longer
+  match how the system behaves, broken or outdated commands and links, missing
+  setup steps, and internal contradictions. Verify a suspected drift against a
+  SECOND source (the repo, a linked reference) before filing — never file on a
+  single reading. Output contract: file at MOST 2 GitHub issues via the
+  dryvist/github-issues skill for the highest-value gaps (respect its issue
+  caps; if you cannot file, fall back to kanban_create with a stable
+  idempotency key docs-<slug>-<UTC-date>). Post a short Slack summary of what
+  you studied, what drifted, and what you filed — deltas only, no Markdown
+  tables, at most 8 lines. Self-check: is each filed gap backed by two sources
+  and absent from "docs-study-last"? Save the updated checked-areas fingerprint
+  back to "docs-study-last".
+
+# AI-news scout: surface notable AI developments to the home channel, learning
+# the operator's interests over time from channel reactions.
+hermes_agent_ai_news_cron_name: ai-news
+hermes_agent_ai_news_cron_schedule: "17 */4 * * *"
+hermes_agent_ai_news_cron_prompt: >-
+  You are the Hermes AI-news scout (every 4 hours): surface genuinely notable AI
+  developments for the operator, tuned to what they actually care about.
+  Retrieval first: read your interests note at
+  {{ hermes_agent_wiki_path }}/ai-news-interests.md (create it if absent) and
+  recall memory key "ai-news-last" (headlines you already posted) so you never
+  repeat a story. Using the web toolset, scan major AI sources for the last few
+  hours; keep only BREAKING or genuinely interesting items — new frontier
+  models, major releases, safety or policy shifts, notable research — and skip
+  rumor, marketing, and anything you have already posted. Output contract: post
+  the kept stories to your Slack home channel, one short line each (headline +
+  one clause on why it matters + link); if nothing clears the bar, post nothing
+  to the home channel. Learning loop: check your home channel for reactions and
+  replies to your PAST posts and fold what the operator engaged with (or
+  dismissed) into the interests note — that note is how you sharpen the
+  signal/noise cut over time. Self-check: is every posted story new versus
+  "ai-news-last" and above the notability bar? Save the updated
+  posted-headlines fingerprint back to "ai-news-last".
+
+# Daily innovation: propose one concrete, genuinely-new improvement per day,
+# checked against a wiki log so it never repeats a past proposal.
+hermes_agent_daily_innovation_cron_name: daily-innovation
+hermes_agent_daily_innovation_cron_schedule: "47 6 * * *"
+hermes_agent_daily_innovation_cron_prompt: >-
+  You are the Hermes daily-innovation proposer: each run, propose at least ONE
+  concrete, novel improvement to how you help the operator run the homelab.
+  Retrieval first: read your proposal log at
+  {{ hermes_agent_wiki_path }}/innovation-log.md (create it if absent) and
+  recall memory key "innovation-last" — your idea MUST be genuinely new, not a
+  restatement of a past proposal or an already-open issue or card. Ground it in
+  what you have actually observed: your recent cron findings, memory, and the
+  gaps in your own workflow (a missing check, a manual step you could automate,
+  a better signal). One well-formed proposal beats five vague ones. Output
+  contract: write the proposal as a GitHub issue via the dryvist/github-issues
+  skill (respect issue caps) OR, if you cannot file, as a Kanban card via
+  kanban_create with a stable idempotency key innovation-<slug>-<UTC-date>; the
+  proposal states the problem, the concrete change, and how you would verify it
+  helped. Append a one-line entry to the innovation log so future runs can see
+  it. Post a short Slack summary (the proposal in 2-3 lines). Self-check: is
+  this absent from the innovation log AND from open issues and cards? If every
+  new idea you formed is a duplicate, say so in one line and propose nothing
+  rather than pad. Save the updated fingerprint to "innovation-last".
+
+# App seeding: self-retiring bootstrap of the Langflow + Langfuse platforms. It
+# cannot remove its own enqueuer, so it self-gates on a wiki completion marker
+# and fast no-ops once both sub-tasks are done.
+hermes_agent_app_seeding_cron_name: app-seeding
+hermes_agent_app_seeding_cron_schedule: "53 7 * * *"
+hermes_agent_app_seeding_cron_prompt: >-
+  You are the Hermes app-seeding task (self-retiring): bootstrap the Langflow
+  and Langfuse app platforms so they are usable, then stop. FIRST, retrieval:
+  read your completion marker at
+  {{ hermes_agent_wiki_path }}/app-seeding-done.md. If it records BOTH sub-tasks
+  complete, do nothing further — post one line saying app-seeding is already
+  done and finish (you cannot remove your own enqueuer, so a fast no-op is how
+  you retire). Otherwise, do only the not-yet-done sub-tasks: (1) Langflow —
+  create ONE minimal starter flow that calls the fabric router (the
+  OpenAI-compatible endpoint at {{ hermes_agent_model_base_url }}) with a
+  trivial prompt, and confirm it runs end-to-end. (2) Langfuse — create the
+  org and project, then PROPOSE (as a GitHub issue or a Kanban card — do NOT
+  wire it live) how homelab LLM traffic should export traces into it. Verify
+  each sub-task before marking it done: the flow actually executes, the Langfuse
+  project actually exists. Output contract: record each completed sub-task in
+  the completion marker with the date and what you did; when BOTH are done,
+  write the final "complete" line so future runs no-op. Post a short Slack
+  summary of what you seeded this run. Self-check: did you verify each thing you
+  marked done, and did you avoid re-doing an already-complete sub-task?
 
 # One entry per recurring workload. Static fields only (no prompt bodies): the
 # body is named by `prompt_var` and resolved from that var at template-render
@@ -803,6 +951,68 @@ hermes_agent_kanban_cards:
       {{ hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
+  # --- Work-supply cards (Track C) ---
+  - job: "{{ hermes_agent_anomaly_hunt_cron_name }}"
+    title: "Anomaly hunt (observability unknowns)"
+    interval_hours: 12
+    schedule: "{{ hermes_agent_anomaly_hunt_cron_schedule }}"
+    prompt_var: hermes_agent_anomaly_hunt_cron_prompt
+    assignee: ""
+    max_runtime: "25m"
+    max_retries: 2
+    skills: [dryvist/splunk-monitor, dryvist/github-issues]
+    unblock: false
+    # Gate on the Splunk MCP + Slack (same as the splunk fleet): it hunts in the
+    # SIEM and delivers to Slack. Issue-filing degrades gracefully when the
+    # github-issues PAT is absent (the prompt falls back to a Zammad flag).
+    enabled: *kanban_splunk_gate
+  - job: "{{ hermes_agent_docs_study_cron_name }}"
+    title: "Docs-site study"
+    interval_hours: 24
+    schedule: "{{ hermes_agent_docs_study_cron_schedule }}"
+    prompt_var: hermes_agent_docs_study_cron_prompt
+    assignee: ""
+    max_runtime: "20m"
+    max_retries: 2
+    skills: [dryvist/github-issues]
+    unblock: false
+    enabled: &kanban_slack_gate >-
+      {{ hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  - job: "{{ hermes_agent_ai_news_cron_name }}"
+    title: "AI news scout"
+    interval_hours: 4
+    schedule: "{{ hermes_agent_ai_news_cron_schedule }}"
+    prompt_var: hermes_agent_ai_news_cron_prompt
+    assignee: ""
+    max_runtime: "15m"
+    max_retries: 2
+    skills: []
+    unblock: false
+    enabled: *kanban_slack_gate
+  - job: "{{ hermes_agent_daily_innovation_cron_name }}"
+    title: "Daily innovation proposal"
+    interval_hours: 24
+    schedule: "{{ hermes_agent_daily_innovation_cron_schedule }}"
+    prompt_var: hermes_agent_daily_innovation_cron_prompt
+    assignee: ""
+    max_runtime: "20m"
+    max_retries: 2
+    skills: [dryvist/github-issues]
+    unblock: false
+    enabled: *kanban_slack_gate
+  - job: "{{ hermes_agent_app_seeding_cron_name }}"
+    title: "App seeding (Langflow + Langfuse)"
+    interval_hours: 24
+    schedule: "{{ hermes_agent_app_seeding_cron_schedule }}"
+    prompt_var: hermes_agent_app_seeding_cron_prompt
+    assignee: ""
+    max_runtime: "30m"
+    max_retries: 1
+    skills: []
+    unblock: false
+    enabled: *kanban_slack_gate
 
 # The daily chain-break safety net (#83): one extra `--no-agent --script` cron
 # that runs the enqueuer in `all --backfill` mode — re-creates any missing
