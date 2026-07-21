@@ -1,0 +1,88 @@
+---
+# Reconcile ONE `--no-agent --script` enqueuer cron (kanban migration, #83).
+# Mirrors reconcile_cron_job.yml's create-if-absent + checksum-marker idempotency,
+# but for a script-only job: no prompt/agent/model, the positional carries the
+# script's argument (the workload selector), and a changed marker triggers a
+# remove+recreate (the CLI's `cron edit` flag set for script jobs is not relied
+# on — recreate re-pins schedule/selector/script deterministically).
+#
+# item fields: schedule, enabled, and EITHER {job} (name/selector derived) OR
+# explicit {name, selector}. script defaults to the shared enqueuer script.
+- name: "Enqueuer cron | Resolve fields for {{ item.name | default(item.job ~ '-enqueue') }}"
+  ansible.builtin.set_fact:
+    hermes_agent_enqueuer_name: "{{ item.name | default(item.job ~ '-enqueue') }}"
+    hermes_agent_enqueuer_selector: "{{ item.selector | default(item.job) }}"
+    hermes_agent_enqueuer_script: "{{ item.script | default(hermes_agent_kanban_enqueue_script_name) }}"
+  when: item.enabled | default(true) | bool
+
+- name: "Enqueuer cron | Look up {{ hermes_agent_enqueuer_name }}"
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_enqueuer_cron_list
+  changed_when: false
+  when: item.enabled | default(true) | bool
+
+- name: "Enqueuer cron | Calculate desired state for {{ hermes_agent_enqueuer_name }}"
+  ansible.builtin.set_fact:
+    hermes_agent_enqueuer_checksum: >-
+      {{ {'schedule': item.schedule, 'selector': hermes_agent_enqueuer_selector,
+          'script': hermes_agent_enqueuer_script, 'no_agent': true}
+         | to_json | hash('sha256') }}
+  when: item.enabled | default(true) | bool
+
+- name: "Enqueuer cron | Check desired-state marker for {{ hermes_agent_enqueuer_name }}"
+  ansible.builtin.copy:
+    content: "{{ hermes_agent_enqueuer_checksum }}\n"
+    dest: "{{ hermes_agent_managed_cron_state_dir }}/{{ hermes_agent_enqueuer_name }}.sha256"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+  check_mode: true
+  register: hermes_agent_enqueuer_marker_probe
+  when: item.enabled | default(true) | bool
+
+# A changed marker on an EXISTING job means schedule/selector/script drifted:
+# remove it so the create below re-pins the new definition. No drift (or a job
+# that does not exist yet) is a no-op here.
+- name: "Enqueuer cron | Remove drifted {{ hermes_agent_enqueuer_name }}"
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron remove {{ hermes_agent_enqueuer_name }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  when:
+    - item.enabled | default(true) | bool
+    - hermes_agent_enqueuer_name in (hermes_agent_enqueuer_cron_list.stdout | default(''))
+    - hermes_agent_enqueuer_marker_probe.changed | bool
+
+- name: "Enqueuer cron | Create {{ hermes_agent_enqueuer_name }}"
+  ansible.builtin.command:
+    argv: >-
+      {{ [hermes_agent_bin, 'cron', 'create', item.schedule,
+          hermes_agent_enqueuer_selector,
+          '--name', hermes_agent_enqueuer_name,
+          '--script', hermes_agent_enqueuer_script,
+          '--no-agent', '--deliver', 'local'] }}
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  when:
+    - item.enabled | default(true) | bool
+    - >-
+      hermes_agent_enqueuer_name not in (hermes_agent_enqueuer_cron_list.stdout | default(''))
+      or hermes_agent_enqueuer_marker_probe.changed | bool
+
+- name: "Enqueuer cron | Record desired state for {{ hermes_agent_enqueuer_name }}"
+  ansible.builtin.copy:
+    content: "{{ hermes_agent_enqueuer_checksum }}\n"
+    dest: "{{ hermes_agent_managed_cron_state_dir }}/{{ hermes_agent_enqueuer_name }}.sha256"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+  when: item.enabled | default(true) | bool
