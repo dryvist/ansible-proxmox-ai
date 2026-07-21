@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+#
+# Kanban recurring-task enqueuer (kanban migration, #83). Deployed to
+# {{ hermes_agent_hermes_home }}/scripts/{{ hermes_agent_kanban_enqueue_script_name }}
+# and invoked by the `--no-agent --script` cron fleet — one cron per workload
+# (passing its own job name), plus a daily safety net (passing `all --backfill`).
+#
+# It is PLUMBING, not a report: with `--no-agent` the script IS the job and its
+# stdout is delivered verbatim, so every path here keeps stdout EMPTY (all
+# `kanban` output is captured and logged via `logger`, never echoed) so the
+# cron stays silent. Work is triggered by CREATING the card; the gateway's
+# in-process Kanban dispatcher (config.yaml kanban: block) spawns a fresh worker
+# session per card — that fresh session per run is the whole point of #83.
+#
+# The per-card table is baked in at template-render time from
+# hermes_agent_kanban_cards (same pattern as the brain-watchdog's seeded-jobs
+# array). Only ENABLED cards are rendered.
+set -uo pipefail
+
+HERMES_BIN="{{ hermes_agent_bin }}"
+
+# Argument parsing tolerant of how the cron passes the positional prompt: it may
+# arrive as one arg ("all --backfill") or already split. Collapse to a string,
+# then take the first whitespace token as the selector and detect --backfill.
+ARGS="$*"
+SELECTOR="${ARGS%% *}"
+[[ -n "${SELECTOR}" ]] || SELECTOR="all"
+BACKFILL=0
+[[ "${ARGS}" == *--backfill* ]] && BACKFILL=1
+
+# Slot stamp for an interval (hours): the idempotency-key suffix. 1h -> the hour
+# itself; daily -> the date; otherwise date + slot index floor(hour/interval).
+# 10# forces base-10 so a leading-zero hour (08, 09) is never read as octal.
+slot_stamp() {
+  local n="$1" h
+  if (( n <= 1 )); then
+    date -u +%Y-%m-%dT%H
+  elif (( n >= 24 )); then
+    date -u +%Y-%m-%d
+  else
+    h=$(( 10#$(date -u +%H) ))
+    printf '%s-s%s\n' "$(date -u +%Y-%m-%d)" "$(( h / n ))"
+  fi
+}
+
+{% for card in hermes_agent_kanban_cards if card.enabled | bool %}
+{% set slug = card.job | replace('-', '_') %}
+# --- {{ card.job }} ---
+enqueue_{{ slug }}() {
+  local slot idem body out{% if card.unblock %} id{% endif %}
+
+  slot="$(slot_stamp {{ card.interval_hours }})"
+  idem="{{ card.job }}-${slot}"
+  IFS= read -r -d '' body <<'HCB_EOF__{{ slug }}' || true
+{{ lookup('vars', card.prompt_var) }}
+
+When finished: post a one-line summary to #hermes-all (channel {{ hermes_agent_slack_hermes_all_channel }}), then call kanban_complete with a one-line summary and metadata.
+HCB_EOF__{{ slug }}
+  # Single line (inline Jinja) so no backslash-continuation can be broken by a
+  # rendered-away optional flag. All flags are baked at render time; only body
+  # and idem are runtime. stdout is captured (never echoed) to keep the job silent.
+  out="$("${HERMES_BIN}" kanban create '{{ card.title }}' --body "${body}" --idempotency-key "${idem}"{% if card.assignee | length > 0 %} --assignee '{{ card.assignee }}'{% endif %} --max-runtime '{{ card.max_runtime }}' --max-retries {{ card.max_retries }}{% for skill in card.skills %} --skill '{{ skill }}'{% endfor %} --json 2>&1)" || {
+    logger -t hermes-kanban-enqueue "create FAILED ${idem}: ${out}"
+    return 0
+  }
+  logger -t hermes-kanban-enqueue "enqueued ${idem}"
+{% if card.unblock %}
+  # Reviewer chain: the previous run pre-created THIS slot's card as blocked, so
+  # create returned its existing id and we now unblock it to let it run on time.
+  # On bootstrap (no prior card) create made a running card and unblock is a
+  # no-op. Tolerant of the id field name; a miss just means the card already runs.
+  id="$(jq -r '.id // .task_id // .task.id // empty' <<<"${out}" 2>/dev/null)"
+  if [[ -n "${id}" ]]; then
+    if "${HERMES_BIN}" kanban unblock "${id}" >/dev/null 2>&1; then
+      logger -t hermes-kanban-enqueue "unblocked ${idem} (${id})"
+    else
+      logger -t hermes-kanban-enqueue "unblock skipped ${idem} (${id})"
+    fi
+  fi
+{% endif %}
+}
+
+{% endfor %}
+enqueue_all() {
+{% for card in hermes_agent_kanban_cards if card.enabled | bool %}
+  enqueue_{{ card.job | replace('-', '_') }}
+{% endfor %}
+  :
+}
+
+case "${SELECTOR}" in
+  all)
+    # `all` (used by the safety net, with --backfill) runs every workload's
+    # enqueue: each create is idempotent per slot, and every unblock-card is
+    # re-checked — so a missed per-job fire is backfilled and a due blocked card
+    # is unblocked. BACKFILL is informational (all is inherently backfilling).
+    (( BACKFILL )) && logger -t hermes-kanban-enqueue "backfill sweep starting"
+    enqueue_all
+    ;;
+{% for card in hermes_agent_kanban_cards if card.enabled | bool %}
+  {{ card.job }})
+    enqueue_{{ card.job | replace('-', '_') }}
+    ;;
+{% endfor %}
+  *)
+    logger -t hermes-kanban-enqueue "unknown selector: ${SELECTOR}"
+    ;;
+esac
+
+exit 0

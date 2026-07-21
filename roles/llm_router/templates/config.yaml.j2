@@ -37,6 +37,31 @@ model_list:
       max_input_tokens: {{ m.context_window }}
       max_tokens: {{ m.context_window }}
 {% endif %}
+{% if m.standby | default(false) and llm_router_llm_large_standby_base_url %}
+  # Standby sibling of {{ m.backend }} on an off-Studio large-tier backend.
+  # SAME model id + SAME context window => a real failover deployment (LiteLLM
+  # groups both under this model_name), NOT a cross-tier alias — so it degrades
+  # the brain's availability without the smaller-context "poison the caller"
+  # failure the no-cross-tier-fallback rule guards against. Emitted only when
+  # llm_router_llm_large_standby_base_url is set (default OFF => byte-identical
+  # to the no-standby render). Motivation: single-Studio brain SPOF, INC-17080.
+  - model_name: {{ m.backend }}
+    litellm_params:
+      model: openai/{{ m.backend }}
+      api_base: {{ llm_router_llm_large_standby_base_url }}
+      api_key: os.environ/LLM_LARGE_STANDBY_BEARER_TOKEN
+{% if m.extra_body is defined %}
+      extra_body:
+{% for _pk, _pv in m.extra_body.items() %}
+        {{ _pk }}: {{ _pv }}
+{% endfor %}
+{% endif %}
+{% if m.context_window is defined %}
+    model_info:
+      max_input_tokens: {{ m.context_window }}
+      max_tokens: {{ m.context_window }}
+{% endif %}
+{% endif %}
 {% endfor %}
 {% if llm_router_large_passthrough_enabled | bool %}
   # --- large tier passthrough: every model the serving gate advertises ---

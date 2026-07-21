@@ -6,10 +6,14 @@
 # one-shot down alert (Slack DM + urgent ntfy) — waking the sleeping operator.
 # Reversed by cluster-hermes-resume.yml at teardown.
 #
-# Values below are copied verbatim from roles/hermes_agent/defaults/main.yml as of
-# 2026-07-11. ponytail: hardcoded per cluster-window run; a committed
-# hermes-maintenance.yml should load them via vars_files (no converge during the
-# window so the seeded list can't drift under us).
+# The seeded list is derived from the role defaults (vars_files below), not
+# hardcoded — it can no longer drift from the role. Post kanban migration (#83)
+# the seeded fleet is the script-only `<job>-enqueue` crons; pausing them stops
+# NEW cards from being created into a dead brain during the window (the workers
+# themselves are what would fail — no cards, nothing to fail). Only
+# hermes_agent_seeded_cron_names is referenced, and every var it transitively
+# touches has an env/default fallback, so loading defaults here resolves cleanly
+# without the role's runtime prompt set_facts.
 - name: Load OpenTofu infrastructure inventory
   import_playbook: ../inventory/load_tofu.yml
 
@@ -17,31 +21,25 @@
   hosts: hermes_agent_group
   become: true
   gather_facts: false
+  vars_files:
+    - ../roles/hermes_agent/defaults/main.yml
   vars:
     hermes_bin: /usr/local/bin/hermes
     hermes_home: /var/lib/hermes/.hermes
     hermes_user: hermes
-    seeded_jobs:
-      - homelab-ai-fabric-status   # 0 9 * * * UTC = 05:00 EDT — fires MID-window
-      - hermes-nightly-wiki
-      - splunk-triage
-      - splunk-security
-      - splunk-parsing
-      - splunk-deepdive
-      - splunk-digest              # 50 * * * * — always delivers, 3 hits mid-window
   tasks:
     - name: Stop the brain-health watchdog timer (kills the down-alert + auto-resume)
       ansible.builtin.systemd:
         name: hermes-brain-watchdog.timer
         state: stopped
 
-    - name: Pause each role-seeded cron job (stops failure-DM spam into the dead brain)
+    - name: Pause each role-seeded cron job (stops new cards into the dead brain)
       ansible.builtin.command: "{{ hermes_bin }} cron pause {{ item }}"
       environment:
         HERMES_HOME: "{{ hermes_home }}"
       become: true
       become_user: "{{ hermes_user }}"
-      loop: "{{ seeded_jobs }}"
+      loop: "{{ hermes_agent_seeded_cron_names }}"
       changed_when: true
       failed_when: false   # a missing/already-paused job must not fail the play
 

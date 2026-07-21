@@ -64,12 +64,15 @@ hermes_agent_curriculum_prompt_files:
 # Reached by its neutral Traefik FQDN — never a hardcoded IP. The router routes by
 # model alias, so the agent just names the model it wants. The api key is the
 # router master key, env-sourced (SOPS/Doppler).
-# The model itself comes from the fabric-wide ai_default_model single source
-# (inventory/group_vars/all.yml) — shared with open_webui_default_model so the
-# agent brain and the human chat UI always run the same default. Change it
-# THERE (PR #753's why-Qwen3.6 rationale moved there with the value); a
-# per-role re-pin here would silently fork the two again.
-hermes_agent_model: "{{ ai_default_model }}"
+# The model comes from hermes_brain_model (inventory/group_vars/all.yml) — the
+# agent's OWN brain, DECOUPLED from ai_default_model as of 2026-07-19 (user
+# decision) so Hermes and the ai-default fabric brain (still used by Open WebUI)
+# can diverge. hermes_brain_model is pinned to the current 80B default so this
+# lands behavior-neutral; the runtime re-point is still the brain-sync timer on
+# the SHARED ai/public/brain key (below) until the dedicated hermes-brain key is
+# seeded (follow-up). Change the default THERE (group_vars), not with a per-role
+# re-pin here.
+hermes_agent_model: "{{ hermes_brain_model }}"
 hermes_agent_model_base_url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1"
 hermes_agent_model_api_mode: chat_completions
 # Context-compression summary model. Hermes hard-requires >=64K context on the
@@ -186,6 +189,15 @@ hermes_agent_firehose_deliver: >-
   {{ 'slack:' ~ hermes_agent_slack_firehose_channel
      if (hermes_agent_slack_firehose_channel | length > 0)
      else 'slack' }}
+
+# #hermes-all: the channel every Kanban worker posts its one-line completion
+# summary to (kanban migration, #83). Kanban cards have no native delivery
+# channel, so each card body ends with "post a one-line summary to #hermes-all
+# (channel <id>), then kanban_complete". Defaults to the firehose channel id so
+# it works before a dedicated #hermes-all channel exists — override in group_vars
+# once one is created. Empty (no firehose set either) leaves the body naming the
+# channel by handle only, which the worker's Slack tools can still resolve.
+hermes_agent_slack_hermes_all_channel: "{{ hermes_agent_slack_firehose_channel }}"
 
 # Post scheduled (cron) output as FRESH top-level channel messages, not threaded
 # replies under one ever-growing root. Each cron run is already an isolated
@@ -510,64 +522,10 @@ hermes_agent_splunk_digest_cron_name: splunk-digest
 hermes_agent_splunk_digest_cron_schedule: "52 * * * *"
 hermes_agent_splunk_digest_cron_prompt_file: hermes-splunk-digest.md
 
-# Aggregate list the seed loop iterates. Alert jobs DM the operator; the digest
-# posts to the home channel; the quiet deep-dive research run saves locally only.
-hermes_agent_splunk_cron_jobs:
-  - name: "{{ hermes_agent_splunk_triage_cron_name }}"
-    schedule: "{{ hermes_agent_splunk_triage_cron_schedule }}"
-    prompt: "{{ hermes_agent_splunk_triage_cron_prompt }}"
-    deliver: "{{ hermes_agent_splunk_alert_deliver }}"
-    skills: [dryvist/splunk-monitor]
-    enabled: >-
-      {{ hermes_agent_splunk_monitor_enabled | bool
-         and hermes_agent_splunk_mcp_url | length > 0
-         and hermes_agent_slack_bot_token | length > 0
-         and hermes_agent_slack_app_token | length > 0
-         and hermes_agent_slack_home_channel | length > 0 }}
-  - name: "{{ hermes_agent_splunk_security_cron_name }}"
-    schedule: "{{ hermes_agent_splunk_security_cron_schedule }}"
-    prompt: "{{ hermes_agent_splunk_security_cron_prompt }}"
-    deliver: "{{ hermes_agent_splunk_alert_deliver }}"
-    skills: [dryvist/splunk-monitor]
-    enabled: >-
-      {{ hermes_agent_splunk_monitor_enabled | bool
-         and hermes_agent_splunk_mcp_url | length > 0
-         and hermes_agent_slack_bot_token | length > 0
-         and hermes_agent_slack_app_token | length > 0
-         and hermes_agent_slack_home_channel | length > 0 }}
-  - name: "{{ hermes_agent_splunk_parsing_cron_name }}"
-    schedule: "{{ hermes_agent_splunk_parsing_cron_schedule }}"
-    prompt: "{{ hermes_agent_splunk_parsing_cron_prompt }}"
-    deliver: "{{ hermes_agent_splunk_alert_deliver }}"
-    skills: [dryvist/splunk-monitor]
-    enabled: >-
-      {{ hermes_agent_splunk_monitor_enabled | bool
-         and hermes_agent_splunk_mcp_url | length > 0
-         and hermes_agent_slack_bot_token | length > 0
-         and hermes_agent_slack_app_token | length > 0
-         and hermes_agent_slack_home_channel | length > 0 }}
-  - name: "{{ hermes_agent_splunk_deepdive_cron_name }}"
-    schedule: "{{ hermes_agent_splunk_deepdive_cron_schedule }}"
-    prompt: "{{ hermes_agent_splunk_deepdive_cron_prompt }}"
-    deliver: local
-    skills: [dryvist/splunk-monitor]
-    enabled: >-
-      {{ hermes_agent_splunk_monitor_enabled | bool
-         and hermes_agent_splunk_mcp_url | length > 0
-         and hermes_agent_slack_bot_token | length > 0
-         and hermes_agent_slack_app_token | length > 0
-         and hermes_agent_slack_home_channel | length > 0 }}
-  - name: "{{ hermes_agent_splunk_digest_cron_name }}"
-    schedule: "{{ hermes_agent_splunk_digest_cron_schedule }}"
-    prompt: "{{ hermes_agent_splunk_digest_cron_prompt }}"
-    deliver: "{{ hermes_agent_splunk_digest_deliver }}"
-    skills: [dryvist/splunk-monitor]
-    enabled: >-
-      {{ hermes_agent_splunk_monitor_enabled | bool
-         and hermes_agent_splunk_mcp_url | length > 0
-         and hermes_agent_slack_bot_token | length > 0
-         and hermes_agent_slack_app_token | length > 0
-         and hermes_agent_slack_home_channel | length > 0 }}
+# The Splunk monitor workloads are dispatched as Kanban cards now, not agentic
+# cron jobs (kanban migration, #83) — see hermes_agent_kanban_cards below, which
+# reuses the per-job name/schedule/prompt vars above. The old
+# hermes_agent_splunk_cron_jobs aggregate (seeded five agentic crons) is gone.
 
 # --- GitHub monitor: periodic read-only org-triage sweep -------------------
 # The poll-based counterpart to the Splunk fleet, reusing the existing
@@ -588,18 +546,9 @@ hermes_agent_github_monitor_cron_prompt_file: hermes-github-triage.md
 # Routine triage report — firehose (3-tier routing).
 hermes_agent_github_monitor_cron_deliver: "{{ hermes_agent_firehose_deliver }}"
 
-hermes_agent_github_cron_jobs:
-  - name: "{{ hermes_agent_github_monitor_cron_name }}"
-    schedule: "{{ hermes_agent_github_monitor_cron_schedule }}"
-    prompt: "{{ hermes_agent_github_monitor_cron_prompt }}"
-    deliver: "{{ hermes_agent_github_monitor_cron_deliver }}"
-    skills: [dryvist/github-issues]
-    enabled: >-
-      {{ hermes_agent_github_monitor_enabled | bool
-         and hermes_agent_github_issues_pat | length > 0
-         and hermes_agent_slack_bot_token | length > 0
-         and hermes_agent_slack_app_token | length > 0
-         and hermes_agent_slack_home_channel | length > 0 }}
+# The GitHub triage workload is a Kanban card now (kanban migration, #83) — see
+# hermes_agent_kanban_cards below. The old hermes_agent_github_cron_jobs aggregate
+# (one agentic cron) is gone; its name/schedule/prompt vars above are reused.
 
 # --- Daily operator summary: the home channel's ONE curated post ------------
 # 3-tier routing gives the verbose crons the firehose channel; this job is what
@@ -649,14 +598,232 @@ hermes_agent_zammad_review_cron_prompt: >-
   "zammad-review-last".
 hermes_agent_zammad_review_cron_deliver: "{{ hermes_agent_firehose_deliver }}"
 
-# Every cron job this role seeds. The model-drift recovery task (tasks/main.yml)
-# only ever removes jobs on this list — user- and agent-created jobs are never
-# touched.
+# --- Kanban recurring-task migration (#83, INC-17120) ------------------------
+# Directional change: the agentic cron fleet is retired. Every recurring
+# workload runs as a Kanban CARD dispatched by the gateway's in-process board
+# engine (the kanban: block in config.yaml.j2), so each run is a fresh isolated
+# WORKER session — eliminating the persistent-cron-session failure class
+# (corrupted compression bookkeeping crash-looping the splunk-* jobs).
+#
+# Kanban has no native recurrence, and the deployed CLI has no --scheduled-at.
+# The recurrence layer is therefore a thin fleet of `cron create --no-agent
+# --script` jobs (script-only, NO agent, NO LLM session — nothing to poison)
+# that enqueue cards. Each enqueuer fires on the SAME schedule the old agentic
+# cron used and emits ONE `kanban create` per slot with an idempotency key
+# `<job>-<slot>`, so a double-fire or a backfill re-run never duplicates a card.
+# The enqueuer script (templates/kanban-enqueue-recurring.sh.j2) bakes the
+# per-card table below in at render time — same pattern as the watchdog's
+# seeded-jobs array.
+hermes_agent_kanban_enqueue_script_name: kanban-enqueue-recurring.sh
+
+# The self-perpetuating 8h reviewer (#83 design refinement). It runs at
+# 00:00/08:00/16:00 UTC (slot s0/s1/s2 = floor(UTC hour / 8)). Its card body
+# tells the worker to create the NEXT slot's card as initial_status=blocked so
+# it cannot run early; the enqueuer, finding that pre-created blocked card at
+# the next slot boundary, unblocks it (the no-`--scheduled-at` adaptation).
+hermes_agent_kanban_reviewer_job: review
+hermes_agent_kanban_reviewer_schedule: "0 */8 * * *"
+hermes_agent_reviewer_card_prompt: >-
+  You are the Hermes 8-hour self-review. Cadence: three slots per UTC day at
+  00:00, 08:00, 16:00 — slot number N = floor(UTC hour / 8), so s0/s1/s2. Do
+  all of the following, then stop. (1) Review the last 8h of Kanban activity:
+  list the done, blocked, and triage cards and read `kanban runs` (task-run
+  outcomes). Identify anything that failed, is stuck/blocked, or a recurring
+  workload that silently did not run. (2) For each real gap, file a follow-up
+  card with kanban_create using a STABLE idempotency key
+  (followup-<short-slug>-<UTC-date>) so a re-run never duplicates it; attach the
+  right skill and a clear body. (3) Post a short digest to #hermes-all (channel
+  {{ hermes_agent_slack_hermes_all_channel }}): what ran, what failed or is
+  blocked, what you filed — deltas and action items only, no Markdown tables.
+  (4) Continue the chain: compute the NEXT slot key as review-<UTC-date>-s<N>
+  (after s2, use s0 of the NEXT UTC day) and call kanban_create with that exact
+  idempotency-key, the same title as this card, the SAME body as this card, and
+  initial_status=blocked so it cannot run before its slot. (5) Call
+  kanban_complete with a one-line summary and metadata.
+
+# One entry per recurring workload. Static fields only (no prompt bodies): the
+# body is named by `prompt_var` and resolved from that var at template-render
+# time — the catalog prompts (loaded by set_fact in tasks/main.yml) and the
+# inline prompts (above) alike — so this list resolves anywhere without needing
+# the runtime catalog (the pause/resume playbooks depend on that).
+#   job            idempotency-key prefix + `<job>-enqueue` cron-name stem
+#   interval_hours slot granularity: 1 -> hourly (%Y-%m-%dT%H), 24 -> daily
+#                  (%Y-%m-%d), else date + `-s<floor(hour/interval)>`
+#   schedule       the enqueuer cron schedule (== the old agentic schedule)
+#   prompt_var     name of the var holding the card body (catalog or inline)
+#   unblock        reviewer only: `kanban unblock` the card after create so a
+#                  pre-created blocked next-slot card goes live on time
+hermes_agent_kanban_cards:
+  - job: "{{ hermes_agent_daily_status_cron_name }}"
+    title: "Homelab AI fabric status"
+    interval_hours: 1
+    schedule: "{{ hermes_agent_daily_status_cron_schedule }}"
+    prompt_var: hermes_agent_daily_status_cron_prompt
+    assignee: ""
+    max_runtime: "15m"
+    max_retries: 2
+    skills: []
+    unblock: false
+    enabled: >-
+      {{ hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  - job: "{{ hermes_agent_nightly_wiki_cron_name }}"
+    title: "Nightly llm-wiki health pass"
+    interval_hours: 24
+    schedule: "{{ hermes_agent_nightly_wiki_cron_schedule }}"
+    prompt_var: hermes_agent_nightly_wiki_cron_prompt
+    assignee: ""
+    max_runtime: "30m"
+    max_retries: 2
+    skills: []
+    unblock: false
+    enabled: >-
+      {{ hermes_agent_wiki_enabled | bool
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  - job: "{{ hermes_agent_summary_cron_name }}"
+    title: "Daily operator summary"
+    interval_hours: 24
+    schedule: "{{ hermes_agent_summary_cron_schedule }}"
+    prompt_var: hermes_agent_summary_cron_prompt
+    assignee: ""
+    max_runtime: "20m"
+    max_retries: 2
+    skills: []
+    unblock: false
+    enabled: >-
+      {{ hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  - job: "{{ hermes_agent_zammad_review_cron_name }}"
+    title: "Zammad incident review"
+    interval_hours: 2
+    schedule: "{{ hermes_agent_zammad_review_cron_schedule }}"
+    prompt_var: hermes_agent_zammad_review_cron_prompt
+    assignee: ""
+    max_runtime: "30m"
+    max_retries: 2
+    skills: [dryvist/zammad-incidents]
+    unblock: false
+    enabled: >-
+      {{ hermes_agent_zammad_url | length > 0
+         and hermes_agent_zammad_api_token | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  - job: "{{ hermes_agent_splunk_triage_cron_name }}"
+    title: "Splunk triage sweep"
+    interval_hours: 1
+    schedule: "{{ hermes_agent_splunk_triage_cron_schedule }}"
+    prompt_var: hermes_agent_splunk_triage_cron_prompt
+    assignee: ""
+    max_runtime: "20m"
+    max_retries: 2
+    skills: [dryvist/splunk-monitor]
+    unblock: false
+    enabled: &kanban_splunk_gate >-
+      {{ hermes_agent_splunk_monitor_enabled | bool
+         and hermes_agent_splunk_mcp_url | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  - job: "{{ hermes_agent_splunk_security_cron_name }}"
+    title: "Splunk security lens"
+    interval_hours: 6
+    schedule: "{{ hermes_agent_splunk_security_cron_schedule }}"
+    prompt_var: hermes_agent_splunk_security_cron_prompt
+    assignee: ""
+    max_runtime: "20m"
+    max_retries: 2
+    skills: [dryvist/splunk-monitor]
+    unblock: false
+    enabled: *kanban_splunk_gate
+  - job: "{{ hermes_agent_splunk_parsing_cron_name }}"
+    title: "Splunk parsing / data-quality lens"
+    interval_hours: 24
+    schedule: "{{ hermes_agent_splunk_parsing_cron_schedule }}"
+    prompt_var: hermes_agent_splunk_parsing_cron_prompt
+    assignee: ""
+    max_runtime: "20m"
+    max_retries: 2
+    skills: [dryvist/splunk-monitor]
+    unblock: false
+    enabled: *kanban_splunk_gate
+  - job: "{{ hermes_agent_splunk_deepdive_cron_name }}"
+    title: "Splunk deep-dive research"
+    interval_hours: 24
+    schedule: "{{ hermes_agent_splunk_deepdive_cron_schedule }}"
+    prompt_var: hermes_agent_splunk_deepdive_cron_prompt
+    assignee: ""
+    max_runtime: "45m"
+    max_retries: 1
+    skills: [dryvist/splunk-monitor]
+    unblock: false
+    enabled: *kanban_splunk_gate
+  - job: "{{ hermes_agent_splunk_digest_cron_name }}"
+    title: "Splunk hourly digest"
+    interval_hours: 1
+    schedule: "{{ hermes_agent_splunk_digest_cron_schedule }}"
+    prompt_var: hermes_agent_splunk_digest_cron_prompt
+    assignee: ""
+    max_runtime: "15m"
+    max_retries: 2
+    skills: [dryvist/splunk-monitor]
+    unblock: false
+    enabled: *kanban_splunk_gate
+  - job: "{{ hermes_agent_github_monitor_cron_name }}"
+    title: "GitHub org triage sweep"
+    interval_hours: 6
+    schedule: "{{ hermes_agent_github_monitor_cron_schedule }}"
+    prompt_var: hermes_agent_github_monitor_cron_prompt
+    assignee: ""
+    max_runtime: "20m"
+    max_retries: 2
+    skills: [dryvist/github-issues]
+    unblock: false
+    enabled: >-
+      {{ hermes_agent_github_monitor_enabled | bool
+         and hermes_agent_github_issues_pat | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  - job: "{{ hermes_agent_kanban_reviewer_job }}"
+    title: "Hermes 8h self-review"
+    interval_hours: 8
+    schedule: "{{ hermes_agent_kanban_reviewer_schedule }}"
+    prompt_var: hermes_agent_reviewer_card_prompt
+    assignee: ""
+    max_runtime: "30m"
+    max_retries: 1
+    skills: []
+    unblock: true
+    enabled: >-
+      {{ hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+
+# The daily chain-break safety net (#83): one extra `--no-agent --script` cron
+# that runs the enqueuer in `all --backfill` mode — re-creates any missing
+# current-slot card (idempotent) and unblocks any due-but-still-blocked card
+# (the reviewer chain's self-heal). No LLM session, so nothing to poison.
+hermes_agent_kanban_safety_net_cron_name: kanban-enqueue-safety-net
+hermes_agent_kanban_safety_net_schedule: "33 4 * * *"
+hermes_agent_kanban_safety_net_enabled: >-
+  {{ hermes_agent_slack_bot_token | length > 0
+     and hermes_agent_slack_app_token | length > 0 }}
+
+# Every cron job this role seeds — now the script-only enqueuer fleet
+# (`<job>-enqueue` per card) plus the daily safety net. The model-drift recovery
+# task (tasks/main.yml) only ever removes jobs on this list, and the brain
+# watchdog only pauses/resumes jobs on this list — user/agent jobs are never
+# touched. Script (`--no-agent`) jobs carry no model snapshot, so the drift GC's
+# `model_snapshot`-defined filter skips them naturally (no guard change needed).
 hermes_agent_seeded_cron_names: >-
-  {{ [hermes_agent_daily_status_cron_name, hermes_agent_nightly_wiki_cron_name,
-      hermes_agent_summary_cron_name, hermes_agent_zammad_review_cron_name]
-     + (hermes_agent_splunk_cron_jobs | map(attribute='name') | list)
-     + (hermes_agent_github_cron_jobs | map(attribute='name') | list) }}
+  {{ (hermes_agent_kanban_cards | map(attribute='job') | list
+      | map('regex_replace', '$', '-enqueue') | list)
+     + [hermes_agent_kanban_safety_net_cron_name] }}
 
 # --- Context7 MCP client (current library/framework docs on demand) ---
 # Registers Context7 so Hermes can pull up-to-date, version-specific docs
@@ -819,7 +986,11 @@ hermes_agent_brain_sync_state_file: "{{ hermes_agent_brain_sync_state_dir }}/cur
 hermes_agent_brain_sync_interval: "5min"
 # KV v2 data path (mount: secret) + field — see roles/openbao_secrets
 # openbao_secrets_domains (ai-public) and inventory/group_vars/all.yml
-# (ai_default_model).
+# (hermes_brain_model). Still the SHARED ai/public/brain key: this PR decouples
+# only the converge-time literal (hermes_brain_model), not the runtime key, so a
+# live override keeps moving Hermes and ai_default together as it does today.
+# The dedicated secret/ai/public/hermes-brain key is a follow-up (seed it first,
+# then repoint here) — see the hermes_brain_model note in group_vars/all.yml.
 hermes_agent_brain_sync_bao_path: ai/public/brain
 hermes_agent_brain_sync_bao_field: active_model
 # ponytail: single endpoint, no client-side failover on the guest (unlike the
