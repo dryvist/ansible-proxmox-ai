@@ -29,6 +29,9 @@ PROBE_TIMEOUT="{{ hermes_agent_brain_watchdog_probe_timeout }}"
 DOWN_AFTER="{{ hermes_agent_brain_watchdog_down_after }}"
 UP_AFTER="{{ hermes_agent_brain_watchdog_up_after }}"
 NTFY_URL="{{ hermes_agent_brain_watchdog_ntfy_url }}"
+# External deadman OK-ping target (silent-Mac / LXC-down backstop). Full ping URL
+# from the environment; empty = no-op. See defaults + hc_ping below.
+HEALTHCHECK_URL="{{ hermes_agent_brain_watchdog_healthcheck_url }}"
 STATE_DIR="{{ hermes_agent_hermes_home }}/brain-watchdog"
 # Flap coalescing: once a down/up cycle completes cleanly, further edges
 # within this many seconds are coalesced (counted, window extended) instead of
@@ -132,6 +135,20 @@ ntfy_push() {
   fi
   curl -fsS --max-time 8 -H "Title: ${title}" -H "Priority: ${prio}" \
     -H "Tags: ${tags}" -d "${text}" "${NTFY_URL}" >/dev/null 2>&1 || true
+}
+
+# --- External deadman OK-ping ------------------------------------------------
+# The ntfy + Slack paths above only page on a DETECTED brain outage, and they run
+# ON this LXC: a powered-off LXC, a masked timer, or a wedged systemd silences
+# them with no page. So every healthy probe pings an external healthchecks-style
+# deadman. When the ping STOPS — this host gone, timer dead, or the brain
+# unreachable (which includes a silent Mac serving host) — the external service
+# pages on its own. Empty URL = no-op. ponytail: OK-ping only, no /fail; a
+# detected-down is already paged by ntfy/Slack, and the deadman exists for the
+# SILENT/absence case those pages structurally cannot cover.
+hc_ping() {
+  [[ -n "${HEALTHCHECK_URL}" ]] || return 0
+  curl -fsS --max-time 8 "${HEALTHCHECK_URL}" >/dev/null 2>&1 || true
 }
 
 alert() {
@@ -263,6 +280,7 @@ streak="$(cat "${STREAK_FILE}" 2>/dev/null || echo 0)"
 [[ "${streak}" =~ ^-?[0-9]+$ ]] || streak=0
 
 if probe_ok; then
+  hc_ping   # external deadman OK: brain reachable this cycle (silent-Mac / LXC-down backstop)
   if (( streak < 0 )); then streak=1; else streak=$(( streak + 1 )); fi
   if [[ "${state}" == "down" ]] && (( streak >= UP_AFTER )); then
     cron_do resume
