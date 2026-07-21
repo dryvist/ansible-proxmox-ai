@@ -281,7 +281,11 @@ per card**, so a corrupted session can never carry forward between runs
 --no-agent --script` jobs — one per workload, on the same schedule the old
 agentic cron used, plus one daily safety net — enqueues the cards. These crons
 run a script only (no LLM session, nothing to poison); `hermes cron list` is
-now script-only. Each card carries an idempotency key `<job>-<slot>`, so a
+now script-only. On a guest provisioned before the migration, the converge
+removes the old bare-named agentic crons
+(`hermes_agent_superseded_agentic_cron_names`) so they cannot double-fire
+alongside their `-enqueue` twins. Each card carries an idempotency key
+`<job>-<slot>`, so a
 double-fire or backfill never duplicates a card.
 
 A self-perpetuating **8h reviewer** card (00:00 / 08:00 / 16:00 UTC) reviews the
