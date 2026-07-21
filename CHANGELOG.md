@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.10.0...v0.11.0) (2026-07-21)
+
+
+### Features
+
+* **hermes_agent:** add work-supply kanban cards (anomaly-hunt, docs-study, ai-news, daily-innovation, app-seeding) ([#115](https://github.com/dryvist/ansible-proxmox-ai/issues/115)) ([6dacbc6](https://github.com/dryvist/ansible-proxmox-ai/commit/6dacbc63739094734fdb46863e898ddbd4a94c82))
+* **hermes_agent:** dial Splunk MCP through the shared agentgateway route ([#118](https://github.com/dryvist/ansible-proxmox-ai/issues/118)) ([ecd1dc7](https://github.com/dryvist/ansible-proxmox-ai/commit/ecd1dc751e5f24f90b52bed66f34736ad5b5ef21))
+* **hermes_agent:** harden kanban card prompts for weak-model robustness ([#119](https://github.com/dryvist/ansible-proxmox-ai/issues/119)) ([535cff5](https://github.com/dryvist/ansible-proxmox-ai/commit/535cff5979cc1c7dae98cdfe56607473dac28c71))
+
+
+### Bug Fixes
+
+* **hermes_agent:** lazy-eval enqueuer name/selector defaults for 2.21 ([#116](https://github.com/dryvist/ansible-proxmox-ai/issues/116)) ([8f73132](https://github.com/dryvist/ansible-proxmox-ai/commit/8f731320976650e02c6703e7d064352686def135))
+* **hermes_agent:** set kanban.default_assignee so ready cards dispatch ([#117](https://github.com/dryvist/ansible-proxmox-ai/issues/117)) ([b8c462c](https://github.com/dryvist/ansible-proxmox-ai/commit/b8c462cdc82399dbb08560ea0ea4463bbad97d86))
+
 ## [0.10.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.9.0...v0.10.0) (2026-07-21)
 
 
