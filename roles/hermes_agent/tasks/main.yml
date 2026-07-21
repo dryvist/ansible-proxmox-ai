@@ -171,6 +171,15 @@
     replace: '\1_boost_cap = agent.max_tokens if agent.max_tokens else max(32768, _requested_cap or 0)'
   notify: Restart hermes-gateway
 
+# The compressor can retain an end offset computed before tool-message cleanup.
+# Clamp it to the current list length so scheduled runs do not abort on IndexError.
+- name: Patch hermes-agent context summary scan to use the live message bound
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/agent/context_compressor.py"
+    regexp: '^(\s*)for idx in range\(end - 1, start - 1, -1\):$'
+    replace: '\1for idx in range(min(end, len(messages)) - 1, start - 1, -1):'
+  notify: Restart hermes-gateway
+
 - name: Check whether the Hermes OTEL plugin file exists
   ansible.builtin.stat:
     path: "{{ hermes_agent_install_dir }}/plugins/observability/otel/__init__.py"
