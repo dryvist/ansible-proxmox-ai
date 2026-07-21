@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.8.0...v0.9.0) (2026-07-21)
+
+
+### Features
+
+* **hermes_agent:** decouple hermes brain from ai-default (behavior-neutral pin) ([#59](https://github.com/dryvist/ansible-proxmox-ai/issues/59)) ([d77bc52](https://github.com/dryvist/ansible-proxmox-ai/commit/d77bc525bf6a3505589cb4cf8184378d2bcfd698))
+* **hermes:** migrate cron fleet to Kanban cards with script-only enqueuers ([#97](https://github.com/dryvist/ansible-proxmox-ai/issues/97)) ([4f5e848](https://github.com/dryvist/ansible-proxmox-ai/commit/4f5e84842a8c3deeae4e2efd2b8ea3d83dee2d9d)), closes [#83](https://github.com/dryvist/ansible-proxmox-ai/issues/83)
+* **llm_router:** optional same-model standby brain backend (default off) ([#58](https://github.com/dryvist/ansible-proxmox-ai/issues/58)) ([0de42ac](https://github.com/dryvist/ansible-proxmox-ai/commit/0de42acf575930514cd99d2fe63d814c4ed3598e))
+
 ## [0.8.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.7.1...v0.8.0) (2026-07-20)
 
 
