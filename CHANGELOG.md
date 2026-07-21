@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.11.0...v0.12.0) (2026-07-21)
+
+
+### Features
+
+* **hermes_agent:** wire bot-pr-triage and docs-sync Kanban jobs ([a445839](https://github.com/dryvist/ansible-proxmox-ai/commit/a4458392357887feaea37bfd854ccb040c95e1e6))
+* **hermes:** add authenticated dashboard service ([#127](https://github.com/dryvist/ansible-proxmox-ai/issues/127)) ([0e65eb2](https://github.com/dryvist/ansible-proxmox-ai/commit/0e65eb2654dcc0121580091957c5fe111f519af3))
+
 ## [0.11.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.10.0...v0.11.0) (2026-07-21)
 
 
