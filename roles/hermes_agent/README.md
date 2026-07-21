@@ -251,26 +251,52 @@ block via `reply_in_thread: false` + `cron_continuable_surface: in_channel`
 (`hermes_agent_slack_reply_in_thread` / `hermes_agent_slack_cron_continuable_surface`),
 rendered only when Slack is configured.
 
-| Job | Schedule (staggered) | Delivery | Posture |
-| --- | --- | --- | --- |
-| `splunk-triage` | `3,18,33,48 * * * *` | DM, silent-unless-anomaly | broad anomaly hunt |
-| `splunk-security` | `9,39 * * * *` | DM, silent-unless-anomaly | security lens |
-| `splunk-parsing` | `24 * * * *` | DM, silent-unless-anomaly | data-quality / parsing lens |
-| `splunk-deepdive` | `44 */6 * * *` | local (quiet) | characterize one index → wiki + memory |
-| `splunk-digest` | `50 * * * *` | firehose channel (always) | hourly "what I'm seeing + current normal" heartbeat |
+| Card | Slot cadence | Posture |
+| --- | --- | --- |
+| `splunk-triage` | hourly | broad anomaly hunt |
+| `splunk-security` | every 6h | security lens |
+| `splunk-parsing` | daily | data-quality / parsing lens |
+| `splunk-deepdive` | daily | characterize one index → wiki + memory |
+| `splunk-digest` | hourly | "what I'm seeing + current normal" heartbeat |
 
-Cron seeding is idempotent (create-if-absent) and gated on Hermes being able to
-**both** query Splunk (`hermes_agent_splunk_mcp_url` set) **and** deliver to Slack
-(bot + app tokens + home channel set) — a job that can't do both is never created.
-When Hermes finds a signal worth watching continuously it may register its own
-`splunk-auto-*` check and surfaces it in the next digest.
+Each workload is gated on Hermes being able to **both** query Splunk
+(`hermes_agent_splunk_mcp_url` set) **and** deliver to Slack (bot + app tokens +
+home channel set) — a card whose enqueuer is not enabled is never created. When
+Hermes finds a signal worth watching continuously it may file its own follow-up
+card and surface it in the next digest.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `hermes_agent_splunk_monitor_enabled` | `true` | Deploy the skill + seed the cron fleet |
-| `hermes_agent_splunk_*_cron_name` / `_schedule` / `_prompt` | — | per-job overrides |
-| `hermes_agent_splunk_alert_deliver` | `slack:<member-id>` | DM target for anomaly alerts |
-| `hermes_agent_splunk_digest_deliver` | `slack` | home-channel target for the digest |
+| `hermes_agent_splunk_monitor_enabled` | `true` | Deploy the skill + enable the Splunk cards |
+| `hermes_agent_splunk_*_cron_name` / `_schedule` / `_prompt` | — | per-workload overrides |
+
+## Recurring work runs on the Kanban board (not agentic cron)
+
+Every recurring workload — the Splunk fleet above, `github-triage`,
+`daily-summary`, `zammad-review`, `homelab-ai-fabric-status`, the nightly wiki
+pass — is a **Kanban card**, not an agentic cron job. The gateway's in-process
+board dispatcher (`config.yaml` `kanban:` block) spawns a **fresh worker session
+per card**, so a corrupted session can never carry forward between runs
+(INC-17120). Kanban has no native recurrence, so a thin fleet of `cron create
+--no-agent --script` jobs — one per workload, on the same schedule the old
+agentic cron used, plus one daily safety net — enqueues the cards. These crons
+run a script only (no LLM session, nothing to poison); `hermes cron list` is
+now script-only. Each card carries an idempotency key `<job>-<slot>`, so a
+double-fire or backfill never duplicates a card.
+
+A self-perpetuating **8h reviewer** card (00:00 / 08:00 / 16:00 UTC) reviews the
+last 8h of board activity, files follow-ups for anything missed or broken, posts
+a digest to `#hermes-all`, and creates the next slot's reviewer card as `blocked`
+so it cannot run early; the next enqueuer fire unblocks it. The daily safety-net
+enqueuer (`all --backfill`) re-creates any missing card and unblocks any due
+blocked card, so the reviewer chain self-heals if a link is ever dropped.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `hermes_agent_kanban_cards` | — | the per-workload card table (title, cadence, schedule, prompt var, skills) |
+| `hermes_agent_slack_hermes_all_channel` | firehose channel id | channel each card's completion summary posts to |
+| `hermes_agent_kanban_reviewer_schedule` | `0 */8 * * *` | the 8h reviewer slots |
+| `hermes_agent_kanban_safety_net_schedule` | `33 4 * * *` | daily chain-break backfill sweep |
 
 ## Inbound job-submission API (sanctioned non-exec path)
 
