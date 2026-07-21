@@ -51,7 +51,7 @@ hermes_agent_installer_path: "/usr/local/lib/hermes-agent-installer-{{ hermes_ag
 # a bad ref fails the converge loudly at the controller build step.
 hermes_agent_bundle_flake_ref: "github:dryvist/nix-hermes/nix-hermes-v0.6.0#hermes-bundle"
 hermes_agent_prompts_flake_ref: >-
-  github:dryvist/ai-llm-prompts/0431be6994d51169b9f705ddeba958eb8a4d0fc4#auto-ai-agent
+  github:dryvist/ai-llm-prompts/a25aaf2ead11c887dbd7781f5187c89687445c42#auto-ai-agent
 hermes_agent_webhook_prompt_file: hermes-inbound-webhook.md
 hermes_agent_curriculum_prompt_files:
   orient: hermes-curriculum-orient.md
@@ -242,6 +242,18 @@ hermes_agent_webhook_enabled: true
 hermes_agent_webhook_port: >-
   {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['hermes_webhook']
      | mandatory('tofu_data.constants.service_ports.hermes_webhook missing — regenerate tofu_inventory.json') }}
+
+# The interactive Dashboard is a separate process from the queue-driven gateway.
+# It is deliberately non-loopback only when its native OIDC guard is configured;
+# Traefik then adds the estate-wide forwardAuth gate at the same hostname.
+hermes_agent_dashboard_enabled: true
+hermes_agent_dashboard_host: 0.0.0.0
+hermes_agent_dashboard_port: >-
+  {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['hermes_dashboard']
+     | mandatory('tofu_data.constants.service_ports.hermes_dashboard missing — regenerate tofu_inventory.json') }}
+hermes_agent_dashboard_public_url: "https://hermes.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
+hermes_agent_dashboard_oidc_issuer: "https://authelia.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
+hermes_agent_dashboard_oidc_client_id: hermes-dashboard
 
 # --- Persona: the shared behavioral base (SOUL.md) ----------------------------
 # Deploy templates/SOUL.md.j2 (shared autonomous base prompt + Hermes variant,
@@ -434,6 +446,14 @@ hermes_agent_github_app_private_key: ""
 # dryvist/github-issues skill documents how the agent should use it.
 hermes_agent_github_issues_pat: ""
 
+# --- GitHub security-alert read token (for the bot-PR triage job) ---
+# Read-only. Reads code-scanning + Dependabot alerts and PR files/diffs across
+# all repos (security_events:read, vulnerability_alerts:read, contents:read,
+# pull_requests:read). Separate from the issues PAT, which supplies the label
+# WRITE. The bot-pr-triage card gates on BOTH tokens. Bao-first, env fallback
+# (see group_vars); empty until seeded — the card stays disabled until then.
+hermes_agent_github_alerts_token: ""
+
 # --- Splunk MCP client (read/search access to the SIEM) ---
 # Registers the Splunk MCP Server as an HTTP MCP server in config.yaml so Hermes
 # can query the environment (run_splunk_query, get_indexes, ...) with its own
@@ -555,6 +575,28 @@ hermes_agent_github_monitor_cron_deliver: "{{ hermes_agent_firehose_deliver }}"
 # The GitHub triage workload is a Kanban card now (kanban migration, #83) — see
 # hermes_agent_kanban_cards below. The old hermes_agent_github_cron_jobs aggregate
 # (one agentic cron) is gone; its name/schedule/prompt vars above are reused.
+
+# --- Bot PR security triage: label + escalate, never merge ------------------
+# Reads CodeQL/Dependabot alerts, runs the deterministic gates, labels
+# auto-merge-deps, and Slack/Codex-escalates high/critical. It never merges —
+# deterministic CI owns the merge. Reuses the github-issues skill (label write)
+# plus the read-only alerts token above. Minute 43 keeps it clear of the other
+# */6 sweeps (github-triage :26). Body from the pinned catalog (set_fact).
+hermes_agent_bot_pr_triage_enabled: true
+hermes_agent_bot_pr_triage_cron_name: bot-pr-triage
+hermes_agent_bot_pr_triage_cron_schedule: "43 */6 * * *"
+hermes_agent_bot_pr_triage_cron_prompt_file: hermes-bot-pr-triage.md
+hermes_agent_bot_pr_triage_cron_deliver: "{{ hermes_agent_firehose_deliver }}"
+
+# --- Docs sync: bounded delta -> signed draft PRs via the docs-pr skill -----
+# Weekly (Mon 08:13 UTC). Discovers doc-worthy deltas since the last run and
+# defers privacy routing, signed commits, and redaction to the docs-pr skill
+# (which uses the hermes GitHub App above). Body from the pinned catalog.
+hermes_agent_docs_sync_enabled: true
+hermes_agent_docs_sync_cron_name: docs-sync
+hermes_agent_docs_sync_cron_schedule: "13 8 * * 1"
+hermes_agent_docs_sync_cron_prompt_file: hermes-docs-sync.md
+hermes_agent_docs_sync_cron_deliver: "{{ hermes_agent_firehose_deliver }}"
 
 # --- Daily operator summary: the home channel's ONE curated post ------------
 # 3-tier routing gives the verbose crons the firehose channel; this job is what
@@ -934,6 +976,39 @@ hermes_agent_kanban_cards:
     enabled: >-
       {{ hermes_agent_github_monitor_enabled | bool
          and hermes_agent_github_issues_pat | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  - job: "{{ hermes_agent_bot_pr_triage_cron_name }}"
+    title: "Bot PR security triage"
+    interval_hours: 6
+    schedule: "{{ hermes_agent_bot_pr_triage_cron_schedule }}"
+    prompt_var: hermes_agent_bot_pr_triage_cron_prompt
+    assignee: ""
+    max_runtime: "20m"
+    max_retries: 2
+    skills: [dryvist/github-issues]
+    unblock: false
+    enabled: >-
+      {{ hermes_agent_bot_pr_triage_enabled | bool
+         and hermes_agent_github_alerts_token | length > 0
+         and hermes_agent_github_issues_pat | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  - job: "{{ hermes_agent_docs_sync_cron_name }}"
+    title: "Docs sync"
+    interval_hours: 24
+    schedule: "{{ hermes_agent_docs_sync_cron_schedule }}"
+    prompt_var: hermes_agent_docs_sync_cron_prompt
+    assignee: ""
+    max_runtime: "30m"
+    max_retries: 1
+    skills: [dryvist/docs-pr]
+    unblock: false
+    enabled: >-
+      {{ hermes_agent_docs_sync_enabled | bool
+         and hermes_agent_github_app_private_key | length > 0
          and hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
