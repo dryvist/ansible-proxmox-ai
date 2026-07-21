@@ -302,6 +302,35 @@ hermes_agent_api_max_concurrent_runs: 2
 hermes_agent_kanban_max_in_progress: 2
 hermes_agent_kanban_max_in_progress_per_profile: 1
 
+# Goal-mode finalization for recurring cards. A plain worker is fire-and-forget:
+# if it ends its final turn on a text response WITHOUT calling kanban_complete/
+# kanban_block, the dispatcher classes the clean exit as a protocol violation
+# and blocks the card on the FIRST offence (a terminal "[SILENT]"-style reply is
+# exactly this). Goal-mode instead drives the worker through the upstream Ralph
+# loop: after each turn a judge checks the response against the card and, if the
+# task is still open, re-prompts IN THE SAME SESSION until the worker calls a
+# lifecycle tool — and only blocks (for human review, never a silent respawn
+# loop) when the turn budget is spent. This makes finalization deterministic
+# instead of depending on the model getting it right in one shot. Rendered into
+# the enqueuer's `kanban create` (kanban-enqueue-recurring.sh.j2).
+hermes_agent_kanban_goal_mode: true
+# Turn budget per goal-mode worker. Small on purpose: with the worker already
+# carrying the full card body, one or two nudges is enough to recover a missed
+# finalize; a genuinely stuck run should block for review quickly rather than
+# spend many turns (each judged turn is one auxiliary LLM call — see the judge
+# pin below). ponytail: single global budget; add a per-card override only if a
+# long deep-dive card actually needs more head-room.
+hermes_agent_kanban_goal_max_turns: 3
+# Model the goal judge runs on. Pinned to the light serving tier, NOT the resident
+# large brain: the judge fires per unfinalized turn, and routing it to the large
+# tier's single-concurrency deployment would compound the very saturation that
+# makes workers fail mid-run. The judge only emits a small continue/done verdict,
+# so a light model suffices; on the happy path the worker finalizes on turn 1 and
+# the loop exits on the status check BEFORE the judge is ever called. Must be a
+# real id the router serves (no aliases). ponytail: bump to a mid tier only if the
+# light model's verdict JSON parse-failures trip the loop's auto-pause.
+hermes_agent_kanban_goal_judge_model: qwen3-4b
+
 # --- Memory: best self-hostable as of June 2026 (Agy-validated) ---
 # Hindsight: local knowledge-graph + multi-strategy retrieval. Runs alongside the
 # always-on built-in MEMORY.md/USER.md. The whole HERMES_HOME is the durable surface.
