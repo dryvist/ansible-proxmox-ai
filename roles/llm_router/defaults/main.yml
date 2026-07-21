@@ -90,6 +90,62 @@ llm_router_llm_large_host: "{{ llm_large_serving_host }}"
 llm_router_llm_large_fqdn: "{{ llm_router_llm_large_host }}.{{ llm_router_apex_domain }}"
 llm_router_llm_large_base_url: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_router_large_port }}/v1"
 
+# --- Standby brain backend (default OFF) -------------------------------------
+# A SAME-MODEL, SAME-CONTEXT failover sibling for the default brain, addressing
+# the single-Studio brain SPOF (Zammad INC-17080: a Studio reboot takes the sole
+# large-tier backend unreachable, so Hermes' brain-watchdog pauses the cron
+# fleet). This is NOT a cross-tier alias: the standby serves the IDENTICAL model
+# id at the IDENTICAL context window, so it fails over without the
+# smaller-context "poison the caller" failure the no-cross-tier-fallback rule
+# guards against (a smaller-context fallback is still forbidden).
+#
+# TOPOLOGY = DEDICATED-PORT (lifecycle-e2e, 2026-07-19). The cluster-join
+# quiesce boots out the WHOLE main llama-swap agent (:11434) and reaps every
+# `vllm-mlx serve` proc, so a main-port OptiQ would die with it. Instead OptiQ
+# runs as its OWN launchd agent on its OWN gated port on the Studio (surviving
+# the SERVER_LABEL bootout); this standby entry points the hermes-brain (OptiQ)
+# failover group at THAT port. Same Studio, already TLS-gated — no new host,
+# no new exposure. The `standby: true` marker is on the OptiQ entry below.
+#
+# Default empty = DISABLED: with no URL set, the rendered config.yaml is
+# byte-identical to today (no standby deployment, no extra env var). To enable:
+#   1. nix: OptiQ resident + a dedicated exempt launchd agent/gated port that
+#      cluster-join's reap + zero-proc guard + watcher unload all EXCLUDE
+#      (lifecycle-e2e, sequenced after PR #1285 settles).
+#   2. Set llm_router_llm_large_standby_base_url to that port's /v1 URL and
+#      seed llm_router_llm_large_standby_bearer (OpenBao, same pattern).
+#
+# HARD SAFETY GATE — do NOT enable OptiQ+shard coexistence until the enforced
+# wired ceiling is DEPLOYED. The inert-guard bug is already FIXED on nix-darwin
+# #1769 (commit 960b73a, INC-17077): clusterMode.wiredLimitMb/dayWiredLimitMb
+# are wired from the clusterLinkPrep single source on both hosts (watcher plists
+# carry CLUSTER_WIRED_LIMIT_MB, sudoers emit matching values), eval-verified;
+# the ceiling RAISE to 118000 (Studio) also landed on #1769 (commit bb338fe).
+# #1769's engineering is therefore COMPLETE — the prerequisite is now purely
+# user action: MERGE #1769 + REBUILD both hosts. No unbuilt wiring hides here. The 49 GB shard + 19.5 GB OptiQ
+# arithmetic only holds under that enforced ceiling (unbounded wired stuck a
+# host at ~99 GB needing a reboot — INC-17076), and coexistence must be
+# validated EMPIRICALLY under it (cluster-join's INC-17075 swap guard must
+# pass), not assumed.
+# Dedicated exempt-OptiQ port = 11442 (lifecycle-e2e contract 2026-07-19). A NIX
+# LITERAL, not a tofu constant — the :1144x gate-site ports are nix literals
+# (cluster = clusterUpstreamPort 11440); the standalone OptiQ agent binds
+# 127.0.0.1:11442 and llm-gate fronts a THIRD gated site optiqUpstreamPort 11442
+# with the SAME bearer + cert as llm-large/cluster. Firm for now; e2e may bump to
+# 11450 for port-range margin and will confirm when the nix agent PR lands.
+llm_router_llm_large_standby_port: 11442
+# DEFAULT EMPTY = DISABLED: with no URL the standby block is skipped and the
+# rendered config.yaml/litellm.env are byte-identical to today (verified by
+# render). Merging this PR is therefore behavior-neutral — nothing changes on
+# converge until the URL below is set. To ACTIVATE (one line), only after
+# (a) the standalone :11442 OptiQ agent exists (nix, lifecycle-e2e) AND
+# (b) the enforced raised ceiling is deployed (user merges #1769 + rebuilds),
+# set this to the large FQDN + standby port /v1 URL — converging earlier routes
+# hermes-brain failover at a port that does not exist yet.
+llm_router_llm_large_standby_base_url: ""
+# Same bearer as the llm-large gate (the OptiQ site shares its token + cert).
+llm_router_llm_large_standby_bearer: "{{ llm_router_llm_large_bearer }}"
+
 # --- Model groups ------------------------------------------------------------
 # large: each entry is registered under the backend's OWN model id (the
 # serving gate lists models under their full MLX repo ids) — no alias names.
@@ -138,6 +194,12 @@ llm_router_large_models:
   - backend: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
     context_window: 65536
     extra_body: { repetition_penalty: 1.05 }
+    # Standby target for cluster windows: OptiQ is the hermes-brain (PR #59) and
+    # the only brain that stays resident beside the shard. Renders a second
+    # same-name deployment ONLY when llm_router_llm_large_standby_base_url is set
+    # (default empty = inert). See the standby var block above for the
+    # dedicated-port topology + the wired-ceiling safety gate.
+    standby: true
   # Qwen3-Next-80B Thinking: served from the nix-ai catalog swap tier, loaded
   # on demand — the escalation rubric's deep-analysis tier (ai_escalation_rubric,
   # all.yml) requests it by this real id. Block style (not the flow one-liner
