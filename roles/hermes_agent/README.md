@@ -19,6 +19,9 @@ VLAN.
 - Runs the `hermes gateway` daemon under a dedicated non-root `hermes` user via
   systemd. The gateway drives the built-in **cron** scheduler and the **Kanban**
   dispatcher (autonomy) even with no messaging platform configured.
+- Runs the separately authenticated `hermes dashboard` service on the published
+  dashboard port. Traefik exposes it at the no-port `hermes` hostname; the
+  existing `/webhooks/` route and `hermes-api` endpoint remain machine-only.
 - `HERMES_HOME` (`/var/lib/hermes/.hermes`) lives on a dedicated ZFS data volume —
   memory, skills, profiles, the Kanban DB, sessions and logs — so it is snapshotted
   and replicated to the DR node (the agent's accumulated knowledge is irreplaceable).
