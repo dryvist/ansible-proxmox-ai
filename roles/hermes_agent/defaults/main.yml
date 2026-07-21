@@ -825,6 +825,17 @@ hermes_agent_seeded_cron_names: >-
       | map('regex_replace', '$', '-enqueue') | list)
      + [hermes_agent_kanban_safety_net_cron_name] }}
 
+# The bare-named agentic crons that #83 replaced with `<job>-enqueue` script
+# crons. A guest provisioned before the migration still carries these; the
+# seeded/drift GC only matches the NEW `-enqueue` names, so without this
+# explicit list the old crons linger and double-fire alongside their enqueuer
+# twins (the role's stated "script-only" end state would be false on any
+# pre-migration guest). Removed if-present, so it is a no-op on fresh installs
+# and on every converge after the first post-migration one. The reviewer job
+# `review` had no pre-migration cron, so it is a harmless no-op in this list.
+hermes_agent_superseded_agentic_cron_names: >-
+  {{ hermes_agent_kanban_cards | map(attribute='job') | list }}
+
 # --- Context7 MCP client (current library/framework docs on demand) ---
 # Registers Context7 so Hermes can pull up-to-date, version-specific docs
 # mid-task. Bao-first, env fallback (see group_vars); the entry is omitted
@@ -947,9 +958,27 @@ hermes_agent_brain_watchdog_sustained_flap_rearm_seconds: 3600  # re-page at mos
 # Urgent page target. Same topic service_deadman pages on ("same feed as other
 # homelab outages", operator decision) — the brain is now a keystone.
 # FQDN-first: the Traefik-fronted ntfy service name; DHCP/DNS own the address.
+# The service lives on the PROXMOX_SUBDOMAIN zone (same zone the working brain
+# probe URL uses, hermes_agent_model_base_url). tofu_data.domain rendered the
+# bare parent zone instead, where the ntfy vhost has no route/cert — every page
+# failed the TLS/connect and was swallowed by the watchdog's `|| true`.
 hermes_agent_brain_watchdog_ntfy_topic: "keystone"
 hermes_agent_brain_watchdog_ntfy_url: >-
-  https://ntfy.{{ tofu_data.domain }}/{{ hermes_agent_brain_watchdog_ntfy_topic }}
+  https://ntfy.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/{{ hermes_agent_brain_watchdog_ntfy_topic }}
+
+# External deadman OK-ping (silent-Mac / LXC-down gap, INC-17114). The ntfy +
+# Slack alerts above only fire when THIS watchdog DETECTS a brain outage — they
+# run on this LXC, so a powered-off LXC, a masked timer, or a wedged systemd
+# silences them with no page at all. So on every healthy probe the watchdog also
+# pings an external healthchecks-style deadman; when that ping STOPS (this host
+# gone, timer dead, or the brain unreachable — which includes a silent Mac
+# serving host), the external service pages on its own. Injection-agnostic: the
+# full ping URL is read from the environment (provision a check in the
+# healthchecks LXC and export its URL, mirroring the service_deadman
+# DEADMAN_HC_URL_* convention). Empty => ping skipped, all other behaviour
+# unchanged.
+hermes_agent_brain_watchdog_healthcheck_url: >-
+  {{ lookup('env', 'DEADMAN_HC_URL_HERMES_BRAIN') | default('', true) }}
 
 # --- Brain runtime source: OpenBao, no converge needed to re-point ----------
 # tofu/Ansible seed the STARTING brain (ai_default_model, config.yaml.j2) but

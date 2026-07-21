@@ -382,6 +382,27 @@
        | map(attribute='name') | list }}
   changed_when: true
 
+# One-time (but idempotent) migration cleanup (#83): a guest provisioned before
+# the Kanban migration still runs the OLD bare-named agentic crons. The drift GC
+# above only matches the new `-enqueue` names, so those old crons would linger
+# and double-fire alongside their enqueuer twins. Remove any superseded bare
+# name that is actually present in the store. Reuses the slurp above (the drift
+# task only touches `-enqueue` names, so the bare-name view is still accurate);
+# self-safe base64("{}") default makes a missing jobs.json a no-op. Empty loop
+# after the first converge -> idempotent.
+- name: "Remove superseded pre-migration agentic cron jobs (kanban migration #83)"
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron remove {{ item }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  loop: >-
+    {{ (hermes_agent_cron_store.content | default('e30=', true) | b64decode | from_json).jobs
+       | default([])
+       | map(attribute='name') | list
+       | select('in', hermes_agent_superseded_agentic_cron_names) | list }}
+  changed_when: true
+
 # The recurring agentic workloads (daily status, operator summary, Zammad
 # review, Splunk fleet, GitHub triage, nightly wiki) are dispatched as Kanban
 # cards now, not agentic crons (kanban migration, #83). They are enqueued by the

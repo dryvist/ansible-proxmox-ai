@@ -281,7 +281,11 @@ per card**, so a corrupted session can never carry forward between runs
 --no-agent --script` jobs — one per workload, on the same schedule the old
 agentic cron used, plus one daily safety net — enqueues the cards. These crons
 run a script only (no LLM session, nothing to poison); `hermes cron list` is
-now script-only. Each card carries an idempotency key `<job>-<slot>`, so a
+now script-only. On a guest provisioned before the migration, the converge
+removes the old bare-named agentic crons
+(`hermes_agent_superseded_agentic_cron_names`) so they cannot double-fire
+alongside their `-enqueue` twins. Each card carries an idempotency key
+`<job>-<slot>`, so a
 double-fire or backfill never duplicates a card.
 
 A self-perpetuating **8h reviewer** card (00:00 / 08:00 / 16:00 UTC) reviews the
@@ -442,21 +446,30 @@ proxy this repo doesn't otherwise need.
 | `hermes_agent_brain_watchdog_up_after` | `2` | Consecutive oks → resume + alert |
 | `hermes_agent_brain_watchdog_flap_cooldown_seconds` | `3600` | Post-cycle window that coalesces further edges into one summary |
 | `hermes_agent_brain_watchdog_ntfy_topic` | `keystone` | ntfy topic for the urgent page |
+| `hermes_agent_brain_watchdog_healthcheck_url` | `''` (env `DEADMAN_HC_URL_HERMES_BRAIN`) | External deadman OK-ping target; empty = ping skipped |
 
 ### Watchdog self-monitoring ("who watches the watchdog")
 
-The watchdog above only alerts when its *probe* detects the brain down — it
-says nothing if the watchdog **script itself crashes** or its timer gets
-disabled/masked. This homelab's real deadman/heartbeat mechanism,
-`service_deadman`, cannot be wired in from this repo: that role lives entirely
-in the sibling `ansible-proxmox-apps` repo, is a closed dict of exactly 4
-keystone groups (DNS/Traefik/HAProxy/OpenBao), and its `healthchecks_docker`
-provisioning role is apps-owned too. Extending it needs a cross-repo PR and a
-design call (new group name, healthchecks check + secret provisioning) — see
-the tracked `ansible-proxmox-apps` issue *"service_deadman: add
-hermes-brain-watchdog as a monitored check"*.
+The watchdog's ntfy + Slack alerts only fire when its *probe* detects the brain
+down, and they run **on this LXC** — so a powered-off LXC, a masked timer, or a
+wedged systemd silences them with no page. Two mechanisms cover that blind spot,
+one external and one same-repo.
 
-Until that lands, this repo ships a **same-repo stopgap**: a systemd
+**External deadman (the real absence detector).** On every healthy probe the
+watchdog pings a healthchecks-style deadman URL (`hc_ping`, from
+`hermes_agent_brain_watchdog_healthcheck_url`). The ping stops whenever this host
+is gone, its timer is dead, or the brain is unreachable — and "brain unreachable"
+includes a silent serving host, since the probe runs the completion end-to-end.
+When the pings stop, the external service pages on its own, with no dependency on
+anything running here. This mirrors the `service_deadman` convention in the
+sibling `ansible-proxmox-apps` repo: the full ping URL comes from the environment
+(`DEADMAN_HC_URL_HERMES_BRAIN`), so the check is **provisioned out-of-band** in
+the healthchecks instance and its URL exported at converge. Empty URL = no-op, so
+the watchdog runs unchanged until the check is provisioned. Provisioning that
+external check (and exporting its URL) is the one manual step this does not — and
+cannot, read-only — automate.
+
+**Same-repo stopgap (fast crash paging).** A systemd
 `OnFailure=` on `hermes-brain-watchdog.service` triggers
 `hermes-brain-watchdog-alert.service`, which fires an urgent ntfy push. It
 only triggers on a **crashed probe cycle** (an unhandled script error) —
@@ -465,11 +478,13 @@ the watchdog script itself, so this never doubles up with the alert above.
 The alert script runs as root with no dependency on the hermes user or
 `.env`, so a broken watchdog environment can't also silence it.
 
-**Partial coverage — not the real fix.** This catches the watchdog *process*
-crashing. It does **not** catch the timer being disabled/masked, or systemd
-itself wedging — those need true deadman semantics (a healthchecks-style
-missed-ping page), which only the apps-owned `healthchecks_docker` role can
-provision. Repeat alerts are rate-limited by systemd's own `StartLimit*` on
+**Fast, but narrow.** The `OnFailure=` stopgap catches only the watchdog
+*process* crashing — not the timer being disabled/masked, nor systemd itself
+wedging. Those are exactly the cases the external deadman ping above covers
+(a masked timer stops pinging, so the check pages), which is why both exist:
+the `OnFailure=` unit pages within one cycle on a crash, and the external
+deadman backstops every silent-absence case the crash path structurally
+cannot see. Repeat alerts are rate-limited by systemd's own `StartLimit*` on
 the alert unit (not the watchdog's probe cadence: `StartLimitIntervalSec=1h`,
 `StartLimitBurst=1`), so a persistently crashing watchdog pages once per hour
 instead of every probe cycle.
