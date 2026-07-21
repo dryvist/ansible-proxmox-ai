@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.9.0...v0.10.0) (2026-07-21)
+
+
+### Features
+
+* **hermes_agent:** ping external deadman on healthy brain probe ([#102](https://github.com/dryvist/ansible-proxmox-ai/issues/102)) ([3a5aaa4](https://github.com/dryvist/ansible-proxmox-ai/commit/3a5aaa42c16b3ed7905bade9f946a44b9adb8e11))
+
+
+### Bug Fixes
+
+* **hermes_agent:** remove superseded agentic crons on kanban converge ([#105](https://github.com/dryvist/ansible-proxmox-ai/issues/105)) ([66e241e](https://github.com/dryvist/ansible-proxmox-ai/commit/66e241e480382605aabe5130b2eb653f76cbe9c6))
+* **hermes:** point brain-watchdog ntfy page at the correct DNS zone ([#101](https://github.com/dryvist/ansible-proxmox-ai/issues/101)) ([f65f7d2](https://github.com/dryvist/ansible-proxmox-ai/commit/f65f7d29eb035bafa61a8a4307862fdc1e8608f5))
+
 ## [0.9.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.8.0...v0.9.0) (2026-07-21)
 
 
