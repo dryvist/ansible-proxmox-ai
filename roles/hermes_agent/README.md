@@ -182,17 +182,19 @@ with its own scoped identity. The URL and Bearer token are referenced as
 `${SPLUNK_MCP_URL}` / `${SPLUNK_MCP_TOKEN}` and resolved from `.env` at connect
 time, so neither the endpoint nor the token ever lands in `config.yaml`.
 
-Creds come from the shared OpenBao `secret/ai/mcp/splunk` path (merged into
-`bao_local_llm_secrets`) with an env fallback. `ansible-splunk` publishes the
-existing shared Splunk service identity as `SPLUNK_MCP_URL` and
-`SPLUNK_MCP_TOKEN`. The
-`mcp_servers.splunk` entry is omitted until the URL is set, so the agent starts
-cleanly before the creds exist.
+The URL is the shared agentgateway `/splunk` route (built from
+`PROXMOX_SUBDOMAIN` in the role defaults, non-secret), same posture as the
+context7/qdrant routes — the gateway federates to the Splunk MCP Server. The
+Bearer token stays bao-first: it comes from the shared OpenBao
+`secret/ai/mcp/splunk` path (merged into `bao_local_llm_secrets`) with an env
+fallback, and is the remaining credential — empty until seeded. The
+`mcp_servers.splunk` entry is omitted only if the URL is empty, so the agent
+starts cleanly regardless.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `hermes_agent_splunk_mcp_enabled` | `true` | Register the Splunk MCP server |
-| `hermes_agent_splunk_mcp_url` | `""` | Splunk MCP Server endpoint (bao/env) |
+| `hermes_agent_splunk_mcp_url` | `mcp.<sub>/splunk` | Agentgateway route (non-secret) |
 | `hermes_agent_splunk_mcp_token` | `""` | Bearer token (bao/env) |
 
 ## Splunk monitoring (self-directed 24/7 analyst)
