@@ -35,23 +35,10 @@ def create_task(conn, *, idempotency_key=None, goal_mode=False, goal_max_turns=N
     raise RuntimeError("insert path")
 '''
 PINNED_GOAL_COMPLETION_SOURCE = "                    verdict, reason, _ = judge_goal(\n"
-PINNED_JUDGE_CALL_SOURCE = '''\
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0,
-            max_tokens=_goal_judge_max_tokens(),
-            timeout=timeout,
-            extra_body=get_auxiliary_extra_body() or None,
-        )
-    except Exception as exc:
-        logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
-        return "continue", f"judge error: {type(exc).__name__}", False, None
-'''
+PINNED_RETRY_DELAY_SOURCE = (
+    "                wait_time = _retry_after if _retry_after else "
+    "jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)\n"
+)
 PINNED_WORKER_SPAWN_SOURCE = '''\
 def build_worker_argv(task, prompt):
     cmd = []
@@ -151,12 +138,8 @@ def _source_postconditions(
         "hermes_agent_goal_reconcile_source": reconcile_source,
         "hermes_agent_goal_judge_source": (
             "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
-            "DEFAULT_JUDGE_RETRY_DELAYS = (10, 30, 60, 180)\n"
-            "for attempt in range(len(DEFAULT_JUDGE_RETRY_DELAYS) + 1):\n"
-            "time.sleep(delay)\n"
         ),
         "hermes_agent_kanban_goal_judge_timeout_seconds": 60,
-        "hermes_agent_kanban_goal_judge_retry_delays": [10, 30, 60, 180],
     }
     return tuple(
         bool(environment.compile_expression(condition)(**context))
@@ -172,16 +155,16 @@ def test_goal_completion_patch_uses_current_judge_contract() -> None:
     assert "verdict, reason, _, _ = judge_goal(" in patched
 
 
-def test_goal_judge_retry_patch_is_bounded_and_transient_only() -> None:
+def test_model_calls_retry_once_after_fifteen_seconds() -> None:
+    config_template = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
+    assert "api_max_retries: 2" in config_template
+
     patched = _apply_runtime_patch(
-        "Patch Hermes goal judge with bounded transient retries",
-        PINNED_JUDGE_CALL_SOURCE,
+        "Patch Hermes model retry delay for the local serial backend",
+        PINNED_RETRY_DELAY_SOURCE,
     )
-    assert "for attempt in range(len(DEFAULT_JUDGE_RETRY_DELAYS) + 1):" in patched
-    assert "status in {408, 409, 425, 429}" in patched
-    assert "status >= 500" in patched
-    assert "time.sleep(delay)" in patched
-    assert "AuthenticationError" not in patched
+    assert "wait_time = 15.0" in patched
+    assert "jittered_backoff" not in patched
 
 
 def test_worker_spawn_patch_enters_quiet_goal_loop_path() -> None:
