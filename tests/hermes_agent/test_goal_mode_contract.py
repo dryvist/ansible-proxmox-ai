@@ -44,8 +44,7 @@ PINNED_INVALID_RESPONSE_RETRY_SOURCE = (
     "retry_count, base_delay=5.0, max_delay=120.0)\n"
 )
 PINNED_ADAPTIVE_BACKOFF_SOURCE = (
-    "                if (is_rate_limited or _is_zai_coding_overload) "
-    "and not _retry_after:\n"
+    "                if is_rate_limited and not _retry_after:\n"
 )
 PINNED_TRANSPORT_RECOVERY_SOURCE = (
     "                    if not _retry.primary_recovery_attempted and "
