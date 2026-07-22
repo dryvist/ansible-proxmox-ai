@@ -171,6 +171,100 @@
     replace: '\1_boost_cap = agent.max_tokens if agent.max_tokens else max(32768, _requested_cap or 0)'
   notify: Restart hermes-gateway
 
+# The compressor can retain an end offset computed before tool-message cleanup.
+# Clamp it to the current list length so scheduled runs do not abort on IndexError.
+- name: Patch hermes-agent context summary scan to use the live message bound
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/agent/context_compressor.py"
+    regexp: '^(\s*)for idx in range\(end - 1, start - 1, -1\):$'
+    replace: '\1for idx in range(min(end, len(messages)) - 1, start - 1, -1):'
+  notify: Restart hermes-gateway
+
+# Pinned Hermes returns four values from judge_goal, while kanban_complete still
+# unpacks the former three-value contract. The caught ValueError silently makes
+# the completion gate fail open. Keep the installed source consistent until the
+# pinned release includes the upstream fix.
+- name: Patch Hermes goal completion gate for the four-value judge result
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/tools/kanban_tools.py"
+    regexp: '^([ \t]*)verdict, reason, _ = judge_goal\($'
+    replace: '\1verdict, reason, _, _ = judge_goal('
+  notify: Restart hermes-gateway
+
+# An idempotency hit returns before create_task applies new fields. Upgrade only
+# active goal-enabled repeats in place so a current-slot card is reconciled
+# without mutating completed history or downgrading an existing goal card.
+- name: Patch Hermes idempotent create to reconcile goal-mode fields
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: |-
+      ^([ \t]*)row = conn\.execute\($
+      \1    "SELECT id FROM tasks WHERE idempotency_key = \? "$
+      \1    "AND status != 'archived' "$
+      \1    "ORDER BY created_at DESC LIMIT 1",$
+      \1    \(idempotency_key,\),$
+      \1\)\.fetchone\(\)$
+      \1if row:$
+      \1    return row\["id"\]$
+    replace: |-
+      \1row = conn.execute(
+      \1    "SELECT id, status FROM tasks WHERE idempotency_key = ? "
+      \1    "AND status != 'archived' "
+      \1    "ORDER BY created_at DESC LIMIT 1",
+      \1    (idempotency_key,),
+      \1).fetchone()
+      \1if row:
+      \1    if goal_mode and row["status"] in ("triage", "todo", "scheduled", "ready", "blocked", "review"):
+      \1        with write_txn(conn):
+      \1            conn.execute(
+      \1                "UPDATE tasks SET goal_mode = 1, "
+      \1                "goal_max_turns = COALESCE(?, goal_max_turns) "
+      \1                "WHERE id = ? AND status IN "
+      \1                "('triage', 'todo', 'scheduled', 'ready', 'blocked', 'review')",
+      \1                (int(goal_max_turns) if goal_max_turns is not None else None, row["id"]),
+      \1            )
+      \1    return row["id"]
+  notify: Restart hermes-gateway
+
+- name: Read installed Hermes goal-mode source patches
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop:
+    - "{{ hermes_agent_install_dir }}/tools/kanban_tools.py"
+    - "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+  register: hermes_agent_goal_mode_sources
+  changed_when: false
+
+- name: Assert installed Hermes goal-mode source patches
+  vars:
+    hermes_agent_goal_completion_source: >-
+      {{ hermes_agent_goal_mode_sources.results[0].content | b64decode }}
+    hermes_agent_goal_reconcile_source: >-
+      {{ hermes_agent_goal_mode_sources.results[1].content | b64decode }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "'verdict, reason, _, _ = judge_goal(' in hermes_agent_goal_completion_source"
+      - >-
+        'SELECT id, status FROM tasks WHERE idempotency_key = ?'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'if goal_mode and row["status"] in ("triage", "todo", "scheduled", "ready", "blocked", "review"):'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'goal_max_turns = COALESCE(?, goal_max_turns)'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'WHERE id = ? AND status IN'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        "('triage', 'todo', 'scheduled', 'ready', 'blocked', 'review')"
+        in hermes_agent_goal_reconcile_source
+    fail_msg: >-
+      The pinned Hermes source changed and one or more required goal-mode
+      patches were not installed; update the pinned-source patches before
+      converging.
+
 - name: Check whether the Hermes OTEL plugin file exists
   ansible.builtin.stat:
     path: "{{ hermes_agent_install_dir }}/plugins/observability/otel/__init__.py"
