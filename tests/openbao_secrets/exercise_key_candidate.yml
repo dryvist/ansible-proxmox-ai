@@ -1,0 +1,34 @@
+---
+- name: Set fetched-key fixture | {{ key_candidate_fixture.name }}
+  ansible.builtin.set_fact:
+    openbao_secrets_by_domain: >-
+      {{ {'local-llm': {
+           openbao_secrets_hermes_api_key_field: key_candidate_fixture.value,
+           'sibling': 'preserve-me'}} }}
+    openbao_secrets_hermes_api_key_fallback: ""
+    malformed_candidate_entered_writer: false
+  delegate_to: localhost
+  delegate_facts: true
+
+- name: Execute fetched-key path | {{ key_candidate_fixture.name }}
+  block:
+    - name: Include the production seed tasks for {{ key_candidate_fixture.name }}
+      ansible.builtin.include_tasks: >-
+        ../../roles/openbao_secrets/tasks/seed_hermes_api_key.yml
+      vars:
+        openbao_secrets_hermes_writer_token: ""
+        openbao_secrets_hermes_api_key_fallback: ""
+
+  rescue:
+    - name: Record writer-lane entry for {{ key_candidate_fixture.name }}
+      ansible.builtin.set_fact:
+        malformed_candidate_entered_writer: true
+
+- name: Assert candidate is missing, not usable | {{ key_candidate_fixture.name }}
+  ansible.builtin.assert:
+    that:
+      - malformed_candidate_entered_writer | bool
+      - not (hostvars['localhost'].openbao_secrets_hermes_api_key_present | bool)
+      - >-
+        hostvars['localhost'].openbao_secrets_by_domain['local-llm'].sibling
+        == 'preserve-me'
