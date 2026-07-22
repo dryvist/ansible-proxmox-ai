@@ -14,3 +14,4 @@ def test_rsyslog_routes_unit_children_and_file_logs() -> None:
     assert "$!_SYSTEMD_UNIT startswith 'hermes-'" in RSYSLOG
     assert 'File="{{ hermes_agent_log_directory }}/*.log"' in RSYSLOG
     assert 'Ruleset="hermes_agent"' in RSYSLOG
+    assert 'freshStartTail="off"' in RSYSLOG

@@ -198,13 +198,34 @@
     replace: 'DEFAULT_JUDGE_TIMEOUT = {{ hermes_agent_kanban_goal_judge_timeout_seconds | float }}'
   notify: Restart hermes-gateway
 
-- name: Patch Hermes model retry delay for the local serial backend
+- name: Patch Hermes exception retry delay for the local serial backend
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
     regexp: >-
       ^([ \t]*)wait_time = _retry_after if _retry_after else
       jittered_backoff\(retry_count, base_delay=2\.0, max_delay=60\.0\)$
     replace: '\g<1>wait_time = 15.0'
+  notify: Restart hermes-gateway
+
+- name: Patch Hermes invalid-response retry delay for the local serial backend
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
+    regexp: '^([ \t]*)wait_time = jittered_backoff\(retry_count, base_delay=5\.0, max_delay=120\.0\)$'
+    replace: '\g<1>wait_time = 15.0'
+  notify: Restart hermes-gateway
+
+- name: Disable adaptive rate-limit backoff for the local serial backend
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
+    regexp: '^([ \t]*)if \(is_rate_limited or _is_zai_coding_overload\) and not _retry_after:$'
+    replace: '\g<1>if False and (is_rate_limited or _is_zai_coding_overload) and not _retry_after:'
+  notify: Restart hermes-gateway
+
+- name: Disable the extra transport-recovery attempt cycle
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
+    regexp: '^([ \t]*)if not _retry\.primary_recovery_attempted and agent\._try_recover_primary_transport\($'
+    replace: '\g<1>if False and not _retry.primary_recovery_attempted and agent._try_recover_primary_transport('
   notify: Restart hermes-gateway
 
 # The dispatcher sets HERMES_KANBAN_GOAL_MODE, but the pinned CLI only invokes
@@ -262,6 +283,7 @@
     - "{{ hermes_agent_install_dir }}/tools/kanban_tools.py"
     - "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
     - "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
+    - "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
   register: hermes_agent_goal_mode_sources
   changed_when: false
 
@@ -273,6 +295,8 @@
       {{ hermes_agent_goal_mode_sources.results[1].content | b64decode }}
     hermes_agent_goal_judge_source: >-
       {{ hermes_agent_goal_mode_sources.results[2].content | b64decode }}
+    hermes_agent_retry_source: >-
+      {{ hermes_agent_goal_mode_sources.results[3].content | b64decode }}
   ansible.builtin.assert:
     quiet: true
     that:
@@ -299,6 +323,13 @@
         ('DEFAULT_JUDGE_TIMEOUT = '
          ~ (hermes_agent_kanban_goal_judge_timeout_seconds | float | string))
         in hermes_agent_goal_judge_source
+      - "hermes_agent_retry_source.count('wait_time = 15.0') >= 2"
+      - >-
+        'if False and (is_rate_limited or _is_zai_coding_overload) and not _retry_after:'
+        in hermes_agent_retry_source
+      - >-
+        'if False and not _retry.primary_recovery_attempted and agent._try_recover_primary_transport('
+        in hermes_agent_retry_source
     fail_msg: >-
       The pinned Hermes source changed and one or more required goal-mode
       patches were not installed; update the pinned-source patches before
@@ -756,13 +787,21 @@
 # tokens that seed the spammy fleet in the first place — no fleet, nothing to
 # guard. It remains available but disabled while Hermes uses its direct
 # one-retry request policy.
+- name: Check for the retained Hermes brain-health watchdog timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/hermes-brain-watchdog.timer
+  register: hermes_agent_brain_watchdog_timer_unit
+  when: not (hermes_agent_brain_watchdog_enabled | bool)
+
 - name: Stop and disable the Hermes brain-health watchdog timer
   ansible.builtin.systemd:
     name: hermes-brain-watchdog.timer
     state: stopped
     enabled: false
     daemon_reload: true
-  when: not (hermes_agent_brain_watchdog_enabled | bool)
+  when:
+    - not (hermes_agent_brain_watchdog_enabled | bool)
+    - hermes_agent_brain_watchdog_timer_unit.stat.exists | default(false)
 
 - name: Deploy the Hermes brain-health watchdog script
   ansible.builtin.template:

@@ -72,19 +72,25 @@
       changed_when: true
       failed_when: false
 
+    - name: Check for the retained brain-health watchdog timer
+      ansible.builtin.stat:
+        path: /etc/systemd/system/hermes-brain-watchdog.timer
+      register: watchdog_timer_unit
+
     - name: Keep the brain-health watchdog timer disabled
       ansible.builtin.systemd:
         name: hermes-brain-watchdog.timer
         state: stopped
         enabled: false
         daemon_reload: true
+      when: watchdog_timer_unit.stat.exists
 
     - name: Verify watchdog timer inactive
       ansible.builtin.systemd:
         name: hermes-brain-watchdog.timer
       register: wd_state
       changed_when: false
-      failed_when: false
+      when: watchdog_timer_unit.stat.exists
 
     - name: Verify cron fleet resumed
       ansible.builtin.command: "{{ hermes_bin }} cron list --all"
@@ -98,5 +104,5 @@
     - name: Report verification (grep this in the run output)
       ansible.builtin.debug:
         msg: >-
-          CLUSTER_RESUME_VERIFY watchdog_is_active={{ wd_state.status.ActiveState | default('unknown', true) }}
+          CLUSTER_RESUME_VERIFY watchdog_is_active={{ wd_state.status.ActiveState | default('inactive', true) }}
           (want inactive) ---CRON_LIST--- {{ cron_list.stdout }}

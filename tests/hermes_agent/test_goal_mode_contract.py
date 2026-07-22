@@ -39,6 +39,18 @@ PINNED_RETRY_DELAY_SOURCE = (
     "                wait_time = _retry_after if _retry_after else "
     "jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)\n"
 )
+PINNED_INVALID_RESPONSE_RETRY_SOURCE = (
+    "                    wait_time = jittered_backoff("
+    "retry_count, base_delay=5.0, max_delay=120.0)\n"
+)
+PINNED_ADAPTIVE_BACKOFF_SOURCE = (
+    "                if (is_rate_limited or _is_zai_coding_overload) "
+    "and not _retry_after:\n"
+)
+PINNED_TRANSPORT_RECOVERY_SOURCE = (
+    "                    if not _retry.primary_recovery_attempted and "
+    "agent._try_recover_primary_transport(\n"
+)
 PINNED_WORKER_SPAWN_SOURCE = '''\
 def build_worker_argv(task, prompt):
     cmd = []
@@ -129,7 +141,7 @@ def _render_reviewer_prompt(goal_mode: bool) -> str:
 
 
 def _source_postconditions(
-    completion_source: str, reconcile_source: str
+    completion_source: str, reconcile_source: str, retry_source: str
 ) -> tuple[bool, ...]:
     task = _task("Assert installed Hermes goal-mode source patches")
     environment = Environment(autoescape=False)
@@ -140,6 +152,7 @@ def _source_postconditions(
             "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
         ),
         "hermes_agent_kanban_goal_judge_timeout_seconds": 60,
+        "hermes_agent_retry_source": retry_source,
     }
     return tuple(
         bool(environment.compile_expression(condition)(**context))
@@ -160,11 +173,29 @@ def test_model_calls_retry_once_after_fifteen_seconds() -> None:
     assert "api_max_retries: 2" in config_template
 
     patched = _apply_runtime_patch(
-        "Patch Hermes model retry delay for the local serial backend",
+        "Patch Hermes exception retry delay for the local serial backend",
         PINNED_RETRY_DELAY_SOURCE,
     )
     assert "wait_time = 15.0" in patched
     assert "jittered_backoff" not in patched
+
+    invalid_response = _apply_runtime_patch(
+        "Patch Hermes invalid-response retry delay for the local serial backend",
+        PINNED_INVALID_RESPONSE_RETRY_SOURCE,
+    )
+    assert "wait_time = 15.0" in invalid_response
+
+    adaptive = _apply_runtime_patch(
+        "Disable adaptive rate-limit backoff for the local serial backend",
+        PINNED_ADAPTIVE_BACKOFF_SOURCE,
+    )
+    assert "if False and" in adaptive
+
+    transport = _apply_runtime_patch(
+        "Disable the extra transport-recovery attempt cycle",
+        PINNED_TRANSPORT_RECOVERY_SOURCE,
+    )
+    assert "if False and" in transport
 
 
 def test_worker_spawn_patch_enters_quiet_goal_loop_path() -> None:
@@ -344,16 +375,38 @@ def test_installed_source_postconditions_fail_closed() -> None:
         )
         + reconcile_source
     )
-    assert all(_source_postconditions(completion_source, reconcile_source))
+    retry_source = "".join(
+        (
+            _apply_runtime_patch(
+                "Patch Hermes exception retry delay for the local serial backend",
+                PINNED_RETRY_DELAY_SOURCE,
+            ),
+            _apply_runtime_patch(
+                "Patch Hermes invalid-response retry delay for the local serial backend",
+                PINNED_INVALID_RESPONSE_RETRY_SOURCE,
+            ),
+            _apply_runtime_patch(
+                "Disable adaptive rate-limit backoff for the local serial backend",
+                PINNED_ADAPTIVE_BACKOFF_SOURCE,
+            ),
+            _apply_runtime_patch(
+                "Disable the extra transport-recovery attempt cycle",
+                PINNED_TRANSPORT_RECOVERY_SOURCE,
+            ),
+        )
+    )
+    assert all(_source_postconditions(completion_source, reconcile_source, retry_source))
     assert not all(
         _source_postconditions(
             PINNED_GOAL_COMPLETION_SOURCE,
             PINNED_CREATE_TASK_SOURCE,
+            PINNED_RETRY_DELAY_SOURCE,
         )
     )
     assert not all(
         _source_postconditions(
             completion_source,
             reconcile_source.replace("COALESCE(?, goal_max_turns)", "?"),
+            retry_source,
         )
     )
