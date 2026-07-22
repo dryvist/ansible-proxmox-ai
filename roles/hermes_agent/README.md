@@ -444,7 +444,7 @@ proxy this repo doesn't otherwise need.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `hermes_agent_brain_watchdog_enabled` | `true` | Deploy + start the watchdog timer |
+| `hermes_agent_brain_watchdog_enabled` | `false` | Preserve the watchdog implementation without scheduling it |
 | `hermes_agent_brain_watchdog_interval` | `60s` | Probe cadence (`OnUnitActiveSec`) |
 | `hermes_agent_brain_watchdog_probe_timeout` | `15` | Per-probe curl deadline (seconds) |
 | `hermes_agent_brain_watchdog_down_after` | `3` | Consecutive fails → pause + alert |
