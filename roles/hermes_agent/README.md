@@ -177,6 +177,17 @@ the `hermes` index are provisioned by `ansible-proxmox-apps` / `ansible-splunk`.
 | `hermes_agent_syslog_host` | `syslog.{{ PROXMOX_SUBDOMAIN }}` | ingest FQDN |
 | `hermes_agent_syslog_port` | `ai_log_routing.hermes_agent.port` (tofu) | ingest TCP port |
 
+Use this public-safe timeline search to see each event at second precision and
+the extracted model latency where Hermes emitted it:
+
+```spl
+index=hermes
+| eval log_stream=if(match(_raw, "hermes-file"), "file", "systemd")
+| eval duration_seconds=round(latency, 3)
+| sort 0 _time
+| table _time log_stream session model duration_seconds _raw
+```
+
 ## Splunk search access
 
 Registers the **Splunk MCP Server** (Splunkbase 7931, deployed by `ansible-splunk`)
