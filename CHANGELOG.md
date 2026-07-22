@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.13.0...v0.13.1) (2026-07-22)
+
+
+### Bug Fixes
+
+* **openbao:** seed Hermes API key atomically ([bc1aa69](https://github.com/dryvist/ansible-proxmox-ai/commit/bc1aa6921aa2a601fec47dba408fa3e21030414c))
+* **openbao:** seed Hermes API key atomically ([f78f11b](https://github.com/dryvist/ansible-proxmox-ai/commit/f78f11bdc1427176590f0d852dcdbe98da03da1b))
+
 ## [0.13.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.12.0...v0.13.0) (2026-07-22)
 
 
