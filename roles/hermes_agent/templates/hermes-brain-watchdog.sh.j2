@@ -97,14 +97,20 @@ probe_ok() {
 }
 
 # --- Cron fleet control (best-effort; idempotent) ----------------------------
-# HERMES_HOME comes from the unit's Environment=. pause/resume are no-ops on an
-# already-paused/active job; a missing job just logs and is ignored.
+# HERMES_HOME comes from the unit's Environment=. Track command outcomes so
+# recovery alerts cannot claim the static desired-job count as a live result.
+CRON_SUCCEEDED=0
+CRON_FAILED=0
 cron_do() {
   local verb="$1" job
+  CRON_SUCCEEDED=0
+  CRON_FAILED=0
   for job in "${SEEDED_JOBS[@]}"; do
     if "${HERMES_BIN}" cron "${verb}" "${job}" >/dev/null 2>&1; then
+      CRON_SUCCEEDED=$(( CRON_SUCCEEDED + 1 ))
       logger -t hermes-brain-watchdog "${verb}d ${job}"
     else
+      CRON_FAILED=$(( CRON_FAILED + 1 ))
       logger -t hermes-brain-watchdog "${verb} skipped (missing/already ${verb}d): ${job}"
     fi
   done
@@ -155,9 +161,9 @@ alert() {
   local kind="$1" msg now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if [[ "${kind}" == "down" ]]; then
-    msg=":warning: Hermes brain unreachable (${MODEL} via ${BASE_URL}) since ${now} -- paused ${JOB_COUNT} seeded cron jobs; will auto-resume on recovery."
+    msg=":warning: Hermes brain unreachable (${MODEL} via ${BASE_URL}) since ${now} -- pause commands succeeded=${CRON_SUCCEEDED} failed=${CRON_FAILED} desired=${JOB_COUNT}; this does not verify Kanban queue health."
   else
-    msg=":white_check_mark: Hermes brain recovered at ${now} -- resumed ${JOB_COUNT} seeded cron jobs."
+    msg=":white_check_mark: Hermes brain recovered at ${now} -- resume commands succeeded=${CRON_SUCCEEDED} failed=${CRON_FAILED} desired=${JOB_COUNT}; Slack delivery still requires queue verification."
   fi
   logger -t hermes-brain-watchdog "${msg}"
   slack_post "${msg}"
