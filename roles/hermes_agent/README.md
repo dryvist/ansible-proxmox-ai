@@ -160,10 +160,10 @@ and GraphQL (Projects v2) calls and the usage guardrails.
 
 ## Operational log shipping (index=hermes)
 
-Ships the `hermes-*` systemd units' journal logs (gateway, brain watchdog, brain
-sync) to a dedicated Splunk `index=hermes`, so agent health is searchable apart
-from the shared `os` index. A drop-in rsyslog ruleset forwards only lines whose
-`programname` starts with `hermes` over TCP to the `hermes_agent` AI ingest
+Ships every `hermes-*` systemd unit record and active `.hermes/logs/*.log` file
+to a dedicated Splunk `index=hermes`, so agent health is searchable apart from
+the shared `os` index. The rsyslog unit match also captures child processes
+whose `programname` is not `hermes`. Both sources forward to the `hermes_agent` AI ingest
 listener (`syslog.${PROXMOX_SUBDOMAIN}`, port from `tofu_data`), then `stop`s
 them so they never also double-ship into `os`. Mirrors the `openbao_audit`
 shipping pattern. The port/index/sourcetype are the single tofu-constants
@@ -173,6 +173,7 @@ the `hermes` index are provisioned by `ansible-proxmox-apps` / `ansible-splunk`.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `hermes_agent_syslog_route_enabled` | `true` | Deploy the rsyslog forward |
+| `hermes_agent_log_directory` | `.hermes/logs` | Active Hermes file logs to forward |
 | `hermes_agent_syslog_host` | `syslog.{{ PROXMOX_SUBDOMAIN }}` | ingest FQDN |
 | `hermes_agent_syslog_port` | `ai_log_routing.hermes_agent.port` (tofu) | ingest TCP port |
 

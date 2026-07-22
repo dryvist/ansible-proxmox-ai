@@ -1,13 +1,14 @@
 # {{ ansible_managed }}
-# Ship the hermes-* systemd unit logs to the hermes_agent AI ingest listener:
-#   journald (hermes-gateway / hermes-brain-watchdog / hermes-brain-sync)
+# Ship all Hermes logs to the hermes_agent AI ingest listener:
+#   journald (every hermes-* unit, including differently tagged child processes)
+#   + {{ hermes_agent_log_directory }}/*.log
 #   -> {{ hermes_agent_syslog_host }}:{{ hermes_agent_syslog_port }} (tcp)
 #   -> HAProxy -> Cribl Stream (ai_stamp) -> Splunk index=hermes.
 #
 # rsyslog ingests the journal by default on Debian, so every hermes-* unit's
-# lines arrive on the default ruleset tagged with its programname. The DEDICATED
-# ruleset below is load-bearing: `call`-ed only for programname startswith
-# 'hermes', it forwards those lines and `stop`s them, so they never also hit a
+# lines arrive on the default ruleset. Child processes can use another
+# programname (for example sudo), so the unit field is part of the match. The
+# DEDICATED ruleset forwards those lines and `stop`s them, so they never also hit a
 # syslog_forwarder catch-all and double-ship into the os index. (The `stop`
 # also keeps hermes lines out of local /var/log/syslog — journald still retains
 # them, and index=hermes is the search surface.) This drop-in is numbered 05-
@@ -26,6 +27,15 @@ ruleset(name="hermes_agent") {
   stop
 }
 
-if ($programname startswith 'hermes') then {
+module(load="imfile")
+
+input(type="imfile"
+      File="{{ hermes_agent_log_directory }}/*.log"
+      Tag="hermes-file"
+      PersistStateInterval="100"
+      freshStartTail="on"
+      Ruleset="hermes_agent")
+
+if ($programname startswith 'hermes' or $!_SYSTEMD_UNIT startswith 'hermes-') then {
   call hermes_agent
 }
