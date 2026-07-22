@@ -194,9 +194,65 @@
 - name: Patch Hermes goal judge timeout for the local light tier
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
-    regexp: '^DEFAULT_JUDGE_TIMEOUT = 30\.0$'
-    replace: >-
+    regexp: '^DEFAULT_JUDGE_TIMEOUT = [0-9]+(?:\.[0-9]+)?$'
+    replace: |-
       DEFAULT_JUDGE_TIMEOUT = {{ hermes_agent_kanban_goal_judge_timeout_seconds | float }}
+      DEFAULT_JUDGE_RETRY_DELAYS = ({{ hermes_agent_kanban_goal_judge_retry_delays | join(', ') }})
+  notify: Restart hermes-gateway
+
+- name: Patch Hermes goal judge with bounded transient retries
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
+    regexp: |-
+      (?s)^    try:$
+              resp = client\.chat\.completions\.create\($
+                  model=model,$
+                  messages=\[$
+                      \{"role": "system", "content": JUDGE_SYSTEM_PROMPT\},$
+                      \{"role": "user", "content": prompt\},$
+                  \],$
+                  temperature=0,$
+                  max_tokens=_goal_judge_max_tokens\(\),$
+                  timeout=timeout,$
+                  extra_body=get_auxiliary_extra_body\(\) or None,$
+              \)$
+          except Exception as exc:$
+              logger\.info\("goal judge: API call failed \(%s\) — falling through to continue", exc\)$
+              return "continue", f"judge error: \{type\(exc\)\.__name__\}", False, None$
+    replace: |-
+          for attempt in range(len(DEFAULT_JUDGE_RETRY_DELAYS) + 1):
+              try:
+                  resp = client.chat.completions.create(
+                      model=model,
+                      messages=[
+                          {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                          {"role": "user", "content": prompt},
+                      ],
+                      temperature=0,
+                      max_tokens=_goal_judge_max_tokens(),
+                      timeout=timeout,
+                      extra_body=get_auxiliary_extra_body() or None,
+                  )
+                  break
+              except Exception as exc:
+                  status = getattr(exc, "status_code", None)
+                  transient = (
+                      type(exc).__name__ in {
+                          "APIConnectionError", "APITimeoutError", "RateLimitError",
+                          "ConnectionError", "TimeoutError",
+                      }
+                      or status in {408, 409, 425, 429}
+                      or (isinstance(status, int) and status >= 500)
+                  )
+                  if not transient or attempt >= len(DEFAULT_JUDGE_RETRY_DELAYS):
+                      logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
+                      return "continue", f"judge error: {type(exc).__name__}", False, None
+                  delay = DEFAULT_JUDGE_RETRY_DELAYS[attempt]
+                  logger.warning(
+                      "goal judge: transient API failure (%s); retrying in %ss",
+                      type(exc).__name__, delay,
+                  )
+                  time.sleep(delay)
   notify: Restart hermes-gateway
 
 # The dispatcher sets HERMES_KANBAN_GOAL_MODE, but the pinned CLI only invokes
@@ -291,6 +347,12 @@
         ('DEFAULT_JUDGE_TIMEOUT = '
          ~ (hermes_agent_kanban_goal_judge_timeout_seconds | float | string))
         in hermes_agent_goal_judge_source
+      - >-
+        ('DEFAULT_JUDGE_RETRY_DELAYS = ('
+         ~ (hermes_agent_kanban_goal_judge_retry_delays | join(', ')) ~ ')')
+        in hermes_agent_goal_judge_source
+      - "'for attempt in range(len(DEFAULT_JUDGE_RETRY_DELAYS) + 1):' in hermes_agent_goal_judge_source"
+      - "'time.sleep(delay)' in hermes_agent_goal_judge_source"
     fail_msg: >-
       The pinned Hermes source changed and one or more required goal-mode
       patches were not installed; update the pinned-source patches before
