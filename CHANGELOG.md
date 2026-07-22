@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.13.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.12.0...v0.13.0) (2026-07-22)
+
+
+### Features
+
+* **hermes_agent:** enforce kanban finalization via goal-mode loop ([9dd15c5](https://github.com/dryvist/ansible-proxmox-ai/commit/9dd15c55705c02cf477e62d58d0eb1f879351039))
+
+
+### Bug Fixes
+
+* **hermes_agent:** clamp compression traversal bounds ([f9f6015](https://github.com/dryvist/ansible-proxmox-ai/commit/f9f6015d48af3edde83cb28c4d01d943dbbdd7a2))
+* **hermes_agent:** reconcile recurring goal mode ([#132](https://github.com/dryvist/ansible-proxmox-ai/issues/132)) ([6315f1a](https://github.com/dryvist/ansible-proxmox-ai/commit/6315f1a9abac8a1dde223b5d35f0e3b091b83765))
+
 ## [0.12.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.11.0...v0.12.0) (2026-07-21)
 
 
