@@ -35,6 +35,15 @@ def create_task(conn, *, idempotency_key=None, goal_mode=False, goal_max_turns=N
     raise RuntimeError("insert path")
 '''
 PINNED_GOAL_COMPLETION_SOURCE = "                    verdict, reason, _ = judge_goal(\n"
+PINNED_WORKER_SPAWN_SOURCE = '''\
+def build_worker_argv(task, prompt):
+    cmd = []
+    cmd.extend([
+        "chat",
+        "-q", prompt,
+    ])
+    return cmd
+'''
 
 
 def _task(name: str) -> dict[str, Any]:
@@ -138,6 +147,34 @@ def test_goal_completion_patch_uses_current_judge_contract() -> None:
     assert "verdict, reason, _, _ = judge_goal(" in patched
 
 
+def test_worker_spawn_patch_enters_quiet_goal_loop_path() -> None:
+    patched = _apply_runtime_patch(
+        "Patch Hermes Kanban workers to enter the quiet goal-loop path",
+        PINNED_WORKER_SPAWN_SOURCE,
+    )
+    assert '*(["--quiet"] if task.goal_mode else []),' in patched
+    assert patched.index('"chat"') < patched.index('["--quiet"]')
+    assert patched.index('["--quiet"]') < patched.index('"-q", prompt')
+    namespace: dict[str, Any] = {}
+    exec(patched, namespace)
+    task_type = type("Task", (), {})
+    goal_task = task_type()
+    goal_task.goal_mode = True
+    ordinary_task = task_type()
+    ordinary_task.goal_mode = False
+    assert namespace["build_worker_argv"](goal_task, "work") == [
+        "chat",
+        "--quiet",
+        "-q",
+        "work",
+    ]
+    assert namespace["build_worker_argv"](ordinary_task, "work") == [
+        "chat",
+        "-q",
+        "work",
+    ]
+
+
 @pytest.mark.parametrize("status", ACTIVE_STATUSES)
 def test_idempotent_create_upgrades_active_same_slot(status: str) -> None:
     conn = _task_db(status=status)
@@ -214,6 +251,9 @@ def test_enqueuer_goal_flags_follow_the_role_toggle() -> None:
         "{{ hermes_agent_kanban_goal_max_turns }}{% endif %}"
         in enqueuer
     )
+    assert "hermes send --to slack:{{ hermes_agent_slack_hermes_all_channel }}" in enqueuer
+    assert "kind=needs_input" in enqueuer
+    assert "status=pending" not in enqueuer
 
 
 def test_reviewer_child_goal_fields_follow_the_role_toggle() -> None:
@@ -250,6 +290,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
         in conditions
     )
     assert "goal_max_turns = COALESCE(?, goal_max_turns)" in conditions
+    assert '["--quiet"]' in conditions
     assert "WHERE id = ? AND status IN" in conditions
     assert "update the pinned-source patches" in assert_task["ansible.builtin.assert"][
         "fail_msg"
@@ -262,6 +303,13 @@ def test_installed_source_postconditions_fail_closed() -> None:
     reconcile_source = _apply_runtime_patch(
         "Patch Hermes idempotent create to reconcile goal-mode fields",
         PINNED_CREATE_TASK_SOURCE,
+    )
+    reconcile_source = (
+        _apply_runtime_patch(
+            "Patch Hermes Kanban workers to enter the quiet goal-loop path",
+            PINNED_WORKER_SPAWN_SOURCE,
+        )
+        + reconcile_source
     )
     assert all(_source_postconditions(completion_source, reconcile_source))
     assert not all(
