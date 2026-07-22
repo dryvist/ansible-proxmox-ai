@@ -268,8 +268,10 @@ def test_reviewer_child_goal_fields_follow_the_role_toggle() -> None:
 
 
 def test_goal_judge_uses_the_declared_auxiliary_model() -> None:
+    defaults = yaml.safe_load((ROLE_ROOT / "defaults" / "main.yml").read_text())
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
 
+    assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_agent_model }}"
     assert "goal_judge:" in config
     assert "model: {{ hermes_agent_kanban_goal_judge_model }}" in config
     assert "base_url: '{{ hermes_agent_model_base_url }}'" in config
