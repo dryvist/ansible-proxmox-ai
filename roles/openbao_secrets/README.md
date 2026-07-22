@@ -114,10 +114,86 @@ All readable path keys for a domain are merged flat into that domain's
 | --- | --- |
 | `BAO_ADDR` | OpenBao ingress URL (`https://openbao.<subdomain>`). Unset ⇒ skip everything. |
 | `<DOMAIN>_VAULT_ROLE_ID` / `_SECRET_ID` | That domain's own AppRole credentials. Unset ⇒ skip just that domain. |
+| `HERMES_WRITE_BAO_TOKEN` | Ephemeral `hermes-write` token for a missing Hermes API key; never falls back to `BAO_TOKEN`. |
 
 On macOS these arrive in the ambient environment via `doppler run`; on Linux
 guests, from a root-only systemd credential / `0600` EnvironmentFile. See
 `tofu-proxmox` `docs/SECRETS_HIERARCHY.md`.
+
+### Hermes API key bootstrap
+
+The existing-key path is read-only and needs no writer token. Missing
+`local-llm` AppRole credentials also preserve the normal env/SOPS fallback;
+seeding runs only after that OpenBao domain was fetched successfully and
+neither its `HERMES_API_SERVER_KEY` nor the resolved env/SOPS fallback is a
+trimmed non-empty string. When the fetched field is absent, null, empty, or
+whitespace-only but the fallback is valid, the role publishes that validated
+fallback into the controller's `local-llm` accumulator so every consumer sees
+the same value under identical strict semantics.
+
+For that one converge, use the approved human `ai-admin` unlock procedure to
+authenticate the native `bao` CLI, then mint and pass an ephemeral,
+nonrenewable token carrying only `hermes-write`:
+
+```sh
+hermes_seed_api_key() {
+  hermes_seed_status=0
+
+  HERMES_WRITE_BAO_TOKEN="$(
+    bao token create \
+      -policy=hermes-write \
+      -ttl=10m \
+      -explicit-max-ttl=10m \
+      -renewable=false \
+      -orphan \
+      -field=token
+  )" || hermes_seed_status=$?
+
+  if [ "$hermes_seed_status" -eq 0 ]; then
+    export HERMES_WRITE_BAO_TOKEN || hermes_seed_status=$?
+  fi
+  if [ "$hermes_seed_status" -eq 0 ]; then
+    bao token revoke -self || hermes_seed_status=$?
+  fi
+  if [ "$hermes_seed_status" -eq 0 ]; then
+    unset BAO_TOKEN || hermes_seed_status=$?
+  fi
+  if [ "$hermes_seed_status" -eq 0 ]; then
+    doppler run -- ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
+      --tags openbao_secrets --limit localhost,hermes_agent_group \
+      || hermes_seed_status=$?
+  fi
+
+  unset HERMES_WRITE_BAO_TOKEN BAO_TOKEN || {
+    hermes_seed_cleanup_status=$?
+    [ "$hermes_seed_status" -ne 0 ] \
+      || hermes_seed_status=$hermes_seed_cleanup_status
+  }
+  return "$hermes_seed_status"
+}
+
+hermes_seed_api_key
+```
+
+The `hermes-write` policy is limited to the Hermes secret document by
+`dryvist/ansible-proxmox-apps` commit `80b3c458`. The role
+accepts only the exact `default` + `hermes-write` policy set, no identity
+policies, a positive remaining TTL of at most 600 seconds, and a nonrenewable
+orphan token. Orphaning prevents revocation of the minting parent from also
+revoking the writer before the converge. The role verifies the exact Hermes
+data-path read/update and metadata-path read, performs an authoritative bundle
+read and CAS merge, and self-revokes the token in an `always` block on success
+or failure. The minting `ai-admin` token is self-revoked before Ansible starts,
+so only the narrow writer reaches the converge. If the process is terminated
+before the `always` block runs, the enforced 600-second TTL is the backstop.
+The native shell procedure always cleans both token variables before returning
+and preserves the first mint, parent-revocation, or converge failure status;
+cleanup cannot turn a failed operation into success.
+
+Do not set `num_uses=1`: the seed can make up to six OpenBao API requests. Do
+not store the token in Doppler, reuse a runner `BAO_TOKEN`, or broaden the
+standing `local-llm` reader. A concurrent writer wins by CAS; the losing
+converge fails closed and never publishes its generated value.
 
 ## Wiring
 

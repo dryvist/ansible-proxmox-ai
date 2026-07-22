@@ -1,0 +1,35 @@
+---
+- name: Set partial fetched-domain fixture | {{ fallback_candidate_fixture.name }}
+  ansible.builtin.set_fact:
+    openbao_secrets_by_domain: >-
+      {{ {'local-llm': {'sibling': 'preserve-me'}
+          | combine(fallback_candidate_fixture.fields)} }}
+    fallback_candidate_entered_writer: false
+  delegate_to: localhost
+  delegate_facts: true
+
+- name: Execute production seed tasks with a valid fallback | {{ fallback_candidate_fixture.name }}
+  block:
+    - name: Include the production seed tasks
+      ansible.builtin.include_tasks: >-
+        ../../roles/openbao_secrets/tasks/seed_hermes_api_key.yml
+      vars:
+        openbao_secrets_hermes_writer_token: ""
+        openbao_secrets_hermes_api_key_fallback: valid-ambient-key
+
+  rescue:
+    - name: Record unexpected writer entry | {{ fallback_candidate_fixture.name }}
+      ansible.builtin.set_fact:
+        fallback_candidate_entered_writer: true
+
+- name: Assert valid fallback bypasses the writer | {{ fallback_candidate_fixture.name }}
+  ansible.builtin.assert:
+    that:
+      - not (fallback_candidate_entered_writer | bool)
+      - hostvars['localhost'].openbao_secrets_hermes_api_key_present | bool
+      - >-
+        hostvars['localhost'].openbao_secrets_by_domain['local-llm']
+        .HERMES_API_SERVER_KEY == 'valid-ambient-key'
+      - >-
+        hostvars['localhost'].openbao_secrets_by_domain['local-llm'].sibling
+        == 'preserve-me'

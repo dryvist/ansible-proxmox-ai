@@ -1,0 +1,241 @@
+---
+# Generate Hermes' inbound API key exactly once.  The existing secret is a
+# multi-field bundle, so this must be an atomic read/merge/CAS-write rather than
+# a blind put.  Every task that can hold the key or writer token is no_log.
+
+- name: Detect whether a fetched or fallback Hermes API key is already usable
+  ansible.builtin.set_fact:
+    openbao_secrets_hermes_api_key_present: >-
+      {{ (openbao_secrets_hermes_fetched_api_key is string
+          and (openbao_secrets_hermes_fetched_api_key | trim | length > 0))
+         or (openbao_secrets_hermes_api_key_fallback is string
+             and (openbao_secrets_hermes_api_key_fallback | trim | length > 0)) }}
+    openbao_secrets_hermes_publish_fallback: >-
+      {{ not (openbao_secrets_hermes_fetched_api_key is string
+              and (openbao_secrets_hermes_fetched_api_key | trim | length > 0))
+         and openbao_secrets_hermes_api_key_fallback is string
+         and (openbao_secrets_hermes_api_key_fallback | trim | length > 0) }}
+  delegate_to: localhost
+  delegate_facts: true
+  connection: local
+  become: false
+  vars:
+    ansible_become: false
+    openbao_secrets_hermes_fetched_api_key: >-
+      {{ (hostvars['localhost'].openbao_secrets_by_domain
+          | default({})).get('local-llm', {})
+         .get(openbao_secrets_hermes_api_key_field, '') }}
+  no_log: true
+
+# Consumer defaults use Ansible's `default(..., true)`, which treats an empty
+# string as missing but not a whitespace-only string. Materializing the already
+# validated fallback here gives every consumer the same strict semantics.
+- name: Publish the validated Hermes fallback into the local-llm accumulator
+  ansible.builtin.set_fact:
+    openbao_secrets_by_domain: >-
+      {{ hostvars['localhost'].openbao_secrets_by_domain
+         | combine({'local-llm':
+             hostvars['localhost'].openbao_secrets_by_domain
+             .get('local-llm', {})
+             | combine({openbao_secrets_hermes_api_key_field:
+                        openbao_secrets_hermes_api_key_fallback})}) }}
+  delegate_to: localhost
+  delegate_facts: true
+  connection: local
+  become: false
+  vars:
+    ansible_become: false
+  when: hostvars['localhost'].openbao_secrets_hermes_publish_fallback | bool
+  no_log: true
+
+- name: Seed the missing Hermes API key with an exact-path writer
+  when: not (hostvars['localhost'].openbao_secrets_hermes_api_key_present | bool)
+  delegate_to: localhost
+  connection: local
+  become: false
+  vars:
+    ansible_become: false
+    openbao_secrets_hermes_api_data_path: >-
+      {{ openbao_secrets_kv_mount }}/data/{{ openbao_secrets_hermes_api_key_path }}
+    openbao_secrets_hermes_api_metadata_path: >-
+      {{ openbao_secrets_kv_mount }}/metadata/{{ openbao_secrets_hermes_api_key_path }}
+  no_log: true
+  block:
+    - name: Initialize writer failure tracking
+      ansible.builtin.set_fact:
+        openbao_secrets_hermes_seed_failed: false
+        openbao_secrets_hermes_seed_failed_task: ""
+        openbao_secrets_hermes_revoke_failed: false
+      delegate_facts: true
+
+    - name: Execute the authorized Hermes key seed
+      block:
+        - name: Require the human-authorized Hermes writer token
+          ansible.builtin.assert:
+            that:
+              - openbao_secrets_hermes_writer_token | length > 0
+            fail_msg: >-
+              HERMES_API_SERVER_KEY is absent and HERMES_WRITE_BAO_TOKEN is
+              unavailable; obtain a one-converge hermes-write token through the
+              human ai-admin unlock procedure before retrying.
+
+        - name: Look up the Hermes writer token identity
+          community.hashi_vault.vault_read:
+            url: "{{ hostvars['localhost'].openbao_secrets_active_addr }}"
+            auth_method: token
+            token: "{{ openbao_secrets_hermes_writer_token }}"
+            path: auth/token/lookup-self
+            validate_certs: "{{ openbao_secrets_validate_certs }}"
+          register: openbao_secrets_hermes_writer_identity
+
+        - name: Validate the short-lived Hermes writer identity
+          ansible.builtin.include_tasks: assert_hermes_writer_identity.yml
+
+        - name: Check the writer token's exact Hermes secret capabilities
+          community.hashi_vault.vault_write:
+            url: "{{ hostvars['localhost'].openbao_secrets_active_addr }}"
+            auth_method: token
+            token: "{{ openbao_secrets_hermes_writer_token }}"
+            path: sys/capabilities-self
+            data:
+              paths:
+                - "{{ openbao_secrets_hermes_api_data_path }}"
+                - "{{ openbao_secrets_hermes_api_metadata_path }}"
+            validate_certs: "{{ openbao_secrets_validate_certs }}"
+          register: openbao_secrets_hermes_writer_capabilities
+          changed_when: false
+
+        - name: Validate exact Hermes data and metadata capabilities
+          ansible.builtin.include_tasks: assert_hermes_writer_capabilities.yml
+
+        - name: Read the current Hermes bundle and KV metadata
+          community.hashi_vault.vault_kv2_get:
+            url: "{{ hostvars['localhost'].openbao_secrets_active_addr }}"
+            auth_method: token
+            token: "{{ openbao_secrets_hermes_writer_token }}"
+            engine_mount_point: "{{ openbao_secrets_kv_mount }}"
+            path: "{{ openbao_secrets_hermes_api_key_path }}"
+            validate_certs: "{{ openbao_secrets_validate_certs }}"
+          register: openbao_secrets_hermes_current
+
+        - name: Recheck the key after the authoritative writer read
+          ansible.builtin.set_fact:
+            openbao_secrets_hermes_api_key_present: >-
+              {{ openbao_secrets_hermes_authoritative_key is string
+                 and (openbao_secrets_hermes_authoritative_key | trim | length > 0) }}
+          vars:
+            openbao_secrets_hermes_authoritative_key: >-
+              {{ openbao_secrets_hermes_current.secret
+                 .get(openbao_secrets_hermes_api_key_field, '') }}
+          delegate_facts: true
+
+        # Another writer may have seeded the key after the read-side prefetch but
+        # before this authoritative read. Consume that winner and do not rotate it.
+        - name: Publish an API key found by the authoritative writer read
+          ansible.builtin.include_tasks: publish_hermes_authoritative_winner.yml
+          when: hostvars['localhost'].openbao_secrets_hermes_api_key_present | bool
+
+        - name: Generate 32 cryptographic random bytes as lowercase hex
+          ansible.builtin.command:
+            argv:
+              - openssl
+              - rand
+              - -hex
+              - "32"
+          register: openbao_secrets_hermes_generated
+          changed_when: false
+          when: not (hostvars['localhost'].openbao_secrets_hermes_api_key_present | bool)
+
+        - name: Validate the generated Hermes API key shape
+          ansible.builtin.assert:
+            that:
+              - openbao_secrets_hermes_generated.stdout is match('^[0-9a-f]{64}$')
+          when: not (hostvars['localhost'].openbao_secrets_hermes_api_key_present | bool)
+
+        - name: CAS-write the merged Hermes bundle
+          community.hashi_vault.vault_kv2_write:
+            url: "{{ hostvars['localhost'].openbao_secrets_active_addr }}"
+            auth_method: token
+            token: "{{ openbao_secrets_hermes_writer_token }}"
+            engine_mount_point: "{{ openbao_secrets_kv_mount }}"
+            path: "{{ openbao_secrets_hermes_api_key_path }}"
+            cas: "{{ openbao_secrets_hermes_current.metadata.version | int }}"
+            data: >-
+              {{ openbao_secrets_hermes_current.secret
+                 | combine({openbao_secrets_hermes_api_key_field:
+                            openbao_secrets_hermes_generated.stdout}) }}
+            validate_certs: "{{ openbao_secrets_validate_certs }}"
+          register: openbao_secrets_hermes_write
+          when: not (hostvars['localhost'].openbao_secrets_hermes_api_key_present | bool)
+
+        # Publish only after the CAS write succeeds. A CAS conflict fails the
+        # module and never reaches this task, so no stale generated key can leak
+        # into the consumer fact.
+        - name: Add the seeded key to the local-llm secret accumulator
+          ansible.builtin.set_fact:
+            openbao_secrets_by_domain: >-
+              {{ hostvars['localhost'].openbao_secrets_by_domain
+                 | combine({'local-llm':
+                     hostvars['localhost'].openbao_secrets_by_domain
+                     .get('local-llm', {})
+                     | combine({openbao_secrets_hermes_api_key_field:
+                                openbao_secrets_hermes_generated.stdout})}) }}
+          delegate_facts: true
+          when: not (hostvars['localhost'].openbao_secrets_hermes_api_key_present | bool)
+
+      rescue:
+        - name: Record the primary Hermes seed failure
+          ansible.builtin.set_fact:
+            openbao_secrets_hermes_seed_failed: true
+            openbao_secrets_hermes_seed_failed_task: >-
+              {{ ansible_failed_task.name | default('unknown writer task') }}
+          delegate_facts: true
+
+      always:
+        - name: Revoke the ephemeral Hermes writer token
+          when: openbao_secrets_hermes_writer_token | length > 0
+          block:
+            - name: Self-revoke the ephemeral Hermes writer token
+              community.hashi_vault.vault_write:
+                url: "{{ hostvars['localhost'].openbao_secrets_active_addr }}"
+                auth_method: token
+                token: "{{ openbao_secrets_hermes_writer_token }}"
+                path: auth/token/revoke-self
+                validate_certs: "{{ openbao_secrets_validate_certs }}"
+
+          rescue:
+            - name: Record Hermes writer token revocation failure
+              ansible.builtin.set_fact:
+                openbao_secrets_hermes_revoke_failed: true
+              delegate_facts: true
+
+            - name: Report Hermes writer token revocation failure
+              ansible.builtin.debug:
+                msg: >-
+                  SECURITY WARNING: HERMES_WRITE_BAO_TOKEN self-revocation failed;
+                  it remains usable only until its enforced 600-second TTL expires.
+              no_log: false
+
+        - name: Propagate a primary Hermes seed failure after revocation
+          ansible.builtin.fail:
+            msg: >-
+              Hermes API key seed failed in
+              {{ hostvars['localhost'].openbao_secrets_hermes_seed_failed_task }}.
+              Writer token revocation
+              {{ 'was not required because no writer token was supplied'
+                 if openbao_secrets_hermes_writer_token | length == 0
+                 else ('also failed; see the security warning above'
+                       if hostvars['localhost'].openbao_secrets_hermes_revoke_failed
+                       else 'completed') }}.
+          when: hostvars['localhost'].openbao_secrets_hermes_seed_failed | bool
+          no_log: false
+
+        - name: Fail when only Hermes writer token revocation failed
+          ansible.builtin.fail:
+            msg: >-
+              HERMES_WRITE_BAO_TOKEN self-revocation failed; the seed completed,
+              but the token remains usable until its enforced 600-second TTL expires.
+          when:
+            - not (hostvars['localhost'].openbao_secrets_hermes_seed_failed | bool)
+            - hostvars['localhost'].openbao_secrets_hermes_revoke_failed | bool
+          no_log: false

@@ -1,0 +1,29 @@
+---
+- name: Reset identity validation result for {{ writer_identity_fixture.name }}
+  ansible.builtin.set_fact:
+    writer_identity_rejected: false
+
+- name: Execute identity validation for {{ writer_identity_fixture.name }}
+  block:
+    - name: Include the production writer-identity assertions
+      ansible.builtin.include_tasks: >-
+        ../../roles/openbao_secrets/tasks/assert_hermes_writer_identity.yml
+      vars:
+        openbao_secrets_hermes_writer_identity:
+          data:
+            data:
+              policies: "{{ writer_identity_fixture.policies }}"
+              identity_policies: "{{ writer_identity_fixture.identity_policies }}"
+              renewable: "{{ writer_identity_fixture.renewable }}"
+              orphan: "{{ writer_identity_fixture.orphan }}"
+              ttl: "{{ writer_identity_fixture.ttl }}"
+
+  rescue:
+    - name: Record rejected identity for {{ writer_identity_fixture.name }}
+      ansible.builtin.set_fact:
+        writer_identity_rejected: true
+
+- name: Assert identity result for {{ writer_identity_fixture.name }}
+  ansible.builtin.assert:
+    that:
+      - writer_identity_rejected | bool == writer_identity_fixture.reject | bool
