@@ -276,7 +276,7 @@ def test_goal_judge_uses_the_declared_auxiliary_model() -> None:
     assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_goal_judge_model }}"
     assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == 60
     assert "goal_judge:" in config
-    assert "model: {{ hermes_agent_kanban_goal_judge_model }}" in config
+    assert "model: {{ hermes_agent_kanban_goal_judge_model | to_json }}" in config
     assert "base_url: '{{ hermes_agent_model_base_url }}'" in config
 
 
@@ -285,6 +285,8 @@ def test_group_vars_reads_canonical_zammad_mcp_pair() -> None:
     assert "bao_local_llm_secrets.ZAMMAD_MCP_URL" in group_vars
     assert "bao_local_llm_secrets.ZAMMAD_MCP_TOKEN" in group_vars
     assert "bao_local_llm_secrets.ZAMMAD_API_TOKEN" not in group_vars
+    assert "ZAMMAD_MCP_URL | regex_replace('/api/v1/?$', '')" in group_vars
+    assert "else lookup('env', 'ZAMMAD_URL')" in group_vars
 
 
 def test_installed_source_postconditions_fail_closed() -> None:
