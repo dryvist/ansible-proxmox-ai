@@ -82,7 +82,7 @@ server-side quorum HA needs a fourth node and is out of scope.
 | Domain | AppRole env vars | KV paths | Consumers |
 | --- | --- | --- | --- |
 | `ai-public` | `AI_PUBLIC_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/public/brain` (non-secret) | `ai_default_model` + brain-sync timers (below) |
-| `local-llm` | `LOCAL_LLM_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/*` (see the defaults for the path list) | every AI role in this repo |
+| `local-llm` | `LOCAL_LLM_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/*`; exact paths in defaults | every AI role in this repo |
 
 Other resource domains (observability, media, apps, ...) are fetched by the
 `ansible-proxmox-apps` copy of this role for the roles that live there.
