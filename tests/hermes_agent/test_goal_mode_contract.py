@@ -132,6 +132,8 @@ def _source_postconditions(
     context = {
         "hermes_agent_goal_completion_source": completion_source,
         "hermes_agent_goal_reconcile_source": reconcile_source,
+        "hermes_agent_goal_judge_source": "DEFAULT_JUDGE_TIMEOUT = 60.0",
+        "hermes_agent_kanban_goal_judge_timeout_seconds": 60,
     }
     return tuple(
         bool(environment.compile_expression(condition)(**context))
@@ -271,10 +273,20 @@ def test_goal_judge_uses_the_declared_auxiliary_model() -> None:
     defaults = yaml.safe_load((ROLE_ROOT / "defaults" / "main.yml").read_text())
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
 
-    assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_agent_model }}"
+    assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_goal_judge_model }}"
+    assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == 60
     assert "goal_judge:" in config
-    assert "model: {{ hermes_agent_kanban_goal_judge_model }}" in config
+    assert "model: {{ hermes_agent_kanban_goal_judge_model | to_json }}" in config
     assert "base_url: '{{ hermes_agent_model_base_url }}'" in config
+
+
+def test_group_vars_reads_canonical_zammad_mcp_pair() -> None:
+    group_vars = (REPO_ROOT / "inventory/group_vars/hermes_agent_group.yml").read_text()
+    assert "bao_local_llm_secrets.ZAMMAD_MCP_URL" in group_vars
+    assert "bao_local_llm_secrets.ZAMMAD_MCP_TOKEN" in group_vars
+    assert "bao_local_llm_secrets.ZAMMAD_API_TOKEN" not in group_vars
+    assert "ZAMMAD_MCP_URL | regex_replace('/api/v1/?$', '')" in group_vars
+    assert "else lookup('env', 'ZAMMAD_URL')" in group_vars
 
 
 def test_installed_source_postconditions_fail_closed() -> None:
@@ -285,6 +297,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
     assert_task = _task("Assert installed Hermes goal-mode source patches")
     conditions = " ".join(assert_task["ansible.builtin.assert"]["that"])
     assert "verdict, reason, _, _ = judge_goal(" in conditions
+    assert "DEFAULT_JUDGE_TIMEOUT =" in conditions
     assert "SELECT id, status FROM tasks" in conditions
     assert (
         'if goal_mode and row["status"] in ("triage", "todo", "scheduled", '
