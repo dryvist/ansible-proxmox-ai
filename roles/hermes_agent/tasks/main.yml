@@ -191,6 +191,19 @@
     replace: '\1verdict, reason, _, _ = judge_goal('
   notify: Restart hermes-gateway
 
+# The dispatcher sets HERMES_KANBAN_GOAL_MODE, but the pinned CLI only invokes
+# its goal-loop wrapper on the machine-readable quiet path. Without --quiet,
+# workers take the ordinary single-query path, return text, and exit rc=0 while
+# their card remains running.
+- name: Patch Hermes Kanban workers to enter the quiet goal-loop path
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)"-q", prompt,$'
+    replace: |-
+      \1*(["--quiet"] if task.goal_mode else []),
+      \1"-q", prompt,
+  notify: Restart hermes-gateway
+
 # An idempotency hit returns before create_task applies new fields. Upgrade only
 # active goal-enabled repeats in place so a current-slot card is reconciled
 # without mutating completed history or downgrading an existing goal card.
@@ -245,6 +258,9 @@
     quiet: true
     that:
       - "'verdict, reason, _, _ = judge_goal(' in hermes_agent_goal_completion_source"
+      - >-
+        '*(["--quiet"] if task.goal_mode else [])'
+        in hermes_agent_goal_reconcile_source
       - >-
         'SELECT id, status FROM tasks WHERE idempotency_key = ?'
         in hermes_agent_goal_reconcile_source
