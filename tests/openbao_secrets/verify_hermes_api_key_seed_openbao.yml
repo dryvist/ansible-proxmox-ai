@@ -1,0 +1,415 @@
+---
+- name: Verify Hermes API key seeding against an isolated OpenBao
+  hosts: localhost
+  gather_facts: false
+  become: false
+  vars:
+    ansible_become: false
+  tasks:
+    - name: Run the isolated integration with guaranteed cleanup
+      block:
+        - name: Choose an isolated high localhost port for this run
+          ansible.builtin.set_fact:
+            openbao_test_port: "{{ range(20000, 60000) | random }}"
+
+        - name: Define this run's isolated OpenBao identity
+          ansible.builtin.set_fact:
+            openbao_test_addr: "http://127.0.0.1:{{ openbao_test_port }}"
+            openbao_test_root_token: >-
+              hermes-seed-integration-root-{{ openbao_test_port }}
+
+        - name: Define the isolated OpenBao CLI environment
+          ansible.builtin.set_fact:
+            openbao_test_env:
+              BAO_ADDR: "{{ openbao_test_addr }}"
+              BAO_TOKEN: "{{ openbao_test_root_token }}"
+
+        - name: Verify the selected localhost port is unused
+          ansible.builtin.wait_for:
+            host: 127.0.0.1
+            port: "{{ openbao_test_port }}"
+            state: stopped
+            timeout: 1
+
+        - name: Start the bounded disposable OpenBao dev server
+          ansible.builtin.command:
+            argv:
+              - bao
+              - server
+              - -dev
+              - -dev-no-store-token
+              - "-dev-root-token-id={{ openbao_test_root_token }}"
+              - "-dev-listen-address=127.0.0.1:{{ openbao_test_port }}"
+          async: 120
+          poll: 0
+          register: openbao_test_server_job
+          changed_when: true
+          no_log: true
+
+        - name: Wait for the disposable OpenBao API
+          ansible.builtin.uri:
+            url: "{{ openbao_test_addr }}/v1/sys/health"
+            method: GET
+            status_code: 200
+          register: openbao_test_health
+          until: openbao_test_health.status == 200
+          retries: 20
+          delay: 1
+
+        - name: Capture the exact disposable OpenBao PID
+          ansible.builtin.command:
+            argv:
+              - pgrep
+              - -f
+              - >-
+                [b]ao server -dev -dev-no-store-token
+                -dev-root-token-id={{ openbao_test_root_token }}
+          register: openbao_test_server_capture
+          until: openbao_test_server_capture.stdout_lines | length == 1
+          retries: 5
+          delay: 1
+          changed_when: false
+
+        - name: Install the exact Hermes writer policy
+          ansible.builtin.command:
+            argv: [bao, policy, write, hermes-write, "-"]
+            stdin: |
+              path "secret/data/ai/hermes" {
+                capabilities = ["create", "read", "update"]
+              }
+              path "secret/metadata/ai/hermes" {
+                capabilities = ["read"]
+              }
+          environment: "{{ openbao_test_env }}"
+          changed_when: true
+          no_log: true
+
+        - name: Seed the sibling-only Hermes bundle
+          ansible.builtin.command:
+            argv: [bao, kv, put, secret/ai/hermes, sibling=preserve-me]
+          environment: "{{ openbao_test_env }}"
+          changed_when: true
+          no_log: true
+
+        - name: Mint the production-shaped Hermes writer token
+          ansible.builtin.command:
+            argv:
+              - bao
+              - token
+              - create
+              - -policy=hermes-write
+              - -ttl=10m
+              - -explicit-max-ttl=10m
+              - -renewable=false
+              - -orphan
+              - -format=json
+          environment: "{{ openbao_test_env }}"
+          register: openbao_test_writer_create
+          changed_when: true
+          no_log: true
+
+        - name: Publish the production success-lane fixture
+          ansible.builtin.set_fact:
+            openbao_secrets_by_domain:
+              local-llm:
+                sibling: preserve-me
+            openbao_secrets_active_addr: "{{ openbao_test_addr }}"
+            openbao_test_success_writer_token: >-
+              {{ (openbao_test_writer_create.stdout | from_json).auth.client_token }}
+          delegate_facts: true
+          no_log: true
+
+        - name: Execute the unchanged production seed success lane
+          ansible.builtin.include_tasks: >-
+            ../../roles/openbao_secrets/tasks/seed_hermes_api_key.yml
+          vars:
+            openbao_secrets_kv_mount: secret
+            openbao_secrets_validate_certs: false
+            openbao_secrets_hermes_api_key_path: ai/hermes
+            openbao_secrets_hermes_api_key_field: HERMES_API_SERVER_KEY
+            openbao_secrets_hermes_api_key_fallback: ""
+            openbao_secrets_hermes_writer_max_ttl_seconds: 600
+            openbao_secrets_hermes_writer_token: >-
+              {{ hostvars['localhost'].openbao_test_success_writer_token }}
+
+        - name: Read the authoritative bundle after production seeding
+          community.hashi_vault.vault_kv2_get:
+            url: "{{ openbao_test_addr }}"
+            auth_method: token
+            token: "{{ openbao_test_root_token }}"
+            engine_mount_point: secret
+            path: ai/hermes
+            validate_certs: false
+          register: openbao_test_seeded_bundle
+          no_log: true
+
+        - name: Verify the production write and publication
+          ansible.builtin.assert:
+            that:
+              - >-
+                openbao_test_seeded_bundle.secret.HERMES_API_SERVER_KEY
+                is match('^[0-9a-f]{64}$')
+              - >-
+                openbao_test_seeded_bundle.secret.HERMES_API_SERVER_KEY
+                == hostvars['localhost'].openbao_secrets_by_domain['local-llm']
+                   .HERMES_API_SERVER_KEY
+              - openbao_test_seeded_bundle.secret.sibling == 'preserve-me'
+              - openbao_secrets_hermes_write is changed
+
+        - name: Verify the production writer token was revoked
+          ansible.builtin.command:
+            argv:
+              - bao
+              - token
+              - lookup
+              - "{{ hostvars['localhost'].openbao_test_success_writer_token }}"
+          environment: "{{ openbao_test_env }}"
+          register: openbao_test_revoked_lookup
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Assert the revoked writer cannot be looked up
+          ansible.builtin.assert:
+            that:
+              - openbao_test_revoked_lookup.rc != 0
+
+        - name: Reset the Hermes bundle for the concurrent CAS test
+          ansible.builtin.command:
+            argv:
+              - bao
+              - kv
+              - put
+              - secret/ai/hermes
+              - HERMES_API_SERVER_KEY=
+              - sibling=before-race
+          environment: "{{ openbao_test_env }}"
+          changed_when: true
+          no_log: true
+
+        - name: Mint the CAS-conflict writer token
+          ansible.builtin.command:
+            argv:
+              - bao
+              - token
+              - create
+              - -policy=hermes-write
+              - -ttl=10m
+              - -explicit-max-ttl=10m
+              - -renewable=false
+              - -orphan
+              - -format=json
+          environment: "{{ openbao_test_env }}"
+          register: openbao_test_conflict_writer_create
+          changed_when: true
+          no_log: true
+
+        - name: Publish the production CAS-conflict fixture
+          ansible.builtin.set_fact:
+            openbao_secrets_by_domain:
+              local-llm:
+                HERMES_API_SERVER_KEY: ""
+                sibling: before-race
+            openbao_test_conflict_writer_token: >-
+              {{ (openbao_test_conflict_writer_create.stdout | from_json).auth.client_token }}
+            openbao_test_conflict_rejected: false
+          delegate_facts: true
+          no_log: true
+
+        - name: Start the bounded concurrent bundle writer
+          ansible.builtin.command:
+            argv:
+              - ansible-playbook
+              - "{{ playbook_dir }}/race_hermes_bundle_openbao.yml"
+          environment:
+            OPENBAO_TEST_ADDR: "{{ openbao_test_addr }}"
+            OPENBAO_TEST_ROOT_TOKEN: "{{ openbao_test_root_token }}"
+          async: 60
+          poll: 0
+          register: openbao_test_racer_job
+          changed_when: true
+          no_log: true
+
+        - name: Execute production seeding during concurrent version advances
+          block:
+            - name: Include the unchanged production seed tasks
+              ansible.builtin.include_tasks: >-
+                ../../roles/openbao_secrets/tasks/seed_hermes_api_key.yml
+              vars:
+                openbao_secrets_kv_mount: secret
+                openbao_secrets_validate_certs: false
+                openbao_secrets_hermes_api_key_path: ai/hermes
+                openbao_secrets_hermes_api_key_field: HERMES_API_SERVER_KEY
+                openbao_secrets_hermes_api_key_fallback: ""
+                openbao_secrets_hermes_writer_max_ttl_seconds: 600
+                openbao_secrets_hermes_writer_token: >-
+                  {{ hostvars['localhost'].openbao_test_conflict_writer_token }}
+
+          rescue:
+            - name: Record the production CAS rejection
+              ansible.builtin.set_fact:
+                openbao_test_conflict_rejected: true
+              delegate_facts: true
+
+        - name: Wait for the bounded concurrent writer
+          ansible.builtin.async_status:
+            jid: "{{ openbao_test_racer_job.ansible_job_id }}"
+          register: openbao_test_racer_result
+          until: openbao_test_racer_result.finished
+          retries: 60
+          delay: 1
+          no_log: true
+
+        - name: Verify the unchanged production lane failed closed on CAS
+          ansible.builtin.assert:
+            that:
+              - hostvars['localhost'].openbao_test_conflict_rejected | bool
+              - >-
+                hostvars['localhost'].openbao_secrets_hermes_seed_failed_task
+                == 'CAS-write the merged Hermes bundle'
+
+      always:
+        - name: Resolve a still-running concurrent writer
+          ansible.builtin.command:
+            argv:
+              - pgrep
+              - -f
+              - >-
+                [a]nsible-playbook
+                {{ playbook_dir }}/race_hermes_bundle_openbao.yml
+          register: openbao_test_racer_resolved
+          changed_when: false
+          failed_when: false
+
+        - name: Collect exact concurrent writer PIDs
+          ansible.builtin.set_fact:
+            openbao_test_racer_cleanup_pids: >-
+              {{ openbao_test_racer_resolved.stdout_lines | default([]) | unique }}
+
+        - name: Terminate only the resolved concurrent writer
+          ansible.builtin.command:
+            argv: [kill, -TERM, "{{ item }}"]
+          loop: "{{ openbao_test_racer_cleanup_pids }}"
+          changed_when: true
+          failed_when: false
+
+        - name: Check the concurrent writer async record before waiting
+          ansible.builtin.stat:
+            path: "{{ openbao_test_racer_job.results_file }}"
+          when: openbao_test_racer_job is defined
+          register: openbao_test_racer_artifact_before
+
+        - name: Wait for the concurrent writer async job to finish after TERM
+          ansible.builtin.async_status:
+            jid: "{{ openbao_test_racer_job.ansible_job_id }}"
+          when:
+            - openbao_test_racer_job is defined
+            - openbao_test_racer_artifact_before.stat.exists | default(false)
+          register: openbao_test_racer_cleanup_wait
+          until: openbao_test_racer_cleanup_wait.finished | default(false)
+          retries: 20
+          delay: 1
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Remove the concurrent writer async record
+          ansible.builtin.async_status:
+            jid: "{{ openbao_test_racer_job.ansible_job_id }}"
+            mode: cleanup
+          when:
+            - openbao_test_racer_job is defined
+            - openbao_test_racer_artifact_before.stat.exists | default(false)
+          changed_when: false
+          failed_when: false
+
+        - name: Resolve the exact disposable OpenBao process
+          ansible.builtin.command:
+            argv:
+              - pgrep
+              - -f
+              - >-
+                [b]ao server -dev -dev-no-store-token
+                -dev-root-token-id={{ openbao_test_root_token | default('not-started') }}
+          register: openbao_test_server_resolved
+          changed_when: false
+          failed_when: false
+
+        - name: Collect exact disposable OpenBao PIDs
+          ansible.builtin.set_fact:
+            openbao_test_server_cleanup_pids: >-
+              {{ ((openbao_test_server_capture.stdout_lines | default([]))
+                  + (openbao_test_server_resolved.stdout_lines | default([])))
+                 | unique }}
+
+        - name: Terminate only the resolved disposable OpenBao process
+          ansible.builtin.command:
+            argv: [kill, -TERM, "{{ item }}"]
+          loop: "{{ openbao_test_server_cleanup_pids }}"
+          changed_when: true
+          failed_when: false
+
+        - name: Check the OpenBao server async record before waiting
+          ansible.builtin.stat:
+            path: "{{ openbao_test_server_job.results_file }}"
+          when: openbao_test_server_job is defined
+          register: openbao_test_server_artifact_before
+
+        - name: Wait for the OpenBao async job to finish after TERM
+          ansible.builtin.async_status:
+            jid: "{{ openbao_test_server_job.ansible_job_id }}"
+          when:
+            - openbao_test_server_job is defined
+            - openbao_test_server_artifact_before.stat.exists | default(false)
+          register: openbao_test_server_cleanup_wait
+          until: openbao_test_server_cleanup_wait.finished | default(false)
+          retries: 20
+          delay: 1
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Remove the OpenBao server async record
+          ansible.builtin.async_status:
+            jid: "{{ openbao_test_server_job.ansible_job_id }}"
+            mode: cleanup
+          when:
+            - openbao_test_server_job is defined
+            - openbao_test_server_artifact_before.stat.exists | default(false)
+          changed_when: false
+          failed_when: false
+
+        - name: Prove no disposable OpenBao process remains
+          ansible.builtin.command:
+            argv:
+              - pgrep
+              - -f
+              - >-
+                [b]ao server -dev -dev-no-store-token
+                -dev-root-token-id={{ openbao_test_root_token | default('not-started') }}
+          register: openbao_test_process_proof
+          changed_when: false
+          failed_when: false
+
+        - name: Check the concurrent writer async artifact
+          ansible.builtin.stat:
+            path: "{{ openbao_test_racer_job.results_file }}"
+          when: openbao_test_racer_job is defined
+          register: openbao_test_racer_artifact
+
+        - name: Check the OpenBao server async artifact
+          ansible.builtin.stat:
+            path: "{{ openbao_test_server_job.results_file }}"
+          when: openbao_test_server_job is defined
+          register: openbao_test_server_artifact
+
+        - name: Assert process and async artifacts were removed
+          ansible.builtin.assert:
+            that:
+              - openbao_test_process_proof.rc != 0
+              - >-
+                openbao_test_racer_job is not defined
+                or not (openbao_test_racer_artifact.stat.exists | default(false))
+              - >-
+                openbao_test_server_job is not defined
+                or not (openbao_test_server_artifact.stat.exists | default(false))
