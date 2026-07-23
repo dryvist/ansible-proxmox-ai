@@ -54,6 +54,14 @@ PINNED_TOKEN_USAGE_SOURCE = (
     "                    if agent.verbose_logging:\n"
     '                        logging.debug(f"Token usage: {usage}")\n'
 )
+MALFORMED_TOKEN_USAGE_SOURCE = (
+    "                   if True:\n"
+    '                       logging.debug(f"Token usage: {usage}")\n'
+)
+PATCHED_TOKEN_USAGE_SOURCE = (
+    "                    if True:\n"
+    '                        logging.debug(f"Token usage: {usage}")\n'
+)
 PINNED_WORKER_SPAWN_SOURCE = '''\
 def build_worker_argv(task, prompt):
     cmd = []
@@ -175,15 +183,20 @@ def test_goal_completion_patch_uses_current_judge_contract() -> None:
     assert "verdict, reason, _, _ = judge_goal(" in patched
 
 
-def test_token_usage_metric_patch_matches_pinned_source() -> None:
+@pytest.mark.parametrize(
+    "source",
+    (
+        PINNED_TOKEN_USAGE_SOURCE,
+        MALFORMED_TOKEN_USAGE_SOURCE,
+        PATCHED_TOKEN_USAGE_SOURCE,
+    ),
+)
+def test_token_usage_metric_patch_normalizes_known_source_states(source: str) -> None:
     patched = _apply_runtime_patch(
         "Enable prompt-safe Hermes token usage metrics at DEBUG",
-        PINNED_TOKEN_USAGE_SOURCE,
+        source,
     )
-    assert (
-        '                    if True:\n'
-        '                        logging.debug(f"Token usage:'
-    ) in patched
+    assert patched == PATCHED_TOKEN_USAGE_SOURCE
 
 
 def test_model_calls_retry_once_after_fifteen_seconds() -> None:
