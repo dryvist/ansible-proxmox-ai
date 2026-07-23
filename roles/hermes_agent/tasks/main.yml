@@ -148,10 +148,8 @@
 # historically), the first truncation retry re-sends a request above the
 # ceiling, which a server enforcing a lower per-request limit 400s
 # identically ("max_tokens exceeds server limit"), burning all retries and
-# surfacing the error instead of completing. Today `model.max_tokens` is
-# 16384 and the OptiQ brain serves `--max-request-tokens 65536`, so the patch
-# now holds the boost at the configured 16384 rather than a coincidental
-# floor — keeping it correct if the output cap is ever lowered again.
+# surfacing the error instead of completing. The patch holds the boost at the
+# configured 8192-token ceiling.
 # `agent.max_tokens` is already the user's explicit config-level ceiling;
 # treat it as absolute instead of a floor for the boost. Runs every
 # converge (idempotent regexp match) because `hermes update` self-updates
@@ -230,6 +228,43 @@
     replace: '\g<1>if False and not _retry.primary_recovery_attempted and agent._try_recover_primary_transport('
   notify: Restart hermes-gateway
 
+- name: Patch Hermes auxiliary retry delay for the local serial backend
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/agent/auxiliary_client.py"
+    regexp: '^_TRANSIENT_RETRY_BACKOFF_BASE = 1\.0$'
+    replace: '_TRANSIENT_RETRY_BACKOFF_BASE = 15.0'
+  notify: Restart hermes-gateway
+
+- name: Retry auxiliary rate limits through the bounded transient path
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/agent/auxiliary_client.py"
+    regexp: 'return isinstance\(status, int\) and \(status == 408 or 500 <= status < 600\)'
+    replace: 'return isinstance(status, int) and (status in (408, 429) or 500 <= status < 600)'
+  notify: Restart hermes-gateway
+
+- name: Disable post-budget fallback for the explicit local auxiliary provider
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/agent/auxiliary_client.py"
+    regexp: '^([ \t]*)if should_fallback and \(is_auto or is_capacity_error\):$'
+    replace: '\g<1>if should_fallback and (is_auto or (is_capacity_error and resolved_provider != "custom")):'
+  notify: Restart hermes-gateway
+
+- name: Enable prompt-safe Hermes request size metrics at DEBUG
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
+    regexp: '([ \t]+# Log request details if verbose\n)[ \t]+if agent\.verbose_logging:'
+    replace: '\g<1>        if True:'
+  notify: Restart hermes-gateway
+
+- name: Enable prompt-safe Hermes token usage metrics at DEBUG
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
+    regexp: >-
+      ([ \t]+)if agent\.verbose_logging:\n
+      \1    logging\.debug\(f"Token usage:
+    replace: '\1if True:\n\1    logging.debug(f"Token usage:'
+  notify: Restart hermes-gateway
+
 # The dispatcher sets HERMES_KANBAN_GOAL_MODE, but the pinned CLI only invokes
 # its goal-loop wrapper on the machine-readable quiet path. Without --quiet,
 # workers take the ordinary single-query path, return text, and exit rc=0 while
@@ -286,6 +321,7 @@
     - "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
     - "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
     - "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
+    - "{{ hermes_agent_install_dir }}/agent/auxiliary_client.py"
   register: hermes_agent_goal_mode_sources
   changed_when: false
 
@@ -299,6 +335,8 @@
       {{ hermes_agent_goal_mode_sources.results[2].content | b64decode }}
     hermes_agent_retry_source: >-
       {{ hermes_agent_goal_mode_sources.results[3].content | b64decode }}
+    hermes_agent_auxiliary_source: >-
+      {{ hermes_agent_goal_mode_sources.results[4].content | b64decode }}
   ansible.builtin.assert:
     quiet: true
     that:
@@ -332,6 +370,21 @@
       - >-
         'if False and not _retry.primary_recovery_attempted and agent._try_recover_primary_transport('
         in hermes_agent_retry_source
+      - >-
+        '# Log request details if verbose\n        if True:'
+        in hermes_agent_retry_source
+      - >-
+        'if True:\n                        logging.debug(f"Token usage:'
+        in hermes_agent_retry_source
+      - >-
+        '_TRANSIENT_RETRY_BACKOFF_BASE = 15.0'
+        in hermes_agent_auxiliary_source
+      - >-
+        'status in (408, 429)'
+        in hermes_agent_auxiliary_source
+      - >-
+        'resolved_provider != "custom"'
+        in hermes_agent_auxiliary_source
     fail_msg: >-
       The pinned Hermes source changed and one or more required goal-mode
       patches were not installed; update the pinned-source patches before
@@ -865,13 +918,24 @@
     - hermes_agent_slack_bot_token | length > 0
     - hermes_agent_slack_app_token | length > 0
 
-# --- Brain runtime source: OpenBao (no rebuild to re-point) ------------------
-# See defaults/main.yml for the full design note. State dir is root-owned;
-# the seed file is re-templated every converge to whatever ai_default_model
-# resolves to right now (itself bao-first — see inventory/group_vars/all.yml)
-# so a converge and a live OpenBao change never disagree. brain-sync only
-# ever moves the file FURTHER from here via a live-validated change; it never
-# reverts one, since a bao-reachable converge resolves the SAME live value.
+# --- Retained optional brain runtime sync ------------------------------------
+# Disabled by default while model selection is owned directly by router aliases.
+- name: Check for the retained Hermes brain-sync timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/hermes-brain-sync.timer
+  register: hermes_agent_brain_sync_timer_unit
+  when: not (hermes_agent_brain_sync_enabled | bool)
+
+- name: Stop and disable the retained Hermes brain-sync timer
+  ansible.builtin.systemd:
+    name: hermes-brain-sync.timer
+    state: stopped
+    enabled: false
+    daemon_reload: true
+  when:
+    - not (hermes_agent_brain_sync_enabled | bool)
+    - hermes_agent_brain_sync_timer_unit.stat.exists | default(false)
+
 - name: Ensure the brain-sync state directory exists
   ansible.builtin.file:
     path: "{{ hermes_agent_brain_sync_state_dir }}"

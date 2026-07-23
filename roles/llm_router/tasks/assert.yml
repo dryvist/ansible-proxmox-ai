@@ -19,6 +19,9 @@
       # The fabric default the agent/UI actually request must resolve to a
       # first-class entry with a non-null context_window.
       - _llm_router_required_safe_models | difference(_llm_router_safe_models) | length == 0
+      - >-
+        llm_router_model_group_aliases | dict2items | map(attribute='value')
+        | difference(_llm_router_safe_models) | length == 0
     fail_msg: >-
       Compress-death trap (roles/llm_router/tasks/assert.yml): model(s)
       [{{ _llm_router_required_safe_models | difference(_llm_router_safe_models) | join(', ') }}]
@@ -32,8 +35,7 @@
       Router brain entries carry real context windows
       ({{ _llm_router_required_safe_models | join(', ') }}).
   vars:
-    # Safe set = large-tier model ids with a non-null context_window. (Aliases
-    # were removed 2026-07-17 — the router serves only real model ids.)
+    # Safe set = large-tier model ids with a non-null context_window.
     _llm_router_safe_models: >-
       {{ llm_router_large_models
          | selectattr('context_window', 'defined')
@@ -44,4 +46,8 @@
     # decoupled 2026-07-19). Both must be tuned entries with a real
     # context_window or their consumer compresses to death. De-duped so a
     # converge where they point at the same id doesn't double-list.
-    _llm_router_required_safe_models: "{{ [ai_default_model, hermes_brain_model] | unique }}"
+    _llm_router_required_safe_models: >-
+      {{ [ai_default_model,
+          llm_router_model_group_aliases.get(hermes_brain_model, hermes_brain_model),
+          llm_router_model_group_aliases.get(hermes_goal_judge_model, hermes_goal_judge_model)]
+         | unique }}

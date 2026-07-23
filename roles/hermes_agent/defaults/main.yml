@@ -64,86 +64,24 @@ hermes_agent_curriculum_prompt_files:
 # Reached by its neutral Traefik FQDN — never a hardcoded IP. The router routes by
 # model alias, so the agent just names the model it wants. The api key is the
 # router master key, env-sourced (SOPS/Doppler).
-# The model comes from hermes_brain_model (inventory/group_vars/all.yml) — the
-# agent's OWN brain, DECOUPLED from ai_default_model as of 2026-07-19 (user
-# decision) so Hermes and the ai-default fabric brain (still used by Open WebUI)
-# can diverge. hermes_brain_model is pinned to the current 80B default so this
-# lands behavior-neutral; the runtime re-point is still the brain-sync timer on
-# the SHARED ai/public/brain key (below) until the dedicated hermes-brain key is
-# seeded (follow-up). Change the default THERE (group_vars), not with a per-role
-# re-pin here.
+# The model comes from the router role alias in inventory/group_vars/all.yml.
+# Physical model IDs remain centralized in the router/MLX catalog.
 hermes_agent_model: "{{ hermes_brain_model }}"
 hermes_agent_model_base_url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1"
 hermes_agent_model_api_mode: chat_completions
-# Context-compression summary model. Hermes hard-requires >=64K context on the
-# compression model — the cron fleet failed on exactly this 2026-07-16 when
-# compression rode a 32,768-token brain ("Auxiliary compression model ... has
-# a context window of 32,768"). Pinned to the RESIDENT 80B Instruct brain by
-# its real id (65,536-token serving window; OptiQ dropped to the 32K swap
-# class when residency moved, so it no longer qualifies). The 2026-07-17
-# deepseek cloud stopgap is superseded — the local-serving flap that
-# motivated it is root-caused and fixed (nix-darwin#1742/#1743). Deliberately
-# a literal (not ai_default_model): a future brain re-point to a
-# smaller-window model must not silently drag the >=64K-required compression
-# path with it.
-hermes_agent_compression_model: mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit
+# Context compression uses the same >=64K-capable router role as the agent.
+hermes_agent_compression_model: tool-calling
 # Session reset policy (see config.yaml.j2 session_reset block): daily boundary
 # hour and idle timeout that bound EVERY session's lifetime.
 hermes_agent_session_reset_at_hour: 4
 hermes_agent_session_reset_idle_minutes: 1440
 # The context window Hermes budgets against and compacts under (it compresses at
-# hermes_agent_context_compression_threshold * this value). The model's TRUE
-# native window is 262144 (Qwen3.6-35B-A3B), but we deliberately DECLARE a
-# smaller 60000 to BOUND PREFILL TIME and break a stale-stream kill/re-prompt
-# spiral confirmed under load: the router's prefix cache is not reused
-# turn-to-turn, so every turn re-prefills the FULL prompt, and prefill emits no
-# stream chunks. A 70-90K-token re-prefill can run longer than
-# hermes_agent_stream_stale_timeout (900s) with zero chunks in flight, tripping a
-# FALSE "stream stale" kill; Hermes then re-prompts "continue where you left
-# off", the context grows, the next re-prefill is longer, and it spirals.
-# Constraints this number traces to (do not change it without re-checking all
-# FOUR): (1) HARD FLOOR — Hermes Agent refuses any model declaring under
-# 64000 ("below the minimum 64,000 required"; every cron failed at 60000 on
-# 2026-07-08). (2) Native window 262144 (config.json). (3) A full re-prefill
-# of the declared window must finish inside the 900s stream-stale budget
-# (65536 needs >=73 tok/s prefill — trivially safe). (4) NEW, and binding:
-# the ROUTER enforces the serving window as max_input_tokens on the brain's
-# tuned entry (enable_pre_call_checks) — the 80B brain serves 65,536. A
-# declaration ABOVE the served window creates a dead zone: Hermes budgets
-# past it and only compacts at threshold*declared, so every request between
-# the served window and the compaction point is router-rejected
-# (ContextWindowExceededError) before compression ever runs — observed live
-# 2026-07-16 at 34k tokens against the then-32k stock brain. Declare exactly
-# the served window so compaction (0.85 * 65536 ≈ 55.7k) fires BELOW the
-# router's rejection point.
-# (Custom providers carry no context catalog Hermes can probe, so this is
-# declared as model.context_length in config.yaml.j2.)
+# hermes_agent_context_compression_threshold * this value). It matches the
+# router's served 65,536-token window so compaction begins at 49,152 tokens,
+# before LiteLLM's pre-call context check can reject the request.
 hermes_agent_model_context_length: 65536
-# ROOT-CAUSE fix for the "Context length exceeded (18/19 tokens). Cannot
-# compress further." death loop confirmed in ~/.hermes/logs/agent.log: the
-# router/backend hard-caps a single completion at 8192 output tokens
-# ("max_tokens exceeds server limit (8192)"), but the `custom` provider
-# profile's built-in default_max_tokens is 65536. Hermes' error_classifier
-# misclassifies that 400 as a context overflow (it matches the bare
-# substring "max_tokens" in any error text) and dies trying to compress an
-# already-minimal conversation instead of lowering the output request.
-# 16384 stays at/below the serving side's per-request token cap. The winning
-# OptiQ-4bit brain (ai_default_model, 2026-07-08 agentic bench) serves with
-# --max-request-tokens 65536 on the Mac Studio, so a 16384 output request plus
-# hermes-agent's own retry-boost ceiling (max(16384, requested)) never exceeds
-# what the server accepts. (The prior stock/coder brains capped at 32768, where
-# that value matched the server exactly; against OptiQ it is a safe margin below.)
-# Capping max_tokens here means an oversized request is never sent.
-#
-# Halved 2026-07-20 (input-headroom fix): Hermes budgets input as
-# context_length - max_tokens - safety, so reserving 32768 for output on the
-# 65536-token declared window (hermes_agent_model_context_length above) left
-# only ~29.5k tokens for INPUT — observed live as repeated "Pre-API
-# compression: ~29,558 tokens" near-limit loops in Slack on 2026-07-20. Agent
-# turns rarely need >16k output tokens; halving the reservation to 16384
-# raises usable input headroom to ~45k against the same served window, with
-# no change to serving-side memory or the declared context length.
-hermes_agent_model_max_tokens: 16384
+# Match the official MLX server's output cap and preserve input headroom.
+hermes_agent_model_max_tokens: 8192
 # Hermes classifies the brain endpoint by HOSTNAME STRING, never by DNS
 # resolution (agent/model_metadata.py is_local_endpoint: loopback, RFC-1918
 # IP literals, container suffixes, dot-less names). Our router base_url is an
@@ -305,7 +243,7 @@ hermes_agent_kanban_max_in_progress_per_profile: 1
 # call gets a bounded continuation/finalization nudge instead of exiting open.
 # Keep verdict traffic on a dedicated smaller MLX model so judging does not
 # serialize another primary-model request behind the worker. The model itself is
-# OpenBao coordination data (`ai/public/brain`), not a deployed-source literal.
+# selected by the stable goal-judge router alias.
 # The pinned upstream timeout is only 30 seconds; allow a bounded 60-second
 # window so a transient local-model stall does not reject a valid completion.
 hermes_agent_kanban_goal_mode: true
@@ -437,7 +375,7 @@ hermes_agent_gateway_cmd: "{{ hermes_agent_bin }} gateway run --replace"
 hermes_agent_wiki_enabled: true
 hermes_agent_wiki_path: "{{ hermes_agent_home }}/wiki"
 hermes_agent_context_compression_enabled: true
-hermes_agent_context_compression_threshold: 0.85
+hermes_agent_context_compression_threshold: 0.75
 hermes_agent_nightly_wiki_cron_name: hermes-nightly-wiki
 hermes_agent_nightly_wiki_cron_schedule: "0 2 * * *"
 hermes_agent_nightly_wiki_cron_prompt_file: hermes-nightly-wiki-health.md
@@ -522,7 +460,8 @@ hermes_agent_splunk_digest_deliver: "{{ hermes_agent_firehose_deliver }}"
 # Cadence calmed 2026-07-16 (operator decision): the old fleet (triage every
 # 15 min, security 2x/hr, parsing+digest hourly) generated most of the
 # concurrent load on the single serving engine — the load that triggered the
-# vllm-mlx batch-scheduler wedge (nix-ai#1234) and the llama-swap 429 bursts.
+# legacy vllm-mlx batch-scheduler wedge (nix-ai#1234; backend now disabled)
+# and the llama-swap 429 bursts.
 # Homelab triage does not need 15-minute latency; ~85% fewer LLM calls with
 # zero overlapping start minutes.
 hermes_agent_splunk_triage_cron_name: splunk-triage
@@ -1278,63 +1217,21 @@ hermes_agent_brain_watchdog_ntfy_url: >-
 hermes_agent_brain_watchdog_healthcheck_url: >-
   {{ lookup('env', 'DEADMAN_HC_URL_HERMES_BRAIN') | default('', true) }}
 
-# --- Brain runtime source: OpenBao, no converge needed to re-point ----------
-# tofu/Ansible seed the STARTING brain (ai_default_model, config.yaml.j2) but
-# do not OWN it: this timer polls the ai-public OpenBao domain's non-secret
-# secret/ai/public/brain (field active_model — see roles/openbao_secrets) and,
-# only when the value both CHANGED and validates live against the router's
-# own /v1/model/info (a tuned entry with a real max_input_tokens — never the
-# "*" wildcard passthrough; the same compress-death-trap guard as
-# roles/llm_router/tasks/assert.yml, but checked against the RUNNING router,
-# not a converge-time snapshot), rewrites config.yaml's model.default and
-# restarts hermes-gateway. Runs as ROOT on its own timer/env-file, deliberately
-# separate from the hermes user's own gateway process and .env — the OpenBao
-# AppRole credential below must never enter the agent's own environment,
-# where an injected prompt could someday try to read it (same blast-radius
-# reasoning as the LXC / non-root-user split at the top of this file).
-# Disabling this falls back to converge-time-only re-pointing (pre-2026-07-18
-# behavior) — a poll failure always just keeps the currently-running brain,
-# so there is no OpenBao hard-dependency either way.
-#
-# Deliberately NOT extended to hermes_agent_compression_model (pinned to a
-# literal on purpose — see its own comment: a brain repoint must not silently
-# drag the >=64K-context compression path with it) or to
-# hermes_agent_memory_llm_model (only rendered under the local_embedded
-# Hindsight mode, which is not the live default — see hindsight-config.json.j2
-# and hermes_agent_memory_mode; extend brain-sync to it if that mode returns).
-hermes_agent_brain_sync_enabled: true
+# --- Retained optional brain runtime sync ------------------------------------
+# Disabled while stable router aliases own model selection. The implementation
+# and variables remain available for a future controlled re-enable.
+hermes_agent_brain_sync_enabled: false
 hermes_agent_brain_sync_script_path: /usr/local/bin/hermes-brain-sync.sh
 hermes_agent_brain_sync_env_path: /etc/hermes-brain-sync.env
 hermes_agent_brain_sync_state_dir: /etc/hermes-brain-sync
 hermes_agent_brain_sync_state_file: "{{ hermes_agent_brain_sync_state_dir }}/current-model"
-# 5 minutes: cheap enough for a KV read + one /v1/model/info probe, and "no
-# rebuild" only has to mean minutes — this polls a value an OPERATOR changes
-# deliberately, not a live-health signal (contrast the watchdog's 60s).
+# Inert while hermes_agent_brain_sync_enabled is false.
 hermes_agent_brain_sync_interval: "5min"
-# KV v2 data path (mount: secret) + field — see roles/openbao_secrets
-# openbao_secrets_domains (ai-public) and inventory/group_vars/all.yml
-# (hermes_brain_model). Still the SHARED ai/public/brain key: this PR decouples
-# only the converge-time literal (hermes_brain_model), not the runtime key, so a
-# live override keeps moving Hermes and ai_default together as it does today.
-# The dedicated secret/ai/public/hermes-brain key is a follow-up (seed it first,
-# then repoint here) — see the hermes_brain_model note in group_vars/all.yml.
 hermes_agent_brain_sync_bao_path: ai/public/brain
 hermes_agent_brain_sync_bao_field: active_model
-# ponytail: single endpoint, no client-side failover on the guest (unlike the
-# controller's openbao_secrets probe-and-pin across every openbao-tagged
-# node). Reuses whichever address the controller itself pinned this converge;
-# add the same candidate-list/probe logic here if guest-side OpenBao HA is
-# ever needed.
 hermes_agent_brain_sync_bao_addr: >-
   {{ hostvars['localhost'].openbao_secrets_active_addr
      | default(lookup('env', 'BAO_ADDR'), true) }}
-# The ai-public domain's OWN AppRole (read-only on ai/public/*) — deliberately
-# NOT local-llm's broader credential (see roles/openbao_secrets/README.md: a
-# guest holding a live, reusable local-llm credential could pull every other
-# ai/* secret, not just the ones already baked into its own .env). Empty
-# until the companion AppRole/policy exists in ansible-proxmox-apps, at which
-# point the script skips cleanly every cycle — same "unconfigured domain"
-# skip as the controller-side fetch.
 hermes_agent_brain_sync_role_id: "{{ lookup('env', 'AI_PUBLIC_VAULT_ROLE_ID') | default('', true) }}"
 hermes_agent_brain_sync_secret_id: "{{ lookup('env', 'AI_PUBLIC_VAULT_SECRET_ID') | default('', true) }}"
 

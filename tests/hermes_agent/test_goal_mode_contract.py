@@ -140,7 +140,10 @@ def _render_reviewer_prompt(goal_mode: bool) -> str:
 
 
 def _source_postconditions(
-    completion_source: str, reconcile_source: str, retry_source: str
+    completion_source: str,
+    reconcile_source: str,
+    retry_source: str,
+    auxiliary_source: str,
 ) -> tuple[bool, ...]:
     task = _task("Assert installed Hermes goal-mode source patches")
     environment = Environment(autoescape=False)
@@ -152,6 +155,7 @@ def _source_postconditions(
         ),
         "hermes_agent_kanban_goal_judge_timeout_seconds": 60,
         "hermes_agent_retry_source": retry_source,
+        "hermes_agent_auxiliary_source": auxiliary_source,
     }
     return tuple(
         bool(environment.compile_expression(condition)(**context))
@@ -169,7 +173,9 @@ def test_goal_completion_patch_uses_current_judge_contract() -> None:
 
 def test_model_calls_retry_once_after_fifteen_seconds() -> None:
     config_template = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
+    assert "Upstream counts total attempts" in config_template
     assert "api_max_retries: 2" in config_template
+    assert "transient_retries: 1" in config_template
 
     patched = _apply_runtime_patch(
         "Patch Hermes exception retry delay for the local serial backend",
@@ -195,6 +201,11 @@ def test_model_calls_retry_once_after_fifteen_seconds() -> None:
         PINNED_TRANSPORT_RECOVERY_SOURCE,
     )
     assert "if False and" in transport
+
+    tasks = (ROLE_ROOT / "tasks" / "main.yml").read_text()
+    assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in tasks
+    assert "status in (408, 429)" in tasks
+    assert 'resolved_provider != "custom"' in tasks
 
 
 def test_worker_spawn_patch_enters_quiet_goal_loop_path() -> None:
@@ -319,8 +330,27 @@ def test_reviewer_child_goal_fields_follow_the_role_toggle() -> None:
 
 def test_goal_judge_uses_the_declared_auxiliary_model() -> None:
     defaults = yaml.safe_load((ROLE_ROOT / "defaults" / "main.yml").read_text())
+    group_vars = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all.yml").read_text())
+    router_defaults = yaml.safe_load(
+        (REPO_ROOT / "roles/llm_router/defaults/main.yml").read_text()
+    )
+    router_config = (REPO_ROOT / "roles/llm_router/templates/config.yaml.j2").read_text()
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
 
+    assert group_vars["hermes_brain_model"] == "tool-calling"
+    assert group_vars["hermes_goal_judge_model"] == "goal-judge"
+    assert defaults["hermes_agent_compression_model"] == "tool-calling"
+    assert defaults["hermes_agent_model_max_tokens"] == 8192
+    assert defaults["hermes_agent_context_compression_threshold"] == 0.75
+    assert defaults["hermes_agent_brain_sync_enabled"] is False
+    assert router_defaults["llm_router_model_group_aliases"] == {
+        "tool-calling": "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
+        "goal-judge": "mlx-community/Qwen3.6-27B-mxfp4",
+    }
+    assert router_defaults["llm_router_num_retries"] == 0
+    assert router_defaults["llm_router_rate_limit_retries"] == 0
+    assert "model_group_alias:" in router_config
+    assert "llm_router_model_group_aliases.items()" in router_config
     assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_goal_judge_model }}"
     assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == 60
     assert "goal_judge:" in config
@@ -355,6 +385,10 @@ def test_installed_source_postconditions_fail_closed() -> None:
     assert "goal_max_turns = COALESCE(?, goal_max_turns)" in conditions
     assert '["--quiet"]' in conditions
     assert "WHERE id = ? AND status IN" in conditions
+    assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in conditions
+    assert "status in (408, 429)" in conditions
+    assert 'resolved_provider != "custom"' in conditions
+    assert "Token usage:" in conditions
     assert "update the pinned-source patches" in assert_task["ansible.builtin.assert"][
         "fail_msg"
     ]
@@ -394,12 +428,29 @@ def test_installed_source_postconditions_fail_closed() -> None:
             ),
         )
     )
-    assert all(_source_postconditions(completion_source, reconcile_source, retry_source))
+    retry_source += (
+        "# Log request details if verbose\n        if True:\n"
+        'if True:\n'
+        '                        logging.debug(f"Token usage: prompt={usage}")\n'
+    )
+    auxiliary_source = "\n".join(
+        (
+            "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0",
+            "return isinstance(status, int) and (status in (408, 429) or 500 <= status < 600)",
+            'if should_fallback and (is_auto or (is_capacity_error and resolved_provider != "custom")):',
+        )
+    )
+    assert all(
+        _source_postconditions(
+            completion_source, reconcile_source, retry_source, auxiliary_source
+        )
+    )
     assert not all(
         _source_postconditions(
             PINNED_GOAL_COMPLETION_SOURCE,
             PINNED_CREATE_TASK_SOURCE,
             PINNED_RETRY_DELAY_SOURCE,
+            "",
         )
     )
     assert not all(
@@ -407,5 +458,6 @@ def test_installed_source_postconditions_fail_closed() -> None:
             completion_source,
             reconcile_source.replace("COALESCE(?, goal_max_turns)", "?"),
             retry_source,
+            auxiliary_source,
         )
     )

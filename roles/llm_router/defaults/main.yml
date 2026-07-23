@@ -2,10 +2,8 @@
 # llm_router role defaults — a LiteLLM proxy (the fabric's single OpenAI-compatible
 # front door) on each guest tagged `llm-router`. Native install: a Python venv +
 # systemd, config at /etc/litellm/config.yaml. Fronted by Traefik at
-# https://llm.<subdomain>; consumers request REAL model ids only — the router
-# serves no alias/indirection names (design rule, 2026-07-17: fake names hide
-# what actually serves a request; re-pointing consumers happens via the
-# ai_default_model ansible var, never via a served alias).
+# https://llm.<subdomain>. Physical backends have one deployment entry each;
+# stable consumer role names resolve through model_group_alias below.
 #
 # Two tiers, both reached through this one proxy:
 #   large — the mlx-community/* models on the neutral `llm-large` runner
@@ -100,12 +98,9 @@ llm_router_llm_large_base_url: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_r
 # guards against (a smaller-context fallback is still forbidden).
 #
 # TOPOLOGY = DEDICATED-PORT (lifecycle-e2e, 2026-07-19). The cluster-join
-# quiesce boots out the WHOLE main llama-swap agent (:11434) and reaps every
-# `vllm-mlx serve` proc, so a main-port OptiQ would die with it. Instead OptiQ
-# runs as its OWN launchd agent on its OWN gated port on the Studio (surviving
-# the SERVER_LABEL bootout); this standby entry points the hermes-brain (OptiQ)
-# failover group at THAT port. Same Studio, already TLS-gated — no new host,
-# no new exposure. The `standby: true` marker is on the OptiQ entry below.
+# quiesce boots out the main llama-swap agent (:11434). This retained standby
+# design is inert and must remain disabled while the legacy vllm-mlx backend is
+# disabled.
 #
 # Default empty = DISABLED: with no URL set, the rendered config.yaml is
 # byte-identical to today (no standby deployment, no extra env var). To enable:
@@ -152,11 +147,9 @@ llm_router_llm_large_standby_bearer: "{{ llm_router_llm_large_bearer }}"
 # One deployment each, bearer-authed.
 # context_window on EVERY entry = the backend's EFFECTIVE SERVING window —
 # what its KV-cache budget (nix-ai catalog cacheMemoryMb) sustains — NOT the
-# model's native max_position_embeddings. vllm-mlx enforces no input-length
-# ceiling at all (--max-request-tokens caps OUTPUT tokens; a 113K-token
-# prompt passed a "65536 cap" untouched, 2026-07-09), so this value is the
-# fabric's ONLY input enforcement (enable_pre_call_checks) AND what sizes
-# client behavior: hermes-agent auto-compaction triggers at ~75% of it.
+# model's native max_position_embeddings. This value is the fabric's explicit
+# input enforcement through enable_pre_call_checks and sizes client behavior:
+# Hermes auto-compaction triggers at 75% of it.
 # Advertising native windows (previously 262144) let agent sessions grow far
 # past the serving ceiling and die mid-stream (Metal buffer exhaustion)
 # instead of compacting. The resident brain gets 65536 (16 GB KV; 113K single-stream
@@ -180,13 +173,9 @@ llm_router_large_models:
   # sessions this brain emitted ~37 IDENTICAL tool calls per turn (Hermes dedups
   # + executes once, the model re-emits next turn, the task never advances). The
   # 20/20-clean agentic bench and the looping production sessions differ only in
-  # sampling. Hermes omits temperature/repetition_penalty, so the serving engine
-  # (vllm-mlx 0.4.0) applies its request-absent fallbacks — temperature 0.7 (NOT
-  # greedy; --default-temperature is unset) and repetition_penalty 1.0 (OFF). A
-  # gentle 1.05 penalty is the one lever whose current effective value is
-  # loop-permitting: it directly taxes verbatim re-emission while staying mild
-  # enough to preserve tool-call JSON validity. extra_body carries it past the
-  # router's drop_params to vllm-mlx, whose chat path honors a request-supplied
+  # sampling. A gentle 1.05 repetition penalty directly taxes verbatim
+  # re-emission while staying mild enough to preserve tool-call JSON validity.
+  # extra_body carries it through the router to the MLX model server.
   # repetition_penalty. (temperature is deliberately NOT pinned here: 0.7 would
   # merely restate the engine fallback the loop already runs under. If 1.05 is
   # insufficient, the next lever is to match the clean bench's sampling —
@@ -213,6 +202,9 @@ llm_router_large_models:
   - backend: mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit
     context_window: 65536
     extra_body: { repetition_penalty: 1.05 }
+  # Resident serialized goal judge.
+  - backend: mlx-community/Qwen3.6-27B-mxfp4
+    context_window: 65536
   # The two-Mac cluster brain (JACCL pipeline across Studio + MacBook,
   # ~256 GB combined), served by mlx-lm rank 0 behind the gate's :11440 TLS
   # site — a DIFFERENT port on the same host, hence the per-entry api_base
@@ -223,9 +215,7 @@ llm_router_large_models:
     api_base: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_router_cluster_port }}/v1"
     context_window: 65536
     extra_body: { repetition_penalty: 1.05 }
-# Aliases were removed 2026-07-17 (design rule: the router serves ONLY real
-# model ids; ai-default / ai-deep-analysis / claude-* are gone). Consumers are
-# re-pointed via the ai_default_model / rubric vars in group_vars/all.yml.
+# Consumer role aliases are defined only in llm_router_model_group_aliases.
 # light: the llama-swap model names, served as-is. Each becomes two same-name
 # deployments (llm-fast GPU + llm-light CPU) in the rendered config.
 # `embedding: true` marks the entry as an embeddings model_group.
@@ -275,17 +265,13 @@ llm_router_openrouter_wildcard_key_field: deepseek-deepseek-v4-flash
 llm_router_routing_strategy: simple-shuffle
 llm_router_allowed_fails: 2
 llm_router_cooldown_time: 30
-# The large tier has ONE deployment per alias (no sibling to fail over to), so
-# a bare TCP hiccup between this router and the mac-studio gate surfaces
-# straight to the caller as a 500. num_retries makes LiteLLM retry the SAME
-# deployment a couple of times before giving up — cheap insurance against a
-# transient connection blip, distinct from Hermes's own client-side retries
-# (which retry the identical request and hit the identical transient error).
+# Forward each request to the MLX backend once. Hermes owns the single retry
+# after a fixed 15-second wait, keeping the end-to-end attempt count bounded.
 # request_timeout_seconds bounds a single attempt; large-tier generations can
 # legitimately run for minutes, so this is generous, not a tight SLA.
 # Timeout chain — each OUTER layer outlives the inner one, so no intermediate
 # guard kills a still-healthy generation and the CLIENT is the sole decider:
-#   vllm-mlx server guard 3600s (nix-darwin) > router attempt 2400s >
+#   MLX model server guard 3600s (nix-darwin) > router attempt 2400s >
 #   Hermes client stream read 1800s.
 # 2400 (was 1200, was 300): guards are set to realistic ceilings on the
 # assumption the request almost always completes even at unusually high
@@ -294,27 +280,23 @@ llm_router_cooldown_time: 30
 # cause of the 18:27 UTC cron failures) and 1200 here would have been the next
 # binding kill. At 2400 the router now sits ABOVE the client's 1800s ceiling,
 # so the client times out first (by design) while the router waits — and
-# below the 3600s server guard, so num_retries still cover a genuine transient
-# connection blip (which fails fast, well under any of these).
+# below the 3600s server guard.
 # The per-attempt timeout is the MIDDLE link of the fabric-wide timeout chain
 # (server guard > this > Hermes client read), so it is sourced from the
 # single-source-of-truth constant (all.yml) the Layer-1 assert checks — resolves
 # to 2400.
-llm_router_num_retries: 2
+llm_router_num_retries: 0
 llm_router_request_timeout_seconds: "{{ ai_router_request_timeout_seconds }}"
-# 429 absorption (queue-by-retry). The serving proxies (llama-swap
-# concurrencyLimit) 429 anything past their in-flight cap. Two failure modes
-# without special handling: (a) the 429 surfaces raw to the caller, which
-# retries into the same wall (the 2026-07-08 bench collapse: 9,262 429s ->
-# session death); (b) worse, with allowed_fails=2/min the router COOLS DOWN
-# the single large deployment, escalating a momentary queue into
-# "no deployments available". So rate-limit errors get their own budget:
-# retried more times with LiteLLM's backoff, and effectively never counted
-# toward cooldown. Real faults (auth, 5xx, timeouts) still cool down via
-# allowed_fails. Retries=6 with exponential backoff spans ~1-2 min of queue
-# pressure — roughly one long large-tier generation ahead in line.
-llm_router_rate_limit_retries: 6
+# Return a 429 immediately to Hermes, which makes its one retry after 15 seconds.
+# Rate-limit failures do not cool down the otherwise healthy deployment.
+llm_router_rate_limit_retries: 0
 llm_router_rate_limit_allowed_fails: 1000
+
+# Stable consumer role names. Aliases carry no deployment configuration; each
+# points to exactly one physical model_list entry above.
+llm_router_model_group_aliases:
+  tool-calling: mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit
+  goal-judge: mlx-community/Qwen3.6-27B-mxfp4
 # Background health checks send REAL test requests to every deployment — on the
 # llama-swap fast tier each probe spawns the target model, and with 3 routers
 # probing every model this both churns VRAM constantly and (pre swap-groups)
