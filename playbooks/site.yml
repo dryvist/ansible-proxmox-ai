@@ -26,7 +26,7 @@
     qdrant_group:hindsight_group:llamaindex_group:ollama_group:open_webui_group:
     hermes_agent_group:llm_fast_group:llm_router_group:
     dify_group:langflow_group:langgraph_group:agent_exec_group:
-    langfuse_group:agentgateway_group:ai_orchestration_group
+    langfuse_group:agentgateway_group:ai_orchestration_group:ai_runner_group
   gather_facts: false
   tags: always
   tasks:
@@ -44,6 +44,7 @@
         bao_local_llm_secrets: "{{ openbao_secrets_by_domain['local-llm'] | default({}) }}"
         bao_apps_secrets: "{{ openbao_secrets_by_domain['apps'] | default({}) }}"
         bao_ai_public_secrets: "{{ openbao_secrets_by_domain['ai-public'] | default({}) }}"
+        bao_ai_runner_secrets: "{{ openbao_secrets_by_domain['ai-runner'] | default({}) }}"
       vars:
         openbao_secrets_by_domain: "{{ hostvars['localhost'].openbao_secrets_by_domain | default({}) }}"
       no_log: true
@@ -256,3 +257,23 @@
     - ai-orchestration
   roles:
     - role: agentgateway_docker
+
+# =============================================================================
+# Phase 7: Headless AI execution plane (WS7A) — AI job runners.
+# Confined guests (tofu `ai-runner` + `ai-github` tags) that run the Claude
+# Code / Codex CLIs in permission-skipping mode, driven by a systemd worker
+# polling the Vikunja AI Jobs queue. Safety is the LXC/firewall boundary, not
+# the agent — so this only ever converges guests behind a restrictive egress
+# profile. bao_ai_runner_secrets comes from the Phase 0 pre-fetch play.
+# =============================================================================
+
+- name: Configure headless AI job runners
+  hosts: ai_runner_group
+  become: true
+  gather_facts: true
+  tags:
+    - ai_runner
+    - agent
+    - ai
+  roles:
+    - role: ai_runner

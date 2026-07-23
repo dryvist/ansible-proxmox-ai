@@ -1,0 +1,56 @@
+---
+# ai_runner molecule scenario. Mirrors the qdrant scenario's driver/platform
+# setup. NOT yet in the CI matrix (.github/workflows/_molecule.yml): the pinned
+# claude-code version is a placeholder, so a full converge that npm-installs it
+# would fail until the floor is reconciled. Run locally (`molecule test -s
+# ai_runner`) once the version is real; ansible-lint + `molecule syntax` gate it
+# in the meantime.
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ${MOLECULE_PROJECT_DIRECTORY}/requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  - name: ai-runner-test
+    image: geerlingguy/docker-debian12-ansible:latest
+    privileged: true
+    command: ""
+    pre_build_image: true
+    tmpfs:
+      - /run
+      - /tmp
+      - /run/lock
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    groups:
+      - ai_runner_group
+      - lxc_containers
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      interpreter_python: auto_silent
+      roles_path: ${MOLECULE_PROJECT_DIRECTORY}/roles
+
+verifier:
+  name: ansible
+
+scenario:
+  name: ai_runner
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - verify
+    - cleanup
+    - destroy
