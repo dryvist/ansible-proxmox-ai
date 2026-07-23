@@ -241,12 +241,23 @@ hermes_agent_kanban_max_in_progress_per_profile: 1
 
 # Recurring cards use Hermes' goal loop so a worker that forgets its lifecycle
 # call gets a bounded continuation/finalization nudge instead of exiting open.
+# goal_mode is load-bearing, NOT optional supervision: the finalize fix
+# (workers actually calling kanban_complete via the quiet path,
+# tasks/main.yml) is gated on task.goal_mode — disabling it reintroduces the
+# "worker exits rc=0 while its card stays running" wedge. Keep it on.
 # Keep verdict traffic on the same stable router alias as every other Hermes
 # inference path.
 # The pinned upstream timeout is only 30 seconds; allow a bounded 60-second
 # window so a transient local-model stall does not reject a valid completion.
 hermes_agent_kanban_goal_mode: true
-hermes_agent_kanban_goal_max_turns: 3
+# One finalize/continuation nudge, not two. A healthy card finalizes on its
+# first turn and never spends the budget; only a stuck card burns extra judge
+# turns, so capping at 2 hands a persistently-stuck card to the dispatcher's own
+# retry (max_retries) + board failure_limit sooner — collapsing the overlapping
+# retry layers toward the dispatcher as the single owner and cutting wasted
+# brain turns. Raise back to 3 only if a class of cards legitimately needs a
+# third pass to finish.
+hermes_agent_kanban_goal_max_turns: 2
 hermes_agent_kanban_goal_judge_model: "{{ hermes_goal_judge_model }}"
 hermes_agent_kanban_goal_judge_timeout_seconds: 60
 # --- Memory: best self-hostable as of June 2026 (Agy-validated) ---

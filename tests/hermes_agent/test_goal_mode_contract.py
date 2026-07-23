@@ -405,6 +405,7 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         hermes_alias: hermes_backend,
         "tool-calling": "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
         "goal-judge": "mlx-community/Qwen3.6-27B-mxfp4",
+        "interim-brain": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
     }
     hermes_entries = [
         entry
