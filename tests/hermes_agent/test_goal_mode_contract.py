@@ -374,7 +374,7 @@ def test_reviewer_child_goal_fields_follow_the_role_toggle() -> None:
     assert "bounded goal loop" not in disabled
 
 
-def test_goal_judge_uses_the_declared_auxiliary_model() -> None:
+def test_hermes_inference_paths_use_the_declared_alias() -> None:
     defaults = yaml.safe_load((ROLE_ROOT / "defaults" / "main.yml").read_text())
     group_vars = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all.yml").read_text())
     router_defaults = yaml.safe_load(
@@ -383,16 +383,27 @@ def test_goal_judge_uses_the_declared_auxiliary_model() -> None:
     router_config = (REPO_ROOT / "roles/llm_router/templates/config.yaml.j2").read_text()
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
 
-    assert group_vars["hermes_brain_model"] == "tool-calling"
-    assert group_vars["hermes_goal_judge_model"] == "goal-judge"
-    assert defaults["hermes_agent_compression_model"] == "tool-calling"
+    hermes_alias = "hermes-default"
+    hermes_backend = "mlx-community/Qwen3.5-9B-OptiQ-4bit"
+    assert group_vars["hermes_brain_model"] == hermes_alias
+    assert group_vars["hermes_goal_judge_model"] == hermes_alias
+    assert defaults["hermes_agent_model"] == "{{ hermes_brain_model }}"
+    assert defaults["hermes_agent_compression_model"] == "{{ hermes_brain_model }}"
+    assert defaults["hermes_agent_memory_llm_model"] == "{{ hermes_brain_model }}"
     assert defaults["hermes_agent_model_max_tokens"] == 8192
     assert defaults["hermes_agent_context_compression_threshold"] == 0.75
     assert defaults["hermes_agent_brain_sync_enabled"] is False
     assert router_defaults["llm_router_model_group_aliases"] == {
+        hermes_alias: hermes_backend,
         "tool-calling": "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
         "goal-judge": "mlx-community/Qwen3.6-27B-mxfp4",
     }
+    hermes_entries = [
+        entry
+        for entry in router_defaults["llm_router_large_models"]
+        if entry["backend"] == hermes_backend
+    ]
+    assert hermes_entries == [{"backend": hermes_backend, "context_window": 65536}]
     assert router_defaults["llm_router_num_retries"] == 0
     assert router_defaults["llm_router_rate_limit_retries"] == 0
     assert "model_group_alias:" in router_config
