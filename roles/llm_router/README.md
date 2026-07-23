@@ -14,9 +14,8 @@ tofu inventory). Tools come from the repo's Nix dev shell (`direnv allow`).
 
 ## Tiers (one proxy, two backends)
 
-The router serves **real model ids only** — no alias/indirection names (design
-rule 2026-07-17). Consumers request the id they want; re-pointing the fabric
-brain is a one-line edit to `ai_default_model` in `group_vars/all.yml`.
+The router registers every physical backend exactly once. Consumers may request
+a physical ID or a stable role from `llm_router_model_group_aliases`.
 
 | Model ids | Backend | Auth |
 | --- | --- | --- |
@@ -53,20 +52,14 @@ this role. The first entry is `nvidia/nemotron-3-ultra-550b-a55b:free`
 (rate-limited; NVIDIA logs prompts on the `:free` endpoint — never send
 confidential material through it).
 
-## No aliases — real model ids only
+## Model role aliases
 
-The router serves **only real model ids** (design rule 2026-07-17). There is
-no `model_group_alias` block and no indirection names: the earlier
-`ai-default` / `ai-deep-analysis` / `claude-*` aliases were removed because a
-name that hides what actually serves a request confuses consumers and rots
-(the `claude-*` aliases misrepresented local Qwen backends as Anthropic
-models). Each backend has exactly one `model_list` entry keyed by its real id.
-
-Re-pointing the fabric brain is a one-line edit to `ai_default_model` in
-`group_vars/all.yml` (a config var holding a real id — not a served alias),
-which every consumer resolves. The daily 00/12 UTC rotation machinery was
-deleted 2026-07-16 as a no-op (both phases had served the same model);
-incident/decision history lives in Zammad (AI/LLM Serving).
+Each physical backend has exactly one `model_list` deployment. Stable
+consumer-facing role names live only in
+`llm_router_model_group_aliases`, rendered as LiteLLM
+`router_settings.model_group_alias`. An alias carries no context window,
+endpoint, or sampling configuration of its own, so changing the physical model
+does not duplicate deployment settings.
 
 ## Observability
 

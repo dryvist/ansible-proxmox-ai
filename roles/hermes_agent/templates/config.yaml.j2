@@ -47,6 +47,8 @@ logging:
 # Cap the agentic loop — a runaway must not pin the GPU all night (Agy's budget).
 agent:
   max_turns: {{ hermes_agent_max_turns }}
+  # Upstream counts total attempts, so 2 means one initial call plus one retry.
+  api_max_retries: 2
   tool_use_enforcement: auto
   # H-17 global deny floor: toolsets NO agent this gateway spawns may load,
   # regardless of any per-platform or per-job allowlist (upstream layers this
@@ -82,17 +84,19 @@ security:
 # Auto-shrink long autonomous sessions. summary_model MUST be a model our router
 # serves — the upstream default (google/gemini-3-flash-preview) is unreachable
 # here (no external egress/key), which would make compression fail mid-session.
-# It must also serve a >=64K window (Hermes hard minimum), which is why it is
-# pinned to a real >=64K model id — see hermes_agent_compression_model.
+# It must also serve a >=64K window (Hermes hard minimum); the router alias
+# selected by hermes_agent_compression_model carries that contract.
 compression:
   enabled: {{ hermes_agent_context_compression_enabled | to_json }}
   threshold: {{ hermes_agent_context_compression_threshold }}
   summary_model: {{ hermes_agent_compression_model }}
 
 {% if hermes_agent_kanban_goal_mode | bool %}
-# Goal-mode verdict calls use the OpenBao-selected smaller MLX model. Judging is
+# Goal-mode verdict calls use the goal-judge router role. Judging is
 # sequential after each worker turn, and the card turn budget remains bounded.
 auxiliary:
+  # One auxiliary retry after the same fixed 15-second delay as primary calls.
+  transient_retries: 1
   goal_judge:
     provider: custom
     model: {{ hermes_agent_kanban_goal_judge_model | to_json }}

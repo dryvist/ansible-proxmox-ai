@@ -1,8 +1,8 @@
 {{ ansible_managed | comment }}
 # LiteLLM proxy config (managed by the llm_router role). One OpenAI-compatible front
-# door for the whole fabric; consumers request REAL model ids — no aliases are
-# served (design rule 2026-07-17). Secrets come from the systemd EnvironmentFile
-# via os.environ/ — no credential literal lives here.
+# door for the whole fabric. Physical backends have one deployment entry each;
+# stable consumer names resolve through model_group_alias. Secrets come from the
+# systemd EnvironmentFile via os.environ/ — no credential literal lives here.
 
 model_list:
   # --- large tier: one deployment each, bearer-authed to llm-large ---
@@ -136,8 +136,10 @@ router_settings:
   routing_strategy: {{ llm_router_routing_strategy }}
   allowed_fails: {{ llm_router_allowed_fails }}
   cooldown_time: {{ llm_router_cooldown_time }}
-  # No model_group_alias block, on purpose: the router serves ONLY real model
-  # ids (design rule 2026-07-17).
+  model_group_alias:
+{% for alias, target in llm_router_model_group_aliases.items() %}
+    {{ alias | to_json }}: {{ target | to_json }}
+{% endfor %}
   # No cross-tier fallbacks for the default brain, on purpose: a fallback
   # serving a smaller context than the primary poisons callers instead of
   # degrading them (incident history: Zammad, AI/LLM Serving). Fail loud; the
@@ -145,19 +147,12 @@ router_settings:
   # Pre-call context-window checks so an over-long request is not routed to a model
   # that cannot serve it (no cross-tier fallback masks the error).
   enable_pre_call_checks: true
-  # Retry the same deployment on a transient failure (single-deployment large
-  # tier has no sibling to fail over to — see llm_router_num_retries) and bound
-  # how long one attempt waits before LiteLLM calls it a connection failure.
+  # Hermes owns its one fixed-delay retry. The router forwards each attempt once
+  # so backend calls remain exactly bounded.
   num_retries: {{ llm_router_num_retries }}
   timeout: {{ llm_router_request_timeout_seconds }}
-  # 429 absorption. The serving tiers cap in-flight requests at the proxy
-  # (llama-swap concurrencyLimit) and 429 the excess; without this, a burst of
-  # concurrent agents trips allowed_fails ({{ llm_router_allowed_fails }}/min)
-  # and cools down the SINGLE large deployment — turning a momentary queue into
-  # a hard "no deployments available" cascade (the 2026-07-08 bench collapse
-  # signature). Rate-limit errors instead retry with backoff (queue-by-retry)
-  # and never count toward cooldown; real faults still cool down via
-  # allowed_fails above.
+  # Rate-limit failures return immediately to Hermes, which waits 15 seconds and
+  # makes its single retry.
   retry_policy:
     RateLimitErrorRetries: {{ llm_router_rate_limit_retries }}
   allowed_fails_policy:
