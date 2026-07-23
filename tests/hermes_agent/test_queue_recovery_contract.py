@@ -22,6 +22,8 @@ def test_queue_recovery_requires_confirmation_and_uses_native_archival() -> None
     assert "cron remove {{ item.id }}" in playbook
     assert "Clear stale Hermes cron desired-state markers" in playbook
     assert "hermes_queue_recovery_expected_cron_names" in playbook
+    assert "retries: 5" in playbook
+    assert "until: >-" in playbook
     assert "kanban gc" not in playbook
     assert "archive {{ item }} --rm" not in BOARD_TASKS.read_text()
 

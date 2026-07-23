@@ -241,9 +241,27 @@ def test_worker_spawn_patch_enters_quiet_goal_loop_path() -> None:
         "Patch Hermes Kanban workers to enter the quiet goal-loop path",
         PINNED_WORKER_SPAWN_SOURCE,
     )
-    assert '*(["--quiet"] if task.goal_mode else []),' in patched
+    quiet_expansion = '        *(["--quiet"] if task.goal_mode else []),\n'
+    assert patched.count(quiet_expansion) == 1
     assert patched.index('"chat"') < patched.index('["--quiet"]')
     assert patched.index('["--quiet"]') < patched.index('"-q", prompt')
+
+    patched_again = _apply_runtime_patch(
+        "Patch Hermes Kanban workers to enter the quiet goal-loop path",
+        patched,
+    )
+    assert patched_again == patched
+
+    duplicated = PINNED_WORKER_SPAWN_SOURCE.replace(
+        '        "-q", prompt,\n',
+        quiet_expansion * 17 + '        "-q", prompt,\n',
+    )
+    normalized = _apply_runtime_patch(
+        "Patch Hermes Kanban workers to enter the quiet goal-loop path",
+        duplicated,
+    )
+    assert normalized == patched
+
     namespace: dict[str, Any] = {}
     exec(patched, namespace)
     task_type = type("Task", (), {})
@@ -356,25 +374,44 @@ def test_reviewer_child_goal_fields_follow_the_role_toggle() -> None:
     assert "bounded goal loop" not in disabled
 
 
-def test_goal_judge_uses_the_declared_auxiliary_model() -> None:
+def test_hermes_inference_paths_use_the_declared_alias() -> None:
     defaults = yaml.safe_load((ROLE_ROOT / "defaults" / "main.yml").read_text())
     group_vars = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all.yml").read_text())
+    hindsight_group_vars = yaml.safe_load(
+        (REPO_ROOT / "inventory/group_vars/hindsight_group.yml").read_text()
+    )
+    hindsight_compose = (
+        REPO_ROOT / "roles/hindsight_docker/templates/docker-compose.yml.j2"
+    ).read_text()
     router_defaults = yaml.safe_load(
         (REPO_ROOT / "roles/llm_router/defaults/main.yml").read_text()
     )
     router_config = (REPO_ROOT / "roles/llm_router/templates/config.yaml.j2").read_text()
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
 
-    assert group_vars["hermes_brain_model"] == "tool-calling"
-    assert group_vars["hermes_goal_judge_model"] == "goal-judge"
-    assert defaults["hermes_agent_compression_model"] == "tool-calling"
+    hermes_alias = "hermes-default"
+    hermes_backend = "mlx-community/Qwen3.5-9B-OptiQ-4bit"
+    assert group_vars["hermes_brain_model"] == hermes_alias
+    assert group_vars["hermes_goal_judge_model"] == hermes_alias
+    assert defaults["hermes_agent_model"] == "{{ hermes_brain_model }}"
+    assert defaults["hermes_agent_compression_model"] == "{{ hermes_brain_model }}"
+    assert defaults["hermes_agent_memory_llm_model"] == "{{ hermes_brain_model }}"
+    assert hindsight_group_vars["hindsight_docker_llm_model"] == "{{ hermes_brain_model }}"
+    assert 'HINDSIGHT_API_LLM_MODEL: "{{ hindsight_docker_llm_model }}"' in hindsight_compose
     assert defaults["hermes_agent_model_max_tokens"] == 8192
     assert defaults["hermes_agent_context_compression_threshold"] == 0.75
     assert defaults["hermes_agent_brain_sync_enabled"] is False
     assert router_defaults["llm_router_model_group_aliases"] == {
+        hermes_alias: hermes_backend,
         "tool-calling": "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
         "goal-judge": "mlx-community/Qwen3.6-27B-mxfp4",
     }
+    hermes_entries = [
+        entry
+        for entry in router_defaults["llm_router_large_models"]
+        if entry["backend"] == hermes_backend
+    ]
+    assert hermes_entries == [{"backend": hermes_backend, "context_window": 65536}]
     assert router_defaults["llm_router_num_retries"] == 0
     assert router_defaults["llm_router_rate_limit_retries"] == 0
     assert "model_group_alias:" in router_config
@@ -418,6 +455,18 @@ def test_installed_source_postconditions_fail_closed() -> None:
         in conditions
     )
     assert "goal_max_turns = COALESCE(?, goal_max_turns)" in conditions
+    assert any(
+        '*(["--quiet"] if task.goal_mode else []),' in condition
+        and ".count(" in condition
+        and ") == 1" in condition
+        for condition in assert_task["ansible.builtin.assert"]["that"]
+    )
+    assert any(
+        '"-q", prompt,' in condition
+        and ".count(" in condition
+        and ") == 1" in condition
+        for condition in assert_task["ansible.builtin.assert"]["that"]
+    )
     assert '["--quiet"]' in conditions
     assert "WHERE id = ? AND status IN" in conditions
     assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in conditions
