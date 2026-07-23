@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.14.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.13.1...v0.14.0) (2026-07-23)
+
+
+### Features
+
+* **agentgateway:** wire read-only Vikunja MCP at the gateway; Hermes pointer ([#157](https://github.com/dryvist/ansible-proxmox-ai/issues/157)) ([bec499e](https://github.com/dryvist/ansible-proxmox-ai/commit/bec499ed72254b74fe155e8479bef679d1387522))
+* **roles:** add harbor AI evaluation framework to agent and LLM container roles ([#153](https://github.com/dryvist/ansible-proxmox-ai/issues/153)) ([a7ea6c2](https://github.com/dryvist/ansible-proxmox-ai/commit/a7ea6c27150b63a940e1db19dda36873879cd2eb))
+
+
+### Bug Fixes
+
+* **hermes:** normalize deployed metric patch ([#149](https://github.com/dryvist/ansible-proxmox-ai/issues/149)) ([87d9119](https://github.com/dryvist/ansible-proxmox-ai/commit/87d9119778ecd3169f9f01f6b4daca61db641aae))
+* **hermes:** preserve token metric indentation ([#146](https://github.com/dryvist/ansible-proxmox-ai/issues/146)) ([16761a7](https://github.com/dryvist/ansible-proxmox-ai/commit/16761a75cdcbf42010dce2f92d6a12f9803c3061))
+* **hermes:** recover wedged scheduler queue ([#139](https://github.com/dryvist/ansible-proxmox-ai/issues/139)) ([58a2c2d](https://github.com/dryvist/ansible-proxmox-ai/commit/58a2c2d61c1d554003c8eaf68fe30b680b7a8070))
+* **hermes:** retain prompt catalog build ([#150](https://github.com/dryvist/ansible-proxmox-ai/issues/150)) ([eb8f1c1](https://github.com/dryvist/ansible-proxmox-ai/commit/eb8f1c1728224108a679eca5f4650e43602fa5fd))
+* **hermes:** route inference through 9b alias ([c371b73](https://github.com/dryvist/ansible-proxmox-ai/commit/c371b7319a6f273bfb828341b79c5707a3112fa4))
+* **hermes:** run Kanban workers through goal loop ([#141](https://github.com/dryvist/ansible-proxmox-ai/issues/141)) ([b973b62](https://github.com/dryvist/ansible-proxmox-ai/commit/b973b62a248a569f0dab6f0ff82502137b834a8f))
+* **hermes:** use proven model for goal judging ([#142](https://github.com/dryvist/ansible-proxmox-ai/issues/142)) ([db78dd0](https://github.com/dryvist/ansible-proxmox-ai/commit/db78dd0e7c711a11521a5801e7cb2ba3dbc8ac56))
+* **hermes:** use runtime goal judge and retry model calls once ([#144](https://github.com/dryvist/ansible-proxmox-ai/issues/144)) ([7997c9f](https://github.com/dryvist/ansible-proxmox-ai/commit/7997c9fe02f2e4138292049a2d16027de0dd75b1))
+* **hermes:** use runtime-selected fast goal judge ([#143](https://github.com/dryvist/ansible-proxmox-ai/issues/143)) ([aac89f3](https://github.com/dryvist/ansible-proxmox-ai/commit/aac89f3e17e34b6b51ba31ca09a913b9c7ba01cc))
+
 ## [0.13.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.13.0...v0.13.1) (2026-07-22)
 
 
