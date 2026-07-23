@@ -50,6 +50,10 @@ PINNED_TRANSPORT_RECOVERY_SOURCE = (
     "                    if not _retry.primary_recovery_attempted and "
     "agent._try_recover_primary_transport(\n"
 )
+PINNED_TOKEN_USAGE_SOURCE = (
+    "                    if agent.verbose_logging:\n"
+    '                        logging.debug(f"Token usage: {usage}")\n'
+)
 PINNED_WORKER_SPAWN_SOURCE = '''\
 def build_worker_argv(task, prompt):
     cmd = []
@@ -169,6 +173,17 @@ def test_goal_completion_patch_uses_current_judge_contract() -> None:
         PINNED_GOAL_COMPLETION_SOURCE,
     )
     assert "verdict, reason, _, _ = judge_goal(" in patched
+
+
+def test_token_usage_metric_patch_matches_pinned_source() -> None:
+    patched = _apply_runtime_patch(
+        "Enable prompt-safe Hermes token usage metrics at DEBUG",
+        PINNED_TOKEN_USAGE_SOURCE,
+    )
+    assert (
+        '                    if True:\n'
+        '                        logging.debug(f"Token usage:'
+    ) in patched
 
 
 def test_model_calls_retry_once_after_fifteen_seconds() -> None:
@@ -428,10 +443,10 @@ def test_installed_source_postconditions_fail_closed() -> None:
             ),
         )
     )
-    retry_source += (
-        "# Log request details if verbose\n        if True:\n"
-        'if True:\n'
-        '                        logging.debug(f"Token usage: prompt={usage}")\n'
+    retry_source += "# Log request details if verbose\n        if True:\n"
+    retry_source += _apply_runtime_patch(
+        "Enable prompt-safe Hermes token usage metrics at DEBUG",
+        PINNED_TOKEN_USAGE_SOURCE,
     )
     auxiliary_source = "\n".join(
         (
