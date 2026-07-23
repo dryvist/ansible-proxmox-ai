@@ -1,0 +1,168 @@
+---
+# Recover a wedged Hermes Kanban dispatcher without deleting durable agent state.
+# Archive is reversible; never use `hermes kanban archive --rm` or raw SQLite.
+- name: Load OpenTofu infrastructure inventory
+  import_playbook: ../inventory/load_tofu.yml
+
+- name: Recover Hermes scheduler and Kanban queue
+  hosts: hermes_agent_group
+  become: true
+  gather_facts: false
+  vars_files:
+    - ../roles/codex_runner/defaults/main.yml
+    - ../roles/hermes_agent/defaults/main.yml
+  vars:
+    hermes_queue_recovery_confirm: false
+  pre_tasks:
+    - name: Require explicit confirmation before clearing Hermes work
+      ansible.builtin.assert:
+        that: hermes_queue_recovery_confirm | bool
+        fail_msg: >-
+          Set hermes_queue_recovery_confirm=true only when you intend to archive
+          every non-archived Hermes Kanban task and recreate the cron fleet.
+
+  tasks:
+    - name: Stop the Hermes gateway before reclaiming active work
+      ansible.builtin.systemd:
+        name: hermes-gateway
+        state: stopped
+
+    - name: Check for the retained brain watchdog timer
+      ansible.builtin.stat:
+        path: /etc/systemd/system/hermes-brain-watchdog.timer
+      register: hermes_queue_recovery_watchdog_timer
+
+    - name: Stop and disable the retained brain watchdog timer during recovery
+      ansible.builtin.systemd:
+        name: hermes-brain-watchdog.timer
+        state: stopped
+        enabled: false
+      when: hermes_queue_recovery_watchdog_timer.stat.exists
+
+    - name: Clear stale Hermes cron desired-state markers
+      ansible.builtin.file:
+        path: "{{ hermes_agent_managed_cron_state_dir }}"
+        state: absent
+
+    - name: Read the live Hermes cron store
+      ansible.builtin.slurp:
+        src: "{{ hermes_agent_hermes_home }}/cron/jobs.json"
+      register: hermes_queue_recovery_cron_store
+      failed_when: false
+
+    - name: Derive every live Hermes cron job
+      ansible.builtin.set_fact:
+        hermes_queue_recovery_cron_jobs: >-
+          {{ (hermes_queue_recovery_cron_store.content | default('e30=', true)
+              | b64decode | from_json).jobs | default([])
+              | selectattr('id', 'defined') | list }}
+
+    - name: List every Hermes Kanban board
+      ansible.builtin.command: "{{ hermes_agent_bin }} kanban boards list --json"
+      environment:
+        HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+      become: true
+      become_user: "{{ hermes_agent_user }}"
+      register: hermes_queue_recovery_boards_raw
+      changed_when: false
+
+    - name: Parse Hermes Kanban boards
+      ansible.builtin.set_fact:
+        hermes_queue_recovery_boards: "{{ hermes_queue_recovery_boards_raw.stdout | from_json }}"
+
+    - name: Archive all non-archived tasks on every Hermes board
+      ansible.builtin.include_tasks: tasks/recover-hermes-queue-board.yml
+      loop: "{{ hermes_queue_recovery_boards }}"
+      loop_control:
+        loop_var: hermes_queue_recovery_board
+        label: "{{ hermes_queue_recovery_board.slug }}"
+
+    - name: Remove every live Hermes cron job by ID
+      ansible.builtin.command: "{{ hermes_agent_bin }} cron remove {{ item.id }}"
+      environment:
+        HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+      become: true
+      become_user: "{{ hermes_agent_user }}"
+      loop: "{{ hermes_queue_recovery_cron_jobs }}"
+      loop_control:
+        label: "{{ item.name | default(item.id) }}"
+      changed_when: true
+
+    - name: Verify the Hermes cron store is empty before reconciliation
+      ansible.builtin.slurp:
+        src: "{{ hermes_agent_hermes_home }}/cron/jobs.json"
+      register: hermes_queue_recovery_empty_cron_store
+
+    - name: Assert no Hermes cron jobs remain before reconciliation
+      ansible.builtin.assert:
+        that: >-
+          ((hermes_queue_recovery_empty_cron_store.content | b64decode | from_json).jobs
+           | default([]) | length) == 0
+
+    - name: Reconcile the Codex runner required by Hermes configuration
+      ansible.builtin.include_role:
+        name: codex_runner
+
+    - name: Reconcile the Hermes role and recreate the declared enqueuer fleet
+      ansible.builtin.include_role:
+        name: hermes_agent
+
+    - name: Read the enabled cron desired-state markers
+      ansible.builtin.find:
+        paths: "{{ hermes_agent_managed_cron_state_dir }}"
+        patterns: "*.sha256"
+        file_type: file
+      register: hermes_queue_recovery_cron_markers
+
+    - name: Derive the enabled cron names from the reconciled markers
+      ansible.builtin.set_fact:
+        hermes_queue_recovery_expected_cron_names: >-
+          {{ hermes_queue_recovery_cron_markers.files
+             | map(attribute='path') | map('basename')
+             | map('regex_replace', '\\.sha256$', '') | list | sort }}
+
+    - name: Read the reconciled Hermes cron store
+      ansible.builtin.slurp:
+        src: "{{ hermes_agent_hermes_home }}/cron/jobs.json"
+      register: hermes_queue_recovery_reseeded_cron_store
+      retries: 5
+      delay: 2
+      until: >-
+        ((hermes_queue_recovery_reseeded_cron_store.content | b64decode | from_json).jobs
+         | default([]) | map(attribute='name') | list | sort)
+        == hermes_queue_recovery_expected_cron_names
+
+    - name: Assert the reconciled cron fleet matches its enabled desired state
+      ansible.builtin.assert:
+        that: >-
+          ((hermes_queue_recovery_reseeded_cron_store.content | b64decode | from_json).jobs
+           | default([]) | map(attribute='name') | list | sort)
+          == hermes_queue_recovery_expected_cron_names
+
+    - name: Confirm the Hermes gateway is active after reconciliation
+      ansible.builtin.systemd:
+        name: hermes-gateway
+      register: hermes_queue_recovery_gateway
+      changed_when: false
+
+    - name: Assert the Hermes gateway is active
+      ansible.builtin.assert:
+        that: hermes_queue_recovery_gateway.status.ActiveState == 'active'
+
+    - name: Check for the retained brain watchdog timer after reconciliation
+      ansible.builtin.stat:
+        path: /etc/systemd/system/hermes-brain-watchdog.timer
+      register: hermes_queue_recovery_watchdog_timer_unit
+
+    - name: Confirm the retained brain watchdog timer is inactive after reconciliation
+      ansible.builtin.systemd:
+        name: hermes-brain-watchdog.timer
+      register: hermes_queue_recovery_watchdog_timer
+      changed_when: false
+      when: hermes_queue_recovery_watchdog_timer_unit.stat.exists
+
+    - name: Assert the brain watchdog timer is inactive
+      ansible.builtin.assert:
+        that: >-
+          not hermes_queue_recovery_watchdog_timer_unit.stat.exists or
+          hermes_queue_recovery_watchdog_timer.status.ActiveState == 'inactive'

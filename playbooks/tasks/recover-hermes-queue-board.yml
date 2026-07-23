@@ -1,0 +1,41 @@
+---
+- name: List active tasks on {{ hermes_queue_recovery_board.slug }}
+  ansible.builtin.command: >-
+    {{ hermes_agent_bin }} kanban --board {{ hermes_queue_recovery_board.slug }} list --json
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_queue_recovery_tasks_raw
+  changed_when: false
+
+- name: Parse active tasks on {{ hermes_queue_recovery_board.slug }}
+  ansible.builtin.set_fact:
+    hermes_queue_recovery_task_ids: >-
+      {{ (hermes_queue_recovery_tasks_raw.stdout | from_json)
+         | map(attribute='id') | list }}
+
+- name: Archive all active tasks on {{ hermes_queue_recovery_board.slug }}
+  ansible.builtin.command: >-
+    {{ hermes_agent_bin }} kanban --board {{ hermes_queue_recovery_board.slug }} archive
+    {{ hermes_queue_recovery_task_ids | join(' ') }}
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  when: hermes_queue_recovery_task_ids | length > 0
+
+- name: Verify no active tasks remain on {{ hermes_queue_recovery_board.slug }}
+  ansible.builtin.command: >-
+    {{ hermes_agent_bin }} kanban --board {{ hermes_queue_recovery_board.slug }} list --json
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_queue_recovery_remaining_tasks_raw
+  changed_when: false
+
+- name: Assert no active tasks remain ({{ hermes_queue_recovery_board.slug }})
+  ansible.builtin.assert:
+    that: (hermes_queue_recovery_remaining_tasks_raw.stdout | from_json | length) == 0

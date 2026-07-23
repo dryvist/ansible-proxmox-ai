@@ -99,7 +99,7 @@ sessions don't overflow.
 | `hermes_agent_wiki_enabled` | `true` | enable llm-wiki + create the wiki dir |
 | `hermes_agent_wiki_path` | `{{ hermes_agent_home }}/wiki` | persistent wiki root (`WIKI_PATH`) |
 | `hermes_agent_context_compression_enabled` | `true` | auto-shrink long sessions |
-| `hermes_agent_context_compression_threshold` | `0.85` | compress at 85% of context |
+| `hermes_agent_context_compression_threshold` | `0.75` | compress at 75% of context |
 | `hermes_agent_nightly_wiki_cron_*` | — | nightly lint/health-check cron |
 
 ## Autonomous GitHub docs-contributor
@@ -160,10 +160,10 @@ and GraphQL (Projects v2) calls and the usage guardrails.
 
 ## Operational log shipping (index=hermes)
 
-Ships the `hermes-*` systemd units' journal logs (gateway, brain watchdog, brain
-sync) to a dedicated Splunk `index=hermes`, so agent health is searchable apart
-from the shared `os` index. A drop-in rsyslog ruleset forwards only lines whose
-`programname` starts with `hermes` over TCP to the `hermes_agent` AI ingest
+Ships every `hermes-*` systemd unit record and active `.hermes/logs/*.log` file
+to a dedicated Splunk `index=hermes`, so agent health is searchable apart from
+the shared `os` index. The rsyslog unit match also captures child processes
+whose `programname` is not `hermes`. Both sources forward to the `hermes_agent` AI ingest
 listener (`syslog.${PROXMOX_SUBDOMAIN}`, port from `tofu_data`), then `stop`s
 them so they never also double-ship into `os`. Mirrors the `openbao_audit`
 shipping pattern. The port/index/sourcetype are the single tofu-constants
@@ -173,8 +173,20 @@ the `hermes` index are provisioned by `ansible-proxmox-apps` / `ansible-splunk`.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `hermes_agent_syslog_route_enabled` | `true` | Deploy the rsyslog forward |
+| `hermes_agent_log_directory` | `.hermes/logs` | Active Hermes file logs to forward |
 | `hermes_agent_syslog_host` | `syslog.{{ PROXMOX_SUBDOMAIN }}` | ingest FQDN |
 | `hermes_agent_syslog_port` | `ai_log_routing.hermes_agent.port` (tofu) | ingest TCP port |
+
+Use this public-safe timeline search to see each event at second precision and
+the extracted model latency where Hermes emitted it:
+
+```spl
+index=hermes
+| eval log_stream=if(match(_raw, "hermes-file"), "file", "systemd")
+| eval duration_seconds=round(latency, 3)
+| sort 0 _time
+| table _time log_stream session model duration_seconds _raw
+```
 
 ## Splunk search access
 
@@ -444,7 +456,7 @@ proxy this repo doesn't otherwise need.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `hermes_agent_brain_watchdog_enabled` | `true` | Deploy + start the watchdog timer |
+| `hermes_agent_brain_watchdog_enabled` | `false` | Preserve the watchdog implementation without scheduling it |
 | `hermes_agent_brain_watchdog_interval` | `60s` | Probe cadence (`OnUnitActiveSec`) |
 | `hermes_agent_brain_watchdog_probe_timeout` | `15` | Per-probe curl deadline (seconds) |
 | `hermes_agent_brain_watchdog_down_after` | `3` | Consecutive fails → pause + alert |
@@ -500,55 +512,15 @@ the `StartLimit*` thresholds are literals in
 role variables — they are operational constants tied 1:1 to this alert unit
 that nothing currently overrides per-host.
 
-## Brain runtime source (OpenBao — no rebuild to re-point)
+## Brain model selection
 
-tofu/Ansible seed the **starting** brain (`ai_default_model`, baked into
-`config.yaml` at converge) but do not **own** it. A second, independent
-`systemd` timer — `hermes-brain-sync.timer`, every
-`hermes_agent_brain_sync_interval` (default 5 min), run as **root**, separate
-from the `hermes` user's own gateway process and `.env` — polls the
-`ai-public` OpenBao domain's non-secret `secret/ai/public/brain` (field
-`active_model`; see `roles/openbao_secrets`) and, only when the value both
-**changed** and **validates live** against the router's own
-`GET /v1/model/info` (a tuned entry with a real `max_input_tokens` — never
-the `"*"` wildcard passthrough; the live counterpart to the converge-time
-compress-death-trap guard in `roles/llm_router/tasks/assert.yml`), rewrites
-`config.yaml`'s `model.default` and restarts `hermes-gateway`.
-
-Re-pointing the fabric brain day-to-day is now an OpenBao write, not a
-converge:
-
-```sh
-bao kv patch secret/ai/public/brain active_model=<new-model-id>
-```
-
-The change reaches Hermes within one poll interval, with no tofu/ansible run.
-A poll failure (OpenBao unreachable, router unreachable, candidate not a
-tuned router entry) always just **keeps the currently-running brain** — it
-never blanks it — and `ai_default_model` (itself bao-first since 2026-07-18,
-same `ai-public` domain) is both the converge-time seed and the fallback a
-sync cycle falls back to. The brain-health watchdog above reads the same
-live state file (`hermes_agent_brain_sync_state_file`), so it always probes
-whichever model is actually configured right now, not a stale converge-time
-value.
-
-The `ai-public` domain deliberately uses its **own**, narrowly read-only
-AppRole — never `local-llm`'s broader `ai/*` credential — because its
-role_id/secret_id are the ones copied onto this guest (a dedicated
-`0600` env file, kept out of Hermes' own `.env` so the credential never
-enters the agent's own environment). See `roles/openbao_secrets/README.md`
-for the rationale and the companion `ansible-proxmox-apps` AppRole/policy
-this domain still needs before it resolves live.
-
-**Deliberately NOT extended** to `hermes_agent_compression_model` (pinned to
-a literal so a brain repoint can never silently drag the ≥64K-context
-compression path with it) or to `hermes_agent_memory_llm_model` (only
-rendered under the `local_embedded` Hindsight mode, not the live
-`local_external` default).
+Hermes selects stable router aliases. Physical model IDs and deployment
+settings remain in the central router/MLX catalogs. The older runtime
+brain-sync implementation is retained but disabled.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `hermes_agent_brain_sync_enabled` | `true` | Deploy + start the brain-sync timer |
+| `hermes_agent_brain_sync_enabled` | `false` | Retain the optional brain-sync implementation without running it |
 | `hermes_agent_brain_sync_interval` | `5min` | Poll cadence (`OnUnitActiveSec`) |
 | `hermes_agent_brain_sync_bao_path` | `ai/public/brain` | KV v2 data path (mount `secret`) |
 | `hermes_agent_brain_sync_bao_field` | `active_model` | Field holding the candidate model id |

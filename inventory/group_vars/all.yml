@@ -29,29 +29,11 @@ llm_large_serving_ip: >-
   {{ lookup('env', 'LLM_LARGE_RUNNER_IP')
      or ('' if lookup('env', 'LLM_LARGE_RUNNER_HOST') else '10.0.50.10') }}
 
-# SINGLE SOURCE OF TRUTH for the fabric's default chat/agent model. Both the
-# Hermes Agent brain (hermes_agent_model) and Open WebUI's default chat model
-# (open_webui_default_model) resolve to this, so the human chat UI and the
-# autonomous agent always run the same default by construction. The value is
-# the REAL model id served via https://llm.<subdomain>/v1 — the router serves
-# no aliases (design rule 2026-07-17).
+# Default model for fabric consumers that have not selected a stable role alias.
+# Hermes uses hermes_brain_model below; Open WebUI continues to read this value.
 #
-# 2026-07-18: tofu/Ansible no longer OWN the active brain — this is now
-# bao-first (secret/ai/public/brain, field active_model, the ai-public
-# OpenBao domain — see roles/openbao_secrets), with the literal below as the
-# fallback ONLY. Re-pointing the fabric brain day-to-day is an OpenBao write,
-# not a converge: `bao kv patch secret/ai/public/brain active_model=<id>`,
-# picked up by the hermes_agent/open_webui brain-sync systemd timers on their
-# next poll (minutes, no rebuild) — see those roles' *_brain_sync_* vars and
-# READMEs. This var (and the literal fallback) still matter for THREE cases
-# a runtime poll can't cover: (1) the value config.yaml/DEFAULT_MODELS is
-# rendered with at converge/first boot, before any poll has run; (2) what a
-# brain-sync timer falls back to if OpenBao or the router is unreachable;
-# (3) the value llm_router/tasks/assert.yml checks at converge time (that
-# check is necessarily a point-in-time proof against WHATEVER this resolves
-# to at converge — it cannot see a later OpenBao-only change, which is why
-# brain-sync re-validates live against the router's own /v1/model/info
-# before ever switching — see roles/hermes_agent's brain-sync script).
+# Open WebUI resolves this from OpenBao coordination data when present, with
+# the literal fallback below. Hermes does not consume this value.
 #
 # 2026-07-18: the deepseek-v4-flash STOPGAP (cloud egress while local serving
 # flapped) is superseded — the flap's root causes are fixed and verified
@@ -66,26 +48,9 @@ ai_default_model: >-
 # decision 2026-07-19) so the agent brain and the ai-default fabric brain CAN
 # diverge. hermes_agent_model resolves to THIS, not ai_default_model.
 #
-# PINNED to the current live default (= ai_default_model's own default literal,
-# the resident 80B Instruct agentic-bench winner) so introducing this var is
-# BEHAVIOR-NEUTRAL: on the next converge Hermes gets exactly the brain it runs
-# today. Runtime re-point still shares the ai/public/brain OpenBao key with
-# ai_default_model (the hermes_agent brain-sync vars below), so a live override
-# keeps moving both together — unchanged from today. The FULL runtime split
-# onto a dedicated secret/ai/public/hermes-brain key is a deliberate follow-up
-# (it needs that key seeded first); this PR lands only the literal decoupling.
-#
-# To switch Hermes to the OptiQ-35B sibling later, edit THIS one var to
-# `mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit` — but only once the standalone
-# dedicated-port OptiQ vllm-mlx agent exists (nix side): as a llama-swap
-# SWAP-class model OptiQ drops to ~32K and DISQUALIFIES (Hermes hard-requires
-# >=64K compression context), and a llama-swap "resident" flip does NOT survive
-# a cluster window (cluster-join reaps the whole llama-swap server). The
-# cluster-window-safe form is a standalone agent on its own port (cluster :11440
-# pattern), configured for 65,536 and excluded from the reap. HARD CONSTRAINTS
-# inherited from the router either way: >=64K served context, and no cross-tier
-# (smaller-context) fallback — it poisons the compression path.
-hermes_brain_model: mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit
+# Consumer-facing aliases are resolved by the router's central model catalog.
+# Physical MLX model IDs belong only in that catalog.
+hermes_brain_model: hermes-default
 
 # Escalation rubric v1 — WHICH tier a task deserves, encoded as data (from the
 # 2026-07-12 document benchmark: two planted traps, three model classes).
@@ -150,7 +115,7 @@ ai_escalation_rubric:
 # AI serving timeout chain (client-is-decider). Each OUTER layer must OUTLIVE the
 # inner one, so no intermediate guard kills a still-healthy generation and the
 # CLIENT alone decides when to give up:
-#   nix-darwin vllm-mlx server guard 3600s (external to this repo, not assertable)
+#   nix-darwin MLX model server guard 3600s (external to this repo)
 #     > llm_router per-attempt timeout  (ai_router_request_timeout_seconds)
 #       > Hermes client stream read     (ai_stream_read_timeout_seconds)
 # The two in-repo layers are named ONCE here (not as bare literals in each role)
@@ -173,3 +138,7 @@ ai_router_request_timeout_seconds: 2400
 # AppRole exists and secret/ai/public/brain is seeded.
 bao_local_llm_secrets: {}
 bao_ai_public_secrets: {}
+
+# Keep every Hermes inference path on the same stable consumer alias. The
+# router owns the physical backend selection.
+hermes_goal_judge_model: hermes-default

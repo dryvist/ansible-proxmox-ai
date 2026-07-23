@@ -47,6 +47,8 @@ logging:
 # Cap the agentic loop — a runaway must not pin the GPU all night (Agy's budget).
 agent:
   max_turns: {{ hermes_agent_max_turns }}
+  # Upstream counts total attempts, so 2 means one initial call plus one retry.
+  api_max_retries: 2
   tool_use_enforcement: auto
   # H-17 global deny floor: toolsets NO agent this gateway spawns may load,
   # regardless of any per-platform or per-job allowlist (upstream layers this
@@ -82,20 +84,22 @@ security:
 # Auto-shrink long autonomous sessions. summary_model MUST be a model our router
 # serves — the upstream default (google/gemini-3-flash-preview) is unreachable
 # here (no external egress/key), which would make compression fail mid-session.
-# It must also serve a >=64K window (Hermes hard minimum), which is why it is
-# pinned to a real >=64K model id — see hermes_agent_compression_model.
+# It must also serve a >=64K window (Hermes hard minimum); the router alias
+# selected by hermes_agent_compression_model carries that contract.
 compression:
   enabled: {{ hermes_agent_context_compression_enabled | to_json }}
   threshold: {{ hermes_agent_context_compression_threshold }}
   summary_model: {{ hermes_agent_compression_model }}
 
 {% if hermes_agent_kanban_goal_mode | bool %}
-# Goal-mode verdict calls use the light tier; workers continue on the primary
-# model and keep their existing session and tool context.
+# Goal-mode verdict calls use the same stable consumer alias as the primary,
+# compression, and memory paths. The card turn budget remains bounded.
 auxiliary:
+  # One auxiliary retry after the same fixed 15-second delay as primary calls.
+  transient_retries: 1
   goal_judge:
     provider: custom
-    model: {{ hermes_agent_kanban_goal_judge_model }}
+    model: {{ hermes_agent_kanban_goal_judge_model | to_json }}
     base_url: '{{ hermes_agent_model_base_url }}'
     api_key: '${HERMES_AGENT_MODEL_API_KEY}'
     api_mode: {{ hermes_agent_model_api_mode }}
@@ -215,8 +219,10 @@ platforms:
    is actually set, below. #}
 {% set _mcp_context7 = (hermes_agent_context7_mcp_enabled | bool) %}
 {% set _mcp_qdrant = (hermes_agent_qdrant_mcp_enabled | bool) %}
+{% set _mcp_vikunja = (hermes_agent_vikunja_mcp_enabled | bool) %}
+{% set _mcp_nautobot = (hermes_agent_nautobot_mcp_enabled | bool) %}
 {% set _mcp_escalation = (hermes_agent_codex_mcp_enabled | bool) %}
-{% if _mcp_splunk or _mcp_context7 or _mcp_qdrant or _mcp_escalation %}
+{% if _mcp_splunk or _mcp_context7 or _mcp_qdrant or _mcp_vikunja or _mcp_nautobot or _mcp_escalation %}
 # MCP servers. ${VARS} resolve from .env at connect time, so tokens/endpoints
 # never land in this file. The Splunk entry is omitted until its creds are
 # present; Context7 is keyless so it renders whenever enabled.
@@ -244,6 +250,19 @@ mcp_servers:
   # sidecar holds the Qdrant credential — see defaults).
   qdrant:
     url: "{{ hermes_agent_qdrant_mcp_url }}"
+{% endif %}
+{% if _mcp_vikunja %}
+  # Vikunja task board — read-only task/project/label tools via the shared
+  # agentgateway /vikunja route (keyless; the gateway sidecar holds the read
+  # token — see agentgateway_docker defaults).
+  vikunja:
+    url: "{{ hermes_agent_vikunja_mcp_url }}"
+{% endif %}
+{% if _mcp_nautobot %}
+  # Nautobot SoT — read-only, via the gateway /nautobot route. Disabled by
+  # default (no route/token yet); renders only once enabled.
+  nautobot:
+    url: "{{ hermes_agent_nautobot_mcp_url }}"
 {% endif %}
 {% if _mcp_escalation %}
   # Escalation: Codex (ChatGPT-OAuth-backed reasoning), for problems worth a
