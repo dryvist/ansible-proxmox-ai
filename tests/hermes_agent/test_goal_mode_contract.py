@@ -377,6 +377,12 @@ def test_reviewer_child_goal_fields_follow_the_role_toggle() -> None:
 def test_hermes_inference_paths_use_the_declared_alias() -> None:
     defaults = yaml.safe_load((ROLE_ROOT / "defaults" / "main.yml").read_text())
     group_vars = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all.yml").read_text())
+    hindsight_group_vars = yaml.safe_load(
+        (REPO_ROOT / "inventory/group_vars/hindsight_group.yml").read_text()
+    )
+    hindsight_compose = (
+        REPO_ROOT / "roles/hindsight_docker/templates/docker-compose.yml.j2"
+    ).read_text()
     router_defaults = yaml.safe_load(
         (REPO_ROOT / "roles/llm_router/defaults/main.yml").read_text()
     )
@@ -390,6 +396,8 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert defaults["hermes_agent_model"] == "{{ hermes_brain_model }}"
     assert defaults["hermes_agent_compression_model"] == "{{ hermes_brain_model }}"
     assert defaults["hermes_agent_memory_llm_model"] == "{{ hermes_brain_model }}"
+    assert hindsight_group_vars["hindsight_docker_llm_model"] == "{{ hermes_brain_model }}"
+    assert 'HINDSIGHT_API_LLM_MODEL: "{{ hindsight_docker_llm_model }}"' in hindsight_compose
     assert defaults["hermes_agent_model_max_tokens"] == 8192
     assert defaults["hermes_agent_context_compression_threshold"] == 0.75
     assert defaults["hermes_agent_brain_sync_enabled"] is False
