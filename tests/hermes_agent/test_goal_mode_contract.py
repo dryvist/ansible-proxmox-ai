@@ -395,6 +395,13 @@ def test_group_vars_reads_canonical_zammad_mcp_pair() -> None:
     assert "else lookup('env', 'ZAMMAD_URL')" in group_vars
 
 
+def test_prompt_catalog_build_keeps_a_gc_root() -> None:
+    build_task = _task("Build the pinned prompt catalog on the controller")
+    command = build_task["ansible.builtin.command"]["cmd"]
+    assert "--out-link /tmp/hermes-agent-prompts" in command
+    assert "--no-link" not in command
+
+
 def test_installed_source_postconditions_fail_closed() -> None:
     read_task = _task("Read installed Hermes goal-mode source patches")
     assert "ansible.builtin.slurp" in read_task
