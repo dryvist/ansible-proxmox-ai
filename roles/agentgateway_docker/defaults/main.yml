@@ -158,6 +158,53 @@ agentgateway_docker_docs_mcp_router_api_key: >-
      | default(lookup('env', 'LLM_ROUTER_MASTER_KEY'), true) }}
 
 # =============================================================================
+# Vikunja MCP sidecar — read-only task-board access for EVERY agent (Hermes,
+# Claude, Codex) through the shared /vikunja capability route, so the tool is
+# wired ONCE at the gateway, not per-agent. The upstream server
+# (@democratize-technology/vikunja-mcp) speaks stdio only, so supergateway wraps
+# it into Streamable HTTP on the compose network — transport plumbing, same
+# posture as the qdrant/docs sidecars. The SIDECAR holds the Vikunja token;
+# callers reach /vikunja keyless (same as /memory).
+#
+# READ-ONLY credential: seed a READ-scoped Vikunja token (a tk_ token from a
+# read-only user/scope) — NOT the svc-mcp-rw token. Inert-until-creds: an empty
+# token omits both the sidecar service and its route, so the role converges
+# cleanly before the operator seeds it (seeding step in the PR body/README).
+# =============================================================================
+agentgateway_docker_vikunja_mcp_enabled: true
+# supergateway = the standard stdio->HTTP shim image (Renovate-tracked).
+agentgateway_docker_vikunja_mcp_image: "supercorp/supergateway:3.4.3"
+# npm @democratize-technology/vikunja-mcp, launched via npx by supergateway.
+agentgateway_docker_vikunja_mcp_version: "0.2.0"
+# Compose-network-internal only (supergateway --port); never published, so not
+# a tofu pipeline_constant (same as the qdrant/docs sidecar ports).
+agentgateway_docker_vikunja_mcp_port: 8002
+# Vikunja instance API base (ends in /api/v1). Override via VIKUNJA_MCP_URL if
+# Vikunja is not at this vhost; inert anyway until the read token is seeded.
+agentgateway_docker_vikunja_url: >-
+  {{ lookup('env', 'VIKUNJA_MCP_URL')
+     | default('https://vikunja.' ~ (lookup('env', 'PROXMOX_SUBDOMAIN')
+        | mandatory('PROXMOX_SUBDOMAIN required (Doppler)')) ~ '/api/v1', true) }}
+# Bao-first, controller-env fallback — READ-scoped token only. Empty => the
+# sidecar and /vikunja route are both omitted.
+agentgateway_docker_vikunja_read_token: >-
+  {{ (bao_local_llm_secrets | default({}))['VIKUNJA_MCP_TOKEN']
+     | default(lookup('env', 'VIKUNJA_MCP_TOKEN'), true) }}
+
+# =============================================================================
+# Nautobot MCP — inert scaffold (path B). No Nautobot MCP server is deployed and
+# no read token exists (live access blocked). Two gaps before this can go live:
+# (1) deploy a Nautobot MCP (or a read-only REST->MCP shim) reachable from this
+# LXC, and (2) seed a read-only NAUTOBOT_MCP_TOKEN. Left DISABLED — no sidecar
+# or route renders while disabled; enabling without both gaps closed is a no-op.
+# =============================================================================
+agentgateway_docker_nautobot_mcp_enabled: false
+agentgateway_docker_nautobot_url: "{{ lookup('env', 'NAUTOBOT_MCP_URL') | default('', true) }}"
+agentgateway_docker_nautobot_read_token: >-
+  {{ (bao_local_llm_secrets | default({}))['NAUTOBOT_MCP_TOKEN']
+     | default(lookup('env', 'NAUTOBOT_MCP_TOKEN'), true) }}
+
+# =============================================================================
 # A2A targets — native Agent2Agent (JSON-RPC) endpoints the gateway fronts on
 # the same proxy port. Each gets a prefix-matched route marked `a2a: {}`, so the
 # gateway parses the JSON-RPC and rewrites the agent card's `url` to point back
