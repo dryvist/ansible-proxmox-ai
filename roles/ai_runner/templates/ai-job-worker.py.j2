@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+# {{ ansible_managed }}
+#
+# ai-job-worker — polls a Vikunja project for coding-agent jobs, runs the
+# requested CLI agent in permission-skipping mode, posts the result back, and
+# closes the task. Stdlib only (urllib/json/subprocess) so the guest needs no
+# pip installs. Config comes entirely from the environment (see the rendered
+# ai-job-worker.env); this file carries no secrets.
+#
+# ponytail: v1 dispatch. Single runner per profile label is assumed, so task
+# claiming is best-effort (assign-then-work) with a small race window — two
+# runners sharing a label could grab the same task. Add an atomic
+# claim (CAS on a "claimed-by" field, or a DB-level lock) if a profile ever
+# fans out to multiple runners.
+#
+# ponytail: the exact Vikunja endpoint shapes (assignee PUT body, comment PUT
+# body, task-filter query) are validated on first converge against the live
+# instance — this phase ships no converge. Adjust here if the running Vikunja
+# version differs; the paths below follow the documented v1 API.
+
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+VIKUNJA_URL = os.environ.get("VIKUNJA_URL", "").rstrip("/")
+VIKUNJA_TOKEN = os.environ.get("VIKUNJA_TOKEN", "")
+PROJECT_NAME = os.environ.get("AI_JOBS_PROJECT", "AI Jobs")
+PROFILE_LABEL = os.environ.get("AI_RUNNER_PROFILE_LABEL", "")
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "60"))
+JOB_TIMEOUT = int(os.environ.get("JOB_TIMEOUT_SECONDS", "1800"))
+NTFY_URL = os.environ.get("NTFY_URL", "").rstrip("/")
+CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
+CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
+
+
+def log(msg):
+    print(f"ai-job-worker: {msg}", flush=True)
+
+
+def api(method, path, body=None):
+    """One Vikunja REST call. Returns decoded JSON (or None for empty body)."""
+    url = f"{VIKUNJA_URL}/api/v1{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {VIKUNJA_TOKEN}")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read()
+        return json.loads(raw) if raw else None
+
+
+def ntfy(title, msg, priority="default", tags="robot"):
+    if not NTFY_URL:
+        return
+    try:
+        req = urllib.request.Request(NTFY_URL, data=msg.encode(), method="POST")
+        req.add_header("Title", title)
+        req.add_header("Priority", priority)
+        req.add_header("Tags", tags)
+        urllib.request.urlopen(req, timeout=8).read()
+    except Exception as exc:  # never let a push failure kill the loop
+        log(f"ntfy push failed: {exc}")
+
+
+def parse_frontmatter(description):
+    """Split a task description into (fields, prompt).
+
+    Front-matter is an optional leading `---`-delimited block of `key: value`
+    lines (agent, model, effort, ...). Everything after it is the prompt. No
+    YAML dependency — stdlib only, so a flat key:value block is all that is
+    supported (ponytail: nested YAML is not; add pyyaml if a job ever needs it).
+    """
+    text = (description or "").replace("\r\n", "\n").strip()
+    fields = {}
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) == 3:
+            block, body = parts[1], parts[2]
+            for line in block.strip().splitlines():
+                if ":" in line:
+                    key, _, val = line.partition(":")
+                    fields[key.strip().lower()] = val.strip()
+            return fields, body.strip()
+    return fields, text
+
+
+def build_command(fields, prompt):
+    """Map job fields to an agent CLI invocation."""
+    agent = fields.get("agent", "claude").lower()
+    model = fields.get("model", "")
+    if agent == "codex":
+        cmd = [CODEX_BIN, "exec"]
+        if model:
+            cmd += ["--model", model]
+        cmd.append(prompt)
+        return cmd
+    # default: Claude Code, permission-skipping (safety is the container boundary)
+    cmd = [CLAUDE_BIN, "-p", prompt, "--dangerously-skip-permissions"]
+    if model:
+        cmd += ["--model", model]
+    return cmd
+
+
+def run_job(fields, prompt):
+    cmd = build_command(fields, prompt)
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=JOB_TIMEOUT,
+            cwd=os.path.expanduser("~"),
+        )
+        out = (proc.stdout or "") + (proc.stderr or "")
+        return proc.returncode == 0, out.strip()
+    except subprocess.TimeoutExpired:
+        return False, f"job exceeded the {JOB_TIMEOUT}s timeout and was killed"
+    except Exception as exc:
+        return False, f"job failed to start: {exc}"
+
+
+def current_user_id():
+    return api("GET", "/user").get("id")
+
+
+def project_id(name):
+    for proj in api("GET", "/projects") or []:
+        if proj.get("title") == name:
+            return proj.get("id")
+    return None
+
+
+def open_jobs(pid):
+    """Undone, unassigned tasks in the project carrying this runner's label."""
+    tasks = api("GET", f"/projects/{pid}/tasks") or []
+    jobs = []
+    for t in tasks:
+        if t.get("done"):
+            continue
+        if t.get("assignees"):
+            continue
+        labels = [l.get("title", "") for l in (t.get("labels") or [])]
+        if PROFILE_LABEL and PROFILE_LABEL not in labels:
+            continue
+        jobs.append(t)
+    return jobs
+
+
+def claim(task_id, user_id):
+    api("PUT", f"/tasks/{task_id}/assignees", {"user_id": user_id})
+
+
+def comment(task_id, text):
+    api("PUT", f"/tasks/{task_id}/comments", {"comment": text})
+
+
+def mark_done(task_id):
+    api("POST", f"/tasks/{task_id}", {"done": True})
+
+
+def process(task, user_id):
+    tid = task["id"]
+    title = task.get("title", f"task {tid}")
+    log(f"claiming {tid}: {title}")
+    claim(tid, user_id)
+    fields, prompt = parse_frontmatter(task.get("description", ""))
+    ok, output = run_job(fields, prompt)
+    verdict = "succeeded" if ok else "FAILED"
+    comment(tid, f"ai-job-worker {verdict}:\n\n```\n{output[:60000]}\n```")
+    mark_done(tid)
+    ntfy(
+        f"AI job {verdict}: {title}",
+        output[:400] or verdict,
+        priority="default" if ok else "high",
+        tags="white_check_mark" if ok else "x",
+    )
+    log(f"{tid} {verdict}")
+
+
+def main():
+    if not VIKUNJA_URL or not VIKUNJA_TOKEN:
+        log("VIKUNJA_URL/VIKUNJA_TOKEN unset — worker idle (queue disabled)")
+        # Sleep-loop rather than exit so a later env fill (no redeploy) recovers.
+        while True:
+            time.sleep(POLL_INTERVAL)
+    user_id = current_user_id()
+    pid = project_id(PROJECT_NAME)
+    if pid is None:
+        log(f"project {PROJECT_NAME!r} not found — worker idle")
+        while True:
+            time.sleep(POLL_INTERVAL)
+    log(f"polling project {pid} ({PROJECT_NAME}) for label {PROFILE_LABEL!r}")
+    while True:
+        try:
+            for task in open_jobs(pid):
+                try:
+                    process(task, user_id)
+                except Exception as exc:  # one poison task must not stop polling
+                    log(f"task {task.get('id')} errored: {exc}")
+        except Exception as exc:  # transient API/network error — retry next tick
+            log(f"poll failed: {exc}")
+        time.sleep(POLL_INTERVAL)
+
+
+def _self_check():
+    """Runnable assertion set for the parse logic — the one piece with branches
+    that a syntax check cannot exercise. `python3 ai-job-worker.py --self-check`."""
+    f, p = parse_frontmatter("---\nagent: codex\nmodel: gpt-5.2\n---\ndo the thing")
+    assert f == {"agent": "codex", "model": "gpt-5.2"}, f
+    assert p == "do the thing", p
+    assert build_command({"agent": "codex", "model": "m"}, "x") == [CODEX_BIN, "exec", "--model", "m", "x"]
+    c = build_command({}, "hello")
+    assert c[0] == CLAUDE_BIN and "--dangerously-skip-permissions" in c, c
+    f2, p2 = parse_frontmatter("no front-matter here")
+    assert f2 == {} and p2 == "no front-matter here", (f2, p2)
+    print("self-check OK")
+
+
+if __name__ == "__main__":
+    if "--self-check" in sys.argv:
+        _self_check()
+    else:
+        main()
