@@ -272,7 +272,7 @@
 - name: Patch Hermes Kanban workers to enter the quiet goal-loop path
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
-    regexp: '^([ \t]*)"-q", prompt,$'
+    regexp: '^([ \t]*)(?:\*\(\["--quiet"\] if task\.goal_mode else \[\]\),\n\1)*"-q", prompt,$'
     replace: |-
       \1*(["--quiet"] if task.goal_mode else []),
       \1"-q", prompt,
@@ -342,8 +342,13 @@
     that:
       - "'verdict, reason, _, _ = judge_goal(' in hermes_agent_goal_completion_source"
       - >-
-        '*(["--quiet"] if task.goal_mode else [])'
-        in hermes_agent_goal_reconcile_source
+        hermes_agent_goal_reconcile_source.count(
+          '*(["--quiet"] if task.goal_mode else []),'
+        ) == 1
+      - >-
+        hermes_agent_goal_reconcile_source.count(
+          '"-q", prompt,'
+        ) == 1
       - >-
         'SELECT id, status FROM tasks WHERE idempotency_key = ?'
         in hermes_agent_goal_reconcile_source

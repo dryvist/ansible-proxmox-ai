@@ -241,9 +241,27 @@ def test_worker_spawn_patch_enters_quiet_goal_loop_path() -> None:
         "Patch Hermes Kanban workers to enter the quiet goal-loop path",
         PINNED_WORKER_SPAWN_SOURCE,
     )
-    assert '*(["--quiet"] if task.goal_mode else []),' in patched
+    quiet_expansion = '        *(["--quiet"] if task.goal_mode else []),\n'
+    assert patched.count(quiet_expansion) == 1
     assert patched.index('"chat"') < patched.index('["--quiet"]')
     assert patched.index('["--quiet"]') < patched.index('"-q", prompt')
+
+    patched_again = _apply_runtime_patch(
+        "Patch Hermes Kanban workers to enter the quiet goal-loop path",
+        patched,
+    )
+    assert patched_again == patched
+
+    duplicated = PINNED_WORKER_SPAWN_SOURCE.replace(
+        '        "-q", prompt,\n',
+        quiet_expansion * 17 + '        "-q", prompt,\n',
+    )
+    normalized = _apply_runtime_patch(
+        "Patch Hermes Kanban workers to enter the quiet goal-loop path",
+        duplicated,
+    )
+    assert normalized == patched
+
     namespace: dict[str, Any] = {}
     exec(patched, namespace)
     task_type = type("Task", (), {})
@@ -418,6 +436,18 @@ def test_installed_source_postconditions_fail_closed() -> None:
         in conditions
     )
     assert "goal_max_turns = COALESCE(?, goal_max_turns)" in conditions
+    assert any(
+        '*(["--quiet"] if task.goal_mode else []),' in condition
+        and ".count(" in condition
+        and ") == 1" in condition
+        for condition in assert_task["ansible.builtin.assert"]["that"]
+    )
+    assert any(
+        '"-q", prompt,' in condition
+        and ".count(" in condition
+        and ") == 1" in condition
+        for condition in assert_task["ansible.builtin.assert"]["that"]
+    )
     assert '["--quiet"]' in conditions
     assert "WHERE id = ? AND status IN" in conditions
     assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in conditions
