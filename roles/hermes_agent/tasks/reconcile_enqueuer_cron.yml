@@ -22,8 +22,14 @@
 - name: "Enqueuer cron | Resolve fields for {{ item.name if item.name is defined else item.job ~ '-enqueue' }}"
   ansible.builtin.set_fact:
     hermes_agent_enqueuer_name: "{{ item.name if item.name is defined else item.job ~ '-enqueue' }}"
-    hermes_agent_enqueuer_selector: "{{ item.selector if item.selector is defined else item.job }}"
+    # Selector is the script's positional arg. Enqueuers pass their workload
+    # (item.job); a script that takes no positional (e.g. the status digest)
+    # supplies neither selector nor job and gets an empty selector (omitted below).
+    hermes_agent_enqueuer_selector: "{{ item.selector | default(item.job | default('')) }}"
     hermes_agent_enqueuer_script: "{{ item.script | default(hermes_agent_kanban_enqueue_script_name) }}"
+    # Delivery target: enqueuers keep stdout empty and deliver 'local'; a digest
+    # script delivers its stdout verbatim to e.g. slack:<channel>.
+    hermes_agent_enqueuer_deliver: "{{ item.deliver | default('local') }}"
   when: hermes_agent_enqueuer_active | bool
 
 - name: "Enqueuer cron | Look up {{ hermes_agent_enqueuer_name }}"
@@ -40,7 +46,8 @@
   ansible.builtin.set_fact:
     hermes_agent_enqueuer_checksum: >-
       {{ {'schedule': item.schedule, 'selector': hermes_agent_enqueuer_selector,
-          'script': hermes_agent_enqueuer_script, 'no_agent': true}
+          'script': hermes_agent_enqueuer_script, 'no_agent': true,
+          'deliver': hermes_agent_enqueuer_deliver}
          | to_json | hash('sha256') }}
   when: hermes_agent_enqueuer_active | bool
 
@@ -73,11 +80,11 @@
 - name: "Enqueuer cron | Create {{ hermes_agent_enqueuer_name }}"
   ansible.builtin.command:
     argv: >-
-      {{ [hermes_agent_bin, 'cron', 'create', item.schedule,
-          hermes_agent_enqueuer_selector,
-          '--name', hermes_agent_enqueuer_name,
-          '--script', hermes_agent_enqueuer_script,
-          '--no-agent', '--deliver', 'local'] }}
+      {{ [hermes_agent_bin, 'cron', 'create', item.schedule]
+         + ([hermes_agent_enqueuer_selector] if (hermes_agent_enqueuer_selector | length > 0) else [])
+         + ['--name', hermes_agent_enqueuer_name,
+            '--script', hermes_agent_enqueuer_script,
+            '--no-agent', '--deliver', hermes_agent_enqueuer_deliver] }}
   environment:
     HERMES_HOME: "{{ hermes_agent_hermes_home }}"
   become: true

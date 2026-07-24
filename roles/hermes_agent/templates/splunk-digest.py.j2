@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+{{ ansible_managed | comment }}
+"""Deterministic, no-LLM Splunk status digest.
+
+STDOUT is delivered verbatim to Slack (cron runs `--no-agent --deliver slack:<ch>`),
+so everything printed here must be TRUE. Never invent data. Missing / zero / stale
+data is ALWAYS an explicit anomaly, never summarized as "no anomalies" (Zammad
+#17143 fabrication; #17144 masked ingest outage).
+
+Pure stdlib + the `mcp` client (present in the hermes-agent venv, which runs this
+file — `hermes cron ... --script *.py` executes non-.sh scripts via Python). Reads
+secrets from the .env file, never prints them. The MCP streamable-http teardown
+emits a harmless "Session termination failed: 202" on STDERR only; it never reaches
+STDOUT, and the single terminal print() keeps the delivered payload clean.
+"""
+import asyncio
+import datetime as dt
+import hashlib
+import json
+import math
+import os
+import sys
+
+# --- config (rendered from roles/hermes_agent/defaults/main.yml) ---------------
+ENV_PATH = "{{ hermes_agent_hermes_home }}/.env"
+STATE_PATH = "{{ hermes_agent_hermes_home }}/state/splunk-digest.json"
+# Expected-continuous indexes: absent / zero-volume / stale here is an ingest
+# anomaly, not "no anomalies". #17144 was os + network going silent unnoticed.
+EXPECTED_CONTINUOUS = {{ hermes_agent_splunk_digest_expected_indexes | to_json }}
+STALENESS_MIN = {{ hermes_agent_splunk_digest_staleness_minutes }}
+EARLIEST = "{{ hermes_agent_splunk_digest_window }}"
+# Inventory + liveness via tstats metadata ONLY — never index=* over raw events.
+TSTATS_QUERY = "| tstats count as vol, max(_time) as last_time where index=* by index"
+ANCHOR_UTC_HOUR = {{ hermes_agent_splunk_digest_anchor_hour }}
+
+
+def load_env(path):
+    """Parse KEY=VALUE lines. Values may be quoted."""
+    env = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip().strip('"').strip("'")
+    return env
+
+
+async def run_tstats(url, token):
+    """Return the parsed results list, or raise on any failure."""
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp import ClientSession
+
+    async with streamablehttp_client(url, headers={"Authorization": f"Bearer {token}"}) as (r, w, _):
+        async with ClientSession(r, w) as s:
+            await s.initialize()
+            res = await s.call_tool("splunk_run_query", {"query": TSTATS_QUERY, "earliest": EARLIEST})
+            if getattr(res, "isError", False):
+                raise RuntimeError("splunk_run_query returned isError=true")
+            data = res.structuredContent
+            if not isinstance(data, dict):
+                # fall back to text content
+                if res.content and getattr(res.content[0], "text", None):
+                    data = json.loads(res.content[0].text)
+                else:
+                    raise RuntimeError("no structuredContent and no text content")
+            return data.get("results", [])
+
+
+def oom_bucket(vol):
+    """Order-of-magnitude bucket so normal jitter doesn't churn the fingerprint."""
+    return 0 if vol <= 0 else int(math.log10(vol))
+
+
+def fmt_age(minutes):
+    if minutes < 90:
+        return f"{int(round(minutes))} min"
+    hours = minutes / 60.0
+    if hours < 48:
+        return f"{hours:.1f} h"
+    return f"{hours / 24:.1f} d"
+
+
+def fmt_vol(v):
+    return f"{v:,}"
+
+
+def build_digest(results, now_epoch):
+    """Return (full_text, fingerprint, healthy_count, silent_count)."""
+    # parse: index -> {vol, last_time, age_min}. Splunk returns vol/last_time as strings.
+    by_index = {}
+    for row in results:
+        idx = row.get("index")
+        if idx is None:
+            continue
+        try:
+            vol = int(float(row.get("vol", 0)))
+        except (TypeError, ValueError):
+            vol = 0
+        try:
+            last = int(float(row.get("last_time", 0)))
+        except (TypeError, ValueError):
+            last = 0
+        age_min = (now_epoch - last) / 60.0 if last > 0 else float("inf")
+        by_index[idx] = {"vol": vol, "last_time": last, "age_min": age_min}
+
+    def is_silent(rec):
+        return rec is None or rec["vol"] == 0 or rec["age_min"] > STALENESS_MIN
+
+    # ingest-silence anomalies over the expected-continuous list
+    anomalies = []
+    for idx in EXPECTED_CONTINUOUS:
+        rec = by_index.get(idx)
+        if is_silent(rec):
+            if rec is None:
+                anomalies.append(f":warning: INGEST SILENCE: index={idx} — ABSENT from results, 24h volume 0")
+            else:
+                anomalies.append(
+                    f":warning: INGEST SILENCE: index={idx} — last event {fmt_age(rec['age_min'])} ago, "
+                    f"24h volume {fmt_vol(rec['vol'])}"
+                )
+
+    all_expected_silent = all(is_silent(by_index.get(i)) for i in EXPECTED_CONTINUOUS)
+    zero_rows = len(by_index) == 0
+
+    # health counters (honest populations): healthy = present, nonzero, fresh
+    healthy = sum(1 for r in by_index.values() if r["vol"] > 0 and r["age_min"] <= STALENESS_MIN)
+    silent_count = len(anomalies)
+
+    # fingerprint: sorted (index, oom_bucket, is_silent) incl. absent-expected
+    fp_tuples = sorted(
+        [(i, oom_bucket(r["vol"]), is_silent(r)) for i, r in by_index.items()]
+        + [(i, -1, True) for i in EXPECTED_CONTINUOUS if i not in by_index]
+    )
+    fingerprint = hashlib.sha256(json.dumps(fp_tuples).encode()).hexdigest()
+
+    # --- compose full digest ---
+    now_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    lines = []
+    if zero_rows or all_expected_silent:
+        lines.append(":rotating_light: *SPLUNK INGEST OUTAGE* :rotating_light:")
+        if zero_rows:
+            lines.append("tstats returned ZERO rows over the last 24h — no index reported any data.")
+        else:
+            lines.append("ALL expected-continuous indexes are silent or stale — likely a pipeline/ingest failure.")
+        lines.append("")
+
+    lines.append(f"*Splunk Status Digest* — {now_iso} (window: last 24h)")
+    lines.append(f"Indexes reporting: {len(by_index)}  |  healthy: {healthy}  |  expected silent: {silent_count}")
+    lines.append("")
+    lines.append("```")
+    lines.append(f"{'INDEX':<16} {'24h VOLUME':>14}  {'LAST EVENT':>12}")
+    for idx, r in sorted(by_index.items(), key=lambda kv: kv[1]["vol"], reverse=True):
+        lines.append(f"{idx:<16} {fmt_vol(r['vol']):>14}  {fmt_age(r['age_min']):>12}")
+    lines.append("```")
+
+    lines.append("")
+    if anomalies:
+        lines.append("*Ingest silence anomalies:*")
+        lines.extend(anomalies)
+    else:
+        lines.append(f":white_check_mark: All {len(EXPECTED_CONTINUOUS)} expected-continuous indexes fresh "
+                     f"(< {STALENESS_MIN} min) with data in the last 24h.")
+
+    return "\n".join(lines), fingerprint, healthy, silent_count
+
+
+def load_state():
+    try:
+        with open(STATE_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def save_state(fingerprint, first_seen_iso, last_post_date):
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"fingerprint": fingerprint, "first_seen_iso": first_seen_iso,
+                   "last_post_date": last_post_date}, f)
+    os.replace(tmp, STATE_PATH)
+
+
+def main():
+    # fail loud, never fabricate: any error is delivered, then exit 0
+    try:
+        env = load_env(ENV_PATH)
+        url = env.get("SPLUNK_MCP_URL")
+        token = env.get("SPLUNK_MCP_TOKEN")
+        if not url or not token:
+            raise RuntimeError("SPLUNK_MCP_URL / SPLUNK_MCP_TOKEN missing from .env")
+        results = asyncio.run(run_tstats(url, token))
+    except Exception as e:  # noqa: BLE001 - deliberately broad; failure must be delivered
+        # asyncio.TaskGroup wraps the real fault in an ExceptionGroup; unwrap to
+        # the root leaf so the delivered message names the actual cause (e.g.
+        # "502 Bad Gateway from the Splunk MCP") instead of a useless
+        # "ExceptionGroup: 1 sub-exception". Keep it short and free of secrets.
+        root = e
+        for _ in range(10):
+            sub = getattr(root, "exceptions", None)
+            if not sub:
+                break
+            root = sub[0]
+        print(f":warning: Splunk digest FAILED: {type(root).__name__}: {str(root)[:200]}")
+        return 0
+
+    now = dt.datetime.now(dt.timezone.utc)
+    now_epoch = now.timestamp()
+    today = now.strftime("%Y-%m-%d")
+    full_text, fingerprint, healthy, silent_count = build_digest(results, now_epoch)
+
+    state = load_state()
+    if state and state.get("fingerprint") == fingerprint and now.hour != ANCHOR_UTC_HOUR:
+        first_seen_iso = state.get("first_seen_iso", now.isoformat())
+        try:
+            first_date = dt.datetime.fromisoformat(first_seen_iso).date()
+            day_n = (now.date() - first_date).days + 1
+            first_seen_short = first_date.isoformat()
+        except ValueError:
+            day_n, first_seen_short = 1, today
+        # refresh last_post_date but keep fingerprint/first_seen stable
+        save_state(fingerprint, first_seen_iso, today)
+        print(f"No change — {healthy} indexes healthy, {silent_count} silent, "
+              f"Day {day_n} since {first_seen_short}")
+        return 0
+
+    # changed / no prior state / anchor hour -> full digest
+    if state and state.get("fingerprint") == fingerprint:
+        first_seen_iso = state.get("first_seen_iso", now.isoformat())  # anchor: keep age
+    else:
+        first_seen_iso = now.isoformat()  # new state
+    save_state(fingerprint, first_seen_iso, today)
+    print(full_text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
