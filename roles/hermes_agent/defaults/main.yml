@@ -515,6 +515,41 @@ hermes_agent_splunk_digest_cron_name: splunk-digest
 hermes_agent_splunk_digest_cron_schedule: "52 * * * *"
 hermes_agent_splunk_digest_cron_prompt_file: hermes-splunk-digest.md
 
+# --- Script-fed Splunk status digest (structural anti-fabrication fix) ---------
+# Replaces the LLM digest path (the splunk-digest kanban card below is retired via
+# hermes_agent_kanban_paused_jobs; the hand-created splunk-hourly-digest-v3 direct
+# cron is paused at converge, disable-don't-delete). This is a `--no-agent
+# --script` cron: splunk-digest.py gathers the numbers itself via the Splunk MCP
+# and its STDOUT is delivered VERBATIM to Slack — NO LLM in the fact path, nothing
+# to poison (the Zammad #17143 fabrications were the model inventing "33 indexes /
+# no anomalies" with zero tool calls, and narrating over an empty result set). An
+# absent / zero-volume / stale expected index is rendered as an explicit INGEST
+# SILENCE anomaly, never "no anomalies" — the exact blind spot that masked the
+# #17144 ~10.5h ingestion outage.
+hermes_agent_splunk_status_digest_cron_name: splunk-status-digest
+hermes_agent_splunk_status_digest_cron_schedule: "52 * * * *"
+hermes_agent_splunk_status_digest_script_name: splunk-digest.py
+# The hand-created LLM digest direct cron this script-fed digest supersedes. It
+# is paused (never deleted) once the script-fed digest is enabled, so the two
+# never double-post. `cron list` shows only ENABLED jobs -> pausing is a no-op
+# after the first converge.
+hermes_agent_superseded_digest_cron_name: splunk-hourly-digest-v3
+# Indexes that must always be reporting; absent / zero / stale => ingest anomaly.
+hermes_agent_splunk_digest_expected_indexes:
+  - os
+  - network
+  - firewall
+hermes_agent_splunk_digest_staleness_minutes: 60
+hermes_agent_splunk_digest_window: "-24h"
+hermes_agent_splunk_digest_anchor_hour: 0
+hermes_agent_splunk_status_digest_channel: "{{ hermes_agent_slack_hermes_all_channel }}"
+hermes_agent_splunk_status_digest_enabled: >-
+  {{ hermes_agent_splunk_monitor_enabled | bool
+     and hermes_agent_splunk_mcp_url | length > 0
+     and hermes_agent_slack_bot_token | length > 0
+     and hermes_agent_slack_app_token | length > 0
+     and hermes_agent_slack_hermes_all_channel | length > 0 }}
+
 # The Splunk monitor workloads are dispatched as Kanban cards now, not agentic
 # cron jobs (kanban migration, #83) — see hermes_agent_kanban_cards below, which
 # reuses the per-job name/schedule/prompt vars above. The old
@@ -1073,7 +1108,9 @@ hermes_agent_kanban_cards:
 # by their config-var refs so this list can never drift from the cards table.
 # NOT listed (already off for other reasons, so listing them would mislead):
 # bot-pr-triage (capability-gated off, no alerts token); anything whose `enabled`
-# capability gate is already false. Active set kept on: splunk triage + digest.
+# capability gate is already false. Active set kept on: splunk triage + the
+# script-fed status digest (splunk-status-digest); the LLM splunk-digest card is
+# retired below in favour of that script.
 hermes_agent_kanban_paused_jobs:
   - "{{ hermes_agent_daily_status_cron_name }}"
   - "{{ hermes_agent_nightly_wiki_cron_name }}"
@@ -1091,6 +1128,9 @@ hermes_agent_kanban_paused_jobs:
   - "{{ hermes_agent_daily_innovation_cron_name }}"
   - "{{ hermes_agent_app_seeding_cron_name }}"
   - "{{ hermes_agent_kanban_safety_net_cron_name }}"
+  # Retired: the LLM digest card is superseded by the script-fed status digest
+  # (splunk-digest.py, no LLM in the fact path). Paused, not deleted.
+  - "{{ hermes_agent_splunk_digest_cron_name }}"
 
 # The daily chain-break safety net (#83): one extra `--no-agent --script` cron
 # that runs the enqueuer in `all --backfill` mode — re-creates any missing
@@ -1111,7 +1151,8 @@ hermes_agent_kanban_safety_net_enabled: >-
 hermes_agent_seeded_cron_names: >-
   {{ (hermes_agent_kanban_cards | map(attribute='job') | list
       | map('regex_replace', '$', '-enqueue') | list)
-     + [hermes_agent_kanban_safety_net_cron_name] }}
+     + [hermes_agent_kanban_safety_net_cron_name,
+        hermes_agent_splunk_status_digest_cron_name] }}
 
 # The bare-named agentic crons that #83 replaced with `<job>-enqueue` script
 # crons. A guest provisioned before the migration still carries these; the
