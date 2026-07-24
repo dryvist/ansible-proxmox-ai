@@ -51,3 +51,34 @@
           llm_router_model_group_aliases.get(hermes_brain_model, hermes_brain_model),
           llm_router_model_group_aliases.get(hermes_goal_judge_model, hermes_goal_judge_model)]
          | unique }}
+
+- name: Assert the rate-limit retry budget actually absorbs a 429 and fits the timeout chain
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # A 429 must never be fatal: the serving tier admits one request at a time
+      # and rejects the rest, so zero retries here re-creates the 2026-07-24 cron
+      # kill (see llm_router_rate_limit_retries in defaults).
+      - llm_router_rate_limit_retries | int > 0
+      # LiteLLM boxes each backoff into [retry_after, MAX_RETRY_DELAY]. A ceiling
+      # below retry_after silently clamps the wait and the budget evaporates.
+      - llm_router_retry_max_delay_seconds | int >= llm_router_retry_after_seconds | int
+      # The whole retry budget is spent inside the caller's single HTTP request,
+      # so it must leave room for the generation that follows it.
+      - (_llm_router_retry_budget | int) < (ai_stream_read_timeout_seconds | int)
+    fail_msg: >-
+      Rate-limit retry budget is unsound (roles/llm_router/tasks/assert.yml):
+      retries={{ llm_router_rate_limit_retries }},
+      retry_after={{ llm_router_retry_after_seconds }}s,
+      max_delay={{ llm_router_retry_max_delay_seconds }}s gives a
+      {{ _llm_router_retry_budget }}s budget against a
+      {{ ai_stream_read_timeout_seconds }}s client read ceiling. Retries must be
+      > 0, max_delay must be >= retry_after, and the budget must leave room for
+      the generation. Constraints: config.yaml.j2 router_settings.retry_after and
+      litellm.env.j2 MAX_RETRY_DELAY.
+    success_msg: >-
+      Rate-limit retries absorb up to {{ _llm_router_retry_budget }}s of serving
+      contention, under the {{ ai_stream_read_timeout_seconds }}s client ceiling.
+  vars:
+    _llm_router_retry_budget: >-
+      {{ (llm_router_rate_limit_retries | int) * (llm_router_retry_after_seconds | int) }}
