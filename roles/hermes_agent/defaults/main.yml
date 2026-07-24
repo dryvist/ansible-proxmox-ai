@@ -177,11 +177,21 @@ hermes_agent_direct_cron_jobs:
     prompt_file: hermes-digest-splunk-parsing-quality.md
     skill: ""
     enabled: true
+  # RETIRED, not superseded: nothing replaces this job because nothing needs to.
+  # Its SPL is `index=* | stats count by index, sourcetype | sort -count | head 15`
+  # — the same two group-by fields splunk-status-digest already computes hourly
+  # from tstats, over ALL pairs rather than the top 15, and with the host and
+  # liveness dimensions on top. Its own `sort -count | head 15` also throws away
+  # the long tail, so it cannot surface the "pattern nobody monitors" its prompt
+  # asks for; the digest's composition tier reports a new or vanished sourcetype
+  # at any volume. The only content it adds is a static top-15 table restated
+  # every 12h, which is exactly the boilerplate the per-day novelty contract
+  # (#183) exists to stop. See hermes_agent_retire_anomaly_hunt below.
   - name: anomaly-hunt-v2
     schedule: "41 6,18 * * *"
     prompt_file: hermes-digest-anomaly-hunt.md
     skill: ""
-    enabled: true
+    enabled: false
   - name: homelab-ai-fabric-status-v2
     schedule: "3 */6 * * *"
     prompt_file: hermes-digest-homelab-ai-fabric-status.md
@@ -703,6 +713,16 @@ hermes_agent_error_triage_enabled: >-
      and hermes_agent_slack_bot_token | length > 0
      and hermes_agent_slack_app_token | length > 0
      and hermes_agent_digest_slack_channel | length > 0 }}
+
+# --- Retire the agentic anomaly hunt (duplicative; nothing replaces it) -------
+# Unlike every other retirement here, this one has no replacement job: the
+# anomaly hunt's factual content is a strict subset of what splunk-status-digest
+# already computes (see the comment on its hermes_agent_direct_cron_jobs entry).
+# `enabled: false` alone would NOT stop it — reconcile_direct_cron.yml skips a
+# disabled entry entirely, so the live cron would keep firing forever. The pause
+# below is what actually retires it. Set false to keep the job running.
+hermes_agent_retire_anomaly_hunt: true
+hermes_agent_retired_anomaly_hunt_cron_name: anomaly-hunt-v2
 
 # The Splunk monitor workloads are dispatched as Kanban cards now, not agentic
 # cron jobs (kanban migration, #83) — see hermes_agent_kanban_cards below, which
