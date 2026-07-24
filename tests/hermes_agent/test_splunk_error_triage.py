@@ -80,8 +80,10 @@ def load_markup_guard():
     source = "\n".join(body)
     assert "def _cron_markup_guard" in source, "guard block not found in tasks/main.yml"
     mod = types.ModuleType("cron_markup_guard")
-    mod.re = re
-    mod.logger = logging.getLogger("selfcheck")
+    # Seed the exec namespace directly: the guard resolves `re` and `logger` as
+    # module globals, which is a dict operation, not attribute assignment.
+    mod.__dict__["re"] = re
+    mod.__dict__["logger"] = logging.getLogger("selfcheck")
     exec(compile(source, str(TASKS_PATH), "exec"), mod.__dict__)  # noqa: S102
     return mod._cron_markup_guard
 
