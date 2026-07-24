@@ -163,11 +163,15 @@ hermes_agent_direct_cron_jobs:
     prompt_file: hermes-digest-splunk-security-lens.md
     skill: ""
     enabled: true
+  # Paused, NEVER reconciled: superseded by the script-fed splunk-error-triage
+  # (hermes_agent_error_triage_cron_name), which pauses this agentic job so the
+  # two never double-post. This job delivered raw <function=...> tool-call markup
+  # to Slack instead of a report — see hermes_agent_superseded_error_triage_cron_name.
   - name: splunk-error-triage-v2
     schedule: "37 * * * *"
     prompt_file: hermes-digest-splunk-error-triage.md
     skill: ""
-    enabled: true
+    enabled: false
   - name: splunk-parsing-quality-v2
     schedule: "17 3 * * *"
     prompt_file: hermes-digest-splunk-parsing-quality.md
@@ -655,6 +659,50 @@ hermes_agent_splunk_status_digest_enabled: >-
      and hermes_agent_slack_bot_token | length > 0
      and hermes_agent_slack_app_token | length > 0
      and hermes_agent_slack_hermes_all_channel | length > 0 }}
+
+# --- Script-fed Splunk error triage (no LLM in the fact path) ----------------
+# Supersedes the agentic splunk-error-triage-v2 direct cron, which posted raw
+# tool-call markup to Slack instead of a report: the model wrote its ONE tool
+# call as text rather than issuing it, on its first turn with no tool ever
+# running. That happened both with and without the prompt's anti-markup clause
+# and on two sibling digests, so it is an unreliable tool-call emitter, not a
+# prompt defect — and the old prompt already handed the model the exact tool
+# name and the exact SPL, leaving it no fact-path judgement worth keeping.
+# Same shape as the status digest above: gather the numbers here, print them,
+# deliver stdout verbatim. Obeys the same per-day novelty contract — a steady
+# error stream is presented once per UTC day; NEW and ESCALATING streams are
+# critical and repeat every run while they hold.
+# NOT "splunk-error-triage": reconcile_enqueuer_cron.yml tests job existence with
+# a SUBSTRING match against `cron list --all`, which lists the paused
+# splunk-error-triage-v2 — so that name would read as already-present and fire a
+# `cron remove` for a job that does not exist. Neither name is a substring of the
+# other, and both are parallel to splunk-status-digest.
+hermes_agent_error_triage_cron_name: splunk-error-digest
+hermes_agent_error_triage_cron_schedule: "37 * * * *"
+hermes_agent_error_triage_script_name: splunk-error-triage.py
+# The agentic direct cron this replaces. Paused (never deleted) once the script
+# is enabled so the two never double-post; it is also enabled:false in
+# hermes_agent_direct_cron_jobs so the reconcile never re-creates it.
+hermes_agent_superseded_error_triage_cron_name: splunk-error-triage-v2
+hermes_agent_error_triage_indexes:
+  - os
+  - network
+hermes_agent_error_triage_terms:
+  - error
+  - failed
+  - critical
+hermes_agent_error_triage_window: "-1h"
+hermes_agent_error_triage_top_n: 12
+hermes_agent_error_triage_max_findings: 8
+# Same channel the superseded agentic job delivered to, so replacing it does not
+# silently move the operator's hourly triage to a different surface.
+hermes_agent_error_triage_channel: "{{ hermes_agent_digest_slack_channel }}"
+hermes_agent_error_triage_enabled: >-
+  {{ hermes_agent_splunk_monitor_enabled | bool
+     and hermes_agent_splunk_mcp_url | length > 0
+     and hermes_agent_slack_bot_token | length > 0
+     and hermes_agent_slack_app_token | length > 0
+     and hermes_agent_digest_slack_channel | length > 0 }}
 
 # The Splunk monitor workloads are dispatched as Kanban cards now, not agentic
 # cron jobs (kanban migration, #83) — see hermes_agent_kanban_cards below, which
