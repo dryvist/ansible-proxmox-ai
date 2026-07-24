@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+{{ ansible_managed | comment }}
+"""Auto-close stale Zammad tickets (state=new, untouched > N days).
+
+Run as a `--no-agent --script` cron: STDOUT is delivered verbatim (empty stdout =
+silent), so this prints a one-line summary ONLY when it actually closes tickets,
+and prints a loud ":warning: ... FAILED" line on any error (never a silent
+success). Reads ZAMMAD_URL + ZAMMAD_API_TOKEN from the .env file at runtime — NO
+hardcoded secret and no hardcoded hostname (the previous hand-placed copy carried
+a cleartext API token and the internal URL literal; both are gone).
+
+Pure stdlib (urllib) so it carries no dependency beyond the interpreter.
+"""
+import datetime as dt
+import json
+import sys
+import urllib.error
+import urllib.request
+
+ENV_PATH = "{{ hermes_agent_hermes_home }}/.env"
+STALE_DAYS = {{ hermes_agent_zammad_autoclose_days }}
+NEW_STATE_ID = 1       # Zammad state 1 = "new"
+CLOSED_STATE_ID = 4    # Zammad state 4 = "closed"
+
+
+def load_env(path):
+    env = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip().strip('"').strip("'")
+    return env
+
+
+def api(base, token, path, method="GET", payload=None):
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(
+        f"{base}{path}", data=data, method=method,
+        headers={"Authorization": f"Token token={token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - fixed internal host from .env
+        body = resp.read().decode()
+    return json.loads(body) if body else None
+
+
+def parse_ts(s):
+    # Zammad returns ISO-8601 with a trailing Z; fromisoformat wants +00:00.
+    return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def iter_new_tickets(resp):
+    """Yield ticket objects from a Zammad /tickets/search response.
+
+    Default search returns {"tickets": [ids], "assets": {"Ticket": {id: obj}}}.
+    Fall back to a bare list of objects if that is what the instance returns.
+    """
+    if isinstance(resp, dict):
+        assets = (resp.get("assets") or {}).get("Ticket") or {}
+        for tid in resp.get("tickets") or []:
+            obj = assets.get(str(tid))
+            if obj:
+                yield obj
+    elif isinstance(resp, list):
+        yield from resp
+
+
+def main():
+    try:
+        env = load_env(ENV_PATH)
+        base = env.get("ZAMMAD_URL")
+        token = env.get("ZAMMAD_API_TOKEN")
+        if not base or not token:
+            print(":warning: zammad-auto-close FAILED: ZAMMAD_URL / ZAMMAD_API_TOKEN missing from .env")
+            return 0
+        resp = api(base, token, f"/api/v1/tickets/search?query=state.id:{NEW_STATE_ID}&limit=100")
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError) as e:
+        print(f":warning: zammad-auto-close FAILED: {type(e).__name__}: {str(e)[:200]}")
+        return 0
+
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=STALE_DAYS)
+    closed = []
+    for t in iter_new_tickets(resp):
+        try:
+            created = parse_ts(t["created_at"])
+            updated = parse_ts(t["updated_at"])
+        except (KeyError, ValueError):
+            continue
+        # close only if it is old AND has never been touched since creation
+        if created < cutoff and updated == created:
+            try:
+                api(base, token, f"/api/v1/tickets/{t['id']}", method="PUT",
+                    payload={"state_id": CLOSED_STATE_ID})
+                closed.append(t["id"])
+            except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+                print(f":warning: zammad-auto-close: failed to close #{t['id']}: {type(e).__name__}")
+
+    # quiet unless something happened (empty stdout = silent delivery)
+    if closed:
+        print(f"Auto-closed {len(closed)} stale Zammad ticket(s) "
+              f"(state=new, untouched > {STALE_DAYS}d): "
+              + ", ".join(f"#{i}" for i in closed))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
