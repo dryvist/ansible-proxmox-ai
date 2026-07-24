@@ -1,4 +1,4 @@
-"""Self-check for the script-fed Splunk error triage and the cron markup guard.
+"""Self-check for the script-fed Splunk triage digests and the cron markup guard.
 
 Two contracts, both enforced here:
 
@@ -7,11 +7,11 @@ Two contracts, both enforced here:
    with a diagnostic naming the job. The guard body lives in a blockinfile in
    roles/hermes_agent/tasks/main.yml, so it is extracted from there and executed:
    the thing under test is the code that actually ships.
-2. Per-day novelty — a steady error stream is presented ONCE per UTC day; NEW
+2. Per-day novelty — a steady stream is presented ONCE per UTC day; NEW
    and ESCALATING streams are critical and repeat every run while they hold.
    Never fabricate: zero rows and an absent baseline are stated as themselves.
 
-Runs bare (`python3 tests/hermes_agent/test_splunk_error_triage.py`) or under
+Runs bare (`python3 tests/hermes_agent/test_splunk_triage.py`) or under
 pytest. Plain asserts, no fixtures, no framework.
 """
 import datetime as dt
@@ -22,14 +22,15 @@ import types
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TEMPLATE_PATH = REPO_ROOT / "roles/hermes_agent/templates/splunk-error-triage.py.j2"
+TEMPLATE_PATH = REPO_ROOT / "roles/hermes_agent/templates/splunk-triage.py.j2"
 TASKS_PATH = REPO_ROOT / "roles/hermes_agent/tasks/main.yml"
 
-STATE_DIR = tempfile.mkdtemp(prefix="splunk-error-triage-selfcheck-")
+STATE_DIR = tempfile.mkdtemp(prefix="splunk-triage-selfcheck-")
 # Stand-ins for the values Ansible renders from roles/hermes_agent/defaults/main.yml.
 FIXTURE_CONFIG = {
     "ENV_PATH": str(Path(STATE_DIR) / "unused.env"),
-    "STATE_PATH": str(Path(STATE_DIR) / "splunk-error-triage.json"),
+    "STATE_PATH": str(Path(STATE_DIR) / "splunk-error-digest.json"),
+    "TITLE": "Splunk error triage",
     "INDEXES": ["os", "network"],
     "TERMS": ["error", "failed", "critical"],
     "EARLIEST": "-1h",
@@ -38,8 +39,13 @@ FIXTURE_CONFIG = {
 }
 
 
-def load_triage_module():
-    """Render the template's config lines to fixtures and import it as a module."""
+def load_triage_module(config=None):
+    """Render the template's config lines to fixtures and import it as a module.
+
+    `config` overrides the defaults so one template can be exercised as any of
+    the jobs in hermes_agent_triage_jobs.
+    """
+    config = config or FIXTURE_CONFIG
     out = []
     for line in TEMPLATE_PATH.read_text().splitlines():
         if "ansible_managed" in line:
@@ -47,13 +53,13 @@ def load_triage_module():
         match = re.match(r"^(\w+) = .*\{\{", line)
         if match:
             name = match.group(1)
-            assert name in FIXTURE_CONFIG, f"template config {name} has no self-check fixture"
-            out.append(f"{name} = {FIXTURE_CONFIG[name]!r}")
+            assert name in config, f"template config {name} has no self-check fixture"
+            out.append(f"{name} = {config[name]!r}")
             continue
         out.append(line)
     rendered = "\n".join(out)
     assert "{{" not in rendered, "self-check left an unrendered Jinja expression"
-    mod = types.ModuleType("splunk_error_triage")
+    mod = types.ModuleType("splunk_triage")
     exec(compile(rendered, str(TEMPLATE_PATH), "exec"), mod.__dict__)  # noqa: S102
     return mod
 
@@ -154,7 +160,7 @@ def test_steady_stream_is_presented_once_per_day():
     assert "pve3 / syslog" in text, "the day's first run presents the stream"
     text, state = TRIAGE.build_report(data, at(2), state)
     assert "pve3 / syslog" not in text, "a steady stream must not repeat within the day"
-    assert "No new error signatures" in text, "the day gets one exhausted-search line"
+    assert "No new signatures" in text, "the day gets one exhausted-search line"
     assert str(len(TRIAGE.parse_rows(data))) in text, "and it names the space it covered"
     text, _ = TRIAGE.build_report(data, at(3), state)
     assert text == TRIAGE.SILENT, "after that, silence for the rest of the day"
@@ -174,7 +180,7 @@ def test_a_new_error_source_is_critical_and_repeats():
     _, state = TRIAGE.build_report(rows({"pve3": {"syslog": 400}}), at(1), None)
     both = rows({"pve3": {"syslog": 400}, "fw01": {"cisco:asa": 90}})
     text, state = TRIAGE.build_report(both, at(2), state)
-    assert "NEW error source fw01 / cisco:asa" in text
+    assert "NEW source fw01 / cisco:asa" in text
     text, state = TRIAGE.build_report(both, at(3), state)
     assert "fw01 / cisco:asa" in text, "critical findings ignore the ledger"
 
@@ -265,18 +271,56 @@ def test_no_reconciled_cron_name_is_a_substring_of_another_job():
     defaults = yaml.safe_load((REPO_ROOT / "roles/hermes_agent/defaults/main.yml").read_text())
     direct = {job["name"] for job in defaults["hermes_agent_direct_cron_jobs"]}
     enqueuers = {card["job"] + "-enqueue" for card in defaults.get("hermes_agent_kanban_cards", [])}
-    scripts = {
-        defaults["hermes_agent_error_triage_cron_name"],
+    triage = {job["name"] for job in defaults["hermes_agent_triage_jobs"]}
+    scripts = triage | {
         defaults["hermes_agent_splunk_status_digest_cron_name"],
         defaults["hermes_agent_kanban_safety_net_cron_name"],
     }
     reconciled = direct | enqueuers | scripts
     # Everything `cron list --all` can print, including paused/superseded jobs.
-    universe = reconciled | {v for k, v in defaults.items()
-                             if k.endswith("_cron_name") and isinstance(v, str)}
+    universe = (reconciled
+                | {job["supersedes"] for job in defaults["hermes_agent_triage_jobs"]}
+                | {v for k, v in defaults.items()
+                   if k.endswith("_cron_name") and isinstance(v, str)})
     collisions = [(r, n) for r, n in itertools.product(sorted(reconciled), sorted(universe))
                   if r != n and r in n]
     assert not collisions, f"reconciled cron name(s) contained in another job's name: {collisions}"
+
+
+def test_every_configured_triage_job_renders_and_is_distinct():
+    """Adding a job is config, so the config is what gets checked.
+
+    Each entry must render to a runnable script with its own SPL and its own
+    state file — two jobs sharing a state path would share a baseline and a
+    novelty ledger, and silently suppress each other's findings.
+    """
+    import yaml
+
+    defaults = yaml.safe_load((REPO_ROOT / "roles/hermes_agent/defaults/main.yml").read_text())
+    jobs = defaults["hermes_agent_triage_jobs"]
+    assert len(jobs) >= 2, "expected at least the error and security digests"
+
+    seen_state, seen_spl = {}, {}
+    for job in jobs:
+        for field in ("name", "title", "schedule", "indexes", "terms", "window", "supersedes"):
+            assert job.get(field), f"{job.get('name', '?')} is missing {field}"
+        mod = load_triage_module({
+            **FIXTURE_CONFIG,
+            "STATE_PATH": str(Path(STATE_DIR) / f"{job['name']}.json"),
+            "TITLE": job["title"],
+            "INDEXES": job["indexes"],
+            "TERMS": job["terms"],
+            "EARLIEST": job["window"],
+        })
+        for term in job["terms"]:
+            assert term in mod.SPL, f"{job['name']} SPL omits term {term}"
+        assert mod.TITLE in mod.build_report(
+            rows({"h": {"syslog": 5}}), at(1), None)[0], "title must head the report"
+        assert job["name"] not in seen_state, "duplicate job name"
+        seen_state[job["name"]] = mod.STATE_PATH
+        assert mod.SPL not in seen_spl, f"{job['name']} duplicates {seen_spl.get(mod.SPL)}'s SPL"
+        seen_spl[mod.SPL] = job["name"]
+    assert len(set(seen_state.values())) == len(jobs), "jobs must not share a state file"
 
 
 if __name__ == "__main__":

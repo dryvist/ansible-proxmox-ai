@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 {{ ansible_managed | comment }}
-"""Deterministic, no-LLM Splunk error triage with a per-day novelty gate.
+"""Deterministic, no-LLM Splunk triage digest with a per-day novelty gate.
 
-Replaces the agentic `splunk-error-triage-v2` digest, whose only genuine LLM
-contribution was one interpretive sentence — while the model repeatedly wrote
-its tool call as TEXT instead of issuing it, and the runtime delivered that
-markup verbatim to Slack. No prompt wording fixes an unreliable tool-call
-emitter; removing the LLM from the fact path does.
+Rendered once per entry in `hermes_agent_triage_jobs` — the indexes, search
+terms, window and title are the only things that differ between jobs, so adding
+one is config rather than code.
+
+Replaces the agentic `splunk-error-triage-v2` and `splunk-security-lens-v2`
+digests. Those delivered raw tool-call markup to Slack: the model intends a tool
+call, the harness fails to parse it, and the unparsed text arrives looking
+exactly like a finished report. It happened on the first turn with no tool run
+AND on the turn after a successful tool result, with and without the prompt's
+anti-markup clause — an unreliable emitter, not a prompt defect. Worse, the
+model never ran the SPL those prompts specified; the agent log is full of
+self-invented substitutes filtering on unpopulated fields. So the jobs were
+producing wrong facts even when they did not leak markup, which makes this a
+correctness fix and not a formatting one.
 
 STDOUT is delivered verbatim to Slack (cron runs `--no-agent --deliver slack:<ch>`),
 so everything printed here must be TRUE. Never invent data. Zero rows, a missing
@@ -14,17 +23,16 @@ baseline, and a failed query are ALWAYS stated as themselves, never smoothed int
 "no errors".
 
 THE PER-DAY NOVELTY CONTRACT: routine information may be presented ONCE per UTC
-day. A steady error stream already reported today is suppressed on later runs.
-CRITICAL findings — an error source absent from the previous run, or one that has
+day. A steady stream already reported today is suppressed on later runs.
+CRITICAL findings — a source absent from the previous run, or one that has
 climbed an order of magnitude — are exempt and repeat every run while they hold.
 A run with nothing left to say prints its one "nothing new" line for the day and
 goes [SILENT] thereafter.
 
-What converting cost: the old prompt asked for one sentence on "the most
-recurring error nobody alerts on". That editorial judgement is gone. What
-replaces it is sharper and checkable — this names which streams are NEW or
-ESCALATING against a stored baseline, which is the fact the sentence was
-gesturing at.
+What converting cost: the old prompts asked for one interpretive sentence each
+("the most recurring error nobody alerts on"). That editorial judgement is gone.
+What replaces it is checkable — which streams are NEW or ESCALATING against a
+stored baseline, which is the fact those sentences were gesturing at.
 
 Pure stdlib + the `mcp` client (present in the hermes-agent venv, which runs this
 file). Reads secrets from the .env file, never prints them.
@@ -39,14 +47,17 @@ from collections import namedtuple
 
 # --- config (rendered from roles/hermes_agent/defaults/main.yml) ---------------
 ENV_PATH = "{{ hermes_agent_hermes_home }}/.env"
-STATE_PATH = "{{ hermes_agent_hermes_home }}/state/splunk-error-triage.json"
-INDEXES = {{ hermes_agent_error_triage_indexes | to_json }}
-TERMS = {{ hermes_agent_error_triage_terms | to_json }}
-EARLIEST = "{{ hermes_agent_error_triage_window }}"
-TOP_N = {{ hermes_agent_error_triage_top_n }}
+# Per-job state file: two jobs rendered from this template must never share a
+# baseline or a novelty ledger.
+STATE_PATH = "{{ hermes_agent_hermes_home }}/state/{{ item.name }}.json"
+TITLE = "{{ item.title }}"
+INDEXES = {{ item.indexes | to_json }}
+TERMS = {{ item.terms | to_json }}
+EARLIEST = "{{ item.window }}"
+TOP_N = {{ hermes_agent_triage_top_n }}
 # Output cap. Novel findings that do not fit are NOT ledgered, so they surface on
 # the next run instead of being silently lost.
-MAX_FINDINGS = {{ hermes_agent_error_triage_max_findings }}
+MAX_FINDINGS = {{ hermes_agent_triage_max_findings }}
 # Same span, phrased for prose ("the 1h window", not "the -1h window").
 WINDOW = EARLIEST.lstrip("-")
 SPL = (
@@ -150,7 +161,7 @@ def build_findings(current, baseline, have_baseline):
         elif previous is None:
             findings.append(Finding(
                 f"new:{pair}",
-                f":rotating_light: NEW error source {host} / {sourcetype} — "
+                f":rotating_light: NEW source {host} / {sourcetype} — "
                 f"{fmt(count)} events in the {WINDOW} window, absent from the "
                 f"previous run.", True))
         elif band(previous) > bucket:
@@ -220,17 +231,17 @@ def build_report(results, now, state):
         if "quiet" in ledger:
             return silent()
         lines.append(
-            f"No new error signatures — all {len(current)} host/sourcetype error "
+            f"No new signatures — all {len(current)} matching host/sourcetype "
             f"streams in {scope} over the {WINDOW} window were already reported "
             f"today.")
         posted.append("quiet")
     else:
         posted.extend(f.key for f in shown)
         lines.append(
-            f"Scope: {len(current)} host/sourcetype error streams in {scope}, "
+            f"Scope: {len(current)} matching host/sourcetype streams in {scope}, "
             f"{WINDOW} window.")
 
-    header = f"*Splunk error triage — last {WINDOW}*"
+    header = f"*{TITLE} — last {WINDOW}*"
     return "\n".join([header] + lines), {
         "schema": STATE_SCHEMA,
         "counts": current,
@@ -275,7 +286,7 @@ def main():
             if not sub:
                 break
             root = sub[0]
-        print(f":warning: Splunk error triage FAILED: {type(root).__name__}: {str(root)[:200]}")
+        print(f":warning: {TITLE} FAILED: {type(root).__name__}: {str(root)[:200]}")
         return 0
 
     text, payload = build_report(results, dt.datetime.now(dt.timezone.utc), load_state())
