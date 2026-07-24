@@ -50,6 +50,10 @@ hermes_agent_installer_path: "/usr/local/lib/hermes-agent-installer-{{ hermes_ag
 # Bump the tag deliberately: renovate opens the PR on each nix-hermes release;
 # a bad ref fails the converge loudly at the controller build step.
 hermes_agent_bundle_flake_ref: "github:dryvist/nix-hermes/nix-hermes-v0.6.0#hermes-bundle"
+# TODO(phase5): bump this SHA to the merge commit of the ai-llm-prompts PR that
+# adds the 8 hermes-digest-*.md prompt files (referenced by
+# hermes_agent_direct_cron_jobs). Until then the direct-deliver reconcile cannot
+# resolve those bodies from the catalog — land the prompts PR first, then bump.
 hermes_agent_prompts_flake_ref: >-
   github:dryvist/ai-llm-prompts/a25aaf2ead11c887dbd7781f5187c89687445c42#auto-ai-agent
 hermes_agent_webhook_prompt_file: hermes-inbound-webhook.md
@@ -138,6 +142,70 @@ hermes_agent_firehose_deliver: >-
   {{ 'slack:' ~ hermes_agent_slack_firehose_channel
      if (hermes_agent_slack_firehose_channel | length > 0)
      else 'slack' }}
+
+# --- Agentic direct-deliver digest crons (declarative; Phase 5) --------------
+# Nine hand-created "direct deliver" digest jobs, now reconciled by the role
+# (tasks/reconcile_direct_cron.yml) instead of being live-patched onto the
+# guest. Each is an AGENTIC cron (unlike the --no-agent kanban enqueuers): the
+# gateway runs the prompt and delivers the model's final response straight to
+# Slack. Bodies live in the pinned ai-llm-prompts catalog (prompt_file), loaded
+# and frontmatter-stripped at reconcile time exactly like the *_cron_prompt_file
+# vars elsewhere in this file.
+#
+# The Slack channel is NEVER hardcoded: it comes from this var, and the whole
+# reconcile loop is skipped (with a loud warning) when it is empty.
+hermes_agent_digest_slack_channel: "{{ lookup('env', 'HERMES_SLACK_DIGEST_CHANNEL') | default('', true) }}"
+
+hermes_agent_direct_cron_jobs:
+  - name: splunk-security-lens-v2
+    schedule: "22 */6 * * *"
+    prompt_file: hermes-digest-splunk-security-lens.md
+    skill: ""
+    enabled: true
+  - name: splunk-error-triage-v2
+    schedule: "37 * * * *"
+    prompt_file: hermes-digest-splunk-error-triage.md
+    skill: ""
+    enabled: true
+  - name: splunk-parsing-quality-v2
+    schedule: "17 3 * * *"
+    prompt_file: hermes-digest-splunk-parsing-quality.md
+    skill: ""
+    enabled: true
+  - name: anomaly-hunt-v2
+    schedule: "41 6,18 * * *"
+    prompt_file: hermes-digest-anomaly-hunt.md
+    skill: ""
+    enabled: true
+  - name: homelab-ai-fabric-status-v2
+    schedule: "3 */6 * * *"
+    prompt_file: hermes-digest-homelab-ai-fabric-status.md
+    skill: ""
+    enabled: true
+  - name: zammad-incident-review-v2
+    schedule: "9 13 * * *"
+    prompt_file: hermes-digest-zammad-incident-review.md
+    skill: dryvist/zammad-incidents
+    enabled: true
+  - name: github-org-triage-v2
+    schedule: "26 8 * * *"
+    prompt_file: hermes-digest-github-org-triage.md
+    skill: dryvist/github-issues
+    enabled: true
+  - name: daily-operator-summary-v2
+    schedule: "31 12 * * *"
+    prompt_file: hermes-digest-daily-operator-summary.md
+    skill: ""
+    enabled: true
+  # Paused, NEVER reconciled: superseded by the script-fed splunk-status-digest
+  # (hermes_agent_splunk_status_digest_cron_name), which pauses this LLM digest
+  # so the two never double-post. enabled:false keeps this reconcile from
+  # re-creating or re-enabling it. See hermes_agent_superseded_digest_cron_name.
+  - name: splunk-hourly-digest-v3
+    schedule: "52 * * * *"
+    prompt_file: hermes-splunk-digest.md
+    skill: ""
+    enabled: false
 
 # #hermes-all: the channel every Kanban worker posts its one-line completion
 # summary to (kanban migration, #83). Kanban cards have no native delivery
