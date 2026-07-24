@@ -1,0 +1,37 @@
+---
+# Reachability gate for a rolling pool play. Import from `pre_tasks` in any
+# play whose group is a Traefik-health-checked pool, alongside `serial: 1` and
+# `max_fail_percentage: 0`:
+#
+#   serial: 1
+#   max_fail_percentage: 0
+#   pre_tasks:
+#     - name: Gate on pool-member reachability
+#       ansible.builtin.import_tasks: tasks/pool_member_gate.yml
+#
+# This is the ONLY place unreachability is tolerated, and that placement is the
+# whole point. It separates the two outcomes that must not be conflated:
+#
+#   - A member that never answered (node down, guest stopped) is skipped here
+#     via end_host, and the converge rolls on to the next member. One node
+#     being down must never block the fleet.
+#   - A member that answered, took its change, and then went unhealthy or
+#     unreachable trips the play's default (unreachable and failed are both
+#     fatal past this point), so the batch fails and the play stops instead of
+#     marching on to break the next member.
+
+# Neither ignore_unreachable nor failed_when can abort the play here, so the
+# single condition below decides: anything other than a live 'pong' means the
+# member did not answer, whatever the reason (node down, guest stopped, pct
+# exec refused). Casting that net wide is safe ONLY because this runs before
+# anything is modified — skipping a member we never touched costs nothing.
+- name: Probe whether this pool member answers before changing it
+  ansible.builtin.ping:
+  ignore_unreachable: true
+  failed_when: false
+  register: pool_member_probe
+  changed_when: false
+
+- name: Skip this pool member for the rest of the play if it never answered
+  ansible.builtin.meta: end_host
+  when: (pool_member_probe.ping | default('')) != 'pong'
