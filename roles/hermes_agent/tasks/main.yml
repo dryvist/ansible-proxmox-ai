@@ -230,6 +230,59 @@
     replace: '\g<1>if False and not _retry.primary_recovery_attempted and agent._try_recover_primary_transport('
   notify: Restart hermes-gateway
 
+# A model that writes its tool call as TEXT (`<function=...>`, `<parameter=...>`)
+# instead of issuing it leaves that markup as its entire final response, and cron
+# delivery posts it verbatim — garbage in Slack, observed on three separate
+# digests. Upstream (NousResearch/hermes-agent) has no notion of this failure, so
+# guard it at the one choke point every cron job's output passes through.
+#
+# NOT a retry: re-running the turn here would run outside the per-job secret scope
+# that scheduler.py resets immediately after run_job, which is the exact fault its
+# own comment above that block describes. Suppress and name the job instead — the
+# raw run is still saved to the job's output file for diagnosis.
+#
+# blockinfile (not replace) for the helper: its markers make re-inserting on every
+# converge idempotent. The call-site replace is idempotent because the rewritten
+# line no longer matches its own regexp. Both re-run every converge because
+# `hermes update` self-updates the app out from under this checkout and would
+# silently drop the patch otherwise.
+- name: Patch Hermes cron delivery with a tool-call markup guard
+  ansible.builtin.blockinfile:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK cron markup guard"
+    insertbefore: '^def _deliver_result\('
+    block: |
+      def _cron_markup_guard(job, output_file, content):
+          """Never deliver unparsed tool-call markup to a chat platform.
+
+          Returns the content unchanged, or a diagnostic naming the job when the
+          model wrote a tool call as text instead of issuing it.
+          """
+          if not re.search(r"<(?:function|parameter)=|<tool_call>", content or ""):
+              return content
+          name = job.get("name", job.get("id", "?"))
+          logger.error(
+              "Job '%s': final response contained unparsed tool-call markup — "
+              "delivery suppressed", name,
+          )
+          return (
+              f":warning: Cron job '{name}' produced unparsed tool-call markup "
+              f"instead of a report; its output was suppressed rather than "
+              f"delivered. Raw run: {output_file}"
+          )
+  notify: Restart hermes-gateway
+
+- name: Route cron delivery content through the markup guard
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: >-
+      ^([ \t]*)deliver_content = final_response if success else
+      _summarize_cron_failure_for_delivery\(job, error\)$
+    replace: >-
+      \g<1>deliver_content = _cron_markup_guard(job, output_file, final_response
+      if success else _summarize_cron_failure_for_delivery(job, error))
+  notify: Restart hermes-gateway
+
 - name: Patch Hermes auxiliary retry delay for the local serial backend
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/agent/auxiliary_client.py"
@@ -833,6 +886,18 @@
     group: "{{ hermes_agent_user }}"
     mode: "0750"
 
+# Same no-LLM-in-the-fact-path shape as the status digest above, for the hourly
+# error triage the agentic splunk-error-triage-v2 used to produce (and leaked raw
+# tool-call markup from). Deployed regardless of the cron gate so enabling it is
+# a one-flag change.
+- name: Deploy the script-fed Splunk error-triage script
+  ansible.builtin.template:
+    src: splunk-error-triage.py.j2
+    dest: "{{ hermes_agent_hermes_home }}/scripts/{{ hermes_agent_error_triage_script_name }}"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+
 # Zammad stale-ticket auto-close, brought under role management (token from .env,
 # no hardcoded secret). Cron is gated off by default (see defaults) — the script
 # is deployed regardless so enabling is a one-flag change.
@@ -932,6 +997,20 @@
       deliver: "slack:{{ hermes_agent_splunk_lens_channel }}"
       enabled: "{{ hermes_agent_splunk_lens_enabled }}"
 
+# The script-fed Splunk error triage: same --no-agent --script contract as the
+# status digest. Its stdout (numbers the script gathered itself) is delivered
+# verbatim — there is no model in the fact path, so there is no tool-call markup
+# to leak and nothing to fabricate.
+- name: Reconcile the script-fed Splunk error-triage cron
+  ansible.builtin.include_tasks: reconcile_enqueuer_cron.yml
+  vars:
+    item:
+      name: "{{ hermes_agent_error_triage_cron_name }}"
+      schedule: "{{ hermes_agent_error_triage_cron_schedule }}"
+      script: "{{ hermes_agent_error_triage_script_name }}"
+      deliver: "slack:{{ hermes_agent_error_triage_channel }}"
+      enabled: "{{ hermes_agent_error_triage_enabled }}"
+
 # Retire the hand-created LLM digest direct cron the script-fed digest replaces:
 # pause it (disable-don't-delete) so the two never double-post. `cron list` shows
 # only ENABLED jobs, so this is a clean no-op once the job is paused.
@@ -945,6 +1024,7 @@
   changed_when: false
   when: >-
     (hermes_agent_splunk_status_digest_enabled | bool)
+    or (hermes_agent_error_triage_enabled | bool)
     or (hermes_agent_splunk_lens_enabled | bool)
 
 - name: Pause the superseded v3 LLM digest cron (disable-don't-delete)
@@ -977,6 +1057,21 @@
   when:
     - hermes_agent_splunk_lens_enabled | bool
     - superseded in (hermes_agent_active_cron_list.stdout | default(''))
+
+# Same disable-don't-delete retirement for the agentic error-triage cron the
+# script-fed job replaces. Already a no-op when it is paused (it was paused by
+# hand to stop the markup posts); this makes that state declarative so a future
+# converge can never leave both jobs live.
+- name: Pause the superseded agentic error-triage cron (disable-don't-delete)
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ hermes_agent_superseded_error_triage_cron_name }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  when:
+    - hermes_agent_error_triage_enabled | bool
+    - hermes_agent_superseded_error_triage_cron_name in (hermes_agent_active_cron_list.stdout | default(''))
 
 # Zammad stale-ticket auto-close cron (disabled by default; see defaults). Closures
 # deliver to Slack for auditability. Gated on the auto-close flag AND zammad + slack

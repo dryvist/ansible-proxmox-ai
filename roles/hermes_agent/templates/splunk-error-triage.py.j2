@@ -1,0 +1,288 @@
+#!/usr/bin/env python3
+{{ ansible_managed | comment }}
+"""Deterministic, no-LLM Splunk error triage with a per-day novelty gate.
+
+Replaces the agentic `splunk-error-triage-v2` digest, whose only genuine LLM
+contribution was one interpretive sentence — while the model repeatedly wrote
+its tool call as TEXT instead of issuing it, and the runtime delivered that
+markup verbatim to Slack. No prompt wording fixes an unreliable tool-call
+emitter; removing the LLM from the fact path does.
+
+STDOUT is delivered verbatim to Slack (cron runs `--no-agent --deliver slack:<ch>`),
+so everything printed here must be TRUE. Never invent data. Zero rows, a missing
+baseline, and a failed query are ALWAYS stated as themselves, never smoothed into
+"no errors".
+
+THE PER-DAY NOVELTY CONTRACT: routine information may be presented ONCE per UTC
+day. A steady error stream already reported today is suppressed on later runs.
+CRITICAL findings — an error source absent from the previous run, or one that has
+climbed an order of magnitude — are exempt and repeat every run while they hold.
+A run with nothing left to say prints its one "nothing new" line for the day and
+goes [SILENT] thereafter.
+
+What converting cost: the old prompt asked for one sentence on "the most
+recurring error nobody alerts on". That editorial judgement is gone. What
+replaces it is sharper and checkable — this names which streams are NEW or
+ESCALATING against a stored baseline, which is the fact the sentence was
+gesturing at.
+
+Pure stdlib + the `mcp` client (present in the hermes-agent venv, which runs this
+file). Reads secrets from the .env file, never prints them.
+"""
+import asyncio
+import datetime as dt
+import json
+import math
+import os
+import sys
+from collections import namedtuple
+
+# --- config (rendered from roles/hermes_agent/defaults/main.yml) ---------------
+ENV_PATH = "{{ hermes_agent_hermes_home }}/.env"
+STATE_PATH = "{{ hermes_agent_hermes_home }}/state/splunk-error-triage.json"
+INDEXES = {{ hermes_agent_error_triage_indexes | to_json }}
+TERMS = {{ hermes_agent_error_triage_terms | to_json }}
+EARLIEST = "{{ hermes_agent_error_triage_window }}"
+TOP_N = {{ hermes_agent_error_triage_top_n }}
+# Output cap. Novel findings that do not fit are NOT ledgered, so they surface on
+# the next run instead of being silently lost.
+MAX_FINDINGS = {{ hermes_agent_error_triage_max_findings }}
+# Same span, phrased for prose ("the 1h window", not "the -1h window").
+WINDOW = EARLIEST.lstrip("-")
+SPL = (
+    "search index=" + " OR index=".join(INDEXES)
+    + " (" + " OR ".join(TERMS) + ")"
+    + " | stats count by host, sourcetype | sort -count | head " + str(TOP_N)
+)
+# Bumped when the state shape changes; an older/absent value means "no usable
+# baseline", and the run reports full counts with no new/escalating claims.
+STATE_SCHEMA = 1
+SILENT = "[SILENT]"
+# Label for rows Splunk returned without a `host` field. Naming them beats
+# dropping them: unset host is itself worth seeing, and a dropped row would
+# quietly shrink the totals printed beside it.
+NO_HOST = "(no host)"
+
+Finding = namedtuple("Finding", "key text critical")
+
+
+def load_env(path):
+    """Parse KEY=VALUE lines. Values may be quoted."""
+    env = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip().strip('"').strip("'")
+    return env
+
+
+async def run_query(url, token):
+    """Return the parsed results list, or raise on any failure."""
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp import ClientSession
+
+    async with streamablehttp_client(url, headers={"Authorization": f"Bearer {token}"}) as (r, w, _):
+        async with ClientSession(r, w) as s:
+            await s.initialize()
+            res = await s.call_tool("splunk_run_query", {"query": SPL, "earliest": EARLIEST})
+            if getattr(res, "isError", False):
+                raise RuntimeError("splunk_run_query returned isError=true")
+            data = res.structuredContent
+            if not isinstance(data, dict):
+                if res.content and getattr(res.content[0], "text", None):
+                    data = json.loads(res.content[0].text)
+                else:
+                    raise RuntimeError("no structuredContent and no text content")
+            return data.get("results", [])
+
+
+def band(n):
+    """Order-of-magnitude bucket so normal jitter never reads as an escalation."""
+    return 0 if n <= 0 else int(math.log10(n))
+
+
+def fmt(n):
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
+def parse_rows(results):
+    """{"host|sourcetype": count} from the stats rows.
+
+    A row missing `host` is kept under NO_HOST, not dropped: `stats count by
+    host, sourcetype` omits the field entirely when it is unset on the events,
+    and silently discarding those rows would under-report real error volume
+    while printing a confident total. Only a row with no usable count at all,
+    or no sourcetype to name it by, is unusable.
+    """
+    out = {}
+    for row in results or []:
+        host = str(row.get("host") or "").strip() or NO_HOST
+        sourcetype = str(row.get("sourcetype") or "").strip()
+        try:
+            count = int(float(row.get("count") or 0))
+        except (TypeError, ValueError):
+            continue
+        if not sourcetype or count <= 0:
+            continue
+        key = f"{host}|{sourcetype}"
+        out[key] = out.get(key, 0) + count
+    return out
+
+
+def build_findings(current, baseline, have_baseline):
+    """One finding per error stream, ordered loudest first.
+
+    With no usable baseline nothing can be called NEW or ESCALATING — there is
+    nothing to have changed from — so every stream is reported as a plain count.
+    """
+    findings = []
+    for pair, count in sorted(current.items(), key=lambda kv: (-kv[1], kv[0])):
+        host, sourcetype = pair.split("|", 1)
+        bucket = band(count)
+        previous = baseline.get(pair)
+        if not have_baseline:
+            findings.append(Finding(
+                f"steady:{pair}:{bucket}",
+                f"{host} / {sourcetype} — {fmt(count)} events.", False))
+        elif previous is None:
+            findings.append(Finding(
+                f"new:{pair}",
+                f":rotating_light: NEW error source {host} / {sourcetype} — "
+                f"{fmt(count)} events in the {WINDOW} window, absent from the "
+                f"previous run.", True))
+        elif band(previous) > bucket:
+            findings.append(Finding(
+                f"steady:{pair}:{bucket}",
+                f"{host} / {sourcetype} — {fmt(count)} events, down from "
+                f"{fmt(previous)}.", False))
+        elif band(previous) < bucket:
+            findings.append(Finding(
+                f"spike:{pair}:{bucket}",
+                f":chart_with_upwards_trend: {host} / {sourcetype} ESCALATING — "
+                f"{fmt(count)} events, up from {fmt(previous)}.", True))
+        else:
+            findings.append(Finding(
+                f"steady:{pair}:{bucket}",
+                f"{host} / {sourcetype} — {fmt(count)} events (was "
+                f"{fmt(previous)}).", False))
+    return findings
+
+
+def load_ledger(state, today):
+    """Today's already-presented keys. A new UTC day resets it to empty, and a
+    state file predating the ledger simply carries none."""
+    ledger = (state or {}).get("ledger")
+    if not isinstance(ledger, dict) or ledger.get("day") != today:
+        return []
+    keys = ledger.get("keys")
+    return list(keys) if isinstance(keys, list) else []
+
+
+def build_report(results, now, state):
+    """(text_to_deliver, state_payload). text may be SILENT to suppress delivery."""
+    current = parse_rows(results)
+    today = now.date().isoformat()
+    prior = state if (state or {}).get("schema") == STATE_SCHEMA else None
+    baseline = (prior or {}).get("counts")
+    have_baseline = isinstance(baseline, dict)
+    baseline = baseline if have_baseline else {}
+    ledger = load_ledger(prior, today)
+
+    shown = []
+    for finding in build_findings(current, baseline, have_baseline):
+        if len(shown) >= MAX_FINDINGS:
+            break
+        if finding.critical or finding.key not in ledger:
+            shown.append(finding)
+
+    scope = ", ".join(INDEXES)
+    lines = [f.text for f in shown]
+    posted = list(ledger)
+
+    def silent():
+        return SILENT, {"schema": STATE_SCHEMA, "counts": current,
+                        "ledger": {"day": today, "keys": posted}}
+
+    if not current:
+        # Zero matching rows is a fact, not an all-clear: it is equally
+        # consistent with a quiet hour and with ingest having stopped.
+        if "zero-rows" in ledger:
+            return silent()
+        lines.append(
+            f"Zero rows matching {'/'.join(TERMS)} in {scope} over the "
+            f"{WINDOW} window — either a genuinely quiet hour or ingest has "
+            f"stopped; this run cannot tell which.")
+        posted.append("zero-rows")
+    elif not lines:
+        if "quiet" in ledger:
+            return silent()
+        lines.append(
+            f"No new error signatures — all {len(current)} host/sourcetype error "
+            f"streams in {scope} over the {WINDOW} window were already reported "
+            f"today.")
+        posted.append("quiet")
+    else:
+        posted.extend(f.key for f in shown)
+        lines.append(
+            f"Scope: {len(current)} host/sourcetype error streams in {scope}, "
+            f"{WINDOW} window.")
+
+    header = f"*Splunk error triage — last {WINDOW}*"
+    return "\n".join([header] + lines), {
+        "schema": STATE_SCHEMA,
+        "counts": current,
+        "ledger": {"day": today, "keys": posted},
+    }
+
+
+def load_state():
+    """Return the stored state, or None when it is unreadable."""
+    try:
+        with open(STATE_PATH) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def save_state(payload):
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f)
+    os.replace(tmp, STATE_PATH)
+
+
+def main():
+    # fail loud, never fabricate: any error is delivered, then exit 0
+    try:
+        env = load_env(ENV_PATH)
+        url = env.get("SPLUNK_MCP_URL")
+        token = env.get("SPLUNK_MCP_TOKEN")
+        if not url or not token:
+            raise RuntimeError("SPLUNK_MCP_URL / SPLUNK_MCP_TOKEN missing from .env")
+        results = asyncio.run(run_query(url, token))
+    except Exception as e:  # noqa: BLE001 - deliberately broad; failure must be delivered
+        # asyncio.TaskGroup wraps the real fault in an ExceptionGroup; unwrap to
+        # the root leaf so the delivered message names the actual cause instead
+        # of a useless "ExceptionGroup: 1 sub-exception". Short, and secret-free.
+        root = e
+        for _ in range(10):
+            sub = getattr(root, "exceptions", None)
+            if not sub:
+                break
+            root = sub[0]
+        print(f":warning: Splunk error triage FAILED: {type(root).__name__}: {str(root)[:200]}")
+        return 0
+
+    text, payload = build_report(results, dt.datetime.now(dt.timezone.utc), load_state())
+    save_state(payload)
+    print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
