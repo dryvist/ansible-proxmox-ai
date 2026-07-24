@@ -8,12 +8,23 @@
 #
 # item fields: schedule, enabled, and EITHER {job} (name/selector derived) OR
 # explicit {name, selector}. script defaults to the shared enqueuer script.
+#
+# A job is ACTIVE iff its capability gate (item.enabled) is true AND it is not on
+# the throughput-throttle pause list. A paused/disabled job is SKIPPED entirely
+# here — no create, no remove — so a converge leaves whatever state the operator
+# last set it to (disable-don't-delete) and never re-enables a throttled job.
+- name: "Enqueuer cron | Effective-active for {{ item.name if item.name is defined else item.job ~ '-enqueue' }}"
+  ansible.builtin.set_fact:
+    hermes_agent_enqueuer_active: >-
+      {{ (item.enabled | default(true) | bool)
+         and ((item.job | default(item.name)) not in hermes_agent_kanban_paused_jobs) }}
+
 - name: "Enqueuer cron | Resolve fields for {{ item.name if item.name is defined else item.job ~ '-enqueue' }}"
   ansible.builtin.set_fact:
     hermes_agent_enqueuer_name: "{{ item.name if item.name is defined else item.job ~ '-enqueue' }}"
     hermes_agent_enqueuer_selector: "{{ item.selector if item.selector is defined else item.job }}"
     hermes_agent_enqueuer_script: "{{ item.script | default(hermes_agent_kanban_enqueue_script_name) }}"
-  when: item.enabled | default(true) | bool
+  when: hermes_agent_enqueuer_active | bool
 
 - name: "Enqueuer cron | Look up {{ hermes_agent_enqueuer_name }}"
   ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
@@ -23,7 +34,7 @@
   become_user: "{{ hermes_agent_user }}"
   register: hermes_agent_enqueuer_cron_list
   changed_when: false
-  when: item.enabled | default(true) | bool
+  when: hermes_agent_enqueuer_active | bool
 
 - name: "Enqueuer cron | Calculate desired state for {{ hermes_agent_enqueuer_name }}"
   ansible.builtin.set_fact:
@@ -31,7 +42,7 @@
       {{ {'schedule': item.schedule, 'selector': hermes_agent_enqueuer_selector,
           'script': hermes_agent_enqueuer_script, 'no_agent': true}
          | to_json | hash('sha256') }}
-  when: item.enabled | default(true) | bool
+  when: hermes_agent_enqueuer_active | bool
 
 - name: "Enqueuer cron | Check desired-state marker for {{ hermes_agent_enqueuer_name }}"
   ansible.builtin.copy:
@@ -42,7 +53,7 @@
     mode: "0640"
   check_mode: true
   register: hermes_agent_enqueuer_marker_probe
-  when: item.enabled | default(true) | bool
+  when: hermes_agent_enqueuer_active | bool
 
 # A changed marker on an EXISTING job means schedule/selector/script drifted:
 # remove it so the create below re-pins the new definition. No drift (or a job
@@ -55,7 +66,7 @@
   become_user: "{{ hermes_agent_user }}"
   changed_when: true
   when:
-    - item.enabled | default(true) | bool
+    - hermes_agent_enqueuer_active | bool
     - hermes_agent_enqueuer_name in (hermes_agent_enqueuer_cron_list.stdout | default(''))
     - hermes_agent_enqueuer_marker_probe.changed | bool
 
@@ -73,7 +84,7 @@
   become_user: "{{ hermes_agent_user }}"
   changed_when: true
   when:
-    - item.enabled | default(true) | bool
+    - hermes_agent_enqueuer_active | bool
     - >-
       hermes_agent_enqueuer_name not in (hermes_agent_enqueuer_cron_list.stdout | default(''))
       or hermes_agent_enqueuer_marker_probe.changed | bool
@@ -85,4 +96,4 @@
     owner: "{{ hermes_agent_user }}"
     group: "{{ hermes_agent_user }}"
     mode: "0640"
-  when: item.enabled | default(true) | bool
+  when: hermes_agent_enqueuer_active | bool
