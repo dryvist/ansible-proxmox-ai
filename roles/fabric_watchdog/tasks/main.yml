@@ -1,0 +1,37 @@
+---
+# fabric_watchdog: probe script + oneshot service + timer. State lives in
+# fabric_watchdog_state_dir so alerts fire only on up/down transitions.
+- name: Create fabric-watchdog state directory
+  ansible.builtin.file:
+    path: "{{ fabric_watchdog_state_dir }}"
+    state: directory
+    owner: "{{ fabric_watchdog_user }}"
+    group: "{{ fabric_watchdog_group }}"
+    mode: "0750"
+
+- name: Render fabric-watchdog probe script
+  ansible.builtin.template:
+    src: fabric-watchdog.sh.j2
+    dest: /usr/local/bin/fabric-watchdog.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render fabric-watchdog systemd units
+  ansible.builtin.template:
+    src: "fabric-watchdog.{{ item }}.j2"
+    dest: "/etc/systemd/system/fabric-watchdog.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - service
+    - timer
+  register: fabric_watchdog_units
+
+- name: Enable and start the fabric-watchdog timer
+  ansible.builtin.systemd_service:
+    name: fabric-watchdog.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ fabric_watchdog_units.changed }}"
