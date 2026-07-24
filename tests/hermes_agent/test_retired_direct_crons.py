@@ -34,6 +34,14 @@ def test_every_disabled_direct_cron_is_also_paused_on_the_host():
 
     # The pause tasks name the job through a var, so resolve every *_cron_name
     # that a `cron pause` line references and compare on real names.
+    #
+    # ponytail: this certifies its property BY PROXY — it recognises syntactic
+    # shapes, so it really means "a pause exists IN A SHAPE LISTED HERE". The
+    # loop form below had to be added for exactly that reason after #188 moved
+    # to it, and a THIRD shape will read as no pause at all the same way. When
+    # that happens the fix is to add the shape, never to relax the assert.
+    # (The proxy-free version — resolving what the play actually runs — means
+    # executing Ansible, which is not worth it for a config-pairing check.)
     paused = {value for key, value in defaults.items()
               if isinstance(value, str)
               and f"cron pause {{{{ {key} }}}}" in tasks}
