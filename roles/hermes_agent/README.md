@@ -527,7 +527,7 @@ brain-sync implementation is retained but disabled.
 | `hermes_agent_brain_sync_interval` | `5min` | Poll cadence (`OnUnitActiveSec`) |
 | `hermes_agent_brain_sync_bao_path` | `ai/public/brain` | KV v2 data path (mount `secret`) |
 | `hermes_agent_brain_sync_bao_field` | `active_model` | Field holding the candidate model id |
-| `hermes_agent_brain_sync_state_file` | `/etc/hermes-brain-sync/current-model` | Live pointer, world-readable, shared with the watchdog |
+| `hermes_agent_brain_sync_state_file` | `/etc/hermes-brain-sync/current-model` | Brain-sync's live pointer; watchdog probes the alias, not this |
 
 ## Live docs (Context7)
 
