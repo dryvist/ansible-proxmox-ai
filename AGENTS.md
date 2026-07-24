@@ -138,6 +138,38 @@ pairing is needed (unlike ansible-proxmox-apps).
   the full multi-domain copy. Promoting both into `homelab-contracts` is a
   tracked follow-up.
 
+### Rolling converge for pooled services
+
+Any play whose group is a multi-node, health-checked pool (`llm_router_group`,
+`hindsight_group`, and `agentgateway_group` once it grows past one node) must
+converge one member at a time. Restarting every member in the same play takes
+the service down even though the pool exists to prevent exactly that.
+
+The pattern is four lines plus the shared gate — copy it, do not re-invent it:
+
+```yaml
+  serial: 1
+  max_fail_percentage: 0
+  pre_tasks:
+    - name: Gate on pool-member reachability
+      ansible.builtin.import_tasks: tasks/pool_member_gate.yml
+```
+
+The role supplies the health gate itself: end the role with a local liveness
+check after `meta: flush_handlers`, so the member is verified serving inside
+its own rolling window before the next one is touched. Both current pooled
+roles already do this (`llm_router` liveness, `hindsight_docker` /health).
+
+Outcomes, by design:
+
+| Situation | Result |
+| --- | --- |
+| Member never answered (node down, guest stopped) | Skipped by the gate, converge rolls on |
+| Member restarted, then unhealthy or unreachable | Play stops before the next member is touched |
+
+Do not add these keywords to a single-node play — the gate would turn a down
+host into a silent skip. Adopt them in the same change that adds the 2nd node.
+
 ## Testing
 
 | Check | Command | When |
