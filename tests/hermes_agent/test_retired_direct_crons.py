@@ -24,7 +24,7 @@ def load_defaults():
     return yaml.safe_load(DEFAULTS_PATH.read_text())
 
 
-def test_every_disabled_direct_cron_is_also_paused_on_the_host():
+def test_every_disabled_direct_cron_has_a_recognised_pause_task():
     defaults = load_defaults()
     tasks = TASKS_PATH.read_text()
 
@@ -55,5 +55,5 @@ def test_every_disabled_direct_cron_is_also_paused_on_the_host():
 
 
 if __name__ == "__main__":
-    test_every_disabled_direct_cron_is_also_paused_on_the_host()
-    print("ok  test_every_disabled_direct_cron_is_also_paused_on_the_host")
+    test_every_disabled_direct_cron_has_a_recognised_pause_task()
+    print("ok  test_every_disabled_direct_cron_has_a_recognised_pause_task")
