@@ -1,13 +1,21 @@
-"""Self-check for the hourly Splunk digest delta logic.
+"""Self-check for the hourly Splunk digest: per-day novelty gate + deltas.
 
 The digest script is a Jinja template whose STDOUT goes verbatim to Slack, so the
-contract under test is the *emitted text*: every hourly post must carry real
-per-index volumes AND their change since the previous run — never a recycled
-"No change" line.
+contract under test is the *emitted text*.
+
+Two contracts, both enforced here:
+
+1. Per-day novelty — routine information may be presented ONCE per UTC day. A
+   later run with nothing genuinely new must escalate its search (host level, then
+   sourcetype/composition) rather than re-present it or emit boilerplate. Critical
+   conditions are exempt and repeat every run while they hold.
+2. Never fabricate — deltas are computed, an absent baseline says so, ingest
+   silence is always explicit, and the fact path is one tstats call with no LLM.
 
 Runs bare (`python3 tests/hermes_agent/test_splunk_digest_deltas.py`) or under
 pytest. Plain asserts, no fixtures, no framework.
 """
+import datetime as dt
 import json
 import re
 import tempfile
@@ -27,9 +35,6 @@ FIXTURE_CONFIG = {
     "STALENESS_MIN": 60,
     "EARLIEST": "-24h",
 }
-
-NOW = 1_784_918_400  # fixed epoch; last_time is derived from it so nothing is stale
-FRESH = NOW - 60
 
 
 def load_digest_module():
@@ -54,146 +59,241 @@ def load_digest_module():
 
 DIGEST = load_digest_module()
 
+DAY = dt.datetime(2026, 7, 24, 0, 52, tzinfo=dt.timezone.utc)
 
-def rows(spec, last_time=FRESH):
-    """Build tstats rows from {index: {host: volume}} — values as Splunk returns them."""
+
+def at(hour, day=24):
+    return DAY.replace(day=day, hour=hour)
+
+
+def rows(spec, ts):
+    """Build tstats rows from {index: {host: {sourcetype: volume}}}.
+
+    Values are strings, exactly as Splunk returns them.
+    """
     return [
-        {"index": idx, "host": host, "vol": str(vol), "last_time": str(last_time)}
+        {"index": idx, "host": host, "sourcetype": stype,
+         "vol": str(vol), "last_time": str(ts)}
         for idx, hosts in spec.items()
-        for host, vol in hosts.items()
+        for host, stypes in hosts.items()
+        for stype, vol in stypes.items()
     ]
 
 
 BASE = {
-    "os": {"host-a": 1_000_000, "host-b": 200_000},
-    "network": {"host-c": 400_000},
-    "firewall": {"host-d": 50_000},
+    "os": {"host-a": {"syslog": 1_000_000}, "host-b": {"syslog": 200_000}},
+    "network": {"host-c": {"ipfix": 400_000}},
+    "firewall": {"host-d": {"pan:traffic": 50_000}},
 }
 
 
-def run(results, prev):
-    return DIGEST.build_digest(results, NOW, prev)
+def scale(spec, index, factor):
+    """Same shape, one index's volumes multiplied — a real, computable move."""
+    out = {i: {h: dict(s) for h, s in hosts.items()} for i, hosts in spec.items()}
+    for host in out[index]:
+        for stype in out[index][host]:
+            out[index][host][stype] = int(out[index][host][stype] * factor)
+    return out
 
 
-def test_first_run_has_no_baseline_but_still_reports_real_numbers():
-    text, _, snapshot = run(rows(BASE), None)
-    assert "no prior baseline" in text.lower()
+def with_stale_host(hour, host, hours):
+    """BASE rows for `hour`, with one host's newest event pushed `hours` into the past."""
+    now = int(at(hour).timestamp())
+    out = rows(BASE, now - 60)
+    for row in out:
+        if row["host"] == host:
+            row["last_time"] = str(now - hours * 3600)
+    return out
+
+
+def step(spec, state, when):
+    """One hourly run. `spec` is a nested dict or a raw row list."""
+    now = when if isinstance(when, dt.datetime) else at(when)
+    results = rows(spec, int(now.timestamp()) - 60) if isinstance(spec, dict) else spec
+    return DIGEST.build_digest(results, now, state)
+
+
+def test_first_run_of_a_day_posts_the_full_baseline_table():
+    text, state = step(BASE, None, 0)
+
+    assert "First digest of 2026-07-24" in text
+    assert "1,200,000" in text, "the day's baseline table must carry real volumes"
+    assert "400,000" in text and "50,000" in text
     assert "no baseline" in text, "delta cells must say why a delta is missing"
-    assert "1,200,000" in text, "per-index volume must be present on the very first run"
-    assert "Δ unavailable" in text
-    assert snapshot["by_index"]["os"] == {"vol": 1_200_000, "hosts": 2}
-    assert snapshot["hosts"] == ["host-a", "host-b", "host-c", "host-d"]
-
-
-def test_changed_run_reports_signed_deltas_and_movers():
-    prev = {
-        "by_index": {"os": {"vol": 1_200_000, "hosts": 2}, "network": {"vol": 400_000, "hosts": 1},
-                     "firewall": {"vol": 50_000, "hosts": 1}, "dns": {"vol": 900, "hosts": 1}},
-        "hosts": ["host-a", "host-b", "host-c", "host-d", "host-e"],
-        "host_detail": True,
-        "captured_iso": "2026-07-24T17:52:00+00:00",
+    assert "No prior baseline" in text
+    assert state["ledger"]["day"] == "2026-07-24"
+    assert "table:2026-07-24" in state["ledger"]["keys"]
+    assert state["by_index"]["os"] == {
+        "vol": 1_200_000, "hosts": 2,
+        "host_vol": {"host-a": 1_000_000, "host-b": 200_000},
+        "st_vol": {"syslog": 1_200_000},
     }
-    changed = {
-        "os": {"host-a": 1_012_004, "host-b": 200_000},   # +12,004  (+1%, not a mover)
-        "network": {"host-c": 100_000},                    # -300,000 (-75%, mover)
-        "firewall": {"host-d": 50_000},                    # 0
-        "proxy": {"host-f": 7_000},                        # NEW index, NEW host
-    }
-    text, _, _ = run(rows(changed), prev)
-
-    assert "Δ vs 17:52 UTC" in text, "the comparison window must be stated, not implied"
-    assert "+12,004" in text
-    assert "-300,000" in text
-    assert re.search(r"firewall\s+50,000\s+0\b", text), "zero change must be explicit, not omitted"
-    assert "NEW" in text and "proxy" in text
-    assert "Movers" in text and "network -75%" in text
-    assert "dns STOPPED reporting" in text and "900" in text
-    assert "1 host(s) stopped logging" in text and "host-e" in text
-    assert "1 host(s) started logging" in text and "host-f" in text
-    assert "FLAT" not in text
 
 
-def test_flat_run_states_it_is_flat_and_still_carries_every_number():
-    _, _, snapshot = run(rows(BASE), None)
-    prev = dict(snapshot, captured_iso="2026-07-24T17:52:00+00:00")
-    text, _, _ = run(rows(BASE), prev)
+def test_a_routine_finding_already_posted_today_is_suppressed():
+    _, s0 = step(BASE, None, 0)
+    grown = scale(BASE, "os", 1.45)          # +45% -> a real index-level finding
 
-    assert "FLAT" in text, "an all-flat hour must say so explicitly"
-    assert "1,200,000" in text and "400,000" in text and "50,000" in text, \
-        "a flat post must still carry the real volumes, not a bare 'No change'"
-    assert "hosts: 4 (flat)" in text
-    assert "No change —" not in text, "the recycled boilerplate branch must stay deleted"
+    second, s1 = step(grown, s0, 1)
+    assert "index=os volume up 45%" in second, "a novel routine move must be posted"
+    assert "First digest of" not in second, "the daily table is routine — once per day only"
+    assert "1,740,000" in second
+    key = next(k for k in s1["ledger"]["keys"] if k.startswith("vol:os:up"))
+
+    # The same +45% band an hour later against the new baseline: same identity.
+    third, s2 = step(scale(grown, "os", 1.45), s1, 2)
+    assert s2["ledger"]["keys"].count(key) == 1, "a repeat must not be re-ledgered"
+    assert "index=os volume up 45%" not in third, \
+        "a routine finding already presented today must be suppressed"
+
+
+def test_a_persisting_critical_condition_repeats_every_run():
+    dark = {i: h for i, h in BASE.items() if i != "network"}
+    first, s0 = step(dark, None, 0)
+    second, s1 = step(dark, s0, 1)
+    third, _ = step(dark, s1, 2)
+
+    for run, text in enumerate((first, second, third)):
+        assert "INGEST SILENCE: index=network" in text, \
+            f"run {run}: a persisting critical condition must repeat, never be ledgered"
+        assert "Critical — repeats every run" in text
+    assert not any(k.startswith("crit:") for k in s1["ledger"]["keys"]), \
+        "critical findings must never enter the day ledger"
+
+
+def test_an_exhausted_routine_search_escalates_before_it_gives_up():
+    _, s0 = step(BASE, None, 0)
+
+    # Identical data: the only index-level news is that everything is flat.
+    flat, s1 = step(BASE, s0, 1)
+    assert "byte-identical" in flat and "index level" in flat
+
+    # Still identical, but one host's newest event is now 3h old -> host tier.
+    escalated, s2 = step(with_stale_host(2, "host-b", hours=3), s1, 2)
+    assert "host level" in escalated and "nothing new at index level" in escalated
+    assert "host host-b" in escalated and "3.0 h old" in escalated
+
+    # Nothing left anywhere: an honest, specific line — never bare boilerplate.
+    exhausted, _ = step(with_stale_host(3, "host-b", hours=3), s2, 3)
+    assert "Nothing new to report" in exhausted
+    assert "Searched 3 index(es), 4 host(s) and 3 index/sourcetype pair(s)" in exhausted
+    assert "no critical condition is active" in exhausted
+    assert "New today" not in exhausted
+
+
+def test_composition_tier_is_reached_when_index_and_host_tiers_are_spent():
+    _, s0 = step(BASE, None, 0)
+    _, s1 = step(BASE, s0, 1)          # spends the flat finding
+
+    # A new sourcetype inside an index whose total is unchanged: invisible above
+    # the composition tier, so only an escalated search can find it.
+    mixed = {i: {h: dict(s) for h, s in hosts.items()} for i, hosts in BASE.items()}
+    mixed["os"]["host-a"] = {"syslog": 900_000, "auditd": 100_000}
+    text, _ = step(mixed, s1, 2)
+
+    assert "sourcetype + composition level" in text
+    assert "nothing new at index level, host level" in text
+    assert "sourcetype auditd newly present in index=os" in text
+
+
+def test_the_day_boundary_resets_the_ledger():
+    _, s0 = step(BASE, None, 0)
+    _, s1 = step(BASE, s0, 23)
+    assert "table:2026-07-24" in s1["ledger"]["keys"]
+
+    next_day, s2 = step(BASE, s1, at(0, day=25))
+    assert s2["ledger"]["day"] == "2026-07-25"
+    assert "table:2026-07-25" in s2["ledger"]["keys"]
+    assert not any(k.endswith("2026-07-24") for k in s2["ledger"]["keys"]), \
+        "yesterday's keys must not survive the boundary"
+    assert "First digest of 2026-07-25" in next_day, "a new day re-presents the baseline table"
 
 
 def test_old_schema_state_file_is_treated_as_no_baseline_not_a_crash():
-    legacy = {"fingerprint": "deadbeef", "first_seen_iso": "2026-07-24T17:52:34+00:00",
-              "last_post_date": "2026-07-24"}
+    legacy = {"schema": 2, "fingerprint": "deadbeef", "by_index": {"os": {"vol": 5, "hosts": 1}},
+              "first_seen_iso": "2026-07-23T17:52:34+00:00", "last_post_date": "2026-07-23"}
     Path(DIGEST.STATE_PATH).write_text(json.dumps(legacy))
 
     state = DIGEST.load_state()
     assert state == legacy, "the old file must still parse"
-    assert DIGEST.baseline_from(state) is None, "schema 1 carries no deltas -> no baseline"
+    assert DIGEST.baseline_from(state) is None, "an older schema carries no usable baseline"
+    assert DIGEST.load_ledger(state, "2026-07-24") == [], "an older schema carries no ledger"
 
-    text, fingerprint, snapshot = run(rows(BASE), DIGEST.baseline_from(state))
-    assert "no prior baseline" in text.lower()
-    assert "1,200,000" in text
+    text, payload = step(BASE, state, 0)
+    assert "No prior baseline" in text
+    assert "1,200,000" in text, "an unusable baseline must not suppress the real numbers"
 
-    # and the round-trip upgrades the file in place, atomically
-    DIGEST.save_state(fingerprint, legacy["first_seen_iso"], "2026-07-24", snapshot,
-                      "2026-07-24T18:52:00+00:00")
+    DIGEST.save_state(payload)
     upgraded = DIGEST.load_state()
     assert upgraded["schema"] == DIGEST.STATE_SCHEMA
     assert DIGEST.baseline_from(upgraded)["by_index"]["os"]["vol"] == 1_200_000
     assert not list(Path(STATE_DIR).glob("*.tmp")), "atomic write must leave no temp file"
 
 
-def test_three_consecutive_hourly_bodies_are_all_different():
-    first, _, snap1 = run(rows(BASE), None)
-    prev1 = dict(snap1, captured_iso="2026-07-24T17:52:00+00:00")
-    grown = {"os": {"host-a": 1_050_000, "host-b": 200_000}, "network": {"host-c": 400_000},
-             "firewall": {"host-d": 50_000}}
-    second, _, snap2 = run(rows(grown), prev1)
-    prev2 = dict(snap2, captured_iso="2026-07-24T18:52:00+00:00")
-    third, _, _ = run(rows(grown), prev2)
+def test_four_consecutive_hourly_bodies_are_all_different():
+    bodies, state, spec = [], None, BASE
+    for hour in range(4):
+        text, state = step(spec, state, hour)
+        bodies.append(text)
+        if hour == 0:
+            spec = scale(spec, "os", 1.6)
+    assert len(set(bodies)) == 4, "no two hourly posts in a day may be identical"
 
-    assert len({first, second, third}) == 3, "no two consecutive hourly posts may be identical"
-    for body in (first, second, third):
-        assert "1,0" in body or "1,2" in body, "every post carries real volumes"
+
+def test_a_fleet_drop_is_critical_but_one_host_leaving_is_routine():
+    _, s0 = step(BASE, None, 0)
+    one_gone = {i: h for i, h in BASE.items() if i != "firewall"}   # host-d leaves
+    text, _ = step(one_gone, s0, 1)
+    assert "HOST FLEET DROP" not in text, "one host is not a fleet drop"
+
+    wide = {"os": {f"host-{n}": {"syslog": 1000} for n in range(8)}}
+    _, w0 = step(wide, None, 0)
+    shrunk = {"os": {f"host-{n}": {"syslog": 1000} for n in range(4)}}
+    drop, _ = step(shrunk, w0, 1)
+    assert "HOST FLEET DROP: 4 host(s)" in drop
+    assert "Critical — repeats every run" in drop
 
 
 def test_ingest_silence_and_fail_loud_contracts_are_preserved():
-    text, _, _ = run(rows({"os": {"host-a": 10}}), None)
+    text, _ = step({"os": {"host-a": {"syslog": 10}}}, None, 0)
     assert "INGEST SILENCE" in text and "index=network" in text and "index=firewall" in text
 
-    outage, _, _ = run([], None)
+    outage, _ = step([], None, 0)
     assert "SPLUNK INGEST OUTAGE" in outage and "ZERO rows" in outage
 
     assert ":warning: Splunk digest FAILED:" in TEMPLATE, "fail-loud path must stay"
     assert TEMPLATE.count("call_tool(") == 1 and 'call_tool("splunk_run_query"' in TEMPLATE, \
         "the fact path must be exactly one Splunk tstats call and no LLM"
+    assert "ExceptionGroup" in TEMPLATE and "exceptions" in TEMPLATE, \
+        "the ExceptionGroup unwrap must stay so a delivered failure names its real cause"
+
+
+def test_a_tiny_series_never_manufactures_a_percent_finding():
+    assert DIGEST.band_of(9, 3) is None, "3 -> 9 events is +200% and means nothing"
+    assert DIGEST.band_of(150, None) is None, "no baseline is never a move"
+    assert DIGEST.band_of(1_500, 1_000)[0] == "up"
+    assert DIGEST.band_of(1_500, 1_000)[1] == 50
 
 
 def test_stability_line_never_claims_a_change_against_nothing():
-    import datetime as dt
+    now = at(18)
+    fresh, _ = DIGEST.stability_finding(None, "fp1", now)
+    assert "baseline established" in fresh.text and "CHANGED" not in fresh.text
 
-    now = dt.datetime(2026, 7, 24, 18, 52, tzinfo=dt.timezone.utc)
-    fresh, _ = DIGEST.stability_line(None, "fp1", now, "2026-07-24")
-    assert "baseline established" in fresh and "CHANGED" not in fresh
+    changed, _ = DIGEST.stability_finding({"fingerprint": "fp0"}, "fp1", now)
+    assert "CHANGED" in changed.text
 
-    changed, _ = DIGEST.stability_line({"fingerprint": "fp0"}, "fp1", now, "2026-07-24")
-    assert "CHANGED" in changed
-
-    held, first_seen = DIGEST.stability_line(
-        {"fingerprint": "fp1", "first_seen_iso": "2026-07-22T00:00:00+00:00"}, "fp1", now, "2026-07-24")
-    assert "Day 3 since 2026-07-22" in held
+    held, first_seen = DIGEST.stability_finding(
+        {"fingerprint": "fp1", "first_seen_iso": "2026-07-22T00:00:00+00:00"}, "fp1", now)
+    assert "Day 3 since 2026-07-22" in held.text
     assert first_seen == "2026-07-22T00:00:00+00:00", "stable state must keep its original first_seen"
 
 
 def test_host_field_absence_is_reported_as_unavailable_not_zero():
-    hostless = [{"index": "os", "vol": "500", "last_time": str(FRESH)}]
-    text, _, snapshot = run(hostless, None)
-    assert "hosts: unavailable" in text
-    assert snapshot["host_detail"] is False
+    hostless = [{"index": "os", "vol": "500", "last_time": str(int(at(0).timestamp()) - 60)}]
+    text, state = step(hostless, None, 0)
+    assert "hosts: 0" in text, "a missing host field must not invent hosts"
+    assert state["host_detail"] is False and state["st_detail"] is False
 
 
 if __name__ == "__main__":
