@@ -37,6 +37,15 @@ def test_every_disabled_direct_cron_is_also_paused_on_the_host():
     paused = {value for key, value in defaults.items()
               if isinstance(value, str)
               and f"cron pause {{{{ {key} }}}}" in tasks}
+    # A pause can also be a loop over a list of jobs — `cron pause {{ item.X }}`
+    # with `loop: {{ some_list }}`. Without this the check fails CLOSED on a
+    # correct retirement, which is the worst direction for a guard meant to
+    # catch the ones people forget.
+    paused |= {job[field]
+               for jobs in defaults.values() if isinstance(jobs, list)
+               for job in jobs if isinstance(job, dict)
+               for field in job
+               if f"cron pause {{{{ item.{field} }}}}" in tasks}
 
     missing = sorted(set(disabled) - paused)
     assert not missing, (

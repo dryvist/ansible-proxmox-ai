@@ -158,11 +158,14 @@ hermes_agent_firehose_deliver: >-
 hermes_agent_digest_slack_channel: "{{ lookup('env', 'HERMES_SLACK_DIGEST_CHANNEL') | default('', true) }}"
 
 hermes_agent_direct_cron_jobs:
+  # Paused, NEVER reconciled: superseded by the script-fed splunk-security-digest
+  # (hermes_agent_triage_jobs). Leaked raw <function=...> markup to Slack twice on
+  # 2026-07-24, and never ran the SPL this prompt specifies.
   - name: splunk-security-lens-v2
     schedule: "22 */6 * * *"
     prompt_file: hermes-digest-splunk-security-lens.md
     skill: ""
-    enabled: true
+    enabled: false
   # Paused, NEVER reconciled: superseded by the script-fed splunk-error-triage
   # (hermes_agent_error_triage_cron_name), which pauses this agentic job so the
   # two never double-post. This job delivered raw <function=...> tool-call markup
@@ -670,44 +673,57 @@ hermes_agent_splunk_status_digest_enabled: >-
      and hermes_agent_slack_app_token | length > 0
      and hermes_agent_slack_hermes_all_channel | length > 0 }}
 
-# --- Script-fed Splunk error triage (no LLM in the fact path) ----------------
-# Supersedes the agentic splunk-error-triage-v2 direct cron, which posted raw
-# tool-call markup to Slack instead of a report: the model wrote its ONE tool
-# call as text rather than issuing it, on its first turn with no tool ever
-# running. That happened both with and without the prompt's anti-markup clause
-# and on two sibling digests, so it is an unreliable tool-call emitter, not a
-# prompt defect — and the old prompt already handed the model the exact tool
-# name and the exact SPL, leaving it no fact-path judgement worth keeping.
-# Same shape as the status digest above: gather the numbers here, print them,
-# deliver stdout verbatim. Obeys the same per-day novelty contract — a steady
-# error stream is presented once per UTC day; NEW and ESCALATING streams are
-# critical and repeat every run while they hold.
-# NOT "splunk-error-triage": reconcile_enqueuer_cron.yml tests job existence with
-# a SUBSTRING match against `cron list --all`, which lists the paused
-# splunk-error-triage-v2 — so that name would read as already-present and fire a
-# `cron remove` for a job that does not exist. Neither name is a substring of the
-# other, and both are parallel to splunk-status-digest.
-hermes_agent_error_triage_cron_name: splunk-error-digest
-hermes_agent_error_triage_cron_schedule: "37 * * * *"
-hermes_agent_error_triage_script_name: splunk-error-triage.py
-# The agentic direct cron this replaces. Paused (never deleted) once the script
-# is enabled so the two never double-post; it is also enabled:false in
-# hermes_agent_direct_cron_jobs so the reconcile never re-creates it.
-hermes_agent_superseded_error_triage_cron_name: splunk-error-triage-v2
-hermes_agent_error_triage_indexes:
-  - os
-  - network
-hermes_agent_error_triage_terms:
-  - error
-  - failed
-  - critical
-hermes_agent_error_triage_window: "-1h"
-hermes_agent_error_triage_top_n: 12
-hermes_agent_error_triage_max_findings: 8
-# Same channel the superseded agentic job delivered to, so replacing it does not
-# silently move the operator's hourly triage to a different surface.
-hermes_agent_error_triage_channel: "{{ hermes_agent_digest_slack_channel }}"
-hermes_agent_error_triage_enabled: >-
+# --- Script-fed Splunk triage digests (no LLM in the fact path) --------------
+# Supersedes the agentic splunk-error-triage-v2 and splunk-security-lens-v2
+# direct crons, which posted raw tool-call markup to Slack instead of reports.
+# Verified from agent.log: the model intends a tool call, the harness fails to
+# parse it, and the unparsed text arrives as
+# `Turn ended: reason=text_response(finish_reason=stop)` — indistinguishable
+# from a finished report, so delivery ships it. It happens both on the first
+# turn with no tool run AND on the turn after a successful tool result, and both
+# with and without the prompt's anti-markup clause: an unreliable emitter, not a
+# prompt defect. Worse, the model never ran the SPL the prompt specified — the
+# log is full of self-invented substitutes filtering on unpopulated fields — so
+# these jobs were producing wrong facts even on runs that did not leak markup.
+#
+# One script (splunk-triage.py.j2), rendered once per job. Adding a job here is
+# config, not code. Shared knobs (top_n, max_findings, channel, enable gate) stay
+# role-level below; per-job identity lives in this list.
+#
+# NAMES: reconcile_enqueuer_cron.yml tests job existence with a SUBSTRING match
+# against `cron list --all`, which lists PAUSED jobs too. A name contained in
+# another job's name reads as already-present and fires `cron remove` for a job
+# that does not exist. Hence splunk-error-digest, not splunk-error-triage (which
+# sits inside splunk-error-triage-v2). tests/hermes_agent enforces this.
+hermes_agent_triage_jobs:
+  # INDEXES MUST CARRY DATA. The prompts these replace searched `index=os OR
+  # index=network`. `network` exists but holds 89 events, all older than a
+  # month, so that half of every search returned nothing while the `os` half
+  # returned plausible rows — invisible in the output. (`netflow`, where the
+  # pipeline actually writes, holds 2.) Network-shaped data lives in `firewall`.
+  # Enumerate indexes with `| eventcount summarize=false index=*`, never with
+  # tstats, which only shows indexes with data in the search window.
+  - name: splunk-error-digest
+    title: Splunk error triage
+    schedule: "37 * * * *"
+    indexes: [os]
+    terms: [error, failed, critical]
+    window: "-1h"
+    supersedes: splunk-error-triage-v2
+  - name: splunk-security-digest
+    title: Splunk security lens
+    schedule: "22 */6 * * *"
+    indexes: [os, firewall]
+    terms: [failed, denied, unauthorized, invalid]
+    window: "-6h"
+    supersedes: splunk-security-lens-v2
+
+hermes_agent_triage_top_n: 12
+hermes_agent_triage_max_findings: 8
+# Same channel the superseded agentic jobs delivered to, so replacing them does
+# not silently move the operator's digests to a different surface.
+hermes_agent_triage_channel: "{{ hermes_agent_digest_slack_channel }}"
+hermes_agent_triage_enabled: >-
   {{ hermes_agent_splunk_monitor_enabled | bool
      and hermes_agent_splunk_mcp_url | length > 0
      and hermes_agent_slack_bot_token | length > 0
