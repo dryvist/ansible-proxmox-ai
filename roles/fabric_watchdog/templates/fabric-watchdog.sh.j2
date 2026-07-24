@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+#
+# Fabric watchdog: probe each configured endpoint; on an up/down TRANSITION
+# (state file differs), post one Slack message. No debounce beyond the timer
+# interval — a 2-min cadence with transition-only alerts is already quiet, and
+# the endpoints sit behind health-checked Traefik pools that absorb single-node
+# blips. Secrets come from the systemd unit's EnvironmentFile.
+set -uo pipefail
+
+STATE_DIR="{{ fabric_watchdog_state_dir }}"
+TIMEOUT="{{ fabric_watchdog_probe_timeout }}"
+SLACK_TOKEN="${SLACK_BOT_TOKEN:-}"
+SLACK_USER="${SLACK_ALLOWED_USERS:-}"
+# Channel wins when provided; else DM the first allowed user (brain-watchdog
+# convention — channel=<user id> DMs them).
+SLACK_CHANNEL="${SLACK_ALERT_CHANNEL:-${SLACK_USER%%,*}}"
+
+slack_post() {
+  local text="$1"
+  [[ -n "${SLACK_TOKEN}" && -n "${SLACK_CHANNEL}" ]] || return 0
+  curl -fsS --max-time 10 -X POST https://slack.com/api/chat.postMessage \
+    -H "Authorization: Bearer ${SLACK_TOKEN}" \
+    -H "Content-Type: application/json; charset=utf-8" \
+    --data "$(printf '{"channel":"%s","text":"%s"}' "${SLACK_CHANNEL}" "${text}")" \
+    >/dev/null 2>&1 || true
+}
+
+mkdir -p "${STATE_DIR}"
+
+{% for t in fabric_watchdog_targets %}
+# --- {{ t.name }} ------------------------------------------------------------
+code="$(curl -sS -o /dev/null --max-time "${TIMEOUT}" -w '%{http_code}' '{{ t.url }}' 2>/dev/null || echo 000)"
+state="down"
+case " {{ t.ok_codes }} " in *" ${code} "*) state="up" ;; esac
+prev="$(cat "${STATE_DIR}/{{ t.name }}.state" 2>/dev/null || echo up)"
+if [[ "${state}" != "${prev}" ]]; then
+  if [[ "${state}" == "down" ]]; then
+    slack_post ":rotating_light: fabric watchdog: {{ t.name }} DOWN — {{ t.url }} returned HTTP ${code} (expected one of: {{ t.ok_codes }})"
+  else
+    slack_post ":white_check_mark: fabric watchdog: {{ t.name }} recovered — {{ t.url }} returned HTTP ${code}"
+  fi
+  echo "${state}" > "${STATE_DIR}/{{ t.name }}.state"
+fi
+{% endfor %}
+
+exit 0
