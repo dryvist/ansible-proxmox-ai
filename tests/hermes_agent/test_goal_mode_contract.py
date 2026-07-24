@@ -414,10 +414,16 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     ]
     assert hermes_entries == [{"backend": hermes_backend, "context_window": 65536}]
     assert router_defaults["llm_router_num_retries"] == 0
-    assert router_defaults["llm_router_rate_limit_retries"] == 0
+    # 429 = "the slot is busy", never "the work is impossible", so the router
+    # absorbs it rather than failing the caller (#175). Not 0 — that setting
+    # killed a cron mid-generation on 2026-07-24.
+    assert router_defaults["llm_router_rate_limit_retries"] == 8
     assert "model_group_alias:" in router_config
     assert "llm_router_model_group_aliases.items()" in router_config
-    assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_goal_judge_model }}"
+    # Pinned to the WORKER model structurally, not to a judge var that merely
+    # happens to match — single-model serving policy, so config drift cannot pull
+    # judge and worker apart (#162, superseding the separate-judge-var of #143).
+    assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_agent_model }}"
     assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == 60
     assert "goal_judge:" in config
     assert "model: {{ hermes_agent_kanban_goal_judge_model | to_json }}" in config
