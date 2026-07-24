@@ -39,6 +39,16 @@ Drift recovery: when the brain model changes, only *drifted* seeded jobs are
 removed and re-seeded (`tasks/main.yml`); the canonical set is
 `hermes_agent_seeded_cron_names`.
 
+### Agentic direct-deliver digest crons
+
+A second, fully declarative set of digest jobs lives in
+`hermes_agent_direct_cron_jobs` and is reconciled by
+`tasks/reconcile_direct_cron.yml`. Each is *agentic* — the gateway runs the
+prompt and delivers the model's final response straight to Slack — with prompt
+bodies pulled from the pinned `ai-llm-prompts` catalog (`prompt_file`). Their
+Slack channel is never hardcoded: it comes from `HERMES_SLACK_DIGEST_CHANNEL`,
+and the whole reconcile loop is skipped (with a loud warning) when that is unset.
+
 ## Memory
 
 - **Provider:** Hindsight (knowledge-graph + multi-strategy retrieval) in
