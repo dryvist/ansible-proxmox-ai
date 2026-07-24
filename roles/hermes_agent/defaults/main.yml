@@ -163,11 +163,15 @@ hermes_agent_direct_cron_jobs:
     prompt_file: hermes-digest-splunk-security-lens.md
     skill: ""
     enabled: true
+  # Paused, NEVER reconciled: superseded by the script-fed splunk-error-triage
+  # (hermes_agent_splunk_error_triage_cron_name), which pauses this agentic job so
+  # the two never double-post. enabled:false keeps this reconcile from re-creating
+  # it. See hermes_agent_superseded_error_triage_cron_name.
   - name: splunk-error-triage-v2
     schedule: "37 * * * *"
     prompt_file: hermes-digest-splunk-error-triage.md
     skill: ""
-    enabled: true
+    enabled: false
   - name: splunk-parsing-quality-v2
     schedule: "17 3 * * *"
     prompt_file: hermes-digest-splunk-parsing-quality.md
@@ -654,6 +658,35 @@ hermes_agent_splunk_digest_expected_indexes:
   - firewall
 hermes_agent_splunk_digest_staleness_minutes: 60
 hermes_agent_splunk_digest_window: "-24h"
+
+# --- Script-fed Splunk error triage (supersedes the agentic v2 cron) ----------
+# The agentic splunk-error-triage-v2 never delivered a usable report: every run in
+# its history emitted its own tool call as literal text, including the run AFTER
+# the prompt was amended to forbid exactly that. Same structural answer as the
+# status digest — one search, no LLM in the fact path, stdout delivered verbatim —
+# plus the per-day novelty ledger the operator requires.
+hermes_agent_splunk_error_triage_cron_name: splunk-error-triage
+hermes_agent_splunk_error_triage_cron_schedule: "37 * * * *"
+hermes_agent_splunk_error_triage_script_name: splunk-error-triage.py
+# The agentic cron this script-fed job supersedes. Paused (never deleted) once
+# this is enabled, so the two never double-post — same disable-don't-delete shape
+# as hermes_agent_superseded_digest_cron_name.
+hermes_agent_superseded_error_triage_cron_name: splunk-error-triage-v2
+# Search scope. Kept as literal SPL fragments rather than lists so the rendered
+# query stays readable in the template and greppable on the guest.
+hermes_agent_splunk_error_triage_indexes: "index=os OR index=network"
+hermes_agent_splunk_error_triage_terms: "error OR failed OR critical"
+hermes_agent_splunk_error_triage_window: "-1h"
+# A single host/sourcetype at or above this hourly count is critical on its own
+# and repeats every run while it holds. Tune against observed traffic.
+hermes_agent_splunk_error_triage_crit_source_count: 5000
+hermes_agent_splunk_error_triage_channel: "{{ hermes_agent_digest_slack_channel }}"
+hermes_agent_splunk_error_triage_enabled: >-
+  {{ hermes_agent_splunk_monitor_enabled | bool
+     and hermes_agent_splunk_mcp_url | length > 0
+     and hermes_agent_slack_bot_token | length > 0
+     and hermes_agent_slack_app_token | length > 0
+     and hermes_agent_splunk_error_triage_channel | length > 0 }}
 # No anchor hour: EVERY hourly run posts the real per-index volumes and their
 # delta against the previous run. The old fingerprint-suppressed "No change --
 # N healthy, N silent" branch (and the daily anchor that existed to stop it

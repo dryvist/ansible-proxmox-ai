@@ -1,0 +1,413 @@
+#!/usr/bin/env python3
+{{ ansible_managed | comment }}
+"""Deterministic, no-LLM Splunk error triage with a per-day novelty gate.
+
+STDOUT is delivered verbatim to Slack (cron runs `--no-agent --deliver slack:<ch>`),
+so everything printed here must be TRUE. Never invent data. Zero matching events is
+an explicit stated fact, never silence.
+
+Replaces the agentic `splunk-error-triage-v2` cron. That job never once delivered a
+usable report: every run in its history emitted its own tool call as literal text
+(`<function=...>`), including the run AFTER the prompt was amended to forbid exactly
+that. An LLM asked to self-police its output is an honor-system check; this file is
+the structural one.
+
+THE PER-DAY NOVELTY CONTRACT (operator requirement): routine information may be
+presented ONCE per UTC day. A later run with nothing genuinely new to say about
+routine conditions must not re-present it. CRITICAL conditions are exempt and repeat
+every run for as long as they hold.
+
+Mechanics mirror splunk-digest.py deliberately — same Finding/ledger/escalation
+shape, so one pattern covers both digests. Every observation becomes a discrete
+*finding* carrying a stable identity key; a day-scoped ledger in the state file
+records which keys posted today and resets at the UTC day boundary. A routine
+finding whose key is in the ledger is suppressed; critical findings ignore it.
+
+When nothing routine is novel at the source level the search ESCALATES rather than
+emitting boilerplate: source (host+sourcetype) level, then host level, then
+sourcetype composition. One search feeds every tier, so escalating costs no extra
+Splunk work. Only a genuinely exhausted search says so, and it names what it
+covered. Novel findings beyond the per-run cap are NOT ledgered, so they surface on
+a later run instead of being burned.
+
+Pure stdlib + the `mcp` client (present in the hermes-agent venv, which runs this
+file). Reads secrets from the .env file, never prints them.
+"""
+import asyncio
+import datetime as dt
+import json
+import os
+from collections import namedtuple
+
+# --- config (rendered from roles/hermes_agent/defaults/main.yml) ---------------
+ENV_PATH = "{{ hermes_agent_hermes_home }}/.env"
+STATE_PATH = "{{ hermes_agent_hermes_home }}/state/splunk-error-triage.json"
+EARLIEST = "{{ hermes_agent_splunk_error_triage_window }}"
+WINDOW = EARLIEST.lstrip("-")
+# The subject is event TEXT, so this is a real search — tstats metadata cannot
+# filter on it. Grouped by host AND sourcetype: one search feeds every tier.
+QUERY = ("search ({{ hermes_agent_splunk_error_triage_indexes }}) "
+         "({{ hermes_agent_splunk_error_triage_terms }}) "
+         "| stats count by host, sourcetype")
+STATE_SCHEMA = 1
+# ponytail: calibration knobs, deliberately module constants and not Ansible
+# variables — real error rates jitter, and these want tuning against observed
+# traffic rather than templating. PCT_BANDS are the magnitude bands a change is
+# bucketed into, and the band is part of a finding's identity: a source up 25% is
+# one finding for the day, the same source up 300% later is a different one.
+PCT_BANDS = (50, 100, 300, 1000)
+# Series below this count are excluded from percent findings — 2 -> 6 errors is
+# +200% and means nothing.
+MIN_MOVER_COUNT = 20
+# A source at or above this hourly error count is critical on its own, regardless
+# of history. Raise it if a chatty-but-benign source starts pinning the output.
+CRIT_SOURCE_COUNT = {{ hermes_agent_splunk_error_triage_crit_source_count }}
+# Total-volume growth at or above this band is critical (a fleet-wide error storm).
+CRIT_TOTAL_PCT = 300
+# Rows in the first-post-of-day table.
+TABLE_ROWS = 12
+# Per-run cap on routine findings. Unshown novel findings stay unledgered and
+# surface next run, which spreads a burst across the day instead of one wall post.
+MAX_FINDINGS = 8
+# Ledger size cap; oldest keys drop first. Only ever holds one day of keys.
+LEDGER_MAX = 500
+# Percentage points of total-error share movement worth reporting.
+SHARE_SHIFT_PP = 10.0
+# Cap on how many names a single set-change line will spell out.
+MAX_NAMED = 5
+
+# key: stable identity for the day ledger. text: the Slack line.
+Finding = namedtuple("Finding", "key text")
+
+
+def load_env(path):
+    """Parse KEY=VALUE lines. Values may be quoted."""
+    env = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip().strip('"').strip("'")
+    return env
+
+
+async def run_search(url, token):
+    """Return the parsed results list, or raise on any failure."""
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp import ClientSession
+
+    async with streamablehttp_client(url, headers={"Authorization": f"Bearer {token}"}) as (r, w, _):
+        async with ClientSession(r, w) as s:
+            await s.initialize()
+            res = await s.call_tool("splunk_run_query", {"query": QUERY, "earliest": EARLIEST})
+            if getattr(res, "isError", False):
+                raise RuntimeError("splunk_run_query returned isError=true")
+            data = res.structuredContent
+            if not isinstance(data, dict):
+                if res.content and getattr(res.content[0], "text", None):
+                    data = json.loads(res.content[0].text)
+                else:
+                    raise RuntimeError("no structuredContent and no text content")
+            return data.get("results", [])
+
+
+def parse_results(results):
+    """{"host|sourcetype": count} from the stats rows. Counts arrive as strings."""
+    by_source = {}
+    for row in results:
+        host = (row.get("host") or "").strip()
+        stype = (row.get("sourcetype") or "").strip()
+        if not host or not stype:
+            continue
+        try:
+            count = int(float(row.get("count") or 0))
+        except (TypeError, ValueError):
+            continue
+        by_source[f"{host}|{stype}"] = by_source.get(f"{host}|{stype}", 0) + count
+    return by_source
+
+
+def totals_by(by_source, part):
+    """Roll sources up to host (part=0) or sourcetype (part=1) totals."""
+    out = {}
+    for key, count in by_source.items():
+        name = key.split("|")[part]
+        out[name] = out.get(name, 0) + count
+    return out
+
+
+def band_of(cur, prev):
+    """(direction, band_edge, pct) for a real move, else None.
+
+    None means "not a finding": no baseline, a series too small for a percent to
+    mean anything, or a swing under the smallest band. Never an estimate.
+    """
+    if prev is None or prev < MIN_MOVER_COUNT:
+        return None
+    pct = (cur - prev) * 100.0 / prev
+    if abs(pct) < PCT_BANDS[0]:
+        return None
+    band = max(b for b in PCT_BANDS if abs(pct) >= b)
+    return ("up" if pct > 0 else "down", band, pct)
+
+
+def name_list(names):
+    shown = sorted(names)[:MAX_NAMED]
+    extra = len(names) - len(shown)
+    return ", ".join(shown) + (f" (+{extra} more)" if extra else "")
+
+
+def fmt(n):
+    return f"{n:,}"
+
+
+def critical_findings(by_source, total, prev_total):
+    """Actionable-now conditions. EXEMPT from the ledger: they repeat every run for
+    as long as they hold, which is the point — a persisting error storm must not go
+    quiet just because it was mentioned once today."""
+    out = []
+    for key, count in sorted(by_source.items(), key=lambda kv: -kv[1]):
+        if count >= CRIT_SOURCE_COUNT:
+            host, stype = key.split("|", 1)
+            out.append(Finding(
+                f"crit:source:{key}",
+                f":rotating_light: {host} / {stype} — {fmt(count)} matching events in the "
+                f"{WINDOW} window (at or above the {fmt(CRIT_SOURCE_COUNT)} threshold)."))
+    move = band_of(total, prev_total)
+    if move and move[0] == "up" and move[1] >= CRIT_TOTAL_PCT:
+        out.append(Finding(
+            f"crit:total:{move[1]}",
+            f":rotating_light: Fleet-wide error volume {fmt(prev_total)} -> {fmt(total)} "
+            f"({move[2]:+.0f}%) since the previous run."))
+    return out
+
+
+def source_findings(by_source, prev_by_source, have_baseline, today):
+    """Tier 1 — the headline: individual host/sourcetype error sources."""
+    out = []
+    if not by_source:
+        out.append(Finding(
+            f"zero:{today}",
+            f":white_check_mark: No matching events in the {WINDOW} window — the search ran "
+            f"and returned zero rows."))
+        return out
+    out.append(Finding(f"table:{today}", ""))  # rendered specially by build_triage
+    for key, count in sorted(by_source.items(), key=lambda kv: -kv[1]):
+        host, stype = key.split("|", 1)
+        prev = prev_by_source.get(key)
+        if have_baseline and prev is None and count >= MIN_MOVER_COUNT:
+            out.append(Finding(
+                f"newsource:{key}",
+                f"New error source: {host} / {stype} — {fmt(count)} events, none last run."))
+            continue
+        move = band_of(count, prev)
+        if move:
+            out.append(Finding(
+                f"source:{key}:{move[0]}:{move[1]}",
+                f"{host} / {stype} {move[0]} {move[2]:+.0f}% — {fmt(prev)} -> {fmt(count)} events."))
+    return out
+
+
+def host_findings(by_source, prev_by_source, have_baseline):
+    """Tier 2 — which machines are erroring, independent of sourcetype."""
+    out = []
+    cur, prev = totals_by(by_source, 0), totals_by(prev_by_source, 0)
+    if have_baseline:
+        gone = set(prev) - set(cur)
+        if gone:
+            out.append(Finding(f"hosts:cleared:{','.join(sorted(gone))}",
+                               f"Stopped erroring: {name_list(gone)}."))
+        new = set(cur) - set(prev)
+        if new:
+            out.append(Finding(f"hosts:new:{','.join(sorted(new))}",
+                               f"Newly erroring: {name_list(new)}."))
+    for host, count in sorted(cur.items(), key=lambda kv: -kv[1]):
+        move = band_of(count, prev.get(host))
+        if move:
+            out.append(Finding(
+                f"host:{host}:{move[0]}:{move[1]}",
+                f"Host {host} {move[0]} {move[2]:+.0f}% — {fmt(prev[host])} -> {fmt(count)} events."))
+    return out
+
+
+def composition_findings(by_source, prev_by_source, have_baseline, total, prev_total):
+    """Tier 3 — what KIND of errors, and how the mix is shifting."""
+    out = []
+    cur, prev = totals_by(by_source, 1), totals_by(prev_by_source, 1)
+    for stype, count in sorted(cur.items(), key=lambda kv: -kv[1]):
+        move = band_of(count, prev.get(stype))
+        if move:
+            out.append(Finding(
+                f"stype:{stype}:{move[0]}:{move[1]}",
+                f"Sourcetype {stype} {move[0]} {move[2]:+.0f}% — "
+                f"{fmt(prev[stype])} -> {fmt(count)} events."))
+        if have_baseline and total and prev_total:
+            shift = count * 100.0 / total - prev.get(stype, 0) * 100.0 / prev_total
+            if abs(shift) >= SHARE_SHIFT_PP:
+                out.append(Finding(
+                    f"share:{stype}:{int(shift // SHARE_SHIFT_PP)}",
+                    f"Sourcetype {stype} now {count * 100.0 / total:.0f}% of all matching "
+                    f"events ({shift:+.0f} points)."))
+    return out
+
+
+def render_table(by_source, prev_by_source, have_baseline):
+    rows = sorted(by_source.items(), key=lambda kv: -kv[1])[:TABLE_ROWS]
+    width = max([len(k.replace("|", " / ")) for k, _ in rows] + [12])
+    out = ["```", f"{'HOST / SOURCETYPE'.ljust(width)}  {'EVENTS':>10}  {'CHANGE':>10}"]
+    for key, count in rows:
+        prev = prev_by_source.get(key)
+        if not have_baseline:
+            change = "no baseline"
+        elif prev is None:
+            change = "NEW"
+        else:
+            change = "0" if count == prev else f"{count - prev:+,}"
+        out.append(f"{key.replace('|', ' / ').ljust(width)}  {count:>10,}  {change:>10}")
+    out.append("```")
+    return out
+
+
+def load_ledger(state, today):
+    """Today's already-presented finding keys. A new UTC day resets it to empty,
+    and a state file predating the ledger simply carries none."""
+    ledger = (state or {}).get("ledger")
+    if not isinstance(ledger, dict) or ledger.get("day") != today:
+        return []
+    keys = ledger.get("keys")
+    return list(keys) if isinstance(keys, list) else []
+
+
+def baseline_from(state):
+    """The previous snapshot, or None when the state carries no usable baseline.
+
+    An older-schema state file is treated as "no baseline" rather than an error —
+    the run reports full counts and deltas resume next hour.
+    """
+    if not state or state.get("schema") != STATE_SCHEMA:
+        return None
+    return state if isinstance(state.get("by_source"), dict) else None
+
+
+def build_triage(results, now, state):
+    """Return (text, payload) where payload is the complete next state file.
+
+    Everything the run decides — which findings are novel, which repeat, what the
+    ledger becomes — is decided here, so exactly one place answers "what gets said".
+    """
+    today = now.strftime("%Y-%m-%d")
+    prev = baseline_from(state)
+    ledger = load_ledger(state, today)
+    seen = set(ledger)
+
+    by_source = parse_results(results)
+    prev_by_source = (prev or {}).get("by_source") or {}
+    have_baseline = prev is not None
+    total = sum(by_source.values())
+    prev_total = sum(prev_by_source.values()) if have_baseline else None
+
+    critical = critical_findings(by_source, total, prev_total)
+    tiers = [
+        ("source level", source_findings(by_source, prev_by_source, have_baseline, today)),
+        ("host level", host_findings(by_source, prev_by_source, have_baseline)),
+        ("sourcetype + composition level",
+         composition_findings(by_source, prev_by_source, have_baseline, total, prev_total)),
+    ]
+
+    # Escalate: the first tier holding anything unsaid today wins. Only what is
+    # actually printed enters the ledger, so an overflowing tier keeps the rest
+    # novel for the next run instead of burning it silently.
+    tier_name, novel, searched = None, [], []
+    for name, found in tiers:
+        searched.append(name)
+        fresh = [f for f in found if f.key not in seen]
+        if fresh:
+            tier_name, novel = name, fresh[:MAX_FINDINGS]
+            break
+
+    lines = [f"*Splunk Error Triage* — {now.strftime('%Y-%m-%d %H:%M UTC')} ({WINDOW} window)"]
+
+    if critical:
+        lines.append("")
+        lines.append("*Critical — repeats every run while it holds:*")
+        lines.extend(f.text for f in critical)
+
+    if novel:
+        lines.append("")
+        escalated = "" if tier_name == tiers[0][0] else f"; nothing new at {', '.join(searched[:-1])}"
+        lines.append(f"*New today — {tier_name}{escalated}:*")
+        for finding in novel:
+            if finding.key.startswith("table:"):
+                lines.append(f":clipboard: First triage of {today}; the table below is today's "
+                             "baseline and later runs today report only what changes.")
+                lines.extend(render_table(by_source, prev_by_source, have_baseline))
+            else:
+                lines.append(f"• {finding.text}")
+        if not have_baseline:
+            lines.append(":information_source: No prior baseline (first run, or the state file "
+                         "predates this schema) — counts above are real, deltas begin next run.")
+    elif not critical:
+        lines.append("")
+        lines.append(
+            f":mag: Nothing new to report. Searched {len(by_source)} host/sourcetype source(s), "
+            f"{len(totals_by(by_source, 0))} host(s) and {len(totals_by(by_source, 1))} "
+            f"sourcetype(s) across volume, membership and composition; all {len(seen)} finding(s) "
+            f"already posted today still hold, and no critical condition is active.")
+
+    payload = {"schema": STATE_SCHEMA, "captured_iso": now.isoformat(),
+               "by_source": by_source,
+               "ledger": {"day": today, "keys": (ledger + [f.key for f in novel])[-LEDGER_MAX:]}}
+    return "\n".join(lines), payload
+
+
+def load_state():
+    """Return the stored state, or None when it is unreadable."""
+    try:
+        with open(STATE_PATH) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def save_state(payload):
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f)
+    os.replace(tmp, STATE_PATH)
+
+
+def main():
+    # fail loud, never fabricate: any error is delivered, then exit 0
+    try:
+        env = load_env(ENV_PATH)
+        url = env.get("SPLUNK_MCP_URL")
+        token = env.get("SPLUNK_MCP_TOKEN")
+        if not url or not token:
+            raise RuntimeError("SPLUNK_MCP_URL / SPLUNK_MCP_TOKEN missing from .env")
+        results = asyncio.run(run_search(url, token))
+    except Exception as e:  # noqa: BLE001 - deliberately broad; failure must be delivered
+        # asyncio.TaskGroup wraps the real fault in an ExceptionGroup; unwrap to the
+        # root leaf so the delivered message names the actual cause instead of a
+        # useless "ExceptionGroup: 1 sub-exception". Short, and free of secrets.
+        root = e
+        for _ in range(10):
+            sub = getattr(root, "exceptions", None)
+            if not sub:
+                break
+            root = sub[0]
+        print(f":warning: Splunk error triage FAILED: {type(root).__name__}: {str(root)[:200]}")
+        return 0
+
+    now = dt.datetime.now(dt.timezone.utc)
+    text, payload = build_triage(results, now, load_state())
+    save_state(payload)
+    print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
