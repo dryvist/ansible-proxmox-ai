@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.15.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.14.0...v0.15.0) (2026-07-24)
+
+
+### Features
+
+* **ai_runner:** add headless AI job-runner role ([#160](https://github.com/dryvist/ansible-proxmox-ai/issues/160)) ([5d13e42](https://github.com/dryvist/ansible-proxmox-ai/commit/5d13e42be110a39bd2b103fd0084d421df1dd7d6))
+* **fabric_watchdog:** minutes-level MCP-fabric + LLM outage detection with Slack transition alerts ([#168](https://github.com/dryvist/ansible-proxmox-ai/issues/168)) ([c26adef](https://github.com/dryvist/ansible-proxmox-ai/commit/c26adef48f9fe587194852690b338900d2972c27))
+* **hermes_agent:** declarative agentic direct-deliver digest crons ([#169](https://github.com/dryvist/ansible-proxmox-ai/issues/169)) ([0601cbc](https://github.com/dryvist/ansible-proxmox-ai/commit/0601cbc51a06961ae34b3a7b7fa4443c35e66965))
+* **hermes_agent:** script-fed Splunk digest (no LLM in the fact path) ([#167](https://github.com/dryvist/ansible-proxmox-ai/issues/167)) ([86d6a33](https://github.com/dryvist/ansible-proxmox-ai/commit/86d6a334429e846a185a159e119360e9846defbc))
+
+
+### Bug Fixes
+
+* **hermes_agent:** make live budget + enqueuer-throttle patches declarative ([#162](https://github.com/dryvist/ansible-proxmox-ai/issues/162)) ([ea8a4ce](https://github.com/dryvist/ansible-proxmox-ai/commit/ea8a4cebed37da36f8953bada8047ca60cde4dbb))
+* **hermes_agent:** manage zammad-auto-close from .env, drop orphan scripts ([#164](https://github.com/dryvist/ansible-proxmox-ai/issues/164)) ([ff30608](https://github.com/dryvist/ansible-proxmox-ai/commit/ff306085d91e4e65a94576792ad912e8318c034a))
+* **hermes_agent:** worker-call timeout, spawn-race clarity, judge evidence contract ([#166](https://github.com/dryvist/ansible-proxmox-ai/issues/166)) ([3b0c332](https://github.com/dryvist/ansible-proxmox-ai/commit/3b0c332623d5d2ee2fd283f9ab265cf6d5a7911b))
+* **hermes:** default vikunja MCP pointer off until its gateway route is live ([#161](https://github.com/dryvist/ansible-proxmox-ai/issues/161)) ([64bfb4f](https://github.com/dryvist/ansible-proxmox-ai/commit/64bfb4fb2c33dd95d63bda2c043d318f6fe5516d))
+
 ## [0.14.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.13.1...v0.14.0) (2026-07-23)
 
 
