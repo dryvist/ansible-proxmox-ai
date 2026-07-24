@@ -323,6 +323,28 @@ def test_every_configured_triage_job_renders_and_is_distinct():
     assert len(set(seen_state.values())) == len(jobs), "jobs must not share a state file"
 
 
+# Indexes that exist in the homelab Splunk, from `| tstats count where index=* by
+# index`. A job searching an index that does not exist silently returns nothing
+# for that half of its search and looks entirely healthy doing it — which is what
+# `index=network` did in the prompts these jobs replace. Refresh this list when
+# an index is genuinely added; do not add a name to make a test pass.
+KNOWN_INDEXES = {
+    "claude", "codex", "dns", "firewall", "gemini", "hermes", "llm", "main",
+    "openbao_audit", "os", "proxy", "unifi",
+}
+
+
+def test_every_configured_index_exists():
+    import yaml
+
+    defaults = yaml.safe_load((REPO_ROOT / "roles/hermes_agent/defaults/main.yml").read_text())
+    for job in defaults["hermes_agent_triage_jobs"]:
+        unknown = set(job["indexes"]) - KNOWN_INDEXES
+        assert not unknown, (
+            f"{job['name']} searches non-existent index(es) {sorted(unknown)} — "
+            f"that half of its search silently matches nothing")
+
+
 if __name__ == "__main__":
     passed = 0
     for name, fn in sorted(globals().items()):
