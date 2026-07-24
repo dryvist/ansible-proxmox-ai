@@ -1,0 +1,96 @@
+---
+# Reconcile ONE agentic direct-deliver digest cron (Phase 5). Unlike the
+# --no-agent enqueuers (reconcile_enqueuer_cron.yml), the gateway RUNS the
+# prompt and delivers the model's final response straight to Slack. Mirrors the
+# same create-if-absent + checksum-marker remove/recreate idempotency (the CLI's
+# `cron edit` is not relied on — recreate re-pins schedule/prompt/skill/deliver
+# deterministically).
+#
+# item fields: name, schedule, prompt_file, skill (may be ""), enabled.
+# The Slack channel is role-global (hermes_agent_digest_slack_channel); the
+# caller only enters this loop once it has asserted the channel is non-empty.
+- name: "Direct cron | Load prompt + deliver target for {{ item.name }}"
+  ansible.builtin.set_fact:
+    hermes_agent_direct_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ item.prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_direct_deliver: "slack:{{ hermes_agent_digest_slack_channel }}"
+  when: item.enabled | bool
+
+- name: "Direct cron | Build create argv for {{ item.name }}"
+  ansible.builtin.set_fact:
+    hermes_agent_direct_argv: >-
+      {{ [hermes_agent_bin, 'cron', 'create', item.schedule,
+          hermes_agent_direct_prompt, '--name', item.name]
+         + (['--skill', item.skill] if (item.skill | default('') | length > 0) else [])
+         + ['--deliver', hermes_agent_direct_deliver] }}
+  when: item.enabled | bool
+
+- name: "Direct cron | Look up {{ item.name }}"
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_direct_cron_list
+  changed_when: false
+  when: item.enabled | bool
+
+- name: "Direct cron | Calculate desired state for {{ item.name }}"
+  ansible.builtin.set_fact:
+    hermes_agent_direct_checksum: >-
+      {{ {'schedule': item.schedule, 'prompt': hermes_agent_direct_prompt,
+          'skill': item.skill | default(''),
+          'deliver': hermes_agent_direct_deliver}
+         | to_json | hash('sha256') }}
+  when: item.enabled | bool
+
+- name: "Direct cron | Check desired-state marker for {{ item.name }}"
+  ansible.builtin.copy:
+    content: "{{ hermes_agent_direct_checksum }}\n"
+    dest: "{{ hermes_agent_managed_cron_state_dir }}/{{ item.name }}.sha256"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+  check_mode: true
+  register: hermes_agent_direct_marker_probe
+  when: item.enabled | bool
+
+# A changed marker on an EXISTING job means schedule/prompt/skill/deliver
+# drifted: remove it so the create below re-pins the new definition. No drift
+# (or a job that does not exist yet) is a no-op here.
+- name: "Direct cron | Remove drifted {{ item.name }}"
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron remove {{ item.name }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  when:
+    - item.enabled | bool
+    - item.name in (hermes_agent_direct_cron_list.stdout | default(''))
+    - hermes_agent_direct_marker_probe.changed | bool
+
+- name: "Direct cron | Create {{ item.name }}"
+  ansible.builtin.command:
+    argv: "{{ hermes_agent_direct_argv }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  when:
+    - item.enabled | bool
+    - >-
+      item.name not in (hermes_agent_direct_cron_list.stdout | default(''))
+      or hermes_agent_direct_marker_probe.changed | bool
+
+- name: "Direct cron | Record desired state for {{ item.name }}"
+  ansible.builtin.copy:
+    content: "{{ hermes_agent_direct_checksum }}\n"
+    dest: "{{ hermes_agent_managed_cron_state_dir }}/{{ item.name }}.sha256"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+  when: item.enabled | bool
