@@ -442,6 +442,22 @@ hermes_agent_splunk_mcp_token: ""
 hermes_agent_zammad_url: ""
 hermes_agent_zammad_api_token: ""
 
+# Zammad stale-ticket auto-close. Brought under role management from a
+# hand-placed script (/var/lib/hermes/scripts/zammad-auto-close.py) that carried
+# a CLEARTEXT API token and the internal hostname literal — both removed; the
+# managed script sources ZAMMAD_URL + ZAMMAD_API_TOKEN from .env at runtime.
+# Wired as a --no-agent --script cron but DISABLED by default: it mutates ticket
+# state (closes state=new tickets untouched > N days), so enable only after a
+# live dry-run confirms the search/close behavior against this Zammad instance.
+# The previously-hardcoded token should be rotated. Closures deliver to Slack for
+# auditability; the script is silent on a run that closes nothing.
+hermes_agent_zammad_autoclose_enabled: false
+hermes_agent_zammad_autoclose_cron_name: zammad-auto-close
+# Daily at :17 past 05h — staggered clear of the other cron minutes.
+hermes_agent_zammad_autoclose_schedule: "17 5 * * *"
+hermes_agent_zammad_autoclose_script_name: zammad-auto-close.py
+hermes_agent_zammad_autoclose_days: 7
+
 # --- Splunk monitor: 24/7 self-directed SIEM analyst -----------------------
 # Seeds a small fleet of Hermes cron jobs, each carrying the dryvist/splunk-monitor
 # skill. That skill encodes the HARD query-safety rails (bounded queries only —
@@ -1152,7 +1168,8 @@ hermes_agent_seeded_cron_names: >-
   {{ (hermes_agent_kanban_cards | map(attribute='job') | list
       | map('regex_replace', '$', '-enqueue') | list)
      + [hermes_agent_kanban_safety_net_cron_name,
-        hermes_agent_splunk_status_digest_cron_name] }}
+        hermes_agent_splunk_status_digest_cron_name,
+        hermes_agent_zammad_autoclose_cron_name] }}
 
 # The bare-named agentic crons that #83 replaced with `<job>-enqueue` script
 # crons. A guest provisioned before the migration still carries these; the
