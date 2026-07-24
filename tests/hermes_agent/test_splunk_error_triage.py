@@ -209,12 +209,23 @@ def test_findings_over_the_cap_are_not_ledgered():
 
 def test_unusable_rows_are_dropped_not_guessed():
     noisy = rows({"pve3": {"syslog": 400}}) + [
-        {"host": "", "sourcetype": "syslog", "count": "5"},
+        {"host": "x", "sourcetype": "", "count": "5"},
         {"host": "x", "sourcetype": "y", "count": "not-a-number"},
         {"host": "z", "sourcetype": "w", "count": "0"},
     ]
     _, state = TRIAGE.build_report(noisy, at(1), None)
     assert state["counts"] == {"pve3|syslog": 400}
+
+
+def test_a_row_without_host_is_reported_not_silently_dropped():
+    """Observed live: `stats count by host, sourcetype` omits `host` entirely
+    when it is unset, and that row carried 44727 events. Dropping it would print
+    a confident total that understates real error volume."""
+    real = [{"sourcetype": "syslog", "count": "44727"}]
+    text, state = TRIAGE.build_report(real, at(1), None)
+    assert state["counts"] == {f"{TRIAGE.NO_HOST}|syslog": 44727}
+    assert "44.7k" in text and TRIAGE.NO_HOST in text
+    assert "Zero rows" not in text, "real data must never be reported as zero rows"
 
 
 def test_an_older_state_schema_is_treated_as_no_baseline():

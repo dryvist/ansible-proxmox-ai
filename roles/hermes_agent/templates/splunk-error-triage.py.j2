@@ -58,6 +58,10 @@ SPL = (
 # baseline", and the run reports full counts with no new/escalating claims.
 STATE_SCHEMA = 1
 SILENT = "[SILENT]"
+# Label for rows Splunk returned without a `host` field. Naming them beats
+# dropping them: unset host is itself worth seeing, and a dropped row would
+# quietly shrink the totals printed beside it.
+NO_HOST = "(no host)"
 
 Finding = namedtuple("Finding", "key text critical")
 
@@ -105,16 +109,23 @@ def fmt(n):
 
 
 def parse_rows(results):
-    """{"host|sourcetype": count} from the stats rows, dropping unusable ones."""
+    """{"host|sourcetype": count} from the stats rows.
+
+    A row missing `host` is kept under NO_HOST, not dropped: `stats count by
+    host, sourcetype` omits the field entirely when it is unset on the events,
+    and silently discarding those rows would under-report real error volume
+    while printing a confident total. Only a row with no usable count at all,
+    or no sourcetype to name it by, is unusable.
+    """
     out = {}
     for row in results or []:
-        host = str(row.get("host") or "").strip()
+        host = str(row.get("host") or "").strip() or NO_HOST
         sourcetype = str(row.get("sourcetype") or "").strip()
         try:
             count = int(float(row.get("count") or 0))
         except (TypeError, ValueError):
             continue
-        if not host or not sourcetype or count <= 0:
+        if not sourcetype or count <= 0:
             continue
         key = f"{host}|{sourcetype}"
         out[key] = out.get(key, 0) + count
