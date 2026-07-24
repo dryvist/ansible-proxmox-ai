@@ -250,15 +250,23 @@ hermes_agent_kanban_max_in_progress_per_profile: 1
 # The pinned upstream timeout is only 30 seconds; allow a bounded 60-second
 # window so a transient local-model stall does not reject a valid completion.
 hermes_agent_kanban_goal_mode: true
-# One finalize/continuation nudge, not two. A healthy card finalizes on its
-# first turn and never spends the budget; only a stuck card burns extra judge
-# turns, so capping at 2 hands a persistently-stuck card to the dispatcher's own
-# retry (max_retries) + board failure_limit sooner — collapsing the overlapping
-# retry layers toward the dispatcher as the single owner and cutting wasted
-# brain turns. Raise back to 3 only if a class of cards legitimately needs a
-# third pass to finish.
-hermes_agent_kanban_goal_max_turns: 2
-hermes_agent_kanban_goal_judge_model: "{{ hermes_goal_judge_model }}"
+# Goal-loop turn budget. A healthy card finalizes on its first turn and never
+# spends the budget; only a stuck card burns extra judge turns. This was briefly
+# trimmed to 2 (collapse the overlapping retry layers toward the dispatcher) when
+# the instant-429 storm made every extra turn a guaranteed 429 block-loop. That
+# 429 storm was since eliminated at the serving layer (llama-swap concurrencyLimit
+# raised), and the soak measured real per-call latency at 2-5 min: with only 2
+# turns a card that needs a genuine continuation is handed to dispatcher retry
+# before it can finish its own work. 8 gives a stuck-but-progressing card room to
+# finalize while the board failure_limit + max_retries still cap a truly wedged
+# card. (Matches the operator's soak tuning, made declarative here.)
+hermes_agent_kanban_goal_max_turns: 8
+# Judge model is pinned to the WORKER model, structurally — not to a separate
+# judge var that merely happens to match. Single-model serving policy: the judge
+# must be the same model as the worker, always; a same-model judge cannot be
+# pulled apart from the worker by config drift. (A same-model judge is not an
+# artifact check — the mechanical completion gate is the anti-fabrication layer.)
+hermes_agent_kanban_goal_judge_model: "{{ hermes_agent_model }}"
 hermes_agent_kanban_goal_judge_timeout_seconds: 60
 # --- Memory: best self-hostable as of June 2026 (Agy-validated) ---
 # Hindsight: local knowledge-graph + multi-strategy retrieval. Runs alongside the
@@ -812,7 +820,7 @@ hermes_agent_kanban_cards:
     schedule: "{{ hermes_agent_daily_status_cron_schedule }}"
     prompt_var: hermes_agent_daily_status_cron_prompt
     assignee: ""
-    max_runtime: "15m"
+    max_runtime: "45m"
     max_retries: 2
     skills: []
     unblock: false
@@ -841,7 +849,7 @@ hermes_agent_kanban_cards:
     schedule: "{{ hermes_agent_summary_cron_schedule }}"
     prompt_var: hermes_agent_summary_cron_prompt
     assignee: ""
-    max_runtime: "20m"
+    max_runtime: "45m"
     max_retries: 2
     skills: []
     unblock: false
@@ -871,7 +879,7 @@ hermes_agent_kanban_cards:
     schedule: "{{ hermes_agent_splunk_triage_cron_schedule }}"
     prompt_var: hermes_agent_splunk_triage_cron_prompt
     assignee: ""
-    max_runtime: "20m"
+    max_runtime: "45m"
     max_retries: 2
     skills: [dryvist/splunk-monitor]
     unblock: false
@@ -887,7 +895,7 @@ hermes_agent_kanban_cards:
     schedule: "{{ hermes_agent_splunk_security_cron_schedule }}"
     prompt_var: hermes_agent_splunk_security_cron_prompt
     assignee: ""
-    max_runtime: "20m"
+    max_runtime: "45m"
     max_retries: 2
     skills: [dryvist/splunk-monitor]
     unblock: false
@@ -898,7 +906,7 @@ hermes_agent_kanban_cards:
     schedule: "{{ hermes_agent_splunk_parsing_cron_schedule }}"
     prompt_var: hermes_agent_splunk_parsing_cron_prompt
     assignee: ""
-    max_runtime: "20m"
+    max_runtime: "45m"
     max_retries: 2
     skills: [dryvist/splunk-monitor]
     unblock: false
@@ -931,7 +939,7 @@ hermes_agent_kanban_cards:
     schedule: "{{ hermes_agent_github_monitor_cron_schedule }}"
     prompt_var: hermes_agent_github_monitor_cron_prompt
     assignee: ""
-    max_runtime: "20m"
+    max_runtime: "45m"
     max_retries: 2
     skills: [dryvist/github-issues]
     unblock: false
@@ -1009,7 +1017,7 @@ hermes_agent_kanban_cards:
     schedule: "{{ hermes_agent_docs_study_cron_schedule }}"
     prompt_var: hermes_agent_docs_study_cron_prompt
     assignee: ""
-    max_runtime: "20m"
+    max_runtime: "45m"
     max_retries: 2
     skills: [dryvist/github-issues]
     unblock: false
@@ -1023,7 +1031,7 @@ hermes_agent_kanban_cards:
     schedule: "{{ hermes_agent_ai_news_cron_schedule }}"
     prompt_var: hermes_agent_ai_news_cron_prompt
     assignee: ""
-    max_runtime: "15m"
+    max_runtime: "45m"
     max_retries: 2
     skills: []
     unblock: false
@@ -1034,7 +1042,7 @@ hermes_agent_kanban_cards:
     schedule: "{{ hermes_agent_daily_innovation_cron_schedule }}"
     prompt_var: hermes_agent_daily_innovation_cron_prompt
     assignee: ""
-    max_runtime: "20m"
+    max_runtime: "45m"
     max_retries: 2
     skills: [dryvist/github-issues]
     unblock: false
@@ -1050,6 +1058,39 @@ hermes_agent_kanban_cards:
     skills: []
     unblock: false
     enabled: *kanban_slack_gate
+
+# --- Enqueuer throughput throttle (2026-07-24, Zammad #17143) ------------------
+# The single serving slot drains ~2-3 goal cards/hour; the full enqueuer fleet
+# out-produced that and wedged the board overnight. Until serving throughput is
+# proven higher, only the essential Splunk cards enqueue; the rest are paused
+# here. A job on this list is treated as not-active: the enqueuer-cron reconcile
+# SKIPS it (so a converge never re-creates or re-enables it — it leaves the
+# operator's disabled state untouched, disable-don't-delete) and the shared
+# enqueuer script does not render it (so the `all --backfill` safety net cannot
+# re-enqueue it either). Lift the throttle by REMOVING a job from this list (and
+# re-enabling the safety net) once capacity is confirmed — start with the least
+# costly cards. Entries are the card `job` values (and the safety-net cron name)
+# by their config-var refs so this list can never drift from the cards table.
+# NOT listed (already off for other reasons, so listing them would mislead):
+# bot-pr-triage (capability-gated off, no alerts token); anything whose `enabled`
+# capability gate is already false. Active set kept on: splunk triage + digest.
+hermes_agent_kanban_paused_jobs:
+  - "{{ hermes_agent_daily_status_cron_name }}"
+  - "{{ hermes_agent_nightly_wiki_cron_name }}"
+  - "{{ hermes_agent_summary_cron_name }}"
+  - "{{ hermes_agent_zammad_review_cron_name }}"
+  - "{{ hermes_agent_splunk_security_cron_name }}"
+  - "{{ hermes_agent_splunk_parsing_cron_name }}"
+  - "{{ hermes_agent_splunk_deepdive_cron_name }}"
+  - "{{ hermes_agent_github_monitor_cron_name }}"
+  - "{{ hermes_agent_docs_sync_cron_name }}"
+  - "{{ hermes_agent_kanban_reviewer_job }}"
+  - "{{ hermes_agent_anomaly_hunt_cron_name }}"
+  - "{{ hermes_agent_docs_study_cron_name }}"
+  - "{{ hermes_agent_ai_news_cron_name }}"
+  - "{{ hermes_agent_daily_innovation_cron_name }}"
+  - "{{ hermes_agent_app_seeding_cron_name }}"
+  - "{{ hermes_agent_kanban_safety_net_cron_name }}"
 
 # The daily chain-break safety net (#83): one extra `--no-agent --script` cron
 # that runs the enqueuer in `all --backfill` mode — re-creates any missing
