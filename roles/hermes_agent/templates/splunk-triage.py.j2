@@ -24,9 +24,12 @@ baseline, and a failed query are ALWAYS stated as themselves, never smoothed int
 
 THE PER-DAY NOVELTY CONTRACT: routine information may be presented ONCE per UTC
 day. A steady stream already reported today is suppressed on later runs.
-CRITICAL findings — a source absent from the previous run, or one that has
-climbed an order of magnitude — are exempt and repeat every run while they hold.
-A run with nothing left to say prints its one "nothing new" line for the day and
+CRITICAL findings — a source absent from the previous run, or one that climbed
+an order of magnitude — bypass that ledger, so they still report when the SAME
+delta recurs later the same day. Note every finding here is a delta against the
+previous run: the baseline advances each run, so nothing restates itself while a
+condition merely persists. A run with nothing left to say escalates to the host
+and sourcetype rollups, then prints its one "nothing new" line for the day and
 goes [SILENT] thereafter.
 
 What converting cost: the old prompts asked for one interpretive sentence each
@@ -73,6 +76,17 @@ SILENT = "[SILENT]"
 # dropping them: unset host is itself worth seeing, and a dropped row would
 # quietly shrink the totals printed beside it.
 NO_HOST = "(no host)"
+# Escalation-ladder calibration. Deliberately module constants, not Ansible vars:
+# one number, one consumer, and they only mean anything against each other.
+# A series smaller than this can't produce a percentage worth reporting.
+MIN_MOVER_COUNT = 20
+# Percent bands a move must clear to count at all. The band a move lands in is
+# part of its ledger key, so a wobble that keeps landing in the same band is
+# reported once a day rather than every run.
+PCT_BANDS = (25, 50, 100, 300)
+# Percentage POINTS of mix shift that make a sourcetype's share change critical.
+SHARE_SHIFT_PP = 15
+MAX_NAMED = 6
 
 Finding = namedtuple("Finding", "key text critical")
 
@@ -182,6 +196,98 @@ def build_findings(current, baseline, have_baseline):
     return findings
 
 
+def totals_by(current, part):
+    """Roll host|sourcetype streams up to host (part=0) or sourcetype (part=1)."""
+    out = {}
+    for key, count in current.items():
+        name = key.split("|")[part]
+        out[name] = out.get(name, 0) + count
+    return out
+
+
+def move_of(cur, prev):
+    """(direction, band, pct) for a real move, else None.
+
+    None means "not a finding": no baseline, a series too small for a percent to
+    mean anything, or a swing under the smallest band. Never an estimate.
+    """
+    if prev is None or prev < MIN_MOVER_COUNT:
+        return None
+    pct = (cur - prev) * 100.0 / prev
+    if abs(pct) < PCT_BANDS[0]:
+        return None
+    return ("up" if pct > 0 else "down", max(b for b in PCT_BANDS if abs(pct) >= b), pct)
+
+
+def name_list(names):
+    shown = sorted(names)[:MAX_NAMED]
+    extra = len(names) - len(shown)
+    return ", ".join(shown) + (f" (+{extra} more)" if extra else "")
+
+
+def host_findings(current, baseline, have_baseline):
+    """Tier 2 — which machines are affected, independent of sourcetype."""
+    out = []
+    if not have_baseline:
+        return out
+    cur, prev = totals_by(current, 0), totals_by(baseline, 0)
+    gone = set(prev) - set(cur)
+    if gone:
+        # Routine: a host going quiet is good news, and repeating it every run
+        # for the rest of the day would crowd out what is still wrong.
+        out.append(Finding(f"hosts:cleared:{','.join(sorted(gone))}",
+                           f"Stopped reporting: {name_list(gone)}.", False))
+    new = set(cur) - set(prev)
+    if new:
+        # Critical: a machine that just started failing is the single thing
+        # most worth repeating while it holds.
+        out.append(Finding(f"hosts:new:{','.join(sorted(new))}",
+                           f":rotating_light: Newly reporting: {name_list(new)}.", True))
+    for host, count in sorted(cur.items(), key=lambda kv: -kv[1]):
+        move = move_of(count, prev.get(host))
+        if not move:
+            continue
+        # Routine, even for a large climb. A move is measured against the PREVIOUS
+        # run, so the baseline catches up next run and the finding cannot persist
+        # — marking it critical would not make a real escalation repeat, it would
+        # only let a host oscillating across a band edge re-post the same key all
+        # day. That is precisely the noise the per-day gate exists to stop.
+        out.append(Finding(
+            f"host:{host}:{move[0]}:{move[1]}",
+            f"Host {host} {move[0]} {move[2]:+.0f}% — "
+            f"{fmt(prev[host])} -> {fmt(count)} events.", False))
+    return out
+
+
+def composition_findings(current, baseline, have_baseline):
+    """Tier 3 — what KIND of events, and how the mix is shifting."""
+    out = []
+    if not have_baseline:
+        return out
+    cur, prev = totals_by(current, 1), totals_by(baseline, 1)
+    total, prev_total = sum(cur.values()), sum(prev.values())
+    for stype, count in sorted(cur.items(), key=lambda kv: -kv[1]):
+        move = move_of(count, prev.get(stype))
+        if move:
+            # Routine: a sourcetype's raw volume tracks overall traffic.
+            out.append(Finding(
+                f"stype:{stype}:{move[0]}:{move[1]}",
+                f"Sourcetype {stype} {move[0]} {move[2]:+.0f}% — "
+                f"{fmt(prev[stype])} -> {fmt(count)} events.", False))
+        if not (total and prev_total):
+            continue
+        shift = count * 100.0 / total - prev.get(stype, 0) * 100.0 / prev_total
+        if abs(shift) >= SHARE_SHIFT_PP:
+            # Critical: the MIX changing is how a new failure mode announces
+            # itself while the totals stay flat — exactly what volume misses.
+            out.append(Finding(
+                f"share:{stype}:{int(shift // SHARE_SHIFT_PP)}",
+                f":twisted_rightwards_arrows: Sourcetype {stype} now "
+                f"{count * 100.0 / total:.0f}% of all matching events "
+                f"({shift:+.0f} points).", True))
+    return out
+
+
 def load_ledger(state, today):
     """Today's already-presented keys. A new UTC day resets it to empty, and a
     state file predating the ledger simply carries none."""
@@ -228,13 +334,29 @@ def build_report(results, now, state):
             f"stopped; this run cannot tell which.")
         posted.append("zero-rows")
     elif not lines:
-        if "quiet" in ledger:
+        # ESCALATE rather than emit boilerplate: nothing novel at the stream
+        # level does not mean nothing happened. Roll up to hosts, then to the
+        # sourcetype mix, and only say "nothing new" once both are exhausted.
+        for tier in (host_findings(current, baseline, have_baseline),
+                     composition_findings(current, baseline, have_baseline)):
+            for finding in tier:
+                if len(shown) >= MAX_FINDINGS:
+                    break
+                if finding.critical or finding.key not in ledger:
+                    shown.append(finding)
+            if shown:
+                break
+        lines = [f.text for f in shown]
+        if lines:
+            posted.extend(f.key for f in shown)
+        elif "quiet" in ledger:
             return silent()
-        lines.append(
-            f"No new signatures — all {len(current)} matching host/sourcetype "
-            f"streams in {scope} over the {WINDOW} window were already reported "
-            f"today.")
-        posted.append("quiet")
+        else:
+            lines.append(
+                f"No new signatures — all {len(current)} matching host/sourcetype "
+                f"streams in {scope} over the {WINDOW} window, their host and "
+                f"sourcetype rollups included, were already reported today.")
+            posted.append("quiet")
     else:
         posted.extend(f.key for f in shown)
         lines.append(

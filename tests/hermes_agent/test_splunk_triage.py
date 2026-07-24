@@ -7,8 +7,10 @@ Two contracts, both enforced here:
    with a diagnostic naming the job. The guard body lives in a blockinfile in
    roles/hermes_agent/tasks/main.yml, so it is extracted from there and executed:
    the thing under test is the code that actually ships.
-2. Per-day novelty — a steady stream is presented ONCE per UTC day; NEW
-   and ESCALATING streams are critical and repeat every run while they hold.
+2. Per-day novelty — a steady stream is presented ONCE per UTC day. Findings
+   are deltas against the PREVIOUS run, so the baseline advances and no finding
+   restates itself; `critical` means "bypass the ledger", which shows up when
+   the same delta RECURS within a day, not as a line repeating every run.
    Never fabricate: zero rows and an absent baseline are stated as themselves.
 
 Runs bare (`python3 tests/hermes_agent/test_splunk_triage.py`) or under
@@ -31,7 +33,7 @@ FIXTURE_CONFIG = {
     "ENV_PATH": str(Path(STATE_DIR) / "unused.env"),
     "STATE_PATH": str(Path(STATE_DIR) / "splunk-error-digest.json"),
     "TITLE": "Splunk error triage",
-    "INDEXES": ["os", "network"],
+    "INDEXES": ["os"],
     "TERMS": ["error", "failed", "critical"],
     "EARLIEST": "-1h",
     "TOP_N": 12,
@@ -176,13 +178,14 @@ def test_a_new_utc_day_resets_the_ledger():
     assert "pve3 / syslog" in text, "a new UTC day re-presents routine information"
 
 
-def test_a_new_error_source_is_critical_and_repeats():
+def test_a_new_source_is_flagged_then_tracked_as_steady():
     _, state = TRIAGE.build_report(rows({"pve3": {"syslog": 400}}), at(1), None)
     both = rows({"pve3": {"syslog": 400}, "fw01": {"cisco:asa": 90}})
     text, state = TRIAGE.build_report(both, at(2), state)
     assert "NEW source fw01 / cisco:asa" in text
     text, state = TRIAGE.build_report(both, at(3), state)
-    assert "fw01 / cisco:asa" in text, "critical findings ignore the ledger"
+    assert "fw01 / cisco:asa" in text and "NEW source" not in text, \
+        "once the baseline knows it, it is a steady stream, not a new one"
 
 
 def test_an_order_of_magnitude_climb_is_escalating():
@@ -339,6 +342,92 @@ KNOWN_INDEXES = {
     "openbao_audit", "os", "os_metrics", "otel", "proxy", "summary", "unifi",
     "unifi_metrics", "vscode",
 }
+
+
+# --- escalation ladder: tier 2 (hosts) and tier 3 (sourcetype mix) ----------
+# Tier 1 buckets by order of magnitude; the ladder buckets by percent. That is
+# what makes them complementary: a +60% move keeps the same OOM bucket, so tier
+# 1 has nothing new to say about it while tier 2 does.
+
+def test_ladder_fires_only_when_tier_one_is_exhausted():
+    first = rows({"a": {"syslog": 100}})
+    text, state = TRIAGE.build_report(first, at(1), None)
+    assert "a / syslog" in text
+    text, _ = TRIAGE.build_report(rows({"a": {"syslog": 160}}), at(2), state)
+    assert "Host a up +60%" in text, "a percent move tier 1 cannot see must escalate"
+    assert "No new signatures" not in text
+
+
+def test_tier_one_content_suppresses_the_ladder():
+    _, state = TRIAGE.build_report(rows({"a": {"syslog": 100}}), at(1), None)
+    text, _ = TRIAGE.build_report(
+        rows({"a": {"syslog": 100}, "b": {"syslog": 90}}), at(2), state)
+    assert "NEW source b" in text
+    assert "Host " not in text, "the ladder is a fallback, not an addition"
+
+
+def test_a_moderate_climb_is_routine_and_does_not_repeat():
+    _, state = TRIAGE.build_report(rows({"a": {"syslog": 100}}), at(1), None)
+    later = rows({"a": {"syslog": 160}})
+    text, state = TRIAGE.build_report(later, at(2), state)
+    assert "Host a up +60%" in text
+    text, _ = TRIAGE.build_report(later, at(3), state)
+    assert "Host a" not in text, "a band-edge wobble must not repeat all day"
+
+
+def test_a_climb_is_reported_once_because_the_baseline_catches_up():
+    """Ladder findings are deltas against the PREVIOUS run, so no ladder finding
+    can persist: once the baseline advances, the move is gone. That is why none
+    of them are marked critical — a critical delta could not repeat a real
+    escalation, only a band-edge oscillation."""
+    _, state = TRIAGE.build_report(rows({"a": {"syslog": 100}}), at(1), None)
+    later = rows({"a": {"syslog": 500}})
+    text, state = TRIAGE.build_report(later, at(2), state)
+    assert "Host a up +400%" in text
+    text, _ = TRIAGE.build_report(later, at(3), state)
+    assert "Host a" not in text, "500 -> 500 is not a move"
+
+
+def test_an_oscillating_host_does_not_re_post_the_same_move_all_day():
+    quiet, loud = rows({"a": {"syslog": 100}}), rows({"a": {"syslog": 500}})
+    _, state = TRIAGE.build_report(quiet, at(1), None)
+    text, state = TRIAGE.build_report(loud, at(2), state)
+    assert "Host a up +400%" in text
+    _, state = TRIAGE.build_report(quiet, at(3), state)
+    text, _ = TRIAGE.build_report(loud, at(4), state)
+    assert "Host a up +400%" not in text, "the same swing must not re-post today"
+
+
+def test_a_host_that_stopped_reporting_is_surfaced():
+    """Tier 1 only walks CURRENT streams, so a disappearance is information it
+    structurally cannot produce."""
+    _, state = TRIAGE.build_report(
+        rows({"a": {"syslog": 100}, "b": {"syslog": 100}}), at(1), None)
+    text, _ = TRIAGE.build_report(rows({"a": {"syslog": 100}}), at(2), state)
+    assert "Stopped reporting: b" in text
+
+
+def test_a_share_shift_is_critical_even_when_volume_is_flat():
+    """The mix changing is how a new failure mode announces itself while totals
+    stay put — the thing a volume-only view misses."""
+    before = TRIAGE.parse_rows(rows({"a": {"syslog": 100, "audit": 100}}))
+    after = TRIAGE.parse_rows(rows({"a": {"syslog": 40, "audit": 160}}))
+    shares = [f for f in TRIAGE.composition_findings(after, before, True)
+              if f.key.startswith("share:")]
+    assert shares, "a 30-point mix shift must be a finding"
+    assert all(f.critical for f in shares)
+
+
+def test_a_move_too_small_to_mean_anything_is_not_a_finding():
+    assert TRIAGE.move_of(11, 10) is None, "series under MIN_MOVER_COUNT"
+    assert TRIAGE.move_of(105, 100) is None, "swing under the smallest band"
+    assert TRIAGE.move_of(100, None) is None, "no baseline"
+
+
+def test_ladder_findings_never_contain_tool_call_markup():
+    _, state = TRIAGE.build_report(rows({"a": {"syslog": 100}}), at(1), None)
+    text, _ = TRIAGE.build_report(rows({"a": {"syslog": 500}}), at(2), state)
+    assert GUARD(JOB, "out.md", text) == text
 
 
 def test_no_configured_index_is_a_typo():
