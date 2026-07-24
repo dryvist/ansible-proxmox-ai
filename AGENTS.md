@@ -46,6 +46,13 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
 - `langgraph_docker` — LangGraph agent orchestration runtime
 - `langfuse_docker` — Langfuse LLM observability/tracing
 
+### Ops
+
+- `fabric_watchdog` — 2-minute systemd timer on the Hermes guest probing the
+  MCP fabric + LLM front door from Hermes's own network path; alerts once per
+  up/down transition over Slack. Deliberately Slack-only, not ntfy/Prometheus:
+  those run on the observability node, so they can't report that node's own loss.
+
 **This repo does NOT own** Splunk (`ansible-splunk`), Cribl/media/network/DNS
 roles, or non-AI observability (`ansible-proxmox-apps`), or Proxmox host
 config (`ansible-proxmox`).

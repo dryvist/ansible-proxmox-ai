@@ -1,0 +1,28 @@
+---
+# fabric_watchdog — minutes-level detection of MCP-fabric / LLM-front-door
+# outages (2026-07-24 pve1 incident: the fabric was down for hours and the only
+# signal was Slack going quiet). Runs on the Hermes guest so probes traverse
+# exactly the path Hermes uses (VLAN -> Traefik -> pool). Alerts EXACTLY ONCE
+# per up/down transition via Slack, reusing the same EnvironmentFile mechanism
+# as the hermes brain-watchdog (SLACK_BOT_TOKEN + SLACK_ALLOWED_USERS DM, or
+# SLACK_ALERT_CHANNEL when set). Deliberately NOT ntfy/prometheus-backed —
+# both live on pve1, the node whose loss this watchdog exists to catch.
+fabric_watchdog_interval: "2min"
+fabric_watchdog_probe_timeout: 8
+fabric_watchdog_state_dir: /var/lib/fabric-watchdog
+fabric_watchdog_user: hermes
+fabric_watchdog_group: hermes
+# Same .env the hermes gateway + brain-watchdog load (SLACK_* secrets).
+fabric_watchdog_env_file: "{{ hermes_agent_hermes_home | default('/var/lib/hermes/.hermes') }}/.env"
+
+# Probed endpoints. ok_codes are space-separated HTTP codes counted as UP:
+# the MCP proxy answers 406 (protocol negotiation rejection) to a plain GET
+# when healthy and 502 when the backend pool is gone; llm answers 401 to an
+# unauthenticated /v1/models when healthy.
+fabric_watchdog_targets:
+  - name: mcp-fabric
+    url: "https://mcp.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/splunk"
+    ok_codes: "200 401 405 406"
+  - name: llm-front-door
+    url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1/models"
+    ok_codes: "200 401"

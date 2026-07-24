@@ -1,0 +1,38 @@
+---
+# Molecule verify — the user, worker files, and systemd unit exist, and the
+# worker's parser self-check passes.
+
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Stat the ai-runner home
+      ansible.builtin.stat:
+        path: /var/lib/ai-runner
+      register: _home
+
+    - name: Stat the worker script + unit
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /var/lib/ai-runner/ai-job-worker.py
+        - /var/lib/ai-runner/ai-job-worker.env
+        - /etc/systemd/system/ai-job-worker.service
+      register: _files
+
+    - name: Assert the runner is installed
+      ansible.builtin.assert:
+        that:
+          - _home.stat.exists and _home.stat.isdir
+          - _files.results | map(attribute='stat.exists') | list is all
+        fail_msg: ai_runner did not install its user/worker/service.
+        quiet: true
+
+    - name: Run the worker parser self-check
+      ansible.builtin.command:
+        cmd: python3 /var/lib/ai-runner/ai-job-worker.py --self-check
+      changed_when: false
+      register: _selfcheck
+      failed_when: "'self-check OK' not in _selfcheck.stdout"

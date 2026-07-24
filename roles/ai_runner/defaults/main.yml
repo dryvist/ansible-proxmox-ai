@@ -1,0 +1,72 @@
+---
+# ai_runner role defaults — a headless coding-agent job runner. A dedicated,
+# low-privilege system user runs the Claude Code + Codex CLIs in
+# permission-skipping mode, driven by a systemd worker that polls a Vikunja
+# queue for jobs. Safety is enforced at the LXC/firewall boundary
+# (tofu-proxmox `ai-github` egress profile), NOT at the agent level — the
+# agent runs with `--dangerously-skip-permissions` by design.
+#
+# Secrets follow the repo's injection-agnostic contract: every value defaults
+# to `lookup('env', ...)` here and is overridden bao-first in
+# inventory/group_vars/ai_runner_group.yml. Do not bake a backend into a
+# default.
+
+ai_runner_user: ai-runner
+ai_runner_group: ai-runner
+ai_runner_home: /var/lib/ai-runner
+
+# --- Pinned CLI installs -----------------------------------------------------
+# Both are first-party npm packages (no raw-binary release to sha256-pin), so
+# an exact version string is npm's equivalent lock — mirrors codex_runner.
+# Bump deliberately, never to a floating "latest". `creates`-guarded install +
+# version-floor assert live in tasks/main.yml.
+ai_runner_claude_code_version: "1.0.0"
+ai_runner_claude_code_npm_package: "@anthropic-ai/claude-code@{{ ai_runner_claude_code_version }}"
+ai_runner_codex_version: "0.130.0"
+ai_runner_codex_npm_package: "@openai/codex@{{ ai_runner_codex_version }}"
+
+# Debian's packaged nodejs/npm — one fewer external apt source to trust (same
+# choice as codex_runner). If the packaged node proves too old for either CLI
+# on first converge, that is a documented follow-up, not silently worked around.
+ai_runner_apt_packages:
+  - nodejs
+  - npm
+  - python3
+
+# npm global-install prefix pinned explicitly (not the packaged default) so the
+# resolved bin paths are known facts.
+ai_runner_npm_prefix: /usr/local
+ai_runner_claude_bin: "{{ ai_runner_npm_prefix }}/bin/claude"
+ai_runner_codex_bin: "{{ ai_runner_npm_prefix }}/bin/codex"
+
+# --- Worker + dispatch queue -------------------------------------------------
+ai_runner_worker_service: ai-job-worker
+ai_runner_worker_script: "{{ ai_runner_home }}/ai-job-worker.py"
+ai_runner_worker_env_file: "{{ ai_runner_home }}/ai-job-worker.env"
+
+# Vikunja dispatch queue. This guest's profile label scopes which jobs it
+# claims — one runner per profile. Vikunja base URL is FQDN-first (Traefik
+# vhost); DHCP/DNS own the address. Empty base URL disables the worker cleanly.
+ai_runner_vikunja_url: >-
+  https://vikunja.{{ lookup('env', 'PROXMOX_SUBDOMAIN') | default('', true) }}
+ai_runner_vikunja_project: "AI Jobs"
+ai_runner_profile_label: "profile:ai-github"
+ai_runner_poll_interval_seconds: 60
+# Hard per-job wall-clock ceiling — a runaway agent is killed, its job marked
+# failed, and the worker moves on.
+ai_runner_job_timeout_seconds: 1800
+
+# ntfy result push. Same FQDN-first Traefik vhost pattern as hermes_agent's
+# watchdog. Empty topic disables the push (worker still comments on the task).
+ai_runner_ntfy_topic: "ai-jobs"
+ai_runner_ntfy_url: >-
+  https://ntfy.{{ lookup('env', 'PROXMOX_SUBDOMAIN') | default('', true) }}/{{ ai_runner_ntfy_topic }}
+
+# --- Secrets (env-fallback defaults; bao-first override in group_vars) --------
+# Vikunja API token — the queue credential. Empty disables the worker.
+ai_runner_vikunja_token: "{{ lookup('env', 'VIKUNJA_API_TOKEN') | default('', true) }}"
+# Model-provider API keys — third-party static secrets (KV is the correct tier,
+# per the WS7A spec). Empty means the corresponding agent CLI is unusable until
+# seeded.
+ai_runner_anthropic_api_key: "{{ lookup('env', 'ANTHROPIC_API_KEY') | default('', true) }}"
+ai_runner_openai_api_key: "{{ lookup('env', 'OPENAI_API_KEY') | default('', true) }}"

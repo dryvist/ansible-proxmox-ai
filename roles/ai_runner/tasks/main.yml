@@ -1,0 +1,118 @@
+---
+# ai_runner — install the Claude Code + Codex CLIs under a dedicated, low-priv
+# system user and run a systemd worker that polls the Vikunja AI Jobs queue.
+# Idempotent. Mirrors codex_runner's install idiom (packaged node, pinned npm
+# package, `creates`-guarded install, version-floor assert).
+
+- name: Install Node.js/npm/python3 (packaged, no NodeSource repo)
+  ansible.builtin.apt:
+    name: "{{ ai_runner_apt_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the ai-runner service group
+  ansible.builtin.group:
+    name: "{{ ai_runner_group }}"
+    system: true
+
+# No login shell: this user only ever runs the worker daemon (systemd) and the
+# agent CLIs the worker spawns — it never needs an interactive session.
+- name: Create the ai-runner service user
+  ansible.builtin.user:
+    name: "{{ ai_runner_user }}"
+    group: "{{ ai_runner_group }}"
+    home: "{{ ai_runner_home }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: true
+
+# 0700: the home holds the worker's .env (API tokens). Only ai-runner + root
+# may read it — same isolation posture as codex_runner's home.
+- name: Lock down the ai-runner home directory
+  ansible.builtin.file:
+    path: "{{ ai_runner_home }}"
+    state: directory
+    owner: "{{ ai_runner_user }}"
+    group: "{{ ai_runner_group }}"
+    mode: "0700"
+
+# @anthropic-ai/claude-code and @openai/codex are first-party npm packages (no
+# raw-binary release to sha256-pin) — an exact version string is npm's
+# equivalent lock. `creates` guards a one-time install per CLI; bumping the
+# pinned version does NOT by itself reinstall (same idiom + limitation as
+# codex_runner) — the version-floor assert below catches a too-old packaged node.
+- name: Install the pinned coding-agent CLIs (npm, global, explicit prefix)
+  ansible.builtin.command:
+    cmd: >-
+      npm install -g --prefix {{ ai_runner_npm_prefix }} {{ item.package }}
+    creates: "{{ item.bin }}"
+  loop:
+    - { package: "{{ ai_runner_claude_code_npm_package }}", bin: "{{ ai_runner_claude_bin }}" }
+    - { package: "{{ ai_runner_codex_npm_package }}", bin: "{{ ai_runner_codex_bin }}" }
+  loop_control:
+    label: "{{ item.package }}"
+  register: ai_runner_cli_install
+
+# Only runs the checks that actually installed a CLI. Inline (noqa: no-handler)
+# rather than a handler: a too-old CLI must fail the converge immediately,
+# before the worker service is installed to run it — same rationale as
+# codex_runner's post-install version assert.
+- name: Confirm the installed CLIs meet their pinned version floors  # noqa: no-handler
+  when: ai_runner_cli_install is changed
+  block:
+    - name: Read the installed CLI versions
+      ansible.builtin.command:
+        cmd: "{{ item }} --version"
+      loop:
+        - "{{ ai_runner_claude_bin }}"
+        - "{{ ai_runner_codex_bin }}"
+      register: ai_runner_version_check
+      changed_when: false
+
+    - name: Assert each CLI reports a semver
+      ansible.builtin.assert:
+        that:
+          - item.stdout is search('\d+\.\d+\.\d+')
+        fail_msg: >-
+          {{ item.cmd | join(' ') }} did not report a semver
+          ({{ item.stdout }}) — investigate the packaged node/npm version.
+        quiet: true
+      loop: "{{ ai_runner_version_check.results }}"
+      loop_control:
+        label: "{{ item.cmd | join(' ') }}"
+
+- name: Render the job-worker environment file (secrets, queue config)
+  ansible.builtin.template:
+    src: ai-job-worker.env.j2
+    dest: "{{ ai_runner_worker_env_file }}"
+    owner: "{{ ai_runner_user }}"
+    group: "{{ ai_runner_group }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart ai-job-worker
+
+- name: Render the job-worker script
+  ansible.builtin.template:
+    src: ai-job-worker.py.j2
+    dest: "{{ ai_runner_worker_script }}"
+    owner: "{{ ai_runner_user }}"
+    group: "{{ ai_runner_group }}"
+    mode: "0755"
+  notify: Restart ai-job-worker
+
+- name: Install the ai-job-worker systemd unit
+  ansible.builtin.template:
+    src: ai-job-worker.service.j2
+    dest: "/etc/systemd/system/{{ ai_runner_worker_service }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart ai-job-worker
+
+- name: Enable and start the ai-job-worker service
+  ansible.builtin.systemd_service:
+    name: "{{ ai_runner_worker_service }}"
+    enabled: true
+    state: started
+    daemon_reload: true
