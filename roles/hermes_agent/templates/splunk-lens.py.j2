@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+{{ ansible_managed | comment }}
+"""Deterministic, no-LLM Splunk lenses with a per-day novelty gate.
+
+Replaces the agentic `splunk-security-lens-v2` and `anomaly-hunt-v2` digests,
+both of which posted raw `<function=...>` tool-call markup to Slack every run
+instead of a report: the model wrote its ONE tool call as TEXT rather than
+issuing it, so no tool ever ran. Both prompts already contained an explicit
+"never write a tool call as text" clause and both failed anyway — that is an
+unreliable tool-call emitter, not a prompt defect. Removing the LLM from the
+fact path is the fix; no prompt wording is.
+
+ONE script, TWO lenses, chosen by the positional selector the cron passes
+(`hermes cron create <sched> <selector> --script ... --no-agent`), exactly like
+the kanban enqueuer. The lenses differ only in query, grouping and ranking, so a
+second copy of the ledger/banding/state machinery would be duplication with two
+places to fix a bug in.
+
+  security — every 6h, auth-failure volume by host/sourcetype. Loudest first:
+             who is failing the most, and who newly started.
+  anomaly  — every 12h, index/sourcetype composition. RAREST first, and a stream
+             that VANISHED is critical. That long tail is the "pattern nobody
+             monitors" the old prompt asked the model to name; the volume-ranked
+             head of the same data is already the status digest's job.
+
+STDOUT is delivered verbatim to Slack (cron runs `--no-agent --deliver slack:<ch>`),
+so everything printed here must be TRUE. Never invent data. Zero rows, a missing
+baseline, and a failed query are ALWAYS stated as themselves, never smoothed into
+"no anomalies" (Zammad #17143 fabrication; #17144 masked ingest outage).
+
+THE PER-DAY NOVELTY CONTRACT: routine information may be presented ONCE per UTC
+day. A steady stream already reported today is suppressed on later runs. CRITICAL
+findings — a stream absent from the previous run, one that has climbed an order of
+magnitude, or (anomaly lens) one that has disappeared — are exempt and repeat every
+run while they hold. A run with nothing left to say prints its one "nothing new"
+line for the day and goes [SILENT] thereafter. Same mechanism as splunk-digest.py:
+a schema-versioned, day-scoped key ledger in the state file.
+
+What converting cost: each old prompt asked for ONE interpretive sentence (the
+"most security-relevant pattern", the "most unusual pattern nobody monitors").
+That editorial judgement is gone. What replaces it is sharper and checkable — the
+lens names which streams are NEW, ESCALATING or GONE against a stored baseline,
+which is the fact those sentences were gesturing at.
+
+Pure stdlib + the `mcp` client (present in the hermes-agent venv, which runs this
+file). Reads secrets from the .env file, never prints them.
+"""
+import asyncio
+import datetime as dt
+import json
+import math
+import os
+import sys
+from collections import namedtuple
+
+# --- config (rendered from roles/hermes_agent/defaults/main.yml) ---------------
+ENV_PATH = "{{ hermes_agent_hermes_home }}/.env"
+STATE_DIR = "{{ hermes_agent_hermes_home }}/state"
+# json.loads, not a bare `| to_json` paste: the profiles carry booleans, and JSON
+# spells those `true`/`false`, which are not Python literals — pasting them
+# straight in is a NameError at import, i.e. every run of both lenses dead. (The
+# status digest gets away with a bare paste because its config is lists of
+# strings, where JSON and Python happen to agree.)
+PROFILES = json.loads(r"""{{ hermes_agent_splunk_lens_profiles | to_json }}""")
+# Output cap. Novel findings that do not fit are NOT ledgered, so they surface on
+# the next run instead of being silently lost.
+MAX_FINDINGS = {{ hermes_agent_splunk_lens_max_findings }}
+# Bumped when the state shape changes; an older/absent value means "no usable
+# baseline", and the run reports full counts with no new/escalating claims.
+STATE_SCHEMA = 1
+SILENT = "[SILENT]"
+
+Finding = namedtuple("Finding", "key text critical")
+
+
+def load_env(path):
+    """Parse KEY=VALUE lines. Values may be quoted."""
+    env = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip().strip('"').strip("'")
+    return env
+
+
+def select_profile(argv):
+    """The lens named by the positional, which may arrive whole or pre-split.
+
+    An unknown or missing selector is a deploy fault, not something to guess at:
+    picking a lens at random would deliver the wrong report under the right name.
+    """
+    name = " ".join(argv).split()
+    name = name[0] if name else ""
+    if name not in PROFILES:
+        raise RuntimeError(
+            f"unknown lens selector {name!r}; expected one of {sorted(PROFILES)}")
+    return name, PROFILES[name]
+
+
+async def run_query(url, token, query, earliest):
+    """Return the parsed results list, or raise on any failure."""
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp import ClientSession
+
+    async with streamablehttp_client(url, headers={"Authorization": f"Bearer {token}"}) as (r, w, _):
+        async with ClientSession(r, w) as s:
+            await s.initialize()
+            res = await s.call_tool("splunk_run_query", {"query": query, "earliest": earliest})
+            if getattr(res, "isError", False):
+                raise RuntimeError("splunk_run_query returned isError=true")
+            data = res.structuredContent
+            if not isinstance(data, dict):
+                if res.content and getattr(res.content[0], "text", None):
+                    data = json.loads(res.content[0].text)
+                else:
+                    raise RuntimeError("no structuredContent and no text content")
+            return data.get("results", [])
+
+
+def band(n):
+    """Order-of-magnitude bucket so normal jitter never reads as an escalation."""
+    return 0 if n <= 0 else int(math.log10(n))
+
+
+def fmt(n):
+    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+
+def parse_rows(results, fields):
+    """{"a|b": count} keyed on the profile's group fields, dropping unusable rows."""
+    out = {}
+    for row in results or []:
+        parts = [str(row.get(f) or "").strip() for f in fields]
+        try:
+            count = int(float(row.get("count") or 0))
+        except (TypeError, ValueError):
+            continue
+        if not all(parts) or count <= 0:
+            continue
+        key = "|".join(parts)
+        out[key] = out.get(key, 0) + count
+    return out
+
+
+def label(pair):
+    return " / ".join(pair.split("|"))
+
+
+def build_findings(profile, current, baseline, have_baseline):
+    """One finding per stream, ordered by the lens's ranking.
+
+    With no usable baseline nothing can be called NEW, ESCALATING or GONE — there
+    is nothing to have changed from — so every stream is a plain count.
+    """
+    # rare_first surfaces the long tail (the anomaly lens's whole point); the
+    # default puts the loudest stream first.
+    rare_first = bool(profile.get("rare_first"))
+    findings = []
+    for pair, count in sorted(current.items(),
+                              key=lambda kv: (kv[1] if rare_first else -kv[1], kv[0])):
+        bucket = band(count)
+        previous = baseline.get(pair)
+        if not have_baseline:
+            findings.append(Finding(
+                f"steady:{pair}:{bucket}",
+                f"{label(pair)} — {fmt(count)} events.", False))
+        elif previous is None:
+            findings.append(Finding(
+                f"new:{pair}",
+                f":rotating_light: NEW {profile['noun']} {label(pair)} — "
+                f"{fmt(count)} events in the {profile['window'].lstrip('-')} window, "
+                f"absent from the previous run.", True))
+        elif band(previous) > bucket:
+            findings.append(Finding(
+                f"steady:{pair}:{bucket}",
+                f"{label(pair)} — {fmt(count)} events, down from {fmt(previous)}.",
+                False))
+        elif band(previous) < bucket:
+            findings.append(Finding(
+                f"spike:{pair}:{bucket}",
+                f":chart_with_upwards_trend: {label(pair)} ESCALATING — "
+                f"{fmt(count)} events, up from {fmt(previous)}.", True))
+        else:
+            findings.append(Finding(
+                f"steady:{pair}:{bucket}",
+                f"{label(pair)} — {fmt(count)} events (was {fmt(previous)}).", False))
+
+    # A stream that was there last run and is not now. On the anomaly lens this is
+    # the "source fell silent" case the old prompt hunted for, so it is critical;
+    # on the security lens a host that stopped failing auth is good news, routine.
+    #
+    # A disappearance is a discrete EVENT, and it is reported once: the pair is
+    # absent from the counts this run saves, so the next run has nothing to miss
+    # it from. Critical here buys the one thing that matters — the line can never
+    # be suppressed by a ledger already holding this pair's key from earlier in
+    # the day (vanish, return, vanish again). STANDING ingest silence is not this
+    # lens's job and is not left uncovered: splunk-digest.py recomputes it from
+    # the expected-continuous indexes every hour and repeats it for as long as it
+    # holds.
+    if have_baseline:
+        gone_critical = bool(profile.get("gone_critical"))
+        for pair in sorted(set(baseline) - set(current)):
+            findings.append(Finding(
+                f"gone:{pair}",
+                f"{':warning: ' if gone_critical else ''}{label(pair)} GONE — "
+                f"{fmt(baseline[pair])} events at the previous run, absent now.",
+                gone_critical))
+    return findings
+
+
+def load_ledger(state, today):
+    """Today's already-presented keys. A new UTC day resets it to empty, and a
+    state file predating the ledger simply carries none."""
+    ledger = (state or {}).get("ledger")
+    if not isinstance(ledger, dict) or ledger.get("day") != today:
+        return []
+    keys = ledger.get("keys")
+    return list(keys) if isinstance(keys, list) else []
+
+
+def build_report(profile, results, now, state):
+    """(text_to_deliver, state_payload). text may be SILENT to suppress delivery."""
+    window = profile["window"].lstrip("-")
+    scope = profile["scope"]
+    current = parse_rows(results, profile["fields"])
+    today = now.date().isoformat()
+    prior = state if (state or {}).get("schema") == STATE_SCHEMA else None
+    baseline = (prior or {}).get("counts")
+    have_baseline = isinstance(baseline, dict)
+    baseline = baseline if have_baseline else {}
+    ledger = load_ledger(prior, today)
+
+    shown = []
+    for finding in build_findings(profile, current, baseline, have_baseline):
+        if len(shown) >= MAX_FINDINGS:
+            break
+        if finding.critical or finding.key not in ledger:
+            shown.append(finding)
+
+    lines = [f.text for f in shown]
+    posted = list(ledger)
+
+    def silent():
+        return SILENT, {"schema": STATE_SCHEMA, "counts": current,
+                        "ledger": {"day": today, "keys": posted}}
+
+    if not current:
+        # Zero matching rows is a fact, not an all-clear: it is equally consistent
+        # with a genuinely quiet window and with ingest having stopped.
+        if "zero-rows" in ledger:
+            return silent()
+        lines.append(
+            f"Zero rows from the {profile['title'].lower()} query over {scope} in "
+            f"the {window} window — either a genuinely quiet window or ingest has "
+            f"stopped; this run cannot tell which.")
+        posted.append("zero-rows")
+    elif not lines:
+        if "quiet" in ledger:
+            return silent()
+        lines.append(
+            f"Nothing new — all {len(current)} {profile['noun']}(s) in {scope} over "
+            f"the {window} window were already reported today.")
+        posted.append("quiet")
+    else:
+        posted.extend(f.key for f in shown)
+        lines.append(
+            f"Scope: {len(current)} {profile['noun']}(s) in {scope}, {window} window.")
+
+    header = f"*{profile['title']} — last {window}*"
+    return "\n".join([header] + lines), {
+        "schema": STATE_SCHEMA,
+        "counts": current,
+        "ledger": {"day": today, "keys": posted},
+    }
+
+
+def state_path(name):
+    return os.path.join(STATE_DIR, f"splunk-lens-{name}.json")
+
+
+def load_state(path):
+    """Return the stored state, or None when it is unreadable."""
+    try:
+        with open(path) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def save_state(path, payload):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f)
+    os.replace(tmp, path)
+
+
+def main(argv):
+    # fail loud, never fabricate: any error is delivered, then exit 0
+    try:
+        name, profile = select_profile(argv)
+        env = load_env(ENV_PATH)
+        url = env.get("SPLUNK_MCP_URL")
+        token = env.get("SPLUNK_MCP_TOKEN")
+        if not url or not token:
+            raise RuntimeError("SPLUNK_MCP_URL / SPLUNK_MCP_TOKEN missing from .env")
+        results = asyncio.run(run_query(url, token, profile["query"], profile["window"]))
+    except Exception as e:  # noqa: BLE001 - deliberately broad; failure must be delivered
+        # asyncio.TaskGroup wraps the real fault in an ExceptionGroup; unwrap to the
+        # root leaf so the delivered message names the actual cause instead of a
+        # useless "ExceptionGroup: 1 sub-exception". Short, and secret-free.
+        root = e
+        for _ in range(10):
+            sub = getattr(root, "exceptions", None)
+            if not sub:
+                break
+            root = sub[0]
+        print(f":warning: Splunk lens FAILED: {type(root).__name__}: {str(root)[:200]}")
+        return 0
+
+    path = state_path(name)
+    text, payload = build_report(profile, results, dt.datetime.now(dt.timezone.utc),
+                                 load_state(path))
+    save_state(path, payload)
+    print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
