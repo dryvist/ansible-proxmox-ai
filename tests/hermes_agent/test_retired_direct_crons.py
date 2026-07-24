@@ -32,11 +32,25 @@ def test_every_disabled_direct_cron_is_also_paused_on_the_host():
                 if not job.get("enabled")]
     assert disabled, "no disabled direct crons — this check has nothing to guard"
 
-    # The pause tasks name the job through a var, so resolve every *_cron_name
-    # that a `cron pause` line references and compare on real names.
+    # The pause tasks name the job through a var, so resolve every var a
+    # `cron pause` line references and compare on real names. Two shapes exist:
+    # a scalar var, and a loop over a list of job dicts pausing item.<field>.
+    #
+    # ponytail: this proves "a pause exists" BY PROXY — by recognising the
+    # syntactic shapes it knows. It therefore really means "a pause exists in a
+    # shape listed here", and a third shape reads as no pause at all: a false
+    # failure on correct config, which is the safe direction but still sends
+    # someone hunting a bug that is not there. Add the shape here, don't relax
+    # the assert. (Cost of the honest version — resolving what the play actually
+    # runs — is executing Ansible; not worth it for a config-pairing check.)
     paused = {value for key, value in defaults.items()
               if isinstance(value, str)
               and f"cron pause {{{{ {key} }}}}" in tasks}
+    paused |= {job[field]
+               for jobs in defaults.values() if isinstance(jobs, list)
+               for job in jobs if isinstance(job, dict)
+               for field in job
+               if f"cron pause {{{{ item.{field} }}}}" in tasks}
 
     missing = sorted(set(disabled) - paused)
     assert not missing, (
