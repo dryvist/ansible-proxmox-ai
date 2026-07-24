@@ -22,17 +22,6 @@ VLAN.
 - Runs the separately authenticated `hermes dashboard` service on the published
   dashboard port. Traefik exposes it at the no-port `hermes` hostname; the
   existing `/webhooks/` route and `hermes-api` endpoint remain machine-only.
-- Runs the **operator Kanban board** on the published kanban port, exposed by
-  Traefik at the `kanban` hostname behind the estate SSO gate. Upstream's
-  Dashboard has no board view, so this is a thin stdlib HTTP face over the
-  `hermes kanban` CLI: it reads with `kanban list --json` and mutates with the
-  same verbs a worker uses (`promote`, `block`, `unblock`, `complete`,
-  `archive`, `comment`, `create`). `kanban.db` stays the single source of
-  truth — the board holds no state and defines no card semantics of its own,
-  so every change lands on the agent's own event stream. Verbs outside that
-  allow-list are rejected, and a mutation arriving without the `Remote-User`
-  header Authelia sets is refused, so reaching the port directly cannot write.
-  Set `hermes_agent_kanban_board_enabled: false` to omit the service.
 - `HERMES_HOME` (`/var/lib/hermes/.hermes`) lives on a dedicated ZFS data volume —
   memory, skills, profiles, the Kanban DB, sessions and logs — so it is snapshotted
   and replicated to the DR node (the agent's accumulated knowledge is irreplaceable).
