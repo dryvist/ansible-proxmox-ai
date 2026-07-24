@@ -648,9 +648,30 @@ hermes_agent_splunk_status_digest_script_name: splunk-digest.py
 # after the first converge.
 hermes_agent_superseded_digest_cron_name: splunk-hourly-digest-v3
 # Indexes that must always be reporting; absent / zero / stale => ingest anomaly.
+# An entry here is exempt from the per-day novelty gate and re-fires a CRITICAL
+# INGEST SILENCE every run for as long as it is silent — so only list an index
+# that is genuinely expected to carry data right now. Listing a
+# structurally-empty index manufactures a permanent false positive, which is
+# precisely the way to train the operator to ignore this alert class.
+#
+# `network` was such an entry and is removed. It is superseded, not empty: it
+# holds 89 real IPFIX events from a single ~11h window on 2026-06-11/12 and
+# nothing since, because the per-index HEC split moved the pipeline to
+# index=netflow (ansible-proxmox-apps #1270 finishes that rename). So the alert
+# was not catching a live pipeline that died — it was watching a name the
+# pipeline stopped writing to over a month ago, and would have kept firing
+# forever no matter how healthy the pipeline got.
+#
+# `netflow` is deliberately NOT substituted in. It is the correct name, but it
+# is structurally empty for an upstream reason: the UniFi UDW reports NetFlow
+# export enabled and emits zero packets to the collector (Zammad #17146; the
+# same gap is recorded in tofu-unifi gateway-telemetry.tf and is why
+# ansible-splunk ships its `netflow` ingest detector disabled). Adding it here
+# would relocate the false positive, not remove it. Add `netflow` back the same
+# day the gateway starts exporting — and flip that ansible-splunk detector to
+# disabled: 0 in the same change.
 hermes_agent_splunk_digest_expected_indexes:
   - os
-  - network
   - firewall
 hermes_agent_splunk_digest_staleness_minutes: 60
 hermes_agent_splunk_digest_window: "-24h"
