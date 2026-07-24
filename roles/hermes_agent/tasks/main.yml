@@ -278,6 +278,30 @@
       \1"-q", prompt,
   notify: Restart hermes-gateway
 
+# Zammad #17143 item 3: the crash classifier flags a dispatcher worker that
+# exited rc=0 with its task still running as a protocol violation, but the
+# message did not distinguish "kanban tools were never registered" from "the
+# model just didn't call one". A dispatcher-spawned worker ALWAYS has
+# HERMES_KANBAN_TASK set before exec (kanban_db._default_spawn — both the goal
+# and classic paths go through the one spawner) and the schema gate force-adds
+# the kanban toolset on that env (model_tools._compute_tool_definitions), so the
+# lifecycle tools are always present. That makes this unambiguously a
+# model-did-not-call violation, not a missing toolset — say so, so the operator
+# is not sent hunting a registration bug that cannot occur here.
+- name: Patch Hermes protocol-violation message to name the model-did-not-call case
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: |-
+      ^([ \t]*)"worker exited cleanly \(rc=0\) without calling "
+      \1"kanban_complete or kanban_block — protocol violation"$
+    replace: |-
+      \1"worker exited cleanly (rc=0) without calling "
+      \1"kanban_complete or kanban_block. Lifecycle tools are always "
+      \1"registered for dispatcher-spawned workers (HERMES_KANBAN_TASK "
+      \1"set), so this is a model-did-not-call protocol violation, not "
+      \1"a missing toolset; a plain retry will not help."
+  notify: Restart hermes-gateway
+
 # An idempotency hit returns before create_task applies new fields. Upgrade only
 # active goal-enabled repeats in place so a current-slot card is reconciled
 # without mutating completed history or downgrading an existing goal card.
