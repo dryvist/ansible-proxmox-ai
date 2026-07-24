@@ -323,26 +323,40 @@ def test_every_configured_triage_job_renders_and_is_distinct():
     assert len(set(seen_state.values())) == len(jobs), "jobs must not share a state file"
 
 
-# Indexes that exist in the homelab Splunk, from `| tstats count where index=* by
-# index`. A job searching an index that does not exist silently returns nothing
-# for that half of its search and looks entirely healthy doing it — which is what
-# `index=network` did in the prompts these jobs replace. Refresh this list when
-# an index is genuinely added; do not add a name to make a test pass.
+# Indexes that exist in the homelab Splunk, from
+# `| eventcount summarize=false index=*`, which ENUMERATES indexes. Do not
+# derive this from `tstats`: that only returns indexes with data in the search
+# window, so it silently omits real-but-idle ones and would make this check
+# reject valid config. A job searching an index that does not exist returns
+# nothing for that part of its search and looks entirely healthy doing it —
+# which is what `index=network` did in the prompts these jobs replace. Refresh
+# this list when an index is genuinely added; do not add a name to make a test
+# pass.
 KNOWN_INDEXES = {
-    "claude", "codex", "dns", "firewall", "gemini", "hermes", "llm", "main",
-    "openbao_audit", "os", "proxy", "unifi",
+    "ai", "claude", "codex", "dns", "firewall", "gemini", "genai_traces",
+    "hermes", "history", "honeypot", "host_metrics", "llm", "llm_metrics",
+    "mac_perf", "main", "netflow", "netmon_metrics", "network", "openai",
+    "openbao_audit", "os", "os_metrics", "otel", "proxy", "summary", "unifi",
+    "unifi_metrics", "vscode",
 }
 
 
-def test_every_configured_index_exists():
+def test_no_configured_index_is_a_typo():
+    """Catches a misspelled index, which silently kills that part of a search.
+
+    It does NOT catch the defect that actually bit us: `network` is spelled
+    correctly and exists, it just has had no data in over a month. Whether an
+    index is still being written to is a live question and cannot be answered
+    from the repo — this only rules out names that are not indexes at all.
+    """
     import yaml
 
     defaults = yaml.safe_load((REPO_ROOT / "roles/hermes_agent/defaults/main.yml").read_text())
     for job in defaults["hermes_agent_triage_jobs"]:
         unknown = set(job["indexes"]) - KNOWN_INDEXES
         assert not unknown, (
-            f"{job['name']} searches non-existent index(es) {sorted(unknown)} — "
-            f"that half of its search silently matches nothing")
+            f"{job['name']} searches unknown index(es) {sorted(unknown)} — "
+            f"that part of its search silently matches nothing")
 
 
 if __name__ == "__main__":
