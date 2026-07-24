@@ -98,6 +98,17 @@ hermes_agent_model_max_tokens: 8192
 # assert checks against the router's per-attempt timeout — resolves to 1800.
 hermes_agent_stream_read_timeout: "{{ ai_stream_read_timeout_seconds }}"
 hermes_agent_stream_stale_timeout: 900
+# Per-call MCP tool timeout (config_servers.<srv>.timeout). The hermes-agent
+# runtime already ENFORCES this bound (tools/mcp_tool._run_on_mcp_loop raises
+# TimeoutError at the deadline and returns a clean tool error), but the per-server
+# key was undeclared, so it fell back to the 300s default. Declaring it at 180s
+# makes a hung-but-connected MCP upstream fail a data card's tool call in 3 min
+# instead of 5 — the card then fails/requeues via max_retries + kanban
+# failure_limit within its max_runtime, so a dead MCP never freezes the sole
+# worker slot indefinitely (Vikunja 815). 180s still allows a legitimately slow
+# bounded Splunk search. The brain call is separately bounded by
+# hermes_agent_stream_stale_timeout above.
+hermes_agent_mcp_tool_timeout_seconds: 180
 # The api key IS the LiteLLM router master key; source it from the canonical
 # LLM_ROUTER_MASTER_KEY env (same as the llm_router role) so no per-run mapping
 # is needed. HERMES_AGENT_MODEL_API_KEY still overrides if explicitly set.
