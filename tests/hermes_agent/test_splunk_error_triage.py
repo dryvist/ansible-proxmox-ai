@@ -229,6 +229,43 @@ def test_delivered_text_never_contains_tool_call_markup():
     assert GUARD(JOB, "out.md", text) == text
 
 
+# --- no cron name may be a substring of another ------------------------------
+
+def test_no_reconciled_cron_name_is_a_substring_of_another_job():
+    """Both reconcilers test job existence with `name in cron_list_stdout`.
+
+    A RECONCILED name contained in some other job's name therefore reads as
+    already-present, and the drift branch fires `cron remove` for a job that
+    does not exist — failing the converge on a fresh guest.
+
+    Caught for real: naming the script job `splunk-error-triage` put it inside
+    the paused `splunk-error-triage-v2`, which `cron list --all` still prints.
+
+    Only reconciled names are checked against the full universe of names that
+    can appear in that listing. The kanban `job:` values are not themselves cron
+    names (the reconciler appends `-enqueue`), and the superseded-removal list
+    matches with exact membership, not substring — neither is a hazard here.
+    """
+    import itertools
+    import yaml
+
+    defaults = yaml.safe_load((REPO_ROOT / "roles/hermes_agent/defaults/main.yml").read_text())
+    direct = {job["name"] for job in defaults["hermes_agent_direct_cron_jobs"]}
+    enqueuers = {card["job"] + "-enqueue" for card in defaults.get("hermes_agent_kanban_cards", [])}
+    scripts = {
+        defaults["hermes_agent_error_triage_cron_name"],
+        defaults["hermes_agent_splunk_status_digest_cron_name"],
+        defaults["hermes_agent_kanban_safety_net_cron_name"],
+    }
+    reconciled = direct | enqueuers | scripts
+    # Everything `cron list --all` can print, including paused/superseded jobs.
+    universe = reconciled | {v for k, v in defaults.items()
+                             if k.endswith("_cron_name") and isinstance(v, str)}
+    collisions = [(r, n) for r, n in itertools.product(sorted(reconciled), sorted(universe))
+                  if r != n and r in n]
+    assert not collisions, f"reconciled cron name(s) contained in another job's name: {collisions}"
+
+
 if __name__ == "__main__":
     passed = 0
     for name, fn in sorted(globals().items()):
