@@ -7,6 +7,11 @@ so everything printed here must be TRUE. Never invent data. Missing / zero / sta
 data is ALWAYS an explicit anomaly, never summarized as "no anomalies" (Zammad
 #17143 fabrication; #17144 masked ingest outage).
 
+Every hourly run posts the real numbers AND their change since the previous run.
+There is no "no change" short-circuit: a flat hour is reported as flat *with* the
+volumes that are flat, because a bare "No change" line is recycled boilerplate
+that carries no information and trains readers to ignore the channel.
+
 Pure stdlib + the `mcp` client (present in the hermes-agent venv, which runs this
 file — `hermes cron ... --script *.py` executes non-.sh scripts via Python). Reads
 secrets from the .env file, never prints them. The MCP streamable-http teardown
@@ -30,8 +35,19 @@ EXPECTED_CONTINUOUS = {{ hermes_agent_splunk_digest_expected_indexes | to_json }
 STALENESS_MIN = {{ hermes_agent_splunk_digest_staleness_minutes }}
 EARLIEST = "{{ hermes_agent_splunk_digest_window }}"
 # Inventory + liveness via tstats metadata ONLY — never index=* over raw events.
-TSTATS_QUERY = "| tstats count as vol, max(_time) as last_time where index=* by index"
-ANCHOR_UTC_HOUR = {{ hermes_agent_splunk_digest_anchor_hour }}
+# Grouped by host too: 24h volume per index is the headline, host counts and
+# host-set changes are how a single dead forwarder shows up before the index
+# total drops far enough to look like an outage.
+TSTATS_QUERY = "| tstats count as vol, max(_time) as last_time where index=* by index, host"
+# State schema version. Bumped when the shape changes; an older/absent value
+# means "no usable baseline" and the run reports full numbers with no deltas.
+STATE_SCHEMA = 2
+# ponytail: calibration knob, deliberately a module constant and not an Ansible
+# variable — one number, one consumer. Percent swing that promotes an index to
+# the "movers" line. Raise it if normal diurnal jitter starts filling the line.
+MOVER_PCT = 25.0
+# Cap on how many host names a single set-change line will spell out.
+MAX_NAMED_HOSTS = 5
 
 
 def load_env(path):
@@ -86,10 +102,35 @@ def fmt_vol(v):
     return f"{v:,}"
 
 
-def build_digest(results, now_epoch):
-    """Return (full_text, fingerprint, healthy_count, silent_count)."""
-    # parse: index -> {vol, last_time, age_min}. Splunk returns vol/last_time as strings.
+def fmt_delta(cur, prev_vol, have_baseline):
+    """Delta cell. Explicit about zero; explicit about *why* a delta is absent."""
+    if not have_baseline:
+        return "no baseline"
+    if prev_vol is None:
+        return "NEW"
+    diff = cur - prev_vol
+    return "0" if diff == 0 else f"{diff:+,}"
+
+
+def pct_change(cur, prev_vol):
+    """Percent change, or None when it is undefined (no baseline / prior zero)."""
+    if prev_vol is None or prev_vol <= 0:
+        return None
+    return (cur - prev_vol) * 100.0 / prev_vol
+
+
+def name_list(names):
+    """Comma-joined, capped, with an honest '+N more' tail."""
+    shown = sorted(names)[:MAX_NAMED_HOSTS]
+    extra = len(names) - len(shown)
+    return ", ".join(shown) + (f" (+{extra} more)" if extra > 0 else "")
+
+
+def parse_results(results, now_epoch):
+    """Fold the per-(index, host) rows into per-index records + the host set."""
     by_index = {}
+    all_hosts = set()
+    saw_host_field = False
     for row in results:
         idx = row.get("index")
         if idx is None:
@@ -102,8 +143,28 @@ def build_digest(results, now_epoch):
             last = int(float(row.get("last_time", 0)))
         except (TypeError, ValueError):
             last = 0
-        age_min = (now_epoch - last) / 60.0 if last > 0 else float("inf")
-        by_index[idx] = {"vol": vol, "last_time": last, "age_min": age_min}
+        rec = by_index.setdefault(idx, {"vol": 0, "last_time": 0, "hosts": set()})
+        rec["vol"] += vol
+        rec["last_time"] = max(rec["last_time"], last)
+        host = row.get("host")
+        if host is not None:
+            saw_host_field = True
+            if host != "":
+                rec["hosts"].add(host)
+                all_hosts.add(host)
+    for rec in by_index.values():
+        rec["age_min"] = (now_epoch - rec["last_time"]) / 60.0 if rec["last_time"] > 0 else float("inf")
+    return by_index, all_hosts, saw_host_field
+
+
+def build_digest(results, now_epoch, prev):
+    """Return (full_text, fingerprint, snapshot).
+
+    `prev` is the previous run's snapshot (or None when there is no usable
+    baseline — first run, or a pre-delta state file). `snapshot` is what this
+    run persists for the next one to diff against.
+    """
+    by_index, all_hosts, saw_host_field = parse_results(results, now_epoch)
 
     def is_silent(rec):
         return rec is None or rec["vol"] == 0 or rec["age_min"] > STALENESS_MIN
@@ -128,12 +189,44 @@ def build_digest(results, now_epoch):
     healthy = sum(1 for r in by_index.values() if r["vol"] > 0 and r["age_min"] <= STALENESS_MIN)
     silent_count = len(anomalies)
 
-    # fingerprint: sorted (index, oom_bucket, is_silent) incl. absent-expected
+    # fingerprint: sorted (index, oom_bucket, is_silent) incl. absent-expected.
+    # It no longer gates whether numbers are reported — it only answers "did the
+    # health picture change materially since last hour", which is worth saying.
     fp_tuples = sorted(
         [(i, oom_bucket(r["vol"]), is_silent(r)) for i, r in by_index.items()]
         + [(i, -1, True) for i in EXPECTED_CONTINUOUS if i not in by_index]
     )
     fingerprint = hashlib.sha256(json.dumps(fp_tuples).encode()).hexdigest()
+
+    snapshot = {
+        "by_index": {i: {"vol": r["vol"], "hosts": len(r["hosts"])} for i, r in by_index.items()},
+        "hosts": sorted(all_hosts),
+        "host_detail": saw_host_field,
+    }
+
+    # --- deltas vs the previous run -------------------------------------------
+    prev_by_index = (prev or {}).get("by_index") or {}
+    have_baseline = prev is not None
+    prev_hosts = set((prev or {}).get("hosts") or [])
+    prev_host_detail = bool((prev or {}).get("host_detail"))
+
+    def prev_vol(idx):
+        rec = prev_by_index.get(idx)
+        return rec.get("vol") if isinstance(rec, dict) else None
+
+    gone_indexes = sorted(set(prev_by_index) - set(by_index))
+    new_indexes = sorted(i for i in by_index if have_baseline and prev_vol(i) is None)
+    new_hosts = all_hosts - prev_hosts if (have_baseline and prev_host_detail) else set()
+    gone_hosts = prev_hosts - all_hosts if (have_baseline and prev_host_detail) else set()
+
+    everything_flat = (
+        have_baseline
+        and not gone_indexes
+        and not new_indexes
+        and not new_hosts
+        and not gone_hosts
+        and all(r["vol"] == prev_vol(i) for i, r in by_index.items())
+    )
 
     # --- compose full digest ---
     now_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -146,14 +239,63 @@ def build_digest(results, now_epoch):
             lines.append("ALL expected-continuous indexes are silent or stale — likely a pipeline/ingest failure.")
         lines.append("")
 
-    lines.append(f"*Splunk Status Digest* — {now_iso} (window: last 24h)")
-    lines.append(f"Indexes reporting: {len(by_index)}  |  healthy: {healthy}  |  expected silent: {silent_count}")
+    if have_baseline:
+        since = (prev or {}).get("captured_iso")
+        try:
+            since_txt = dt.datetime.fromisoformat(since).strftime("%H:%M UTC")
+        except (TypeError, ValueError):
+            since_txt = "the previous run"
+        baseline_txt = f"Δ vs {since_txt}"
+    else:
+        baseline_txt = "Δ unavailable — no prior baseline"
+    lines.append(f"*Splunk Status Digest* — {now_iso} (24h window; {baseline_txt})")
+
+    if not saw_host_field:
+        host_txt = "hosts: unavailable (query returned no host field)"
+    elif not have_baseline or not prev_host_detail:
+        host_txt = f"hosts: {len(all_hosts)} (no baseline)"
+    else:
+        net = len(all_hosts) - len(prev_hosts)
+        host_txt = f"hosts: {len(all_hosts)} ({net:+d})" if net else f"hosts: {len(all_hosts)} (flat)"
+    lines.append(
+        f"Indexes reporting: {len(by_index)}  |  healthy: {healthy}  |  "
+        f"expected silent: {silent_count}  |  {host_txt}"
+    )
     lines.append("")
     lines.append("```")
-    lines.append(f"{'INDEX':<16} {'24h VOLUME':>14}  {'LAST EVENT':>12}")
+    lines.append(f"{'INDEX':<16} {'24h VOLUME':>13} {'Δ vs PREV':>12} {'HOSTS':>6} {'LAST EVENT':>11}")
     for idx, r in sorted(by_index.items(), key=lambda kv: kv[1]["vol"], reverse=True):
-        lines.append(f"{idx:<16} {fmt_vol(r['vol']):>14}  {fmt_age(r['age_min']):>12}")
+        lines.append(
+            f"{idx:<16} {fmt_vol(r['vol']):>13} {fmt_delta(r['vol'], prev_vol(idx), have_baseline):>12} "
+            f"{len(r['hosts']):>6} {fmt_age(r['age_min']):>11}"
+        )
     lines.append("```")
+
+    if not have_baseline:
+        lines.append(":information_source: No prior baseline (first run, or the state file predates delta "
+                     "tracking) — volumes above are real, deltas begin with the next run.")
+    elif everything_flat:
+        lines.append(f":left_right_arrow: All {len(by_index)} indexes FLAT vs the previous run — every 24h "
+                     f"volume above is byte-identical to last hour, and all {len(all_hosts)} hosts are the "
+                     "same set. A rolling 24h window that does not move at all is itself worth a look.")
+    else:
+        movers = []
+        for idx, r in sorted(by_index.items(), key=lambda kv: kv[1]["vol"], reverse=True):
+            pct = pct_change(r["vol"], prev_vol(idx))
+            if pct is not None and abs(pct) >= MOVER_PCT:
+                movers.append(f"{idx} {pct:+.0f}% ({fmt_vol(prev_vol(idx))} -> {fmt_vol(r['vol'])})")
+        if movers:
+            lines.append(f"*Movers* (>= {MOVER_PCT:.0f}% swing): " + "; ".join(movers))
+
+    if new_indexes:
+        lines.append(":new: Newly reporting since last run: " + ", ".join(new_indexes))
+    for idx in gone_indexes:
+        lines.append(f":warning: index={idx} STOPPED reporting — had {fmt_vol(prev_by_index[idx].get('vol', 0))} "
+                     "events at the previous run, absent now")
+    if gone_hosts:
+        lines.append(f":warning: {len(gone_hosts)} host(s) stopped logging since last run: {name_list(gone_hosts)}")
+    if new_hosts:
+        lines.append(f":new: {len(new_hosts)} host(s) started logging since last run: {name_list(new_hosts)}")
 
     lines.append("")
     if anomalies:
@@ -163,24 +305,57 @@ def build_digest(results, now_epoch):
         lines.append(f":white_check_mark: All {len(EXPECTED_CONTINUOUS)} expected-continuous indexes fresh "
                      f"(< {STALENESS_MIN} min) with data in the last 24h.")
 
-    return "\n".join(lines), fingerprint, healthy, silent_count
+    return "\n".join(lines), fingerprint, snapshot
 
 
 def load_state():
+    """Return the stored state, or None when it is unreadable."""
     try:
         with open(STATE_PATH) as f:
-            return json.load(f)
+            state = json.load(f)
     except (OSError, ValueError):
         return None
+    return state if isinstance(state, dict) else None
 
 
-def save_state(fingerprint, first_seen_iso, last_post_date):
+def baseline_from(state):
+    """The previous snapshot, or None when the state carries no usable baseline.
+
+    A pre-delta state file (schema < 2, no by_index) is treated as "no baseline"
+    rather than an error — the run reports full numbers and deltas resume next hour.
+    """
+    if not state or state.get("schema") != STATE_SCHEMA:
+        return None
+    return state if isinstance(state.get("by_index"), dict) else None
+
+
+def save_state(fingerprint, first_seen_iso, last_post_date, snapshot, captured_iso):
     os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+    payload = {"schema": STATE_SCHEMA, "fingerprint": fingerprint,
+               "first_seen_iso": first_seen_iso, "last_post_date": last_post_date,
+               "captured_iso": captured_iso}
+    payload.update(snapshot)
     tmp = STATE_PATH + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"fingerprint": fingerprint, "first_seen_iso": first_seen_iso,
-                   "last_post_date": last_post_date}, f)
+        json.dump(payload, f)
     os.replace(tmp, STATE_PATH)
+
+
+def stability_line(state, fingerprint, now, today):
+    """One honest line about how long the health picture has held."""
+    if not state:
+        # No prior run to have changed *from* — saying "CHANGED" here would be a
+        # comparison against nothing, i.e. a fabrication.
+        return "Health-state baseline established (no prior state file).", now.isoformat()
+    if state.get("fingerprint") != fingerprint:
+        return ":arrows_counterclockwise: Health state CHANGED vs the previous run.", now.isoformat()
+    first_seen_iso = state.get("first_seen_iso", now.isoformat())
+    try:
+        first_date = dt.datetime.fromisoformat(first_seen_iso).date()
+        day_n, first_short = (now.date() - first_date).days + 1, first_date.isoformat()
+    except (TypeError, ValueError):
+        day_n, first_short = 1, today
+    return f"Health state unchanged — Day {day_n} since {first_short}.", first_seen_iso
 
 
 def main():
@@ -207,32 +382,13 @@ def main():
         return 0
 
     now = dt.datetime.now(dt.timezone.utc)
-    now_epoch = now.timestamp()
     today = now.strftime("%Y-%m-%d")
-    full_text, fingerprint, healthy, silent_count = build_digest(results, now_epoch)
-
     state = load_state()
-    if state and state.get("fingerprint") == fingerprint and now.hour != ANCHOR_UTC_HOUR:
-        first_seen_iso = state.get("first_seen_iso", now.isoformat())
-        try:
-            first_date = dt.datetime.fromisoformat(first_seen_iso).date()
-            day_n = (now.date() - first_date).days + 1
-            first_seen_short = first_date.isoformat()
-        except ValueError:
-            day_n, first_seen_short = 1, today
-        # refresh last_post_date but keep fingerprint/first_seen stable
-        save_state(fingerprint, first_seen_iso, today)
-        print(f"No change — {healthy} indexes healthy, {silent_count} silent, "
-              f"Day {day_n} since {first_seen_short}")
-        return 0
+    full_text, fingerprint, snapshot = build_digest(results, now.timestamp(), baseline_from(state))
+    stability, first_seen_iso = stability_line(state, fingerprint, now, today)
 
-    # changed / no prior state / anchor hour -> full digest
-    if state and state.get("fingerprint") == fingerprint:
-        first_seen_iso = state.get("first_seen_iso", now.isoformat())  # anchor: keep age
-    else:
-        first_seen_iso = now.isoformat()  # new state
-    save_state(fingerprint, first_seen_iso, today)
-    print(full_text)
+    save_state(fingerprint, first_seen_iso, today, snapshot, now.isoformat())
+    print(full_text + "\n" + stability)
     return 0
 
 
