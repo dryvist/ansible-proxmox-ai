@@ -796,6 +796,29 @@
     group: "{{ hermes_agent_user }}"
     mode: "0750"
 
+# Zammad stale-ticket auto-close, brought under role management (token from .env,
+# no hardcoded secret). Cron is gated off by default (see defaults) — the script
+# is deployed regardless so enabling is a one-flag change.
+- name: Deploy the Zammad stale-ticket auto-close script
+  ansible.builtin.template:
+    src: zammad-auto-close.py.j2
+    dest: "{{ hermes_agent_hermes_home }}/scripts/{{ hermes_agent_zammad_autoclose_script_name }}"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+
+# Remove the hand-placed orphan scripts under /var/lib/hermes/scripts/ (a dir
+# separate from the managed .hermes/scripts/): the old zammad-auto-close.py
+# carried a CLEARTEXT Zammad API token (superseded by the managed template above;
+# rotate that token), and issue_tracker.py is an unused, unmanaged SQLite tool.
+- name: Remove hand-placed orphan scripts (cleartext-token auto-close + unused tracker)
+  ansible.builtin.file:
+    path: "{{ hermes_agent_home }}/scripts/{{ item }}"
+    state: absent
+  loop:
+    - zammad-auto-close.py
+    - issue_tracker.py
+
 # One `<job>-enqueue` script cron per card, same schedule the old agentic cron
 # used; each enqueues its workload's current-slot card. Disabled cards create no
 # cron (the include is gated on item.enabled).
@@ -851,6 +874,23 @@
   when:
     - hermes_agent_splunk_status_digest_enabled | bool
     - hermes_agent_superseded_digest_cron_name in (hermes_agent_active_cron_list.stdout | default(''))
+
+# Zammad stale-ticket auto-close cron (disabled by default; see defaults). Closures
+# deliver to Slack for auditability. Gated on the auto-close flag AND zammad + slack
+# credentials being present.
+- name: Reconcile the Zammad stale-ticket auto-close cron
+  ansible.builtin.include_tasks: reconcile_enqueuer_cron.yml
+  vars:
+    item:
+      name: "{{ hermes_agent_zammad_autoclose_cron_name }}"
+      schedule: "{{ hermes_agent_zammad_autoclose_schedule }}"
+      script: "{{ hermes_agent_zammad_autoclose_script_name }}"
+      deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+      enabled: >-
+        {{ hermes_agent_zammad_autoclose_enabled | bool
+           and hermes_agent_zammad_url | length > 0
+           and hermes_agent_zammad_api_token | length > 0
+           and hermes_agent_slack_hermes_all_channel | length > 0 }}
 
 # Restart=always now lives in the unit itself (see the template); remove the
 # stale drop-in a prior mechanism left behind (Restart=on-failure, dated Jul 6)
