@@ -82,3 +82,34 @@
   vars:
     _llm_router_retry_budget: >-
       {{ (llm_router_rate_limit_retries | int) * (llm_router_retry_after_seconds | int) }}
+
+- name: Assert the standby backend covers the brain and only the brain
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # ONE standby base_url exists, and the endpoint behind it is a single
+      # standalone agent serving ONE model id. Two flagged entries would render
+      # two deployments at that one URL, and the one it cannot serve black-holes
+      # half its shuffled traffic (num_retries is 0, so a connection error is
+      # forwarded to the caller, never retried on the sibling).
+      - _llm_router_standby_models | length == 1
+      # It must be the model the brain alias resolves to — a standby for a model
+      # no consumer requests leaves the real brain a single point of failure.
+      - _llm_router_standby_models | first == _llm_router_brain_model
+    fail_msg: >-
+      Standby backend is misdirected (roles/llm_router/tasks/assert.yml):
+      standby: true is set on [{{ _llm_router_standby_models | join(', ') }}],
+      but exactly one entry may carry it and it must be
+      {{ _llm_router_brain_model }} (what {{ hermes_brain_model }} resolves to).
+      One llm_router_llm_large_standby_base_url serves one model id; a second
+      flagged entry renders a deployment that endpoint cannot serve, and
+      simple-shuffle sends it real brain traffic that hard-fails.
+      Constraint: config.yaml.j2 standby block.
+    success_msg: >-
+      Standby backend targets the brain ({{ _llm_router_brain_model }}) only.
+  vars:
+    _llm_router_standby_models: >-
+      {{ llm_router_large_models | selectattr('standby', 'defined')
+         | selectattr('standby') | map(attribute='backend') | list }}
+    _llm_router_brain_model: >-
+      {{ llm_router_model_group_aliases.get(hermes_brain_model, hermes_brain_model) }}
