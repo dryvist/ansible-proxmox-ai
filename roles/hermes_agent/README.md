@@ -255,11 +255,14 @@ run. Gated on the Zammad URL + token alongside the Slack gates.
 the canonical surface for ongoing/known findings; `splunk-triage`'s DM recalls
 the digest's last-posted state from memory before alerting and stays silent
 when its top finding is already covered there — the DM is for genuinely NEW
-or ESCALATING findings only. The digest itself fingerprints its own findings
-against its last post: unchanged → a one-line "still open" update; changed, or
-once per day (the anchor hour), → the full digest. `github-triage` applies the
-same fingerprint-and-collapse pattern to its top-5 list. All three reuse the
-existing memory tool for this — no new state infrastructure.
+or ESCALATING findings only. The script-fed status digest does NOT collapse:
+every hourly run posts the real per-index volumes plus their delta against the
+previous run, because a "no change" line carries no information. It still
+fingerprints its findings, but the fingerprint now only labels whether the
+health picture moved — it no longer decides whether numbers get reported, so
+there is no anchor hour to defeat the suppression. `github-triage` does apply
+the fingerprint-and-collapse pattern to its top-5 list, reusing the existing
+memory tool — no new state infrastructure.
 
 **Fresh posts, not one thread.** Each cron run is an isolated session, so its Slack
 output is delivered **flat/top-level** (a new message each time) rather than threaded
