@@ -278,6 +278,7 @@ def test_no_reconciled_cron_name_is_a_substring_of_another_job():
     scripts = triage | {
         defaults["hermes_agent_splunk_status_digest_cron_name"],
         defaults["hermes_agent_kanban_safety_net_cron_name"],
+        defaults["hermes_agent_kanban_digest_cron_name"],
     }
     reconciled = direct | enqueuers | scripts
     # Everything `cron list --all` can print, including paused/superseded jobs.

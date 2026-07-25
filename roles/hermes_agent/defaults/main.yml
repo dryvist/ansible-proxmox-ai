@@ -751,6 +751,44 @@ hermes_agent_triage_enabled: >-
      and hermes_agent_slack_app_token | length > 0
      and hermes_agent_digest_slack_channel | length > 0 }}
 
+# --- Master Kanban digest (no LLM in the fact path) --------------------------
+# What the board DID since this digest last ran: cards completed (with enough of
+# each worker's own summary to be useful), cards that failed, retried or exited
+# open, and cards still running past their own max_runtime. One report covering
+# every workload — the mechanism that lets a pile of duplicate per-workload crons
+# be retired.
+#
+# `--no-agent --script`, same contract as the Splunk digests: the script reads
+# kanban.db READ-ONLY and its stdout is delivered verbatim. That property is not
+# stylistic here — this is the surface that reports a wedged board, and a wedged
+# board is usually a wedged brain, so a digest that needed the brain would go
+# quiet in precisely the failure it exists to announce. It is deliberately absent
+# from hermes_agent_seeded_cron_names for the same reason: a cluster window
+# silences that list, and this must keep reporting through one.
+#
+# 15 minutes is the SOAK cadence, while the board's failure modes (466 crashed
+# and 59 timed_out runs on the board at the time of writing) are still being
+# characterised. Intended steady state is hourly — set this to 60 and the
+# schedule below follows. It is the only place the interval is written: the
+# script's no-state fallback window is rendered from this same number, so the
+# schedule and the fallback cannot drift apart.
+hermes_agent_kanban_digest_interval_minutes: 15
+hermes_agent_kanban_digest_cron_schedule: >-
+  {{ '*/' ~ hermes_agent_kanban_digest_interval_minutes ~ ' * * * *'
+     if (hermes_agent_kanban_digest_interval_minutes | int) < 60
+     else '9 * * * *' }}
+hermes_agent_kanban_digest_cron_name: kanban-digest
+hermes_agent_kanban_digest_script_name: kanban-digest.py
+hermes_agent_kanban_digest_state_name: kanban-digest.json
+hermes_agent_kanban_digest_title: Kanban Board Digest
+# Same surface the other script-fed digests deliver to; never a hardcoded id.
+hermes_agent_kanban_digest_channel: "{{ hermes_agent_digest_slack_channel }}"
+# No Splunk or brain dependency in the gate — only "can it deliver".
+hermes_agent_kanban_digest_enabled: >-
+  {{ hermes_agent_slack_bot_token | length > 0
+     and hermes_agent_slack_app_token | length > 0
+     and hermes_agent_kanban_digest_channel | length > 0 }}
+
 # --- Retire the agentic anomaly hunt (duplicative; nothing replaces it) -------
 # Unlike every other retirement here, this one has no replacement job: the
 # anomaly hunt's factual content is a strict subset of what splunk-status-digest
