@@ -1,0 +1,105 @@
+---
+# Reconcile ONE named Hermes operating profile (see hermes_agent_profiles in
+# defaults/main.yml for the concept and the decision rule). Included once per
+# entry with `item` = that profile's dict. Idempotent: `hermes profile create`
+# is guarded by `creates`, and every file below is a plain Ansible
+# template/copy re-render (safe to run every converge).
+#
+# Order matters: this runs AFTER the shared dryvist skills bundle is deployed
+# to the default profile (so hermes_agent_bundle_path is already resolved) and
+# BEFORE the Kanban enqueuer crons are reconciled (so a card's --skill and
+# --assignee always resolve against a profile that already exists).
+
+# `hermes profile create` always creates under the ROOT HERMES_HOME
+# (profiles/<name>/), regardless of which profile is "active" — pointing
+# HERMES_HOME at the default root here is therefore correct, not a shortcut.
+- name: "Create profile directory for {{ item.name }}"
+  ansible.builtin.command:
+    cmd: "{{ hermes_agent_bin }} profile create {{ item.name }} --no-skills --no-alias"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  args:
+    creates: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}"
+
+- name: "Deploy profile config.yaml for {{ item.name }}"
+  ansible.builtin.template:
+    src: config-profile.yaml.j2
+    dest: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/config.yaml"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+  vars:
+    hermes_agent_profile: "{{ item }}"
+
+- name: "Deploy profile secrets (.env) for {{ item.name }}"
+  ansible.builtin.template:
+    src: hermes-env-profile.j2
+    dest: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/.env"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0600"
+  vars:
+    hermes_agent_profile: "{{ item }}"
+  no_log: true
+
+# Memory: the same standalone Hindsight service as the default profile
+# (hermes_agent_memory_api_url), local_external mode. bank_id_template is
+# deliberately UNSET (matches the default profile), so every profile shares
+# the "hermes" bank_id — memory is explicitly NOT part of the profile
+# isolation boundary (verified against the pinned hindsight plugin source:
+# static bank_id defaults to "hermes" and bank_id_template is empty by
+# default, so _resolve_bank_id_template falls back to that fallback for
+# every {profile} placeholder value). This keeps daily-summary (default)
+# able to read a moved job's findings, and no memory continuity is lost when
+# a card's assignee changes.
+- name: "Ensure the hindsight config dir exists for profile {{ item.name }}"
+  ansible.builtin.file:
+    path: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/hindsight"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+  when: hermes_agent_memory_provider == 'hindsight'
+
+- name: "Deploy the hindsight provider config for profile {{ item.name }}"
+  ansible.builtin.template:
+    src: hindsight-config.json.j2
+    dest: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/hindsight/config.json"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+  when: hermes_agent_memory_provider == 'hindsight'
+
+# SOUL.md = the shared autonomous-base persona (same content every profile
+# gets) plus this profile's own addendum, appended. The lazy first cut per
+# the profiles plan: role-local templates/soul-<name>.md.j2, concatenated at
+# render time; move into the nix-hermes bundle once the content stabilizes.
+- name: "Deploy composed SOUL.md (shared base + addendum) for profile {{ item.name }}"
+  ansible.builtin.copy:
+    content: >-
+      {{ (lookup('ansible.builtin.file', hermes_agent_bundle_path ~ '/SOUL.md')
+          ~ "\n\n" ~
+          lookup('ansible.builtin.template', role_path ~ '/templates/' ~ item.soul_addendum_file)) }}
+    dest: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/SOUL.md"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0644"
+  when: hermes_agent_soul_managed | bool
+
+# Only the skills this profile is scoped to reach — a card's --skill only
+# resolves what its assignee actually has materialized under its own
+# skills/dryvist/ dir.
+- name: "Deploy the scoped dryvist skills for profile {{ item.name }}"
+  ansible.builtin.copy:
+    src: "{{ hermes_agent_bundle_path }}/skills/{{ hermes_agent_profile_skill }}/"
+    dest: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/skills/{{ hermes_agent_profile_skill }}/"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+    directory_mode: "0750"
+  loop: "{{ item.skills }}"
+  loop_control:
+    loop_var: hermes_agent_profile_skill
+    label: "{{ hermes_agent_profile_skill }}"

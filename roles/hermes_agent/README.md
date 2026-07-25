@@ -79,9 +79,59 @@ Verify on the first converge: (a) `install.sh` runs clean non-interactively as r
 on a minimal Debian LXC; (b) `hermes gateway run --replace` stays up headless with no
 messaging platform; (c) Hindsight initialises from `config.yaml` alone (it may need
 its client package on first run — `memory status` check is non-fatal so it surfaces
-without failing the converge). Single-profile first; profiles + Kanban teams + a
-messaging gateway are a documented follow-up (the whole `HERMES_HOME` is already
-persisted for them).
+without failing the converge).
+
+## Operating profiles
+
+Choosing a profile is the **default action** for new recurring work — not an
+advanced option. `default` is not the absence of a choice; it is correct only
+for cross-domain, board-meta, or GitHub work (say why in the PR).
+
+A **profile** is a fully independent `HERMES_HOME` directory (own
+`config.yaml`, `.env`, `SOUL.md`, memory, skills) that a Kanban card selects
+via its `assignee` field. The dispatcher spawns
+`hermes -p <assignee> chat ...` with `HERMES_HOME` pointed at that profile's
+directory, so the assignee is the **entire tool/credential envelope** the
+worker runs under — MCP servers, native toolset floor, `.env` secrets, and
+skills. Named profiles live at `{{ hermes_agent_hermes_home }}/profiles/<name>/`;
+the `default` profile is `{{ hermes_agent_hermes_home }}` itself.
+
+There is **one shared gateway, dispatcher, and Kanban board** for every
+profile (no per-profile gateway, cron store, or Slack bot) — see
+`hermes_agent_profiles` in `defaults/main.yml` for the full design comment,
+the decision rule, and the isolation caveat (profile scoping is a
+config/tool-availability boundary, not an OS sandbox: every profile runs as
+the same `hermes` user in the same LXC).
+
+| Profile | Mission | Has | Must NOT have |
+| --- | --- | --- | --- |
+| `default` | Cross-domain, board-meta, GitHub | everything (unchanged) | — |
+| `splunk-admin` | Read-only SIEM: SPL, alert + report | Splunk + Qdrant MCP, `splunk-monitor` skill | GitHub, Zammad, other MCP/skills |
+| `homelab-admin` | Incidents + fabric health | Qdrant MCP (+ Vikunja/Nautobot later), `zammad-incidents` skill | Splunk, GitHub, other MCP/skills |
+
+**Adding a card to a profile**: set that card's `assignee:` in
+`hermes_agent_kanban_cards` to the profile name (empty string = default).
+`assert.yml` fails the converge loudly if an assignee names no profile in
+`hermes_agent_profiles` — upstream would otherwise bucket it
+`skipped_nonspawnable` and the card would silently sit ready forever.
+
+**Adding a new profile**: add an entry to `hermes_agent_profiles`
+(`mcp`/`env`/`skills`/`soul_addendum_file`), add a
+`templates/soul-<name>.md.j2` addendum, and scope it by what it must **not**
+reach, not by what it might someday need — a new capability is a new profile
+decision made in the PR that adds the work, not a widened existing one.
+
+**Concurrency**: `hermes_agent_kanban_max_in_progress` is the SUM cap across
+every profile combined (1 today — see the comment on that var). Naming a
+profile never raises real concurrency by itself; raising the cap back up is a
+separate, deliberate operator decision after the serving tier proves the
+capacity.
+
+**Verifying a new profile** (manual, not part of the converge — it burns an
+LLM run): see "Profile smoke test" in `docs/HERMES_OPS.md`.
+
+Full page: <https://docs.jacobpevans.com/ai/hermes-operating-profiles>
+(concept, table, and the decision rule for the public docs site).
 
 ## LLM knowledge base (llm-wiki)
 

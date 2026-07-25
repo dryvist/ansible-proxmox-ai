@@ -366,7 +366,18 @@ hermes_agent_api_max_concurrent_runs: 2
 # deployment as the API cap above (same measured-envelope rationale: one
 # stream serves well, 2-stream aggregate ~0.71x, beyond that thrash). Workers
 # + API runs + the cron fleet all share that envelope — keep the SUM small.
-hermes_agent_kanban_max_in_progress: 2
+#
+# max_in_progress is the SUM cap across every profile combined. Pinned to 1
+# (not upstream's 2) because that is today's EFFECTIVE ceiling: with a single
+# profile, max_in_progress_per_profile already limits the board to one worker
+# in flight. Naming profiles must not silently raise real concurrency just
+# because more assignees now exist — with 3 profiles and this left at 2, the
+# global cap would newly permit 2 concurrent workers (one each from two
+# profiles), a real increase nothing measured. Raising this back to 2 (cross-
+# profile overlap at ~0.71x aggregate) is a documented operator decision made
+# AFTER the serving tier proves that capacity — never a side effect of adding
+# a profile.
+hermes_agent_kanban_max_in_progress: 1
 hermes_agent_kanban_max_in_progress_per_profile: 1
 
 # Recurring cards use Hermes' goal loop so a worker that forgets its lifecycle
@@ -927,8 +938,8 @@ hermes_agent_zammad_review_cron_prompt: >-
   Review open Zammad incidents across ALL groups and queues, not just your
   own. Recall memory key "zammad-review-last" (incident ids + states you saw
   last run) and work the DELTA. For each open incident: (1) check whether
-  evidence now proves it complete — verify with your tools (Splunk queries,
-  fabric probes, GitHub state), and if proven, RESOLVE the ticket yourself
+  evidence now proves it complete — verify with your available probes (fabric
+  health checks, prior article history), and if proven, RESOLVE the ticket yourself
   with a closing article stating the evidence — never just recommend closing;
   (2) if you find genuinely NEW information or a plausible solution, append
   ONE article with it — never repeat what an earlier article already says;
@@ -1023,10 +1034,10 @@ hermes_agent_anomaly_hunt_cron_prompt: >-
   ingest gap; (3) volume anomalies — a source spiking or collapsing. Confirm
   every candidate against a SECOND query before calling it real; one noisy
   sample is not an anomaly. Output contract: for each CONFIRMED new finding,
-  file a GitHub issue via the dryvist/github-issues skill (respect its issue
-  caps — if the cap is reached, open no more and flag the overflow for a Zammad
-  incident instead), each with a one-paragraph description and the exact bounded
-  query that shows it. DM the operator only for a confirmed HIGH-severity
+  file a kanban_create follow-up card (the default-profile reviewer triages
+  it from there — this profile carries no GitHub credential) with a
+  one-paragraph description and the exact bounded query that shows it, then
+  post it to Slack too. DM the operator only for a confirmed HIGH-severity
   finding; otherwise stay quiet. Self-check before finishing: did every finding
   survive a second confirming query, and is it genuinely absent from
   "anomaly-hunt-last"? Drop any that fail. Save the updated signature/source
@@ -1128,6 +1139,57 @@ hermes_agent_app_seeding_cron_prompt: >-
   summary of what you seeded this run. Self-check: did you verify each thing you
   marked done, and did you avoid re-doing an already-complete sub-task?
 
+# --- Named operating profiles (Hermes agent identities) -----------------------
+# A profile is a fully independent HERMES_HOME directory (own config.yaml,
+# .env, SOUL.md, memory, skills) that a Kanban card selects via its `assignee`
+# field below — the dispatcher spawns `hermes -p <assignee> chat ...` with
+# HERMES_HOME pointed at that profile's directory, so the assignee is the
+# ENTIRE tool/credential envelope the worker runs under (see
+# roles/hermes_agent/README.md "Operating profiles"). One shared
+# gateway/dispatcher/board serves every profile; there is no per-profile
+# gateway, cron store, or Slack bot (tasks/profiles.yml sets
+# kanban.dispatch_in_gateway: false in every profile's own config.yaml as a
+# belt-and-braces guard against that).
+#
+# DECISION RULE (the default action for new recurring work): choose a profile
+# FIRST. `default` is not the absence of a choice — it is correct only for
+# cross-domain, board-meta, or GitHub work, and the card/PR should say why.
+# SIEM-shaped work is splunk-admin; incident/infra-shaped work is
+# homelab-admin; work that fits neither and is not cross-domain is the signal
+# to propose a NEW profile, not to widen an existing one — a profile is scoped
+# by what it must NOT reach, not by what it might someday need.
+#
+# `env` names the .env sections templates/hermes-env-profile.j2 renders with a
+# real value; every OTHER credential the template knows about is rendered
+# BLANK for this profile (dotenv override=True on load) — that blanking IS the
+# isolation mechanism: a spawned worker inherits the gateway process's full
+# environment, so simply omitting a line would leave the default profile's
+# credential silently readable. `mcp` names the mcp_servers entries
+# templates/config-profile.yaml.j2 renders. `skills` are copied from the
+# nix-hermes bundle into the profile's own skills/dryvist/ dir — a card's
+# --skill only resolves what its assignee actually has.
+#
+# NOTE: profile isolation is a CONFIG/tool-availability boundary, not an OS
+# sandbox — every profile runs as the same `hermes` OS user in the same LXC,
+# so a worker with the terminal/file toolset can still read another profile's
+# files on disk by hand. The blast-radius boundary is the LXC (see the role
+# header comment); a profile boundary keeps a job's ordinary tool calls,
+# skills, and prompts scoped to what it is meant to reach — it does not stop a
+# deliberately adversarial instruction from reading a sibling profile's .env.
+hermes_agent_profiles:
+  - name: splunk-admin
+    description: Read-only SIEM analyst (bounded SPL, alert + report, no remediation)
+    mcp: [splunk, qdrant]
+    env: [slack, splunk]
+    skills: [dryvist/splunk-monitor]
+    soul_addendum_file: soul-splunk-admin.md.j2
+  - name: homelab-admin
+    description: Incident lifecycle + fabric health (evidence-before-resolve)
+    mcp: [qdrant]                  # + vikunja/nautobot once their gateway routes go live
+    env: [slack, zammad]
+    skills: [dryvist/zammad-incidents]
+    soul_addendum_file: soul-homelab-admin.md.j2
+
 # One entry per recurring workload. Static fields only (no prompt bodies): the
 # body is named by `prompt_var` and resolved from that var at template-render
 # time — the catalog prompts (loaded by set_fact in tasks/main.yml) and the
@@ -1138,15 +1200,18 @@ hermes_agent_app_seeding_cron_prompt: >-
 #                  (%Y-%m-%d), else date + `-s<floor(hour/interval)>`
 #   schedule       the enqueuer cron schedule (== the old agentic schedule)
 #   prompt_var     name of the var holding the card body (catalog or inline)
+#   assignee       "" (default profile) or a name in hermes_agent_profiles —
+#                  see the profiles block above; asserted in assert.yml
 #   unblock        reviewer only: `kanban unblock` the card after create so a
 #                  pre-created blocked next-slot card goes live on time
 hermes_agent_kanban_cards:
+  # profile: homelab-admin — fabric health is homelab ops
   - job: "{{ hermes_agent_daily_status_cron_name }}"
     title: "Homelab AI fabric status"
     interval_hours: 1
     schedule: "{{ hermes_agent_daily_status_cron_schedule }}"
     prompt_var: hermes_agent_daily_status_cron_prompt
-    assignee: ""
+    assignee: homelab-admin
     max_runtime: "45m"
     max_retries: 2
     skills: []
@@ -1155,6 +1220,7 @@ hermes_agent_kanban_cards:
       {{ hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
+  # profile: default — wiki is shared default-home state
   - job: "{{ hermes_agent_nightly_wiki_cron_name }}"
     title: "Nightly llm-wiki health pass"
     interval_hours: 24
@@ -1170,6 +1236,9 @@ hermes_agent_kanban_cards:
          and hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
+  # profile: default — cross-domain rollup, needs visibility across every
+  # domain's findings; moving it is blocked on the Hindsight memory-scope
+  # question (see roles/hermes_agent/README.md "Operating profiles")
   - job: "{{ hermes_agent_summary_cron_name }}"
     title: "Daily operator summary"
     interval_hours: 24
@@ -1184,12 +1253,13 @@ hermes_agent_kanban_cards:
       {{ hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
+  # profile: homelab-admin — incident lifecycle ownership
   - job: "{{ hermes_agent_zammad_review_cron_name }}"
     title: "Zammad incident review"
     interval_hours: 2
     schedule: "{{ hermes_agent_zammad_review_cron_schedule }}"
     prompt_var: hermes_agent_zammad_review_cron_prompt
-    assignee: ""
+    assignee: homelab-admin
     max_runtime: "30m"
     max_retries: 2
     skills: [dryvist/zammad-incidents]
@@ -1200,12 +1270,13 @@ hermes_agent_kanban_cards:
          and hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
+  # profile: splunk-admin — SIEM; the only splunk card active under the throttle
   - job: "{{ hermes_agent_splunk_triage_cron_name }}"
     title: "Splunk triage sweep"
     interval_hours: 1
     schedule: "{{ hermes_agent_splunk_triage_cron_schedule }}"
     prompt_var: hermes_agent_splunk_triage_cron_prompt
-    assignee: ""
+    assignee: splunk-admin
     max_runtime: "45m"
     max_retries: 2
     skills: [dryvist/splunk-monitor]
@@ -1216,50 +1287,58 @@ hermes_agent_kanban_cards:
          and hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
+  # profile: splunk-admin — SIEM (throttle-paused; routing-at-rest)
   - job: "{{ hermes_agent_splunk_security_cron_name }}"
     title: "Splunk security lens"
     interval_hours: 6
     schedule: "{{ hermes_agent_splunk_security_cron_schedule }}"
     prompt_var: hermes_agent_splunk_security_cron_prompt
-    assignee: ""
+    assignee: splunk-admin
     max_runtime: "45m"
     max_retries: 2
     skills: [dryvist/splunk-monitor]
     unblock: false
     enabled: *kanban_splunk_gate
+  # profile: splunk-admin — SIEM (throttle-paused; routing-at-rest)
   - job: "{{ hermes_agent_splunk_parsing_cron_name }}"
     title: "Splunk parsing / data-quality lens"
     interval_hours: 24
     schedule: "{{ hermes_agent_splunk_parsing_cron_schedule }}"
     prompt_var: hermes_agent_splunk_parsing_cron_prompt
-    assignee: ""
+    assignee: splunk-admin
     max_runtime: "45m"
     max_retries: 2
     skills: [dryvist/splunk-monitor]
     unblock: false
     enabled: *kanban_splunk_gate
+  # profile: splunk-admin — SIEM (throttle-paused; routing-at-rest)
   - job: "{{ hermes_agent_splunk_deepdive_cron_name }}"
     title: "Splunk deep-dive research"
     interval_hours: 24
     schedule: "{{ hermes_agent_splunk_deepdive_cron_schedule }}"
     prompt_var: hermes_agent_splunk_deepdive_cron_prompt
-    assignee: ""
+    assignee: splunk-admin
     max_runtime: "45m"
     max_retries: 1
     skills: [dryvist/splunk-monitor]
     unblock: false
     enabled: *kanban_splunk_gate
+  # profile: splunk-admin — retired card (superseded by the script-fed status
+  # digest); paused, never dispatches. Assigned for consistency (it carries
+  # dryvist/splunk-monitor, same mechanical rule as the rest of the fleet
+  # above) rather than left as an unexplained exception.
   - job: "{{ hermes_agent_splunk_digest_cron_name }}"
     title: "Splunk hourly digest"
     interval_hours: 1
     schedule: "{{ hermes_agent_splunk_digest_cron_schedule }}"
     prompt_var: hermes_agent_splunk_digest_cron_prompt
-    assignee: ""
+    assignee: splunk-admin
     max_runtime: "15m"
     max_retries: 2
     skills: [dryvist/splunk-monitor]
     unblock: false
     enabled: *kanban_splunk_gate
+  # profile: default — GitHub org work; a future github-admin profile, not now
   - job: "{{ hermes_agent_github_monitor_cron_name }}"
     title: "GitHub org triage sweep"
     interval_hours: 6
@@ -1276,6 +1355,7 @@ hermes_agent_kanban_cards:
          and hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
+  # profile: default — GitHub security triage; same future github-admin home
   - job: "{{ hermes_agent_bot_pr_triage_cron_name }}"
     title: "Bot PR security triage"
     interval_hours: 6
@@ -1293,6 +1373,7 @@ hermes_agent_kanban_cards:
          and hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
+  # profile: default — GitHub App signed-PR path; same future github-admin home
   - job: "{{ hermes_agent_docs_sync_cron_name }}"
     title: "Docs sync"
     interval_hours: 24
@@ -1309,6 +1390,9 @@ hermes_agent_kanban_cards:
          and hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
+  # profile: default — board-wide meta work; also self-recreates its own next
+  # card (see below), so keeping it default sidesteps any assignee-inheritance
+  # question in that chain prompt
   - job: "{{ hermes_agent_kanban_reviewer_job }}"
     title: "Hermes 8h self-review"
     interval_hours: 8
@@ -1324,20 +1408,24 @@ hermes_agent_kanban_cards:
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
   # --- Work-supply cards (Track C) ---
+  # profile: splunk-admin — SIEM hunting. Loses direct GitHub issue-filing
+  # (splunk-admin carries no GitHub PAT/skill by design); findings land in
+  # Slack + a kanban_create follow-up card instead, which the default-profile
+  # reviewer triages (see the prompt below and roles/hermes_agent/README.md).
   - job: "{{ hermes_agent_anomaly_hunt_cron_name }}"
     title: "Anomaly hunt (observability unknowns)"
     interval_hours: 12
     schedule: "{{ hermes_agent_anomaly_hunt_cron_schedule }}"
     prompt_var: hermes_agent_anomaly_hunt_cron_prompt
-    assignee: ""
+    assignee: splunk-admin
     max_runtime: "25m"
     max_retries: 2
-    skills: [dryvist/splunk-monitor, dryvist/github-issues]
+    skills: [dryvist/splunk-monitor]
     unblock: false
-    # Gate on the Splunk MCP + Slack (same as the splunk fleet): it hunts in the
-    # SIEM and delivers to Slack. Issue-filing degrades gracefully when the
-    # github-issues PAT is absent (the prompt falls back to a Zammad flag).
+    # Gate on the Splunk MCP + Slack (same as the splunk fleet): it hunts in
+    # the SIEM and delivers to Slack.
     enabled: *kanban_splunk_gate
+  # profile: default — web + github-issues, cross-domain by nature
   - job: "{{ hermes_agent_docs_study_cron_name }}"
     title: "Docs-site study"
     interval_hours: 24
@@ -1352,6 +1440,7 @@ hermes_agent_kanban_cards:
       {{ hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
+  # profile: default — home-channel curation, web only, cross-domain
   - job: "{{ hermes_agent_ai_news_cron_name }}"
     title: "AI news scout"
     interval_hours: 4
@@ -1363,6 +1452,7 @@ hermes_agent_kanban_cards:
     skills: []
     unblock: false
     enabled: *kanban_slack_gate
+  # profile: default — cross-domain by nature
   - job: "{{ hermes_agent_daily_innovation_cron_name }}"
     title: "Daily innovation proposal"
     interval_hours: 24
@@ -1374,6 +1464,7 @@ hermes_agent_kanban_cards:
     skills: [dryvist/github-issues]
     unblock: false
     enabled: *kanban_slack_gate
+  # profile: default — self-retiring bootstrap, nearly done
   - job: "{{ hermes_agent_app_seeding_cron_name }}"
     title: "App seeding (Langflow + Langfuse)"
     interval_hours: 24
