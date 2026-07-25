@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.16.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.15.0...v0.16.0) (2026-07-25)
+
+
+### Features
+
+* **hermes_agent:** escalate to host and sourcetype rollups before going quiet ([#192](https://github.com/dryvist/ansible-proxmox-ai/issues/192)) ([6157b9c](https://github.com/dryvist/ansible-proxmox-ai/commit/6157b9c7280507d287e055cd21851e676f49ec18))
+* **hermes_agent:** hourly Splunk digest carries real per-run deltas ([#177](https://github.com/dryvist/ansible-proxmox-ai/issues/177)) ([c7f923b](https://github.com/dryvist/ansible-proxmox-ai/commit/c7f923bb4d896e6cf1e786edd7b2517d93e1089e))
+* **hermes_agent:** operator Kanban board over the agent task store ([#179](https://github.com/dryvist/ansible-proxmox-ai/issues/179)) ([c690c13](https://github.com/dryvist/ansible-proxmox-ai/commit/c690c1399b325e2e4bafc3ed9730b3ce5b2b02b4))
+* **hermes_agent:** per-day novelty gate so every digest run reports something new ([#183](https://github.com/dryvist/ansible-proxmox-ai/issues/183)) ([39a962c](https://github.com/dryvist/ansible-proxmox-ai/commit/39a962ccbd5d4dabe10fbb2bf4a7b44677beb7da))
+* **hermes_agent:** retire the agentic anomaly hunt as duplicative ([#190](https://github.com/dryvist/ansible-proxmox-ai/issues/190)) ([60ced86](https://github.com/dryvist/ansible-proxmox-ai/commit/60ced86315070e9992bfe01491e2c65a50b46a32))
+* **hermes_agent:** script-fed security lens; triage digests are config now ([#188](https://github.com/dryvist/ansible-proxmox-ai/issues/188)) ([98fefdf](https://github.com/dryvist/ansible-proxmox-ai/commit/98fefdfb92d0ac27e08152f4a2846599d345c122))
+
+
+### Bug Fixes
+
+* **fabric_watchdog:** pin alert channel instead of falling back to a DM ([#176](https://github.com/dryvist/ansible-proxmox-ai/issues/176)) ([fa4ac0e](https://github.com/dryvist/ansible-proxmox-ai/commit/fa4ac0ea41c9f2a749b0fa85df346f8db154f3d0))
+* **hermes_agent:** never deliver tool-call markup; script-fed error triage ([#186](https://github.com/dryvist/ansible-proxmox-ai/issues/186)) ([081f4eb](https://github.com/dryvist/ansible-proxmox-ai/commit/081f4ebe836665f027695f337bdea62f507a3144))
+* **hermes_agent:** pin prompts to the error-triage tool-call-leak fix ([#174](https://github.com/dryvist/ansible-proxmox-ai/issues/174)) ([ae43e17](https://github.com/dryvist/ansible-proxmox-ai/commit/ae43e1729ab7b7236ff9670edb7ba348ab4a43ff))
+* **hermes_agent:** pin prompts to the two-more-digests leak fix ([#178](https://github.com/dryvist/ansible-proxmox-ai/issues/178)) ([2da36f9](https://github.com/dryvist/ansible-proxmox-ai/commit/2da36f90ecaf76fdb840be95352123932c001599))
+* **hermes_agent:** stop watching superseded index `network` ([#191](https://github.com/dryvist/ansible-proxmox-ai/issues/191)) ([ba86b22](https://github.com/dryvist/ansible-proxmox-ai/commit/ba86b22ed40bde0120b42cd1dbb2b8c6e35c5ad6))
+* **hermes:** pause the v2 agentic crons during a cluster window ([#198](https://github.com/dryvist/ansible-proxmox-ai/issues/198)) ([02ea533](https://github.com/dryvist/ansible-proxmox-ai/commit/02ea533716f467699d2faa303fde3319b134a39a))
+* **llm_router:** absorb serving-tier 429s instead of failing the caller ([#175](https://github.com/dryvist/ansible-proxmox-ai/issues/175)) ([8b1b62a](https://github.com/dryvist/ansible-proxmox-ai/commit/8b1b62aefe709f54c9f63287be2feca9c415d094))
+* **llm_router:** roll pool restarts one member at a time ([#185](https://github.com/dryvist/ansible-proxmox-ai/issues/185)) ([2cda54c](https://github.com/dryvist/ansible-proxmox-ai/commit/2cda54c6b06b9ca1a7bcbfafb1219722b0c6232c))
+
 ## [0.15.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.14.0...v0.15.0) (2026-07-24)
 
 
