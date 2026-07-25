@@ -1,11 +1,28 @@
 #!/usr/bin/env python3
 {{ ansible_managed | comment }}
-"""Deterministic, no-LLM Splunk status digest.
+"""Deterministic, no-LLM Splunk status digest with a per-day novelty gate.
 
 STDOUT is delivered verbatim to Slack (cron runs `--no-agent --deliver slack:<ch>`),
 so everything printed here must be TRUE. Never invent data. Missing / zero / stale
 data is ALWAYS an explicit anomaly, never summarized as "no anomalies" (Zammad
 #17143 fabrication; #17144 masked ingest outage).
+
+THE PER-DAY NOVELTY CONTRACT (operator requirement; supersedes the always-post
+full table this file used to emit): routine information may be presented ONCE per
+UTC day. A later run with nothing genuinely new to say about routine conditions
+must not re-present them. CRITICAL conditions are exempt and repeat every run for
+as long as they persist.
+
+Mechanics: every observation becomes a discrete *finding* carrying a stable
+identity key. A day-scoped ledger in the state file records which keys have been
+posted today and resets at the UTC day boundary. A routine finding whose key is in
+the ledger is suppressed; critical findings ignore the ledger entirely.
+
+When nothing routine is novel at the index level the search ESCALATES rather than
+falling back to boilerplate: host level, then sourcetype/composition level. Only a
+genuinely exhausted search prints a "nothing new" line, and that line names the
+search space it covered. Novel findings that did not fit this run's output cap are
+NOT ledgered, so they surface on the next run instead of being lost.
 
 Pure stdlib + the `mcp` client (present in the hermes-agent venv, which runs this
 file — `hermes cron ... --script *.py` executes non-.sh scripts via Python). Reads
@@ -20,6 +37,7 @@ import json
 import math
 import os
 import sys
+from collections import namedtuple
 
 # --- config (rendered from roles/hermes_agent/defaults/main.yml) ---------------
 ENV_PATH = "{{ hermes_agent_hermes_home }}/.env"
@@ -29,9 +47,41 @@ STATE_PATH = "{{ hermes_agent_hermes_home }}/state/splunk-digest.json"
 EXPECTED_CONTINUOUS = {{ hermes_agent_splunk_digest_expected_indexes | to_json }}
 STALENESS_MIN = {{ hermes_agent_splunk_digest_staleness_minutes }}
 EARLIEST = "{{ hermes_agent_splunk_digest_window }}"
+# Same span, phrased for prose ("the 24h window" rather than "the -24h window").
+WINDOW = EARLIEST.lstrip("-")
 # Inventory + liveness via tstats metadata ONLY — never index=* over raw events.
-TSTATS_QUERY = "| tstats count as vol, max(_time) as last_time where index=* by index"
-ANCHOR_UTC_HOUR = {{ hermes_agent_splunk_digest_anchor_hour }}
+# Grouped by host AND sourcetype: one metadata call feeds every finding dimension
+# (index volume, host membership, per-host liveness, sourcetype composition), so
+# escalating the search costs no extra Splunk work.
+TSTATS_QUERY = "| tstats count as vol, max(_time) as last_time where index=* by index, host, sourcetype"
+# State schema version. Bumped when the shape changes; an older/absent value
+# means "no usable baseline" and the run reports full numbers with no deltas.
+STATE_SCHEMA = 3
+# ponytail: calibration knobs, deliberately module constants and not Ansible
+# variables — real ingest jitters, and these want tuning against it rather than
+# templating. PCT_BANDS are the magnitude bands a change is bucketed into, and the
+# band is part of a finding's identity: "os up 25%" is one finding for the day,
+# while "os up 300%" later the same day is a genuinely different one. Raise the
+# first band if normal diurnal swing starts filling the output.
+PCT_BANDS = (25, 50, 100, 300, 1000)
+# Series below this volume are excluded from percent findings — 3 -> 9 events is
+# +200% and means nothing.
+MIN_MOVER_VOL = 100
+# Cap on how many host names a single set-change line will spell out.
+MAX_NAMED_HOSTS = 5
+# Per-run cap on routine findings. Unshown novel findings stay unledgered and
+# surface next run, which spreads a burst across the day instead of one wall post.
+MAX_FINDINGS = 8
+# Ledger size cap; oldest keys drop first. Only ever holds one day of keys.
+LEDGER_MAX = 500
+# Net host-fleet shrink treated as critical (repeats while it persists) rather
+# than as routine per-host findings.
+HOST_DROP_CRIT = 3
+# Percentage points of total-ingest share movement worth reporting.
+SHARE_SHIFT_PP = 5.0
+
+# key: stable identity for the day ledger. text: the Slack line.
+Finding = namedtuple("Finding", "key text")
 
 
 def load_env(path):
@@ -74,6 +124,8 @@ def oom_bucket(vol):
 
 
 def fmt_age(minutes):
+    if minutes == float("inf"):
+        return "never"
     if minutes < 90:
         return f"{int(round(minutes))} min"
     hours = minutes / 60.0
@@ -86,10 +138,50 @@ def fmt_vol(v):
     return f"{v:,}"
 
 
-def build_digest(results, now_epoch):
-    """Return (full_text, fingerprint, healthy_count, silent_count)."""
-    # parse: index -> {vol, last_time, age_min}. Splunk returns vol/last_time as strings.
+def fmt_delta(cur, prev_vol, have_baseline):
+    """Delta cell. Explicit about zero; explicit about *why* a delta is absent."""
+    if not have_baseline:
+        return "no baseline"
+    if prev_vol is None:
+        return "NEW"
+    diff = cur - prev_vol
+    return "0" if diff == 0 else f"{diff:+,}"
+
+
+def band_of(cur, prev):
+    """(direction, band_edge, pct) for a real move, else None.
+
+    None means "not a finding": no baseline, a series too small for a percent to
+    mean anything, or a swing under the smallest band. Never an estimate.
+    """
+    if prev is None or prev < MIN_MOVER_VOL:
+        return None
+    pct = (cur - prev) * 100.0 / prev
+    if abs(pct) < PCT_BANDS[0]:
+        return None
+    edge = max(e for e in PCT_BANDS if abs(pct) >= e)
+    return ("up" if pct > 0 else "down", edge, pct)
+
+
+def name_list(names):
+    """Comma-joined, capped, with an honest '+N more' tail."""
+    shown = sorted(names)[:MAX_NAMED_HOSTS]
+    extra = len(names) - len(shown)
+    return ", ".join(shown) + (f" (+{extra} more)" if extra > 0 else "")
+
+
+def parse_results(results, now_epoch):
+    """Fold per-(index, host, sourcetype) rows into per-index records.
+
+    Returns (by_index, host_last, saw_host_field, saw_sourcetype_field), where
+    by_index[i] carries vol, last_time, age_min, hosts{host: vol} and
+    sourcetypes{sourcetype: vol}, and host_last[host] is that host's newest event
+    epoch across every index.
+    """
     by_index = {}
+    host_last = {}
+    saw_host_field = False
+    saw_sourcetype_field = False
     for row in results:
         idx = row.get("index")
         if idx is None:
@@ -102,84 +194,396 @@ def build_digest(results, now_epoch):
             last = int(float(row.get("last_time", 0)))
         except (TypeError, ValueError):
             last = 0
-        age_min = (now_epoch - last) / 60.0 if last > 0 else float("inf")
-        by_index[idx] = {"vol": vol, "last_time": last, "age_min": age_min}
+        rec = by_index.setdefault(idx, {"vol": 0, "last_time": 0, "hosts": {}, "sourcetypes": {}})
+        rec["vol"] += vol
+        rec["last_time"] = max(rec["last_time"], last)
+        host = row.get("host")
+        if host is not None:
+            saw_host_field = True
+            if host != "":
+                rec["hosts"][host] = rec["hosts"].get(host, 0) + vol
+                host_last[host] = max(host_last.get(host, 0), last)
+        stype = row.get("sourcetype")
+        if stype is not None:
+            saw_sourcetype_field = True
+            if stype != "":
+                rec["sourcetypes"][stype] = rec["sourcetypes"].get(stype, 0) + vol
+    for rec in by_index.values():
+        rec["age_min"] = (now_epoch - rec["last_time"]) / 60.0 if rec["last_time"] > 0 else float("inf")
+    return by_index, host_last, saw_host_field, saw_sourcetype_field
 
-    def is_silent(rec):
-        return rec is None or rec["vol"] == 0 or rec["age_min"] > STALENESS_MIN
 
-    # ingest-silence anomalies over the expected-continuous list
-    anomalies = []
+def snapshot_of(by_index, hosts, saw_host_field, saw_sourcetype_field):
+    """What this run persists for the next one to diff against."""
+    return {
+        "by_index": {
+            i: {"vol": r["vol"], "hosts": len(r["hosts"]),
+                "host_vol": dict(r["hosts"]), "st_vol": dict(r["sourcetypes"])}
+            for i, r in by_index.items()
+        },
+        "hosts": sorted(hosts),
+        "host_detail": saw_host_field,
+        "st_detail": saw_sourcetype_field,
+    }
+
+
+def is_silent(rec):
+    return rec is None or rec["vol"] == 0 or rec["age_min"] > STALENESS_MIN
+
+
+def critical_findings(by_index, prev_by_index, hosts, prev_hosts, have_baseline, host_detail):
+    """Actionable-now conditions. EXEMPT from the ledger: they repeat every run for
+    as long as they hold, because a persisting outage is not stale news."""
+    out = []
+    all_expected_silent = bool(EXPECTED_CONTINUOUS) and all(
+        is_silent(by_index.get(i)) for i in EXPECTED_CONTINUOUS)
+
+    if not by_index:
+        out.append(Finding("crit:zero-rows",
+                           ":rotating_light: *SPLUNK INGEST OUTAGE* — tstats returned ZERO rows over the "
+                           "last 24h; no index reported any data."))
+    elif all_expected_silent:
+        out.append(Finding("crit:all-silent",
+                           ":rotating_light: *SPLUNK INGEST OUTAGE* — ALL expected-continuous indexes are "
+                           "silent or stale; likely a pipeline/ingest failure."))
+
     for idx in EXPECTED_CONTINUOUS:
         rec = by_index.get(idx)
-        if is_silent(rec):
-            if rec is None:
-                anomalies.append(f":warning: INGEST SILENCE: index={idx} — ABSENT from results, 24h volume 0")
-            else:
-                anomalies.append(
-                    f":warning: INGEST SILENCE: index={idx} — last event {fmt_age(rec['age_min'])} ago, "
-                    f"24h volume {fmt_vol(rec['vol'])}"
-                )
+        if not is_silent(rec):
+            continue
+        if rec is None:
+            out.append(Finding(f"crit:silence:{idx}",
+                               f":warning: INGEST SILENCE: index={idx} — ABSENT from results, 24h volume 0"))
+        else:
+            out.append(Finding(f"crit:silence:{idx}",
+                               f":warning: INGEST SILENCE: index={idx} — last event "
+                               f"{fmt_age(rec['age_min'])} ago, 24h volume {fmt_vol(rec['vol'])}"))
 
-    all_expected_silent = all(is_silent(by_index.get(i)) for i in EXPECTED_CONTINUOUS)
-    zero_rows = len(by_index) == 0
+    # An index that carried traffic and has now gone to zero or vanished. The
+    # expected-continuous ones are already covered above; don't say it twice.
+    for idx in sorted(prev_by_index):
+        if idx in EXPECTED_CONTINUOUS:
+            continue
+        was = prev_by_index[idx].get("vol", 0)
+        rec = by_index.get(idx)
+        if was > 0 and (rec is None or rec["vol"] == 0):
+            where = "absent from results" if rec is None else "reporting 0 events"
+            out.append(Finding(f"crit:zeroed:{idx}",
+                               f":warning: index={idx} went to ZERO — {fmt_vol(was)} events at the "
+                               f"previous run, now {where}"))
 
-    # health counters (honest populations): healthy = present, nonzero, fresh
+    if have_baseline and host_detail:
+        drop = len(prev_hosts) - len(hosts)
+        if drop >= HOST_DROP_CRIT:
+            out.append(Finding("crit:fleet-drop",
+                               f":warning: HOST FLEET DROP: {drop} host(s) stopped logging since the "
+                               f"previous run ({len(prev_hosts)} -> {len(hosts)}): "
+                               f"{name_list(prev_hosts - hosts)}"))
+    return out
+
+
+def index_findings(by_index, prev_by_index, have_baseline, healthy, silent_count,
+                   hosts, host_detail, today, stability):
+    """Tier 0 — the index-level picture. Cheapest and highest-level.
+
+    Ordered most-substantive first: the day's baseline table, then real movement,
+    then the housekeeping counters. MAX_FINDINGS truncates from the end, so a busy
+    run drops the counters rather than the news.
+    """
+    # The full table is routine information too, so it is a finding like any
+    # other: presented once a day, as that day's baseline. Its text is None
+    # because build_digest renders the table itself.
+    out = [Finding(f"table:{today}", None)]
+
+    for idx, r in sorted(by_index.items(), key=lambda kv: kv[1]["vol"], reverse=True):
+        prev = prev_by_index.get(idx)
+        prev_vol = prev.get("vol") if isinstance(prev, dict) else None
+        if have_baseline and prev_vol is None:
+            out.append(Finding(f"idx+:{idx}",
+                               f":new: index={idx} newly reporting — {fmt_vol(r['vol'])} events, "
+                               f"{len(r['hosts'])} host(s)"))
+            continue
+        move = band_of(r["vol"], prev_vol)
+        if move:
+            direction, edge, pct = move
+            out.append(Finding(f"vol:{idx}:{direction}{edge}",
+                               f"index={idx} volume {direction} {abs(pct):.0f}% "
+                               f"({fmt_vol(prev_vol)} -> {fmt_vol(r['vol'])})"))
+        if isinstance(prev, dict) and host_detail:
+            prev_n = prev.get("hosts")
+            if isinstance(prev_n, int) and prev_n != len(r["hosts"]):
+                out.append(Finding(f"idxhosts:{idx}:{len(r['hosts'])}",
+                                   f"index={idx} host count {prev_n} -> {len(r['hosts'])} "
+                                   f"(volume {fmt_vol(r['vol'])})"))
+
+    if (have_baseline and by_index and len(by_index) == len(prev_by_index)
+            and all(isinstance(prev_by_index.get(i), dict) and r["vol"] == prev_by_index[i].get("vol")
+                    for i, r in by_index.items())):
+        out.append(Finding(f"flat:{len(by_index)}",
+                           f":left_right_arrow: All {len(by_index)} indexes are byte-identical to the "
+                           f"previous run. A rolling {WINDOW} window that does not move at all is "
+                           "itself worth a look."))
+
+    out.append(Finding(f"health:{len(by_index)}/{healthy}/{silent_count}/{len(hosts)}",
+                       f"Indexes reporting: {len(by_index)}  |  healthy: {healthy}  |  "
+                       f"expected silent: {silent_count}  |  hosts: {len(hosts)}"))
+    if stability:
+        out.append(stability)
+    return out
+
+
+def host_findings(by_index, prev_by_index, hosts, prev_hosts, host_last, now_epoch,
+                  have_baseline, host_detail):
+    """Tier 1 — per-host membership, volume and liveness."""
+    out = []
+    if not host_detail:
+        return out
+
+    prev_host_vol = {}
+    for idx, prev in prev_by_index.items():
+        for host, vol in (prev.get("host_vol") or {}).items():
+            prev_host_vol[(idx, host)] = vol
+
+    if have_baseline:
+        for host in sorted(hosts - prev_hosts):
+            where = sorted(i for i, r in by_index.items() if host in r["hosts"])
+            out.append(Finding(f"host+:{host}",
+                               f":new: host {host} started logging — index(es) {', '.join(where)}"))
+        for host in sorted(prev_hosts - hosts):
+            was = sorted(i for i in prev_by_index if host in (prev_by_index[i].get("host_vol") or {}))
+            out.append(Finding(f"host-:{host}",
+                               f":warning: host {host} stopped logging — was in index(es) "
+                               f"{', '.join(was) or 'unknown'}"))
+
+    for idx, r in sorted(by_index.items()):
+        for host, vol in sorted(r["hosts"].items()):
+            move = band_of(vol, prev_host_vol.get((idx, host)))
+            if move:
+                direction, edge, pct = move
+                out.append(Finding(f"hostvol:{idx}:{host}:{direction}{edge}",
+                                   f"host {host} in index={idx} {direction} {abs(pct):.0f}% "
+                                   f"({fmt_vol(prev_host_vol[(idx, host)])} -> {fmt_vol(vol)})"))
+
+    for host in sorted(hosts):
+        last = host_last.get(host, 0)
+        age = (now_epoch - last) / 60.0 if last > 0 else float("inf")
+        if age > STALENESS_MIN:
+            # Bucketed by whole hours: one stale host is one finding per hour of
+            # staleness, not one per run.
+            bucket = "inf" if age == float("inf") else int(age // 60)
+            out.append(Finding(f"stale:{host}:{bucket}",
+                               f":hourglass: host {host} has data in the {WINDOW} window but its "
+                               f"newest event is {fmt_age(age)} old"))
+    return out
+
+
+def composition_findings(by_index, prev_by_index, have_baseline, st_detail, prev_st_detail):
+    """Tier 2 — sourcetype mix and each index's share of total ingest."""
+    out = []
+    if not have_baseline:
+        return out
+
+    if st_detail and prev_st_detail:
+        for idx, r in sorted(by_index.items()):
+            prev_st = (prev_by_index.get(idx) or {}).get("st_vol") or {}
+            for stype in sorted(set(r["sourcetypes"]) - set(prev_st)):
+                out.append(Finding(f"st+:{idx}:{stype}",
+                                   f":new: sourcetype {stype} newly present in index={idx} — "
+                                   f"{fmt_vol(r['sourcetypes'][stype])} events"))
+            for stype in sorted(set(prev_st) - set(r["sourcetypes"])):
+                out.append(Finding(f"st-:{idx}:{stype}",
+                                   f":warning: sourcetype {stype} no longer present in index={idx} — had "
+                                   f"{fmt_vol(prev_st[stype])} events at the previous run"))
+            for stype, vol in sorted(r["sourcetypes"].items()):
+                move = band_of(vol, prev_st.get(stype))
+                if move:
+                    direction, edge, pct = move
+                    out.append(Finding(f"stvol:{idx}:{stype}:{direction}{edge}",
+                                       f"sourcetype {stype} in index={idx} {direction} {abs(pct):.0f}% "
+                                       f"({fmt_vol(prev_st[stype])} -> {fmt_vol(vol)})"))
+
+    total = sum(r["vol"] for r in by_index.values())
+    prev_total = sum(p.get("vol", 0) for p in prev_by_index.values())
+    if total > 0 and prev_total > 0:
+        for idx, r in sorted(by_index.items(), key=lambda kv: kv[1]["vol"], reverse=True):
+            prev = prev_by_index.get(idx)
+            if not isinstance(prev, dict):
+                continue
+            share = r["vol"] * 100.0 / total
+            prev_share = prev.get("vol", 0) * 100.0 / prev_total
+            shift = share - prev_share
+            if abs(shift) >= SHARE_SHIFT_PP:
+                out.append(Finding(f"share:{idx}:{int(share // SHARE_SHIFT_PP)}",
+                                   f"index={idx} share of total ingest {prev_share:.0f}% -> {share:.0f}% "
+                                   f"({shift:+.0f} points)"))
+    return out
+
+
+def render_table(by_index, prev_by_index, have_baseline):
+    def prev_vol(idx):
+        rec = prev_by_index.get(idx)
+        return rec.get("vol") if isinstance(rec, dict) else None
+
+    lines = ["```", f"{'INDEX':<16} {'24h VOLUME':>13} {'Δ vs PREV':>12} {'HOSTS':>6} {'LAST EVENT':>11}"]
+    for idx, r in sorted(by_index.items(), key=lambda kv: kv[1]["vol"], reverse=True):
+        lines.append(
+            f"{idx:<16} {fmt_vol(r['vol']):>13} {fmt_delta(r['vol'], prev_vol(idx), have_baseline):>12} "
+            f"{len(r['hosts']):>6} {fmt_age(r['age_min']):>11}"
+        )
+    lines.append("```")
+    return lines
+
+
+def stability_finding(state, fingerprint, now):
+    """(Finding, first_seen_iso) about how long the health picture has held.
+
+    Never claims a CHANGE against nothing: with no prior state there is nothing to
+    have changed from, so the line says a baseline was established.
+    """
+    if not state:
+        return (Finding(f"stability:new:{fingerprint}",
+                        "Health-state baseline established (no prior state file)."), now.isoformat())
+    if state.get("fingerprint") != fingerprint:
+        return (Finding(f"stability:changed:{fingerprint}",
+                        ":arrows_counterclockwise: Health state CHANGED vs the previous run."),
+                now.isoformat())
+    first_seen_iso = state.get("first_seen_iso", now.isoformat())
+    try:
+        first_date = dt.datetime.fromisoformat(first_seen_iso).date()
+        day_n, first_short = (now.date() - first_date).days + 1, first_date.isoformat()
+    except (TypeError, ValueError):
+        day_n, first_short = 1, now.date().isoformat()
+    return (Finding(f"stability:held:{fingerprint}",
+                    f"Health state unchanged — Day {day_n} since {first_short}."), first_seen_iso)
+
+
+def load_ledger(state, today):
+    """Today's already-presented finding keys. A new UTC day resets it to empty,
+    and a state file predating the ledger simply carries none."""
+    ledger = (state or {}).get("ledger")
+    if not isinstance(ledger, dict) or ledger.get("day") != today:
+        return []
+    keys = ledger.get("keys")
+    return list(keys) if isinstance(keys, list) else []
+
+
+def baseline_from(state):
+    """The previous snapshot, or None when the state carries no usable baseline.
+
+    An older-schema state file is treated as "no baseline" rather than an error —
+    the run reports full numbers and deltas resume next hour.
+    """
+    if not state or state.get("schema") != STATE_SCHEMA:
+        return None
+    return state if isinstance(state.get("by_index"), dict) else None
+
+
+def build_digest(results, now, state):
+    """Return (text, payload) where payload is the complete next state file.
+
+    Everything the run decides — which findings are novel, which repeat, what the
+    ledger becomes — is decided here, so exactly one place answers "what gets said".
+    """
+    now_epoch = now.timestamp()
+    today = now.strftime("%Y-%m-%d")
+    prev = baseline_from(state)
+    ledger = load_ledger(state, today)
+    seen = set(ledger)
+
+    by_index, host_last, saw_host, saw_st = parse_results(results, now_epoch)
+    hosts = set(host_last)
+
+    prev_by_index = (prev or {}).get("by_index") or {}
+    have_baseline = prev is not None
+    prev_hosts = set((prev or {}).get("hosts") or [])
+    host_detail = saw_host and (bool((prev or {}).get("host_detail")) or not have_baseline)
+    prev_st_detail = bool((prev or {}).get("st_detail"))
+
     healthy = sum(1 for r in by_index.values() if r["vol"] > 0 and r["age_min"] <= STALENESS_MIN)
-    silent_count = len(anomalies)
+    silent_count = sum(1 for i in EXPECTED_CONTINUOUS if is_silent(by_index.get(i)))
 
-    # fingerprint: sorted (index, oom_bucket, is_silent) incl. absent-expected
     fp_tuples = sorted(
         [(i, oom_bucket(r["vol"]), is_silent(r)) for i, r in by_index.items()]
         + [(i, -1, True) for i in EXPECTED_CONTINUOUS if i not in by_index]
     )
     fingerprint = hashlib.sha256(json.dumps(fp_tuples).encode()).hexdigest()
+    stability, first_seen_iso = stability_finding(state, fingerprint, now)
 
-    # --- compose full digest ---
-    now_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    lines = []
-    if zero_rows or all_expected_silent:
-        lines.append(":rotating_light: *SPLUNK INGEST OUTAGE* :rotating_light:")
-        if zero_rows:
-            lines.append("tstats returned ZERO rows over the last 24h — no index reported any data.")
-        else:
-            lines.append("ALL expected-continuous indexes are silent or stale — likely a pipeline/ingest failure.")
+    critical = critical_findings(by_index, prev_by_index, hosts, prev_hosts,
+                                 have_baseline, host_detail)
+    tiers = [
+        ("index level", index_findings(by_index, prev_by_index, have_baseline, healthy,
+                                       silent_count, hosts, host_detail, today, stability)),
+        ("host level", host_findings(by_index, prev_by_index, hosts, prev_hosts, host_last,
+                                     now_epoch, have_baseline, host_detail)),
+        ("sourcetype + composition level",
+         composition_findings(by_index, prev_by_index, have_baseline, saw_st, prev_st_detail)),
+    ]
+
+    # Escalate: the first tier holding anything unsaid today wins. Only what is
+    # actually printed enters the ledger, so an overflowing tier keeps the rest
+    # novel for the next run instead of burning it silently.
+    tier_name, novel, searched = None, [], []
+    for name, found in tiers:
+        searched.append(name)
+        fresh = [f for f in found if f.key not in seen]
+        if fresh:
+            tier_name, novel = name, fresh[:MAX_FINDINGS]
+            break
+
+    lines = [f"*Splunk Status Digest* — {now.strftime('%Y-%m-%d %H:%M UTC')} ({WINDOW} window)"]
+
+    if critical:
         lines.append("")
+        lines.append("*Critical — repeats every run while it holds:*")
+        lines.extend(f.text for f in critical)
 
-    lines.append(f"*Splunk Status Digest* — {now_iso} (window: last 24h)")
-    lines.append(f"Indexes reporting: {len(by_index)}  |  healthy: {healthy}  |  expected silent: {silent_count}")
-    lines.append("")
-    lines.append("```")
-    lines.append(f"{'INDEX':<16} {'24h VOLUME':>14}  {'LAST EVENT':>12}")
-    for idx, r in sorted(by_index.items(), key=lambda kv: kv[1]["vol"], reverse=True):
-        lines.append(f"{idx:<16} {fmt_vol(r['vol']):>14}  {fmt_age(r['age_min']):>12}")
-    lines.append("```")
+    if novel:
+        lines.append("")
+        escalated = "" if tier_name == tiers[0][0] else f"; nothing new at {', '.join(searched[:-1])}"
+        lines.append(f"*New today — {tier_name}{escalated}:*")
+        for finding in novel:
+            if finding.key.startswith("table:"):
+                lines.append(f":clipboard: First digest of {today}; the table below is today's baseline "
+                             "and later runs today report only what changes.")
+                lines.extend(render_table(by_index, prev_by_index, have_baseline))
+            else:
+                lines.append(f"• {finding.text}")
+        if not have_baseline:
+            lines.append(":information_source: No prior baseline (first run, or the state file predates "
+                         "this schema) — volumes above are real, deltas begin with the next run.")
+    elif not critical:
+        pairs = sum(len(r["sourcetypes"]) for r in by_index.values())
+        lines.append("")
+        lines.append(
+            f":mag: Nothing new to report. Searched {len(by_index)} index(es), {len(hosts)} host(s) and "
+            f"{pairs} index/sourcetype pair(s) across volume, membership, liveness and composition; all "
+            f"{len(seen)} finding(s) already posted today still hold, and no critical condition is active."
+        )
 
-    lines.append("")
-    if anomalies:
-        lines.append("*Ingest silence anomalies:*")
-        lines.extend(anomalies)
-    else:
-        lines.append(f":white_check_mark: All {len(EXPECTED_CONTINUOUS)} expected-continuous indexes fresh "
-                     f"(< {STALENESS_MIN} min) with data in the last 24h.")
-
-    return "\n".join(lines), fingerprint, healthy, silent_count
+    payload = {"schema": STATE_SCHEMA, "fingerprint": fingerprint,
+               "first_seen_iso": first_seen_iso, "last_post_date": today,
+               "captured_iso": now.isoformat(),
+               "ledger": {"day": today, "keys": (ledger + [f.key for f in novel])[-LEDGER_MAX:]}}
+    payload.update(snapshot_of(by_index, hosts, saw_host, saw_st))
+    return "\n".join(lines), payload
 
 
 def load_state():
+    """Return the stored state, or None when it is unreadable."""
     try:
         with open(STATE_PATH) as f:
-            return json.load(f)
+            state = json.load(f)
     except (OSError, ValueError):
         return None
+    return state if isinstance(state, dict) else None
 
 
-def save_state(fingerprint, first_seen_iso, last_post_date):
+def save_state(payload):
     os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
     tmp = STATE_PATH + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"fingerprint": fingerprint, "first_seen_iso": first_seen_iso,
-                   "last_post_date": last_post_date}, f)
+        json.dump(payload, f)
     os.replace(tmp, STATE_PATH)
 
 
@@ -207,32 +611,9 @@ def main():
         return 0
 
     now = dt.datetime.now(dt.timezone.utc)
-    now_epoch = now.timestamp()
-    today = now.strftime("%Y-%m-%d")
-    full_text, fingerprint, healthy, silent_count = build_digest(results, now_epoch)
-
-    state = load_state()
-    if state and state.get("fingerprint") == fingerprint and now.hour != ANCHOR_UTC_HOUR:
-        first_seen_iso = state.get("first_seen_iso", now.isoformat())
-        try:
-            first_date = dt.datetime.fromisoformat(first_seen_iso).date()
-            day_n = (now.date() - first_date).days + 1
-            first_seen_short = first_date.isoformat()
-        except ValueError:
-            day_n, first_seen_short = 1, today
-        # refresh last_post_date but keep fingerprint/first_seen stable
-        save_state(fingerprint, first_seen_iso, today)
-        print(f"No change — {healthy} indexes healthy, {silent_count} silent, "
-              f"Day {day_n} since {first_seen_short}")
-        return 0
-
-    # changed / no prior state / anchor hour -> full digest
-    if state and state.get("fingerprint") == fingerprint:
-        first_seen_iso = state.get("first_seen_iso", now.isoformat())  # anchor: keep age
-    else:
-        first_seen_iso = now.isoformat()  # new state
-    save_state(fingerprint, first_seen_iso, today)
-    print(full_text)
+    text, payload = build_digest(results, now, load_state())
+    save_state(payload)
+    print(text)
     return 0
 
 

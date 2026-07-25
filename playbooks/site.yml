@@ -83,7 +83,15 @@
   hosts: hindsight_group
   become: true
   gather_facts: false
+  # Same rolling-pool contract as the llm_router play below; the role's own
+  # /health check is this pool's per-member gate. serial: 1 was already here —
+  # the gate import and max_fail_percentage make the unreachable-vs-unhealthy
+  # split explicit, so a replica whose node is down no longer aborts the play.
   serial: 1
+  max_fail_percentage: 0
+  pre_tasks:
+    - name: Gate on pool-member reachability
+      ansible.builtin.import_tasks: tasks/pool_member_gate.yml
   tags:
     - hindsight_docker
     - memory
@@ -164,6 +172,19 @@
   hosts: llm_router_group
   become: true
   gather_facts: true
+  # Rolling pool converge. Restarting all three routers in the same play took
+  # the whole front door down on 2026-07-24 (the watchdog recorded a down
+  # transition across the converge) — the pool exists for redundancy and the
+  # deploy path defeated it. serial: 1 restarts one member at a time, and the
+  # role's own liveness check is the gate: it runs after flush_handlers, inside
+  # this member's window, so the next member is not touched until this one is
+  # serving again. max_fail_percentage: 0 stops the play on any failure rather
+  # than marching on to break the rest.
+  serial: 1
+  max_fail_percentage: 0
+  pre_tasks:
+    - name: Gate on pool-member reachability
+      ansible.builtin.import_tasks: tasks/pool_member_gate.yml
   tags:
     - llm_router
     - llm

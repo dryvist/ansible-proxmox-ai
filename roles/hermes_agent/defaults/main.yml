@@ -50,11 +50,13 @@ hermes_agent_installer_path: "/usr/local/lib/hermes-agent-installer-{{ hermes_ag
 # Bump the tag deliberately: renovate opens the PR on each nix-hermes release;
 # a bad ref fails the converge loudly at the controller build step.
 hermes_agent_bundle_flake_ref: "github:dryvist/nix-hermes/nix-hermes-v0.6.0#hermes-bundle"
-# adds the 8 hermes-digest-*.md prompt files (referenced by
-# hermes_agent_direct_cron_jobs). Until then the direct-deliver reconcile cannot
-# resolve those bodies from the catalog — land the prompts PR first, then bump.
+# --- Pinned prompt catalog (dryvist/ai-llm-prompts) --------------------------
+# Supplies every prompt body the reconciles resolve by filename, including the
+# 8 hermes-digest-*.md files referenced by hermes_agent_direct_cron_jobs. A
+# prompt edit lands in the catalog first; this pin then moves to that merge
+# commit, so the converge is the only thing that changes what a job says.
 hermes_agent_prompts_flake_ref: >-
-  github:dryvist/ai-llm-prompts/6eb6907fe09648e9272589979817cc949433314a#auto-ai-agent
+  github:dryvist/ai-llm-prompts/c598d915a1c37af3b33bba8a5be5b403681295cc#auto-ai-agent
 hermes_agent_webhook_prompt_file: hermes-inbound-webhook.md
 hermes_agent_curriculum_prompt_files:
   orient: hermes-curriculum-orient.md
@@ -156,26 +158,43 @@ hermes_agent_firehose_deliver: >-
 hermes_agent_digest_slack_channel: "{{ lookup('env', 'HERMES_SLACK_DIGEST_CHANNEL') | default('', true) }}"
 
 hermes_agent_direct_cron_jobs:
+  # Paused, NEVER reconciled: superseded by the script-fed splunk-security-digest
+  # (hermes_agent_triage_jobs). Leaked raw <function=...> markup to Slack twice on
+  # 2026-07-24, and never ran the SPL this prompt specifies.
   - name: splunk-security-lens-v2
     schedule: "22 */6 * * *"
     prompt_file: hermes-digest-splunk-security-lens.md
     skill: ""
-    enabled: true
+    enabled: false
+  # Paused, NEVER reconciled: superseded by the script-fed splunk-error-triage
+  # (hermes_agent_error_triage_cron_name), which pauses this agentic job so the
+  # two never double-post. This job delivered raw <function=...> tool-call markup
+  # to Slack instead of a report — see hermes_agent_superseded_error_triage_cron_name.
   - name: splunk-error-triage-v2
     schedule: "37 * * * *"
     prompt_file: hermes-digest-splunk-error-triage.md
     skill: ""
-    enabled: true
+    enabled: false
   - name: splunk-parsing-quality-v2
     schedule: "17 3 * * *"
     prompt_file: hermes-digest-splunk-parsing-quality.md
     skill: ""
     enabled: true
+  # RETIRED, not superseded: nothing replaces this job because nothing needs to.
+  # Its SPL is `index=* | stats count by index, sourcetype | sort -count | head 15`
+  # — the same two group-by fields splunk-status-digest already computes hourly
+  # from tstats, over ALL pairs rather than the top 15, and with the host and
+  # liveness dimensions on top. Its own `sort -count | head 15` also throws away
+  # the long tail, so it cannot surface the "pattern nobody monitors" its prompt
+  # asks for; the digest's composition tier reports a new or vanished sourcetype
+  # at any volume. The only content it adds is a static top-15 table restated
+  # every 12h, which is exactly the boilerplate the per-day novelty contract
+  # (#183) exists to stop. See hermes_agent_retire_anomaly_hunt below.
   - name: anomaly-hunt-v2
     schedule: "41 6,18 * * *"
     prompt_file: hermes-digest-anomaly-hunt.md
     skill: ""
-    enabled: true
+    enabled: false
   - name: homelab-ai-fabric-status-v2
     schedule: "3 */6 * * *"
     prompt_file: hermes-digest-homelab-ai-fabric-status.md
@@ -629,13 +648,44 @@ hermes_agent_splunk_status_digest_script_name: splunk-digest.py
 # after the first converge.
 hermes_agent_superseded_digest_cron_name: splunk-hourly-digest-v3
 # Indexes that must always be reporting; absent / zero / stale => ingest anomaly.
+# An entry here is exempt from the per-day novelty gate and re-fires a CRITICAL
+# INGEST SILENCE every run for as long as it is silent — so only list an index
+# that is genuinely expected to carry data right now. Listing a
+# structurally-empty index manufactures a permanent false positive, which is
+# precisely the way to train the operator to ignore this alert class.
+#
+# `network` was such an entry and is removed. It is superseded, not empty: it
+# holds 89 real IPFIX events from a single ~11h window on 2026-06-11/12 and
+# nothing since, because the per-index HEC split moved the pipeline to
+# index=netflow (ansible-proxmox-apps #1270 finishes that rename). So the alert
+# was not catching a live pipeline that died — it was watching a name the
+# pipeline stopped writing to over a month ago, and would have kept firing
+# forever no matter how healthy the pipeline got.
+#
+# `netflow` is deliberately NOT substituted in. It is the correct name, but it
+# is structurally empty for an upstream reason: the UniFi UDW reports NetFlow
+# export enabled and emits zero packets to the collector (Zammad #17146; the
+# same gap is recorded in tofu-unifi gateway-telemetry.tf and is why
+# ansible-splunk ships its `netflow` ingest detector disabled). Adding it here
+# would relocate the false positive, not remove it. Add `netflow` back the same
+# day the gateway starts exporting — and flip that ansible-splunk detector to
+# disabled: 0 in the same change.
 hermes_agent_splunk_digest_expected_indexes:
   - os
-  - network
   - firewall
 hermes_agent_splunk_digest_staleness_minutes: 60
 hermes_agent_splunk_digest_window: "-24h"
-hermes_agent_splunk_digest_anchor_hour: 0
+# PER-DAY NOVELTY GATE (operator requirement). Routine information may be
+# presented ONCE per UTC day: the full index table is the day's first post, and
+# every later observation is a discrete finding with a stable identity key,
+# suppressed if that key is already in the day-scoped ledger the script keeps in
+# its state file. CRITICAL conditions (ingest silence, an index gone to zero, a
+# host-fleet drop) are exempt and repeat every run for as long as they persist.
+# A run with nothing novel at the index level escalates -- host level, then
+# sourcetype/composition -- instead of falling back to boilerplate; only a
+# genuinely exhausted search says so, and names what it searched.
+# The knobs that shape a finding's identity (percent bands, per-run cap) are
+# module constants in the script, not vars here: one number, one consumer.
 hermes_agent_splunk_status_digest_channel: "{{ hermes_agent_slack_hermes_all_channel }}"
 hermes_agent_splunk_status_digest_enabled: >-
   {{ hermes_agent_splunk_monitor_enabled | bool
@@ -643,6 +693,73 @@ hermes_agent_splunk_status_digest_enabled: >-
      and hermes_agent_slack_bot_token | length > 0
      and hermes_agent_slack_app_token | length > 0
      and hermes_agent_slack_hermes_all_channel | length > 0 }}
+
+# --- Script-fed Splunk triage digests (no LLM in the fact path) --------------
+# Supersedes the agentic splunk-error-triage-v2 and splunk-security-lens-v2
+# direct crons, which posted raw tool-call markup to Slack instead of reports.
+# Verified from agent.log: the model intends a tool call, the harness fails to
+# parse it, and the unparsed text arrives as
+# `Turn ended: reason=text_response(finish_reason=stop)` — indistinguishable
+# from a finished report, so delivery ships it. It happens both on the first
+# turn with no tool run AND on the turn after a successful tool result, and both
+# with and without the prompt's anti-markup clause: an unreliable emitter, not a
+# prompt defect. Worse, the model never ran the SPL the prompt specified — the
+# log is full of self-invented substitutes filtering on unpopulated fields — so
+# these jobs were producing wrong facts even on runs that did not leak markup.
+#
+# One script (splunk-triage.py.j2), rendered once per job. Adding a job here is
+# config, not code. Shared knobs (top_n, max_findings, channel, enable gate) stay
+# role-level below; per-job identity lives in this list.
+#
+# NAMES: reconcile_enqueuer_cron.yml tests job existence with a SUBSTRING match
+# against `cron list --all`, which lists PAUSED jobs too. A name contained in
+# another job's name reads as already-present and fires `cron remove` for a job
+# that does not exist. Hence splunk-error-digest, not splunk-error-triage (which
+# sits inside splunk-error-triage-v2). tests/hermes_agent enforces this.
+hermes_agent_triage_jobs:
+  # INDEXES MUST CARRY DATA. The prompts these replace searched `index=os OR
+  # index=network`. `network` exists but holds 89 events, all older than a
+  # month, so that half of every search returned nothing while the `os` half
+  # returned plausible rows — invisible in the output. (`netflow`, where the
+  # pipeline actually writes, holds 2.) Network-shaped data lives in `firewall`.
+  # Enumerate indexes with `| eventcount summarize=false index=*`, never with
+  # tstats, which only shows indexes with data in the search window.
+  - name: splunk-error-digest
+    title: Splunk error triage
+    schedule: "37 * * * *"
+    indexes: [os]
+    terms: [error, failed, critical]
+    window: "-1h"
+    supersedes: splunk-error-triage-v2
+  - name: splunk-security-digest
+    title: Splunk security lens
+    schedule: "22 */6 * * *"
+    indexes: [os, firewall]
+    terms: [failed, denied, unauthorized, invalid]
+    window: "-6h"
+    supersedes: splunk-security-lens-v2
+
+hermes_agent_triage_top_n: 12
+hermes_agent_triage_max_findings: 8
+# Same channel the superseded agentic jobs delivered to, so replacing them does
+# not silently move the operator's digests to a different surface.
+hermes_agent_triage_channel: "{{ hermes_agent_digest_slack_channel }}"
+hermes_agent_triage_enabled: >-
+  {{ hermes_agent_splunk_monitor_enabled | bool
+     and hermes_agent_splunk_mcp_url | length > 0
+     and hermes_agent_slack_bot_token | length > 0
+     and hermes_agent_slack_app_token | length > 0
+     and hermes_agent_digest_slack_channel | length > 0 }}
+
+# --- Retire the agentic anomaly hunt (duplicative; nothing replaces it) -------
+# Unlike every other retirement here, this one has no replacement job: the
+# anomaly hunt's factual content is a strict subset of what splunk-status-digest
+# already computes (see the comment on its hermes_agent_direct_cron_jobs entry).
+# `enabled: false` alone would NOT stop it — reconcile_direct_cron.yml skips a
+# disabled entry entirely, so the live cron would keep firing forever. The pause
+# below is what actually retires it. Set false to keep the job running.
+hermes_agent_retire_anomaly_hunt: true
+hermes_agent_retired_anomaly_hunt_cron_name: anomaly-hunt-v2
 
 # The Splunk monitor workloads are dispatched as Kanban cards now, not agentic
 # cron jobs (kanban migration, #83) — see hermes_agent_kanban_cards below, which
@@ -1248,6 +1365,29 @@ hermes_agent_seeded_cron_names: >-
      + [hermes_agent_kanban_safety_net_cron_name,
         hermes_agent_splunk_status_digest_cron_name,
         hermes_agent_zammad_autoclose_cron_name] }}
+
+# Everything a cluster window must silence, derived — never a second hand-kept
+# list. The seeded fleet above is only the `<job>-enqueue` script crons plus
+# three named ones; the `*-v2` agentic generation in
+# hermes_agent_direct_cron_jobs is NOT in it. Those jobs run the brain and
+# deliver straight to Slack, so during a cluster window (brain unloaded off the
+# day-proxy) they fail and DM the operator — exactly what
+# cluster-hermes-pause.yml exists to prevent, and exactly what it missed.
+#
+# Observed 2026-07-25: the pause playbook reported failed=0 with the watchdog
+# inactive, and five brain-dependent jobs were still `[active]` afterwards
+# (splunk-parsing-quality-v2, homelab-ai-fabric-status-v2,
+# zammad-incident-review-v2, github-org-triage-v2, daily-operator-summary-v2).
+# A green recap certified the pause by proxy: it proved the loop ran over its
+# list, never that the list covered the fleet.
+#
+# Only `enabled` direct jobs are included: the disabled ones are already paused
+# and never reconciled, so naming them would just add no-op `cron pause` calls.
+hermes_agent_cluster_pause_cron_names: >-
+  {{ hermes_agent_seeded_cron_names
+     + (hermes_agent_direct_cron_jobs
+        | selectattr('enabled', 'defined') | selectattr('enabled')
+        | map(attribute='name') | list) }}
 
 # The bare-named agentic crons that #83 replaced with `<job>-enqueue` script
 # crons. A guest provisioned before the migration still carries these; the

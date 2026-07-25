@@ -147,12 +147,14 @@ router_settings:
   # Pre-call context-window checks so an over-long request is not routed to a model
   # that cannot serve it (no cross-tier fallback masks the error).
   enable_pre_call_checks: true
-  # Hermes owns its one fixed-delay retry. The router forwards each attempt once
-  # so backend calls remain exactly bounded.
+  # Genuine failures are forwarded once so backend calls remain exactly bounded.
+  # The rate-limit policy below overrides this for 429s only.
   num_retries: {{ llm_router_num_retries }}
   timeout: {{ llm_router_request_timeout_seconds }}
-  # Rate-limit failures return immediately to Hermes, which waits 15 seconds and
-  # makes its single retry.
+  # A 429 means the serving slot is busy, not that the work failed — wait it out
+  # here so every consumer inherits the resilience instead of each one retrying.
+  # retry_after is the MINIMUM sleep between attempts; see defaults for sizing.
+  retry_after: {{ llm_router_retry_after_seconds }}
   retry_policy:
     RateLimitErrorRetries: {{ llm_router_rate_limit_retries }}
   allowed_fails_policy:

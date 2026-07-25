@@ -34,10 +34,12 @@ jobs:
         with:
           python-version: '3.14'
 
+      # pytest joins the existing pip install: the hermes_agent self-checks below
+      # use parametrize and raises, so pytest is their runner, not an extra tool.
       - name: Install Ansible
         run: |
           python -m pip install --upgrade pip
-          pip install ansible
+          pip install ansible pytest
 
       - name: Install Ansible collections
         run: |
@@ -58,6 +60,15 @@ jobs:
         run: >-
           ansible-playbook tests/openbao_secrets/verify_hermes_api_key_seed.yml
           -i inventory/hosts.yml -c local
+
+      # The hermes_agent self-checks render the role's Jinja templates and assert
+      # the emitted contract. They were runnable-but-unrun until now, which made
+      # them decorative; running them here is what stops them rotting. It must be
+      # pytest and not a `python3 <file>` loop: two of these files have no
+      # __main__ block, so running them as scripts collects nothing and exits 0 —
+      # a green light for tests that never ran.
+      - name: Run hermes_agent self-checks
+        run: python -m pytest tests/hermes_agent/ -q
 
   verify-inventory-load:
     name: Verify Inventory Load

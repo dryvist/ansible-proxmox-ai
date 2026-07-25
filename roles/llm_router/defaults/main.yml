@@ -110,18 +110,20 @@ llm_router_llm_large_base_url: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_r
 #   2. Set llm_router_llm_large_standby_base_url to that port's /v1 URL and
 #      seed llm_router_llm_large_standby_bearer (OpenBao, same pattern).
 #
-# HARD SAFETY GATE — do NOT enable OptiQ+shard coexistence until the enforced
-# wired ceiling is DEPLOYED. The inert-guard bug is already FIXED on nix-darwin
-# #1769 (commit 960b73a, INC-17077): clusterMode.wiredLimitMb/dayWiredLimitMb
-# are wired from the clusterLinkPrep single source on both hosts (watcher plists
-# carry CLUSTER_WIRED_LIMIT_MB, sudoers emit matching values), eval-verified;
-# the ceiling RAISE to 118000 (Studio) also landed on #1769 (commit bb338fe).
-# #1769's engineering is therefore COMPLETE — the prerequisite is now purely
-# user action: MERGE #1769 + REBUILD both hosts. No unbuilt wiring hides here. The 49 GB shard + 19.5 GB OptiQ
-# arithmetic only holds under that enforced ceiling (unbounded wired stuck a
-# host at ~99 GB needing a reboot — INC-17076), and coexistence must be
-# validated EMPIRICALLY under it (cluster-join's INC-17075 swap guard must
-# pass), not assumed.
+# WIRED CEILING — both hosts are pinned to the SAME iogpu.wired_limit_mb
+# (102400, measured on both 2026-07-24). This is deliberate: it matches the
+# memory the MacBook makes available, and the Studio runs the same number on
+# purpose — accepting unused memory there — to keep the two hosts identical and
+# the setup simple. Raising the Studio later is a possible future, NOT the
+# current design; do not treat a higher ceiling as a prerequisite for anything
+# here. Unbounded wired previously wedged a host (INC-17076), which is why the
+# ceiling is enforced rather than advisory.
+#
+# The enforcement wiring landed in nix-darwin #1769 and both hosts are rebuilt
+# on it (both on darwin-system 26.05.adda04f, verified 2026-07-24), so that
+# prerequisite is SATISFIED. OptiQ+shard coexistence must still be validated
+# EMPIRICALLY under the deployed ceiling (cluster-join's INC-17075 swap guard
+# must pass), not assumed.
 # Dedicated exempt-OptiQ port = 11442 (lifecycle-e2e contract 2026-07-19). A NIX
 # LITERAL, not a tofu constant — the :1144x gate-site ports are nix literals
 # (cluster = clusterUpstreamPort 11440); the standalone OptiQ agent binds
@@ -132,11 +134,13 @@ llm_router_llm_large_standby_port: 11442
 # DEFAULT EMPTY = DISABLED: with no URL the standby block is skipped and the
 # rendered config.yaml/litellm.env are byte-identical to today (verified by
 # render). Merging this PR is therefore behavior-neutral — nothing changes on
-# converge until the URL below is set. To ACTIVATE (one line), only after
-# (a) the standalone :11442 OptiQ agent exists (nix, lifecycle-e2e) AND
-# (b) the enforced raised ceiling is deployed (user merges #1769 + rebuilds),
-# set this to the large FQDN + standby port /v1 URL — converging earlier routes
-# hermes-brain failover at a port that does not exist yet.
+# converge until the URL below is set. To ACTIVATE (one line), only after both:
+# (a) the standalone :11442 OptiQ agent exists (nix, lifecycle-e2e) — STILL
+#     UNMET: no such launchd agent on either host, and :11442 is closed on both
+#     (verified 2026-07-24).
+# (b) the wired ceiling is deployed — SATISFIED; see the wired-ceiling note above.
+# Then set this to the large FQDN + standby port /v1 URL — converging while (a)
+# is unmet routes hermes-brain failover at a port that does not exist yet.
 llm_router_llm_large_standby_base_url: ""
 # Same bearer as the llm-large gate (the OptiQ site shares its token + cert).
 llm_router_llm_large_standby_bearer: "{{ llm_router_llm_large_bearer }}"
@@ -269,8 +273,9 @@ llm_router_openrouter_wildcard_key_field: deepseek-deepseek-v4-flash
 llm_router_routing_strategy: simple-shuffle
 llm_router_allowed_fails: 2
 llm_router_cooldown_time: 30
-# Forward each request to the MLX backend once. Hermes owns the single retry
-# after a fixed 15-second wait, keeping the end-to-end attempt count bounded.
+# Forward each request to the MLX backend once. This governs GENUINE failures
+# only — a 429 means the backend never started the work, so it is retried under
+# the separate rate-limit policy below rather than counted here.
 # request_timeout_seconds bounds a single attempt; large-tier generations can
 # legitimately run for minutes, so this is generous, not a tight SLA.
 # Timeout chain — each OUTER layer outlives the inner one, so no intermediate
@@ -291,9 +296,33 @@ llm_router_cooldown_time: 30
 # to 2400.
 llm_router_num_retries: 0
 llm_router_request_timeout_seconds: "{{ ai_router_request_timeout_seconds }}"
-# Return a 429 immediately to Hermes, which makes its one retry after 15 seconds.
+# Rate limits are absorbed HERE, not by the caller. The serving tier admits one
+# in-flight request per model (llama-swap concurrencyLimit) and rejects the rest
+# instantly — its own option doc names this router as the layer that "absorbs
+# 429s via its retry policy". Passing the 429 straight through instead (the
+# previous 0/0 setting) made that contract a no-op: on 2026-07-24 the
+# homelab-ai-fabric-status-v2 cron died outright because a 3m31s generation held
+# the slot while the caller's entire tolerance was one 15-second retry. A 429 is
+# "the slot is busy", never "the work is impossible", so it must not be fatal.
+#
+# Tolerance = rate_limit_retries x retry_after_seconds. 8 x 40s ~= 320s, sized
+# above the longest slot occupancy actually observed in that incident (211s) with
+# margin. Rejections cost microseconds, so the retry loop spends only the sleeps;
+# the budget still fits under the client's 1800s read ceiling with ~1480s left
+# for the generation itself.
+llm_router_rate_limit_retries: 8
+# Minimum sleep between rate-limit retries (LiteLLM router_settings.retry_after).
+# LiteLLM boxes each backoff into [retry_after, MAX_RETRY_DELAY]; the ceiling
+# defaults to 8s and would silently clamp this, so the service env pins
+# MAX_RETRY_DELAY to the same value (see llm_router_retry_max_delay_seconds).
+# Waiting whole tens of seconds is correct here: the blocker is a multi-minute
+# generation, so sub-second exponential backoff just burns attempts.
+llm_router_retry_after_seconds: 40
+# Raises LiteLLM's global backoff ceiling so retry_after is not clamped. Only the
+# rate-limit path retries at all (num_retries is 0 and no other error type has a
+# retry policy), so this has no other blast radius.
+llm_router_retry_max_delay_seconds: "{{ llm_router_retry_after_seconds }}"
 # Rate-limit failures do not cool down the otherwise healthy deployment.
-llm_router_rate_limit_retries: 0
 llm_router_rate_limit_allowed_fails: 1000
 
 # Stable consumer role names. Aliases carry no deployment configuration; each
