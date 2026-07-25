@@ -53,6 +53,27 @@ def _defaults() -> dict[str, Any]:
     return yaml.safe_load((ROLE_ROOT / "defaults" / "main.yml").read_text())
 
 
+def _group_vars_all() -> dict[str, Any]:
+    return yaml.safe_load(
+        (REPO_ROOT / "inventory" / "group_vars" / "all.yml").read_text()
+    )
+
+
+def _effective(key: str) -> int:
+    """Resolve a defaults value that may derive from a group_vars constant.
+
+    The caps below are Jinja expressions over ai_llm_concurrency rather than
+    bare ints, so comparing the raw YAML would assert the TEMPLATE TEXT and
+    pass or fail for the wrong reason. Render it the way Ansible would and
+    assert the value that actually reaches the config.
+    """
+    raw = _defaults()[key]
+    if isinstance(raw, int):
+        return raw
+    rendered = _jinja_env().from_string(str(raw)).render(**_group_vars_all())
+    return int(rendered)
+
+
 def _profiles() -> list[dict[str, Any]]:
     return _defaults()["hermes_agent_profiles"]
 
@@ -138,12 +159,17 @@ def test_profile_skill_lists_never_grant_a_forbidden_skill() -> None:
 
 
 def test_concurrency_sum_cap_is_pinned_to_todays_effective_ceiling() -> None:
-    defaults = _defaults()
     # Naming more profiles must never silently raise real concurrency — the
     # SUM cap stays at 1 (today's effective ceiling with per-profile cap 1
     # and a single profile) until an operator deliberately raises it.
-    assert defaults["hermes_agent_kanban_max_in_progress"] == 1
-    assert defaults["hermes_agent_kanban_max_in_progress_per_profile"] == 1
+    #
+    # Asserts the EFFECTIVE value, not the literal: both caps now derive from
+    # ai_llm_concurrency (inventory/group_vars/all.yml), the single definition
+    # of serving concurrency. That makes this test strictly stronger — raising
+    # ai_llm_concurrency now trips it too, which is correct, because raising
+    # the sum cap is exactly the operator decision this test exists to gate.
+    assert _effective("hermes_agent_kanban_max_in_progress") == 1
+    assert _effective("hermes_agent_kanban_max_in_progress_per_profile") == 1
 
 
 def test_every_profile_has_a_soul_addendum_template_on_disk() -> None:
