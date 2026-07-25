@@ -67,6 +67,34 @@
       non-empty hermes_agent_kanban_goal_judge_model, and a judge timeout of
       at least 30 seconds.
 
+# Upstream's dispatcher buckets a card whose assignee names no real profile
+# as skipped_nonspawnable and NEVER spawns it — a typo'd assignee silently
+# sits ready forever with no error anywhere. Converting that into a loud
+# converge failure is the whole point of this assert (see hermes_agent_profiles
+# in defaults/main.yml for the profile concept).
+- name: Assert every Kanban card assignee names a real profile or the default
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_kanban_cards
+        | rejectattr('assignee', 'equalto', '')
+        | map(attribute='assignee')
+        | reject('in', hermes_agent_profiles | map(attribute='name') | list)
+        | list | length == 0
+    fail_msg: >-
+      One or more hermes_agent_kanban_cards entries name an assignee that is
+      not in hermes_agent_profiles. Upstream buckets an unresolvable assignee
+      as skipped_nonspawnable and never spawns a worker for it — the card
+      would silently sit ready forever. Fix the card's assignee (empty string
+      for the default profile) or add the profile to hermes_agent_profiles.
+      Cards seen:
+      {{ hermes_agent_kanban_cards | map(attribute='job') | list }};
+      known profiles: {{ hermes_agent_profiles | map(attribute='name') | list }}.
+    success_msg: >-
+      Every Kanban card assignee resolves to the default profile or a name in
+      hermes_agent_profiles ({{ hermes_agent_profiles | map(attribute='name') | list }}).
+
 # Curriculum manifest contracts. The manifest is the machine-readable side of
 # the graded curriculum; these checks guarantee every job the queue would
 # execute has a prompt file that exists, a unique id, and at least one

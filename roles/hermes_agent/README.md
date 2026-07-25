@@ -79,9 +79,59 @@ Verify on the first converge: (a) `install.sh` runs clean non-interactively as r
 on a minimal Debian LXC; (b) `hermes gateway run --replace` stays up headless with no
 messaging platform; (c) Hindsight initialises from `config.yaml` alone (it may need
 its client package on first run — `memory status` check is non-fatal so it surfaces
-without failing the converge). Single-profile first; profiles + Kanban teams + a
-messaging gateway are a documented follow-up (the whole `HERMES_HOME` is already
-persisted for them).
+without failing the converge).
+
+## Operating profiles
+
+Choosing a profile is the **default action** for new recurring work — not an
+advanced option. `default` is not the absence of a choice; it is correct only
+for cross-domain, board-meta, or GitHub work (say why in the PR).
+
+A **profile** is a fully independent `HERMES_HOME` directory (own
+`config.yaml`, `.env`, `SOUL.md`, memory, skills) that a Kanban card selects
+via its `assignee` field. The dispatcher spawns
+`hermes -p <assignee> chat ...` with `HERMES_HOME` pointed at that profile's
+directory, so the assignee is the **entire tool/credential envelope** the
+worker runs under — MCP servers, native toolset floor, `.env` secrets, and
+skills. Named profiles live at `{{ hermes_agent_hermes_home }}/profiles/<name>/`;
+the `default` profile is `{{ hermes_agent_hermes_home }}` itself.
+
+There is **one shared gateway, dispatcher, and Kanban board** for every
+profile (no per-profile gateway, cron store, or Slack bot) — see
+`hermes_agent_profiles` in `defaults/main.yml` for the full design comment,
+the decision rule, and the isolation caveat (profile scoping is a
+config/tool-availability boundary, not an OS sandbox: every profile runs as
+the same `hermes` user in the same LXC).
+
+| Profile | Mission | Has | Must NOT have |
+| --- | --- | --- | --- |
+| `default` | Cross-domain, board-meta, GitHub | everything (unchanged) | — |
+| `splunk-admin` | Read-only SIEM: SPL, alert + report | Splunk + Qdrant MCP, `splunk-monitor` skill | GitHub, Zammad, other MCP/skills |
+| `homelab-admin` | Incidents + fabric health | Qdrant MCP (+ Vikunja/Nautobot later), `zammad-incidents` skill | Splunk, GitHub, other MCP/skills |
+
+**Adding a card to a profile**: set that card's `assignee:` in
+`hermes_agent_kanban_cards` to the profile name (empty string = default).
+`assert.yml` fails the converge loudly if an assignee names no profile in
+`hermes_agent_profiles` — upstream would otherwise bucket it
+`skipped_nonspawnable` and the card would silently sit ready forever.
+
+**Adding a new profile**: add an entry to `hermes_agent_profiles`
+(`mcp`/`env`/`skills`/`soul_addendum_file`), add a
+`templates/soul-<name>.md.j2` addendum, and scope it by what it must **not**
+reach, not by what it might someday need — a new capability is a new profile
+decision made in the PR that adds the work, not a widened existing one.
+
+**Concurrency**: `hermes_agent_kanban_max_in_progress` is the SUM cap across
+every profile combined (1 today — see the comment on that var). Naming a
+profile never raises real concurrency by itself; raising the cap back up is a
+separate, deliberate operator decision after the serving tier proves the
+capacity.
+
+**Verifying a new profile** (manual, not part of the converge — it burns an
+LLM run): see "Profile smoke test" in `docs/HERMES_OPS.md`.
+
+Full page: <https://docs.jacobpevans.com/ai/hermes-operating-profiles>
+(concept, table, and the decision rule for the public docs site).
 
 ## LLM knowledge base (llm-wiki)
 
@@ -308,6 +358,24 @@ alongside their `-enqueue` twins. Each card carries an idempotency key
 `<job>-<slot>`, so a
 double-fire or backfill never duplicates a card.
 
+**Cards post a full report, not a sentence.** The enqueuer appends a shared
+footer telling the worker to `hermes send` a full report to the `#hermes-all`
+channel variable — headline line, then the concrete values/counts/statuses
+observed that run, one per line, clean checks included, under 25 lines — and
+then `kanban_complete` with a **one-line** summary (the board digest renders
+that field as a single bullet). A card whose own prompt already posts a report
+posts once, not twice.
+
+This wording is what makes cron retirement safe. A cron is justified only when
+it is a genuine daily report over the previous day, or runs **less often than
+daily**; anything more frequent belongs on the board. But a `-v2` cron posts a
+full report, so while the footer asked for a one-line summary, switching one off
+silently downgraded its topic from a report to a sentence. Footer first, then
+the retirement — and the replacement card must be off
+`hermes_agent_kanban_paused_jobs`, or its enqueuer fires into the enqueue
+script's unknown-selector arm and creates nothing at all. Both are enforced by
+`tests/hermes_agent/test_retired_direct_crons.py`.
+
 A self-perpetuating **8h reviewer** card (00:00 / 08:00 / 16:00 UTC) reviews the
 last 8h of board activity, files follow-ups for anything missed or broken, posts
 a digest to `#hermes-all`, and creates the next slot's reviewer card as `blocked`
@@ -318,9 +386,43 @@ blocked card, so the reviewer chain self-heals if a link is ever dropped.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `hermes_agent_kanban_cards` | — | the per-workload card table (title, cadence, schedule, prompt var, skills) |
-| `hermes_agent_slack_hermes_all_channel` | firehose channel id | channel each card's completion summary posts to |
+| `hermes_agent_slack_hermes_all_channel` | firehose channel id | channel each card posts its completion **report** to |
 | `hermes_agent_kanban_reviewer_schedule` | `0 */8 * * *` | the 8h reviewer slots |
 | `hermes_agent_kanban_safety_net_schedule` | `33 4 * * *` | daily chain-break backfill sweep |
+
+### Master board digest (`kanban-digest`)
+
+One report covering **everything the board did since this digest last ran** —
+cards completed (with the worker's own summary, not just a title), cards that
+failed, retried or **exited open** (the run ended and the card never reached a
+settled column), and cards still running past their own `max_runtime`. It is the
+report that makes per-workload digest crons redundant.
+
+`--no-agent --script`, same contract as the script-fed Splunk digests: the script
+reads `kanban.db` **read-only** (`mode=ro`) and its stdout is delivered verbatim.
+No LLM and no network in the fact path, which is the point — this is the surface
+that announces a wedged board, and a wedged board is usually a wedged brain. For
+the same reason it is deliberately **absent from
+`hermes_agent_seeded_cron_names`**: a cluster window pauses that list, and this
+digest has to keep reporting through one.
+
+`hermes kanban` has no "every run that ended since T" query — `list --json`
+carries task rows whose `result` column is null, and per-attempt outcome and
+summary live in `runs --json <task_id>`, one task id at a time. One read-only SQL
+query over `task_runs` replaces a per-card subprocess fan-out.
+
+"Since the previous run" is a schema-versioned state file beside the Splunk
+digests' state. Missing or corrupt degrades to one scheduling interval and
+**says so** in the post; a broken read is delivered as an explicit `FAILED` line,
+never as silence (an empty post would read as a healthy board). A genuinely
+quiet window prints one line naming the board it searched.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `hermes_agent_kanban_digest_interval_minutes` | `15` | the only place the cadence is written; schedule and fallback derive from it. Steady state hourly |
+| `hermes_agent_kanban_digest_cron_schedule` | derived | never set by hand |
+| `hermes_agent_kanban_digest_channel` | `hermes_agent_digest_slack_channel` | delivery surface; never a literal id |
+| `hermes_agent_kanban_digest_enabled` | derived | Slack bot + app tokens + channel set. No Splunk or brain dependency |
 
 ## Inbound job-submission API (sanctioned non-exec path)
 
@@ -527,7 +629,7 @@ brain-sync implementation is retained but disabled.
 | `hermes_agent_brain_sync_interval` | `5min` | Poll cadence (`OnUnitActiveSec`) |
 | `hermes_agent_brain_sync_bao_path` | `ai/public/brain` | KV v2 data path (mount `secret`) |
 | `hermes_agent_brain_sync_bao_field` | `active_model` | Field holding the candidate model id |
-| `hermes_agent_brain_sync_state_file` | `/etc/hermes-brain-sync/current-model` | Live pointer, world-readable, shared with the watchdog |
+| `hermes_agent_brain_sync_state_file` | `/etc/hermes-brain-sync/current-model` | Brain-sync's live pointer; watchdog probes the alias, not this |
 
 ## Live docs (Context7)
 

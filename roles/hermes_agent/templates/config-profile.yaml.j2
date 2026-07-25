@@ -1,0 +1,115 @@
+{{ ansible_managed | comment }}
+# Hermes Agent profile config: {{ hermes_agent_profile.name }} — {{ hermes_agent_profile.description }}
+# A named operating profile (see hermes_agent_profiles in defaults/main.yml).
+# Scoped subset of the default profile's config.yaml: same brain/agent/session
+# floor, but NO dashboard, NO platforms, NO platform_toolsets, and only the
+# mcp_servers this profile is scoped to reach.
+
+model:
+  provider: custom
+  default: {{ hermes_agent_model }}
+  base_url: '{{ hermes_agent_model_base_url }}'
+  api_mode: {{ hermes_agent_model_api_mode }}
+  context_length: {{ hermes_agent_model_context_length }}
+  max_tokens: {{ hermes_agent_model_max_tokens }}
+  api_key: '${HERMES_AGENT_MODEL_API_KEY}'
+
+memory:
+  provider: {{ hermes_agent_memory_provider }}
+  memory_enabled: true
+  user_profile_enabled: true
+
+logging:
+  level: {{ hermes_agent_log_level }}
+
+agent:
+  max_turns: {{ hermes_agent_max_turns }}
+  api_max_retries: 2
+  tool_use_enforcement: auto
+  # H-17 global deny floor — same list every profile inherits; see
+  # hermes_agent_disabled_toolsets in defaults/main.yml for the rationale.
+  disabled_toolsets: {{ hermes_agent_disabled_toolsets | to_json }}
+
+terminal:
+  backend: local
+  timeout: 180
+
+display:
+  streaming: false
+  tool_progress: all
+
+security:
+  redact_secrets: true
+  tirith_enabled: true
+
+compression:
+  enabled: {{ hermes_agent_context_compression_enabled | to_json }}
+  threshold: {{ hermes_agent_context_compression_threshold }}
+  summary_model: {{ hermes_agent_compression_model }}
+
+{% if hermes_agent_kanban_goal_mode | bool %}
+# Every seeded recurring card runs goal_mode=true, and a card assigned to
+# this profile is judged from ITS OWN config.yaml (the spawned worker reads
+# the assignee's HERMES_HOME) — this block must exist here too, identical to
+# the default profile's, or goal-mode completion judging fails for any card
+# this profile owns.
+auxiliary:
+  transient_retries: 1
+  goal_judge:
+    provider: custom
+    model: {{ hermes_agent_kanban_goal_judge_model | to_json }}
+    base_url: '{{ hermes_agent_model_base_url }}'
+    api_key: '${HERMES_AGENT_MODEL_API_KEY}'
+    api_mode: {{ hermes_agent_model_api_mode }}
+{% endif %}
+
+session_reset:
+  mode: both
+  at_hour: {{ hermes_agent_session_reset_at_hour }}
+  idle_minutes: {{ hermes_agent_session_reset_idle_minutes }}
+  notify: true
+
+plugins:
+  enabled:
+    - observability/otel
+
+# Belt-and-braces (§5 of the profiles design): this profile has no gateway of
+# its own, but if one were ever accidentally started against this HERMES_HOME
+# it must never contend for the machine-global dispatcher lock — the DEFAULT
+# gateway is the only dispatcher, and it spawns workers into this profile via
+# `hermes -p {{ hermes_agent_profile.name }}`, not by running its own board here.
+kanban:
+  dispatch_in_gateway: false
+
+{% set _mcp_splunk = ('splunk' in hermes_agent_profile.mcp) and (hermes_agent_splunk_mcp_enabled | bool) and (hermes_agent_splunk_mcp_url | length > 0) %}
+{% set _mcp_qdrant = ('qdrant' in hermes_agent_profile.mcp) and (hermes_agent_qdrant_mcp_enabled | bool) %}
+{% set _mcp_vikunja = ('vikunja' in hermes_agent_profile.mcp) and (hermes_agent_vikunja_mcp_enabled | bool) %}
+{% set _mcp_nautobot = ('nautobot' in hermes_agent_profile.mcp) and (hermes_agent_nautobot_mcp_enabled | bool) %}
+{% if _mcp_splunk or _mcp_qdrant or _mcp_vikunja or _mcp_nautobot %}
+# MCP servers this profile is scoped to reach. ${VARS} resolve from THIS
+# profile's own .env at connect time — never the default profile's.
+mcp_servers:
+{% if _mcp_splunk %}
+  splunk:
+    timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
+    url: "${SPLUNK_MCP_URL}"
+    headers:
+      Authorization: "Bearer ${SPLUNK_MCP_TOKEN}"
+{% endif %}
+{% if _mcp_qdrant %}
+  qdrant:
+    timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
+    url: "{{ hermes_agent_qdrant_mcp_url }}"
+{% endif %}
+{% if _mcp_vikunja %}
+  vikunja:
+    timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
+    url: "{{ hermes_agent_vikunja_mcp_url }}"
+{% endif %}
+{% if _mcp_nautobot %}
+  nautobot:
+    timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
+    url: "{{ hermes_agent_nautobot_mcp_url }}"
+{% endif %}
+{% endif %}
+timezone: '{{ hermes_agent_timezone }}'
