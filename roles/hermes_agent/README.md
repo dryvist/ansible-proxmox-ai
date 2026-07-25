@@ -308,6 +308,24 @@ alongside their `-enqueue` twins. Each card carries an idempotency key
 `<job>-<slot>`, so a
 double-fire or backfill never duplicates a card.
 
+**Cards post a full report, not a sentence.** The enqueuer appends a shared
+footer telling the worker to `hermes send` a full report to the `#hermes-all`
+channel variable — headline line, then the concrete values/counts/statuses
+observed that run, one per line, clean checks included, under 25 lines — and
+then `kanban_complete` with a **one-line** summary (the board digest renders
+that field as a single bullet). A card whose own prompt already posts a report
+posts once, not twice.
+
+This wording is what makes cron retirement safe. A cron is justified only when
+it is a genuine daily report over the previous day, or runs **less often than
+daily**; anything more frequent belongs on the board. But a `-v2` cron posts a
+full report, so while the footer asked for a one-line summary, switching one off
+silently downgraded its topic from a report to a sentence. Footer first, then
+the retirement — and the replacement card must be off
+`hermes_agent_kanban_paused_jobs`, or its enqueuer fires into the enqueue
+script's unknown-selector arm and creates nothing at all. Both are enforced by
+`tests/hermes_agent/test_retired_direct_crons.py`.
+
 A self-perpetuating **8h reviewer** card (00:00 / 08:00 / 16:00 UTC) reviews the
 last 8h of board activity, files follow-ups for anything missed or broken, posts
 a digest to `#hermes-all`, and creates the next slot's reviewer card as `blocked`
@@ -318,7 +336,7 @@ blocked card, so the reviewer chain self-heals if a link is ever dropped.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `hermes_agent_kanban_cards` | — | the per-workload card table (title, cadence, schedule, prompt var, skills) |
-| `hermes_agent_slack_hermes_all_channel` | firehose channel id | channel each card's completion summary posts to |
+| `hermes_agent_slack_hermes_all_channel` | firehose channel id | channel each card posts its completion **report** to |
 | `hermes_agent_kanban_reviewer_schedule` | `0 */8 * * *` | the 8h reviewer slots |
 | `hermes_agent_kanban_safety_net_schedule` | `33 4 * * *` | daily chain-break backfill sweep |
 

@@ -1019,6 +1019,7 @@
     (hermes_agent_splunk_status_digest_enabled | bool)
     or (hermes_agent_triage_enabled | bool)
     or (hermes_agent_retire_anomaly_hunt | bool)
+    or (hermes_agent_retire_fabric_status_v2 | bool)
 
 - name: Pause the superseded v3 LLM digest cron (disable-don't-delete)
   ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ hermes_agent_superseded_digest_cron_name }}"
@@ -1063,6 +1064,23 @@
   when:
     - hermes_agent_retire_anomaly_hunt | bool
     - hermes_agent_retired_anomaly_hunt_cron_name in (hermes_agent_active_cron_list.stdout | default(''))
+
+# Retire the 6-hourly fabric-status cron: it fails the cadence rule (a cron earns
+# its place only as a daily-or-rarer report), and the hourly homelab-ai-fabric-status
+# card now covers the topic — the card footer asks for a full report, and the card
+# is off hermes_agent_kanban_paused_jobs so its enqueuer actually creates it.
+# enabled:false stops reconcile from re-creating this job; only this pause stops
+# the one already on the guest.
+- name: Pause the retired 6-hourly fabric-status cron (disable-don't-delete)
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ hermes_agent_retired_fabric_status_cron_name }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  when:
+    - hermes_agent_retire_fabric_status_v2 | bool
+    - hermes_agent_retired_fabric_status_cron_name in (hermes_agent_active_cron_list.stdout | default(''))
 
 # Zammad stale-ticket auto-close cron (disabled by default; see defaults). Closures
 # deliver to Slack for auditability. Gated on the auto-close flag AND zammad + slack
