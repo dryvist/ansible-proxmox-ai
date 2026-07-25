@@ -357,7 +357,9 @@ hermes_agent_api_server_port: >-
 # 2026-07-11 bench). 2 = one operator submission + one background/curriculum
 # run in flight; anything more waits at the door, not in the GPU queue.
 # 0 would disable the cap entirely — assert.yml forbids that.
-hermes_agent_api_max_concurrent_runs: 2
+# Derived from ai_llm_concurrency (all.yml) so this cap scales with the
+# serving tier's admitted concurrency; resolves to 2 at the current value of 1.
+hermes_agent_api_max_concurrent_runs: "{{ ai_llm_concurrency | int * 2 }}"
 
 # --- Kanban dispatcher bounds (config.yaml `kanban:` block) -------------------
 # Upstream (>=v0.13) runs the board dispatcher inside the gateway BY DEFAULT,
@@ -377,8 +379,13 @@ hermes_agent_api_max_concurrent_runs: 2
 # profile overlap at ~0.71x aggregate) is a documented operator decision made
 # AFTER the serving tier proves that capacity — never a side effect of adding
 # a profile.
-hermes_agent_kanban_max_in_progress: 1
-hermes_agent_kanban_max_in_progress_per_profile: 1
+# Both derive from ai_llm_concurrency (all.yml) 1:1 (NOT the x2 relationship
+# hermes_agent_api_max_concurrent_runs above uses) so this SUM cap stays
+# pinned to the per-profile cap until the operator decision above raises it
+# explicitly — a straight ai_llm_concurrency reference cannot silently double
+# it the way a x2 derivation would.
+hermes_agent_kanban_max_in_progress: "{{ ai_llm_concurrency | int }}"
+hermes_agent_kanban_max_in_progress_per_profile: "{{ ai_llm_concurrency | int }}"
 
 # Recurring cards use Hermes' goal loop so a worker that forgets its lifecycle
 # call gets a bounded continuation/finalization nudge instead of exiting open.
