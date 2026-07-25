@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+{{ ansible_managed | comment }}
+"""Deterministic, no-LLM master digest of everything the Kanban board did.
+
+STDOUT is delivered verbatim to Slack (cron runs `--no-agent --deliver slack:<ch>`),
+so everything printed here must be TRUE. No model sits in the fact path, which is
+the point: this digest is what tells the operator the board is wedged, so it has
+to keep working when the brain is unloaded, throttled or crash-looping — exactly
+the conditions that produce the failures it reports.
+
+It is the MASTER report: one run covers every card that finished, failed, retried,
+exited open or overran since the previous run of this same digest. Duplicating it
+per workload is what it exists to retire.
+
+SINCE THE PREVIOUS RUN. A schema-versioned state file under the Hermes state
+directory carries the last run's wall clock (same location and shape as the
+Splunk digests' state). A missing or corrupt state file degrades to the last
+INTERVAL_MIN minutes — one scheduling interval — and SAYS SO in the output; it
+never crashes and never silently reports nothing.
+
+Source of truth is kanban.db, opened READ-ONLY. `hermes kanban` has no query for
+"every run that ended since T": `list --json` carries task rows whose `result`
+column is null on all 413 tasks currently on the board, and the per-attempt
+outcome and summary live in `runs --json <task_id>`, which takes one task id at a
+time. Fanning that out would be one subprocess per card per run. One read-only
+SQL query over task_runs is the whole job.
+
+ponytail: read-only sqlite against another program's schema. The ceiling is a
+Hermes upgrade renaming a column — which surfaces as an explicit FAILED line
+here, never as a quiet empty digest. Upgrade path if that gets annoying: ask
+upstream for `kanban runs --since`.
+"""
+import datetime as dt
+import json
+import os
+import sqlite3
+import sys
+
+# --- config (rendered from roles/hermes_agent/defaults/main.yml) ---------------
+DB_PATH = "{{ hermes_agent_hermes_home }}/kanban.db"
+STATE_PATH = "{{ hermes_agent_hermes_home }}/state/{{ hermes_agent_kanban_digest_state_name }}"
+TITLE = "{{ hermes_agent_kanban_digest_title }}"
+# One scheduling interval. Doubles as the no-state fallback window, so the
+# schedule and the fallback can never drift apart — they are the same number.
+INTERVAL_MIN = {{ hermes_agent_kanban_digest_interval_minutes }}
+# Bumped when the state shape changes. An older/absent value is treated as no
+# usable state, which takes the announced fallback path rather than erroring.
+STATE_SCHEMA = 1
+# ponytail: presentation calibration, deliberately module constants and not
+# Ansible variables — they only mean anything against each other and want tuning
+# against real Slack posts, not templating.
+# Per-section cap. An overflowing section says how many it did not name.
+MAX_ITEMS = 10
+# A worker summary is a paragraph; Slack wants a line. Enough to carry the
+# finding, not the whole evidence block.
+SUMMARY_CHARS = 400
+# Every run outcome that is not this one is a failure of some kind.
+OK = "completed"
+# Where a card is allowed to be once its run ended. Anything else means the run
+# stopped but the card did not finish — the "exits open" failure mode.
+SETTLED = ("done", "archived")
+
+RUNS_SQL = """
+SELECT r.task_id, r.outcome, r.started_at, r.ended_at, r.summary, r.error,
+       t.title, t.status, t.consecutive_failures, t.max_retries
+  FROM task_runs r
+  JOIN tasks t ON t.id = r.task_id
+ WHERE r.ended_at IS NOT NULL AND r.ended_at > ? AND r.ended_at <= ?
+ ORDER BY r.ended_at
+"""
+# current_run_id pins the ATTEMPT in flight; tasks.started_at is the first
+# attempt's start, which would overstate the elapsed time of a retry.
+RUNNING_SQL = """
+SELECT t.id, t.title, t.max_runtime_seconds, t.last_heartbeat_at,
+       COALESCE(r.started_at, t.started_at) AS run_started
+  FROM tasks t
+  LEFT JOIN task_runs r ON r.id = t.current_run_id
+ WHERE t.status = 'running'
+"""
+BOARD_SQL = "SELECT status, COUNT(*) FROM tasks GROUP BY status"
+
+
+def fmt_dur(seconds):
+    """Duration for prose. None is stated as unknown, never guessed at."""
+    if seconds is None:
+        return "unknown"
+    seconds = int(seconds)
+    if seconds < 90:
+        return f"{seconds}s"
+    if seconds < 5400:
+        return f"{seconds // 60}m"
+    return f"{seconds / 3600:.1f}h"
+
+
+def clip(text, limit=SUMMARY_CHARS):
+    """One-line, length-capped. Truncation is marked, never silent."""
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def load_state():
+    """(since_epoch, note) — note is non-empty when the fallback window was used.
+
+    Missing, unreadable, wrong-schema and nonsense-timestamp all take the same
+    announced fallback path. A state file from the future (clock step) is not
+    trusted either: it would silence the digest until the clock caught up.
+    """
+    fallback = f"no usable state file — reporting the last {INTERVAL_MIN} min instead"
+    try:
+        with open(STATE_PATH) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return None, fallback
+    if not isinstance(state, dict) or state.get("schema") != STATE_SCHEMA:
+        return None, fallback
+    last = state.get("last_run_epoch")
+    if not isinstance(last, (int, float)) or last <= 0:
+        return None, fallback
+    return float(last), ""
+
+
+def save_state(now_epoch):
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"schema": STATE_SCHEMA, "last_run_epoch": now_epoch}, f)
+    os.replace(tmp, STATE_PATH)
+
+
+def connect(db_path):
+    """Read-only handle. mode=ro is enforced by SQLite, not by convention: this
+    digest must never be able to mutate the board it reports on."""
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def group_runs(rows):
+    """Fold per-attempt rows into one entry per card.
+
+    A card retried three times in the window is one line saying it was retried
+    three times, not three lines. Ordering follows the newest attempt.
+    """
+    by_task = {}
+    for row in rows:
+        entry = by_task.setdefault(row["task_id"], {
+            "title": row["title"], "status": row["status"],
+            "consecutive_failures": row["consecutive_failures"],
+            "max_retries": row["max_retries"], "attempts": [],
+        })
+        entry["title"] = row["title"]
+        entry["status"] = row["status"]
+        entry["attempts"].append(row)
+    return by_task
+
+
+def completed_lines(by_task):
+    """Cards that finished, each with enough of its result to be useful."""
+    out = []
+    for task_id, e in by_task.items():
+        wins = [a for a in e["attempts"] if a["outcome"] == OK]
+        if not wins:
+            continue
+        last = wins[-1]
+        elapsed = None
+        if last["started_at"] and last["ended_at"]:
+            elapsed = last["ended_at"] - last["started_at"]
+        retried = len(e["attempts"]) - len(wins)
+        retry_note = f", after {retried} failed attempt(s)" if retried else ""
+        summary = clip(last["summary"]) or "(the worker recorded no summary)"
+        out.append(f":white_check_mark: *{e['title']}* [{task_id}] "
+                   f"{fmt_dur(elapsed)}{retry_note} — {summary}")
+    return out
+
+
+def failed_lines(by_task):
+    """Cards whose attempts ended in anything but completion.
+
+    Names the outcomes, the attempt count, the error, and — the failure mode
+    this board actually has — where the card was left sitting.
+    """
+    out = []
+    for task_id, e in by_task.items():
+        bad = [a for a in e["attempts"] if a["outcome"] != OK]
+        if not bad or any(a["outcome"] == OK for a in e["attempts"]):
+            continue
+        last = bad[-1]
+        outcomes = ", ".join(sorted({(a["outcome"] or "unknown") for a in bad}))
+        tries = f" x{len(bad)}" if len(bad) > 1 else ""
+        # A card that exits open is a known failure mode here: the run stopped
+        # and the card never reached a settled column, so nothing retries it and
+        # nothing reports it. Saying WHERE it stopped is the actionable half.
+        landed = (f"card left *{e['status']}*" if e["status"] not in SETTLED
+                  else f"card {e['status']}")
+        detail = clip(last["error"] or last["summary"], 200)
+        streak = e["consecutive_failures"] or 0
+        streak_note = f", {streak} consecutive failures" if streak > 1 else ""
+        out.append(f":x: *{e['title']}* [{task_id}] {outcomes}{tries}, {landed}"
+                   f"{streak_note}" + (f" — {detail}" if detail else ""))
+    return out
+
+
+def overrun_lines(rows, now_epoch):
+    """Cards still running past their own max_runtime.
+
+    Unlike the sections above these are NOT window-scoped: an overrun repeats
+    every run for as long as it holds, because a card wedged for six hours is
+    not stale news. A card with no max_runtime recorded is skipped rather than
+    judged against an invented limit.
+    """
+    out = []
+    for row in rows:
+        limit, started = row["max_runtime_seconds"], row["run_started"]
+        if not limit or not started:
+            continue
+        elapsed = now_epoch - started
+        if elapsed <= limit:
+            continue
+        beat = row["last_heartbeat_at"]
+        beat_note = (f", last heartbeat {fmt_dur(now_epoch - beat)} ago"
+                     if beat else ", no heartbeat recorded")
+        out.append(f":hourglass: *{row['title']}* [{row['id']}] running "
+                   f"{fmt_dur(elapsed)}, past its {fmt_dur(limit)} max_runtime{beat_note}")
+    return out
+
+
+def section(lines, heading):
+    """Rendered section, capped, honest about what the cap hid."""
+    if not lines:
+        return []
+    shown, extra = lines[:MAX_ITEMS], len(lines) - MAX_ITEMS
+    out = ["", f"*{heading} ({len(lines)}):*"] + [f"• {line}" for line in shown]
+    if extra > 0:
+        out.append(f"• …and {extra} more not shown (cap {MAX_ITEMS}).")
+    return out
+
+
+def build_digest(run_rows, running_rows, board, now, since, note):
+    """Return the Slack text. Every number here came from a row just read."""
+    now_epoch = now.timestamp()
+    span = fmt_dur(now_epoch - since)
+    by_task = group_runs(run_rows)
+    done = completed_lines(by_task)
+    failed = failed_lines(by_task)
+    overrun = overrun_lines(running_rows, now_epoch)
+
+    header = (f"*{TITLE}* — {now.strftime('%Y-%m-%d %H:%M UTC')} "
+              f"(since {dt.datetime.fromtimestamp(since, dt.timezone.utc).strftime('%H:%M UTC')}, {span})")
+    lines = [header]
+    if note:
+        lines.append(f":information_source: {note}.")
+
+    lines += section(overrun, "Overrunning — repeats every run while it holds")
+    lines += section(failed, "Failed / retried / left open")
+    lines += section(done, "Completed")
+
+    if not (done or failed or overrun):
+        board_text = ", ".join(f"{v} {k}" for k, v in sorted(board.items())) or "empty"
+        lines.append("")
+        lines.append(f":mag: No board activity in the last {span} — no card completed, "
+                     f"failed, was retried or exceeded its max_runtime. Board holds: {board_text}.")
+    return "\n".join(lines)
+
+
+def main():
+    now = dt.datetime.now(dt.timezone.utc)
+    now_epoch = now.timestamp()
+    # fail loud, never fabricate: a broken read is DELIVERED as a failure, never
+    # smoothed into "nothing happened" — silence here would read as a healthy
+    # board. State is left untouched so the next run re-covers this window.
+    try:
+        since, note = load_state()
+        if since is None:
+            since = now_epoch - INTERVAL_MIN * 60
+        conn = connect(DB_PATH)
+        try:
+            run_rows = list(conn.execute(RUNS_SQL, (since, now_epoch)))
+            running_rows = list(conn.execute(RUNNING_SQL))
+            board = {row[0]: row[1] for row in conn.execute(BOARD_SQL)}
+        finally:
+            conn.close()
+        text = build_digest(run_rows, running_rows, board, now, since, note)
+    except Exception as e:  # noqa: BLE001 - deliberately broad; failure must be delivered
+        print(f":warning: {TITLE} FAILED: {type(e).__name__}: {str(e)[:200]}")
+        return 0
+
+    save_state(now_epoch)
+    print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

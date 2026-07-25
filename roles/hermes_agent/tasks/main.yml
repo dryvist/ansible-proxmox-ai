@@ -888,6 +888,18 @@
   loop_control:
     label: "{{ item.name }}"
 
+# The master Kanban digest: reads kanban.db read-only and reports what the board
+# did since its own previous run. No LLM and no network in its fact path, so it
+# still reports when the brain is unloaded or wedged — which is when a board goes
+# wrong in the first place.
+- name: Deploy the master Kanban digest script
+  ansible.builtin.template:
+    src: kanban-digest.py.j2
+    dest: "{{ hermes_agent_hermes_home }}/scripts/{{ hermes_agent_kanban_digest_script_name }}"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+
 # Zammad stale-ticket auto-close, brought under role management (token from .env,
 # no hardcoded secret). Cron is gated off by default (see defaults) — the script
 # is deployed regardless so enabling is a one-flag change.
@@ -960,6 +972,19 @@
       deliver: "slack:{{ hermes_agent_splunk_status_digest_channel }}"
       enabled: "{{ hermes_agent_splunk_status_digest_enabled }}"
 
+# The master Kanban digest cron: same --no-agent --script contract. Deliberately
+# NOT added to hermes_agent_seeded_cron_names — that list is what a cluster
+# window pauses, and this digest has to keep reporting through one.
+- name: Reconcile the master Kanban digest cron
+  ansible.builtin.include_tasks: reconcile_enqueuer_cron.yml
+  vars:
+    item:
+      name: "{{ hermes_agent_kanban_digest_cron_name }}"
+      schedule: "{{ hermes_agent_kanban_digest_cron_schedule }}"
+      script: "{{ hermes_agent_kanban_digest_script_name }}"
+      deliver: "slack:{{ hermes_agent_kanban_digest_channel }}"
+      enabled: "{{ hermes_agent_kanban_digest_enabled }}"
+
 # The script-fed Splunk triage digests: same --no-agent --script contract as the
 # status digest. Their stdout (numbers each script gathered itself) is delivered
 # verbatim — no model in the fact path, so no tool-call markup to leak and
@@ -994,6 +1019,7 @@
     (hermes_agent_splunk_status_digest_enabled | bool)
     or (hermes_agent_triage_enabled | bool)
     or (hermes_agent_retire_anomaly_hunt | bool)
+    or (hermes_agent_retire_fabric_status_v2 | bool)
 
 - name: Pause the superseded v3 LLM digest cron (disable-don't-delete)
   ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ hermes_agent_superseded_digest_cron_name }}"
@@ -1038,6 +1064,23 @@
   when:
     - hermes_agent_retire_anomaly_hunt | bool
     - hermes_agent_retired_anomaly_hunt_cron_name in (hermes_agent_active_cron_list.stdout | default(''))
+
+# Retire the 6-hourly fabric-status cron: it fails the cadence rule (a cron earns
+# its place only as a daily-or-rarer report), and the hourly homelab-ai-fabric-status
+# card now covers the topic — the card footer asks for a full report, and the card
+# is off hermes_agent_kanban_paused_jobs so its enqueuer actually creates it.
+# enabled:false stops reconcile from re-creating this job; only this pause stops
+# the one already on the guest.
+- name: Pause the retired 6-hourly fabric-status cron (disable-don't-delete)
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ hermes_agent_retired_fabric_status_cron_name }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  when:
+    - hermes_agent_retire_fabric_status_v2 | bool
+    - hermes_agent_retired_fabric_status_cron_name in (hermes_agent_active_cron_list.stdout | default(''))
 
 # Zammad stale-ticket auto-close cron (disabled by default; see defaults). Closures
 # deliver to Slack for auditability. Gated on the auto-close flag AND zammad + slack

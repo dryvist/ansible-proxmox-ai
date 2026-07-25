@@ -308,6 +308,24 @@ alongside their `-enqueue` twins. Each card carries an idempotency key
 `<job>-<slot>`, so a
 double-fire or backfill never duplicates a card.
 
+**Cards post a full report, not a sentence.** The enqueuer appends a shared
+footer telling the worker to `hermes send` a full report to the `#hermes-all`
+channel variable — headline line, then the concrete values/counts/statuses
+observed that run, one per line, clean checks included, under 25 lines — and
+then `kanban_complete` with a **one-line** summary (the board digest renders
+that field as a single bullet). A card whose own prompt already posts a report
+posts once, not twice.
+
+This wording is what makes cron retirement safe. A cron is justified only when
+it is a genuine daily report over the previous day, or runs **less often than
+daily**; anything more frequent belongs on the board. But a `-v2` cron posts a
+full report, so while the footer asked for a one-line summary, switching one off
+silently downgraded its topic from a report to a sentence. Footer first, then
+the retirement — and the replacement card must be off
+`hermes_agent_kanban_paused_jobs`, or its enqueuer fires into the enqueue
+script's unknown-selector arm and creates nothing at all. Both are enforced by
+`tests/hermes_agent/test_retired_direct_crons.py`.
+
 A self-perpetuating **8h reviewer** card (00:00 / 08:00 / 16:00 UTC) reviews the
 last 8h of board activity, files follow-ups for anything missed or broken, posts
 a digest to `#hermes-all`, and creates the next slot's reviewer card as `blocked`
@@ -318,9 +336,43 @@ blocked card, so the reviewer chain self-heals if a link is ever dropped.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `hermes_agent_kanban_cards` | — | the per-workload card table (title, cadence, schedule, prompt var, skills) |
-| `hermes_agent_slack_hermes_all_channel` | firehose channel id | channel each card's completion summary posts to |
+| `hermes_agent_slack_hermes_all_channel` | firehose channel id | channel each card posts its completion **report** to |
 | `hermes_agent_kanban_reviewer_schedule` | `0 */8 * * *` | the 8h reviewer slots |
 | `hermes_agent_kanban_safety_net_schedule` | `33 4 * * *` | daily chain-break backfill sweep |
+
+### Master board digest (`kanban-digest`)
+
+One report covering **everything the board did since this digest last ran** —
+cards completed (with the worker's own summary, not just a title), cards that
+failed, retried or **exited open** (the run ended and the card never reached a
+settled column), and cards still running past their own `max_runtime`. It is the
+report that makes per-workload digest crons redundant.
+
+`--no-agent --script`, same contract as the script-fed Splunk digests: the script
+reads `kanban.db` **read-only** (`mode=ro`) and its stdout is delivered verbatim.
+No LLM and no network in the fact path, which is the point — this is the surface
+that announces a wedged board, and a wedged board is usually a wedged brain. For
+the same reason it is deliberately **absent from
+`hermes_agent_seeded_cron_names`**: a cluster window pauses that list, and this
+digest has to keep reporting through one.
+
+`hermes kanban` has no "every run that ended since T" query — `list --json`
+carries task rows whose `result` column is null, and per-attempt outcome and
+summary live in `runs --json <task_id>`, one task id at a time. One read-only SQL
+query over `task_runs` replaces a per-card subprocess fan-out.
+
+"Since the previous run" is a schema-versioned state file beside the Splunk
+digests' state. Missing or corrupt degrades to one scheduling interval and
+**says so** in the post; a broken read is delivered as an explicit `FAILED` line,
+never as silence (an empty post would read as a healthy board). A genuinely
+quiet window prints one line naming the board it searched.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `hermes_agent_kanban_digest_interval_minutes` | `15` | the only place the cadence is written; schedule and fallback derive from it. Steady state hourly |
+| `hermes_agent_kanban_digest_cron_schedule` | derived | never set by hand |
+| `hermes_agent_kanban_digest_channel` | `hermes_agent_digest_slack_channel` | delivery surface; never a literal id |
+| `hermes_agent_kanban_digest_enabled` | derived | Slack bot + app tokens + channel set. No Splunk or brain dependency |
 
 ## Inbound job-submission API (sanctioned non-exec path)
 
