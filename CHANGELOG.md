@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.17.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.16.0...v0.17.0) (2026-07-25)
+
+
+### Features
+
+* **hermes_agent:** add splunk-admin and homelab-admin operating profiles ([#203](https://github.com/dryvist/ansible-proxmox-ai/issues/203)) ([8ddec81](https://github.com/dryvist/ansible-proxmox-ai/commit/8ddec8195273c6b1d37cd702387018d271637764))
+* **hermes_agent:** master Kanban digest, full-report cards, retire the 6-hourly fabric cron ([#202](https://github.com/dryvist/ansible-proxmox-ai/issues/202)) ([a2b4d75](https://github.com/dryvist/ansible-proxmox-ai/commit/a2b4d75986bd5858f479d4d0edffd16a0d7b29da))
+
+
+### Bug Fixes
+
+* **hermes_agent:** watchdog probes the router alias, not a physical id ([#197](https://github.com/dryvist/ansible-proxmox-ai/issues/197)) ([d9c4f72](https://github.com/dryvist/ansible-proxmox-ai/commit/d9c4f729e2d76ac8e4985b820057fab5a751318d))
+
 ## [0.16.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.15.0...v0.16.0) (2026-07-25)
 
 
