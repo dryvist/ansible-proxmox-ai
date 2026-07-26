@@ -286,8 +286,10 @@ dedup), and durable knowledge is captured as `llm-wiki` pages (RAG).
 **Routing (3-tier, 2026-07-18):** Slack output is split by audience, not by
 job. The **firehose channel** (`SLACK_FIREHOSE_CHANNEL` →
 `hermes_agent_firehose_deliver`) receives every verbose routine report —
-`splunk-digest`, `github-triage`, `homelab-ai-fabric-status` (now 24/7), and
-the `zammad-review` working report — posted every run, in full. The **home
+`github-triage`, `homelab-ai-fabric-status` (now 24/7), and the
+`zammad-review` working report, posted every run in full, plus `splunk-digest`
+(posts on anything critical or novel, and otherwise at least once every
+`HEARTBEAT_HOURS` — see "Delta discipline" below). The **home
 channel** is the curated operator surface: the once-daily `daily-summary`
 rollup (delta-only, no tables, ≤15 lines) and nothing routine. **DMs stay
 urgent-only**: anomaly alerts (`slack:<member-id>`, silent-unless-anomaly) and
@@ -305,13 +307,20 @@ run. Gated on the Zammad URL + token alongside the Slack gates.
 the canonical surface for ongoing/known findings; `splunk-triage`'s DM recalls
 the digest's last-posted state from memory before alerting and stays silent
 when its top finding is already covered there — the DM is for genuinely NEW
-or ESCALATING findings only. The script-fed status digest does NOT collapse:
-every hourly run posts the real per-index volumes plus their delta against the
-previous run, because a "no change" line carries no information. It still
-fingerprints its findings, but the fingerprint now only labels whether the
-health picture moved — it no longer decides whether numbers get reported, so
-there is no anchor hour to defeat the suppression. `github-triage` does apply
-the fingerprint-and-collapse pattern to its top-5 list, reusing the existing
+or ESCALATING findings only. The script-fed status digest posts the real
+per-index volumes plus their delta against the previous run whenever anything
+is CRITICAL or genuinely novel anywhere in its escalation ladder (index, host,
+then sourcetype/composition), exactly as before. **Heartbeat gate (operator
+decision, 2026-07-26):** a run with nothing critical and nothing novel now
+goes `[SILENT]` unless `HEARTBEAT_HOURS` (a module constant in
+`splunk-digest.py.j2`, currently 6) has elapsed since the last real post — the
+prior rule posted a "Health state unchanged" boilerplate line on every single
+quiet hour (38 of 40 runs carried zero information in one UTC day). A CRITICAL
+finding is exempt and always posts, every run, for as long as it holds, so an
+ingest anomaly is never delayed or hidden by this gate; the fingerprint still
+labels whether the health picture moved, the heartbeat clock only decides
+whether a *quiet* state gets restated. `github-triage` does apply the
+fingerprint-and-collapse pattern to its top-5 list, reusing the existing
 memory tool — no new state infrastructure.
 
 **Fresh posts, not one thread.** Each cron run is an isolated session, so its Slack

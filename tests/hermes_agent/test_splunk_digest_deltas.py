@@ -173,12 +173,51 @@ def test_an_exhausted_routine_search_escalates_before_it_gives_up():
     assert "host level" in escalated and "nothing new at index level" in escalated
     assert "host host-b" in escalated and "3.0 h old" in escalated
 
-    # Nothing left anywhere: an honest, specific line — never bare boilerplate.
-    exhausted, _ = step(with_stale_host(3, "host-b", hours=3), s2, 3)
+    # Nothing left anywhere, and the heartbeat ceiling has elapsed since the
+    # last real post (hour 2): an honest, specific line — never bare
+    # boilerplate, and never silent once the heartbeat is due.
+    exhausted, _ = step(with_stale_host(9, "host-b", hours=3), s2, 9)
     assert "Nothing new to report" in exhausted
     assert "Searched 3 index(es), 4 host(s) and 3 index/sourcetype pair(s)" in exhausted
     assert "no critical condition is active" in exhausted
     assert "New today" not in exhausted
+
+
+def test_heartbeat_gate_silences_a_repeat_quiet_run_then_posts_once_it_elapses():
+    """The fully-quiet case only posts once per HEARTBEAT_HOURS; a real ingest
+    anomaly is always CRITICAL and can never be silenced by this gate."""
+    _, s0 = step(BASE, None, 0)                 # real post: the day's table
+    grown = scale(BASE, "os", 1.6)
+    _, s1 = step(grown, s0, 1)                  # real post: the +60% finding
+    flat, s2 = step(grown, s1, 2)               # real post: first "flat" finding
+    assert "byte-identical" in flat
+
+    soon, s3 = step(grown, s2, 3)
+    assert soon == DIGEST.SILENT, \
+        "1h after the last real post (well under the 6h ceiling), a repeat quiet run must stay silent"
+    assert s3["last_post_iso"] == s2["last_post_iso"], "a silent run must not reset the heartbeat clock"
+    assert s3["by_index"]["os"]["vol"] == s2["by_index"]["os"]["vol"], \
+        "tracking state keeps updating on a silent run — only delivery is suppressed"
+
+    later_when = at(2) + dt.timedelta(hours=DIGEST.HEARTBEAT_HOURS + 1)
+    later, s4 = step(grown, s3, later_when)
+    assert "Nothing new to report" in later, "once the heartbeat ceiling elapses, a quiet run posts again"
+    assert "heartbeat" in later.lower()
+    assert s4["last_post_iso"] != s3["last_post_iso"], "a real heartbeat post must advance the clock"
+
+
+def test_critical_findings_bypass_the_heartbeat_gate_even_minutes_after_the_last_post():
+    dark = {i: h for i, h in BASE.items() if i != "network"}
+    first, s0 = step(dark, None, 0)
+    assert "INGEST SILENCE: index=network" in first
+
+    # 5 minutes later — nowhere near the 6h heartbeat ceiling — a persisting
+    # critical condition must still post, never fall back to the gate above.
+    soon_after = at(0) + dt.timedelta(minutes=5)
+    second, _ = step(dark, s0, soon_after)
+    assert second != DIGEST.SILENT
+    assert "INGEST SILENCE: index=network" in second
+    assert "Critical — repeats every run" in second
 
 
 def test_composition_tier_is_reached_when_index_and_host_tiers_are_spent():
