@@ -88,7 +88,7 @@ advanced option. `default` is not the absence of a choice; it is correct only
 for cross-domain, board-meta, or GitHub work (say why in the PR).
 
 A **profile** is a fully independent `HERMES_HOME` directory (own
-`config.yaml`, `.env`, `SOUL.md`, memory, skills) that a Kanban card selects
+`config.yaml`, `.env`, `SOUL.md`, skills) that a Kanban card selects
 via its `assignee` field. The dispatcher spawns
 `hermes -p <assignee> chat ...` with `HERMES_HOME` pointed at that profile's
 directory, so the assignee is the **entire tool/credential envelope** the
@@ -103,7 +103,21 @@ the decision rule, and the isolation caveat (profile scoping is a
 config/tool-availability boundary, not an OS sandbox: every profile runs as
 the same `hermes` user in the same LXC).
 
-| Profile | Mission | Has | Must NOT have |
+**The isolation boundary is tools and credentials — memory is NOT part of
+it.** Every profile points at the same Hindsight memory bank: `bank_id`
+defaults to `"hermes"` and no profile sets `bank_id_template`, so
+`_resolve_bank_id_template` falls back to that one shared bank for all of
+them (verified against the pinned hindsight plugin source — see
+`hermes_agent_profiles` in `defaults/main.yml` and "Shared across profiles,
+by design" in [`docs/HERMES_OPS.md`](../../docs/HERMES_OPS.md)). This is
+deliberate — it is what lets `daily-summary` on the `default` profile recall
+a card's findings after its `assignee` moves — but it means a `splunk-admin`
+worker can `memory recall` anything `homelab-admin` (or any other profile)
+ever wrote, and vice versa. The "Must NOT have" column below is a
+**tools/MCP/skills boundary only**; it is not a data boundary, and nothing
+written to memory by any profile should be treated as private to it.
+
+| Profile | Mission | Has | Must NOT have (tools/MCP/skills — memory is shared across every profile, see above) |
 | --- | --- | --- | --- |
 | `default` | Cross-domain, board-meta, GitHub | everything (unchanged) | — |
 | `splunk-admin` | Read-only SIEM: SPL, alert + report | Splunk + Qdrant MCP, `splunk-monitor` skill | GitHub, Zammad, other MCP/skills |
