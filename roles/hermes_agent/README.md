@@ -484,12 +484,24 @@ nothing while adding the documented per-session "failed initial connection"
 park, since the route is still not seeded. Flip that flag when the agent should
 *read* the board conversationally — an unrelated decision.
 
-**Bucket moves use the dedicated route.** Vikunja does not move a task between
-buckets on a task update; it only auto-moves on a `done` flip. The move is
-`PUT /projects/{p}/views/{v}/buckets/{b}/tasks`. Sending `bucket_id` in an
-update is the silent-no-op version — the board would freeze while every comment
-still landed correctly, which is the hardest possible failure to notice. A
-check pins this.
+### Two endpoint facts, both verified live (2026-07-26)
+
+Both were wrong on the first pass, and **both fail silently** — the daemon
+runs, logs nothing, and does nothing. Each is pinned by a check.
+
+1. **The bucket move is `POST`, not `PUT`.** `PUT` returns **405** on the
+   running instance, even though upstream's own client docs say `PUT`. The
+   route itself is also load-bearing: a task *update* does not move buckets
+   (the server only auto-moves on a `done` flip), so sending `bucket_id` in an
+   update succeeds and moves nothing.
+2. **Tasks are read from `/views/{v}/tasks`, not `/views/{v}/buckets`.** Both
+   return the bucket list, but `/buckets` carries only a `count` and **no
+   `tasks` key at all**. Reading tasks from it returns an empty list for every
+   bucket, forever, with a 200 and no error anywhere — the bridge would poll
+   perfectly and never pick up a single task.
+
+One call serves both bucket-id mapping and the ready-task read, which is also
+one fewer token permission.
 
 **Concurrency** is *not* managed here. `kanban.max_in_progress` already bounds
 how many workers the shared serving deployment carries, and stays the single
@@ -507,20 +519,36 @@ rate limit, so one bulk paste into Vikunja cannot create fifty cards at once.
 | `hermes_agent_vikunja_bridge_card_assignee` | `""` | `kanban.default_assignee`, or a name in `hermes_agent_profiles` (asserted) |
 | `hermes_agent_vikunja_bridge_token` | `env HERMES_VIKUNJA_API_TOKEN` | **operator-supplied**; see below |
 
-### The credential the operator must supply
+### The credential
 
 `HERMES_VIKUNJA_API_TOKEN` — a **write-scoped** Vikunja API token, read from the
 converge environment per repo convention (`lookup('env', ...)`, so Doppler, SOPS
 and OpenBao all satisfy it; the role never names a backend).
 
-It must carry the `projects` → `views_buckets_tasks` permission, not just task
-read/write: moving a task between buckets is its own permission group, and a
-token without it comments perfectly while never moving a card. Vikunja is known
-to need *both* possible permission keys requested for that route in some
-versions.
+**Already provisioned.** A least-privilege token was minted via the Vikunja API
+and stored at `secret/ai/hermes/vikunja-bridge` in OpenBao (key
+`HERMES_VIKUNJA_API_TOKEN`). Every function above was then run against the live
+instance with that exact token.
 
-This is deliberately **not** `ai_runner`'s `VIKUNJA_API_TOKEN`. Different guest,
-different scope — one shared credential would hand each the other's
+Its permission set is exactly the operations the bridge performs and nothing
+more — no project create, no project delete, no delete of anything:
+
+| Group | Actions | Used for |
+| --- | --- | --- |
+| `projects` | `read_all`, `views_buckets_tasks` | find the project by title; the bucket move |
+| `projects_views` | `read_all` | find the Kanban view |
+| `projects_views_tasks` | `read_all` | buckets **with** their tasks |
+| `tasks` | `read_one`, `update` | mark done |
+| `tasks_comments` | `create` | relay the card's result |
+
+Note `projects_views` and `projects_views_tasks` are **separate permission
+groups** from `projects`. The pre-existing `VIKUNJA_MCP_TOKEN_RW` lacks them
+and returns 401 listing views, so it cannot drive this bridge — that is why a
+new token exists rather than reusing it. Vikunja also requires `expires_at` on
+token creation; this one is dated one year out.
+
+Deliberately **not** `ai_runner`'s `VIKUNJA_API_TOKEN`: different guest,
+different scope, and one shared credential would hand each the other's
 permissions. Enabling the bridge without a token fails the converge rather than
 shipping a daemon that can only log `bridge idle`.
 

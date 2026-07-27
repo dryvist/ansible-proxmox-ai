@@ -157,21 +157,62 @@ def test_intake_gates_exclude_everything_not_explicitly_offered():
     assert BRIDGE.actionable({"id": 8, "title": "real work", "labels": labelled}, tracked)
 
 
-def test_bucket_moves_use_the_dedicated_route_not_a_task_update():
-    """Vikunja does NOT move a task between buckets on a task update — it only
-    auto-moves on a `done` flip. Sending bucket_id in an update silently
-    succeeds and moves nothing, which would freeze the operator's board while
-    every comment still landed. Pin the working route.
+def test_bucket_moves_use_the_dedicated_route_with_post():
+    """Two live-verified facts (2026-07-26), each a silent failure if broken.
+
+    ROUTE: Vikunja does not move a task between buckets on a task update — it
+    only auto-moves on a `done` flip. Sending bucket_id in an update succeeds
+    and moves nothing, freezing the board while every comment still lands.
+
+    METHOD: PUT on this route returns 405 on the running instance, despite
+    upstream's client docs saying PUT. POST is what actually works.
     """
     assert "/views/{view}/buckets/{bucket}/tasks" in TEMPLATE, (
         "the bucket move must go through the dedicated bucket-tasks route")
     move = TEMPLATE.split("def move_to_bucket")[1].split("\ndef ")[0]
-    assert '"PUT"' in move and '"task_id": task_id' in move, move
-    # Code only — the docstring names the wrong-way call in order to warn
-    # against it, and must not be read as the function making it.
+    # Code only — the docstring names the wrong calls in order to warn against
+    # them, and must not be read as the function making them.
     code = move.split('"""')[-1]
+    assert '"POST"' in code and '"task_id": task_id' in code, code
+    assert '"PUT"' not in code, "PUT returns 405 on the deployed API — POST is the verb"
     assert "bucket_id" not in code, (
         "bucket_id in a task update is the silent-no-op version of this call")
+
+
+def test_tasks_are_read_from_the_view_tasks_route_not_the_buckets_route():
+    """Live-verified 2026-07-26: `/views/{v}/buckets` returns buckets carrying
+    only a `count` — no `tasks` key at all — while `/views/{v}/tasks` returns
+    the buckets WITH their tasks.
+
+    Reading tasks from `/buckets` therefore yields an empty list for every
+    bucket, forever, with a 200 and nothing in any log. The daemon would run
+    flawlessly and never pick up a single task — the easiest way to silently
+    break the whole bridge, so it is pinned.
+    """
+    fetch = TEMPLATE.split("def view_buckets")[1].split("\ndef ")[0]
+    code = fetch.split('"""')[-1]
+    assert "/views/{view}/tasks" in code, code
+    called = code.split("api(")[1].split(")")[0]
+    assert "buckets" not in called, (
+        "the /buckets route carries no tasks — reading it makes intake a silent no-op")
+
+    # ready_tasks must consume that already-fetched list, not re-query.
+    ready = TEMPLATE.split("def ready_tasks")[1].split("\ndef ")[0]
+    assert "api(" not in ready, "ready_tasks must not issue its own request"
+    assert 'board["buckets"]' in ready and 'entry.get("tasks")' in ready, ready
+
+
+def test_ready_tasks_reads_the_right_bucket_out_of_the_board():
+    board = {"ready": 2, "buckets": [
+        {"id": 1, "title": "Backlog", "tasks": [{"id": 10}]},
+        {"id": 2, "title": "Ready", "tasks": [{"id": 11}, {"id": 12}]},
+        {"id": 3, "title": "Done", "tasks": [{"id": 13}]},
+    ]}
+    assert [t["id"] for t in BRIDGE.ready_tasks(board)] == [11, 12]
+    # A bucket returned with no tasks key at all must read as empty, not
+    # explode — that is exactly the shape the /buckets route returns.
+    assert BRIDGE.ready_tasks({"ready": 9, "buckets": [{"id": 9, "title": "Ready"}]}) == []
+    assert BRIDGE.ready_tasks({"ready": 99, "buckets": []}) == []
 
 
 def test_the_write_token_never_reaches_the_script_template():

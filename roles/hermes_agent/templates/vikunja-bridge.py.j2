@@ -152,20 +152,38 @@ def kanban_view_id(pid):
     return None
 
 
-def bucket_ids(pid, view):
-    """{bucket title: id} for the Kanban view."""
-    buckets = api("GET", f"/projects/{pid}/views/{view}/buckets") or []
+def view_buckets(pid, view):
+    """The Kanban view's buckets, each WITH its `tasks` array.
+
+    This is `/views/{v}/tasks`, NOT `/views/{v}/buckets` — verified live
+    2026-07-26 against the running instance. Both return the bucket list, but
+    `/buckets` carries only a `count` and no `tasks` key at all, so reading
+    tasks from it yields an empty list for every bucket, forever, with a 200
+    and no error anywhere. One endpoint serves both jobs here (title->id
+    mapping and the ready-task read), which is also one fewer token permission.
+    """
+    return api("GET", f"/projects/{pid}/views/{view}/tasks") or []
+
+
+def bucket_ids(buckets):
+    """{bucket title: id}, from an already-fetched bucket list."""
     return {b.get("title"): b.get("id") for b in buckets if b.get("title")}
 
 
 def move_to_bucket(pid, view, bucket, task_id):
     """Move a task into a bucket.
 
-    This MUST be the dedicated bucket route: updating a task does NOT move it
-    between buckets (the server only auto-moves on a `done` flip). Sending
-    bucket_id in a task update is the silent-no-op version of this call.
+    Two things are load-bearing and both were verified live 2026-07-26:
+
+    METHOD IS POST. PUT on this route returns 405 on the running instance.
+    (Upstream's own client docs say PUT; the deployed API disagrees. The
+    observed behaviour wins.)
+
+    IT MUST BE THIS ROUTE. Updating a task does NOT move it between buckets —
+    the server only auto-moves on a `done` flip. Sending bucket_id in a task
+    update is the silent-no-op version of this call.
     """
-    api("PUT", f"/projects/{pid}/views/{view}/buckets/{bucket}/tasks",
+    api("POST", f"/projects/{pid}/views/{view}/buckets/{bucket}/tasks",
         {"task_id": task_id})
 
 
@@ -397,7 +415,8 @@ def resolve_board():
     if view is None:
         log(f"project {PROJECT_NAME!r} has no Kanban view")
         return None
-    buckets = bucket_ids(pid, view)
+    bucket_list = view_buckets(pid, view)
+    buckets = bucket_ids(bucket_list)
     if BUCKET_READY not in buckets:
         log(f"ready bucket {BUCKET_READY!r} not found — nothing to intake from")
         return None
@@ -415,14 +434,15 @@ def resolve_board():
         "in_progress": buckets.get(BUCKET_IN_PROGRESS),
         "done": buckets.get(BUCKET_DONE),
         "blocked": buckets.get(BUCKET_BLOCKED),
+        # Carried from the same fetch that resolved the ids, so intake reads
+        # the board exactly as it was when the buckets were resolved.
+        "buckets": bucket_list,
     }
 
 
 def ready_tasks(board):
-    view, bucket = board["view"], board["ready"]
-    data = api("GET", f"/projects/{board['pid']}/views/{view}/buckets") or []
-    for entry in data:
-        if entry.get("id") == bucket:
+    for entry in board["buckets"]:
+        if entry.get("id") == board["ready"]:
             return entry.get("tasks") or []
     return []
 
