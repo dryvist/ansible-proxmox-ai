@@ -10,44 +10,152 @@ README](../roles/hermes_agent/README.md). This doc covers the agent itself — i
 cron fleet, its memory, the credentials it needs, and how the serving path
 self-heals.
 
-Everything here is seeded declaratively by the `hermes_agent` role. Every cron
-run is a **fresh, isolated agent session** — there is no in-process state
-carried between runs, so anything a job needs to remember it must write to
-memory (below).
+Everything here is seeded declaratively by the `hermes_agent` role. Every run is
+a **fresh, isolated session** — there is no in-process state carried between
+runs, so anything a job needs to remember it must write to memory (below). That
+property is not incidental: recurring work moved off agentic cron onto the
+Kanban board (#83) precisely to guarantee it.
 
 ## Cron fleet
 
-All jobs are defined in `roles/hermes_agent/defaults/main.yml` and seeded at
-converge time via `hermes cron create` in `tasks/main.yml`. Schedules are UTC
-(`hermes_agent_timezone: UTC`). Splunk jobs are gated on the Splunk MCP URL
-**and** Slack tokens being present; GitHub triage on the issues PAT **and**
-Slack tokens — a job whose credentials are unseeded is simply not created
-(the role runs inert, never errors).
+Schedules are UTC (`hermes_agent_timezone: UTC`). Everything below is defined
+in `roles/hermes_agent/defaults/main.yml` — this doc restates it and can drift,
+so **the defaults file wins on any disagreement**.
 
-| Job | Schedule (UTC) | Purpose | Delivery |
+### The two layers (Kanban migration, #83)
+
+There is no longer a fleet of agentic crons under bare job names. Issue #83
+retired that model: a long-lived cron session accumulated state between runs,
+and corrupted compression bookkeeping crash-looped the `splunk-*` jobs
+(INC-17120). What replaced it has two layers:
+
+1. **Recurrence** — a thin fleet of `cron create --no-agent --script` jobs.
+   Script-only, no agent and no LLM session, so there is nothing to poison.
+   Each fires on its workload's schedule and emits exactly one `kanban create`
+   per slot with idempotency key `<job>-<slot>`, so a double-fire or a backfill
+   never duplicates a card. Reconciled by `tasks/reconcile_enqueuer_cron.yml`;
+   a card named `<job>` yields the cron `<job>-enqueue`.
+2. **Execution** — the gateway's in-process Kanban board engine
+   (`config.yaml` `kanban:` block) dispatches each card in a **fresh, isolated
+   worker session**. That per-run freshness is the entire point of #83.
+
+`tasks/main.yml` actively *removes* the pre-migration bare-named agentic crons
+(`hermes_agent_superseded_agentic_cron_names`), so a guest provisioned before
+the migration does not double-fire alongside its enqueuer twin.
+
+### Kanban cards (`hermes_agent_kanban_cards`)
+
+**Only 2 of the 18 cards actually enqueue today.** The rest are on
+`hermes_agent_kanban_paused_jobs` — a deliberate throughput throttle
+(2026-07-24, Zammad #17143) against the single shared serving deployment. A
+paused job is skipped entirely by the reconcile (no create, no remove, so the
+operator's state is untouched) and is not rendered as a selector arm in the
+enqueuer script, so the `all --backfill` safety net cannot revive it either.
+Lift the throttle by *removing* a job from that list once capacity is proven.
+
+| Card | Schedule (UTC) | Every | Assignee | State |
+| --- | --- | --- | --- | --- |
+| `homelab-ai-fabric-status` | `0 8-22 * * *` | 1h, 08–22 | homelab-admin | **active** |
+| `splunk-triage` | `7 * * * *` | 1h | splunk-admin | **active** |
+| `hermes-nightly-wiki` | `0 2 * * *` | 24h | default | paused |
+| `daily-summary` | `0 12 * * *` | 24h | default | paused |
+| `zammad-review` | `41 */2 * * *` | 2h | homelab-admin | paused |
+| `splunk-security` | `22 */6 * * *` | 6h | splunk-admin | paused |
+| `splunk-parsing` | `37 2 * * *` | 24h | splunk-admin | paused |
+| `splunk-deepdive` | `11 3 * * *` | 24h | splunk-admin | paused |
+| `splunk-digest` | `52 * * * *` | 1h | splunk-admin | **retired** — superseded by the script-fed `splunk-status-digest` |
+| `github-triage` | `26 */6 * * *` | 6h | default | paused |
+| `bot-pr-triage` | `43 */6 * * *` | 6h | default | capability-gated off (no alerts token) |
+| `docs-sync` | `13 8 * * 1` | weekly | default | paused |
+| `review` | `0 */8 * * *` | 8h | default | paused |
+| `anomaly-hunt` | `13 */12 * * *` | 12h | splunk-admin | paused |
+| `docs-study` | `43 5 * * *` | 24h | default | paused |
+| `ai-news` | `17 */4 * * *` | 4h | default | paused |
+| `daily-innovation` | `47 6 * * *` | 24h | default | paused |
+| `app-seeding` | `53 7 * * *` | 24h | default | paused |
+
+Every card is additionally **capability-gated**: all of them require the Slack
+bot token, app token and home channel; the `splunk-*` cards also require
+`hermes_agent_splunk_monitor_enabled` and the Splunk MCP URL. A card whose gate
+is false never has its enqueuer created — the role runs inert, never errors.
+
+Card output does **not** go to per-job channels. Every worker posts its
+completion report to `hermes_agent_slack_hermes_all_channel` (`#hermes-all`);
+the enqueuer appends that instruction as a footer to the card body, because
+Kanban cards have no native delivery channel.
+
+`review` is self-perpetuating: its worker creates the next slot's card as
+`initial_status=blocked`, and the enqueuer unblocks it at the slot boundary
+(`unblock: true`) — the adaptation for a CLI with no `--scheduled-at`.
+
+### Script crons (`--no-agent --script`)
+
+These carry no LLM in their fact path, which is why the digests among them
+survived the fabrication incidents: the script gathers the numbers and its
+stdout is delivered verbatim.
+
+| Cron | Schedule (UTC) | Script | Delivery |
 | --- | --- | --- | --- |
-| `homelab-ai-fabric-status` | `0 9 * * *` (daily 09:00) | Summarize AI-fabric health — router/gateway/DNS, merge-ready PRs | Slack |
-| `hermes-nightly-wiki` | `0 2 * * *` (daily 02:00) | Lint + health-check the llm-wiki | default |
-| `splunk-triage` | `3,18,33,48 * * * *` (every 15 min) | Broad self-directed anomaly sweep; `[SILENT]` unless something is off | alert → operator DM |
-| `splunk-security` | `9,39 * * * *` (every 30 min) | Security lens — firewall drops, auth failures, honeypot hits, unexpected IPs | alert → operator DM |
-| `splunk-parsing` | `24 * * * *` (hourly) | Data-quality lens — timestamp/line-merge/sourcetype/parse anomalies | alert → operator DM |
-| `splunk-deepdive` | `44 */6 * * *` (every 6h) | Quiet RAG research — characterize one index → wiki + memory baseline | local, no alert |
-| `splunk-digest` | `50 * * * *` (hourly) | Splunk heartbeat digest to the home channel; **never** `[SILENT]` | Slack (home) |
-| `github-triage` | `12 */2 * * *` (every 2h) | Read-only dryvist-org PR/issue triage; report only, never mutate | Slack (home) |
+| `<job>-enqueue` (one per card) | the card's schedule | `kanban-enqueue-recurring.sh` | `local` (silent — it only creates the card) |
+| `kanban-enqueue-safety-net` | `33 4 * * *` | same, selector `all --backfill` | `local` — **itself paused** |
+| `splunk-status-digest` | `52 7-23 * * *` | `splunk-digest.py` | `slack:<hermes-all>` |
+| `kanban-digest` | `*/15 * * * *` | `kanban-digest.py` | `slack:<digest>` |
+| `splunk-error-digest` | `37 * * * *` | `splunk-error-digest.py` | `slack:<digest>` |
+| `splunk-security-digest` | `22 */6 * * *` | `splunk-security-digest.py` | `slack:<digest>` |
+| `zammad-auto-close` | `17 5 * * *` | `zammad-auto-close.py` | `slack:<hermes-all>` — **off by default** |
+
+`splunk-status-digest` runs on waking hours only, and a fully quiet run goes
+`[SILENT]` unless `HEARTBEAT_HOURS` (module constant, currently 6) has elapsed
+since the last real post. A CRITICAL finding is exempt and posts every run.
+The older "hourly heartbeat, never `[SILENT]`" law is **superseded** — see the
+`hermes_agent` role README for both decisions.
+
+`kanban-digest` is the master board report: it reads `kanban.db` read-only and
+says what every card did since its own previous run. It is deliberately
+excluded from `hermes_agent_seeded_cron_names` so it survives a cluster pause
+window — it is what tells you the board is wedged.
+
+### Agentic direct-deliver digest crons
+
+`hermes_agent_direct_cron_jobs`, reconciled by `tasks/reconcile_direct_cron.yml`.
+Each is *agentic* — the gateway runs the prompt and delivers the model's final
+response straight to Slack — with prompt bodies pulled from the pinned
+`ai-llm-prompts` catalog (`prompt_file`). The Slack channel is never hardcoded:
+it comes from `HERMES_SLACK_DIGEST_CHANNEL`, and the whole reconcile loop is
+skipped (with a loud warning) when that is unset.
+
+**Four of the nine are enabled.** The rest are retired or superseded, and are
+explicitly `cron pause`d by `tasks/main.yml` — declaring `enabled: false` alone
+does *not* stop a job already running on the guest (see
+`tests/hermes_agent/test_retired_direct_crons.py`, which makes that pairing
+mandatory rather than remembered).
+
+| Job | Schedule (UTC) | Enabled | Note |
+| --- | --- | --- | --- |
+| `splunk-parsing-quality-v2` | `17 3 * * *` | yes | |
+| `zammad-incident-review-v2` | `9 13 * * *` | yes | |
+| `github-org-triage-v2` | `26 8 * * *` | yes | |
+| `daily-operator-summary-v2` | `31 12 * * *` | yes | |
+| `splunk-security-lens-v2` | `22 */6 * * *` | no | superseded by `splunk-security-digest` |
+| `splunk-error-triage-v2` | `37 * * * *` | no | superseded by `splunk-error-digest` |
+| `anomaly-hunt-v2` | `41 6,18 * * *` | no | retired, no replacement |
+| `homelab-ai-fabric-status-v2` | `3 */6 * * *` | no | replaced by the card of the same name |
+| `splunk-hourly-digest-v3` | `52 * * * *` | no | superseded by `splunk-status-digest` |
+
+### Systemd units (not crons)
+
+`hermes-gateway.service`, `hermes-dashboard.service`,
+`hermes-brain-watchdog.timer` (+ its alert service), the optional
+`hermes-brain-sync.timer`, and the optional `hermes-vikunja-bridge.service`
+(off by default — see the role README).
 
 Drift recovery: when the brain model changes, only *drifted* seeded jobs are
 removed and re-seeded (`tasks/main.yml`); the canonical set is
 `hermes_agent_seeded_cron_names`.
 
-### Agentic direct-deliver digest crons
-
-A second, fully declarative set of digest jobs lives in
-`hermes_agent_direct_cron_jobs` and is reconciled by
-`tasks/reconcile_direct_cron.yml`. Each is *agentic* — the gateway runs the
-prompt and delivers the model's final response straight to Slack — with prompt
-bodies pulled from the pinned `ai-llm-prompts` catalog (`prompt_file`). Their
-Slack channel is never hardcoded: it comes from `HERMES_SLACK_DIGEST_CHANNEL`,
-and the whole reconcile loop is skipped (with a loud warning) when that is unset.
+> **Cron names must not be substrings of one another.** The reconcile's
+> existence test is a substring match against `cron list --all` — which is why
+> the script digest is `splunk-error-digest` and not `splunk-error-triage`.
 
 ## Memory
 
@@ -102,7 +210,7 @@ field is present.
 | Field | Enables | Notes |
 | --- | --- | --- |
 | `SPLUNK_MCP_URL` + `SPLUNK_MCP_TOKEN` | the entire `splunk-*` cron fleet | sourced from shared `secret/ai/mcp/splunk`; published by ansible-splunk |
-| `GH_PAT_WRITE_PROJECT_ISSUES` | `github-triage` cron + github-issues skill | empty until the token is issued |
+| `GH_PAT_WRITE_PROJECT_ISSUES` | `github-triage` card + github-issues skill | empty until the token is issued |
 | `HERMES_GITHUB_APP_ID` / `_INSTALLATION_ID` / `_PRIVATE_KEY` | GitHub-App docs-contributor / nightly-wiki path | empty until the App is provisioned |
 | `HERMES_API_SERVER_KEY` | inbound job-submission API (`POST /v1/runs`, cron CRUD) | seeded programmatically; empty disables the api_server platform |
 | `WEBHOOK_SECRET` | inbound webhook receiver | generate-if-absent; empty disables webhooks |
@@ -114,8 +222,11 @@ field is present.
 To verify seeding, the sanctioned path is the `hermes_agent` converge itself:
 `verify.yml` proves a live tool-call round-trip through the router and, when
 `HERMES_API_SERVER_KEY` is present, that the job API answers `/health` 200 and
-refuses a keyless `POST /v1/runs` with 401. A missing Splunk token shows up as
-the `splunk-*` crons simply not being seeded.
+refuses a keyless `POST /v1/runs` with 401. A missing Splunk token shows up as the
+`splunk-*` *enqueuer* crons not being created (their cards' capability gate is
+false). Note that most `splunk-*` cards are separately paused by the throughput
+throttle regardless of credentials, so "not present" is not by itself evidence
+of a missing token — check `hermes_agent_kanban_paused_jobs` first.
 
 ## Serving self-heal (the zombie watchdog)
 
@@ -219,28 +330,34 @@ aggregate throughput) is a deliberate operator decision to make ONLY after
 the serving tier is proven to have that capacity — never a side effect of
 adding a profile.
 
-## Cron schedule — review (proposed, pending operator decision)
+## Cron schedule — decisions taken
 
-The current fleet is anomaly-first and heavy on the single-stream brain
-(concurrency 1). Points worth an operator decision — **none applied here**:
+This section used to propose cadence changes. They have since been decided and
+applied; it now records what was settled and why, so the same ground is not
+re-litigated.
 
-- **`splunk-digest` hourly, never `[SILENT]`** is the noisiest, lowest-signal
-  job — 24 heartbeat posts/day to the home channel. Consider every 4–6h, or
-  folding the heartbeat into the daily `homelab-ai-fabric-status`, keeping the
-  alert-on-anomaly jobs (`triage`/`security`/`parsing`) as the real signal.
-- **`splunk-triage` every 15 min** (96 runs/day) is aggressive for a
-  single-stream brain. If contention shows up, 20–30 min keeps anomaly latency
-  reasonable while freeing brain time.
-- **Stagger heavy jobs off the same minute.** `triage`, `security`, `parsing`
-  and `digest` can co-fire near the top of the hour; spreading their minutes
-  avoids two long agentic runs hitting the one resident brain at once.
-- **Self-directed work.** `splunk-deepdive` (quiet RAG, no alert) is the model
-  for "propose your own work"; a second reflective job that reviews recent
-  memory baselines and proposes follow-ups would extend that with no alert
-  noise.
-
-Keep the anomaly/security sweeps — a constant Splunk review is the highest-value
-loop. The lever is cadence and staggering, not removal.
+- **Throughput throttle (2026-07-24, Zammad #17143).** The fleet was heavier
+  than the single shared serving deployment could carry. 16 of 18 cards were
+  paused via `hermes_agent_kanban_paused_jobs`, leaving `splunk-triage` and
+  `homelab-ai-fabric-status` plus the script-fed digests. Lift it one card at a
+  time, least costly first, once capacity is proven.
+- **The LLM `splunk-digest` card is retired.** It was replaced by the
+  script-fed `splunk-status-digest`, whose fact path contains no model at all —
+  the fix for the fabricated "33 indexes / no anomalies" reports and for the
+  blind spot that masked a ~10.5h ingestion outage.
+- **The "never `[SILENT]`" heartbeat law is superseded (2026-07-26).** 38 of 40
+  runs in one UTC day carried zero information. A quiet run now stays silent
+  unless `HEARTBEAT_HOURS` (6) has elapsed; a CRITICAL finding is exempt and
+  posts every run.
+- **Waking hours (2026-07-26).** `splunk-status-digest` runs `52 7-23 * * *`.
+  Overnight posts were read the next morning anyway. Urgent alerting is the
+  silent-unless-anomaly `splunk-triage` path, not the digest.
+- **Staggering is already applied.** Minutes are spread across the fleet
+  precisely so two long runs do not hit the one resident brain together; keep
+  it that way when adding a job.
+- **Self-directed work exists.** `splunk-deepdive` (quiet RAG, no alert) and
+  the self-perpetuating `review` card cover it. Both are currently paused under
+  the throttle rather than removed.
 
 ---
 

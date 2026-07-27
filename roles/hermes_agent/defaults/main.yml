@@ -1641,6 +1641,71 @@ hermes_agent_vikunja_mcp_url: >-
   https://mcp.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
   | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}/vikunja
 
+# --- Vikunja Kanban bridge (operator board -> Hermes board) -------------------
+# A poll daemon that makes the operator's Vikunja board drive Hermes: a task in
+# the READY bucket becomes a Hermes Kanban card, the task moves across the
+# operator's buckets as the card starts and finishes, and the card's recorded
+# result is commented back onto the task. Recurring work still comes from the
+# enqueuer fleet (#83); this is the on-demand, operator-authored half.
+#
+# WHY THIS DOES NOT USE THE VIKUNJA MCP ROUTE ABOVE. Every write here — bucket
+# move, comment, done — needs a WRITE credential, and the gateway's /vikunja
+# route is read-only by construction (the sidecar holds a READ token). Enabling
+# hermes_agent_vikunja_mcp_enabled would therefore buy the bridge nothing while
+# adding the documented per-session "failed initial connection" park, since the
+# route is still not seeded. The bridge talks plain REST with its own token and
+# the MCP flag stays false. Flip that flag when the agent should READ the board
+# conversationally — a separate decision from this bridge.
+#
+# SINGLE WRITER. The bridge is the only thing that writes to the operator's
+# board: the card body explicitly forbids the worker from touching Vikunja
+# itself, so a card's result reaches the operator by exactly one path and two
+# surfaces can never disagree.
+#
+# Disabled by default: it needs an operator-seeded write token AND a Vikunja
+# project whose bucket names match the four below. Empty token = inert.
+hermes_agent_vikunja_bridge_enabled: false
+hermes_agent_vikunja_bridge_service: hermes-vikunja-bridge
+hermes_agent_vikunja_bridge_script_name: vikunja-bridge.py
+hermes_agent_vikunja_bridge_state_name: vikunja-bridge.json
+hermes_agent_vikunja_bridge_env_file: "{{ hermes_agent_hermes_home }}/vikunja-bridge.env"
+# FQDN-first Traefik vhost, no port — the address belongs to DNS.
+hermes_agent_vikunja_bridge_url: >-
+  https://vikunja.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}
+hermes_agent_vikunja_bridge_project: "Hermes"
+# Bucket titles on that project's Kanban view. READY is the only REQUIRED one —
+# it is where the operator puts work and where intake reads from. The other
+# three are optional: a board missing one still gets its result comment, which
+# is what actually carries the answer.
+hermes_agent_vikunja_bridge_bucket_ready: "Ready"
+hermes_agent_vikunja_bridge_bucket_in_progress: "In Progress"
+hermes_agent_vikunja_bridge_bucket_done: "Done"
+hermes_agent_vikunja_bridge_bucket_blocked: "Blocked"
+# An empty label means "every undone task in READY is fair game". A non-empty
+# one is a second, explicit opt-in — the safer default posture for a board the
+# operator also uses for their own non-Hermes tasks.
+hermes_agent_vikunja_bridge_intake_label: "hermes"
+hermes_agent_vikunja_bridge_poll_interval_seconds: 60
+# Per-tick intake cap. This is a RATE limit, not a concurrency limit: board
+# concurrency is already bounded by kanban.max_in_progress (config.yaml), which
+# is the single source of truth for how many workers the shared serving
+# deployment can carry. This only stops one bulk paste into Vikunja from
+# creating fifty cards in a single tick.
+hermes_agent_vikunja_bridge_max_intake_per_tick: 3
+hermes_agent_vikunja_bridge_card_max_runtime: "45m"
+hermes_agent_vikunja_bridge_card_max_retries: 2
+# "" leaves the card to kanban.default_assignee; a name here must exist in
+# hermes_agent_profiles (asserted in assert.yml).
+hermes_agent_vikunja_bridge_card_assignee: ""
+# WRITE-scoped Vikunja API token. Deliberately its OWN env var, not the
+# VIKUNJA_API_TOKEN that ai_runner reads: that is a different guest needing a
+# different scope, and sharing one credential across both would hand each the
+# other's permissions. Injection-agnostic per repo convention — Doppler, SOPS
+# or OpenBao all satisfy it, the role only sees the environment.
+hermes_agent_vikunja_bridge_token: >-
+  {{ lookup('env', 'HERMES_VIKUNJA_API_TOKEN') | default('', true) }}
+
 # --- Nautobot MCP client (read-only SoT) — inert scaffold ---
 # Disabled: no Nautobot MCP route exists on the gateway yet (no deployed server,
 # no read token). Flip enabled=true only once the gateway /nautobot route is live.
