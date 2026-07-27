@@ -333,7 +333,20 @@ quiet hour (38 of 40 runs carried zero information in one UTC day). A CRITICAL
 finding is exempt and always posts, every run, for as long as it holds, so an
 ingest anomaly is never delayed or hidden by this gate; the fingerprint still
 labels whether the health picture moved, the heartbeat clock only decides
-whether a *quiet* state gets restated. `github-triage` does apply the
+whether a *quiet* state gets restated.
+
+**Waking hours (2026-07-26).** The status digest runs `52 7-23 * * *` — 17
+runs/day, not 24. Overnight posts were read the next morning anyway, so the
+job simply does not run between 00:00 and 06:59. The two mechanisms are
+independent: the *schedule* decides whether a run happens, `HEARTBEAT_HOURS`
+decides whether a quiet run says anything. The first run after the gap
+(07:52) is always ≥ `HEARTBEAT_HOURS` past the last post, so the morning
+always opens with a real state report. A CRITICAL condition starting after
+23:52 is not surfaced by this job until 07:52 — accepted deliberately: the
+digest is a status surface, and urgent alerting is `splunk-triage`'s
+silent-unless-anomaly DM path, which keeps its own unchanged schedule.
+
+`github-triage` does apply the
 fingerprint-and-collapse pattern to its top-5 list, reusing the existing
 memory tool — no new state infrastructure.
 
