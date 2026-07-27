@@ -79,6 +79,20 @@ LEDGER_MAX = 500
 HOST_DROP_CRIT = 3
 # Percentage points of total-ingest share movement worth reporting.
 SHARE_SHIFT_PP = 5.0
+# Heartbeat ceiling for the fully-quiet case (no critical condition, nothing
+# novel anywhere in the escalation ladder): even with zero change, a live post
+# still fires at least this often so silence stays distinguishable from the
+# cron/gateway itself being dead. A real ingest anomaly is always a CRITICAL
+# finding above and is therefore NEVER subject to this gate — it keeps posting
+# every run regardless. Operator decision (2026-07-26): replaces the prior
+# "post every run, 24x/day, never [SILENT]" rule after 38 of 40 runs in one
+# UTC day carried zero information ("Health state unchanged"). Lower this if
+# an outage of the digest itself needs to surface faster than every 6h.
+HEARTBEAT_HOURS = 6
+# Upstream's `hermes cron` executor skips Slack delivery when a --script
+# cron's STDOUT is exactly this string — the same contract splunk-triage.py.j2
+# already relies on for its per-day "quiet" suppression.
+SILENT = "[SILENT]"
 
 # key: stable identity for the day ledger. text: the Slack line.
 Finding = namedtuple("Finding", "key text")
@@ -538,6 +552,20 @@ def build_digest(results, now, state):
         lines.append("*Critical — repeats every run while it holds:*")
         lines.extend(f.text for f in critical)
 
+    # Heartbeat gate: only the fully-quiet branch below (no critical, nothing
+    # novel anywhere in the escalation ladder) is ever subject to this — a
+    # real post (critical and/or novel) always updates last_post_iso and is
+    # never suppressed. This only decides whether the "nothing new" boilerplate
+    # fires or the run goes SILENT.
+    last_post_iso = (state or {}).get("last_post_iso")
+    heartbeat_due = True
+    if last_post_iso:
+        try:
+            elapsed_h = (now - dt.datetime.fromisoformat(last_post_iso)).total_seconds() / 3600.0
+            heartbeat_due = elapsed_h >= HEARTBEAT_HOURS
+        except (TypeError, ValueError):
+            heartbeat_due = True
+
     if novel:
         lines.append("")
         escalated = "" if tier_name == tiers[0][0] else f"; nothing new at {', '.join(searched[:-1])}"
@@ -552,20 +580,32 @@ def build_digest(results, now, state):
         if not have_baseline:
             lines.append(":information_source: No prior baseline (first run, or the state file predates "
                          "this schema) — volumes above are real, deltas begin with the next run.")
-    elif not critical:
+        last_post_iso = now.isoformat()
+    elif critical:
+        # Critical lines are already appended above; that alone is a real post.
+        last_post_iso = now.isoformat()
+    elif heartbeat_due:
+        # Fully quiet, and the heartbeat ceiling elapsed: post once so silence
+        # stays distinguishable from the cron/gateway itself being dead. A real
+        # ingest anomaly is always CRITICAL above and can never reach here.
         pairs = sum(len(r["sourcetypes"]) for r in by_index.values())
         lines.append("")
         lines.append(
             f":mag: Nothing new to report. Searched {len(by_index)} index(es), {len(hosts)} host(s) and "
             f"{pairs} index/sourcetype pair(s) across volume, membership, liveness and composition; all "
-            f"{len(seen)} finding(s) already posted today still hold, and no critical condition is active."
+            f"{len(seen)} finding(s) already posted today still hold, and no critical condition is active. "
+            f"(heartbeat — next post is silent unless something changes within {HEARTBEAT_HOURS}h)"
         )
+        last_post_iso = now.isoformat()
 
     payload = {"schema": STATE_SCHEMA, "fingerprint": fingerprint,
                "first_seen_iso": first_seen_iso, "last_post_date": today,
-               "captured_iso": now.isoformat(),
+               "captured_iso": now.isoformat(), "last_post_iso": last_post_iso,
                "ledger": {"day": today, "keys": (ledger + [f.key for f in novel])[-LEDGER_MAX:]}}
     payload.update(snapshot_of(by_index, hosts, saw_host, saw_st))
+
+    if not critical and not novel and not heartbeat_due:
+        return SILENT, payload
     return "\n".join(lines), payload
 
 
