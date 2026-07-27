@@ -99,6 +99,10 @@
   loop_control:
     label: "{{ item.id }}"
 
+# update_cache stays false, matching syslog_route.yml below: these guests reach
+# internal mirrors only. Refreshing the cache makes every converge depend on the
+# apt caching proxy being up, so an unrelated proxy outage hard-fails this play
+# even when the packages are already present and nothing would change.
 - name: Install role prerequisites (installer + clone)
   ansible.builtin.apt:
     name:
@@ -108,8 +112,7 @@
       - sudo
       - jq # hermes-brain-sync.sh JSON parsing (OpenBao KV, router /v1/model/info)
     state: present
-    update_cache: true
-    cache_valid_time: 3600
+    update_cache: false
 
 # Fetch the installer from the pinned release tag's immutable raw URL and verify
 # its sha256 BEFORE running it — no `curl <url> | bash` of a moving remote script.
@@ -911,6 +914,74 @@
     owner: "{{ hermes_agent_user }}"
     group: "{{ hermes_agent_user }}"
     mode: "0750"
+
+# --- Vikunja Kanban bridge (operator board -> Hermes board) ------------------
+# Makes the operator's Vikunja board the front end for Hermes: READY tasks
+# become Kanban cards, the tasks move across their buckets as work starts and
+# finishes, and the card's RECORDED result (from kanban.db, no LLM in the
+# relay path) is commented back. Deployed regardless of the enable flag so
+# turning it on is a one-flag change, same posture as the scripts above.
+- name: Deploy the Vikunja Kanban bridge script
+  ansible.builtin.template:
+    src: vikunja-bridge.py.j2
+    dest: "{{ hermes_agent_hermes_home }}/scripts/{{ hermes_agent_vikunja_bridge_script_name }}"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+  notify: Restart hermes-vikunja-bridge
+
+# 0600 and hermes-owned: this is the only file carrying the write token, which
+# is why it is separate from the 0750 script above.
+- name: Deploy the Vikunja Kanban bridge environment file
+  ansible.builtin.template:
+    src: hermes-vikunja-bridge.env.j2
+    dest: "{{ hermes_agent_vikunja_bridge_env_file }}"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart hermes-vikunja-bridge
+
+- name: Deploy the Vikunja Kanban bridge systemd unit
+  ansible.builtin.template:
+    src: hermes-vikunja-bridge.service.j2
+    dest: "/etc/systemd/system/{{ hermes_agent_vikunja_bridge_service }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart hermes-vikunja-bridge
+  when: hermes_agent_vikunja_bridge_enabled | bool
+
+# Gated on the token as well as the flag: starting the daemon without a
+# credential would only produce a permanent "bridge idle" log line.
+- name: Enable and start the Vikunja Kanban bridge
+  ansible.builtin.systemd:
+    name: "{{ hermes_agent_vikunja_bridge_service }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+  when:
+    - hermes_agent_vikunja_bridge_enabled | bool
+    - hermes_agent_vikunja_bridge_token | length > 0
+
+# Disable-don't-delete: turning the flag off stops the daemon but leaves the
+# unit and the ledger in place, so re-enabling resumes tracking the cards that
+# were already in flight instead of orphaning them.
+- name: Check for a retained Vikunja Kanban bridge unit
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ hermes_agent_vikunja_bridge_service }}.service"
+  register: hermes_agent_vikunja_bridge_unit
+  when: not (hermes_agent_vikunja_bridge_enabled | bool)
+
+- name: Stop and disable the retained Vikunja Kanban bridge
+  ansible.builtin.systemd:
+    name: "{{ hermes_agent_vikunja_bridge_service }}"
+    state: stopped
+    enabled: false
+    daemon_reload: true
+  when:
+    - not (hermes_agent_vikunja_bridge_enabled | bool)
+    - hermes_agent_vikunja_bridge_unit.stat.exists | default(false)
 
 # Zammad stale-ticket auto-close, brought under role management (token from .env,
 # no hardcoded secret). Cron is gated off by default (see defaults) — the script

@@ -88,7 +88,7 @@ advanced option. `default` is not the absence of a choice; it is correct only
 for cross-domain, board-meta, or GitHub work (say why in the PR).
 
 A **profile** is a fully independent `HERMES_HOME` directory (own
-`config.yaml`, `.env`, `SOUL.md`, memory, skills) that a Kanban card selects
+`config.yaml`, `.env`, `SOUL.md`, skills) that a Kanban card selects
 via its `assignee` field. The dispatcher spawns
 `hermes -p <assignee> chat ...` with `HERMES_HOME` pointed at that profile's
 directory, so the assignee is the **entire tool/credential envelope** the
@@ -103,7 +103,21 @@ the decision rule, and the isolation caveat (profile scoping is a
 config/tool-availability boundary, not an OS sandbox: every profile runs as
 the same `hermes` user in the same LXC).
 
-| Profile | Mission | Has | Must NOT have |
+**The isolation boundary is tools and credentials — memory is NOT part of
+it.** Every profile points at the same Hindsight memory bank: `bank_id`
+defaults to `"hermes"` and no profile sets `bank_id_template`, so
+`_resolve_bank_id_template` falls back to that one shared bank for all of
+them (verified against the pinned hindsight plugin source — see
+`hermes_agent_profiles` in `defaults/main.yml` and "Shared across profiles,
+by design" in [`docs/HERMES_OPS.md`](../../docs/HERMES_OPS.md)). This is
+deliberate — it is what lets `daily-summary` on the `default` profile recall
+a card's findings after its `assignee` moves — but it means a `splunk-admin`
+worker can `memory recall` anything `homelab-admin` (or any other profile)
+ever wrote, and vice versa. The "Must NOT have" column below is a
+**tools/MCP/skills boundary only**; it is not a data boundary, and nothing
+written to memory by any profile should be treated as private to it.
+
+| Profile | Mission | Has | Must NOT have (tools/MCP/skills — memory is shared across every profile, see above) |
 | --- | --- | --- | --- |
 | `default` | Cross-domain, board-meta, GitHub | everything (unchanged) | — |
 | `splunk-admin` | Read-only SIEM: SPL, alert + report | Splunk + Qdrant MCP, `splunk-monitor` skill | GitHub, Zammad, other MCP/skills |
@@ -286,8 +300,10 @@ dedup), and durable knowledge is captured as `llm-wiki` pages (RAG).
 **Routing (3-tier, 2026-07-18):** Slack output is split by audience, not by
 job. The **firehose channel** (`SLACK_FIREHOSE_CHANNEL` →
 `hermes_agent_firehose_deliver`) receives every verbose routine report —
-`splunk-digest`, `github-triage`, `homelab-ai-fabric-status` (now 24/7), and
-the `zammad-review` working report — posted every run, in full. The **home
+`github-triage`, `homelab-ai-fabric-status` (now 24/7), and the
+`zammad-review` working report, posted every run in full, plus `splunk-digest`
+(posts on anything critical or novel, and otherwise at least once every
+`HEARTBEAT_HOURS` — see "Delta discipline" below). The **home
 channel** is the curated operator surface: the once-daily `daily-summary`
 rollup (delta-only, no tables, ≤15 lines) and nothing routine. **DMs stay
 urgent-only**: anomaly alerts (`slack:<member-id>`, silent-unless-anomaly) and
@@ -305,13 +321,33 @@ run. Gated on the Zammad URL + token alongside the Slack gates.
 the canonical surface for ongoing/known findings; `splunk-triage`'s DM recalls
 the digest's last-posted state from memory before alerting and stays silent
 when its top finding is already covered there — the DM is for genuinely NEW
-or ESCALATING findings only. The script-fed status digest does NOT collapse:
-every hourly run posts the real per-index volumes plus their delta against the
-previous run, because a "no change" line carries no information. It still
-fingerprints its findings, but the fingerprint now only labels whether the
-health picture moved — it no longer decides whether numbers get reported, so
-there is no anchor hour to defeat the suppression. `github-triage` does apply
-the fingerprint-and-collapse pattern to its top-5 list, reusing the existing
+or ESCALATING findings only. The script-fed status digest posts the real
+per-index volumes plus their delta against the previous run whenever anything
+is CRITICAL or genuinely novel anywhere in its escalation ladder (index, host,
+then sourcetype/composition), exactly as before. **Heartbeat gate (operator
+decision, 2026-07-26):** a run with nothing critical and nothing novel now
+goes `[SILENT]` unless `HEARTBEAT_HOURS` (a module constant in
+`splunk-digest.py.j2`, currently 6) has elapsed since the last real post — the
+prior rule posted a "Health state unchanged" boilerplate line on every single
+quiet hour (38 of 40 runs carried zero information in one UTC day). A CRITICAL
+finding is exempt and always posts, every run, for as long as it holds, so an
+ingest anomaly is never delayed or hidden by this gate; the fingerprint still
+labels whether the health picture moved, the heartbeat clock only decides
+whether a *quiet* state gets restated.
+
+**Waking hours (2026-07-26).** The status digest runs `52 7-23 * * *` — 17
+runs/day, not 24. Overnight posts were read the next morning anyway, so the
+job simply does not run between 00:00 and 06:59. The two mechanisms are
+independent: the *schedule* decides whether a run happens, `HEARTBEAT_HOURS`
+decides whether a quiet run says anything. The first run after the gap
+(07:52) is always ≥ `HEARTBEAT_HOURS` past the last post, so the morning
+always opens with a real state report. A CRITICAL condition starting after
+23:52 is not surfaced by this job until 07:52 — accepted deliberately: the
+digest is a status surface, and urgent alerting is `splunk-triage`'s
+silent-unless-anomaly DM path, which keeps its own unchanged schedule.
+
+`github-triage` does apply the
+fingerprint-and-collapse pattern to its top-5 list, reusing the existing
 memory tool — no new state infrastructure.
 
 **Fresh posts, not one thread.** Each cron run is an isolated session, so its Slack
@@ -423,6 +459,111 @@ quiet window prints one line naming the board it searched.
 | `hermes_agent_kanban_digest_cron_schedule` | derived | never set by hand |
 | `hermes_agent_kanban_digest_channel` | `hermes_agent_digest_slack_channel` | delivery surface; never a literal id |
 | `hermes_agent_kanban_digest_enabled` | derived | Slack bot + app tokens + channel set. No Splunk or brain dependency |
+
+## Vikunja bridge (the operator's board drives Hermes)
+
+The Kanban fleet above is the *recurring* half of the board. The Vikunja bridge
+is the *on-demand* half: it lets the operator run Hermes entirely from their own
+Vikunja board, without touching Hermes directly.
+
+`hermes-vikunja-bridge.service` is a stdlib-only poll daemon
+(`templates/vikunja-bridge.py.j2`) that does three things per tick:
+
+- **intake** — an undone **Ready** task carrying the intake label becomes a card
+  via `hermes kanban create --idempotency-key vikunja-<task id>`. The task then
+  moves to **In Progress** and gets a comment naming the card.
+- **reconcile** — each tracked card is read out of `kanban.db` (READ-ONLY, same
+  posture and source as `kanban-digest.py`). Once its run has settled, the
+  recorded outcome is written back: a summary comment, a move to **Done** or
+  **Blocked**, and `done` on success.
+- **ledger** — the task-to-card mapping is a schema-versioned JSON file in the
+  Hermes state dir, beside the digests' state.
+
+**Nothing in the relay path is written by a model.** Every comment the bridge
+posts is either a literal card id or a summary string copied verbatim out of
+`kanban.db`. The LLM does the work *inside* the card; the bridge only reports
+what the board recorded — so a wedged or unloaded brain surfaces as a real
+`FAILED` comment instead of a plausible-sounding success.
+
+**Single writer.** The card body explicitly forbids the worker from touching
+Vikunja itself. One path to the operator's board means two surfaces can never
+show contradictory verdicts for the same card.
+
+**It does not use the Vikunja MCP route.** `hermes_agent_vikunja_mcp_enabled`
+stays `false`. Every operation the bridge performs — bucket move, comment,
+`done` — is a *write*, and the gateway's `/vikunja` route is read-only by
+construction (the sidecar holds a READ token). Enabling it would buy the bridge
+nothing while adding the documented per-session "failed initial connection"
+park, since the route is still not seeded. Flip that flag when the agent should
+*read* the board conversationally — an unrelated decision.
+
+### Two endpoint facts, both verified live (2026-07-26)
+
+Both were wrong on the first pass, and **both fail silently** — the daemon
+runs, logs nothing, and does nothing. Each is pinned by a check.
+
+1. **The bucket move is `POST`, not `PUT`.** `PUT` returns **405** on the
+   running instance, even though upstream's own client docs say `PUT`. The
+   route itself is also load-bearing: a task *update* does not move buckets
+   (the server only auto-moves on a `done` flip), so sending `bucket_id` in an
+   update succeeds and moves nothing.
+2. **Tasks are read from `/views/{v}/tasks`, not `/views/{v}/buckets`.** Both
+   return the bucket list, but `/buckets` carries only a `count` and **no
+   `tasks` key at all**. Reading tasks from it returns an empty list for every
+   bucket, forever, with a 200 and no error anywhere — the bridge would poll
+   perfectly and never pick up a single task.
+
+One call serves both bucket-id mapping and the ready-task read, which is also
+one fewer token permission.
+
+**Concurrency** is *not* managed here. `kanban.max_in_progress` already bounds
+how many workers the shared serving deployment carries, and stays the single
+source of truth. `hermes_agent_vikunja_bridge_max_intake_per_tick` is only a
+rate limit, so one bulk paste into Vikunja cannot create fifty cards at once.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `hermes_agent_vikunja_bridge_enabled` | `false` | opt-in — it writes to the operator's real board |
+| `hermes_agent_vikunja_bridge_project` | `Hermes` | Vikunja project whose Kanban view is polled |
+| `hermes_agent_vikunja_bridge_bucket_ready` | `Ready` | the only **required** bucket — where intake reads from |
+| `hermes_agent_vikunja_bridge_bucket_in_progress` / `_done` / `_blocked` | `In Progress` / `Done` / `Blocked` | optional; a missing one skips its move |
+| `hermes_agent_vikunja_bridge_intake_label` | `hermes` | second explicit opt-in. Empty means every undone Ready task is fair game |
+| `hermes_agent_vikunja_bridge_max_intake_per_tick` | `3` | rate limit, not a concurrency limit |
+| `hermes_agent_vikunja_bridge_card_assignee` | `""` | `kanban.default_assignee`, or a name in `hermes_agent_profiles` (asserted) |
+| `hermes_agent_vikunja_bridge_token` | `env HERMES_VIKUNJA_API_TOKEN` | **operator-supplied**; see below |
+
+### The credential
+
+`HERMES_VIKUNJA_API_TOKEN` — a **write-scoped** Vikunja API token, read from the
+converge environment per repo convention (`lookup('env', ...)`, so Doppler, SOPS
+and OpenBao all satisfy it; the role never names a backend).
+
+**Already provisioned.** A least-privilege token was minted via the Vikunja API
+and stored at `secret/ai/hermes/vikunja-bridge` in OpenBao (key
+`HERMES_VIKUNJA_API_TOKEN`). Every function above was then run against the live
+instance with that exact token.
+
+Its permission set is exactly the operations the bridge performs and nothing
+more — no project create, no project delete, no delete of anything:
+
+| Group | Actions | Used for |
+| --- | --- | --- |
+| `projects` | `read_all`, `views_buckets_tasks` | find the project by title; the bucket move |
+| `projects_views` | `read_all` | find the Kanban view |
+| `projects_views_tasks` | `read_all` | buckets **with** their tasks |
+| `tasks` | `read_one`, `update` | mark done |
+| `tasks_comments` | `create` | relay the card's result |
+
+Note `projects_views` and `projects_views_tasks` are **separate permission
+groups** from `projects`. The pre-existing `VIKUNJA_MCP_TOKEN_RW` lacks them
+and returns 401 listing views, so it cannot drive this bridge — that is why a
+new token exists rather than reusing it. Vikunja also requires `expires_at` on
+token creation; this one is dated one year out.
+
+Deliberately **not** `ai_runner`'s `VIKUNJA_API_TOKEN`: different guest,
+different scope, and one shared credential would hand each the other's
+permissions. Enabling the bridge without a token fails the converge rather than
+shipping a daemon that can only log `bridge idle`.
 
 ## Inbound job-submission API (sanctioned non-exec path)
 
@@ -671,10 +812,12 @@ call to it errors; the daemon itself starts and runs normally regardless.
 OpenRouter is reachable with **no Hermes-side wiring**: the `llm_router` role
 registers OpenRouter models under their real upstream ids (first:
 `nvidia/nemotron-3-ultra-550b-a55b:free`), with one OpenBao-held key **per
-model** under `secret/ai/saas/openrouter` — Hermes just names the real model
-id like any other. The old account-wide `OPENROUTER_API_KEY` parked in
-`secret/ai/hermes` is superseded by those per-model keys and should be retired
-once they are seeded.
+model** under `secrets-external/ai/saas/openrouter` (canonical home; an
+internet-reachable SaaS credential, dual-mounted with the internal
+`secret/ai/saas/openrouter` path during the migration) — Hermes just names
+the real model id like any other. The old account-wide `OPENROUTER_API_KEY`
+parked in `secret/ai/hermes` is superseded by those per-model keys and should
+be retired once they are seeded.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

@@ -95,6 +95,48 @@
       Every Kanban card assignee resolves to the default profile or a name in
       hermes_agent_profiles ({{ hermes_agent_profiles | map(attribute='name') | list }}).
 
+# Same failure mode as the card assert above, reached by the other door: the
+# Vikunja bridge creates cards at RUNTIME, so a typo'd assignee there produces
+# skipped_nonspawnable cards for every task the operator files — and the only
+# symptom is their board never moving. Caught at converge instead.
+- name: Assert the Vikunja bridge card assignee names a real profile or the default
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_vikunja_bridge_card_assignee | length == 0
+        or hermes_agent_vikunja_bridge_card_assignee
+           in (hermes_agent_profiles | map(attribute='name') | list)
+    fail_msg: >-
+      hermes_agent_vikunja_bridge_card_assignee is
+      {{ hermes_agent_vikunja_bridge_card_assignee | to_json }}, which is not in
+      hermes_agent_profiles. Every card the bridge creates would be bucketed
+      skipped_nonspawnable and never run, so the operator's tasks would sit in
+      the in-progress column forever with no error. Use an empty string for the
+      default profile, or a name in
+      {{ hermes_agent_profiles | map(attribute='name') | list }}.
+    success_msg: >-
+      The Vikunja bridge card assignee resolves to the default profile or a
+      known profile.
+
+# A bridge switched on with no credential is a daemon that can only log
+# "bridge idle" forever. Fail the converge instead of shipping a no-op service.
+- name: Assert the Vikunja bridge has a write token when it is enabled
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_vikunja_bridge_token | length > 0
+    fail_msg: >-
+      hermes_agent_vikunja_bridge_enabled is true but no Vikunja write token is
+      set. Supply HERMES_VIKUNJA_API_TOKEN in the converge environment (Doppler,
+      SOPS or OpenBao — the role does not care which). The token must be
+      WRITE-scoped on the bridge's project: it moves tasks between buckets,
+      which needs the projects/views_buckets_tasks permission, not just task
+      read/write. Note this is a SEPARATE credential from ai_runner's
+      VIKUNJA_API_TOKEN, deliberately — different guest, different scope.
+    success_msg: The Vikunja bridge has a write token.
+  when: hermes_agent_vikunja_bridge_enabled | bool
+
 # Curriculum manifest contracts. The manifest is the machine-readable side of
 # the graded curriculum; these checks guarantee every job the queue would
 # execute has a prompt file that exists, a unique id, and at least one
