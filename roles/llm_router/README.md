@@ -35,8 +35,10 @@ request that fails surfaces the error rather than silently degrading to a small 
 real upstream ids. Deliberate properties:
 
 - **One OpenRouter API key per MODEL** (never per harness/caller). Each entry's
-  `key_field` names its field in the OpenBao paid-SaaS key area
-  `secret/ai/saas/openrouter`; the `openbao_secrets` pre-play delivers it via
+  `key_field` names its field in the OpenBao paid-SaaS key area, canonically
+  `secrets-external/ai/saas/openrouter` (an internet-reachable SaaS
+  credential; dual-mounted with the internal `secret/ai/saas/openrouter`
+  path during the migration); the `openbao_secrets` pre-play delivers it via
   the `ai-saas-openrouter` policy leaf, and the rendered EnvironmentFile
   carries it as `OPENROUTER_API_KEY_<KEY_FIELD upper-snaked>`.
 - **Inert until seeded** — an entry whose key is absent renders nothing, so
@@ -47,8 +49,8 @@ real upstream ids. Deliberate properties:
 
 Seeding a new model (operator, once per model): mint a scoped key in the
 OpenRouter console, then
-`bao kv patch secret/ai/saas/openrouter <model-slug>=<key>` and re-converge
-this role. The first entry is `nvidia/nemotron-3-ultra-550b-a55b:free`
+`bao kv patch secrets-external/ai/saas/openrouter <model-slug>=<key>` and
+re-converge this role. The first entry is `nvidia/nemotron-3-ultra-550b-a55b:free`
 (rate-limited; NVIDIA logs prompts on the `:free` endpoint — never send
 confidential material through it).
 

@@ -694,10 +694,12 @@ call to it errors; the daemon itself starts and runs normally regardless.
 OpenRouter is reachable with **no Hermes-side wiring**: the `llm_router` role
 registers OpenRouter models under their real upstream ids (first:
 `nvidia/nemotron-3-ultra-550b-a55b:free`), with one OpenBao-held key **per
-model** under `secret/ai/saas/openrouter` — Hermes just names the real model
-id like any other. The old account-wide `OPENROUTER_API_KEY` parked in
-`secret/ai/hermes` is superseded by those per-model keys and should be retired
-once they are seeded.
+model** under `secrets-external/ai/saas/openrouter` (canonical home; an
+internet-reachable SaaS credential, dual-mounted with the internal
+`secret/ai/saas/openrouter` path during the migration) — Hermes just names
+the real model id like any other. The old account-wide `OPENROUTER_API_KEY`
+parked in `secret/ai/hermes` is superseded by those per-model keys and should
+be retired once they are seeded.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
