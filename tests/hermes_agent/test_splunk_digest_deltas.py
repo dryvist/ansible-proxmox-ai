@@ -335,6 +335,37 @@ def test_host_field_absence_is_reported_as_unavailable_not_zero():
     assert state["host_detail"] is False and state["st_detail"] is False
 
 
+def test_waking_hours_schedule_never_outruns_the_heartbeat_gate():
+    """The run window and HEARTBEAT_HOURS must stay compatible.
+
+    The digest runs on a waking-hours schedule, so there is a nightly gap where
+    no run happens at all. That is fine only while the FIRST run after the gap
+    is guaranteed to be at least HEARTBEAT_HOURS past the last one — otherwise
+    the morning could open with a `[SILENT]` run and the operator would see
+    nothing at all until the gate happened to trip. This pins the two values
+    against each other so raising HEARTBEAT_HOURS or narrowing the window
+    cannot silently break that guarantee.
+    """
+    import yaml
+    defaults = yaml.safe_load(
+        (REPO_ROOT / "roles/hermes_agent/defaults/main.yml").read_text())
+    schedule = defaults["hermes_agent_splunk_status_digest_cron_schedule"]
+
+    minute, hours = schedule.split()[0], schedule.split()[1]
+    assert hours != "*", (
+        "schedule is back to 24/7; if that is intended, delete this check "
+        "rather than loosening it")
+    start, end = (int(part) for part in hours.split("-"))
+    # Longest stretch with no run: from the last run of one day to the first of
+    # the next. Minutes are identical on both ends, so hours alone decide it.
+    gap_hours = 24 - end + start
+    assert gap_hours >= DIGEST.HEARTBEAT_HOURS, (
+        f"the {gap_hours}h overnight gap in {schedule!r} is shorter than "
+        f"HEARTBEAT_HOURS={DIGEST.HEARTBEAT_HOURS}, so the first run of the day "
+        "can be gated to [SILENT] and the morning opens with no state report")
+    assert 0 <= int(minute) <= 59 and 0 <= start < end <= 23, schedule
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for test in tests:
