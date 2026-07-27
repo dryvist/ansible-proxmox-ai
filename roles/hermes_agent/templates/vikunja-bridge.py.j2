@@ -1,0 +1,518 @@
+#!/usr/bin/env python3
+{{ ansible_managed | comment }}
+"""Vikunja Kanban <-> Hermes board bridge.
+
+The operator's board of record is Vikunja. Hermes' own Kanban board is its
+work queue. This daemon makes the first drive the second: it turns an
+actionable Vikunja task into a Hermes card, moves the Vikunja task across the
+operator's buckets as the card starts and finishes, and comments the run's
+result back onto the task. The operator never touches Hermes directly.
+
+Three responsibilities, one poll loop:
+
+  intake     a task sitting in the READY bucket, not done, becomes a Hermes
+             card via `hermes kanban create --idempotency-key vikunja-<id>`.
+             The task then moves to the IN-PROGRESS bucket and gets a comment
+             naming the card, so the board shows the handoff the moment it
+             happens rather than when the work ends.
+  reconcile  every tracked card is looked up in kanban.db (READ-ONLY, the same
+             source and posture as kanban-digest.py) and, once its run has
+             settled, its outcome is written back: summary comment, bucket
+             move, and `done` on success.
+  ledger     the task<->card mapping lives in a schema-versioned JSON file
+             under the Hermes state dir, alongside the digests' state.
+
+WHY NOT THE VIKUNJA MCP. This talks to Vikunja over plain REST with its own
+write-scoped token, and deliberately does NOT depend on the gateway's
+`/vikunja` MCP route (hermes_agent_vikunja_mcp_enabled stays false). That
+route is read-only by construction — the gateway sidecar holds a READ token —
+so it cannot move a bucket or post a comment, which is the entire job here.
+Enabling it would add a per-session "failed initial connection" park for a
+route that still would not help.
+
+FABRICATION. Nothing here is written by a model. Every comment this posts is
+either a literal card id or a summary string copied verbatim out of kanban.db.
+The LLM does the work inside the card; the bridge only reports what the board
+recorded, so a wedged or unloaded brain surfaces as a real FAILED comment
+rather than a plausible-sounding success.
+
+ponytail: read-only sqlite against another program's schema, exactly as
+kanban-digest.py already does and for the same reason — `hermes kanban` has no
+"status of these N cards" query, and one subprocess per tracked card per tick
+is not a trade worth making. A Hermes upgrade renaming a column surfaces as a
+logged error and a stalled reconcile, never as a silent false "completed".
+
+Stdlib only (urllib/json/sqlite3/subprocess) so the guest needs no pip install.
+
+Self-check: `python3 vikunja-bridge.py --self-check`.
+"""
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+# --- config (rendered from roles/hermes_agent/defaults/main.yml) ---------------
+HERMES_BIN = "{{ hermes_agent_bin }}"
+HERMES_HOME = "{{ hermes_agent_hermes_home }}"
+DB_PATH = "{{ hermes_agent_hermes_home }}/kanban.db"
+STATE_PATH = "{{ hermes_agent_hermes_home }}/state/{{ hermes_agent_vikunja_bridge_state_name }}"
+VIKUNJA_URL = "{{ hermes_agent_vikunja_bridge_url }}"
+PROJECT_NAME = "{{ hermes_agent_vikunja_bridge_project }}"
+BUCKET_READY = "{{ hermes_agent_vikunja_bridge_bucket_ready }}"
+BUCKET_IN_PROGRESS = "{{ hermes_agent_vikunja_bridge_bucket_in_progress }}"
+BUCKET_DONE = "{{ hermes_agent_vikunja_bridge_bucket_done }}"
+BUCKET_BLOCKED = "{{ hermes_agent_vikunja_bridge_bucket_blocked }}"
+POLL_INTERVAL = {{ hermes_agent_vikunja_bridge_poll_interval_seconds }}
+CARD_MAX_RUNTIME = "{{ hermes_agent_vikunja_bridge_card_max_runtime }}"
+CARD_MAX_RETRIES = {{ hermes_agent_vikunja_bridge_card_max_retries }}
+CARD_ASSIGNEE = "{{ hermes_agent_vikunja_bridge_card_assignee }}"
+INTAKE_LABEL = "{{ hermes_agent_vikunja_bridge_intake_label }}"
+MAX_INTAKE_PER_TICK = {{ hermes_agent_vikunja_bridge_max_intake_per_tick }}
+
+# The token is NEVER templated into this file — it arrives via the systemd
+# EnvironmentFile so the script itself carries no secret and is safe to read.
+VIKUNJA_TOKEN = os.environ.get("VIKUNJA_API_TOKEN", "")
+
+# Bumped when the ledger shape changes. An older/absent value is treated as an
+# empty ledger, which is SAFE rather than convenient: the idempotency key on
+# `kanban create` is derived from the Vikunja task id, so a re-intake of an
+# already-bridged task returns the EXISTING card instead of duplicating work.
+STATE_SCHEMA = 1
+
+# A run summary is a paragraph; a Vikunja comment wants to stay readable.
+SUMMARY_CHARS = 4000
+# Every kanban run outcome that is not this one is a failure of some kind.
+OK = "completed"
+# Card statuses that mean the card is finished with the work, one way or another.
+SETTLED = ("done", "archived", "failed", "cancelled")
+
+# Status of the tracked cards plus their most recent finished run. The
+# LEFT JOIN keeps a card that has no run row yet (queued, never started)
+# visible as "not settled" rather than dropping it out of the ledger sweep.
+CARD_SQL = """
+SELECT t.id, t.status, t.consecutive_failures, t.max_retries,
+       r.outcome, r.summary, r.error, r.ended_at
+  FROM tasks t
+  LEFT JOIN task_runs r
+         ON r.id = (SELECT id FROM task_runs
+                     WHERE task_id = t.id AND ended_at IS NOT NULL
+                     ORDER BY ended_at DESC LIMIT 1)
+ WHERE t.id = ?
+"""
+
+
+def log(msg):
+    print(f"vikunja-bridge: {msg}", flush=True)
+
+
+def clip(text, limit=SUMMARY_CHARS):
+    """Length-capped. Truncation is marked, never silent."""
+    text = (text or "").strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+# --- Vikunja REST -------------------------------------------------------------
+
+def api(method, path, body=None):
+    """One Vikunja v1 REST call. Returns decoded JSON (or None for empty body)."""
+    url = f"{VIKUNJA_URL}/api/v1{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {VIKUNJA_TOKEN}")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read()
+        return json.loads(raw) if raw else None
+
+
+def project_id(name):
+    for proj in api("GET", "/projects") or []:
+        if proj.get("title") == name:
+            return proj.get("id")
+    return None
+
+
+def kanban_view_id(pid):
+    """The project's Kanban view. Buckets belong to a VIEW, not to the project.
+
+    view_kind is 3 (or the string "kanban") for the Kanban view; both spellings
+    are accepted because the wire type has differed across Vikunja versions and
+    guessing wrong here would silently pick the list view, whose bucket routes
+    do not exist.
+    """
+    for view in api("GET", f"/projects/{pid}/views") or []:
+        kind = view.get("view_kind")
+        if kind == 3 or (isinstance(kind, str) and kind.lower() == "kanban"):
+            return view.get("id")
+    return None
+
+
+def bucket_ids(pid, view):
+    """{bucket title: id} for the Kanban view."""
+    buckets = api("GET", f"/projects/{pid}/views/{view}/buckets") or []
+    return {b.get("title"): b.get("id") for b in buckets if b.get("title")}
+
+
+def move_to_bucket(pid, view, bucket, task_id):
+    """Move a task into a bucket.
+
+    This MUST be the dedicated bucket route: updating a task does NOT move it
+    between buckets (the server only auto-moves on a `done` flip). Sending
+    bucket_id in a task update is the silent-no-op version of this call.
+    """
+    api("PUT", f"/projects/{pid}/views/{view}/buckets/{bucket}/tasks",
+        {"task_id": task_id})
+
+
+def comment(task_id, text):
+    api("PUT", f"/tasks/{task_id}/comments", {"comment": text})
+
+
+def mark_done(task_id):
+    api("POST", f"/tasks/{task_id}", {"done": True})
+
+
+def actionable(task, tracked):
+    """Is this task ours to pick up?
+
+    Deliberately conservative — every gate here is a reason NOT to touch a
+    task, because the cost of ignoring one the operator wanted is a nudge, and
+    the cost of grabbing one they did not is an agent session doing unasked-for
+    work on the operator's real board.
+    """
+    if task.get("done"):
+        return False
+    if str(task.get("id")) in tracked:
+        return False
+    if INTAKE_LABEL:
+        labels = [(lbl.get("title") or "") for lbl in (task.get("labels") or [])]
+        if INTAKE_LABEL not in labels:
+            return False
+    return bool((task.get("description") or task.get("title") or "").strip())
+
+
+# --- Hermes board -------------------------------------------------------------
+
+def card_body(task):
+    """The card body handed to the worker.
+
+    The Vikunja task's own text is the instruction; everything appended is the
+    reporting contract. The worker writes its result to the CARD (via
+    kanban_complete), and this bridge is what relays it to Vikunja — the worker
+    is told not to reach for Vikunja itself, so there is exactly one writer to
+    the operator's board and no second, unverified path to it.
+    """
+    title = (task.get("title") or "").strip()
+    desc = (task.get("description") or "").strip()
+    return (
+        f"{title}\n\n{desc}\n\n"
+        "This card came from the operator's Vikunja board. Everything above is "
+        "their request; treat it as the whole specification and do not widen it.\n\n"
+        "EVIDENCE CONTRACT: every finding, number, count, name or status you "
+        "report must come from a tool result you actually received THIS run, "
+        "cited with the command or query that produced it and what it returned. "
+        "Zero rows is a real result — report it as zero. Never infer, estimate, "
+        "or carry a value over from memory or a previous run.\n\n"
+        "Do NOT write to Vikunja yourself — no comment, no status change, no "
+        "bucket move. The bridge that created this card owns that surface and "
+        "will relay your result; a second writer produces contradictory boards.\n\n"
+        "End the run with kanban_complete and a summary that stands alone as "
+        "the operator's answer: what you did, what you found, and what (if "
+        "anything) they must decide. That summary is relayed VERBATIM onto "
+        "their task, and is the only thing they will see. If you cannot "
+        "proceed, call kanban_block with kind=needs_input and the reason — "
+        "never end with text alone."
+    )
+
+
+def create_card(task):
+    """`hermes kanban create` for a Vikunja task. Returns the card id, or None.
+
+    The idempotency key is derived from the Vikunja task id, so this is safe to
+    call again after a crash between create and ledger-write: Hermes returns
+    the existing card rather than starting the work twice.
+    """
+    argv = [
+        HERMES_BIN, "kanban", "create", clip(task.get("title") or "task", 200),
+        "--body", card_body(task),
+        "--idempotency-key", f"vikunja-{task['id']}",
+        "--max-runtime", CARD_MAX_RUNTIME,
+        "--max-retries", str(CARD_MAX_RETRIES),
+    ]
+    if CARD_ASSIGNEE:
+        argv += ["--assignee", CARD_ASSIGNEE]
+    argv += ["--json"]
+    proc = subprocess.run(
+        argv, capture_output=True, text=True, timeout=120,
+        env={**os.environ, "HERMES_HOME": HERMES_HOME},
+    )
+    if proc.returncode != 0:
+        log(f"kanban create failed for vikunja task {task['id']}: "
+            f"{(proc.stderr or proc.stdout or '').strip()[:400]}")
+        return None
+    return parse_card_id(proc.stdout)
+
+
+def parse_card_id(stdout):
+    """Card id out of `kanban create --json` stdout.
+
+    Tolerant of the id field name for the same reason the enqueuer script is:
+    the CLI has spelled it more than one way. A miss returns None and the task
+    is left in READY to be retried next tick — never half-tracked.
+    """
+    try:
+        doc = json.loads(stdout)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    for key in ("id", "task_id"):
+        if doc.get(key):
+            return str(doc[key])
+    nested = doc.get("task")
+    if isinstance(nested, dict) and nested.get("id"):
+        return str(nested["id"])
+    return None
+
+
+def card_state(conn, card_id):
+    """(settled, ok, text) for one card, from kanban.db.
+
+    An unknown card id — deleted from the board, or a schema that no longer has
+    these columns — is reported as UNSETTLED, so the bridge waits rather than
+    declaring a result it does not have.
+    """
+    row = conn.execute(CARD_SQL, (card_id,)).fetchone()
+    if row is None:
+        return False, False, ""
+    _, status, fails, max_retries, outcome, summary, error, _ended = row
+    if status not in SETTLED:
+        return False, False, ""
+    ok = status in ("done", "archived") and outcome == OK
+    if ok:
+        return True, True, clip(summary or "(the card completed with no summary)")
+    detail = clip(error or summary or "(no error text recorded)")
+    return True, False, (
+        f"status={status} outcome={outcome or 'none'} "
+        f"attempts={fails or 0}/{max_retries or 0}\n\n{detail}"
+    )
+
+
+# --- Ledger -------------------------------------------------------------------
+
+def load_ledger():
+    """{vikunja task id (str): card id (str)}. Any unusable file reads as empty.
+
+    Empty is the safe degradation, not the lossy one: re-intake is idempotent
+    through the card's idempotency key, so the worst case is a redundant
+    create that returns the card already doing the work.
+    """
+    try:
+        with open(STATE_PATH) as handle:
+            state = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(state, dict) or state.get("schema") != STATE_SCHEMA:
+        return {}
+    tracked = state.get("tracked")
+    return tracked if isinstance(tracked, dict) else {}
+
+
+def save_ledger(tracked):
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+    tmp = f"{STATE_PATH}.tmp"
+    with open(tmp, "w") as handle:
+        json.dump({"schema": STATE_SCHEMA, "tracked": tracked}, handle)
+    os.replace(tmp, tmp[: -len(".tmp")])
+
+
+# --- The loop -----------------------------------------------------------------
+
+def intake(board, tasks, tracked):
+    """READY tasks -> Hermes cards. Returns the number picked up."""
+    picked = 0
+    for task in tasks:
+        if picked >= MAX_INTAKE_PER_TICK:
+            log(f"intake capped at {MAX_INTAKE_PER_TICK} this tick")
+            break
+        if not actionable(task, tracked):
+            continue
+        card_id = create_card(task)
+        if card_id is None:
+            continue  # stays in READY; retried next tick
+        # Ledger FIRST: a crash after this leaves a tracked card whose task did
+        # not move (visible, self-healing next tick). The other order leaves an
+        # in-progress task with no card, which nothing ever reconciles.
+        tracked[str(task["id"])] = card_id
+        save_ledger(tracked)
+        comment(task["id"], f"Picked up by Hermes as Kanban card `{card_id}`.")
+        if board["in_progress"]:
+            move_to_bucket(board["pid"], board["view"], board["in_progress"], task["id"])
+        picked += 1
+        log(f"intake vikunja/{task['id']} -> card {card_id}")
+    return picked
+
+
+def reconcile(board, tracked):
+    """Settled cards -> comment + bucket move + done. Returns the count."""
+    if not tracked:
+        return 0
+    settled_count = 0
+    with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as conn:
+        for task_id, card_id in list(tracked.items()):
+            try:
+                settled, ok, text = card_state(conn, card_id)
+            except sqlite3.Error as exc:
+                # A schema drift must be loud and must NOT be read as a result.
+                log(f"kanban.db read failed for card {card_id}: {exc}")
+                continue
+            if not settled:
+                continue
+            verdict = "completed" if ok else "FAILED"
+            comment(int(task_id), f"Hermes card `{card_id}` {verdict}:\n\n{text}")
+            target = board["done"] if ok else board["blocked"]
+            if target:
+                move_to_bucket(board["pid"], board["view"], target, int(task_id))
+            if ok:
+                mark_done(int(task_id))
+            del tracked[task_id]
+            save_ledger(tracked)
+            settled_count += 1
+            log(f"reconcile vikunja/{task_id} card {card_id} {verdict}")
+    return settled_count
+
+
+def resolve_board():
+    """Project/view/bucket ids, or None while the board is not usable yet."""
+    pid = project_id(PROJECT_NAME)
+    if pid is None:
+        log(f"project {PROJECT_NAME!r} not found")
+        return None
+    view = kanban_view_id(pid)
+    if view is None:
+        log(f"project {PROJECT_NAME!r} has no Kanban view")
+        return None
+    buckets = bucket_ids(pid, view)
+    if BUCKET_READY not in buckets:
+        log(f"ready bucket {BUCKET_READY!r} not found — nothing to intake from")
+        return None
+    # The non-ready buckets are OPTIONAL. A board missing a "Blocked" column
+    # should still process work; the move is skipped and the comment (which
+    # carries the actual result) is posted either way. Losing the comment
+    # because a column was renamed would be the worse failure.
+    for name in (BUCKET_IN_PROGRESS, BUCKET_DONE, BUCKET_BLOCKED):
+        if name and name not in buckets:
+            log(f"bucket {name!r} not found — its moves are skipped")
+    return {
+        "pid": pid,
+        "view": view,
+        "ready": buckets[BUCKET_READY],
+        "in_progress": buckets.get(BUCKET_IN_PROGRESS),
+        "done": buckets.get(BUCKET_DONE),
+        "blocked": buckets.get(BUCKET_BLOCKED),
+    }
+
+
+def ready_tasks(board):
+    view, bucket = board["view"], board["ready"]
+    data = api("GET", f"/projects/{board['pid']}/views/{view}/buckets") or []
+    for entry in data:
+        if entry.get("id") == bucket:
+            return entry.get("tasks") or []
+    return []
+
+
+def tick():
+    board = resolve_board()
+    if board is None:
+        return
+    tracked = load_ledger()
+    # Reconcile BEFORE intake: finishing work frees the operator's in-progress
+    # column before anything new lands in it, so the board never shows a
+    # backlog of already-finished cards.
+    reconcile(board, tracked)
+    intake(board, ready_tasks(board), tracked)
+
+
+def main():
+    if not VIKUNJA_URL or not VIKUNJA_TOKEN:
+        log("VIKUNJA_URL/VIKUNJA_API_TOKEN unset — bridge idle (disabled)")
+        # Sleep-loop rather than exit so a later env fill recovers with a plain
+        # `systemctl restart`, and so systemd does not log a crash loop for a
+        # deliberate not-configured-yet state.
+        while True:
+            time.sleep(POLL_INTERVAL)
+    log(f"polling {PROJECT_NAME!r} every {POLL_INTERVAL}s")
+    while True:
+        try:
+            tick()
+        except Exception as exc:  # one bad tick must never end the daemon
+            log(f"tick failed: {exc}")
+        time.sleep(POLL_INTERVAL)
+
+
+def _self_check():
+    """Assertions for the branchy, non-I/O logic. Deliberately covers the
+    decisions that a syntax check cannot reach and that a live board would
+    only reveal by doing the wrong thing to the operator's real tasks."""
+    assert parse_card_id('{"id": 42}') == "42"
+    assert parse_card_id('{"task_id": 7}') == "7"
+    assert parse_card_id('{"task": {"id": 9}}') == "9"
+    assert parse_card_id("not json") is None
+    assert parse_card_id('{"nope": 1}') is None
+    assert parse_card_id("[1, 2]") is None
+
+    # actionable(): every gate is a reason NOT to touch a task.
+    tracked = {"5": "card-5"}
+    assert not actionable({"id": 1, "done": True, "title": "t"}, tracked)
+    assert not actionable({"id": 5, "title": "t"}, tracked), "already tracked"
+    assert not actionable({"id": 2, "title": "  ", "description": ""}, tracked)
+    live = {"id": 3, "title": "do the thing"}
+    if INTAKE_LABEL:
+        assert not actionable(live, tracked), "label gate must exclude unlabelled"
+        live = dict(live, labels=[{"title": INTAKE_LABEL}])
+    assert actionable(live, tracked)
+
+    body = card_body({"title": "T", "description": "D"})
+    assert "T" in body and "D" in body
+    assert "Do NOT write to Vikunja yourself" in body, "single-writer rule must be stated"
+
+    assert clip("abc", 10) == "abc"
+    assert clip("abcdefghijkl", 5).endswith("…") and len(clip("abcdefghijkl", 5)) == 5
+
+    # card_state() against a stand-in board with the real column shape.
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        "CREATE TABLE tasks (id TEXT, status TEXT, consecutive_failures INT,"
+        " max_retries INT);"
+        "CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT,"
+        " outcome TEXT, summary TEXT, error TEXT, ended_at REAL);")
+    conn.execute("INSERT INTO tasks VALUES ('c1', 'running', 0, 2)")
+    conn.execute("INSERT INTO tasks VALUES ('c2', 'done', 0, 2)")
+    conn.execute("INSERT INTO tasks VALUES ('c3', 'failed', 2, 2)")
+    conn.execute("INSERT INTO tasks VALUES ('c4', 'done', 0, 2)")
+    conn.execute("INSERT INTO task_runs VALUES (1, 'c2', 'completed', 'found 3', NULL, 10)")
+    conn.execute("INSERT INTO task_runs VALUES (2, 'c3', 'error', NULL, 'boom', 11)")
+    conn.execute("INSERT INTO task_runs VALUES (3, 'c2', NULL, NULL, NULL, NULL)")
+
+    assert card_state(conn, "c1") == (False, False, ""), "a running card is not a result"
+    settled, ok, text = card_state(conn, "c2")
+    assert (settled, ok) == (True, True) and text == "found 3", (settled, ok, text)
+    settled, ok, text = card_state(conn, "c3")
+    assert (settled, ok) == (True, False) and "boom" in text and "attempts=2/2" in text
+    settled, ok, text = card_state(conn, "c4")
+    assert (settled, ok) == (True, False), "done with no completed run is NOT success"
+    assert card_state(conn, "nosuch") == (False, False, ""), "unknown card must not settle"
+    print("self-check OK")
+
+
+if __name__ == "__main__":
+    if "--self-check" in sys.argv:
+        _self_check()
+    else:
+        main()

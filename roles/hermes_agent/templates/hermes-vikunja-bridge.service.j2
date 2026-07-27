@@ -1,0 +1,25 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=Hermes Vikunja bridge (operator Kanban board -> Hermes board)
+# The gateway owns the board this bridge creates cards on. Wants, not Requires:
+# a gateway restart must not take the bridge down with it — the bridge's poll
+# loop tolerates a create failing and retries the task on the next tick.
+After=network-online.target hermes-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ hermes_agent_user }}
+Group={{ hermes_agent_user }}
+WorkingDirectory={{ hermes_agent_hermes_home }}
+Environment=HERMES_HOME={{ hermes_agent_hermes_home }}
+EnvironmentFile={{ hermes_agent_vikunja_bridge_env_file }}
+ExecStart=/usr/bin/python3 {{ hermes_agent_hermes_home }}/scripts/{{ hermes_agent_vikunja_bridge_script_name }}
+# A 24/7 poll loop — any exit is an outage, so restart always. The daemon
+# already sleep-loops on a missing token rather than exiting, so this never
+# turns a deliberate not-configured-yet state into a crash loop.
+Restart=always
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

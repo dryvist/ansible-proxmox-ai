@@ -447,6 +447,83 @@ quiet window prints one line naming the board it searched.
 | `hermes_agent_kanban_digest_channel` | `hermes_agent_digest_slack_channel` | delivery surface; never a literal id |
 | `hermes_agent_kanban_digest_enabled` | derived | Slack bot + app tokens + channel set. No Splunk or brain dependency |
 
+## Vikunja bridge (the operator's board drives Hermes)
+
+The Kanban fleet above is the *recurring* half of the board. The Vikunja bridge
+is the *on-demand* half: it lets the operator run Hermes entirely from their own
+Vikunja board, without touching Hermes directly.
+
+`hermes-vikunja-bridge.service` is a stdlib-only poll daemon
+(`templates/vikunja-bridge.py.j2`) that does three things per tick:
+
+- **intake** — an undone **Ready** task carrying the intake label becomes a card
+  via `hermes kanban create --idempotency-key vikunja-<task id>`. The task then
+  moves to **In Progress** and gets a comment naming the card.
+- **reconcile** — each tracked card is read out of `kanban.db` (READ-ONLY, same
+  posture and source as `kanban-digest.py`). Once its run has settled, the
+  recorded outcome is written back: a summary comment, a move to **Done** or
+  **Blocked**, and `done` on success.
+- **ledger** — the task-to-card mapping is a schema-versioned JSON file in the
+  Hermes state dir, beside the digests' state.
+
+**Nothing in the relay path is written by a model.** Every comment the bridge
+posts is either a literal card id or a summary string copied verbatim out of
+`kanban.db`. The LLM does the work *inside* the card; the bridge only reports
+what the board recorded — so a wedged or unloaded brain surfaces as a real
+`FAILED` comment instead of a plausible-sounding success.
+
+**Single writer.** The card body explicitly forbids the worker from touching
+Vikunja itself. One path to the operator's board means two surfaces can never
+show contradictory verdicts for the same card.
+
+**It does not use the Vikunja MCP route.** `hermes_agent_vikunja_mcp_enabled`
+stays `false`. Every operation the bridge performs — bucket move, comment,
+`done` — is a *write*, and the gateway's `/vikunja` route is read-only by
+construction (the sidecar holds a READ token). Enabling it would buy the bridge
+nothing while adding the documented per-session "failed initial connection"
+park, since the route is still not seeded. Flip that flag when the agent should
+*read* the board conversationally — an unrelated decision.
+
+**Bucket moves use the dedicated route.** Vikunja does not move a task between
+buckets on a task update; it only auto-moves on a `done` flip. The move is
+`PUT /projects/{p}/views/{v}/buckets/{b}/tasks`. Sending `bucket_id` in an
+update is the silent-no-op version — the board would freeze while every comment
+still landed correctly, which is the hardest possible failure to notice. A
+check pins this.
+
+**Concurrency** is *not* managed here. `kanban.max_in_progress` already bounds
+how many workers the shared serving deployment carries, and stays the single
+source of truth. `hermes_agent_vikunja_bridge_max_intake_per_tick` is only a
+rate limit, so one bulk paste into Vikunja cannot create fifty cards at once.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `hermes_agent_vikunja_bridge_enabled` | `false` | opt-in — it writes to the operator's real board |
+| `hermes_agent_vikunja_bridge_project` | `Hermes` | Vikunja project whose Kanban view is polled |
+| `hermes_agent_vikunja_bridge_bucket_ready` | `Ready` | the only **required** bucket — where intake reads from |
+| `hermes_agent_vikunja_bridge_bucket_in_progress` / `_done` / `_blocked` | `In Progress` / `Done` / `Blocked` | optional; a missing one skips its move |
+| `hermes_agent_vikunja_bridge_intake_label` | `hermes` | second explicit opt-in. Empty means every undone Ready task is fair game |
+| `hermes_agent_vikunja_bridge_max_intake_per_tick` | `3` | rate limit, not a concurrency limit |
+| `hermes_agent_vikunja_bridge_card_assignee` | `""` | `kanban.default_assignee`, or a name in `hermes_agent_profiles` (asserted) |
+| `hermes_agent_vikunja_bridge_token` | `env HERMES_VIKUNJA_API_TOKEN` | **operator-supplied**; see below |
+
+### The credential the operator must supply
+
+`HERMES_VIKUNJA_API_TOKEN` — a **write-scoped** Vikunja API token, read from the
+converge environment per repo convention (`lookup('env', ...)`, so Doppler, SOPS
+and OpenBao all satisfy it; the role never names a backend).
+
+It must carry the `projects` → `views_buckets_tasks` permission, not just task
+read/write: moving a task between buckets is its own permission group, and a
+token without it comments perfectly while never moving a card. Vikunja is known
+to need *both* possible permission keys requested for that route in some
+versions.
+
+This is deliberately **not** `ai_runner`'s `VIKUNJA_API_TOKEN`. Different guest,
+different scope — one shared credential would hand each the other's
+permissions. Enabling the bridge without a token fails the converge rather than
+shipping a daemon that can only log `bridge idle`.
+
 ## Inbound job-submission API (sanctioned non-exec path)
 
 The upstream `api_server` gateway platform, enabled when
