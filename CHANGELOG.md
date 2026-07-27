@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.18.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.17.0...v0.18.0) (2026-07-27)
+
+
+### Features
+
+* **hermes_agent:** enable the Vikunja bridge on this estate ([#220](https://github.com/dryvist/ansible-proxmox-ai/issues/220)) ([ba5b6d9](https://github.com/dryvist/ansible-proxmox-ai/commit/ba5b6d9e8a4a5fc3b1a265fd9f4d09be984ad400))
+* **hermes_agent:** Vikunja write bridge + regenerated cron-fleet docs ([#218](https://github.com/dryvist/ansible-proxmox-ai/issues/218)) ([65ee7d5](https://github.com/dryvist/ansible-proxmox-ai/commit/65ee7d577bdc7d3ae7df0b00a0221287b325a451))
+
+
+### Bug Fixes
+
+* **hermes_agent,codex_runner:** stop apt cache refresh gating converge ([#221](https://github.com/dryvist/ansible-proxmox-ai/issues/221)) ([45c7ef4](https://github.com/dryvist/ansible-proxmox-ai/commit/45c7ef476d3fd187624979ad28a98210a5fc87a2))
+* **hermes_agent:** gate splunk-status-digest's quiet posts behind a heartbeat ([#215](https://github.com/dryvist/ansible-proxmox-ai/issues/215)) ([7314d16](https://github.com/dryvist/ansible-proxmox-ai/commit/7314d16f4533d782cb222991c1f63b98bb8c778a))
+* **hermes_agent:** pin the prompt catalog to the operator-summary fabrication fix ([#213](https://github.com/dryvist/ansible-proxmox-ai/issues/213)) ([af00aa9](https://github.com/dryvist/ansible-proxmox-ai/commit/af00aa92ebd38191d6c5a285ed968384f76defa8))
+* **hermes_agent:** run the Splunk status digest on waking hours only ([#217](https://github.com/dryvist/ansible-proxmox-ai/issues/217)) ([efcaa5d](https://github.com/dryvist/ansible-proxmox-ai/commit/efcaa5d0cc2e809e086697654bd09ec1020997f7))
+* **ollama:** derive num_parallel from the single concurrency source ([#212](https://github.com/dryvist/ansible-proxmox-ai/issues/212)) ([513cc4c](https://github.com/dryvist/ansible-proxmox-ai/commit/513cc4c1281ea47a96ff3a1da883db6fec2200f2))
+
 ## [0.17.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.16.0...v0.17.0) (2026-07-25)
 
 
