@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+# {{ ansible_managed }}
+#
+# agent-task — the guest's whole job pipeline, absorbed from ai_runner's
+# ai-job-worker.py and extended with the clone/branch/PR flow. Stdlib only
+# (urllib/json/subprocess), so the guest needs no pip installs. Config comes
+# entirely from the environment; this file carries no secrets.
+#
+# TWO MODES, one file (the Vikunja API helpers are shared, so splitting them
+# would duplicate the whole client):
+#
+#   --poll        list claimable jobs and start one agent-task@<id> unit each.
+#                 Runs as root from agent-queue.service; touches no job payload
+#                 and no credential.
+#   --task <id>   run exactly one job. Runs as {{ agent_guest_user }} under
+#                 `bao agent` supervision from agent-task@<id>.service, so the
+#                 GitHub/Claude tokens arrive in the environment and die with
+#                 the unit. The per-job wall clock is the unit's RuntimeMaxSec,
+#                 not an in-process timeout — a wedged CLI is killed with its
+#                 whole cgroup rather than left holding a claim.
+#
+# JOB FORMAT (Vikunja task description) — front-matter then prompt:
+#
+#   ---
+#   agent: codex          # claude | codex | gemini   (default claude)
+#   model: gpt-5.2        # optional, passed through to the CLI
+#   repo: dryvist/foo     # optional; omit for a no-checkout job
+#   base: develop         # optional, defaults to {{ agent_guest_task_default_base }}
+#   ---
+#   Do the thing.
+#
+# With `repo`, the job runs in a throwaway clone and ends in a PR. Without it,
+# the job runs in the agent's home and only the output is reported — the
+# backwards-compatible ai_runner behaviour.
+#
+# ponytail: claiming is still assign-then-work, inherited from ai_runner. The
+# race window is now much smaller (the poller claims before dispatch, and
+# systemd refuses a second agent-task@<same-id> while one is running), but two
+# pollers on two guests sharing one profile label could still double-claim.
+# Give each guest its own label, or add a CAS field, if a label ever fans out.
+
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+VIKUNJA_URL = os.environ.get("VIKUNJA_URL", "").rstrip("/")
+VIKUNJA_TOKEN = os.environ.get("VIKUNJA_TOKEN", "")
+PROJECT_NAME = os.environ.get("AI_JOBS_PROJECT", "AI Jobs")
+PROFILE_LABEL = os.environ.get("AGENT_PROFILE_LABEL", "")
+NTFY_URL = os.environ.get("NTFY_URL", "").rstrip("/")
+DEFAULT_BASE = os.environ.get("AGENT_DEFAULT_BASE", "develop")
+CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
+CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
+GEMINI_BIN = os.environ.get("GEMINI_BIN", "gemini")
+
+
+def log(msg):
+    print(f"agent-task: {msg}", flush=True)
+
+
+def api(method, path, body=None):
+    """One Vikunja REST call. Returns decoded JSON (or None for empty body)."""
+    url = f"{VIKUNJA_URL}/api/v1{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {VIKUNJA_TOKEN}")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read()
+        return json.loads(raw) if raw else None
+
+
+def ntfy(title, msg, priority="default", tags="robot"):
+    if not NTFY_URL:
+        return
+    try:
+        req = urllib.request.Request(NTFY_URL, data=msg.encode(), method="POST")
+        req.add_header("Title", title)
+        req.add_header("Priority", priority)
+        req.add_header("Tags", tags)
+        urllib.request.urlopen(req, timeout=8).read()
+    except Exception as exc:  # never let a push failure kill the job
+        log(f"ntfy push failed: {exc}")
+
+
+def parse_frontmatter(description):
+    """Split a task description into (fields, prompt).
+
+    Front-matter is an optional leading `---`-delimited block of `key: value`
+    lines. Everything after it is the prompt. No YAML dependency — stdlib only,
+    so a flat key:value block is all that is supported.
+    """
+    text = (description or "").replace("\r\n", "\n").strip()
+    fields = {}
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) == 3:
+            block, body = parts[1], parts[2]
+            for line in block.strip().splitlines():
+                if ":" in line:
+                    key, _, val = line.partition(":")
+                    fields[key.strip().lower()] = val.strip()
+            return fields, body.strip()
+    return fields, text
+
+
+def build_command(fields, prompt):
+    """Map job fields to an agent CLI invocation.
+
+    Launch flags are load-bearing and verified, not stylistic:
+    - claude: `-p` WITHOUT `--bare` — bare mode ignores CLAUDE_CODE_OAUTH_TOKEN.
+    - gemini: `--approval-mode yolo` — gemini-cli strips the equivalent
+      settings key, so only the flag actually turns approvals off.
+    """
+    agent = fields.get("agent", "claude").lower()
+    model = fields.get("model", "")
+    if agent == "codex":
+        cmd = [CODEX_BIN, "exec"]
+        if model:
+            cmd += ["--model", model]
+        cmd.append(prompt)
+        return cmd
+    if agent == "gemini":
+        cmd = [GEMINI_BIN, "--approval-mode", "yolo"]
+        if model:
+            cmd += ["--model", model]
+        cmd += ["--prompt", prompt]
+        return cmd
+    cmd = [CLAUDE_BIN, "-p", prompt]
+    if model:
+        cmd += ["--model", model]
+    return cmd
+
+
+def run(cmd, cwd=None, check=True):
+    """Run a command, capturing combined output. No timeout: RuntimeMaxSec on
+    the unit is the one wall clock, so an in-process one would only race it."""
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if check and proc.returncode != 0:
+        raise RuntimeError(f"{cmd[0]} failed ({proc.returncode}):\n{out}")
+    return proc.returncode == 0, out
+
+
+def git_flow(fields, prompt, workspace, task_id):
+    """Clone, branch, run the agent, gate on gitleaks, push, open a PR."""
+    repo = fields["repo"]
+    base = fields.get("base", DEFAULT_BASE)
+    branch = f"agent/{task_id}"
+    checkout = os.path.join(workspace, "repo")
+
+    run(["git", "clone", "--depth", "50", "--branch", base,
+         f"https://github.com/{repo}.git", checkout])
+    run(["git", "switch", "-c", branch], cwd=checkout)
+
+    ok, output = run(build_command(fields, prompt), cwd=checkout, check=False)
+    if not ok:
+        return False, output
+
+    clean, _ = run(["git", "diff", "--quiet", "HEAD"], cwd=checkout, check=False)
+    if clean:
+        return True, f"{output}\n\n(no changes produced, nothing to push)"
+
+    run(["git", "add", "-A"], cwd=checkout)
+    # Fail-closed: a job that generated a credential never reaches the remote.
+    run(["gitleaks", "protect", "--staged", "--redact", "--no-banner"], cwd=checkout)
+    run(["git", "commit", "-m", f"feat(agent): {task_id}"], cwd=checkout)
+    run(["git", "push", "--set-upstream", "origin", branch], cwd=checkout)
+    _, pr = run(["gh", "pr", "create", "--repo", repo, "--base", base,
+                 "--head", branch, "--title", f"agent task {task_id}",
+                 "--body", f"Autonomous run by `{fields.get('agent', 'claude')}`."],
+                cwd=checkout)
+    return True, f"{output}\n\nPR: {pr}"
+
+
+def run_task(task_id):
+    """Mode --task: run one job end to end and report back."""
+    task = api("GET", f"/tasks/{task_id}")
+    title = task.get("title", f"task {task_id}")
+    fields, prompt = parse_frontmatter(task.get("description", ""))
+    log(f"running {task_id}: {title}")
+
+    # PrivateTmp gives this unit its own tmpfs /tmp, so the workspace is
+    # memory-backed and disappears with the unit — no cleanup to get wrong.
+    workspace = os.environ.get("AGENT_WORKSPACE", "/tmp")
+    try:
+        if fields.get("repo"):
+            ok, output = git_flow(fields, prompt, workspace, task_id)
+        else:
+            ok, output = run(build_command(fields, prompt),
+                             cwd=os.path.expanduser("~"), check=False)
+    except Exception as exc:
+        ok, output = False, str(exc)
+
+    verdict = "succeeded" if ok else "FAILED"
+    api("PUT", f"/tasks/{task_id}/comments",
+        {"comment": f"agent-task {verdict}:\n\n```\n{output[:60000]}\n```"})
+    api("POST", f"/tasks/{task_id}", {"done": True})
+    ntfy(f"AI job {verdict}: {title}", output[:400] or verdict,
+         priority="default" if ok else "high",
+         tags="white_check_mark" if ok else "x")
+    log(f"{task_id} {verdict}")
+    return 0 if ok else 1
+
+
+def project_id(name):
+    for proj in api("GET", "/projects") or []:
+        if proj.get("title") == name:
+            return proj.get("id")
+    return None
+
+
+def claimable(pid):
+    """Undone, unassigned tasks in the project carrying this guest's label."""
+    jobs = []
+    for t in api("GET", f"/projects/{pid}/tasks") or []:
+        if t.get("done") or t.get("assignees"):
+            continue
+        labels = [lbl.get("title", "") for lbl in (t.get("labels") or [])]
+        if PROFILE_LABEL and PROFILE_LABEL not in labels:
+            continue
+        jobs.append(t)
+    return jobs
+
+
+def poll():
+    """Mode --poll: claim each open job and hand it to its own systemd unit."""
+    if not VIKUNJA_URL or not VIKUNJA_TOKEN:
+        log("VIKUNJA_URL/VIKUNJA_TOKEN unset — queue disabled, nothing to do")
+        return 0
+    pid = project_id(PROJECT_NAME)
+    if pid is None:
+        log(f"project {PROJECT_NAME!r} not found — nothing to do")
+        return 0
+    user_id = api("GET", "/user").get("id")
+    for task in claimable(pid):
+        tid = task["id"]
+        try:
+            api("PUT", f"/tasks/{tid}/assignees", {"user_id": user_id})
+            subprocess.run(["systemctl", "start", "--no-block",
+                            f"agent-task@{tid}.service"], check=True)
+            log(f"dispatched {tid}")
+        except Exception as exc:  # one bad task must not stop the sweep
+            log(f"task {tid} dispatch failed: {exc}")
+    return 0
+
+
+def _self_check():
+    """Runnable assertions for the parse/command logic — the branchy parts a
+    syntax check cannot exercise. `agent-task --self-check`."""
+    f, p = parse_frontmatter("---\nagent: codex\nmodel: gpt-5.2\n---\ndo the thing")
+    assert f == {"agent": "codex", "model": "gpt-5.2"}, f
+    assert p == "do the thing", p
+    f2, p2 = parse_frontmatter("no front-matter here")
+    assert f2 == {} and p2 == "no front-matter here", (f2, p2)
+    f3, _ = parse_frontmatter("---\nrepo: dryvist/foo\nbase: main\n---\nx")
+    assert f3["repo"] == "dryvist/foo" and f3["base"] == "main", f3
+
+    assert build_command({"agent": "codex", "model": "m"}, "x") == \
+        [CODEX_BIN, "exec", "--model", "m", "x"]
+    # claude must NOT get --bare (it would ignore CLAUDE_CODE_OAUTH_TOKEN)
+    c = build_command({}, "hello")
+    assert c[:2] == [CLAUDE_BIN, "-p"] and "--bare" not in c, c
+    # gemini's yolo must be a FLAG (the settings key is stripped by gemini-cli)
+    g = build_command({"agent": "gemini"}, "hi")
+    assert "--approval-mode" in g and g[g.index("--approval-mode") + 1] == "yolo", g
+    print("self-check OK")
+
+
+if __name__ == "__main__":
+    if "--self-check" in sys.argv:
+        _self_check()
+    elif "--poll" in sys.argv:
+        sys.exit(poll())
+    elif "--task" in sys.argv:
+        # The id may be an argument or, when `bao agent` execs us (its HCL
+        # command list is static), the AGENT_TASK_ID the unit set from %i.
+        args = sys.argv[sys.argv.index("--task") + 1:]
+        sys.exit(run_task(args[0] if args else os.environ["AGENT_TASK_ID"]))
+    else:
+        print(__doc__ or "usage: agent-task --poll | --task <id> | --self-check")
+        sys.exit(64)

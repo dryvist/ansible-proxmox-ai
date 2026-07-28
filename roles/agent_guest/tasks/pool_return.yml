@@ -1,0 +1,52 @@
+---
+# Pool return / teardown. NOT part of a normal converge — tagged `never`, so it
+# runs only when explicitly requested:
+#   ansible-playbook playbooks/site.yml --tags agent_guest_pool_return --limit <guest>,localhost
+#
+# ORDER IS LOAD-BEARING. Drain FIRST, then stop Edge, then remove credentials,
+# then wipe the workspace. Reversed, undelivered transcripts are stranded: the
+# Cribl persistent queue survives restarts by design, so a clean `systemctl stop`
+# is NOT delivery proof — it just parks the backlog on a disk that is about to be
+# rebuilt.
+
+- name: Wait for the Cribl Edge persistent queue to drain
+  # The find module rather than `find | wc -l`: no shell, no pipe, and a queue
+  # directory that never existed reports 0 matches — which is a drained queue.
+  ansible.builtin.find:
+    paths: "{{ agent_guest_cribl_install_dir }}/state/queues"
+    file_type: file
+    recurse: true
+  register: agent_guest_pq_files
+  changed_when: false
+  # Fails loud when the queue never empties — that is the signal that the
+  # backlog cannot be delivered, and the guest must not be recycled yet.
+  until: agent_guest_pq_files.matched == 0
+  retries: 30
+  delay: 10
+
+- name: Stop the Cribl Edge service
+  ansible.builtin.systemd_service:
+    name: "{{ agent_guest_cribl_service_name }}"
+    state: stopped
+    enabled: false
+
+- name: Stop the queue poller and any in-flight task units
+  ansible.builtin.systemd_service:
+    name: agent-queue.timer
+    state: stopped
+    enabled: false
+
+- name: Remove the guest's credentials
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ agent_guest_approle_dir }}"
+    - "{{ agent_guest_config_dir }}/agent-task.env"
+
+- name: Wipe the agent workspace
+  # Task workspaces live in the units' PrivateTmp and are already gone; this
+  # clears what the CLIs persisted under the home (transcripts, caches, tokens).
+  ansible.builtin.file:
+    path: "{{ agent_guest_home }}"
+    state: absent

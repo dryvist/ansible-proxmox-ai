@@ -1,0 +1,100 @@
+---
+# Molecule verification for agent_guest (render surface).
+#
+# The thing that must not silently break is the single-list inheritance: all
+# three tools' policy files derive from agent_guest_residual_deny, so every
+# entry must appear in each tool's native format. A renderer that dropped
+# entries would otherwise produce a valid-looking config with no protection.
+
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    agent_guest_home: /home/agent
+
+  tasks:
+    - name: Load the role defaults (the deny mirror under test)
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../roles/agent_guest/defaults/main.yml"
+        name: agent_guest_defaults
+
+    - name: Read the rendered policy files
+      ansible.builtin.slurp:
+        src: "{{ agent_guest_home }}/{{ item }}"
+      register: agent_guest_policies
+      loop:
+        - .claude/settings.json
+        - .codex/rules/default.rules
+        - .gemini/policies/autonomous.toml
+
+    - name: Assert every deny prefix reached all three tools in its native format
+      vars:
+        _deny: "{{ agent_guest_defaults.agent_guest_residual_deny }}"
+        _claude: "{{ agent_guest_policies.results[0].content | b64decode }}"
+        _codex: "{{ agent_guest_policies.results[1].content | b64decode }}"
+        _gemini: "{{ agent_guest_policies.results[2].content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - >-
+            _deny | map('regex_replace', '^(.*)$', 'Bash(\1 *)')
+            | reject('in', _claude) | list | length == 0
+          - >-
+            _deny | map('regex_replace', '^(.*)$', 'commandPrefix = "\1"')
+            | reject('in', _gemini) | list | length == 0
+          - _codex.splitlines() | select('match', '^prefix_rule') | list | length == _deny | length
+          # bypassPermissions without an enforced deny list is the failure mode
+          # this whole mirror exists to prevent.
+          - "'bypassPermissions' in _claude"
+        fail_msg: >-
+          The autonomous deny mirror did not reach every tool — one of the three
+          renderers dropped entries from agent_guest_residual_deny.
+
+    - name: Run the job runner's own self-check (parse + launch-flag assertions)
+      ansible.builtin.command:
+        cmd: /usr/local/bin/agent-task --self-check
+      changed_when: false
+
+    - name: Assert no ANTHROPIC_API_KEY assignment was rendered
+      # ai_runner seeded it; it outranks CLAUDE_CODE_OAUTH_TOKEN and flips
+      # billing off the subscription. This is the regression guard.
+      # Anchored to an assignment, not the bare name: the env template carries a
+      # comment explaining the absence, and matching that would fail forever.
+      ansible.builtin.command:
+        cmd: grep -rlE '^[[:space:]]*(export[[:space:]]+)?ANTHROPIC_API_KEY=' /etc/agent-guest /home/agent
+      register: agent_guest_anthropic
+      changed_when: false
+      failed_when: agent_guest_anthropic.rc == 0
+
+    - name: Stat the runner and units
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: agent_guest_artifacts
+      loop:
+        - /usr/local/bin/agent-task
+        - /etc/systemd/system/agent-task@.service
+        - /etc/systemd/system/agent-queue.timer
+        - /etc/agent-guest/openbao-agent.hcl
+        - /etc/agent-guest/agent-guest.env
+
+    - name: Assert the runner and units are installed
+      ansible.builtin.assert:
+        that:
+          - agent_guest_artifacts.results | rejectattr('stat.exists') | list | length == 0
+          - agent_guest_artifacts.results[0].stat.mode == '0755'
+          - agent_guest_artifacts.results[4].stat.mode == '0640'
+        fail_msg: "agent_guest runner, units or env file are missing or wrong mode"
+
+    - name: Read the agent user's group membership
+      ansible.builtin.command:
+        cmd: id -nG agent
+      register: agent_guest_groups
+      changed_when: false
+
+    - name: Assert the agent user has no sudo path
+      ansible.builtin.assert:
+        that:
+          - "'sudo' not in agent_guest_groups.stdout.split()"
+          - "'root' not in agent_guest_groups.stdout.split()"
+        fail_msg: "the agent user gained a privileged group — the no-sudo contract is broken"

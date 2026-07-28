@@ -1,0 +1,35 @@
+[Unit]
+# {{ ansible_managed }}
+# One instance per Vikunja job; %i is the task id. ExecStart is `bao agent` in
+# process-supervisor mode — it authenticates, renders GITHUB_TOKEN and the
+# Claude token into the child environment, and execs the job runner. The runner
+# is never started directly, so there is no code path where a job runs without
+# credentials scoped and leased by OpenBao.
+Description=Autonomous agent job %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ agent_guest_user }}
+Group={{ agent_guest_user }}
+WorkingDirectory={{ agent_guest_home }}
+Environment=HOME={{ agent_guest_home }}
+Environment=AGENT_TASK_ID=%i
+# Queue/CLI config and the OTel trace env; `bao agent` passes its environment
+# to the child, so the runner sees both these and the rendered secrets.
+EnvironmentFile={{ agent_guest_config_dir }}/agent-guest.env
+ExecStart={{ agent_guest_bao_bin }} agent -config={{ agent_guest_config_dir }}/openbao-agent.hcl
+# The one per-job wall clock. A wedged CLI is killed with its whole cgroup
+# rather than left holding a Vikunja claim.
+RuntimeMaxSec={{ agent_guest_task_max_sec }}
+TimeoutStopSec=30
+# PrivateTmp gives the unit its own tmpfs /tmp; the runner works there, so the
+# checkout is memory-backed and cannot outlive the unit.
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+ReadWritePaths={{ agent_guest_home }}

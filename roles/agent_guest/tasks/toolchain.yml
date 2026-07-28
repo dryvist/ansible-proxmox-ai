@@ -1,0 +1,73 @@
+---
+# CLI toolchain for the agent user. The guest downloads directly from
+# github.com rather than staging on the controller: an agent guest clones repos
+# and opens PRs, so GitHub egress is a hard requirement of the workload (via the
+# `ai-proxied` squid chokepoint), not something to design around.
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ agent_guest_apt_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create apt keyrings directory
+  ansible.builtin.file:
+    path: "{{ agent_guest_gh_keyring | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Add GitHub CLI apt key
+  ansible.builtin.get_url:
+    url: https://cli.github.com/packages/githubcli-archive-keyring.gpg
+    dest: "{{ agent_guest_gh_keyring }}"
+    owner: root
+    group: root
+    mode: "0644"
+    force: false
+
+- name: Add GitHub CLI apt repository
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}
+      signed-by={{ agent_guest_gh_keyring }}]
+      https://cli.github.com/packages stable main
+    state: present
+    filename: github-cli
+
+- name: Install GitHub CLI
+  ansible.builtin.apt:
+    name: gh
+    state: present
+    update_cache: true
+
+# Unpinned on purpose (AGENTS.md "Version management"): the agent CLIs ship
+# breaking-fast and the newest stable is the supported one. This replaces
+# ai_runner's `creates`-guarded pinned install, which never upgraded on a
+# version bump — the npm module actually reconciles against the registry.
+- name: Install the agent CLIs globally from npm
+  community.general.npm:
+    name: "{{ item }}"
+    path: "{{ agent_guest_npm_prefix }}"
+    global: true
+    state: latest
+  loop: "{{ agent_guest_npm_clis }}"
+
+- name: Install gitleaks
+  ansible.builtin.unarchive:
+    src: "{{ agent_guest_gitleaks_url }}"
+    dest: /usr/local/bin
+    remote_src: true
+    include:
+      - gitleaks
+    owner: root
+    group: root
+    mode: "0755"
+    creates: /usr/local/bin/gitleaks
+
+- name: Install the OpenBao client (bao agent supervises every job)
+  ansible.builtin.apt:
+    deb: "{{ agent_guest_openbao_deb_url }}"
+    state: present
