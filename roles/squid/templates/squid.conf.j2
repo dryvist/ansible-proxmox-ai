@@ -1,0 +1,43 @@
+{{ ansible_managed | comment }}
+# Minimal forward proxy for the AI agent plane — deliberately NOT the stock
+# Debian squid.conf. Everything here is either a rule or a value the rule needs;
+# there is no cache_dir, so squid caches in memory only and nothing an agent
+# fetched survives a restart.
+
+http_port {{ squid_port }}
+visible_hostname {{ inventory_hostname }}
+
+# Do not leak the internal client address to the external services below.
+forwarded_for delete
+via off
+
+acl CONNECT method CONNECT
+{% for port in squid_safe_ports %}
+acl Safe_ports port {{ port }}
+{% endfor %}
+{% for port in squid_ssl_ports %}
+acl SSL_ports port {{ port }}
+{% endfor %}
+
+http_access deny !Safe_ports
+http_access deny CONNECT !SSL_ports
+http_access deny manager
+
+# --- Egress profiles ---------------------------------------------------------
+# One ACL group per Proxmox firewall egress profile, keyed off the client
+# address. Client addresses are the DHCP reservations of that profile's
+# inventory group — never hand-written here. A profile with no members in
+# inventory emits no rule at all, so it falls through to the deny below.
+{% for profile, spec in squid_egress_profiles | dictsort %}
+{% set clients = groups[spec.group] | default([]) | map('extract', hostvars, 'container_reserved_ip') | reject('equalto', '') | list %}
+{% if clients %}
+
+acl {{ profile }}_clients src {{ clients | join(' ') }}
+acl {{ profile }}_domains dstdomain {{ spec.domains | join(' ') }}
+http_access allow {{ profile }}_clients {{ profile }}_domains
+{% endif %}
+{% endfor %}
+
+# Anything not matched above — unknown client, or a known client reaching for a
+# hostname outside its allowlist.
+http_access deny all

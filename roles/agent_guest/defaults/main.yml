@@ -20,6 +20,38 @@ agent_guest_uid: 1000
 agent_guest_home: "/home/{{ agent_guest_user }}"
 agent_guest_config_dir: /etc/agent-guest
 
+# --- Egress proxy (the ONLY WAN path) ---------------------------------------
+# An `ai-proxied` guest has no direct WAN firewall rule: everything outbound
+# goes CONNECT through the squid guest, where the domain allowlist lives
+# (roles/squid). Both coordinates are inventory-derived — the proxy's own FQDN
+# from the `squid`-tagged group, the port from the tofu constants.
+agent_guest_proxy_host: >-
+  {{ groups['squid_group'] | default([]) | map('extract', hostvars, 'container_ip') | select('truthy') | first
+     | mandatory('no member of squid_group — the `squid`-tagged LXC must be in the published tofu inventory') }}
+agent_guest_proxy_port: >-
+  {{ tofu_data.constants.service_ports.squid_proxy
+     | mandatory('tofu_data.constants.service_ports.squid_proxy missing — regenerate tofu_inventory.json') }}
+agent_guest_proxy_url: "http://{{ agent_guest_proxy_host }}:{{ agent_guest_proxy_port }}"
+# Internal destinations must NOT be routed at squid: OpenBao, Cribl, DNS and NTP
+# are reachable directly, and squid would deny them anyway — its allowlist is
+# external-only. RFC1918 covers the estate by address, the domain by name.
+agent_guest_no_proxy: >-
+  localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.{{
+  tofu_data.domain | mandatory('tofu_data.domain missing — regenerate tofu_inventory.json') }}
+# Both cases: curl/git/node read the lowercase pair, most Go and Java tooling
+# the uppercase. Applied to every Ansible task that fetches from the internet,
+# to the login shell, to systemd's default environment, and to each job unit.
+agent_guest_proxy_env:
+  http_proxy: "{{ agent_guest_proxy_url }}"
+  https_proxy: "{{ agent_guest_proxy_url }}"
+  no_proxy: "{{ agent_guest_no_proxy }}"
+  HTTP_PROXY: "{{ agent_guest_proxy_url }}"
+  HTTPS_PROXY: "{{ agent_guest_proxy_url }}"
+  NO_PROXY: "{{ agent_guest_no_proxy }}"
+agent_guest_apt_proxy_conf: /etc/apt/apt.conf.d/01-agent-guest-proxy
+agent_guest_profile_proxy_script: /etc/profile.d/agent-guest-proxy.sh
+agent_guest_systemd_proxy_conf: /etc/systemd/system.conf.d/10-agent-guest-proxy.conf
+
 # --- CLI toolchain ----------------------------------------------------------
 # Unpinned, unlike ai_runner's version floors: the three agent CLIs ship
 # breaking-fast and the newest stable is the supported one (AGENTS.md "Version
