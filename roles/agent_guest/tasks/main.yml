@@ -32,12 +32,23 @@
     group: "{{ agent_guest_user }}"
     mode: "0755"
 
+# Must precede the toolchain: this guest has no direct WAN rule, so its first
+# apt update already needs the proxy.
+- name: Wire the guest to the egress proxy
+  ansible.builtin.include_tasks: proxy.yml
+
 # molecule-notest: apt repos, the npm registry and release tarballs need real
 # egress; the molecule scenario exercises the render surface instead.
-- name: Install the CLI toolchain
-  ansible.builtin.include_tasks: toolchain.yml
+#
+# The block exists for its environment: apt, get_url, unarchive and npm fetch
+# from the Ansible process, which never reads the config files proxy.yml wrote.
+- name: Fetch the CLI toolchain through the egress proxy
+  environment: "{{ agent_guest_proxy_env }}"
   tags:
     - molecule-notest
+  block:
+    - name: Install the CLI toolchain
+      ansible.builtin.include_tasks: toolchain.yml
 
 # --- Autonomous config mirror ----------------------------------------------
 - name: Create agent config directories
@@ -193,10 +204,13 @@
     state: "{{ 'started' if agent_guest_vikunja_url | length > 0 else 'stopped' }}"
     enabled: "{{ agent_guest_vikunja_url | length > 0 }}"
 
-- name: Install the transcript-shipping Cribl Edge
-  ansible.builtin.include_tasks: cribl.yml
+- name: Fetch the transcript-shipping Cribl Edge through the egress proxy
+  environment: "{{ agent_guest_proxy_env }}"
   tags:
     - molecule-notest
+  block:
+    - name: Install the transcript-shipping Cribl Edge
+      ansible.builtin.include_tasks: cribl.yml
 
 # Teardown path, opt-in only (`never`): drains the Cribl persistent queue before
 # anything is stopped or deleted, so returning a guest to the pool cannot strand

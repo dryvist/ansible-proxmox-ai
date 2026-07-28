@@ -119,6 +119,31 @@ Codex (`~/.codex/auth.json`) and Gemini (`~/.gemini/oauth_creds.json`) auth file
 are seeded out of band beside the AppRole credentials — they self-refresh in
 place, and `bao agent` env_template renders environment variables, not files.
 
+## Egress
+
+The guest has **no direct WAN rule**. Its only path off the estate is CONNECT
+through the [`squid`](../squid/README.md) proxy, where the domain allowlist
+lives — so `roles/squid` must have converged before this role can install a
+single package, which is why `site.yml` orders that play first.
+
+`tasks/proxy.yml` runs before the toolchain and writes four things: an
+`apt.conf.d` drop-in, `/etc/profile.d/agent-guest-proxy.sh`, a
+`system.conf.d` `DefaultEnvironment` drop-in (systemd reads neither of the
+other two), and the prefix-scoped `npmrc`. The job units get the same variables
+through `agent-guest.env`, and the fetching Ansible modules through an
+`environment:` on the toolchain include — config files on disk do not reach the
+Ansible process.
+
+Both coordinates are inventory-derived: the proxy FQDN from `squid_group`
+membership, the port from `tofu_data.constants.service_ports.squid_proxy`.
+`no_proxy` carries the internal domain and the RFC1918 ranges, so OpenBao,
+Cribl, DNS and NTP go direct — squid's allowlist is external-only and would
+deny them.
+
+A job that fails on a network error is usually an allowlist miss: check
+`TCP_DENIED` in `/var/log/squid/access.log` on the proxy guest before assuming
+anything else.
+
 ## Transcript shipping
 
 A standalone Cribl Edge tails `/home/agent` for the three CLIs' transcripts and

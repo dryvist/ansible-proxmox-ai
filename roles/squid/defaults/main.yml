@@ -1,0 +1,64 @@
+---
+# squid — the AI agent plane's egress chokepoint.
+#
+# A guest on the `ai-proxied` Proxmox firewall profile has NO direct WAN rule at
+# all (tofu-proxmox modules/firewall/ai_proxied_rules.tf): its only permitted
+# outbound flows are internal DNS/NTP/OpenBao/Cribl plus TCP squid_proxy to this
+# guest. So CONNECT through here is the one path off the estate, and the domain
+# allowlist below is the whole egress boundary — the Proxmox firewall cannot
+# filter by hostname, which is exactly why it lives here instead.
+
+squid_service_name: squid
+squid_config_path: /etc/squid/squid.conf
+
+# Listen port from the published tofu constants — never a literal.
+squid_port: >-
+  {{ tofu_data.constants.service_ports.squid_proxy
+     | mandatory('tofu_data.constants.service_ports.squid_proxy missing — regenerate tofu_inventory.json') }}
+
+# IANA protocol constants, not estate service ports: there is no tofu constant
+# for "the port HTTPS speaks", so these are named here rather than buried in the
+# template. CONNECT is confined to squid_ssl_ports so an allowlisted hostname
+# cannot be used to tunnel to an arbitrary service on that host.
+squid_safe_ports: [80, 443]
+squid_ssl_ports: [443]
+
+# One ACL group per firewall egress profile, keyed off the client address.
+# `group` is the inventory group inventory/load_tofu.yml derives from the
+# matching tofu tag; every member's DHCP-reservation address becomes an
+# `acl <profile>_clients src` entry, so adding a pool guest is a tofu change
+# with no edit here.
+#
+# SECURITY BOUNDARY — read before editing `domains`. This list is the complete
+# set of hostnames a guest on that profile can reach. The agents behind it run
+# in permission-skipping mode by design; the allowlist is what bounds them.
+# Adding an entry is a security decision, not a configuration tweak.
+squid_egress_profiles:
+  ai_proxied:
+    group: ai_agent_pool_group
+    domains:
+      # Debian packages
+      - deb.debian.org
+      - security.debian.org
+      # GitHub — clone, push, PR, release tarballs, the gh CLI apt channel
+      - github.com
+      - api.github.com
+      - codeload.github.com
+      - objects.githubusercontent.com
+      - raw.githubusercontent.com
+      - uploads.github.com
+      - cli.github.com
+      # npm — the three agent CLIs install from here
+      - registry.npmjs.org
+      # Anthropic (claude CLI)
+      - api.anthropic.com
+      - statsig.anthropic.com
+      # OpenAI (codex CLI)
+      - api.openai.com
+      - auth.openai.com
+      - chatgpt.com
+      # Google (agy CLI)
+      - generativelanguage.googleapis.com
+      - cloudcode-pa.googleapis.com
+      - oauth2.googleapis.com
+      - accounts.google.com
