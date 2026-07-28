@@ -450,15 +450,70 @@ query over `task_runs` replaces a per-card subprocess fan-out.
 "Since the previous run" is a schema-versioned state file beside the Splunk
 digests' state. Missing or corrupt degrades to one scheduling interval and
 **says so** in the post; a broken read is delivered as an explicit `FAILED` line,
-never as silence (an empty post would read as a healthy board). A genuinely
-quiet window prints one line naming the board it searched.
+never as silence (an empty post would read as a healthy board).
+
+**Quiet runs are heartbeat-gated** (operator decision, 2026-07-28). A run with
+no completion, failure, retry or overrun to report goes `[SILENT]` unless
+`hermes_agent_kanban_digest_heartbeat_hours` has elapsed since the last
+*delivered* post. At the 15-minute cadence the quiet branch was firing ~90 times
+a day with byte-identical board counts, which is the noise this removes; the
+rule is **never post a message whose entire content is "nothing happened"**
+unless the heartbeat interval has passed. Two invariants make that safe:
+
+- **Real activity is never gated.** The check runs only on the fully-quiet
+  branch, so a failure, an overrun or a completion posts immediately, every run.
+- **Unknown or future-dated last-post counts as DUE.** Erring towards posting is
+  the only safe direction — a suppressed heartbeat is indistinguishable from a
+  dead cron, which is exactly what this digest exists to announce.
+
+A suppressed run still **advances its window** (it did cover that window) but
+does **not** advance `last_post_epoch`, or every quiet run would reset its own
+heartbeat clock and the heartbeat would never fire.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `hermes_agent_kanban_digest_interval_minutes` | `15` | the only place the cadence is written; schedule and fallback derive from it. Steady state hourly |
+| `hermes_agent_kanban_digest_heartbeat_hours` | `6` | quiet-post ceiling; `0` restores "post every run" |
 | `hermes_agent_kanban_digest_cron_schedule` | derived | never set by hand |
 | `hermes_agent_kanban_digest_channel` | `hermes_agent_digest_slack_channel` | delivery surface; never a literal id |
 | `hermes_agent_kanban_digest_enabled` | derived | Slack bot + app tokens + channel set. No Splunk or brain dependency |
+
+## Script-fed Splunk triage digests (`hermes_agent_triage_jobs`)
+
+One template (`templates/splunk-triage.py.j2`) rendered once per job; adding a
+job is config, not code. Both jobs report **error signatures**, not host volume.
+
+Before (what the operator actually saw): a leaderboard of counters —
+`openbao-02 / syslog — 18.0k events (was 17.9k)`. After: the fault leads, the
+blast radius follows —
+
+```text
+:rotating_light: *NEW* `bao[<pid>]: <ts> [ERROR] storage.raft: failed to heartbeat to: peer=<ip>:<n> ... no route to host`
+    3.5k events in the 1h window, absent from the previous run · openbao-02
+`systemd[<pid>]: Failed to mount tmp.mount - Temporary Directory /tmp.`
+    78 events (was 78) · 9 hosts: openbao-02, openbao-01, openbao-21 (+6 more)
+```
+
+Signatures are produced in Splunk by an ordered `rex mode=sed` chain that
+normalises timestamps, pids, IPs, hex ids and finally bare digits. **The order
+is load-bearing**: put the catch-all digit rule before the timestamp rule and an
+ISO timestamp becomes `<n>-<n>-<n>T<n>:<n>:<n>`, splitting one fault across as
+many signatures as it has distinct timestamps. A test pins the ordering.
+
+Under-normalising is the safe direction and over-normalising is not: an
+unrecognised varying token splits one fault into several signatures (visible and
+fixable), while an over-broad rule merges genuinely different faults into one
+(invisible, and it hides the thing you needed).
+
+> **The MCP drops `earliest`.** Proven live 2026-07-28: `splunk_run_query`
+> returns byte-identical results for `earliest=-1h`, `-24h` and `-7d`. Every
+> hourly digest ever posted was a ~24h figure under a "last 1h" heading — which
+> is how one host read as 18k errors/hour when its real hourly rate was 36, and
+> was not even the estate's top error source. The window is therefore written
+> **inline in the SPL**; the argument is still passed so the job stays correct
+> if the server is ever fixed. `splunk-status-digest` passes `-24h`, which
+> happens to match the server's default, so it is accidentally rather than
+> deliberately correct — fix it there too when the MCP is touched.
 
 ## Vikunja bridge (the operator's board drives Hermes)
 

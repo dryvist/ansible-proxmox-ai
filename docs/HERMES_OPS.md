@@ -113,7 +113,23 @@ The older "hourly heartbeat, never `[SILENT]`" law is **superseded** — see the
 `kanban-digest` is the master board report: it reads `kanban.db` read-only and
 says what every card did since its own previous run. It is deliberately
 excluded from `hermes_agent_seeded_cron_names` so it survives a cluster pause
-window — it is what tells you the board is wedged.
+window — it is what tells you the board is wedged. A run with **nothing** to
+report (no completion, failure, retry or overrun) goes `[SILENT]` until
+`hermes_agent_kanban_digest_heartbeat_hours` (default 6) has elapsed since the
+last delivered post — the same gate `splunk-status-digest` carries. Real board
+activity is never gated by it.
+
+`splunk-error-digest` and `splunk-security-digest` cluster events by **error
+signature** — the raw line with timestamps, pids, IPs, hex ids and numbers
+normalised out — not by host/sourcetype volume. One fault on thirty machines is
+one line naming its blast radius, rather than thirty lines of counters.
+
+> **The MCP drops `earliest`.** `splunk_run_query`'s `earliest` argument is
+> ignored by the Splunk MCP server: the same query returns byte-identical
+> results for `-1h`, `-24h` and `-7d` (verified live 2026-07-28). The triage
+> digests therefore write their window **inline in the SPL**, where Splunk
+> applies it. Any new job that relies on the argument alone will silently report
+> a ~24h figure under whatever heading it claims.
 
 ### Agentic direct-deliver digest crons
 

@@ -40,6 +40,7 @@ FIXTURE_CONFIG = {
     "STATE_PATH": str(TMP / "kanban-digest.json"),
     "TITLE": "Kanban Board Digest",
     "INTERVAL_MIN": 15,
+    "HEARTBEAT_HOURS": 6,
 }
 
 # Columns as they exist on the live board. Only what the digest reads.
@@ -123,8 +124,8 @@ def now_dt():
     return dt.datetime.fromtimestamp(NOW, dt.timezone.utc)
 
 
-def digest(tasks, runs, since=NOW - 900, note=""):
-    return DIGEST.build_digest(*board(tasks, runs), now_dt(), since, note)
+def digest(tasks, runs, since=NOW - 900, note="", due=True):
+    return DIGEST.build_digest(*board(tasks, runs), now_dt(), since, note, due)
 
 
 # --- contract 1: a completed card carries its result -------------------------
@@ -216,13 +217,13 @@ def test_overrun_uses_the_current_attempts_start_not_the_first():
 
 def test_missing_state_file_falls_back_to_the_interval_and_says_so():
     Path(FIXTURE_CONFIG["STATE_PATH"]).unlink(missing_ok=True)
-    since, note = DIGEST.load_state()
-    assert since is None and "15 min" in note
+    since, posted, note = DIGEST.load_state()
+    assert since is None and posted is None and "15 min" in note
 
 
 def test_corrupt_state_file_falls_back_rather_than_crashing():
     Path(FIXTURE_CONFIG["STATE_PATH"]).write_text("{not json")
-    since, note = DIGEST.load_state()
+    since, _, note = DIGEST.load_state()
     assert since is None and note
     Path(FIXTURE_CONFIG["STATE_PATH"]).write_text(json.dumps({"schema": 0, "last_run_epoch": 1}))
     assert DIGEST.load_state()[0] is None, "an older schema is not a usable baseline"
@@ -232,7 +233,7 @@ def test_a_future_timestamp_is_not_trusted():
     """A clock step forward would otherwise silence the digest until it caught up."""
     Path(FIXTURE_CONFIG["STATE_PATH"]).write_text(
         json.dumps({"schema": DIGEST.STATE_SCHEMA, "last_run_epoch": NOW}))
-    since, note = DIGEST.load_state()
+    since, _, note = DIGEST.load_state()
     assert since == NOW and not note, "a valid state file is used as-is"
 
 
@@ -242,8 +243,89 @@ def test_the_fallback_note_reaches_the_post():
 
 
 def test_a_saved_state_round_trips():
-    DIGEST.save_state(NOW)
-    assert DIGEST.load_state() == (NOW, "")
+    DIGEST.save_state(NOW, NOW - 10)
+    assert DIGEST.load_state() == (NOW, NOW - 10, "")
+
+
+# --- contract 7: never post a message whose whole content is "nothing happened"
+
+def test_a_quiet_run_is_silent_when_the_heartbeat_has_not_elapsed():
+    """The defect this fixes: a 15-minute cron posting ~90 identical
+    "No board activity" messages a day, each repeating the same board counts."""
+    assert digest([{"id": "t_q", "title": "Waiting", "status": "ready"}], [],
+                  due=False) == DIGEST.SILENT
+
+
+def test_a_quiet_run_still_posts_once_the_heartbeat_elapses():
+    text = digest([{"id": "t_q", "title": "Waiting", "status": "ready"}], [], due=True)
+    assert "No board activity" in text
+    assert "heartbeat" in text, "the heartbeat post must say why it is rare"
+
+
+def test_real_board_activity_is_never_heartbeat_suppressed():
+    """The gate covers ONLY the quiet branch. A failure, a completion or an
+    overrun is the reason the digest exists and must post immediately."""
+    failed = digest(
+        [{"id": "t_r", "title": "Docs study", "status": "blocked"}],
+        [{"id": 1, "task_id": "t_r", "outcome": "crashed", "ended_at": NOW - 100,
+          "error": "worker exited 1"}], due=False)
+    assert failed != DIGEST.SILENT and "Docs study" in failed
+
+    completed = digest(
+        [{"id": "t_s", "title": "AI news", "status": "done"}],
+        [{"id": 1, "task_id": "t_s", "outcome": "completed", "started_at": NOW - 200,
+          "ended_at": NOW - 100, "summary": "posted 3 items"}], due=False)
+    assert completed != DIGEST.SILENT and "posted 3 items" in completed
+
+    overrun = digest(
+        [{"id": "t_t", "title": "Sweep", "status": "running",
+          "max_runtime_seconds": 1800, "current_run_id": 1}],
+        [{"id": 1, "task_id": "t_t", "outcome": None, "started_at": NOW - 5400}], due=False)
+    assert overrun != DIGEST.SILENT and "Overrunning" in overrun
+
+
+def test_heartbeat_is_due_when_the_last_post_is_unknown_or_stale():
+    """Erring towards posting is the only safe direction — a suppressed heartbeat
+    is indistinguishable from a dead cron, which is what this digest announces."""
+    assert DIGEST.heartbeat_due(NOW, None), "unknown last post must post"
+    assert DIGEST.heartbeat_due(NOW, NOW - DIGEST.HEARTBEAT_HOURS * 3600), "exactly due"
+    assert DIGEST.heartbeat_due(NOW, NOW + 99999), "a future last-post is a clock step"
+    assert not DIGEST.heartbeat_due(NOW, NOW - 60), "one minute ago is not due"
+
+
+def test_a_suppressed_run_advances_the_window_but_not_the_last_post():
+    """Otherwise the next real activity is double-reported, or the heartbeat
+    never fires because every quiet run resets its own clock."""
+    import io
+    import contextlib
+
+    Path(FIXTURE_CONFIG["STATE_PATH"]).unlink(missing_ok=True)
+    board([{"id": "t_u", "title": "Waiting", "status": "ready"}], [])
+    mod = load_digest_module()
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert mod.main() == 0
+    assert buf.getvalue().strip() != mod.SILENT, "no state file means the heartbeat is due"
+    first_run, first_post, _ = mod.load_state()
+    assert first_post is not None
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert mod.main() == 0
+    assert buf.getvalue().strip() == mod.SILENT, "the second quiet run is suppressed"
+    second_run, second_post, _ = mod.load_state()
+    assert second_run > first_run, "the window must always advance"
+    assert second_post == first_post, "a suppressed run must not reset the heartbeat"
+
+
+def test_the_heartbeat_ceiling_is_configurable_not_a_literal():
+    import yaml
+
+    defaults = yaml.safe_load(DEFAULTS_PATH.read_text())
+    assert defaults["hermes_agent_kanban_digest_heartbeat_hours"] == 6
+    source = TEMPLATE_PATH.read_text()
+    assert "HEARTBEAT_HOURS = {{ hermes_agent_kanban_digest_heartbeat_hours }}" in source
+    assert re.search(r"^\s*HEARTBEAT_HOURS\s*=\s*\d", source, re.M) is None
 
 
 # --- contract 5: nothing happened is stated, not implied ---------------------
