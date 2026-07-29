@@ -1,0 +1,93 @@
+---
+# Pins the servable-alias contract from roles/llm_router/tasks/assert.yml.
+#
+# WHY THIS TEST EXISTS. On 2026-07-28 every consumer alias in the router pointed
+# at a model the serving host does not serve — hermes-default, tool-calling,
+# goal-judge and interim-brain all returned HTTP 404 against the live gate, at
+# the same time. The serving host runs llama-swap in single-model mode, where
+# every non-resident model is demoted to `disabledModels` and answers 404 rather
+# than being served under the wrong weights. Nothing in the repo could catch it:
+# the pre-existing assert only proves an alias target carries a non-null
+# context_window (the compress-death guard), never that it is REACHABLE.
+#
+# The failure was invisible for as long as llama-swap still grafted disabled ids
+# onto the resident, because a request for a disabled model was quietly answered
+# by whatever happened to be loaded. So this contract cannot be left to a live
+# probe: it has to hold at render time, offline, on every converge.
+#
+# Run:
+#   ansible-playbook tests/llm_router/test_alias_servable.yml -i localhost, -c local
+- name: Verify the llm_router servable-alias contract
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _defaults_file: "{{ playbook_dir }}/../../roles/llm_router/defaults/main.yml"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        file: "{{ _defaults_file }}"
+
+    - name: Every alias target resolves into the servable set
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            llm_router_model_group_aliases | dict2items | map(attribute='value')
+            | difference(llm_router_servable_models) | length == 0
+        fail_msg: >-
+          Alias(es)
+          [{{ llm_router_model_group_aliases | dict2items | map(attribute='value')
+              | difference(llm_router_servable_models) | unique | join(', ') }}]
+          are outside llm_router_servable_models and would return HTTP 404.
+        success_msg: "all {{ llm_router_model_group_aliases | length }} aliases are servable"
+
+    - name: Every servable model is a first-class entry with a real context_window
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_servable_models | difference(_safe) | length == 0
+        fail_msg: >-
+          [{{ llm_router_servable_models | difference(_safe) | join(', ') }}]
+          are in the servable set but carry no context_window in
+          llm_router_large_models — they would fall through the "*" wildcard and
+          compress every caller to death.
+        success_msg: "servable models all carry explicit context windows"
+      vars:
+        _safe: >-
+          {{ llm_router_large_models
+             | selectattr('context_window', 'defined')
+             | rejectattr('context_window', 'none')
+             | map(attribute='backend') | list }}
+
+    - name: The advertised window for the resident matches what the serving host provisions
+      # nix-ai catalog-data.nix pins qwen36-35b's RESIDENT profile at
+      # maxRequestTokens = 65536 (cacheMemoryMb 16384). The router carried 32768
+      # — the SWAP-class figure — so Hermes auto-compacted at 24.5K instead of
+      # ~49K. Halving the advertised window protects nothing; it only wastes
+      # context, and the catalog comment names 65536 as what avoids the 32768
+      # truncation/retry death-loop.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _primary_entry | length == 1
+          - (_primary_entry | first).context_window | int == 65536
+        fail_msg: >-
+          llm_router_primary_model ({{ llm_router_primary_model }}) must appear
+          exactly once in llm_router_large_models with context_window 65536 to
+          match its nix-ai resident profile; found
+          {{ _primary_entry | map(attribute='context_window') | list }}.
+        success_msg: "resident window (65536) matches the nix-ai resident profile"
+      vars:
+        _primary_entry: >-
+          {{ llm_router_large_models
+             | selectattr('backend', 'equalto', llm_router_primary_model) | list }}
+
+    - name: The judge does not share the worker's model
+      # Same-model judging is self-preference bias by construction, and it made
+      # worker and judge contend for one serving slot.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_model_group_aliases['goal-judge'] != llm_router_model_group_aliases['hermes-default']
+        fail_msg: "goal-judge must not resolve to the same model as hermes-default"
+        success_msg: "judge is cross-family to the worker"
