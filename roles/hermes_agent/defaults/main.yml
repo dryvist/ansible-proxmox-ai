@@ -409,11 +409,39 @@ hermes_agent_kanban_goal_mode: true
 # finalize while the board failure_limit + max_retries still cap a truly wedged
 # card. (Matches the operator's soak tuning, made declarative here.)
 hermes_agent_kanban_goal_max_turns: 8
-# Judge model is pinned to the WORKER model, structurally — not to a separate
-# judge var that merely happens to match. Single-model serving policy: the judge
-# must be the same model as the worker, always; a same-model judge cannot be
-# pulled apart from the worker by config drift. (A same-model judge is not an
-# artifact check — the mechanical completion gate is the anti-fabrication layer.)
+# THIS IS THE REAL JUDGE. It is what config.yaml.j2 renders into
+# auxiliary.goal_judge.model, and it is currently pinned to the WORKER model.
+#
+# Do not confuse it with `hermes_goal_judge_model` in inventory/group_vars/all.yml.
+# That one names the `goal-judge` router alias and is read by exactly ONE thing —
+# the llm_router compress-death assert. It drives no inference. Repointing it
+# does NOT unpin the judge, which is a mistake already made once (2026-07-29):
+# the two names differ by a prefix and both look authoritative.
+#
+# The pin's stated justification does not currently hold, and saying so is the
+# point of this comment. It read: "a same-model judge is not an artifact check —
+# the mechanical completion gate is the anti-fabrication layer." There IS no
+# mechanical completion gate. Searched 2026-07-29 across this repo and
+# nix-hermes: the phrase occurs in this comment and nowhere else, and no
+# tool-call-count gate is configured or implemented. A comment that cites a
+# protection that does not exist is worse than silence, because it answers the
+# question a reviewer would otherwise ask.
+#
+# What the pin genuinely buys is drift-safety: judge and worker cannot be pulled
+# apart by config. What it costs is real and twofold — a model scoring its own
+# output is self-preference bias by construction (it survives blind evaluation,
+# so hiding authorship is no defence), and the serving tier admits ONE in-flight
+# request per model, so worker and judge on the same model SERIALIZE against
+# each other. The judge queues behind the very generation it was spawned to
+# score.
+#
+# Unpinning to the cross-family small tier fixes both, and the small tier is a
+# separate llama-swap entry with its own slot — so it also resolves the
+# contention without touching concurrency anywhere. It is NOT done here because
+# it cannot currently be verified: the small tier is swap-class, a cold load has
+# to finish inside hermes_agent_kanban_goal_judge_timeout_seconds, and the
+# serving gate is down so that load time cannot be measured. Tracked, with the
+# measurement it needs, rather than shipped blind.
 hermes_agent_kanban_goal_judge_model: "{{ hermes_agent_model }}"
 hermes_agent_kanban_goal_judge_timeout_seconds: 60
 # --- Memory: best self-hostable as of June 2026 (Agy-validated) ---
