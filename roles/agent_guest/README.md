@@ -94,8 +94,10 @@ rules), byte-equal to `nix eval …#lib.renderAutonomous`.
 Two launch flags are load-bearing and asserted by the runner's self-check:
 
 - **claude gets `-p` without `--bare`** — bare mode ignores `CLAUDE_CODE_OAUTH_TOKEN`.
-- **gemini gets `--approval-mode yolo`** — gemini-cli strips the equivalent
-  settings key, so the settings block is render parity only.
+- **agy gets `--dangerously-skip-permissions`** — headless `-p` follows the
+  settings policy, which denies shell by default; only the flag opens it.
+  (`gemini` is accepted as an alias — gemini-cli is dead upstream for
+  individual OAuth, see #245.)
 
 ## Credentials
 
