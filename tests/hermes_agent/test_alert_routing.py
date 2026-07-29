@@ -89,6 +89,59 @@ def test_firehose_keeps_the_single_channel_fallback() -> None:
     assert _firehose_targets(firehose="", hermes_all="") == ["slack"]
 
 
+def _splunk_digest_targets(*, splunk: str, firehose: str, hermes_all: str) -> list[str]:
+    """Resolve the splunk-domain digest deliver value the way the scheduler does."""
+    suffix = _render(
+        DEFAULTS["hermes_agent_hermes_all_deliver_suffix"],
+        hermes_agent_slack_hermes_all_channel=hermes_all,
+    )
+    fire = _render(
+        DEFAULTS["hermes_agent_firehose_deliver"],
+        hermes_agent_slack_firehose_channel=firehose,
+        hermes_agent_hermes_all_deliver_suffix=suffix,
+    )
+    deliver = _render(
+        DEFAULTS["hermes_agent_splunk_digest_deliver"],
+        hermes_agent_slack_splunk_channel=splunk,
+        hermes_agent_hermes_all_deliver_suffix=suffix,
+        hermes_agent_firehose_deliver=fire,
+    )
+    seen: list[str] = []
+    for part in (p.strip() for p in deliver.split(",")):
+        if part and part not in seen:
+            seen.append(part)
+    return seen
+
+
+def test_splunk_domain_goes_to_its_own_channel_plus_hermes_all() -> None:
+    assert _splunk_digest_targets(
+        splunk="C_SPLUNK", firehose="C_FIRE", hermes_all="C_ALL"
+    ) == ["slack:C_SPLUNK", "slack:C_ALL"]
+
+
+def test_splunk_channel_unset_reproduces_todays_behaviour_exactly() -> None:
+    # The empty default must be inert, not merely close: with no splunk channel
+    # and hermes_all still defaulted to the firehose id, the digest resolves to
+    # exactly the one target it does today.
+    assert _splunk_digest_targets(
+        splunk="", firehose="C_FIRE", hermes_all="C_FIRE"
+    ) == ["slack:C_FIRE"]
+
+
+def test_splunk_channel_unset_still_inherits_the_hermes_all_leg() -> None:
+    # Falling through to the firehose target must not lose the log-of-record
+    # leg once the channels diverge.
+    assert _splunk_digest_targets(
+        splunk="", firehose="C_FIRE", hermes_all="C_ALL"
+    ) == ["slack:C_FIRE", "slack:C_ALL"]
+
+
+def test_splunk_channel_is_env_sourced_never_hardcoded() -> None:
+    assert "lookup('env', 'SLACK_HERMES_SPLUNK_CHANNEL')" in (
+        DEFAULTS["hermes_agent_slack_splunk_channel"]
+    )
+
+
 def test_critical_alert_reaches_both_the_dm_and_hermes_all() -> None:
     targets = _alert_targets(allowed_users="U123", hermes_all="C_ALL")
     assert targets == ["slack:U123", "slack:C_ALL"]
