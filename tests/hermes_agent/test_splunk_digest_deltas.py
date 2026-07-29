@@ -59,6 +59,18 @@ def load_digest_module():
 
 DIGEST = load_digest_module()
 
+
+def ledger_keys(state):
+    """The finding keys a state file has ledgered, read through the script's own
+    accessor rather than off the raw record shape.
+
+    The ledger stores {"k": key, "t": text} records so the heartbeat can restate
+    what is still holding instead of only counting it. Assertions that reached
+    into ["ledger"]["keys"] directly were pinning that layout, not the contract,
+    and broke the moment text was added alongside the key."""
+    day = (state or {}).get("ledger", {}).get("day")
+    return DIGEST.load_ledger(state, day)
+
 DAY = dt.datetime(2026, 7, 24, 0, 52, tzinfo=dt.timezone.utc)
 
 
@@ -122,7 +134,7 @@ def test_first_run_of_a_day_posts_the_full_baseline_table():
     assert "no baseline" in text, "delta cells must say why a delta is missing"
     assert "No prior baseline" in text
     assert state["ledger"]["day"] == "2026-07-24"
-    assert "table:2026-07-24" in state["ledger"]["keys"]
+    assert "table:2026-07-24" in ledger_keys(state)
     assert state["by_index"]["os"] == {
         "vol": 1_200_000, "hosts": 2,
         "host_vol": {"host-a": 1_000_000, "host-b": 200_000},
@@ -138,11 +150,11 @@ def test_a_routine_finding_already_posted_today_is_suppressed():
     assert "index=os volume up 45%" in second, "a novel routine move must be posted"
     assert "First digest of" not in second, "the daily table is routine — once per day only"
     assert "1,740,000" in second
-    key = next(k for k in s1["ledger"]["keys"] if k.startswith("vol:os:up"))
+    key = next(k for k in ledger_keys(s1) if k.startswith("vol:os:up"))
 
     # The same +45% band an hour later against the new baseline: same identity.
     third, s2 = step(scale(grown, "os", 1.45), s1, 2)
-    assert s2["ledger"]["keys"].count(key) == 1, "a repeat must not be re-ledgered"
+    assert ledger_keys(s2).count(key) == 1, "a repeat must not be re-ledgered"
     assert "index=os volume up 45%" not in third, \
         "a routine finding already presented today must be suppressed"
 
@@ -157,7 +169,7 @@ def test_a_persisting_critical_condition_repeats_every_run():
         assert "INGEST SILENCE: index=network" in text, \
             f"run {run}: a persisting critical condition must repeat, never be ledgered"
         assert "Critical — repeats every run" in text
-    assert not any(k.startswith("crit:") for k in s1["ledger"]["keys"]), \
+    assert not any(k.startswith("crit:") for k in ledger_keys(s1)), \
         "critical findings must never enter the day ledger"
 
 
@@ -238,12 +250,12 @@ def test_composition_tier_is_reached_when_index_and_host_tiers_are_spent():
 def test_the_day_boundary_resets_the_ledger():
     _, s0 = step(BASE, None, 0)
     _, s1 = step(BASE, s0, 23)
-    assert "table:2026-07-24" in s1["ledger"]["keys"]
+    assert "table:2026-07-24" in ledger_keys(s1)
 
     next_day, s2 = step(BASE, s1, at(0, day=25))
     assert s2["ledger"]["day"] == "2026-07-25"
-    assert "table:2026-07-25" in s2["ledger"]["keys"]
-    assert not any(k.endswith("2026-07-24") for k in s2["ledger"]["keys"]), \
+    assert "table:2026-07-25" in ledger_keys(s2)
+    assert not any(k.endswith("2026-07-24") for k in ledger_keys(s2)), \
         "yesterday's keys must not survive the boundary"
     assert "First digest of 2026-07-25" in next_day, "a new day re-presents the baseline table"
 
@@ -364,6 +376,69 @@ def test_waking_hours_schedule_never_outruns_the_heartbeat_gate():
         f"HEARTBEAT_HOURS={DIGEST.HEARTBEAT_HOURS}, so the first run of the day "
         "can be gated to [SILENT] and the morning opens with no state report")
     assert 0 <= int(minute) <= 59 and 0 <= start < end <= 23, schedule
+
+
+def quiet_state():
+    """Drive the digest to a genuinely quiet state, the same way
+    test_heartbeat_gate_silences_a_repeat_quiet_run_then_posts_once_it_elapses
+    does: baseline table, a growth finding, then the "flat" finding. After this
+    a further run with identical data has nothing novel to say."""
+    grown = scale(BASE, "os", 1.6)
+    _, s0 = step(BASE, None, 0)
+    _, s1 = step(grown, s0, 1)
+    _, s2 = step(grown, s1, 2)
+    return grown, s2
+
+
+def test_the_heartbeat_restates_what_is_still_holding_not_just_a_count():
+    """On a quiet day the heartbeat is the ONLY post. A bare "N finding(s) still
+    hold" leaves an operator scrolling back with no idea which N — the exact
+    unreadability this digest exists to fix. It must restate them."""
+    grown, state = quiet_state()
+    held = [e["t"] for e in DIGEST.load_ledger_entries(state, "2026-07-24") if e.get("t")]
+    assert held, "the quiet state should carry ledgered findings with text"
+
+    beat, _ = step(grown, state, at(2) + dt.timedelta(hours=DIGEST.HEARTBEAT_HOURS + 1))
+    assert "Nothing new to report" in beat, beat
+    assert "Still holding from earlier today" in beat, beat
+    # Each ledgered finding's own text comes back, not a tally of them.
+    for text in held[: DIGEST.HEARTBEAT_MAX_RESTATED]:
+        assert text in beat, f"heartbeat dropped a still-holding finding: {text!r}"
+
+
+def test_the_heartbeat_never_truncates_silently():
+    """A capped list that does not say it was capped reads as "that is
+    everything", which is worse than a long post."""
+    grown, state = quiet_state()
+    over = DIGEST.HEARTBEAT_MAX_RESTATED + 5
+    state["ledger"]["keys"] = [{"k": f"synthetic:{i}", "t": f"finding number {i}"}
+                               for i in range(over)] + state["ledger"]["keys"]
+
+    beat, _ = step(grown, state, at(2) + dt.timedelta(hours=DIGEST.HEARTBEAT_HOURS + 1))
+    shown = beat.count("finding number ")
+    assert shown == DIGEST.HEARTBEAT_MAX_RESTATED, f"restated {shown}, expected the cap"
+    assert "more not shown" in beat, beat
+
+
+def test_an_older_state_file_degrades_the_heartbeat_rather_than_crashing():
+    """The ledger used to be a bare list of key strings. A state file written by
+    the previous version must not take the digest down; it loses that day's
+    restatement detail and nothing else."""
+    day = "2026-07-24"
+    grown, state = quiet_state()
+    # Rewrite the ledger into the OLD shape, keys only.
+    state["ledger"]["keys"] = [e["k"] for e in state["ledger"]["keys"]]
+    assert DIGEST.load_ledger(state, day) == state["ledger"]["keys"], \
+        "the accessor must still read a pre-2026-07-29 ledger"
+
+    beat, _ = step(grown, state, at(2) + dt.timedelta(hours=DIGEST.HEARTBEAT_HOURS + 1))
+    assert "Nothing new to report" in beat, beat
+    assert "Still holding from earlier today" not in beat, \
+        "with no stored text there is nothing to restate"
+    # Asserted on the schema-specific sentence, NOT the bare word "predates" —
+    # that also appears in the unrelated no-baseline notice, so a looser
+    # assertion would pass without the branch under test ever running.
+    assert "their text predates" in beat, beat
 
 
 def test_a_persistent_failure_is_reported_once_not_every_run():
