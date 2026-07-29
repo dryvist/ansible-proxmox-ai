@@ -685,8 +685,24 @@ hermes_agent_splunk_alert_deliver: >-
       if (hermes_agent_slack_allowed_users | length > 0)
       else 'slack')
      ~ hermes_agent_hermes_all_deliver_suffix }}
+# Optional dedicated channel for the splunk-admin domain. NEVER hardcoded: it
+# comes from the environment like every other channel id, and defaults to EMPTY
+# so this whole block is inert until an operator actually creates the channel.
+hermes_agent_slack_splunk_channel: >-
+  {{ lookup('env', 'SLACK_HERMES_SPLUNK_CHANNEL') | default('', true) }}
+
 # The digest is a verbose full report every hour — firehose (3-tier routing).
-hermes_agent_splunk_digest_deliver: "{{ hermes_agent_firehose_deliver }}"
+#
+# When a splunk-domain channel exists the digest goes THERE plus #hermes-all, so
+# the domain surface is readable on its own without the log of record losing it.
+# When it does not (today), this falls through to the firehose target unchanged
+# — which already carries the #hermes-all leg — so the empty default reproduces
+# current behaviour exactly rather than merely approximately.
+hermes_agent_splunk_digest_deliver: >-
+  {{ ('slack:' ~ hermes_agent_slack_splunk_channel
+      ~ hermes_agent_hermes_all_deliver_suffix)
+     if (hermes_agent_slack_splunk_channel | length > 0)
+     else hermes_agent_firehose_deliver }}
 
 # Per-job cron definitions. Prompts stay short — the skill carries the discipline;
 # the prompt only sets each run's posture (a lens, not a checklist) and reinforces
