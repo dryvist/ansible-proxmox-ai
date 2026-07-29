@@ -139,10 +139,20 @@ hermes_agent_slack_home_channel_name: "{{ lookup('env', 'SLACK_HOME_CHANNEL_NAME
 # (anomaly sweeps + new incidents). Empty firehose → those jobs fall back to
 # the home channel, i.e. the original single-channel behavior.
 hermes_agent_slack_firehose_channel: "{{ lookup('env', 'SLACK_FIREHOSE_CHANNEL') | default('', true) }}"
+#
+# The #hermes-all leg is appended STRUCTURALLY, not left to coincide. Today
+# hermes_all_channel defaults to the firehose id, so the two resolve to the same
+# channel and upstream's (platform, chat_id, thread_id) dedup collapses them —
+# this is a no-op. But the moment an operator does what that default's own
+# comment instructs ("override in group_vars once one is created"), every job
+# below would deliver to the firehose ONLY and #hermes-all would receive
+# nothing — inverting it from the complete log of record into a nearly empty
+# channel, silently, from a config change that looks inert.
 hermes_agent_firehose_deliver: >-
-  {{ 'slack:' ~ hermes_agent_slack_firehose_channel
-     if (hermes_agent_slack_firehose_channel | length > 0)
-     else 'slack' }}
+  {{ ('slack:' ~ hermes_agent_slack_firehose_channel
+      if (hermes_agent_slack_firehose_channel | length > 0)
+      else 'slack')
+     ~ hermes_agent_hermes_all_deliver_suffix }}
 
 # --- Agentic direct-deliver digest crons (declarative; Phase 5) --------------
 # Nine hand-created "direct deliver" digest jobs, now reconciled by the role
