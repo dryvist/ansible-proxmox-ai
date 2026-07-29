@@ -52,6 +52,40 @@
           llm_router_model_group_aliases.get(hermes_goal_judge_model, hermes_goal_judge_model)]
          | unique }}
 
+- name: Assert every consumer alias points at a model the serving host will actually serve
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        llm_router_model_group_aliases | dict2items | map(attribute='value')
+        | difference(llm_router_servable_models) | length == 0
+      # The servable set must itself be first-class entries, or this assert
+      # could be satisfied by a model that then compresses its caller to death.
+      - llm_router_servable_models | difference(_llm_router_safe_models) | length == 0
+    fail_msg: >-
+      Unroutable alias (roles/llm_router/tasks/assert.yml): alias target(s)
+      [{{ llm_router_model_group_aliases | dict2items | map(attribute='value')
+          | difference(llm_router_servable_models) | unique | join(', ') }}]
+      are not in llm_router_servable_models
+      [{{ llm_router_servable_models | join(', ') }}].
+      The serving host runs llama-swap in single-model mode: anything outside
+      that set is in disabledModels and returns HTTP 404 — not a degraded
+      answer, no answer. On 2026-07-28 EVERY consumer alias was in this state at
+      once (hermes-default, tool-calling, goal-judge, interim-brain), which stayed
+      invisible only while llama-swap still grafted disabled ids onto the resident.
+      Fix by repointing the alias at llm_router_primary_model /
+      llm_router_small_model — NOT by widening this list to match a stale alias.
+      Widening it is only correct when the SERVING HOST really did gain a model.
+    success_msg: >-
+      All {{ llm_router_model_group_aliases | length }} consumer aliases resolve
+      into the servable set ({{ llm_router_servable_models | join(', ') }}).
+  vars:
+    _llm_router_safe_models: >-
+      {{ llm_router_large_models
+         | selectattr('context_window', 'defined')
+         | rejectattr('context_window', 'none')
+         | map(attribute='backend') | list }}
+
 - name: Assert the rate-limit retry budget actually absorbs a 429 and fits the timeout chain
   ansible.builtin.assert:
     quiet: true

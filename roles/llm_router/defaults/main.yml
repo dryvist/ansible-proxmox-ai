@@ -166,7 +166,21 @@ llm_router_llm_large_standby_bearer: "{{ llm_router_llm_large_bearer }}"
 llm_router_large_models:
   - { backend: mlx-community/gpt-oss-120b-MXFP4-Q8, context_window: 32768 }
   - { backend: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit, context_window: 32768 }
-  - { backend: mlx-community/Qwen3.6-35B-A3B-4bit, context_window: 32768 }
+  # THE RESIDENT (llm_router_primary_model). 65536, not the 32768 it carried
+  # until 2026-07-28: that was the SWAP-class figure, and this model is resident.
+  # Its resident profile in nix-ai catalog-data.nix is provisioned
+  # cacheMemoryMb = 16384 with maxRequestTokens = 65536, and the catalog comment
+  # states 65536 "avoids the 32768 truncation/retry death-loop". Advertising half
+  # the real window does not protect anything — it just makes Hermes auto-compact
+  # at 24.5K (75% of 32768) when ~49K is actually available.
+  - { backend: mlx-community/Qwen3.6-35B-A3B-4bit, context_window: 65536 }
+  # THE SMALL TIER (llm_router_small_model) — the on-demand 9B that stays
+  # servable beside the resident (nix-ai alwaysAvailableModels) and never evicts
+  # it. A first-class entry because goal-judge points here, and an alias target
+  # with no context_window falls through the "*" wildcard to a null
+  # max_input_tokens and compresses its caller to death. 32768 is the small-cache
+  # tier figure, matching the swap flags it loads under.
+  - { backend: mlx-community/Qwen3.5-9B-MLX-4bit, context_window: 32768 }
   # OptiQ-4bit: the agentic-bench-winning brain (ai_default_model, all.yml). A
   # first-class entry — NOT passthrough — so the default model carries an
   # explicit max_input_tokens: the wildcard "*" entry below sets none, and a
@@ -329,18 +343,51 @@ llm_router_retry_max_delay_seconds: "{{ llm_router_retry_after_seconds }}"
 # Rate-limit failures do not cool down the otherwise healthy deployment.
 llm_router_rate_limit_allowed_fails: 1000
 
+# --- THE SERVABLE SET (single source for every alias) ------------------------
+# The serving host runs llama-swap in SINGLE-MODEL mode (nix-ai
+# llama-swap-topology.nix): exactly ONE physical id is servable, plus a small
+# always-available swap tier beside it. Every other catalogued model is
+# deliberately demoted to `disabledModels`, and a request naming one gets a 404
+# — by design, so a caller can never be answered by the resident's weights under
+# another model's name.
+#
+# Which means an alias pointing anywhere outside this set is not "slightly
+# stale", it is UNROUTABLE. Measured 2026-07-28 against the live gate, before
+# this block existed: hermes-default, tool-calling, goal-judge and interim-brain
+# ALL returned 404 — every consumer alias at once, because the alias map and the
+# serving host's enabled set had no shared definition. It stayed invisible while
+# llama-swap still grafted disabled ids onto the resident (Hermes was answered by
+# a model nobody selected); nix-ai#1441 removed that graft and the 404s surfaced.
+#
+# So the two values below are the ONE place a serving-side change is recorded,
+# every alias derives from them, and llm_router_servable_models feeds the assert
+# that refuses a converge if any alias escapes the set. Repointing the serving
+# host means editing these two lines and nothing else.
+llm_router_primary_model: mlx-community/Qwen3.6-35B-A3B-4bit
+# The always-available small tier: judge//trivial work, and the only model that
+# may differ from the primary (user decision 2026-07-28 — the 9B is always up for
+# the judge, concurrency belongs to the largest accurate model). Cross-family to
+# the primary, which is also what an LLM judge should be.
+llm_router_small_model: mlx-community/Qwen3.5-9B-MLX-4bit
+llm_router_servable_models:
+  - "{{ llm_router_primary_model }}"
+  - "{{ llm_router_small_model }}"
+
 # Stable consumer role names. Aliases carry no deployment configuration; each
-# points to exactly one physical model_list entry above.
+# points to exactly one physical model_list entry above — and now, only ever at
+# a member of the servable set above.
 llm_router_model_group_aliases:
-  hermes-default: mlx-community/Qwen3.5-9B-OptiQ-4bit
-  tool-calling: mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit
-  goal-judge: mlx-community/Qwen3.6-27B-mxfp4
-  # Interim Hermes-brain candidate: a fast MoE coder with strong tool-calling,
-  # a stable handle so hermes_brain_model (or secret/ai/public/brain) can repoint
-  # to it in one line. Inert until a consumer requests it; the backend already
-  # carries a real context_window (llm_router_large_models), so the compress-death
-  # assert passes.
-  interim-brain: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
+  hermes-default: "{{ llm_router_primary_model }}"
+  tool-calling: "{{ llm_router_primary_model }}"
+  # The judge runs on the small tier, NOT the worker's model. Same-model judging
+  # is self-preference bias by construction, and it also made worker and judge
+  # contend for one serving slot.
+  goal-judge: "{{ llm_router_small_model }}"
+  # Interim Hermes-brain candidate: a stable handle so hermes_brain_model (or
+  # secret/ai/public/brain) can repoint in one line. It tracks the primary rather
+  # than naming its own model — a second physical id here is exactly the drift
+  # this block exists to prevent.
+  interim-brain: "{{ llm_router_primary_model }}"
 # Background health checks send REAL test requests to every deployment — on the
 # llama-swap fast tier each probe spawns the target model, and with 3 routers
 # probing every model this both churns VRAM constantly and (pre swap-groups)
