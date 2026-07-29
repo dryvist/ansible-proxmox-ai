@@ -651,13 +651,30 @@ hermes_agent_zammad_autoclose_days: 7
 # tokens being set (can deliver) — a job that can't do both is never created.
 hermes_agent_splunk_monitor_enabled: true
 
+# Appended to a deliver target so the same post ALSO lands in #hermes-all, which
+# is the complete log of record. Upstream splits `deliver` on commas and dedups
+# resolved targets by (platform, chat_id, thread_id) — documented contract in
+# cron/scheduler.py `_normalize_deliver_value` / `_resolve_delivery_targets` —
+# so appending is safe even while hermes_all still defaults to the firehose
+# channel and the two resolve identically. Empty channel appends nothing.
+hermes_agent_hermes_all_deliver_suffix: >-
+  {{ ',slack:' ~ hermes_agent_slack_hermes_all_channel
+     if (hermes_agent_slack_hermes_all_channel | length > 0)
+     else '' }}
+
 # DM target for anomaly alerts: `slack:<member-id>` when the operator's Slack
 # member id is known, else fall back to the home channel (`slack`). The digest
 # always goes to the home channel.
+#
+# The DM is necessary but not sufficient: an anomaly that only ever exists in a
+# DM is invisible to anyone reading the channel that is supposed to be the
+# complete record, and it cannot be correlated later against the digests around
+# it. So CRITICAL fans out to BOTH — the DM for urgency, #hermes-all for the log.
 hermes_agent_splunk_alert_deliver: >-
-  {{ 'slack:' ~ hermes_agent_slack_allowed_users
-     if (hermes_agent_slack_allowed_users | length > 0)
-     else 'slack' }}
+  {{ ('slack:' ~ hermes_agent_slack_allowed_users
+      if (hermes_agent_slack_allowed_users | length > 0)
+      else 'slack')
+     ~ hermes_agent_hermes_all_deliver_suffix }}
 # The digest is a verbose full report every hour — firehose (3-tier routing).
 hermes_agent_splunk_digest_deliver: "{{ hermes_agent_firehose_deliver }}"
 
