@@ -393,7 +393,7 @@
       \1    return row["id"]
   notify: Restart hermes-gateway
 
-- name: Read installed Hermes goal-mode source patches
+- name: Read installed Hermes pinned-source patches
   ansible.builtin.slurp:
     src: "{{ item }}"
   loop:
@@ -402,10 +402,15 @@
     - "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
     - "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
     - "{{ hermes_agent_install_dir }}/agent/auxiliary_client.py"
+    # Appended, never reordered — the assert below indexes results[] by
+    # position, so inserting into the middle would silently re-point every
+    # later assertion at the wrong file.
+    - "{{ hermes_agent_install_dir }}/agent/context_compressor.py"
+    - "{{ hermes_agent_install_dir }}/cron/scheduler.py"
   register: hermes_agent_goal_mode_sources
   changed_when: false
 
-- name: Assert installed Hermes goal-mode source patches
+- name: Assert installed Hermes pinned-source patches
   vars:
     hermes_agent_goal_completion_source: >-
       {{ hermes_agent_goal_mode_sources.results[0].content | b64decode }}
@@ -417,6 +422,10 @@
       {{ hermes_agent_goal_mode_sources.results[3].content | b64decode }}
     hermes_agent_auxiliary_source: >-
       {{ hermes_agent_goal_mode_sources.results[4].content | b64decode }}
+    hermes_agent_compressor_source: >-
+      {{ hermes_agent_goal_mode_sources.results[5].content | b64decode }}
+    hermes_agent_cron_scheduler_source: >-
+      {{ hermes_agent_goal_mode_sources.results[6].content | b64decode }}
   ansible.builtin.assert:
     quiet: true
     that:
@@ -470,8 +479,31 @@
       - >-
         'resolved_provider != "custom"'
         in hermes_agent_auxiliary_source
+      # `_tc_boost_cap` CONTAINS the substring `_boost_cap`, so a bare
+      # `'_boost_cap = agent.max_tokens' in ...` would be satisfied by the
+      # _tc_ line alone and pass with the length-continuation patch missing.
+      # Count instead: both patched lines match the shorter needle, so 2 is
+      # the only value that proves BOTH landed (verified against upstream
+      # v2026.7.7.2 — unpatched 0, either patch alone 1, both 2).
+      - >-
+        hermes_agent_retry_source.count(
+          '_tc_boost_cap = agent.max_tokens if agent.max_tokens else max('
+        ) >= 1
+      - >-
+        hermes_agent_retry_source.count(
+          '_boost_cap = agent.max_tokens if agent.max_tokens else max('
+        ) == 2
+      - >-
+        'for idx in range(min(end, len(messages)) - 1, start - 1, -1):'
+        in hermes_agent_compressor_source
+      - >-
+        'deliver_content = _cron_markup_guard(job, output_file,'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        'registered for dispatcher-spawned workers (HERMES_KANBAN_TASK '
+        in hermes_agent_goal_reconcile_source
     fail_msg: >-
-      The pinned Hermes source changed and one or more required goal-mode
+      The pinned Hermes source changed and one or more required source
       patches were not installed; update the pinned-source patches before
       converging.
 
