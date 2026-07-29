@@ -390,9 +390,18 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
 
     hermes_alias = "hermes-default"
-    hermes_backend = "mlx-community/Qwen3.5-9B-OptiQ-4bit"
+    # The alias map no longer names physical ids: they come from two selector
+    # vars that are the single record of what the serving host actually serves.
+    # Pinning literals here is what let all four aliases drift to unroutable
+    # models at once (2026-07-28, every one a live 404), so follow the
+    # indirection instead of re-pinning the ids under a new name.
+    hermes_backend = router_defaults["llm_router_primary_model"]
+    judge_backend = router_defaults["llm_router_small_model"]
     assert group_vars["hermes_brain_model"] == hermes_alias
-    assert group_vars["hermes_goal_judge_model"] == hermes_alias
+    # The judge rides its own alias now — a judge on the worker's model is
+    # self-preference bias, and the two serialize against one serving slot.
+    assert group_vars["hermes_goal_judge_model"] == "goal-judge"
+    assert judge_backend != hermes_backend
     assert defaults["hermes_agent_model"] == "{{ hermes_brain_model }}"
     assert defaults["hermes_agent_compression_model"] == "{{ hermes_brain_model }}"
     assert defaults["hermes_agent_memory_llm_model"] == "{{ hermes_brain_model }}"
@@ -402,11 +411,17 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert defaults["hermes_agent_context_compression_threshold"] == 0.75
     assert defaults["hermes_agent_brain_sync_enabled"] is False
     assert router_defaults["llm_router_model_group_aliases"] == {
-        hermes_alias: hermes_backend,
-        "tool-calling": "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
-        "goal-judge": "mlx-community/Qwen3.6-27B-mxfp4",
-        "interim-brain": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+        hermes_alias: "{{ llm_router_primary_model }}",
+        "tool-calling": "{{ llm_router_primary_model }}",
+        "goal-judge": "{{ llm_router_small_model }}",
+        "interim-brain": "{{ llm_router_primary_model }}",
     }
+    # Both selectors must be declared servable, or the alias indirection just
+    # moves the 404 one level down.
+    assert router_defaults["llm_router_servable_models"] == [
+        "{{ llm_router_primary_model }}",
+        "{{ llm_router_small_model }}",
+    ]
     hermes_entries = [
         entry
         for entry in router_defaults["llm_router_large_models"]
