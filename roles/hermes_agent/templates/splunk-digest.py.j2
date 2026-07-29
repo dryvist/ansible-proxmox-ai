@@ -617,6 +617,87 @@ def build_digest(results, now, state):
     return "\n".join(lines), payload
 
 
+def failure_key(root):
+    """Stable identity for a fault, so an UNCHANGED failure is one finding and a
+    genuinely different one is a new finding. Type plus the same truncated
+    message the post carries — anything narrower (type alone) would hide a
+    changed cause; anything wider (a timestamped repr) would make every run
+    novel and re-create the flood this gate exists to stop."""
+    return f"digest-failure:{type(root).__name__}:{str(root)[:200]}"
+
+
+def failure_report(root, state, now):
+    """A digest failure, gated by the SAME day ledger as every other finding.
+
+    Until 2026-07-29 this path printed unconditionally: outside the ledger,
+    outside the SILENT contract, and outside the per-day novelty rule every
+    other finding in this file obeys. A fault that persists is not news after
+    the first post, so an hourly cron turned one outage into 24 identical Slack
+    messages a day — the flood that made the channel unreadable.
+
+    Failure is still ALWAYS delivered the first time it is seen each day, and a
+    changed cause is a new key and posts immediately. Only verbatim repetition
+    is suppressed, and the suppression is COUNTED so it can be reported rather
+    than silently swallowed.
+
+    Returns (text, payload) exactly like build_digest, so main() treats both
+    paths identically.
+    """
+    today = now.strftime("%Y-%m-%d")
+    ledger = load_ledger(state, today)
+    key = failure_key(root)
+    detail = f"{type(root).__name__}: {str(root)[:200]}"
+
+    # Read-modify-write: the baseline snapshot (by_index, hosts, ...) belongs to
+    # the last SUCCESSFUL run and must survive a failure untouched, or recovery
+    # would report full numbers with no deltas and look like a fresh install.
+    payload = dict(state or {})
+    suppressed = suppression_of(state, today)
+
+    if key in ledger:
+        suppressed["count"] = int(suppressed.get("count", 0)) + 1
+        payload["suppressed"] = suppressed
+        payload["failure"] = {"day": today, "key": key}
+        return SILENT, payload
+
+    prefix = ""
+    if suppressed.get("count"):
+        prefix = (f"({suppressed['count']} identical repeat(s) suppressed since "
+                  f"{suppressed.get('since_hhmm', '??:??')} UTC)\n")
+    payload["suppressed"] = {"day": today, "count": 0,
+                             "since_hhmm": now.strftime("%H:%M")}
+    payload["failure"] = {"day": today, "key": key}
+    payload["ledger"] = {"day": today, "keys": (ledger + [key])[-LEDGER_MAX:]}
+    return (f"{prefix}:warning: Splunk digest FAILED: {detail}\n"
+            f"(identical repeats are suppressed until the cause changes or the "
+            f"UTC day rolls; a different cause posts immediately)"), payload
+
+
+def suppression_of(state, today):
+    """Today's suppression counter, reset on a new UTC day."""
+    s = (state or {}).get("suppressed")
+    if not isinstance(s, dict) or s.get("day") != today:
+        return {"day": today, "count": 0, "since_hhmm": None}
+    return dict(s)
+
+
+def recovery_line(state, now):
+    """One line when a previously-failing digest succeeds, else None.
+
+    Recovery is the single most useful message this script can send and it was
+    never sent: the failure path posted forever and the success path knew
+    nothing about it, so a fixed outage just went quiet — indistinguishable from
+    the cron dying.
+    """
+    failure = (state or {}).get("failure")
+    if not isinstance(failure, dict) or not failure.get("key"):
+        return None
+    suppressed = (state or {}).get("suppressed") or {}
+    count = int(suppressed.get("count", 0)) if isinstance(suppressed, dict) else 0
+    tail = f" ({count} identical repeat(s) were suppressed)" if count else ""
+    return f":white_check_mark: Splunk digest RECOVERED — the previous failure has cleared.{tail}"
+
+
 def load_state():
     """Return the stored state, or None when it is unreadable."""
     try:
@@ -655,12 +736,30 @@ def main():
             if not sub:
                 break
             root = sub[0]
-        print(f":warning: Splunk digest FAILED: {type(root).__name__}: {str(root)[:200]}")
+        # Delivered through the day ledger, not straight to stdout. Failure is
+        # still always reported the first time it is seen and a changed cause
+        # posts at once; only verbatim repetition is suppressed, and counted.
+        now = dt.datetime.now(dt.timezone.utc)
+        text, payload = failure_report(root, load_state(), now)
+        save_state(payload)
+        print(text)
         return 0
 
     now = dt.datetime.now(dt.timezone.utc)
-    text, payload = build_digest(results, now, load_state())
+    state = load_state()
+    recovered = recovery_line(state, now)
+    text, payload = build_digest(results, now, state)
+    # The run succeeded, so the stored failure is over. Clearing it here (rather
+    # than leaving it for the next failure to overwrite) is what makes the
+    # recovery line fire exactly once.
+    payload.pop("failure", None)
+    payload.pop("suppressed", None)
     save_state(payload)
+    if recovered:
+        # A recovery is news even when the digest itself has nothing new, so it
+        # overrides SILENT rather than being appended to it.
+        print(recovered if text == SILENT else f"{recovered}\n{text}")
+        return 0
     print(text)
     return 0
 
