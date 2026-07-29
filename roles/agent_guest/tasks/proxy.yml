@@ -7,25 +7,22 @@
 # environment, not these files — main.yml sets agent_guest_proxy_env on the
 # toolchain include for that. These four cover everything that runs later:
 # apt on its own, the login shell, every systemd unit, and npm.
+#
+# All four are `template`, not `copy` with inline content: `ansible_managed` is
+# injected by the template action plugin only, so referencing it from a copy
+# task fails at arg-finalization with "'ansible_managed' is undefined".
 
 - name: Configure apt to use the egress proxy
-  ansible.builtin.copy:
-    content: |
-      {{ ansible_managed | comment }}
-      Acquire::http::Proxy "{{ agent_guest_proxy_url }}";
-      Acquire::https::Proxy "{{ agent_guest_proxy_url }}";
+  ansible.builtin.template:
+    src: proxy/apt-proxy.conf.j2
     dest: "{{ agent_guest_apt_proxy_conf }}"
     owner: root
     group: root
     mode: "0644"
 
 - name: Configure the login-shell proxy environment
-  ansible.builtin.copy:
-    content: |
-      {{ ansible_managed | comment }}
-      {% for key, value in agent_guest_proxy_env | dictsort %}
-      export {{ key }}="{{ value }}"
-      {% endfor %}
+  ansible.builtin.template:
+    src: proxy/profile-proxy.sh.j2
     dest: "{{ agent_guest_profile_proxy_script }}"
     owner: root
     group: root
@@ -35,12 +32,8 @@
 # system-wide default environment is its own drop-in. daemon-reload does not
 # pick this up — only a re-exec does.
 - name: Configure the system-wide systemd proxy environment
-  ansible.builtin.copy:
-    content: |
-      {{ ansible_managed | comment }}
-      [Manager]
-      DefaultEnvironment={% for key, value in agent_guest_proxy_env | dictsort %}"{{ key }}={{ value }}" {% endfor %}
-
+  ansible.builtin.template:
+    src: proxy/systemd-proxy.conf.j2
     dest: "{{ agent_guest_systemd_proxy_conf }}"
     owner: root
     group: root
@@ -50,12 +43,8 @@
 # npm reads the prefix-scoped npmrc for globally installed packages, which is
 # the prefix toolchain.yml installs the three agent CLIs into.
 - name: Configure npm to use the egress proxy
-  ansible.builtin.copy:
-    content: |
-      {{ ansible_managed | comment }}
-      proxy={{ agent_guest_proxy_url }}
-      https-proxy={{ agent_guest_proxy_url }}
-      noproxy={{ agent_guest_no_proxy }}
+  ansible.builtin.template:
+    src: proxy/npmrc.j2
     dest: "{{ agent_guest_npm_prefix }}/etc/npmrc"
     owner: root
     group: root
