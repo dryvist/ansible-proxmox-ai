@@ -438,6 +438,11 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # Pinned to the WORKER model structurally, not to a judge var that merely
     # happens to match — single-model serving policy, so config drift cannot pull
     # judge and worker apart (#162, superseding the separate-judge-var of #143).
+    # The var that actually reaches auxiliary.goal_judge.model. The similarly
+    # named `hermes_goal_judge_model` in group_vars drives no inference at all —
+    # it names the router alias the compress-death assert checks. Repointing
+    # THAT one does not unpin the judge; that mistake was made on 2026-07-29,
+    # and this assertion pair is what makes the difference legible.
     assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_agent_model }}"
     assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == 60
     assert "goal_judge:" in config
