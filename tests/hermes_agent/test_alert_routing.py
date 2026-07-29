@@ -1,8 +1,9 @@
-"""CRITICAL anomaly alerts must reach #hermes-all, not only the operator DM.
+"""Everything that must reach #hermes-all actually resolves there.
 
 #hermes-all is the complete log of record. An anomaly that exists only in a DM
 is invisible to anyone reading that channel and cannot be correlated against the
-digests around it.
+digests around it — and a firehose job that only resolves to the firehose leaves
+#hermes-all empty the moment the two channels stop being the same id.
 
 Upstream's cron scheduler splits ``deliver`` on commas and dedups the resolved
 targets by (platform, chat_id, thread_id) — see ``_normalize_deliver_value`` and
@@ -46,6 +47,46 @@ def _alert_targets(*, allowed_users: str, hermes_all: str) -> list[str]:
         if part and part not in seen:
             seen.append(part)
     return seen
+
+
+def _firehose_targets(*, firehose: str, hermes_all: str) -> list[str]:
+    """Resolve the firehose deliver value the way the scheduler does."""
+    suffix = _render(
+        DEFAULTS["hermes_agent_hermes_all_deliver_suffix"],
+        hermes_agent_slack_hermes_all_channel=hermes_all,
+    )
+    deliver = _render(
+        DEFAULTS["hermes_agent_firehose_deliver"],
+        hermes_agent_slack_firehose_channel=firehose,
+        hermes_agent_hermes_all_deliver_suffix=suffix,
+    )
+    seen: list[str] = []
+    for part in (p.strip() for p in deliver.split(",")):
+        if part and part not in seen:
+            seen.append(part)
+    return seen
+
+
+def test_firehose_jobs_still_reach_hermes_all_once_the_channels_diverge() -> None:
+    # The regression this guards: the defaults tell the operator to override
+    # hermes_all "once one is created". Doing exactly that used to leave
+    # #hermes-all receiving nothing from any firehose job.
+    assert _firehose_targets(firehose="C_FIRE", hermes_all="C_ALL") == [
+        "slack:C_FIRE",
+        "slack:C_ALL",
+    ]
+
+
+def test_firehose_fanout_is_a_noop_while_the_channels_are_the_same() -> None:
+    # hermes_all defaults to the firehose id, so both legs resolve identically
+    # and upstream's dedup collapses them. Today this must not double-post.
+    assert _firehose_targets(firehose="C_FIRE", hermes_all="C_FIRE") == ["slack:C_FIRE"]
+
+
+def test_firehose_keeps_the_single_channel_fallback() -> None:
+    # No firehose configured → bare `slack` (the home channel), which is the
+    # documented original single-channel behaviour.
+    assert _firehose_targets(firehose="", hermes_all="") == ["slack"]
 
 
 def test_critical_alert_reaches_both_the_dm_and_hermes_all() -> None:
