@@ -55,7 +55,7 @@ NTFY_URL = os.environ.get("NTFY_URL", "").rstrip("/")
 DEFAULT_BASE = os.environ.get("AGENT_DEFAULT_BASE", "develop")
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
-GEMINI_BIN = os.environ.get("GEMINI_BIN", "gemini")
+AGY_BIN = os.environ.get("AGY_BIN", "{{ agent_guest_agy_bin }}")
 
 
 def log(msg):
@@ -113,8 +113,10 @@ def build_command(fields, prompt):
 
     Launch flags are load-bearing and verified, not stylistic:
     - claude: `-p` WITHOUT `--bare` — bare mode ignores CLAUDE_CODE_OAUTH_TOKEN.
-    - gemini: `--approval-mode yolo` — gemini-cli strips the equivalent
-      settings key, so only the flag actually turns approvals off.
+    - agy: `--dangerously-skip-permissions` — headless (`-p`) follows the
+      settings policy which denies shell by default; only the flag opens it.
+      "gemini" is accepted as an alias: gemini-cli is dead upstream for
+      individual OAuth (ansible-proxmox-ai#245) and agy replaces it.
     """
     agent = fields.get("agent", "claude").lower()
     model = fields.get("model", "")
@@ -124,12 +126,8 @@ def build_command(fields, prompt):
             cmd += ["--model", model]
         cmd.append(prompt)
         return cmd
-    if agent == "gemini":
-        cmd = [GEMINI_BIN, "--approval-mode", "yolo"]
-        if model:
-            cmd += ["--model", model]
-        cmd += ["--prompt", prompt]
-        return cmd
+    if agent in ("agy", "gemini"):
+        return [AGY_BIN, "--dangerously-skip-permissions", "-p", prompt]
     cmd = [CLAUDE_BIN, "-p", prompt]
     if model:
         cmd += ["--model", model]
@@ -265,9 +263,11 @@ def _self_check():
     # claude must NOT get --bare (it would ignore CLAUDE_CODE_OAUTH_TOKEN)
     c = build_command({}, "hello")
     assert c[:2] == [CLAUDE_BIN, "-p"] and "--bare" not in c, c
-    # gemini's yolo must be a FLAG (the settings key is stripped by gemini-cli)
-    g = build_command({"agent": "gemini"}, "hi")
-    assert "--approval-mode" in g and g[g.index("--approval-mode") + 1] == "yolo", g
+    # agy's permission skip must be a FLAG (headless settings deny shell by
+    # default), and "gemini" must alias to agy (gemini-cli is dead upstream)
+    for alias in ("agy", "gemini"):
+        g = build_command({"agent": alias}, "hi")
+        assert g[0] == AGY_BIN and "--dangerously-skip-permissions" in g, g
     print("self-check OK")
 
 
