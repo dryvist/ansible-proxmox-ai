@@ -39,8 +39,10 @@
 # pollers on two guests sharing one profile label could still double-claim.
 # Give each guest its own label, or add a CAS field, if a label ever fans out.
 
+import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -56,6 +58,11 @@ DEFAULT_BASE = os.environ.get("AGENT_DEFAULT_BASE", "develop")
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
 AGY_BIN = os.environ.get("AGY_BIN", "{{ agent_guest_agy_bin }}")
+# fnmatch patterns for repos a job may touch. Empty means "allow nothing" —
+# see repo_allowed() for why that direction is the safe one.
+REPO_ALLOWLIST = [
+    p.strip() for p in os.environ.get("AGENT_REPO_ALLOWLIST", "").split(",") if p.strip()
+]
 
 
 def log(msg):
@@ -144,9 +151,43 @@ def run(cmd, cwd=None, check=True):
     return proc.returncode == 0, out
 
 
+# Exactly `owner/name`, GitHub's own charset, one slash. Checked BEFORE the
+# glob because fnmatch's `*` crosses `/`: without this, `dryvist/*` matches
+# "dryvist/foo/../../attacker/evil", and git normalises that URL away to
+# attacker/evil — an allowlist that passes its own test and still lets a job
+# push anywhere. Same failure shape as accepting a path before resolving it.
+REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$")
+
+
+def repo_allowed(repo):
+    """Is `repo` a well-formed owner/name that the allowlist permits?
+
+    Fails closed twice over: on a malformed `repo`, and on an empty allowlist.
+    A missing or mis-rendered AGENT_REPO_ALLOWLIST must stop every repo job,
+    not permit every one — the opposite default would turn a template bug into
+    estate-wide push access with nothing in the logs to say so.
+    """
+    if not REPO_RE.match(repo) or ".." in repo:
+        return False
+    return any(fnmatch.fnmatch(repo, pattern) for pattern in REPO_ALLOWLIST)
+
+
 def git_flow(fields, prompt, workspace, task_id):
     """Clone, branch, run the agent, gate on gitleaks, push, open a PR."""
     repo = fields["repo"]
+    # `repo` is queue content — the one input to this guest an attacker could
+    # reach — and it flows straight into `git clone` and `gh pr create`. Check
+    # it BEFORE the clone: the token injected by `bao agent` is the only other
+    # thing bounding where this job can write, and its scope is currently
+    # undefined (the `agent-guest` permission set does not exist yet), so
+    # treating that as the sole control would be trusting a layer nobody has
+    # verified. Defence in depth, per
+    # https://www.anthropic.com/engineering/how-we-contain-claude
+    if not repo_allowed(repo):
+        raise RuntimeError(
+            f"repo {repo!r} is not in AGENT_REPO_ALLOWLIST "
+            f"({', '.join(REPO_ALLOWLIST) or 'empty'}) — refusing to clone"
+        )
     base = fields.get("base", DEFAULT_BASE)
     branch = f"agent/{task_id}"
     checkout = os.path.join(workspace, "repo")
