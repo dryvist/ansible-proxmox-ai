@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.19.0...v0.20.0) (2026-07-30)
+
+
+### Features
+
+* **agent_guest:** bound the repo field and job resources; record why ([#262](https://github.com/dryvist/ansible-proxmox-ai/issues/262)) ([b185763](https://github.com/dryvist/ansible-proxmox-ai/commit/b1857639afb34fbec15bbd99b46cac796bfc16cd))
+
 ## [0.19.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.18.0...v0.19.0) (2026-07-30)
 
 
