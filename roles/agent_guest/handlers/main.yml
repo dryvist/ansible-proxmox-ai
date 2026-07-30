@@ -1,0 +1,24 @@
+---
+- name: Reload systemd for agent guest units
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+# The poller is a oneshot on a timer, so there is no long-running service to
+# bounce — restarting the timer is what picks up new config on the next tick.
+- name: Restart agent guest queue timer
+  ansible.builtin.systemd_service:
+    name: agent-queue.timer
+    state: restarted
+    daemon_reload: true
+  when: agent_guest_vikunja_url | length > 0
+
+# DefaultEnvironment is read at manager start, so a reload is not enough.
+- name: Re-exec systemd for the proxy environment
+  ansible.builtin.systemd_service:
+    daemon_reexec: true
+
+- name: Restart agent guest cribl edge
+  ansible.builtin.systemd_service:
+    name: "{{ agent_guest_cribl_service_name }}"
+    state: restarted
+    daemon_reload: true

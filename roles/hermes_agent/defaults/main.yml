@@ -139,10 +139,20 @@ hermes_agent_slack_home_channel_name: "{{ lookup('env', 'SLACK_HOME_CHANNEL_NAME
 # (anomaly sweeps + new incidents). Empty firehose → those jobs fall back to
 # the home channel, i.e. the original single-channel behavior.
 hermes_agent_slack_firehose_channel: "{{ lookup('env', 'SLACK_FIREHOSE_CHANNEL') | default('', true) }}"
+#
+# The #hermes-all leg is appended STRUCTURALLY, not left to coincide. Today
+# hermes_all_channel defaults to the firehose id, so the two resolve to the same
+# channel and upstream's (platform, chat_id, thread_id) dedup collapses them —
+# this is a no-op. But the moment an operator does what that default's own
+# comment instructs ("override in group_vars once one is created"), every job
+# below would deliver to the firehose ONLY and #hermes-all would receive
+# nothing — inverting it from the complete log of record into a nearly empty
+# channel, silently, from a config change that looks inert.
 hermes_agent_firehose_deliver: >-
-  {{ 'slack:' ~ hermes_agent_slack_firehose_channel
-     if (hermes_agent_slack_firehose_channel | length > 0)
-     else 'slack' }}
+  {{ ('slack:' ~ hermes_agent_slack_firehose_channel
+      if (hermes_agent_slack_firehose_channel | length > 0)
+      else 'slack')
+     ~ hermes_agent_hermes_all_deliver_suffix }}
 
 # --- Agentic direct-deliver digest crons (declarative; Phase 5) --------------
 # Nine hand-created "direct deliver" digest jobs, now reconciled by the role
@@ -409,11 +419,39 @@ hermes_agent_kanban_goal_mode: true
 # finalize while the board failure_limit + max_retries still cap a truly wedged
 # card. (Matches the operator's soak tuning, made declarative here.)
 hermes_agent_kanban_goal_max_turns: 8
-# Judge model is pinned to the WORKER model, structurally — not to a separate
-# judge var that merely happens to match. Single-model serving policy: the judge
-# must be the same model as the worker, always; a same-model judge cannot be
-# pulled apart from the worker by config drift. (A same-model judge is not an
-# artifact check — the mechanical completion gate is the anti-fabrication layer.)
+# THIS IS THE REAL JUDGE. It is what config.yaml.j2 renders into
+# auxiliary.goal_judge.model, and it is currently pinned to the WORKER model.
+#
+# Do not confuse it with `hermes_goal_judge_model` in inventory/group_vars/all.yml.
+# That one names the `goal-judge` router alias and is read by exactly ONE thing —
+# the llm_router compress-death assert. It drives no inference. Repointing it
+# does NOT unpin the judge, which is a mistake already made once (2026-07-29):
+# the two names differ by a prefix and both look authoritative.
+#
+# The pin's stated justification does not currently hold, and saying so is the
+# point of this comment. It read: "a same-model judge is not an artifact check —
+# the mechanical completion gate is the anti-fabrication layer." There IS no
+# mechanical completion gate. Searched 2026-07-29 across this repo and
+# nix-hermes: the phrase occurs in this comment and nowhere else, and no
+# tool-call-count gate is configured or implemented. A comment that cites a
+# protection that does not exist is worse than silence, because it answers the
+# question a reviewer would otherwise ask.
+#
+# What the pin genuinely buys is drift-safety: judge and worker cannot be pulled
+# apart by config. What it costs is real and twofold — a model scoring its own
+# output is self-preference bias by construction (it survives blind evaluation,
+# so hiding authorship is no defence), and the serving tier admits ONE in-flight
+# request per model, so worker and judge on the same model SERIALIZE against
+# each other. The judge queues behind the very generation it was spawned to
+# score.
+#
+# Unpinning to the cross-family small tier fixes both, and the small tier is a
+# separate llama-swap entry with its own slot — so it also resolves the
+# contention without touching concurrency anywhere. It is NOT done here because
+# it cannot currently be verified: the small tier is swap-class, a cold load has
+# to finish inside hermes_agent_kanban_goal_judge_timeout_seconds, and the
+# serving gate is down so that load time cannot be measured. Tracked, with the
+# measurement it needs, rather than shipped blind.
 hermes_agent_kanban_goal_judge_model: "{{ hermes_agent_model }}"
 hermes_agent_kanban_goal_judge_timeout_seconds: 60
 # --- Memory: best self-hostable as of June 2026 (Agy-validated) ---
@@ -623,15 +661,48 @@ hermes_agent_zammad_autoclose_days: 7
 # tokens being set (can deliver) — a job that can't do both is never created.
 hermes_agent_splunk_monitor_enabled: true
 
+# Appended to a deliver target so the same post ALSO lands in #hermes-all, which
+# is the complete log of record. Upstream splits `deliver` on commas and dedups
+# resolved targets by (platform, chat_id, thread_id) — documented contract in
+# cron/scheduler.py `_normalize_deliver_value` / `_resolve_delivery_targets` —
+# so appending is safe even while hermes_all still defaults to the firehose
+# channel and the two resolve identically. Empty channel appends nothing.
+hermes_agent_hermes_all_deliver_suffix: >-
+  {{ ',slack:' ~ hermes_agent_slack_hermes_all_channel
+     if (hermes_agent_slack_hermes_all_channel | length > 0)
+     else '' }}
+
 # DM target for anomaly alerts: `slack:<member-id>` when the operator's Slack
 # member id is known, else fall back to the home channel (`slack`). The digest
 # always goes to the home channel.
+#
+# The DM is necessary but not sufficient: an anomaly that only ever exists in a
+# DM is invisible to anyone reading the channel that is supposed to be the
+# complete record, and it cannot be correlated later against the digests around
+# it. So CRITICAL fans out to BOTH — the DM for urgency, #hermes-all for the log.
 hermes_agent_splunk_alert_deliver: >-
-  {{ 'slack:' ~ hermes_agent_slack_allowed_users
-     if (hermes_agent_slack_allowed_users | length > 0)
-     else 'slack' }}
+  {{ ('slack:' ~ hermes_agent_slack_allowed_users
+      if (hermes_agent_slack_allowed_users | length > 0)
+      else 'slack')
+     ~ hermes_agent_hermes_all_deliver_suffix }}
+# Optional dedicated channel for the splunk-admin domain. NEVER hardcoded: it
+# comes from the environment like every other channel id, and defaults to EMPTY
+# so this whole block is inert until an operator actually creates the channel.
+hermes_agent_slack_splunk_channel: >-
+  {{ lookup('env', 'SLACK_HERMES_SPLUNK_CHANNEL') | default('', true) }}
+
 # The digest is a verbose full report every hour — firehose (3-tier routing).
-hermes_agent_splunk_digest_deliver: "{{ hermes_agent_firehose_deliver }}"
+#
+# When a splunk-domain channel exists the digest goes THERE plus #hermes-all, so
+# the domain surface is readable on its own without the log of record losing it.
+# When it does not (today), this falls through to the firehose target unchanged
+# — which already carries the #hermes-all leg — so the empty default reproduces
+# current behaviour exactly rather than merely approximately.
+hermes_agent_splunk_digest_deliver: >-
+  {{ ('slack:' ~ hermes_agent_slack_splunk_channel
+      ~ hermes_agent_hermes_all_deliver_suffix)
+     if (hermes_agent_slack_splunk_channel | length > 0)
+     else hermes_agent_firehose_deliver }}
 
 # Per-job cron definitions. Prompts stay short — the skill carries the discipline;
 # the prompt only sets each run's posture (a lens, not a checklist) and reinforces
@@ -850,6 +921,14 @@ hermes_agent_kanban_digest_cron_schedule: >-
   {{ '*/' ~ hermes_agent_kanban_digest_interval_minutes ~ ' * * * *'
      if (hermes_agent_kanban_digest_interval_minutes | int) < 60
      else '9 * * * *' }}
+# Quiet-post ceiling. A run with no completion, failure, retry or overrun to
+# report goes [SILENT] until this many hours have passed since the last
+# DELIVERED post. Real board activity is never gated by it. Same shape as
+# splunk-status-digest's HEARTBEAT_HOURS (#215): at the 15-minute cadence above
+# the quiet branch was firing ~90 times a day with identical board counts, which
+# is the noise this removes. Lower it if an outage of the digest itself needs to
+# surface faster; 0 disables suppression entirely and restores the old behaviour.
+hermes_agent_kanban_digest_heartbeat_hours: 6
 hermes_agent_kanban_digest_cron_name: kanban-digest
 hermes_agent_kanban_digest_script_name: kanban-digest.py
 hermes_agent_kanban_digest_state_name: kanban-digest.json

@@ -26,7 +26,8 @@
     qdrant_group:hindsight_group:llamaindex_group:ollama_group:open_webui_group:
     hermes_agent_group:llm_fast_group:llm_router_group:
     dify_group:langflow_group:langgraph_group:agent_exec_group:
-    langfuse_group:agentgateway_group:ai_orchestration_group:ai_runner_group
+    langfuse_group:agentgateway_group:ai_orchestration_group:ai_runner_group:
+    ai_agent_pool_group
   gather_facts: false
   tags: always
   tasks:
@@ -45,6 +46,9 @@
         bao_apps_secrets: "{{ openbao_secrets_by_domain['apps'] | default({}) }}"
         bao_ai_public_secrets: "{{ openbao_secrets_by_domain['ai-public'] | default({}) }}"
         bao_ai_runner_secrets: "{{ openbao_secrets_by_domain['ai-runner'] | default({}) }}"
+        # agent_guest reuses the ai-runner OpenBao domain: same queue token,
+        # same guests, no new identity to provision for the successor role.
+        bao_agent_guest_secrets: "{{ openbao_secrets_by_domain['ai-runner'] | default({}) }}"
       vars:
         openbao_secrets_by_domain: "{{ hostvars['localhost'].openbao_secrets_by_domain | default({}) }}"
       no_log: true
@@ -301,3 +305,63 @@
     - ai
   roles:
     - role: ai_runner
+
+# =============================================================================
+# Phase 7a: Squid — the agent plane's egress chokepoint.
+#
+# This play MUST run BEFORE the pooled agent guests below: an `ai-proxied` guest
+# has no direct WAN rule, so until this proxy is up it cannot reach an apt repo,
+# the npm registry or GitHub, and agent_guest's very first toolchain task (an
+# apt update) fails. The domain allowlist enforced here is the plane's whole
+# egress boundary — the Proxmox firewall cannot filter by hostname.
+# =============================================================================
+
+- name: Configure the agent-plane egress proxy
+  hosts: squid_group
+  become: true
+  gather_facts: true
+  tags:
+    - squid
+    - agent
+    - ai
+  roles:
+    - role: squid
+
+# =============================================================================
+# Phase 7b: Pooled autonomous agent guests (ai-runner-pool-NN, `ai-proxied`).
+# agent_guest is ai_runner's successor: same Vikunja queue, but one job per
+# systemd unit under `bao agent` supervision, three CLIs instead of two, the
+# nix-ai autonomous config mirror, a clone/gitleaks/PR flow, and per-guest
+# transcript shipping. The legacy ai_runner play above stays until this role
+# carries load on the canary; removing it is a follow-up PR, not this one.
+# =============================================================================
+
+- name: Configure pooled autonomous agent guests
+  hosts: ai_agent_pool_group
+  become: true
+  gather_facts: true
+  tags:
+    - agent_guest
+    - agent
+    - ai
+  roles:
+    - role: agent_guest
+
+# Pool return lives in its OWN play, not inside the converge play above: play
+# tags are inherited by every task, so a `never`-tagged include inside the
+# converge play effectively carries `agent_guest` too — and `--tags
+# agent_guest` then overrides `never` and wipes the guest at the end of every
+# converge. Opt in explicitly:
+#   ansible-playbook playbooks/site.yml --tags agent_guest_pool_return --limit <guest>,localhost
+- name: Return pooled agent guests to the pool (drain, stop, de-credential, wipe)
+  hosts: ai_agent_pool_group
+  become: true
+  gather_facts: false
+  tags:
+    - never
+    - agent_guest_pool_return
+  tasks:
+    - name: Drain, stop, de-credential and wipe the guest
+      ansible.builtin.include_role:
+        name: agent_guest
+        tasks_from: pool_return.yml

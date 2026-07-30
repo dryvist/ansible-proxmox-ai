@@ -54,6 +54,28 @@ PINNED_TOKEN_USAGE_SOURCE = (
     "                    if agent.verbose_logging:\n"
     '                        logging.debug(f"Token usage: {usage}")\n'
 )
+# Verbatim upstream lines at the pinned tag (v2026.7.7.2), indentation
+# included — `_apply_runtime_patch` re-runs the role's own regexp against
+# these, so a copy that drifts from upstream would silently stop patching
+# and the test would go green on nothing.
+PINNED_TC_BOOST_CAP_SOURCE = (
+    "                                _tc_boost_cap = max("
+    "32768, _tc_requested_cap or 0)\n"
+)
+PINNED_BOOST_CAP_SOURCE = (
+    "            _boost_cap = max(32768, _requested_cap or 0)\n"
+)
+PINNED_COMPRESSOR_SCAN_SOURCE = (
+    "        for idx in range(end - 1, start - 1, -1):\n"
+)
+PINNED_PROTOCOL_VIOLATION_SOURCE = (
+    '                    "worker exited cleanly (rc=0) without calling "\n'
+    '                    "kanban_complete or kanban_block — protocol violation"\n'
+)
+PINNED_CRON_DELIVERY_SOURCE = (
+    "            deliver_content = final_response if success else "
+    "_summarize_cron_failure_for_delivery(job, error)\n"
+)
 MALFORMED_TOKEN_USAGE_SOURCE = (
     "                   if True:\n"
     '                       logging.debug(f"Token usage: {usage}")\n'
@@ -92,6 +114,19 @@ def _apply_runtime_patch(name: str, source: str) -> str:
     )
     assert count == 1
     return patched
+
+
+# Derived by running the role's own patch over the pinned upstream line,
+# never hand-written — a hand-copied "expected" string can drift from what
+# the role actually produces and would assert against itself.
+PATCHED_COMPRESSOR_SCAN_SOURCE = _apply_runtime_patch(
+    "Patch hermes-agent context summary scan to use the live message bound",
+    PINNED_COMPRESSOR_SCAN_SOURCE,
+)
+PATCHED_CRON_DELIVERY_SOURCE = _apply_runtime_patch(
+    "Route cron delivery content through the markup guard",
+    PINNED_CRON_DELIVERY_SOURCE,
+)
 
 
 @contextmanager
@@ -156,8 +191,10 @@ def _source_postconditions(
     reconcile_source: str,
     retry_source: str,
     auxiliary_source: str,
+    compressor_source: str = PATCHED_COMPRESSOR_SCAN_SOURCE,
+    cron_scheduler_source: str = PATCHED_CRON_DELIVERY_SOURCE,
 ) -> tuple[bool, ...]:
-    task = _task("Assert installed Hermes goal-mode source patches")
+    task = _task("Assert installed Hermes pinned-source patches")
     environment = Environment(autoescape=False)
     context = {
         "hermes_agent_goal_completion_source": completion_source,
@@ -168,6 +205,8 @@ def _source_postconditions(
         "hermes_agent_kanban_goal_judge_timeout_seconds": 60,
         "hermes_agent_retry_source": retry_source,
         "hermes_agent_auxiliary_source": auxiliary_source,
+        "hermes_agent_compressor_source": compressor_source,
+        "hermes_agent_cron_scheduler_source": cron_scheduler_source,
     }
     return tuple(
         bool(environment.compile_expression(condition)(**context))
@@ -390,9 +429,18 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
 
     hermes_alias = "hermes-default"
-    hermes_backend = "mlx-community/Qwen3.5-9B-OptiQ-4bit"
+    # The alias map no longer names physical ids: they come from two selector
+    # vars that are the single record of what the serving host actually serves.
+    # Pinning literals here is what let all four aliases drift to unroutable
+    # models at once (2026-07-28, every one a live 404), so follow the
+    # indirection instead of re-pinning the ids under a new name.
+    hermes_backend = router_defaults["llm_router_primary_model"]
+    judge_backend = router_defaults["llm_router_small_model"]
     assert group_vars["hermes_brain_model"] == hermes_alias
-    assert group_vars["hermes_goal_judge_model"] == hermes_alias
+    # The judge rides its own alias now — a judge on the worker's model is
+    # self-preference bias, and the two serialize against one serving slot.
+    assert group_vars["hermes_goal_judge_model"] == "goal-judge"
+    assert judge_backend != hermes_backend
     assert defaults["hermes_agent_model"] == "{{ hermes_brain_model }}"
     assert defaults["hermes_agent_compression_model"] == "{{ hermes_brain_model }}"
     assert defaults["hermes_agent_memory_llm_model"] == "{{ hermes_brain_model }}"
@@ -402,11 +450,17 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert defaults["hermes_agent_context_compression_threshold"] == 0.75
     assert defaults["hermes_agent_brain_sync_enabled"] is False
     assert router_defaults["llm_router_model_group_aliases"] == {
-        hermes_alias: hermes_backend,
-        "tool-calling": "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
-        "goal-judge": "mlx-community/Qwen3.6-27B-mxfp4",
-        "interim-brain": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+        hermes_alias: "{{ llm_router_primary_model }}",
+        "tool-calling": "{{ llm_router_primary_model }}",
+        "goal-judge": "{{ llm_router_small_model }}",
+        "interim-brain": "{{ llm_router_primary_model }}",
     }
+    # Both selectors must be declared servable, or the alias indirection just
+    # moves the 404 one level down.
+    assert router_defaults["llm_router_servable_models"] == [
+        "{{ llm_router_primary_model }}",
+        "{{ llm_router_small_model }}",
+    ]
     hermes_entries = [
         entry
         for entry in router_defaults["llm_router_large_models"]
@@ -423,6 +477,11 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # Pinned to the WORKER model structurally, not to a judge var that merely
     # happens to match — single-model serving policy, so config drift cannot pull
     # judge and worker apart (#162, superseding the separate-judge-var of #143).
+    # The var that actually reaches auxiliary.goal_judge.model. The similarly
+    # named `hermes_goal_judge_model` in group_vars drives no inference at all —
+    # it names the router alias the compress-death assert checks. Repointing
+    # THAT one does not unpin the judge; that mistake was made on 2026-07-29,
+    # and this assertion pair is what makes the difference legible.
     assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_agent_model }}"
     assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == 60
     assert "goal_judge:" in config
@@ -447,11 +506,23 @@ def test_prompt_catalog_build_keeps_a_gc_root() -> None:
 
 
 def test_installed_source_postconditions_fail_closed() -> None:
-    read_task = _task("Read installed Hermes goal-mode source patches")
+    read_task = _task("Read installed Hermes pinned-source patches")
     assert "ansible.builtin.slurp" in read_task
     assert read_task["register"] == "hermes_agent_goal_mode_sources"
+    # The assert task indexes results[] positionally, so the slurp order is
+    # load-bearing: a file inserted anywhere but the end silently re-points
+    # every later assertion at the wrong source.
+    assert [path.split("}}/")[-1] for path in read_task["loop"]] == [
+        "tools/kanban_tools.py",
+        "hermes_cli/kanban_db.py",
+        "hermes_cli/goals.py",
+        "agent/conversation_loop.py",
+        "agent/auxiliary_client.py",
+        "agent/context_compressor.py",
+        "cron/scheduler.py",
+    ]
 
-    assert_task = _task("Assert installed Hermes goal-mode source patches")
+    assert_task = _task("Assert installed Hermes pinned-source patches")
     conditions = " ".join(assert_task["ansible.builtin.assert"]["that"])
     assert "verdict, reason, _, _ = judge_goal(" in conditions
     assert "DEFAULT_JUDGE_TIMEOUT =" in conditions
@@ -478,6 +549,18 @@ def test_installed_source_postconditions_fail_closed() -> None:
     assert "WHERE id = ? AND status IN" in conditions
     assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in conditions
     assert "status in (408, 429)" in conditions
+    assert "for idx in range(min(end, len(messages)) - 1, start - 1, -1):" in conditions
+    assert "deliver_content = _cron_markup_guard(job, output_file," in conditions
+    assert (
+        "registered for dispatcher-spawned workers (HERMES_KANBAN_TASK "
+        in conditions
+    )
+    assert any(
+        "_boost_cap = agent.max_tokens if agent.max_tokens else max(" in condition
+        and ".count(" in condition
+        and ") == 2" in condition
+        for condition in assert_task["ansible.builtin.assert"]["that"]
+    )
     assert 'resolved_provider != "custom"' in conditions
     assert "Token usage:" in conditions
     assert "update the pinned-source patches" in assert_task["ansible.builtin.assert"][
@@ -498,6 +581,11 @@ def test_installed_source_postconditions_fail_closed() -> None:
             PINNED_WORKER_SPAWN_SOURCE,
         )
         + reconcile_source
+        + _apply_runtime_patch(
+            "Patch Hermes protocol-violation message to name the "
+            "model-did-not-call case",
+            PINNED_PROTOCOL_VIOLATION_SOURCE,
+        )
     )
     retry_source = "".join(
         (
@@ -524,6 +612,15 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "Enable prompt-safe Hermes token usage metrics at DEBUG",
         PINNED_TOKEN_USAGE_SOURCE,
     )
+    retry_source += _apply_runtime_patch(
+        "Patch hermes-agent retry boost to respect the configured max_tokens ceiling",
+        PINNED_TC_BOOST_CAP_SOURCE,
+    )
+    retry_source += _apply_runtime_patch(
+        "Patch hermes-agent length-continuation boost to respect the configured "
+        "max_tokens ceiling",
+        PINNED_BOOST_CAP_SOURCE,
+    )
     auxiliary_source = "\n".join(
         (
             "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0",
@@ -549,6 +646,56 @@ def test_installed_source_postconditions_fail_closed() -> None:
             completion_source,
             reconcile_source.replace("COALESCE(?, goal_max_turns)", "?"),
             retry_source,
+            auxiliary_source,
+        )
+    )
+    # Each newly-covered patch, dropped one at a time. Without these the
+    # assertions could be decorative — present in the task file, but
+    # incapable of going red on the failure they exist to catch.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            compressor_source=PINNED_COMPRESSOR_SCAN_SOURCE,
+        )
+    )
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            cron_scheduler_source=PINNED_CRON_DELIVERY_SOURCE,
+        )
+    )
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source.replace(
+                "registered for dispatcher-spawned workers (HERMES_KANBAN_TASK ",
+                "",
+            ),
+            retry_source,
+            auxiliary_source,
+        )
+    )
+    # The length-continuation boost dropped while the _tc_ one landed. The
+    # needle `_boost_cap = agent.max_tokens ...` still occurs once (inside
+    # the _tc_boost_cap line), so only the ==2 count catches this — a plain
+    # substring assertion would pass here with the patch missing.
+    retry_source_tc_only = retry_source.replace(
+        "_boost_cap = agent.max_tokens if agent.max_tokens else max("
+        "32768, _requested_cap or 0)",
+        "_boost_cap = max(32768, _requested_cap or 0)",
+    )
+    assert "_tc_boost_cap = agent.max_tokens" in retry_source_tc_only
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source_tc_only,
             auxiliary_source,
         )
     )

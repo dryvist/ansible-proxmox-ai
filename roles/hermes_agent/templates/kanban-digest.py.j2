@@ -43,9 +43,22 @@ TITLE = "{{ hermes_agent_kanban_digest_title }}"
 # One scheduling interval. Doubles as the no-state fallback window, so the
 # schedule and the fallback can never drift apart — they are the same number.
 INTERVAL_MIN = {{ hermes_agent_kanban_digest_interval_minutes }}
+# Heartbeat ceiling for the fully-quiet case (nothing completed, failed, retried
+# or overran since the previous run). Same gate splunk-status-digest carries: a
+# post whose ENTIRE content is "nothing happened" is suppressed until this many
+# hours have passed, so silence stays distinguishable from the cron itself being
+# dead without spending 96 posts a day saying so. Operator decision 2026-07-28:
+# at a 15-minute cadence the quiet branch fired most of those 96 times with
+# identical board counts. Real board activity is NEVER subject to this gate — a
+# failure, an overrun or a completion posts every run, immediately.
+HEARTBEAT_HOURS = {{ hermes_agent_kanban_digest_heartbeat_hours }}
 # Bumped when the state shape changes. An older/absent value is treated as no
 # usable state, which takes the announced fallback path rather than erroring.
-STATE_SCHEMA = 1
+# 2: carries last_post_epoch alongside last_run_epoch for the heartbeat gate.
+STATE_SCHEMA = 2
+# Upstream's `hermes cron` executor skips Slack delivery when a --script cron's
+# STDOUT is exactly this string — the same contract the Splunk digests use.
+SILENT = "[SILENT]"
 # ponytail: presentation calibration, deliberately module constants and not
 # Ansible variables — they only mean anything against each other and want tuning
 # against real Slack posts, not templating.
@@ -99,32 +112,53 @@ def clip(text, limit=SUMMARY_CHARS):
 
 
 def load_state():
-    """(since_epoch, note) — note is non-empty when the fallback window was used.
+    """(since_epoch, last_post_epoch, note).
 
-    Missing, unreadable, wrong-schema and nonsense-timestamp all take the same
-    announced fallback path. A state file from the future (clock step) is not
-    trusted either: it would silence the digest until the clock caught up.
+    `note` is non-empty when the fallback window was used. Missing, unreadable,
+    wrong-schema and nonsense-timestamp all take the same announced fallback
+    path. A state file from the future (clock step) is not trusted either: it
+    would silence the digest until the clock caught up.
+
+    `last_post_epoch` is None when unknown, which makes the heartbeat DUE — an
+    unreadable state file must never be able to suppress a post.
     """
     fallback = f"no usable state file — reporting the last {INTERVAL_MIN} min instead"
     try:
         with open(STATE_PATH) as f:
             state = json.load(f)
     except (OSError, ValueError):
-        return None, fallback
+        return None, None, fallback
     if not isinstance(state, dict) or state.get("schema") != STATE_SCHEMA:
-        return None, fallback
+        return None, None, fallback
     last = state.get("last_run_epoch")
     if not isinstance(last, (int, float)) or last <= 0:
-        return None, fallback
-    return float(last), ""
+        return None, None, fallback
+    posted = state.get("last_post_epoch")
+    if not isinstance(posted, (int, float)) or posted <= 0:
+        posted = None
+    return float(last), posted, ""
 
 
-def save_state(now_epoch):
+def save_state(now_epoch, last_post_epoch):
     os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
     tmp = STATE_PATH + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"schema": STATE_SCHEMA, "last_run_epoch": now_epoch}, f)
+        json.dump({"schema": STATE_SCHEMA, "last_run_epoch": now_epoch,
+                   "last_post_epoch": last_post_epoch}, f)
     os.replace(tmp, STATE_PATH)
+
+
+def heartbeat_due(now_epoch, last_post_epoch):
+    """Has the quiet-post ceiling elapsed?
+
+    Unknown or future-dated last post => DUE. Erring towards posting is the only
+    safe direction: a suppressed heartbeat is indistinguishable from a dead cron,
+    which is the exact failure this digest exists to announce.
+    """
+    if last_post_epoch is None:
+        return True
+    elapsed_h = (now_epoch - last_post_epoch) / 3600.0
+    return elapsed_h < 0 or elapsed_h >= HEARTBEAT_HOURS
 
 
 def connect(db_path):
@@ -235,14 +269,25 @@ def section(lines, heading):
     return out
 
 
-def build_digest(run_rows, running_rows, board, now, since, note):
-    """Return the Slack text. Every number here came from a row just read."""
+def build_digest(run_rows, running_rows, board, now, since, note, due=True):
+    """Return the Slack text, or SILENT when a quiet run is heartbeat-suppressed.
+
+    `due` is the heartbeat verdict and gates ONLY the fully-quiet branch. Any
+    real board activity — a completion, a failure, an overrun — returns text
+    regardless, because those are the reason the digest exists.
+    """
     now_epoch = now.timestamp()
     span = fmt_dur(now_epoch - since)
     by_task = group_runs(run_rows)
     done = completed_lines(by_task)
     failed = failed_lines(by_task)
     overrun = overrun_lines(running_rows, now_epoch)
+
+    # NEVER post a message whose entire content is "nothing happened" unless the
+    # heartbeat interval has elapsed. Decided before any text is built so the
+    # quiet path cannot leak a header-only post.
+    if not (done or failed or overrun) and not due:
+        return SILENT
 
     header = (f"*{TITLE}* — {now.strftime('%Y-%m-%d %H:%M UTC')} "
               f"(since {dt.datetime.fromtimestamp(since, dt.timezone.utc).strftime('%H:%M UTC')}, {span})")
@@ -258,7 +303,9 @@ def build_digest(run_rows, running_rows, board, now, since, note):
         board_text = ", ".join(f"{v} {k}" for k, v in sorted(board.items())) or "empty"
         lines.append("")
         lines.append(f":mag: No board activity in the last {span} — no card completed, "
-                     f"failed, was retried or exceeded its max_runtime. Board holds: {board_text}.")
+                     f"failed, was retried or exceeded its max_runtime. Board holds: "
+                     f"{board_text}. (heartbeat — quiet runs stay silent for the next "
+                     f"{HEARTBEAT_HOURS}h unless the board does something)")
     return "\n".join(lines)
 
 
@@ -269,7 +316,7 @@ def main():
     # smoothed into "nothing happened" — silence here would read as a healthy
     # board. State is left untouched so the next run re-covers this window.
     try:
-        since, note = load_state()
+        since, last_post, note = load_state()
         if since is None:
             since = now_epoch - INTERVAL_MIN * 60
         conn = connect(DB_PATH)
@@ -279,12 +326,16 @@ def main():
             board = {row[0]: row[1] for row in conn.execute(BOARD_SQL)}
         finally:
             conn.close()
-        text = build_digest(run_rows, running_rows, board, now, since, note)
+        text = build_digest(run_rows, running_rows, board, now, since, note,
+                            heartbeat_due(now_epoch, last_post))
     except Exception as e:  # noqa: BLE001 - deliberately broad; failure must be delivered
         print(f":warning: {TITLE} FAILED: {type(e).__name__}: {str(e)[:200]}")
         return 0
 
-    save_state(now_epoch)
+    # The window always advances — a suppressed run still covered it, and
+    # re-covering it would double-report the next real activity. Only
+    # last_post_epoch is held back, and only when nothing was delivered.
+    save_state(now_epoch, last_post if text == SILENT else now_epoch)
     print(text)
     return 0
 

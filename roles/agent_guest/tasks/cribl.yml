@@ -1,0 +1,102 @@
+---
+# Standalone Cribl Edge tailing the agent user's transcript trees. Install steps
+# mirror dryvist.homelab.cribl_edge (native tarball, mode-edge, boot-start) but
+# the config surface is only what transcript shipping needs — the shared role's
+# inputs are syslog/netflow listeners this guest does not have, and its
+# templates cannot be overridden per-consumer.
+
+- name: Create cribl system group
+  ansible.builtin.group:
+    name: "{{ agent_guest_cribl_group }}"
+    system: true
+    state: present
+
+- name: Create cribl system user
+  ansible.builtin.user:
+    name: "{{ agent_guest_cribl_user }}"
+    group: "{{ agent_guest_cribl_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ agent_guest_cribl_install_dir }}"
+    create_home: false
+    state: present
+
+- name: Check whether Cribl Edge is already installed
+  ansible.builtin.stat:
+    path: "{{ agent_guest_cribl_install_dir }}/bin/cribl"
+  register: agent_guest_cribl_binary
+
+# Fresh-install only: recursing over a RUNNING Edge races its persistent queues
+# and pointlessly rewalks gigabytes of PQ data (roles/cribl_edge learned this).
+- name: Download and extract the Cribl Edge tarball
+  ansible.builtin.unarchive:
+    src: "{{ agent_guest_cribl_tarball_url }}"
+    dest: /opt
+    remote_src: true
+    owner: "{{ agent_guest_cribl_user }}"
+    group: "{{ agent_guest_cribl_group }}"
+  when: not agent_guest_cribl_binary.stat.exists
+
+- name: Check the current Cribl mode
+  ansible.builtin.slurp:
+    src: "{{ agent_guest_cribl_install_dir }}/local/_system/instance.yml"
+  register: agent_guest_cribl_instance
+  failed_when: false
+
+# `cribl mode-edge` rewrites local config to defaults on every invocation, so
+# only run it when the recorded mode differs.
+- name: Set Cribl to Edge mode
+  ansible.builtin.command:
+    cmd: "{{ agent_guest_cribl_install_dir }}/bin/cribl mode-edge"
+  become: true
+  become_user: "{{ agent_guest_cribl_user }}"
+  vars:
+    # Task var, not keyword: group_vars ansible_become_method=sudo outranks
+    # the keyword. No sudo on stock Debian; root -> su.
+    ansible_become_method: ansible.builtin.su
+    # The cribl user's shell is nologin, and su runs the TARGET's shell —
+    # without this the become fails with "This account is currently not
+    # available." -s overrides just for this invocation.
+    ansible_become_flags: -s /bin/sh
+  changed_when: true
+  when: >-
+    ((agent_guest_cribl_instance.content | default('') | b64decode | from_yaml)
+     | default({}, true)).get('distributed', {}).get('mode', '') != 'edge'
+
+- name: Ensure the Edge config directory exists
+  ansible.builtin.file:
+    path: "{{ agent_guest_cribl_install_dir }}/local/edge"
+    state: directory
+    owner: "{{ agent_guest_cribl_user }}"
+    group: "{{ agent_guest_cribl_group }}"
+    mode: "0755"
+
+# The Edge worker loads ALL config from local/edge/, not local/cribl/.
+- name: Deploy Edge transcript configuration
+  ansible.builtin.template:
+    src: "cribl/{{ item }}.j2"
+    dest: "{{ agent_guest_cribl_install_dir }}/local/edge/{{ item }}"
+    owner: "{{ agent_guest_cribl_user }}"
+    group: "{{ agent_guest_cribl_group }}"
+    mode: "0644"
+  loop:
+    - breakers.yml
+    - inputs.yml
+    - outputs.yml
+  notify: Restart agent guest cribl edge
+
+- name: Enable the Cribl Edge systemd service
+  # `cribl boot-start enable` derives the unit name from the operating mode;
+  # after mode-edge that is cribl-edge.service, not cribl.service.
+  ansible.builtin.command:
+    cmd: >-
+      {{ agent_guest_cribl_install_dir }}/bin/cribl boot-start enable
+      -m systemd -u {{ agent_guest_cribl_user }}
+    creates: "/etc/systemd/system/{{ agent_guest_cribl_service_name }}.service"
+
+- name: Start the Cribl Edge service
+  ansible.builtin.systemd_service:
+    name: "{{ agent_guest_cribl_service_name }}"
+    state: started
+    enabled: true
+    daemon_reload: true

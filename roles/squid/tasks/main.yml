@@ -1,0 +1,29 @@
+---
+# squid — forward proxy for the `ai-proxied` agent plane. Package, one config,
+# one service. The allowlist lives in defaults/main.yml.
+
+- name: Install squid
+  ansible.builtin.apt:
+    name: squid
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# `validate` runs squid's own parser before the file is moved into place, so a
+# bad render fails the task instead of taking the whole agent plane's egress
+# down on the restart that follows.
+- name: Deploy the squid configuration
+  ansible.builtin.template:
+    src: squid.conf.j2
+    dest: "{{ squid_config_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: squid -k parse -f %s
+  notify: Restart squid
+
+- name: Enable and start squid
+  ansible.builtin.systemd_service:
+    name: "{{ squid_service_name }}"
+    state: started
+    enabled: true

@@ -1,0 +1,244 @@
+---
+# agent_guest — successor to roles/ai_runner. Converges a pooled Debian LXC
+# (ai-runner-pool-NN, `ai-proxied` firewall profile) into an autonomous coding
+# agent guest: it pulls jobs off the Vikunja queue, runs one headless CLI agent
+# per job under OpenBao Agent supervision, and opens a PR with the result.
+#
+# Safety is the LXC + firewall boundary, NOT the agent level — the agents run in
+# permission-skipping mode by design, so a guest must only ever live behind a
+# restrictive egress profile. Same posture ai_runner documented; unchanged.
+#
+# Secrets stay injection-agnostic: defaults read `lookup('env', ...)`, group_vars
+# overrides bao-first. Never bake a backend into a default.
+
+# --- Identity ---------------------------------------------------------------
+# uid 1000 + /home/agent matches the paths the nix-ai autonomous render bakes.
+# No sudo: the runner never needs root, and a job that thinks it does is a gap
+# in this role to fix, not a privilege to grant.
+agent_guest_user: agent
+agent_guest_uid: 1000
+agent_guest_home: "/home/{{ agent_guest_user }}"
+agent_guest_config_dir: /etc/agent-guest
+
+# --- Egress proxy (the ONLY WAN path) ---------------------------------------
+# An `ai-proxied` guest has no direct WAN firewall rule: everything outbound
+# goes CONNECT through the squid guest, where the domain allowlist lives
+# (roles/squid). Both coordinates are inventory-derived — the proxy's own FQDN
+# from the `squid`-tagged group, the port from the tofu constants.
+agent_guest_proxy_host: >-
+  {{ groups['squid_group'] | default([]) | map('extract', hostvars, 'container_ip') | select('truthy') | first
+     | mandatory('no member of squid_group — the `squid`-tagged LXC must be in the published tofu inventory') }}
+agent_guest_proxy_port: >-
+  {{ tofu_data.constants.service_ports.squid_proxy
+     | mandatory('tofu_data.constants.service_ports.squid_proxy missing — regenerate tofu_inventory.json') }}
+agent_guest_proxy_url: "http://{{ agent_guest_proxy_host }}:{{ agent_guest_proxy_port }}"
+# Internal destinations must NOT be routed at squid: OpenBao, Cribl, DNS and NTP
+# are reachable directly, and squid would deny them anyway — its allowlist is
+# external-only. RFC1918 covers the estate by address, the domain by name.
+agent_guest_no_proxy: >-
+  localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.{{
+  tofu_data.domain | mandatory('tofu_data.domain missing — regenerate tofu_inventory.json') }}
+# Both cases: curl/git/node read the lowercase pair, most Go and Java tooling
+# the uppercase. Applied to every Ansible task that fetches from the internet,
+# to the login shell, to systemd's default environment, and to each job unit.
+agent_guest_proxy_env:
+  http_proxy: "{{ agent_guest_proxy_url }}"
+  https_proxy: "{{ agent_guest_proxy_url }}"
+  no_proxy: "{{ agent_guest_no_proxy }}"
+  HTTP_PROXY: "{{ agent_guest_proxy_url }}"
+  HTTPS_PROXY: "{{ agent_guest_proxy_url }}"
+  NO_PROXY: "{{ agent_guest_no_proxy }}"
+agent_guest_apt_proxy_conf: /etc/apt/apt.conf.d/01-agent-guest-proxy
+agent_guest_profile_proxy_script: /etc/profile.d/agent-guest-proxy.sh
+agent_guest_systemd_proxy_conf: /etc/systemd/system.conf.d/10-agent-guest-proxy.conf
+
+# --- CLI toolchain ----------------------------------------------------------
+# Unpinned, unlike ai_runner's version floors: the three agent CLIs ship
+# breaking-fast and the newest stable is the supported one (AGENTS.md "Version
+# management"). ai_runner's `creates`-guarded install never upgraded on a version
+# bump anyway — the community.general.npm module with state=latest actually
+# reconciles. Only gitleaks carries a version: it is a GitHub release tarball
+# with no apt channel, so Renovate pins it.
+agent_guest_apt_packages:
+  - ca-certificates
+  - curl
+  - git
+  - gpg          # apt_repository needs a gpg binary on minimal LXC templates
+  - jq
+  - nodejs
+  - npm
+  - python3
+  - ripgrep
+  - tar
+# @google/gemini-cli is NOT here: Google refuses individual OAuth on it
+# (IneligibleTierError); the third CLI is agy, installed in toolchain.yml
+# via Antigravity's own installer (ansible-proxmox-ai#245).
+agent_guest_npm_clis:
+  - "@anthropic-ai/claude-code"
+  - "@openai/codex"
+agent_guest_npm_prefix: /usr/local
+agent_guest_claude_bin: "{{ agent_guest_npm_prefix }}/bin/claude"
+agent_guest_codex_bin: "{{ agent_guest_npm_prefix }}/bin/codex"
+# agy installs per-user (Antigravity's installer), not into the npm prefix.
+agent_guest_agy_bin: "{{ agent_guest_home }}/.local/bin/agy"
+agent_guest_gh_keyring: /etc/apt/keyrings/githubcli.asc
+agent_guest_gitleaks_version: "8.30.0"
+agent_guest_gitleaks_url: >-
+  https://github.com/gitleaks/gitleaks/releases/download/v{{
+  agent_guest_gitleaks_version }}/gitleaks_{{ agent_guest_gitleaks_version
+  }}_linux_x64.tar.gz
+
+# --- Autonomous config mirror ----------------------------------------------
+# Committed mirror of dryvist/nix-ai `profiles.autonomous.residualDeny` — that
+# repo is the source of truth for all three tools' deny policy. Regenerate with:
+#   nix eval github:dryvist/nix-ai#lib.profiles.autonomous.residualDeny --json
+#
+# This ONE list is what nix-ai's three renderers consume, so it is what this
+# role mirrors — not their five rendered outputs. The templates reproduce each
+# tool's native format from it (Claude `Bash(<prefix> *)` deny entries, Codex
+# `prefix_rule` tokens, Gemini Policy-Engine `commandPrefix` rules), byte-equal
+# to `nix eval github:dryvist/nix-ai#lib.renderAutonomous`.
+agent_guest_residual_deny:
+  - gh repo delete
+  - gh repo archive
+  - gh repo edit
+  - gh secret
+  - gh variable
+  - gh release delete
+  - gh auth
+  - gh api -X DELETE
+  - gh api --method DELETE
+  - git push --force
+  - git push -f
+  - git push --delete
+  - npm publish
+  - cargo publish
+
+# Claude Code enforces permissions.deny even under bypassPermissions, so the
+# residual deny is real protection here, not decoration.
+agent_guest_claude_settings:
+  $schema: https://json.schemastore.org/claude-code-settings.json
+  permissions:
+    allow: []
+    ask: []
+    defaultMode: bypassPermissions
+    deny: >-
+      {{ agent_guest_residual_deny | map('regex_replace', '^(.*)$', 'Bash(\1 *)') | list }}
+
+# Gemini's own sandbox is off — the LXC is already the boundary. The yolo
+# approval mode is set by the LAUNCH FLAG only: gemini-cli 0.53 does not just
+# strip defaultApprovalMode:"yolo" from settings — it HARD-ERRORS on it (the
+# enum admits default|auto_edit|plan) and refuses to start. The job runner's
+# `--approval-mode yolo` is the one and only yolo carrier; never put it here.
+# security.auth.selectedType pins the auth method so a headless run never
+# stops at the interactive auth-method picker.
+agent_guest_gemini_policy_path: "{{ agent_guest_home }}/.gemini/policies/autonomous.toml"
+agent_guest_gemini_settings:
+  $schema: https://raw.githubusercontent.com/google-gemini/gemini-cli/main/schemas/settings.schema.json
+  security:
+    auth:
+      selectedType: oauth-personal
+  policyPaths:
+    - "{{ agent_guest_gemini_policy_path }}"
+  tools:
+    sandbox: false
+
+# --- Dispatch queue (Vikunja) -----------------------------------------------
+# Absorbed from ai_runner: one Vikunja project is the queue, one task is a job,
+# and this guest's profile label scopes which jobs it claims. FQDN-first Traefik
+# vhost; empty base URL disables dispatch cleanly (guest converges, stays idle).
+agent_guest_vikunja_url: >-
+  https://vikunja.{{ lookup('env', 'PROXMOX_SUBDOMAIN') | default('', true) }}
+agent_guest_vikunja_project: "AI Jobs"
+agent_guest_profile_label: "profile:ai-proxied"
+agent_guest_poll_interval: 2min
+# Hard per-job wall clock, enforced by systemd RuntimeMaxSec rather than the
+# in-process timeout ai_runner used — a wedged CLI is killed with its whole
+# cgroup, not left holding a claim.
+agent_guest_task_max_sec: 3600
+agent_guest_task_default_base: develop
+agent_guest_worker_script: /usr/local/bin/agent-task
+
+# --- Result push (ntfy) ------------------------------------------------------
+# Absorbed from ai_runner unchanged. Empty topic disables the push; the worker
+# still comments the outcome on the Vikunja task.
+agent_guest_ntfy_topic: "ai-jobs"
+agent_guest_ntfy_url: >-
+  https://ntfy.{{ lookup('env', 'PROXMOX_SUBDOMAIN') | default('', true) }}/{{ agent_guest_ntfy_topic }}
+
+# --- OpenBao Agent (process-supervisor mode) --------------------------------
+# The job runner never holds a static credential: `bao agent` authenticates with
+# the guest's own AppRole, renders the tokens into the child process
+# environment, and execs the runner as its supervised child.
+#
+# NOTE the deliberate absence of ANTHROPIC_API_KEY — ai_runner seeded it and
+# that was a defect: it outranks CLAUDE_CODE_OAUTH_TOKEN in claude's auth
+# precedence, silently flipping billing off the subscription. Never reintroduce.
+# Keep in sync with ansible-proxmox-apps roles/openbao `openbao_version`.
+agent_guest_openbao_version: "2.5.5"
+agent_guest_openbao_deb_url: >-
+  https://github.com/openbao/openbao/releases/download/v{{
+  agent_guest_openbao_version }}/openbao_{{ agent_guest_openbao_version
+  }}_linux_amd64.deb
+agent_guest_bao_bin: /usr/bin/bao
+# AppRole credentials are seeded out of band into this dir; the role creates it
+# but never writes a secret into it. See README.
+agent_guest_approle_dir: "{{ agent_guest_config_dir }}/approle"
+agent_guest_bao_addr: >-
+  https://openbao.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN environment variable is required (Doppler)') }}
+# GitHub App installation token, minted per job by the github secrets engine —
+# never a static PAT in KV.
+agent_guest_github_token_path: github/token/agent-guest
+# Claude's long-lived headless token (KV v2 — note the data/ infix), from
+# `claude setup-token`. Subscription billing, 1-year life.
+agent_guest_claude_token_path: secret/data/ai/saas/claude
+agent_guest_runner_bin: "{{ agent_guest_worker_script }}"
+
+# --- CLI trace telemetry (OTLP -> Cribl Stream -> Langfuse + Splunk) ---------
+# One endpoint, Cribl forks. http/protobuf is load-bearing: Cribl in_otel and
+# Langfuse are both HTTP-only — grpc silently fails. Claude spans are beta and
+# need both CLAUDE_CODE_* flags. GEMINI_CLI_TRUST_WORKSPACE skips the headless
+# folder-trust prompt.
+agent_guest_otel_endpoint: >-
+  https://otel.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN environment variable is required (Doppler)') }}
+agent_guest_task_env:
+  CLAUDE_CODE_ENABLE_TELEMETRY: "1"
+  CLAUDE_CODE_ENHANCED_TELEMETRY_BETA: "1"
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_EXPORTER_OTLP_ENDPOINT: "{{ agent_guest_otel_endpoint }}"
+  GEMINI_CLI_TRUST_WORKSPACE: "true"
+# Codex reads trace config from config.toml, not OTEL_* env. Off until the
+# [otel] TOML schema is verified against the installed codex at canary — a
+# config.toml parse error would kill every codex job.
+agent_guest_codex_otel_enabled: false
+
+# --- Queue credential (env-fallback default; bao-first in group_vars) --------
+agent_guest_vikunja_token: "{{ lookup('env', 'VIKUNJA_API_TOKEN') | default('', true) }}"
+
+# --- Transcript shipping (standalone Cribl Edge) ----------------------------
+# The three CLIs write transcripts under the agent's home; a per-guest Cribl
+# Edge tails them and ships to the HAProxy-fronted Stream frontends. The journal
+# is NOT duplicated here — the estate's syslog forwarder already ships it.
+# The rolling `latest` URL, matching the cribl_edge role's documented pattern:
+# the versioned form (dl/<v>/cribl-<v>-linux-x64.tgz) 404s upstream for every
+# version probed — Cribl retired that layout.
+agent_guest_cribl_tarball_url: https://cdn.cribl.io/dl/latest/cribl-linux-x64.tgz
+agent_guest_cribl_install_dir: /opt/cribl
+agent_guest_cribl_user: cribl
+agent_guest_cribl_group: cribl
+agent_guest_cribl_service_name: cribl-edge
+# The stable `syslog` CNAME -> HAProxy, which balances the Cribl Stream per-CLI
+# frontends. FQDN only, never an IP.
+agent_guest_cribl_stream_host: >-
+  syslog.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN environment variable is required (Doppler)') }}
+# Ports come from the tofu ai_log_routing constant — never a literal here.
+agent_guest_log_routing: >-
+  {{ hostvars['localhost']['tofu_data']['constants']['ai_log_routing'] }}
+agent_guest_cribl_ports:
+  claude: "{{ agent_guest_log_routing['claude_code']['port'] }}"
+  codex: "{{ agent_guest_log_routing['codex_cli']['port'] }}"
+  gemini: "{{ agent_guest_log_routing['agy_cli']['port'] }}"

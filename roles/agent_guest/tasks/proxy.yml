@@ -1,0 +1,66 @@
+---
+# Egress proxy wiring. Runs BEFORE toolchain.yml: that file's first task is an
+# apt update, and on an `ai-proxied` guest nothing reaches a repo, the npm
+# registry or GitHub except through squid.
+#
+# Ansible's own fetchers (apt, get_url, unarchive, npm) read the process
+# environment, not these files — main.yml sets agent_guest_proxy_env on the
+# toolchain include for that. These four cover everything that runs later:
+# apt on its own, the login shell, every systemd unit, and npm.
+#
+# All four are `template`, not `copy` with inline content: `ansible_managed` is
+# injected by the template action plugin only, so referencing it from a copy
+# task fails at arg-finalization with "'ansible_managed' is undefined".
+
+- name: Configure apt to use the egress proxy
+  ansible.builtin.template:
+    src: proxy/apt-proxy.conf.j2
+    dest: "{{ agent_guest_apt_proxy_conf }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure the login-shell proxy environment
+  ansible.builtin.template:
+    src: proxy/profile-proxy.sh.j2
+    dest: "{{ agent_guest_profile_proxy_script }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+# systemd services do not read /etc/environment or /etc/profile.d, so the
+# system-wide default environment is its own drop-in. daemon-reload does not
+# pick this up — only a re-exec does.
+#
+# The drop-in directory is created explicitly: a stock Debian image ships
+# /etc/systemd/system.conf without any system.conf.d beside it, and `template`
+# does not create missing parent directories.
+- name: Create the systemd drop-in directory
+  ansible.builtin.file:
+    path: "{{ agent_guest_systemd_proxy_conf | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure the system-wide systemd proxy environment
+  ansible.builtin.template:
+    src: proxy/systemd-proxy.conf.j2
+    dest: "{{ agent_guest_systemd_proxy_conf }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Re-exec systemd for the proxy environment
+
+# npm reads the prefix-scoped npmrc for globally installed packages, which is
+# the prefix toolchain.yml installs the three agent CLIs into.
+- name: Configure npm to use the egress proxy
+  ansible.builtin.template:
+    src: proxy/npmrc.j2
+    dest: "{{ agent_guest_npm_prefix }}/etc/npmrc"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Flush handlers so systemd carries the proxy before anything installs
+  ansible.builtin.meta: flush_handlers

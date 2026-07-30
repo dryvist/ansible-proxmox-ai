@@ -1,0 +1,48 @@
+# {{ ansible_managed }}
+# OpenBao Agent in process-supervisor mode. It authenticates with this guest's
+# own AppRole, renders the task credentials straight into the child process
+# environment (never to disk, never to a sink), and execs the task runner as its
+# supervised child. When the unit stops, the agent stops the child and the
+# rendered env dies with it.
+#
+# GITHUB_TOKEN comes from the github SECRETS ENGINE, not KV: a static PAT is
+# banned wherever an engine exists (.claude/rules/openbao-plugins-first.md).
+exit_after_auth = false
+
+vault {
+  address = "{{ agent_guest_bao_addr }}"
+}
+
+auto_auth {
+  method "approle" {
+    config = {
+      role_id_file_path                   = "{{ agent_guest_approle_dir }}/role_id"
+      secret_id_file_path                 = "{{ agent_guest_approle_dir }}/secret_id"
+      remove_secret_id_file_after_reading = false
+    }
+  }
+}
+{% raw %}
+env_template "GITHUB_TOKEN" {
+  contents             = "{{ with secret \"{% endraw %}{{ agent_guest_github_token_path }}{% raw %}\" }}{{ .Data.token }}{{ end }}"
+  error_on_missing_key = true
+}
+{% endraw %}
+{# Claude's 1-year subscription token (claude setup-token, seeded by the
+   operator runbook). error_on_missing_key=false on purpose: an unseeded claude
+   token must not kill codex/gemini tasks — a claude task then fails loud at
+   auth instead. #}
+{% raw %}
+env_template "CLAUDE_CODE_OAUTH_TOKEN" {
+  contents             = "{{ with secret \"{% endraw %}{{ agent_guest_claude_token_path }}{% raw %}\" }}{{ .Data.data.CLAUDE_CODE_OAUTH_TOKEN }}{{ end }}"
+  error_on_missing_key = false
+}
+{% endraw %}
+exec {
+  # The task id is NOT baked in here — the systemd template unit passes it as
+  # AGENT_TASK_ID=%i and the agent hands its environment to the child, which
+  # reads it when no id argument follows --task. One config, every instance.
+  command                   = ["{{ agent_guest_worker_script }}", "--task"]
+  restart_on_secret_changes = "never"
+  restart_stop_signal       = "SIGTERM"
+}

@@ -46,6 +46,14 @@ STATE_PATH = "{{ hermes_agent_hermes_home }}/state/splunk-digest.json"
 # anomaly, not "no anomalies". #17144 was os + network going silent unnoticed.
 EXPECTED_CONTINUOUS = {{ hermes_agent_splunk_digest_expected_indexes | to_json }}
 STALENESS_MIN = {{ hermes_agent_splunk_digest_staleness_minutes }}
+# WARNING: the MCP server IGNORES the `earliest` argument this is passed as.
+# Proven live 2026-07-28 — `splunk_run_query` returned byte-identical results
+# for -1h, -24h and -7d. This digest is only correct because its window happens
+# to equal the server's own default; it is accidentally right, not deliberately.
+# splunk-triage.py.j2 fixes this by writing `earliest=... latest=now` INLINE in
+# the SPL, where Splunk applies it. Do the same here before changing this value
+# to anything other than -24h, and verify the new number against the REST API
+# rather than assuming the argument took effect.
 EARLIEST = "{{ hermes_agent_splunk_digest_window }}"
 # Same span, phrased for prose ("the 24h window" rather than "the -24h window").
 WINDOW = EARLIEST.lstrip("-")
@@ -88,7 +96,16 @@ SHARE_SHIFT_PP = 5.0
 # "post every run, 24x/day, never [SILENT]" rule after 38 of 40 runs in one
 # UTC day carried zero information ("Health state unchanged"). Lower this if
 # an outage of the digest itself needs to surface faster than every 6h.
-HEARTBEAT_HOURS = 6
+#
+# 6 -> 4 on 2026-07-29, and the two changes belong together: the heartbeat now
+# RESTATES everything still holding rather than counting it, so it is worth
+# receiving more often. Four a day is the cadence at which this doubles as the
+# quiet-day log of record without becoming noise.
+HEARTBEAT_HOURS = 4
+# Cap on findings restated in one heartbeat. Overflow is always DISCLOSED — a
+# silently truncated list reads as "that is everything", which is worse than a
+# long post.
+HEARTBEAT_MAX_RESTATED = 40
 # Upstream's `hermes cron` executor skips Slack delivery when a --script
 # cron's STDOUT is exactly this string — the same contract splunk-triage.py.j2
 # already relies on for its per-day "quiet" suppression.
@@ -471,14 +488,37 @@ def stability_finding(state, fingerprint, now):
                     f"Health state unchanged — Day {day_n} since {first_short}."), first_seen_iso)
 
 
-def load_ledger(state, today):
-    """Today's already-presented finding keys. A new UTC day resets it to empty,
-    and a state file predating the ledger simply carries none."""
+def load_ledger_entries(state, today):
+    """Today's already-presented findings as {"k": key, "t": text} records.
+
+    The ledger carries TEXT as well as keys so the heartbeat can restate what is
+    still holding instead of only counting it. A count is unactionable: "12
+    finding(s) still hold" tells an operator scrolling back nothing about which
+    twelve, and the heartbeat is the only post a quiet day produces.
+
+    Tolerates the pre-2026-07-29 shape (a bare list of key strings) by carrying
+    the key with an empty text — an older state file degrades that day's
+    heartbeat detail rather than erroring.
+    """
     ledger = (state or {}).get("ledger")
     if not isinstance(ledger, dict) or ledger.get("day") != today:
         return []
     keys = ledger.get("keys")
-    return list(keys) if isinstance(keys, list) else []
+    if not isinstance(keys, list):
+        return []
+    out = []
+    for entry in keys:
+        if isinstance(entry, dict) and entry.get("k"):
+            out.append({"k": entry["k"], "t": entry.get("t", "")})
+        elif isinstance(entry, str):
+            out.append({"k": entry, "t": ""})
+    return out
+
+
+def load_ledger(state, today):
+    """Today's already-presented finding keys. A new UTC day resets it to empty,
+    and a state file predating the ledger simply carries none."""
+    return [entry["k"] for entry in load_ledger_entries(state, today)]
 
 
 def baseline_from(state):
@@ -501,7 +541,8 @@ def build_digest(results, now, state):
     now_epoch = now.timestamp()
     today = now.strftime("%Y-%m-%d")
     prev = baseline_from(state)
-    ledger = load_ledger(state, today)
+    ledger_entries = load_ledger_entries(state, today)
+    ledger = [entry["k"] for entry in ledger_entries]
     seen = set(ledger)
 
     by_index, host_last, saw_host, saw_st = parse_results(results, now_epoch)
@@ -592,21 +633,128 @@ def build_digest(results, now, state):
         lines.append("")
         lines.append(
             f":mag: Nothing new to report. Searched {len(by_index)} index(es), {len(hosts)} host(s) and "
-            f"{pairs} index/sourcetype pair(s) across volume, membership, liveness and composition; all "
-            f"{len(seen)} finding(s) already posted today still hold, and no critical condition is active. "
+            f"{pairs} index/sourcetype pair(s) across volume, membership, liveness and composition; "
+            f"no critical condition is active. "
             f"(heartbeat — next post is silent unless something changes within {HEARTBEAT_HOURS}h)"
         )
+        # RESTATE what is still holding, do not merely count it. On a quiet day
+        # this is the ONLY post, so a bare "N finding(s) still hold" leaves an
+        # operator scrolling back with no idea which N — the exact
+        # unreadability this digest is meant to fix.
+        held = [entry["t"] for entry in ledger_entries if entry.get("t")]
+        if held:
+            lines.append("")
+            lines.append(f"*Still holding from earlier today ({len(held)}):*")
+            for text in held[:HEARTBEAT_MAX_RESTATED]:
+                lines.append(f"• {text}")
+            # Never truncate silently: a capped list that does not say it was
+            # capped reads as "that is everything".
+            if len(held) > HEARTBEAT_MAX_RESTATED:
+                lines.append(f"• …and {len(held) - HEARTBEAT_MAX_RESTATED} more not shown "
+                             f"(cap {HEARTBEAT_MAX_RESTATED}).")
+        elif seen:
+            lines.append(f"({len(seen)} finding(s) already posted today still hold; their text predates "
+                         "this state file's schema and returns on the next post.)")
         last_post_iso = now.isoformat()
 
     payload = {"schema": STATE_SCHEMA, "fingerprint": fingerprint,
                "first_seen_iso": first_seen_iso, "last_post_date": today,
                "captured_iso": now.isoformat(), "last_post_iso": last_post_iso,
-               "ledger": {"day": today, "keys": (ledger + [f.key for f in novel])[-LEDGER_MAX:]}}
+               "ledger": {"day": today,
+                          "keys": (ledger_entries
+                                   + [{"k": f.key, "t": f.text} for f in novel])[-LEDGER_MAX:]}}
     payload.update(snapshot_of(by_index, hosts, saw_host, saw_st))
 
     if not critical and not novel and not heartbeat_due:
         return SILENT, payload
     return "\n".join(lines), payload
+
+
+def failure_key(root):
+    """Stable identity for a fault, so an UNCHANGED failure is one finding and a
+    genuinely different one is a new finding. Type plus the same truncated
+    message the post carries — anything narrower (type alone) would hide a
+    changed cause; anything wider (a timestamped repr) would make every run
+    novel and re-create the flood this gate exists to stop."""
+    return f"digest-failure:{type(root).__name__}:{str(root)[:200]}"
+
+
+def failure_report(root, state, now):
+    """A digest failure, gated by the SAME day ledger as every other finding.
+
+    Until 2026-07-29 this path printed unconditionally: outside the ledger,
+    outside the SILENT contract, and outside the per-day novelty rule every
+    other finding in this file obeys. A fault that persists is not news after
+    the first post, so an hourly cron turned one outage into 24 identical Slack
+    messages a day — the flood that made the channel unreadable.
+
+    Failure is still ALWAYS delivered the first time it is seen each day, and a
+    changed cause is a new key and posts immediately. Only verbatim repetition
+    is suppressed, and the suppression is COUNTED so it can be reported rather
+    than silently swallowed.
+
+    Returns (text, payload) exactly like build_digest, so main() treats both
+    paths identically.
+    """
+    today = now.strftime("%Y-%m-%d")
+    ledger_entries = load_ledger_entries(state, today)
+    ledger = [entry["k"] for entry in ledger_entries]
+    key = failure_key(root)
+    detail = f"{type(root).__name__}: {str(root)[:200]}"
+
+    # Read-modify-write: the baseline snapshot (by_index, hosts, ...) belongs to
+    # the last SUCCESSFUL run and must survive a failure untouched, or recovery
+    # would report full numbers with no deltas and look like a fresh install.
+    payload = dict(state or {})
+    suppressed = suppression_of(state, today)
+
+    if key in ledger:
+        suppressed["count"] = int(suppressed.get("count", 0)) + 1
+        payload["suppressed"] = suppressed
+        payload["failure"] = {"day": today, "key": key}
+        return SILENT, payload
+
+    prefix = ""
+    if suppressed.get("count"):
+        prefix = (f"({suppressed['count']} identical repeat(s) suppressed since "
+                  f"{suppressed.get('since_hhmm', '??:??')} UTC)\n")
+    payload["suppressed"] = {"day": today, "count": 0,
+                             "since_hhmm": now.strftime("%H:%M")}
+    payload["failure"] = {"day": today, "key": key}
+    # Same record shape as build_digest, so a failure that is still holding gets
+    # restated by the heartbeat alongside every other finding.
+    payload["ledger"] = {"day": today,
+                         "keys": (ledger_entries
+                                  + [{"k": key, "t": f":warning: Splunk digest failing — {detail}"}]
+                                  )[-LEDGER_MAX:]}
+    return (f"{prefix}:warning: Splunk digest FAILED: {detail}\n"
+            f"(identical repeats are suppressed until the cause changes or the "
+            f"UTC day rolls; a different cause posts immediately)"), payload
+
+
+def suppression_of(state, today):
+    """Today's suppression counter, reset on a new UTC day."""
+    s = (state or {}).get("suppressed")
+    if not isinstance(s, dict) or s.get("day") != today:
+        return {"day": today, "count": 0, "since_hhmm": None}
+    return dict(s)
+
+
+def recovery_line(state, now):
+    """One line when a previously-failing digest succeeds, else None.
+
+    Recovery is the single most useful message this script can send and it was
+    never sent: the failure path posted forever and the success path knew
+    nothing about it, so a fixed outage just went quiet — indistinguishable from
+    the cron dying.
+    """
+    failure = (state or {}).get("failure")
+    if not isinstance(failure, dict) or not failure.get("key"):
+        return None
+    suppressed = (state or {}).get("suppressed") or {}
+    count = int(suppressed.get("count", 0)) if isinstance(suppressed, dict) else 0
+    tail = f" ({count} identical repeat(s) were suppressed)" if count else ""
+    return f":white_check_mark: Splunk digest RECOVERED — the previous failure has cleared.{tail}"
 
 
 def load_state():
@@ -647,12 +795,30 @@ def main():
             if not sub:
                 break
             root = sub[0]
-        print(f":warning: Splunk digest FAILED: {type(root).__name__}: {str(root)[:200]}")
+        # Delivered through the day ledger, not straight to stdout. Failure is
+        # still always reported the first time it is seen and a changed cause
+        # posts at once; only verbatim repetition is suppressed, and counted.
+        now = dt.datetime.now(dt.timezone.utc)
+        text, payload = failure_report(root, load_state(), now)
+        save_state(payload)
+        print(text)
         return 0
 
     now = dt.datetime.now(dt.timezone.utc)
-    text, payload = build_digest(results, now, load_state())
+    state = load_state()
+    recovered = recovery_line(state, now)
+    text, payload = build_digest(results, now, state)
+    # The run succeeded, so the stored failure is over. Clearing it here (rather
+    # than leaving it for the next failure to overwrite) is what makes the
+    # recovery line fire exactly once.
+    payload.pop("failure", None)
+    payload.pop("suppressed", None)
     save_state(payload)
+    if recovered:
+        # A recovery is news even when the digest itself has nothing new, so it
+        # overrides SILENT rather than being appended to it.
+        print(recovered if text == SILENT else f"{recovered}\n{text}")
+        return 0
     print(text)
     return 0
 

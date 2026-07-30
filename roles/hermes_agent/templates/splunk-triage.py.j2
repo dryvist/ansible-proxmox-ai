@@ -1,21 +1,39 @@
 #!/usr/bin/env python3
 {{ ansible_managed | comment }}
-"""Deterministic, no-LLM Splunk triage digest with a per-day novelty gate.
+"""Deterministic, no-LLM Splunk triage digest keyed on ERROR SIGNATURES.
 
 Rendered once per entry in `hermes_agent_triage_jobs` — the indexes, search
 terms, window and title are the only things that differ between jobs, so adding
 one is config rather than code.
 
-Replaces the agentic `splunk-error-triage-v2` and `splunk-security-lens-v2`
-digests. Those delivered raw tool-call markup to Slack: the model intends a tool
-call, the harness fails to parse it, and the unparsed text arrives looking
-exactly like a finished report. It happened on the first turn with no tool run
-AND on the turn after a successful tool result, with and without the prompt's
-anti-markup clause — an unreliable emitter, not a prompt defect. Worse, the
-model never ran the SPL those prompts specified; the agent log is full of
-self-invented substitutes filtering on unpopulated fields. So the jobs were
-producing wrong facts even when they did not leak markup, which makes this a
-correctness fix and not a formatting one.
+WHAT THIS REPORTS, AND WHY IT CHANGED (operator requirement, 2026-07-28). The
+previous version grouped by `host, sourcetype` and printed volume:
+
+    openbao-02 / syslog — 18.0k events (was 17.9k)
+    pve3 / syslog — 442 events (was 425)
+
+A counter moving says nothing about what is wrong. This version clusters events
+by their MESSAGE SIGNATURE — the raw line with timestamps, pids, IPs, hex ids
+and numbers normalised out — so the same data reads:
+
+    :rotating_light: *NEW* `bao[<pid>]: <ts> [ERROR] storage.raft: failed to
+    heartbeat to: peer=<ip>:<n> ... error="dial tcp <ip>:<n>: connect: no
+    route to host"`
+        3.5k events · openbao-02
+
+Same query cost, same novelty machinery; the unit of analysis is the fault
+rather than the machine. Host and sourcetype survive as the escalation ladder's
+rollup tiers, which is what they were actually good for.
+
+THE WINDOW BUG THIS ALSO FIXES. `splunk_run_query`'s `earliest` ARGUMENT IS
+IGNORED by the MCP server — proven live on 2026-07-28 by calling the tool with
+earliest=-1h, -24h and -7d and getting byte-identical results all three times
+(one host reported 5890 in every case). Every number the hourly digest has ever
+printed was really a ~24h figure under a "last 1h" heading, which is why one
+host looked like it was emitting 18k errors an hour when its true hourly rate
+was 36. The window is therefore written INLINE in the SPL, where Splunk applies
+it; the argument is still passed as well, so the job stays correct if the server
+is ever fixed.
 
 STDOUT is delivered verbatim to Slack (cron runs `--no-agent --deliver slack:<ch>`),
 so everything printed here must be TRUE. Never invent data. Zero rows, a missing
@@ -23,25 +41,21 @@ baseline, and a failed query are ALWAYS stated as themselves, never smoothed int
 "no errors".
 
 THE PER-DAY NOVELTY CONTRACT: routine information may be presented ONCE per UTC
-day. A steady stream already reported today is suppressed on later runs.
-CRITICAL findings — a source absent from the previous run, or one that climbed
+day. A steady signature already reported today is suppressed on later runs.
+CRITICAL findings — a signature absent from the previous run, or one that climbed
 an order of magnitude — bypass that ledger, so they still report when the SAME
-delta recurs later the same day. Note every finding here is a delta against the
+delta recurs later the same day. Every finding here is a delta against the
 previous run: the baseline advances each run, so nothing restates itself while a
 condition merely persists. A run with nothing left to say escalates to the host
 and sourcetype rollups, then prints its one "nothing new" line for the day and
 goes [SILENT] thereafter.
-
-What converting cost: the old prompts asked for one interpretive sentence each
-("the most recurring error nobody alerts on"). That editorial judgement is gone.
-What replaces it is checkable — which streams are NEW or ESCALATING against a
-stored baseline, which is the fact those sentences were gesturing at.
 
 Pure stdlib + the `mcp` client (present in the hermes-agent venv, which runs this
 file). Reads secrets from the .env file, never prints them.
 """
 import asyncio
 import datetime as dt
+import hashlib
 import json
 import math
 import os
@@ -63,19 +77,67 @@ TOP_N = {{ hermes_agent_triage_top_n }}
 MAX_FINDINGS = {{ hermes_agent_triage_max_findings }}
 # Same span, phrased for prose ("the 1h window", not "the -1h window").
 WINDOW = EARLIEST.lstrip("-")
-SPL = (
-    "search index=" + " OR index=".join(INDEXES)
-    + " (" + " OR ".join(TERMS) + ")"
-    + " | stats count by host, sourcetype | sort -count | head " + str(TOP_N)
-)
+# How much of a normalised signature survives into the report. Long enough to
+# carry the fault, short enough to read on a phone.
+SIG_CHARS = 120
+
+# Signature normalisation, applied by Splunk so the clustering happens where the
+# data is. ORDER MATTERS: the syslog header first (it is anchored), then the
+# specific shapes, then the catch-all digit rule — reversing those last two would
+# turn `2026-07-27T16:22:41Z` into `<n>-<n>-<n>T<n>:<n>:<n>Z` and split one fault
+# across as many signatures as it has distinct timestamps, which is the exact
+# failure this whole change exists to remove.
+#
+# Anything NOT normalised here stays part of the signature, which is the right
+# default: an unrecognised varying token splits a fault into several signatures
+# (visible, annoying, fixable) whereas over-normalising merges genuinely
+# different faults into one (invisible, and it hides the thing you needed).
+SED_RULES = [
+    r's/^<\d+>//',                                              # syslog PRI
+    r's/^[A-Z][a-z]{2} +\d+ \d+:\d+:\d+ \S+ //',                # BSD syslog header
+    r's/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?Z?/<ts>/g',
+    r's/\[\d+\]/[<pid>]/g',
+    r's/\b(?:\d{1,3}\.){3}\d{1,3}\b/<ip>/g',
+    r's/\b[0-9a-f]{8,}\b/<hex>/g',
+    r's/\d+/<n>/g',
+    r's/ +/ /g',
+]
+# The window is written INLINE (see the module docstring): the MCP's `earliest`
+# argument is dropped on the floor, and a digest whose heading lies about its
+# own window is worse than no digest.
+SPL = " ".join([
+    "search index=" + " OR index=".join(INDEXES),
+    "(" + " OR ".join(TERMS) + ")",
+    f"earliest={EARLIEST} latest=now",
+    "| eval sig=_raw",
+] + [f'| rex mode=sed field=sig "{rule}"' for rule in SED_RULES] + [
+    # One character MORE than the report shows, so the formatter can tell a
+    # clipped signature from one that merely happens to be exactly that long and
+    # mark the truncation instead of guessing at it.
+    f"| eval sig=substr(sig,1,{SIG_CHARS + 1})",
+    "| stats count as count, latest(_raw) as sample by sig, host, sourcetype",
+    # sig_total ranks signatures; total_sigs is how many exist BEFORE the cap, so
+    # the scope line can say what the cap hid instead of implying it saw them all.
+    "| eventstats sum(count) as sig_total by sig",
+    "| eventstats dc(sig) as total_sigs",
+    # Sorting by sig_total keeps every row of a signature contiguous, so the rank
+    # filter below cuts on a signature boundary and never returns half a total.
+    "| sort - sig_total, - count",
+    "| streamstats dc(sig) as sig_rank",
+    f"| where sig_rank <= {TOP_N}",
+    "| eval sample=substr(sample,1,180)",
+    "| table sig host sourcetype count total_sigs sample",
+])
 # Bumped when the state shape changes; an older/absent value means "no usable
 # baseline", and the run reports full counts with no new/escalating claims.
-STATE_SCHEMA = 1
+# 2: keyed by signature rather than by host|sourcetype.
+STATE_SCHEMA = 2
 SILENT = "[SILENT]"
 # Label for rows Splunk returned without a `host` field. Naming them beats
 # dropping them: unset host is itself worth seeing, and a dropped row would
 # quietly shrink the totals printed beside it.
 NO_HOST = "(no host)"
+NO_SOURCETYPE = "(no sourcetype)"
 # Escalation-ladder calibration. Deliberately module constants, not Ansible vars:
 # one number, one consumer, and they only mean anything against each other.
 # A series smaller than this can't produce a percentage worth reporting.
@@ -87,8 +149,13 @@ PCT_BANDS = (25, 50, 100, 300)
 # Percentage POINTS of mix shift that make a sourcetype's share change critical.
 SHARE_SHIFT_PP = 15
 MAX_NAMED = 6
+# How many host names a signature line spells out before it says "+N more".
+MAX_NAMED_HOSTS = 3
 
 Finding = namedtuple("Finding", "key text critical")
+# One clustered fault: its normalised signature, total count, which hosts and
+# sourcetypes carry it, and one real line as evidence.
+Signature = namedtuple("Signature", "sig count hosts sourcetypes sample")
 
 
 def load_env(path):
@@ -133,76 +200,131 @@ def fmt(n):
     return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
 
-def parse_rows(results):
-    """{"host|sourcetype": count} from the stats rows.
+def sig_key(sig):
+    """Short stable id for a signature.
 
-    A row missing `host` is kept under NO_HOST, not dropped: `stats count by
-    host, sourcetype` omits the field entirely when it is unset on the events,
-    and silently discarding those rows would under-report real error volume
-    while printing a confident total. Only a row with no usable count at all,
-    or no sourcetype to name it by, is unusable.
+    The ledger and the state file are keyed by this rather than by the signature
+    text: a day of 120-character keys would bloat both, and the text is
+    reconstructed from the current results anyway.
     """
-    out = {}
+    return hashlib.sha1(sig.encode("utf-8", "replace")).hexdigest()[:12]  # noqa: S324
+
+
+def parse_rows(results):
+    """Fold the per-(signature, host, sourcetype) rows into signatures.
+
+    Returns (signatures, total_sigs) where `signatures` maps sig_key -> Signature
+    ordered loudest first, and `total_sigs` is how many distinct signatures the
+    search found BEFORE TOP_N truncated it (None when Splunk did not report it).
+
+    A row missing `host` is kept under NO_HOST, not dropped: `stats ... by host`
+    omits the field entirely when it is unset on the events, and silently
+    discarding those rows would under-report real error volume while printing a
+    confident total. Only a row with no signature, or no usable count, is
+    unusable.
+    """
+    acc = {}
+    total_sigs = None
     for row in results or []:
+        sig = " ".join(str(row.get("sig") or "").split())
         host = str(row.get("host") or "").strip() or NO_HOST
-        sourcetype = str(row.get("sourcetype") or "").strip()
+        sourcetype = str(row.get("sourcetype") or "").strip() or NO_SOURCETYPE
         try:
             count = int(float(row.get("count") or 0))
         except (TypeError, ValueError):
             continue
-        if not sourcetype or count <= 0:
+        if not sig or count <= 0:
             continue
-        key = f"{host}|{sourcetype}"
-        out[key] = out.get(key, 0) + count
+        try:
+            total_sigs = max(total_sigs or 0, int(float(row["total_sigs"])))
+        except (KeyError, TypeError, ValueError):
+            pass
+        rec = acc.setdefault(sig_key(sig), {"sig": sig, "count": 0, "hosts": {},
+                                            "sourcetypes": {}, "sample": ""})
+        rec["count"] += count
+        rec["hosts"][host] = rec["hosts"].get(host, 0) + count
+        rec["sourcetypes"][sourcetype] = rec["sourcetypes"].get(sourcetype, 0) + count
+        sample = " ".join(str(row.get("sample") or "").split())
+        if sample and not rec["sample"]:
+            rec["sample"] = sample
+    ordered = sorted(acc.items(), key=lambda kv: (-kv[1]["count"], kv[1]["sig"]))
+    return ({k: Signature(v["sig"], v["count"], v["hosts"], v["sourcetypes"], v["sample"])
+             for k, v in ordered}, total_sigs)
+
+
+def rollup(signatures, part):
+    """Total events per host (part="hosts") or per sourcetype (part="sourcetypes")."""
+    out = {}
+    for entry in signatures.values():
+        for name, count in getattr(entry, part).items():
+            out[name] = out.get(name, 0) + count
     return out
+
+
+def host_phrase(hosts):
+    """Who is emitting this signature, capped and honest about the cap."""
+    if not hosts:
+        return "no host reported"
+    names = sorted(hosts, key=lambda h: (-hosts[h], h))
+    shown = names[:MAX_NAMED_HOSTS]
+    extra = len(names) - len(shown)
+    joined = ", ".join(shown) + (f" (+{extra} more)" if extra else "")
+    return joined if len(names) == 1 else f"{len(names)} hosts: {joined}"
+
+
+def clip_sig(sig):
+    """Signature at report width. Truncation is MARKED, never silent — an
+    unmarked cut reads as the whole message and hides where the fault differs."""
+    return sig if len(sig) <= SIG_CHARS else sig[:SIG_CHARS - 1] + "…"
+
+
+def sig_line(entry, headline, detail):
+    """Two lines: the fault itself, then who and how much.
+
+    The signature goes FIRST because it is the substance — the operator is
+    scanning for a fault they recognise, not for a leaderboard position.
+    """
+    return (f"{headline}`{clip_sig(entry.sig)}`\n"
+            f"    {detail} · {host_phrase(entry.hosts)}")
 
 
 def build_findings(current, baseline, have_baseline):
-    """One finding per error stream, ordered loudest first.
+    """One finding per error signature, loudest first.
 
     With no usable baseline nothing can be called NEW or ESCALATING — there is
-    nothing to have changed from — so every stream is reported as a plain count.
+    nothing to have changed from — so every signature is reported as a plain
+    count.
     """
     findings = []
-    for pair, count in sorted(current.items(), key=lambda kv: (-kv[1], kv[0])):
-        host, sourcetype = pair.split("|", 1)
-        bucket = band(count)
-        previous = baseline.get(pair)
+    for key, entry in current.items():
+        bucket = band(entry.count)
+        previous = baseline.get(key)
         if not have_baseline:
             findings.append(Finding(
-                f"steady:{pair}:{bucket}",
-                f"{host} / {sourcetype} — {fmt(count)} events.", False))
+                f"steady:{key}:{bucket}",
+                sig_line(entry, "", f"{fmt(entry.count)} events"), False))
         elif previous is None:
             findings.append(Finding(
-                f"new:{pair}",
-                f":rotating_light: NEW source {host} / {sourcetype} — "
-                f"{fmt(count)} events in the {WINDOW} window, absent from the "
-                f"previous run.", True))
+                f"new:{key}",
+                sig_line(entry, ":rotating_light: *NEW* ",
+                         f"{fmt(entry.count)} events in the {WINDOW} window, "
+                         f"absent from the previous run"), True))
         elif band(previous) > bucket:
             findings.append(Finding(
-                f"steady:{pair}:{bucket}",
-                f"{host} / {sourcetype} — {fmt(count)} events, down from "
-                f"{fmt(previous)}.", False))
+                f"steady:{key}:{bucket}",
+                sig_line(entry, "", f"{fmt(entry.count)} events, down from "
+                                    f"{fmt(previous)}"), False))
         elif band(previous) < bucket:
             findings.append(Finding(
-                f"spike:{pair}:{bucket}",
-                f":chart_with_upwards_trend: {host} / {sourcetype} ESCALATING — "
-                f"{fmt(count)} events, up from {fmt(previous)}.", True))
+                f"spike:{key}:{bucket}",
+                sig_line(entry, ":chart_with_upwards_trend: *ESCALATING* ",
+                         f"{fmt(entry.count)} events, up from {fmt(previous)}"), True))
         else:
             findings.append(Finding(
-                f"steady:{pair}:{bucket}",
-                f"{host} / {sourcetype} — {fmt(count)} events (was "
-                f"{fmt(previous)}).", False))
+                f"steady:{key}:{bucket}",
+                sig_line(entry, "", f"{fmt(entry.count)} events "
+                                    f"(was {fmt(previous)})"), False))
     return findings
-
-
-def totals_by(current, part):
-    """Roll host|sourcetype streams up to host (part=0) or sourcetype (part=1)."""
-    out = {}
-    for key, count in current.items():
-        name = key.split("|")[part]
-        out[name] = out.get(name, 0) + count
-    return out
 
 
 def move_of(cur, prev):
@@ -225,12 +347,11 @@ def name_list(names):
     return ", ".join(shown) + (f" (+{extra} more)" if extra else "")
 
 
-def host_findings(current, baseline, have_baseline):
-    """Tier 2 — which machines are affected, independent of sourcetype."""
+def host_findings(cur, prev, have_baseline):
+    """Tier 2 — which machines are affected, independent of the fault."""
     out = []
     if not have_baseline:
         return out
-    cur, prev = totals_by(current, 0), totals_by(baseline, 0)
     gone = set(prev) - set(cur)
     if gone:
         # Routine: a host going quiet is good news, and repeating it every run
@@ -259,12 +380,11 @@ def host_findings(current, baseline, have_baseline):
     return out
 
 
-def composition_findings(current, baseline, have_baseline):
+def composition_findings(cur, prev, have_baseline):
     """Tier 3 — what KIND of events, and how the mix is shifting."""
     out = []
     if not have_baseline:
         return out
-    cur, prev = totals_by(current, 1), totals_by(baseline, 1)
     total, prev_total = sum(cur.values()), sum(prev.values())
     for stype, count in sorted(cur.items(), key=lambda kv: -kv[1]):
         move = move_of(count, prev.get(stype))
@@ -298,15 +418,33 @@ def load_ledger(state, today):
     return list(keys) if isinstance(keys, list) else []
 
 
+def scope_line(current, total_sigs):
+    """What the run actually covered.
+
+    Names what the cap hid rather than implying the run saw everything: TOP_N
+    truncates the signature list in Splunk, so "12 signatures" alone would be a
+    quiet lie whenever there were 47.
+    """
+    shown = len(current)
+    covered = (f"top {shown} of {total_sigs} error signatures"
+               if total_sigs and total_sigs > shown else
+               f"{shown} error signature(s)")
+    return f"Scope: {covered} in {', '.join(INDEXES)}, {WINDOW} window."
+
+
 def build_report(results, now, state):
     """(text_to_deliver, state_payload). text may be SILENT to suppress delivery."""
-    current = parse_rows(results)
+    current, total_sigs = parse_rows(results)
     today = now.date().isoformat()
     prior = state if (state or {}).get("schema") == STATE_SCHEMA else None
     baseline = (prior or {}).get("counts")
     have_baseline = isinstance(baseline, dict)
     baseline = baseline if have_baseline else {}
+    prev_hosts = (prior or {}).get("hosts") or {}
+    prev_stypes = (prior or {}).get("sourcetypes") or {}
     ledger = load_ledger(prior, today)
+
+    cur_hosts, cur_stypes = rollup(current, "hosts"), rollup(current, "sourcetypes")
 
     shown = []
     for finding in build_findings(current, baseline, have_baseline):
@@ -315,30 +453,31 @@ def build_report(results, now, state):
         if finding.critical or finding.key not in ledger:
             shown.append(finding)
 
-    scope = ", ".join(INDEXES)
     lines = [f.text for f in shown]
     posted = list(ledger)
 
-    def silent():
-        return SILENT, {"schema": STATE_SCHEMA, "counts": current,
-                        "ledger": {"day": today, "keys": posted}}
+    def payload(keys):
+        return {"schema": STATE_SCHEMA,
+                "counts": {k: e.count for k, e in current.items()},
+                "hosts": cur_hosts, "sourcetypes": cur_stypes,
+                "ledger": {"day": today, "keys": keys}}
 
     if not current:
         # Zero matching rows is a fact, not an all-clear: it is equally
         # consistent with a quiet hour and with ingest having stopped.
         if "zero-rows" in ledger:
-            return silent()
+            return SILENT, payload(posted)
         lines.append(
-            f"Zero rows matching {'/'.join(TERMS)} in {scope} over the "
+            f"Zero rows matching {'/'.join(TERMS)} in {', '.join(INDEXES)} over the "
             f"{WINDOW} window — either a genuinely quiet hour or ingest has "
             f"stopped; this run cannot tell which.")
         posted.append("zero-rows")
     elif not lines:
-        # ESCALATE rather than emit boilerplate: nothing novel at the stream
+        # ESCALATE rather than emit boilerplate: nothing novel at the signature
         # level does not mean nothing happened. Roll up to hosts, then to the
         # sourcetype mix, and only say "nothing new" once both are exhausted.
-        for tier in (host_findings(current, baseline, have_baseline),
-                     composition_findings(current, baseline, have_baseline)):
+        for tier in (host_findings(cur_hosts, prev_hosts, have_baseline),
+                     composition_findings(cur_stypes, prev_stypes, have_baseline)):
             for finding in tier:
                 if len(shown) >= MAX_FINDINGS:
                     break
@@ -350,25 +489,19 @@ def build_report(results, now, state):
         if lines:
             posted.extend(f.key for f in shown)
         elif "quiet" in ledger:
-            return silent()
+            return SILENT, payload(posted)
         else:
             lines.append(
-                f"No new signatures — all {len(current)} matching host/sourcetype "
-                f"streams in {scope} over the {WINDOW} window, their host and "
+                f"No new signatures — all {len(current)} error signature(s) in "
+                f"{', '.join(INDEXES)} over the {WINDOW} window, their host and "
                 f"sourcetype rollups included, were already reported today.")
             posted.append("quiet")
     else:
         posted.extend(f.key for f in shown)
-        lines.append(
-            f"Scope: {len(current)} matching host/sourcetype streams in {scope}, "
-            f"{WINDOW} window.")
+        lines.append(scope_line(current, total_sigs))
 
     header = f"*{TITLE} — last {WINDOW}*"
-    return "\n".join([header] + lines), {
-        "schema": STATE_SCHEMA,
-        "counts": current,
-        "ledger": {"day": today, "keys": posted},
-    }
+    return "\n".join([header] + lines), payload(posted)
 
 
 def load_state():
