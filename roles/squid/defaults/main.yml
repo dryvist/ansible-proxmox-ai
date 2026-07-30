@@ -33,6 +33,26 @@ squid_ssl_ports: [443]
 # set of hostnames a guest on that profile can reach. The agents behind it run
 # in permission-skipping mode by design; the allowlist is what bounds them.
 # Adding an entry is a security decision, not a configuration tweak.
+#
+# Two limits of this boundary, both worth knowing BEFORE trusting it:
+#
+# 1. An allowlisted domain is not a safe domain. Anthropic's containment
+#    write-up describes an exfiltration that succeeded through an allowlist
+#    that "worked perfectly" — the domain was permitted, and the *content*
+#    crossing it was attacker-controlled. Their framing: "Any external
+#    resource provided to an agent represents two risks at once: a code
+#    execution risk, in the traditional supply-chain sense, and a prompt
+#    injection vector."  Every entry below is reachable in BOTH directions —
+#    `raw.githubusercontent.com` is an arbitrary-payload fetch channel, and
+#    the GitHub API entries are an arbitrary-content *write* channel.
+#    https://www.anthropic.com/engineering/how-we-contain-claude
+#
+# 2. `dstdomain` on a CONNECT matches the hostname the CLIENT asked for. We do
+#    not SSL-bump, so squid never verifies that the tunnel's real peer matches
+#    that string. This bounds an agent doing ordinary things; it is not a
+#    control against a process actively trying to evade it. Treat the guest's
+#    LXC + firewall confinement as the boundary that holds, and this list as
+#    the one that keeps honest traffic honest.
 squid_egress_profiles:
   ai_proxied:
     group: ai_agent_pool_group

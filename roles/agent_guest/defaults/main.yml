@@ -8,6 +8,21 @@
 # permission-skipping mode by design, so a guest must only ever live behind a
 # restrictive egress profile. Same posture ai_runner documented; unchanged.
 #
+# That ordering is deliberate and matches Anthropic's published guidance:
+# "Design for containment at the environment layer first, then steer behavior
+# at the model layer."  The reason it must be that way round is that anything
+# enforced at the model layer is a tendency, not a limit — "Because models are
+# probabilistic, these shape only what the agent *tends* to do, not what it is
+# theoretically capable of doing."  So every control in this role is placed to
+# hold when the agent behaves badly, not merely when it behaves well:
+# "The deterministic boundary is what gets hit when everything probabilistic
+# misses."  https://www.anthropic.com/engineering/how-we-contain-claude
+#
+# Practical consequence when editing this file: if a safeguard here only works
+# because the CLI chooses to respect it, it is decoration. The load-bearing
+# controls are the firewall profile, the squid allowlist, the unit's resource
+# and filesystem confinement, and the repo allowlist below.
+#
 # Secrets stay injection-agnostic: defaults read `lookup('env', ...)`, group_vars
 # overrides bao-first. Never bake a backend into a default.
 
@@ -156,8 +171,37 @@ agent_guest_poll_interval: 2min
 # in-process timeout ai_runner used — a wedged CLI is killed with its whole
 # cgroup, not left holding a claim.
 agent_guest_task_max_sec: 3600
+# RuntimeMaxSec bounds a job that is WEDGED. It does nothing about one that is
+# running away — a fork bomb or a memory hog reaches the guest's own limits
+# long before the wall clock, taking the poller and Cribl Edge down with it and
+# stranding undelivered transcripts. These two cap that: "The engineering
+# question becomes how to cap the blast radius."
+# https://www.anthropic.com/engineering/how-we-contain-claude
+# Sized against a 4-core / 8192 MB pool guest, leaving headroom for the poller,
+# Cribl Edge and sshd. Raise deliberately; a job needing more than this is a
+# sign the job is wrong, not that the cap is.
+agent_guest_task_memory_max: 6G
+agent_guest_task_cpu_quota: 300%
 agent_guest_task_default_base: develop
 agent_guest_worker_script: /usr/local/bin/agent-task
+
+# Repos a job is permitted to clone and open a PR against, as fnmatch patterns.
+#
+# The `repo` field arrives in the job's front-matter — queue content, which is
+# the one attacker-reachable input to this guest. Without this list, any task
+# that reaches the queue can direct the runner to clone and push to anything
+# the injected GITHUB_TOKEN can reach, so the token's own scope would be the
+# only thing standing in the way. That is a single layer, and it is currently
+# an UNKNOWN one: the `agent-guest` GitHub permission set does not exist yet,
+# so the token's real reach is undefined. This list is the layer that does not
+# depend on that being resolved correctly.
+#
+# Anthropic's framing for why queue content gets this treatment: "Tool output
+# is an attack surface even when the tool is trusted."
+# https://www.anthropic.com/engineering/how-we-contain-claude
+agent_guest_repo_allowlist:
+  - "dryvist/*"
+  - "JacobPEvans-personal/*"
 
 # --- Result push (ntfy) ------------------------------------------------------
 # Absorbed from ai_runner unchanged. Empty topic disables the push; the worker
