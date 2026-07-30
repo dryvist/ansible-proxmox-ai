@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.19.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.18.0...v0.19.0) (2026-07-30)
+
+
+### Features
+
+* **agent_guest:** migrate the third CLI from gemini-cli to agy ([#245](https://github.com/dryvist/ansible-proxmox-ai/issues/245)) ([#246](https://github.com/dryvist/ansible-proxmox-ai/issues/246)) ([0cdc1b8](https://github.com/dryvist/ansible-proxmox-ai/commit/0cdc1b8fd1e8db5fd4794f4a02d3ae2b8d5d4f66))
+* **agent_guest:** pooled autonomous agent role — ai_runner successor ([#226](https://github.com/dryvist/ansible-proxmox-ai/issues/226)) ([4a5ca12](https://github.com/dryvist/ansible-proxmox-ai/commit/4a5ca12a94751e3f41a1f08548026850e12e3a43))
+* **hermes_agent:** report error signatures, gate the kanban digest's quiet posts ([#228](https://github.com/dryvist/ansible-proxmox-ai/issues/228)) ([2c36c93](https://github.com/dryvist/ansible-proxmox-ai/commit/2c36c93d1d2f534b542cc6aae9c242eaae7114d4))
+* **hermes:** give the splunk-admin domain its own channel, inert until created ([#257](https://github.com/dryvist/ansible-proxmox-ai/issues/257)) ([9e9f28a](https://github.com/dryvist/ansible-proxmox-ai/commit/9e9f28a7c15b4b4a3dc4cbbaf5cb895ac704a11b))
+* **hermes:** make the heartbeat the quiet-day log of record, every 4h ([#249](https://github.com/dryvist/ansible-proxmox-ai/issues/249)) ([6fd76eb](https://github.com/dryvist/ansible-proxmox-ai/commit/6fd76eb06b5bfd141a63c0a7139db8378cd609a6))
+* **squid:** forward-proxy role and agent-guest proxy wiring ([#229](https://github.com/dryvist/ansible-proxmox-ai/issues/229)) ([3ddfdb7](https://github.com/dryvist/ansible-proxmox-ai/commit/3ddfdb7fef80d50dcfa156e1e8989c1a27bd637e))
+
+
+### Bug Fixes
+
+* **agent_guest:** become via su — stock Debian ships no sudo ([#237](https://github.com/dryvist/ansible-proxmox-ai/issues/237)) ([438dcd1](https://github.com/dryvist/ansible-proxmox-ai/commit/438dcd16bfaa48aef73b7d51d1ccae326ca806f2))
+* **agent_guest:** create the systemd drop-in directory before templating ([#231](https://github.com/dryvist/ansible-proxmox-ai/issues/231)) ([827dee7](https://github.com/dryvist/ansible-proxmox-ai/commit/827dee714b59fcfb373209222f16944a65e42602))
+* **agent_guest:** drop ansible_managed from the gitleaks hook copy task ([#234](https://github.com/dryvist/ansible-proxmox-ai/issues/234)) ([e5049d5](https://github.com/dryvist/ansible-proxmox-ai/commit/e5049d59a919690b3ccaf9a22d93369661bab4c4))
+* **agent_guest:** gemini settings — drop invalid yolo enum, pin auth type ([#244](https://github.com/dryvist/ansible-proxmox-ai/issues/244)) ([b4ba8bc](https://github.com/dryvist/ansible-proxmox-ai/commit/b4ba8bc276f3536c768dc389d47031d727426bac))
+* **agent_guest:** move pool-return to its own play — never-tag inheritance ([#242](https://github.com/dryvist/ansible-proxmox-ai/issues/242)) ([55019f5](https://github.com/dryvist/ansible-proxmox-ai/commit/55019f5ef5077cb82de3dcf24d59f9c4bc4ce9ed))
+* **agent_guest:** render the proxy drop-ins with template, not copy ([#230](https://github.com/dryvist/ansible-proxmox-ai/issues/230)) ([b51c489](https://github.com/dryvist/ansible-proxmox-ai/commit/b51c4892e6ae0f8212c3bf4dcb46683b8b37cf86))
+* **agent_guest:** set su via task var — connection vars outrank keywords ([#238](https://github.com/dryvist/ansible-proxmox-ai/issues/238)) ([b155d1c](https://github.com/dryvist/ansible-proxmox-ai/commit/b155d1c87beb132aa153b3dfd88931266bebe907))
+* **agent_guest:** su -s /bin/sh for the nologin cribl user ([#241](https://github.com/dryvist/ansible-proxmox-ai/issues/241)) ([036d66c](https://github.com/dryvist/ansible-proxmox-ai/commit/036d66c86f5870ca497a1f1250e0028dabbea7dd))
+* **agent_guest:** use Cribl's rolling latest URL — the versioned layout 404s ([#240](https://github.com/dryvist/ansible-proxmox-ai/issues/240)) ([18640ec](https://github.com/dryvist/ansible-proxmox-ai/commit/18640ec2a31386dd825a5ba6c5d0f5fc30c26964))
+* **hermes:** CRITICAL anomaly alerts reach #hermes-all, not just the DM ([#255](https://github.com/dryvist/ansible-proxmox-ai/issues/255)) ([39c6d09](https://github.com/dryvist/ansible-proxmox-ai/commit/39c6d094bbd827a7e977d3852580f48cf8273909))
+* **hermes:** gate digest failures through the day ledger, and announce recovery ([#248](https://github.com/dryvist/ansible-proxmox-ai/issues/248)) ([297a52b](https://github.com/dryvist/ansible-proxmox-ai/commit/297a52b6dc2bfe7e7800aa0d180961cfce5aa610))
+* **hermes:** make #hermes-all the log of record structurally, not by coincidence ([#256](https://github.com/dryvist/ansible-proxmox-ai/issues/256)) ([88387c7](https://github.com/dryvist/ansible-proxmox-ai/commit/88387c72e80c3edab27f8b7ec272faef39df3be2))
+* **hermes:** stop citing a completion gate that does not exist ([#250](https://github.com/dryvist/ansible-proxmox-ai/issues/250)) ([4ed7370](https://github.com/dryvist/ansible-proxmox-ai/commit/4ed737067802450a95ebde7aa43658b145069aeb))
+* **hermes:** verify every pinned-source patch, not just the goal-mode ones ([#253](https://github.com/dryvist/ansible-proxmox-ai/issues/253)) ([d7fe007](https://github.com/dryvist/ansible-proxmox-ai/commit/d7fe007839f57227eccece3182950477550612c6))
+* **llm_router:** point every consumer alias at a model the host will serve ([#233](https://github.com/dryvist/ansible-proxmox-ai/issues/233)) ([e5f30f9](https://github.com/dryvist/ansible-proxmox-ai/commit/e5f30f971a7fd7602771beffb1d5598a1ab4ddec))
+* **squid:** allow agy's eligibility-check host ([#258](https://github.com/dryvist/ansible-proxmox-ai/issues/258)) ([f9de523](https://github.com/dryvist/ansible-proxmox-ai/commit/f9de523d9055bd983e7e26ba699daf01448ef923))
+* **squid:** allow cdn.cribl.io — the transcript-shipping Edge downloads from it ([#239](https://github.com/dryvist/ansible-proxmox-ai/issues/239)) ([eaf34c2](https://github.com/dryvist/ansible-proxmox-ai/commit/eaf34c20706befe4f70984076d9f91825fd6f7ae))
+* **squid:** allow platform.claude.com — the claude OAuth refresh endpoint ([#243](https://github.com/dryvist/ansible-proxmox-ai/issues/243)) ([bd90c58](https://github.com/dryvist/ansible-proxmox-ai/commit/bd90c582f5881f051b8134dc08cd0215082ea596))
+* **squid:** allow the githubusercontent asset CDN by wildcard ([#232](https://github.com/dryvist/ansible-proxmox-ai/issues/232)) ([e5f524f](https://github.com/dryvist/ansible-proxmox-ai/commit/e5f524f44d5c06a9dfb699f6422b84e812997f8c))
+
 ## [0.18.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.17.0...v0.18.0) (2026-07-27)
 
 
