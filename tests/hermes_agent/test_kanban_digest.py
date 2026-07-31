@@ -45,6 +45,7 @@ FIXTURE_CONFIG = {
     # Deliberately absent: send_to_issues must report failure, not raise, so the
     # caller can fall back to inlining the failure lines.
     "HERMES_BIN": str(TMP / "no-such-hermes-binary"),
+    "ISSUES_MARKER": "[ISSUES]",
 }
 
 # Columns as they exist on the live board. Only what the digest reads.

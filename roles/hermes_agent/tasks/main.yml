@@ -273,6 +273,37 @@
               f"instead of a report; its output was suppressed rather than "
               f"delivered. Raw run: {output_file}"
           )
+
+
+      # Where a run that FAILED goes, instead of the job's own channel. Empty
+      # disables the split and leaves every result on its configured target.
+      _CRON_ISSUES_TARGET = "{{ hermes_agent_cron_failure_deliver }}"
+      # Script-fed crons exit 0 and PRINT their own failure so it gets delivered
+      # (see the digest templates) — so `success` is True even though the run
+      # failed. They declare it with this prefix instead, the same shape as the
+      # existing [SILENT] contract. A marker the script owns, never a keyword
+      # match on the text: a successful job REPORTING an error it observed is a
+      # finding and must stay on the work surface.
+      _CRON_ISSUES_MARKER = "{{ hermes_agent_cron_issues_marker }}"
+
+
+      def _cron_route(job, success, content):
+          """Return (job, content) with failures routed to the issues channel.
+
+          Routes when the runner reports failure, or when a script-fed job
+          declared its own failure with the marker prefix. The marker is
+          stripped so it never reaches Slack. Never mutates the caller's job.
+          """
+          declared = content.lstrip().startswith(_CRON_ISSUES_MARKER)
+          if declared:
+              content = content.lstrip()[len(_CRON_ISSUES_MARKER):].lstrip()
+          if (success and not declared) or not _CRON_ISSUES_TARGET:
+              return job, content
+          logger.info(
+              "Job '%s': run failed — routing delivery to the issues channel",
+              job.get("name", job.get("id", "?")),
+          )
+          return {**job, "deliver": _CRON_ISSUES_TARGET}, content
   notify: Restart hermes-gateway
 
 - name: Route cron delivery content through the markup guard
@@ -284,6 +315,24 @@
     replace: >-
       \g<1>deliver_content = _cron_markup_guard(job, output_file, final_response
       if success else _summarize_cron_failure_for_delivery(job, error))
+  notify: Restart hermes-gateway
+
+- name: Route failed cron deliveries to the issues channel
+  # The `success` flag is already in scope at the delivery call, so routing on
+  # it needs no new signal and cannot misclassify a healthy job that happens to
+  # report an error. Rewrites the call, not the content, so the markup guard
+  # above is untouched. Idempotent: the rewritten line no longer matches.
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: >-
+      ^([ \t]*)delivery_error = _deliver_result\(job, deliver_content,
+      adapters=adapters, loop=loop\)$
+    replace: >-
+      \g<1>_routed_job, deliver_content = _cron_route(job, success,
+      deliver_content)
+
+      \g<1>delivery_error = _deliver_result(_routed_job, deliver_content,
+      adapters=adapters, loop=loop)
   notify: Restart hermes-gateway
 
 - name: Patch Hermes auxiliary retry delay for the local serial backend
@@ -498,6 +547,9 @@
         in hermes_agent_compressor_source
       - >-
         'deliver_content = _cron_markup_guard(job, output_file,'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        '_deliver_result(_routed_job, deliver_content,'
         in hermes_agent_cron_scheduler_source
       - >-
         'registered for dispatcher-spawned workers (HERMES_KANBAN_TASK '

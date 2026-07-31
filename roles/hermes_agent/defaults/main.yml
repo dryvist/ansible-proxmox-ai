@@ -156,6 +156,22 @@ hermes_agent_slack_firehose_channel: "{{ lookup('env', 'SLACK_FIREHOSE_CHANNEL')
 hermes_agent_slack_issues_channel: "{{ lookup('env', 'SLACK_HERMES_ISSUES_CHANNEL') | default('', true) }}"
 hermes_agent_slack_noise_channel: "{{ lookup('env', 'SLACK_HERMES_NOISE_CHANNEL') | default('', true) }}"
 
+# The prefix a script-fed cron prints to declare that its OWN observation path
+# failed. Those scripts deliberately exit 0 and print their failure so it gets
+# delivered, so the runner sees success — this is how they say otherwise. ONE
+# definition, templated into both the scheduler patch and every script that
+# emits it, so the producer and the consumer cannot drift.
+hermes_agent_cron_issues_marker: "[ISSUES]"
+
+# Delivery target a FAILED cron run is redirected to, patched into upstream's
+# scheduler (tasks/main.yml). Covers both a runner-reported failure and a
+# script-fed job that declared its own with the marker above. Empty leaves
+# every result on its job's own channel, i.e. previous behaviour.
+hermes_agent_cron_failure_deliver: >-
+  {{ 'slack:' ~ hermes_agent_slack_issues_channel
+     if (hermes_agent_slack_issues_channel | length > 0)
+     else '' }}
+
 # --- Agentic direct-deliver digest crons (declarative; Phase 5) --------------
 # Nine hand-created "direct deliver" digest jobs, now reconciled by the role
 # (tasks/reconcile_direct_cron.yml) instead of being live-patched onto the

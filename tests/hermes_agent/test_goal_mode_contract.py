@@ -75,6 +75,8 @@ PINNED_PROTOCOL_VIOLATION_SOURCE = (
 PINNED_CRON_DELIVERY_SOURCE = (
     "            deliver_content = final_response if success else "
     "_summarize_cron_failure_for_delivery(job, error)\n"
+    "                    delivery_error = _deliver_result(job, deliver_content, "
+    "adapters=adapters, loop=loop)\n"
 )
 MALFORMED_TOKEN_USAGE_SOURCE = (
     "                   if True:\n"
@@ -124,8 +126,11 @@ PATCHED_COMPRESSOR_SCAN_SOURCE = _apply_runtime_patch(
     PINNED_COMPRESSOR_SCAN_SOURCE,
 )
 PATCHED_CRON_DELIVERY_SOURCE = _apply_runtime_patch(
-    "Route cron delivery content through the markup guard",
-    PINNED_CRON_DELIVERY_SOURCE,
+    "Route failed cron deliveries to the issues channel",
+    _apply_runtime_patch(
+        "Route cron delivery content through the markup guard",
+        PINNED_CRON_DELIVERY_SOURCE,
+    ),
 )
 
 
@@ -551,6 +556,8 @@ def test_installed_source_postconditions_fail_closed() -> None:
     assert "status in (408, 429)" in conditions
     assert "for idx in range(min(end, len(messages)) - 1, start - 1, -1):" in conditions
     assert "deliver_content = _cron_markup_guard(job, output_file," in conditions
+    # A failed run must reach the issues channel, not the work surface.
+    assert "_deliver_result(_routed_job, deliver_content," in conditions
     assert (
         "registered for dispatcher-spawned workers (HERMES_KANBAN_TASK "
         in conditions
