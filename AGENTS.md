@@ -85,13 +85,15 @@ RBAC) is documented on the docs site, not here.
 
 This repo is fully self-sufficient: `playbooks/site.yml` +
 `inventory/load_tofu.yml` converge the AI fleet with no dependency on
-`ansible-proxmox-apps`. The shared `inventory_resolve` galaxy role is
-gitignored — install it once per fresh worktree:
+`ansible-proxmox-apps`. The shared `inventory_resolve` role ships in the
+`dryvist.homelab` collection — install dependencies once per fresh worktree:
 
 ```bash
-ansible-galaxy collection install -r requirements.yml
-ansible-galaxy role install -r requirements.yml   # -> roles/inventory_resolve
+ansible-galaxy install -r requirements.yml
 ```
+
+Use `install`, not `collection install` or `role install`: each of those
+silently ignores the other section of `requirements.yml` and still exits zero.
 
 ### Commands
 
@@ -189,7 +191,7 @@ TOFU_INVENTORY_PATH=$PWD/tests/inventory_load/tofu_inventory.json \
 
 ```bash
 # Install Ansible Galaxy dependencies (once)
-ansible-galaxy collection install -r requirements.yml
+ansible-galaxy install -r requirements.yml
 
 # Run one scenario's full test cycle (create -> converge -> idempotence -> verify -> destroy)
 molecule test -s llamaindex
