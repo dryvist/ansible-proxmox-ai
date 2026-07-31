@@ -34,10 +34,15 @@ import datetime as dt
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 
 # --- config (rendered from roles/hermes_agent/defaults/main.yml) ---------------
 DB_PATH = "{{ hermes_agent_hermes_home }}/kanban.db"
+# Where worker-failure lines go instead of the work log. Empty disables the
+# split entirely and restores the single-post behaviour.
+ISSUES_CHANNEL = "{{ hermes_agent_kanban_digest_issues_channel }}"
+HERMES_BIN = "{{ hermes_agent_bin }}"
 STATE_PATH = "{{ hermes_agent_hermes_home }}/state/{{ hermes_agent_kanban_digest_state_name }}"
 TITLE = "{{ hermes_agent_kanban_digest_title }}"
 # One scheduling interval. Doubles as the no-state fallback window, so the
@@ -258,6 +263,27 @@ def overrun_lines(rows, now_epoch):
     return out
 
 
+def send_to_issues(text):
+    """Post `text` to the issues channel. True on success, False on any failure.
+
+    Uses the native sender, which already owns the configured Slack credentials
+    — the same path the Kanban card footer instructs workers to use. No token
+    handling and no curl here on purpose.
+
+    Never raises: the caller falls back to inlining the text, so a send problem
+    degrades the routing rather than losing the failure report.
+    """
+    if not ISSUES_CHANNEL:
+        return False
+    try:
+        return subprocess.run(
+            [HERMES_BIN, "send", "--to", f"slack:{ISSUES_CHANNEL}", "--quiet", text],
+            capture_output=True, timeout=30, check=False,
+        ).returncode == 0
+    except Exception:  # noqa: BLE001 - any failure means "fall back to inline"
+        return False
+
+
 def section(lines, heading):
     """Rendered section, capped, honest about what the cap hid."""
     if not lines:
@@ -269,12 +295,22 @@ def section(lines, heading):
     return out
 
 
-def build_digest(run_rows, running_rows, board, now, since, note, due=True):
-    """Return the Slack text, or SILENT when a quiet run is heartbeat-suppressed.
+def build_digest(run_rows, running_rows, board, now, since, note, due=True,
+                 split_failures=False):
+    """Return (slack_text, issues_text).
+
+    slack_text is SILENT when a quiet run is heartbeat-suppressed.
 
     `due` is the heartbeat verdict and gates ONLY the fully-quiet branch. Any
     real board activity — a completion, a failure, an overrun — returns text
     regardless, because those are the reason the digest exists.
+
+    When `split_failures`, the "Failed / retried / left open" section is peeled
+    off into issues_text for the issues channel instead of the work log. Those
+    lines are always Hermes' own workers dying (turn-budget exhaustion, judge
+    timeouts, max_runtime overruns) — Hermes being broken, not board activity.
+    The peel happens BEFORE the heartbeat gate so a run whose only content was
+    failures counts as quiet for the work log rather than posting a bare header.
     """
     now_epoch = now.timestamp()
     span = fmt_dur(now_epoch - since)
@@ -283,11 +319,20 @@ def build_digest(run_rows, running_rows, board, now, since, note, due=True):
     failed = failed_lines(by_task)
     overrun = overrun_lines(running_rows, now_epoch)
 
+    issues_text = ""
+    if split_failures and failed:
+        issues_text = "\n".join(
+            [f"*{TITLE} — worker failures* — {now.strftime('%Y-%m-%d %H:%M UTC')} "
+             f"(since {dt.datetime.fromtimestamp(since, dt.timezone.utc).strftime('%H:%M UTC')}, {span})"]
+            + section(failed, "Failed / retried / left open")
+        )
+        failed = []
+
     # NEVER post a message whose entire content is "nothing happened" unless the
     # heartbeat interval has elapsed. Decided before any text is built so the
     # quiet path cannot leak a header-only post.
     if not (done or failed or overrun) and not due:
-        return SILENT
+        return SILENT, issues_text
 
     header = (f"*{TITLE}* — {now.strftime('%Y-%m-%d %H:%M UTC')} "
               f"(since {dt.datetime.fromtimestamp(since, dt.timezone.utc).strftime('%H:%M UTC')}, {span})")
@@ -306,7 +351,7 @@ def build_digest(run_rows, running_rows, board, now, since, note, due=True):
                      f"failed, was retried or exceeded its max_runtime. Board holds: "
                      f"{board_text}. (heartbeat — quiet runs stay silent for the next "
                      f"{HEARTBEAT_HOURS}h unless the board does something)")
-    return "\n".join(lines)
+    return "\n".join(lines), issues_text
 
 
 def main():
@@ -326,11 +371,20 @@ def main():
             board = {row[0]: row[1] for row in conn.execute(BOARD_SQL)}
         finally:
             conn.close()
-        text = build_digest(run_rows, running_rows, board, now, since, note,
-                            heartbeat_due(now_epoch, last_post))
+        text, issues_text = build_digest(run_rows, running_rows, board, now,
+                                         since, note,
+                                         heartbeat_due(now_epoch, last_post),
+                                         split_failures=bool(ISSUES_CHANNEL))
     except Exception as e:  # noqa: BLE001 - deliberately broad; failure must be delivered
         print(f":warning: {TITLE} FAILED: {type(e).__name__}: {str(e)[:200]}")
         return 0
+
+    # Failures go to the issues channel. If that send fails for ANY reason the
+    # lines are appended to this post instead — a dropped failure report is far
+    # worse than one landing on the wrong surface, so the split degrades back to
+    # the old inline behaviour rather than losing data.
+    if issues_text and not send_to_issues(issues_text):
+        text = issues_text if text == SILENT else f"{text}\n\n{issues_text}"
 
     # The window always advances — a suppressed run still covered it, and
     # re-covering it would double-report the next real activity. Only

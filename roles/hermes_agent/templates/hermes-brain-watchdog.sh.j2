@@ -64,6 +64,11 @@ SEEDED_JOBS=(
 API_KEY="${HERMES_AGENT_MODEL_API_KEY:-}"
 SLACK_TOKEN="${SLACK_BOT_TOKEN:-}"
 SLACK_USER="${SLACK_ALLOWED_USERS:-}"
+# Channel for brain up/down transitions. The brain being unreachable is Hermes
+# itself not working, so this belongs in the issues channel rather than only in
+# a DM, where it is invisible to anyone reading the channels. Same knob name and
+# fallback order fabric_watchdog already uses. Empty keeps the DM-only path.
+SLACK_ALERT_CHANNEL="${SLACK_ALERT_CHANNEL:-}"
 
 # --- Probe: a tiny real completion, mirroring what the crons actually do ------
 # Healthy iff HTTP 200 AND the body carries a real finish_reason. HTTP code
@@ -125,8 +130,11 @@ cron_do() {
 # is not worth a dependency (ponytail).
 slack_post() {
   local text="$1" channel
-  [[ -n "${SLACK_TOKEN}" && -n "${SLACK_USER}" ]] || return 0
-  channel="${SLACK_USER%%,*}"   # first member id; channel=<user id> DMs them
+  # Channel wins when set; else the first member id, i.e. channel=<user id> DMs
+  # them. Requires a token either way, but only requires SLACK_USER when there
+  # is no channel to fall back from.
+  channel="${SLACK_ALERT_CHANNEL:-${SLACK_USER%%,*}}"
+  [[ -n "${SLACK_TOKEN}" && -n "${channel}" ]] || return 0
   curl -fsS --max-time 10 -X POST https://slack.com/api/chat.postMessage \
     -H "Authorization: Bearer ${SLACK_TOKEN}" \
     -H "Content-Type: application/json; charset=utf-8" \
