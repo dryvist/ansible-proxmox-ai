@@ -133,6 +133,8 @@ def test_the_seed_is_public_safe() -> None:
     assert not re.search(r"\b\d{1,3}(\.\d{1,3}){3}\b", seed), "IP literal in the interest seed"
     assert "PROXMOX_SUBDOMAIN" not in seed
     assert not re.search(r"\b[\w-]+\.(jacobpevans|local|lan|internal)\b", seed)
+    assert "{{" not in seed and "}}" not in seed, "Jinja expression in the interest seed"
+    assert "lookup(" not in seed, "Ansible lookup (e.g. env var) in the interest seed"
 
 
 # --- activation and routing --------------------------------------------------
