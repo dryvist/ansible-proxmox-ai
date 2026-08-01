@@ -36,6 +36,7 @@ Runs bare (`python3 tests/hermes_agent/test_alert_routing.py`) or under pytest.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 import yaml
@@ -88,11 +89,31 @@ def _resolve(env_overrides: dict[str, str]) -> dict[str, str]:
     return ctx
 
 
-def _deliver_targets(pattern: str, ctx: dict[str, str], text: str) -> str:
+def _deliver_targets(pattern: str, ctx: Mapping[str, object], text: str) -> str:
     """Render the `deliver:` value at a real call site."""
     match = re.search(pattern, text)
     assert match, f"call site not found — did the task move? {pattern}"
     return _ENV.from_string(match.group(1)).render(**ctx).strip()
+
+
+ENQUEUER = (ROLE / "templates" / "kanban-enqueue-recurring.sh.j2").read_text()
+# The one place every recurring card is told where to post its report.
+CARD_REPORT = r'hermes send --to (slack:\{\{ card\.channel[^\n]*?\}\}) --quiet'
+
+
+def _card(title: str) -> dict:
+    for card in DEFAULTS["hermes_agent_kanban_cards"]:
+        if card["title"] == title:
+            return card
+    raise AssertionError(f"no kanban card titled {title!r}")
+
+
+def _card_report_channel(title: str, ctx: dict[str, str]) -> str:
+    """Where this card's report actually goes, rendered as the enqueuer renders it."""
+    card = dict(_card(title))
+    if "channel" in card:
+        card["channel"] = _ENV.from_string(str(card["channel"])).render(**ctx).strip()
+    return _deliver_targets(CARD_REPORT, {**ctx, "card": card}, ENQUEUER)
 
 
 SPLUNK_STATUS = r'deliver: "(slack:\{\{ hermes_agent_splunk_status_digest_channel \}\})"'
@@ -166,6 +187,43 @@ def test_the_four_channels_resolve_to_four_distinct_surfaces() -> None:
     assert len(live) == 4, f"emitters collapsed onto fewer channels: {live}"
 
 
+# --- per-card routing: the recurring board is not one undifferentiated tier ----
+
+def test_the_fabric_status_card_reports_to_the_issues_channel() -> None:
+    """The operator's stated requirement for #hermes-issues: nothing but an
+    hourly daytime all-clear while Hermes and its dependencies are up, and the
+    error detail when they are not. Both halves are this one card's output, so
+    the card posts to issues whether the news is good or bad — which is also
+    what keeps silence in that channel distinguishable from a dead watchdog."""
+    assert _card_report_channel("Homelab AI fabric status", _resolve(CONFIGURED)) == "slack:C_ISSUES"
+
+
+def test_scouting_cards_report_to_the_noise_channel() -> None:
+    """~28% of the audited corpus was low-urgency polling. These two are its
+    recurring source: reading material on a fixed cadence, never an observation
+    that something changed."""
+    ctx = _resolve(CONFIGURED)
+    for title in ("AI news scout", "Daily innovation proposal"):
+        assert _card_report_channel(title, ctx) == "slack:C_NOISE", title
+
+
+def test_cards_without_an_override_still_report_to_the_work_channel() -> None:
+    """The override is opt-in. Every card that observes the estate — including
+    the docs and Splunk fleets — stays on the work surface by omitting it."""
+    ctx = _resolve(CONFIGURED)
+    for title in ("Splunk triage sweep", "Docs sync", "Docs-site study"):
+        assert "channel" not in _card(title), f"{title} gained an override"
+        assert _card_report_channel(title, ctx) == "slack:C_ALL", title
+
+
+def test_an_unset_override_target_falls_back_to_the_work_channel() -> None:
+    """An override naming a channel the operator never configured must degrade to
+    the work channel, never to `slack:` with an empty id."""
+    ctx = _resolve({})
+    for title in ("Homelab AI fabric status", "AI news scout"):
+        assert _card_report_channel(title, ctx) == "slack:C_FIRE", title
+
+
 # --- inertness: an unconfigured id must change nothing ------------------------
 
 def test_unset_channels_reproduce_todays_routing_exactly() -> None:
@@ -213,6 +271,32 @@ def test_the_dead_composite_deliver_layer_is_gone() -> None:
                  "hermes_agent_summary_cron_deliver",
                  "hermes_agent_zammad_review_cron_deliver"):
         assert dead not in DEFAULTS, f"{dead} is back but still reaches no call site"
+
+
+def test_every_channel_var_reaches_a_consumer() -> None:
+    """The same defect class as the block above, caught one layer earlier.
+
+    A channel var whose only readers are these tests routes nothing: it looks
+    like a configured surface, resolves to a real Slack id, and no emitter ever
+    posts to it. That is how the collapse hid — sophistication with no call
+    site. A var must be read by a task, a template, or another var.
+    """
+    consumers = "\n".join(
+        p.read_text()
+        for d in ("tasks", "templates", "handlers", "vars")
+        for p in sorted((ROLE / d).rglob("*"))
+        if p.is_file()
+    ) + "\n" + yaml.safe_dump(DEFAULTS)
+
+    for name in DEFAULTS:
+        if not (name.startswith("hermes_agent_slack_") and name.endswith("_channel")):
+            continue
+        # Its own definition is not a use, so require a second occurrence.
+        assert consumers.count(name) > 1, (
+            f"{name} is defined but nothing reads it — wire it to an emitter or "
+            f"drop it; a channel with no producer is indistinguishable from a "
+            f"broken one"
+        )
 
 
 # --- the failure-routing helper, executed as shipped -------------------------

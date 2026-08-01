@@ -402,7 +402,15 @@ def test_enqueuer_goal_flags_follow_the_role_toggle() -> None:
         "{{ hermes_agent_kanban_goal_max_turns }}{% endif %}"
         in enqueuer
     )
-    assert "hermes send --to slack:{{ hermes_agent_slack_hermes_all_channel }}" in enqueuer
+    # The report destination is per-card as of the four-channel split: cards opt
+    # in with `channel:`, everything else falls back to the work channel. Routing
+    # itself is pinned in test_alert_routing.py; what matters here is that the
+    # footer still tells the worker to send exactly one report via the native
+    # sender, with the fallback intact.
+    assert (
+        "hermes send --to slack:"
+        "{{ card.channel | default(hermes_agent_slack_hermes_all_channel, true) }}"
+    ) in enqueuer
     assert "kind=needs_input" in enqueuer
     assert "status=pending" not in enqueuer
 
