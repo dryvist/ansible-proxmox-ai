@@ -599,6 +599,29 @@
     'Installed' in hermes_agent_slack_extra_install.stderr
     or 'Uninstalled' in hermes_agent_slack_extra_install.stderr
   when: hermes_agent_slack_bot_token | length > 0 and hermes_agent_slack_app_token | length > 0
+
+# The `web` toolset (web_search/web_extract) resolves its backend through a
+# key/package cascade and, with nothing installed, lands on its hardcoded
+# firecrawl default with no API key — verified live 2026-07-31 by running the
+# detection in the deployed venv: `search_backend: firecrawl, available:
+# False`. Every card that said "using the web toolset" was written against a
+# capability that never worked here. ddgs (keyless DuckDuckGo, search-only) is
+# the one upstream-bundled backend that needs no credential and no service; it
+# is an optional dep the base install omits, so install it the same way as the
+# Slack extra. Extraction has NO keyless provider upstream — cards read pages
+# with curl via the terminal toolset instead (self-hosted Firecrawl via
+# FIRECRAWL_API_URL is the follow-up if clean extraction is ever needed).
+- name: Install the keyless ddgs web-search backend into the Hermes venv
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_uv_bin }} pip install
+      --python {{ hermes_agent_venv_python }}
+      ddgs
+  register: hermes_agent_ddgs_install
+  changed_when: >-
+    'Installed' in hermes_agent_ddgs_install.stderr
+    or 'Uninstalled' in hermes_agent_ddgs_install.stderr
+  notify: Restart hermes-gateway
 - name: Create the hermes runtime user (HERMES_HOME on the data volume)
   ansible.builtin.user:
     name: "{{ hermes_agent_user }}"
