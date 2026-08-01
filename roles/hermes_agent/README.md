@@ -234,9 +234,19 @@ shipping pattern. The port/index/sourcetype are the single tofu-constants
 source of truth (`ai_log_routing.hermes_agent`); Cribl Stream's syslog input and
 the `hermes` index are provisioned by `ansible-proxmox-apps` / `ansible-splunk`.
 
+Deployed as **two** rsyslog.d drop-ins, not one: `05-hermes-agent.conf` (the
+ruleset + journald dispatch, order-sensitive relative to any `10-`-numbered
+catch-all) and `15-hermes-agent-files.conf` (the file-tailing `imfile`
+inputs). rsyslog's `module(load=...)` may be declared exactly once
+config-wide, so the second file only loads the `imfile` module when no other
+rsyslog.d drop-in on the guest already has — checked live at converge time
+(`syslog_route.yml`), never assumed.
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `hermes_agent_syslog_route_enabled` | `true` | Deploy the rsyslog forward |
+| `hermes_agent_syslog_rsyslog_config_path` | `/etc/rsyslog.d/05-hermes-agent.conf` | ruleset + dispatch drop-in |
+| `hermes_agent_syslog_files_rsyslog_config_path` | `/etc/rsyslog.d/15-hermes-agent-files.conf` | file-tail `imfile` drop-in |
 | `hermes_agent_log_directory` | `.hermes/logs` | Active Hermes file logs to forward |
 | `hermes_agent_syslog_host` | `syslog.{{ PROXMOX_SUBDOMAIN }}` | ingest FQDN |
 | `hermes_agent_syslog_port` | `ai_log_routing.hermes_agent.port` (tofu) | ingest TCP port |

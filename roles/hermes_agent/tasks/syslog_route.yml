@@ -3,9 +3,13 @@
 # dedicated rsyslog ruleset (full flow in the template header). Mirrors the
 # openbao_audit rsyslog shipping plumbing; gated by hermes_agent_syslog_route_enabled.
 
-# rsyslog may not be present on this guest (the AI stack does not apply the
-# shared syslog_forwarder role), so install it defensively — the role stands
-# alone. update_cache stays false: these guests reach internal mirrors only.
+# rsyslog is ALSO installed by ansible-proxmox-apps's syslog_forwarder role,
+# which applies to every lxc_containers guest (hermes-agent included) — so it
+# is very likely already present by the time this role runs. But that role's
+# converge is a separate, independently-scheduled Ansible run in another repo
+# with no ordering guarantee relative to this one, so this role must not
+# assume it already ran. Install here defensively — update_cache stays false:
+# these guests reach internal mirrors only.
 - name: Install rsyslog
   ansible.builtin.apt:
     name: rsyslog
@@ -16,6 +20,67 @@
   ansible.builtin.template:
     src: hermes-agent-rsyslog.conf.j2
     dest: "{{ hermes_agent_syslog_rsyslog_config_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart rsyslog
+
+# --- imfile module ownership (see hermes-agent-files-rsyslog.conf.j2 header) --
+# rsyslog's module(load=...) may be declared exactly once config-wide; a second
+# attempt is a hard validation error, not a merge. Another independently-
+# managed rsyslog.d drop-in on this guest (owned by a role this repo must not
+# edit) may already load imfile for its own inputs, so check the CURRENT
+# on-disk state before deciding whether this role's own file-tail inputs need
+# to load it themselves — generate-if-absent. Excludes both of this role's own
+# drop-ins so a PRIOR run of this same role is never mistaken for "another"
+# drop-in (hermes-agent-files-rsyslog.conf.j2 legitimately carries the load
+# itself once this task has run once with nothing else present).
+- name: Check whether another rsyslog drop-in already loads the imfile module
+  ansible.builtin.find:
+    paths: /etc/rsyslog.d
+    patterns: "*.conf"
+    excludes:
+      - "{{ hermes_agent_syslog_rsyslog_config_path | basename }}"
+      - "{{ hermes_agent_syslog_files_rsyslog_config_path | basename }}"
+    contains: 'module\(load="imfile"'
+  register: hermes_agent_imfile_scan
+
+- name: Record whether imfile is owned by another drop-in
+  ansible.builtin.set_fact:
+    hermes_agent_imfile_owned_elsewhere: "{{ hermes_agent_imfile_scan.matched > 0 }}"
+
+# rsyslog parses /etc/rsyslog.d/*.conf in lexical filename order as one merged
+# config, so a module load only satisfies a LATER file's `input()` reference —
+# never an earlier one. hermes-agent-files-rsyslog.conf.j2 is numbered 15- to
+# sort after the estate's only observed imfile-loading conventions (10-
+# forward-cribl.conf, 20-openbao-audit.conf where present), but that is an
+# observed convention, not a guarantee. Fail loudly here instead of letting a
+# violation surface as the cryptic "parameter ... not known -- typo in config
+# file?" cascade the duplicate-load error produces.
+- name: Assert the other imfile loader sorts before this role's own drop-in
+  ansible.builtin.assert:
+    that:
+      - >-
+        hermes_agent_imfile_scan.files
+        | map(attribute='path') | map('basename')
+        | select('lt', hermes_agent_syslog_files_rsyslog_config_path | basename)
+        | list | length > 0
+    fail_msg: >-
+      Another rsyslog.d drop-in already loads the imfile module
+      ({{ hermes_agent_imfile_scan.files | map(attribute='path') | join(', ') }})
+      but none of them sort lexically before
+      {{ hermes_agent_syslog_files_rsyslog_config_path }}. rsyslog requires a
+      module to be loaded before any config line that references it, so this
+      role's own imfile inputs would fail rsyslogd -N1. Renumber the
+      conflicting drop-in (in its own role/repo) to load earlier, or renumber
+      hermes_agent_syslog_files_rsyslog_config_path to load later.
+    quiet: true
+  when: hermes_agent_imfile_owned_elsewhere | bool
+
+- name: Deploy the hermes-agent file-tail imfile inputs
+  ansible.builtin.template:
+    src: hermes-agent-files-rsyslog.conf.j2
+    dest: "{{ hermes_agent_syslog_files_rsyslog_config_path }}"
     owner: root
     group: root
     mode: "0644"

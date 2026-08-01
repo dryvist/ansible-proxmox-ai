@@ -1,0 +1,53 @@
+# {{ ansible_managed }}
+# Tail Hermes' file-only logs (agent, Kanban worker, board worker, profile
+# logs) into the hermes_agent ruleset defined by hermes-agent-rsyslog.conf.j2
+# (05-hermes-agent.conf, parsed first — rsyslog requires a ruleset to be
+# declared before an `input()` can reference it by name).
+#
+# rsyslog's module(load=...) is a config-wide singleton: it may be declared
+# exactly once, and a second attempt is a hard validation error ("module
+# 'imfile' already in this config, cannot be added"), not a merge — see
+# https://github.com/rsyslog/rsyslog/blob/main/doc/source/development/config_data_model.md
+# ("Each module must be specified only once"). Any other rsyslog.d drop-in on
+# this guest may independently need imfile too (a Cribl catch-all's optional
+# per-app file-tail inputs, an audit-log shipper, ...), owned by a role this
+# repo must not edit. So the load below is skipped whenever
+# hermes_agent_imfile_owned_elsewhere (computed in syslog_route.yml from the
+# CURRENT state of /etc/rsyslog.d) is true — generate-if-absent, the same
+# idiom ansible-proxmox-apps's syslog_forwarder role uses for its own optional
+# imfile inputs. This file is numbered 15- specifically so it sorts after the
+# estate's observed imfile-loading drop-ins (10-forward-cribl.conf,
+# 20-openbao-audit.conf where present) — syslog_route.yml asserts that
+# whichever other drop-in owns the load actually sorts before this file,
+# rather than silently trusting the convention.
+{% if not hermes_agent_imfile_owned_elsewhere %}
+module(load="imfile")
+{% endif %}
+
+input(type="imfile"
+      File="{{ hermes_agent_log_directory }}/*.log"
+      Tag="hermes-file"
+      PersistStateInterval="100"
+      freshStartTail="off"
+      Ruleset="hermes_agent")
+
+input(type="imfile"
+      File="{{ hermes_agent_hermes_home }}/kanban/logs/*.log"
+      Tag="hermes-kanban"
+      PersistStateInterval="100"
+      freshStartTail="off"
+      Ruleset="hermes_agent")
+
+input(type="imfile"
+      File="{{ hermes_agent_hermes_home }}/kanban/boards/*/logs/*.log"
+      Tag="hermes-kanban-board"
+      PersistStateInterval="100"
+      freshStartTail="off"
+      Ruleset="hermes_agent")
+
+input(type="imfile"
+      File="{{ hermes_agent_hermes_home }}/profiles/*/logs/*.log"
+      Tag="hermes-profile"
+      PersistStateInterval="100"
+      freshStartTail="off"
+      Ruleset="hermes_agent")
