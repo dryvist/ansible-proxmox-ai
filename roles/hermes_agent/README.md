@@ -585,16 +585,19 @@ rate limit, so one bulk paste into Vikunja cannot create fifty cards at once.
 | `hermes_agent_vikunja_bridge_intake_label` | `hermes` | second explicit opt-in. Empty means every undone Ready task is fair game |
 | `hermes_agent_vikunja_bridge_max_intake_per_tick` | `3` | rate limit, not a concurrency limit |
 | `hermes_agent_vikunja_bridge_card_assignee` | `""` | `kanban.default_assignee`, or a name in `hermes_agent_profiles` (asserted) |
-| `hermes_agent_vikunja_bridge_token` | bao-first, `env HERMES_VIKUNJA_API_TOKEN` fallback | **operator-supplied**; see below |
+| `hermes_agent_vikunja_bridge_token` | `env HERMES_VIKUNJA_API_TOKEN` | **operator-supplied**; see below |
 
 ### The credential
 
 `HERMES_VIKUNJA_API_TOKEN` — a **write-scoped** Vikunja API token. Resolved
-bao-first via the `hermes` OpenBao resource domain (its own least-privilege
-AppRole, path-exact on `ai/hermes` — see `roles/openbao_secrets/defaults/
-main.yml`), falling back to the converge environment (`lookup('env', ...)`,
-so Doppler or SOPS also satisfy it) when that domain's AppRole isn't
-configured.
+bao-first via the `local-llm` OpenBao domain (`secret/ai/hermes` — see
+`inventory/group_vars/hermes_agent_group.yml`, which overrides the role's
+plain-env default above), falling back to the converge environment
+(`lookup('env', ...)`, so Doppler or SOPS also satisfy it) when that domain's
+AppRole isn't configured. A path-exact `hermes` domain also exists (see
+`roles/openbao_secrets/defaults/main.yml`), provisioned ahead of a future
+migration off `local-llm`'s broader `ai/*`-style grant — nothing reads
+through it yet.
 
 **Already provisioned.** A least-privilege token was minted via the Vikunja API
 and stored at `secret/ai/hermes` in OpenBao (key `HERMES_VIKUNJA_API_TOKEN`,
