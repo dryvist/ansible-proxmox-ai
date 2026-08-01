@@ -137,14 +137,15 @@ def test_the_seed_is_public_safe() -> None:
 
 # --- activation and routing --------------------------------------------------
 
-def test_the_news_card_stays_paused_until_its_preconditions_hold() -> None:
-    """Deferred, not cancelled (team-lead decision 2026-07-31): the card stays
-    paused until (a) the hermes converge succeeds and (b) the goal-turn-burn
-    fix is live — today every agentic card exhausts its turn budget on judge
-    errors regardless of capability, so unpausing means its first act is to
-    fail or fabricate. Flipping this assertion IS the deliberate unpause act."""
+def test_the_news_card_is_the_canary_lift_off_the_pause_list() -> None:
+    """Team-lead decision 2026-07-31: unpaused, because the converge assertion
+    (ordered before the enqueuer reconcile) enforces the web-works
+    precondition structurally — a pause entry is a note, an ordered assertion
+    is a control — and the noise-channel routing bounds a poor run's blast
+    radius. Standing condition: this card is the FIRST thing re-paused if the
+    board wedges; daily-innovation stays throttled until capacity is proven."""
     paused = set(DEFAULTS["hermes_agent_kanban_paused_jobs"])
-    assert "{{ hermes_agent_ai_news_cron_name }}" in paused
+    assert "{{ hermes_agent_ai_news_cron_name }}" not in paused
     assert "{{ hermes_agent_daily_innovation_cron_name }}" in paused
 
 
