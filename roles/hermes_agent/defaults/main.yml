@@ -1240,7 +1240,10 @@ hermes_agent_docs_study_cron_prompt: >-
   documentation and find where it has drifted from reality. Retrieval first:
   recall memory key "docs-study-last" (pages and claims you already checked and
   filed) so you do not re-file a known gap, and rotate to a DIFFERENT area each
-  run (record which). Using the web toolset, read the public documentation site
+  run (record which). Find pages with the web_search tool and read them with
+  `curl -sL --max-time 30 <url>` in the terminal (web_extract has no backend
+  here — only search works); every page you cite must come from a tool result
+  THIS run. Study the public documentation site
   and the repository docs it is built from. Look for: claims that no longer
   match how the system behaves, broken or outdated commands and links, missing
   setup steps, and internal contradictions. Verify a suspected drift against a
@@ -1254,28 +1257,86 @@ hermes_agent_docs_study_cron_prompt: >-
   and absent from "docs-study-last"? Save the updated checked-areas fingerprint
   back to "docs-study-last".
 
-# AI-news scout: surface notable AI developments to the home channel, learning
-# the operator's interests over time from channel reactions.
+# News scout: read the news and turn it into a few suggestions the operator can
+# act on, tuned to their interests. Two design decisions carry this card:
+#
+# Interests are DERIVED at runtime, not frozen here. The seed list below is the
+# static floor; the living profile is the wiki interests note, which each run
+# refreshes from what Hermes' own memory shows the operator recently worked on.
+# (The previous prompt told the worker to learn from Slack reactions on its
+# past posts — impossible: upstream hard-disables the messaging toolset in
+# every cron context, so a cron worker can send via the `hermes send` CLI but
+# can never read a channel. The learning loop now uses inputs a cron worker
+# actually has: memory recall and explicit operator feedback stored there.)
+#
+# Every reported item must carry a URL that came out of a tool result THIS run.
+# The web toolset was silently non-functional for months (no search backend
+# installed — see the ddgs install in tasks/main.yml), so this card's old
+# "scan major AI sources" instruction was fabrication bait of exactly the
+# daily-status-endpoints shape. The prompt now fails loudly when search is
+# down instead of letting the model improvise headlines.
 hermes_agent_ai_news_cron_name: ai-news
 hermes_agent_ai_news_cron_schedule: "17 */4 * * *"
 hermes_agent_ai_news_cron_prompt: >-
-  You are the Hermes AI-news scout (every 4 hours): surface genuinely notable AI
-  developments for the operator, tuned to what they actually care about.
+  You are the Hermes news scout (every 4 hours): read the news and turn it into
+  AT MOST 3 suggestions the operator can act on, tuned to their interests.
   Retrieval first: read your interests note at
-  {{ hermes_agent_wiki_path }}/ai-news-interests.md (create it if absent) and
-  recall memory key "ai-news-last" (headlines you already posted) so you never
-  repeat a story. Using the web toolset, scan major AI sources for the last few
-  hours; keep only BREAKING or genuinely interesting items — new frontier
-  models, major releases, safety or policy shifts, notable research — and skip
-  rumor, marketing, and anything you have already posted. Output contract: post
-  the kept stories to your Slack home channel, one short line each (headline +
-  one clause on why it matters + link); if nothing clears the bar, post nothing
-  to the home channel. Learning loop: check your home channel for reactions and
-  replies to your PAST posts and fold what the operator engaged with (or
-  dismissed) into the interests note — that note is how you sharpen the
-  signal/noise cut over time. Self-check: is every posted story new versus
-  "ai-news-last" and above the notability bar? Save the updated
-  posted-headlines fingerprint back to "ai-news-last".
+  {{ hermes_agent_wiki_path }}/ai-news-interests.md — create it from the
+  INTEREST SEED below if absent — and recall memory key "ai-news-last"
+  (fingerprints of items already reported) so you never repeat one. Refresh the
+  note each run: recall from memory what the operator recently worked on or
+  asked about, merge those topics in, and note which topics you scouted so runs
+  rotate. The seed is the fixed floor; the note is the living profile.
+  Scouting: pick the 3-4 note topics closest to recent operator activity and
+  search them with the web_search tool. Read a promising result with
+  `curl -sL --max-time 30 <url>` in the terminal (web_extract has no backend
+  here — only search works). Every candidate MUST carry a URL that appeared
+  in a tool result THIS run — if web_search errors or returns nothing, report
+  that in one line
+  and stop; never substitute a remembered or plausible-looking URL, and never
+  report an item you did not retrieve this run. Selection bar (relevance beats
+  recency): keep an item ONLY if it connects to a named interest AND you can
+  say what the operator could do with it; prefer items from the last few days;
+  skip rumor, marketing, funding news, and anything matching "ai-news-last".
+  Output contract: each kept item is exactly 3 lines — what happened (with its
+  URL), why it matters to THIS estate (name the interest, service, or repo it
+  touches), and what you would research or try next. At most 3 items; if
+  nothing clears the bar the report is the single line "No news cleared the
+  bar this run." If an item is genuinely actionable now against something this
+  estate runs (a security advisory for a deployed service, a release that
+  fixes a known problem), ALSO file it with kanban_create using idempotency
+  key news-<slug>-<UTC-date> so it enters board triage — that, not another
+  Slack channel, is how a suggestion becomes work. Self-check: does every item
+  carry a this-run URL and an estate-tied "why"? Save the updated fingerprints
+  to "ai-news-last" and write the refreshed note.
+
+
+  {{ hermes_agent_ai_news_interests }}
+
+# The static floor of the interest profile, appended verbatim to the news-scout
+# card body. Reviewable and overridable without touching the prompt; host_vars
+# may replace it wholesale. PUBLIC-SAFE ONLY: this repo is public, so entries
+# are technology and product names already visible in the operator's public
+# repos — never hostnames, addresses, or private topology. The living profile
+# (the wiki note the prompt maintains) stays on the guest and may hold more.
+hermes_agent_ai_news_interests: |-
+  INTEREST SEED (static floor — the interests note starts from this and grows):
+  - Infrastructure as code: Proxmox VE, OpenTofu/Terraform, Terrakube,
+    Ansible, UniFi networking
+  - Secrets and identity: OpenBao/Vault, ephemeral credentials, SSH
+    certificate authorities
+  - Observability and SIEM: Splunk, Cribl Edge/Stream, OpenTelemetry, syslog
+    pipelines
+  - Local LLM serving: MLX on Apple Silicon, quantization, llama.cpp, LiteLLM
+    routing, open-weight model releases (DeepSeek, Qwen, Hermes, Llama)
+  - AI agents and tooling: agent frameworks, MCP, Claude Code, Codex, Gemini
+    CLI, multi-agent orchestration, agent memory systems
+  - Nix: nix-darwin, home-manager, flakes, reproducible dev environments
+  - Self-hosted services this estate runs: Traefik, Authelia, Technitium DNS,
+    Vikunja, Zammad, Nautobot, Qdrant, PostgreSQL, Plex and the *arr stack
+  - Security advisories (CVEs, supply-chain compromises) affecting anything
+    above
+  - GitHub automation: Actions, Renovate, release-please
 
 # Daily innovation: propose one concrete, genuinely-new improvement per day,
 # checked against a wiki log so it never repeats a past proposal.
@@ -1290,7 +1351,11 @@ hermes_agent_daily_innovation_cron_prompt: >-
   restatement of a past proposal or an already-open issue or card. Ground it in
   what you have actually observed: your recent cron findings, memory, and the
   gaps in your own workflow (a missing check, a manual step you could automate,
-  a better signal). One well-formed proposal beats five vague ones. Output
+  a better signal). The news scout's recent finds are a first-class source too
+  — recall memory key "ai-news-last" and read the interests note at
+  {{ hermes_agent_wiki_path }}/ai-news-interests.md; an external development
+  that unlocks an estate improvement is exactly the kind of proposal wanted.
+  One well-formed proposal beats five vague ones. Output
   contract: write the proposal as a GitHub issue via the dryvist/github-issues
   skill (respect issue caps) OR, if you cannot file, as a Kanban card via
   kanban_create with a stable idempotency key innovation-<slug>-<UTC-date>; the
@@ -1673,9 +1738,12 @@ hermes_agent_kanban_cards:
     schedule: "{{ hermes_agent_ai_news_cron_schedule }}"
     prompt_var: hermes_agent_ai_news_cron_prompt
     assignee: ""
-    # Scouting output is reading material on a 4h cadence — the highest-volume,
-    # lowest-urgency emitter in the fleet. It belongs beside the work channel,
-    # not in it.
+    # Still noise, even now that the card emits estate-tied suggestions rather
+    # than raw headlines: the routing discriminator is the observation path,
+    # and a suggestion is reading material, not an observation that something
+    # in the estate changed. An item that IS actionable work does not get a
+    # louder channel — the prompt files it via kanban_create, so it enters the
+    # same board triage as every other work source.
     channel: "{{ hermes_agent_slack_noise_channel }}"
     max_runtime: "45m"
     max_retries: 2
@@ -1724,9 +1792,10 @@ hermes_agent_kanban_cards:
 # by their config-var refs so this list can never drift from the cards table.
 # NOT listed (already off for other reasons, so listing them would mislead):
 # bot-pr-triage (capability-gated off, no alerts token); anything whose `enabled`
-# capability gate is already false. Active set kept on: splunk triage + the
-# script-fed status digest (splunk-status-digest); the LLM splunk-digest card is
-# retired below in favour of that script.
+# capability gate is already false. Active set kept on: splunk triage, the
+# script-fed status digest (splunk-status-digest), and the ai-news scout
+# (canary lift, see below); the LLM splunk-digest card is retired below in
+# favour of that script.
 hermes_agent_kanban_paused_jobs:
   # homelab-ai-fabric-status is deliberately NOT here any more: it is now the
   # replacement for the retired homelab-ai-fabric-status-v2 cron, so it has to
@@ -1743,7 +1812,12 @@ hermes_agent_kanban_paused_jobs:
   - "{{ hermes_agent_kanban_reviewer_job }}"
   - "{{ hermes_agent_anomaly_hunt_cron_name }}"
   - "{{ hermes_agent_docs_study_cron_name }}"
-  - "{{ hermes_agent_ai_news_cron_name }}"
+  # ai-news deliberately NOT here (team-lead decision 2026-07-31): the converge
+  # assertion above the enqueuer reconcile enforces "web works" structurally —
+  # a pause entry is a note, an ordered assertion is a control — and the card
+  # reports to the noise channel, so a poor run cannot pollute the work
+  # surface. Standing condition: this card is the FIRST thing re-paused if the
+  # board wedges again; it is the throttle's canary lift (one 4h card).
   - "{{ hermes_agent_daily_innovation_cron_name }}"
   - "{{ hermes_agent_app_seeding_cron_name }}"
   - "{{ hermes_agent_kanban_safety_net_cron_name }}"
