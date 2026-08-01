@@ -14,7 +14,10 @@ TASKS = (REPO_ROOT / "roles/hermes_agent/tasks/main.yml").read_text()
 
 
 def _render_files_template(imfile_owned_elsewhere: bool) -> str:
-    env = jinja2.Environment()
+    # StrictUndefined: the default Undefined renders a missing variable as an
+    # empty string, which would let this test pass even if the template drifts
+    # to reference a variable this helper forgot to pass -- fail fast instead.
+    env = jinja2.Environment(undefined=jinja2.StrictUndefined)
     template = env.from_string(RSYSLOG_FILES_SRC)
     return template.render(
         ansible_managed="test",
@@ -78,7 +81,7 @@ def test_files_drop_in_loads_imfile_only_when_nothing_else_does() -> None:
 
 def test_syslog_route_computes_imfile_ownership_before_templating() -> None:
     assert "ansible.builtin.find" in SYSLOG_ROUTE_TASKS
-    assert 'contains: \'module\\(load="imfile"\'' in SYSLOG_ROUTE_TASKS
+    assert 'contains: \'^\\s*module\\(load="imfile"\'' in SYSLOG_ROUTE_TASKS
     assert "hermes_agent_imfile_owned_elsewhere" in SYSLOG_ROUTE_TASKS
     # Excludes both of this role's own drop-ins, so a prior run of this same
     # role is never mistaken for "another" drop-in owning the load.
