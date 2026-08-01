@@ -447,6 +447,22 @@
       \1    return row["id"]
   notify: Restart hermes-gateway
 
+# Auto-recall (the per-turn prefetch injected into context before the model
+# sees a message) swallows every failure at DEBUG and returns "" — recall
+# silently degrades to "no memories" with no signal distinguishable from
+# routine debug noise. Bring it up to the same severity auto-retain's
+# equivalent failure already logs at (_writer_loop, a few hundred lines
+# below in the same file) so a Hindsight outage is at least searchable in
+# Splunk as a warning, not buried in DEBUG chatter. Not a retry — the bar is
+# detectability, not resilience; fabric_watchdog (roles/fabric_watchdog)
+# covers actual outage alerting.
+- name: Patch Hermes auto-recall prefetch failure to log at warning, not debug
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/plugins/memory/hindsight/__init__.py"
+    regexp: '^(\s*)logger\.debug\("Hindsight prefetch failed: %s", e, exc_info=True\)$'
+    replace: '\1logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)'
+  notify: Restart hermes-gateway
+
 - name: Read installed Hermes pinned-source patches
   ansible.builtin.slurp:
     src: "{{ item }}"
@@ -461,6 +477,7 @@
     # later assertion at the wrong file.
     - "{{ hermes_agent_install_dir }}/agent/context_compressor.py"
     - "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    - "{{ hermes_agent_install_dir }}/plugins/memory/hindsight/__init__.py"
   register: hermes_agent_goal_mode_sources
   changed_when: false
 
@@ -480,6 +497,8 @@
       {{ hermes_agent_goal_mode_sources.results[5].content | b64decode }}
     hermes_agent_cron_scheduler_source: >-
       {{ hermes_agent_goal_mode_sources.results[6].content | b64decode }}
+    hermes_agent_hindsight_plugin_source: >-
+      {{ hermes_agent_goal_mode_sources.results[7].content | b64decode }}
   ansible.builtin.assert:
     quiet: true
     that:
@@ -559,6 +578,9 @@
       - >-
         'registered for dispatcher-spawned workers (HERMES_KANBAN_TASK '
         in hermes_agent_goal_reconcile_source
+      - >-
+        'logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)'
+        in hermes_agent_hindsight_plugin_source
     fail_msg: >-
       The pinned Hermes source changed and one or more required source
       patches were not installed; update the pinned-source patches before

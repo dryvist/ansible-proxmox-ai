@@ -542,7 +542,44 @@ hermes_agent_memory_llm_model: "{{ hermes_brain_model }}"
 # pip-install can never succeed in the venv (no pip/ensurepip) — with
 # hindsight-all's newer client resolved, every memory call fails "Memory is
 # not available". Pin what the plugin pins; bump with the hermes-agent package.
+# Verified 2026-07-31 against the pinned hermes-agent v2026.7.7.2 plugin
+# source: _MIN_CLIENT_VERSION == "0.6.1", so this pin exactly satisfies the
+# plugin's own >=0.6.1 check and its auto-upgrade-on-mismatch code path (which
+# would hit the same broken lazy pip-install) never triggers.
 hermes_agent_hindsight_client_pin: "==0.6.1"
+
+# --- Memory resilience: what actually happens when Hindsight is down ---------
+# Read directly from the pinned plugin source (plugins/memory/hindsight/
+# __init__.py in NousResearch/hermes-agent@v2026.7.7.2) — do not assume
+# behavior from upstream docs, they don't describe local_external's failure
+# path. Two real gaps, one non-gap:
+#  - is_available() is a NO-OP for local_external mode: it unconditionally
+#    returns True without ever contacting the service. Hermes has no built-in
+#    way to know Hindsight is down short of an actual memory call failing.
+#  - Auto-recall (the per-turn prefetch injected into context before the
+#    model sees the user's message) runs on a background thread and is
+#    genuinely silent on failure: `logger.debug("Hindsight prefetch failed:
+#    %s", ...)` and returns "". Recall degrades to "no memories" with no
+#    signal to the agent or the operator beyond a DEBUG log line — this is
+#    the failure mode fabric_watchdog's new `hindsight` target (see
+#    roles/fabric_watchdog/defaults/main.yml) exists to catch actively
+#    instead of relying on someone noticing recall going quiet.
+#  - Auto-retain (the background writer draining sync_turn's queue) logs
+#    failures at WARNING (visible in Splunk at our DEBUG log level) but does
+#    not retry and does not propagate — a dropped retain during an outage is
+#    permanently lost, not queued for replay.
+#  - Non-gap: explicit tool calls (hindsight_recall/_retain/_reflect, when the
+#    model invokes them directly) DO surface failures — handle_tool_call
+#    catches the exception and returns tool_error(...), which the agent sees
+#    as a failed tool call, not silence.
+#  - `_run_hindsight_operation`'s one-retry-after-reconnect logic is
+#    local_embedded-only (recovers from the embedded daemon's idle-shutdown);
+#    it never fires for local_external, so a transient 5xx/timeout against the
+#    standalone service gets zero retries anywhere in this call chain.
+# All of the above lives in the upstream pip package, not this repo — fixing
+# it means patching/forking hermes-agent. The available lever here is making
+# an outage IMPOSSIBLE to miss (fabric_watchdog) rather than patching a
+# dependency we don't own.
 
 # --- Logging: config.yaml `logging.level` (installed hermes-agent's
 # hermes_logging.py reads cfg["logging"]["level"], default "INFO" if unset).
