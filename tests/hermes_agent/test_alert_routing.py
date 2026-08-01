@@ -241,6 +241,38 @@ def test_only_the_fabric_status_card_collapses_its_all_clear() -> None:
     assert "without naming them" in body.render(card={})
 
 
+def test_the_fabric_status_card_is_told_its_endpoints_instead_of_guessing() -> None:
+    """Measured 2026-07-31: the public catalog body names checks but no address,
+    so the worker invented every one — localhost:8000/:8001 for services on other
+    ports, localhost for two that live behind their own FQDNs, and a domain that
+    does not resolve. All probes returned 000 and it posted hourly total-outage
+    alarms while mcp answered 406 and llm answered 401, their healthy codes.
+
+    That card feeds the channel the operator wants near-silent, so a fabricated
+    alarm is the one failure that makes the channel worthless."""
+    ep = str(DEFAULTS["hermes_agent_daily_status_endpoints"])
+
+    # Ports come from the deploy-time variables, never a literal a model can drift
+    # away from — and never the invented ones.
+    assert "{{ hermes_agent_api_server_port }}" in ep
+    assert "{{ hermes_agent_dashboard_port }}" in ep
+    for invented in ("localhost:8000", "localhost:8001", "localhost:6333", "localhost:8086"):
+        assert invented not in ep, f"{invented} was one of the invented endpoints"
+
+    assert "NOTHING ELSE" in ep and "Do not guess" in ep
+    # 000 is a failed probe, not a down service. Reporting it as an outage is what
+    # produced the alarms.
+    assert "probe failed" in ep
+
+    # fabric_watchdog owns the external front doors on a 2-minute cadence and
+    # alerts to this same channel; a second prober here only double-reports.
+    assert "Do NOT probe the MCP fabric or the LLM front door" in ep
+    assert "/v1/models" not in ep
+
+    # And it must actually reach the card: appended to the catalog body at load.
+    assert "hermes_agent_daily_status_endpoints" in MAIN_TASKS
+
+
 # --- inertness: an unconfigured id must change nothing ------------------------
 
 def test_unset_channels_reproduce_todays_routing_exactly() -> None:
