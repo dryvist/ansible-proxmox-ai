@@ -679,11 +679,11 @@ every `prompt_file` mapped to an immutable catalog artifact, and a non-empty
 `success_checks` list per job. Job ids follow clustered/normal naming (the original
 `night-orient` draft id shipped here as `orient`).
 
-## Runner-enforced tool policy (per job class)
+## Runner-enforced tool policy (per platform)
 
 A submitted `input` — and everything a job retrieves while running — is
 untrusted text that can carry prompt injection. The **runner's toolset
-resolution**, not the prompt, decides what each job class may load; injected
+resolution**, not the prompt, decides what each platform may load; injected
 instructions cannot widen a toolset list the runner never registered. Policy
 is plain data in `defaults/main.yml`:
 
@@ -696,7 +696,7 @@ is plain data in `defaults/main.yml`:
 
 The allowlists deliberately exclude `cronjob` (no injected persistence) and
 `browser`/`delegation` (widest attack surface / cost amplification) from
-every job class — the risk is the capability, not the trust level of whoever
+every platform — the risk is the capability, not the trust level of whoever
 triggered it. `api_server` and `cron` additionally exclude `clarify`
 (headless: no one to answer); `slack` allows it, since that rationale doesn't
 hold for an interactive human-in-the-loop surface. Layer-1 asserts fail the
