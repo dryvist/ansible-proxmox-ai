@@ -224,6 +224,23 @@ def test_an_unset_override_target_falls_back_to_the_work_channel() -> None:
         assert _card_report_channel(title, ctx) == "slack:C_FIRE", title
 
 
+def test_only_the_fabric_status_card_collapses_its_all_clear() -> None:
+    """The operator wants #hermes-issues silent-but-alive: one line when healthy,
+    detail when not. That inverts the report contract, so it is opt-in per card —
+    for every other card a clean check IS the finding and must be named."""
+    terse = [c["title"] for c in DEFAULTS["hermes_agent_kanban_cards"]
+             if c.get("terse_when_healthy")]
+    assert terse == ["Homelab AI fabric status"], terse
+
+    branch = re.search(r"(\{% if card\.terse_when_healthy.*?\{% endif %\})", ENQUEUER, re.S)
+    assert branch, "the report-shape branch is gone from the enqueuer footer"
+    body = _ENV.from_string(branch.group(1))
+    assert "All systems operational" in body.render(card={"terse_when_healthy": True})
+    # The default branch must still forbid the unnamed "all healthy" summary that
+    # the terse branch mandates — otherwise the opt-in silently became the norm.
+    assert "without naming them" in body.render(card={})
+
+
 # --- inertness: an unconfigured id must change nothing ------------------------
 
 def test_unset_channels_reproduce_todays_routing_exactly() -> None:
