@@ -626,13 +626,21 @@ hermes_agent_max_turns: 90
 #     (never included by `all`/`*`), so naming it here is the only grant.
 #     Upstream additionally hard-disables cronjob/messaging/clarify in every
 #     cron context regardless of this list.
-#
-# The interactive Slack surface is deliberately NOT allowlisted: it is
-# operator-driven (allowed-users gate), so it keeps the upstream platform
-# default minus the global floor. Per-JOB granularity below these classes
-# (e.g. a read-only reposweep run) needs per-job enabled_toolsets, which the
-# CLI seeding path cannot set — tracked as a build-out issue; these platform
-# lists are the enforced envelope every job class runs inside.
+#  4. platform_toolsets.slack — allowlist for the interactive Slack surface
+#     (operator-driven, allowed-users gate). Previously UNLISTED, which meant
+#     it inherited the upstream platform default minus only the global deny
+#     floor — a strictly WIDER envelope than either job class above, including
+#     `cronjob`/`browser`/`delegation` that both refuse. Those three exclusion
+#     rationales are about the CAPABILITY, not about input being untrusted API
+#     text: `cronjob` is a persistence/backdoor risk regardless of who asked,
+#     `browser` is the widest attack surface (indirect injection from a
+#     fetched page is the same risk whether the fetch was triggered by an API
+#     payload or a Slack message), and `delegation` is cost amplification
+#     either way. So Slack gets the same base as cron_toolsets (kanban
+#     included — the Vikunja bridge already treats operator-driven card
+#     creation as sanctioned) PLUS `clarify`: cron/api_server exclude it only
+#     because they are headless (no one to answer), which does not apply to
+#     an interactive human-in-the-loop surface, and it has no side effect.
 hermes_agent_disabled_toolsets:
   - image_gen
   - video_gen
@@ -656,6 +664,7 @@ hermes_agent_api_server_toolsets:
   - context_engine
   - session_search
 hermes_agent_cron_toolsets: "{{ hermes_agent_api_server_toolsets + ['kanban'] }}"
+hermes_agent_slack_toolsets: "{{ hermes_agent_cron_toolsets + ['clarify'] }}"
 
 # Pinned to UTC (workspace policy: no custom timezones), independent of the
 # target host's configured zone.
