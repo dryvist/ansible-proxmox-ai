@@ -1241,6 +1241,65 @@
     HERMES_HOME: "{{ hermes_agent_hermes_home }}"
   changed_when: false
 
+# The splunk-admin fleet ran hourly against a 401ing token for a week (WS1,
+# 2026-07-31) because nothing between the converge and a worker's failed tool
+# call ever checked that the DELIVERED credential authenticates — the card
+# `enabled` gate deliberately excludes the token (fail-to-auth, not
+# stay-disabled), so the failure was silent by design. Close that gap at the
+# converge with a POST of an MCP initialize to the same gateway route the
+# profile dials, from the guest, with the token just delivered — split into a
+# hidden probe and a visible assert so a bad status is diagnosable without
+# printing the bearer header. The probe accepts 401/403 as well as 200 so an
+# auth failure reaches the assert as a real status code instead of an opaque
+# no_log module failure, and changed_when: false keeps a read-only probe from
+# reporting changed every run. Skipped when the integration is off, the URL
+# is unrendered (matches the `mcp_servers.splunk` gate in config.yaml.j2), or
+# the token is unseeded (the documented inert posture).
+- name: Probe the Splunk MCP token against the gateway route
+  ansible.builtin.uri:
+    url: "{{ hermes_agent_splunk_mcp_url }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ hermes_agent_splunk_mcp_token }}"
+      Accept: application/json, text/event-stream
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      id: 1
+      method: initialize
+      params:
+        protocolVersion: "2025-03-26"
+        capabilities: {}
+        clientInfo:
+          name: converge-assert
+          version: "0"
+    status_code:
+      - 200
+      - 401
+      - 403
+    timeout: 15
+  register: hermes_agent_splunk_mcp_probe
+  changed_when: false
+  no_log: true
+  when:
+    - hermes_agent_splunk_mcp_enabled | bool
+    - hermes_agent_splunk_mcp_url | length > 0
+    - hermes_agent_splunk_mcp_token | length > 0
+
+- name: Assert the Splunk MCP token authenticates against the gateway route
+  ansible.builtin.assert:
+    that:
+      - hermes_agent_splunk_mcp_probe.status == 200
+    fail_msg: >-
+      Splunk MCP token delivered but the gateway route returned HTTP
+      {{ hermes_agent_splunk_mcp_probe.status }} instead of 200 — the
+      credential is not authenticating.
+    quiet: true
+  when:
+    - hermes_agent_splunk_mcp_enabled | bool
+    - hermes_agent_splunk_mcp_url | length > 0
+    - hermes_agent_splunk_mcp_token | length > 0
+
 # One `<job>-enqueue` script cron per card, same schedule the old agentic cron
 # used; each enqueues its workload's current-slot card. Disabled cards create no
 # cron (the include is gated on item.enabled).
