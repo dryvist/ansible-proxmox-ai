@@ -206,6 +206,64 @@
     replace: 'DEFAULT_JUDGE_TIMEOUT = {{ hermes_agent_kanban_goal_judge_timeout_seconds | float }}'
   notify: Restart hermes-gateway
 
+# A judge-call FAILURE is not a judge VERDICT. Upstream judge_goal masks its
+# own API errors as ("continue", "judge error: <Type>", ...), so the kanban
+# goal loop fires a continuation worker turn and increments turns_used for
+# every failed judge call — measured over 7 days, whole 8-turn budgets burned
+# in minutes (48% timeouts, 29% routing 404s, 11% 500s) with the worker never
+# executing a single tool call. The two patches below teach the loop to tell
+# the cases apart: a failed judge call re-polls the card (so a worker that
+# completed meanwhile still wins) and retries the judge after the role's flat
+# 15s local-backend delay, consuming NO turn; five consecutive failures block
+# the card cleanly with a "no worker turns were consumed" reason — sticky
+# blocked, i.e. retryable once the backend is healthy — so a total outage can
+# never spin the loop forever. Any real verdict resets the counter. The guard
+# keys on the exact "judge error: " sentinel judge_goal produces, and the
+# assert below pins that producer line too, so upstream drift fails the
+# converge loudly instead of silently re-arming the turn burn.
+- name: Patch Hermes kanban goal loop to count consecutive judge failures
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
+    regexp: '^([ \t]*)nudged_to_finalize = False$(?:\n\1judge_failures = 0)?'
+    replace: |-
+      \1nudged_to_finalize = False
+      \1judge_failures = 0
+  notify: Restart hermes-gateway
+
+- name: Patch Hermes kanban goal loop to retry judge errors without burning turns
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
+    regexp: |-
+      ^([ \t]*)verdict, reason, _parse_failed, _wait = judge_goal\(goal_text, last_response\)$
+      \1if verdict == "wait":$
+      \1    verdict = "continue"$
+      \1_log\(f"kanban goal loop: turn \{turns_used\}/\{max_turns\} verdict=\{verdict\} reason=.*\)$
+    replace: |-
+      \1verdict, reason, _parse_failed, _wait = judge_goal(goal_text, last_response)
+      \1if verdict == "wait":
+      \1    verdict = "continue"
+      \1if reason.startswith("judge error: "):
+      \1    judge_failures += 1
+      \1    _log(
+      \1        f"kanban goal loop: judge call failed ({judge_failures}/5, "
+      \1        f"{reason}); retrying without consuming a turn"
+      \1    )
+      \1    if judge_failures >= 5:
+      \1        try:
+      \1            block_fn(
+      \1                f"Goal judge unreachable {judge_failures} consecutive times "
+      \1                f"({reason}); no worker turns were consumed. Retry the card "
+      \1                f"once the judge backend is healthy."
+      \1            )
+      \1        except Exception as exc:
+      \1            _log(f"kanban goal loop: block_fn failed ({exc})")
+      \1        return {"outcome": "blocked_judge_unreachable", "turns_used": turns_used, "reason": reason}
+      \1    time.sleep(15.0)
+      \1    continue
+      \1judge_failures = 0
+      \1_log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
+  notify: Restart hermes-gateway
+
 - name: Patch Hermes exception retry delay for the local serial backend
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
@@ -581,6 +639,24 @@
       - >-
         'logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)'
         in hermes_agent_hindsight_plugin_source
+      # The kanban goal loop's judge-error guard: both halves of the patch
+      # (counter init + guard reset = exactly 2 occurrences), the bounded
+      # blocked outcome, and — critically — the UPSTREAM producer line of the
+      # "judge error: " sentinel the guard keys on. If upstream rewords that
+      # sentinel, the guard would silently never fire and every judge outage
+      # would burn full turn budgets again; pin it so the converge fails
+      # loudly instead.
+      - >-
+        'if reason.startswith("judge error: "):'
+        in hermes_agent_goal_judge_source
+      - >-
+        hermes_agent_goal_judge_source.count('judge_failures = 0') == 2
+      - >-
+        '"outcome": "blocked_judge_unreachable"'
+        in hermes_agent_goal_judge_source
+      - >-
+        'return "continue", f"judge error: {type(exc).__name__}", False, None'
+        in hermes_agent_goal_judge_source
     fail_msg: >-
       The pinned Hermes source changed and one or more required source
       patches were not installed; update the pinned-source patches before
