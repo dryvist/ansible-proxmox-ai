@@ -58,8 +58,14 @@ llm_router_light_port: "{{ tofu_data.constants.service_ports.llm_fast_api }}"
 # llm-large speaks the Ollama-compatible API on the standard Ollama port.
 llm_router_large_port: "{{ tofu_data.constants.service_ports.ollama_api }}"
 # The gate's second TLS site fronting the two-Mac cluster endpoint (mlx-lm
-# rank 0); live only while a cluster window is up.
-llm_router_cluster_port: "{{ tofu_data.constants.service_ports.llm_night_api }}"
+# rank 0); live only while a cluster window is up. Renamed from
+# llm_night_api to llm_cluster_api in tofu-proxmox PR #726 (d179b5b,
+# 2026-07-21) — the old name resolves to nothing and this reference silently
+# fell back to the standalone base URL's port instead of erroring (proven at
+# render time, not just suspected:
+# tests/llm_router/test_hermes_default_failover.yml pins the current name so
+# it cannot regress unnoticed).
+llm_router_cluster_port: "{{ tofu_data.constants.service_ports.llm_cluster_api }}"
 
 # --- Backend base URLs (derived; never a hardcoded IP) -----------------------
 llm_router_llm_fast_base_url: "http://llm-fast.{{ llm_router_subdomain }}:{{ llm_router_light_port }}/v1"
@@ -233,7 +239,10 @@ llm_router_large_models:
   # override. Reachable only while a cluster window is up (cable in); normal
   # serving on :11434 quiesces during windows, so this entry is what keeps a
   # brain reachable then. Same bearer token as the main gate site.
-  - backend: mlx-community/GLM-4.7-REAP-50-mxfp4
+  # hermes-default's fallback target (router_settings.fallbacks, below) —
+  # backend: "{{ llm_router_cluster_model }}" so the fallback wiring and this
+  # deployment can never name two different ids.
+  - backend: "{{ llm_router_cluster_model }}"
     api_base: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_router_cluster_port }}/v1"
     context_window: 65536
     extra_body: { repetition_penalty: 1.05 }
@@ -359,19 +368,27 @@ llm_router_rate_limit_allowed_fails: 1000
 # llama-swap still grafted disabled ids onto the resident (Hermes was answered by
 # a model nobody selected); nix-ai#1441 removed that graft and the 404s surfaced.
 #
-# So the two values below are the ONE place a serving-side change is recorded,
-# every alias derives from them, and llm_router_servable_models feeds the assert
-# that refuses a converge if any alias escapes the set. Repointing the serving
-# host means editing these two lines and nothing else.
+# So the values below are the ONE place a serving-side change is recorded,
+# every alias/fallback derives from them, and llm_router_servable_models feeds
+# the assert that refuses a converge if any alias or fallback target escapes
+# the set. Repointing the serving host means editing these lines and nothing
+# else.
 llm_router_primary_model: mlx-community/Qwen3.6-35B-A3B-4bit
 # The always-available small tier: judge//trivial work, and the only model that
 # may differ from the primary (user decision 2026-07-28 — the 9B is always up for
 # the judge, concurrency belongs to the largest accurate model). Cross-family to
 # the primary, which is also what an LLM judge should be.
 llm_router_small_model: mlx-community/Qwen3.5-9B-MLX-4bit
+# The two-Mac cluster brain (see the model_list entry above): servable ONLY
+# while a cluster window is up, exactly when the primary is not (cluster-join
+# boots the standalone llama-swap agent out). Part of the servable set because
+# hermes-default's fallback chain (below) is a real, reachable target for it —
+# not a stale alias like the ones the incident above was about.
+llm_router_cluster_model: mlx-community/GLM-4.7-REAP-50-mxfp4
 llm_router_servable_models:
   - "{{ llm_router_primary_model }}"
   - "{{ llm_router_small_model }}"
+  - "{{ llm_router_cluster_model }}"
 
 # Stable consumer role names. Aliases carry no deployment configuration; each
 # points to exactly one physical model_list entry above — and now, only ever at
@@ -388,6 +405,39 @@ llm_router_model_group_aliases:
   # than naming its own model — a second physical id here is exactly the drift
   # this block exists to prevent.
   interim-brain: "{{ llm_router_primary_model }}"
+
+# --- hermes-default automatic failover across the cluster + standalone gates -
+# The cluster and standalone backends are mutually exclusive (see the model_list
+# comment above): whichever is up, hermes-default must answer from it, and the
+# dead one must be skipped automatically — no converge, no manual interlock
+# (operator standing requirement). LiteLLM's own general `fallbacks` mechanism
+# does exactly this: when a call for a model group fails (after
+# llm_router_num_retries and, per-deployment, llm_router_allowed_fails /
+# llm_router_cooldown_time), the router tries the next model group in the
+# chain instead of surfacing the error.
+#
+# Ordering: the alias resolves to the primary (standalone, :11434) FIRST — the
+# steady state, live outside a cluster window — and this chain names what to
+# try next, in order, when that fails. During a cluster window the primary is
+# the one that is down, so every request takes one failed attempt against it
+# before landing on the cluster entry; outside a window the primary answers
+# directly and the chain is never touched. No reverse entry is needed: every
+# hermes-default request always starts at the alias (never at a physical model
+# id directly), so there is no path that enters at the cluster side first.
+#
+# The fallback KEY below is the alias name "hermes-default", not
+# llm_router_primary_model. Verified against the installed litellm package
+# (litellm/router.py: Router.acompletion sets kwargs["model"] = model, then
+# calls async_function_with_fallbacks(**kwargs) BEFORE model_group_alias is
+# resolved — that resolution happens later, inside deployment selection
+# (_get_model_from_alias). async_function_with_fallbacks reads
+# model_group = kwargs.get("model") at the top, so the fallback lookup always
+# sees the alias the caller requested, not the id it resolves to. The proxy
+# confirms this: litellm/proxy/route_llm_request.py dispatches on
+# `data["model"] in llm_router.model_group_alias` without ever rewriting
+# data["model"]. A fallback keyed on the resolved primary id would never fire.
+llm_router_hermes_default_fallback_chain:
+  - "{{ llm_router_cluster_model }}"
 # Background health checks send REAL test requests to every deployment — on the
 # llama-swap fast tier each probe spawns the target model, and with 3 routers
 # probing every model this both churns VRAM constantly and (pre swap-groups)
