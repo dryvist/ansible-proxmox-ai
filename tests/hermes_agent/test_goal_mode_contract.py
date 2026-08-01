@@ -659,10 +659,15 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         "interim-brain": "{{ llm_router_primary_model }}",
     }
     # Both selectors must be declared servable, or the alias indirection just
-    # moves the 404 one level down.
+    # moves the 404 one level down. The cluster model is servable too — it is
+    # hermes-default's router_settings.fallbacks target while a cluster window
+    # is up (roles/llm_router/defaults/main.yml,
+    # llm_router_hermes_default_fallback_chain) — same reasoning: an
+    # unroutable fallback target 404s instead of failing over.
     assert router_defaults["llm_router_servable_models"] == [
         "{{ llm_router_primary_model }}",
         "{{ llm_router_small_model }}",
+        "{{ llm_router_cluster_model }}",
     ]
     hermes_entries = [
         entry

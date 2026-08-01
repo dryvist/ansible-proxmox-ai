@@ -140,10 +140,20 @@ router_settings:
 {% for alias, target in llm_router_model_group_aliases.items() %}
     {{ alias | to_json }}: {{ target | to_json }}
 {% endfor %}
-  # No cross-tier fallbacks for the default brain, on purpose: a fallback
+{% if llm_router_hermes_default_fallback_chain | length > 0 %}
+  # hermes-default automatic failover across the cluster + standalone gates
+  # (see defaults for the full ordering rationale and the source-verified
+  # reason the key is the ALIAS, not the resolved primary id). Same-tier only
+  # (every entry here carries the same context_window as the primary) — this
+  # is NOT the cross-tier fallback the no-fallback rule below still forbids.
+  fallbacks:
+    - hermes-default: {{ llm_router_hermes_default_fallback_chain | to_json }}
+{% endif %}
+  # No CROSS-TIER fallbacks for the default brain, on purpose: a fallback
   # serving a smaller context than the primary poisons callers instead of
   # degrading them (incident history: Zammad, AI/LLM Serving). Fail loud; the
-  # watchdog pauses.
+  # watchdog pauses. (The same-tier chain above is a same-context failover,
+  # not an exception to this.)
   # Pre-call context-window checks so an over-long request is not routed to a model
   # that cannot serve it (no cross-tier fallback masks the error).
   enable_pre_call_checks: true
