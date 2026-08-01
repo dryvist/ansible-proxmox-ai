@@ -95,6 +95,14 @@ def build_worker_argv(task, prompt):
     ])
     return cmd
 '''
+# Verbatim upstream lines at the pinned tag (v2026.7.7.2), from
+# plugins/memory/hindsight/__init__.py's queue_prefetch._run() exception
+# handler — indentation included, same drift protection as the other
+# PINNED_*_SOURCE fixtures above.
+PINNED_HINDSIGHT_PREFETCH_SOURCE = (
+    "            except Exception as e:\n"
+    '                logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)\n'
+)
 
 
 def _task(name: str) -> dict[str, Any]:
@@ -131,6 +139,10 @@ PATCHED_CRON_DELIVERY_SOURCE = _apply_runtime_patch(
         "Route cron delivery content through the markup guard",
         PINNED_CRON_DELIVERY_SOURCE,
     ),
+)
+PATCHED_HINDSIGHT_PREFETCH_SOURCE = _apply_runtime_patch(
+    "Patch Hermes auto-recall prefetch failure to log at warning, not debug",
+    PINNED_HINDSIGHT_PREFETCH_SOURCE,
 )
 
 
@@ -198,6 +210,7 @@ def _source_postconditions(
     auxiliary_source: str,
     compressor_source: str = PATCHED_COMPRESSOR_SCAN_SOURCE,
     cron_scheduler_source: str = PATCHED_CRON_DELIVERY_SOURCE,
+    hindsight_plugin_source: str = PATCHED_HINDSIGHT_PREFETCH_SOURCE,
 ) -> tuple[bool, ...]:
     task = _task("Assert installed Hermes pinned-source patches")
     environment = Environment(autoescape=False)
@@ -212,6 +225,7 @@ def _source_postconditions(
         "hermes_agent_auxiliary_source": auxiliary_source,
         "hermes_agent_compressor_source": compressor_source,
         "hermes_agent_cron_scheduler_source": cron_scheduler_source,
+        "hermes_agent_hindsight_plugin_source": hindsight_plugin_source,
     }
     return tuple(
         bool(environment.compile_expression(condition)(**context))
@@ -225,6 +239,15 @@ def test_goal_completion_patch_uses_current_judge_contract() -> None:
         PINNED_GOAL_COMPLETION_SOURCE,
     )
     assert "verdict, reason, _, _ = judge_goal(" in patched
+
+
+def test_hindsight_prefetch_patch_logs_at_warning() -> None:
+    patched = _apply_runtime_patch(
+        "Patch Hermes auto-recall prefetch failure to log at warning, not debug",
+        PINNED_HINDSIGHT_PREFETCH_SOURCE,
+    )
+    assert 'logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)' in patched
+    assert "logger.debug" not in patched
 
 
 @pytest.mark.parametrize(
@@ -533,6 +556,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "agent/auxiliary_client.py",
         "agent/context_compressor.py",
         "cron/scheduler.py",
+        "plugins/memory/hindsight/__init__.py",
     ]
 
     assert_task = _task("Assert installed Hermes pinned-source patches")
@@ -568,6 +592,10 @@ def test_installed_source_postconditions_fail_closed() -> None:
     assert "_deliver_result(_routed_job, deliver_content," in conditions
     assert (
         "registered for dispatcher-spawned workers (HERMES_KANBAN_TASK "
+        in conditions
+    )
+    assert (
+        'logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)'
         in conditions
     )
     assert any(
@@ -712,5 +740,14 @@ def test_installed_source_postconditions_fail_closed() -> None:
             reconcile_source,
             retry_source_tc_only,
             auxiliary_source,
+        )
+    )
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            hindsight_plugin_source=PINNED_HINDSIGHT_PREFETCH_SOURCE,
         )
     )
