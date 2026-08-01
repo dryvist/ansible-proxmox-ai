@@ -692,13 +692,19 @@ is plain data in `defaults/main.yml`:
 | `hermes_agent_disabled_toolsets` | `agent.disabled_toolsets` | Global deny floor; no allowlist can widen past it |
 | `hermes_agent_api_server_toolsets` | `platform_toolsets.api_server` | API-submitted runs (untrusted input) |
 | `hermes_agent_cron_toolsets` | `platform_toolsets.cron` | The scheduled fleet (upstream also hard-blocks cronjob/messaging/clarify in cron) |
+| `hermes_agent_slack_toolsets` | `platform_toolsets.slack` | The interactive, allowed-users-gated surface |
 
-The allowlists deliberately exclude `cronjob` (no injected persistence),
-`browser`, `delegation`, and `clarify`; Layer-1 asserts fail the converge if
-any of those creep back in or a denied toolset is simultaneously allowlisted.
+The allowlists deliberately exclude `cronjob` (no injected persistence) and
+`browser`/`delegation` (widest attack surface / cost amplification) from
+every job class — the risk is the capability, not the trust level of whoever
+triggered it. `api_server` and `cron` additionally exclude `clarify`
+(headless: no one to answer); `slack` allows it, since that rationale doesn't
+hold for an interactive human-in-the-loop surface. Layer-1 asserts fail the
+converge if any excluded toolset creeps back into an allowlist, if a denied
+toolset is simultaneously allowlisted, or if any allowlist goes empty.
 Enabled MCP servers (splunk/context7/codex) layer onto the allowlists by
-upstream's platform-tools semantics. The interactive Slack surface keeps the
-upstream default (operator-driven, allowed-users gate) minus the deny floor.
+upstream's platform-tools semantics. `hermes_agent_slack_toolsets` renders
+only when the Slack bot token is set, matching the other Slack-gated config.
 
 ## Brain-health watchdog (no cron-failure spam)
 
