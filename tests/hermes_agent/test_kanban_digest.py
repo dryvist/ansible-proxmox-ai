@@ -41,6 +41,11 @@ FIXTURE_CONFIG = {
     "TITLE": "Kanban Board Digest",
     "INTERVAL_MIN": 15,
     "HEARTBEAT_HOURS": 6,
+    "ISSUES_CHANNEL": "C_ISSUES",
+    # Deliberately absent: send_to_issues must report failure, not raise, so the
+    # caller can fall back to inlining the failure lines.
+    "HERMES_BIN": str(TMP / "no-such-hermes-binary"),
+    "ISSUES_MARKER": "[ISSUES]",
 }
 
 # Columns as they exist on the live board. Only what the digest reads.
@@ -125,7 +130,15 @@ def now_dt():
 
 
 def digest(tasks, runs, since=NOW - 900, note="", due=True):
-    return DIGEST.build_digest(*board(tasks, runs), now_dt(), since, note, due)
+    """The work-log post only — what #hermes-all receives."""
+    text, _ = DIGEST.build_digest(*board(tasks, runs), now_dt(), since, note, due)
+    return text
+
+
+def digest_split(tasks, runs, since=NOW - 900, note="", due=True):
+    """(work_log_text, issues_text) with failure routing enabled."""
+    return DIGEST.build_digest(*board(tasks, runs), now_dt(), since, note, due,
+                               split_failures=True)
 
 
 # --- contract 1: a completed card carries its result -------------------------
@@ -382,12 +395,24 @@ def test_schedule_and_fallback_window_come_from_the_one_interval_variable():
     assert re.search(r"^\s*INTERVAL_MIN\s*=\s*\d", source, re.M) is None
 
 
-def test_the_digest_channel_is_never_a_literal_id():
+def test_the_digest_channels_are_never_literal_ids():
+    """Both destinations stay env-fed expressions — an id in git is the defect."""
     import yaml
 
     defaults = yaml.safe_load(DEFAULTS_PATH.read_text())
-    channel = defaults["hermes_agent_kanban_digest_channel"]
-    assert channel.strip() == "{{ hermes_agent_digest_slack_channel }}"
+    for var in ("hermes_agent_kanban_digest_channel",
+                "hermes_agent_kanban_digest_issues_channel"):
+        channel = defaults[var]
+        assert "{{" in channel, f"{var} must stay a Jinja expression"
+        assert not re.search(r"\bC0[A-Z0-9]{8,}\b", channel), \
+            f"{var} carries a literal Slack channel id"
+
+    # The work log is #hermes-all, not the shared digest surface: that alias is
+    # what collapsed every tier onto one channel.
+    assert "hermes_agent_slack_hermes_all_channel" in \
+        defaults["hermes_agent_kanban_digest_channel"]
+    assert "hermes_agent_slack_issues_channel" in \
+        defaults["hermes_agent_kanban_digest_issues_channel"]
 
 
 def test_a_broken_database_is_delivered_as_a_failure_not_as_silence(capsys=None):
@@ -400,6 +425,60 @@ def test_a_broken_database_is_delivered_as_a_failure_not_as_silence(capsys=None)
     with contextlib.redirect_stdout(buf):
         assert broken.main() == 0, "the cron must always exit 0 so stdout is delivered"
     assert "FAILED" in buf.getvalue()
+
+
+# --- contract 7: worker failures route away from the work log ----------------
+# These lines are always Hermes' own workers dying (turn-budget exhaustion,
+# judge timeouts, max_runtime overruns), never board activity. Over a 13-day
+# audit they were the single largest category in the work channel.
+
+FAILING_CARD = [{"id": "t_ff", "title": "Splunk triage sweep", "status": "blocked"}]
+FAILING_RUN = [{"id": 1, "task_id": "t_ff", "outcome": "failed", "started_at": NOW - 600,
+                "ended_at": NOW - 60,
+                "error": "Goal-mode worker exhausted its turn budget (8/8)"}]
+
+
+def test_worker_failures_leave_the_work_log_and_carry_their_reason():
+    text, issues = digest_split(FAILING_CARD, FAILING_RUN)
+    assert "Failed / retried / left open" in issues
+    assert "exhausted its turn budget" in issues, \
+        "the routed post must carry the diagnosis, not just the card name"
+    assert "t_ff" in issues
+    assert "Failed / retried / left open" not in text, \
+        "a worker failure must not also sit in the work log"
+
+
+def test_a_run_of_only_failures_is_quiet_for_the_work_log_not_a_bare_header():
+    """The peel happens before the heartbeat gate, so nothing posts a lone header."""
+    text, issues = digest_split(FAILING_CARD, FAILING_RUN, due=False)
+    assert text == DIGEST.SILENT
+    assert "exhausted its turn budget" in issues, "the failure must survive the gate"
+
+
+def test_completions_stay_in_the_work_log_while_failures_leave():
+    text, issues = digest_split(
+        FAILING_CARD + [{"id": "t_ok", "title": "Nightly wiki", "status": "done"}],
+        FAILING_RUN + [{"id": 2, "task_id": "t_ok", "outcome": "completed",
+                        "started_at": NOW - 300, "ended_at": NOW - 30,
+                        "summary": "wiki rebuilt, 12 pages"}])
+    assert "Completed (1)" in text and "wiki rebuilt" in text
+    assert "exhausted its turn budget" in issues
+    assert "wiki rebuilt" not in issues
+
+
+def test_split_is_off_by_default_so_an_unconfigured_channel_changes_nothing():
+    text = digest(FAILING_CARD, FAILING_RUN)
+    assert "Failed / retried / left open" in text
+    assert "exhausted its turn budget" in text
+
+
+def test_a_failed_send_reports_failure_rather_than_raising():
+    """Fail-soft is the whole safety property: the caller inlines on False.
+
+    HERMES_BIN points at a path that does not exist, so this exercises the real
+    except path — a dropped failure report is worse than a misrouted one.
+    """
+    assert DIGEST.send_to_issues("anything") is False
 
 
 if __name__ == "__main__":

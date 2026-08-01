@@ -132,27 +132,45 @@ hermes_agent_slack_allowed_users: "{{ lookup('env', 'SLACK_MEMBER_ID') | default
 hermes_agent_slack_home_channel: "{{ lookup('env', 'SLACK_HOME_CHANNEL') | default('', true) }}"
 hermes_agent_slack_home_channel_name: "{{ lookup('env', 'SLACK_HOME_CHANNEL_NAME') | default('', true) }}"
 
-# 3-tier Slack routing (operator decision 2026-07-18): verbose routine cron
-# output (full working reports, every run) goes to the FIREHOSE channel; the
-# home channel above becomes the curated summary surface (the once-daily
-# delta-only rollup, plus anything a human must act on); DMs stay urgent-only
-# (anomaly sweeps + new incidents). Empty firehose → those jobs fall back to
-# the home channel, i.e. the original single-channel behavior.
-hermes_agent_slack_firehose_channel: "{{ lookup('env', 'SLACK_FIREHOSE_CHANNEL') | default('', true) }}"
+# 4-channel Slack routing (operator decision 2026-07-31). The previous 3-tier
+# scheme collapsed: firehose, digest and hermes_all all resolved to ONE id, so
+# every emitter landed in the same channel. A 13-day audit of 1084 messages
+# found ~52% of that channel was Hermes reporting its own breakage and ~28% was
+# null-result polling, leaving ~10-17% actual work.
 #
-# The #hermes-all leg is appended STRUCTURALLY, not left to coincide. Today
-# hermes_all_channel defaults to the firehose id, so the two resolve to the same
-# channel and upstream's (platform, chat_id, thread_id) dedup collapses them —
-# this is a no-op. But the moment an operator does what that default's own
-# comment instructs ("override in group_vars once one is created"), every job
-# below would deliver to the firehose ONLY and #hermes-all would receive
-# nothing — inverting it from the complete log of record into a nearly empty
-# channel, silently, from a config change that looks inert.
-hermes_agent_firehose_deliver: >-
-  {{ ('slack:' ~ hermes_agent_slack_firehose_channel
-      if (hermes_agent_slack_firehose_channel | length > 0)
-      else 'slack')
-     ~ hermes_agent_hermes_all_deliver_suffix }}
+# The discriminator is the OBSERVATION PATH, never a keyword. Hermes reporting a
+# failure it observed is work (#hermes-all / #hermes-splunk); Hermes failing to
+# observe is breakage (#hermes-issues). Keyword routing on "error"/"litellm"
+# would misroute the most valuable posts in the corpus — Splunk-observed
+# litellm errors on the llm-routers are findings, produced by a job that worked.
+#
+#   #hermes-all     real thinking, work, and findings
+#   #hermes-issues  Hermes itself not functional
+#   #hermes-splunk  the Splunk digest domain
+#   #hermes-noise   "no change since" / heartbeat polls
+#
+# Every id is an env lookup fed by Doppler at converge time — never hardcoded.
+# Each defaults EMPTY and falls back to prior behaviour, so an unset var leaves
+# routing exactly as it was rather than silently emptying a channel.
+hermes_agent_slack_firehose_channel: "{{ lookup('env', 'SLACK_FIREHOSE_CHANNEL') | default('', true) }}"
+hermes_agent_slack_issues_channel: "{{ lookup('env', 'SLACK_HERMES_ISSUES_CHANNEL') | default('', true) }}"
+hermes_agent_slack_noise_channel: "{{ lookup('env', 'SLACK_HERMES_NOISE_CHANNEL') | default('', true) }}"
+
+# The prefix a script-fed cron prints to declare that its OWN observation path
+# failed. Those scripts deliberately exit 0 and print their failure so it gets
+# delivered, so the runner sees success — this is how they say otherwise. ONE
+# definition, templated into both the scheduler patch and every script that
+# emits it, so the producer and the consumer cannot drift.
+hermes_agent_cron_issues_marker: "[ISSUES]"
+
+# Delivery target a FAILED cron run is redirected to, patched into upstream's
+# scheduler (tasks/main.yml). Covers both a runner-reported failure and a
+# script-fed job that declared its own with the marker above. Empty leaves
+# every result on its job's own channel, i.e. previous behaviour.
+hermes_agent_cron_failure_deliver: >-
+  {{ 'slack:' ~ hermes_agent_slack_issues_channel
+     if (hermes_agent_slack_issues_channel | length > 0)
+     else '' }}
 
 # --- Agentic direct-deliver digest crons (declarative; Phase 5) --------------
 # Nine hand-created "direct deliver" digest jobs, now reconciled by the role
@@ -271,11 +289,17 @@ hermes_agent_direct_cron_jobs:
 # sentence with nothing saying so. The footer now asks for a full report and
 # keeps kanban_complete's summary field one line (the board digest reads it), so
 # the card path and the cron path deliver the same thing and a `-v2` retirement
-# loses nothing. Defaults to the firehose channel id so
-# it works before a dedicated #hermes-all channel exists — override in group_vars
-# once one is created. Empty (no firehose set either) leaves the body naming the
-# channel by handle only, which the worker's Slack tools can still resolve.
-hermes_agent_slack_hermes_all_channel: "{{ hermes_agent_slack_firehose_channel }}"
+# loses nothing.
+#
+# This is now its own env lookup rather than an alias of the firehose id. While
+# it was an alias, #hermes-all could not be made distinct from the firehose by
+# configuration alone — which is why every tier collapsed onto one channel.
+# Falls back to the firehose id so an unset var reproduces the old behaviour
+# exactly. Empty (no firehose either) leaves the body naming the channel by
+# handle only, which the worker's Slack tools can still resolve.
+hermes_agent_slack_hermes_all_channel: >-
+  {{ lookup('env', 'SLACK_HERMES_ALL_CHANNEL')
+     | default(hermes_agent_slack_firehose_channel, true) }}
 
 # Post scheduled (cron) output as FRESH top-level channel messages, not threaded
 # replies under one ever-growing root. Each cron run is already an isolated
@@ -304,6 +328,45 @@ hermes_agent_daily_status_cron_name: homelab-ai-fabric-status
 # the full enqueue-to-Slack path during this window.
 hermes_agent_daily_status_cron_schedule: "0 8-22 * * *"
 hermes_agent_daily_status_cron_prompt_file: hermes-daily-fabric-status.md
+
+# The catalog body names the checks but not a single endpoint, so the worker
+# invented them — and every one it invented was wrong. Measured 2026-07-31: it
+# curled localhost:8000 and :8001 for an API that listens on
+# hermes_agent_api_server_port and a dashboard on hermes_agent_dashboard_port,
+# localhost ports for two services that live behind their own FQDNs, and a
+# domain that does not resolve at all. Every probe returned 000, so it posted an
+# hourly total-outage alarm while the fabric was healthy (mcp 406, llm 401, both
+# the documented healthy codes). That card now reports to the issues channel,
+# where the operator asked for near-silence, so fabricated alarms are the one
+# failure mode that would make the channel worthless.
+#
+# Endpoints are topology and must never enter the public prompt catalog, so they
+# are appended at converge from the same variables the services are deployed
+# from. External front doors are deliberately absent: fabric_watchdog probes mcp
+# and llm every 2 minutes with proven ok_codes and alerts to this same channel,
+# so duplicating them here would only add a slower, less reliable second opinion.
+hermes_agent_daily_status_endpoints: |
+  PROBE EXACTLY THESE, AND NOTHING ELSE. Every address you need is listed here.
+  Do not guess, infer, complete, or recall a hostname or port from anywhere else
+  — an address not on this list is wrong, and a result from one is a fabricated
+  finding rather than evidence, however plausible it reads.
+
+  Probe each URL with: curl -sS -o /dev/null -w '%{http_code}' <url>
+
+    gateway process   pgrep -fa hermes-gateway
+    gateway API       http://localhost:{{ hermes_agent_api_server_port }}/
+    dashboard         http://localhost:{{ hermes_agent_dashboard_port }}/
+    memory pool       https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/
+
+  Reading the results. Any HTTP status at all — 200, 302, 401, 403, 404 — means
+  the service answered, so it is UP; authentication and routing are not health.
+  Only 000 means the probe never reached anything, and 000 is reported as a
+  "probe failed" observation, never as a service being down. Never escalate a
+  single 000: state what you saw and re-check it next run.
+
+  Do NOT probe the MCP fabric or the LLM front door. fabric_watchdog already
+  probes both every 2 minutes and alerts to this same channel on each
+  transition, so a second opinion here is slower and would double-report.
 
 # --- Inbound webhook receiver (event-driven agent trigger) ------------------
 # The `hermes gateway` webhook platform: an HTTP receiver (/webhooks/<name>,
@@ -661,48 +724,11 @@ hermes_agent_zammad_autoclose_days: 7
 # tokens being set (can deliver) — a job that can't do both is never created.
 hermes_agent_splunk_monitor_enabled: true
 
-# Appended to a deliver target so the same post ALSO lands in #hermes-all, which
-# is the complete log of record. Upstream splits `deliver` on commas and dedups
-# resolved targets by (platform, chat_id, thread_id) — documented contract in
-# cron/scheduler.py `_normalize_deliver_value` / `_resolve_delivery_targets` —
-# so appending is safe even while hermes_all still defaults to the firehose
-# channel and the two resolve identically. Empty channel appends nothing.
-hermes_agent_hermes_all_deliver_suffix: >-
-  {{ ',slack:' ~ hermes_agent_slack_hermes_all_channel
-     if (hermes_agent_slack_hermes_all_channel | length > 0)
-     else '' }}
-
-# DM target for anomaly alerts: `slack:<member-id>` when the operator's Slack
-# member id is known, else fall back to the home channel (`slack`). The digest
-# always goes to the home channel.
-#
-# The DM is necessary but not sufficient: an anomaly that only ever exists in a
-# DM is invisible to anyone reading the channel that is supposed to be the
-# complete record, and it cannot be correlated later against the digests around
-# it. So CRITICAL fans out to BOTH — the DM for urgency, #hermes-all for the log.
-hermes_agent_splunk_alert_deliver: >-
-  {{ ('slack:' ~ hermes_agent_slack_allowed_users
-      if (hermes_agent_slack_allowed_users | length > 0)
-      else 'slack')
-     ~ hermes_agent_hermes_all_deliver_suffix }}
-# Optional dedicated channel for the splunk-admin domain. NEVER hardcoded: it
-# comes from the environment like every other channel id, and defaults to EMPTY
-# so this whole block is inert until an operator actually creates the channel.
+# Dedicated channel for the splunk-admin domain. NEVER hardcoded: it comes from
+# the environment like every other channel id, and defaults to EMPTY so every
+# consumer below falls back to its previous target until an id is configured.
 hermes_agent_slack_splunk_channel: >-
   {{ lookup('env', 'SLACK_HERMES_SPLUNK_CHANNEL') | default('', true) }}
-
-# The digest is a verbose full report every hour — firehose (3-tier routing).
-#
-# When a splunk-domain channel exists the digest goes THERE plus #hermes-all, so
-# the domain surface is readable on its own without the log of record losing it.
-# When it does not (today), this falls through to the firehose target unchanged
-# — which already carries the #hermes-all leg — so the empty default reproduces
-# current behaviour exactly rather than merely approximately.
-hermes_agent_splunk_digest_deliver: >-
-  {{ ('slack:' ~ hermes_agent_slack_splunk_channel
-      ~ hermes_agent_hermes_all_deliver_suffix)
-     if (hermes_agent_slack_splunk_channel | length > 0)
-     else hermes_agent_firehose_deliver }}
 
 # Per-job cron definitions. Prompts stay short — the skill carries the discipline;
 # the prompt only sets each run's posture (a lens, not a checklist) and reinforces
@@ -830,7 +856,10 @@ hermes_agent_splunk_digest_window: "-24h"
 # genuinely exhausted search says so, and names what it searched.
 # The knobs that shape a finding's identity (percent bands, per-run cap) are
 # module constants in the script, not vars here: one number, one consumer.
-hermes_agent_splunk_status_digest_channel: "{{ hermes_agent_slack_hermes_all_channel }}"
+# Splunk domain surface when one is configured, else the work log as before.
+hermes_agent_splunk_status_digest_channel: >-
+  {{ hermes_agent_slack_splunk_channel
+     | default(hermes_agent_slack_hermes_all_channel, true) }}
 hermes_agent_splunk_status_digest_enabled: >-
   {{ hermes_agent_splunk_monitor_enabled | bool
      and hermes_agent_splunk_mcp_url | length > 0
@@ -885,9 +914,11 @@ hermes_agent_triage_jobs:
 
 hermes_agent_triage_top_n: 12
 hermes_agent_triage_max_findings: 8
-# Same channel the superseded agentic jobs delivered to, so replacing them does
-# not silently move the operator's digests to a different surface.
-hermes_agent_triage_channel: "{{ hermes_agent_digest_slack_channel }}"
+# The Splunk triage digests are the Splunk domain: they go to the domain channel
+# when one is configured, else the previous digest surface unchanged.
+hermes_agent_triage_channel: >-
+  {{ hermes_agent_slack_splunk_channel
+     | default(hermes_agent_digest_slack_channel, true) }}
 hermes_agent_triage_enabled: >-
   {{ hermes_agent_splunk_monitor_enabled | bool
      and hermes_agent_splunk_mcp_url | length > 0
@@ -933,8 +964,16 @@ hermes_agent_kanban_digest_cron_name: kanban-digest
 hermes_agent_kanban_digest_script_name: kanban-digest.py
 hermes_agent_kanban_digest_state_name: kanban-digest.json
 hermes_agent_kanban_digest_title: Kanban Board Digest
-# Same surface the other script-fed digests deliver to; never a hardcoded id.
-hermes_agent_kanban_digest_channel: "{{ hermes_agent_digest_slack_channel }}"
+# The board digest is a work log: completions and overruns belong in #hermes-all.
+# Its failure section is routed separately to the issues channel by the script
+# itself (kanban-digest.py.j2), because worker turn-budget exhaustion and judge
+# timeouts are Hermes being broken, not board activity. Never a hardcoded id.
+hermes_agent_kanban_digest_channel: >-
+  {{ hermes_agent_slack_hermes_all_channel
+     | default(hermes_agent_digest_slack_channel, true) }}
+# Where the digest's "Failed / retried / left open" section goes. Empty disables
+# the split and leaves the failure lines inline, i.e. previous behaviour.
+hermes_agent_kanban_digest_issues_channel: "{{ hermes_agent_slack_issues_channel }}"
 # No Splunk or brain dependency in the gate — only "can it deliver".
 hermes_agent_kanban_digest_enabled: >-
   {{ hermes_agent_slack_bot_token | length > 0
@@ -980,8 +1019,6 @@ hermes_agent_github_monitor_cron_schedule: "26 */6 * * *"
 # last-posted list across runs (same reuse-what-exists pattern as the Splunk
 # jobs above) so an unchanged sweep costs one line instead of a full repost.
 hermes_agent_github_monitor_cron_prompt_file: hermes-github-triage.md
-# Routine triage report — firehose (3-tier routing).
-hermes_agent_github_monitor_cron_deliver: "{{ hermes_agent_firehose_deliver }}"
 
 # The GitHub triage workload is a Kanban card now (kanban migration, #83) — see
 # hermes_agent_kanban_cards below. The old hermes_agent_github_cron_jobs aggregate
@@ -997,7 +1034,6 @@ hermes_agent_bot_pr_triage_enabled: true
 hermes_agent_bot_pr_triage_cron_name: bot-pr-triage
 hermes_agent_bot_pr_triage_cron_schedule: "43 */6 * * *"
 hermes_agent_bot_pr_triage_cron_prompt_file: hermes-bot-pr-triage.md
-hermes_agent_bot_pr_triage_cron_deliver: "{{ hermes_agent_firehose_deliver }}"
 
 # --- Docs sync: bounded delta -> signed draft PRs via the docs-pr skill -----
 # Weekly (Mon 08:13 UTC). Discovers doc-worthy deltas since the last run and
@@ -1007,7 +1043,6 @@ hermes_agent_docs_sync_enabled: true
 hermes_agent_docs_sync_cron_name: docs-sync
 hermes_agent_docs_sync_cron_schedule: "13 8 * * 1"
 hermes_agent_docs_sync_cron_prompt_file: hermes-docs-sync.md
-hermes_agent_docs_sync_cron_deliver: "{{ hermes_agent_firehose_deliver }}"
 
 # --- Daily operator summary: the home channel's ONE curated post ------------
 # 3-tier routing gives the verbose crons the firehose channel; this job is what
@@ -1030,7 +1065,6 @@ hermes_agent_summary_cron_prompt: >-
   and nothing open, say exactly that in one line — never pad. Self-check before
   posting: every line is a delta or an open action item — drop anything that is
   unchanged or benign status.
-hermes_agent_summary_cron_deliver: slack
 
 # --- Zammad review: proactive incident lifecycle across ALL queues ----------
 # Operator directive 2026-07-18: Hermes proactively READS open Zammad
@@ -1059,7 +1093,6 @@ hermes_agent_zammad_review_cron_prompt: >-
   carries NEW information not already in the ticket, and every resolution cites
   the evidence that proved it. Save the updated id+state map back to
   "zammad-review-last".
-hermes_agent_zammad_review_cron_deliver: "{{ hermes_agent_firehose_deliver }}"
 
 # --- Kanban recurring-task migration (#83, INC-17120) ------------------------
 # Directional change: the agentic cron fleet is retired. Every recurring
@@ -1310,6 +1343,17 @@ hermes_agent_profiles:
 #   prompt_var     name of the var holding the card body (catalog or inline)
 #   assignee       "" (default profile) or a name in hermes_agent_profiles —
 #                  see the profiles block above; asserted in assert.yml
+#   channel        OPTIONAL Slack destination for this card's report. Omitted or
+#                  empty -> the work channel. Set it where a card's output is
+#                  categorically not work: fabric health is Hermes' own state
+#                  (issues), scouting cards are reading material (noise).
+#   terse_when_healthy
+#                  OPTIONAL. Inverts the report contract for cards whose channel
+#                  must stay quiet: all-healthy collapses to one line, and only
+#                  failures get detail. Default false — every other card names
+#                  each clean check, because for them a clean check IS the
+#                  finding. Only set it where an all-clear carries no information
+#                  beyond "still alive".
 #   unblock        reviewer only: `kanban unblock` the card after create so a
 #                  pre-created blocked next-slot card goes live on time
 hermes_agent_kanban_cards:
@@ -1320,6 +1364,11 @@ hermes_agent_kanban_cards:
     schedule: "{{ hermes_agent_daily_status_cron_schedule }}"
     prompt_var: hermes_agent_daily_status_cron_prompt
     assignee: homelab-admin
+    # Hermes reporting on its OWN fabric is not work output: healthy is the
+    # hourly all-clear the operator asked for in-channel, unhealthy is breakage.
+    # Both belong on the issues surface, so the channel is never silent.
+    channel: "{{ hermes_agent_slack_issues_channel }}"
+    terse_when_healthy: true
     max_runtime: "45m"
     max_retries: 2
     skills: []
@@ -1555,6 +1604,10 @@ hermes_agent_kanban_cards:
     schedule: "{{ hermes_agent_ai_news_cron_schedule }}"
     prompt_var: hermes_agent_ai_news_cron_prompt
     assignee: ""
+    # Scouting output is reading material on a 4h cadence — the highest-volume,
+    # lowest-urgency emitter in the fleet. It belongs beside the work channel,
+    # not in it.
+    channel: "{{ hermes_agent_slack_noise_channel }}"
     max_runtime: "45m"
     max_retries: 2
     skills: []
@@ -1567,6 +1620,9 @@ hermes_agent_kanban_cards:
     schedule: "{{ hermes_agent_daily_innovation_cron_schedule }}"
     prompt_var: hermes_agent_daily_innovation_cron_prompt
     assignee: ""
+    # Speculative proposals, not observations of the estate. Same tier as the
+    # news scout: worth reading, never worth interrupting the work channel for.
+    channel: "{{ hermes_agent_slack_noise_channel }}"
     max_runtime: "45m"
     max_retries: 2
     skills: [dryvist/github-issues]
