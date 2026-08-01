@@ -1118,6 +1118,31 @@
     - zammad-auto-close.py
     - issue_tracker.py
 
+# The guard this failure mode demands: "toolset allowlisted, backend dead" sat
+# undetected from first deploy until 2026-07-31, because nothing between the
+# converge and a worker's failed tool call ever checked that the web toolset
+# could actually answer. Run the upstream backend resolution inside the venv,
+# as the hermes user against the deployed config, and FAIL the converge if the
+# configured search backend does not resolve as available. Ordered before the
+# enqueuer-cron reconcile below on purpose: a converge where search is dead
+# stops here and cannot (re-)enable any card that depends on it. Runs the same
+# code path the agent runs, so it also breaks loudly if a hermes self-update
+# renames these internals — same posture as the source patches above.
+- name: Assert the configured web search backend resolves as available
+  ansible.builtin.command:
+    chdir: "{{ hermes_agent_install_dir }}"
+    cmd: >-
+      {{ hermes_agent_venv_python }} -c
+      "from tools.web_tools import _get_search_backend, _is_backend_available;
+      b = _get_search_backend();
+      assert _is_backend_available(b), 'web search backend %r unavailable' % b;
+      print(b)"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  changed_when: false
+
 # One `<job>-enqueue` script cron per card, same schedule the old agentic cron
 # used; each enqueues its workload's current-slot card. Disabled cards create no
 # cron (the include is gated on item.enabled).

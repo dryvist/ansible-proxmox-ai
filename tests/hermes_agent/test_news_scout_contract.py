@@ -68,6 +68,21 @@ def test_config_pins_the_web_backend_to_ddgs() -> None:
         "config.yaml.j2 must pin web.backend to ddgs")
 
 
+def test_the_converge_asserts_search_availability_before_enabling_cards() -> None:
+    """The converge runs the upstream backend resolution in the deployed venv
+    and fails if it does not resolve available — ordered before the enqueuer
+    reconcile, so a converge with dead search cannot (re-)enable a card that
+    depends on it. This gate, not the pause list, is what makes 'web works'
+    a precondition for the news scout going live."""
+    gate = MAIN_TASKS.find("Assert the configured web search backend resolves as available")
+    reconcile = MAIN_TASKS.find("Reconcile the per-workload Kanban enqueuer crons")
+    assert gate != -1, "the availability assertion task is missing"
+    assert reconcile != -1, "the enqueuer reconcile task is missing"
+    assert gate < reconcile, "the assertion must run before cards are reconciled"
+    assert "_is_backend_available" in MAIN_TASKS, (
+        "the gate must run the real upstream availability check, not a proxy")
+
+
 # --- the prompt contract -----------------------------------------------------
 
 def test_every_item_needs_a_url_retrieved_this_run() -> None:
