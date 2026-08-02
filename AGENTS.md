@@ -16,6 +16,12 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
 - `llama_cpp` — llama.cpp + llama-swap (GPU-tier serving)
 - `llm_router` — LiteLLM proxy, the single OpenAI-compatible front door for
   the large/light serving tiers.
+  **Registry rule (hard): every model name, alias, tier and enabled/servable
+  state is written ONCE, in the repo-root `llm-models.yml` registry. The role's
+  defaults and templates are projections of it — never add a model id, alias or
+  OpenBao key field to `roles/llm_router/` (or anywhere else); add or edit a
+  registry entry. A test fails the build when a registry value is re-typed in
+  the role's defaults.**
   **Alias rule (hard): consumer-facing model aliases (`ai-default`,
   `ai-deep-analysis`, `claude-*`, any future tier name) live ONLY in
   `llm_router_model_group_aliases` (rendered as LiteLLM
@@ -24,7 +30,10 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
   context_window/extra_body/api_base under a second name — is BANNED: the
   duplicate config silently drifts from the real backend every time the
   model changes (root cause of the #1004 diagnosis cost). One physical
-  entry per backend; every other name is a literal alias with zero config.**
+  entry per backend; every other name is a literal alias with zero config.
+  An alias is declared in `stable_aliases` on the registry entry it points
+  at, which is what makes it structurally incapable of naming a model that
+  is not registered.**
 - `open_webui` — Open WebUI chat frontend
 
 ### RAG (retrieval-augmented generation)
