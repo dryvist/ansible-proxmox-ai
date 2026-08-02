@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.22.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.21.1...v0.22.0) (2026-08-02)
+
+
+### Features
+
+* **hermes_agent:** lift fleet-health off the throughput throttle ([#305](https://github.com/dryvist/ansible-proxmox-ai/issues/305)) ([179d71c](https://github.com/dryvist/ansible-proxmox-ai/commit/179d71c639942047b89825604d2df5bc2d66925c))
+
+
+### Bug Fixes
+
+* **inventory:** resolve ai_llm_concurrency when the artifact predates the constant ([#302](https://github.com/dryvist/ansible-proxmox-ai/issues/302)) ([c673e2d](https://github.com/dryvist/ansible-proxmox-ai/commit/c673e2d64dfb27c835d48e265bb8af3516267384))
+
 ## [0.21.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.21.0...v0.21.1) (2026-08-02)
 
 
