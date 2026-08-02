@@ -147,7 +147,27 @@ ai_router_request_timeout_seconds: 2400
 # hermes_agent_kanban_max_in_progress* (roles/hermes_agent/defaults/main.yml)
 # derive from this, so the rendered config stays byte-identical to the prior
 # literals at the current value of 1.
-ai_llm_concurrency: "{{ tofu_data.constants.serving.llm_concurrency }}"
+# ROLLOUT WINDOW (remove the fallback once the artifact carries it). Ansible
+# reads the PUBLISHED inventory artifact, not tofu-proxmox's constants.tf, and
+# that artifact is only rewritten by a `tofu apply`. `serving.llm_concurrency`
+# was added to constants.tf and promoted to main, but the artifact in the
+# object store still predates it — its `constants` object has no `serving` key
+# at all. A bare reference therefore raises "object of type 'dict' has no
+# attribute 'serving'" and fails EVERY converge of this role, which is what it
+# did on 2026-08-02 before this fallback existed.
+#
+# The fallback is a migration shim, NOT a second definition: it is the same
+# value the constant publishes, it disappears from every render the moment the
+# artifact carries the key, and `assert_serving_constant_published` below
+# reports which path was taken so the shim cannot go quietly permanent. Delete
+# the `| default` and that assert together after the first apply that
+# republishes the inventory.
+ai_llm_concurrency: >-
+  {{ (tofu_data.constants.serving | default({})).llm_concurrency | default(1) }}
+# True only while the shim above is load-bearing. Consumed by the converge-time
+# notice in roles/hermes_agent/tasks/assert.yml.
+ai_llm_concurrency_from_fallback: >-
+  {{ (tofu_data.constants.serving | default({})).llm_concurrency is not defined }}
 
 # Resource-domain secrets fetched from OpenBao by the openbao_secrets pre-play.
 # Defaults to an empty dict so every consumer's

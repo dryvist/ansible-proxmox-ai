@@ -342,3 +342,24 @@
     ansible_become: false
   run_once: true
   changed_when: false
+
+# Reports which path ai_llm_concurrency resolved through. This is deliberately
+# a notice and not a failure: the published artifact legitimately lags a
+# constants.tf change until the next apply republishes it, and failing here
+# would recreate the very converge outage the fallback exists to prevent. It
+# exists so the migration shim in group_vars/all.yml cannot become permanent
+# by being invisible — once this stops reporting the fallback, delete the
+# shim, this task, and ai_llm_concurrency_from_fallback together.
+- name: Report whether serving concurrency came from the published constant
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        'ai_llm_concurrency=' ~ (ai_llm_concurrency | int) ~ ' resolved from the ROLLOUT FALLBACK — '
+        ~ 'the published inventory artifact has no constants.serving key yet. '
+        ~ 'Run an apply to republish it, then remove the fallback in '
+        ~ 'inventory/group_vars/all.yml and this task.'
+        if (ai_llm_concurrency_from_fallback | bool)
+        else 'ai_llm_concurrency=' ~ (ai_llm_concurrency | int)
+             ~ ' resolved from the published constant; the rollout fallback is now dead code and should be deleted.'
+      }}
+  run_once: true
