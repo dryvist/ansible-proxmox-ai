@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.21.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.20.0...v0.21.0) (2026-08-02)
+
+
+### Features
+
+* **agentgateway:** add the Nautobot IPAM/DCIM MCP route ([#291](https://github.com/dryvist/ansible-proxmox-ai/issues/291)) ([51ae3a8](https://github.com/dryvist/ansible-proxmox-ai/commit/51ae3a8c7b49c102e240d8cdf090252b6ab3aacc))
+* **hermes:** add Hindsight to fabric_watchdog and document silent memory-failure paths ([#275](https://github.com/dryvist/ansible-proxmox-ai/issues/275)) ([eb729c8](https://github.com/dryvist/ansible-proxmox-ai/commit/eb729c87eba914cbff25eb07df343ce71c66cef4))
+* **hermes:** make the news scout real — working search, interest-aware suggestions ([4f721d5](https://github.com/dryvist/ansible-proxmox-ai/commit/4f721d508f5c63f47a7163974f07da887071d67d))
+
+
+### Bug Fixes
+
+* **hermes_agent:** assert a profile with the Splunk skill declares the splunk MCP ([#288](https://github.com/dryvist/ansible-proxmox-ai/issues/288)) ([8dd900a](https://github.com/dryvist/ansible-proxmox-ai/commit/8dd900a6db905027526f8565cc0f221fb14d2141))
+* **hermes:** audit the kanban/direct-cron fleet, fix a dangling memory-key bug ([#294](https://github.com/dryvist/ansible-proxmox-ai/issues/294)) ([7da704a](https://github.com/dryvist/ansible-proxmox-ai/commit/7da704a75580aeb6fd1557760141cdf9e135eccc))
+* **hermes:** close the interactive Slack toolset gap in H-17 policy ([4454117](https://github.com/dryvist/ansible-proxmox-ai/commit/44541178590404b90d147e0d9692579ec7e9b29b))
+* **hermes:** fail the converge when the delivered Splunk MCP token cannot authenticate ([b6f8c34](https://github.com/dryvist/ansible-proxmox-ai/commit/b6f8c3464fdd5cdbc1960923374389374bbad42b))
+* **hermes:** hand the app-seeding card its endpoints instead of letting it invent them ([d690b18](https://github.com/dryvist/ansible-proxmox-ai/commit/d690b1879ca6f36a92535e771c43424395097f67))
+* **hermes:** split Slack routing into four channels by observation path ([#274](https://github.com/dryvist/ansible-proxmox-ai/issues/274)) ([c3aae40](https://github.com/dryvist/ansible-proxmox-ai/commit/c3aae40d4293adff185b3658d243ab09ef1c9b73))
+* **hermes:** stop judge errors from burning kanban goal turns ([#277](https://github.com/dryvist/ansible-proxmox-ai/issues/277)) ([b8d8232](https://github.com/dryvist/ansible-proxmox-ai/commit/b8d823244cb7bbddfe6ab6697d011a7cd5df8fa3))
+* **inventory:** add llm-router-1/2/3 to the ssh-override guest list ([#285](https://github.com/dryvist/ansible-proxmox-ai/issues/285)) ([0caa77b](https://github.com/dryvist/ansible-proxmox-ai/commit/0caa77b18f086787de96eb79e0905c2fb45c77cf))
+* **inventory:** add per-guest ssh override for LXC converges ([#278](https://github.com/dryvist/ansible-proxmox-ai/issues/278)) ([98eddee](https://github.com/dryvist/ansible-proxmox-ai/commit/98eddeed0c3de4e9fe2f69dfbd1c9f8dd720bd4e))
+* **inventory:** derive ai_llm_concurrency from tofu_data instead of a literal ([#293](https://github.com/dryvist/ansible-proxmox-ai/issues/293)) ([d3128c2](https://github.com/dryvist/ansible-proxmox-ai/commit/d3128c2ba782817d64fa5a33785399b1413d887a))
+* **llm_router:** give hermes-default automatic failover to the cluster brain ([aface19](https://github.com/dryvist/ansible-proxmox-ai/commit/aface1993eb7168066203b475a5a055fdc859cb1))
+* **llm_router:** give the liveness wait a budget that fits actual startup ([7c1366d](https://github.com/dryvist/ansible-proxmox-ai/commit/7c1366d3ac3b91f73503796f4d8755187c18be39))
+* **scripts:** add run-ansible.sh SSH-CA wrapper ([#290](https://github.com/dryvist/ansible-proxmox-ai/issues/290)) ([56330c4](https://github.com/dryvist/ansible-proxmox-ai/commit/56330c44b5a7c22637c9ea27e9d140e8a116e51a))
+
 ## [0.20.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.19.0...v0.20.0) (2026-07-30)
 
 
