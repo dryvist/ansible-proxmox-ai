@@ -95,6 +95,53 @@
       Every Kanban card assignee resolves to the default profile or a name in
       hermes_agent_profiles ({{ hermes_agent_profiles | map(attribute='name') | list }}).
 
+# A direct-cron retirement that names a replacement card is a promise: the
+# topic stays covered, just through the card instead of the cron. Nothing
+# enforced that promise at converge time before this — only
+# tests/hermes_agent/test_retired_direct_crons.py checked it, against the raw
+# YAML, and only if someone remembered to run pytest. Caught for real:
+# `homelab-ai-fabric-status` sat on hermes_agent_kanban_paused_jobs for a
+# stretch while its `-v2` cron was being retired in its favour — a paused
+# card's enqueuer renders no selector arm
+# (kanban-enqueue-recurring.sh.j2), so its still-active `-v2` cron's
+# replacement created nothing either, and the topic silently went to zero
+# coverage. This is the same invariant, enforced every converge.
+- name: Assert every direct-cron retirement's replacement card is enabled and unpaused
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_direct_cron_jobs
+        | selectattr('replaced_by_card', 'defined')
+        | selectattr('enabled') | list | length == 0
+      - >-
+        hermes_agent_direct_cron_jobs
+        | selectattr('replaced_by_card', 'defined')
+        | rejectattr('replaced_by_card', 'in',
+            hermes_agent_kanban_cards | map(attribute='job') | list
+            | reject('in', hermes_agent_kanban_paused_jobs) | list)
+        | list | length == 0
+    fail_msg: >-
+      A hermes_agent_direct_cron_jobs retirement is broken. Either it names a
+      replaced_by_card while still enabled:true (both paths would post — pick
+      one), or its replaced_by_card is not the `job` of a currently-enabled,
+      unpaused hermes_agent_kanban_cards entry (a paused card's enqueuer
+      renders no selector arm, so nothing creates it — the topic goes
+      unreported by both the retired cron and its replacement). Fix the
+      card name, unpause it, or set the cron back to enabled:true, in the
+      same change. Retirements still enabled:
+      {{ hermes_agent_direct_cron_jobs | selectattr('replaced_by_card', 'defined')
+         | selectattr('enabled') | map(attribute='name') | list }}.
+      Retirements with a dead replacement:
+      {{ hermes_agent_direct_cron_jobs | selectattr('replaced_by_card', 'defined')
+         | rejectattr('replaced_by_card', 'in',
+             hermes_agent_kanban_cards | map(attribute='job') | list
+             | reject('in', hermes_agent_kanban_paused_jobs) | list)
+         | map(attribute='name') | list }}.
+    success_msg: >-
+      Every direct-cron retirement names an enabled, unpaused replacement
+      card and is itself disabled.
+
 # A profile can carry the Splunk skill while declaring no splunk MCP server,
 # and nothing notices. The skill loads, the agent believes it can query Splunk,
 # and every SPL call fails at RUNTIME inside a job — visible only as a card
