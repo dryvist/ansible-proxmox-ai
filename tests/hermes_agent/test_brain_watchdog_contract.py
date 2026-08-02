@@ -1,11 +1,14 @@
 """Safety contract for the Hermes brain watchdog.
 
-WHY THIS EXISTS. `hermes_agent_brain_watchdog_enabled` defaults to false, and
-the roadmap calls for turning it on. Before that happens the watchdog's
-decision logic needs a contract, because it does not merely alert: it
-`pause`/`resume`s the role-seeded cron fleet. A watchdog that pauses the whole
-fleet on a single unlucky probe would silently stop all Hermes work, and the
-symptom — nothing running — looks identical to an idle board.
+WHY THIS EXISTS. `hermes_agent_brain_watchdog_enabled` was flipped to true
+2026-08-01 (a Caddy llm-gate crash that took the primary AND fallback serving
+legs down at once, twice in one night, with the seeded cron fleet firing into
+a dead brain the whole time — exactly the gap this watchdog closes). Before
+that happened, the watchdog's decision logic needed a contract, because it
+does not merely alert: it `pause`/`resume`s the role-seeded cron fleet. A
+watchdog that pauses the whole fleet on a single unlucky probe would silently
+stop all Hermes work, and the symptom — nothing running — looks identical to
+an idle board.
 
 The template already implements debounce, flap coalescing and a sustained-flap
 escalation. Nothing pinned them. `test_queue_recovery_contract.py` does touch
@@ -24,6 +27,7 @@ role variables and an operator may tune them.
 from pathlib import Path
 
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
+REPO_ROOT = ROLE.parents[1]
 WATCHDOG = (ROLE / "templates" / "hermes-brain-watchdog.sh.j2").read_text()
 DEFAULTS = (ROLE / "defaults" / "main.yml").read_text()
 
@@ -81,3 +85,50 @@ def test_recovery_alert_disclaims_queue_verification() -> None:
     "recovered" that implies the queue is draining invites the operator to
     stop looking."""
     assert "still requires queue verification" in WATCHDOG
+
+
+def test_watchdog_is_enabled_by_default() -> None:
+    """Regression guard for the 2026-08-01 flip. A silent revert back to false
+    would leave the fleet with no auto-pause the next time the brain drops —
+    exactly the incident that prompted enabling it."""
+    assert "hermes_agent_brain_watchdog_enabled: true" in DEFAULTS
+
+
+def test_probe_is_a_real_completion_not_a_liveness_endpoint() -> None:
+    """THE TRAP THIS WATCHDOG EXISTS TO AVOID.
+
+    A probe against /v1/models or any bare health endpoint can return 200 while
+    the engine is wedged and generating nothing — confirmed live 2026-07-16,
+    where a broken batch scheduler kept answering HTTP 200 with
+    finish_reason=error and zero tokens. The probe must hit chat/completions
+    with a real message body and verify BOTH a real finish_reason AND a
+    nonzero completion_tokens count, not just a 200 status code.
+    """
+    assert 'PROBE_URL="${BASE_URL}/chat/completions"' in WATCHDOG
+    assert '\\"messages\\":[{\\"role\\":\\"user\\",\\"content\\":\\"ping\\"}]' in WATCHDOG
+    assert '"finish_reason"' in WATCHDOG
+    assert '"completion_tokens"' in WATCHDOG
+    # A bare HTTP-200 check without the body assertions would silently pass a
+    # wedged engine — the probe must require both.
+    assert '[[ "${code}" == "200" ]] \\' in WATCHDOG
+
+
+def test_maintenance_playbooks_expect_the_timer_active_after_normal_operation() -> None:
+    """The watchdog being enabled by default means every playbook that stops it
+    for a deliberate window (cluster pause, queue recovery) must bring it back
+    when that window ends — otherwise the very first maintenance op silently
+    re-disables auto-pause/resume for good, with no alert that it happened.
+
+    cluster-hermes-pause.yml legitimately stops the timer and stays that way
+    (it's reversed by resume, not by itself) so it is deliberately not covered
+    here.
+    """
+    resume = (REPO_ROOT / "playbooks" / "cluster-hermes-resume.yml").read_text()
+    recover = (REPO_ROOT / "playbooks" / "recover-hermes-queue.yml").read_text()
+
+    assert "enabled: true" in resume
+    assert "state: started" in resume
+    assert "ActiveState == 'inactive'" not in resume
+
+    assert "ActiveState == 'active'" in recover
+    assert "ActiveState == 'inactive'" not in recover

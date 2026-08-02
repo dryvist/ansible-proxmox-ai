@@ -103,3 +103,21 @@
   loop_control:
     loop_var: hermes_agent_profile_skill
     label: "{{ hermes_agent_profile_skill }}"
+
+# research/llm-wiki ships from the hermes-agent install itself
+# (hermes_agent_install_dir), not the nix-hermes dryvist bundle above, so it
+# needs its own copy task — same source tasks/main.yml uses for the default
+# profile ("Materialize llm-wiki skill"). Opt-in: only profiles that name it
+# in their `skills` list get it materialized; WIKI_PATH (hermes-env-profile.j2)
+# is rendered for every profile regardless, since the directory itself is
+# shared, non-secret state — but without this task a profile's --skill
+# research/llm-wiki still would not resolve.
+- name: "Materialize the llm-wiki skill for profile {{ item.name }}"
+  ansible.builtin.copy:
+    src: "{{ hermes_agent_install_dir }}/skills/research/llm-wiki"
+    dest: "{{ hermes_agent_hermes_home }}/profiles/{{ item.name }}/skills/"
+    remote_src: true
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: preserve
+  when: hermes_agent_wiki_enabled | bool and 'research/llm-wiki' in item.skills

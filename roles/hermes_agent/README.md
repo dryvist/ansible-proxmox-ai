@@ -120,8 +120,8 @@ written to memory by any profile should be treated as private to it.
 | Profile | Mission | Has | Must NOT have (tools/MCP/skills — memory is shared across every profile, see above) |
 | --- | --- | --- | --- |
 | `default` | Cross-domain, board-meta, GitHub | everything (unchanged) | — |
-| `splunk-admin` | Read-only SIEM: SPL, alert + report | Splunk + Qdrant MCP, `splunk-monitor` skill | GitHub, Zammad, other MCP/skills |
-| `homelab-admin` | Incidents + fabric health | Qdrant MCP (+ Vikunja/Nautobot later), `zammad-incidents` skill | Splunk, GitHub, other MCP/skills |
+| `splunk-admin` | Read-only SIEM: SPL, alert + report | Splunk + Docs MCP, `splunk-monitor` skill | GitHub, Zammad, other MCP/skills |
+| `homelab-admin` | Incidents + fabric health | Docs MCP (+ Vikunja/Nautobot later), `zammad-incidents` skill | Splunk, GitHub, other MCP/skills |
 
 **Adding a card to a profile**: set that card's `assignee:` in
 `hermes_agent_kanban_cards` to the profile name (empty string = default).
@@ -263,7 +263,7 @@ time, so neither the endpoint nor the token ever lands in `config.yaml`.
 
 The URL is the shared agentgateway `/splunk` route (built from
 `PROXMOX_SUBDOMAIN` in the role defaults, non-secret), same posture as the
-context7/qdrant routes — the gateway federates to the Splunk MCP Server. The
+context7/docs routes — the gateway federates to the Splunk MCP Server. The
 Bearer token stays bao-first: it comes from the shared OpenBao
 `secret/ai/mcp/splunk` path (merged into `bao_local_llm_secrets`) with an env
 fallback, and is the remaining credential — empty until seeded. The
@@ -774,7 +774,7 @@ proxy this repo doesn't otherwise need.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `hermes_agent_brain_watchdog_enabled` | `false` | Preserve the watchdog implementation without scheduling it |
+| `hermes_agent_brain_watchdog_enabled` | `true` | Deploy + start the watchdog timer |
 | `hermes_agent_brain_watchdog_interval` | `60s` | Probe cadence (`OnUnitActiveSec`) |
 | `hermes_agent_brain_watchdog_probe_timeout` | `15` | Per-probe curl deadline (seconds) |
 | `hermes_agent_brain_watchdog_down_after` | `3` | Consecutive fails → pause + alert |
@@ -782,6 +782,30 @@ proxy this repo doesn't otherwise need.
 | `hermes_agent_brain_watchdog_flap_cooldown_seconds` | `3600` | Post-cycle window that coalesces further edges into one summary |
 | `hermes_agent_brain_watchdog_ntfy_topic` | `keystone` | ntfy topic for the urgent page |
 | `hermes_agent_brain_watchdog_healthcheck_url` | `''` (env `DEADMAN_HC_URL_HERMES_BRAIN`) | External deadman OK-ping target; empty = ping skipped |
+
+### Telling a watchdog pause from a human pause
+
+`hermes cron list --all` shows a job as paused either way — it does not record
+*who* paused it. Two things distinguish the two cases without adding any new
+state:
+
+- **The watchdog's own state file**, `$HERMES_HOME/brain-watchdog/state`
+  (`up` or `down`). If it reads `down`, the watchdog itself paused the seeded
+  fleet on a debounced probe failure. If it reads `up` while jobs are still
+  paused, the watchdog did not do it — look for a human cause instead
+  (`cluster-hermes-pause.yml`, `recover-hermes-queue.yml`, or a manual
+  `hermes cron pause`).
+- **Whether the timer is even running**: `systemctl is-active
+  hermes-brain-watchdog.timer`. The maintenance playbooks
+  (`cluster-hermes-pause.yml`, `recover-hermes-queue.yml`) explicitly stop the
+  timer *before* pausing anything by hand, precisely so the watchdog cannot
+  race a deliberate pause or auto-resume mid-maintenance. An inactive timer
+  during a paused fleet is conclusive: this is not the watchdog.
+- **The audit trail**: every watchdog-driven edge is logged with
+  `logger -t hermes-brain-watchdog`, so `journalctl -t hermes-brain-watchdog`
+  gives an exact "down at ${time}" / "up at ${time}" history alongside the
+  Slack DM + ntfy page it already sent. A human pause instead shows up in the
+  Ansible/Terrakube run history for whichever playbook ran.
 
 ### Watchdog self-monitoring ("who watches the watchdog")
 
@@ -856,6 +880,25 @@ env fallback; the entry is omitted until the key is set.
 | --- | --- | --- |
 | `hermes_agent_context7_mcp_enabled` | `true` | Register the Context7 MCP server |
 | `hermes_agent_context7_api_key` | `""` | Context7 API key (bao/env) |
+
+## Docs RAG search
+
+Registers the shared agentgateway `/docs` route (`mcp_servers.docs`) — a
+read-only `search_docs` tool over the `homelab_docs` Qdrant collection, which
+the `llamaindex` role rebuilds nightly from `docs.jacobpevans.com`,
+`docs.dryvist.com`, and the tofu service registry (see
+`llamaindex_sources`/`llamaindex_index_on_calendar` in that role's defaults).
+Keyless for the caller — the gateway's `mcp-docs` sidecar (`agentgateway_docker`
+role) holds the LLM-router credential used to embed each query. Defaults ON in
+both the default profile's `config.yaml` and every named profile that lists
+`docs` in its `mcp` (currently both `splunk-admin` and `homelab-admin`) —
+this is the estate's only document-retrieval index, so it belongs to every
+profile doing homelab work.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `hermes_agent_docs_mcp_enabled` | `true` | Register the docs MCP server |
+| `hermes_agent_docs_mcp_url` | `mcp.<sub>/docs` | Agentgateway route (non-secret) |
 
 ## Escalation (Codex via MCP)
 
