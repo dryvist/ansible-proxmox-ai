@@ -47,18 +47,20 @@ Always deploy the fabric in this order. Each stage gates the next.
      -i inventory/hosts.yml playbooks/site.yml --tags llm_router
    ```
 
-   **Converging without object-storage inventory access.** Inventory is
-   normally the object-storage-published `tofu_inventory.json`, fetched with an
-   OpenBao-authed AppRole. From a workstation lacking that AppRole, pin the
-   local gitignored cache instead — `inventory_resolve` resolves
-   `TOFU_INVENTORY_PATH` first (tier 1) and skips the object-storage fetch
-   entirely:
+   **Converging without object-storage inventory access.** Inventory is the
+   object-storage-published `ansible_inventory.json`, fetched with an
+   OpenBao-authed AppRole. From a workstation lacking that AppRole, pin a
+   known-current copy — `inventory_resolve` resolves `TOFU_INVENTORY_PATH`
+   first and skips the object-storage fetch entirely:
 
    ```bash
-   TOFU_INVENTORY_PATH="$PWD/inventory/tofu_inventory.json" \
+   TOFU_INVENTORY_PATH="<path-to-a-current-inventory>.json" \
      doppler run -- ansible-playbook \
        -i inventory/hosts.yml playbooks/site.yml --tags llm_router
    ```
+
+   Fetch that copy from the store rather than reusing an old one; the pin
+   bypasses every freshness check the role would otherwise apply.
 
    The cache is safe when topology is stable (host set unchanged) — the common
    case for a config-only converge. If a host moved or was added, refresh the
