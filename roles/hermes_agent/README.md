@@ -763,7 +763,7 @@ proxy this repo doesn't otherwise need.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `hermes_agent_brain_watchdog_enabled` | `false` | Preserve the watchdog implementation without scheduling it |
+| `hermes_agent_brain_watchdog_enabled` | `true` | Deploy + start the watchdog timer |
 | `hermes_agent_brain_watchdog_interval` | `60s` | Probe cadence (`OnUnitActiveSec`) |
 | `hermes_agent_brain_watchdog_probe_timeout` | `15` | Per-probe curl deadline (seconds) |
 | `hermes_agent_brain_watchdog_down_after` | `3` | Consecutive fails → pause + alert |
@@ -771,6 +771,30 @@ proxy this repo doesn't otherwise need.
 | `hermes_agent_brain_watchdog_flap_cooldown_seconds` | `3600` | Post-cycle window that coalesces further edges into one summary |
 | `hermes_agent_brain_watchdog_ntfy_topic` | `keystone` | ntfy topic for the urgent page |
 | `hermes_agent_brain_watchdog_healthcheck_url` | `''` (env `DEADMAN_HC_URL_HERMES_BRAIN`) | External deadman OK-ping target; empty = ping skipped |
+
+### Telling a watchdog pause from a human pause
+
+`hermes cron list --all` shows a job as paused either way — it does not record
+*who* paused it. Two things distinguish the two cases without adding any new
+state:
+
+- **The watchdog's own state file**, `$HERMES_HOME/brain-watchdog/state`
+  (`up` or `down`). If it reads `down`, the watchdog itself paused the seeded
+  fleet on a debounced probe failure. If it reads `up` while jobs are still
+  paused, the watchdog did not do it — look for a human cause instead
+  (`cluster-hermes-pause.yml`, `recover-hermes-queue.yml`, or a manual
+  `hermes cron pause`).
+- **Whether the timer is even running**: `systemctl is-active
+  hermes-brain-watchdog.timer`. The maintenance playbooks
+  (`cluster-hermes-pause.yml`, `recover-hermes-queue.yml`) explicitly stop the
+  timer *before* pausing anything by hand, precisely so the watchdog cannot
+  race a deliberate pause or auto-resume mid-maintenance. An inactive timer
+  during a paused fleet is conclusive: this is not the watchdog.
+- **The audit trail**: every watchdog-driven edge is logged with
+  `logger -t hermes-brain-watchdog`, so `journalctl -t hermes-brain-watchdog`
+  gives an exact "down at ${time}" / "up at ${time}" history alongside the
+  Slack DM + ntfy page it already sent. A human pause instead shows up in the
+  Ansible/Terrakube run history for whichever playbook ran.
 
 ### Watchdog self-monitoring ("who watches the watchdog")
 
