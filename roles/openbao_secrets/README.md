@@ -12,8 +12,8 @@ some_secret: "{{ bao_local_llm_secrets.SOME_SECRET | default(lookup('env', 'SOME
 ```
 
 This is a copy of the same-named role in `ansible-proxmox-apps`, trimmed to
-the one domain this repo consumes (`local-llm`). The generic machinery
-(failover probe, per-domain AppRole login, flat merge) is identical.
+the domains this repo consumes. The generic machinery (failover probe,
+per-domain AppRole login, flat merge) is identical.
 
 It runs **once** on the controller (`delegate_to: localhost`, `run_once`),
 looping `openbao_secrets_domains` and leaving each domain's merged result in
@@ -81,10 +81,13 @@ server-side quorum HA needs a fourth node and is out of scope.
 
 | Domain | AppRole env vars | KV paths | Consumers |
 | --- | --- | --- | --- |
+| `apps` | `APPS_VAULT_ROLE_ID` / `_SECRET_ID` | `apps/hindsight` | `hindsight_docker` |
 | `ai-public` | `AI_PUBLIC_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/public/brain` (non-secret) | `ai_default_model` + brain-sync timers (below) |
+| `ai-runner` | `AI_RUNNER_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/vikunja`, `ai/saas/{anthropic,openai}` | job-runner guests (`ai_runner`, `agent_guest`) |
+| `hermes` | `HERMES_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/hermes` (path-exact) | none yet — see below |
 | `local-llm` | `LOCAL_LLM_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/*`; exact paths in defaults | every AI role in this repo |
 
-Other resource domains (observability, media, apps, ...) are fetched by the
+Other resource domains (observability, media, ...) are fetched by the
 `ansible-proxmox-apps` copy of this role for the roles that live there.
 
 `local-llm` replaces the old `ai-readonly`-backed `bao_ai_secrets` for the LLM
@@ -103,6 +106,14 @@ must stay narrowly read-only on non-secret data — never local-llm's broader
 (`openbao_approles`/`openbao_policies`) before it resolves live** — until
 then it skips cleanly like any other unconfigured domain, and
 `ai_default_model` falls back to its static literal.
+
+`hermes` is path-exact-only future scaffolding: `HERMES_VAULT_ROLE_ID`/
+`_SECRET_ID` are already provisioned as a real AppRole + policy server-side,
+but every `hermes_agent` credential under `ai/hermes` still reads through
+`local-llm`'s broader grant (its `inventory/group_vars/hermes_agent_group.yml`
+overrides) — nothing currently resolves via `bao_hermes_secrets`. Migrate one
+field at a time by pointing its group_vars override here once
+`HERMES_VAULT_ROLE_ID`/`_SECRET_ID` land in Doppler.
 
 All readable path keys for a domain are merged flat into that domain's
 `bao_<domain>_secrets`, keyed by the field name, so a consumer default reads
