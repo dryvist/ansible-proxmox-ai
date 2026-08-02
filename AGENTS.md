@@ -97,15 +97,23 @@ silently ignores the other section of `requirements.yml` and still exits zero.
 
 ### Commands
 
+`scripts/run-ansible.sh` mints a short-lived SSH certificate from the OpenBao
+CA (`ssh-certificate-authority` ADR) when `BAO_ADDR` +
+`OPENBAO_APPROLE_ANSIBLE_ROLE_ID`/`_SECRET_ID` are ambient, then runs the
+playbook — the same signing token also satisfies `inventory_resolve`'s
+`BAO_TOKEN` requirement, so no separate token is needed. Falls back verbatim
+to the static `PROXMOX_SSH_KEY_PATH` flow when that env is absent. See
+[SSH certificate access](https://docs.jacobpevans.com/d/runbooks/ssh-certificate-access).
+
 ```bash
-# Converge everything (Doppler injects BAO_ADDR + the local-llm AppRole creds,
-# PROXMOX_SUBDOMAIN, PROXMOX_SSH_KEY_PATH, ...)
-doppler run -- ansible-playbook -i inventory/hosts.yml playbooks/site.yml --forks 25
+# Converge everything (Doppler injects BAO_ADDR + the ansible-converge and
+# local-llm AppRole creds, PROXMOX_SUBDOMAIN, PROXMOX_SSH_KEY_PATH, ...)
+doppler run -- scripts/run-ansible.sh playbooks/site.yml -i inventory/hosts.yml --forks 25
 
 # Scoped converge — --limit MUST include localhost (the inventory loader runs
 # on localhost via add_host; without it no hosts are added and every play
 # reports "no hosts matched")
-doppler run -- ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
+doppler run -- scripts/run-ansible.sh playbooks/site.yml -i inventory/hosts.yml \
   --tags llm_router --limit llm_router_group,localhost --forks 25
 
 # Lint
