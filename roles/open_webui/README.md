@@ -2,7 +2,7 @@
 
 Deploys **Open WebUI** (CT 168 `hermes-chat`) as the chat front-end for the local
 LLM, talking to **Ollama** (CT 167) and fronted by **Traefik** at
-`https://llm.<PROXMOX_SUBDOMAIN>` (e.g. `https://llm.pve.jacobpevans.com`).
+`https://llm.<PROXMOX_SUBDOMAIN>`.
 
 ## Installation
 
