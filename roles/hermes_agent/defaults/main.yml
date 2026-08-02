@@ -56,7 +56,7 @@ hermes_agent_bundle_flake_ref: "github:dryvist/nix-hermes/nix-hermes-v0.6.0#herm
 # prompt edit lands in the catalog first; this pin then moves to that merge
 # commit, so the converge is the only thing that changes what a job says.
 hermes_agent_prompts_flake_ref: >-
-  github:dryvist/ai-llm-prompts/30bab7c9e4ec8fab67ea61c98940b3f6175dcade#auto-ai-agent
+  github:dryvist/ai-llm-prompts/b231d16d2d2f0e7edceaf638b247e46e7d7a4c17#auto-ai-agent
 hermes_agent_webhook_prompt_file: hermes-inbound-webhook.md
 hermes_agent_curriculum_prompt_files:
   orient: hermes-curriculum-orient.md
@@ -203,11 +203,24 @@ hermes_agent_direct_cron_jobs:
     prompt_file: hermes-digest-splunk-error-triage.md
     skill: ""
     enabled: false
+  # RETIRED (2026-08-01 kanban audit), replaced by the splunk-parsing kanban
+  # card (same daily cadence — a 1-for-1 swap, not a throughput increase).
+  # This job's fixed SPL was `index=os OR index=network | stats count by
+  # sourcetype | sort -count | head 15`: `index=network` is the same
+  # stale/near-empty index the daily-operator-summary fix above already
+  # dropped for `firewall`, so half of every run's table silently omitted the
+  # real network-shaped data — a confidently wrong daily post, not just a
+  # crude one. It also had no memory dedup and no [SILENT] path, so it always
+  # posted regardless of whether anything needed attention. The kanban card
+  # sweeps for real data-quality signals (timestamp-extraction failures,
+  # line-merge anomalies, new/unknown sourcetypes) with memory-backed delta
+  # discipline and posts only when something is actually off.
   - name: splunk-parsing-quality-v2
     schedule: "17 3 * * *"
     prompt_file: hermes-digest-splunk-parsing-quality.md
     skill: ""
-    enabled: true
+    enabled: false
+    replaced_by_card: "{{ hermes_agent_splunk_parsing_cron_name }}"
   # RETIRED, not superseded: nothing replaces this job because nothing needs to.
   # Its SPL is `index=* | stats count by index, sourcetype | sort -count | head 15`
   # — the same two group-by fields splunk-status-digest already computes hourly
@@ -806,26 +819,22 @@ hermes_agent_splunk_deepdive_cron_name: splunk-deepdive
 hermes_agent_splunk_deepdive_cron_schedule: "11 3 * * *"
 hermes_agent_splunk_deepdive_cron_prompt_file: hermes-splunk-deepdive.md
 
-# Routine status post: always delivered (never [SILENT]).
-hermes_agent_splunk_digest_cron_name: splunk-digest
-# HOURLY by operator law (2026-07-16): Hermes must deliver useful information
-# at least once per hour, 24/7 — this digest IS that heartbeat (and its silence
-# is the outage signal). Anomaly sweeps stay silent-unless-anomaly; only they
-# were calmed.
-#
-# Delta discipline (2026-07-18): the same CRITICAL finding was getting restated
-# in full 24x/day for 2+ days straight. Memory is the canonical last-posted
-# state (also read by splunk-triage above, so the two surfaces stop
-# independently re-deriving and re-posting the same finding). A full report
-# still goes out at least once/day (the anchor hour) even with zero change, so
-# "still CRITICAL" never silently rots off everyone's radar.
-hermes_agent_splunk_digest_cron_schedule: "52 * * * *"
-hermes_agent_splunk_digest_cron_prompt_file: hermes-splunk-digest.md
+# The LLM splunk-digest kanban card that used to own this topic is REMOVED
+# (2026-08-01 kanban audit), not merely paused: its script-fed replacement
+# below fully covers the "routine status post" it existed for, and leaving it
+# defined-but-paused was actively harmful — hermes-splunk-triage's prompt
+# recalled memory key "splunk-digest-last", written only by this card's
+# worker, and once the card stopped running that recall was a dangling read
+# that always found nothing (fixed separately in the ai-llm-prompts catalog:
+# splunk-triage now recalls/saves its own "splunk-triage-last" key). If a
+# quiet, memory-backed Splunk status card is ever wanted again, give it a
+# name that isn't recalled from anywhere else, so retiring it can never leave
+# a foreign prompt's memory recall silently dead again.
 
 # --- Script-fed Splunk status digest (structural anti-fabrication fix) ---------
-# Replaces the LLM digest path (the splunk-digest kanban card below is retired via
-# hermes_agent_kanban_paused_jobs; the hand-created splunk-hourly-digest-v3 direct
-# cron is paused at converge, disable-don't-delete). This is a `--no-agent
+# Replaces the LLM digest path (removed, see above; the hand-created
+# splunk-hourly-digest-v3 direct cron is paused at converge, disable-don't-delete).
+# This is a `--no-agent
 # --script` cron: splunk-digest.py gathers the numbers itself via the Splunk MCP
 # and its STDOUT is delivered VERBATIM to Slack — NO LLM in the fact path, nothing
 # to poison (the Zammad #17143 fabrications were the model inventing "33 indexes /
@@ -1044,6 +1053,16 @@ hermes_agent_retired_anomaly_hunt_cron_name: anomaly-hunt-v2
 hermes_agent_retire_fabric_status_v2: true
 hermes_agent_retired_fabric_status_cron_name: homelab-ai-fabric-status-v2
 
+# --- Retire the daily splunk-parsing-quality-v2 cron (the card replaces it) ---
+# Same disable-don't-delete shape as the two retirements above: `enabled:
+# false` on the hermes_agent_direct_cron_jobs entry stops reconcile from
+# re-creating the job, and only the pause below stops the one already on the
+# guest. Set false to keep the cron running (the card runs either way once
+# unpaused, so that means both post — and the cron's query is proven wrong,
+# see the comment on its hermes_agent_direct_cron_jobs entry).
+hermes_agent_retire_splunk_parsing_v2: true
+hermes_agent_retired_splunk_parsing_v2_cron_name: splunk-parsing-quality-v2
+
 # The Splunk monitor workloads are dispatched as Kanban cards now, not agentic
 # cron jobs (kanban migration, #83) — see hermes_agent_kanban_cards below, which
 # reuses the per-job name/schedule/prompt vars above. The old
@@ -1101,16 +1120,20 @@ hermes_agent_summary_cron_schedule: "0 12 * * *"
 hermes_agent_summary_cron_prompt: >-
   Post the once-daily operator summary to this channel, built from your own
   last-24h cron findings and memory (Splunk, Zammad incidents
-  opened/updated/resolved, fabric health, GitHub org findings). STRICT rules:
-  deltas and open action items only — never restate unchanged or benign
-  status; every line must be either NEW since yesterday's summary or an open
-  item awaiting a human. Lead with anything needing operator action. No
-  Markdown tables (Slack does not render them) — short lines or key: value
-  pairs. At most 15 lines. Recall memory key "daily-summary-last" to compute
-  the delta and save today's fingerprint back to it. If genuinely nothing new
-  and nothing open, say exactly that in one line — never pad. Self-check before
-  posting: every line is a delta or an open action item — drop anything that is
-  unchanged or benign status.
+  opened/updated/resolved, fabric health, GitHub org findings). For Splunk
+  ingest volume specifically, recall memory key "daily-operator-summary-last"
+  (saved by the separate daily-operator-summary-v2 job) instead of re-querying
+  it yourself — that job already owns per-index event/host counts; do not
+  duplicate its Splunk tool calls here. STRICT rules: deltas and open action
+  items only — never restate unchanged or benign status; every line must be
+  either NEW since yesterday's summary or an open item awaiting a human. Lead
+  with anything needing operator action. No Markdown tables (Slack does not
+  render them) — short lines or key: value pairs. At most 15 lines. Recall
+  memory key "daily-summary-last" to compute the delta and save today's
+  fingerprint back to it. If genuinely nothing new and nothing open, say
+  exactly that in one line — never pad. Self-check before posting: every line
+  is a delta or an open action item — drop anything that is unchanged or
+  benign status.
 
 # --- Zammad review: proactive incident lifecycle across ALL queues ----------
 # Operator directive 2026-07-18: Hermes proactively READS open Zammad
@@ -1207,6 +1230,19 @@ hermes_agent_reviewer_card_prompt: >-
 # Anomaly hunt: the unknown-unknowns lens the scheduled Splunk/GitHub lenses do
 # not cover. Splunk-monitor skill carries the bounded-query safety rails;
 # github-issues lets it file confirmed findings.
+#
+# Audited 2026-08-01 against the script-fed digests that did not exist when
+# this card was designed: its own anomaly-hunt-v2 direct-cron twin WAS retired
+# outright (see hermes_agent_direct_cron_jobs) because its fixed top-15 SPL
+# was a strict subset of splunk-status-digest. This kanban card is NOT the
+# same case — checked each of its three hunting axes individually:
+# (1) new error signatures overlaps splunk-error-digest's signature
+# clustering, and (2)/(3) silent sources / volume anomalies overlap
+# splunk-status-digest's ingest-silence and percent-band findings, BUT both
+# scripts only watch the two hardcoded `hermes_agent_splunk_digest_expected_indexes`
+# (os, firewall); this card hunts across whatever it chooses, and can file a
+# kanban_create follow-up card, which a `--no-agent` script cannot. Keep it —
+# do not apply the direct-cron retirement here without re-checking that gap.
 hermes_agent_anomaly_hunt_cron_name: anomaly-hunt
 hermes_agent_anomaly_hunt_cron_schedule: "13 */12 * * *"
 hermes_agent_anomaly_hunt_cron_prompt: >-
@@ -1414,6 +1450,45 @@ hermes_agent_app_seeding_endpoints: |-
   hold, record the sub-task as blocked in the completion marker and say so in
   the Slack summary — never try another hostname or port.
 
+# --- Fleet health: Hermes watching its OWN reliability trend (2026-08-01) -----
+# The one gap the 2026-08-01 kanban audit found with no card covering it:
+# every existing card watches a DOWNSTREAM system (Splunk, Zammad, GitHub,
+# the fabric); nothing watches whether HERMES ITSELF is getting more or less
+# reliable at running them. Weekly (not hourly/daily like the monitor fleet —
+# a reliability TREND needs a window longer than one throttle-limited board's
+# worth of runs to mean anything) and read-only over `kanban runs`; it never
+# proposes touching serving infrastructure, only files a follow-up card for a
+# human or a separate change to act on. Distinct from the `review` card
+# above: `review` catches an operational gap in the last 8h (stuck, blocked,
+# silently-not-run); this catches a reliability trend across weeks. Different
+# time horizons, not a duplicate.
+hermes_agent_fleet_health_cron_name: fleet-health
+hermes_agent_fleet_health_cron_schedule: "3 10 * * 1"
+hermes_agent_fleet_health_cron_prompt: >-
+  You are the Hermes weekly fleet-health pass: look for REGRESSION in your own
+  reliability over the last 7 days — not in any downstream system you
+  monitor. Retrieval first: recall memory key "fleet-health-last" (the
+  per-card outcome counts you saved last week) so you compare against a real
+  baseline, not from scratch. Then read `kanban runs` for the window and
+  compute, per recurring card, its completed / failed / retried /
+  turn-budget-exhausted counts. Flag ONLY a card whose failure or retry rate
+  got genuinely worse than the recalled baseline (a single bad run in a
+  low-volume card is not a regression) or that produced zero runs when its
+  schedule implies it should have run (a silently-stopped enqueuer). For each
+  CONFIRMED regression, file one kanban_create follow-up card naming the
+  workload, the before/after counts, and cite the exact `kanban runs` rows
+  behind them — never assert a regression you cannot point to in that output.
+  If the fleet's run history is too thin to say anything meaningful (most
+  cards are currently paused under the throughput throttle — see
+  hermes_agent_kanban_paused_jobs), say exactly that instead of speculating
+  from a handful of runs. You can only observe and file a follow-up card;
+  never propose or attempt to restart, reconfigure, or converge any serving
+  infrastructure yourself. Self-check before finishing: does every flagged
+  regression cite real before/after counts from `kanban runs`, and is the
+  baseline genuinely stale-comparable rather than one noisy run? Save this
+  week's per-card counts back to "fleet-health-last". If nothing regressed,
+  say so in one line.
+
 # --- Named operating profiles (Hermes agent identities) -----------------------
 # A profile is a fully independent HERMES_HOME directory (own config.yaml,
 # .env, SOUL.md, memory, skills) that a Kanban card selects via its `assignee`
@@ -1614,21 +1689,8 @@ hermes_agent_kanban_cards:
     skills: [dryvist/splunk-monitor]
     unblock: false
     enabled: *kanban_splunk_gate
-  # profile: splunk-admin — retired card (superseded by the script-fed status
-  # digest); paused, never dispatches. Assigned for consistency (it carries
-  # dryvist/splunk-monitor, same mechanical rule as the rest of the fleet
-  # above) rather than left as an unexplained exception.
-  - job: "{{ hermes_agent_splunk_digest_cron_name }}"
-    title: "Splunk hourly digest"
-    interval_hours: 1
-    schedule: "{{ hermes_agent_splunk_digest_cron_schedule }}"
-    prompt_var: hermes_agent_splunk_digest_cron_prompt
-    assignee: splunk-admin
-    max_runtime: "15m"
-    max_retries: 2
-    skills: [dryvist/splunk-monitor]
-    unblock: false
-    enabled: *kanban_splunk_gate
+  # The splunk-digest card that used to sit here is REMOVED, not paused — see
+  # the comment above hermes_agent_splunk_status_digest_cron_name.
   # profile: default — GitHub org work; a future github-admin profile, not now
   - job: "{{ hermes_agent_github_monitor_cron_name }}"
     title: "GitHub org triage sweep"
@@ -1777,6 +1839,19 @@ hermes_agent_kanban_cards:
     skills: []
     unblock: false
     enabled: *kanban_slack_gate
+  # profile: default — meta/cross-domain, same home as review/daily-summary;
+  # watches Hermes' OWN reliability trend, not a downstream system.
+  - job: "{{ hermes_agent_fleet_health_cron_name }}"
+    title: "Hermes weekly fleet-health pass"
+    interval_hours: 24
+    schedule: "{{ hermes_agent_fleet_health_cron_schedule }}"
+    prompt_var: hermes_agent_fleet_health_cron_prompt
+    assignee: ""
+    max_runtime: "30m"
+    max_retries: 1
+    skills: []
+    unblock: false
+    enabled: *kanban_slack_gate
 
 # --- Enqueuer throughput throttle (2026-07-24, Zammad #17143) ------------------
 # The single serving slot drains ~2-3 goal cards/hour; the full enqueuer fleet
@@ -1794,8 +1869,9 @@ hermes_agent_kanban_cards:
 # bot-pr-triage (capability-gated off, no alerts token); anything whose `enabled`
 # capability gate is already false. Active set kept on: splunk triage, the
 # script-fed status digest (splunk-status-digest), and the ai-news scout
-# (canary lift, see below); the LLM splunk-digest card is retired below in
-# favour of that script.
+# (canary lift, see below); splunk-parsing (see below, 2026-08-01 swap); the
+# LLM splunk-digest card is REMOVED, not paused — see the comment above
+# hermes_agent_splunk_status_digest_cron_name.
 hermes_agent_kanban_paused_jobs:
   # homelab-ai-fabric-status is deliberately NOT here any more: it is now the
   # replacement for the retired homelab-ai-fabric-status-v2 cron, so it has to
@@ -1805,7 +1881,16 @@ hermes_agent_kanban_paused_jobs:
   - "{{ hermes_agent_summary_cron_name }}"
   - "{{ hermes_agent_zammad_review_cron_name }}"
   - "{{ hermes_agent_splunk_security_cron_name }}"
-  - "{{ hermes_agent_splunk_parsing_cron_name }}"
+  # splunk-parsing is deliberately NOT here any more (2026-08-01 kanban audit,
+  # Zammad-throttle-safe 1-for-1 swap): the direct cron it used to sit behind
+  # in priority, splunk-parsing-quality-v2, is retired below — its fixed SPL
+  # queried `index=network`, which the triage-digest comment above already
+  # proved stale/near-empty, so it was silently omitting the real
+  # network-shaped data that lives in `firewall`, every day, with no memory
+  # dedup and no [SILENT] path (always posts). This card has the SAME daily
+  # cadence (net zero enqueue-rate change), a correct query, memory-backed
+  # delta discipline, and posts only when something is actually off — a pure
+  # quality win, not a throttle lift.
   - "{{ hermes_agent_splunk_deepdive_cron_name }}"
   - "{{ hermes_agent_github_monitor_cron_name }}"
   - "{{ hermes_agent_docs_sync_cron_name }}"
@@ -1821,9 +1906,12 @@ hermes_agent_kanban_paused_jobs:
   - "{{ hermes_agent_daily_innovation_cron_name }}"
   - "{{ hermes_agent_app_seeding_cron_name }}"
   - "{{ hermes_agent_kanban_safety_net_cron_name }}"
-  # Retired: the LLM digest card is superseded by the script-fed status digest
-  # (splunk-digest.py, no LLM in the fact path). Paused, not deleted.
-  - "{{ hermes_agent_splunk_digest_cron_name }}"
+  # New (2026-08-01 kanban audit), paused on creation like every other new
+  # card — but named here as the RECOMMENDED next throttle lift, ahead of the
+  # cards above it: it is the only card in the fleet that watches Hermes' own
+  # reliability trend rather than a downstream system, a weekly (not hourly)
+  # cadence, and read-only over `kanban runs`. See its card comment below.
+  - "{{ hermes_agent_fleet_health_cron_name }}"
 
 # The daily chain-break safety net (#83): one extra `--no-agent --script` cron
 # that runs the enqueuer in `all --backfill` mode — re-creates any missing

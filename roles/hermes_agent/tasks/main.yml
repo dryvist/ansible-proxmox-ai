@@ -69,10 +69,6 @@
       {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
          ~ hermes_agent_splunk_deepdive_cron_prompt_file, rstrip=false)
          | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
-    hermes_agent_splunk_digest_cron_prompt: >-
-      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
-         ~ hermes_agent_splunk_digest_cron_prompt_file, rstrip=false)
-         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
     hermes_agent_github_monitor_cron_prompt: >-
       {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
          ~ hermes_agent_github_monitor_cron_prompt_file, rstrip=false)
@@ -89,6 +85,34 @@
       {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
          ~ hermes_agent_docs_sync_cron_prompt_file, rstrip=false)
          | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+
+# The splunk-digest kanban card that used to write memory key
+# "splunk-digest-last" is REMOVED (see defaults, hermes_agent_kanban_cards);
+# hermes-splunk-triage's catalog prompt used to recall that key before
+# alerting, which was a dangling read once nothing wrote it any more — always
+# missed, so the "already covered, don't re-alert" branch could never fire.
+# Fixed in the ai-llm-prompts catalog (splunk-triage now recalls its own
+# "splunk-triage-last"); this catches a REGRESSION of the same bug — a future
+# catalog edit that reintroduces a recall of a key only a removed or paused
+# job could ever write — at converge time instead of silently shipping it.
+- name: Assert the Splunk triage prompt does not recall a dead job's memory key
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "'splunk-digest-last' not in hermes_agent_splunk_triage_cron_prompt"
+    fail_msg: >-
+      hermes_agent_splunk_triage_cron_prompt (from the pinned ai-llm-prompts
+      catalog) recalls memory key "splunk-digest-last", which nothing writes
+      any more — the splunk-digest kanban card that used to own it is removed
+      (see hermes_agent_kanban_cards in defaults/main.yml). A recall of a key
+      nothing writes always finds nothing, so any "already covered, don't
+      re-alert" branch built on it can never fire. Fix the prompt in
+      dryvist/ai-llm-prompts to recall a key a currently-running job actually
+      writes (its own, by preference — see splunk-triage-last), then bump
+      hermes_agent_prompts_flake_ref to the merge commit.
+    success_msg: >-
+      hermes_agent_splunk_triage_cron_prompt does not recall the dead
+      splunk-digest-last memory key.
 
 - name: Assert every curriculum prompt resolves from the catalog
   ansible.builtin.assert:
@@ -1397,6 +1421,7 @@
     or (hermes_agent_triage_enabled | bool)
     or (hermes_agent_retire_anomaly_hunt | bool)
     or (hermes_agent_retire_fabric_status_v2 | bool)
+    or (hermes_agent_retire_splunk_parsing_v2 | bool)
 
 - name: Pause the superseded v3 LLM digest cron (disable-don't-delete)
   ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ hermes_agent_superseded_digest_cron_name }}"
@@ -1458,6 +1483,22 @@
   when:
     - hermes_agent_retire_fabric_status_v2 | bool
     - hermes_agent_retired_fabric_status_cron_name in (hermes_agent_active_cron_list.stdout | default(''))
+
+# Retire the daily splunk-parsing-quality-v2 cron: its fixed SPL queried the
+# proven stale/near-empty `index=network` (see the comment on its
+# hermes_agent_direct_cron_jobs entry), so it was confidently omitting real
+# data every run, with no memory dedup and no [SILENT] path. The
+# splunk-parsing kanban card replaces it 1-for-1 on the same daily cadence.
+- name: Pause the retired splunk-parsing-quality-v2 cron (disable-don't-delete)
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ hermes_agent_retired_splunk_parsing_v2_cron_name }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  when:
+    - hermes_agent_retire_splunk_parsing_v2 | bool
+    - hermes_agent_retired_splunk_parsing_v2_cron_name in (hermes_agent_active_cron_list.stdout | default(''))
 
 # Zammad stale-ticket auto-close cron (disabled by default; see defaults). Closures
 # deliver to Slack for auditability. Gated on the auto-close flag AND zammad + slack

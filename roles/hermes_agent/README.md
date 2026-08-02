@@ -297,13 +297,16 @@ the `[SILENT]` marker suppresses delivery entirely, so a normal sweep costs zero
 notifications. Findings are written to memory (baselines + open issues, for
 dedup), and durable knowledge is captured as `llm-wiki` pages (RAG).
 
-**Routing (3-tier, 2026-07-18):** Slack output is split by audience, not by
+**Routing (3-tier, 2026-07-18; see `docs/HERMES_OPS.md` for the newer 4-channel
+scheme, 2026-07-31):** Slack output is split by audience, not by
 job. The **firehose channel** (`SLACK_FIREHOSE_CHANNEL` →
 `hermes_agent_firehose_deliver`) receives every verbose routine report —
 `github-triage`, `homelab-ai-fabric-status` (now 24/7), and the
-`zammad-review` working report, posted every run in full, plus `splunk-digest`
-(posts on anything critical or novel, and otherwise at least once every
-`HEARTBEAT_HOURS` — see "Delta discipline" below). The **home
+`zammad-review` working report, posted every run in full, plus the
+script-fed `splunk-status-digest` cron (posts on anything critical or novel,
+and otherwise at least once every `HEARTBEAT_HOURS` — see "Delta discipline"
+below; the LLM `splunk-digest` card this described is removed, 2026-08-01).
+The **home
 channel** is the curated operator surface: the once-daily `daily-summary`
 rollup (delta-only, no tables, ≤15 lines) and nothing routine. **DMs stay
 urgent-only**: anomaly alerts (`slack:<member-id>`, silent-unless-anomaly) and
@@ -317,11 +320,14 @@ with evidence — not recommending), enriches open ones with genuinely new
 findings, and DMs the operator about incidents that appeared since its last
 run. Gated on the Zammad URL + token alongside the Slack gates.
 
-**Delta discipline (canonical surface, not double-reported).** The digest is
-the canonical surface for ongoing/known findings; `splunk-triage`'s DM recalls
-the digest's last-posted state from memory before alerting and stays silent
-when its top finding is already covered there — the DM is for genuinely NEW
-or ESCALATING findings only. The script-fed status digest posts the real
+**Delta discipline (own state, not double-reported).** `splunk-triage`'s DM
+recalls its OWN last-posted findings from memory (key `splunk-triage-last`)
+before alerting and stays silent when its top finding is already covered
+there — the DM is for genuinely NEW or ESCALATING findings only. (Until
+2026-08-01 it recalled the LLM `splunk-digest` card's key instead; once that
+card was removed the recall was a dangling read that always found nothing —
+fixed in the `ai-llm-prompts` catalog, guarded at converge time.) The
+script-fed status digest posts the real
 per-index volumes plus their delta against the previous run whenever anything
 is CRITICAL or genuinely novel anywhere in its escalation ladder (index, host,
 then sourcetype/composition), exactly as before. **Heartbeat gate (operator
@@ -363,7 +369,12 @@ rendered only when Slack is configured.
 | `splunk-security` | every 6h | security lens |
 | `splunk-parsing` | daily | data-quality / parsing lens |
 | `splunk-deepdive` | daily | characterize one index → wiki + memory |
-| `splunk-digest` | hourly | "what I'm seeing + current normal" heartbeat |
+
+The `splunk-digest` card that used to sit here (hourly "what I'm seeing +
+current normal" heartbeat) is REMOVED (2026-08-01) — see `docs/HERMES_OPS.md`
+"Kanban cards" for why. Its topic is covered by the script-fed
+`splunk-status-digest` cron instead (no LLM in its fact path); see "Script
+crons" in `docs/HERMES_OPS.md`.
 
 Each workload is gated on Hermes being able to **both** query Splunk
 (`hermes_agent_splunk_mcp_url` set) **and** deliver to Slack (bot + app tokens +

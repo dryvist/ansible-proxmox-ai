@@ -45,34 +45,53 @@ the migration does not double-fire alongside its enqueuer twin.
 
 ### Kanban cards (`hermes_agent_kanban_cards`)
 
-**Only 2 of the 18 cards actually enqueue today.** The rest are on
+**4 of the 18 cards actually enqueue today** (2026-08-01 kanban audit — was 2;
+splunk-parsing joined the active set as a same-day 1-for-1 swap, see below,
+and ai-news was lifted 2026-07-31). The rest are on
 `hermes_agent_kanban_paused_jobs` — a deliberate throughput throttle
 (2026-07-24, Zammad #17143) against the single shared serving deployment. A
 paused job is skipped entirely by the reconcile (no create, no remove, so the
 operator's state is untouched) and is not rendered as a selector arm in the
 enqueuer script, so the `all --backfill` safety net cannot revive it either.
-Lift the throttle by *removing* a job from that list once capacity is proven.
+Lift the throttle by *removing* a job from that list once capacity is proven
+— `fleet-health` (last row) is the audit's recommended next lift.
+
+The 2026-08-01 audit **removed** the `splunk-digest` card outright (not
+paused): its script-fed replacement, `splunk-status-digest` below, already
+covers the topic with no LLM in the fact path, and leaving the card
+defined-but-paused left a live trap — `hermes-splunk-triage`'s catalog prompt
+recalled a memory key only `splunk-digest`'s worker ever wrote, so once that
+worker stopped running the recall silently always found nothing. Fixed in the
+`ai-llm-prompts` catalog and guarded at converge time
+(`roles/hermes_agent/tasks/main.yml`).
 
 | Card | Schedule (UTC) | Every | Assignee | State |
 | --- | --- | --- | --- | --- |
 | `homelab-ai-fabric-status` | `0 8-22 * * *` | 1h, 08–22 | homelab-admin | **active** |
 | `splunk-triage` | `7 * * * *` | 1h | splunk-admin | **active** |
+| `splunk-parsing` | `37 2 * * *` | 24h | splunk-admin | **active** — 2026-08-01 swap for `splunk-parsing-quality-v2` (see below) |
+| `ai-news` | `17 */4 * * *` | 4h | default | **active** — noise channel, 2026-07-31 canary lift |
 | `hermes-nightly-wiki` | `0 2 * * *` | 24h | default | paused |
 | `daily-summary` | `0 12 * * *` | 24h | default | paused |
 | `zammad-review` | `41 */2 * * *` | 2h | homelab-admin | paused |
 | `splunk-security` | `22 */6 * * *` | 6h | splunk-admin | paused |
-| `splunk-parsing` | `37 2 * * *` | 24h | splunk-admin | paused |
 | `splunk-deepdive` | `11 3 * * *` | 24h | splunk-admin | paused |
-| `splunk-digest` | `52 * * * *` | 1h | splunk-admin | **retired** — superseded by the script-fed `splunk-status-digest` |
 | `github-triage` | `26 */6 * * *` | 6h | default | paused |
 | `bot-pr-triage` | `43 */6 * * *` | 6h | default | capability-gated off (no alerts token) |
 | `docs-sync` | `13 8 * * 1` | weekly | default | paused |
 | `review` | `0 */8 * * *` | 8h | default | paused |
 | `anomaly-hunt` | `13 */12 * * *` | 12h | splunk-admin | paused |
 | `docs-study` | `43 5 * * *` | 24h | default | paused |
-| `ai-news` | `17 */4 * * *` | 4h | default | paused |
 | `daily-innovation` | `47 6 * * *` | 24h | default | paused |
 | `app-seeding` | `53 7 * * *` | 24h | default | paused |
+| `fleet-health` | `3 10 * * 1` | weekly | default | paused (new 2026-08-01; **recommended next throttle lift**) |
+
+`fleet-health` is the one card watching Hermes' own reliability trend rather
+than a downstream system — weekly, read-only over `kanban runs`, never
+proposes touching serving infrastructure. Distinct from `review`: `review`
+catches an 8h operational gap (stuck/blocked/silently-not-run); `fleet-health`
+catches a week-over-week regression in failure/retry rate. Both file
+follow-up cards for what they find, neither acts on it.
 
 Every card is additionally **capability-gated**: all of them require the Slack
 bot token, app token and home channel; the `splunk-*` cards also require
@@ -140,23 +159,32 @@ response straight to Slack — with prompt bodies pulled from the pinned
 it comes from `HERMES_SLACK_DIGEST_CHANNEL`, and the whole reconcile loop is
 skipped (with a loud warning) when that is unset.
 
-**Four of the nine are enabled.** The rest are retired or superseded, and are
-explicitly `cron pause`d by `tasks/main.yml` — declaring `enabled: false` alone
-does *not* stop a job already running on the guest (see
+**Three of the nine are enabled** (was four; `splunk-parsing-quality-v2`
+retired 2026-08-01). The rest are retired or superseded, and are explicitly
+`cron pause`d by `tasks/main.yml` — declaring `enabled: false` alone does
+*not* stop a job already running on the guest (see
 `tests/hermes_agent/test_retired_direct_crons.py`, which makes that pairing
 mandatory rather than remembered).
 
 | Job | Schedule (UTC) | Enabled | Note |
 | --- | --- | --- | --- |
-| `splunk-parsing-quality-v2` | `17 3 * * *` | yes | |
 | `zammad-incident-review-v2` | `9 13 * * *` | yes | |
 | `github-org-triage-v2` | `26 8 * * *` | yes | |
 | `daily-operator-summary-v2` | `31 12 * * *` | yes | |
+| `splunk-parsing-quality-v2` | `17 3 * * *` | no | 2026-08-01: replaced by `splunk-parsing` card (stale `index=network`, no dedup) |
 | `splunk-security-lens-v2` | `22 */6 * * *` | no | superseded by `splunk-security-digest` |
 | `splunk-error-triage-v2` | `37 * * * *` | no | superseded by `splunk-error-digest` |
 | `anomaly-hunt-v2` | `41 6,18 * * *` | no | retired, no replacement |
 | `homelab-ai-fabric-status-v2` | `3 */6 * * *` | no | replaced by the card of the same name |
 | `splunk-hourly-digest-v3` | `52 * * * *` | no | superseded by `splunk-status-digest` |
+
+`zammad-incident-review-v2` and `github-org-triage-v2` are intentionally kept
+as crude-but-honest daily interim coverage: their kanban twins
+(`zammad-review` every 2h, `github-triage` every 6h) are richer but paused
+under the throttle, and unpausing either would multiply that topic's enqueue
+rate 4-12x — a throughput increase, not the 1-for-1 swap `splunk-parsing` got.
+Retire these two in favour of their kanban twins in the SAME change that
+unpauses them, not before, so the topic is never dropped in between.
 
 ### Systemd units (not crons)
 
@@ -357,10 +385,22 @@ re-litigated.
   paused via `hermes_agent_kanban_paused_jobs`, leaving `splunk-triage` and
   `homelab-ai-fabric-status` plus the script-fed digests. Lift it one card at a
   time, least costly first, once capacity is proven.
-- **The LLM `splunk-digest` card is retired.** It was replaced by the
-  script-fed `splunk-status-digest`, whose fact path contains no model at all —
-  the fix for the fabricated "33 indexes / no anomalies" reports and for the
-  blind spot that masked a ~10.5h ingestion outage.
+- **The LLM `splunk-digest` card is removed (2026-08-01; was "retired" —
+  paused — since 2026-07-24).** It was replaced by the script-fed
+  `splunk-status-digest`, whose fact path contains no model at all — the fix
+  for the fabricated "33 indexes / no anomalies" reports and for the blind
+  spot that masked a ~10.5h ingestion outage. Leaving it merely paused turned
+  out to be its own trap: `splunk-triage`'s prompt recalled a memory key only
+  this card's worker wrote, so once the worker stopped running that recall
+  silently always found nothing — see the note under "Kanban cards" above.
+- **2026-08-01 kanban audit: one 1-for-1 swap, one new card.**
+  `splunk-parsing-quality-v2` (direct cron) is retired in favour of the
+  `splunk-parsing` kanban card — same daily cadence, so no throughput
+  increase, and its fixed SPL was proven wrong (queried the stale
+  `index=network`). The new `fleet-health` card fills the one gap the audit
+  found no existing card covers: something watching Hermes' own reliability
+  trend, not a downstream system. Both changes and the full per-card
+  KEEP/MERGE/DELETE/NEW rationale are in the PR that introduced them.
 - **The "never `[SILENT]`" heartbeat law is superseded (2026-07-26).** 38 of 40
   runs in one UTC day carried zero information. A quiet run now stays silent
   unless `HEARTBEAT_HOURS` (6) has elapsed; a CRITICAL finding is exempt and
