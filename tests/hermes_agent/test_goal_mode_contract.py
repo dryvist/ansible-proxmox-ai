@@ -625,20 +625,27 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     hindsight_compose = (
         REPO_ROOT / "roles/hindsight_docker/templates/docker-compose.yml.j2"
     ).read_text()
-    router_defaults = yaml.safe_load(
-        (REPO_ROOT / "roles/llm_router/defaults/main.yml").read_text()
-    )
+    router_defaults_text = (REPO_ROOT / "roles/llm_router/defaults/main.yml").read_text()
+    router_defaults = yaml.safe_load(router_defaults_text)
+    registry = yaml.safe_load((REPO_ROOT / "llm-models.yml").read_text())[
+        "llm_router_model_registry"
+    ]
     router_config = (REPO_ROOT / "roles/llm_router/templates/config.yaml.j2").read_text()
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
 
     hermes_alias = "hermes-default"
-    # The alias map no longer names physical ids: they come from two selector
-    # vars that are the single record of what the serving host actually serves.
-    # Pinning literals here is what let all four aliases drift to unroutable
-    # models at once (2026-07-28, every one a live 404), so follow the
-    # indirection instead of re-pinning the ids under a new name.
-    hermes_backend = router_defaults["llm_router_primary_model"]
-    judge_backend = router_defaults["llm_router_small_model"]
+    # Physical ids live in ONE file — the repo-root llm-models.yml registry —
+    # and the router's selector vars are projections of it. Pinning literals
+    # here is what let all four aliases drift to unroutable models at once
+    # (2026-07-28, every one a live 404), so follow the indirection to its
+    # source instead of re-pinning the ids under a new name.
+    by_role = {
+        entry["serving_role"]: entry
+        for entry in registry
+        if entry.get("enabled") and "serving_role" in entry
+    }
+    hermes_backend = by_role["primary"]["client_model_id"]
+    judge_backend = by_role["small"]["client_model_id"]
     assert group_vars["hermes_brain_model"] == hermes_alias
     # The judge rides its own alias now — a judge on the worker's model is
     # self-preference bias, and the two serialize against one serving slot.
@@ -652,11 +659,22 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert defaults["hermes_agent_model_max_tokens"] == 8192
     assert defaults["hermes_agent_context_compression_threshold"] == 0.75
     assert defaults["hermes_agent_brain_sync_enabled"] is False
-    assert router_defaults["llm_router_model_group_aliases"] == {
-        hermes_alias: "{{ llm_router_primary_model }}",
-        "tool-calling": "{{ llm_router_primary_model }}",
-        "goal-judge": "{{ llm_router_small_model }}",
-        "interim-brain": "{{ llm_router_primary_model }}",
+    # An alias belongs to the entry it points at, so the whole consumer-facing
+    # name set is readable off the registry — and cannot name a model that is
+    # not there. A model_list deployment entry named after an alias is banned
+    # (AGENTS.md): the duplicate config drifts from the real backend every time
+    # the model changes.
+    aliases = {
+        alias: entry["client_model_id"]
+        for entry in registry
+        if entry.get("enabled")
+        for alias in entry.get("stable_aliases", [])
+    }
+    assert aliases == {
+        hermes_alias: hermes_backend,
+        "tool-calling": hermes_backend,
+        "goal-judge": judge_backend,
+        "interim-brain": hermes_backend,
     }
     # Both selectors must be declared servable, or the alias indirection just
     # moves the 404 one level down. The cluster model is servable too — it is
@@ -664,17 +682,31 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # is up (roles/llm_router/defaults/main.yml,
     # llm_router_hermes_default_fallback_chain) — same reasoning: an
     # unroutable fallback target 404s instead of failing over.
-    assert router_defaults["llm_router_servable_models"] == [
-        "{{ llm_router_primary_model }}",
-        "{{ llm_router_small_model }}",
-        "{{ llm_router_cluster_model }}",
-    ]
+    #
+    # `servable` is deliberately NOT `enabled`: every large-tier entry is
+    # enabled (the router offers it), only these three are servable (the
+    # backend answers for it). Conflating them yields a 404, not an answer.
+    assert [
+        entry["client_model_id"] for entry in registry if entry.get("servable")
+    ] == [hermes_backend, judge_backend, by_role["cluster"]["client_model_id"]]
     hermes_entries = [
-        entry
-        for entry in router_defaults["llm_router_large_models"]
-        if entry["backend"] == hermes_backend
+        entry for entry in registry if entry["client_model_id"] == hermes_backend
     ]
-    assert hermes_entries == [{"backend": hermes_backend, "context_window": 65536}]
+    assert len(hermes_entries) == 1
+    assert hermes_entries[0]["context_window"] == 65536
+    # The registry is the SOLE spelling of a model name or key field: the role's
+    # defaults project it and must never re-type one. A literal here is exactly
+    # the drift this indirection exists to prevent, so it fails the build rather
+    # than waiting for a live 404. Values only — the defaults' prose may of
+    # course still discuss the tiers.
+    router_defaults_values = yaml.dump(router_defaults, allow_unicode=True)
+    for entry in registry:
+        for field in ("client_model_id", "upstream_model_id", "key_field"):
+            if field in entry:
+                assert entry[field] not in router_defaults_values, (
+                    f"{entry[field]} is re-typed in roles/llm_router/defaults/main.yml; "
+                    "derive it from llm-models.yml instead"
+                )
     assert router_defaults["llm_router_num_retries"] == 0
     # 429 = "the slot is busy", never "the work is impossible", so the router
     # absorbs it rather than failing the caller (#175). Not 0 — that setting

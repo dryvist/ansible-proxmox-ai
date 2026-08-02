@@ -3,6 +3,13 @@
 # door for the whole fabric. Physical backends have one deployment entry each;
 # stable consumer names resolve through model_group_alias. Secrets come from the
 # systemd EnvironmentFile via os.environ/ — no credential literal lives here.
+#
+# Every model name below comes from the repo-root llm-models.yml registry, via
+# the role's tier views. Three names stay distinct on purpose and must not be
+# collapsed: `model_name` is what a CALLER sends (client_model_id),
+# `litellm_params.model` is LiteLLM's own provider-prefixed route string, and
+# the id after the prefix is what the UPSTREAM serves (upstream_model_id).
+{% macro litellm_model(m) %}{{ m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id) }}{% endmacro %}
 
 model_list:
   # --- large tier: one deployment each, bearer-authed to llm-large ---
@@ -11,10 +18,13 @@ model_list:
   # deployment (llama-swap: parsers, preload, batching) instead of falling
   # through to the zero-config dynamic tier.
 {% for m in llm_router_large_models %}
-  - model_name: {{ m.backend }}
+{# Registry entries select a backend symbolically; the URL lives in the role. #}
+{% set _api_base = llm_router_llm_large_cluster_base_url if m.endpoint | default('') == 'cluster'
+                   else llm_router_llm_large_base_url %}
+  - model_name: {{ m.client_model_id }}
     litellm_params:
-      model: openai/{{ m.backend }}
-      api_base: {{ m.api_base | default(llm_router_llm_large_base_url) }}
+      model: {{ litellm_model(m) }}
+      api_base: {{ _api_base }}
       api_key: os.environ/LLM_LARGE_BEARER_TOKEN
 {% if m.extra_body is defined %}
       # Per-model sampling defaults pinned at the router. extra_body is forwarded
@@ -38,16 +48,16 @@ model_list:
       max_tokens: {{ m.context_window }}
 {% endif %}
 {% if m.standby | default(false) and llm_router_llm_large_standby_base_url %}
-  # Standby sibling of {{ m.backend }} on an off-Studio large-tier backend.
+  # Standby sibling of {{ m.client_model_id }} on an off-Studio large-tier backend.
   # SAME model id + SAME context window => a real failover deployment (LiteLLM
   # groups both under this model_name), NOT a cross-tier alias — so it degrades
   # the brain's availability without the smaller-context "poison the caller"
   # failure the no-cross-tier-fallback rule guards against. Emitted only when
   # llm_router_llm_large_standby_base_url is set (default OFF => byte-identical
   # to the no-standby render). Motivation: single-Studio brain SPOF, INC-17080.
-  - model_name: {{ m.backend }}
+  - model_name: {{ m.client_model_id }}
     litellm_params:
-      model: openai/{{ m.backend }}
+      model: {{ litellm_model(m) }}
       api_base: {{ llm_router_llm_large_standby_base_url }}
       api_key: os.environ/LLM_LARGE_STANDBY_BEARER_TOKEN
 {% if m.extra_body is defined %}
@@ -85,9 +95,9 @@ model_list:
 {% set _or_env = 'OPENROUTER_API_KEY_' ~ (m.key_field | upper | replace('-', '_')) %}
 {% set _or_key = bao_local_llm_secrets[m.key_field] | default(lookup('env', _or_env), true) %}
 {% if _or_key | length > 0 %}
-  - model_name: {{ m.model }}
+  - model_name: {{ m.client_model_id }}
     litellm_params:
-      model: openrouter/{{ m.model }}
+      model: {{ litellm_model(m) }}
       api_key: os.environ/{{ _or_env }}
     model_info:
       max_input_tokens: {{ m.context_window }}
@@ -111,9 +121,9 @@ model_list:
   # down, so a GPU outage drains to the CPU standby automatically.
 {% for m in llm_router_light_models %}
 {% if llm_router_llm_fast_enabled %}
-  - model_name: {{ m.backend }}
+  - model_name: {{ m.client_model_id }}
     litellm_params:
-      model: openai/{{ m.backend }}
+      model: {{ litellm_model(m) }}
       api_base: {{ llm_router_llm_fast_base_url }}
       api_key: {{ llm_router_light_api_key }}
 {% if m.embedding | default(false) %}
@@ -121,9 +131,9 @@ model_list:
       mode: embedding
 {% endif %}
 {% endif %}
-  - model_name: {{ m.backend }}
+  - model_name: {{ m.client_model_id }}
     litellm_params:
-      model: openai/{{ m.backend }}
+      model: {{ litellm_model(m) }}
       api_base: {{ llm_router_llm_light_base_url }}
       api_key: {{ llm_router_light_api_key }}
 {% if m.embedding | default(false) %}
