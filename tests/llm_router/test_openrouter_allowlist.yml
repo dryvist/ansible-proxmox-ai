@@ -1,0 +1,201 @@
+---
+# Pins the OpenRouter egress contract: the registry is the allowlist, and the
+# router enforces the spend ceiling itself.
+#
+# WHY THIS TEST EXISTS. Until 2026-08 the role rendered an `openrouter/*`
+# passthrough entry authenticated with one already-seeded key, which exposed the
+# entire live OpenRouter catalog. The keys are ACCOUNT-WIDE — the role's own
+# operator disclosure recorded that the per-model field names were "a
+# naming-level guardrail, not a technical one" — so the only real control was
+# caller-side prose: a persona paragraph and a skill describing a daily budget
+# the agent tracked for ITSELF, in its own memory. That binds a compliant caller
+# and nothing else.
+#
+# Two claims were false while it existed. "The registry is the sole enabled-model
+# inventory" could not be true with a wildcard routing around it. And "spend is
+# capped" was advisory, so a noncompliant or compromised caller had no ceiling.
+#
+# Both failures are silent by nature: the render succeeds either way, and the
+# wildcard's absence or presence is invisible to ansible-lint and --syntax-check.
+# Only the RENDERED config shows it, which is what this test inspects.
+#
+# Run (from the REPO ROOT — the registry load resolves the llm_router role
+# through ansible.cfg's cwd-relative roles_path):
+#   ansible-playbook tests/llm_router/test_openrouter_allowlist.yml -i localhost, -c local
+- name: Verify the OpenRouter egress allowlist and router-enforced budget
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    # Mirrors the current tofu-proxmox service_ports constants, as the failover
+    # test does — the render needs them to resolve backend api_base values.
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          llm_cluster_api: 11440
+          otel_traces_http: 4318
+    # Seeds every registry key_field so the OpenRouter entries actually render.
+    # Without this they are inert (unseeded keys emit nothing) and the
+    # allowlist assertions below would pass against an EMPTY list — proving
+    # nothing. Built from the registry rather than spelled out, so a new entry
+    # is covered the day it lands instead of silently skipping this test.
+    bao_local_llm_secrets: {}
+    ai_default_model: mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main.yml"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    # Every OpenRouter entry renders only when its key_field is seeded. Seeding
+    # them all here is what makes the "rendered set == registry set" assertion
+    # meaningful; with an empty secrets dict both sides would be empty.
+    - name: Seed every registry key_field so the egress tier actually renders
+      ansible.builtin.set_fact:
+        bao_local_llm_secrets: >-
+          {{ dict(_key_fields | zip(_key_fields | map('regex_replace', '^', 'test-key-'))) }}
+      vars:
+        _key_fields: >-
+          {{ llm_router_openrouter_models | map(attribute='key_field') | list }}
+
+    - name: Render the real config.yaml.j2 template into a string
+      ansible.builtin.set_fact:
+        _rendered_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') }}"
+
+    - name: Parse the rendered config as YAML
+      ansible.builtin.set_fact:
+        _config: "{{ _rendered_config | from_yaml }}"
+
+    - name: No OpenRouter passthrough wildcard is rendered
+      # The whole point. `openrouter/*` would make every assertion below
+      # cosmetic, because any catalog model would be reachable regardless of
+      # what the registry says.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _wildcards | length == 0
+        fail_msg: >-
+          The rendered model_list contains {{ _wildcards | length }}
+          OpenRouter passthrough entr(y|ies) ({{ _wildcards | join(', ') }}).
+          That exposes the entire live OpenRouter catalog on an account-wide
+          key and makes the registry no longer the enabled-model inventory.
+        success_msg: "no openrouter passthrough wildcard — the registry is the allowlist"
+      vars:
+        _wildcards: >-
+          {{ _config.model_list | map(attribute='model_name')
+             | select('match', '^openrouter/\*$') | list }}
+
+    - name: Every rendered OpenRouter model is an enabled registry entry
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered_or | difference(_registry_or) | length == 0
+        fail_msg: >-
+          [{{ _rendered_or | difference(_registry_or) | join(', ') }}] are
+          reachable through the router but are not enabled OpenRouter entries
+          in the registry. Egress must be exactly the registry's allowlist.
+        success_msg: >-
+          all {{ _rendered_or | length }} rendered egress models come from the registry
+      vars:
+        _rendered_or: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.model', 'match', '^openrouter/')
+             | map(attribute='model_name') | list }}
+        _registry_or: >-
+          {{ llm_router_openrouter_models | map(attribute='client_model_id') | list }}
+
+    - name: Every enabled registry egress entry is actually reachable
+      # The converse direction. Without it, a template regression that dropped
+      # the egress loop entirely would still satisfy the assertion above (the
+      # empty set is a subset of anything) and read as a pass.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _registry_or | difference(_rendered_or) | length == 0
+        fail_msg: >-
+          [{{ _registry_or | difference(_rendered_or) | join(', ') }}] are
+          enabled in the registry with a seeded key but render no model_list
+          entry — the egress loop has regressed.
+        success_msg: "registry egress set and rendered egress set agree exactly"
+      vars:
+        _rendered_or: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.model', 'match', '^openrouter/')
+             | map(attribute='model_name') | list }}
+        _registry_or: >-
+          {{ llm_router_openrouter_models | map(attribute='client_model_id') | list }}
+
+    - name: The router enforces an OpenRouter spend ceiling with a time window
+      # This is what makes the persona's and skill's "the router enforces your
+      # budget" text true. Enforcement has to sit where the caller cannot reach
+      # it; an agent tracking its own spend in a memory key is advisory.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _or_budget | length > 0
+          - _or_budget.budget_limit | default(0) | float > 0
+          - _or_budget.time_period | default('') | length > 0
+        fail_msg: >-
+          router_settings.provider_budget_config.openrouter must carry a
+          positive budget_limit and a time_period. Without it the only spend
+          control on an ACCOUNT-WIDE key is caller-side prose.
+        success_msg: >-
+          openrouter spend ceiling {{ _or_budget.budget_limit | default('?') }}
+          per {{ _or_budget.time_period | default('?') }}
+      vars:
+        # Defaulted at every hop. Reaching straight into
+        # provider_budget_config.openrouter makes a MISSING block raise a Jinja
+        # resolution error while rendering fail_msg, so the test still fails but
+        # reports a traceback instead of the reason — and the missing block is
+        # precisely the case this assertion exists to catch.
+        _or_budget: >-
+          {{ (_config.router_settings | default({})).get('provider_budget_config', {})
+             | default({}, true) | dict2items
+             | selectattr('key', 'equalto', 'openrouter')
+             | map(attribute='value') | first | default({}) }}
+
+    - name: Budget enforcement fails closed
+      # LiteLLM's default is to let a request through when the spend lookup
+      # cannot be resolved. On an account-wide key the safe default is the
+      # opposite: refuse rather than spend.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _config.litellm_settings.fail_closed_budget_enforcement | bool
+        fail_msg: >-
+          litellm_settings.fail_closed_budget_enforcement must be true, or a
+          budget check that cannot resolve lets the spend through.
+        success_msg: "budget enforcement fails closed"
+
+    - name: Every egress deployment carries rate and concurrency limits
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _unlimited | length == 0
+        fail_msg: >-
+          Egress deployment(s) [{{ _unlimited | join(', ') }}] carry no
+          rpm/tpm/max_parallel_requests. A spend cap alone bounds the month but
+          not the minute — a runaway loop can exhaust the whole budget before
+          the ceiling is observed.
+        success_msg: "all egress deployments are rate- and concurrency-limited"
+      vars:
+        _unlimited: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.model', 'match', '^openrouter/')
+             | rejectattr('litellm_params.rpm', 'defined')
+             | map(attribute='model_name') | list }}

@@ -99,23 +99,21 @@ model_list:
     litellm_params:
       model: {{ litellm_model(m) }}
       api_key: os.environ/{{ _or_env }}
+      # Rate and concurrency ceilings on paid egress. The spend cap below bounds
+      # the period; these bound the minute, so a runaway caller cannot exhaust a
+      # whole day's budget before the cap observes it.
+      rpm: {{ llm_router_openrouter_rpm }}
+      tpm: {{ llm_router_openrouter_tpm }}
+      max_parallel_requests: {{ llm_router_openrouter_max_parallel_requests }}
     model_info:
       max_input_tokens: {{ m.context_window }}
       max_tokens: {{ m.context_window }}
 {% endif %}
 {% endfor %}
-{% set _or_wc_env = 'OPENROUTER_API_KEY_' ~ (llm_router_openrouter_wildcard_key_field | upper | replace('-', '_')) %}
-{% set _or_wc_key = bao_local_llm_secrets[llm_router_openrouter_wildcard_key_field] | default(lookup('env', _or_wc_env), true) %}
-{% if llm_router_openrouter_wildcard_enabled | bool and _or_wc_key | length > 0 %}
-  # --- OpenRouter dynamic tier: `openrouter/<exact-upstream-id>` passthrough ---
-  # Budget-gated at the CALLER (persona + openrouter-models skill, $1/day), not
-  # here — see defaults for the operator-disclosure rationale. The prefix keeps
-  # it disjoint from tuned entries and from the local `*` catch-all.
-  - model_name: "openrouter/*"
-    litellm_params:
-      model: "openrouter/*"
-      api_key: os.environ/{{ _or_wc_env }}
-{% endif %}
+  # NOTE there is deliberately no `openrouter/*` passthrough entry. The loop
+  # above IS the egress allowlist: a model the registry does not enable with a
+  # seeded key is not reachable through this router at all. See defaults for
+  # why the wildcard was removed rather than tightened.
   # --- light tier: two deployments per model name (GPU llm-fast + CPU llm-light) ---
   # Same model_name => LiteLLM load-balances the pair and cools a failed deployment
   # down, so a GPU outage drains to the CPU standby automatically.
@@ -179,6 +177,17 @@ router_settings:
     RateLimitErrorRetries: {{ llm_router_rate_limit_retries }}
   allowed_fails_policy:
     RateLimitErrorAllowedFails: {{ llm_router_rate_limit_allowed_fails }}
+  # Paid-egress spend ceiling, evaluated by LiteLLM on the request path. This is
+  # what makes "the router enforces your budget" true for every caller: the
+  # control it replaces was an agent tracking its own spend in a memory key and
+  # choosing to stop, which binds a compliant caller and nothing else. Keyed by
+  # LiteLLM provider name, matching the `openrouter/` prefix the egress entries
+  # above already route under. Local tiers are deliberately absent — they cost
+  # nothing per token, so a ceiling there would only invent an outage.
+  provider_budget_config:
+    openrouter:
+      budget_limit: {{ llm_router_openrouter_budget_limit }}
+      time_period: {{ llm_router_openrouter_budget_period }}
 
 general_settings:
   master_key: os.environ/LLM_ROUTER_MASTER_KEY
@@ -196,6 +205,12 @@ litellm_settings:
   # requires the v2 SDK and errors on init with the v3 pip resolves.
   callbacks: ["otel"]
   drop_params: true
+  # LiteLLM's default is to ALLOW a request whose spend lookup cannot be
+  # resolved. On an account-wide credential the safe default is the reverse:
+  # refuse rather than spend. Callers already have a defined behaviour for a
+  # bounded refusal — report and defer — so failing closed costs a deferral,
+  # while failing open costs money nobody authorised.
+  fail_closed_budget_enforcement: {{ llm_router_fail_closed_budget_enforcement | to_json }}
 {% if llm_router_large_passthrough_enabled | bool %}
   # Resolve the wildcard against the gate's live /v1/models so this proxy's
   # own /v1/models lists every passthrough model (not just the aliases) —
