@@ -15,7 +15,8 @@
 # by whatever happened to be loaded. So this contract cannot be left to a live
 # probe: it has to hold at render time, offline, on every converge.
 #
-# Run:
+# Run (from the REPO ROOT — the registry load resolves the llm_router role
+# through ansible.cfg's cwd-relative roles_path):
 #   ansible-playbook tests/llm_router/test_alias_servable.yml -i localhost, -c local
 - name: Verify the llm_router servable-alias contract
   hosts: localhost
@@ -26,6 +27,16 @@
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
         file: "{{ _defaults_file }}"
+
+    # The defaults are projections of the registry, so both have to be in scope
+    # for the contract to mean anything. Loaded through the role's own task file
+    # rather than by a path spelled here: llm_router_registry_file derives from
+    # role_path, so a hand-rolled path would keep this test green while the
+    # converge's own lookup was broken.
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
 
     - name: Every alias target resolves into the servable set
       ansible.builtin.assert:
@@ -57,7 +68,7 @@
           {{ llm_router_large_models
              | selectattr('context_window', 'defined')
              | rejectattr('context_window', 'none')
-             | map(attribute='backend') | list }}
+             | map(attribute='client_model_id') | list }}
 
     - name: The advertised window for the resident matches what the serving host provisions
       # nix-ai catalog-data.nix pins qwen36-35b's RESIDENT profile at
@@ -80,7 +91,7 @@
       vars:
         _primary_entry: >-
           {{ llm_router_large_models
-             | selectattr('backend', 'equalto', llm_router_primary_model) | list }}
+             | selectattr('client_model_id', 'equalto', llm_router_primary_model) | list }}
 
     - name: The judge does not share the worker's model
       # Same-model judging is self-preference bias by construction, and it made

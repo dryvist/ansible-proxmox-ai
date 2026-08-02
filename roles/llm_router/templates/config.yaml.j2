@@ -3,6 +3,13 @@
 # door for the whole fabric. Physical backends have one deployment entry each;
 # stable consumer names resolve through model_group_alias. Secrets come from the
 # systemd EnvironmentFile via os.environ/ — no credential literal lives here.
+#
+# Every model name below comes from the repo-root llm-models.yml registry, via
+# the role's tier views. Three names stay distinct on purpose and must not be
+# collapsed: `model_name` is what a CALLER sends (client_model_id),
+# `litellm_params.model` is LiteLLM's own provider-prefixed route string, and
+# the id after the prefix is what the UPSTREAM serves (upstream_model_id).
+{% macro litellm_model(m) %}{{ m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id) }}{% endmacro %}
 
 model_list:
   # --- large tier: one deployment each, bearer-authed to llm-large ---
@@ -11,10 +18,13 @@ model_list:
   # deployment (llama-swap: parsers, preload, batching) instead of falling
   # through to the zero-config dynamic tier.
 {% for m in llm_router_large_models %}
-  - model_name: {{ m.backend }}
+{# Registry entries select a backend symbolically; the URL lives in the role. #}
+{% set _api_base = llm_router_llm_large_cluster_base_url if m.endpoint | default('') == 'cluster'
+                   else llm_router_llm_large_base_url %}
+  - model_name: {{ m.client_model_id }}
     litellm_params:
-      model: openai/{{ m.backend }}
-      api_base: {{ m.api_base | default(llm_router_llm_large_base_url) }}
+      model: {{ litellm_model(m) }}
+      api_base: {{ _api_base }}
       api_key: os.environ/LLM_LARGE_BEARER_TOKEN
 {% if m.extra_body is defined %}
       # Per-model sampling defaults pinned at the router. extra_body is forwarded
@@ -38,16 +48,16 @@ model_list:
       max_tokens: {{ m.context_window }}
 {% endif %}
 {% if m.standby | default(false) and llm_router_llm_large_standby_base_url %}
-  # Standby sibling of {{ m.backend }} on an off-Studio large-tier backend.
+  # Standby sibling of {{ m.client_model_id }} on an off-Studio large-tier backend.
   # SAME model id + SAME context window => a real failover deployment (LiteLLM
   # groups both under this model_name), NOT a cross-tier alias — so it degrades
   # the brain's availability without the smaller-context "poison the caller"
   # failure the no-cross-tier-fallback rule guards against. Emitted only when
   # llm_router_llm_large_standby_base_url is set (default OFF => byte-identical
   # to the no-standby render). Motivation: single-Studio brain SPOF, INC-17080.
-  - model_name: {{ m.backend }}
+  - model_name: {{ m.client_model_id }}
     litellm_params:
-      model: openai/{{ m.backend }}
+      model: {{ litellm_model(m) }}
       api_base: {{ llm_router_llm_large_standby_base_url }}
       api_key: os.environ/LLM_LARGE_STANDBY_BEARER_TOKEN
 {% if m.extra_body is defined %}
@@ -85,35 +95,33 @@ model_list:
 {% set _or_env = 'OPENROUTER_API_KEY_' ~ (m.key_field | upper | replace('-', '_')) %}
 {% set _or_key = bao_local_llm_secrets[m.key_field] | default(lookup('env', _or_env), true) %}
 {% if _or_key | length > 0 %}
-  - model_name: {{ m.model }}
+  - model_name: {{ m.client_model_id }}
     litellm_params:
-      model: openrouter/{{ m.model }}
+      model: {{ litellm_model(m) }}
       api_key: os.environ/{{ _or_env }}
+      # Rate and concurrency ceilings on paid egress. The spend cap below bounds
+      # the period; these bound the minute, so a runaway caller cannot exhaust a
+      # whole day's budget before the cap observes it.
+      rpm: {{ llm_router_openrouter_rpm }}
+      tpm: {{ llm_router_openrouter_tpm }}
+      max_parallel_requests: {{ llm_router_openrouter_max_parallel_requests }}
     model_info:
       max_input_tokens: {{ m.context_window }}
       max_tokens: {{ m.context_window }}
 {% endif %}
 {% endfor %}
-{% set _or_wc_env = 'OPENROUTER_API_KEY_' ~ (llm_router_openrouter_wildcard_key_field | upper | replace('-', '_')) %}
-{% set _or_wc_key = bao_local_llm_secrets[llm_router_openrouter_wildcard_key_field] | default(lookup('env', _or_wc_env), true) %}
-{% if llm_router_openrouter_wildcard_enabled | bool and _or_wc_key | length > 0 %}
-  # --- OpenRouter dynamic tier: `openrouter/<exact-upstream-id>` passthrough ---
-  # Budget-gated at the CALLER (persona + openrouter-models skill, $1/day), not
-  # here — see defaults for the operator-disclosure rationale. The prefix keeps
-  # it disjoint from tuned entries and from the local `*` catch-all.
-  - model_name: "openrouter/*"
-    litellm_params:
-      model: "openrouter/*"
-      api_key: os.environ/{{ _or_wc_env }}
-{% endif %}
+  # NOTE there is deliberately no `openrouter/*` passthrough entry. The loop
+  # above IS the egress allowlist: a model the registry does not enable with a
+  # seeded key is not reachable through this router at all. See defaults for
+  # why the wildcard was removed rather than tightened.
   # --- light tier: two deployments per model name (GPU llm-fast + CPU llm-light) ---
   # Same model_name => LiteLLM load-balances the pair and cools a failed deployment
   # down, so a GPU outage drains to the CPU standby automatically.
 {% for m in llm_router_light_models %}
 {% if llm_router_llm_fast_enabled %}
-  - model_name: {{ m.backend }}
+  - model_name: {{ m.client_model_id }}
     litellm_params:
-      model: openai/{{ m.backend }}
+      model: {{ litellm_model(m) }}
       api_base: {{ llm_router_llm_fast_base_url }}
       api_key: {{ llm_router_light_api_key }}
 {% if m.embedding | default(false) %}
@@ -121,9 +129,9 @@ model_list:
       mode: embedding
 {% endif %}
 {% endif %}
-  - model_name: {{ m.backend }}
+  - model_name: {{ m.client_model_id }}
     litellm_params:
-      model: openai/{{ m.backend }}
+      model: {{ litellm_model(m) }}
       api_base: {{ llm_router_llm_light_base_url }}
       api_key: {{ llm_router_light_api_key }}
 {% if m.embedding | default(false) %}
@@ -169,6 +177,13 @@ router_settings:
     RateLimitErrorRetries: {{ llm_router_rate_limit_retries }}
   allowed_fails_policy:
     RateLimitErrorAllowedFails: {{ llm_router_rate_limit_allowed_fails }}
+  # NOTE deliberately no provider_budget_config here. It tracks spend in Redis,
+  # which this DB-less, Redis-less proxy does not have, and llm_router_group is
+  # a three-member pool — each member would count only its own spend, so the
+  # rendered ceiling would really be 3x and would reset on every rolling
+  # converge. A control that reports a limit it does not hold is worse than an
+  # absent one. Rate ceilings that DO work in-process are on each egress
+  # deployment above; see defaults for the full rationale.
 
 general_settings:
   master_key: os.environ/LLM_ROUTER_MASTER_KEY

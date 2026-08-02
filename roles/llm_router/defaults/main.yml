@@ -93,6 +93,11 @@ llm_router_apex_domain: "{{ llm_router_subdomain | split('.', 1) | last }}"
 llm_router_llm_large_host: "{{ llm_large_serving_host }}"
 llm_router_llm_large_fqdn: "{{ llm_router_llm_large_host }}.{{ llm_router_apex_domain }}"
 llm_router_llm_large_base_url: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_router_large_port }}/v1"
+# The gate's cluster TLS site — a different port on the same host, fronting
+# mlx-lm rank 0. Registry entries select it symbolically with `endpoint: cluster`
+# so no URL or port is ever written in the registry itself.
+llm_router_llm_large_cluster_base_url: >-
+  https://{{ llm_router_llm_large_fqdn }}:{{ llm_router_cluster_port }}/v1
 
 # --- Standby brain backend (default OFF) -------------------------------------
 # A SAME-MODEL, SAME-CONTEXT failover sibling for the default brain, addressing
@@ -151,148 +156,115 @@ llm_router_llm_large_standby_base_url: ""
 # Same bearer as the llm-large gate (the OptiQ site shares its token + cert).
 llm_router_llm_large_standby_bearer: "{{ llm_router_llm_large_bearer }}"
 
-# --- Model groups ------------------------------------------------------------
-# large: each entry is registered under the backend's OWN model id (the
-# serving gate lists models under their full MLX repo ids) — no alias names.
-# One deployment each, bearer-authed.
-# context_window on EVERY entry = the backend's EFFECTIVE SERVING window —
-# what its KV-cache budget (nix-ai catalog cacheMemoryMb) sustains — NOT the
-# model's native max_position_embeddings. This value is the fabric's explicit
-# input enforcement through enable_pre_call_checks and sizes client behavior:
-# Hermes auto-compaction triggers at 75% of it.
-# Advertising native windows (previously 262144) let agent sessions grow far
-# past the serving ceiling and die mid-stream (Metal buffer exhaustion)
-# instead of compacting. The resident brain gets 65536 (16 GB KV; 113K single-stream
-# validated, 65K leaves 4-way-concurrency headroom); the small-cache tiers
-# get 32768. Native windows for reference: gpt-oss 131072, Qwen3* 262144.
-# LiteLLM has no built-in entry for these mlx-community backend ids, so an
-# unset context_window resolves max_input_tokens to null — clients that read
-# that (e.g. Hermes, OpenWebUI) fall back to a near-zero context guess and
-# compress every request to death (see config.yaml.j2 for the failure mode).
-llm_router_large_models:
-  - { backend: mlx-community/gpt-oss-120b-MXFP4-Q8, context_window: 32768 }
-  - { backend: mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit, context_window: 32768 }
-  # THE RESIDENT (llm_router_primary_model). 65536, not the 32768 it carried
-  # until 2026-07-28: that was the SWAP-class figure, and this model is resident.
-  # Its resident profile in nix-ai catalog-data.nix is provisioned
-  # cacheMemoryMb = 16384 with maxRequestTokens = 65536, and the catalog comment
-  # states 65536 "avoids the 32768 truncation/retry death-loop". Advertising half
-  # the real window does not protect anything — it just makes Hermes auto-compact
-  # at 24.5K (75% of 32768) when ~49K is actually available.
-  - { backend: mlx-community/Qwen3.6-35B-A3B-4bit, context_window: 65536 }
-  # THE SMALL TIER (llm_router_small_model) — the on-demand 9B that stays
-  # servable beside the resident (nix-ai alwaysAvailableModels) and never evicts
-  # it. A first-class entry because goal-judge points here, and an alias target
-  # with no context_window falls through the "*" wildcard to a null
-  # max_input_tokens and compresses its caller to death. 32768 is the small-cache
-  # tier figure, matching the swap flags it loads under.
-  - { backend: mlx-community/Qwen3.5-9B-MLX-4bit, context_window: 32768 }
-  # OptiQ-4bit: the agentic-bench-winning brain (ai_default_model, all.yml). A
-  # first-class entry — NOT passthrough — so the default model carries an
-  # explicit max_input_tokens: the wildcard "*" entry below sets none, and a
-  # null there makes Hermes/OpenWebUI fall back to a near-zero context guess and
-  # compress every request to death.
-  #
-  # extra_body.repetition_penalty: the anti-repetition-loop fix. In long agentic
-  # sessions this brain emitted ~37 IDENTICAL tool calls per turn (Hermes dedups
-  # + executes once, the model re-emits next turn, the task never advances). The
-  # 20/20-clean agentic bench and the looping production sessions differ only in
-  # sampling. A gentle 1.05 repetition penalty directly taxes verbatim
-  # re-emission while staying mild enough to preserve tool-call JSON validity.
-  # extra_body carries it through the router to the MLX model server.
-  # repetition_penalty. (temperature is deliberately NOT pinned here: 0.7 would
-  # merely restate the engine fallback the loop already runs under. If 1.05 is
-  # insufficient, the next lever is to match the clean bench's sampling —
-  # temperature ~1.0 / presence_penalty 0.0 — added to this same extra_body.)
-  - backend: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
-    context_window: 65536
-    extra_body: { repetition_penalty: 1.05 }
-    # Standby target for cluster windows: OptiQ is the hermes-brain (PR #59) and
-    # the only brain that stays resident beside the shard. Renders a second
-    # same-name deployment ONLY when llm_router_llm_large_standby_base_url is set
-    # (default empty = inert). See the standby var block above for the
-    # dedicated-port topology + the wired-ceiling safety gate.
-    standby: true
-  # Qwen3-Next-80B Thinking: served from the nix-ai catalog swap tier, loaded
-  # on demand — the escalation rubric's deep-analysis tier (ai_escalation_rubric,
-  # all.yml) requests it by this real id. Block style (not the flow one-liner
-  # above) only to stay under the 120-char limit.
-  - backend: mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit
-    context_window: 32768
-    extra_body: { repetition_penalty: 1.05 }
-  # Instruct sibling: the fleet brain (ai_default_model) since 2026-07-17 —
-  # agentic-bench winner, resident on the serving host with a 65536 window
-  # (also Hermes' compression model, which hard-requires >=64K).
-  - backend: mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit
-    context_window: 65536
-    extra_body: { repetition_penalty: 1.05 }
-  # Hermes' stable default target. The 65,536-token input contract passed a
-  # direct production-profile mlx_lm probe before this alias was enabled.
-  - backend: mlx-community/Qwen3.5-9B-OptiQ-4bit
-    context_window: 65536
-  # Resident serialized goal judge.
-  - backend: mlx-community/Qwen3.6-27B-mxfp4
-    context_window: 65536
-  # The two-Mac cluster brain (JACCL pipeline across Studio + MacBook,
-  # ~256 GB combined), served by mlx-lm rank 0 behind the gate's :11440 TLS
-  # site — a DIFFERENT port on the same host, hence the per-entry api_base
-  # override. Reachable only while a cluster window is up (cable in); normal
-  # serving on :11434 quiesces during windows, so this entry is what keeps a
-  # brain reachable then. Same bearer token as the main gate site.
-  # hermes-default's fallback target (router_settings.fallbacks, below) —
-  # backend: "{{ llm_router_cluster_model }}" so the fallback wiring and this
-  # deployment can never name two different ids.
-  - backend: "{{ llm_router_cluster_model }}"
-    api_base: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_router_cluster_port }}/v1"
-    context_window: 65536
-    extra_body: { repetition_penalty: 1.05 }
-# Consumer role aliases are defined only in llm_router_model_group_aliases.
-# light: the llama-swap model names, served as-is. Each becomes two same-name
-# deployments (llm-fast GPU + llm-light CPU) in the rendered config.
-# `embedding: true` marks the entry as an embeddings model_group.
-llm_router_light_models:
-  - { backend: qwen3-4b }
-  - { backend: embeddings, embedding: true }
+# --- THE MODEL REGISTRY (single source for every model name) -----------------
+# Model names, aliases, tiers and enabled/servable state are written ONCE, in
+# the repo-root llm-models.yml registry, and everything below is a projection of
+# it. The registry carries the per-model rationale (context windows, sampling
+# overrides, incident history); this file carries only the topology the registry
+# deliberately does not know about — base URLs, ports, bearer env names.
+#
+# Loaded by tasks/main.yml before the asserts and the render. Anything else that
+# needs these vars (tests, CI) loads the same file; nothing re-types a model id.
+llm_router_registry_file: "{{ role_path | dirname | dirname }}/llm-models.yml"
+
+# Only enabled entries reach the rendered config or any derived contract.
+llm_router_registry_enabled: >-
+  {{ llm_router_model_registry | selectattr('enabled') | list }}
+
+# --- Model groups (tier views over the registry) ------------------------------
+# Each view is the enabled registry entries for one tier, in registry order.
+# The templates iterate these; the entries themselves are registry dicts
+# (client_model_id / upstream_model_id / provider / context_window / ...), so a
+# model id is never re-typed here.
+#
+# large: registered under the backend's OWN model id (the serving gate lists
+# models under their full MLX repo ids) — no alias names. One deployment each,
+# bearer-authed, no cross-tier fallback.
+llm_router_large_models: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'large') | list }}
+# light: the llama-swap model names, served as-is. Each becomes TWO same-name
+# deployments (GPU llm-fast + CPU llm-light) in the rendered config, so LiteLLM
+# load-balances the pair and a GPU outage drains to CPU automatically.
+llm_router_light_models: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'light') | list }}
 
 # --- OpenRouter egress tier (paid-SaaS; one key per MODEL) --------------------
-# OpenRouter-hosted models, served under their REAL upstream ids. NEVER part
-# of any fallback chain — a flaky/rate-limited upstream must not be able to
-# degrade the local brain; consumers opt in by requesting the id explicitly.
-# Key model (deliberate): ONE OpenRouter API key PER MODEL, irrespective of
-# which harness/caller makes the request. key_field names the per-model field
-# in OpenBao ai/saas/openrouter — canonically secrets-external/ai/saas/
-# openrouter (an internet-reachable SaaS credential), dual-mounted with the
-# internal secret/ai/saas/openrouter path during the migration (fetched into
+# OpenRouter-hosted models, served under their REAL upstream ids. NEVER part of
+# any fallback chain — a flaky/rate-limited upstream must not be able to degrade
+# the local brain; consumers opt in by requesting the id explicitly. Each entry
+# carries its own key_field, naming the per-model field in OpenBao
+# ai/saas/openrouter — canonically secrets-external/ai/saas/openrouter (an
+# internet-reachable SaaS credential), dual-mounted with the internal
+# secret/ai/saas/openrouter path during the migration (fetched into
 # bao_local_llm_secrets by the openbao_secrets pre-play via the
 # ai-saas-openrouter policy leaf; env fallback
-# OPENROUTER_API_KEY_<KEY_FIELD upper-snaked>). An entry whose key is
-# not seeded renders nothing (inert-until-creds), so the list is safe to
-# extend ahead of key seeding. context_window is the model's real serving
-# window (never null — the compress-death rule applies to every entry).
-llm_router_openrouter_models:
-  # Free endpoint: rate-limited, and NVIDIA logs prompt/session data on the
-  # :free variant — never send confidential material through this model.
-  - model: nvidia/nemotron-3-ultra-550b-a55b:free
-    key_field: nvidia-nemotron-3-ultra-550b-a55b-free
-    context_window: 1000000
-  # Cheap paid egress: efficiency-optimized MoE, $0.09/$0.18 per 1M tokens.
-  - model: deepseek/deepseek-v4-flash
-    key_field: deepseek-deepseek-v4-flash
-    context_window: 1000000
+# OPENROUTER_API_KEY_<KEY_FIELD upper-snaked>). An entry whose key is not seeded
+# renders nothing (inert-until-creds), so the registry is safe to extend ahead of
+# key seeding.
+llm_router_openrouter_models: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'openrouter') | list }}
 
-# --- OpenRouter dynamic tier: any current upstream model, budget-gated -------
-# Operator disclosure 2026-07-19: the ai/saas/openrouter keys (now
-# secrets-external/ai/saas/openrouter) are ACCOUNT-WIDE
-# (the per-model field names were a naming-level guardrail, not a technical
-# one). The real permission model is now explicit policy: Hermes' persona +
-# dryvist/openrouter-models skill (deliberate escalation only, hard $1.00/day
-# memory-tracked budget, :free rules) — so this wildcard exposes the full
-# current OpenRouter catalog as `openrouter/<exact-upstream-id>` without a
-# per-model router edit. Tuned entries above still win on exact match; the
-# local `*` catch-all is untouched (bare ids still route to local serving).
-# Reuses an existing seeded key field; disable to fall back to tuned-only.
-llm_router_openrouter_wildcard_enabled: true
-llm_router_openrouter_wildcard_key_field: deepseek-deepseek-v4-flash
+# --- The OpenRouter egress ALLOWLIST is the list above, and nothing else -----
+# There is deliberately no `openrouter/*` passthrough var here any more.
+#
+# What it was: an `openrouter/*` model_list entry authenticated with one
+# already-seeded key, which exposed the ENTIRE live OpenRouter catalog. The
+# only stated control was caller-side prose — a persona paragraph and a skill
+# describing a daily budget the agent tracked for itself. That is advisory:
+# it binds a compliant caller and nothing else, and this role's own operator
+# disclosure already recorded that the per-model key-field names were "a
+# naming-level guardrail, not a technical one" because the keys are
+# ACCOUNT-WIDE.
+#
+# Two properties made it worth removing rather than tightening. The registry
+# cannot be the sole enabled-model inventory while a wildcard routes around
+# it — every claim of the form "these are the models the fabric serves" was
+# false by construction. And spend on an account-wide key was bounded only by
+# what a caller chose to do, so a noncompliant or compromised one had no
+# ceiling at all.
+#
+# What replaces it: the per-entry renders above ARE the allowlist. Every
+# reachable OpenRouter model is a registry entry with `enabled: true` and a
+# seeded key_field; anything else 400s at the router. Adding a model is one
+# registry line plus a key seed, which is the same cost the wildcard was
+# avoiding, paid once per model instead of never.
+#
+# NOTE this removes the wildcard, not the caller-side policy. There is still no
+# router-enforced SPEND cap — this proxy has no store to track spend in — so
+# the persona's and skill's escalation rules remain load-bearing rather than a
+# backstop. What the router adds is the allowlist above plus the rate ceilings
+# below. See that block before describing any of this as a budget.
+
+# --- Rate ceilings on paid egress (what this proxy CAN enforce) --------------
+# Per-deployment request, token and concurrency limits, applied to every
+# OpenRouter entry. LiteLLM's Router evaluates these in process, so they need
+# no storage backend and work on this DB-less proxy exactly as written.
+#
+# HONEST SCOPE — read before treating these as a spend cap. They are per
+# INSTANCE, and llm_router_group is a three-member pool (see the serial: 1
+# rolling converge in playbooks/site.yml). The estate-wide ceiling is therefore
+# three times each number below, and a member restart resets its own counters.
+# They bound the RATE at which spend can accumulate; they are not a spend cap
+# and must not be described as one.
+#
+# What is deliberately NOT here: a LiteLLM spend budget.
+# `router_settings.provider_budget_config` tracks spend in REDIS, and
+# `max_budget`/`budget_duration` on virtual keys live in LiteLLM's
+# Postgres-backed key management. This proxy has neither, on purpose — see the
+# prisma note at the top of this file ("We use no database"), and the
+# fabric-router ADR, where DB-lessness is the load-bearing reason a single
+# front door in the call path is acceptable at all: a replicated stateless
+# front, not a stateful bottleneck.
+#
+# Configuring a budget anyway would be WORSE than having none. With three
+# replicas and no Redis each member would count only its own spend, so the
+# rendered config would advertise a limit that is really 3x, and every rolling
+# converge would reset it. That manufactures the appearance of a control, which
+# is the one outcome worse than the absence of one. Adding Redis or Postgres to
+# the estate's front door is an architecture decision, not a line in this file.
+llm_router_openrouter_rpm: 60
+llm_router_openrouter_tpm: 200000
+llm_router_openrouter_max_parallel_requests: 4
 
 # --- Routing behaviour -------------------------------------------------------
 # Load-balance across same-name deployments; cool a failed one down so traffic
@@ -352,7 +324,7 @@ llm_router_retry_max_delay_seconds: "{{ llm_router_retry_after_seconds }}"
 # Rate-limit failures do not cool down the otherwise healthy deployment.
 llm_router_rate_limit_allowed_fails: 1000
 
-# --- THE SERVABLE SET (single source for every alias) ------------------------
+# --- THE SERVABLE SET + consumer aliases (projected from the registry) --------
 # The serving host runs llama-swap in SINGLE-MODEL mode (nix-ai
 # llama-swap-topology.nix): exactly ONE physical id is servable, plus a small
 # always-available swap tier beside it. Every other catalogued model is
@@ -362,61 +334,61 @@ llm_router_rate_limit_allowed_fails: 1000
 #
 # Which means an alias pointing anywhere outside this set is not "slightly
 # stale", it is UNROUTABLE. Measured 2026-07-28 against the live gate, before
-# this block existed: hermes-default, tool-calling, goal-judge and interim-brain
-# ALL returned 404 — every consumer alias at once, because the alias map and the
-# serving host's enabled set had no shared definition. It stayed invisible while
-# llama-swap still grafted disabled ids onto the resident (Hermes was answered by
-# a model nobody selected); nix-ai#1441 removed that graft and the 404s surfaced.
+# any shared definition existed: hermes-default, tool-calling, goal-judge and
+# interim-brain ALL returned 404 — every consumer alias at once, because the
+# alias map and the serving host's enabled set had no common source. It stayed
+# invisible while llama-swap still grafted disabled ids onto the resident
+# (Hermes was answered by a model nobody selected); nix-ai#1441 removed that
+# graft and the 404s surfaced.
 #
-# So the values below are the ONE place a serving-side change is recorded,
-# every alias/fallback derives from them, and llm_router_servable_models feeds
-# the assert that refuses a converge if any alias or fallback target escapes
-# the set. Repointing the serving host means editing these lines and nothing
-# else.
-llm_router_primary_model: mlx-community/Qwen3.6-35B-A3B-4bit
-# The small tier: judge//trivial work, and the only model that may differ
-# from the primary (user decision 2026-07-28 — concurrency belongs to the
-# largest accurate model, the small tier stays cross-family to it, which is
-# also what an LLM judge should be).
+# So a serving-side change is recorded in ONE place — the registry's `servable`
+# and `serving_role` fields — every selector and alias below derives from it, and
+# llm_router_servable_models feeds the assert that refuses a converge if any
+# alias or fallback target escapes the set. Repointing the serving host means
+# moving `serving_role: primary` to another registry entry and nothing else.
 #
-# CORRECTED 2026-08: this used to claim "the 9B is always up for the judge".
-# Measured live against the deployed serving host and it is false — the
-# deployed llama-swap config (nix-ai modules/mlx/llama-swap-topology.nix) has
-# the PRIMARY pinned resident (ttl=0) and THIS model as the evictable
-# swap-class member (ttl=900), the opposite of what was claimed here.
-# "servable" (llm_router_servable_models below) means never demoted to
-# disabledModels — reachable, not disabled — it does NOT mean pre-loaded or
-# residency-pinned. Measured cold-load after eviction: ~79s, which exceeds
-# hermes_agent_kanban_goal_judge_timeout_seconds (60s) — see the goal-judge
-# comment in roles/hermes_agent/defaults/main.yml for the full incident and
-# the precondition for using this model as the judge target again.
-llm_router_small_model: mlx-community/Qwen3.5-9B-MLX-4bit
-# The two-Mac cluster brain (see the model_list entry above): servable ONLY
-# while a cluster window is up, exactly when the primary is not (cluster-join
-# boots the standalone llama-swap agent out). Part of the servable set because
-# hermes-default's fallback chain (below) is a real, reachable target for it —
-# not a stale alias like the ones the incident above was about.
-llm_router_cluster_model: mlx-community/GLM-4.7-REAP-50-mxfp4
-llm_router_servable_models:
-  - "{{ llm_router_primary_model }}"
-  - "{{ llm_router_small_model }}"
-  - "{{ llm_router_cluster_model }}"
+# `servable` is NOT `enabled`: enabled means the router offers the id at all
+# (all ten large-tier entries are), servable means the backend will actually
+# answer for it (three are). Conflating the two is what produces a 404 instead
+# of an answer.
+llm_router_primary_model: >-
+  {{ llm_router_registry_enabled | selectattr('serving_role', 'defined')
+     | selectattr('serving_role', 'equalto', 'primary')
+     | map(attribute='client_model_id') | first }}
+# The small tier: judge/trivial work, and the only model that may differ from
+# the primary (user decision 2026-07-28 — concurrency belongs to the largest
+# accurate model, the small tier stays cross-family to it, which is also what an
+# LLM judge should be). See its registry entry for the measured residency
+# caveat: servable does not mean pre-loaded, and its cold load exceeds the
+# judge timeout.
+llm_router_small_model: >-
+  {{ llm_router_registry_enabled | selectattr('serving_role', 'defined')
+     | selectattr('serving_role', 'equalto', 'small')
+     | map(attribute='client_model_id') | first }}
+# The two-Mac cluster brain: servable ONLY while a cluster window is up, exactly
+# when the primary is not (cluster-join boots the standalone agent out). Part of
+# the servable set because hermes-default's fallback chain (below) is a real,
+# reachable target for it — not a stale alias like the ones the incident above
+# was about.
+llm_router_cluster_model: >-
+  {{ llm_router_registry_enabled | selectattr('serving_role', 'defined')
+     | selectattr('serving_role', 'equalto', 'cluster')
+     | map(attribute='client_model_id') | first }}
+llm_router_servable_models: >-
+  {{ llm_router_registry_enabled | selectattr('servable', 'defined')
+     | selectattr('servable') | map(attribute='client_model_id') | list }}
 
-# Stable consumer role names. Aliases carry no deployment configuration; each
-# points to exactly one physical model_list entry above — and now, only ever at
-# a member of the servable set above.
-llm_router_model_group_aliases:
-  hermes-default: "{{ llm_router_primary_model }}"
-  tool-calling: "{{ llm_router_primary_model }}"
-  # The judge runs on the small tier, NOT the worker's model. Same-model judging
-  # is self-preference bias by construction, and it also made worker and judge
-  # contend for one serving slot.
-  goal-judge: "{{ llm_router_small_model }}"
-  # Interim Hermes-brain candidate: a stable handle so hermes_brain_model (or
-  # secret/ai/public/brain) can repoint in one line. It tracks the primary rather
-  # than naming its own model — a second physical id here is exactly the drift
-  # this block exists to prevent.
-  interim-brain: "{{ llm_router_primary_model }}"
+# Stable consumer role names, from each registry entry's `stable_aliases`.
+# Aliases carry no deployment configuration; each points to exactly one physical
+# model_list entry — and, by construction, only ever at the entry that declared
+# it, which is always a member of the servable set above.
+llm_router_alias_pairs: >-
+  {{ llm_router_registry_enabled | selectattr('stable_aliases', 'defined')
+     | subelements('stable_aliases') | list }}
+llm_router_model_group_aliases: >-
+  {{ dict(llm_router_alias_pairs | map(attribute=1)
+          | zip(llm_router_alias_pairs | map(attribute=0)
+                | map(attribute='client_model_id'))) }}
 
 # --- hermes-default automatic failover across the cluster + standalone gates -
 # The cluster and standalone backends are mutually exclusive (see the model_list

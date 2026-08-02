@@ -1,0 +1,63 @@
+---
+# Resolves the residual deny policy from nix-ai, the repo that owns it.
+#
+# Its own file, not two lines inlined into main.yml, so anything needing the
+# policy in scope loads it THE SAME WAY the converge does:
+#
+#   - ansible.builtin.include_role:
+#       name: agent_guest
+#       tasks_from: policy.yml
+#
+# A test that hand-rolled its own `nix eval` would still pass while the
+# converge's own invocation was broken — the drift this change removes,
+# reproduced one level up. Same reasoning as llm_router/tasks/registry.yml.
+#
+# NARROW interface on purpose. This consumes ONE list, not nix-ai's rendered
+# outputs: those are workstation-shaped (different paths, user, bootstrap
+# assumptions) and this guest is a different runtime. The role keeps its own
+# per-tool templates and reproduces each native format from this list.
+#
+# Runs on the CONTROLLER — the only side with nix; the guest never needs it.
+# Read-only and safe in check mode.
+- name: Evaluate the residual deny policy from the pinned nix-ai ref
+  ansible.builtin.command:
+    cmd: >-
+      nix eval --json
+      "{{ agent_guest_policy_flake_ref }}#{{ agent_guest_policy_attr }}"
+  delegate_to: localhost
+  # See hermes_agent/assert.yml: the ansible_become connection var outranks the
+  # keyword, so both are needed to actually run unprivileged here.
+  become: false
+  vars:
+    ansible_become: false
+  run_once: true
+  register: agent_guest_policy_eval
+  changed_when: false
+  check_mode: false
+
+- name: Set the residual deny policy from the evaluated result
+  ansible.builtin.set_fact:
+    agent_guest_residual_deny: "{{ agent_guest_policy_eval.stdout | from_json }}"
+
+- name: Assert the evaluated policy is usable
+  # An eval that succeeds but yields an empty or wrongly-shaped list would
+  # render an EMPTY deny policy onto an agent running with standing credentials
+  # under bypassPermissions. That fails open and silently, so it is checked
+  # here rather than trusted. The floor is deliberately a shape check, not a
+  # count: pinning an exact length would fail the converge every time nix-ai
+  # legitimately adds a rule, which is the opposite of what this should do.
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - agent_guest_residual_deny is iterable
+      - agent_guest_residual_deny is not string
+      - agent_guest_residual_deny | length > 0
+      - agent_guest_residual_deny | reject('string') | list | length == 0
+      - agent_guest_residual_deny | select('equalto', '') | list | length == 0
+    fail_msg: >-
+      {{ agent_guest_policy_flake_ref }}#{{ agent_guest_policy_attr }} produced
+      no usable deny policy ({{ agent_guest_residual_deny | default('undefined') }}).
+      Rendering an empty policy would give a fully-autonomous agent holding
+      standing credentials no residual deny at all, so the converge stops here.
+    success_msg: >-
+      residual deny policy resolved: {{ agent_guest_residual_deny | length }} prefixes
