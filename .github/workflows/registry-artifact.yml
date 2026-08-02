@@ -1,0 +1,87 @@
+---
+# Publishes the alias contract derived from the model registry.
+#
+# Consumers outside this repo need the fabric's model/alias inventory without
+# cloning an Ansible role: the Hermes bundle's manifest check, the workstation
+# nix-ai module, and the delegation skills all read it. Attaching it to a
+# release gives them an IMMUTABLE revision plus a checksum to pin, which a
+# branch path cannot offer.
+#
+# Git stays authoritative. This derives the artifact from the committed
+# registry at tag time and never commits anything back — a converge writing to
+# git would make the deployed state a second source of truth, which is the
+# defect the registry exists to remove. The router may additionally serve a
+# runtime copy for discovery; that copy is never a build input.
+
+name: Registry Artifact
+
+on:
+  release:
+    types: [published]
+  # Manual runs produce the artifact as a workflow artifact only (no release to
+  # attach to), which is enough to inspect what a release WOULD carry.
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  publish-alias-contract:
+    name: Publish servable-aliases.json
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.14'
+
+      - name: Install PyYAML
+        run: python -m pip install --upgrade pip pyyaml
+
+      - name: Generate the alias contract and its checksum
+        run: |
+          python3 scripts/generate_servable_aliases.py -o servable-aliases.json
+          sha256sum servable-aliases.json > servable-aliases.json.sha256
+          cat servable-aliases.json.sha256
+
+      # A checksum only means something if the same registry always renders the
+      # same bytes. Generating twice and diffing proves that here rather than
+      # trusting the sorted-keys claim in the generator's docstring.
+      - name: Verify the render is byte-deterministic
+        run: |
+          python3 scripts/generate_servable_aliases.py -o second.json
+          diff -u servable-aliases.json second.json
+          rm second.json
+
+      # Git is authoritative: the artifact is derived, never written back. If a
+      # future edit made the generator mutate a tracked file, this fails.
+      - name: Verify nothing was committed back
+        run: |
+          if [ -n "$(git status --porcelain -- ':!servable-aliases.json*')" ]; then
+            echo "Generation modified tracked files; the artifact must be derived, not committed:"
+            git status --porcelain -- ':!servable-aliases.json*'
+            exit 1
+          fi
+
+      - name: Upload as a workflow artifact
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: servable-aliases
+          path: |
+            servable-aliases.json
+            servable-aliases.json.sha256
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: >-
+          gh release upload "$TAG"
+          servable-aliases.json servable-aliases.json.sha256
+          --clobber

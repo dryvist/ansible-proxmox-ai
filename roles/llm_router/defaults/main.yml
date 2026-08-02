@@ -204,23 +204,67 @@ llm_router_light_models: >-
 llm_router_openrouter_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'openrouter') | list }}
 
-# --- OpenRouter dynamic tier: any current upstream model, budget-gated -------
-# Operator disclosure 2026-07-19: the ai/saas/openrouter keys (now
-# secrets-external/ai/saas/openrouter) are ACCOUNT-WIDE
-# (the per-model field names were a naming-level guardrail, not a technical
-# one). The real permission model is now explicit policy: Hermes' persona +
-# dryvist/openrouter-models skill (deliberate escalation only, hard $1.00/day
-# memory-tracked budget, :free rules) — so this wildcard exposes the full
-# current OpenRouter catalog as `openrouter/<exact-upstream-id>` without a
-# per-model router edit. Tuned entries above still win on exact match; the
-# local `*` catch-all is untouched (bare ids still route to local serving).
-# Reuses an existing seeded key field; disable to fall back to tuned-only.
-llm_router_openrouter_wildcard_enabled: true
-# The donor key is named in the registry (`wildcard_key_source`), not spelled
-# again here — a key field written twice drifts exactly like a model name does.
-llm_router_openrouter_wildcard_key_field: >-
-  {{ llm_router_registry_enabled | selectattr('wildcard_key_source', 'defined')
-     | selectattr('wildcard_key_source') | map(attribute='key_field') | first }}
+# --- The OpenRouter egress ALLOWLIST is the list above, and nothing else -----
+# There is deliberately no `openrouter/*` passthrough var here any more.
+#
+# What it was: an `openrouter/*` model_list entry authenticated with one
+# already-seeded key, which exposed the ENTIRE live OpenRouter catalog. The
+# only stated control was caller-side prose — a persona paragraph and a skill
+# describing a daily budget the agent tracked for itself. That is advisory:
+# it binds a compliant caller and nothing else, and this role's own operator
+# disclosure already recorded that the per-model key-field names were "a
+# naming-level guardrail, not a technical one" because the keys are
+# ACCOUNT-WIDE.
+#
+# Two properties made it worth removing rather than tightening. The registry
+# cannot be the sole enabled-model inventory while a wildcard routes around
+# it — every claim of the form "these are the models the fabric serves" was
+# false by construction. And spend on an account-wide key was bounded only by
+# what a caller chose to do, so a noncompliant or compromised one had no
+# ceiling at all.
+#
+# What replaces it: the per-entry renders above ARE the allowlist. Every
+# reachable OpenRouter model is a registry entry with `enabled: true` and a
+# seeded key_field; anything else 400s at the router. Adding a model is one
+# registry line plus a key seed, which is the same cost the wildcard was
+# avoiding, paid once per model instead of never.
+#
+# NOTE this removes the wildcard, not the caller-side policy. There is still no
+# router-enforced SPEND cap — this proxy has no store to track spend in — so
+# the persona's and skill's escalation rules remain load-bearing rather than a
+# backstop. What the router adds is the allowlist above plus the rate ceilings
+# below. See that block before describing any of this as a budget.
+
+# --- Rate ceilings on paid egress (what this proxy CAN enforce) --------------
+# Per-deployment request, token and concurrency limits, applied to every
+# OpenRouter entry. LiteLLM's Router evaluates these in process, so they need
+# no storage backend and work on this DB-less proxy exactly as written.
+#
+# HONEST SCOPE — read before treating these as a spend cap. They are per
+# INSTANCE, and llm_router_group is a three-member pool (see the serial: 1
+# rolling converge in playbooks/site.yml). The estate-wide ceiling is therefore
+# three times each number below, and a member restart resets its own counters.
+# They bound the RATE at which spend can accumulate; they are not a spend cap
+# and must not be described as one.
+#
+# What is deliberately NOT here: a LiteLLM spend budget.
+# `router_settings.provider_budget_config` tracks spend in REDIS, and
+# `max_budget`/`budget_duration` on virtual keys live in LiteLLM's
+# Postgres-backed key management. This proxy has neither, on purpose — see the
+# prisma note at the top of this file ("We use no database"), and the
+# fabric-router ADR, where DB-lessness is the load-bearing reason a single
+# front door in the call path is acceptable at all: a replicated stateless
+# front, not a stateful bottleneck.
+#
+# Configuring a budget anyway would be WORSE than having none. With three
+# replicas and no Redis each member would count only its own spend, so the
+# rendered config would advertise a limit that is really 3x, and every rolling
+# converge would reset it. That manufactures the appearance of a control, which
+# is the one outcome worse than the absence of one. Adding Redis or Postgres to
+# the estate's front door is an architecture decision, not a line in this file.
+llm_router_openrouter_rpm: 60
+llm_router_openrouter_tpm: 200000
+llm_router_openrouter_max_parallel_requests: 4
 
 # --- Routing behaviour -------------------------------------------------------
 # Load-balance across same-name deployments; cool a failed one down so traffic
