@@ -177,17 +177,13 @@ router_settings:
     RateLimitErrorRetries: {{ llm_router_rate_limit_retries }}
   allowed_fails_policy:
     RateLimitErrorAllowedFails: {{ llm_router_rate_limit_allowed_fails }}
-  # Paid-egress spend ceiling, evaluated by LiteLLM on the request path. This is
-  # what makes "the router enforces your budget" true for every caller: the
-  # control it replaces was an agent tracking its own spend in a memory key and
-  # choosing to stop, which binds a compliant caller and nothing else. Keyed by
-  # LiteLLM provider name, matching the `openrouter/` prefix the egress entries
-  # above already route under. Local tiers are deliberately absent — they cost
-  # nothing per token, so a ceiling there would only invent an outage.
-  provider_budget_config:
-    openrouter:
-      budget_limit: {{ llm_router_openrouter_budget_limit }}
-      time_period: {{ llm_router_openrouter_budget_period }}
+  # NOTE deliberately no provider_budget_config here. It tracks spend in Redis,
+  # which this DB-less, Redis-less proxy does not have, and llm_router_group is
+  # a three-member pool — each member would count only its own spend, so the
+  # rendered ceiling would really be 3x and would reset on every rolling
+  # converge. A control that reports a limit it does not hold is worse than an
+  # absent one. Rate ceilings that DO work in-process are on each egress
+  # deployment above; see defaults for the full rationale.
 
 general_settings:
   master_key: os.environ/LLM_ROUTER_MASTER_KEY
@@ -205,12 +201,6 @@ litellm_settings:
   # requires the v2 SDK and errors on init with the v3 pip resolves.
   callbacks: ["otel"]
   drop_params: true
-  # LiteLLM's default is to ALLOW a request whose spend lookup cannot be
-  # resolved. On an account-wide credential the safe default is the reverse:
-  # refuse rather than spend. Callers already have a defined behaviour for a
-  # bounded refusal — report and defer — so failing closed costs a deferral,
-  # while failing open costs money nobody authorised.
-  fail_closed_budget_enforcement: {{ llm_router_fail_closed_budget_enforcement | to_json }}
 {% if llm_router_large_passthrough_enabled | bool %}
   # Resolve the wildcard against the gate's live /v1/models so this proxy's
   # own /v1/models lists every passthrough model (not just the aliases) —
