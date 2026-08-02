@@ -496,38 +496,66 @@ hermes_agent_kanban_goal_mode: true
 # card. (Matches the operator's soak tuning, made declarative here.)
 hermes_agent_kanban_goal_max_turns: 8
 # THIS IS THE REAL JUDGE. It is what config.yaml.j2 renders into
-# auxiliary.goal_judge.model, and it is currently pinned to the WORKER model.
+# auxiliary.goal_judge.model, and it is DELIBERATELY pinned to the WORKER
+# model, not the `goal-judge` router alias — that is a measured blocker, not
+# an oversight, and not the same claim as the old "config drift" pin (#162)
+# this comment used to defend. Do not re-flip this without re-measuring.
 #
-# Do not confuse it with `hermes_goal_judge_model` in inventory/group_vars/all.yml.
-# That one names the `goal-judge` router alias and is read by exactly ONE thing —
-# the llm_router compress-death assert. It drives no inference. Repointing it
-# does NOT unpin the judge, which is a mistake already made once (2026-07-29):
-# the two names differ by a prefix and both look authoritative.
+# The design intent IS correct (inventory/group_vars/all.yml:156-170 argues it
+# well: same-model judging is self-preference bias, and the serving tier's
+# one-in-flight-per-model limit makes worker and judge on the same model
+# serialize). `hermes_goal_judge_model` there already names the `goal-judge`
+# alias for exactly this reason. The gap was never the design — it was that
+# `hermes_agent_kanban_goal_judge_model` (THIS var, the one that actually
+# reaches inference) never read it. Repointing `hermes_goal_judge_model`
+# itself does nothing on its own: it is consumed by exactly one other thing,
+# the llm_router compress-death assert, and confusing the two is the
+# "differ by a prefix" trap already made once (2026-07-29).
 #
-# The pin's stated justification does not currently hold, and saying so is the
-# point of this comment. It read: "a same-model judge is not an artifact check —
-# the mechanical completion gate is the anti-fabrication layer." There IS no
-# mechanical completion gate. Searched 2026-07-29 across this repo and
-# nix-hermes: the phrase occurs in this comment and nowhere else, and no
-# tool-call-count gate is configured or implemented. A comment that cites a
-# protection that does not exist is worse than silence, because it answers the
-# question a reviewer would otherwise ask.
+# MEASURED 2026-08 (live, brain healthy) why flipping this today would break
+# card judgement:
+#  - `goal-judge` IS a live, registered alias (present in /v1/models) — not
+#    dead config.
+#  - A completion through the alias 502s: "No fallback model group found for
+#    original model_group=goal-judge ... Available Model Group Fallbacks=None".
+#  - Direct to its backend (mlx-community/Qwen3.5-9B-MLX-4bit) on the Studio
+#    loopback, 4 attempts over ~13 min: two 429 "Too many requests", two ~197s
+#    empty responses. It never returned a completion in that window.
+#  - The Studio warmup log shows repeated warm/evict/re-warm cycles for this
+#    model, with the cold-load time climbing: 0.4s, then 35.2s, 79.0s, 79.0s,
+#    79.3s.
+#  - Root cause: the deployed llama-swap config (nix-ai
+#    modules/mlx/llama-swap-topology.nix) has the WORKER
+#    (Qwen3.6-35B-A3B-4bit) pinned resident (ttl=0) and the JUDGE
+#    (Qwen3.5-9B-MLX-4bit) as the evictable swap-class member (ttl=900) — the
+#    opposite of what roles/llm_router/defaults/main.yml's comment claimed
+#    ("the 9B is always up for the judge"; corrected there in this same
+#    change). A ~79s cold load against
+#    hermes_agent_kanban_goal_judge_timeout_seconds (60s) means the FIRST
+#    judge call after any eviction fails outright; auxiliary.transient_retries
+#    (1) might catch a second attempt, but the measured runs above show it
+#    isn't even reliably getting a completion within several retries.
 #
-# What the pin genuinely buys is drift-safety: judge and worker cannot be pulled
-# apart by config. What it costs is real and twofold — a model scoring its own
-# output is self-preference bias by construction (it survives blind evaluation,
-# so hiding authorship is no defence), and the serving tier admits ONE in-flight
-# request per model, so worker and judge on the same model SERIALIZE against
-# each other. The judge queues behind the very generation it was spawned to
-# score.
-#
-# Unpinning to the cross-family small tier fixes both, and the small tier is a
-# separate llama-swap entry with its own slot — so it also resolves the
-# contention without touching concurrency anywhere. It is NOT done here because
-# it cannot currently be verified: the small tier is swap-class, a cold load has
-# to finish inside hermes_agent_kanban_goal_judge_timeout_seconds, and the
-# serving gate is down so that load time cannot be measured. Tracked, with the
-# measurement it needs, rather than shipped blind.
+# EXACT PRECONDITION to flip this line to "{{ hermes_goal_judge_model }}":
+# a nix-ai module change (Phase B, needs darwin-rebuild — NOT something this
+# Ansible-only repo can fix), THEN re-measure, THEN this flip and a raised
+# hermes_agent_kanban_goal_judge_timeout_seconds land IN THE SAME CHANGE. Do
+# not do either half alone:
+#  - Raising the timeout WITHOUT the flip is dead config today — the judge
+#    still resolves to hermes_agent_model (ttl=0, no cold load), so there is
+#    nothing for a raised timeout to protect. Don't add it speculatively.
+#  - Flipping WITHOUT a residency fix breaks judging (measured above).
+#  - Residency itself is NOT a value flip. Read: nix-ai's
+#    alwaysAvailableModels option is documented as an on-demand swap tier
+#    BESIDE the one ttl=0 resident — there is no existing option to pin a
+#    SECOND model resident. Giving the judge real residency is new nix-ai
+#    module/option work, not a config change.
+#  - Even a correctly-raised timeout only makes the judge WORK, not FAST: at
+#    the ~2-3 goal cards/hour this fabric drains (#162), the judge model
+#    will keep evicting between cards on today's ttl=900, so nearly every
+#    judge call would still pay the full cold-load tax. Residency is the
+#    actual fix for throughput; a timeout raise alone is a correctness
+#    patch, not the solution — don't mistake one for the other.
 hermes_agent_kanban_goal_judge_model: "{{ hermes_agent_model }}"
 hermes_agent_kanban_goal_judge_timeout_seconds: 60
 # --- Memory: best self-hostable as of June 2026 (Agy-validated) ---
@@ -733,7 +761,7 @@ hermes_agent_github_alerts_token: ""
 # can query the environment (run_splunk_query, get_indexes, ...) with its own
 # scoped token. Dialed through the shared agentgateway MCP plane (one governed
 # front door per target; the gateway federates to the Splunk MCP Server), same
-# posture as the context7/qdrant routes below — the URL is the gateway route,
+# posture as the context7/docs routes below — the URL is the gateway route,
 # not a secret. The scoped bearer token stays bao-first (see group_vars) and is
 # the remaining credential; empty until seeded, so queries simply fail to
 # authenticate until then while the agent still starts cleanly.
@@ -1529,13 +1557,13 @@ hermes_agent_fleet_health_cron_prompt: >-
 hermes_agent_profiles:
   - name: splunk-admin
     description: Read-only SIEM analyst (bounded SPL, alert + report, no remediation)
-    mcp: [splunk, qdrant]
+    mcp: [splunk, docs]
     env: [slack, splunk]
     skills: [dryvist/splunk-monitor]
     soul_addendum_file: soul-splunk-admin.md.j2
   - name: homelab-admin
     description: Incident lifecycle + fabric health (evidence-before-resolve)
-    mcp: [qdrant]                  # + vikunja/nautobot once their gateway routes go live
+    mcp: [docs]                    # + vikunja/nautobot once their gateway routes go live
     env: [slack, zammad]
     skills: [dryvist/zammad-incidents]
     soul_addendum_file: soul-homelab-admin.md.j2
@@ -1983,20 +2011,38 @@ hermes_agent_context7_mcp_url: >-
   | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}/context7
 hermes_agent_context7_api_key: ""
 
-# --- Qdrant MCP client (persistent vector memory) ---
-# Registers the qdrant-store / qdrant-find memory tools, dialed through the
-# shared agentgateway MCP plane. Keyless for the caller — the gateway's
-# mcp-server-qdrant sidecar holds the Qdrant credential (agentgateway_docker
-# role), same posture as the context7 route.
-hermes_agent_qdrant_mcp_enabled: true
-hermes_agent_qdrant_mcp_url: >-
+# --- Qdrant MCP client (persistent vector memory) — REMOVED, see docs MCP ---
+# Was `hermes_agent_qdrant_mcp_enabled`/`_url`, registering the generic
+# qdrant-store/qdrant-find tools over the `agent_memories` collection. Deleted
+# 2026-08: wired into both named profiles' mcp lists since their creation but
+# never referenced by any prompt or skill in this repo OR nix-hermes (grepped
+# both — zero hits on qdrant-store/qdrant-find/agent_memories outside the
+# wiring itself). Hermes already has a real, structured memory system —
+# `memory.provider: hindsight` below, shared across every profile — so this
+# was a second, undifferentiated store with no guidance on which one to use
+# for what: pure confusion risk, not a capability anyone exercised. Re-add it
+# (same shape as the docs MCP client below) only alongside an actual skill or
+# prompt that tells the agent when to reach for it over Hindsight.
+
+# --- Docs MCP client (RAG search over the estate's homelab_docs index) ---
+# Registers the search_docs tool, dialed through the shared agentgateway MCP
+# plane (same posture as context7 above: keyless for the caller, the
+# gateway's mcp-docs sidecar holds the router credential — see
+# agentgateway_docker_docs_mcp_* in the agentgateway_docker role). Defaults ON:
+# the gateway /docs route is enabled by default
+# (agentgateway_docker_docs_mcp_enabled: true) and the homelab_docs Qdrant
+# collection it searches is rebuilt nightly by the llamaindex role
+# (llamaindex_index_on_calendar) — this is the estate's only document-
+# retrieval index, so leaving it unwired here made it invisible to Hermes.
+hermes_agent_docs_mcp_enabled: true
+hermes_agent_docs_mcp_url: >-
   https://mcp.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
-  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}/memory
+  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}/docs
 
 # --- Vikunja MCP client (read-only task board) ---
 # Thin pointer to the shared agentgateway /vikunja route — the gateway sidecar
-# holds the read token, so this is keyless (same posture as qdrant/context7).
-# DISABLED by default: unlike splunk/qdrant (whose gateway routes always exist),
+# holds the read token, so this is keyless (same posture as docs/context7).
+# DISABLED by default: unlike splunk/docs (whose gateway routes always exist),
 # the /vikunja route itself is omitted until the operator seeds the read token
 # on the gateway. With this enabled but the route absent, Hermes retries and
 # parks on "MCP server 'vikunja' failed initial connection" EVERY session (log

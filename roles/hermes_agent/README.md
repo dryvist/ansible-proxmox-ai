@@ -120,8 +120,8 @@ written to memory by any profile should be treated as private to it.
 | Profile | Mission | Has | Must NOT have (tools/MCP/skills — memory is shared across every profile, see above) |
 | --- | --- | --- | --- |
 | `default` | Cross-domain, board-meta, GitHub | everything (unchanged) | — |
-| `splunk-admin` | Read-only SIEM: SPL, alert + report | Splunk + Qdrant MCP, `splunk-monitor` skill | GitHub, Zammad, other MCP/skills |
-| `homelab-admin` | Incidents + fabric health | Qdrant MCP (+ Vikunja/Nautobot later), `zammad-incidents` skill | Splunk, GitHub, other MCP/skills |
+| `splunk-admin` | Read-only SIEM: SPL, alert + report | Splunk + Docs MCP, `splunk-monitor` skill | GitHub, Zammad, other MCP/skills |
+| `homelab-admin` | Incidents + fabric health | Docs MCP (+ Vikunja/Nautobot later), `zammad-incidents` skill | Splunk, GitHub, other MCP/skills |
 
 **Adding a card to a profile**: set that card's `assignee:` in
 `hermes_agent_kanban_cards` to the profile name (empty string = default).
@@ -263,7 +263,7 @@ time, so neither the endpoint nor the token ever lands in `config.yaml`.
 
 The URL is the shared agentgateway `/splunk` route (built from
 `PROXMOX_SUBDOMAIN` in the role defaults, non-secret), same posture as the
-context7/qdrant routes — the gateway federates to the Splunk MCP Server. The
+context7/docs routes — the gateway federates to the Splunk MCP Server. The
 Bearer token stays bao-first: it comes from the shared OpenBao
 `secret/ai/mcp/splunk` path (merged into `bao_local_llm_secrets`) with an env
 fallback, and is the remaining credential — empty until seeded. The
@@ -880,6 +880,25 @@ env fallback; the entry is omitted until the key is set.
 | --- | --- | --- |
 | `hermes_agent_context7_mcp_enabled` | `true` | Register the Context7 MCP server |
 | `hermes_agent_context7_api_key` | `""` | Context7 API key (bao/env) |
+
+## Docs RAG search
+
+Registers the shared agentgateway `/docs` route (`mcp_servers.docs`) — a
+read-only `search_docs` tool over the `homelab_docs` Qdrant collection, which
+the `llamaindex` role rebuilds nightly from `docs.jacobpevans.com`,
+`docs.dryvist.com`, and the tofu service registry (see
+`llamaindex_sources`/`llamaindex_index_on_calendar` in that role's defaults).
+Keyless for the caller — the gateway's `mcp-docs` sidecar (`agentgateway_docker`
+role) holds the LLM-router credential used to embed each query. Defaults ON in
+both the default profile's `config.yaml` and every named profile that lists
+`docs` in its `mcp` (currently both `splunk-admin` and `homelab-admin`) —
+this is the estate's only document-retrieval index, so it belongs to every
+profile doing homelab work.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `hermes_agent_docs_mcp_enabled` | `true` | Register the docs MCP server |
+| `hermes_agent_docs_mcp_url` | `mcp.<sub>/docs` | Agentgateway route (non-secret) |
 
 ## Escalation (Codex via MCP)
 
