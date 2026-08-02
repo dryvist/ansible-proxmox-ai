@@ -600,14 +600,20 @@ rate limit, so one bulk paste into Vikunja cannot create fifty cards at once.
 
 ### The credential
 
-`HERMES_VIKUNJA_API_TOKEN` — a **write-scoped** Vikunja API token, read from the
-converge environment per repo convention (`lookup('env', ...)`, so Doppler, SOPS
-and OpenBao all satisfy it; the role never names a backend).
+`HERMES_VIKUNJA_API_TOKEN` — a **write-scoped** Vikunja API token. Resolved
+bao-first via the `local-llm` OpenBao domain (`secret/ai/hermes` — see
+`inventory/group_vars/hermes_agent_group.yml`, which overrides the role's
+plain-env default above), falling back to the converge environment
+(`lookup('env', ...)`, so Doppler or SOPS also satisfy it) when that domain's
+AppRole isn't configured. A path-exact `hermes` domain also exists (see
+`roles/openbao_secrets/defaults/main.yml`), provisioned ahead of a future
+migration off `local-llm`'s broader `ai/*`-style grant — nothing reads
+through it yet.
 
 **Already provisioned.** A least-privilege token was minted via the Vikunja API
-and stored at `secret/ai/hermes/vikunja-bridge` in OpenBao (key
-`HERMES_VIKUNJA_API_TOKEN`). Every function above was then run against the live
-instance with that exact token.
+and stored at `secret/ai/hermes` in OpenBao (key `HERMES_VIKUNJA_API_TOKEN`,
+alongside Hermes' other credentials at that same path). Every function above
+was then run against the live instance with that exact token.
 
 Its permission set is exactly the operations the bridge performs and nothing
 more — no project create, no project delete, no delete of anything:
