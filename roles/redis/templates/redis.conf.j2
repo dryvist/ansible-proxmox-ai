@@ -1,0 +1,34 @@
+{{ ansible_managed | comment }}
+# Redis backing the LiteLLM router pool's cross-instance spend accounting.
+# Managed by the `redis` role — edits here are overwritten on the next converge.
+
+bind {{ redis_bind_address }}
+port {{ redis_port }}
+protected-mode yes
+
+# AUTH is mandatory. An unauthenticated Redis reachable off-loopback is an RCE
+# primitive (CONFIG SET dir + SAVE writes an arbitrary file as the redis user),
+# so the role has no password-less branch.
+requirepass {{ redis_password }}
+
+# The commands that turn a reachable Redis into that primitive. This instance
+# only ever needs GET/SET/INCR-shaped traffic from LiteLLM, so the rest is
+# surplus reachable surface.
+rename-command CONFIG ""
+rename-command MODULE ""
+rename-command DEBUG ""
+
+dir {{ redis_data_dir }}
+maxmemory {{ redis_maxmemory }}
+
+# noeviction: these keys ARE the spend ceiling. Evicting one under memory
+# pressure would silently RAISE the effective budget rather than enforce it —
+# the failure mode is invisible and points the wrong way, so writes fail
+# instead.
+maxmemory-policy {{ redis_maxmemory_policy }}
+
+# Persistence: a restart that came back empty would zero the period's
+# accumulated spend, which is one of the two reasons the unbacked budget was
+# dishonest. appendonly bounds the loss to the last fsync window.
+appendonly {{ redis_appendonly }}
+appendfsync everysec

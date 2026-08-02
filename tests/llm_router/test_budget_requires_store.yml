@@ -1,0 +1,86 @@
+---
+# The other half of the budget contract: a spend budget WITHOUT a shared store
+# must fail the build.
+#
+# WHY THIS TEST EXISTS, and why it is separate from the allowlist test. That
+# test proves a budget and a store are rendered together in the shipped
+# configuration. It cannot prove that the pairing is ENFORCED — deleting the
+# assert would leave it passing, because the shipped configuration would still
+# have both. This one removes the store, keeps the budget, and requires the
+# converge to stop.
+#
+# The failure being guarded against is the one that already happened. A budget
+# was configured on this proxy once with nothing to track spend in. LiteLLM
+# counts provider spend in Redis, and llm_router_group is a multi-member pool
+# converged serial: 1, so each member counted only its own: the rendered config
+# advertised a ceiling that was really N times its stated value, and every
+# rolling converge reset it. It rendered fine, converged green, and reported a
+# limit that did not hold. Only the pairing makes the number honest.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_budget_requires_store.yml -i localhost, -c local
+- name: Verify an unbacked spend budget fails the build
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main.yml"
+
+    # set_fact, not a play var: include_vars binds the role defaults at a higher
+    # precedence than a play var, so a play-level override is discarded.
+    - name: Configure a budget with NO shared store behind it
+      ansible.builtin.set_fact:
+        llm_router_openrouter_budget_limit: 1.0
+        llm_router_openrouter_budget_period: 1d
+        llm_router_redis_host: ""
+
+    - name: Prove the unbacked budget stops the converge
+      block:
+        - name: Import the budget-backing assert with no store configured
+          ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-budget-backing.yml
+
+        - name: Fail because the assert admitted an unbacked budget
+          ansible.builtin.fail:
+            msg: >-
+              roles/llm_router/tasks/assert-budget-backing.yml PASSED with a
+              spend budget and no shared store. That assert is the only thing
+              keeping the two coupled, and without it the config can once again
+              advertise a ceiling that is really N times its stated value and
+              resets on every rolling converge.
+      rescue:
+        - name: Confirm the failure was the budget-backing assert
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'Spend budget configured with no shared store' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              Something failed, but not the budget-backing assert — got
+              {{ ansible_failed_result.msg | default('(none)') }}. A failure
+              from anywhere else would make this test pass for the wrong reason.
+            success_msg: An unbacked spend budget is fatal.
+
+    # The inverse must NOT fire: a store with no budget is merely unused, and
+    # making that fatal would block the honest storage-less configuration this
+    # proxy ran for good reason. Without this, an assert written as a plain
+    # "both or neither" would pass the case above and still be wrong.
+    - name: Assert a store with no budget is permitted
+      ansible.builtin.set_fact:
+        llm_router_openrouter_budget_limit: 0
+        llm_router_redis_host: redis.example.test
+
+    - name: Import the budget-backing assert with a store and no budget
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-budget-backing.yml
+
+    # And neither-nor, which is exactly the configuration that shipped between
+    # the two inversions. It must stay valid: this contract is about honesty,
+    # not about mandating a budget.
+    - name: Assert neither a budget nor a store is permitted
+      ansible.builtin.set_fact:
+        llm_router_openrouter_budget_limit: 0
+        llm_router_redis_host: ""
+
+    - name: Import the budget-backing assert with neither configured
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-budget-backing.yml

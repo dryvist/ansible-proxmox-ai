@@ -252,24 +252,73 @@ llm_router_openrouter_models: >-
 # They bound the RATE at which spend can accumulate; they are not a spend cap
 # and must not be described as one.
 #
-# What is deliberately NOT here: a LiteLLM spend budget.
-# `router_settings.provider_budget_config` tracks spend in REDIS, and
-# `max_budget`/`budget_duration` on virtual keys live in LiteLLM's
-# Postgres-backed key management. This proxy has neither, on purpose — see the
-# prisma note at the top of this file ("We use no database"), and the
-# fabric-router ADR, where DB-lessness is the load-bearing reason a single
-# front door in the call path is acceptable at all: a replicated stateless
-# front, not a stateful bottleneck.
-#
-# Configuring a budget anyway would be WORSE than having none. With three
-# replicas and no Redis each member would count only its own spend, so the
-# rendered config would advertise a limit that is really 3x, and every rolling
-# converge would reset it. That manufactures the appearance of a control, which
-# is the one outcome worse than the absence of one. Adding Redis or Postgres to
-# the estate's front door is an architecture decision, not a line in this file.
+# They remain per-instance even now that a spend cap exists below: they bound
+# the RATE at which spend accumulates, which is what stops a runaway caller
+# exhausting a whole period before the shared counter observes it. Do not
+# describe them as the cap.
 llm_router_openrouter_rpm: 60
 llm_router_openrouter_tpm: 200000
 llm_router_openrouter_max_parallel_requests: 4
+
+# --- Shared spend store, and the spend cap it makes real ---------------------
+# This block reverses a deliberate removal, so the reasoning for the removal
+# matters. A budget was configured here once and backed out, because
+# `router_settings.provider_budget_config` tracks spend in REDIS and this proxy
+# had none: llm_router_group is a three-member pool (serial: 1 in
+# playbooks/site.yml), so each member would have counted only its own spend.
+# The rendered config would have advertised a ceiling that was really 3x, and
+# every rolling converge would have reset it. A control that reports a limit it
+# does not hold is worse than an absent one, so it went.
+#
+# What changed is the premise, not the judgement: there is now a shared store
+# (roles/redis), so the ceiling is a single estate-wide number rather than
+# three private ones, and it survives a member restart. The cap below is real
+# in a way the earlier one was not.
+#
+# HONEST SCOPE, because "a budget exists" is not the same as "spend is capped
+# right now". LiteLLM reads through a DualCache — in-memory first, Redis on
+# miss — so if Redis becomes unreachable the ceiling degrades back to
+# per-member counting rather than failing closed. That is the right trade for
+# the fabric's single front door (a store outage must not take serving down
+# with it), but it means Redis is a CORRECTNESS dependency, not just an
+# optimisation. The assert in tasks/assert.yml is what stops a budget from
+# being rendered without one.
+#
+# What is still deliberately NOT here: `fail_closed_budget_enforcement`.
+# It is a `general_settings` key, not a router_settings one, and it governs
+# LiteLLM's key/team/user/org/tag budgets — the virtual-key system backed by
+# POSTGRES. Its documented behaviour is to validate spend against "the
+# authoritative database" and return 503 when spend can be verified against
+# neither Redis nor the database. This proxy issues no virtual keys and has no
+# database (see the prisma note at the top of this file), so the setting would
+# be either inert — claiming a control that does not exist, which is precisely
+# the defect the earlier removal was fixing — or, if it engaged, a 503
+# generator on the fabric's only front door. Adding Postgres is a separate
+# architecture decision; adding Redis did not make this setting real.
+#
+# Empty by default: the cap is only rendered when a store is configured, so a
+# deployment without one gets no budget rather than a dishonest one.
+llm_router_redis_host: ""
+llm_router_redis_port: "{{ tofu_data.constants.service_ports.redis_default }}"
+llm_router_redis_password: >-
+  {{ bao_local_llm_secrets.LLM_ROUTER_REDIS_PASSWORD
+     | default(lookup('env', 'LLM_ROUTER_REDIS_PASSWORD'), true) }}
+
+# Period ceiling on OpenRouter egress, in USD. Enforced by the router against
+# the shared store above, so it binds every caller — including a noncompliant
+# or compromised one — rather than only the callers that choose to read the
+# policy. Caller-side escalation rules still apply; they are now a first line
+# rather than the only one.
+#
+# ZERO in the ROLE, set together with the store in group_vars/llm_router_group.
+# The role must be able to converge honestly on a deployment that has no shared
+# store — that configuration ran for good reason and is not a defect — so the
+# default here is "no budget", not "a budget nobody can enforce". Turning the
+# ceiling on is one edit that sets this and llm_router_redis_host together, and
+# assert-budget-backing.yml fails the build if anything ever sets one without
+# the other.
+llm_router_openrouter_budget_limit: 0
+llm_router_openrouter_budget_period: 1d
 
 # --- Routing behaviour -------------------------------------------------------
 # Load-balance across same-name deployments; cool a failed one down so traffic

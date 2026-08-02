@@ -1,0 +1,32 @@
+---
+# Budget/store coupling contract. Its own file so a test can import exactly this
+# assert and prove the failure path, rather than restating its condition where
+# the two could drift apart. Imported by assert.yml.
+
+- name: Assert a rendered spend budget is backed by a shared store
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # A budget may exist only when a store does. The reverse is fine: a store
+      # with no budget is merely unused, not dishonest.
+      - not (llm_router_openrouter_budget_limit | default(0) | float > 0)
+        or (llm_router_redis_host | default('') | trim | length > 0)
+    fail_msg: >-
+      Spend budget configured with no shared store
+      (roles/llm_router/tasks/assert-budget-backing.yml).
+      llm_router_openrouter_budget_limit is
+      {{ llm_router_openrouter_budget_limit | default(0) }} but
+      llm_router_redis_host is empty.
+      LiteLLM tracks provider spend in Redis. llm_router_group is a multi-member
+      pool converged serial: 1, so with no shared store each member counts only
+      its OWN spend: the rendered config would advertise a ceiling that is
+      really N times the number written, and every rolling converge would reset
+      it. An operator reading that config would believe in a limit that does not
+      hold — which is worse than reading no limit at all, and is exactly why the
+      earlier unbacked budget was backed out rather than left in.
+      Either set llm_router_redis_host (roles/redis) or leave the budget at 0.
+    success_msg: >-
+      {{ 'Spend budget ' ~ llm_router_openrouter_budget_limit ~ '/'
+         ~ llm_router_openrouter_budget_period ~ ' is backed by a shared store.'
+         if (llm_router_openrouter_budget_limit | default(0) | float > 0)
+         else 'No spend budget configured; nothing to back.' }}
