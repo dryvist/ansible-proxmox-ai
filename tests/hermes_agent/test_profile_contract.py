@@ -29,12 +29,12 @@ _RENDER_CONTEXT: dict[str, Any] = {
     "hermes_agent_session_reset_at_hour": 4,
     "hermes_agent_session_reset_idle_minutes": 1440,
     "hermes_agent_mcp_tool_timeout_seconds": 180,
-    "hermes_agent_qdrant_mcp_url": "https://mcp.example.com/qdrant",
+    "hermes_agent_docs_mcp_url": "https://mcp.example.com/docs",
     "hermes_agent_vikunja_mcp_url": "https://mcp.example.com/vikunja",
     "hermes_agent_nautobot_mcp_url": "https://mcp.example.com/nautobot",
     "hermes_agent_splunk_mcp_enabled": True,
     "hermes_agent_splunk_mcp_url": "https://mcp.example.com/splunk",
-    "hermes_agent_qdrant_mcp_enabled": True,
+    "hermes_agent_docs_mcp_enabled": True,
     "hermes_agent_vikunja_mcp_enabled": False,
     "hermes_agent_nautobot_mcp_enabled": False,
     "hermes_agent_timezone": "UTC",
@@ -185,6 +185,22 @@ def test_profiles_tasks_are_wired_before_the_enqueuer_reconcile() -> None:
     assert profiles_idx < enqueuer_idx
 
 
+def test_llm_wiki_skill_is_materializable_into_any_profile_that_opts_in() -> None:
+    # research/llm-wiki ships from hermes_agent_install_dir (the hermes-agent
+    # install itself), not the nix-hermes dryvist bundle the "scoped dryvist
+    # skills" loop below copies from — so it needs its OWN copy task, or a
+    # profile naming it in `skills` would get no error and no skill (silent
+    # gap, not a loud one). Gated on the same hermes_agent_wiki_enabled flag
+    # as the default profile's copy in tasks/main.yml.
+    profiles_tasks = (ROLE_ROOT / "tasks" / "profiles.yml").read_text()
+    assert "Materialize the llm-wiki skill for profile" in profiles_tasks
+    assert "{{ hermes_agent_install_dir }}/skills/research/llm-wiki" in profiles_tasks
+    assert (
+        "when: hermes_agent_wiki_enabled | bool and 'research/llm-wiki' in item.skills"
+        in profiles_tasks
+    )
+
+
 def test_profile_config_template_renders_scoped_mcp_only() -> None:
     env = _jinja_env()
     src = (ROLE_ROOT / "templates" / "config-profile.yaml.j2").read_text()
@@ -221,6 +237,8 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         hermes_agent_splunk_mcp_token="SPLUNKTOK",
         hermes_agent_zammad_url="https://zammad.example.com",
         hermes_agent_zammad_api_token="ZAMTOK",
+        hermes_agent_wiki_enabled=True,
+        hermes_agent_wiki_path="/var/lib/hermes/wiki",
     )
     always_blank = ("GH_PAT_WRITE_PROJECT_ISSUES", "GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "CONTEXT7_API_KEY")
     section_keys = {
@@ -245,3 +263,11 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
                     assert values[key] != "", f"{profile['name']}: {key} should be set ({section} granted)"
                 else:
                     assert values[key] == "", f"{profile['name']}: {key} must be blank ({section} not granted)"
+        # WIKI_PATH is not a credential and carries no 'env' grant — every
+        # profile gets it whenever wiki is enabled, same as the default
+        # profile's hermes-env.j2. Without this, a profile that DOES get the
+        # research/llm-wiki skill (tasks/profiles.yml) would have the skill on
+        # disk but no path for it to read.
+        assert values["WIKI_PATH"] == "/var/lib/hermes/wiki", (
+            f"{profile['name']}: WIKI_PATH must be set whenever hermes_agent_wiki_enabled is true"
+        )

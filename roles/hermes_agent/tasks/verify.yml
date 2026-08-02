@@ -167,6 +167,26 @@
   changed_when: false
   failed_when: false
 
+# Plain `debug: var: stdout_lines` was silent telemetry in practice: it prints
+# the same neutral block whether the command exited 0 or crashed, and nothing
+# ever reads it — a Hindsight outage degrades to "no memories" with no signal
+# beyond this line (see "Memory resilience" above hermes_agent_hindsight_client_pin
+# in defaults/main.yml). This still never fails the converge (no `failed_when`
+# added), but it now says HEALTHY/DEGRADED explicitly instead of making a
+# human read raw CLI output to judge that themselves. rc != 0 is a hard
+# signal (Ansible's own exit-code capture, not a guess). The stdout substring
+# match is best-effort: "Memory is not available" is the literal string the
+# pinned hermes-agent plugin logs on a failed memory call elsewhere in this
+# codebase (tasks/main.yml, hermes-gateway.service.j2) — `memory status` is not
+# proven to reuse it, so a miss here is not proof of health, only an unmatched
+# guess.
 - name: Report the active memory provider
   ansible.builtin.debug:
-    var: hermes_agent_memory_status.stdout_lines
+    msg: >-
+      Hindsight memory status: {{
+        'DEGRADED (rc=' ~ hermes_agent_memory_status.rc ~ ')'
+        if hermes_agent_memory_status.rc != 0
+        else 'DEGRADED (CLI reported "not available")'
+        if hermes_agent_memory_status.stdout is search('not available', ignorecase=True)
+        else 'HEALTHY (best-effort: exit 0, no known-bad string)'
+      }} — raw output: {{ hermes_agent_memory_status.stdout_lines }}
