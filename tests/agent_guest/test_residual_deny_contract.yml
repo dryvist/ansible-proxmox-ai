@@ -1,0 +1,204 @@
+---
+# Golden test for the residual deny policy now sourced from nix-ai.
+#
+# WHY THIS TEST EXISTS. The role used to carry its own 14-entry copy of
+# nix-ai's `lib.profiles.autonomous.residualDeny`. The two agreed byte for
+# byte, which is precisely the problem: a copy that agrees today is not a copy
+# that agrees after the next edit, and nothing compared them. nix-ai b56f999
+# records this renderer living in four places, with the same
+# invalid-defaultApprovalMode bug shipping in two copies and being fixed twice
+# (#1464, dryvist/nix-agy#1).
+#
+# Removing the copy trades one risk for another: instead of drifting, the
+# policy can now arrive EMPTY, MALFORMED, or SILENTLY WEAKER if the eval
+# misbehaves — onto an agent that runs unattended with standing credentials and
+# `defaultMode: bypassPermissions`. So this asserts the whole path, not just
+# that a variable exists:
+#
+#   1. the converge's own eval resolves (via the role's task file, not a
+#      hand-rolled command that could pass while the converge's was broken)
+#   2. the rendered artifacts are BYTE-IDENTICAL to what the committed list
+#      produced, so the migration changed nothing an agent will read
+#   3. the deployment intent around them — paths, owner, mode — is unchanged
+#
+# GOLDEN CONTENT. The expectations below are frozen from the pre-migration
+# render at develop 7cefc2d. They are deliberately literal: deriving them from
+# the same list the role uses would make this test tautological, passing
+# whatever the policy happened to be.
+#
+# Run (from the REPO ROOT — the role resolves through ansible.cfg's
+# cwd-relative roles_path):
+#   ansible-playbook tests/agent_guest/test_residual_deny_contract.yml -i localhost, -c local
+- name: Verify the agent_guest residual deny contract
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/agent_guest"
+    agent_guest_user: agent
+    agent_guest_home: /home/agent
+    agent_guest_codex_otel_enabled: false
+    ansible_managed: "TEST"
+
+    # Frozen from the render at develop 7cefc2d, before the committed list was
+    # removed. Order matters: these render into ordered policy files, and a
+    # reordering is a real change to what an operator reads even when the set
+    # is equal.
+    _golden_deny:
+      - gh repo delete
+      - gh repo archive
+      - gh repo edit
+      - gh secret
+      - gh variable
+      - gh release delete
+      - gh auth
+      - gh api -X DELETE
+      - gh api --method DELETE
+      - git push --force
+      - git push -f
+      - git push --delete
+      - npm publish
+      - cargo publish
+
+    # The deployment intent the role has always had for these three files.
+    _golden_deployment:
+      - { dest: .codex/config.toml, mode: "0644" }
+      - { dest: .codex/rules/default.rules, mode: "0644" }
+      - { dest: .gemini/policies/autonomous.toml, mode: "0644" }
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main.yml"
+
+    - name: Resolve the policy the way the converge does
+      ansible.builtin.include_role:
+        name: agent_guest
+        tasks_from: policy.yml
+
+    - name: The resolved policy matches the golden list exactly, in order
+      # Set equality is not enough. These render into ordered files, and the
+      # role's own comment ties its Codex `prefix_rule` output to nix-ai's
+      # byte-for-byte — a reorder breaks that claim while every set-based
+      # assertion still passes.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - agent_guest_residual_deny == _golden_deny
+        fail_msg: >-
+          The policy resolved from
+          {{ agent_guest_policy_flake_ref }}#{{ agent_guest_policy_attr }}
+          differs from the golden list frozen at develop 7cefc2d.
+          Missing: {{ _golden_deny | difference(agent_guest_residual_deny) | join(', ') | default('none', true) }}.
+          Added: {{ agent_guest_residual_deny | difference(_golden_deny) | join(', ') | default('none', true) }}.
+          If nix-ai legitimately changed the policy, review the change and
+          update this golden list in the same commit that bumps the pin — never
+          the other way round, or the test stops being evidence.
+        success_msg: "resolved policy is byte-equal to the golden list"
+
+    - name: Every policy artifact renders byte-identically to the committed-list render
+      # The real migration guarantee. Renders each template from the RESOLVED
+      # policy and from the GOLDEN list, and compares. Equal output means
+      # nothing an agent reads changed when the copy was deleted.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _from_resolved == _from_golden
+        fail_msg: >-
+          {{ item }} renders differently from the resolved policy than from the
+          golden list. The migration was supposed to be byte-neutral for every
+          file the agent reads.
+        success_msg: "{{ item }} renders identically"
+      loop:
+        - codex-config.toml
+        - codex-default.rules
+        - gemini-autonomous.toml
+      vars:
+        _from_resolved: "{{ lookup('template', _role_dir ~ '/templates/autonomous/' ~ item ~ '.j2') }}"
+        _from_golden: >-
+          {{ lookup('template', _role_dir ~ '/templates/autonomous/' ~ item ~ '.j2',
+                    template_vars=dict(agent_guest_residual_deny=_golden_deny)) }}
+
+    - name: The rendered Codex rules contain one forbidden rule per prefix
+      # Guards the format, not just the data: a template edit that dropped the
+      # loop body would still satisfy the equality checks above if it dropped it
+      # from both renders.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rule_lines | length == _golden_deny | length
+          - _rule_lines | select('search', '"forbidden"') | list | length == _rule_lines | length
+        fail_msg: >-
+          Expected {{ _golden_deny | length }} forbidden prefix_rule lines in
+          the rendered Codex rules; found {{ _rule_lines | length }}. An agent
+          reads this file as its whole out-of-sandbox deny policy.
+        success_msg: "{{ _rule_lines | length }} forbidden prefix_rule lines rendered"
+      vars:
+        _rule_lines: >-
+          {{ (lookup('template', _role_dir ~ '/templates/autonomous/codex-default.rules.j2')
+              ).splitlines() | select('match', '^prefix_rule\(') | list }}
+
+    - name: The Gemini policy denies every prefix at override priority
+      # priority 200 is what makes the deny outrank the yolo approval mode. A
+      # rule rendered at a lower priority is silently inert.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _deny_count == _golden_deny | length
+          - _priority_count == _golden_deny | length
+        fail_msg: >-
+          Rendered Gemini policy has {{ _deny_count }} deny rules and
+          {{ _priority_count }} at priority 200; expected
+          {{ _golden_deny | length }} of each. A deny below the yolo approval
+          mode's priority does not hold.
+        success_msg: "all {{ _deny_count }} Gemini rules deny at priority 200"
+      vars:
+        _rendered: "{{ lookup('template', _role_dir ~ '/templates/autonomous/gemini-autonomous.toml.j2') }}"
+        _deny_count: "{{ _rendered.splitlines() | select('search', 'decision = \"deny\"') | list | length | int }}"
+        _priority_count: "{{ _rendered.splitlines() | select('search', '^priority = 200$') | list | length | int }}"
+
+    - name: The Claude settings still derive their deny list from the same policy
+      # agent_guest_claude_settings is a lazily-templated default referencing
+      # agent_guest_residual_deny. Moving that variable from a literal to a
+      # set_fact could have broken the reference without any template erroring.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _claude_deny | length == _golden_deny | length
+          - "'Bash(gh repo delete *)' in _claude_deny"
+        fail_msg: >-
+          agent_guest_claude_settings.permissions.deny resolved to
+          {{ _claude_deny }}, which does not match the residual policy. Claude
+          enforces permissions.deny even under bypassPermissions, so this list
+          is real protection, not decoration.
+        success_msg: "Claude deny list carries all {{ _claude_deny | length }} prefixes"
+      vars:
+        _claude_deny: "{{ agent_guest_claude_settings.permissions.deny }}"
+
+    - name: Deployment intent for the policy artifacts is unchanged
+      # Paths and modes are part of the contract: a policy file the agent's CLI
+      # does not read at the path it looks in is the same as no policy.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _deploy_task.loop | map(attribute='dest') | list == _golden_deployment | map(attribute='dest') | list
+          - _deploy_task.mode == '0644'
+          # Compared as the UNRENDERED template string on purpose. The task file
+          # is read as raw YAML here, so this asserts the task still references
+          # the role's user variable rather than having acquired a hardcoded
+          # name — which is the drift worth catching. Comparing a rendered value
+          # would silently accept a literal that happened to match today.
+          - _deploy_task.owner == '{{ "{{ agent_guest_user }}" }}'
+        fail_msg: >-
+          The policy deployment task's paths, owner or mode changed. Expected
+          {{ _golden_deployment | map(attribute='dest') | list }} at 0644 owned
+          by the role's agent_guest_user variable; got dests
+          {{ _deploy_task.loop | map(attribute='dest') | list }},
+          mode {{ _deploy_task.mode }}, owner {{ _deploy_task.owner }}.
+        success_msg: "policy artifacts deploy to the same paths, owner and mode"
+      vars:
+        _main_tasks: "{{ lookup('file', _role_dir ~ '/tasks/main.yml') | from_yaml }}"
+        _deploy_raw: >-
+          {{ _main_tasks | selectattr('name', 'equalto',
+             'Deploy the rendered autonomous policy files') | first }}
+        _deploy_task: >-
+          {{ _deploy_raw['ansible.builtin.template']
+             | combine({'loop': _deploy_raw.loop}) }}
