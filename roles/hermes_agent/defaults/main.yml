@@ -524,13 +524,25 @@ hermes_agent_kanban_goal_max_turns: 8
 #    isn't even reliably getting a completion within several retries.
 #
 # EXACT PRECONDITION to flip this line to "{{ hermes_goal_judge_model }}":
-# the judge's backend needs real residency (ttl=0, a second pinned resident
-# alongside the worker) or hermes_agent_kanban_goal_judge_timeout_seconds
-# needs to comfortably clear the measured cold-load time (or both) — a
-# nix-ai/nix-darwin change (Phase B, needs darwin-rebuild), tracked
-# separately, NOT something this Ansible-only repo can fix. Once that lands
-# and is re-measured, flip this one line and revert this comment to record
-# the fix.
+# a nix-ai module change (Phase B, needs darwin-rebuild — NOT something this
+# Ansible-only repo can fix), THEN re-measure, THEN this flip and a raised
+# hermes_agent_kanban_goal_judge_timeout_seconds land IN THE SAME CHANGE. Do
+# not do either half alone:
+#  - Raising the timeout WITHOUT the flip is dead config today — the judge
+#    still resolves to hermes_agent_model (ttl=0, no cold load), so there is
+#    nothing for a raised timeout to protect. Don't add it speculatively.
+#  - Flipping WITHOUT a residency fix breaks judging (measured above).
+#  - Residency itself is NOT a value flip. Read: nix-ai's
+#    alwaysAvailableModels option is documented as an on-demand swap tier
+#    BESIDE the one ttl=0 resident — there is no existing option to pin a
+#    SECOND model resident. Giving the judge real residency is new nix-ai
+#    module/option work, not a config change.
+#  - Even a correctly-raised timeout only makes the judge WORK, not FAST: at
+#    the ~2-3 goal cards/hour this fabric drains (#162), the judge model
+#    will keep evicting between cards on today's ttl=900, so nearly every
+#    judge call would still pay the full cold-load tax. Residency is the
+#    actual fix for throughput; a timeout raise alone is a correctness
+#    patch, not the solution — don't mistake one for the other.
 hermes_agent_kanban_goal_judge_model: "{{ hermes_agent_model }}"
 hermes_agent_kanban_goal_judge_timeout_seconds: 60
 # --- Memory: best self-hostable as of June 2026 (Agy-validated) ---
