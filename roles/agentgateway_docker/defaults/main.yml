@@ -192,14 +192,37 @@ agentgateway_docker_vikunja_read_token: >-
      | default(lookup('env', 'VIKUNJA_MCP_TOKEN'), true) }}
 
 # =============================================================================
-# Nautobot MCP — inert scaffold (path B). No Nautobot MCP server is deployed and
-# no read token exists (live access blocked). Two gaps before this can go live:
-# (1) deploy a Nautobot MCP (or a read-only REST->MCP shim) reachable from this
-# LXC, and (2) seed a read-only NAUTOBOT_MCP_TOKEN. Left DISABLED — no sidecar
-# or route renders while disabled; enabling without both gaps closed is a no-op.
+# Nautobot MCP sidecar — a ~40-line FastMCP GraphQL passthrough
+# (files/mcp_nautobot_server.py) over Nautobot's own /graphql/ endpoint, same
+# shape as the docs-search sidecar (one read-only tool, no local state). No
+# separate Nautobot MCP server exists upstream worth taking a dependency on
+# (evaluated the nautobot-mcp PyPI plugin: it installs INTO Nautobot's own
+# process and its auth story is undocumented — a sidecar keeps the read-only
+# boundary in a credential we mint ourselves and never touches the live
+# Nautobot install). Served at the /nautobot capability route; same
+# inert-until-creds gating as the other sidecars.
+#
+# READ-ONLY credential: seed the svc-mcp-ro token minted by
+# ansible-proxmox-apps' roles/nautobot/tasks/mcp_token.yml (opt-in via
+# nautobot_mcp_token_publish_openbao) — NOT the superuser token. Inert-until-
+# creds: an empty token omits both the sidecar service and its route, so the
+# role converges cleanly before the operator seeds it.
 # =============================================================================
-agentgateway_docker_nautobot_mcp_enabled: false
-agentgateway_docker_nautobot_url: "{{ lookup('env', 'NAUTOBOT_MCP_URL') | default('', true) }}"
+agentgateway_docker_nautobot_mcp_enabled: true
+# Same base image as the docs/qdrant sidecars (uv, so `uv run --with fastmcp`
+# needs no separate Dockerfile).
+agentgateway_docker_nautobot_mcp_fastmcp_version: "3.4.4"
+# Compose-network-internal only, like the docs/qdrant sidecar ports.
+agentgateway_docker_nautobot_mcp_port: 8003
+# Nautobot's public UI FQDN also serves GraphQL at /graphql/ — same vhost the
+# GraphQL dynamic inventory dials (inventory/nautobot.yml). Override via
+# NAUTOBOT_MCP_URL if Nautobot moves; inert anyway until the read token exists.
+agentgateway_docker_nautobot_url: >-
+  {{ lookup('env', 'NAUTOBOT_MCP_URL')
+     | default('https://nautobot.' ~ (lookup('env', 'PROXMOX_SUBDOMAIN')
+        | mandatory('PROXMOX_SUBDOMAIN required (Doppler)')), true) }}
+# Bao-first, controller-env fallback — READ-scoped token only. Empty => the
+# sidecar and /nautobot route are both omitted.
 agentgateway_docker_nautobot_read_token: >-
   {{ (bao_local_llm_secrets | default({}))['NAUTOBOT_MCP_TOKEN']
      | default(lookup('env', 'NAUTOBOT_MCP_TOKEN'), true) }}
