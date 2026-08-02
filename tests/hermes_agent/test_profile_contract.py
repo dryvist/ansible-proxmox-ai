@@ -54,9 +54,25 @@ def _defaults() -> dict[str, Any]:
 
 
 def _group_vars_all() -> dict[str, Any]:
-    return yaml.safe_load(
+    """all.yml plus the tofu_data it now derives ai_llm_concurrency from.
+
+    ai_llm_concurrency is itself a Jinja expression over tofu_data.constants
+    (dryvist/tofu-proxmox's pipeline_constants.serving.llm_concurrency,
+    published via the inventory_resolve role at playbook run time) rather
+    than a bare int. tofu_data doesn't exist outside a real inventory load,
+    so a minimal fixture stands in here — 1, matching the current published
+    value — and ai_llm_concurrency is pre-rendered against it so _effective's
+    single-pass render below sees a resolved int, the way Ansible's templar
+    would after resolving both levels.
+    """
+    group_vars = yaml.safe_load(
         (REPO_ROOT / "inventory" / "group_vars" / "all.yml").read_text()
     )
+    group_vars["tofu_data"] = {"constants": {"serving": {"llm_concurrency": 1}}}
+    group_vars["ai_llm_concurrency"] = (
+        _jinja_env().from_string(str(group_vars["ai_llm_concurrency"])).render(**group_vars)
+    )
+    return group_vars
 
 
 def _effective(key: str) -> int:
