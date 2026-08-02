@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.23.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.22.1...v0.23.0) (2026-08-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **llm_router:** registry-generated OpenRouter allowlist and published alias contract ([#315](https://github.com/dryvist/ansible-proxmox-ai/issues/315))
+
+### Features
+
+* **llm_router:** registry-generated OpenRouter allowlist and published alias contract ([#315](https://github.com/dryvist/ansible-proxmox-ai/issues/315)) ([4455cba](https://github.com/dryvist/ansible-proxmox-ai/commit/4455cbafaa857ad7bbfcdeb365303f9c18a4ef21))
+
 ## [0.22.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.22.0...v0.22.1) (2026-08-02)
 
 
