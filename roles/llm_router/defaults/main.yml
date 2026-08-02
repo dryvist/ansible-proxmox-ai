@@ -229,42 +229,42 @@ llm_router_openrouter_models: >-
 # registry line plus a key seed, which is the same cost the wildcard was
 # avoiding, paid once per model instead of never.
 #
-# The budget is now enforced here too rather than described elsewhere — see
-# the provider-budget block below.
+# NOTE this removes the wildcard, not the caller-side policy. There is still no
+# router-enforced SPEND cap — this proxy has no store to track spend in — so
+# the persona's and skill's escalation rules remain load-bearing rather than a
+# backstop. What the router adds is the allowlist above plus the rate ceilings
+# below. See that block before describing any of this as a budget.
 
-# --- Router-ENFORCED egress budget ------------------------------------------
-# The spend ceiling that replaces the caller-side one. The previous control was
-# an agent tracking its own daily spend in a memory key and choosing to stop:
-# advisory by construction, unverifiable, and worth nothing against a caller
-# that is looping, misconfigured, or compromised. LiteLLM evaluates this on the
-# request path, so a caller cannot decline to apply it.
+# --- Rate ceilings on paid egress (what this proxy CAN enforce) --------------
+# Per-deployment request, token and concurrency limits, applied to every
+# OpenRouter entry. LiteLLM's Router evaluates these in process, so they need
+# no storage backend and work on this DB-less proxy exactly as written.
 #
-# Rendered as router_settings.provider_budget_config, keyed by LiteLLM provider
-# name (`openrouter` — the same provider prefix litellm_params.model already
-# uses for these entries). time_period accepts LiteLLM's duration strings
-# (Xs/Xm/Xh/Xd/Xmo).
+# HONEST SCOPE — read before treating these as a spend cap. They are per
+# INSTANCE, and llm_router_group is a three-member pool (see the serial: 1
+# rolling converge in playbooks/site.yml). The estate-wide ceiling is therefore
+# three times each number below, and a member restart resets its own counters.
+# They bound the RATE at which spend can accumulate; they are not a spend cap
+# and must not be described as one.
 #
-# Sized to the daily figure the retired prose carried, so this is a change of
-# ENFORCEMENT, not of policy — the number a human already agreed to, moved
-# somewhere it binds. Raise it deliberately; it is the whole ceiling on an
-# account-wide credential.
-llm_router_openrouter_budget_limit: 1.0
-llm_router_openrouter_budget_period: 1d
-
-# A spend cap bounds the period, not the minute: a runaway loop can burn a whole
-# day's budget in seconds and the ceiling only observes it afterwards. These
-# per-deployment limits bound the rate at which that can happen, so the spend
-# cap is a backstop rather than the first line. Applied to every egress
-# deployment.
+# What is deliberately NOT here: a LiteLLM spend budget.
+# `router_settings.provider_budget_config` tracks spend in REDIS, and
+# `max_budget`/`budget_duration` on virtual keys live in LiteLLM's
+# Postgres-backed key management. This proxy has neither, on purpose — see the
+# prisma note at the top of this file ("We use no database"), and the
+# fabric-router ADR, where DB-lessness is the load-bearing reason a single
+# front door in the call path is acceptable at all: a replicated stateless
+# front, not a stateful bottleneck.
+#
+# Configuring a budget anyway would be WORSE than having none. With three
+# replicas and no Redis each member would count only its own spend, so the
+# rendered config would advertise a limit that is really 3x, and every rolling
+# converge would reset it. That manufactures the appearance of a control, which
+# is the one outcome worse than the absence of one. Adding Redis or Postgres to
+# the estate's front door is an architecture decision, not a line in this file.
 llm_router_openrouter_rpm: 60
 llm_router_openrouter_tpm: 200000
 llm_router_openrouter_max_parallel_requests: 4
-
-# LiteLLM's default is to ALLOW a request when the spend lookup cannot be
-# resolved. On an account-wide credential the safe default is the opposite:
-# refuse rather than spend, and let the caller report a bounded failure (which
-# the delegation doctrine already tells every agent to do).
-llm_router_fail_closed_budget_enforcement: true
 
 # --- Routing behaviour -------------------------------------------------------
 # Load-balance across same-name deployments; cool a failed one down so traffic

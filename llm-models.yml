@@ -294,11 +294,14 @@ llm_router_model_registry:
   # Operator disclosure 2026-07-19: these keys are ACCOUNT-WIDE — the per-model
   # field names were a naming-level guardrail, not a technical one. Because of
   # that, THIS LIST IS THE EGRESS ALLOWLIST: an entry here with a seeded key is
-  # the only way a model becomes reachable, the `openrouter/*` passthrough that
-  # used to route around it is gone, and the spend ceiling is enforced by the
-  # router rather than described to the caller. Caller-side policy (deliberate
-  # escalation, :free rules) still applies, but it is no longer the only thing
-  # standing between an account-wide key and the whole catalog.
+  # the only way a model becomes reachable, and the `openrouter/*` passthrough
+  # that used to route around it is gone.
+  #
+  # There is no router-enforced SPEND cap, and nothing here should be read as
+  # claiming one — the proxy has no Redis or database to track spend in, by
+  # design. What the router does enforce is a rate ceiling per egress
+  # deployment. Caller-side policy (deliberate escalation, :free rules) is
+  # therefore still doing real work here rather than being a backstop.
   #
   # Free endpoint: rate-limited, and the vendor logs prompt/session data on the
   # :free variant — never send confidential material through this model.
@@ -319,22 +322,39 @@ llm_router_model_registry:
     context_window: 1000000
     key_field: deepseek-deepseek-v4-flash
 
-  # MiniMax M3 — burst capacity for long-context work the local tiers cannot
-  # hold. The slug was READ from the live keyless catalog
-  # (https://openrouter.ai/api/v1/models) on 2026-08-02, not inferred: that
-  # catalog carries eight `minimax/*` ids and only this one is the current
-  # flagship, so a guessed slug would have rendered a model_list entry that
-  # 400s on first use.
+  # MiniMax, TWO entries. The live keyless catalog
+  # (https://openrouter.ai/api/v1/models, read 2026-08-02) carries eight
+  # `minimax/*` ids, so "add MiniMax" is a selection, not a lookup — and since
+  # the delegation doctrine tells callers to take the cheapest tier that can
+  # actually do a subtask, one entry would force every MiniMax call to pay for
+  # whichever shape it did not need. These two cover both:
   #
-  # Verified there the same day: 1,048,576-token window, $0.30 per million
-  # prompt tokens and $1.20 per million completion — pricier per token than the
-  # DeepSeek entry above, so it is the escalation of the two, not the default.
-  # (The 1000000 on DeepSeek is a pre-existing rounding of the same 1048576
-  # window; left alone rather than widened in a PR about something else.)
+  #   minimax-m2.5  204,800 ctx   $0.15 / $0.90 per Mtok  — the cheap default
+  #   minimax-m3  1,048,576 ctx   $0.30 / $1.20 per Mtok  — the long-context one
   #
-  # Inert until `minimax-minimax-m3` is seeded under
-  # secrets-external/ai/saas/openrouter — an unseeded key_field renders no
-  # entry at all, which is what makes it safe to land ahead of the secret.
+  # context_window is the catalog's real serving window in both cases, not a
+  # round number: the servable-alias contract test exists because an inflated
+  # window is the compress-death failure, and an entry advertising more than the
+  # backend serves dies mid-stream instead of compacting. (DeepSeek's 1000000
+  # above is a pre-existing rounding of the same 1048576 window — left alone
+  # rather than widened in a PR about something else.)
+  #
+  # Both are PAID — neither has a `:free` variant — so both fall under the rate
+  # ceilings the role applies to every egress deployment. Note those are rate
+  # limits, not a spend cap: this proxy has no store to track spend in. See the
+  # egress block in roles/llm_router/defaults/main.yml.
+  #
+  # Inert until `minimax-minimax-m2-5` and `minimax-minimax-m3` are seeded under
+  # secrets-external/ai/saas/openrouter — an unseeded key_field renders no entry
+  # at all, which is what makes both safe to land ahead of the secrets.
+  - client_model_id: minimax/minimax-m2.5
+    upstream_model_id: minimax/minimax-m2.5
+    provider: openrouter
+    tier: openrouter
+    enabled: true
+    context_window: 204800
+    key_field: minimax-minimax-m2-5
+
   - client_model_id: minimax/minimax-m3
     upstream_model_id: minimax/minimax-m3
     provider: openrouter

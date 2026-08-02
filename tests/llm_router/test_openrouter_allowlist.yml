@@ -1,6 +1,7 @@
 ---
-# Pins the OpenRouter egress contract: the registry is the allowlist, and the
-# router enforces the spend ceiling itself.
+# Pins the OpenRouter egress contract: the registry is the allowlist, every
+# egress deployment is rate-limited, and no spend budget is CLAIMED that this
+# storage-less proxy cannot actually hold.
 #
 # WHY THIS TEST EXISTS. Until 2026-08 the role rendered an `openrouter/*`
 # passthrough entry authenticated with one already-seeded key, which exposed the
@@ -140,47 +141,40 @@
         _registry_or: >-
           {{ llm_router_openrouter_models | map(attribute='client_model_id') | list }}
 
-    - name: The router enforces an OpenRouter spend ceiling with a time window
-      # This is what makes the persona's and skill's "the router enforces your
-      # budget" text true. Enforcement has to sit where the caller cannot reach
-      # it; an agent tracking its own spend in a memory key is advisory.
+    - name: No LiteLLM spend budget is configured on this storage-less proxy
+      # The INVERSE of what this assertion originally said, and the correction
+      # matters more than the original claim did.
+      #
+      # LiteLLM's spend controls need storage this proxy does not have:
+      # provider_budget_config tracks spend in REDIS, and max_budget /
+      # budget_duration on virtual keys live in its Postgres-backed key
+      # management. This proxy is deliberately DB-less (see the prisma note in
+      # the role defaults: "We use no database") and has no Redis, because
+      # DB-lessness is the load-bearing reason a single front door in the call
+      # path is acceptable — a replicated stateless front, not a stateful
+      # bottleneck.
+      #
+      # Configuring a budget anyway would be worse than configuring none.
+      # llm_router_group is a three-member pool, so with no shared store each
+      # member counts only its own spend: the rendered config would advertise a
+      # ceiling that is really 3x, and every rolling converge would reset it.
+      # An operator reading that config would believe in a control that does not
+      # hold. This assertion exists to keep anyone from re-adding it as a
+      # config line, because it is an architecture decision (add Redis or
+      # Postgres to the estate's front door) and not a template edit.
       ansible.builtin.assert:
         quiet: true
         that:
-          - _or_budget | length > 0
-          - _or_budget.budget_limit | default(0) | float > 0
-          - _or_budget.time_period | default('') | length > 0
+          - "'provider_budget_config' not in (_config.router_settings | default({}))"
+          - "'fail_closed_budget_enforcement' not in (_config.litellm_settings | default({}))"
         fail_msg: >-
-          router_settings.provider_budget_config.openrouter must carry a
-          positive budget_limit and a time_period. Without it the only spend
-          control on an ACCOUNT-WIDE key is caller-side prose.
-        success_msg: >-
-          openrouter spend ceiling {{ _or_budget.budget_limit | default('?') }}
-          per {{ _or_budget.time_period | default('?') }}
-      vars:
-        # Defaulted at every hop. Reaching straight into
-        # provider_budget_config.openrouter makes a MISSING block raise a Jinja
-        # resolution error while rendering fail_msg, so the test still fails but
-        # reports a traceback instead of the reason — and the missing block is
-        # precisely the case this assertion exists to catch.
-        _or_budget: >-
-          {{ (_config.router_settings | default({})).get('provider_budget_config', {})
-             | default({}, true) | dict2items
-             | selectattr('key', 'equalto', 'openrouter')
-             | map(attribute='value') | first | default({}) }}
-
-    - name: Budget enforcement fails closed
-      # LiteLLM's default is to let a request through when the spend lookup
-      # cannot be resolved. On an account-wide key the safe default is the
-      # opposite: refuse rather than spend.
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _config.litellm_settings.fail_closed_budget_enforcement | bool
-        fail_msg: >-
-          litellm_settings.fail_closed_budget_enforcement must be true, or a
-          budget check that cannot resolve lets the spend through.
-        success_msg: "budget enforcement fails closed"
+          The rendered config carries a LiteLLM spend budget, but this proxy has
+          neither Redis nor a database to track spend in, and runs as a
+          three-member pool. The ceiling it advertises would be 3x its stated
+          value and would reset on every rolling converge. Do not re-add it as a
+          config line — adding a shared store to the fabric's front door is an
+          architecture decision.
+        success_msg: "no unbacked spend budget is claimed in the rendered config"
 
     - name: Every egress deployment carries rate and concurrency limits
       ansible.builtin.assert:
@@ -189,10 +183,12 @@
           - _unlimited | length == 0
         fail_msg: >-
           Egress deployment(s) [{{ _unlimited | join(', ') }}] carry no
-          rpm/tpm/max_parallel_requests. A spend cap alone bounds the month but
-          not the minute — a runaway loop can exhaust the whole budget before
-          the ceiling is observed.
-        success_msg: "all egress deployments are rate- and concurrency-limited"
+          rpm/tpm/max_parallel_requests. These are the ONLY enforcement this
+          storage-less proxy can apply to an account-wide credential, so an
+          unlimited deployment has no ceiling of any kind.
+        success_msg: >-
+          all egress deployments are rate- and concurrency-limited
+          (per instance; the pool has three members)
       vars:
         _unlimited: >-
           {{ _config.model_list
