@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.22.0...v0.22.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* **hermes:** resolve the Vikunja bridge token bao-first ([#286](https://github.com/dryvist/ansible-proxmox-ai/issues/286)) ([023bc93](https://github.com/dryvist/ansible-proxmox-ai/commit/023bc93ffcc212d2e78a25c81bbb9d73f5d93cee))
+
 ## [0.22.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.21.1...v0.22.0) (2026-08-02)
 
 
