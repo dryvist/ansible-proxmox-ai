@@ -95,7 +95,21 @@ def test_splunk_parsing_quality_v2_is_retired_in_favour_of_the_kanban_card() -> 
     assert defaults["hermes_agent_retired_splunk_parsing_v2_cron_name"] == "splunk-parsing-quality-v2"
 
 
-def test_fleet_health_card_exists_and_starts_paused() -> None:
+def test_fleet_health_card_exists_and_is_lifted() -> None:
+    """fleet-health was created paused (2026-08-01) and LIFTED (2026-08-02).
+
+    This assertion was inverted deliberately, not relaxed to make a change
+    pass. The card was added paused as the recommended next throttle lift;
+    the preconditions it waited on were then measured on the guest — the
+    brain serving consecutive real completions in 0-1s after the warmup
+    contention was resolved, and both hermes-brain-watchdog.timer and
+    fabric-watchdog.timer reporting enabled AND active. The pause was a
+    state to exit, not an invariant to hold, so the test now pins the exit.
+
+    What stays invariant is everything that makes the lift cheap and safe:
+    weekly cadence, default profile, no skills, read-only over `kanban runs`.
+    Those are asserted below and must not be relaxed.
+    """
     cards = _cards()
     card = cards.get("{{ hermes_agent_fleet_health_cron_name }}")
     assert card is not None, "fleet-health card is missing from hermes_agent_kanban_cards"
@@ -103,10 +117,17 @@ def test_fleet_health_card_exists_and_starts_paused() -> None:
     assert card["skills"] == []
 
     defaults = _defaults()
-    assert "{{ hermes_agent_fleet_health_cron_name }}" in defaults["hermes_agent_kanban_paused_jobs"], (
-        "a brand-new card starts paused like every other one added under the throughput throttle"
+    assert "{{ hermes_agent_fleet_health_cron_name }}" not in defaults["hermes_agent_kanban_paused_jobs"], (
+        "fleet-health is deliberately lifted; re-pause ai-news first if the board wedges"
     )
     assert defaults["hermes_agent_fleet_health_cron_name"] == "fleet-health"
+
+    # The lift is only defensible while the card stays weekly. An hourly
+    # cadence here would put real pressure on the single serving slot.
+    schedule = defaults["hermes_agent_fleet_health_cron_schedule"]
+    assert schedule.split()[-1] not in ("*", "?"), (
+        f"fleet-health must stay weekly to justify being unpaused, got {schedule!r}"
+    )
 
     prompt = defaults["hermes_agent_fleet_health_cron_prompt"]
     assert "kanban runs" in prompt
