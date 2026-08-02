@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.21.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.21.0...v0.21.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* **hermes_agent:** close five wiring gaps degrading Hermes output ([#292](https://github.com/dryvist/ansible-proxmox-ai/issues/292)) ([7ae5116](https://github.com/dryvist/ansible-proxmox-ai/commit/7ae5116d3b321839d9c6efa0c52809d69010f5eb))
+* **hermes:** re-enable the brain-health watchdog ([#296](https://github.com/dryvist/ansible-proxmox-ai/issues/296)) ([41468a8](https://github.com/dryvist/ansible-proxmox-ai/commit/41468a877eae36515241934a996c8b1981fb8d61))
+
 ## [0.21.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.20.0...v0.21.0) (2026-08-02)
 
 
