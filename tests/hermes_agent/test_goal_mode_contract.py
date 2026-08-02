@@ -682,20 +682,17 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert router_defaults["llm_router_rate_limit_retries"] == 8
     assert "model_group_alias:" in router_config
     assert "llm_router_model_group_aliases.items()" in router_config
-    # Rides the `goal-judge` router alias (the small, cross-family tier), not
-    # the worker model — #162 pinned it to the worker for "config drift"
-    # protection, but that pin's stated justification ("the mechanical
-    # completion gate is the anti-fabrication layer") described a gate that
-    # does not exist anywhere in this repo or nix-hermes, while the pin's real
-    # cost was live: same-model judging is self-preference bias, and the
-    # serving tier's one-in-flight-per-model limit made judge and worker
-    # serialize against each other. Unpinned 2026-08 via the SAME
-    # `hermes_goal_judge_model` group_var the llm_router compress-death assert
-    # already reads for this alias (roles/llm_router/tasks/assert.yml) — one
-    # name, one place it is spelled, closing the "two names differ by a
-    # prefix" trap that made repointing the wrong one an easy mistake
-    # (2026-07-29).
-    assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_goal_judge_model }}"
+    # Still pinned to the worker model, deliberately, per the measured
+    # blocker recorded at length in defaults/main.yml: the `goal-judge` alias
+    # is live and its DESIGN is correct (same var this test already asserts,
+    # hermes_goal_judge_model == "goal-judge"), but its backend is llama-swap
+    # swap-class in the deployed config (nix-ai
+    # modules/mlx/llama-swap-topology.nix — worker pinned ttl=0, judge
+    # ttl=900), and a measured ~79s cold load exceeds the 60s judge timeout.
+    # Flipping this to "{{ hermes_goal_judge_model }}" without that residency
+    # fix landing first breaks card judgement — measured live 2026-08, not
+    # theoretical. Do not flip it back without re-measuring.
+    assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_agent_model }}"
     assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == 60
     assert "goal_judge:" in config
     assert "model: {{ hermes_agent_kanban_goal_judge_model | to_json }}" in config

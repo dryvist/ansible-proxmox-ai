@@ -483,39 +483,55 @@ hermes_agent_kanban_goal_mode: true
 # card. (Matches the operator's soak tuning, made declarative here.)
 hermes_agent_kanban_goal_max_turns: 8
 # THIS IS THE REAL JUDGE. It is what config.yaml.j2 renders into
-# auxiliary.goal_judge.model. Unpinned 2026-08 from the WORKER model to the
-# `goal-judge` router alias (llm_router_model_group_aliases.goal-judge ->
-# llm_router_small_model, a cross-family 9B, roles/llm_router/defaults/main.yml)
-# via `hermes_goal_judge_model` in inventory/group_vars/all.yml — the SAME name
-# that already names this alias for the llm_router compress-death assert, so
-# there is now exactly one place the judge's model name is spelled, not two
-# that "differ by a prefix and both look authoritative" (the trap that caused a
-# no-op repoint of the wrong var on 2026-07-29 — see git blame if that mistake
-# needs repeating).
+# auxiliary.goal_judge.model, and it is DELIBERATELY pinned to the WORKER
+# model, not the `goal-judge` router alias — that is a measured blocker, not
+# an oversight, and not the same claim as the old "config drift" pin (#162)
+# this comment used to defend. Do not re-flip this without re-measuring.
 #
-# Same-model judging was self-preference bias by construction (it survives
-# blind evaluation, so hiding authorship is no defence), and the serving tier
-# admits ONE in-flight request per model, so worker and judge on the same model
-# SERIALIZED against each other — the judge queued behind the very generation
-# it was spawned to score. The cited justification for the pin ("the mechanical
-# completion gate is the anti-fabrication layer") does not describe anything
-# that exists in this repo or nix-hermes (searched 2026-07-29); drift-safety
-# (judge and worker can't be pulled apart by config) was the only real thing it
-# bought, and it is not worth the bias + contention it cost.
+# The design intent IS correct (inventory/group_vars/all.yml:156-170 argues it
+# well: same-model judging is self-preference bias, and the serving tier's
+# one-in-flight-per-model limit makes worker and judge on the same model
+# serialize). `hermes_goal_judge_model` there already names the `goal-judge`
+# alias for exactly this reason. The gap was never the design — it was that
+# `hermes_agent_kanban_goal_judge_model` (THIS var, the one that actually
+# reaches inference) never read it. Repointing `hermes_goal_judge_model`
+# itself does nothing on its own: it is consumed by exactly one other thing,
+# the llm_router compress-death assert, and confusing the two is the
+# "differ by a prefix" trap already made once (2026-07-29).
 #
-# Residual, honestly unresolved risk: the small tier is llama-swap's on-demand
-# swap group (nix-ai modules/mlx/llama-swap-topology.nix mlx-small-models,
-# `swap = true`), not a second persistent resident — "always-available" there
-# means never demoted to disabledModels, NOT pre-loaded. A cold judge call can
-# still take a real cold-load hit against
-# hermes_agent_kanban_goal_judge_timeout_seconds. This could not be measured
-# before this change (serving gate was down) and still cannot be from an
-# Ansible-only change — auxiliary.transient_retries: 1 gives one retry, which
-# should absorb a single cold call once the small tier is warm from it, but
-# that is reasoning, not a measurement. Watch actual goal-judge latency in the
-# fabric_watchdog/OTel traces after this converges; revert this one line to
-# `hermes_agent_model` if timeouts show up.
-hermes_agent_kanban_goal_judge_model: "{{ hermes_goal_judge_model }}"
+# MEASURED 2026-08 (live, brain healthy) why flipping this today would break
+# card judgement:
+#  - `goal-judge` IS a live, registered alias (present in /v1/models) — not
+#    dead config.
+#  - A completion through the alias 502s: "No fallback model group found for
+#    original model_group=goal-judge ... Available Model Group Fallbacks=None".
+#  - Direct to its backend (mlx-community/Qwen3.5-9B-MLX-4bit) on the Studio
+#    loopback, 4 attempts over ~13 min: two 429 "Too many requests", two ~197s
+#    empty responses. It never returned a completion in that window.
+#  - The Studio warmup log shows repeated warm/evict/re-warm cycles for this
+#    model, with the cold-load time climbing: 0.4s, then 35.2s, 79.0s, 79.0s,
+#    79.3s.
+#  - Root cause: the deployed llama-swap config (nix-ai
+#    modules/mlx/llama-swap-topology.nix) has the WORKER
+#    (Qwen3.6-35B-A3B-4bit) pinned resident (ttl=0) and the JUDGE
+#    (Qwen3.5-9B-MLX-4bit) as the evictable swap-class member (ttl=900) — the
+#    opposite of what roles/llm_router/defaults/main.yml's comment claimed
+#    ("the 9B is always up for the judge"; corrected there in this same
+#    change). A ~79s cold load against
+#    hermes_agent_kanban_goal_judge_timeout_seconds (60s) means the FIRST
+#    judge call after any eviction fails outright; auxiliary.transient_retries
+#    (1) might catch a second attempt, but the measured runs above show it
+#    isn't even reliably getting a completion within several retries.
+#
+# EXACT PRECONDITION to flip this line to "{{ hermes_goal_judge_model }}":
+# the judge's backend needs real residency (ttl=0, a second pinned resident
+# alongside the worker) or hermes_agent_kanban_goal_judge_timeout_seconds
+# needs to comfortably clear the measured cold-load time (or both) — a
+# nix-ai/nix-darwin change (Phase B, needs darwin-rebuild), tracked
+# separately, NOT something this Ansible-only repo can fix. Once that lands
+# and is re-measured, flip this one line and revert this comment to record
+# the fix.
+hermes_agent_kanban_goal_judge_model: "{{ hermes_agent_model }}"
 hermes_agent_kanban_goal_judge_timeout_seconds: 60
 # --- Memory: best self-hostable as of June 2026 (Agy-validated) ---
 # Hindsight: local knowledge-graph + multi-strategy retrieval. Runs alongside the
