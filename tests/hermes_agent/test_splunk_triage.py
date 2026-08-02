@@ -38,6 +38,7 @@ FIXTURE_CONFIG = {
     "EARLIEST": "-1h",
     "TOP_N": 12,
     "MAX_FINDINGS": 8,
+    "ISSUES_MARKER": "[ISSUES]",
 }
 
 

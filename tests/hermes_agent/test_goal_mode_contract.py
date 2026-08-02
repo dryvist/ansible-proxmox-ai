@@ -75,6 +75,8 @@ PINNED_PROTOCOL_VIOLATION_SOURCE = (
 PINNED_CRON_DELIVERY_SOURCE = (
     "            deliver_content = final_response if success else "
     "_summarize_cron_failure_for_delivery(job, error)\n"
+    "                    delivery_error = _deliver_result(job, deliver_content, "
+    "adapters=adapters, loop=loop)\n"
 )
 MALFORMED_TOKEN_USAGE_SOURCE = (
     "                   if True:\n"
@@ -93,6 +95,57 @@ def build_worker_argv(task, prompt):
     ])
     return cmd
 '''
+# Verbatim upstream lines at the pinned tag (v2026.7.7.2), from
+# plugins/memory/hindsight/__init__.py's queue_prefetch._run() exception
+# handler — indentation included, same drift protection as the other
+# PINNED_*_SOURCE fixtures above.
+PINNED_HINDSIGHT_PREFETCH_SOURCE = (
+    "            except Exception as e:\n"
+    '                logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)\n'
+)
+# Reduced run_kanban_goal_loop skeleton: the control flow that matters
+# (status poll, judge, budget check, worker turn, increment) with the two
+# patch anchor sites VERBATIM from upstream v2026.7.7.2 — indentation
+# included, since the role's regexes capture and reuse it.
+PINNED_KANBAN_GOAL_LOOP_SOURCE = '''\
+def run_kanban_goal_loop(*, task_id, goal_text, run_turn, task_status_fn,
+                         block_fn, max_turns=8, first_response="", log=None):
+    def _log(msg):
+        if log is not None:
+            log(msg)
+
+    last_response = first_response or ""
+    # The first turn already consumed one unit of budget.
+    turns_used = 1
+    nudged_to_finalize = False
+
+    while True:
+        status = task_status_fn()
+        if status == "done":
+            return {"outcome": "completed_by_worker", "turns_used": turns_used, "reason": "worker completed the task"}
+        if status not in ("running", "ready"):
+            return {"outcome": "stopped", "turns_used": turns_used, "reason": f"status={status}"}
+
+        verdict, reason, _parse_failed, _wait = judge_goal(goal_text, last_response)
+        if verdict == "wait":
+            verdict = "continue"
+        _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
+
+        if turns_used >= max_turns:
+            block_fn("turn budget exhausted")
+            return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "turn budget exhausted"}
+
+        last_response = run_turn("continue") or ""
+        turns_used += 1
+'''
+# Verbatim upstream producer of the "judge error: " sentinel the guard keys
+# on (judge_goal's except handler). Kept pinned so the fail-closed test
+# proves the converge assert goes red when upstream rewords it.
+PINNED_JUDGE_ERROR_SENTINEL_SOURCE = (
+    '        return "continue", f"judge error: {type(exc).__name__}", '
+    "False, None\n"
+)
+JUDGE_ERROR = ("continue", "judge error: NotFoundError", False, None)
 
 
 def _task(name: str) -> dict[str, Any]:
@@ -124,9 +177,55 @@ PATCHED_COMPRESSOR_SCAN_SOURCE = _apply_runtime_patch(
     PINNED_COMPRESSOR_SCAN_SOURCE,
 )
 PATCHED_CRON_DELIVERY_SOURCE = _apply_runtime_patch(
-    "Route cron delivery content through the markup guard",
-    PINNED_CRON_DELIVERY_SOURCE,
+    "Route failed cron deliveries to the issues channel",
+    _apply_runtime_patch(
+        "Route cron delivery content through the markup guard",
+        PINNED_CRON_DELIVERY_SOURCE,
+    ),
 )
+PATCHED_HINDSIGHT_PREFETCH_SOURCE = _apply_runtime_patch(
+    "Patch Hermes auto-recall prefetch failure to log at warning, not debug",
+    PINNED_HINDSIGHT_PREFETCH_SOURCE,
+)
+PATCHED_KANBAN_GOAL_LOOP_SOURCE = _apply_runtime_patch(
+    "Patch Hermes kanban goal loop to retry judge errors without burning turns",
+    _apply_runtime_patch(
+        "Patch Hermes kanban goal loop to count consecutive judge failures",
+        PINNED_KANBAN_GOAL_LOOP_SOURCE,
+    ),
+)
+PATCHED_GOAL_JUDGE_SOURCE = (
+    "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
+    + PINNED_JUDGE_ERROR_SENTINEL_SOURCE
+    + PATCHED_KANBAN_GOAL_LOOP_SOURCE
+)
+
+
+class _FakeTime:
+    """Records sleeps instead of taking them."""
+
+    def __init__(self) -> None:
+        self.sleeps: list[float] = []
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+
+
+def _patched_goal_loop(judge_results: list[tuple]) -> tuple[Any, _FakeTime]:
+    """Exec the patched reduced loop with a scripted judge and fake clock."""
+    results = iter(judge_results)
+
+    def judge_goal(goal: str, response: str) -> tuple:
+        return next(results, ("continue", "keep going", False, None))
+
+    fake_time = _FakeTime()
+    namespace: dict[str, Any] = {
+        "judge_goal": judge_goal,
+        "_truncate": lambda text, limit: text,
+        "time": fake_time,
+    }
+    exec(PATCHED_KANBAN_GOAL_LOOP_SOURCE, namespace)
+    return namespace["run_kanban_goal_loop"], fake_time
 
 
 @contextmanager
@@ -193,20 +292,21 @@ def _source_postconditions(
     auxiliary_source: str,
     compressor_source: str = PATCHED_COMPRESSOR_SCAN_SOURCE,
     cron_scheduler_source: str = PATCHED_CRON_DELIVERY_SOURCE,
+    hindsight_plugin_source: str = PATCHED_HINDSIGHT_PREFETCH_SOURCE,
+    goal_judge_source: str = PATCHED_GOAL_JUDGE_SOURCE,
 ) -> tuple[bool, ...]:
     task = _task("Assert installed Hermes pinned-source patches")
     environment = Environment(autoescape=False)
     context = {
         "hermes_agent_goal_completion_source": completion_source,
         "hermes_agent_goal_reconcile_source": reconcile_source,
-        "hermes_agent_goal_judge_source": (
-            "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
-        ),
+        "hermes_agent_goal_judge_source": goal_judge_source,
         "hermes_agent_kanban_goal_judge_timeout_seconds": 60,
         "hermes_agent_retry_source": retry_source,
         "hermes_agent_auxiliary_source": auxiliary_source,
         "hermes_agent_compressor_source": compressor_source,
         "hermes_agent_cron_scheduler_source": cron_scheduler_source,
+        "hermes_agent_hindsight_plugin_source": hindsight_plugin_source,
     }
     return tuple(
         bool(environment.compile_expression(condition)(**context))
@@ -220,6 +320,15 @@ def test_goal_completion_patch_uses_current_judge_contract() -> None:
         PINNED_GOAL_COMPLETION_SOURCE,
     )
     assert "verdict, reason, _, _ = judge_goal(" in patched
+
+
+def test_hindsight_prefetch_patch_logs_at_warning() -> None:
+    patched = _apply_runtime_patch(
+        "Patch Hermes auto-recall prefetch failure to log at warning, not debug",
+        PINNED_HINDSIGHT_PREFETCH_SOURCE,
+    )
+    assert 'logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)' in patched
+    assert "logger.debug" not in patched
 
 
 @pytest.mark.parametrize(
@@ -321,6 +430,92 @@ def test_worker_spawn_patch_enters_quiet_goal_loop_path() -> None:
     ]
 
 
+def test_judge_call_failure_consumes_no_turns_and_blocks_retryable() -> None:
+    # The measured defect: 8/8 turns burned in minutes on nothing but judge
+    # infrastructure errors, zero worker tool calls. A judge failure must
+    # never consume budget, and a sustained outage must end in the sticky
+    # blocked (retryable) state instead of spinning forever.
+    loop, fake_time = _patched_goal_loop([JUDGE_ERROR] * 99)
+    worker_prompts: list[str] = []
+    blocks: list[str] = []
+
+    result = loop(
+        task_id="t",
+        goal_text="g",
+        run_turn=lambda prompt: worker_prompts.append(prompt) or "reply",
+        task_status_fn=lambda: "running",
+        block_fn=blocks.append,
+        max_turns=8,
+        first_response="started",
+    )
+
+    assert result["outcome"] == "blocked_judge_unreachable"
+    assert result["turns_used"] == 1
+    assert worker_prompts == []
+    assert len(blocks) == 1
+    assert "no worker turns were consumed" in blocks[0]
+    # Five bounded attempts, the flat 15s local-backend delay between them.
+    assert fake_time.sleeps == [15.0] * 4
+
+
+def test_judge_failure_counter_resets_on_any_real_verdict() -> None:
+    # Eight judge failures in total, but a real verdict between the two
+    # bursts resets the counter — the loop never blocks, the worker keeps
+    # its budget and finishes.
+    loop, fake_time = _patched_goal_loop(
+        [
+            *[JUDGE_ERROR] * 4,
+            ("continue", "made progress", False, None),
+            *[JUDGE_ERROR] * 4,
+        ]
+    )
+    state = {"worker_turns": 0}
+
+    def run_turn(prompt: str) -> str:
+        state["worker_turns"] += 1
+        return "reply"
+
+    blocks: list[str] = []
+    result = loop(
+        task_id="t",
+        goal_text="g",
+        run_turn=run_turn,
+        task_status_fn=lambda: "done" if state["worker_turns"] >= 2 else "running",
+        block_fn=blocks.append,
+        max_turns=8,
+        first_response="started",
+    )
+
+    assert result["outcome"] == "completed_by_worker"
+    assert blocks == []
+    assert state["worker_turns"] == 2
+    assert result["turns_used"] == 3
+    assert fake_time.sleeps == [15.0] * 8
+
+
+def test_judge_error_guard_patches_are_idempotent() -> None:
+    # The counter patch self-normalizes (optional-group regexp): re-applying
+    # it to already-patched source is byte-identical.
+    again = _apply_runtime_patch(
+        "Patch Hermes kanban goal loop to count consecutive judge failures",
+        PATCHED_KANBAN_GOAL_LOOP_SOURCE,
+    )
+    assert again == PATCHED_KANBAN_GOAL_LOOP_SOURCE
+    # The guard patch rewrites its own anchor, so on patched source it must
+    # find nothing — never a second insertion.
+    config = _replace_task(
+        "Patch Hermes kanban goal loop to retry judge errors without burning turns"
+    )
+    patched, count = re.subn(
+        config["regexp"],
+        config["replace"],
+        PATCHED_KANBAN_GOAL_LOOP_SOURCE,
+        flags=re.MULTILINE,
+    )
+    assert count == 0
+    assert patched == PATCHED_KANBAN_GOAL_LOOP_SOURCE
+
+
 @pytest.mark.parametrize("status", ACTIVE_STATUSES)
 def test_idempotent_create_upgrades_active_same_slot(status: str) -> None:
     conn = _task_db(status=status)
@@ -397,7 +592,15 @@ def test_enqueuer_goal_flags_follow_the_role_toggle() -> None:
         "{{ hermes_agent_kanban_goal_max_turns }}{% endif %}"
         in enqueuer
     )
-    assert "hermes send --to slack:{{ hermes_agent_slack_hermes_all_channel }}" in enqueuer
+    # The report destination is per-card as of the four-channel split: cards opt
+    # in with `channel:`, everything else falls back to the work channel. Routing
+    # itself is pinned in test_alert_routing.py; what matters here is that the
+    # footer still tells the worker to send exactly one report via the native
+    # sender, with the fallback intact.
+    assert (
+        "hermes send --to slack:"
+        "{{ card.channel | default(hermes_agent_slack_hermes_all_channel, true) }}"
+    ) in enqueuer
     assert "kind=needs_input" in enqueuer
     assert "status=pending" not in enqueuer
 
@@ -456,10 +659,15 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         "interim-brain": "{{ llm_router_primary_model }}",
     }
     # Both selectors must be declared servable, or the alias indirection just
-    # moves the 404 one level down.
+    # moves the 404 one level down. The cluster model is servable too — it is
+    # hermes-default's router_settings.fallbacks target while a cluster window
+    # is up (roles/llm_router/defaults/main.yml,
+    # llm_router_hermes_default_fallback_chain) — same reasoning: an
+    # unroutable fallback target 404s instead of failing over.
     assert router_defaults["llm_router_servable_models"] == [
         "{{ llm_router_primary_model }}",
         "{{ llm_router_small_model }}",
+        "{{ llm_router_cluster_model }}",
     ]
     hermes_entries = [
         entry
@@ -520,6 +728,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "agent/auxiliary_client.py",
         "agent/context_compressor.py",
         "cron/scheduler.py",
+        "plugins/memory/hindsight/__init__.py",
     ]
 
     assert_task = _task("Assert installed Hermes pinned-source patches")
@@ -551,9 +760,29 @@ def test_installed_source_postconditions_fail_closed() -> None:
     assert "status in (408, 429)" in conditions
     assert "for idx in range(min(end, len(messages)) - 1, start - 1, -1):" in conditions
     assert "deliver_content = _cron_markup_guard(job, output_file," in conditions
+    # A failed run must reach the issues channel, not the work surface.
+    assert "_deliver_result(_routed_job, deliver_content," in conditions
     assert (
         "registered for dispatcher-spawned workers (HERMES_KANBAN_TASK "
         in conditions
+    )
+    assert (
+        'logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)'
+        in conditions
+    )
+    assert 'if reason.startswith("judge error: "):' in conditions
+    assert "blocked_judge_unreachable" in conditions
+    # The upstream sentinel producer must stay pinned: reworded upstream, the
+    # guard would silently never fire.
+    assert (
+        'return "continue", f"judge error: {type(exc).__name__}", False, None'
+        in conditions
+    )
+    assert any(
+        "judge_failures = 0" in condition
+        and ".count(" in condition
+        and ") == 2" in condition
+        for condition in assert_task["ansible.builtin.assert"]["that"]
     )
     assert any(
         "_boost_cap = agent.max_tokens if agent.max_tokens else max(" in condition
@@ -681,6 +910,34 @@ def test_installed_source_postconditions_fail_closed() -> None:
             auxiliary_source,
         )
     )
+    # The judge-error guard dropped (upstream loop unpatched): must go red
+    # even though the sentinel producer is still present.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            goal_judge_source=(
+                "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
+                + PINNED_JUDGE_ERROR_SENTINEL_SOURCE
+                + PINNED_KANBAN_GOAL_LOOP_SOURCE
+            ),
+        )
+    )
+    # The upstream sentinel producer drifted out from under the guard: the
+    # patched loop alone must not satisfy the postconditions.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            goal_judge_source=(
+                "DEFAULT_JUDGE_TIMEOUT = 60.0\n" + PATCHED_KANBAN_GOAL_LOOP_SOURCE
+            ),
+        )
+    )
     # The length-continuation boost dropped while the _tc_ one landed. The
     # needle `_boost_cap = agent.max_tokens ...` still occurs once (inside
     # the _tc_boost_cap line), so only the ==2 count catches this — a plain
@@ -697,5 +954,14 @@ def test_installed_source_postconditions_fail_closed() -> None:
             reconcile_source,
             retry_source_tc_only,
             auxiliary_source,
+        )
+    )
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            hindsight_plugin_source=PINNED_HINDSIGHT_PREFETCH_SOURCE,
         )
     )

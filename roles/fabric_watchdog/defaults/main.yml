@@ -17,10 +17,18 @@ fabric_watchdog_env_file: "{{ hermes_agent_hermes_home | default('/var/lib/herme
 
 # Alert destination. That .env does not define SLACK_ALERT_CHANNEL, so without
 # this the script silently falls back to DMing the first SLACK_ALLOWED_USERS
-# entry — a destination that moves whenever that list is reordered. Pin it to
-# the same channel the digests use so every Hermes signal lands in one place
-# and the target is deterministic. Empty restores the DM fallback.
-fabric_watchdog_alert_channel: "{{ hermes_agent_digest_slack_channel | default('', true) }}"
+# entry — a destination that moves whenever that list is reordered.
+#
+# These probes report on Hermes' OWN fabric (the MCP proxy and LLM front door it
+# depends on), so a DOWN/recovered transition is Hermes being non-functional, not
+# a homelab finding — it belongs in the issues channel. Over the 13-day audit
+# these flaps were 86 messages in the work channel, several of them recoveries
+# with no matching DOWN. Falls back to the digest channel when unset, then to the
+# DM, so an unconfigured id changes nothing.
+fabric_watchdog_alert_channel: >-
+  {{ hermes_agent_slack_issues_channel
+     | default(hermes_agent_digest_slack_channel, true)
+     | default('', true) }}
 
 # Probed endpoints. ok_codes are space-separated HTTP codes counted as UP:
 # the MCP proxy answers 406 (protocol negotiation rejection) to a plain GET
@@ -33,3 +41,16 @@ fabric_watchdog_targets:
   - name: llm-front-door
     url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1/models"
     ok_codes: "200 401"
+  # Hindsight (hermes_agent_memory_provider) has no active liveness check of
+  # its own: the plugin's is_available() unconditionally returns True in
+  # local_external mode (verified 2026-07-31 against the pinned hermes-agent
+  # v2026.7.7.2 plugin source — it never actually pings the service), and the
+  # converge-time `hermes memory status` probe (verify.yml) is a one-shot,
+  # non-fatal check that only runs during a role converge. Between converges,
+  # an outage is invisible until someone notices memory recall going quiet —
+  # this closes that gap the same way as the other two targets. /health is
+  # the same endpoint Traefik's own pool health check uses (hindsight_docker
+  # role) and returns {"status":"healthy","database":"connected"} — 200 only.
+  - name: hindsight
+    url: "https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/health"
+    ok_codes: "200"

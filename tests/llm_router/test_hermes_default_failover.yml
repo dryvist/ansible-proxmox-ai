@@ -1,0 +1,142 @@
+---
+# Pins the hermes-default cluster-failover contract added alongside the
+# two-Mac cluster bring-up.
+#
+# WHY THIS TEST EXISTS. Before this change, bringing the cluster up would
+# have taken Hermes' brain offline: cluster-join boots out the standalone
+# llama-swap agent (:11434), and hermes-default had no path to the cluster
+# gate's :11440 site — the cluster model_list entry existed but no alias or
+# fallback referenced it. Fixing that touches three things at once (a stale
+# tofu-proxmox port-constant name, the servable-models allowlist, and a new
+# router_settings.fallbacks chain), and each one fails SILENTLY if it drifts:
+#   - the port constant fallback (proven empirically while building this
+#     test): a stale `llm_night_api` reference does not error, it silently
+#     re-derives the STANDALONE port for the cluster entry's api_base, so a
+#     "cluster" deployment quietly dials the wrong gate instead of failing
+#     loud.
+#   - a fallback chain entry outside llm_router_servable_models 404s instead
+#     of failing over (same class of bug tests/llm_router/test_alias_servable.yml
+#     exists for, on the alias side).
+# None of this is visible from `ansible-lint` or `--syntax-check`; it only
+# shows up in the RENDERED config.yaml, which is what this test inspects.
+#
+# Run:
+#   ansible-playbook tests/llm_router/test_hermes_default_failover.yml -i localhost, -c local
+- name: Verify hermes-default fails over across the cluster and standalone gates
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    # Deliberately mirrors the CURRENT tofu-proxmox service_ports constants
+    # (modules/proxmox-stack/constants.tf) and nothing else — in particular it
+    # does NOT define the retired `llm_night_api` key. If llm_router_cluster_port
+    # ever regresses to that name, the render below still succeeds (Ansible's
+    # nested templating swallows the undefined lookup rather than erroring),
+    # but the cluster entry's api_base silently falls back to the standalone
+    # port. The port-derivation assertion catches exactly that.
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          llm_cluster_api: 11440
+          otel_traces_http: 4318
+    bao_local_llm_secrets: {}
+    # Mirrors inventory/group_vars/all.yml's ai_default_model default (its
+    # own template needs bao_ai_public_secrets, out of scope for this role
+    # test) — a real first-class llm_router_large_models entry either way.
+    ai_default_model: mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main.yml"
+
+    - name: Run the role's real render-time asserts against these vars
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert.yml"
+
+    - name: Render the real config.yaml.j2 template into a string
+      ansible.builtin.set_fact:
+        _rendered_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') }}"
+
+    - name: Parse the rendered config as YAML
+      ansible.builtin.set_fact:
+        _config: "{{ _rendered_config | from_yaml }}"
+
+    - name: The primary (standalone) backend is registered at the standalone port
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _primary_entries | length > 0
+          - "':11434/v1' in (_primary_entries | first).litellm_params.api_base"
+        fail_msg: >-
+          Expected {{ llm_router_primary_model }} in the rendered model_list
+          with api_base ending :11434/v1 (llm_router_large_port); got
+          {{ _primary_entries }}.
+        success_msg: "primary backend ({{ llm_router_primary_model }}) present at :11434"
+      vars:
+        _primary_entries: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', llm_router_primary_model) | list }}
+
+    - name: The cluster backend is registered at the CLUSTER port, not the standalone one
+      # This is the port-constant regression check: with the stale
+      # `llm_night_api` name, this entry's api_base silently re-derives
+      # :11434 (proven while writing this test) instead of failing to render.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _cluster_entries | length > 0
+          - "':11440/v1' in (_cluster_entries | first).litellm_params.api_base"
+          - "':11434' not in (_cluster_entries | first).litellm_params.api_base"
+        fail_msg: >-
+          Expected {{ llm_router_cluster_model }} in the rendered model_list
+          with api_base ending :11440/v1 (llm_router_cluster_port, sourced from
+          tofu_data.constants.service_ports.llm_cluster_api). Got
+          {{ _cluster_entries }} — if this shows :11434, llm_router_cluster_port
+          in defaults/main.yml has regressed to the retired llm_night_api name.
+        success_msg: "cluster backend ({{ llm_router_cluster_model }}) present at its own :11440 site"
+      vars:
+        _cluster_entries: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', llm_router_cluster_model) | list }}
+
+    - name: Hermes-default's alias resolves to the primary backend
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _config.router_settings.model_group_alias['hermes-default'] == llm_router_primary_model
+        fail_msg: >-
+          router_settings.model_group_alias['hermes-default'] is
+          {{ _config.router_settings.model_group_alias.get('hermes-default') }},
+          expected {{ llm_router_primary_model }}.
+        success_msg: "hermes-default alias -> {{ llm_router_primary_model }} (standalone, primary)"
+
+    - name: Hermes-default's rendered fallback chain reaches the cluster backend
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _config.router_settings.fallbacks is defined
+          - _hermes_fallback_entries | length == 1
+          - _hermes_fallback_entries | first == llm_router_cluster_model
+        fail_msg: >-
+          router_settings.fallbacks does not contain a "hermes-default" entry
+          resolving to {{ llm_router_cluster_model }}; got
+          {{ _config.router_settings.fallbacks | default('(missing)') }}.
+        success_msg: >-
+          router_settings.fallbacks routes hermes-default ->
+          [{{ llm_router_cluster_model }}] — both backends are reachable
+          under the hermes-default name.
+      vars:
+        _hermes_fallback_entries: >-
+          {{ _config.router_settings.fallbacks | default([])
+             | selectattr('hermes-default', 'defined')
+             | map(attribute='hermes-default') | flatten }}

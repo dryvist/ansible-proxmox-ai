@@ -95,6 +95,95 @@
       Every Kanban card assignee resolves to the default profile or a name in
       hermes_agent_profiles ({{ hermes_agent_profiles | map(attribute='name') | list }}).
 
+# A direct-cron retirement that names a replacement card is a promise: the
+# topic stays covered, just through the card instead of the cron. Nothing
+# enforced that promise at converge time before this — only
+# tests/hermes_agent/test_retired_direct_crons.py checked it, against the raw
+# YAML, and only if someone remembered to run pytest. Caught for real:
+# `homelab-ai-fabric-status` sat on hermes_agent_kanban_paused_jobs for a
+# stretch while its `-v2` cron was being retired in its favour — a paused
+# card's enqueuer renders no selector arm
+# (kanban-enqueue-recurring.sh.j2), so its still-active `-v2` cron's
+# replacement created nothing either, and the topic silently went to zero
+# coverage. This is the same invariant, enforced every converge.
+- name: Assert every direct-cron retirement's replacement card is enabled and unpaused
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_direct_cron_jobs
+        | selectattr('replaced_by_card', 'defined')
+        | selectattr('enabled') | list | length == 0
+      - >-
+        hermes_agent_direct_cron_jobs
+        | selectattr('replaced_by_card', 'defined')
+        | rejectattr('replaced_by_card', 'in',
+            hermes_agent_kanban_cards | map(attribute='job') | list
+            | reject('in', hermes_agent_kanban_paused_jobs) | list)
+        | list | length == 0
+    fail_msg: >-
+      A hermes_agent_direct_cron_jobs retirement is broken. Either it names a
+      replaced_by_card while still enabled:true (both paths would post — pick
+      one), or its replaced_by_card is not the `job` of a currently-enabled,
+      unpaused hermes_agent_kanban_cards entry (a paused card's enqueuer
+      renders no selector arm, so nothing creates it — the topic goes
+      unreported by both the retired cron and its replacement). Fix the
+      card name, unpause it, or set the cron back to enabled:true, in the
+      same change. Retirements still enabled:
+      {{ hermes_agent_direct_cron_jobs | selectattr('replaced_by_card', 'defined')
+         | selectattr('enabled') | map(attribute='name') | list }}.
+      Retirements with a dead replacement:
+      {{ hermes_agent_direct_cron_jobs | selectattr('replaced_by_card', 'defined')
+         | rejectattr('replaced_by_card', 'in',
+             hermes_agent_kanban_cards | map(attribute='job') | list
+             | reject('in', hermes_agent_kanban_paused_jobs) | list)
+         | map(attribute='name') | list }}.
+    success_msg: >-
+      Every direct-cron retirement names an enabled, unpaused replacement
+      card and is itself disabled.
+
+# A profile can carry the Splunk skill while declaring no splunk MCP server,
+# and nothing notices. The skill loads, the agent believes it can query Splunk,
+# and every SPL call fails at RUNTIME inside a job — visible only as a card
+# that produces nothing useful, on the profile that exists precisely to query
+# Splunk. tests/hermes_agent/test_profile_contract.py already proves the
+# rendered mcp_servers matches the declared `mcp` list, but that is a pytest
+# check of SELF-consistency: it never runs during a converge, and it stays
+# green for a profile whose `mcp` legitimately dropped `splunk` while the
+# skill stayed. This asserts the cross-field invariant instead.
+#
+# `map(attribute='mcp', default=[])` is deliberate — a profile with the skill
+# and NO `mcp` key at all is a violation, not an exemption, and plain
+# rejectattr('mcp', ...) would raise on it rather than report it.
+# selectattr('skills', 'defined') keeps profiles that declare no skills (a
+# legitimate shape) out of the check instead of erroring on them.
+- name: Assert every profile carrying the Splunk skill also declares the splunk MCP server
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_profiles
+        | selectattr('skills', 'defined')
+        | selectattr('skills', 'contains', 'dryvist/splunk-monitor')
+        | map(attribute='mcp', default=[])
+        | reject('contains', 'splunk')
+        | list | length == 0
+    fail_msg: >-
+      A profile lists the dryvist/splunk-monitor skill but does not declare
+      'splunk' in its mcp list, so its rendered config.yaml will carry the
+      skill with no Splunk MCP server behind it and every SPL call will fail
+      at runtime. Offending profiles:
+      {{ hermes_agent_profiles | selectattr('skills', 'defined')
+         | selectattr('skills', 'contains', 'dryvist/splunk-monitor')
+         | rejectattr('mcp', 'defined') | map(attribute='name') | list
+       + (hermes_agent_profiles | selectattr('skills', 'defined')
+         | selectattr('skills', 'contains', 'dryvist/splunk-monitor')
+         | selectattr('mcp', 'defined') | rejectattr('mcp', 'contains', 'splunk')
+         | map(attribute='name') | list) }}.
+    success_msg: >-
+      Every profile carrying dryvist/splunk-monitor also declares the splunk
+      MCP server.
+
 # Same failure mode as the card assert above, reached by the other door: the
 # Vikunja bridge creates cards at RUNTIME, so a typo'd assignee there produces
 # skipped_nonspawnable cards for every task the operator files — and the only
@@ -187,20 +276,28 @@
   ansible.builtin.assert:
     quiet: true
     that:
-      # Both job-class allowlists must be real (non-empty) lists — an empty
+      # Every platform allowlist must be a real (non-empty) list — an empty
       # allowlist silently falls back to upstream's platform default, which
       # is the opposite of a policy.
       - hermes_agent_api_server_toolsets | length > 0
       - hermes_agent_cron_toolsets | length > 0
+      - hermes_agent_slack_toolsets | length > 0
       # An API-submitted (untrusted-input) run must never be able to schedule
       # persistent jobs, drive a browser, delegate sub-agents, or block on a
-      # clarifying question. Cron gets the same envelope.
+      # clarifying question. Cron gets the same envelope. Slack (interactive,
+      # allowed-users-gated) is intentionally allowed `clarify` — the
+      # headless rationale doesn't apply — but still excluded from the other
+      # three: their risk is the capability itself, not the trust level of
+      # whoever triggered it.
       - >-
         ['cronjob', 'browser', 'delegation', 'clarify']
         | intersect(hermes_agent_api_server_toolsets) | length == 0
       - >-
         ['cronjob', 'browser', 'delegation', 'clarify']
         | intersect(hermes_agent_cron_toolsets) | length == 0
+      - >-
+        ['cronjob', 'browser', 'delegation']
+        | intersect(hermes_agent_slack_toolsets) | length == 0
       # A toolset cannot be both globally denied and platform-allowlisted:
       # upstream resolves that contradiction by silently dropping the tool,
       # which reads as a mysterious "Unknown tool" at run time. Catch it here.
@@ -210,17 +307,23 @@
       - >-
         hermes_agent_disabled_toolsets
         | intersect(hermes_agent_cron_toolsets) | length == 0
+      - >-
+        hermes_agent_disabled_toolsets
+        | intersect(hermes_agent_slack_toolsets) | length == 0
     fail_msg: >-
       Hermes tool-policy contract violated (roles/hermes_agent/tasks/assert.yml).
-      The api_server/cron allowlists must be non-empty, must not contain any of
-      cronjob/browser/delegation/clarify, and must be disjoint from
-      hermes_agent_disabled_toolsets (api_server:
+      The api_server/cron/slack allowlists must be non-empty; api_server and
+      cron must not contain any of cronjob/browser/delegation/clarify; slack
+      must not contain any of cronjob/browser/delegation; and none may
+      overlap hermes_agent_disabled_toolsets (api_server:
       {{ hermes_agent_api_server_toolsets }}; cron: {{ hermes_agent_cron_toolsets }};
+      slack: {{ hermes_agent_slack_toolsets }};
       denied: {{ hermes_agent_disabled_toolsets }}). Fix the lists in
       roles/hermes_agent/defaults/main.yml.
     success_msg: >-
       Hermes tool-policy contracts hold ({{ hermes_agent_api_server_toolsets | length }}
       api_server toolsets, {{ hermes_agent_cron_toolsets | length }} cron toolsets,
+      {{ hermes_agent_slack_toolsets | length }} slack toolsets,
       {{ hermes_agent_disabled_toolsets | length }} globally denied).
 
 # The dryvist skills + SOUL.md come from the pinned nix-hermes bundle, built

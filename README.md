@@ -18,8 +18,8 @@ git clone <repo-url> ansible-proxmox-ai
 cd ansible-proxmox-ai
 direnv allow    # one-time per worktree — auto-activates the dev shell on cd
 
-# Install required Ansible Galaxy collections
-ansible-galaxy collection install -r requirements.yml
+# Install required Ansible Galaxy dependencies
+ansible-galaxy install -r requirements.yml
 ```
 
 To activate the dev shell manually without direnv:

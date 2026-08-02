@@ -21,6 +21,12 @@ ENV_PATH = "{{ hermes_agent_hermes_home }}/.env"
 STALE_DAYS = {{ hermes_agent_zammad_autoclose_days }}
 NEW_STATE_ID = 1       # Zammad state 1 = "new"
 CLOSED_STATE_ID = 4    # Zammad state 4 = "closed"
+# Prefix that tells the cron scheduler this run's own observation path
+# failed, so the post is routed to the issues channel instead of the work
+# surface. This script exits 0 and prints its failure (so it is delivered
+# rather than lost), which the runner reads as success — the marker is how
+# it says otherwise. Value comes from Ansible: one definition, two consumers.
+ISSUES_MARKER = "{{ hermes_agent_cron_issues_marker }}"
 
 
 def load_env(path):
@@ -73,11 +79,11 @@ def main():
         base = env.get("ZAMMAD_URL")
         token = env.get("ZAMMAD_API_TOKEN")
         if not base or not token:
-            print(":warning: zammad-auto-close FAILED: ZAMMAD_URL / ZAMMAD_API_TOKEN missing from .env")
+            print(f"{ISSUES_MARKER} :warning: zammad-auto-close FAILED: ZAMMAD_URL / ZAMMAD_API_TOKEN missing from .env")
             return 0
         resp = api(base, token, f"/api/v1/tickets/search?query=state.id:{NEW_STATE_ID}&limit=100")
     except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError) as e:
-        print(f":warning: zammad-auto-close FAILED: {type(e).__name__}: {str(e)[:200]}")
+        print(f"{ISSUES_MARKER} :warning: zammad-auto-close FAILED: {type(e).__name__}: {str(e)[:200]}")
         return 0
 
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=STALE_DAYS)

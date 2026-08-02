@@ -38,7 +38,7 @@
     # The repo-specific asserts and add_host group mapping stay below.
     - name: Resolve the published OpenTofu inventory
       ansible.builtin.include_role:
-        name: inventory_resolve
+        name: dryvist.homelab.inventory_resolve
       vars:
         inventory_resolve_required_keys: [constants, nodes, domain]
 
@@ -173,10 +173,21 @@
         # nodes-map lookup corrects a legacy bare node key to its role, and
         # falls back to the node value itself when the map omits the key
         # (e.g. the generic test-fixture node key).
+        #
+        # Guests in tofu_load_ssh_containers converge over direct ssh to their
+        # own FQDN (the contract's `ip` field) instead of pct-exec-via-node:
+        # pct exec on PVE 9.2.4 closes the channel mid module-upload (large
+        # stdin), failing every play at Gathering Facts with the misleading
+        # "Channel closed.". Membership requires sshd in the guest, the SSH
+        # client-CA (root login, `ansible` principal), and the guest's host
+        # key in the pinned SSH_KNOWN_HOSTS set.
         ansible_host: >-
-          {{ (tofu_data.nodes[item.value.node] | default({})).role
-             | default(item.value.node, true) }}.{{ tofu_data.domain }}
-        ansible_connection: "{{ item.value.ansible_connection }}"
+          {{ item.value.ip if item.key in tofu_load_ssh_containers
+             else (tofu_data.nodes[item.value.node] | default({})).role
+                  | default(item.value.node, true) ~ '.' ~ tofu_data.domain }}
+        ansible_connection: >-
+          {{ 'ssh' if item.key in tofu_load_ssh_containers
+             else item.value.ansible_connection }}
         ansible_user: root
         ansible_ssh_private_key_file: "{{ lookup('env', 'PROXMOX_SSH_KEY_PATH') }}"
         # NOTE: no `hostname:` here — add_host treats it as an alias of `name`
@@ -189,6 +200,8 @@
         # omit it entirely) — both normalize to '' here.
         container_reserved_ip: "{{ item.value.reserved_ip | default('', true) }}"
         host_tags: "{{ item.value.tags | default([]) }}"
+      vars:
+        tofu_load_ssh_containers: [hermes-agent, llm-router-1, llm-router-2, llm-router-3]
       loop: "{{ tofu_data.containers | dict2items }}"
       changed_when: false
       when:
