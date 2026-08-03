@@ -56,5 +56,5 @@ env -u DOPPLER_PROJECT -u DOPPLER_CONFIG -u DOPPLER_ENVIRONMENT doppler run -- \
 ```bash
 pct exec 167 -- rocminfo | grep -i gfx            # GPU visible to ROCm
 pct exec 167 -- ollama run hermes4 "say hi"        # GPU inference (watch radeontop)
-curl http://10.0.40.167:11434/v1/models            # OpenAI-compatible endpoint
+curl http://ollama.<PROXMOX_SUBDOMAIN>:11434/v1/models   # OpenAI-compatible endpoint
 ```

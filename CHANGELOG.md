@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.23.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.23.0...v0.23.1) (2026-08-03)
+
+
+### Bug Fixes
+
+* **hermes_agent:** emit the routing channel ids into the runtime env ([#325](https://github.com/dryvist/ansible-proxmox-ai/issues/325)) ([ee07aea](https://github.com/dryvist/ansible-proxmox-ai/commit/ee07aea788af5c3974ada0e314cb38b7a8ba2cc1))
+* remove host and address literals from a public repo ([#322](https://github.com/dryvist/ansible-proxmox-ai/issues/322)) ([6b8bae9](https://github.com/dryvist/ansible-proxmox-ai/commit/6b8bae9c3713883453ff641c0b93d70d1f1e15d4))
+
+## [0.23.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.22.1...v0.23.0) (2026-08-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **llm_router:** registry-generated OpenRouter allowlist and published alias contract ([#315](https://github.com/dryvist/ansible-proxmox-ai/issues/315))
+
+### Features
+
+* **llm_router:** registry-generated OpenRouter allowlist and published alias contract ([#315](https://github.com/dryvist/ansible-proxmox-ai/issues/315)) ([4455cba](https://github.com/dryvist/ansible-proxmox-ai/commit/4455cbafaa857ad7bbfcdeb365303f9c18a4ef21))
+
 ## [0.22.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.22.0...v0.22.1) (2026-08-02)
 
 
