@@ -1,0 +1,49 @@
+---
+# Serving-identity contract, split into its own file so the failure path can be
+# exercised directly by tests/llm_router/test_serving_identity.yml without
+# standing up the whole render. Imported by assert.yml; not a standalone entry
+# point for a converge.
+- name: Assert the heavy-tier serving host identity was supplied by an authority
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_large_serving_host | trim | length > 0
+    fail_msg: >-
+      Heavy-tier serving host is undescribed (roles/llm_router/tasks/assert-serving-identity.yml).
+      llm_large_serving_host resolved empty, so every URL this role builds from
+      it — the large-tier base URL, the cluster endpoint, the /etc/hosts pin —
+      would be constructed against a hostname that does not exist.
+      This host is a network-IaC reservation rather than a PVE guest, so it has
+      no derivable address and MUST be supplied by one of two authorities:
+      tofu-proxmox's constants.serving.host (the destination state, published
+      once an apply republishes the inventory artifact — tofu-proxmox#827), or
+      LLM_LARGE_RUNNER_HOST in the environment (the operator override, and the
+      supply path while the artifact is still catching up).
+      This deliberately does NOT fall back to a built-in value. A committed
+      default is what this change removed, and a guessed address is worse than
+      an absent one: it fails later, somewhere else, as a timeout against a host
+      nobody chose.
+    success_msg: >-
+      Heavy-tier serving host supplied by {{ llm_large_serving_source | default('an override', true) }}.
+
+# Reports which authority supplied the serving identity. A notice rather than a
+# failure for the SECOND value only: the assert above already makes absence
+# fatal, and this exists so "environment" cannot quietly become permanent after
+# the artifact starts carrying the constant. Once this reports "constants" on
+# every converge, the env-var branch in group_vars/all.yml is dead weight and
+# can go — along with this task.
+- name: Report which authority supplied the heavy-tier serving identity
+  ansible.builtin.debug:
+    msg: >-
+      Heavy-tier serving identity came from {{ _source }}
+      ({{ 'tofu constants.serving — destination state'
+          if _source == 'constants'
+          else 'LLM_LARGE_RUNNER_* env override; the published artifact does not
+                carry constants.serving.host yet' }}).
+  changed_when: false
+  run_once: true
+  vars:
+    # Defaulted rather than required: group_vars supplies this on a real
+    # converge, but the host can also arrive from a direct override, and a
+    # telemetry variable must never be the reason a converge fails.
+    _source: "{{ llm_large_serving_source | default('an override', true) }}"
