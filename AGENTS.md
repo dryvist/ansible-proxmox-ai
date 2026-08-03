@@ -137,17 +137,14 @@ pairing is needed (unlike ansible-proxmox-apps).
 
 1. **Provisioning-driven (tofu-proxmox first).** Guest shells, DNS, and the
    published inventory come from the `tofu-proxmox` Terrakube workspace: an
-   apply publishes `ansible_inventory` to the RustFS S3 store and its
-   after-hook refreshes the local gitignored cache. After any infra change,
-   run that workspace first, then converge from here — `load_tofu.yml`
+   apply publishes `ansible_inventory` to the RustFS S3 store. After any infra
+   change, run that workspace first, then converge from here — `load_tofu.yml`
    resolves the fresh artifact automatically.
 2. **Direct local converge (day-to-day app changes).** No tofu run needed
    when guests haven't changed: converge directly with the commands above.
-   Inventory resolution order is `TOFU_INVENTORY_PATH` (explicit pin) →
-   RustFS published artifact → local gitignored cache (only with
-   `TOFU_INVENTORY_ALLOW_STALE=1`). While the published artifact is missing
-   (apps#975), pin explicitly:
-   `TOFU_INVENTORY_PATH=<path-to>/tofu_inventory.json`.
+   Inventory resolution is owned by the shared `inventory_resolve` role; its
+   [README](https://github.com/dryvist/homelab-contracts/tree/main/ansible/roles/inventory_resolve)
+   is the canonical description.
 
 ### Shared-role duplication (deliberate)
 
