@@ -14,18 +14,45 @@ ai_otel_http_port: >-
   {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['otel_traces_http'] }}
 ai_orchestration_otel_endpoint: "http://cribl-edge.{{ ai_subdomain }}:{{ ai_otel_http_port }}"
 
-# Heavy-tier LLM serving host (the Mac Studio) — single source for its short
-# hostname and reserved IP so neither literal is repeated across roles
-# (llm_router). The host is a tofu-unifi fixed_ips.json reservation and is NOT
-# a PVE guest, so it is absent from the tofu ansible inventory; parameterize
-# it from the environment instead (LLM_LARGE_RUNNER_HOST is the FQDN used for
-# the llm-large alias — take its short host here). Both variables come from the
-# shared secret store; there is no in-repo default, so the host identity is not
-# written down in a public repository and ansible-proxmox-apps — which owns the
-# `llm-large` DNS records — reads the same single source rather than its own
-# copy.
-llm_large_serving_host: "{{ lookup('env', 'LLM_LARGE_RUNNER_HOST') | split('.') | first }}"
-llm_large_serving_ip: "{{ lookup('env', 'LLM_LARGE_RUNNER_IP') }}"
+# Heavy-tier LLM serving host — short hostname and reserved address, read from
+# the inventory artifact and NEVER written here.
+#
+# This host is a fixed-address reservation made by the network IaC rather than
+# a PVE guest, so it is absent from the tofu inventory's guest list and its
+# address cannot be derived the way every other host's is. Until
+# tofu-proxmox#827 there was nothing to read, so both this repository and
+# ansible-proxmox-apps carried their own copies of the two values, each with a
+# comment telling the reader to change both together. Both repositories are
+# PUBLIC, which made those copies committed topology rather than a committed
+# convention.
+#
+# tofu-proxmox now publishes both as constants.serving.host/.ip, supplied from
+# the private deployment object at apply time. The env vars remain as the
+# operator override and as the supply path while the published artifact is
+# still catching up; what is gone is the third option, a value baked into a
+# public file.
+#
+# DELIBERATELY NO FALLBACK VALUE. Contrast ai_llm_concurrency below, whose
+# rollout shim can safely repeat the published number: a number that matches is
+# harmless, whereas an address that merely looks plausible is not. A wrong
+# address does not fail here — it fails later, somewhere else, as a timeout
+# against a host nobody chose. Absence is therefore reported and asserted
+# (roles/llm_router/tasks/assert-serving-identity.yml) rather than papered over.
+llm_large_serving_host: >-
+  {{ ((tofu_data.constants.serving | default({})).host | default('', true))
+     or (lookup('env', 'LLM_LARGE_RUNNER_HOST') | split('.') | first) }}
+llm_large_serving_ip: >-
+  {{ ((tofu_data.constants.serving | default({})).ip | default('', true))
+     or lookup('env', 'LLM_LARGE_RUNNER_IP') }}
+# Which authority supplied the two values above, for the converge-time notice
+# in roles/llm_router/tasks/assert-serving-identity.yml. "constants" is the
+# destination state; "environment" is the operator override and the supply path
+# while the published artifact predates tofu-proxmox#827; "unset" fails the
+# assert.
+llm_large_serving_source: >-
+  {{ 'constants'
+     if ((tofu_data.constants.serving | default({})).host | default('', true))
+     else ('environment' if lookup('env', 'LLM_LARGE_RUNNER_HOST') else 'unset') }}
 
 # Default model for fabric consumers that have not selected a stable role alias.
 # Hermes uses hermes_brain_model below; Open WebUI continues to read this value.

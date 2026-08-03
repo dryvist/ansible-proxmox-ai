@@ -1,0 +1,107 @@
+---
+# Pins the heavy-tier serving identity contract: the address and hostname come
+# from a published authority, never from a value committed to this repository,
+# and their absence is fatal rather than papered over.
+#
+# WHY THIS TEST EXISTS. Until tofu-proxmox#827 there was no published source for
+# these two values. This host is a network-IaC reservation rather than a PVE
+# guest, so it is absent from the inventory's guest list and its address cannot
+# be derived the way every other host's is. With nothing to read, this
+# repository and ansible-proxmox-apps each carried their own copy, with a
+# comment in each telling the reader to change both together — and both
+# repositories are public, so the copy was committed topology.
+#
+# The failure this guards against is specifically SILENT. A built-in default
+# address renders perfectly, converges green, and then fails much later and
+# somewhere else as a timeout against a host nobody chose. Only the resolution
+# itself shows the difference, which is what this test inspects.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_serving_identity.yml -i localhost, -c local
+- name: Verify the heavy-tier serving identity resolution and its failure path
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _group_vars: "{{ playbook_dir }}/../../inventory/group_vars/all.yml"
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the shared group vars as they ship
+      ansible.builtin.include_vars:
+        file: "{{ _group_vars }}"
+
+    # --- 1. The destination state: the published constant supplies both -------
+    - name: Assert the published constant supplies the serving identity
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_large_serving_host | trim == 'llm-large-example'
+          - llm_large_serving_ip | trim == '192.0.2.10'
+          - llm_large_serving_source | trim == 'constants'
+        fail_msg: >-
+          constants.serving did not supply the serving identity: host=
+          {{ llm_large_serving_host }}, ip={{ llm_large_serving_ip }},
+          source={{ llm_large_serving_source }}. The published artifact is the
+          destination authority; if this fails, group_vars/all.yml is not
+          reading tofu_data.constants.serving.
+        success_msg: Published constants.serving supplies host and address.
+      vars:
+        tofu_data:
+          constants:
+            serving:
+              host: llm-large-example
+              ip: 192.0.2.10
+
+    # --- 2. No authority at all: empty, and self-describing as unset ----------
+    # Note this is the state a converge is in TODAY, before an apply
+    # republishes the artifact, whenever the env override is also absent.
+    - name: Assert an undescribed serving host resolves empty rather than guessing
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_large_serving_host | trim | length == 0
+          - llm_large_serving_source | trim == 'unset'
+        fail_msg: >-
+          With no published constant and no environment override, the serving
+          host resolved to "{{ llm_large_serving_host }}" instead of empty.
+          A non-empty value here means a fallback address has been
+          reintroduced — which is exactly the committed literal this contract
+          removed, and it will fail later and elsewhere rather than here.
+        success_msg: >-
+          An undescribed serving host resolves empty and reports itself unset.
+      vars:
+        tofu_data:
+          constants: {}
+
+    # --- 3. The failure path actually fires ----------------------------------
+    # Without this the assertions above would still pass if the role's assert
+    # were deleted: they prove the value is empty, not that emptiness stops the
+    # converge. Imports the role's own assert file rather than restating its
+    # condition, so the two cannot drift apart.
+    - name: Prove an undescribed serving host fails the role assert
+      block:
+        - name: Import the serving-identity assert with no authority supplied
+          ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-serving-identity.yml
+          vars:
+            tofu_data:
+              constants: {}
+
+        - name: Fail because the assert admitted an undescribed serving host
+          ansible.builtin.fail:
+            msg: >-
+              roles/llm_router/tasks/assert-serving-identity.yml PASSED with no
+              serving host supplied. That assert is the only thing standing
+              between an undescribed reservation and a converge that builds
+              every large-tier URL against a hostname that does not exist.
+      rescue:
+        - name: Confirm the assert failed for the serving identity specifically
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'Heavy-tier serving host is undescribed' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              The serving-identity assert failed, but not with its own message —
+              got {{ ansible_failed_result.msg | default('(none)') }}. A failure
+              from an unrelated assertion would make this test pass for the
+              wrong reason.
+            success_msg: >-
+              An undescribed serving host is fatal, with the intended message.
