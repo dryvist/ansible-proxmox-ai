@@ -432,7 +432,7 @@ blocked card, so the reviewer chain self-heals if a link is ever dropped.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `hermes_agent_kanban_cards` | — | the per-workload card table (title, cadence, schedule, prompt var, skills, retry budget, optional goal turn budget) |
+| `hermes_agent_kanban_cards` | — | the per-workload card table (title, cadence, schedule, prompt var, skills, retry budget) |
 | `hermes_agent_slack_hermes_all_channel` | firehose channel id | channel each card posts its completion **report** to |
 | `hermes_agent_kanban_reviewer_schedule` | `0 */8 * * *` | the 8h reviewer slots |
 | `hermes_agent_kanban_safety_net_schedule` | `33 4 * * *` | daily chain-break backfill sweep |

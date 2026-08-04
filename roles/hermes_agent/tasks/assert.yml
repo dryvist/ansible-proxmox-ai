@@ -62,18 +62,21 @@
       - >-
         not (hermes_agent_kanban_goal_mode | bool)
         or hermes_agent_kanban_goal_judge_timeout_seconds | int >= 30
+      # The budget is deliberately role-wide with no per-card override — see
+      # hermes_agent_kanban_goal_max_turns in defaults for why a per-card raise
+      # is the wrong instrument against a single-slot serving backend.
       - >-
         hermes_agent_kanban_cards
         | selectattr('goal_max_turns', 'defined')
-        | selectattr('goal_max_turns', 'lt', 1)
         | list | length == 0
     fail_msg: >-
       Goal mode requires a positive hermes_agent_kanban_goal_max_turns and a
       non-empty hermes_agent_kanban_goal_judge_model, and a judge timeout of
-      at least 30 seconds. Any per-card goal_max_turns override must also be
-      at least 1 — the goal loop silently substitutes its own upstream default
-      for a non-positive budget, so a typo there reads as "no override" rather
-      than failing.
+      at least 30 seconds. No card may carry its own goal_max_turns: the goal
+      loop re-sends the whole accumulated conversation every turn, so a bigger
+      budget costs prefill quadratically, and it is only ever spent by a card
+      that is already failing — which is when the serving tier has least room.
+      Raise hermes_agent_kanban_goal_max_turns for everything, or not at all.
 
 # `max_retries` is a failure LIMIT, not a retry count: 1 blocks on the first
 # failure, so a card carrying 1 gets zero retries and one crash, one wall-clock

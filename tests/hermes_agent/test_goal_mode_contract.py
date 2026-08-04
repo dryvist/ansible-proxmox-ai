@@ -591,16 +591,17 @@ def test_idempotent_create_does_not_mutate_terminal_history(status: str) -> None
 
 def test_enqueuer_goal_flags_follow_the_role_toggle() -> None:
     enqueuer = (ROLE_ROOT / "templates" / "kanban-enqueue-recurring.sh.j2").read_text()
-    # The budget is per-card with the role-wide value as the fallback: a card
-    # whose work is several bounded steps before it can report needs more room
-    # than a card that answers in one, and raising the global default instead
-    # would spend that room on every card that is merely wedged.
+    # One budget for the whole board, no per-card fallback expression. The loop
+    # re-sends its accumulated conversation each turn, so the budget prices
+    # prefill quadratically against a serving tier that admits one request at a
+    # time — and it is spent only by cards that are already failing, which is
+    # when that tier has least room. See hermes_agent_kanban_goal_max_turns.
     assert (
         "{% if hermes_agent_kanban_goal_mode | bool %} --goal --goal-max-turns "
-        "{{ card.goal_max_turns | default(hermes_agent_kanban_goal_max_turns, true) }}"
-        "{% endif %}"
+        "{{ hermes_agent_kanban_goal_max_turns }}{% endif %}"
         in enqueuer
     )
+    assert "card.goal_max_turns" not in enqueuer
     # The report destination is per-card as of the four-channel split: cards opt
     # in with `channel:`, everything else falls back to the work channel. Routing
     # itself is pinned in test_alert_routing.py; what matters here is that the
