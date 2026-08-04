@@ -30,12 +30,18 @@ BACKFILL=0
 [[ "${ARGS}" == *--backfill* ]] && BACKFILL=1
 
 # Slot stamp for an interval (hours): the idempotency-key suffix. 1h -> the hour
-# itself; daily -> the date; otherwise date + slot index floor(hour/interval).
+# itself; weekly -> the ISO week; daily -> the date; otherwise date + slot index
+# floor(hour/interval).
 # 10# forces base-10 so a leading-zero hour (08, 09) is never read as octal.
+# %G-W%V (ISO year + ISO week), never %Y-W%V: in the days around New Year the
+# calendar year and the ISO week-numbering year disagree, and pairing them
+# yields a key that repeats a week already used or skips one.
 slot_stamp() {
   local n="$1" h
   if (( n <= 1 )); then
     date -u +%Y-%m-%dT%H
+  elif (( n >= 168 )); then
+    date -u +%G-W%V
   elif (( n >= 24 )); then
     date -u +%Y-%m-%d
   else
@@ -62,7 +68,7 @@ HCB_EOF__{{ slug }}
   # Single line (inline Jinja) so no backslash-continuation can be broken by a
   # rendered-away optional flag. All flags are baked at render time; only body
   # and idem are runtime. stdout is captured (never echoed) to keep the job silent.
-  out="$("${HERMES_BIN}" kanban create '{{ card.title }}' --body "${body}" --idempotency-key "${idem}"{% if card.assignee | length > 0 %} --assignee '{{ card.assignee }}'{% endif %} --max-runtime '{{ card.max_runtime }}' --max-retries {{ card.max_retries }}{% for skill in card.skills %} --skill '{{ skill }}'{% endfor %}{% if hermes_agent_kanban_goal_mode | bool %} --goal --goal-max-turns {{ hermes_agent_kanban_goal_max_turns }}{% endif %} --json 2>&1)" || {
+  out="$("${HERMES_BIN}" kanban create '{{ card.title }}' --body "${body}" --idempotency-key "${idem}"{% if card.assignee | length > 0 %} --assignee '{{ card.assignee }}'{% endif %} --max-runtime '{{ card.max_runtime }}' --max-retries {{ card.max_retries }}{% for skill in card.skills %} --skill '{{ skill }}'{% endfor %}{% if hermes_agent_kanban_goal_mode | bool %} --goal --goal-max-turns {{ card.goal_max_turns | default(hermes_agent_kanban_goal_max_turns, true) }}{% endif %} --json 2>&1)" || {
     logger -t hermes-kanban-enqueue "create FAILED ${idem}: ${out}"
     return 0
   }

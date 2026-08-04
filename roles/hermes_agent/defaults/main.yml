@@ -484,16 +484,23 @@ hermes_agent_kanban_max_in_progress_per_profile: "{{ ai_llm_concurrency | int }}
 # The pinned upstream timeout is only 30 seconds; allow a bounded 60-second
 # window so a transient local-model stall does not reject a valid completion.
 hermes_agent_kanban_goal_mode: true
-# Goal-loop turn budget. A healthy card finalizes on its first turn and never
-# spends the budget; only a stuck card burns extra judge turns. This was briefly
-# trimmed to 2 (collapse the overlapping retry layers toward the dispatcher) when
-# the instant-429 storm made every extra turn a guaranteed 429 block-loop. That
-# 429 storm was since eliminated at the serving layer (llama-swap concurrencyLimit
-# raised), and the soak measured real per-call latency at 2-5 min: with only 2
-# turns a card that needs a genuine continuation is handed to dispatcher retry
-# before it can finish its own work. 8 gives a stuck-but-progressing card room to
-# finalize while the board failure_limit + max_retries still cap a truly wedged
-# card. (Matches the operator's soak tuning, made declarative here.)
+# Goal-loop turn budget — the GLOBAL DEFAULT. A card may override it with its
+# own `goal_max_turns` in hermes_agent_kanban_cards below; that is the knob to
+# reach for, not this one.
+#
+# A healthy card finalizes on its first turn and never spends the budget. Only a
+# card the judge keeps ruling "not done" burns more, and every extra turn is a
+# full worker conversation PLUS a judge call against the single serving slot —
+# so this is a throughput knob as much as a completeness one, and raising it
+# globally raises the cost of exactly the cards that are already failing.
+#
+# It stays at 8 rather than being raised across the board because the goal loop
+# no longer spends budget on an unreachable judge: a judge error is retried
+# without consuming a turn and blocks after 5 consecutive failures, which is a
+# distinct, correctly-named outcome. What is left at 8 is a worker that produced
+# 8 judged-insufficient turns, and more of those is not a completion strategy.
+# Give the extra room per-card, to the cards whose work genuinely needs several
+# bounded steps before they can report.
 hermes_agent_kanban_goal_max_turns: 8
 # THIS IS THE REAL JUDGE. It is what config.yaml.j2 renders into
 # auxiliary.goal_judge.model, and it is DELIBERATELY pinned to the WORKER
@@ -1597,7 +1604,13 @@ hermes_agent_profiles:
 # the runtime catalog (the pause/resume playbooks depend on that).
 #   job            idempotency-key prefix + `<job>-enqueue` cron-name stem
 #   interval_hours slot granularity: 1 -> hourly (%Y-%m-%dT%H), 24 -> daily
-#                  (%Y-%m-%d), else date + `-s<floor(hour/interval)>`
+#                  (%Y-%m-%d), 168 -> ISO week (%G-W%V), else date +
+#                  `-s<floor(hour/interval)>`. It MUST match the card's real
+#                  cadence: a slot finer than the cadence gives every run a
+#                  fresh key, so a re-enqueue (or the backfill sweep) creates a
+#                  second card for the same period instead of resolving to the
+#                  existing one, and any comparison the prompt makes against
+#                  "the previous run" is measured over the wrong window.
 #   schedule       the enqueuer cron schedule (== the old agentic schedule)
 #   prompt_var     name of the var holding the card body (catalog or inline)
 #   assignee       "" (default profile) or a name in hermes_agent_profiles —
@@ -1613,6 +1626,19 @@ hermes_agent_profiles:
 #                  each clean check, because for them a clean check IS the
 #                  finding. Only set it where an all-clear carries no information
 #                  beyond "still alive".
+#   goal_max_turns OPTIONAL per-card goal-loop turn budget. Omitted -> the
+#                  global hermes_agent_kanban_goal_max_turns. Set it only where
+#                  the card's work is several bounded steps before it can even
+#                  begin reporting, and remember each extra turn is a whole
+#                  worker conversation plus a judge call on the single serving
+#                  slot — it is spent only by a card that is already failing.
+#   max_retries    failure limit, NOT a retry count: 1 blocks on the FIRST
+#                  failure (zero retries), 2 allows one retry. A crash, a
+#                  wall-clock kill, or a worker that finished its work and never
+#                  called kanban_complete all count here, and all three are
+#                  cases where the next attempt may well succeed — so no card
+#                  sits at 1. Keep it small: retries are re-runs against the
+#                  same single serving slot.
 #   unblock        reviewer only: `kanban unblock` the card after create so a
 #                  pre-created blocked next-slot card goes live on time
 hermes_agent_kanban_cards:
@@ -1630,6 +1656,10 @@ hermes_agent_kanban_cards:
     terse_when_healthy: true
     max_runtime: "45m"
     max_retries: 2
+    # Probes several independent services before it has anything to report, so
+    # its first turns are spent orienting rather than concluding — the shape the
+    # per-card budget exists for.
+    goal_max_turns: 12
     skills: []
     unblock: false
     enabled: >-
@@ -1695,6 +1725,10 @@ hermes_agent_kanban_cards:
     assignee: splunk-admin
     max_runtime: "45m"
     max_retries: 2
+    # Same shape as the fabric-status card: several bounded queries, a memory
+    # recall and a save, then the report — the orientation steps land before any
+    # finding exists to judge.
+    goal_max_turns: 12
     skills: [dryvist/splunk-monitor]
     unblock: false
     enabled: &kanban_splunk_gate >-
@@ -1735,7 +1769,7 @@ hermes_agent_kanban_cards:
     prompt_var: hermes_agent_splunk_deepdive_cron_prompt
     assignee: splunk-admin
     max_runtime: "45m"
-    max_retries: 1
+    max_retries: 2
     skills: [dryvist/splunk-monitor]
     unblock: false
     enabled: *kanban_splunk_gate
@@ -1784,7 +1818,7 @@ hermes_agent_kanban_cards:
     prompt_var: hermes_agent_docs_sync_cron_prompt
     assignee: ""
     max_runtime: "30m"
-    max_retries: 1
+    max_retries: 2
     skills: [dryvist/docs-pr]
     unblock: false
     enabled: >-
@@ -1803,7 +1837,7 @@ hermes_agent_kanban_cards:
     prompt_var: hermes_agent_reviewer_card_prompt
     assignee: ""
     max_runtime: "30m"
-    max_retries: 1
+    max_retries: 2
     skills: []
     unblock: true
     enabled: >-
@@ -1885,7 +1919,7 @@ hermes_agent_kanban_cards:
     prompt_var: hermes_agent_app_seeding_cron_prompt
     assignee: ""
     max_runtime: "30m"
-    max_retries: 1
+    max_retries: 2
     skills: []
     unblock: false
     enabled: *kanban_slack_gate
@@ -1893,12 +1927,23 @@ hermes_agent_kanban_cards:
   # watches Hermes' OWN reliability trend, not a downstream system.
   - job: "{{ hermes_agent_fleet_health_cron_name }}"
     title: "Hermes weekly fleet-health pass"
-    interval_hours: 24
+    # WEEKLY slot, matching the weekly schedule. It was 24 (daily) while the
+    # cron fired weekly, so each run landed on a fresh key: a re-enqueue made a
+    # second card for the same week rather than resolving to the existing one,
+    # and the card's own week-over-week comparison was keyed to a window it
+    # never actually spanned.
+    interval_hours: 168
     schedule: "{{ hermes_agent_fleet_health_cron_schedule }}"
     prompt_var: hermes_agent_fleet_health_cron_prompt
     assignee: ""
-    max_runtime: "30m"
-    max_retries: 1
+    # This is the card that watches whether the OTHER cards are failing, and it
+    # gets exactly one attempt per week — a single crash, kill or restart during
+    # its run took the fleet's only regression check out until the next week
+    # with nothing watching that it had gone. It is the one card where the cost
+    # of a retry is lower than the cost of a missed run, so it carries the
+    # widest limit on the board and the same runtime as the other sweeps.
+    max_runtime: "45m"
+    max_retries: 3
     skills: []
     unblock: false
     enabled: *kanban_slack_gate
