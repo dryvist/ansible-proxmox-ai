@@ -488,23 +488,26 @@ hermes_agent_kanban_max_in_progress_per_profile: "{{ ai_llm_concurrency | int }}
 # The pinned upstream timeout is only 30 seconds; allow a bounded 60-second
 # window so a transient local-model stall does not reject a valid completion.
 hermes_agent_kanban_goal_mode: true
-# Goal-loop turn budget — the GLOBAL DEFAULT. A card may override it with its
-# own `goal_max_turns` in hermes_agent_kanban_cards below; that is the knob to
-# reach for, not this one.
+# Goal-loop turn budget. Role-wide, with NO per-card override — asserted in
+# assert.yml, because "give the slow cards more turns" is the intuitive change
+# here and it is the wrong one. Two mechanics make it wrong:
 #
-# A healthy card finalizes on its first turn and never spends the budget. Only a
-# card the judge keeps ruling "not done" burns more, and every extra turn is a
-# full worker conversation PLUS a judge call against the single serving slot —
-# so this is a throughput knob as much as a completeness one, and raising it
-# globally raises the cost of exactly the cards that are already failing.
+#   - Each turn re-sends the whole accumulated conversation, so prefill grows
+#     with every turn and the total cost of a loop rises roughly with the
+#     SQUARE of the budget, not linearly. Against a serving tier that admits
+#     one request at a time, prefill IS occupancy: a longer context holds the
+#     only slot for longer and everything else queues behind it.
+#   - The budget is only ever spent by a card the judge keeps ruling "not
+#     done" — that is, a card that is already failing. Cards fail most when
+#     the serving tier is saturated, so a bigger budget adds the most load at
+#     exactly the moment there is least room for it.
 #
-# It stays at 8 rather than being raised across the board because the goal loop
-# no longer spends budget on an unreachable judge: a judge error is retried
-# without consuming a turn and blocks after 5 consecutive failures, which is a
-# distinct, correctly-named outcome. What is left at 8 is a worker that produced
-# 8 judged-insufficient turns, and more of those is not a completion strategy.
-# Give the extra room per-card, to the cards whose work genuinely needs several
-# bounded steps before they can report.
+# A healthy card finalizes on its first turn and never touches this. 8 is not a
+# tuned optimum, it is a backstop, and a card that produced 8 judged-insufficient
+# turns wants a different card, not more turns. Note also that a goal turn is a
+# whole worker conversation of up to hermes_agent_max_turns tool iterations — so
+# THAT is the knob that governs how large any single prompt grows, and it dwarfs
+# this one for serving pressure.
 hermes_agent_kanban_goal_max_turns: 8
 # THIS IS THE REAL JUDGE. It is what config.yaml.j2 renders into
 # auxiliary.goal_judge.model, and it is DELIBERATELY pinned to the WORKER
@@ -1631,12 +1634,9 @@ hermes_agent_profiles:
 #                  each clean check, because for them a clean check IS the
 #                  finding. Only set it where an all-clear carries no information
 #                  beyond "still alive".
-#   goal_max_turns OPTIONAL per-card goal-loop turn budget. Omitted -> the
-#                  global hermes_agent_kanban_goal_max_turns. Set it only where
-#                  the card's work is several bounded steps before it can even
-#                  begin reporting, and remember each extra turn is a whole
-#                  worker conversation plus a judge call on the single serving
-#                  slot — it is spent only by a card that is already failing.
+#                  There is deliberately NO per-card goal turn budget — see
+#                  hermes_agent_kanban_goal_max_turns above, and the assert that
+#                  holds it.
 #   max_retries    failure limit, NOT a retry count: 1 blocks on the FIRST
 #                  failure (zero retries), 2 allows one retry. A crash, a
 #                  wall-clock kill, or a worker that finished its work and never
@@ -1661,10 +1661,6 @@ hermes_agent_kanban_cards:
     terse_when_healthy: true
     max_runtime: "45m"
     max_retries: 2
-    # Probes several independent services before it has anything to report, so
-    # its first turns are spent orienting rather than concluding — the shape the
-    # per-card budget exists for.
-    goal_max_turns: 12
     skills: []
     unblock: false
     enabled: >-
@@ -1730,10 +1726,6 @@ hermes_agent_kanban_cards:
     assignee: splunk-admin
     max_runtime: "45m"
     max_retries: 2
-    # Same shape as the fabric-status card: several bounded queries, a memory
-    # recall and a save, then the report — the orientation steps land before any
-    # finding exists to judge.
-    goal_max_turns: 12
     skills: [dryvist/splunk-monitor]
     unblock: false
     enabled: &kanban_splunk_gate >-
