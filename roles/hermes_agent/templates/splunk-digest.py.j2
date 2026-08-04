@@ -75,6 +75,13 @@ PCT_BANDS = (25, 50, 100, 300, 1000)
 # Series below this volume are excluded from percent findings — 3 -> 9 events is
 # +200% and means nothing.
 MIN_MOVER_VOL = 100
+# ...and neither does a large percentage of a small number: 109 -> 195 events in
+# 24h clears MIN_MOVER_VOL and the 50% band, and reported as "up 79%" it reads
+# like news. A move must ALSO be this many events to be a finding. Audience is
+# one person, so the bar is "would a human act on this", not "is it measurable".
+# Raise it if small indexes still fill the output; lower it only with evidence
+# that a real incident was missed under it.
+MIN_MOVER_DELTA = 500
 # Cap on how many host names a single set-change line will spell out.
 MAX_NAMED_HOSTS = 5
 # Per-run cap on routine findings. Unshown novel findings stay unledgered and
@@ -189,9 +196,16 @@ def band_of(cur, prev):
     """(direction, band_edge, pct) for a real move, else None.
 
     None means "not a finding": no baseline, a series too small for a percent to
-    mean anything, or a swing under the smallest band. Never an estimate.
+    mean anything, a swing under the smallest band, or a move too few events to
+    matter however large the percentage. Never an estimate.
+
+    Both floors live here rather than at the call sites: index-level and
+    per-host movers both route through this one function, so one guard covers
+    every mover finding the digest can emit.
     """
     if prev is None or prev < MIN_MOVER_VOL:
+        return None
+    if abs(cur - prev) < MIN_MOVER_DELTA:
         return None
     pct = (cur - prev) * 100.0 / prev
     if abs(pct) < PCT_BANDS[0]:

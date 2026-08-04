@@ -78,6 +78,34 @@ def test_flap_coalescing_state_is_persisted() -> None:
         assert marker in WATCHDOG, f"missing flap state file: {marker}"
 
 
+def test_a_flap_episode_is_not_cleared_while_the_brain_is_still_down() -> None:
+    """THE PROPERTY THAT KEEPS ONE OUTAGE TO ONE MESSAGE PAIR.
+
+    flap_summary_check runs every invocation and used to clear the whole
+    episode — cooldown window, flap count, sustained-page re-arm — as soon as
+    the cooldown timer elapsed, regardless of state. During a wedge whose down
+    phase outlasts the cooldown that disarmed every gate mid-outage: the next
+    edge was no longer inside a cooldown, so it alerted as a fresh outage, and
+    the episode repeated one down + one up message per flap cycle for hours.
+
+    An episode ends when the brain is UP. While it is down the window must be
+    extended and nothing cleared, so the `rm -f` must be unreachable until the
+    state is up.
+    """
+    body = WATCHDOG.split("flap_summary_check() {")[1].split("\n}")[0]
+
+    guard = body.index('if [[ "${state}" != "up" ]]; then')
+    extend = body.index('> "${FLAP_COOLDOWN_FILE}"', guard)
+    early_return = body.index("return 0", extend)
+    clear = body.index("rm -f", guard)
+
+    assert extend < early_return < clear, \
+        "while down, the cooldown window must be extended and the function must " \
+        "return before anything is cleared"
+    assert "${SUSTAINED_REARM_FILE}" in body[clear:], \
+        "the sustained-page re-arm is episode state and must be cleared only on recovery"
+
+
 def test_recovery_alert_disclaims_queue_verification() -> None:
     """The DOWN-edge message's "does not verify Kanban queue health" disclaimer
     is already pinned by test_queue_recovery_contract. Its UP-edge counterpart
