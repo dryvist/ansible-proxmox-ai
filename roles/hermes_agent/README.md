@@ -747,8 +747,11 @@ This watchdog closes both gaps with a small `systemd` timer
    3 min) and UP after `up_after` successes (2). This rides brief bounces
    (rotation flips, cold reloads) so the watchdog never becomes a *new* source of
    spam.
-3. **On a transition** — `hermes cron pause` (or `resume`) the role-seeded fleet
-   (`hermes_agent_seeded_cron_names`; user/agent jobs are never touched) and alert
+3. **On a transition** — `hermes cron pause` (or `resume`) the brain-dependent
+   fleet (`hermes_agent_cluster_pause_cron_names`, the same list a cluster window
+   pauses; user/agent jobs are never touched), confirm each job's new state by
+   reading `hermes cron list --all` back rather than trusting the command's exit
+   code, and alert
    **exactly once** per edge to **both** a Slack DM (the operator, same place the
    spam was) and an **urgent ntfy** push (the `keystone` feed other homelab
    outages page on). Paused jobs don't fire, so the outage stops producing spam
