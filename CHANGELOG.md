@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.23.1...v0.23.2) (2026-08-04)
+
+
+### Bug Fixes
+
+* **llama_cpp:** gate the restart handler on the serve toggle ([#333](https://github.com/dryvist/ansible-proxmox-ai/issues/333)) ([313e455](https://github.com/dryvist/ansible-proxmox-ai/commit/313e455f045733b2ba475c2581a9c2d325f64f67))
+
 ## [0.23.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.23.0...v0.23.1) (2026-08-03)
 
 
