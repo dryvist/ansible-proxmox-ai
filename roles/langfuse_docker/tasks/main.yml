@@ -31,10 +31,21 @@
     label: "{{ item.path }}"
 
 # =============================================================================
-# Application secrets (generate-once, persist on disk)
+# Application secrets
 # =============================================================================
-# NEXTAUTH_SECRET, SALT and ENCRYPTION_KEY must be stable across runs; persist
-# each in a root-only file the first time the role runs and reuse it thereafter.
+# NEXTAUTH_SECRET, SALT and ENCRYPTION_KEY must be stable for the life of the
+# data. Order of authority: the secret store (langfuse_docker_secret_overrides,
+# resolved bao-first in group_vars), then the generate-once files on the guest.
+#
+# ENCRYPTION_KEY protects the provider credentials this app stores in its
+# database, and SALT participates in how stored values are keyed. Both were
+# generated onto the SAME directory as the database they protect, so a loss of
+# that directory took the data and the means to read it together — and a restore
+# against different values yields a database that loads with its stored
+# credentials permanently unreadable, reporting no error at all.
+#
+# The files remain the greenfield bootstrap and the local read for promoting
+# existing values into the secret store. They are not the durable home.
 # ENCRYPTION_KEY must be 64 hex chars — SHA-256 of a random string yields exactly
 # that; SALT / NEXTAUTH_SECRET accept any high-entropy string.
 
@@ -46,7 +57,7 @@
     label: "{{ item.name }}"
   register: langfuse_docker_secret_stats
 
-- name: Generate Langfuse secrets (first run only)
+- name: Generate Langfuse secrets (greenfield bootstrap only)
   ansible.builtin.copy:
     dest: "{{ langfuse_docker_data_dir }}/{{ item.item.file }}"
     content: >-
@@ -61,27 +72,62 @@
   loop: "{{ langfuse_docker_secret_stats.results }}"
   loop_control:
     label: "{{ item.item.name }}"
-  when: not item.stat.exists
+  when:
+    - not item.stat.exists
+    - langfuse_docker_secret_overrides[item.item.name] | default('', true) | length == 0
   no_log: true
 
-- name: Read generated Langfuse secrets into memory
+# failed_when: false rather than a second stat — a secret supplied by the store
+# needs no file on the guest at all, so an unreadable path here is an expected
+# outcome, not an error. The assert below is what catches a genuinely missing one.
+- name: Read the on-guest Langfuse secrets into memory (absent files tolerated)
   ansible.builtin.slurp:
     src: "{{ langfuse_docker_data_dir }}/{{ item.file }}"
   loop: "{{ langfuse_docker_generated_secrets }}"
   loop_control:
     label: "{{ item.name }}"
   register: langfuse_docker_secret_slurps
+  failed_when: false
   no_log: true
 
-- name: Resolve generated Langfuse secrets into a fact
+- name: Reset the resolved-secret accumulator
   ansible.builtin.set_fact:
-    langfuse_docker_secrets: "{{ dict(_langfuse_docker_secret_names | zip(_langfuse_docker_secret_values)) }}"
+    langfuse_docker_secrets: {}
+
+- name: Resolve each secret (secret store, then on-guest file)
+  ansible.builtin.set_fact:
+    langfuse_docker_secrets: >-
+      {{ langfuse_docker_secrets | combine({item.item.name: _langfuse_docker_resolved}) }}
   vars:
-    _langfuse_docker_secret_names: "{{ langfuse_docker_generated_secrets | map(attribute='name') | list }}"
-    _langfuse_docker_secret_values: >-
-      {{ langfuse_docker_secret_slurps.results
-         | map(attribute='content') | map('b64decode') | map('trim') | list }}
+    _langfuse_docker_override: >-
+      {{ langfuse_docker_secret_overrides[item.item.name] | default('', true) }}
+    _langfuse_docker_resolved: >-
+      {{ _langfuse_docker_override
+         if _langfuse_docker_override | length > 0
+         else (item.content | default('') | b64decode | trim) }}
+  loop: "{{ langfuse_docker_secret_slurps.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
   no_log: true
+
+# Deploying with any of these empty is the failure this role must never turn
+# into a silent success: the stack would come up, re-key what it stores under an
+# empty value, and everything already stored would become unreadable while every
+# container reported healthy.
+- name: Assert every application secret resolved
+  ansible.builtin.assert:
+    that:
+      - langfuse_docker_secrets[item.name] | default('', true) | length > 0
+    fail_msg: >-
+      No value resolved for '{{ item.name }}' from the secret store or the
+      guest. Deploying without it would leave what this app has already stored
+      unreadable. Re-run under the secrets environment so the ai domain is
+      fetched, or restore the guest's file — do NOT let this converge proceed
+      with a freshly generated value.
+    quiet: true
+  loop: "{{ langfuse_docker_generated_secrets }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 # =============================================================================
 # Compose Deployment

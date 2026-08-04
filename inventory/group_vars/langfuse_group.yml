@@ -11,6 +11,28 @@ langfuse_subdomain: "{{ lookup('env', 'PROXMOX_SUBDOMAIN') | mandatory('PROXMOX_
 # role (RustFS/MinIO require path-style).
 ai_orchestration_s3_endpoint: "https://s3.{{ langfuse_subdomain }}"
 
+# Application secrets bao-first (ai/langfuse) with an env fallback — same shape
+# as the other ai-domain consumers. bao_local_llm_secrets defaults to {} in
+# all.yml, so a run without the domain fetched falls through cleanly and the
+# role reads the guest's own files instead.
+#
+# These are the values that decrypt what this app has already stored, so they
+# are PROMOTED (read off the running guest), never generated afresh. They were
+# previously written only into the app's data directory — the same directory as
+# the database they protect — so losing it lost the data and the means to read
+# it in one step. An empty value here does NOT silently become a fresh secret:
+# the role falls back to the guest file and asserts non-empty before deploying.
+langfuse_docker_secret_overrides:
+  nextauth_secret: >-
+    {{ bao_local_llm_secrets.LANGFUSE_NEXTAUTH_SECRET
+       | default(lookup('env', 'LANGFUSE_NEXTAUTH_SECRET'), true) }}
+  salt: >-
+    {{ bao_local_llm_secrets.LANGFUSE_SALT
+       | default(lookup('env', 'LANGFUSE_SALT'), true) }}
+  encryption_key: >-
+    {{ bao_local_llm_secrets.LANGFUSE_ENCRYPTION_KEY
+       | default(lookup('env', 'LANGFUSE_ENCRYPTION_KEY'), true) }}
+
 # Restart the Docker stack on failure (Phase 9 systemd restart policy).
 systemd_restart_policy_services:
   - docker

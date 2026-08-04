@@ -146,15 +146,27 @@ langfuse_docker_redis_auth: >-
      | mandatory('LANGFUSE_REDIS_AUTH unset') }}
 
 # =============================================================================
-# Application secrets — generated once on the LXC and persisted under the data
-# dir (root:root 0600), then reused. Regenerating them per run would invalidate
-# all sessions (NEXTAUTH_SECRET) and make stored data undecryptable
-# (ENCRYPTION_KEY). ENCRYPTION_KEY must be 64 hex chars (256-bit).
+# Application secrets. Set them from the secret store via
+# langfuse_docker_secret_overrides (inventory/group_vars/langfuse_group.yml
+# resolves them bao-first); the role falls back to generate-once files under the
+# data dir (root:root 0600) so a greenfield deploy still comes up.
+#
+# Treat these as part of the backup, not as configuration. Regenerating them
+# invalidates all sessions (NEXTAUTH_SECRET) and makes stored data unreadable
+# (ENCRYPTION_KEY, SALT) — with no error raised anywhere. They were generated
+# onto the same directory as the database they protect, so that directory's loss
+# took the data and the means to read it together. ENCRYPTION_KEY must be 64 hex
+# chars (256-bit).
 # =============================================================================
 langfuse_docker_generated_secrets:
   - { name: nextauth_secret, file: .nextauth_secret, length: 48, hex: false }
   - { name: salt, file: .salt, length: 48, hex: false }
   - { name: encryption_key, file: .encryption_key, length: 32, hex: true }
+
+# Per-secret values from the secret store, keyed by the names above. A non-empty
+# entry wins over the on-guest file; an absent one falls back to it. PROMOTED
+# (read off the running guest), never generated afresh for an existing install.
+langfuse_docker_secret_overrides: {}
 
 # =============================================================================
 # Headless first-run provisioning (LANGFUSE_INIT_*): org, project, an admin
