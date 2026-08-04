@@ -24,12 +24,14 @@ PROPERTIES that make enabling safe, not the exact numbers — the numbers are
 role variables and an operator may tune them.
 """
 
+import re
 from pathlib import Path
 
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
 REPO_ROOT = ROLE.parents[1]
 WATCHDOG = (ROLE / "templates" / "hermes-brain-watchdog.sh.j2").read_text()
 DEFAULTS = (ROLE / "defaults" / "main.yml").read_text()
+ROUTER_DEFAULTS = (REPO_ROOT / "roles" / "llm_router" / "defaults" / "main.yml").read_text()
 
 
 def test_both_edge_thresholds_come_from_role_vars_not_literals() -> None:
@@ -139,6 +141,74 @@ def test_probe_is_a_real_completion_not_a_liveness_endpoint() -> None:
     # A bare HTTP-200 check without the body assertions would silently pass a
     # wedged engine — the probe must require both.
     assert '[[ "${code}" == "200" ]] \\' in WATCHDOG
+
+
+def test_pause_outcome_is_read_back_off_the_board_not_from_a_return_code() -> None:
+    """THE FALSE-SUCCESS GUARD.
+
+    `hermes cron pause <missing>` prints "Job ... not found" and still exits 0.
+    A loop that scores the return code therefore counts a name with no job
+    behind it as a pause: 8 of the 21 names carried no job, so every alert
+    reported 21 pauses over a fleet of 13. The outcome must come from the
+    board — what the job's state actually IS — never from what the command
+    returned.
+    """
+    assert 'board="$("${HERMES_BIN}" cron list --all 2>/dev/null)"' in WATCHDOG
+    # the pause/resume call is fired for effect only; its status is discarded
+    assert '"${HERMES_BIN}" cron "${verb}" "${job}" >/dev/null 2>&1 || true' in WATCHDOG
+    # ...and the counters are driven by the board lookup that follows
+    assert 'grep -B1 -E "^ *Name: +${job}\\$" <<< "${board}"' in WATCHDOG
+
+
+def test_board_readback_includes_paused_jobs() -> None:
+    """`cron list` WITHOUT --all omits paused jobs entirely.
+
+    Drop the flag and every pause verifies as a failure (the job it just paused
+    has vanished from the output), and a paused job becomes indistinguishable
+    from a deleted one. This one flag is what makes the readback above mean
+    anything.
+    """
+    assert "cron list --all" in WATCHDOG
+    assert 'want="paused"' in WATCHDOG
+
+
+def test_watchdog_pauses_the_same_fleet_a_cluster_window_pauses() -> None:
+    """hermes_agent_seeded_cron_names covers only the script-fed `-enqueue`
+    crons, which never call the brain. The enabled `*-v2` jobs that DO call it
+    live in hermes_agent_direct_cron_jobs, so pausing the seeded list alone
+    left every brain-dependent job firing into a dead brain — the same gap
+    found on the cluster-pause path 2026-07-25. Both paths must derive from
+    one list so they cannot drift apart again.
+    """
+    assert "{{ hermes_agent_cluster_pause_cron_names | length }}" in WATCHDOG
+    assert "{% for job in hermes_agent_cluster_pause_cron_names %}" in WATCHDOG
+
+
+def test_probe_deadline_exceeds_the_router_rate_limit_backoff() -> None:
+    """A probe deadline below the router's 429 backoff can only ever time out.
+
+    The single-slot serving backend returns in well under a second when the
+    slot is free; when it is busy the router takes a 429 and sleeps
+    llm_router_retry_after_seconds before retrying. There is no outcome in
+    between, so a deadline under that sleep measures "is the slot free right
+    now" and turns ordinary saturation into a DOWN edge that pauses the fleet.
+    """
+    retry_after = int(
+        re.search(r"^llm_router_retry_after_seconds:\s*(\d+)", ROUTER_DEFAULTS, re.M).group(1)
+    )
+    probe_timeout = int(
+        re.search(r"^hermes_agent_brain_watchdog_probe_timeout:\s*(\d+)", DEFAULTS, re.M).group(1)
+    )
+    interval = int(
+        re.search(r'^hermes_agent_brain_watchdog_interval:\s*"(\d+)s"', DEFAULTS, re.M).group(1)
+    )
+    assert probe_timeout > retry_after, (
+        f"probe timeout {probe_timeout}s must exceed the router's {retry_after}s retry_after"
+    )
+    assert probe_timeout < interval, (
+        f"probe timeout {probe_timeout}s must stay under the {interval}s interval so probes "
+        "cannot overlap"
+    )
 
 
 def test_maintenance_playbooks_expect_the_timer_active_after_normal_operation() -> None:

@@ -2037,9 +2037,12 @@ hermes_agent_kanban_safety_net_enabled: >-
 
 # Every cron job this role seeds — now the script-only enqueuer fleet
 # (`<job>-enqueue` per card) plus the daily safety net. The model-drift recovery
-# task (tasks/main.yml) only ever removes jobs on this list, and the brain
-# watchdog only pauses/resumes jobs on this list — user/agent jobs are never
-# touched. Script (`--no-agent`) jobs carry no model snapshot, so the drift GC's
+# task (tasks/main.yml) only ever removes jobs on this list — user/agent jobs are
+# never touched. The brain watchdog does NOT use this list: it pauses the wider
+# hermes_agent_cluster_pause_cron_names, because the `-enqueue` crons here are
+# script-fed and never call the brain, so pausing only these during a brain
+# outage left the `*-v2` jobs that do call it running.
+# Script (`--no-agent`) jobs carry no model snapshot, so the drift GC's
 # `model_snapshot`-defined filter skips them naturally (no guard change needed).
 hermes_agent_seeded_cron_names: >-
   {{ (hermes_agent_kanban_cards | map(attribute='job') | list
@@ -2293,9 +2296,16 @@ hermes_agent_brain_watchdog_enabled: true
 hermes_agent_brain_watchdog_script_path: /usr/local/bin/hermes-brain-watchdog.sh
 # Probe cadence (systemd OnUnitActiveSec). 60s matches service_deadman.
 hermes_agent_brain_watchdog_interval: "60s"
-# Per-probe curl deadline. Comfortably covers a warm 1-token completion; a hung or
-# unreachable brain trips it and counts as one failure toward the debounce.
-hermes_agent_brain_watchdog_probe_timeout: 15
+# Per-probe curl deadline. MUST exceed llm_router_retry_after_seconds (40), the
+# router's minimum sleep before it retries a 429. The single-slot serving backend
+# answers a probe one of two ways and nothing in between: the slot is free and it
+# returns in well under a second, or the slot is busy, the router takes a 429 and
+# sleeps retry_after before trying again. A deadline below retry_after can
+# therefore only ever time out on a busy slot — it measures "is the slot free
+# right now", not "can the brain serve", and turns ordinary saturation into a
+# DOWN edge. 45 clears 40 with headroom while staying under the 60s interval, so
+# probes cannot overlap. Raise this in step with retry_after, never below it.
+hermes_agent_brain_watchdog_probe_timeout: 45
 # Hysteresis: consecutive failures before declaring DOWN (pause+alert), and
 # consecutive successes before declaring UP (resume+alert). down_after=3 over the
 # 60s cadence (~3 min) rides rotation-flip bounces and cold reloads so the

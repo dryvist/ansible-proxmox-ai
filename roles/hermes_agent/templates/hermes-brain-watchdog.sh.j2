@@ -48,12 +48,17 @@ SUSTAINED_FLAP_REARM="{{ hermes_agent_brain_watchdog_sustained_flap_rearm_second
 # Rendered at template time (the seeded list is static) so the script avoids
 # bash's array-length parameter form, whose brace-hash opener would be misread as
 # a Jinja comment start in this .j2 and mangle the template.
-JOB_COUNT="{{ hermes_agent_seeded_cron_names | length }}"
+JOB_COUNT="{{ hermes_agent_cluster_pause_cron_names | length }}"
 
-# Role-seeded, brain-dependent cron fleet — the only jobs this watchdog touches
-# (never user/agent-created jobs). Same list the model-drift recovery uses.
+# Brain-dependent cron fleet — the only jobs this watchdog touches (never
+# user/agent-created jobs). The SAME list a cluster window pauses, not the
+# narrower seeded list: `hermes_agent_seeded_cron_names` covers only the
+# script-fed `<job>-enqueue` crons, which do not call the brain, while the
+# enabled `*-v2` jobs that DO call it were absent — so a brain outage paused a
+# fleet of enqueuers and left every brain-dependent job firing. One list for
+# both pause paths, derived in defaults, so they cannot drift apart again.
 SEEDED_JOBS=(
-{% for job in hermes_agent_seeded_cron_names %}
+{% for job in hermes_agent_cluster_pause_cron_names %}
   "{{ job }}"
 {% endfor %}
 )
@@ -109,17 +114,34 @@ probe_ok() {
 # recovery alerts cannot claim the static desired-job count as a live result.
 CRON_SUCCEEDED=0
 CRON_FAILED=0
+# Assert what was DONE, never what was RUN. `hermes cron pause <missing>` prints
+# "Job ... not found" and still exits 0, so a return code cannot tell "paused it"
+# from "there is no such job". Trusting it let this loop count a name that no
+# longer exists as a pause: 8 of the 21 seeded names have no job behind them, so
+# every alert claimed 21 pauses over a fleet of 13. Read the state back off the
+# board instead — a job missing from it, or in the wrong state, is a FAILURE,
+# which is what surfaces a list that has drifted from the live fleet.
+#
+# --all is REQUIRED: a bare `cron list` omits paused jobs entirely, so without it
+# a pause could never be confirmed (and, worse, a paused job would be
+# indistinguishable from a deleted one).
 cron_do() {
-  local verb="$1" job
+  local verb="$1" job want board
   CRON_SUCCEEDED=0
   CRON_FAILED=0
+  if [[ "${verb}" == "pause" ]]; then want="paused"; else want="active"; fi
   for job in "${SEEDED_JOBS[@]}"; do
-    if "${HERMES_BIN}" cron "${verb}" "${job}" >/dev/null 2>&1; then
+    "${HERMES_BIN}" cron "${verb}" "${job}" >/dev/null 2>&1 || true
+  done
+  board="$("${HERMES_BIN}" cron list --all 2>/dev/null)"
+  for job in "${SEEDED_JOBS[@]}"; do
+    # `cron list` prints the state on the id line, one line ABOVE its Name line.
+    if grep -B1 -E "^ *Name: +${job}\$" <<< "${board}" | grep -q "\[${want}\]"; then
       CRON_SUCCEEDED=$(( CRON_SUCCEEDED + 1 ))
       logger -t hermes-brain-watchdog "${verb}d ${job}"
     else
       CRON_FAILED=$(( CRON_FAILED + 1 ))
-      logger -t hermes-brain-watchdog "${verb} skipped (missing/already ${verb}d): ${job}"
+      logger -t hermes-brain-watchdog "${verb} FAILED (missing from board or not ${want}): ${job}"
     fi
   done
 }
@@ -172,9 +194,9 @@ alert() {
   local kind="$1" msg now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if [[ "${kind}" == "down" ]]; then
-    msg=":warning: Hermes brain unreachable (${MODEL} via ${BASE_URL}) since ${now} -- pause commands succeeded=${CRON_SUCCEEDED} failed=${CRON_FAILED} desired=${JOB_COUNT}; this does not verify Kanban queue health."
+    msg=":warning: Hermes brain unreachable (${MODEL} via ${BASE_URL}) since ${now} -- pause verified succeeded=${CRON_SUCCEEDED} failed=${CRON_FAILED} desired=${JOB_COUNT}; this does not verify Kanban queue health."
   else
-    msg=":white_check_mark: Hermes brain recovered at ${now} -- resume commands succeeded=${CRON_SUCCEEDED} failed=${CRON_FAILED} desired=${JOB_COUNT}; Slack delivery still requires queue verification."
+    msg=":white_check_mark: Hermes brain recovered at ${now} -- resume verified succeeded=${CRON_SUCCEEDED} failed=${CRON_FAILED} desired=${JOB_COUNT}; Slack delivery still requires queue verification."
   fi
   logger -t hermes-brain-watchdog "${msg}"
   slack_post "${msg}"
