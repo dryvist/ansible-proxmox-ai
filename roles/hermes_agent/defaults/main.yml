@@ -308,8 +308,12 @@ hermes_agent_direct_cron_jobs:
 # it was an alias, #hermes-all could not be made distinct from the firehose by
 # configuration alone — which is why every tier collapsed onto one channel.
 # Falls back to the firehose id so an unset var reproduces the old behaviour
-# exactly. Empty (no firehose either) leaves the body naming the channel by
-# handle only, which the worker's Slack tools can still resolve.
+# exactly. The value belongs ONLY in the enqueuer footer's `hermes send --to`
+# argument — never interpolated into prose a worker reads. Cron/Kanban workers
+# get no messaging toolset (see hermes_agent_cron_toolsets), so a body that
+# names a destination gives the worker nothing to act on and it emits the
+# destination as message text instead. Empty (no firehose either) renders an
+# empty --to and the send fails loudly, which is the intended failure.
 hermes_agent_slack_hermes_all_channel: >-
   {{ lookup('env', 'SLACK_HERMES_ALL_CHANNEL')
      | default(hermes_agent_slack_firehose_channel, true) }}
@@ -1254,8 +1258,9 @@ hermes_agent_reviewer_card_prompt: >-
   workload that silently did not run. (2) For each real gap, file a follow-up
   card with kanban_create using a STABLE idempotency key
   (followup-<short-slug>-<UTC-date>) so a re-run never duplicates it; attach the
-  right skill and a clear body. (3) Post a short digest to #hermes-all (channel
-  {{ hermes_agent_slack_hermes_all_channel }}): what ran, what failed or is
+  right skill and a clear body. (3) Post a short digest — the enqueuer footer
+  below carries the exact send command and its destination, so do not restate a
+  destination here: what ran, what failed or is
   blocked, what you filed — deltas and action items only, no Markdown tables.
   Self-check before posting: every gap in step 2 has a follow-up card, and the
   digest names each one. (4) Continue the chain: compute the NEXT slot key as

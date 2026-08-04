@@ -327,6 +327,25 @@ def test_a_tiny_series_never_manufactures_a_percent_finding():
     assert DIGEST.band_of(1_500, 1_000)[1] == 50
 
 
+def test_a_big_percent_of_a_small_number_is_not_a_finding():
+    """The percent floor alone is not enough — the absolute move must matter too.
+
+    109 -> 195 events in 24h clears MIN_MOVER_VOL and lands in the 50% band, so
+    the percent gate reported it as "up 79%". For an audience of one it is not
+    news. Both floors live in band_of, so this covers index-level and per-host
+    movers alike.
+    """
+    assert DIGEST.band_of(195, 109) is None, "+86 events in 24h is not news at any percent"
+    assert DIGEST.band_of(109 + DIGEST.MIN_MOVER_DELTA - 1, 109) is None, "just under the floor"
+    # Same series, a move that clears the floor: still reported.
+    assert DIGEST.band_of(109 + DIGEST.MIN_MOVER_DELTA, 109)[0] == "up"
+    # The floor never rescues a series below the volume floor.
+    assert DIGEST.band_of(3 + DIGEST.MIN_MOVER_DELTA, 3) is None
+    # Symmetric on the way down.
+    assert DIGEST.band_of(1_000, 1_200) is None, "-200 events is under the delta floor"
+    assert DIGEST.band_of(1_000, 2_000)[0] == "down"
+
+
 def test_stability_line_never_claims_a_change_against_nothing():
     now = at(18)
     fresh, _ = DIGEST.stability_finding(None, "fp1", now)
