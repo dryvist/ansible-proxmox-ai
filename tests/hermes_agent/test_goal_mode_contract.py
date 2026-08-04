@@ -72,6 +72,10 @@ PINNED_PROTOCOL_VIOLATION_SOURCE = (
     '                    "worker exited cleanly (rc=0) without calling "\n'
     '                    "kanban_complete or kanban_block — protocol violation"\n'
 )
+PINNED_PROTOCOL_RETRY_SOURCE = (
+    "                failure_limit=1 if (protocol_violation or is_systemic) "
+    "else None,\n"
+)
 PINNED_CRON_DELIVERY_SOURCE = (
     "            deliver_content = final_response if success else "
     "_summarize_cron_failure_for_delivery(job, error)\n"
@@ -587,9 +591,14 @@ def test_idempotent_create_does_not_mutate_terminal_history(status: str) -> None
 
 def test_enqueuer_goal_flags_follow_the_role_toggle() -> None:
     enqueuer = (ROLE_ROOT / "templates" / "kanban-enqueue-recurring.sh.j2").read_text()
+    # The budget is per-card with the role-wide value as the fallback: a card
+    # whose work is several bounded steps before it can report needs more room
+    # than a card that answers in one, and raising the global default instead
+    # would spend that room on every card that is merely wedged.
     assert (
         "{% if hermes_agent_kanban_goal_mode | bool %} --goal --goal-max-turns "
-        "{{ hermes_agent_kanban_goal_max_turns }}{% endif %}"
+        "{{ card.goal_max_turns | default(hermes_agent_kanban_goal_max_turns, true) }}"
+        "{% endif %}"
         in enqueuer
     )
     # The report destination is per-card as of the four-channel split: cards opt
@@ -800,6 +809,14 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "registered for dispatcher-spawned workers (HERMES_KANBAN_TASK "
         in conditions
     )
+    # The message and the retry rule are asserted as a pair: the message tells
+    # the operator the card will be retried, so it must not be able to land
+    # while the forced first-failure give-up is still in the source.
+    assert (
+        "a missing toolset. The card is retried within its own max_retries"
+        in conditions
+    )
+    assert "failure_limit=1 if is_systemic else None," in conditions
     assert (
         'logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)'
         in conditions
@@ -848,6 +865,10 @@ def test_installed_source_postconditions_fail_closed() -> None:
             "Patch Hermes protocol-violation message to name the "
             "model-did-not-call case",
             PINNED_PROTOCOL_VIOLATION_SOURCE,
+        )
+        + _apply_runtime_patch(
+            "Patch Hermes protocol-violation crashes to retry within the card budget",
+            PINNED_PROTOCOL_RETRY_SOURCE,
         )
     )
     retry_source = "".join(
@@ -939,6 +960,20 @@ def test_installed_source_postconditions_fail_closed() -> None:
             reconcile_source.replace(
                 "registered for dispatcher-spawned workers (HERMES_KANBAN_TASK ",
                 "",
+            ),
+            retry_source,
+            auxiliary_source,
+        )
+    )
+    # The forced first-failure give-up left in place: a protocol violation
+    # would still retire the card on its first occurrence, so the postconditions
+    # must go red even though the reworded message landed.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source.replace(
+                "failure_limit=1 if is_systemic else None,",
+                "failure_limit=1 if (protocol_violation or is_systemic) else None,",
             ),
             retry_source,
             auxiliary_source,

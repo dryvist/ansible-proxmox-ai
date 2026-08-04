@@ -50,3 +50,79 @@ def test_watchdog_reports_command_outcomes_not_only_desired_count() -> None:
     assert "CRON_FAILED=0" in watchdog
     assert "succeeded=${CRON_SUCCEEDED} failed=${CRON_FAILED}" in watchdog
     assert "does not verify Kanban queue health" in watchdog
+
+
+def test_no_card_is_retired_by_its_first_failure() -> None:
+    """`max_retries` is a failure LIMIT, so 1 means zero retries.
+
+    A recurring card has no other recovery path: nothing re-attempts a blocked
+    card, it simply waits for its next slot, which for the weekly cards is a
+    week with that workload uncovered. Duplicated as a converge assert in
+    assert.yml — this is the copy that runs without a guest.
+    """
+    cards = yaml.safe_load(DEFAULTS.read_text())["hermes_agent_kanban_cards"]
+
+    offenders = [c["job"] for c in cards if int(c["max_retries"]) < 2]
+    assert offenders == [], f"cards blocked by their first failure: {offenders}"
+
+
+def test_fleet_health_survives_a_lost_run_and_keys_on_its_own_cadence() -> None:
+    """The card that watches the other cards must outlive one bad run.
+
+    It is the fleet's only regression check and it fires weekly, so a single
+    crash or wall-clock kill used to cost a full week of cover with nothing
+    watching that it had gone. Its slot must also match that weekly cadence:
+    a finer slot gives every enqueue a fresh key, so a re-enqueue creates a
+    second card for the same week instead of resolving to the existing one,
+    and the week-over-week comparison the card exists to make is keyed to a
+    window it never spans.
+    """
+    defaults = yaml.safe_load(DEFAULTS.read_text())
+    card = next(
+        c for c in defaults["hermes_agent_kanban_cards"]
+        if c["job"] == "{{ hermes_agent_fleet_health_cron_name }}"
+    )
+
+    assert int(card["max_retries"]) >= 3
+    assert int(card["interval_hours"]) == 168
+    # Weekly cron (a fixed day-of-week field), matching the 168-hour slot.
+    assert defaults["hermes_agent_fleet_health_cron_schedule"].split()[-1] not in ("*", "?")
+
+
+def test_slot_stamp_gives_one_key_per_period() -> None:
+    """Execute the rendered `slot_stamp`, rather than pattern-match it.
+
+    The branch selection is arithmetic on the interval, and the whole point of
+    the weekly branch is that a weekly card stops getting a fresh key every day
+    — a property only visible by running it.
+    """
+    import re
+    import subprocess
+
+    template = (
+        REPO_ROOT / "roles/hermes_agent/templates/kanban-enqueue-recurring.sh.j2"
+    ).read_text()
+    body = re.search(r"^slot_stamp\(\) \{.*?^\}", template, re.S | re.M)
+    assert body, "slot_stamp() not found — the enqueuer template changed shape"
+
+    def stamp(interval: int) -> str:
+        return subprocess.run(
+            ["bash", "-c", f"{body.group(0)}\nslot_stamp {interval}\n"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    hourly, daily, weekly = stamp(1), stamp(24), stamp(168)
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}", hourly), hourly
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", daily), daily
+    assert re.fullmatch(r"\d{4}-W\d{2}", weekly), weekly
+    assert hourly.startswith(daily)
+    # The weekly key must not be a restatement of today's date, which is the
+    # bug the branch exists to fix.
+    assert weekly != daily
+    # A sub-daily interval still buckets within the day.
+    assert stamp(6).startswith(daily + "-s")
+    # ISO week paired with the ISO week-numbering year, never the calendar
+    # year: the two disagree around New Year (1 Jan can fall in week 52/53 of
+    # the previous ISO year), so `%Y-W%V` would reuse a key already spent.
+    assert "date -u +%G-W%V" in body.group(0)
+    assert "%Y-W%V" not in body.group(0)
