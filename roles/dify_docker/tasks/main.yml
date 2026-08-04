@@ -56,19 +56,24 @@
     mode: "0755"
 
 # =============================================================================
-# SECRET_KEY (generate-once, persist on disk)
-# The api/worker sign sessions with SECRET_KEY; randomizing it per play would
-# invalidate every active session. Persist it root-only on first run and reuse.
+# SECRET_KEY
+# The api/worker sign sessions with SECRET_KEY and it protects the material that
+# decrypts what the app has already stored. Order of authority: the secret store
+# (supplied as dify_docker_secret_key), then the generate-once file on the guest.
+#
+# The file remains the greenfield bootstrap, but it is NOT the durable home. A
+# key that lives only beside the data it unlocks is lost with that guest, and
+# data restored without it is unreadable while every surface reports success.
 # =============================================================================
 
-- name: Check for existing Dify SECRET_KEY
+- name: Check for the on-guest Dify SECRET_KEY
   ansible.builtin.stat:
-    path: "{{ dify_docker_data_dir }}/.secret_key"
+    path: "{{ dify_docker_secret_key_path }}"
   register: dify_docker_secret_key_stat
 
-- name: Generate Dify SECRET_KEY (first run only)
+- name: Generate a Dify SECRET_KEY on the guest (greenfield bootstrap only)
   ansible.builtin.copy:
-    dest: "{{ dify_docker_data_dir }}/.secret_key"
+    dest: "{{ dify_docker_secret_key_path }}"
     # 50 alphanumeric chars; boolean flags pin the character set unambiguously.
     content: >-
       {{ lookup('community.general.random_string',
@@ -78,22 +83,47 @@
     owner: root
     group: root
     mode: "0600"
-  when: not dify_docker_secret_key_stat.stat.exists
+  when:
+    - not dify_docker_secret_key_stat.stat.exists
+    - dify_docker_secret_key | length == 0
   no_log: true
 
-- name: Read Dify SECRET_KEY into memory
+- name: Re-check for the on-guest Dify SECRET_KEY
+  ansible.builtin.stat:
+    path: "{{ dify_docker_secret_key_path }}"
+  register: dify_docker_secret_key_stat
+
+- name: Read the on-guest Dify SECRET_KEY into memory
   ansible.builtin.slurp:
-    src: "{{ dify_docker_data_dir }}/.secret_key"
+    src: "{{ dify_docker_secret_key_path }}"
   register: dify_docker_secret_key_file
+  when: dify_docker_secret_key_stat.stat.exists
   no_log: true
 
-- name: Resolve effective SECRET_KEY (inventory override or persisted file)
+- name: Resolve the effective SECRET_KEY (secret store, then on-guest file)
   ansible.builtin.set_fact:
     dify_docker_secret_key: >-
       {{ dify_docker_secret_key
          if dify_docker_secret_key | length > 0
-         else (dify_docker_secret_key_file.content | b64decode | trim) }}
+         else ((dify_docker_secret_key_file.content | default('') | b64decode | trim)
+               if dify_docker_secret_key_stat.stat.exists else '') }}
   no_log: true
+
+# Deploying with an empty key is the one failure this role must never turn into
+# a silent success: the stack would come up, re-protect its stored material
+# under an empty key, and what was already stored would become unreadable —
+# with every container healthy and every page loading.
+- name: Assert a SECRET_KEY resolved
+  ansible.builtin.assert:
+    that:
+      - dify_docker_secret_key | length > 0
+    fail_msg: >-
+      No Dify SECRET_KEY resolved from the secret store or the guest. Deploying
+      without it would leave what the app has already stored unreadable. Re-run
+      under the secrets environment so the ai domain is fetched, or restore the
+      guest's key file — do NOT let this converge proceed with a freshly
+      generated value.
+    quiet: true
 
 # =============================================================================
 # Config + Compose Files
