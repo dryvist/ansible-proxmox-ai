@@ -8,10 +8,11 @@
 # Two tiers, both reached through this one proxy:
 #   large — the mlx-community/* models on the neutral `llm-large` runner
 #           (bearer auth). One deployment each; no cross-tier fallback.
-#   light — qwen3-4b / embeddings. TWO deployments per model name: the GPU
-#           `llm-fast` box AND the CPU `llm-light` standby, same model_name.
-#           LiteLLM load-balances the pair and cools a failed deployment
-#           down, so a GPU outage drains to CPU automatically.
+#   light — qwen3-4b / embeddings. The CPU `llm-light` deployment always
+#           renders; the GPU `llm-fast` one renders only when
+#           llm_router_llm_fast_enabled is true. With that false there is ONE
+#           deployment per model name and no standby. With both, they share a
+#           model_name and LiteLLM load-balances and cools down the pair.
 #
 # Restart-on-failure is applied DRY by the shared systemd_restart_policy role via
 # group_vars, not here.
@@ -185,9 +186,10 @@ llm_router_registry_enabled: >-
 # bearer-authed, no cross-tier fallback.
 llm_router_large_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'large') | list }}
-# light: the llama-swap model names, served as-is. Each becomes TWO same-name
-# deployments (GPU llm-fast + CPU llm-light) in the rendered config, so LiteLLM
-# load-balances the pair and a GPU outage drains to CPU automatically.
+# light: the llama-swap model names, served as-is. Each becomes a CPU
+# `llm-light` deployment, plus a same-name GPU `llm-fast` deployment only when
+# llm_router_llm_fast_enabled is true — that toggle is what decides whether the
+# tier is a load-balanced pair or a single deployment with no standby.
 llm_router_light_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'light') | list }}
 
