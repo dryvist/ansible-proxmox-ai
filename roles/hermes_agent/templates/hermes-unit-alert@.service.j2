@@ -1,0 +1,25 @@
+{{ ansible_managed | comment }}
+# Generic OnFailure= target for the long-running Hermes units (gateway,
+# dashboard, vikunja-bridge). Instantiated with the failed unit's name, e.g.
+# OnFailure=hermes-unit-alert@%n.service, so one template covers all of them
+# and the page names which unit died.
+#
+# Why this exists: those three units are Restart=always. Without a start-rate
+# limit a config-broken service restarts every few seconds forever, burning CPU
+# while appearing "activating" and alerting nobody. Adding the limit alone would
+# be worse — the unit would give up and sit dead, equally silently. The limit
+# plus this OnFailure= is the pair that makes it safe: bounded loop, and a page
+# the moment systemd gives up.
+#
+# Rate-limited the same way as hermes-brain-watchdog-alert: one page per hour
+# per instance, so a unit that keeps failing does not become its own spam
+# source. Thresholds are literal for the same reason as that unit — operational
+# constants tied 1:1 to this alert, with no per-host override today.
+[Unit]
+Description=Alert that %i failed and systemd stopped restarting it
+StartLimitIntervalSec=1h
+StartLimitBurst=1
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/hermes-unit-alert.sh %i
