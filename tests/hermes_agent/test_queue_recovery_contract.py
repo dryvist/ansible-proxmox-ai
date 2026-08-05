@@ -38,9 +38,21 @@ def test_queue_recovery_archives_each_board_before_reconciling() -> None:
 
 
 def test_heartbeat_is_limited_to_waking_hours() -> None:
-    defaults = yaml.safe_load(DEFAULTS.read_text())
+    """Hourly, and only while the operator is awake.
 
-    assert defaults["hermes_agent_daily_status_cron_schedule"] == "0 8-22 * * *"
+    Asserts the HOUR field, not the whole expression. It used to pin the exact
+    string "0 8-22 * * *", which made the minute part of a contract that is
+    about waking hours — so moving the card off minute :00 to stop it colliding
+    with the */15 board digest every hour failed a test named for something
+    else. The minute is deliberately free to change; where it may land is the
+    separate concern owned by test_cron_stagger.py.
+    """
+    defaults = yaml.safe_load(DEFAULTS.read_text())
+    minute, hours, dom, month, dow = defaults["hermes_agent_daily_status_cron_schedule"].split()
+
+    assert hours == "8-22", "the heartbeat must stay inside waking hours"
+    assert (dom, month, dow) == ("*", "*", "*"), "the heartbeat runs every day"
+    assert minute.isdigit(), f"the heartbeat runs once per hour, not on {minute!r}"
 
 
 def test_watchdog_reports_command_outcomes_not_only_desired_count() -> None:

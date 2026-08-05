@@ -343,7 +343,19 @@ hermes_agent_slack_cron_continuable_surface: in_channel
 hermes_agent_daily_status_cron_name: homelab-ai-fabric-status
 # Post once per local waking hour. The queue-recovery acceptance gate verifies
 # the full enqueue-to-Slack path during this window.
-hermes_agent_daily_status_cron_schedule: "0 8-22 * * *"
+#
+# Moved off minute :00 on 2026-08-05. This is the only HOURLY agentic card, and
+# at :00 it started in the same second as the kanban-digest tick (*/15) — 15
+# collisions a day, every day, against a serving tier that admits ONE in-flight
+# request per model and rejects the rest with an instant 429. Minute :00 also
+# carries three daily/8-hourly cards (nightly-wiki, daily-summary, the 8h
+# self-review), so it was the single most contended minute in the role.
+#
+# HONEST LIMIT: this separates STARTS, not overlap. Agentic cards here carry
+# max_runtime of 25-45m, so a long run still spans the next card's start. The
+# structural fix is capacity or admission control, not a minute offset —
+# tracked separately. This is the cheap half.
+hermes_agent_daily_status_cron_schedule: "4 8-22 * * *"
 hermes_agent_daily_status_cron_prompt_file: hermes-daily-fabric-status.md
 
 # The catalog body names the checks but not a single endpoint, so the worker
@@ -1415,7 +1427,11 @@ hermes_agent_ai_news_cron_name: ai-news
 # 11:00, 14:00, 19:00 ET. The durable fix is a per-card timezone or moving the
 # role off UTC, which would shift every OTHER seeded schedule here and so is
 # deliberately not done in this change. Tracked in Vikunja.
-hermes_agent_ai_news_cron_schedule: "13 0,12,16,19 * * *"
+# Minute :19 is deliberate and must stay free of other jobs. :13 (the minute
+# this first landed on) already carries anomaly-hunt, whose "13 */12 * * *"
+# collides with the 00:13 and 12:13 news runs — two agentic cards starting
+# together against a serving tier that admits ONE in-flight request per model.
+hermes_agent_ai_news_cron_schedule: "19 0,12,16,19 * * *"
 hermes_agent_ai_news_cron_prompt: >-
   You are the Hermes news scout (every 4 hours): read the news and turn it into
   AT MOST 3 suggestions the operator can act on, tuned to their interests.
