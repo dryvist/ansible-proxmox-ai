@@ -97,8 +97,10 @@ def _deliver_targets(pattern: str, ctx: Mapping[str, object], text: str) -> str:
 
 
 ENQUEUER = (ROLE / "templates" / "kanban-enqueue-recurring.sh.j2").read_text()
-# The one place every recurring card is told where to post its report.
-CARD_REPORT = r'hermes send --to (slack:\{\{ card\.channel[^\n]*?\}\}) --quiet'
+# The one line every recurring card is told to post its report with. A card may
+# name a second destination for the all-healthy case, so this renders the whole
+# instruction and reads back every destination in it rather than matching one.
+CARD_REPORT_LINE = "hermes send --to slack:"
 
 
 def _card(title: str) -> dict:
@@ -108,12 +110,29 @@ def _card(title: str) -> dict:
     raise AssertionError(f"no kanban card titled {title!r}")
 
 
+def _render_card_report(title: str, ctx: dict[str, str]) -> str:
+    """The delivery instruction as the enqueuer renders it for this card."""
+    card = {
+        key: _ENV.from_string(str(value)).render(**ctx).strip()
+        if key in ("channel", "channel_when_healthy")
+        else value
+        for key, value in _card(title).items()
+    }
+    line = next((l for l in ENQUEUER.splitlines() if CARD_REPORT_LINE in l), None)
+    assert line, "the card delivery instruction moved out of the enqueuer footer"
+    return _ENV.from_string(line).render(**{**ctx, "card": card})
+
+
+def _card_report_channels(title: str, ctx: dict[str, str]) -> list[str]:
+    """Every Slack destination this card can post its report to, in render order."""
+    return [f"slack:{c}" for c in re.findall(r"slack:(\S+)", _render_card_report(title, ctx))]
+
+
 def _card_report_channel(title: str, ctx: dict[str, str]) -> str:
-    """Where this card's report actually goes, rendered as the enqueuer renders it."""
-    card = dict(_card(title))
-    if "channel" in card:
-        card["channel"] = _ENV.from_string(str(card["channel"])).render(**ctx).strip()
-    return _deliver_targets(CARD_REPORT, {**ctx, "card": card}, ENQUEUER)
+    """The single destination for a card that does not split by outcome."""
+    targets = _card_report_channels(title, ctx)
+    assert len(targets) == 1, f"{title} routes to {targets}; use _card_report_channels"
+    return targets[0]
 
 
 SPLUNK_STATUS = r'deliver: "(slack:\{\{ hermes_agent_splunk_status_digest_channel \}\})"'
@@ -189,13 +208,33 @@ def test_the_four_channels_resolve_to_four_distinct_surfaces() -> None:
 
 # --- per-card routing: the recurring board is not one undifferentiated tier ----
 
-def test_the_fabric_status_card_reports_to_the_issues_channel() -> None:
-    """The operator's stated requirement for #hermes-issues: nothing but an
-    hourly daytime all-clear while Hermes and its dependencies are up, and the
-    error detail when they are not. Both halves are this one card's output, so
-    the card posts to issues whether the news is good or bad — which is also
-    what keeps silence in that channel distinguishable from a dead watchdog."""
-    assert _card_report_channel("Homelab AI fabric status", _resolve(CONFIGURED)) == "slack:C_ISSUES"
+def test_the_fabric_status_card_splits_its_report_by_outcome() -> None:
+    """Healthy is FYI and goes to noise; broken is breakage and goes to issues.
+
+    SUPERSEDES an earlier operator preference, recorded here so the reversal is
+    not mistaken for drift. That rule sent BOTH halves to issues, so silence in
+    that channel could be distinguished from a dead watchdog. It did not
+    survive the cadence: this card runs hourly 08-22, so the all-clear half
+    alone put ~15 identical "All systems operational" posts a day into the one
+    channel that has to stay readable — and the operator's later, explicit rule
+    is that nothing repeats in a core channel within 24 hours, with FYI going
+    to noise.
+
+    The dead-watchdog concern is now answered by the fabric_watchdog probe
+    (asserted above) rather than by an hourly all-clear, and quiet in issues
+    now MEANS healthy, which is the signal the all-clear was standing in for.
+    """
+    healthy, broken = _card_report_channels("Homelab AI fabric status", _resolve(CONFIGURED))
+    assert healthy == "slack:C_NOISE"
+    assert broken == "slack:C_ISSUES"
+
+
+def test_an_unset_noise_channel_collapses_the_split_instead_of_dropping_posts() -> None:
+    """Every channel var defaults empty and falls back to prior behaviour, so an
+    unset id must never route a report to `slack:` with nothing after it. With
+    the noise id absent the split disappears and everything goes to issues."""
+    ctx = _resolve({**CONFIGURED, "SLACK_HERMES_NOISE_CHANNEL": ""})
+    assert _card_report_channels("Homelab AI fabric status", ctx) == ["slack:C_ISSUES"]
 
 
 def test_scouting_cards_report_to_the_noise_channel() -> None:
