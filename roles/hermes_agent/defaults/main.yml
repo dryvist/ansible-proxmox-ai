@@ -2435,6 +2435,23 @@ hermes_agent_brain_watchdog_up_after: 2
 # outside a deliberate maintenance window; it converts this watchdog into one
 # that can never report a saturated brain.
 hermes_agent_brain_watchdog_busy_grace_probes: 15
+# Converge a paused fleet back to running whenever the brain probes healthy,
+# instead of relying only on a down->up edge.
+#
+# Without this the fleet can stay paused INDEFINITELY. The DOWN branch pauses
+# the fleet and persists the state in two separate steps, so a kill in that
+# window leaves the jobs paused while the state file still says "up" — and the
+# resume is gated on state == "down", so it never fires. cluster-hermes-pause.yml
+# reaches the same end state by design, since it pauses via ansible and never
+# writes the state file. Nothing else un-pauses: there is no `cron resume` in
+# this role's tasks, so a converge does not repair it either.
+#
+# Safe against deliberate maintenance pauses because that playbook also stops
+# this timer — no timer, no reconcile. A future pause path that leaves the timer
+# running MUST also write the state file, or it will fight this.
+#
+# Set false only to debug a reconcile loop; it re-opens the indefinite pause.
+hermes_agent_brain_watchdog_reconcile_paused: true
 # Flap coalescing (2026-07-18): down_after/up_after debounce brief bounces, but
 # a genuinely UNSTABLE backend still produces one clean alert per edge — a
 # confirmed 31h-unstable backend produced dozens of up/down DM pairs. Once a

@@ -348,3 +348,57 @@ def test_probe_asks_for_the_cheapest_reply_that_still_proves_generation() -> Non
     yields completion_tokens >= 1, which catches a wedged engine reporting zero.
     """
     assert '\\"max_tokens\\":1' in WATCHDOG
+
+
+def test_a_paused_fleet_is_reconciled_not_only_edge_resumed() -> None:
+    """THE INDEFINITE-PAUSE HOLE.
+
+    The DOWN branch pauses the fleet and persists the state in two separate
+    steps. A kill between them leaves every brain-dependent job paused while the
+    state file still reads "up", and the resume is gated on state == "down" — so
+    it never fires. The fleet then stays paused until some future outage happens
+    to complete a whole down->up cycle, which may never come.
+
+    cluster-hermes-pause.yml reaches the identical end state by design, because
+    it pauses via ansible and never writes the state file at all.
+    """
+    assert "reconcile_fleet" in WATCHDOG, "a healthy brain must converge the fleet to running"
+    # It must run on the healthy path when NO edge fired — that is the stuck case.
+    up_branch = WATCHDOG.split("  up)", 1)[1].split("  busy)", 1)[0]
+    assert "reconcile_fleet" in up_branch
+    assert "else" in up_branch, "reconcile must run when the up-edge branch did NOT fire"
+
+
+def test_reconcile_is_silent_and_only_touches_the_seeded_fleet() -> None:
+    """Repair is not an incident.
+
+    Paging on a reconcile would re-create exactly the alert noise this watchdog
+    exists to suppress, and reconciling jobs the watchdog does not own would
+    undo a human's deliberate pause.
+    """
+    body = WATCHDOG.split("reconcile_fleet() {", 1)[1].split("\n}", 1)[0]
+    assert "SEEDED_JOBS" in body, "reconcile must be scoped to the fleet the watchdog owns"
+    assert "logger" in body, "reconcile must leave an audit trail"
+    for noisy in ("slack_post", "ntfy", "handle_edge"):
+        assert noisy not in body, f"reconcile must not {noisy} — repair is not an incident"
+
+
+def test_reconcile_cannot_be_disabled_by_default() -> None:
+    """Disabling it re-opens the indefinite pause, so the default must be on."""
+    match = re.search(
+        r"^hermes_agent_brain_watchdog_reconcile_paused:\s*(\w+)", DEFAULTS, re.M
+    )
+    assert match is not None, "the reconcile toggle must exist as a role default"
+    assert match.group(1) == "true"
+
+
+def test_the_converge_resume_claim_is_not_reintroduced() -> None:
+    """The old comment claimed a converge re-resumes a paused fleet. It does not:
+    the role's tasks contain no `cron resume` at all. Pin the correction so the
+    false reassurance cannot come back and mask the hole again.
+    """
+    tasks = (ROLE / "tasks" / "main.yml").read_text()
+    assert "cron resume" not in tasks.replace("# ", ""), (
+        "if a real `cron resume` task was added, update this test and the watchdog comment"
+    )
+    assert "converge re-resumes" not in WATCHDOG

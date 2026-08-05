@@ -34,6 +34,8 @@ UP_AFTER="{{ hermes_agent_brain_watchdog_up_after }}"
 # Consecutive busy (429 / probe-deadline) probes tolerated before a saturated
 # brain is escalated to DOWN. Keeps "busy" from becoming a permanent mute.
 BUSY_GRACE_PROBES="{{ hermes_agent_brain_watchdog_busy_grace_probes }}"
+# 1 = converge a paused fleet back to running whenever the brain is healthy.
+RECONCILE_PAUSED="{{ 1 if hermes_agent_brain_watchdog_reconcile_paused else 0 }}"
 NTFY_URL="{{ hermes_agent_brain_watchdog_ntfy_url }}"
 # External deadman OK-ping target (silent-Mac / LXC-down backstop). Full ping URL
 # from the environment; empty = no-op. See defaults + hc_ping below.
@@ -349,13 +351,65 @@ flap_summary_check() {
         "${FLAP_SINCE_EPOCH_FILE}" "${SUSTAINED_REARM_FILE}"
 }
 
+# --- Reconcile the fleet to "running" whenever the brain is healthy -----------
+# Edge-triggered resume alone is not enough, because the pause and the state
+# write are SEPARATE operations in the DOWN branch below:
+#
+#     cron_do pause            <- the fleet is paused here
+#     handle_edge down
+#     state="down"
+#     ...
+#     printf '%s\n' "${state}" > "${STATE_FILE}"   <- persisted only here
+#
+# Kill the process anywhere in that window (SIGKILL, OOM, host reset, container
+# stop) and the fleet is paused while the persisted state still reads "up". The
+# resume branch is gated on state == "down", so it can never fire: the fleet
+# stays paused until a NEW outage happens to complete a full down->up cycle. If
+# the brain never goes down again, it stays paused forever, silently, with every
+# brain-dependent job simply not running.
+#
+# The same hole is reached by an entirely routine path: cluster-hermes-pause.yml
+# pauses via ansible and never touches the state file at all.
+#
+# Converging to desired state repairs both without needing the write to be
+# atomic. Deliberate maintenance pauses are NOT undone, because that playbook
+# also stops this timer — no timer, no reconcile. That interlock is what makes
+# this safe; if a future pause path leaves the timer running, it must set the
+# state file too or this will fight it.
+#
+# Silent by design (logger only, no Slack/ntfy): this is repair, not an
+# incident, and paging on it would re-create the noise this watchdog exists to
+# suppress.
+reconcile_fleet() {
+  local board job stuck=0
+  [[ "${RECONCILE_PAUSED}" == "1" ]] || return 0
+  board="$("${HERMES_BIN}" cron list --all 2>/dev/null)" || return 0
+  [[ -n "${board}" ]] || return 0
+  for job in "${SEEDED_JOBS[@]}"; do
+    if grep -B1 -E "^ *Name: +${job}\$" <<< "${board}" | grep -q "\[paused\]"; then
+      stuck=$(( stuck + 1 ))
+    fi
+  done
+  (( stuck > 0 )) || return 0
+  logger -t hermes-brain-watchdog \
+    "reconcile: ${stuck} seeded job(s) paused while the brain is healthy and state=up; resuming"
+  cron_do resume
+  logger -t hermes-brain-watchdog \
+    "reconcile: resumed ${CRON_SUCCEEDED}, failed ${CRON_FAILED}"
+}
+
 # --- Debounced state machine -------------------------------------------------
 # state: up|down (default up so a fresh start never emits a spurious recovery).
 # streak: signed run of consecutive same-result probes (+ok / -fail). A DOWN edge
 # needs DOWN_AFTER consecutive fails, an UP edge UP_AFTER consecutive oks — this
 # rides brief bounces (rotation flips, cold reloads) so the watchdog never becomes
-# a new source of spam. ponytail: if state is ever lost while paused (persistent
-# ZFS makes this rare), the next real down->up cycle or a converge re-resumes.
+# a new source of spam.
+#
+# The resume is RECONCILED, not only edge-triggered — see reconcile_fleet below.
+# This comment used to claim "the next real down->up cycle or a converge
+# re-resumes"; the second half was FALSE. There is no `hermes cron resume`
+# anywhere in this role's tasks (only two comments mention the word), so a
+# converge never un-paused anything.
 mkdir -p "${STATE_DIR}"
 STATE_FILE="${STATE_DIR}/state"
 STREAK_FILE="${STATE_DIR}/streak"
@@ -388,6 +442,8 @@ case "${result}" in
       cron_do resume
       handle_edge up
       state="up"; streak=0
+    else
+      reconcile_fleet
     fi
     ;;
   busy)
