@@ -866,12 +866,16 @@
 
 # SOUL.md = the persona/behavior surface upstream loads FRESH on every message
 # (no restart needed) — the role the AGENTS.md chain plays for Claude Code.
-# The bundle composes it at BUILD time from ai-assistant-instructions'
-# agentsmd/prompts/autonomous-base.md + nix-hermes data/soul/hermes-variant.md
-# (edit intent in those sources, never a vendored copy here). Ansible owns the
-# file; Hermes self-edits MEMORY.md, not SOUL.md, so no agent-written state is
-# overwritten. backup:true preserves the pre-management content once on first
-# converge.
+# The bundle composes it at BUILD time from the ai-llm-prompts flake input:
+# auto-ai-agent/autonomous-base.md + auto-ai-agent/hermes.md, with their OKF
+# frontmatter stripped (see nix-hermes lib/bundle.nix). Edit intent in THOSE
+# sources. nix-hermes vendors no prompt of its own — the path this comment used
+# to name, data/soul/hermes-variant.md, no longer exists, and looking for it
+# costs a real detour.
+#
+# Ansible owns the file; Hermes self-edits MEMORY.md, not SOUL.md, so no
+# agent-written state is overwritten. backup:true preserves the pre-management
+# content once on first converge.
 - name: Deploy the Hermes SOUL.md (shared behavioral base + Hermes variant)
   ansible.builtin.copy:
     src: "{{ hermes_agent_bundle_path }}/SOUL.md"
@@ -881,6 +885,26 @@
     mode: "0644"
     backup: true
   when: hermes_agent_soul_managed | bool
+
+# USER.md = what Hermes knows about the operator. Upstream loads it alongside
+# MEMORY.md (config.yaml sets user_profile_enabled), and BOTH are agent-owned:
+# Hermes edits this file as it learns, so a converge that rewrote it would
+# silently delete everything the agent had figured out.
+#
+# force: no is therefore the whole point, and is NOT the SOUL.md pattern above —
+# SOUL.md is role-owned and re-copied every run. This seeds the file once, on a
+# guest that has none, and never touches it again. The seed carries only what
+# the operator has stated directly (working hours, output expectations, the
+# write-routing law); everything else Hermes learns and writes itself.
+- name: Seed the Hermes operator profile (USER.md) if the agent has none yet
+  ansible.builtin.template:
+    src: USER.md.j2
+    dest: "{{ hermes_agent_hermes_home }}/USER.md"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0644"
+    force: false
+  when: hermes_agent_seed_user_profile | bool
 
 # --- Hindsight memory: local embedded daemon ---------------------------------
 # The provider name in config.yaml is not enough: hindsight defaults to CLOUD

@@ -151,6 +151,63 @@ def test_the_news_card_is_the_canary_lift_off_the_pause_list() -> None:
     assert "{{ hermes_agent_daily_innovation_cron_name }}" in paused
 
 
+def _news_card() -> dict:
+    for card in DEFAULTS["hermes_agent_kanban_cards"]:
+        if card["job"] == "{{ hermes_agent_ai_news_cron_name }}":
+            return card
+    raise AssertionError("the ai-news card is missing from hermes_agent_kanban_cards")
+
+
+def _slot_stamp(hour: int, interval: int) -> str:
+    """The slot suffix kanban-enqueue-recurring.sh.j2 would compute for an hour.
+
+    Mirrors slot_stamp() for the sub-daily branch only, which is the one the
+    news card uses. A mirror rather than a call because the shell function is
+    inline in a script the test cannot source.
+    """
+    return f"T{hour:02d}" if interval <= 1 else f"s{hour // interval}"
+
+
+def test_every_scheduled_news_run_gets_a_distinct_dedup_slot() -> None:
+    """The operator asked for four digests a day at times around their working
+    day, which makes the schedule UNEVENLY spaced (0, 12, 16, 19 UTC).
+
+    slot_stamp() keys the enqueuer's idempotency suffix on floor(hour/interval)
+    for any interval > 1, so an interval that does not divide the spacing makes
+    two runs collide on one key — and a duplicate key is a successful no-op,
+    not an error, so the lost digest is SILENT. At the previous interval_hours
+    of 4, both 16:00 and 19:00 mapped to s4 and the sign-off digest would have
+    been dropped as a repeat of midday.
+
+    Pins the invariant, not the number: whatever the schedule and interval are,
+    every scheduled hour must produce its own slot.
+    """
+    card = _news_card()
+    interval = int(card["interval_hours"])
+    schedule = DEFAULTS["hermes_agent_ai_news_cron_schedule"]
+    hours = [int(h) for h in schedule.split()[1].split(",")]
+
+    stamps = [_slot_stamp(h, interval) for h in hours]
+    assert len(set(stamps)) == len(hours), (
+        f"interval_hours={interval} collapses {hours} onto {stamps}; "
+        "runs sharing a slot are silently deduped away"
+    )
+
+
+def test_the_news_schedule_matches_the_operators_day() -> None:
+    """Four fixed times, not a round interval: before work, midday, just before
+    sign-off, bedtime. Recorded as UTC because hermes_agent_timezone is UTC;
+    these are the EDT (UTC-4) conversions the operator asked for."""
+    assert DEFAULTS["hermes_agent_timezone"] == "UTC", (
+        "the news schedule below is written in UTC; if the role timezone moves, "
+        "these hours must be recomputed rather than inherited"
+    )
+    hours = sorted(
+        int(h) for h in DEFAULTS["hermes_agent_ai_news_cron_schedule"].split()[1].split(",")
+    )
+    assert hours == [0, 12, 16, 19]
+
+
 def test_the_innovation_card_reads_the_scouts_finds() -> None:
     """The operator's ask is suggestions informed by news — the innovation card
     is the proposal vehicle, so it must consult the scout's trail."""

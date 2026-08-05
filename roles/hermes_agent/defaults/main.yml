@@ -413,11 +413,26 @@ hermes_agent_dashboard_oidc_issuer: "https://authelia.{{ lookup('env', 'PROXMOX_
 hermes_agent_dashboard_oidc_client_id: hermes-dashboard
 
 # --- Persona: the shared behavioral base (SOUL.md) ----------------------------
-# Deploy templates/SOUL.md.j2 (shared autonomous base prompt + Hermes variant,
-# vendored from ai-assistant-instructions agentsmd/prompts/autonomous-base.md)
-# over the upstream-default persona. Upstream reloads SOUL.md per message.
+# Copy the composed SOUL.md out of the pinned nix-hermes bundle
+# (hermes_agent_bundle_flake_ref above) over the upstream-default persona.
+# Upstream reloads SOUL.md per message, so no restart is needed.
+#
+# There is no SOUL.md.j2 in this role and nothing is vendored from
+# ai-assistant-instructions — this comment claimed both for a while. The content
+# is composed at BUILD time by nix-hermes from the ai-llm-prompts flake input
+# (auto-ai-agent/autonomous-base.md + auto-ai-agent/hermes.md); edit intent
+# THERE, then release nix-hermes and bump the pin.
+#
 # Flip false to hand the file back to manual/agent ownership.
 hermes_agent_soul_managed: true
+
+# The operator profile Hermes keeps about the person it works for. Seeded ONCE
+# from templates/USER.md.j2 and then owned by the agent — upstream loads it
+# alongside MEMORY.md (config.yaml sets user_profile_enabled) and Hermes edits it
+# as it learns, so the deploy task uses force:false and a converge never
+# overwrites it. Flip false to skip seeding entirely on a guest that should start
+# with no profile at all.
+hermes_agent_seed_user_profile: true
 
 # --- Inbound job-submission API (`api_server` platform) ----------------------
 # The `hermes gateway` api_server platform: a bearer-authenticated HTTP API
@@ -1254,7 +1269,11 @@ hermes_agent_kanban_reviewer_job: review
 hermes_agent_kanban_reviewer_schedule: "0 */8 * * *"
 hermes_agent_reviewer_card_prompt: >-
   You are the Hermes 8-hour self-review. Cadence: three slots per UTC day at
-  00:00, 08:00, 16:00 — slot number N = floor(UTC hour / 8), so s0/s1/s2. Do
+  00:00, 08:00, 16:00 — slot number N = floor(UTC hour / 8), so s0/s1/s2.
+  Retrieval first: recall memory key "review-last" (the gaps you already
+  reported and filed follow-ups for) so a gap that is still open does not get
+  re-reported in every slot — an unfixed problem is not a new finding, and
+  repeating it three times a day is what makes the digest unreadable. Do
   all of the following, then stop. (1) Review the last 8h of Kanban activity:
   list the done, blocked, and triage cards and read `kanban runs` (task-run
   outcomes). Identify anything that failed, is stuck/blocked, or a recurring
@@ -1266,7 +1285,11 @@ hermes_agent_reviewer_card_prompt: >-
   destination here: what ran, what failed or is
   blocked, what you filed — deltas and action items only, no Markdown tables.
   Self-check before posting: every gap in step 2 has a follow-up card, and the
-  digest names each one. (4) Continue the chain: compute the NEXT slot key as
+  digest names each one, and every gap you are about to report is genuinely
+  absent from "review-last" — drop the ones that are not, and say in one line
+  how many you suppressed as still-open rather than listing them again. Save the
+  updated gap fingerprint back to "review-last". (4) Continue the chain: compute
+  the NEXT slot key as
   review-<UTC-date>-s<N>
   (after s2, use s0 of the NEXT UTC day) and call kanban_create with that exact
   idempotency-key, the same title as this card, the SAME body as this card, and
@@ -1377,7 +1400,22 @@ hermes_agent_docs_study_cron_prompt: >-
 # daily-status-endpoints shape. The prompt now fails loudly when search is
 # down instead of letting the model improvise headlines.
 hermes_agent_ai_news_cron_name: ai-news
-hermes_agent_ai_news_cron_schedule: "17 */4 * * *"
+# Four fixed times a day, chosen by the operator around their actual working
+# day rather than a round interval: before work, midday, just before sign-off,
+# and bedtime. These are UTC expressions (hermes_agent_timezone is UTC) tuned
+# for EDT (UTC-4):
+#
+#   12:00 UTC -> 08:00 ET   before work
+#   16:00 UTC -> 12:00 ET   midday
+#   19:00 UTC -> 15:00 ET   just before sign-off
+#   00:00 UTC -> 20:00 ET   bedtime (the previous ET day)
+#
+# DST HAZARD, stated so the next reader does not have to rediscover it: when ET
+# returns to EST (UTC-5) in November these all land an hour earlier — 07:00,
+# 11:00, 14:00, 19:00 ET. The durable fix is a per-card timezone or moving the
+# role off UTC, which would shift every OTHER seeded schedule here and so is
+# deliberately not done in this change. Tracked in Vikunja.
+hermes_agent_ai_news_cron_schedule: "13 0,12,16,19 * * *"
 hermes_agent_ai_news_cron_prompt: >-
   You are the Hermes news scout (every 4 hours): read the news and turn it into
   AT MOST 3 suggestions the operator can act on, tuned to their interests.
@@ -1627,6 +1665,15 @@ hermes_agent_profiles:
 #                  empty -> the work channel. Set it where a card's output is
 #                  categorically not work: fabric health is Hermes' own state
 #                  (issues), scouting cards are reading material (noise).
+#   channel_when_healthy
+#                  OPTIONAL second destination, used when EVERY check in the run
+#                  came back healthy; anything failed, unreachable or unexpected
+#                  still goes to `channel`. For a card that runs often, the
+#                  all-clear and the failure are different kinds of message: the
+#                  failure is breakage, the all-clear is FYI, and sending both to
+#                  the breakage channel is what makes that channel unreadable.
+#                  Omitted or empty -> no split, everything goes to `channel`,
+#                  which is also what happens when the target id is unset.
 #   terse_when_healthy
 #                  OPTIONAL. Inverts the report contract for cards whose channel
 #                  must stay quiet: all-healthy collapses to one line, and only
@@ -1654,10 +1701,24 @@ hermes_agent_kanban_cards:
     schedule: "{{ hermes_agent_daily_status_cron_schedule }}"
     prompt_var: hermes_agent_daily_status_cron_prompt
     assignee: homelab-admin
-    # Hermes reporting on its OWN fabric is not work output: healthy is the
-    # hourly all-clear the operator asked for in-channel, unhealthy is breakage.
-    # Both belong on the issues surface, so the channel is never silent.
+    # SPLIT BY OUTCOME 2026-08-05. The previous rule sent healthy AND unhealthy
+    # to the issues surface, reasoning that Hermes reporting on its own fabric is
+    # never work output and the channel should never go silent. The breakage half
+    # of that still holds and is unchanged. The healthy half did not survive
+    # contact: this card runs hourly 08-22, so an all-clear-to-issues is ~15
+    # "everything is fine" posts a day in the one channel that must stay
+    # readable, and the operator's rule is that FYI belongs in noise.
+    #
+    # An hourly all-clear is FYI by definition, so it goes to noise; a failed,
+    # unreachable, or unexpected check is breakage and still goes to issues. The
+    # channel is still never silent — quiet in issues now MEANS healthy, which is
+    # the signal an all-clear was standing in for.
+    #
+    # If the noise channel id is unset, channel_when_healthy renders empty and
+    # the footer falls back to posting everything to `channel` — i.e. exactly
+    # today's behaviour, per the unset-var rule documented at the channel vars.
     channel: "{{ hermes_agent_slack_issues_channel }}"
+    channel_when_healthy: "{{ hermes_agent_slack_noise_channel }}"
     terse_when_healthy: true
     max_runtime: "45m"
     max_retries: 2
@@ -1877,7 +1938,18 @@ hermes_agent_kanban_cards:
   # profile: default — home-channel curation, web only, cross-domain
   - job: "{{ hermes_agent_ai_news_cron_name }}"
     title: "AI news scout"
-    interval_hours: 4
+    # 1, NOT 4, and this is load-bearing rather than cosmetic. The schedule is
+    # four fixed UTC hours (0, 12, 16, 19), and slot_stamp() in
+    # kanban-enqueue-recurring.sh.j2 keys the idempotency suffix on
+    # floor(hour/interval) for any interval > 1. At 4 that maps BOTH 16:00 and
+    # 19:00 to slot s4, so the sign-off digest would collide with the midday one
+    # and be dropped as an already-enqueued duplicate — silently, since a
+    # duplicate key is a successful no-op, not an error. At 1 the stamp is the
+    # hour itself (%Y-%m-%dT%H), so each of the four runs gets a distinct key.
+    #
+    # The rule to carry forward: interval_hours must divide the schedule's
+    # spacing evenly, and an unevenly spaced schedule therefore requires 1.
+    interval_hours: 1
     schedule: "{{ hermes_agent_ai_news_cron_schedule }}"
     prompt_var: hermes_agent_ai_news_cron_prompt
     assignee: ""
