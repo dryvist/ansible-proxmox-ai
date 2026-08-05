@@ -2381,10 +2381,18 @@ hermes_agent_brain_watchdog_interval: "60s"
 # answers a probe one of two ways and nothing in between: the slot is free and it
 # returns in well under a second, or the slot is busy, the router takes a 429 and
 # sleeps retry_after before trying again. A deadline below retry_after can
-# therefore only ever time out on a busy slot — it measures "is the slot free
-# right now", not "can the brain serve", and turns ordinary saturation into a
-# DOWN edge. 45 clears 40 with headroom while staying under the 60s interval, so
-# probes cannot overlap. Raise this in step with retry_after, never below it.
+# therefore never see a retry succeed — it measures "is the slot free right now",
+# not "can the brain serve". 45 clears 40 with headroom while staying under the
+# 60s interval, so probes cannot overlap. Raise this in step with retry_after,
+# never below it — assert.yml now enforces that pairing instead of this comment.
+#
+# 2026-08-05: this ceiling admits exactly ONE router retry (40s sleep + a
+# sub-second 1-token generation ~= 40.5s), so a probe needing two retries still
+# hits the deadline. That is now HARMLESS rather than a false outage: the
+# watchdog classifies curl rc 28 as busy, not down (see probe_state in
+# templates/hermes-brain-watchdog.sh.j2). Do NOT raise this past the interval to
+# buy more retries — overlapping probes would compound the contention they are
+# measuring. Widen hermes_agent_brain_watchdog_busy_grace_probes instead.
 hermes_agent_brain_watchdog_probe_timeout: 45
 # Hysteresis: consecutive failures before declaring DOWN (pause+alert), and
 # consecutive successes before declaring UP (resume+alert). down_after=3 over the
@@ -2398,6 +2406,22 @@ hermes_agent_brain_watchdog_probe_timeout: 45
 # a flapping-wedge class dominates.
 hermes_agent_brain_watchdog_down_after: 3
 hermes_agent_brain_watchdog_up_after: 2
+# Consecutive BUSY probes (HTTP 429, or curl rc 28 while the router sleeps
+# between rate-limit retries) tolerated before the brain is escalated to DOWN.
+#
+# Busy means alive-and-declining-work, so it must not trip a DOWN edge — that
+# misclassification is what made ordinary contention pause the cron fleet and
+# page hourly (57% of gate requests were 429 over 2026-08-01..08-05, each one
+# counted as an outage). But busy must not become a permanent mute either: if
+# nothing can serve a single 1-token probe for this many cycles, real jobs are
+# failing too, because the router itself gives up after
+# rate_limit_retries x retry_after (~320s).
+#
+# 15 at the 60s cadence = 15 minutes of unbroken saturation before paging, ~3x
+# the router's own tolerance. Set 0 to disable the escalation entirely — do not,
+# outside a deliberate maintenance window; it converts this watchdog into one
+# that can never report a saturated brain.
+hermes_agent_brain_watchdog_busy_grace_probes: 15
 # Flap coalescing (2026-07-18): down_after/up_after debounce brief bounces, but
 # a genuinely UNSTABLE backend still produces one clean alert per edge — a
 # confirmed 31h-unstable backend produced dozens of up/down DM pairs. Once a

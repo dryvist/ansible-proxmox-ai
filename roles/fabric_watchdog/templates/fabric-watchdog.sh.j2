@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
 #
-# Fabric watchdog: probe each configured endpoint; on an up/down TRANSITION
-# (state file differs), post one Slack message. No debounce beyond the timer
-# interval — a 2-min cadence with transition-only alerts is already quiet, and
-# the endpoints sit behind health-checked Traefik pools that absorb single-node
-# blips. Secrets come from the systemd unit's EnvironmentFile.
+# Fabric watchdog: probe each configured endpoint; on a DEBOUNCED up/down
+# transition, post one Slack message.
+#
+# Transition-only alerting was NOT enough on its own. The original design
+# assumed "a 2-min cadence with transition-only alerts is already quiet, and the
+# endpoints sit behind health-checked Traefik pools that absorb single-node
+# blips" — but with an 8s probe deadline and no debounce, any single slow
+# response is a transition, and the recovery 2 minutes later is another. A
+# 13-day audit found 86 messages in the work channel, several of them
+# recoveries with no matching DOWN. One blip must not be able to speak.
+#
+# Hysteresis matches the brain watchdog: an edge needs DOWN_AFTER/UP_AFTER
+# consecutive identical observations before it is committed and alerted.
+# Secrets come from the systemd unit's EnvironmentFile.
 set -uo pipefail
 
 STATE_DIR="{{ fabric_watchdog_state_dir }}"
 TIMEOUT="{{ fabric_watchdog_probe_timeout }}"
+DOWN_AFTER="{{ fabric_watchdog_down_after }}"
+UP_AFTER="{{ fabric_watchdog_up_after }}"
 SLACK_TOKEN="${SLACK_BOT_TOKEN:-}"
 SLACK_USER="${SLACK_ALLOWED_USERS:-}"
 # Channel wins when provided; else DM the first allowed user (brain-watchdog
@@ -34,13 +45,25 @@ code="$(curl -sS -o /dev/null --max-time "${TIMEOUT}" -w '%{http_code}' '{{ t.ur
 state="down"
 case " {{ t.ok_codes }} " in *" ${code} "*) state="up" ;; esac
 prev="$(cat "${STATE_DIR}/{{ t.name }}.state" 2>/dev/null || echo up)"
+# Consecutive observations matching the CURRENT reading. Reset whenever the
+# reading flips, so a flapping endpoint never accumulates its way to an edge.
+last_obs="$(cat "${STATE_DIR}/{{ t.name }}.obs" 2>/dev/null || echo "${prev}")"
+streak="$(cat "${STATE_DIR}/{{ t.name }}.streak" 2>/dev/null || echo 0)"
+[[ "${streak}" =~ ^[0-9]+$ ]] || streak=0
+if [[ "${state}" == "${last_obs}" ]]; then streak=$(( streak + 1 )); else streak=1; fi
+printf '%s\n' "${state}" > "${STATE_DIR}/{{ t.name }}.obs"
+printf '%s\n' "${streak}" > "${STATE_DIR}/{{ t.name }}.streak"
+
 if [[ "${state}" != "${prev}" ]]; then
-  if [[ "${state}" == "down" ]]; then
-    slack_post ":rotating_light: fabric watchdog: {{ t.name }} DOWN — {{ t.url }} returned HTTP ${code} (expected one of: {{ t.ok_codes }})"
-  else
-    slack_post ":white_check_mark: fabric watchdog: {{ t.name }} recovered — {{ t.url }} returned HTTP ${code}"
+  if [[ "${state}" == "down" ]]; then needed="${DOWN_AFTER}"; else needed="${UP_AFTER}"; fi
+  if (( streak >= needed )); then
+    if [[ "${state}" == "down" ]]; then
+      slack_post ":rotating_light: fabric watchdog: {{ t.name }} DOWN — {{ t.url }} returned HTTP ${code} (expected one of: {{ t.ok_codes }})"
+    else
+      slack_post ":white_check_mark: fabric watchdog: {{ t.name }} recovered — {{ t.url }} returned HTTP ${code}"
+    fi
+    printf '%s\n' "${state}" > "${STATE_DIR}/{{ t.name }}.state"
   fi
-  echo "${state}" > "${STATE_DIR}/{{ t.name }}.state"
 fi
 {% endfor %}
 
