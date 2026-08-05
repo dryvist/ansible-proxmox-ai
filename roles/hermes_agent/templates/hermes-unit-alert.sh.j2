@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+#
+# Fired by the OnFailure= of a long-running Hermes unit that hit its
+# StartLimitBurst — systemd has STOPPED restarting it, so the service is now
+# down and will stay down until someone acts. That is exactly the state that
+# used to be invisible: Restart=always with no start-rate limit meant a
+# config-broken unit looped every few seconds forever with no signal at all.
+#
+# Runs as root with no dependency on the hermes user, $HERMES_HOME, or .env,
+# deliberately independent of the stack that just broke — same reasoning as
+# hermes-brain-watchdog-alert.sh, so a broken environment cannot also silence
+# the alert about itself.
+set -uo pipefail
+
+UNIT="${1:-unknown}"
+NTFY_URL="{{ hermes_agent_brain_watchdog_ntfy_url }}"
+HOST="$(hostname)"
+MSG=":rotating_light: ${UNIT} failed on ${HOST} and systemd has STOPPED restarting it (start-rate limit hit). It is down until manually reset: systemctl reset-failed ${UNIT} && systemctl start ${UNIT}. journalctl -u ${UNIT} for the cause."
+
+logger -t hermes-unit-alert "${MSG}"
+
+[[ -n "${NTFY_URL}" ]] || exit 0
+curl -fsS --max-time 8 -H "Title: ${UNIT} stopped restarting" -H "Priority: urgent" \
+  -H "Tags: rotating_light,skull" -d "${MSG}" "${NTFY_URL}" > /dev/null 2>&1 || true
+exit 0
