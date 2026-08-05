@@ -31,6 +31,9 @@ PROBE_URL="${BASE_URL}/chat/completions"
 PROBE_TIMEOUT="{{ hermes_agent_brain_watchdog_probe_timeout }}"
 DOWN_AFTER="{{ hermes_agent_brain_watchdog_down_after }}"
 UP_AFTER="{{ hermes_agent_brain_watchdog_up_after }}"
+# Consecutive busy (429 / probe-deadline) probes tolerated before a saturated
+# brain is escalated to DOWN. Keeps "busy" from becoming a permanent mute.
+BUSY_GRACE_PROBES="{{ hermes_agent_brain_watchdog_busy_grace_probes }}"
 NTFY_URL="{{ hermes_agent_brain_watchdog_ntfy_url }}"
 # External deadman OK-ping target (silent-Mac / LXC-down backstop). Full ping URL
 # from the environment; empty = no-op. See defaults + hc_ping below.
@@ -76,37 +79,69 @@ SLACK_USER="${SLACK_ALLOWED_USERS:-}"
 SLACK_ALERT_CHANNEL="${SLACK_ALERT_CHANNEL:-}"
 
 # --- Probe: a tiny real completion, mirroring what the crons actually do ------
+# THREE states, not two: up | busy | down. Busy is the one that matters — see
+# "Saturation is not an outage" below.
+#
 # Healthy iff HTTP 200 AND the body carries a real finish_reason. HTTP code
 # alone is NOT health: when the MLX engine's batch scheduler wedges (2026-07-16
 # broadcast_shapes incident) every completion returns HTTP 200 with
 # `"finish_reason":"error"` and zero tokens — the code-only probe stayed green
-# for hours while every cron failed. A connection error (curl fails -> 000), a
-# 5xx, an auth 4xx, a hang past PROBE_TIMEOUT, or a 200-wrapped error body all
-# read as DOWN — the same failures that would fail a cron. It hits the
-# already-active rotation model (no cold-model spawn), and probing on this
-# cadence keeps the brain warm, which matches the intended 24/7 posture.
+# for hours while every cron failed. A connection error, a 5xx, an auth 4xx, or
+# a 200-wrapped error body all read as DOWN — the same failures that fail a cron.
+#
+# SATURATION IS NOT AN OUTAGE. The serving host admits one request at a time
+# (proxy.concurrencyLimit) and rejects the rest with an instant 429 — measured
+# at 18.8us, i.e. a live server declining work, not a dead one. Over 2026-08-01
+# .. 08-05, 57% of all gate requests were 429 and the watchdog counted every one
+# of them as DOWN, so ordinary contention paused the whole cron fleet and paged.
+# Meanwhile the REAL work path tolerates exactly this for ~320s
+# (llm_router rate_limit_retries x retry_after), so the watchdog was declaring
+# outages in conditions where every job it protects succeeds. That asymmetry —
+# not the 429 — was the defect. Same classification the MLX-side watchdog
+# already uses (nix-ai modules/mlx/mlx-watchdog.sh: `429 -> busy`).
+#
+# curl rc 28 (our own deadline) is ALSO busy, and is in fact the common case:
+# the router sleeps retry_after between rate-limit retries, so a saturated brain
+# usually starves the probe of a reply rather than handing it a 429. Every other
+# curl failure (7 refused, 6 DNS, 35 TLS) is a genuine reachability fault.
+#
+# Busy is NOT free: it holds state rather than clearing it, and the caller
+# escalates a sustained busy run to DOWN (BUSY_GRACE_PROBES) — a brain that
+# cannot serve one 1-token probe for that long is failing real work too.
 # ponytail: grep on the body, no jq and no temp file on the guest.
-probe_ok() {
-  local response code body
+probe_state() {
+  local response code body rc
   # Body and status code in one call: -w appends the code on its own line
-  # after the body, so no temp file is needed on a 60s cadence.
+  # after the body, so no temp file is needed on this cadence.
+  # max_tokens 1 = the cheapest reply that still proves completion_tokens >= 1;
+  # it finishes on "length", which the finish_reason set below accepts.
   response="$(curl -sS -w '\n%{http_code}' --max-time "${PROBE_TIMEOUT}" \
     -X POST "${PROBE_URL}" \
     -H "Authorization: Bearer ${API_KEY}" \
     -H "Content-Type: application/json" \
-    -d "{\"model\":\"${MODEL}\",\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}" \
-    2>/dev/null)" || return 1
+    -d "{\"model\":\"${MODEL}\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}" \
+    2>/dev/null)"
+  rc=$?
+  if (( rc != 0 )); then
+    (( rc == 28 )) && { printf 'busy'; return; }
+    printf 'down'; return
+  fi
   code="${response##*$'\n'}"
   body="${response%$'\n'*}"
+  # The gate answered and declined work: proof of life. Never an outage.
+  [[ "${code}" == "429" ]] && { printf 'busy'; return; }
   # stop|length|tool_calls = the model really generated; "error" (or a body
   # with no finish_reason at all) = broken regardless of the 200. The
   # finish_reason check alone is not enough: LiteLLM can remap an upstream
   # finish_reason "error" to "stop" (core_helpers "Unmapped finish_reason
   # 'error', defaulting to 'stop'", seen live 2026-07-16), so also require
   # completion_tokens >= 1 — a wedged engine always reports 0.
-  [[ "${code}" == "200" ]] \
+  if [[ "${code}" == "200" ]] \
     && grep -Eq '"finish_reason"[[:space:]]*:[[:space:]]*"(stop|length|tool_calls)"' <<< "${body}" \
-    && grep -Eq '"completion_tokens"[[:space:]]*:[[:space:]]*[1-9]' <<< "${body}"
+    && grep -Eq '"completion_tokens"[[:space:]]*:[[:space:]]*[1-9]' <<< "${body}"; then
+    printf 'up'; return
+  fi
+  printf 'down'
 }
 
 # --- Cron fleet control (best-effort; idempotent) ----------------------------
@@ -328,25 +363,51 @@ state="$(cat "${STATE_FILE}" 2>/dev/null || echo up)"
 [[ -n "${state}" ]] || state=up
 streak="$(cat "${STREAK_FILE}" 2>/dev/null || echo 0)"
 [[ "${streak}" =~ ^-?[0-9]+$ ]] || streak=0
+# Consecutive busy (429 / probe-deadline) probes. Separate from `streak` so
+# contention neither trips a DOWN edge nor counts as recovery.
+BUSY_FILE="${STATE_DIR}/busy"
+busy="$(cat "${BUSY_FILE}" 2>/dev/null || echo 0)"
+[[ "${busy}" =~ ^[0-9]+$ ]] || busy=0
 
-if probe_ok; then
-  hc_ping   # external deadman OK: brain reachable this cycle (silent-Mac / LXC-down backstop)
-  if (( streak < 0 )); then streak=1; else streak=$(( streak + 1 )); fi
-  if [[ "${state}" == "down" ]] && (( streak >= UP_AFTER )); then
-    cron_do resume
-    handle_edge up
-    state="up"; streak=0
-  fi
-else
-  if (( streak > 0 )); then streak=-1; else streak=$(( streak - 1 )); fi
-  if [[ "${state}" == "up" ]] && (( streak <= -DOWN_AFTER )); then
-    cron_do pause
-    handle_edge down
-    state="down"; streak=0
-  fi
+result="$(probe_state)"
+# Sustained saturation IS a fault: nothing has been able to serve a 1-token
+# probe for BUSY_GRACE_PROBES cycles, which real jobs cannot survive either
+# (the router gives up after ~320s). Escalate to the normal DOWN path rather
+# than staying quiet forever — this is what stops "busy" from becoming a mute
+# switch. Cleared by any single up or down verdict.
+if [[ "${result}" == "busy" ]] && (( BUSY_GRACE_PROBES > 0 && busy + 1 >= BUSY_GRACE_PROBES )); then
+  result="down"
 fi
+
+case "${result}" in
+  up)
+    busy=0
+    hc_ping   # external deadman OK: brain reachable this cycle (silent-Mac / LXC-down backstop)
+    if (( streak < 0 )); then streak=1; else streak=$(( streak + 1 )); fi
+    if [[ "${state}" == "down" ]] && (( streak >= UP_AFTER )); then
+      cron_do resume
+      handle_edge up
+      state="up"; streak=0
+    fi
+    ;;
+  busy)
+    # Alive but declining work. Hold state and streak untouched: this is
+    # neither evidence of failure nor evidence of recovery.
+    busy=$(( busy + 1 ))
+    ;;
+  *)
+    busy=0
+    if (( streak > 0 )); then streak=-1; else streak=$(( streak - 1 )); fi
+    if [[ "${state}" == "up" ]] && (( streak <= -DOWN_AFTER )); then
+      cron_do pause
+      handle_edge down
+      state="down"; streak=0
+    fi
+    ;;
+esac
 
 printf '%s\n' "${state}" > "${STATE_FILE}"
 printf '%s\n' "${streak}" > "${STREAK_FILE}"
+printf '%s\n' "${busy}" > "${BUSY_FILE}"
 flap_summary_check
 exit 0

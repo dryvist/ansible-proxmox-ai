@@ -32,6 +32,18 @@ REPO_ROOT = ROLE.parents[1]
 WATCHDOG = (ROLE / "templates" / "hermes-brain-watchdog.sh.j2").read_text()
 DEFAULTS = (ROLE / "defaults" / "main.yml").read_text()
 ROUTER_DEFAULTS = (REPO_ROOT / "roles" / "llm_router" / "defaults" / "main.yml").read_text()
+ALL_VARS = (REPO_ROOT / "inventory" / "group_vars" / "all.yml").read_text()
+
+
+def _int_var(pattern: str, haystack: str, what: str) -> int:
+    """Extract one integer setting, failing loudly when the key is gone.
+
+    A bare `re.search(...).group(1)` raises AttributeError on a renamed or
+    removed key, which reads as a broken test rather than a broken contract.
+    """
+    match = re.search(pattern, haystack, re.M)
+    assert match is not None, f"could not find {what} — was it renamed or templated away?"
+    return int(match.group(1))
 
 
 def test_both_edge_thresholds_come_from_role_vars_not_literals() -> None:
@@ -185,23 +197,36 @@ def test_watchdog_pauses_the_same_fleet_a_cluster_window_pauses() -> None:
 
 
 def test_probe_deadline_exceeds_the_router_rate_limit_backoff() -> None:
-    """A probe deadline below the router's 429 backoff can only ever time out.
+    """A probe deadline below the router's 429 backoff can never see a retry.
 
     The single-slot serving backend returns in well under a second when the
     slot is free; when it is busy the router takes a 429 and sleeps
-    llm_router_retry_after_seconds before retrying. There is no outcome in
+    ai_router_retry_after_seconds before retrying. There is no outcome in
     between, so a deadline under that sleep measures "is the slot free right
-    now" and turns ordinary saturation into a DOWN edge that pauses the fleet.
+    now" rather than "can the brain serve".
+
+    Saturation no longer produces a DOWN edge regardless (probe_state classifies
+    429 and curl rc 28 as busy), but the deadline still has to outlive one
+    backoff or the probe can never observe a successful retry at all.
     """
-    retry_after = int(
-        re.search(r"^llm_router_retry_after_seconds:\s*(\d+)", ROUTER_DEFAULTS, re.M).group(1)
+    retry_after = _int_var(
+        r"^ai_router_retry_after_seconds:\s*(\d+)", ALL_VARS, "ai_router_retry_after_seconds"
     )
-    probe_timeout = int(
-        re.search(r"^hermes_agent_brain_watchdog_probe_timeout:\s*(\d+)", DEFAULTS, re.M).group(1)
+    probe_timeout = _int_var(
+        r"^hermes_agent_brain_watchdog_probe_timeout:\s*(\d+)",
+        DEFAULTS,
+        "hermes_agent_brain_watchdog_probe_timeout",
     )
-    interval = int(
-        re.search(r'^hermes_agent_brain_watchdog_interval:\s*"(\d+)s"', DEFAULTS, re.M).group(1)
+    interval = _int_var(
+        r'^hermes_agent_brain_watchdog_interval:\s*"(\d+)s"',
+        DEFAULTS,
+        "hermes_agent_brain_watchdog_interval",
     )
+    # The router must consume the shared constant, not re-declare a literal —
+    # otherwise this assertion guards a value the router no longer uses.
+    assert "llm_router_retry_after_seconds: \"{{ ai_router_retry_after_seconds }}\"" in (
+        ROUTER_DEFAULTS
+    ), "llm_router_retry_after_seconds must derive from the all.yml constant this test reads"
     assert probe_timeout > retry_after, (
         f"probe timeout {probe_timeout}s must exceed the router's {retry_after}s retry_after"
     )
@@ -230,3 +255,96 @@ def test_maintenance_playbooks_expect_the_timer_active_after_normal_operation() 
 
     assert "ActiveState == 'active'" in recover
     assert "ActiveState == 'inactive'" not in recover
+
+
+def test_saturation_is_classified_busy_not_down() -> None:
+    """THE 2026-08-05 FALSE-OUTAGE FIX.
+
+    The serving host admits one request at a time and rejects the rest with an
+    instant 429 (measured at 18.8us — a live server declining work). Over
+    2026-08-01..08-05, 57% of all gate requests were 429 and the watchdog scored
+    every one as DOWN, so ordinary contention paused the whole cron fleet and
+    paged hourly. Meanwhile the real work path absorbs exactly this for ~320s
+    (rate_limit_retries x retry_after), so the watchdog was declaring outages in
+    conditions where every job it protects succeeds.
+
+    curl rc 28 is the same condition seen from the other side: the router sleeps
+    retry_after between retries, so a saturated brain usually starves the probe
+    of a reply rather than handing it a 429.
+    """
+    assert '[[ "${code}" == "429" ]] && { printf \'busy\'; return; }' in WATCHDOG
+    assert "(( rc == 28 )) && { printf 'busy'; return; }" in WATCHDOG
+    assert "busy=$(( busy + 1 ))" in WATCHDOG
+
+
+def test_busy_does_not_touch_the_down_or_up_streak() -> None:
+    """Busy is neither evidence of failure nor evidence of recovery.
+
+    If busy decremented the streak it would still pause the fleet, just slower.
+    If it incremented it, a saturated brain would fake a recovery it never made.
+    The busy branch must therefore leave `streak` alone entirely.
+    """
+    branch = WATCHDOG.split("  busy)", 1)[1].split("  *)", 1)[0]
+    # Comments in this branch legitimately discuss streak/edges; assert on the
+    # executable lines only, or the test pins prose instead of behaviour.
+    code = "\n".join(
+        line for line in branch.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "streak=" not in code, (
+        "the busy branch must not assign streak — it is neither a failure nor a recovery"
+    )
+    assert "cron_do" not in code, "busy must never pause or resume the fleet"
+    assert "handle_edge" not in code, "busy must never fire an alert edge"
+    assert "hc_ping" not in code, (
+        "busy must not ping the deadman — nothing proved the brain can generate"
+    )
+
+
+def test_sustained_saturation_still_escalates_to_down() -> None:
+    """Busy must not become a permanent mute.
+
+    A watchdog that can never report a saturated brain is worse than a noisy
+    one: it converts a fix for false positives into a suppressed true positive.
+    If nothing can serve a single 1-token probe for busy_grace_probes cycles,
+    real jobs are failing too — the router itself gives up after
+    rate_limit_retries x retry_after.
+    """
+    assert 'result="down"' in WATCHDOG, "sustained busy must escalate into the normal DOWN path"
+    assert "BUSY_GRACE_PROBES > 0 && busy + 1 >= BUSY_GRACE_PROBES" in WATCHDOG
+
+    grace = _int_var(
+        r"^hermes_agent_brain_watchdog_busy_grace_probes:\s*(\d+)",
+        DEFAULTS,
+        "hermes_agent_brain_watchdog_busy_grace_probes",
+    )
+    interval = _int_var(
+        r'^hermes_agent_brain_watchdog_interval:\s*"(\d+)s"',
+        DEFAULTS,
+        "hermes_agent_brain_watchdog_interval",
+    )
+    retry_after = _int_var(
+        r"^ai_router_retry_after_seconds:\s*(\d+)", ALL_VARS, "ai_router_retry_after_seconds"
+    )
+    rate_limit_retries = _int_var(
+        r"^llm_router_rate_limit_retries:\s*(\d+)",
+        ROUTER_DEFAULTS,
+        "llm_router_rate_limit_retries",
+    )
+
+    assert grace > 0, "a zero grace disables saturation reporting entirely"
+    # Must outlast the router's own tolerance, or the watchdog pages for a
+    # backlog the request path would still have ridden out.
+    router_tolerance = retry_after * rate_limit_retries
+    assert grace * interval > router_tolerance, (
+        f"busy grace {grace * interval}s must exceed the router's own {router_tolerance}s "
+        "429 tolerance, else the watchdog pages for saturation real jobs survive"
+    )
+
+
+def test_probe_asks_for_the_cheapest_reply_that_still_proves_generation() -> None:
+    """The probe competes for the same single slot as real work, so it asks for
+    the smallest reply that still proves the engine generated: max_tokens 1
+    finishes on "length" (covered by the accepted finish_reason set) and still
+    yields completion_tokens >= 1, which catches a wedged engine reporting zero.
+    """
+    assert '\\"max_tokens\\":1' in WATCHDOG
