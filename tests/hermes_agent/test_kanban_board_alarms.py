@@ -67,6 +67,8 @@ def load_digest_module():
     rendered_path = TMP / "kanban_digest_rendered.py"
     rendered_path.write_text(rendered)
     spec = importlib.util.spec_from_file_location("kanban_board_alarms", rendered_path)
+    assert spec is not None and spec.loader is not None, \
+        "rendered template did not resolve to a loadable module"
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

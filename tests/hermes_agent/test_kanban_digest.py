@@ -421,7 +421,7 @@ def test_the_digest_channels_are_never_literal_ids():
         defaults["hermes_agent_kanban_digest_issues_channel"]
 
 
-def test_a_broken_database_is_delivered_as_a_failure_not_as_silence(capsys=None):
+def test_a_broken_database_is_delivered_as_a_failure_not_as_silence():
     """A schema change must announce itself; an empty post would read as healthy."""
     import io
     import contextlib
