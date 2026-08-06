@@ -1,9 +1,21 @@
 # {{ ansible_managed }}
+# Ship stdout/stderr to journald (-> rsyslog -> Splunk index=ai, sourcetype
+# agentgateway:app) instead of the default json-file driver, which stays on
+# local disk and never reaches the SIEM. Tag is a bare identifier (no ':' or
+# whitespace) so rsyslog's syslog-header regex extracts it as $programname.
+# Shared by every service in this stack (gateway + MCP sidecars) — one
+# sourcetype for the whole stack, matching every other *_docker role here.
+x-logging: &agentgateway_docker_logging
+  driver: journald
+  options:
+    tag: agentgateway
+
 services:
   agentgateway:
     image: {{ agentgateway_docker_image }}
     container_name: {{ agentgateway_docker_container_name }}
     restart: {{ agentgateway_docker_restart_policy }}
+    logging: *agentgateway_docker_logging
     command: ["-f", "/config.yaml"]
     ports:
       - "{{ agentgateway_docker_proxy_port }}:{{ agentgateway_docker_proxy_port }}"
@@ -21,6 +33,7 @@ services:
     image: {{ agentgateway_docker_vikunja_mcp_image }}
     container_name: mcp-vikunja
     restart: {{ agentgateway_docker_restart_policy }}
+    logging: *agentgateway_docker_logging
     command:
       - "--stdio"
       - "npx -y @democratize-technology/vikunja-mcp@{{ agentgateway_docker_vikunja_mcp_version }}"
@@ -43,6 +56,7 @@ services:
     image: {{ agentgateway_docker_qdrant_mcp_image }}
     container_name: mcp-nautobot
     restart: {{ agentgateway_docker_restart_policy }}
+    logging: *agentgateway_docker_logging
     entrypoint: ["uv"]
     command:
       - "run"
@@ -67,6 +81,7 @@ services:
     image: {{ agentgateway_docker_qdrant_mcp_image }}
     container_name: mcp-qdrant
     restart: {{ agentgateway_docker_restart_policy }}
+    logging: *agentgateway_docker_logging
     entrypoint: ["uvx"]
     command:
       - "mcp-server-qdrant=={{ agentgateway_docker_qdrant_mcp_version }}"
@@ -89,6 +104,7 @@ services:
     image: {{ agentgateway_docker_qdrant_mcp_image }}
     container_name: mcp-docs
     restart: {{ agentgateway_docker_restart_policy }}
+    logging: *agentgateway_docker_logging
     entrypoint: ["uv"]
     command:
       - "run"

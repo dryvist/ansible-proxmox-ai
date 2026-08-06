@@ -2,12 +2,25 @@
 # Self-hosted, zero-cloud LangGraph: in-memory `langgraph dev` server + a
 # self-hosted Agent Chat UI. Both images are built from the local contexts below.
 # Rendered by ansible-proxmox-apps/roles/langgraph_docker.
+#
+# Ship stdout/stderr to journald (-> rsyslog -> Splunk index=ai, sourcetype
+# langgraph:app) instead of the default json-file driver, which stays on local
+# disk and never reaches the SIEM. Tag is a bare identifier (no ':' or
+# whitespace) so rsyslog's syslog-header regex extracts it as $programname.
+# Shared by both services in this stack — one sourcetype for the whole stack,
+# matching every other *_docker role here.
+x-logging: &langgraph_docker_logging
+  driver: journald
+  options:
+    tag: langgraph
+
 services:
   {{ langgraph_docker_api_service }}:
     build:
       context: ./graph
     image: homelab/langgraph-seed:local
     container_name: "{{ langgraph_docker_api_service }}"
+    logging: *langgraph_docker_logging
     environment:
       # LiteLLM router (fabric front door) — langchain-openai reads these.
       OPENAI_API_BASE: "{{ langgraph_docker_llm_base_url }}"
@@ -26,6 +39,7 @@ services:
         NEXT_PUBLIC_ASSISTANT_ID: "{{ langgraph_docker_assistant_id }}"
     image: homelab/agent-chat-ui:local
     container_name: "{{ langgraph_docker_chat_ui_service }}"
+    logging: *langgraph_docker_logging
     depends_on:
       - {{ langgraph_docker_api_service }}
     environment:
