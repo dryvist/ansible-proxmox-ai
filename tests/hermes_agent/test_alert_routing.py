@@ -74,18 +74,31 @@ def _resolve(env_overrides: dict[str, str]) -> dict[str, str]:
         "HERMES_SLACK_DIGEST_CHANNEL": "C_DIGEST",
         **env_overrides,
     }
-    names = [k for k in DEFAULTS if "channel" in k] + ["fabric_watchdog_alert_channel"]
+    def _lookup(plugin: str, name: str) -> str:
+        """Stand in for Ansible's lookup plugin against the simulated env.
+
+        A real callable rather than a regex substitution on the source text:
+        the channel vars build their env-var NAME from the agent identity
+        (`'SLACK_' ~ (hermes_agent_id | upper) ~ '_ISSUES_CHANNEL'`), so there
+        is no literal in the source to match. Evaluating the expression is also
+        what the converge actually does, which is the behaviour worth pinning.
+        """
+        assert plugin == "env", f"only the env lookup is simulated, got {plugin!r}"
+        return env.get(name, "")
+
+    # hermes_agent_id leads: every channel name below derives its env-var name
+    # from it, so it has to be in the context before the first channel renders.
+    names = (
+        ["hermes_agent_id"]
+        + [k for k in DEFAULTS if "channel" in k]
+        + ["fabric_watchdog_alert_channel"]
+    )
     source = {**DEFAULTS, "fabric_watchdog_alert_channel": FABRIC_DEFAULTS["fabric_watchdog_alert_channel"]}
     ctx: dict[str, str] = {}
     for _ in range(4):  # a few passes is plenty for this shallow dependency graph
         for name in names:
             tpl = str(source[name])
-            if "lookup(" in tpl:
-                # Substitute the env lookup with its simulated value first.
-                def sub(m: re.Match[str]) -> str:
-                    return repr(env.get(m.group(1), ""))
-                tpl = re.sub(r"lookup\(\s*'env',\s*'(\w+)'\s*\)", sub, tpl)
-            ctx[name] = _ENV.from_string(tpl).render(**ctx).strip()
+            ctx[name] = _ENV.from_string(tpl).render(**ctx, lookup=_lookup).strip()
     return ctx
 
 
@@ -189,10 +202,23 @@ def test_hermes_all_is_not_an_alias_of_the_firehose() -> None:
     ``{{ hermes_agent_slack_firehose_channel }}``, no configuration could make
     the work channel distinct from the firehose — every tier resolved to one id.
     """
-    raw = str(DEFAULTS["hermes_agent_slack_hermes_all_channel"])
-    assert "lookup('env', 'SLACK_HERMES_ALL_CHANNEL')" in raw
+    # Asserted as behaviour, not as a source-text match. The env-var name is
+    # now built from the agent identity so a second agent reads its own
+    # channel, which means there is no literal in defaults to grep for — and
+    # the property that actually matters was never the spelling. These two
+    # cases pin it from both sides: its own channel wins when set, and the
+    # firehose is only ever reached as a fallback.
     ctx = _resolve(CONFIGURED)
     assert ctx["hermes_agent_slack_hermes_all_channel"] == "C_ALL" != "C_FIRE"
+
+    unset = _resolve({k: v for k, v in CONFIGURED.items() if k != "SLACK_HERMES_ALL_CHANNEL"})
+    assert unset["hermes_agent_slack_hermes_all_channel"] == "C_FIRE"
+
+    # And the identity really does select the name, so the second agent cannot
+    # silently inherit this one's work channel.
+    assert _resolve({**CONFIGURED, "SLACK_DONNA_ALL_CHANNEL": "C_DONNA"})[
+        "hermes_agent_slack_hermes_all_channel"
+    ] == "C_ALL"
 
 
 def test_the_four_channels_resolve_to_four_distinct_surfaces() -> None:
