@@ -107,6 +107,46 @@ PINNED_HINDSIGHT_PREFETCH_SOURCE = (
     "            except Exception as e:\n"
     '                logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)\n'
 )
+# Verbatim upstream shape of run_agent.py's _sync_external_memory_for_turn —
+# indentation included, same drift protection as the other PINNED_*_SOURCE
+# fixtures above. Full behavioral coverage of the four patches this feeds
+# lives in test_memory_sync_observability.py; this copy exists only so
+# _source_postconditions() below has something to default the new
+# hermes_agent_run_agent_source context var to.
+PINNED_SYNC_EXTERNAL_MEMORY_SOURCE = '''\
+class _Agent:
+    def _sync_external_memory_for_turn(
+        self,
+        *,
+        original_user_message,
+        final_response,
+        interrupted,
+        messages=None,
+    ) -> None:
+        if interrupted:
+            return
+        if not (self._memory_manager and final_response and original_user_message):
+            return
+        user_text = _summarize_user_message_for_log(original_user_message, sep="\\n")
+        response_text = _summarize_user_message_for_log(final_response, sep="\\n")
+        if not (user_text and response_text):
+            return
+        try:
+            sync_kwargs = {"session_id": self.session_id or ""}
+            if messages is not None:
+                sync_kwargs["messages"] = messages
+            self._memory_manager.sync_all(
+                user_text,
+                response_text,
+                **sync_kwargs,
+            )
+            self._memory_manager.queue_prefetch_all(
+                user_text,
+                session_id=self.session_id or "",
+            )
+        except Exception:
+            pass
+'''
 # Reduced run_kanban_goal_loop skeleton: the control flow that matters
 # (status poll, judge, budget check, worker turn, increment) with the two
 # patch anchor sites VERBATIM from upstream v2026.7.7.2 — indentation
@@ -191,6 +231,14 @@ PATCHED_HINDSIGHT_PREFETCH_SOURCE = _apply_runtime_patch(
     "Patch Hermes auto-recall prefetch failure to log at warning, not debug",
     PINNED_HINDSIGHT_PREFETCH_SOURCE,
 )
+PATCHED_RUN_AGENT_SOURCE = PINNED_SYNC_EXTERNAL_MEMORY_SOURCE
+for _run_agent_task_name in (
+    'Patch _sync_external_memory_for_turn to log its "interrupted" skip',
+    "Patch _sync_external_memory_for_turn to log its missing-input skip",
+    "Patch _sync_external_memory_for_turn to log its empty-flatten skip",
+    "Patch _sync_external_memory_for_turn to log its swallowed exception",
+):
+    PATCHED_RUN_AGENT_SOURCE = _apply_runtime_patch(_run_agent_task_name, PATCHED_RUN_AGENT_SOURCE)
 PATCHED_KANBAN_GOAL_LOOP_SOURCE = _apply_runtime_patch(
     "Patch Hermes kanban goal loop to retry judge errors without burning turns",
     _apply_runtime_patch(
@@ -298,6 +346,7 @@ def _source_postconditions(
     cron_scheduler_source: str = PATCHED_CRON_DELIVERY_SOURCE,
     hindsight_plugin_source: str = PATCHED_HINDSIGHT_PREFETCH_SOURCE,
     goal_judge_source: str = PATCHED_GOAL_JUDGE_SOURCE,
+    run_agent_source: str = PATCHED_RUN_AGENT_SOURCE,
 ) -> tuple[bool, ...]:
     task = _task("Assert installed Hermes pinned-source patches")
     environment = Environment(autoescape=False)
@@ -311,6 +360,7 @@ def _source_postconditions(
         "hermes_agent_compressor_source": compressor_source,
         "hermes_agent_cron_scheduler_source": cron_scheduler_source,
         "hermes_agent_hindsight_plugin_source": hindsight_plugin_source,
+        "hermes_agent_run_agent_source": run_agent_source,
     }
     return tuple(
         bool(environment.compile_expression(condition)(**context))
@@ -773,6 +823,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "agent/context_compressor.py",
         "cron/scheduler.py",
         "plugins/memory/hindsight/__init__.py",
+        "run_agent.py",
     ]
 
     assert_task = _task("Assert installed Hermes pinned-source patches")
