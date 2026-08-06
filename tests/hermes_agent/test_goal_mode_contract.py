@@ -795,12 +795,17 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # hermes_goal_judge_model == "goal-judge"), but its backend is llama-swap
     # swap-class in the deployed config (nix-ai
     # modules/mlx/llama-swap-topology.nix — worker pinned ttl=0, judge
-    # ttl=900), and a measured ~79s cold load exceeds the 60s judge timeout.
+    # ttl=900), and a measured ~79s cold load would exceed the judge timeout.
     # Flipping this to "{{ hermes_goal_judge_model }}" without that residency
     # fix landing first breaks card judgement — measured live 2026-08, not
     # theoretical. Do not flip it back without re-measuring.
+    #
+    # The timeout below is unrelated: it is raised on MEASURED tail latency
+    # of hermes_agent_model itself (the pinned model the judge actually
+    # calls today), not on the cold-load case above — see defaults/main.yml's
+    # ADDENDUM comment for the full figures.
     assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_agent_model }}"
-    assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == 60
+    assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == 150
     assert "goal_judge:" in config
     assert "model: {{ hermes_agent_kanban_goal_judge_model | to_json }}" in config
     assert "base_url: '{{ hermes_agent_model_base_url }}'" in config
