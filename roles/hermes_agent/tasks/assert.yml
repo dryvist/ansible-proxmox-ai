@@ -79,13 +79,6 @@
       - >-
         not (hermes_agent_kanban_goal_mode | bool)
         or hermes_agent_kanban_goal_judge_timeout_seconds | int >= 30
-      # The budget is deliberately role-wide with no per-card override — see
-      # hermes_agent_kanban_goal_max_turns in defaults for why a per-card raise
-      # is the wrong instrument against a single-slot serving backend.
-      - >-
-        hermes_agent_kanban_cards
-        | selectattr('goal_max_turns', 'defined')
-        | list | length == 0
     fail_msg: >-
       Goal mode requires a positive hermes_agent_kanban_goal_max_turns and a
       non-empty hermes_agent_kanban_goal_judge_model, and a judge timeout of
@@ -95,109 +88,17 @@
       that is already failing — which is when the serving tier has least room.
       Raise hermes_agent_kanban_goal_max_turns for everything, or not at all.
 
-# `max_retries` is a failure LIMIT, not a retry count: 1 blocks on the first
-# failure, so a card carrying 1 gets zero retries and one crash, one wall-clock
-# kill or one restart mid-run ends it until a human intervenes. Every card
-# failure class this covers is one where the next attempt can plausibly succeed,
-# and a recurring card has no other recovery path — nothing re-attempts it, it
-# just waits for its next slot, which for a weekly card is a week of no cover.
-# Enforced here rather than left to review because the value is a bare integer
-# repeated once per card, which is exactly the kind of field that regresses
-# quietly when a card is added by copying its neighbour.
-- name: Assert no Kanban card blocks on its first failure
-  ansible.builtin.assert:
-    quiet: true
-    that:
-      - >-
-        hermes_agent_kanban_cards
-        | selectattr('max_retries', 'lt', 2)
-        | list | length == 0
-    fail_msg: >-
-      One or more hermes_agent_kanban_cards entries set max_retries below 2.
-      That is a failure LIMIT, not a retry count — 1 means the card is blocked
-      by its FIRST failure and never re-attempted, so a single crash or
-      wall-clock kill retires that workload until a human unblocks it. Use 2
-      (one retry) as the floor, and a wider budget only where a missed run
-      costs more than a re-run. Offending cards:
-      {{ hermes_agent_kanban_cards | selectattr('max_retries', 'lt', 2)
-         | map(attribute='job') | list }}.
-    success_msg: >-
-      Every Kanban card allows at least one retry before blocking.
+# The max_retries floor and the assignee/profile-validity checks that used to
+# live here validated hermes_agent_kanban_cards, which no longer exists
+# (native-cron reframe: all 18 former cards are hermes_agent_direct_cron_jobs
+# entries now). Neither field carries over to a plain `hermes cron create` job
+# — see the PR that introduced this change for the explicit gap report on
+# assignee/profile, max_runtime and max_retries not being expressible there.
 
-# Upstream's dispatcher buckets a card whose assignee names no real profile
-# as skipped_nonspawnable and NEVER spawns it — a typo'd assignee silently
-# sits ready forever with no error anywhere. Converting that into a loud
-# converge failure is the whole point of this assert (see hermes_agent_profiles
-# in defaults/main.yml for the profile concept).
-- name: Assert every Kanban card assignee names a real profile or the default
-  ansible.builtin.assert:
-    quiet: true
-    that:
-      - >-
-        hermes_agent_kanban_cards
-        | rejectattr('assignee', 'equalto', '')
-        | map(attribute='assignee')
-        | reject('in', hermes_agent_profiles | map(attribute='name') | list)
-        | list | length == 0
-    fail_msg: >-
-      One or more hermes_agent_kanban_cards entries name an assignee that is
-      not in hermes_agent_profiles. Upstream buckets an unresolvable assignee
-      as skipped_nonspawnable and never spawns a worker for it — the card
-      would silently sit ready forever. Fix the card's assignee (empty string
-      for the default profile) or add the profile to hermes_agent_profiles.
-      Cards seen:
-      {{ hermes_agent_kanban_cards | map(attribute='job') | list }};
-      known profiles: {{ hermes_agent_profiles | map(attribute='name') | list }}.
-    success_msg: >-
-      Every Kanban card assignee resolves to the default profile or a name in
-      hermes_agent_profiles ({{ hermes_agent_profiles | map(attribute='name') | list }}).
-
-# A direct-cron retirement that names a replacement card is a promise: the
-# topic stays covered, just through the card instead of the cron. Nothing
-# enforced that promise at converge time before this — only
-# tests/hermes_agent/test_retired_direct_crons.py checked it, against the raw
-# YAML, and only if someone remembered to run pytest. Caught for real:
-# `homelab-ai-fabric-status` sat on hermes_agent_kanban_paused_jobs for a
-# stretch while its `-v2` cron was being retired in its favour — a paused
-# card's enqueuer renders no selector arm
-# (kanban-enqueue-recurring.sh.j2), so its still-active `-v2` cron's
-# replacement created nothing either, and the topic silently went to zero
-# coverage. This is the same invariant, enforced every converge.
-- name: Assert every direct-cron retirement's replacement card is enabled and unpaused
-  ansible.builtin.assert:
-    quiet: true
-    that:
-      - >-
-        hermes_agent_direct_cron_jobs
-        | selectattr('replaced_by_card', 'defined')
-        | selectattr('enabled') | list | length == 0
-      - >-
-        hermes_agent_direct_cron_jobs
-        | selectattr('replaced_by_card', 'defined')
-        | rejectattr('replaced_by_card', 'in',
-            hermes_agent_kanban_cards | map(attribute='job') | list
-            | reject('in', hermes_agent_kanban_paused_jobs) | list)
-        | list | length == 0
-    fail_msg: >-
-      A hermes_agent_direct_cron_jobs retirement is broken. Either it names a
-      replaced_by_card while still enabled:true (both paths would post — pick
-      one), or its replaced_by_card is not the `job` of a currently-enabled,
-      unpaused hermes_agent_kanban_cards entry (a paused card's enqueuer
-      renders no selector arm, so nothing creates it — the topic goes
-      unreported by both the retired cron and its replacement). Fix the
-      card name, unpause it, or set the cron back to enabled:true, in the
-      same change. Retirements still enabled:
-      {{ hermes_agent_direct_cron_jobs | selectattr('replaced_by_card', 'defined')
-         | selectattr('enabled') | map(attribute='name') | list }}.
-      Retirements with a dead replacement:
-      {{ hermes_agent_direct_cron_jobs | selectattr('replaced_by_card', 'defined')
-         | rejectattr('replaced_by_card', 'in',
-             hermes_agent_kanban_cards | map(attribute='job') | list
-             | reject('in', hermes_agent_kanban_paused_jobs) | list)
-         | map(attribute='name') | list }}.
-    success_msg: >-
-      Every direct-cron retirement names an enabled, unpaused replacement
-      card and is itself disabled.
+# The replaced_by_card retirement chain (a direct-cron retirement naming a
+# Kanban card as its replacement) does not exist any more (native-cron
+# reframe): every former card is itself now a hermes_agent_direct_cron_jobs
+# entry, so there is no cron-to-card handoff left to promise or assert.
 
 # A profile can carry the Splunk skill while declaring no splunk MCP server,
 # and nothing notices. The skill loads, the agent believes it can query Splunk,

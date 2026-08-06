@@ -13,8 +13,8 @@ self-heals.
 Everything here is seeded declaratively by the `hermes_agent` role. Every run is
 a **fresh, isolated session** — there is no in-process state carried between
 runs, so anything a job needs to remember it must write to memory (below). That
-property is not incidental: recurring work moved off agentic cron onto the
-Kanban board (#83) precisely to guarantee it.
+property held under the Kanban-board design (#83) and holds equally under the
+native-cron design below: neither carries state in-process.
 
 ## Cron fleet
 
@@ -22,90 +22,109 @@ Schedules are UTC (`hermes_agent_timezone: UTC`). Everything below is defined
 in `roles/hermes_agent/defaults/main.yml` — this doc restates it and can drift,
 so **the defaults file wins on any disagreement**.
 
-### The two layers (Kanban migration, #83)
+### Recurring reports are plain cron jobs, not Kanban cards (native-cron reframe)
 
-There is no longer a fleet of agentic crons under bare job names. Issue #83
-retired that model: a long-lived cron session accumulated state between runs,
-and corrupted compression bookkeeping crash-looped the `splunk-*` jobs
-(INC-17120). What replaced it has two layers:
+Issue #83 moved recurring work off long-lived agentic cron sessions (state
+accumulated between runs; corrupted compression bookkeeping crash-looped the
+`splunk-*` jobs, INC-17120) onto a two-layer Kanban design: a script-only
+enqueuer cron created one card per slot, and the board engine dispatched each
+in a fresh worker session. That fixed the state-leak, but the enqueuer itself
+became a silent-failure hazard: the worker had to run `hermes kanban archive`
+as its own last action to free its idempotency key for the next fire, and
+skipping that step for any reason (model forgets, a runtime cap killing the
+process, any flake) left the key claimed forever and the job silently dark —
+`hermes kanban complete` transitions `running/ready -> done`, never
+`archived`, and no atomic native alternative exists.
 
-1. **Recurrence** — a thin fleet of `cron create --no-agent --script` jobs.
-   Script-only, no agent and no LLM session, so there is nothing to poison.
-   Each fires on its workload's schedule and emits exactly one `kanban create`
-   per slot with idempotency key `<job>-<slot>`, so a double-fire or a backfill
-   never duplicates a card. Reconciled by `tasks/reconcile_enqueuer_cron.yml`;
-   a card named `<job>` yields the cron `<job>-enqueue`.
-2. **Execution** — the gateway's in-process Kanban board engine
-   (`config.yaml` `kanban:` block) dispatches each card in a **fresh, isolated
-   worker session**. That per-run freshness is the entire point of #83.
+The reframe underneath that: a recurring **report** (digest, sweep, status
+check) was never a discrete unit of work a human expects to see tracked to
+completion on a board — it's a scheduled broadcast. So every recurring report
+is now a plain `hermes cron create` job whose prompt is delivered straight to
+Slack (`--deliver`), reconciled by the *existing* `tasks/reconcile_direct_cron.yml`
+mechanism (`hermes_agent_direct_cron_jobs`) — no new machinery. Each prompt
+keeps its retrieval-first shape verbatim: recall a named memory key at start,
+act only on the delta, reply `[SILENT]` if nothing changed, save the updated
+fingerprint back to the same key at the end — the gateway's native
+`[SILENT]`/`NO_REPLY` marker suppresses delivery, so a quiet run posts nothing.
 
-`tasks/main.yml` actively *removes* the pre-migration bare-named agentic crons
-(`hermes_agent_superseded_agentic_cron_names`), so a guest provisioned before
-the migration does not double-fire alongside its enqueuer twin.
+All 18 pre-reframe cards, docs-sync included, are now direct-cron jobs — see
+"Real semantics `hermes cron create` cannot express" below for what that cost:
 
-### Kanban cards (`hermes_agent_kanban_cards`)
+| Job | Schedule (UTC) | Deliver |
+| --- | --- | --- |
+| `homelab-ai-fabric-status` | `4 8-22 * * *` | `#hermes-issues` |
+| `hermes-nightly-wiki` | `0 2 * * *` | `#hermes-all` |
+| `daily-summary` | `0 12 * * *` | `#hermes-all` |
+| `zammad-review` | `41 */2 * * *` | `#hermes-all` |
+| `splunk-triage` | `7 * * * *` | `#hermes-all` |
+| `splunk-security` | `22 */6 * * *` | `#hermes-all` |
+| `splunk-parsing` | `37 2 * * *` | `#hermes-all` |
+| `splunk-deepdive` | `11 3 * * *` | `#hermes-all` |
+| `github-triage` | `26 */6 * * *` | `#hermes-all` |
+| `bot-pr-triage` | `43 */6 * * *` | `#hermes-all` |
+| `review` | `0 */8 * * *` | `#hermes-all` |
+| `anomaly-hunt` | `13 */12 * * *` | `#hermes-all` |
+| `docs-study` | `43 5 * * *` | `#hermes-all` |
+| `ai-news` | `19 0,12,16,19 * * *` | `#hermes-noise` |
+| `daily-innovation` | `47 6 * * *` | `#hermes-noise` |
+| `app-seeding` | `53 7 * * *` | `#hermes-all` |
+| `fleet-health` | `3 10 * * 1` (weekly) | `#hermes-all` |
+| `docs-sync` | `13 8 * * 1` (weekly) | `#hermes-all` |
 
-**4 of the 18 cards actually enqueue today** (2026-08-01 kanban audit — was 2;
-splunk-parsing joined the active set as a same-day 1-for-1 swap, see below,
-and ai-news was lifted 2026-07-31). The rest are on
-`hermes_agent_kanban_paused_jobs` — a deliberate throughput throttle
-(2026-07-24, Zammad #17143) against the single shared serving deployment. A
-paused job is skipped entirely by the reconcile (no create, no remove, so the
-operator's state is untouched) and is not rendered as a selector arm in the
-enqueuer script, so the `all --backfill` safety net cannot revive it either.
-Lift the throttle by *removing* a job from that list once capacity is proven
-— `fleet-health` (last row) is the audit's recommended next lift.
+Every job is additionally **capability-gated**: all require the Slack bot
+token, app token and home channel; the `splunk-*` jobs also require
+`hermes_agent_splunk_monitor_enabled` and the Splunk MCP URL. A job whose gate
+is false is never created — the role runs inert, never errors.
 
-The 2026-08-01 audit **removed** the `splunk-digest` card outright (not
-paused): its script-fed replacement, `splunk-status-digest` below, already
-covers the topic with no LLM in the fact path, and leaving the card
-defined-but-paused left a live trap — `hermes-splunk-triage`'s catalog prompt
-recalled a memory key only `splunk-digest`'s worker ever wrote, so once that
-worker stopped running the recall silently always found nothing. Fixed in the
-`ai-llm-prompts` catalog and guarded at converge time
-(`roles/hermes_agent/tasks/main.yml`).
+`homelab-ai-fabric-status` splits its report by outcome (all-clear to the
+noise channel, a break to issues) — restored as **prompt text**, not a
+`--deliver` flag: `--deliver` (`#hermes-issues`, the default/breaking-run
+destination) takes exactly one fixed target, so the shared reporting footer
+(`templates/direct-cron-footer.md.j2`, appended to every direct-cron job's
+prompt) instructs the model to self-route to the noise channel via the
+terminal command `hermes send` when the run is a genuine all-clear, ending
+with `[SILENT]` so `--deliver` does not ALSO post it. `terse_when_healthy`
+(one-line "All systems operational" on that branch) is restored the same way.
 
-| Card | Schedule (UTC) | Every | Assignee | State |
-| --- | --- | --- | --- | --- |
-| `homelab-ai-fabric-status` | `0 8-22 * * *` | 1h, 08–22 | homelab-admin | **active** |
-| `splunk-triage` | `7 * * * *` | 1h | splunk-admin | **active** |
-| `splunk-parsing` | `37 2 * * *` | 24h | splunk-admin | **active** — 2026-08-01 swap for `splunk-parsing-quality-v2` (see below) |
-| `ai-news` | `17 */4 * * *` | 4h | default | **active** — noise channel, 2026-07-31 canary lift |
-| `hermes-nightly-wiki` | `0 2 * * *` | 24h | default | paused |
-| `daily-summary` | `0 12 * * *` | 24h | default | paused |
-| `zammad-review` | `41 */2 * * *` | 2h | homelab-admin | paused |
-| `splunk-security` | `22 */6 * * *` | 6h | splunk-admin | paused |
-| `splunk-deepdive` | `11 3 * * *` | 24h | splunk-admin | paused |
-| `github-triage` | `26 */6 * * *` | 6h | default | paused |
-| `bot-pr-triage` | `43 */6 * * *` | 6h | default | capability-gated off (no alerts token) |
-| `docs-sync` | `13 8 * * 1` | weekly | default | paused |
-| `review` | `0 */8 * * *` | 8h | default | paused |
-| `anomaly-hunt` | `13 */12 * * *` | 12h | splunk-admin | paused |
-| `docs-study` | `43 5 * * *` | 24h | default | paused |
-| `daily-innovation` | `47 6 * * *` | 24h | default | paused |
-| `app-seeding` | `53 7 * * *` | 24h | default | paused |
-| `fleet-health` | `3 10 * * 1` | weekly | default | paused (new 2026-08-01; **recommended next throttle lift**) |
+`docs-sync` was initially kept as the one surviving Kanban card, with a
+**per-run** (not stable) idempotency key to solve the enqueuer's archive
+problem deterministically. That solution was correct but unnecessary: the
+operator's rule settles it upstream — Kanban is not for repetitive scheduled
+work, and docs-sync runs weekly on a fixed schedule, so it is cron by
+definition. `hermes_agent_kanban_cards` no longer exists at all; the board
+keeps doing what it is actually for — ad-hoc work, and the follow-up cards
+these cron jobs file via `kanban_create` (`review`'s gap follow-ups,
+`anomaly-hunt`'s findings, `ai-news`'s actionable items).
 
-`fleet-health` is the one card watching Hermes' own reliability trend rather
-than a downstream system — weekly, read-only over `kanban runs`, never
-proposes touching serving infrastructure. Distinct from `review`: `review`
-catches an 8h operational gap (stuck/blocked/silently-not-run); `fleet-health`
-catches a week-over-week regression in failure/retry rate. Both file
-follow-up cards for what they find, neither acts on it.
+**Real semantics `hermes cron create` cannot express**, verified against the
+live CLI's own `--help` (not assumed) and, for the profile finding, against
+`cron/scheduler.py` itself: profile/`assignee` selection — no `cron create`
+flag exists, so the 7 jobs that had a real profile (2 → `homelab-admin`:
+`daily-status`, `zammad-review`; 5 → `splunk-admin`: `splunk-triage`,
+`splunk-security`, `splunk-parsing`, `splunk-deepdive`, `anomaly-hunt`) get a
+per-job `HERMES_HOME` override instead (`hermes_home:` on the item,
+`reconcile_direct_cron.yml`). That alone is not sufficient: `hermes cron`'s
+ticker runs IN-PROCESS inside whichever gateway registered the job — only the
+default profile's gateway (`hermes-gateway.service`) runs persistently, so a
+job registered under a named profile needs its own trigger. `hermes cron
+tick` ("run due jobs once and exit") is the native one; a `*/5 * * * *`
+crontab entry per profile (`hermes_agent_profile_cron_tick_timeout`) fires it,
+which also restores an approximate `max_runtime` ceiling for those 7 (`timeout
+<duration>` wraps the whole tick invocation — a per-tick cap, not strictly
+per-job, since more than one due job can land in the same 5-minute window).
+The other 11 converted jobs run inside the default gateway's in-process
+ticker, which has no external invocation point to wrap with `timeout` at
+all — those have no runtime cap, full stop; there is no native way to add one
+without a persistent gateway process per job, which nothing here stands up.
+`max_retries` (the failure-limit circuit breaker) has no `cron create`
+equivalent either and is not restored — an accepted, documented loss.
 
-Every card is additionally **capability-gated**: all of them require the Slack
-bot token, app token and home channel; the `splunk-*` cards also require
-`hermes_agent_splunk_monitor_enabled` and the Splunk MCP URL. A card whose gate
-is false never has its enqueuer created — the role runs inert, never errors.
-
-Card output does **not** go to per-job channels. Every worker posts its
-completion report to `hermes_agent_slack_hermes_all_channel` (`#hermes-all`);
-the enqueuer appends that instruction as a footer to the card body, because
-Kanban cards have no native delivery channel.
-
-`review` is self-perpetuating: its worker creates the next slot's card as
-`initial_status=blocked`, and the enqueuer unblocks it at the slot boundary
-(`unblock: true`) — the adaptation for a CLI with no `--scheduled-at`.
+`tasks/main.yml` actively *removes* the superseded per-card enqueuer crons
+(`hermes_agent_superseded_kanban_enqueuer_cron_names`, the old `<job>-enqueue`
+names plus `kanban-enqueue-safety-net`) and *pauses* (not deletes) the three
+`-v2` direct-cron jobs the reframe replaces 1-for-1
+(`zammad-incident-review-v2`, `github-org-triage-v2`, `daily-operator-summary-v2`),
+so a guest converged mid-migration does not double-fire.
 
 ### Script crons (`--no-agent --script`)
 
@@ -115,8 +134,6 @@ stdout is delivered verbatim.
 
 | Cron | Schedule (UTC) | Script | Delivery |
 | --- | --- | --- | --- |
-| `<job>-enqueue` (one per card) | the card's schedule | `kanban-enqueue-recurring.sh` | `local` (silent — it only creates the card) |
-| `kanban-enqueue-safety-net` | `33 4 * * *` | same, selector `all --backfill` | `local` — **itself paused** |
 | `splunk-status-digest` | `52 7-23 * * *` | `splunk-digest.py` | `slack:<hermes-all>` |
 | `kanban-digest` | `*/15 * * * *` | `kanban-digest.py` | `slack:<digest>` |
 | `splunk-error-digest` | `37 * * * *` | `splunk-error-digest.py` | `slack:<digest>` |
@@ -266,11 +283,9 @@ field is present.
 To verify seeding, the sanctioned path is the `hermes_agent` converge itself:
 `verify.yml` proves a live tool-call round-trip through the router and, when
 `HERMES_API_SERVER_KEY` is present, that the job API answers `/health` 200 and
-refuses a keyless `POST /v1/runs` with 401. A missing Splunk token shows up as the
-`splunk-*` *enqueuer* crons not being created (their cards' capability gate is
-false). Note that most `splunk-*` cards are separately paused by the throughput
-throttle regardless of credentials, so "not present" is not by itself evidence
-of a missing token — check `hermes_agent_kanban_paused_jobs` first.
+refuses a keyless `POST /v1/runs` with 401. A missing Splunk token shows up as
+the `splunk-*` direct-cron jobs not being created — their capability gate in
+`hermes_agent_direct_cron_jobs` is false.
 
 ## Serving self-heal (the zombie watchdog)
 
@@ -402,6 +417,26 @@ re-litigated.
   found no existing card covers: something watching Hermes' own reliability
   trend, not a downstream system. Both changes and the full per-card
   KEEP/MERGE/DELETE/NEW rationale are in the PR that introduced them.
+  **Superseded by the native-cron reframe below** — every card this audit
+  paused or swapped is now a plain direct-cron job, and the throughput
+  throttle it describes no longer exists as a mechanism.
+- **Native-cron reframe: 18 of 18 cards become plain cron jobs, none stay
+  Kanban.** The per-card enqueuer script depended on the model running
+  `hermes kanban archive` as its own last action to free its idempotency key
+  — skip that step once and the job goes silently dark forever, with no
+  atomic native alternative. A per-run (not stable) idempotency key would have
+  solved that deterministically, and `docs-sync` briefly shipped with exactly
+  that as the one card kept on the board. It didn't need solving: Kanban is
+  not for repetitive scheduled work by construction, and docs-sync runs weekly
+  on a fixed schedule — cron by definition. Every one of the 18, including
+  docs-sync, is now a `hermes_agent_direct_cron_jobs` entry
+  (`tasks/reconcile_direct_cron.yml`, already existed for the `-v2` jobs) with
+  its recall/save memory pattern carried over verbatim. Kanban keeps doing
+  what it is actually for: ad-hoc work, and the follow-up cards these cron
+  jobs file via `kanban_create`. See "Recurring reports are plain cron jobs"
+  above for what `hermes cron create` cannot express natively (profile,
+  runtime cap, outcome-split delivery) and how each is restored or accepted
+  as a documented loss.
 - **The "never `[SILENT]`" heartbeat law is superseded (2026-07-26).** 38 of 40
   runs in one UTC day carried zero information. A quiet run now stays silent
   unless `HEARTBEAT_HOURS` (6) has elapsed; a CRITICAL finding is exempt and

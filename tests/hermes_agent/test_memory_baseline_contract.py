@@ -108,28 +108,59 @@ def test_every_written_memory_key_is_read_by_something() -> None:
     )
 
 
-def test_the_high_cadence_cards_all_carry_a_baseline() -> None:
-    """A card that runs many times a day and holds no baseline cannot avoid
+def _expand_field(field: str, span: int) -> set[int]:
+    """Values a single cron field (comma list of `*`, `*/N`, `H`, `H1-H2`) fires on."""
+    out: set[int] = set()
+    for part in field.split(","):
+        if part == "*":
+            out.update(range(span))
+        elif part.startswith("*/"):
+            out.update(range(0, span, int(part[2:])))
+        elif "-" in part:
+            lo, hi = part.split("-")
+            out.update(range(int(lo), int(hi) + 1))
+        elif part.isdigit():
+            out.add(int(part))
+    return out
+
+
+def _fires_per_day(schedule: str) -> int:
+    """Day-of-month/month/weekday restrictions are ignored: every current
+    weekday-restricted schedule fires at a single fixed hour:minute (docs-sync,
+    fleet-health), so this is a safe over-approximation, not an undercount."""
+    minute_field, hour_field = schedule.split()[:2]
+    return len(_expand_field(minute_field, 60)) * len(_expand_field(hour_field, 24))
+
+
+def test_the_high_cadence_jobs_all_carry_a_baseline() -> None:
+    """A job that runs many times a day and holds no baseline cannot avoid
     repeating itself — cadence is what turns a missing baseline from a latent
     flaw into the operator's actual complaint.
 
-    Scoped to cards whose prompt lives in this repo AND that are not paused; a
-    paused card emits nothing, and a catalog prompt is not readable here.
+    Native-cron reframe: there is no `interval_hours` field any more — cadence
+    is read directly off the crontab `schedule` (>=3 fires/day, i.e. no gap
+    wider than ~8h, the same cutoff the old field used). Scoped to jobs whose
+    prompt lives in this repo (`prompt_var`) AND that are actually reconciled
+    (`enabled` is not the literal `False` the retired -v2 entries carry); a
+    catalog-sourced `prompt_file` job is not readable here.
     """
-    paused = set(DEFAULTS["hermes_agent_kanban_paused_jobs"])
     inline = _inline_prompts()
     offenders = []
-    for card in DEFAULTS["hermes_agent_kanban_cards"]:
-        if card["job"] in paused:
+    for job in DEFAULTS["hermes_agent_direct_cron_jobs"]:
+        if job.get("enabled") is False:
             continue
-        if int(card.get("interval_hours", 24)) > 8:
+        if _fires_per_day(job["schedule"]) < 3:
             continue
-        prompt = inline.get(card["prompt_var"])
-        if prompt is None:  # catalog-sourced, asserted at converge time instead
+        prompt_var = job.get("prompt_var")
+        if prompt_var is None:  # catalog-sourced (prompt_file), asserted at converge time instead
+            continue
+        prompt = inline.get(prompt_var)
+        if prompt is None:
             continue
         if not KEY.search(prompt):
             offenders.append(
-                f"{card['title']} runs every {card['interval_hours']}h with no memory baseline"
+                f"{job.get('name', job.get('job'))} fires "
+                f"{_fires_per_day(job['schedule'])}x/day with no memory baseline"
             )
     assert not offenders, "\n".join(offenders)
 

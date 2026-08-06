@@ -96,12 +96,26 @@ worker runs under — MCP servers, native toolset floor, `.env` secrets, and
 skills. Named profiles live at `{{ hermes_agent_hermes_home }}/profiles/<name>/`;
 the `default` profile is `{{ hermes_agent_hermes_home }}` itself.
 
-There is **one shared gateway, dispatcher, and Kanban board** for every
-profile (no per-profile gateway, cron store, or Slack bot) — see
-`hermes_agent_profiles` in `defaults/main.yml` for the full design comment,
-the decision rule, and the isolation caveat (profile scoping is a
-config/tool-availability boundary, not an OS sandbox: every profile runs as
-the same `hermes` user in the same LXC).
+There is **one shared gateway, dispatcher, Kanban board, and Slack bot** for
+every profile — no per-profile gateway service exists. Cron is the one
+exception (native-cron reframe): `hermes cron`'s ticker runs in-process
+inside whichever gateway registered a job, and only the default profile's
+gateway is persistent, so a direct-cron job on a named profile
+(`hermes_home:` in `hermes_agent_direct_cron_jobs`) gets its own cron store
+AND its own periodic `hermes cron tick` trigger (`tasks/main.yml`) rather
+than sharing the default gateway's. See `hermes_agent_profiles` in
+`defaults/main.yml` for the full design comment, the decision rule, and the
+isolation caveat (profile scoping is a config/tool-availability boundary, not
+an OS sandbox: every profile runs as the same `hermes` user in the same LXC).
+
+**A profile's `config.yaml` overrides the shared config, it does not merge
+with it.** A named profile that omits a section the default profile has (an
+MCP server entry, a config block) simply does not get it — there is no
+fallback to the shared value. `templates/config-profile.yaml.j2` generates
+each profile's `mcp_servers:` block from that profile's own `mcp:` list in
+`hermes_agent_profiles`, so a job needing a tool must have that tool named on
+its assignee's profile entry, or the worker runs with the tool silently
+absent rather than inherited.
 
 **The isolation boundary is tools and credentials — memory is NOT part of
 it.** Every profile points at the same Hindsight memory bank: `bank_id`
@@ -123,11 +137,12 @@ written to memory by any profile should be treated as private to it.
 | `splunk-admin` | Read-only SIEM: SPL, alert + report | Splunk + Docs MCP, `splunk-monitor` skill | GitHub, Zammad, other MCP/skills |
 | `homelab-admin` | Incidents + fabric health | Docs MCP (+ Vikunja/Nautobot later), `zammad-incidents` skill | Splunk, GitHub, other MCP/skills |
 
-**Adding a card to a profile**: set that card's `assignee:` in
-`hermes_agent_kanban_cards` to the profile name (empty string = default).
-`assert.yml` fails the converge loudly if an assignee names no profile in
-`hermes_agent_profiles` — upstream would otherwise bucket it
-`skipped_nonspawnable` and the card would silently sit ready forever.
+**Assigning a job to a profile is not possible any more.** `hermes cron
+create` has no profile-selection flag (unlike `kanban create`'s `--assignee`),
+so every `hermes_agent_direct_cron_jobs` entry runs under the default profile
+regardless of what its pre-reframe Kanban card used to name — 6 of the 18
+converted jobs (2 → `homelab-admin`, 4 → `splunk-admin`) lost this. See the PR
+that removed `hermes_agent_kanban_cards` for the full gap report.
 
 **Adding a new profile**: add an entry to `hermes_agent_profiles`
 (`mcp`/`env`/`skills`/`soul_addendum_file`), add a
@@ -387,55 +402,75 @@ card and surface it in the next digest.
 | `hermes_agent_splunk_monitor_enabled` | `true` | Deploy the skill + enable the Splunk cards |
 | `hermes_agent_splunk_*_cron_name` / `_schedule` / `_prompt` | — | per-workload overrides |
 
-## Recurring work runs on the Kanban board (not agentic cron)
+## Recurring work is all plain cron now — Kanban is ad-hoc/follow-up only
 
 Every recurring workload — the Splunk fleet above, `github-triage`,
 `daily-summary`, `zammad-review`, `homelab-ai-fabric-status`, the nightly wiki
-pass — is a **Kanban card**, not an agentic cron job. The gateway's in-process
-board dispatcher (`config.yaml` `kanban:` block) spawns a **fresh worker session
-per card**, so a corrupted session can never carry forward between runs
-(INC-17120). Kanban has no native recurrence, so a thin fleet of `cron create
---no-agent --script` jobs — one per workload, on the same schedule the old
-agentic cron used, plus one daily safety net — enqueues the cards. These crons
-run a script only (no LLM session, nothing to poison); `hermes cron list` is
-now script-only. On a guest provisioned before the migration, the converge
-removes the old bare-named agentic crons
-(`hermes_agent_superseded_agentic_cron_names`) so they cannot double-fire
-alongside their `-enqueue` twins. Each card carries an idempotency key
-`<job>-<slot>`, so a
-double-fire or backfill never duplicates a card.
+pass, the 8h `review`, and (as of this reframe) `docs-sync` — is a
+**direct-deliver cron job** (`hermes_agent_direct_cron_jobs`,
+`tasks/reconcile_direct_cron.yml`), not a Kanban card and not an agentic cron
+session. Each fires an isolated LLM run on its own schedule and delivers
+straight to Slack (`--deliver`) — no board involved, `hermes_agent_kanban_cards`
+no longer exists at all. This replaced an earlier Kanban-card design (#83): a
+script-only enqueuer cron created one card per slot for the board's dispatcher
+to run in a fresh worker session, which fixed #83's original state-leak
+problem (INC-17120) but introduced its own silent-failure hazard — the worker
+had to run `hermes kanban archive` as its own last action to free its
+idempotency key for the next fire, and a skipped archive (model forgets, a
+runtime cap killing the process, any flake) left the job silently dark
+forever, since `hermes kanban complete` transitions to `done`, never
+`archived`, and no atomic native alternative exists. A per-run (not stable)
+idempotency key would have solved that deterministically, but it didn't need
+solving: kanban is not for repetitive scheduled work by definition, docs-sync
+included — it runs weekly on a fixed schedule. The board keeps doing what it
+is actually for: ad-hoc work, and the follow-up cards these cron jobs
+themselves file via `kanban_create` (`review`'s gap follow-ups,
+`anomaly-hunt`'s findings, `ai-news`'s actionable items).
 
-**Cards post a full report, not a sentence.** The enqueuer appends a shared
-footer telling the worker to `hermes send` a full report to the `#hermes-all`
-channel variable — headline line, then the concrete values/counts/statuses
-observed that run, one per line, clean checks included, under 25 lines — and
-then `kanban_complete` with a **one-line** summary (the board digest renders
-that field as a single bullet). A card whose own prompt already posts a report
-posts once, not twice.
+**Real semantics `hermes cron create` cannot express natively** (verified
+against the live CLI's `--help` and, for profile, against `cron/scheduler.py`
+itself — not assumed):
 
-This wording is what makes cron retirement safe. A cron is justified only when
-it is a genuine daily report over the previous day, or runs **less often than
-daily**; anything more frequent belongs on the board. But a `-v2` cron posts a
-full report, so while the footer asked for a one-line summary, switching one off
-silently downgraded its topic from a report to a sentence. Footer first, then
-the retirement — and the replacement card must be off
-`hermes_agent_kanban_paused_jobs`, or its enqueuer fires into the enqueue
-script's unknown-selector arm and creates nothing at all. Both are enforced by
-`tests/hermes_agent/test_retired_direct_crons.py`.
+- **`assignee`/profile selection** — no `cron create` flag exists. Restored
+  via a per-job `hermes_home:` override (7 of the 18 converted jobs had a real
+  profile: `daily-status`, `zammad-review` → `homelab-admin`; `splunk-triage`,
+  `splunk-security`, `splunk-parsing`, `splunk-deepdive`, `anomaly-hunt` →
+  `splunk-admin`) — but a HERMES_HOME override alone is not sufficient: cron
+  jobs run IN-PROCESS inside whichever gateway registered them, and only the
+  default profile's gateway (`hermes-gateway.service`) is persistent. A named
+  profile needs its own trigger — `hermes cron tick` ("run due jobs once and
+  exit"), fired every 5 minutes per profile
+  (`hermes_agent_profile_cron_tick_timeout`, `tasks/main.yml`).
+- **`max_runtime`** — no `cron create` flag either. Partially restored for the
+  7 profile-scoped jobs only: `timeout <duration>` wraps their tick-trigger
+  invocation, an approximate per-TICK ceiling (more than one due job can share
+  a 5-minute window), not a strict per-job one. The other 11 run inside the
+  default gateway's in-process ticker, which has no external invocation point
+  to wrap at all — no runtime cap exists for them, and none can be added
+  without a persistent gateway process per job.
+- **`max_retries`** — no `cron create` equivalent. Not restored; an accepted,
+  documented loss.
+- **Outcome-based delivery split** (`channel_when_healthy` /
+  `terse_when_healthy`, one job: `homelab-ai-fabric-status`) — `--deliver`
+  takes exactly one fixed target. Restored as **prompt text**: the shared
+  reporting footer instructs the model to self-route via the terminal command
+  `hermes send` when the run is a genuine all-clear, ending with `[SILENT]` so
+  `--deliver` does not also post it.
 
-A self-perpetuating **8h reviewer** card (00:00 / 08:00 / 16:00 UTC) reviews the
-last 8h of board activity, files follow-ups for anything missed or broken, posts
-a digest to `#hermes-all`, and creates the next slot's reviewer card as `blocked`
-so it cannot run early; the next enqueuer fire unblocks it. The daily safety-net
-enqueuer (`all --backfill`) re-creates any missing card and unblocks any due
-blocked card, so the reviewer chain self-heals if a link is ever dropped.
+None of these were silently dropped.
+
+**Every direct-cron job posts a full report, not a sentence**, and every one
+carries the anti-fabrication evidence contract — both restored as a shared
+Jinja prompt-text footer (`templates/direct-cron-footer.md.j2`, appended to
+every job's prompt in `reconcile_direct_cron.yml`), the same distinction that
+made the original enqueuer-footer design acceptable: data, not a script.
+check that guarantees new prompt text keeps doing so.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `hermes_agent_kanban_cards` | — | the per-workload card table (title, cadence, schedule, prompt var, skills, retry budget) |
-| `hermes_agent_slack_hermes_all_channel` | firehose channel id | channel each card posts its completion **report** to |
-| `hermes_agent_kanban_reviewer_schedule` | `0 */8 * * *` | the 8h reviewer slots |
-| `hermes_agent_kanban_safety_net_schedule` | `33 4 * * *` | daily chain-break backfill sweep |
+| `hermes_agent_direct_cron_jobs` | — | the plain-cron job table (name, schedule, prompt var, skill, deliver target) — every recurring workload, 27 entries |
+| `hermes_agent_slack_hermes_all_channel` | firehose channel id | default delivery channel for jobs' completion **report** |
+| `hermes_agent_superseded_kanban_enqueuer_cron_names` | — | the retired per-card `<job>-enqueue` crons + the old safety net, removed at converge |
 
 ### Master board digest (`kanban-digest`)
 

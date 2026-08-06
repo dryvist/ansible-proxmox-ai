@@ -36,19 +36,17 @@ def _defaults():
     return yaml.safe_load(DEFAULTS_PATH.read_text())
 
 
-def _cards():
-    return {c["job"]: c for c in _defaults()["hermes_agent_kanban_cards"]}
-
-
 def _direct_crons():
     return {j["name"]: j for j in _defaults()["hermes_agent_direct_cron_jobs"]}
 
 
 def test_splunk_digest_card_is_fully_removed() -> None:
     defaults = _defaults()
-    jobs = {c["job"] for c in defaults["hermes_agent_kanban_cards"]}
-    assert "{{ hermes_agent_splunk_digest_cron_name }}" not in jobs
-    assert "{{ hermes_agent_splunk_digest_cron_name }}" not in defaults["hermes_agent_kanban_paused_jobs"]
+    # hermes_agent_kanban_cards no longer exists at all (18/18 native-cron
+    # reframe); hermes_agent_kanban_paused_jobs is gone too. The vars-gone
+    # assertions below prove the retired card cannot come back through either
+    # door.
+    assert "hermes_agent_kanban_cards" not in defaults
     assert "hermes_agent_splunk_digest_cron_name" not in defaults
     assert "hermes_agent_splunk_digest_cron_schedule" not in defaults
     assert "hermes_agent_splunk_digest_cron_prompt_file" not in defaults
@@ -72,18 +70,20 @@ def test_splunk_triage_prompt_regression_guard_exists() -> None:
     assert "splunk-digest-last" in tasks_text
 
 
-def test_splunk_parsing_quality_v2_is_retired_in_favour_of_the_kanban_card() -> None:
+def test_splunk_parsing_quality_v2_is_retired_in_favour_of_the_direct_cron() -> None:
+    """Native-cron reframe: the replacement is no longer a Kanban card. It is
+    now hermes_agent_splunk_parsing_cron_name, a plain daily direct-cron job
+    (hermes_agent_direct_cron_jobs). `replaced_by_card` is gone from the
+    retired -v2 entry too — nothing reads that field any more; the pairing
+    lives only in this entry's own comment and the pause task below.
+    """
     direct = _direct_crons()
     job = direct["splunk-parsing-quality-v2"]
     assert job["enabled"] is False
-    assert job["replaced_by_card"] == "{{ hermes_agent_splunk_parsing_cron_name }}"
+    assert "replaced_by_card" not in job
 
-    cards = _cards()
-    assert "{{ hermes_agent_splunk_parsing_cron_name }}" in cards
-    defaults = _defaults()
-    assert "{{ hermes_agent_splunk_parsing_cron_name }}" not in defaults["hermes_agent_kanban_paused_jobs"], (
-        "splunk-parsing-quality-v2 is retired in its favour, so the card "
-        "must not be paused or the topic goes unreported by both paths"
+    assert "{{ hermes_agent_splunk_parsing_cron_name }}" in direct, (
+        "splunk-parsing must exist as its replacement direct-cron job"
     )
 
     # The retirement's pause task (disable-don't-delete) is wired the same
@@ -106,20 +106,22 @@ def test_fleet_health_card_exists_and_is_lifted() -> None:
     fabric-watchdog.timer reporting enabled AND active. The pause was a
     state to exit, not an invariant to hold, so the test now pins the exit.
 
-    What stays invariant is everything that makes the lift cheap and safe:
-    weekly cadence, default profile, no skills, read-only over `kanban runs`.
-    Those are asserted below and must not be relaxed.
+    Native-cron reframe: fleet-health is no longer a Kanban card. It is now a
+    plain hermes_agent_direct_cron_jobs entry, so "lifted" means its `enabled`
+    is a real Jinja gate (not the retired -v2 style literal `false`) and there
+    is no separate paused-jobs list left to re-check it against. What stays
+    invariant is everything that makes the lift cheap and safe: weekly
+    cadence, no skill, read-only over `kanban runs`.
     """
-    cards = _cards()
-    card = cards.get("{{ hermes_agent_fleet_health_cron_name }}")
-    assert card is not None, "fleet-health card is missing from hermes_agent_kanban_cards"
-    assert card["assignee"] == "", "fleet-health is cross-domain/meta — belongs on the default profile"
-    assert card["skills"] == []
+    direct = _direct_crons()
+    job = direct.get("{{ hermes_agent_fleet_health_cron_name }}")
+    assert job is not None, "fleet-health job is missing from hermes_agent_direct_cron_jobs"
+    assert job["skill"] == ""
+    assert job["enabled"] != False, (  # noqa: E712 — distinguishing Jinja str from literal False
+        "fleet-health is deliberately lifted; a literal False re-pauses it"
+    )
 
     defaults = _defaults()
-    assert "{{ hermes_agent_fleet_health_cron_name }}" not in defaults["hermes_agent_kanban_paused_jobs"], (
-        "fleet-health is deliberately lifted; re-pause ai-news first if the board wedges"
-    )
     assert defaults["hermes_agent_fleet_health_cron_name"] == "fleet-health"
 
     # The lift is only defensible while the card stays weekly. An hourly

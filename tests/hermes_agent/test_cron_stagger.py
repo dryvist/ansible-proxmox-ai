@@ -48,34 +48,52 @@ def _schedules() -> dict[str, str]:
     }
 
 
-def _minutes(expr: str) -> set[int]:
-    """Minutes a 5-field cron expression fires on."""
-    field = expr.split()[0]
-    if field.startswith("*/"):
-        step = int(field[2:])
-        return set(range(0, 60, step))
-    if field == "*":
-        return set(range(60))
+def _expand_field(field: str, span: int) -> set[int]:
+    """Values a single cron field (comma list of `*`, `*/N`, `H`, `H1-H2`) fires on."""
     out: set[int] = set()
     for part in field.split(","):
-        if part.isdigit():
+        if part == "*":
+            out.update(range(span))
+        elif part.startswith("*/"):
+            out.update(range(0, span, int(part[2:])))
+        elif "-" in part:
+            lo, hi = part.split("-")
+            out.update(range(int(lo), int(hi) + 1))
+        elif part.isdigit():
             out.add(int(part))
     return out
+
+
+def _minutes(expr: str) -> set[int]:
+    """Minute-of-day (hour*60 + minute) values a 5-field cron expression fires
+    on. Hour-aware: two daily cards sharing a `:00`/`:13`/... minute field on
+    DIFFERENT hours (e.g. 0 2 * * * vs 0 12 * * *) do not actually start
+    together — matching on the minute field alone was the false-positive this
+    produced once every converted card became live (they used to be excluded
+    via hermes_agent_kanban_paused_jobs, a list this reframe removed)."""
+    minute_field, hour_field = expr.split()[0], expr.split()[1]
+    minutes = _expand_field(minute_field, 60)
+    hours = _expand_field(hour_field, 24)
+    return {h * 60 + m for h in hours for m in minutes}
 
 
 def _agentic_jobs() -> set[str]:
     """Cards that run a model, i.e. the ones that contend for the serving slot.
 
-    Script-fed crons are excluded: they call APIs, not the brain.
+    Script-fed crons are excluded: they call APIs, not the brain. Native-cron
+    reframe (18/18): every former board card, including docs-sync, is now a
+    hermes_agent_direct_cron_jobs entry — the gateway runs the prompt directly.
+    hermes_agent_kanban_cards no longer exists. The retired ``-v2`` entries
+    (``enabled: false`` literal, never reconciled) are excluded — there is no
+    longer a separate paused-jobs list to check against.
     """
-    paused = set(DEFAULTS["hermes_agent_kanban_paused_jobs"])
     names: set[str] = set()
-    for card in DEFAULTS["hermes_agent_kanban_cards"]:
-        if card["job"] in paused:
+    for entry in DEFAULTS["hermes_agent_direct_cron_jobs"]:
+        if entry.get("enabled") is False:
             continue
-        job = card["job"]
-        match = re.fullmatch(r"\{\{\s*hermes_agent_(\w+?)_cron_name\s*\}\}", job)
-        names.add(match.group(1) if match else job)
+        key = entry.get("name", entry.get("job"))
+        match = re.fullmatch(r"\{\{\s*hermes_agent_(\w+?)_cron_name\s*\}\}", key)
+        names.add(match.group(1) if match else key)
     return names
 
 
@@ -94,7 +112,8 @@ def test_no_two_active_agentic_cards_start_in_the_same_minute() -> None:
 
     clashes = {m: sorted(j) for m, j in by_minute.items() if len(j) > 1}
     assert not clashes, "\n".join(
-        f"minute :{m:02d} starts {jobs} together" for m, jobs in sorted(clashes.items())
+        f"{m // 60:02d}:{m % 60:02d} starts {jobs} together"
+        for m, jobs in sorted(clashes.items())
     )
 
 
@@ -102,7 +121,9 @@ def test_the_hourly_card_avoids_the_board_digest_tick() -> None:
     """The fabric-status card is the only hourly agentic one, so a collision it
     has repeats every single hour rather than once a day. The board digest runs
     on a fixed interval it cannot dodge, so the hourly card moves instead."""
-    fabric = _minutes(DEFAULTS["hermes_agent_daily_status_cron_schedule"])
+    # The digest ticks every N minutes of every hour, so only fabric-status's
+    # minute-of-HOUR matters here (unlike the minute-of-day check above).
+    fabric = {m % 60 for m in _minutes(DEFAULTS["hermes_agent_daily_status_cron_schedule"])}
     digest_interval = int(DEFAULTS["hermes_agent_kanban_digest_interval_minutes"])
     digest = set(range(0, 60, digest_interval))
     assert not (fabric & digest), (
