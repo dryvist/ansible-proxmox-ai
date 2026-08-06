@@ -413,24 +413,43 @@ is actually for: ad-hoc work, and the follow-up cards these cron jobs
 themselves file via `kanban_create` (`review`'s gap follow-ups,
 `anomaly-hunt`'s findings, `ai-news`'s actionable items).
 
-**Real semantics that do not carry over to `hermes cron create`** (verified
-against the live CLI's `--help`, not assumed): **`assignee`/profile
-selection** — no flag exists; 6 of the 18 converted jobs (2 →
-`homelab-admin`, 4 → `splunk-admin`) now run under the default profile.
-**`max_runtime`** and **`max_retries`** — both exist on `kanban create`,
-neither on `cron create`; every converted job now has no runtime cap and no
-retry/circuit-breaker protection. **Outcome-based delivery split**
-(`channel_when_healthy` / `terse_when_healthy`, one card:
-`homelab-ai-fabric-status`) — `--deliver` takes exactly one fixed target, so
-it now always posts to `#hermes-issues`. None of these were silently
-dropped — see the PR that finished the reframe for the full gap report.
+**Real semantics `hermes cron create` cannot express natively** (verified
+against the live CLI's `--help` and, for profile, against `cron/scheduler.py`
+itself — not assumed):
 
-**Every direct-cron job posts a full report, not a sentence** — as long as its
-own prompt text still says so. The shared enqueuer-footer instruction that
-used to enforce this uniformly (full report + evidence-contract
-anti-fabrication wording) is gone with the enqueuer script; each of the 18
-converted prompts carries its own reporting instructions verbatim from its
-pre-reframe card body, but there is no longer a converge-time or test-time
+- **`assignee`/profile selection** — no `cron create` flag exists. Restored
+  via a per-job `hermes_home:` override (7 of the 18 converted jobs had a real
+  profile: `daily-status`, `zammad-review` → `homelab-admin`; `splunk-triage`,
+  `splunk-security`, `splunk-parsing`, `splunk-deepdive`, `anomaly-hunt` →
+  `splunk-admin`) — but a HERMES_HOME override alone is not sufficient: cron
+  jobs run IN-PROCESS inside whichever gateway registered them, and only the
+  default profile's gateway (`hermes-gateway.service`) is persistent. A named
+  profile needs its own trigger — `hermes cron tick` ("run due jobs once and
+  exit"), fired every 5 minutes per profile
+  (`hermes_agent_profile_cron_tick_timeout`, `tasks/main.yml`).
+- **`max_runtime`** — no `cron create` flag either. Partially restored for the
+  7 profile-scoped jobs only: `timeout <duration>` wraps their tick-trigger
+  invocation, an approximate per-TICK ceiling (more than one due job can share
+  a 5-minute window), not a strict per-job one. The other 11 run inside the
+  default gateway's in-process ticker, which has no external invocation point
+  to wrap at all — no runtime cap exists for them, and none can be added
+  without a persistent gateway process per job.
+- **`max_retries`** — no `cron create` equivalent. Not restored; an accepted,
+  documented loss.
+- **Outcome-based delivery split** (`channel_when_healthy` /
+  `terse_when_healthy`, one job: `homelab-ai-fabric-status`) — `--deliver`
+  takes exactly one fixed target. Restored as **prompt text**: the shared
+  reporting footer instructs the model to self-route via the terminal command
+  `hermes send` when the run is a genuine all-clear, ending with `[SILENT]` so
+  `--deliver` does not also post it.
+
+None of these were silently dropped.
+
+**Every direct-cron job posts a full report, not a sentence**, and every one
+carries the anti-fabrication evidence contract — both restored as a shared
+Jinja prompt-text footer (`templates/direct-cron-footer.md.j2`, appended to
+every job's prompt in `reconcile_direct_cron.yml`), the same distinction that
+made the original enqueuer-footer design acceptable: data, not a script.
 check that guarantees new prompt text keeps doing so.
 
 | Variable | Default | Meaning |

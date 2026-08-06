@@ -1540,6 +1540,30 @@
         and hermes_agent_slack_app_token | length > 0
         and hermes_agent_slack_home_channel | length > 0)
 
+# See hermes_agent_profile_cron_tick_timeout (defaults) for why this exists:
+# a job registered under a named profile's HERMES_HOME needs its OWN ticker,
+# since `hermes cron`'s ticker runs in-process inside whichever gateway
+# registered it and only the default profile's gateway is persistent.
+- name: "Reconcile the profile cron tick trigger for {{ item }}"
+  ansible.builtin.cron:
+    name: "hermes-cron-tick-{{ item }}"
+    user: "{{ hermes_agent_user }}"
+    job: >-
+      HERMES_HOME={{ hermes_agent_hermes_home }}/profiles/{{ item }}
+      timeout {{ hermes_agent_profile_cron_tick_timeout }}
+      {{ hermes_agent_bin }} cron tick
+      >> {{ hermes_agent_log_directory }}/cron-tick-{{ item }}.log 2>&1
+    minute: "*/5"
+    state: present
+  loop:
+    - homelab-admin
+    - splunk-admin
+  when: >-
+    hermes_agent_direct_cron_jobs
+    | selectattr('hermes_home', 'defined')
+    | selectattr('hermes_home', 'search', item)
+    | selectattr('enabled') | list | length > 0
+
 # No daily backfill safety net any more: it existed to re-create a slot-keyed
 # Kanban card a missed fire would otherwise drop forever. Recurring work is a
 # cron job now (native [SILENT] delivery suppression already handles "nothing

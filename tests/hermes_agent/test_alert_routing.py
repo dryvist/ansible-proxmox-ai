@@ -116,10 +116,9 @@ def _deliver_targets(pattern: str, ctx: Mapping[str, object], text: str) -> str:
 # are now plain `hermes_agent_direct_cron_jobs` entries — the gateway runs the
 # prompt itself and delivers straight to Slack via one fixed `deliver:` per job
 # (tasks/reconcile_direct_cron.yml). hermes_agent_kanban_cards no longer
-# exists; the outcome-split and terse-when-healthy behaviors are not
-# expressible via `hermes cron create` (single fixed --deliver target) and do
-# not carry over — see the PR that removed the last Kanban card for the gap
-# report.
+# exists. `--deliver` cannot express a per-outcome split itself, but the split
+# is restored as shared prompt text (templates/direct-cron-footer.md.j2) —
+# see the outcome-split tests below.
 
 
 def _direct_job(cron_name_var: str) -> dict:
@@ -226,19 +225,54 @@ def test_the_four_channels_resolve_to_four_distinct_surfaces() -> None:
 
 # --- per-job routing: the recurring fleet is not one undifferentiated tier ----
 #
-# Outcome-based split routing (channel_when_healthy) and terse_when_healthy no
-# longer exist anywhere in the design — they were fields on the retired
-# per-card enqueuer script. Every job below now has exactly ONE fixed
-# `deliver:` in hermes_agent_direct_cron_jobs, confirmed by re-reading
-# defaults/main.yml directly rather than assumed.
+# Outcome-based split routing (channel_when_healthy) and terse_when_healthy
+# are restored as PROMPT TEXT, not a hermes_agent_direct_cron_jobs field
+# `--deliver` can express: `--deliver` is one fixed target (the breaking-run
+# destination, issues, checked below), and the shared reporting footer
+# (templates/direct-cron-footer.md.j2, appended to every job's prompt by
+# reconcile_direct_cron.yml) instructs the model to self-route to
+# channel_when_healthy via `hermes send` + a trailing [SILENT] on an
+# all-clear run, so --deliver does not also post it.
 
-def test_the_fabric_status_job_always_reports_to_the_issues_channel() -> None:
-    """Outcome-split routing (healthy->noise, broken->issues) is gone with the
-    enqueuer script. As a plain direct-cron job it has one fixed `deliver:`,
-    always issues — louder on a healthy run than the old split, flagged rather
-    than silently accepted (see hermes_agent_direct_cron_jobs in defaults)."""
+def test_the_fabric_status_job_deliver_is_the_breaking_run_channel() -> None:
+    """`--deliver` (issues) is the default/breaking-run destination; the
+    all-clear destination (noise) is on the item as channel_when_healthy and
+    is only reachable via the prompt footer's self-send branch, not --deliver
+    itself — see test_the_fabric_status_job_carries_the_outcome_split below."""
     ctx = _resolve(CONFIGURED)
     assert _direct_deliver("hermes_agent_daily_status_cron_name", ctx) == "slack:C_ISSUES"
+
+
+def test_the_fabric_status_job_carries_the_outcome_split() -> None:
+    job = _direct_job("hermes_agent_daily_status_cron_name")
+    assert "channel_when_healthy" in job
+    assert job["channel_when_healthy"] == "slack:{{ hermes_agent_slack_noise_channel }}"
+    assert job.get("terse_when_healthy") is True
+    # No other job carries the split — it was one card's behaviour, not a
+    # general one.
+    others = [j for j in DEFAULTS["hermes_agent_direct_cron_jobs"]
+              if j is not job and "channel_when_healthy" in j]
+    assert others == [], [j.get("name") for j in others]
+
+
+def test_the_shared_footer_renders_the_outcome_split_and_the_default_case() -> None:
+    """The footer template itself, not just the data feeding it — pins that
+    the self-send + [SILENT] branch and the evidence contract are both
+    actually present in the rendered text, for a job with the split and one
+    without."""
+    footer = (ROLE / "templates" / "direct-cron-footer.md.j2").read_text()
+    split = _ENV.from_string(footer).render(
+        item={"channel_when_healthy": "slack:C_NOISE", "terse_when_healthy": True},
+        deliver="slack:C_ISSUES", ansible_managed="TEST",
+    )
+    default = _ENV.from_string(footer).render(item={}, deliver="slack:C_ALL", ansible_managed="TEST")
+    assert "hermes send --to slack:C_NOISE" in split
+    assert "[SILENT]" in split
+    assert "All systems operational" in split
+    assert "do not call `hermes send` yourself" in default
+    for rendered in (split, default):
+        assert "EVIDENCE CONTRACT" in rendered
+        assert "do NOT invent a result" in rendered
 
 
 def test_scouting_jobs_report_to_the_noise_channel() -> None:

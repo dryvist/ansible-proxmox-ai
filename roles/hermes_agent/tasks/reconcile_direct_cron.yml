@@ -9,16 +9,23 @@
 # item fields: name, schedule, EITHER prompt_file (loaded from the pinned
 # catalog) OR prompt_var (name of an already-resolved var, inline or
 # catalog-preloaded — same lookup('vars', ...) pattern the retired kanban card
-# table used), skill (may be ""), enabled, and an optional deliver override
-# (defaults to the shared digest channel).
-- name: "Direct cron | Load prompt + deliver target for {{ item.name }}"
+# table used), skill (may be ""), enabled, an optional deliver override
+# (defaults to the shared digest channel), and optional channel_when_healthy /
+# terse_when_healthy (outcome-based routing — see direct-cron-footer.md.j2).
+- name: "Direct cron | Resolve deliver target for {{ item.name }}"
+  ansible.builtin.set_fact:
+    hermes_agent_direct_deliver: "{{ item.deliver | default('slack:' ~ hermes_agent_digest_slack_channel) }}"
+
+- name: "Direct cron | Load prompt + append reporting footer for {{ item.name }}"
   ansible.builtin.set_fact:
     hermes_agent_direct_prompt: >-
-      {{ (lookup('vars', item.prompt_var) if item.prompt_var is defined else
-          lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
-            ~ item.prompt_file, rstrip=false))
-         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
-    hermes_agent_direct_deliver: "{{ item.deliver | default('slack:' ~ hermes_agent_digest_slack_channel) }}"
+      {{ ((lookup('vars', item.prompt_var) if item.prompt_var is defined else
+           lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+             ~ item.prompt_file, rstrip=false))
+          | regex_replace('(?s)^---\n.*?\n---\n', '') | trim)
+         ~ '\n\n' ~
+         (lookup('template', role_path ~ '/templates/direct-cron-footer.md.j2',
+                 template_vars={'item': item, 'deliver': hermes_agent_direct_deliver}) | trim) }}
   when: item.enabled | bool
 
 - name: "Direct cron | Build create argv for {{ item.name }}"
@@ -33,7 +40,7 @@
 - name: "Direct cron | Look up {{ item.name }}"
   ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
   environment:
-    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+    HERMES_HOME: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
   become: true
   become_user: "{{ hermes_agent_user }}"
   register: hermes_agent_direct_cron_list
@@ -66,7 +73,7 @@
 - name: "Direct cron | Remove drifted {{ item.name }}"
   ansible.builtin.command: "{{ hermes_agent_bin }} cron remove {{ item.name }}"
   environment:
-    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+    HERMES_HOME: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
   become: true
   become_user: "{{ hermes_agent_user }}"
   changed_when: true
@@ -79,7 +86,7 @@
   ansible.builtin.command:
     argv: "{{ hermes_agent_direct_argv }}"
   environment:
-    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+    HERMES_HOME: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
   become: true
   become_user: "{{ hermes_agent_user }}"
   changed_when: true

@@ -76,10 +76,15 @@ token, app token and home channel; the `splunk-*` jobs also require
 `hermes_agent_splunk_monitor_enabled` and the Splunk MCP URL. A job whose gate
 is false is never created — the role runs inert, never errors.
 
-`homelab-ai-fabric-status` previously split its report by outcome (all-clear to
-the noise channel, a break to issues). A plain `--deliver` target cannot
-conditionally choose a destination, so this job now always posts to
-`#hermes-issues` — louder-by-default on a healthy run.
+`homelab-ai-fabric-status` splits its report by outcome (all-clear to the
+noise channel, a break to issues) — restored as **prompt text**, not a
+`--deliver` flag: `--deliver` (`#hermes-issues`, the default/breaking-run
+destination) takes exactly one fixed target, so the shared reporting footer
+(`templates/direct-cron-footer.md.j2`, appended to every direct-cron job's
+prompt) instructs the model to self-route to the noise channel via the
+terminal command `hermes send` when the run is a genuine all-clear, ending
+with `[SILENT]` so `--deliver` does not ALSO post it. `terse_when_healthy`
+(one-line "All systems operational" on that branch) is restored the same way.
 
 `docs-sync` was initially kept as the one surviving Kanban card, with a
 **per-run** (not stable) idempotency key to solve the enqueuer's archive
@@ -92,13 +97,27 @@ these cron jobs file via `kanban_create` (`review`'s gap follow-ups,
 `anomaly-hunt`'s findings, `ai-news`'s actionable items).
 
 **Real semantics `hermes cron create` cannot express**, verified against the
-live CLI's own `--help` (not assumed): profile/`assignee` selection — no such
-flag exists, so 6 of the 18 converted jobs (2 → `homelab-admin`, 4 →
-`splunk-admin`) now run under the default profile; `max_runtime` and
-`max_retries` — both exist on `kanban create`, neither on `cron create`, so
-every converted job has no runtime cap and no retry protection; the
-`homelab-ai-fabric-status` outcome-split above. None of these were silently
-dropped.
+live CLI's own `--help` (not assumed) and, for the profile finding, against
+`cron/scheduler.py` itself: profile/`assignee` selection — no `cron create`
+flag exists, so the 7 jobs that had a real profile (2 → `homelab-admin`:
+`daily-status`, `zammad-review`; 5 → `splunk-admin`: `splunk-triage`,
+`splunk-security`, `splunk-parsing`, `splunk-deepdive`, `anomaly-hunt`) get a
+per-job `HERMES_HOME` override instead (`hermes_home:` on the item,
+`reconcile_direct_cron.yml`). That alone is not sufficient: `hermes cron`'s
+ticker runs IN-PROCESS inside whichever gateway registered the job — only the
+default profile's gateway (`hermes-gateway.service`) runs persistently, so a
+job registered under a named profile needs its own trigger. `hermes cron
+tick` ("run due jobs once and exit") is the native one; a `*/5 * * * *`
+crontab entry per profile (`hermes_agent_profile_cron_tick_timeout`) fires it,
+which also restores an approximate `max_runtime` ceiling for those 7 (`timeout
+<duration>` wraps the whole tick invocation — a per-tick cap, not strictly
+per-job, since more than one due job can land in the same 5-minute window).
+The other 11 converted jobs run inside the default gateway's in-process
+ticker, which has no external invocation point to wrap with `timeout` at
+all — those have no runtime cap, full stop; there is no native way to add one
+without a persistent gateway process per job, which nothing here stands up.
+`max_retries` (the failure-limit circuit breaker) has no `cron create`
+equivalent either and is not restored — an accepted, documented loss.
 
 `tasks/main.yml` actively *removes* the superseded per-card enqueuer crons
 (`hermes_agent_superseded_kanban_enqueuer_cron_names`, the old `<job>-enqueue`
@@ -414,9 +433,10 @@ re-litigated.
   (`tasks/reconcile_direct_cron.yml`, already existed for the `-v2` jobs) with
   its recall/save memory pattern carried over verbatim. Kanban keeps doing
   what it is actually for: ad-hoc work, and the follow-up cards these cron
-  jobs file via `kanban_create`. See "Recurring work is all plain cron now"
-  above for the semantics `hermes cron create` cannot express (profile,
-  max_runtime, max_retries, outcome-split delivery).
+  jobs file via `kanban_create`. See "Recurring reports are plain cron jobs"
+  above for what `hermes cron create` cannot express natively (profile,
+  runtime cap, outcome-split delivery) and how each is restored or accepted
+  as a documented loss.
 - **The "never `[SILENT]`" heartbeat law is superseded (2026-07-26).** 38 of 40
   runs in one UTC day carried zero information. A quiet run now stays silent
   unless `HEARTBEAT_HOURS` (6) has elapsed; a CRITICAL finding is exempt and
