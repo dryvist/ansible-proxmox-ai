@@ -35,25 +35,6 @@ def create_task(conn, *, idempotency_key=None, goal_mode=False, goal_max_turns=N
     raise RuntimeError("insert path")
 '''
 PINNED_GOAL_COMPLETION_SOURCE = "                    verdict, reason, _ = judge_goal(\n"
-PINNED_RETRY_DELAY_SOURCE = (
-    "                wait_time = _retry_after if _retry_after else "
-    "jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)\n"
-)
-PINNED_INVALID_RESPONSE_RETRY_SOURCE = (
-    "                    wait_time = jittered_backoff("
-    "retry_count, base_delay=5.0, max_delay=120.0)\n"
-)
-PINNED_ADAPTIVE_BACKOFF_SOURCE = (
-    "                if is_rate_limited and not _retry_after:\n"
-)
-PINNED_TRANSPORT_RECOVERY_SOURCE = (
-    "                    if not _retry.primary_recovery_attempted and "
-    "agent._try_recover_primary_transport(\n"
-)
-PINNED_TOKEN_USAGE_SOURCE = (
-    "                    if agent.verbose_logging:\n"
-    '                        logging.debug(f"Token usage: {usage}")\n'
-)
 # Verbatim upstream lines at the pinned tag (v2026.7.7.2), indentation
 # included — `_apply_runtime_patch` re-runs the role's own regexp against
 # these, so a copy that drifts from upstream would silently stop patching
@@ -81,14 +62,6 @@ PINNED_CRON_DELIVERY_SOURCE = (
     "_summarize_cron_failure_for_delivery(job, error)\n"
     "                    delivery_error = _deliver_result(job, deliver_content, "
     "adapters=adapters, loop=loop)\n"
-)
-MALFORMED_TOKEN_USAGE_SOURCE = (
-    "                   if True:\n"
-    '                       logging.debug(f"Token usage: {usage}")\n'
-)
-PATCHED_TOKEN_USAGE_SOURCE = (
-    "                    if True:\n"
-    '                        logging.debug(f"Token usage: {usage}")\n'
 )
 PINNED_WORKER_REAP_SOURCE = '''\
 def _reap(pid, signal_fn=None):
@@ -433,57 +406,58 @@ def test_hindsight_prefetch_patch_logs_at_warning() -> None:
     assert "logger.debug" not in patched
 
 
-@pytest.mark.parametrize(
-    "source",
-    (
-        PINNED_TOKEN_USAGE_SOURCE,
-        MALFORMED_TOKEN_USAGE_SOURCE,
-        PATCHED_TOKEN_USAGE_SOURCE,
-    ),
-)
-def test_token_usage_metric_patch_normalizes_known_source_states(source: str) -> None:
-    patched = _apply_runtime_patch(
-        "Enable prompt-safe Hermes token usage metrics at DEBUG",
-        source,
-    )
-    assert patched == PATCHED_TOKEN_USAGE_SOURCE
+def test_auxiliary_retry_budgets_are_bounded() -> None:
+    """What remains true after the client-side backoff hacks were reverted.
 
-
-def test_model_calls_retry_once_after_fifteen_seconds() -> None:
+    Retry *counts* (how many attempts) are a deliberate, unrelated config —
+    unlike the removed patches, which forced a flat *wait time* between
+    retries. Only the counts and the auxiliary-path fixed delay survive.
+    """
     config_template = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
     assert "Upstream counts total attempts" in config_template
     assert "api_max_retries: 2" in config_template
     assert "transient_retries: 1" in config_template
 
-    patched = _apply_runtime_patch(
-        "Patch Hermes exception retry delay for the local serial backend",
-        PINNED_RETRY_DELAY_SOURCE,
-    )
-    assert "wait_time = 15.0" in patched
-    assert "jittered_backoff" not in patched
-
-    invalid_response = _apply_runtime_patch(
-        "Patch Hermes invalid-response retry delay for the local serial backend",
-        PINNED_INVALID_RESPONSE_RETRY_SOURCE,
-    )
-    assert "wait_time = 15.0" in invalid_response
-
-    adaptive = _apply_runtime_patch(
-        "Disable adaptive rate-limit backoff for the local serial backend",
-        PINNED_ADAPTIVE_BACKOFF_SOURCE,
-    )
-    assert "if False and" in adaptive
-
-    transport = _apply_runtime_patch(
-        "Disable the extra transport-recovery attempt cycle",
-        PINNED_TRANSPORT_RECOVERY_SOURCE,
-    )
-    assert "if False and" in transport
-
     tasks = (ROLE_ROOT / "tasks" / "main.yml").read_text()
     assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in tasks
     assert "status in (408, 429)" in tasks
     assert 'resolved_provider != "custom"' in tasks
+
+
+# The six conversation_loop.py patches that forced a flat unjittered retry
+# wait, disabled adaptive rate-limit backoff and transport recovery, and
+# permanently forced debug logging on. All six reapplied on every converge
+# once merged; removing them from the task list is the actual fix, so the
+# regression this guards is a silent re-add of any one of them.
+REVERTED_CLIENT_BACKOFF_PATCH_NAMES = (
+    "Patch Hermes exception retry delay for the local serial backend",
+    "Patch Hermes invalid-response retry delay for the local serial backend",
+    "Disable adaptive rate-limit backoff for the local serial backend",
+    "Disable the extra transport-recovery attempt cycle",
+    "Enable prompt-safe Hermes request size metrics at DEBUG",
+    "Enable prompt-safe Hermes token usage metrics at DEBUG",
+)
+KEPT_MAX_TOKENS_CEILING_PATCH_NAMES = (
+    "Patch hermes-agent retry boost to respect the configured max_tokens ceiling",
+    "Patch hermes-agent length-continuation boost to respect the configured "
+    "max_tokens ceiling",
+)
+
+
+def test_client_side_backoff_hacks_stay_reverted() -> None:
+    task_names = {
+        item.get("name")
+        for item in yaml.safe_load((ROLE_ROOT / "tasks" / "main.yml").read_text())
+    }
+    for name in REVERTED_CLIENT_BACKOFF_PATCH_NAMES:
+        assert name not in task_names, f"reintroduced: {name}"
+    for name in KEPT_MAX_TOKENS_CEILING_PATCH_NAMES:
+        assert name in task_names, f"missing: {name}"
+
+    tasks_text = (ROLE_ROOT / "tasks" / "main.yml").read_text()
+    assert "wait_time = 15.0" not in tasks_text
+    assert "if False and is_rate_limited" not in tasks_text
+    assert "if False and not _retry.primary_recovery_attempted" not in tasks_text
 
 
 def test_worker_spawn_patch_enters_quiet_goal_loop_path() -> None:
@@ -962,7 +936,6 @@ def test_installed_source_postconditions_fail_closed() -> None:
         for condition in assert_task["ansible.builtin.assert"]["that"]
     )
     assert 'resolved_provider != "custom"' in conditions
-    assert "Token usage:" in conditions
     assert "update the pinned-source patches" in assert_task["ansible.builtin.assert"][
         "fail_msg"
     ]
@@ -1025,32 +998,10 @@ def test_installed_source_postconditions_fail_closed() -> None:
         + stale_reclaim_source
     )
     reconcile_source += stale_reclaim_source
-    retry_source = "".join(
-        (
-            _apply_runtime_patch(
-                "Patch Hermes exception retry delay for the local serial backend",
-                PINNED_RETRY_DELAY_SOURCE,
-            ),
-            _apply_runtime_patch(
-                "Patch Hermes invalid-response retry delay for the local serial backend",
-                PINNED_INVALID_RESPONSE_RETRY_SOURCE,
-            ),
-            _apply_runtime_patch(
-                "Disable adaptive rate-limit backoff for the local serial backend",
-                PINNED_ADAPTIVE_BACKOFF_SOURCE,
-            ),
-            _apply_runtime_patch(
-                "Disable the extra transport-recovery attempt cycle",
-                PINNED_TRANSPORT_RECOVERY_SOURCE,
-            ),
-        )
-    )
-    retry_source += "# Log request details if verbose\n        if True:\n"
-    retry_source += _apply_runtime_patch(
-        "Enable prompt-safe Hermes token usage metrics at DEBUG",
-        PINNED_TOKEN_USAGE_SOURCE,
-    )
-    retry_source += _apply_runtime_patch(
+    # The six client-side backoff hacks are gone (see
+    # test_client_side_backoff_hacks_stay_reverted); only the two kept
+    # max_tokens-ceiling patches still contribute to this source.
+    retry_source = _apply_runtime_patch(
         "Patch hermes-agent retry boost to respect the configured max_tokens ceiling",
         PINNED_TC_BOOST_CAP_SOURCE,
     )
@@ -1075,7 +1026,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
         _source_postconditions(
             PINNED_GOAL_COMPLETION_SOURCE,
             PINNED_CREATE_TASK_SOURCE,
-            PINNED_RETRY_DELAY_SOURCE,
+            "",
             "",
         )
     )
