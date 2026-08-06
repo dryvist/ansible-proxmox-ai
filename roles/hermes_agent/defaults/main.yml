@@ -2520,8 +2520,36 @@ hermes_agent_unit_restart_burst: 5
 
 hermes_agent_brain_watchdog_enabled: true
 hermes_agent_brain_watchdog_script_path: /usr/local/bin/hermes-brain-watchdog.sh
-# Probe cadence (systemd OnUnitActiveSec). 60s matches service_deadman.
-hermes_agent_brain_watchdog_interval: "60s"
+# Probe cadence (systemd OnUnitActiveSec).
+#
+# 2026-08-06: measured over 61h of production Splunk data, this probe (at the
+# prior 60s cadence) occupied the single-slot serving backend for 56.5% of
+# wall-clock time — nearly as much as every real agent call combined. A
+# max_tokens=1 probe is not free on a contended backend: most of that time was
+# the probe itself queueing/timing out, not generating one token.
+#
+# Widening the interval is the safe lever. The other candidate — shrinking
+# hermes_agent_brain_watchdog_probe_timeout — is NOT available: that deadline
+# is asserted (roles/hermes_agent/tasks/assert.yml) to exceed
+# ai_router_retry_after_seconds so a rate-limited probe can still observe one
+# router retry; lowering it below that either fails the assert or requires
+# lowering the router's own production retry policy, which is a much larger
+# change than a watchdog cadence and out of scope here.
+#
+# 180s cuts invocation frequency 3x (60/hr -> 20/hr), projecting occupancy
+# from 56.5% down to roughly 19% (linear in invocation count — an estimate,
+# not a guarantee). Detection time (interval x hermes_agent_brain_watchdog_down_after)
+# moves from 3min to 9min, and the busy-grace tolerance
+# (interval x hermes_agent_brain_watchdog_busy_grace_probes) from 15min to
+# 45min — both still bounded, and 9min is the same order of magnitude as the
+# ~320s a real request already tolerates from router retries. Was "60s
+# matches service_deadman" — that pairing was cosmetic, not asserted, and
+# survives no worse for now diverging from it.
+#
+# If an external deadman ping grace period (hermes_agent_brain_watchdog_healthcheck_url)
+# was tuned against the old 60s cadence, it needs a matching bump — that
+# config lives outside this repo and is not touched here.
+hermes_agent_brain_watchdog_interval: "180s"
 # Per-probe curl deadline. MUST exceed llm_router_retry_after_seconds (40), the
 # router's minimum sleep before it retries a 429. The single-slot serving backend
 # answers a probe one of two ways and nothing in between: the slot is free and it
