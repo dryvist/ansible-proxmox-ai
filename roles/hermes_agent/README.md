@@ -96,12 +96,26 @@ worker runs under — MCP servers, native toolset floor, `.env` secrets, and
 skills. Named profiles live at `{{ hermes_agent_hermes_home }}/profiles/<name>/`;
 the `default` profile is `{{ hermes_agent_hermes_home }}` itself.
 
-There is **one shared gateway, dispatcher, and Kanban board** for every
-profile (no per-profile gateway, cron store, or Slack bot) — see
-`hermes_agent_profiles` in `defaults/main.yml` for the full design comment,
-the decision rule, and the isolation caveat (profile scoping is a
-config/tool-availability boundary, not an OS sandbox: every profile runs as
-the same `hermes` user in the same LXC).
+There is **one shared gateway, dispatcher, Kanban board, and Slack bot** for
+every profile — no per-profile gateway service exists. Cron is the one
+exception (native-cron reframe): `hermes cron`'s ticker runs in-process
+inside whichever gateway registered a job, and only the default profile's
+gateway is persistent, so a direct-cron job on a named profile
+(`hermes_home:` in `hermes_agent_direct_cron_jobs`) gets its own cron store
+AND its own periodic `hermes cron tick` trigger (`tasks/main.yml`) rather
+than sharing the default gateway's. See `hermes_agent_profiles` in
+`defaults/main.yml` for the full design comment, the decision rule, and the
+isolation caveat (profile scoping is a config/tool-availability boundary, not
+an OS sandbox: every profile runs as the same `hermes` user in the same LXC).
+
+**A profile's `config.yaml` overrides the shared config, it does not merge
+with it.** A named profile that omits a section the default profile has (an
+MCP server entry, a config block) simply does not get it — there is no
+fallback to the shared value. `templates/config-profile.yaml.j2` generates
+each profile's `mcp_servers:` block from that profile's own `mcp:` list in
+`hermes_agent_profiles`, so a job needing a tool must have that tool named on
+its assignee's profile entry, or the worker runs with the tool silently
+absent rather than inherited.
 
 **The isolation boundary is tools and credentials — memory is NOT part of
 it.** Every profile points at the same Hindsight memory bank: `bank_id`
