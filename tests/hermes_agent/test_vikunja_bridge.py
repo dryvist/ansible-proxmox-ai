@@ -42,6 +42,7 @@ FIXTURE_CONFIG = {
     "STATE_PATH": str(Path(STATE_DIR) / "state/vikunja-bridge.json"),
     "VIKUNJA_URL": "https://vikunja.example.invalid",
     "PROJECT_NAME": "Hermes",
+    "AGENT_NAME": "Hermes",
     "BUCKET_READY": "Ready",
     "BUCKET_IN_PROGRESS": "In Progress",
     "BUCKET_DONE": "Done",

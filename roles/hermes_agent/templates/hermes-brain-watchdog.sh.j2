@@ -205,9 +205,9 @@ ntfy_push() {
   local kind="$1" text="$2" prio tags title
   [[ -n "${NTFY_URL}" ]] || return 0
   if [[ "${kind}" == "down" ]]; then
-    prio="urgent"; tags="rotating_light"; title="hermes brain down"
+    prio="urgent"; tags="rotating_light"; title="{{ hermes_agent_id }} brain down"
   else
-    prio="default"; tags="white_check_mark"; title="hermes brain recovered"
+    prio="default"; tags="white_check_mark"; title="{{ hermes_agent_id }} brain recovered"
   fi
   curl -fsS --max-time 8 -H "Title: ${title}" -H "Priority: ${prio}" \
     -H "Tags: ${tags}" -d "${text}" "${NTFY_URL}" >/dev/null 2>&1 || true
@@ -231,9 +231,9 @@ alert() {
   local kind="$1" msg now
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if [[ "${kind}" == "down" ]]; then
-    msg=":warning: Hermes brain unreachable (${MODEL} via ${BASE_URL}) since ${now} -- pause verified succeeded=${CRON_SUCCEEDED} failed=${CRON_FAILED} desired=${JOB_COUNT}; this does not verify Kanban queue health."
+    msg=":warning: {{ hermes_agent_display_name }} brain unreachable (${MODEL} via ${BASE_URL}) since ${now} -- pause verified succeeded=${CRON_SUCCEEDED} failed=${CRON_FAILED} desired=${JOB_COUNT}; this does not verify Kanban queue health."
   else
-    msg=":white_check_mark: Hermes brain recovered at ${now} -- resume verified succeeded=${CRON_SUCCEEDED} failed=${CRON_FAILED} desired=${JOB_COUNT}; Slack delivery still requires queue verification."
+    msg=":white_check_mark: {{ hermes_agent_display_name }} brain recovered at ${now} -- resume verified succeeded=${CRON_SUCCEEDED} failed=${CRON_FAILED} desired=${JOB_COUNT}; Slack delivery still requires queue verification."
   fi
   logger -t hermes-brain-watchdog "${msg}"
   slack_post "${msg}"
@@ -274,7 +274,7 @@ maybe_escalate_sustained_flap() {
   elapsed=$(( now_epoch - since_epoch ))
   if (( flap_count >= SUSTAINED_FLAP_THRESHOLD )) || (( elapsed >= SUSTAINED_FLAP_SECONDS )); then
     mins=$(( elapsed / 60 ))
-    msg=":rotating_light: Hermes brain UNSTABLE for ~${mins} min and still flapping (${flap_count} coalesced flaps) -- ${MODEL} via ${BASE_URL}. Seeded crons pause during down phases but resume into brief-recovery windows; probable serving-stack wedge, needs operator attention (INC-17083 class)."
+    msg=":rotating_light: {{ hermes_agent_display_name }} brain UNSTABLE for ~${mins} min and still flapping (${flap_count} coalesced flaps) -- ${MODEL} via ${BASE_URL}. Seeded crons pause during down phases but resume into brief-recovery windows; probable serving-stack wedge, needs operator attention (INC-17083 class)."
     logger -t hermes-brain-watchdog "${msg}"
     slack_post "${msg}"
     ntfy_push down "${msg}"
@@ -342,7 +342,7 @@ flap_summary_check() {
   [[ "${flap_count}" =~ ^[0-9]+$ ]] || flap_count=0
   if (( flap_count > 0 )); then
     since="$(cat "${FLAP_SINCE_FILE}" 2>/dev/null || echo unknown)"
-    msg=":large_yellow_circle: Hermes brain was unstable since ${since} (${flap_count} additional flap(s) after the initial recovery) -- stabilized at $(date -u +%Y-%m-%dT%H:%M:%SZ)."
+    msg=":large_yellow_circle: {{ hermes_agent_display_name }} brain was unstable since ${since} (${flap_count} additional flap(s) after the initial recovery) -- stabilized at $(date -u +%Y-%m-%dT%H:%M:%SZ)."
     logger -t hermes-brain-watchdog "${msg}"
     slack_post "${msg}"
     ntfy_push up "${msg}"

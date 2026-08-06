@@ -6,6 +6,38 @@
 # non-root 'hermes' user whose HERMES_HOME is on a persisted ZFS data volume.
 # Restart-on-failure is applied DRY by systemd_restart_policy (Phase 9).
 
+# --- Agent identity: the ONE variable a second agent overrides -----------------
+# Set this per host group and every SHARED-SERVICE handle below derives from it:
+# Slack env-var names, the memory bank id, the Kanban project and intake label,
+# the secret-store field prefix, and the telemetry service name.
+#
+# What deliberately does NOT derive from it: the OS user, home path, systemd unit
+# names, and listening ports. Those are guest-local, and the deployment model is
+# one agent per container — so two agents never share a namespace where they
+# could collide. Deriving them would be churn that buys no isolation. The
+# boundary is: reaches a shared service -> needs the identity; local to the
+# guest -> does not.
+#
+# Every default below is written so that hermes_agent_id: hermes reproduces the
+# pre-existing literal EXACTLY. That is the review property — converging the
+# existing agent after this change must produce a zero-change diff.
+#
+# Sourced from hermes_agent_identity, which inventory/load_tofu.yml sets per
+# guest from its deployment.json tag. The indirection is NOT stylistic: three
+# operational playbooks load THIS FILE through `vars_files` to reuse the seeded
+# cron list, and play vars_files outranks inventory host/group vars — so a
+# literal here would override the per-guest value and hand one agent the other's
+# Slack, Vikunja, OpenBao and memory-bank handles. Resolving through a name this
+# file never defines keeps the guest's own value authoritative in that path too.
+hermes_agent_id: "{{ hermes_agent_identity | default('hermes', true) }}"
+
+# Same identity, capitalized, for text a HUMAN reads on a shared surface — a
+# Vikunja comment, an ntfy push, a Slack alert body. Those cross the same
+# boundary as a credential: an agent that signs the other agent's name in the
+# operator's own alert feed is misreporting, even though nothing is shared.
+# Resolves to "Hermes" for the pre-existing agent, so no message text changes.
+hermes_agent_display_name: "{{ hermes_agent_id | capitalize }}"
+
 hermes_agent_user: hermes
 # Dedicated ZFS data volume mount (deployment.json mount_point). Holds the whole
 # agent home — memory, skills, profiles, Kanban DB, sessions, logs — so it is
@@ -126,8 +158,15 @@ hermes_agent_model_api_key: >-
 # converge time (iac-conf-mgmt/prd, where these were added alongside
 # LLM_ROUTER_MASTER_KEY). Empty-string defaults keep the role inert — and the
 # gateway Slack-free — until all five are actually set.
-hermes_agent_slack_bot_token: "{{ lookup('env', 'SLACK_HERMES_BOT_TOKEN') | default('', true) }}"
-hermes_agent_slack_app_token: "{{ lookup('env', 'SLACK_HERMES_APP_TOKEN') | default('', true) }}"
+# Per-agent by construction: two agents sharing one bot token would each open a
+# Socket Mode connection, and the platform round-robins events between them — a
+# DM gets answered by whichever connection wins the race, nondeterministically.
+# A second agent therefore needs its own app and its own token pair, which is
+# what deriving the variable NAME from the identity buys.
+hermes_agent_slack_bot_token: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_BOT_TOKEN') | default('', true) }}
+hermes_agent_slack_app_token: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_APP_TOKEN') | default('', true) }}
 hermes_agent_slack_allowed_users: "{{ lookup('env', 'SLACK_MEMBER_ID') | default('', true) }}"
 hermes_agent_slack_home_channel: "{{ lookup('env', 'SLACK_HOME_CHANNEL') | default('', true) }}"
 hermes_agent_slack_home_channel_name: "{{ lookup('env', 'SLACK_HOME_CHANNEL_NAME') | default('', true) }}"
@@ -153,8 +192,10 @@ hermes_agent_slack_home_channel_name: "{{ lookup('env', 'SLACK_HOME_CHANNEL_NAME
 # Each defaults EMPTY and falls back to prior behaviour, so an unset var leaves
 # routing exactly as it was rather than silently emptying a channel.
 hermes_agent_slack_firehose_channel: "{{ lookup('env', 'SLACK_FIREHOSE_CHANNEL') | default('', true) }}"
-hermes_agent_slack_issues_channel: "{{ lookup('env', 'SLACK_HERMES_ISSUES_CHANNEL') | default('', true) }}"
-hermes_agent_slack_noise_channel: "{{ lookup('env', 'SLACK_HERMES_NOISE_CHANNEL') | default('', true) }}"
+hermes_agent_slack_issues_channel: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_ISSUES_CHANNEL') | default('', true) }}
+hermes_agent_slack_noise_channel: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_NOISE_CHANNEL') | default('', true) }}
 
 # The prefix a script-fed cron prints to declare that its OWN observation path
 # failed. Those scripts deliberately exit 0 and print their failure so it gets
@@ -183,7 +224,8 @@ hermes_agent_cron_failure_deliver: >-
 #
 # The Slack channel is NEVER hardcoded: it comes from this var, and the whole
 # reconcile loop is skipped (with a loud warning) when it is empty.
-hermes_agent_digest_slack_channel: "{{ lookup('env', 'HERMES_SLACK_DIGEST_CHANNEL') | default('', true) }}"
+hermes_agent_digest_slack_channel: >-
+  {{ lookup('env', (hermes_agent_id | upper) ~ '_SLACK_DIGEST_CHANNEL') | default('', true) }}
 
 hermes_agent_direct_cron_jobs:
   # Paused, NEVER reconciled: superseded by the script-fed splunk-security-digest
@@ -315,7 +357,7 @@ hermes_agent_direct_cron_jobs:
 # destination as message text instead. Empty (no firehose either) renders an
 # empty --to and the send fails loudly, which is the intended failure.
 hermes_agent_slack_hermes_all_channel: >-
-  {{ lookup('env', 'SLACK_HERMES_ALL_CHANNEL')
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_ALL_CHANNEL')
      | default(hermes_agent_slack_firehose_channel, true) }}
 
 # Post scheduled (cron) output as FRESH top-level channel messages, not threaded
@@ -642,6 +684,24 @@ hermes_agent_memory_api_url: >-
   https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
   | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}
 hermes_agent_memory_llm_model: "{{ hermes_brain_model }}"
+
+# Per-AGENT memory isolation — deliberately not per-profile.
+#
+# The memory service is multi-tenant by bank: every route is scoped
+# /v1/<tenant>/banks/<bank_id>/..., so two agents pointed at ONE deployment stay
+# fully separated as long as their bank ids differ. A second agent therefore
+# needs no second memory instance, no second database, and no extra container.
+#
+# This is a static bank_id, NOT bank_id_template, and that is load-bearing:
+# tasks/profiles.yml documents an explicit decision to leave the template unset
+# so every profile of one agent SHARES a bank. That keeps the default profile
+# able to read a moved job's findings and preserves memory continuity when a
+# card changes assignee. Setting a {profile} template here would silently
+# reverse that decision for the existing agent. Isolate agents, not profiles.
+#
+# The value matches the plugin's own static default for the existing agent, so
+# this is a no-op for it and only takes effect for a differently-named agent.
+hermes_agent_memory_bank_id: "{{ hermes_agent_id }}"
 # The gateway's hindsight plugin hard-pins this client version and its lazy
 # pip-install can never succeed in the venv (no pip/ensurepip) — with
 # hindsight-all's newer client resolved, every memory call fails "Memory is
@@ -776,7 +836,7 @@ hermes_agent_timezone: "UTC"
 
 # --- Observability: bundled OTLP/HTTP plugin (Cribl Edge fan-out) -----------
 hermes_agent_otel_endpoint: "{{ ai_orchestration_otel_endpoint }}"
-hermes_agent_otel_service_name: hermes-agent
+hermes_agent_otel_service_name: "{{ hermes_agent_id }}-agent"
 hermes_agent_otel_timeout: 5
 
 # systemd ExecStart: the long-running gateway daemon. It drives the built-in cron
@@ -913,7 +973,7 @@ hermes_agent_splunk_monitor_enabled: true
 # the environment like every other channel id, and defaults to EMPTY so every
 # consumer below falls back to its previous target until an id is configured.
 hermes_agent_slack_splunk_channel: >-
-  {{ lookup('env', 'SLACK_HERMES_SPLUNK_CHANNEL') | default('', true) }}
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_SPLUNK_CHANNEL') | default('', true) }}
 
 # Per-job cron definitions. Prompts stay short — the skill carries the discipline;
 # the prompt only sets each run's posture (a lens, not a checklist) and reinforces
@@ -2287,7 +2347,7 @@ hermes_agent_vikunja_bridge_env_file: "{{ hermes_agent_hermes_home }}/vikunja-br
 hermes_agent_vikunja_bridge_url: >-
   https://vikunja.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
   | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}
-hermes_agent_vikunja_bridge_project: "Hermes"
+hermes_agent_vikunja_bridge_project: "{{ hermes_agent_id | capitalize }}"
 # Bucket titles on that project's Kanban view. READY is the only REQUIRED one —
 # it is where the operator puts work and where intake reads from. The other
 # three are optional: a board missing one still gets its result comment, which
@@ -2299,7 +2359,7 @@ hermes_agent_vikunja_bridge_bucket_blocked: "Blocked"
 # An empty label means "every undone task in READY is fair game". A non-empty
 # one is a second, explicit opt-in — the safer default posture for a board the
 # operator also uses for their own non-Hermes tasks.
-hermes_agent_vikunja_bridge_intake_label: "hermes"
+hermes_agent_vikunja_bridge_intake_label: "{{ hermes_agent_id }}"
 hermes_agent_vikunja_bridge_poll_interval_seconds: 60
 # Per-tick intake cap. This is a RATE limit, not a concurrency limit: board
 # concurrency is already bounded by kanban.max_in_progress (config.yaml), which
