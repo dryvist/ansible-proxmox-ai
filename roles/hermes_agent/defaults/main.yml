@@ -672,8 +672,31 @@ hermes_agent_kanban_goal_max_turns: 8
 #    judge call would still pay the full cold-load tax. Residency is the
 #    actual fix for throughput; a timeout raise alone is a correctness
 #    patch, not the solution — don't mistake one for the other.
+#
+# ADDENDUM (timeout raised 60 -> 150): the warning above is about the MODEL
+# pin and still holds unchanged — this change does not touch
+# hermes_agent_kanban_goal_judge_model. The TIMEOUT below is raised for a
+# separate, independently measured reason: tail latency on hermes_agent_model
+# itself (the pinned worker the judge actually calls), NOT the cold-load case
+# the warning above describes — that case cannot occur while this var stays
+# pinned to hermes_agent_model.
+#
+# MEASURED (61h, n=4,178 successful primary-model calls): p50 15.7s / p90
+# 63.2s / p95 106.2s / p99 425.1s / max 762.5s. The prior 60s timeout sat
+# BELOW p90 — roughly 10% of ordinary calls exceeded it with nothing unusual
+# happening. Corroborated by an independent measurement over the same
+# window: 27 judge APITimeoutErrors against 258 successful verdicts
+# (27/285 ~= 9.5%), matching the p90 prediction closely without being derived
+# from it.
+#
+# 150s covers p95 (106.2s, ~42% headroom) without chasing p99/max (425s /
+# 762s) — goals.py retries the judge up to 5 times, so this value is paid up
+# to 5x per card: 5 * 150s = 750s against the 2700s task budget (~28%).
+# Covering the full tail would let one slow judge call burn the whole budget
+# by itself; 150s trades a bounded worst case for eliminating the
+# ordinary-latency failures the measurement above found.
 hermes_agent_kanban_goal_judge_model: "{{ hermes_agent_model }}"
-hermes_agent_kanban_goal_judge_timeout_seconds: 60
+hermes_agent_kanban_goal_judge_timeout_seconds: 150
 # --- Memory: best self-hostable as of June 2026 (Agy-validated) ---
 # Hindsight: local knowledge-graph + multi-strategy retrieval. Runs alongside the
 # always-on built-in MEMORY.md/USER.md. The whole HERMES_HOME is the durable surface.
