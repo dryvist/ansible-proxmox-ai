@@ -123,11 +123,12 @@ written to memory by any profile should be treated as private to it.
 | `splunk-admin` | Read-only SIEM: SPL, alert + report | Splunk + Docs MCP, `splunk-monitor` skill | GitHub, Zammad, other MCP/skills |
 | `homelab-admin` | Incidents + fabric health | Docs MCP (+ Vikunja/Nautobot later), `zammad-incidents` skill | Splunk, GitHub, other MCP/skills |
 
-**Adding a card to a profile**: set that card's `assignee:` in
-`hermes_agent_kanban_cards` to the profile name (empty string = default).
-`assert.yml` fails the converge loudly if an assignee names no profile in
-`hermes_agent_profiles` — upstream would otherwise bucket it
-`skipped_nonspawnable` and the card would silently sit ready forever.
+**Assigning a job to a profile is not possible any more.** `hermes cron
+create` has no profile-selection flag (unlike `kanban create`'s `--assignee`),
+so every `hermes_agent_direct_cron_jobs` entry runs under the default profile
+regardless of what its pre-reframe Kanban card used to name — 6 of the 18
+converted jobs (2 → `homelab-admin`, 4 → `splunk-admin`) lost this. See the PR
+that removed `hermes_agent_kanban_cards` for the full gap report.
 
 **Adding a new profile**: add an entry to `hermes_agent_profiles`
 (`mcp`/`env`/`skills`/`soul_addendum_file`), add a
@@ -387,50 +388,55 @@ card and surface it in the next digest.
 | `hermes_agent_splunk_monitor_enabled` | `true` | Deploy the skill + enable the Splunk cards |
 | `hermes_agent_splunk_*_cron_name` / `_schedule` / `_prompt` | — | per-workload overrides |
 
-## Recurring reports run on plain cron; only docs-sync stays Kanban
+## Recurring work is all plain cron now — Kanban is ad-hoc/follow-up only
 
 Every recurring workload — the Splunk fleet above, `github-triage`,
 `daily-summary`, `zammad-review`, `homelab-ai-fabric-status`, the nightly wiki
-pass, the 8h `review` — is a **direct-deliver cron job**
-(`hermes_agent_direct_cron_jobs`, `tasks/reconcile_direct_cron.yml`), not a
-Kanban card and not an agentic cron session. Each fires an isolated LLM run on
-its own schedule and delivers straight to Slack (`--deliver`) — no board
-involved. This replaced an earlier Kanban-card design (#83): a script-only
-enqueuer cron created one card per slot for the board's dispatcher to run in a
-fresh worker session, which fixed #83's original state-leak problem
-(INC-17120) but introduced its own silent-failure hazard — the worker had to
-run `hermes kanban archive` as its own last action to free its idempotency key
-for the next fire, and a skipped archive (model forgets, a runtime cap killing
-the process, any flake) left the job silently dark forever, since `hermes
-kanban complete` transitions to `done`, never `archived`, and no atomic native
-alternative exists. The actual fix was reframing the work, not patching the
-archive step: a recurring **report** was never a discrete unit of work a human
-expects tracked to completion on a board, it's a scheduled broadcast — so it
-belongs on plain cron with its recall/save memory pattern carried over
-verbatim, not on Kanban.
+pass, the 8h `review`, and (as of this reframe) `docs-sync` — is a
+**direct-deliver cron job** (`hermes_agent_direct_cron_jobs`,
+`tasks/reconcile_direct_cron.yml`), not a Kanban card and not an agentic cron
+session. Each fires an isolated LLM run on its own schedule and delivers
+straight to Slack (`--deliver`) — no board involved, `hermes_agent_kanban_cards`
+no longer exists at all. This replaced an earlier Kanban-card design (#83): a
+script-only enqueuer cron created one card per slot for the board's dispatcher
+to run in a fresh worker session, which fixed #83's original state-leak
+problem (INC-17120) but introduced its own silent-failure hazard — the worker
+had to run `hermes kanban archive` as its own last action to free its
+idempotency key for the next fire, and a skipped archive (model forgets, a
+runtime cap killing the process, any flake) left the job silently dark
+forever, since `hermes kanban complete` transitions to `done`, never
+`archived`, and no atomic native alternative exists. A per-run (not stable)
+idempotency key would have solved that deterministically, but it didn't need
+solving: kanban is not for repetitive scheduled work by definition, docs-sync
+included — it runs weekly on a fixed schedule. The board keeps doing what it
+is actually for: ad-hoc work, and the follow-up cards these cron jobs
+themselves file via `kanban_create` (`review`'s gap follow-ups,
+`anomaly-hunt`'s findings, `ai-news`'s actionable items).
 
-**Only `docs-sync` stays a genuine Kanban card** (`hermes_agent_kanban_cards`,
-`tasks/reconcile_kanban_card_cron.yml`) — opening a PR and waiting on review is
-exactly the kind of discrete, trackable unit of work Kanban exists for. Its
-crontab entry runs `hermes kanban create` directly with a **per-run**
-idempotency key (`docs-sync-<UTC-date>`, not stable), so nothing depends on the
-model archiving anything: accumulating cards on the board across runs is board
-history, not a bug — it's what made a 13-day Splunk outage visible in the
-first place. `hermes kanban gc` handles archived-card retention on its own
-schedule, independent of any per-run action.
+**Real semantics that do not carry over to `hermes cron create`** (verified
+against the live CLI's `--help`, not assumed): **`assignee`/profile
+selection** — no flag exists; 6 of the 18 converted jobs (2 →
+`homelab-admin`, 4 → `splunk-admin`) now run under the default profile.
+**`max_runtime`** and **`max_retries`** — both exist on `kanban create`,
+neither on `cron create`; every converted job now has no runtime cap and no
+retry/circuit-breaker protection. **Outcome-based delivery split**
+(`channel_when_healthy` / `terse_when_healthy`, one card:
+`homelab-ai-fabric-status`) — `--deliver` takes exactly one fixed target, so
+it now always posts to `#hermes-issues`. None of these were silently
+dropped — see the PR that finished the reframe for the full gap report.
 
-**Every direct-cron job posts a full report, not a sentence.** Each prompt's
-own footer tells the worker to `hermes send` a full report — headline line,
-then the concrete values/counts/statuses observed that run, one per line,
-clean checks included, under 25 lines. The one Kanban card follows the same
-contract via its card-body template, plus a **one-line** `kanban_complete`
-summary (the board digest renders that field as a single bullet).
+**Every direct-cron job posts a full report, not a sentence** — as long as its
+own prompt text still says so. The shared enqueuer-footer instruction that
+used to enforce this uniformly (full report + evidence-contract
+anti-fabrication wording) is gone with the enqueuer script; each of the 18
+converted prompts carries its own reporting instructions verbatim from its
+pre-reframe card body, but there is no longer a converge-time or test-time
+check that guarantees new prompt text keeps doing so.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `hermes_agent_direct_cron_jobs` | — | the plain-cron job table (name, schedule, prompt var, skill, deliver target) |
-| `hermes_agent_kanban_cards` | — | the one remaining Kanban card (docs-sync): job, title, schedule, prompt var, assignee, max_runtime, max_retries, skills |
-| `hermes_agent_slack_hermes_all_channel` | firehose channel id | default delivery channel for jobs and the one card's completion **report** |
+| `hermes_agent_direct_cron_jobs` | — | the plain-cron job table (name, schedule, prompt var, skill, deliver target) — every recurring workload, 27 entries |
+| `hermes_agent_slack_hermes_all_channel` | firehose channel id | default delivery channel for jobs' completion **report** |
 | `hermes_agent_superseded_kanban_enqueuer_cron_names` | — | the retired per-card `<job>-enqueue` crons + the old safety net, removed at converge |
 
 ### Master board digest (`kanban-digest`)

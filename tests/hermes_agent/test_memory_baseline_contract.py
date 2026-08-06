@@ -146,7 +146,7 @@ def test_the_high_cadence_jobs_all_carry_a_baseline() -> None:
     """
     inline = _inline_prompts()
     offenders = []
-    for job in DEFAULTS["hermes_agent_direct_cron_jobs"] + DEFAULTS["hermes_agent_kanban_cards"]:
+    for job in DEFAULTS["hermes_agent_direct_cron_jobs"]:
         if job.get("enabled") is False:
             continue
         if _fires_per_day(job["schedule"]) < 3:

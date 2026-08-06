@@ -486,6 +486,20 @@ hermes_agent_direct_cron_jobs:
     skill: ""
     deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
     enabled: *cron_slack_gate
+  # The last card off the board (native-cron reframe, 18/18): opens real
+  # signed PRs via the docs-pr skill, so it needs the GitHub App credential on
+  # top of the shared Slack gate — everything else here is inert without it.
+  - name: "{{ hermes_agent_docs_sync_cron_name }}"
+    schedule: "{{ hermes_agent_docs_sync_cron_schedule }}"
+    prompt_var: hermes_agent_docs_sync_cron_prompt
+    skill: dryvist/docs-pr
+    deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    enabled: >-
+      {{ hermes_agent_docs_sync_enabled | bool
+         and hermes_agent_github_app_private_key | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
 
 # #hermes-all: the channel every Kanban worker posts its completion REPORT to
 # (kanban migration, #83). Kanban cards have no native delivery channel, so the
@@ -1913,48 +1927,19 @@ hermes_agent_profiles:
     skills: [dryvist/zammad-incidents]
     soul_addendum_file: soul-homelab-admin.md.j2
 
-# The one workload left on the board (native-cron reframe): docs-sync opens
-# real signed PRs via the docs-pr skill and monitors/escalates on a secret-scan
-# hit — a genuine discrete task with a real external side effect, the kind of
-# work a human expects tracked to completion, unlike the report/sweep/digest
-# fleet that moved to hermes_agent_direct_cron_jobs above.
-#
-# Its `hermes kanban create` cron entry (reconcile_kanban_card_cron.yml) uses a
-# PER-RUN idempotency key, not a stable one: a card accumulating because the
-# job keeps blocking or failing is exactly the signal a board exists to make
-# visible (this is what actually made a 13-day Splunk outage visible before —
-# see reconcile_kanban_card_cron.yml's header comment for the full reasoning).
-# `hermes kanban gc` handles archived-card retention; nothing here depends on
-# a model running a cleanup command.
-#
-#   job          idempotency-key prefix + crontab-entry name stem
-#   title        kanban card title
-#   schedule     the crontab schedule this card's `kanban create` fires on
-#   prompt_var   name of the var holding the card body (catalog or inline)
-#   assignee     "" (default profile) or a name in hermes_agent_profiles
-#   max_runtime  per-task runtime cap (kanban-only; cron jobs have none)
-#   max_retries  failure limit, NOT a retry count: 1 blocks on the FIRST
-#                failure (zero retries), 2 allows one retry.
-hermes_agent_kanban_cards:
-  - job: "{{ hermes_agent_docs_sync_cron_name }}"
-    title: "Docs sync"
-    schedule: "{{ hermes_agent_docs_sync_cron_schedule }}"
-    prompt_var: hermes_agent_docs_sync_cron_prompt
-    assignee: ""
-    max_runtime: "30m"
-    max_retries: 2
-    skills: [dryvist/docs-pr]
-    enabled: >-
-      {{ hermes_agent_docs_sync_enabled | bool
-         and hermes_agent_github_app_private_key | length > 0
-         and hermes_agent_slack_bot_token | length > 0
-         and hermes_agent_slack_app_token | length > 0
-         and hermes_agent_slack_home_channel | length > 0 }}
+# Kanban is no longer used for recurring work at all (native-cron reframe,
+# 18/18): the board keeps doing what it is actually for — ad-hoc work and the
+# follow-up cards these cron jobs themselves file via kanban_create (review's
+# gap follow-ups, anomaly-hunt's findings, ai-news's actionable items) — but
+# nothing here declares a recurring Kanban card any more. docs-sync (below,
+# hermes_agent_direct_cron_jobs) was the last one; `hermes cron create` has no
+# max_runtime/max_retries/assignee equivalent to kanban create's, so those
+# three fields do not carry over for any of the 18 — see the PR that removed
+# hermes_agent_kanban_cards for the full gap report.
 
 # Every `hermes cron`-managed job this role seeds that is NOT agentic (script
-# only, no model snapshot) — the docs-sync Kanban card's own crontab entry
-# lives in the OS crontab, not here, and every agentic job (the whole
-# hermes_agent_direct_cron_jobs fleet, including the 17 converted ones) is
+# only, no model snapshot) — every agentic job (the whole
+# hermes_agent_direct_cron_jobs fleet, including all 18 converted ones) is
 # covered by hermes_agent_cluster_pause_cron_names below instead. The
 # model-drift recovery task (tasks/main.yml) only ever removes jobs on this
 # list — user/agent jobs are never touched.

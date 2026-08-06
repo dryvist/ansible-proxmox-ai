@@ -47,9 +47,8 @@ act only on the delta, reply `[SILENT]` if nothing changed, save the updated
 fingerprint back to the same key at the end — the gateway's native
 `[SILENT]`/`NO_REPLY` marker suppresses delivery, so a quiet run posts nothing.
 
-Only one workload stayed a genuine Kanban card: **docs-sync** (below), because
-its idempotency problem has a deterministic answer that does not depend on the
-model. Every other pre-reframe card is now a direct-cron job:
+All 18 pre-reframe cards, docs-sync included, are now direct-cron jobs — see
+"Real semantics `hermes cron create` cannot express" below for what that cost:
 
 | Job | Schedule (UTC) | Deliver |
 | --- | --- | --- |
@@ -70,6 +69,7 @@ model. Every other pre-reframe card is now a direct-cron job:
 | `daily-innovation` | `47 6 * * *` | `#hermes-noise` |
 | `app-seeding` | `53 7 * * *` | `#hermes-all` |
 | `fleet-health` | `3 10 * * 1` (weekly) | `#hermes-all` |
+| `docs-sync` | `13 8 * * 1` (weekly) | `#hermes-all` |
 
 Every job is additionally **capability-gated**: all require the Slack bot
 token, app token and home channel; the `splunk-*` jobs also require
@@ -78,9 +78,27 @@ is false is never created — the role runs inert, never errors.
 
 `homelab-ai-fabric-status` previously split its report by outcome (all-clear to
 the noise channel, a break to issues). A plain `--deliver` target cannot
-conditionally choose a destination, so this card now always posts to
-`#hermes-issues` — louder-by-default on a healthy run, a deliberate accepted
-trade-off rather than a silent regression.
+conditionally choose a destination, so this job now always posts to
+`#hermes-issues` — louder-by-default on a healthy run.
+
+`docs-sync` was initially kept as the one surviving Kanban card, with a
+**per-run** (not stable) idempotency key to solve the enqueuer's archive
+problem deterministically. That solution was correct but unnecessary: the
+operator's rule settles it upstream — Kanban is not for repetitive scheduled
+work, and docs-sync runs weekly on a fixed schedule, so it is cron by
+definition. `hermes_agent_kanban_cards` no longer exists at all; the board
+keeps doing what it is actually for — ad-hoc work, and the follow-up cards
+these cron jobs file via `kanban_create` (`review`'s gap follow-ups,
+`anomaly-hunt`'s findings, `ai-news`'s actionable items).
+
+**Real semantics `hermes cron create` cannot express**, verified against the
+live CLI's own `--help` (not assumed): profile/`assignee` selection — no such
+flag exists, so 6 of the 18 converted jobs (2 → `homelab-admin`, 4 →
+`splunk-admin`) now run under the default profile; `max_runtime` and
+`max_retries` — both exist on `kanban create`, neither on `cron create`, so
+every converted job has no runtime cap and no retry protection; the
+`homelab-ai-fabric-status` outcome-split above. None of these were silently
+dropped.
 
 `tasks/main.yml` actively *removes* the superseded per-card enqueuer crons
 (`hermes_agent_superseded_kanban_enqueuer_cron_names`, the old `<job>-enqueue`
@@ -88,28 +106,6 @@ names plus `kanban-enqueue-safety-net`) and *pauses* (not deletes) the three
 `-v2` direct-cron jobs the reframe replaces 1-for-1
 (`zammad-incident-review-v2`, `github-org-triage-v2`, `daily-operator-summary-v2`),
 so a guest converged mid-migration does not double-fire.
-
-### The one remaining Kanban card (`hermes_agent_kanban_cards`)
-
-**`docs-sync`** stays a genuine Kanban card, weekly (`13 8 * * 1`), because
-docs-sync is a discrete unit of work — open a PR, wait for review — that the
-operator expects tracked to completion on the board, not just broadcast. Its
-crontab entry (`tasks/reconcile_kanban_card_cron.yml`) runs `hermes kanban
-create` directly with a **PER-RUN** idempotency key (`docs-sync-<UTC-date>`),
-not a stable one, and nothing in the run depends on the model archiving
-anything. Two things ruled a stable key out: (1) it requires the model to run
-`hermes kanban archive` as its own last action, which is exactly the silent-dark
-failure mode above; (2) accumulating cards on the board is not a bug — it is
-board history, and it is what made a 13-day Splunk outage visible in the first
-place. `hermes kanban gc` handles archived-card retention on its own schedule.
-
-Every card is additionally **capability-gated**: docs-sync requires the GitHub
-App private key plus the Slack bot/app tokens and home channel — a false gate
-means no crontab entry, never an error.
-
-Card output goes to `hermes_agent_slack_hermes_all_channel` (`#hermes-all`) —
-hardcoded in the card body template, since there is exactly one card left and
-no per-card channel override to plumb through.
 
 ### Script crons (`--no-agent --script`)
 
@@ -119,7 +115,6 @@ stdout is delivered verbatim.
 
 | Cron | Schedule (UTC) | Script | Delivery |
 | --- | --- | --- | --- |
-| `kanban-docs-sync` | `13 8 * * 1` | `hermes kanban create` (native, no script) | none — creates the card |
 | `splunk-status-digest` | `52 7-23 * * *` | `splunk-digest.py` | `slack:<hermes-all>` |
 | `kanban-digest` | `*/15 * * * *` | `kanban-digest.py` | `slack:<digest>` |
 | `splunk-error-digest` | `37 * * * *` | `splunk-error-digest.py` | `slack:<digest>` |
@@ -406,20 +401,22 @@ re-litigated.
   **Superseded by the native-cron reframe below** — every card this audit
   paused or swapped is now a plain direct-cron job, and the throughput
   throttle it describes no longer exists as a mechanism.
-- **Native-cron reframe: 17 of 18 cards become plain cron jobs, one stays
+- **Native-cron reframe: 18 of 18 cards become plain cron jobs, none stay
   Kanban.** The per-card enqueuer script depended on the model running
   `hermes kanban archive` as its own last action to free its idempotency key
   — skip that step once and the job goes silently dark forever, with no
-  atomic native alternative. The real fix was the framing, not the archive
-  step: a recurring report is a scheduled broadcast, not a discrete tracked
-  unit of work, so it belongs on `hermes_agent_direct_cron_jobs`
+  atomic native alternative. A per-run (not stable) idempotency key would have
+  solved that deterministically, and `docs-sync` briefly shipped with exactly
+  that as the one card kept on the board. It didn't need solving: Kanban is
+  not for repetitive scheduled work by construction, and docs-sync runs weekly
+  on a fixed schedule — cron by definition. Every one of the 18, including
+  docs-sync, is now a `hermes_agent_direct_cron_jobs` entry
   (`tasks/reconcile_direct_cron.yml`, already existed for the `-v2` jobs) with
-  its recall/save memory pattern carried over verbatim. `docs-sync` is the one
-  exception — genuine discrete work a human expects tracked to completion —
-  and gets a per-run (not stable) idempotency key instead, because
-  accumulating cards on the board is history, not a bug: it is what made a
-  13-day Splunk outage visible. See "Recurring reports are plain cron jobs"
-  above.
+  its recall/save memory pattern carried over verbatim. Kanban keeps doing
+  what it is actually for: ad-hoc work, and the follow-up cards these cron
+  jobs file via `kanban_create`. See "Recurring work is all plain cron now"
+  above for the semantics `hermes cron create` cannot express (profile,
+  max_runtime, max_retries, outcome-split delivery).
 - **The "never `[SILENT]`" heartbeat law is superseded (2026-07-26).** 38 of 40
   runs in one UTC day carried zero information. A quiet run now stays silent
   unless `HEARTBEAT_HOURS` (6) has elapsed; a CRITICAL finding is exempt and

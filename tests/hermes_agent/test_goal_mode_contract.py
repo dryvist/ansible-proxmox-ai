@@ -579,23 +579,21 @@ def test_idempotent_create_does_not_mutate_terminal_history(status: str) -> None
 
 
 # test_enqueuer_goal_flags_follow_the_role_toggle DELETED (native-cron
-# reframe): kanban-enqueue-recurring.sh.j2 is gone. The one surviving Kanban
-# card's crontab entry (reconcile_kanban_card_cron.yml) calls
-# `hermes kanban create` with no --goal/--goal-max-turns flags at all — goal
-# mode on a kanban task is set later, by the reviewer job filing a follow-up
-# (still governed by hermes_agent_kanban_goal_mode, asserted elsewhere in this
-# file against the Python patches, not against a template that no longer
-# exists). kanban-card-body.md.j2 also carries no per-card `channel:`
-# override — the report destination is hardcoded to
-# hermes_agent_slack_hermes_all_channel (see test_alert_routing.py).
+# reframe, 18/18): kanban-enqueue-recurring.sh.j2 and every Kanban card
+# (including docs-sync) are gone — there is no enqueuer template and no
+# per-card `channel:` override left to test at all. hermes_agent_kanban_cards
+# no longer exists; hermes_agent_kanban_goal_mode still governs ad-hoc/
+# follow-up kanban work (the reviewer job filing a gap card, etc.), asserted
+# elsewhere in this file against the Python patches, not against a template.
 #
-# EVIDENCE CONTRACT / kind=needs_input wording lives in kanban-card-body.md.j2
-# now; pinned in the file's own read below.
-def test_the_kanban_card_body_still_carries_the_evidence_and_block_contract() -> None:
-    body = (ROLE_ROOT / "templates" / "kanban-card-body.md.j2").read_text()
-    assert "kind=needs_input" in body
-    assert "status=pending" not in body
-    assert "hermes send --to slack:{{ hermes_agent_slack_hermes_all_channel }}" in body
+# test_the_kanban_card_body_still_carries_the_evidence_and_block_contract was
+# removed: kanban-card-body.md.j2 no longer exists (18/18 to cron). Its
+# kanban_block(kind=needs_input) escalation and self-directed `hermes send`
+# instruction were Kanban-task machinery — a cron job has no task to block and
+# already delivers natively via `--deliver`, so neither applies. The one piece
+# of real value in that wrapper, the evidence-contract anti-fabrication
+# instruction (cite the query, never invent a number), is NOT reproduced
+# anywhere for the 18 converted jobs — flagged in the PR, not silently lost.
 
 
 def test_reviewer_prompt_carries_no_leftover_self_perpetuation() -> None:

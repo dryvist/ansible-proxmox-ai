@@ -64,18 +64,11 @@ def test_watchdog_reports_command_outcomes_not_only_desired_count() -> None:
     assert "does not verify Kanban queue health" in watchdog
 
 
-def test_no_card_is_retired_by_its_first_failure() -> None:
-    """`max_retries` is a failure LIMIT, so 1 means zero retries.
-
-    A recurring card has no other recovery path: nothing re-attempts a blocked
-    card, it simply waits for its next slot, which for the weekly cards is a
-    week with that workload uncovered. Duplicated as a converge assert in
-    assert.yml — this is the copy that runs without a guest.
-    """
-    cards = yaml.safe_load(DEFAULTS.read_text())["hermes_agent_kanban_cards"]
-
-    offenders = [c["job"] for c in cards if int(c["max_retries"]) < 2]
-    assert offenders == [], f"cards blocked by their first failure: {offenders}"
+# test_no_card_is_retired_by_its_first_failure was removed: `max_retries` no
+# longer exists on anything (18/18 native-cron reframe) — `hermes cron create`
+# has no failure-limit/retry-budget flag at all, unlike `kanban create`.
+# Flagged as a real gap in the PR, not silently dropped: every converted job
+# now has NO retry protection whatsoever, kanban's circuit breaker included.
 
 
 def test_fleet_health_fires_weekly() -> None:

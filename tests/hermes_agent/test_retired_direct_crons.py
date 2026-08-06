@@ -83,25 +83,14 @@ def test_every_disabled_direct_cron_has_a_recognised_pause_task():
 # machine-checkable "names a card" pairing left to pin.
 
 
-def test_the_kanban_card_body_asks_for_a_full_report():
-    """The precondition for the one remaining Kanban card (docs-sync).
-
-    kanban-enqueue-recurring.sh.j2's shared footer is gone; the same
-    instruction now lives directly in kanban-card-body.md.j2, the body every
-    kanban card (just the one, now) is rendered from. While the old footer
-    asked for a one-line summary, switching a cron off silently downgraded
-    that topic from a report to a sentence — so the wording is load-bearing,
-    not cosmetic, and is checked here rather than remembered. The old
-    "post once, never twice" per-card opt-out is gone too: with only one
-    Kanban card left there is no second card sharing this body to double-post
-    against.
-    """
-    body = (REPO_ROOT / "roles/hermes_agent/templates"
-            / "kanban-card-body.md.j2").read_text()
-    assert "deliver a FULL REPORT to Slack" in body
-    # kanban_complete's summary still has to be one line — the board digest
-    # (kanban-digest.py) renders it as a single Slack bullet.
-    assert "ONE-LINE summary" in body
+# test_the_kanban_card_body_asks_for_a_full_report was removed:
+# kanban-card-body.md.j2 no longer exists (18/18 native-cron reframe) and
+# there is no shared wrapper/footer for direct-cron jobs at all —
+# reconcile_direct_cron.yml passes each job's prompt_var/prompt_file content
+# straight through unmodified. Whether a converted job's own prompt text still
+# asks for a full report is therefore only checkable by reading that prompt,
+# which for catalog-sourced (prompt_file) jobs lives in the external
+# dryvist/ai-llm-prompts repo, not here.
 
 
 if __name__ == "__main__":

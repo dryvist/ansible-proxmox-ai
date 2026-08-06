@@ -81,14 +81,14 @@ def _agentic_jobs() -> set[str]:
     """Cards that run a model, i.e. the ones that contend for the serving slot.
 
     Script-fed crons are excluded: they call APIs, not the brain. Native-cron
-    reframe: agentic jobs are hermes_agent_direct_cron_jobs (the gateway runs
-    the prompt directly) plus hermes_agent_kanban_cards (the one surviving
-    board card, docs-sync — also model-driven). The retired ``-v2`` entries
+    reframe (18/18): every former board card, including docs-sync, is now a
+    hermes_agent_direct_cron_jobs entry — the gateway runs the prompt directly.
+    hermes_agent_kanban_cards no longer exists. The retired ``-v2`` entries
     (``enabled: false`` literal, never reconciled) are excluded — there is no
     longer a separate paused-jobs list to check against.
     """
     names: set[str] = set()
-    for entry in DEFAULTS["hermes_agent_direct_cron_jobs"] + DEFAULTS["hermes_agent_kanban_cards"]:
+    for entry in DEFAULTS["hermes_agent_direct_cron_jobs"]:
         if entry.get("enabled") is False:
             continue
         key = entry.get("name", entry.get("job"))

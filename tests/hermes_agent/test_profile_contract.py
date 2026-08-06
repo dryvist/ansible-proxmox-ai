@@ -94,37 +94,13 @@ def _profiles() -> list[dict[str, Any]]:
     return _defaults()["hermes_agent_profiles"]
 
 
-def _cards() -> list[dict[str, Any]]:
-    return _defaults()["hermes_agent_kanban_cards"]
-
-
-def test_every_card_carries_an_explicit_assignee_key() -> None:
-    for card in _cards():
-        assert "assignee" in card, f"card {card.get('job')!r} has no assignee key"
-        assert isinstance(card["assignee"], str)
-
-
-def test_every_non_empty_assignee_names_a_real_profile() -> None:
-    profile_names = {p["name"] for p in _profiles()}
-    for card in _cards():
-        assignee = card["assignee"]
-        if assignee:
-            assert assignee in profile_names, (
-                f"card {card.get('job')!r} assignee {assignee!r} is not in "
-                f"hermes_agent_profiles ({sorted(profile_names)})"
-            )
-
-
-def test_splunk_monitor_skill_cards_are_assigned_splunk_admin() -> None:
-    # The one mechanical, unambiguous ownership rule: any card wired to the
-    # splunk-monitor skill belongs to the splunk-admin profile — including a
-    # retired/paused card, so there is no unexplained exception to this rule.
-    for card in _cards():
-        if "dryvist/splunk-monitor" in card.get("skills", []):
-            assert card["assignee"] == "splunk-admin", (
-                f"card {card.get('job')!r} carries dryvist/splunk-monitor but "
-                f"is assigned {card['assignee']!r}, not splunk-admin"
-            )
+# _cards() and its three assignee/profile tests were removed: `assignee` no
+# longer exists as a field anywhere (18/18 native-cron reframe) —
+# `hermes cron create` has no profile-selection flag at all, so every
+# converted job runs under the default profile regardless of what the retired
+# hermes_agent_kanban_cards entry used to name. Flagged as a real gap in the
+# PR (6 of the 18 cards, including every splunk-monitor one, had a non-default
+# assignee), not silently dropped.
 
 
 def test_profile_env_lists_never_grant_a_forbidden_credential_section() -> None:
@@ -194,15 +170,16 @@ def test_every_profile_has_a_soul_addendum_template_on_disk() -> None:
         assert addendum.is_file(), f"missing {addendum}"
 
 
-def test_profiles_tasks_are_wired_before_the_kanban_card_reconcile() -> None:
-    """Native-cron reframe: only docs-sync is still a Kanban card (its
-    `assignee` needs a profile to already exist), so the task it must precede
-    is now "Reconcile the docs-sync Kanban card cron", not the retired
-    per-workload enqueuer reconcile."""
+def test_profiles_tasks_are_wired_before_the_direct_cron_reconcile() -> None:
+    """Native-cron reframe (18/18): there is no Kanban card left whose
+    `assignee` needs a profile to exist first — direct-cron jobs carry no
+    assignee field at all (see the PR's gap report). Profiles still need to be
+    wired before the direct-cron reconcile loop runs, since some of its
+    prompts reference profile-scoped skills."""
     tasks = (ROLE_ROOT / "tasks" / "main.yml").read_text()
     profiles_idx = tasks.index("Reconcile named Hermes operating profiles")
-    kanban_idx = tasks.index("Reconcile the docs-sync Kanban card cron")
-    assert profiles_idx < kanban_idx
+    direct_idx = tasks.index("Reconcile the agentic direct-deliver digest crons")
+    assert profiles_idx < direct_idx
 
 
 def test_llm_wiki_skill_is_materializable_into_any_profile_that_opts_in() -> None:

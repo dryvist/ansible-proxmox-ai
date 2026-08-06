@@ -379,16 +379,15 @@ def test_no_reconciled_cron_name_is_a_substring_of_another_job():
     the paused `splunk-error-triage-v2`, which `cron list --all` still prints.
 
     Only reconciled names are checked against the full universe of names that
-    can appear in that listing. The kanban `job:` values are not themselves cron
-    names (the reconciler appends `-enqueue`), and the superseded-removal list
-    matches with exact membership, not substring — neither is a hazard here.
+    can appear in that listing. There is no Kanban card fleet left to enqueue
+    at all (18/18 native-cron reframe), and the superseded-removal list
+    matches with exact membership, not substring — not a hazard here.
     """
     import itertools
     import yaml
 
     defaults = yaml.safe_load((REPO_ROOT / "roles/hermes_agent/defaults/main.yml").read_text())
     direct = {job["name"] for job in defaults["hermes_agent_direct_cron_jobs"]}
-    enqueuers = {card["job"] + "-enqueue" for card in defaults.get("hermes_agent_kanban_cards", [])}
     triage = {job["name"] for job in defaults["hermes_agent_triage_jobs"]}
     # hermes_agent_kanban_safety_net_cron_name is DELETED (native-cron
     # reframe removed the whole safety-net job); 'kanban-enqueue-safety-net'
@@ -399,7 +398,7 @@ def test_no_reconciled_cron_name_is_a_substring_of_another_job():
         defaults["hermes_agent_splunk_status_digest_cron_name"],
         defaults["hermes_agent_kanban_digest_cron_name"],
     }
-    reconciled = direct | enqueuers | scripts
+    reconciled = direct | scripts
     # Everything `cron list --all` can print, including paused/superseded jobs.
     universe = (reconciled
                 | {job["supersedes"] for job in defaults["hermes_agent_triage_jobs"]}

@@ -42,11 +42,11 @@ def _direct_crons():
 
 def test_splunk_digest_card_is_fully_removed() -> None:
     defaults = _defaults()
-    jobs = {c["job"] for c in defaults["hermes_agent_kanban_cards"]}
-    assert "{{ hermes_agent_splunk_digest_cron_name }}" not in jobs
-    # hermes_agent_kanban_paused_jobs no longer exists (native-cron reframe
-    # deleted the whole paused-jobs concept); the vars-gone assertions below
-    # already prove the card cannot come back through that door either.
+    # hermes_agent_kanban_cards no longer exists at all (18/18 native-cron
+    # reframe); hermes_agent_kanban_paused_jobs is gone too. The vars-gone
+    # assertions below prove the retired card cannot come back through either
+    # door.
+    assert "hermes_agent_kanban_cards" not in defaults
     assert "hermes_agent_splunk_digest_cron_name" not in defaults
     assert "hermes_agent_splunk_digest_cron_schedule" not in defaults
     assert "hermes_agent_splunk_digest_cron_prompt_file" not in defaults

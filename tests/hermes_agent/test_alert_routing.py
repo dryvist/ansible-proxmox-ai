@@ -109,24 +109,17 @@ def _deliver_targets(pattern: str, ctx: Mapping[str, object], text: str) -> str:
     return _ENV.from_string(match.group(1)).render(**ctx).strip()
 
 
-# kanban-enqueue-recurring.sh.j2 is GONE (native-cron reframe). It used to be
-# the one enqueuer script for every recurring card, with per-card `channel` /
-# `channel_when_healthy` / `terse_when_healthy` outcome-based split routing.
-# 17 of the 18 cards it enqueued are now plain `hermes_agent_direct_cron_jobs`
-# entries — the gateway runs the prompt itself and delivers straight to Slack
-# via one fixed `deliver:` per job (tasks/reconcile_direct_cron.yml). Only
-# "Docs sync" is still a genuine Kanban card (hermes_agent_kanban_cards),
-# reconciled by reconcile_kanban_card_cron.yml with its report destination
-# hardcoded in templates/kanban-card-body.md.j2 — no per-card override field
-# exists any more, so there is nothing left for an enqueuer-footer helper to
-# render.
-
-
-def _card(title: str) -> dict:
-    for card in DEFAULTS["hermes_agent_kanban_cards"]:
-        if card["title"] == title:
-            return card
-    raise AssertionError(f"no kanban card titled {title!r}")
+# kanban-enqueue-recurring.sh.j2 is GONE (native-cron reframe, 18/18). It used
+# to be the one enqueuer script for every recurring card, with per-card
+# `channel` / `channel_when_healthy` / `terse_when_healthy` outcome-based split
+# routing. All 18 cards it enqueued, including the former "Docs sync" card,
+# are now plain `hermes_agent_direct_cron_jobs` entries — the gateway runs the
+# prompt itself and delivers straight to Slack via one fixed `deliver:` per job
+# (tasks/reconcile_direct_cron.yml). hermes_agent_kanban_cards no longer
+# exists; the outcome-split and terse-when-healthy behaviors are not
+# expressible via `hermes cron create` (single fixed --deliver target) and do
+# not carry over — see the PR that removed the last Kanban card for the gap
+# report.
 
 
 def _direct_job(cron_name_var: str) -> dict:
@@ -257,19 +250,13 @@ def test_scouting_jobs_report_to_the_noise_channel() -> None:
         assert _direct_deliver(var, ctx) == "slack:C_NOISE", var
 
 
-def test_the_docs_sync_kanban_card_reports_to_the_work_channel() -> None:
-    """The one surviving Kanban card. Its destination is hardcoded in the card
-    body template — there is no per-card channel override field any more."""
-    assert "channel" not in _card("Docs sync")
-    body = (ROLE / "templates" / "kanban-card-body.md.j2").read_text()
-    assert "hermes_agent_slack_hermes_all_channel" in body
-
-
 def test_the_former_kanban_cards_still_report_to_the_work_channel() -> None:
-    """Splunk triage sweep and Docs-site study were Kanban cards before the
-    reframe; they are now direct-cron jobs but keep the same destination."""
+    """Splunk triage sweep, Docs-site study and docs-sync were Kanban cards
+    before the reframe (18/18 to cron); they are now direct-cron jobs but keep
+    the same destination."""
     ctx = _resolve(CONFIGURED)
-    for var in ("hermes_agent_splunk_triage_cron_name", "hermes_agent_docs_study_cron_name"):
+    for var in ("hermes_agent_splunk_triage_cron_name", "hermes_agent_docs_study_cron_name",
+                "hermes_agent_docs_sync_cron_name"):
         assert _direct_deliver(var, ctx) == "slack:C_ALL", var
 
 
