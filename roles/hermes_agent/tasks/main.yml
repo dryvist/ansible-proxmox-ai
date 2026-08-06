@@ -174,6 +174,53 @@
       --branch {{ hermes_agent_version }} --skip-setup --non-interactive
     creates: "{{ hermes_agent_bin }}"
 
+# The dashboard SPA is NOT shipped down the git-checkout install path. Upstream
+# gitignores hermes_cli/web_dist/ and builds it in release CI, so the published
+# PyPI wheel carries the bundle but a `--branch <tag>` checkout never does, and
+# install.sh runs no frontend build of its own. Result: the dashboard answers
+# {"error":"Frontend not built. Run: cd web && npm run build"} on / while every
+# /api/* route stays healthy — it looks like an outage and is a missing artifact.
+#
+# Building alone does not fix it, because two different trees are in play. The
+# app is installed as a REGULAR wheel, so hermes_cli/web_server.py resolves its
+# default dist as Path(__file__).parent / "web_dist" INSIDE site-packages, while
+# `npm run build` writes to the CHECKOUT (web/vite.config.ts outDir
+# "../hermes_cli/web_dist"). The build output and the search path never meet.
+#
+# HERMES_WEB_DIST on the dashboard unit is the seam upstream provides for exactly
+# this (their Dockerfile and Nix package both set it). Pointing it at the
+# checkout's output is also the durable choice: `hermes update` rebuilds that
+# same path via _build_web_ui(PROJECT_ROOT / "web"), so the daemon keeps the
+# bundle current after we seed it here, instead of us racing its self-updates.
+#
+# npm ci is deliberately NOT run: the installer already populated node_modules in
+# both the root and the web workspace, and the repo pins a single root
+# package-lock.json for an npm workspace, so a lone `npm ci` inside web/ would
+# fight that layout.
+- name: Build the Hermes dashboard frontend bundle
+  ansible.builtin.command:
+    cmd: npm run build
+    chdir: "{{ hermes_agent_install_dir }}/web"
+    creates: "{{ hermes_agent_web_dist }}/index.html"
+  notify: Restart hermes-dashboard
+
+# A build that exits 0 but emits nothing still leaves the dashboard 404ing, and
+# the creates guard above would then skip the rebuild forever. Fail the converge
+# on the artifact, not on the exit code.
+- name: Assert the dashboard bundle exists
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_web_dist }}/index.html"
+  register: hermes_agent_web_dist_stat
+
+- name: Fail when the dashboard bundle is missing
+  ansible.builtin.fail:
+    msg: >-
+      {{ hermes_agent_web_dist }}/index.html is absent after the frontend build.
+      The dashboard will serve "Frontend not built" on /. Check that node and npm
+      are on PATH in the guest and that {{ hermes_agent_install_dir }}/web
+      has its node_modules populated.
+  when: not hermes_agent_web_dist_stat.stat.exists
+
 # Upstream bug (NousResearch/hermes-agent, agent/conversation_loop.py):
 # the length-continuation and truncated-tool-call retry paths boost
 # max_tokens on each retry, but floor the boost ceiling at

@@ -46,15 +46,26 @@ hermes_agent_home: /var/lib/hermes
 hermes_agent_hermes_home: "{{ hermes_agent_home }}/.hermes" # $HERMES_HOME
 hermes_agent_managed_cron_state_dir: "{{ hermes_agent_hermes_home }}/managed-cron"
 hermes_agent_bin: /usr/local/bin/hermes                     # system-wide install
-# install.sh's root-FHS layout: the app checkout (editable install target) and
-# its uv-managed venv. uv itself lands only at this root-owned path — the
-# installer never symlinks it onto the system PATH.
+# install.sh's root-FHS layout: the app checkout and its uv-managed venv. uv
+# itself lands only at this root-owned path — the installer never symlinks it
+# onto the system PATH.
+#
+# The install is REGULAR, not editable: `import agent` / `import hermes_cli`
+# resolve into venv/lib/python3.*/site-packages, NOT this checkout. Anything
+# that edits a file under this directory expecting to change running behaviour
+# is a no-op unless the same edit reaches site-packages.
 hermes_agent_install_dir: /usr/local/lib/hermes-agent
 hermes_agent_venv_python: "{{ hermes_agent_install_dir }}/venv/bin/python"
 hermes_agent_uv_bin: /root/.hermes/bin/uv
 
+# Built dashboard SPA. web/vite.config.ts sets outDir "../hermes_cli/web_dist",
+# so a build in the checkout lands here — which is NOT where the installed
+# package looks by default. The dashboard unit exports HERMES_WEB_DIST to point
+# at it; see the build task in tasks/main.yml for why that indirection exists.
+hermes_agent_web_dist: "{{ hermes_agent_install_dir }}/hermes_cli/web_dist"
+
 # --- Pinned, checksum-verified installer (NO curl|bash of a moving remote script) ---
-# Hermes ships as a Python app built from a git checkout (uv venv + editable pip),
+# Hermes ships as a Python app built from a git checkout (uv venv + pip install),
 # not a released binary — so there is no binary artifact to checksum. What we CAN
 # pin is (a) the installer script, fetched from the tag's immutable raw URL and
 # sha256-verified, and (b) the app checkout, via the installer's --branch <tag>.
