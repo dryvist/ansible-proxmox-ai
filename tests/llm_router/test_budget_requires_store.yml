@@ -168,3 +168,51 @@
 
     - name: Import the budget-backing assert with neither configured
       ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-budget-backing.yml
+
+    # A named host with no credential is the second route to the same dishonest
+    # ceiling: roles/redis makes AUTH mandatory, so an empty password means every
+    # spend read is refused and LiteLLM falls back to per-member counting. The
+    # host leg alone passes this, which is why it needs its own case.
+    - name: Configure a budget against a named store with NO credential
+      ansible.builtin.set_fact:
+        llm_router_openrouter_budget_limit: 1.0
+        llm_router_redis_host: redis.example.test
+        llm_router_redis_password: ""
+
+    - name: Prove a credential-less store stops the converge
+      block:
+        - name: Import the budget-backing assert with no store credential
+          ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-budget-backing.yml
+
+        - name: Fail because the assert admitted an unreachable store
+          ansible.builtin.fail:
+            msg: >-
+              roles/llm_router/tasks/assert-budget-backing.yml PASSED with a
+              spend budget against a store it holds no credential for. Naming a
+              host is not reaching it — the ceiling would degrade silently to
+              per-member counting, which is the same defect the host check
+              prevents, reached by a different route.
+      rescue:
+        - name: Confirm the failure was the credential assert
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'Spend budget configured with no store credential' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              Something failed, but not the store-credential assert — got
+              {{ ansible_failed_result.msg | default('(none)') }}. In
+              particular, failing on the HOST leg here would mean this case
+              never exercised the credential leg at all.
+            success_msg: A budget against a credential-less store is fatal.
+
+    # And the fully-configured pair must still pass, or the two legs above would
+    # be satisfied by an assert that simply never lets a budget through.
+    - name: Assert a budget with both a store and its credential is permitted
+      ansible.builtin.set_fact:
+        llm_router_openrouter_budget_limit: 1.0
+        llm_router_openrouter_budget_period: 1d
+        llm_router_redis_host: redis.example.test
+        llm_router_redis_password: not-a-real-password
+
+    - name: Import the budget-backing assert with the pair fully configured
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-budget-backing.yml
