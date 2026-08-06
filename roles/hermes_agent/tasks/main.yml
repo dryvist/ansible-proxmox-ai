@@ -611,15 +611,17 @@
       \1    return row["id"]
   notify: Restart hermes-gateway
 
-# Upstream's timeout reaper (enforce_max_runtime) already SIGTERM/SIGKILLs
-# tasks.worker_pid on timeout, called every dispatcher tick. The gap: workers
-# are spawned with start_new_session=True, making each worker the leader of
-# its own process group, but the reaper signals only the recorded PID, not
-# that group — a worker that itself forked a child (MCP server, tool
-# subprocess) leaves that child orphaned and running indefinitely after the
-# top-level PID is gone. Helper inserted via blockinfile (idempotent
-# markers) ahead of the function it guards; the two kill() call sites below
-# route through it.
+# Upstream's timeout reaper (enforce_max_runtime) and the stale-reclaim path
+# (detect_stale_running) both terminate a host-local worker for a different
+# reason but must not diverge in HOW they do it, so both route through the
+# same identity-check helper. Workers are spawned with start_new_session=True,
+# making each worker the leader of its own process group, but the reapers
+# signal only the recorded PID, not that group — a worker that itself forked
+# a child (MCP server, tool subprocess) leaves that child orphaned and
+# running indefinitely after the top-level PID is gone. Helper inserted via
+# blockinfile (idempotent markers) ahead of the function it guards; the
+# kill() call sites below (timeout path and stale-reclaim path) route
+# through it.
 - name: Patch Hermes worker-reap helper to verify PID identity before signaling
   ansible.builtin.blockinfile:
     path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
@@ -678,6 +680,45 @@
     path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
     regexp: '^([ \t]*)kill\(pid, _sigkill\)$'
     replace: '\1kill(-pid, _sigkill)'
+  notify: Restart hermes-gateway
+
+# Never signal PID 0/negative/1(init), this gateway process itself
+# (dispatch_in_gateway: true runs this reclaim path inside the gateway
+# process), or a PID the OS has recycled for something no longer a hermes
+# worker. The pid<=0 check above already excludes 0/negative; this adds the
+# remaining cases.
+- name: Patch Hermes stale-reclaim worker termination to verify PID safety before signaling
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: |-
+      ^([ \t]*)if kill is None:$
+      \1    return info$
+      $
+      \1info\["termination_attempted"\] = True$
+    replace: |-
+      \1if kill is None:
+      \1    return info
+      \1if pid <= 1 or pid == os.getpid() or not _pid_is_hermes_worker(pid):
+      \1    return info
+
+      \1info["termination_attempted"] = True
+  notify: Restart hermes-gateway
+
+# Signal the worker's process group (negative pid), not just the recorded
+# PID, so a child process the worker itself spawned is reaped too. Same
+# start_new_session=True reasoning as the timeout-path patches above.
+- name: Patch Hermes stale-reclaim worker termination to signal the worker's process group
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)kill\(int\(pid\), signal\.SIGTERM\)$'
+    replace: '\1kill(-int(pid), signal.SIGTERM)'
+  notify: Restart hermes-gateway
+
+- name: Patch Hermes stale-reclaim worker termination to escalate on the worker's process group
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)kill\(int\(pid\), _sigkill\)$'
+    replace: '\1kill(-int(pid), _sigkill)'
   notify: Restart hermes-gateway
 
 # Auto-recall (the per-turn prefetch injected into context before the model
@@ -773,9 +814,10 @@
         'failure_limit=1 if is_systemic else None,'
         in hermes_agent_goal_reconcile_source
       # Worker-reap process-group guard: the identity check function, the
-      # safety condition guarding both signal sites, and the two signal
-      # sites themselves — each asserted so a partial landing (helper
-      # present but call sites unpatched, or vice versa) fails loudly.
+      # safety condition guarding the timeout path's and the stale-reclaim
+      # path's signal sites, and all four signal sites themselves — each
+      # asserted so a partial landing (helper present but a call site
+      # unpatched, or vice versa) fails loudly.
       - >-
         'def _pid_is_hermes_worker(pid: int) -> bool:'
         in hermes_agent_goal_reconcile_source
@@ -790,6 +832,15 @@
         in hermes_agent_goal_reconcile_source
       - >-
         'kill(-pid, _sigkill)'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'if pid <= 1 or pid == os.getpid() or not _pid_is_hermes_worker(pid):'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'kill(-int(pid), signal.SIGTERM)'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'kill(-int(pid), _sigkill)'
         in hermes_agent_goal_reconcile_source
       - >-
         ('DEFAULT_JUDGE_TIMEOUT = '
