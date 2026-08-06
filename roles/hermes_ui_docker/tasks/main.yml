@@ -1,0 +1,125 @@
+---
+# hermes-ui deployment (Docker in LXC): two independent Compose services,
+# hermes-workspace (pulled, pre-built image) and mission-control (built
+# locally from a pinned source tag — see defaults/main.yml for why).
+
+# =============================================================================
+# Validation
+# =============================================================================
+
+- name: Validate required hermes-ui secrets are set
+  ansible.builtin.assert:
+    that:
+      - hermes_ui_docker_workspace_password | length > 0
+      - hermes_ui_docker_mission_control_auth_user | length > 0
+      - hermes_ui_docker_mission_control_auth_pass | length > 0
+    fail_msg: >-
+      hermes-ui secrets missing — hermes_ui_docker_workspace_password,
+      hermes_ui_docker_mission_control_auth_user and
+      hermes_ui_docker_mission_control_auth_pass resolve bao-first from the
+      apps/hermes-ui KV fields (env fallback HERMES_UI_WORKSPACE_PASSWORD /
+      HERMES_UI_MISSION_CONTROL_AUTH_USER / HERMES_UI_MISSION_CONTROL_AUTH_PASS).
+    quiet: true
+
+# Docker itself (docker-ce + compose plugin, LXC-conditional fuse-overlayfs,
+# daemon.json) is installed by the docker_engine meta dependency.
+
+- name: Install git for the mission-control source clone
+  ansible.builtin.apt:
+    name: git
+    state: present
+    update_cache: true
+
+# =============================================================================
+# Filesystem layout
+# =============================================================================
+
+- name: Create hermes-ui project directory
+  ansible.builtin.file:
+    path: "{{ hermes_ui_docker_data_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Create mission-control persistent state directory
+  ansible.builtin.file:
+    path: "{{ hermes_ui_docker_mission_control_data_dir }}"
+    state: directory
+    owner: "{{ hermes_ui_docker_mission_control_uid }}"
+    group: "{{ hermes_ui_docker_mission_control_gid }}"
+    mode: "0750"
+
+# =============================================================================
+# mission-control build context — clone at the pinned tag; upstream's own
+# Dockerfile already exposes the NEXT_PUBLIC_GATEWAY_* build ARGs this
+# deployment needs (see defaults/main.yml).
+# =============================================================================
+
+- name: Clone mission-control at the pinned tag
+  ansible.builtin.git:
+    repo: "{{ hermes_ui_docker_mission_control_repo }}"
+    dest: "{{ hermes_ui_docker_data_dir }}/mission-control"
+    version: "{{ hermes_ui_docker_mission_control_ref }}"
+    depth: 1
+  notify: Restart hermes-ui
+
+# =============================================================================
+# Compose file + deploy
+# =============================================================================
+
+- name: Deploy hermes-ui docker-compose template
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ hermes_ui_docker_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart hermes-ui
+
+- name: Deploy hermes-ui via docker compose
+  # build: always so mission-control's source clone is rebuilt on every
+  # converge (its build context can change without docker-compose.yml
+  # changing). This makes 'Building' appear in actions on EVERY run
+  # regardless of whether the build produced a different image — a cached,
+  # no-op build still reports as an attempted build. changed_when therefore
+  # deliberately excludes 'Building': only Creating/Recreating/Pulling are
+  # evidence of an actual state change, keeping the task idempotent.
+  community.docker.docker_compose_v2:
+    project_src: "{{ hermes_ui_docker_data_dir }}"
+    state: present
+    build: always
+  register: hermes_ui_docker_compose_result
+  changed_when: >-
+    (hermes_ui_docker_compose_result.actions | default([]))
+    | selectattr('status', 'in', ['Creating', 'Recreating', 'Pulling'])
+    | list | length > 0
+  no_log: true
+
+# =============================================================================
+# Health checks
+# =============================================================================
+
+- name: Wait for hermes-workspace port to be ready
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ hermes_ui_docker_workspace_port }}"
+    timeout: 300
+
+- name: Wait for mission-control port to be ready
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ hermes_ui_docker_mission_control_port }}"
+    timeout: 300
+
+- name: Verify mission-control health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ hermes_ui_docker_mission_control_port }}/api/status?action=health"
+    method: GET
+    status_code: 200
+  register: hermes_ui_docker_mission_control_health
+  retries: "{{ hermes_ui_docker_health_retries }}"
+  delay: "{{ hermes_ui_docker_health_delay }}"
+  until: hermes_ui_docker_mission_control_health.status == 200
+  changed_when: false
