@@ -611,6 +611,75 @@
       \1    return row["id"]
   notify: Restart hermes-gateway
 
+# Upstream's timeout reaper (enforce_max_runtime) already SIGTERM/SIGKILLs
+# tasks.worker_pid on timeout, called every dispatcher tick. The gap: workers
+# are spawned with start_new_session=True, making each worker the leader of
+# its own process group, but the reaper signals only the recorded PID, not
+# that group — a worker that itself forked a child (MCP server, tool
+# subprocess) leaves that child orphaned and running indefinitely after the
+# top-level PID is gone. Helper inserted via blockinfile (idempotent
+# markers) ahead of the function it guards; the two kill() call sites below
+# route through it.
+- name: Patch Hermes worker-reap helper to verify PID identity before signaling
+  ansible.builtin.blockinfile:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK worker reap identity guard"
+    insertbefore: '^def enforce_max_runtime\('
+    block: |
+      def _pid_is_hermes_worker(pid: int) -> bool:
+          """Best-effort check that ``pid`` still looks like a hermes worker.
+
+          Guards against signaling a PID the OS has recycled for an
+          unrelated process between the time it was recorded and the time
+          we act on it.
+          """
+          try:
+              proc = subprocess.run(
+                  ["ps", "-o", "command=", "-p", str(int(pid))],
+                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                  text=True, timeout=1, check=False,
+              )
+          except (OSError, subprocess.SubprocessError, TimeoutError):
+              return False
+          if proc.returncode != 0:
+              return False
+          cmdline = proc.stdout or ""
+          return "hermes" in cmdline and "chat" in cmdline
+
+
+  notify: Restart hermes-gateway
+
+# Never signal PID 0/negative/1(init), this gateway process itself
+# (dispatch_in_gateway: true runs enforce_max_runtime inside the gateway
+# process, so os.getpid() at this call site IS the gateway's own PID), or a
+# PID the OS has recycled for something no longer a hermes worker.
+- name: Patch Hermes worker-reap timeout path to verify PID safety before signaling
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)if kill is not None:$'
+    replace: |-
+      \1if (
+      \1    kill is not None and pid > 1 and pid != os.getpid()
+      \1    and _pid_is_hermes_worker(pid)
+      \1):
+  notify: Restart hermes-gateway
+
+# Signal the worker's process group (negative pid), not just the recorded
+# PID, so a child process the worker itself spawned is reaped too.
+- name: Patch Hermes worker-reap timeout path to signal the worker's process group
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)kill\(pid, signal\.SIGTERM\)$'
+    replace: '\1kill(-pid, signal.SIGTERM)'
+  notify: Restart hermes-gateway
+
+- name: Patch Hermes worker-reap timeout path to escalate on the worker's process group
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)kill\(pid, _sigkill\)$'
+    replace: '\1kill(-pid, _sigkill)'
+  notify: Restart hermes-gateway
+
 # Auto-recall (the per-turn prefetch injected into context before the model
 # sees a message) swallows every failure at DEBUG and returns "" — recall
 # silently degrades to "no memories" with no signal distinguishable from
@@ -699,6 +768,25 @@
         in hermes_agent_goal_reconcile_source
       - >-
         'failure_limit=1 if is_systemic else None,'
+        in hermes_agent_goal_reconcile_source
+      # Worker-reap process-group guard: the identity check function, the
+      # safety condition guarding both signal sites, and the two signal
+      # sites themselves — each asserted so a partial landing (helper
+      # present but call sites unpatched, or vice versa) fails loudly.
+      - >-
+        'def _pid_is_hermes_worker(pid: int) -> bool:'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'kill is not None and pid > 1 and pid != os.getpid()'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'and _pid_is_hermes_worker(pid)'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'kill(-pid, signal.SIGTERM)'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'kill(-pid, _sigkill)'
         in hermes_agent_goal_reconcile_source
       - >-
         ('DEFAULT_JUDGE_TIMEOUT = '
