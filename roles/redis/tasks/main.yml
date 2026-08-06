@@ -1,0 +1,42 @@
+---
+# redis — a native apt install in a plain LXC (no Docker), matching how every
+# other single-binary service in this repository is deployed. Ansible owns the
+# config and the unit; idempotent.
+
+- name: Install redis-server
+  ansible.builtin.apt:
+    name: redis-server
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure the data directory exists and is owned by redis
+  ansible.builtin.file:
+    path: "{{ redis_data_dir }}"
+    state: directory
+    owner: "{{ redis_user }}"
+    group: "{{ redis_group }}"
+    mode: "0750"
+
+- name: Render the redis configuration
+  ansible.builtin.template:
+    src: redis.conf.j2
+    dest: "{{ redis_config_file }}"
+    owner: "{{ redis_user }}"
+    group: "{{ redis_group }}"
+    # 0640 — the file carries requirepass. World-readable would put the
+    # credential in reach of every account on the guest.
+    mode: "0640"
+    # No `validate:` here on purpose. redis-server has no parse-and-exit mode —
+    # the closest invocation STARTS the server — so any validate command would
+    # have to end in `|| true` to be safe, and a check that cannot fail is worse
+    # than no check: it reads as verification while verifying nothing. A bad
+    # config surfaces on the restart below, which does fail the converge.
+  notify: Restart redis
+
+- name: Enable and start redis
+  ansible.builtin.systemd_service:
+    name: "{{ redis_service }}"
+    state: started
+    enabled: true
+    daemon_reload: true

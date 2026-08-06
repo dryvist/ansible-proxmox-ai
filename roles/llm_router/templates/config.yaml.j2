@@ -180,13 +180,50 @@ router_settings:
     RateLimitErrorRetries: {{ llm_router_rate_limit_retries }}
   allowed_fails_policy:
     RateLimitErrorAllowedFails: {{ llm_router_rate_limit_allowed_fails }}
-  # NOTE deliberately no provider_budget_config here. It tracks spend in Redis,
-  # which this DB-less, Redis-less proxy does not have, and llm_router_group is
-  # a three-member pool — each member would count only its own spend, so the
-  # rendered ceiling would really be 3x and would reset on every rolling
-  # converge. A control that reports a limit it does not hold is worse than an
-  # absent one. Rate ceilings that DO work in-process are on each egress
-  # deployment above; see defaults for the full rationale.
+{% if llm_router_redis_host | length > 0 %}
+  # Shared spend store for the router pool. Without this every member would
+  # count only its own spend and the ceiling below would really be Nx, which is
+  # why the budget is rendered ONLY inside this block — a budget without a
+  # store is a control that reports a limit it does not hold, and the assert in
+  # tasks/assert.yml fails the build rather than let the two separate.
+  # Credentials come from the EnvironmentFile via os.environ/, like every other
+  # secret here; no literal lands in this file.
+  redis_host: os.environ/LLM_ROUTER_REDIS_HOST
+  # Port is a LITERAL int, not an os.environ/ reference like its neighbours.
+  # LiteLLM's documented Redis examples show the port as an integer, and its
+  # os.environ/ indirection is documented for string fields; passing the
+  # unresolved marker where an int is expected risks failing at client
+  # construction rather than at render, which is the worst place to find out.
+  # It is also not a secret — it comes from the same public ports registry every
+  # other port here does — so routing it through the EnvironmentFile bought
+  # nothing.
+  redis_port: {{ llm_router_redis_port }}
+  redis_password: os.environ/LLM_ROUTER_REDIS_PASSWORD
+{% if llm_router_openrouter_budget_limit | float > 0 %}
+  # Period ceiling on paid egress, enforced against the store above so it binds
+  # every caller rather than only the compliant ones. The per-deployment rpm/tpm
+  # ceilings above bound the RATE spend accumulates at, so a runaway caller
+  # cannot exhaust the period before this counter observes it.
+  provider_budget_config:
+    openrouter:
+      budget_limit: {{ llm_router_openrouter_budget_limit }}
+      time_period: {{ llm_router_openrouter_budget_period }}
+{% endif %}
+{% else %}
+  # No spend store configured, so deliberately NO provider_budget_config.
+  # LiteLLM tracks provider spend in Redis; with a multi-member pool and no
+  # shared store each member counts only its own, so a rendered ceiling would
+  # really be Nx and would reset on every rolling converge. A control that
+  # reports a limit it does not hold is worse than an absent one. Set
+  # llm_router_redis_host to get a real cap; the rate ceilings on each egress
+  # deployment above work either way.
+{% endif %}
+  # NOTE deliberately no `fail_closed_budget_enforcement`. It is a
+  # general_settings key governing LiteLLM's POSTGRES-backed virtual-key
+  # budgets, not the provider budget above, and it 503s when spend can be
+  # verified against neither Redis nor a database. This proxy issues no virtual
+  # keys and has no database, so it would be inert at best and a 503 generator
+  # on the fabric's only front door at worst. See defaults.
 
 general_settings:
   master_key: os.environ/LLM_ROUTER_MASTER_KEY
