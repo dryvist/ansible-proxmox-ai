@@ -1138,11 +1138,29 @@
        | select('in', hermes_agent_superseded_agentic_cron_names) | list }}
   changed_when: true
 
+# One-time (but idempotent) migration cleanup (native-cron redesign): a guest
+# converged before this change still runs the OLD `<job>-enqueue` `--no-agent
+# --script` crons in `hermes cron`'s own job store. The script they ran no
+# longer exists on disk, so left in place they would start failing loudly
+# instead of quietly going away when the OS-crontab replacement takes over.
+- name: "Remove superseded kanban-enqueuer script crons (native-cron redesign)"
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron remove {{ item }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  loop: >-
+    {{ (hermes_agent_cron_store.content | default('e30=', true) | b64decode | from_json).jobs
+       | default([])
+       | map(attribute='name') | list
+       | select('in', hermes_agent_superseded_kanban_enqueuer_cron_names) | list }}
+  changed_when: true
+
 # The recurring agentic workloads (daily status, operator summary, Zammad
 # review, Splunk fleet, GitHub triage, nightly wiki) are dispatched as Kanban
-# cards now, not agentic crons (kanban migration, #83). They are enqueued by the
-# script-only `--no-agent` cron fleet reconciled after the skills/prompts are in
-# place (see "Kanban enqueuer fleet" below).
+# cards now, not agentic crons (kanban migration, #83). They are enqueued by a
+# per-card OS-crontab entry reconciled after the skills/prompts are in place
+# (see "Kanban enqueuer fleet" below).
 
 - name: Ensure the wiki directory exists
   ansible.builtin.file:
@@ -1264,15 +1282,16 @@
   loop_control:
     label: "{{ item.id }}"
 
-# --- Kanban enqueuer fleet (kanban migration, #83) ---------------------------
+# --- Kanban enqueuer fleet (kanban migration, #83; native-cron redesign) -----
 # Every recurring workload is a Kanban card dispatched by the gateway's in-process
 # board engine (config.yaml kanban: block) — a FRESH worker session per run,
 # eliminating the persistent-cron-session failure class (INC-17120). The
-# recurrence layer is a thin fleet of `--no-agent --script` crons (no LLM, so
-# nothing to poison) that enqueue those cards. All the skills the cards reference
-# (dryvist/splunk-monitor, dryvist/github-issues, dryvist/zammad-incidents,
-# llm-wiki) are already materialized above, so a card's `--skill` resolves when a
-# worker runs it.
+# recurrence layer is a per-card OS-crontab entry whose command is one native
+# `hermes kanban create` invocation — no script anywhere (see
+# reconcile_kanban_card_cron.yml for why `hermes cron` itself cannot host this).
+# All the skills the cards reference (dryvist/splunk-monitor,
+# dryvist/github-issues, dryvist/zammad-incidents, llm-wiki) are already
+# materialized above, so a card's `--skill` resolves when a worker runs it.
 - name: Ensure the Hermes scripts directory exists
   ansible.builtin.file:
     path: "{{ hermes_agent_hermes_home }}/scripts"
@@ -1281,12 +1300,10 @@
     group: "{{ hermes_agent_user }}"
     mode: "0750"
 
-# Rendered AFTER the prompt set_facts above so lookup('vars', card.prompt_var)
-# resolves each card body (catalog + inline prompts alike) at render time.
-- name: Deploy the Kanban recurring-task enqueuer script
-  ansible.builtin.template:
-    src: kanban-enqueue-recurring.sh.j2
-    dest: "{{ hermes_agent_hermes_home }}/scripts/{{ hermes_agent_kanban_enqueue_script_name }}"
+- name: Ensure the Hermes kanban-bodies directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_agent_hermes_home }}/kanban-bodies"
+    state: directory
     owner: "{{ hermes_agent_user }}"
     group: "{{ hermes_agent_user }}"
     mode: "0750"
@@ -1513,11 +1530,10 @@
     - hermes_agent_splunk_mcp_url | length > 0
     - hermes_agent_splunk_mcp_token | length > 0
 
-# One `<job>-enqueue` script cron per card, same schedule the old agentic cron
-# used; each enqueues its workload's current-slot card. Disabled cards create no
-# cron (the include is gated on item.enabled).
-- name: Reconcile the per-workload Kanban enqueuer crons
-  ansible.builtin.include_tasks: reconcile_enqueuer_cron.yml
+# One `kanban-<job>` OS-crontab entry per card, on the card's own schedule.
+# Disabled/paused cards create no entry (see reconcile_kanban_card_cron.yml).
+- name: Reconcile the per-workload Kanban card system crons
+  ansible.builtin.include_tasks: reconcile_kanban_card_cron.yml
   loop: "{{ hermes_agent_kanban_cards }}"
   loop_control:
     label: "{{ item.job }}"
@@ -1539,15 +1555,12 @@
     label: "{{ item.name }}"
   when: hermes_agent_digest_slack_channel | length > 0
 
-# The daily chain-break safety net: one enqueuer cron in `all --backfill` mode.
-- name: Reconcile the daily Kanban safety-net enqueuer cron
-  ansible.builtin.include_tasks: reconcile_enqueuer_cron.yml
-  vars:
-    item:
-      name: "{{ hermes_agent_kanban_safety_net_cron_name }}"
-      schedule: "{{ hermes_agent_kanban_safety_net_schedule }}"
-      selector: "all --backfill"
-      enabled: "{{ hermes_agent_kanban_safety_net_enabled }}"
+# No daily backfill safety net any more: the old one existed to re-create a
+# slot-keyed card a missed fire would otherwise drop forever. With a STABLE
+# per-job key (reconcile_kanban_card_cron.yml), a missed fire just means that
+# one occurrence did not happen — the job's own next scheduled fire creates a
+# fresh card normally, because the previous occurrence already freed the key by
+# archiving itself on completion. There is nothing left to backfill.
 
 # The script-fed Splunk status digest: a --no-agent --script cron whose stdout
 # (real numbers the script gathered itself) is delivered verbatim to Slack. No

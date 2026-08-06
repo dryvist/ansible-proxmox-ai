@@ -83,11 +83,11 @@ def test_fleet_health_survives_a_lost_run_and_keys_on_its_own_cadence() -> None:
 
     It is the fleet's only regression check and it fires weekly, so a single
     crash or wall-clock kill used to cost a full week of cover with nothing
-    watching that it had gone. Its slot must also match that weekly cadence:
-    a finer slot gives every enqueue a fresh key, so a re-enqueue creates a
-    second card for the same week instead of resolving to the existing one,
-    and the week-over-week comparison the card exists to make is keyed to a
-    window it never spans.
+    watching that it had gone. Its idempotency key is now stable (the job
+    name, not a slot — see reconcile_kanban_card_cron.yml), so a re-enqueue in
+    the same week resolves to the existing card either way; what still has to
+    hold is that the crontab schedule is genuinely weekly, matching the
+    week-over-week comparison the card exists to make.
     """
     defaults = yaml.safe_load(DEFAULTS.read_text())
     card = next(
@@ -97,44 +97,9 @@ def test_fleet_health_survives_a_lost_run_and_keys_on_its_own_cadence() -> None:
 
     assert int(card["max_retries"]) >= 3
     assert int(card["interval_hours"]) == 168
-    # Weekly cron (a fixed day-of-week field), matching the 168-hour slot.
+    # Weekly cron (a fixed day-of-week field), matching the 168-hour cadence.
     assert defaults["hermes_agent_fleet_health_cron_schedule"].split()[-1] not in ("*", "?")
 
-
-def test_slot_stamp_gives_one_key_per_period() -> None:
-    """Execute the rendered `slot_stamp`, rather than pattern-match it.
-
-    The branch selection is arithmetic on the interval, and the whole point of
-    the weekly branch is that a weekly card stops getting a fresh key every day
-    — a property only visible by running it.
-    """
-    import re
-    import subprocess
-
-    template = (
-        REPO_ROOT / "roles/hermes_agent/templates/kanban-enqueue-recurring.sh.j2"
-    ).read_text()
-    body = re.search(r"^slot_stamp\(\) \{.*?^\}", template, re.S | re.M)
-    assert body, "slot_stamp() not found — the enqueuer template changed shape"
-
-    def stamp(interval: int) -> str:
-        return subprocess.run(
-            ["bash", "-c", f"{body.group(0)}\nslot_stamp {interval}\n"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
-
-    hourly, daily, weekly = stamp(1), stamp(24), stamp(168)
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}", hourly), hourly
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", daily), daily
-    assert re.fullmatch(r"\d{4}-W\d{2}", weekly), weekly
-    assert hourly.startswith(daily)
-    # The weekly key must not be a restatement of today's date, which is the
-    # bug the branch exists to fix.
-    assert weekly != daily
-    # A sub-daily interval still buckets within the day.
-    assert stamp(6).startswith(daily + "-s")
-    # ISO week paired with the ISO week-numbering year, never the calendar
-    # year: the two disagree around New Year (1 Jan can fall in week 52/53 of
-    # the previous ISO year), so `%Y-W%V` would reuse a key already spent.
-    assert "date -u +%G-W%V" in body.group(0)
-    assert "%Y-W%V" not in body.group(0)
+# test_slot_stamp_gives_one_key_per_period was removed with the native-cron
+# redesign: slot_stamp() no longer exists anywhere (idempotency keys are
+# stable per job, not slotted) — see reconcile_kanban_card_cron.yml.

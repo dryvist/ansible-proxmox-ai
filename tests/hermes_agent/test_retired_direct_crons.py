@@ -71,11 +71,10 @@ def test_a_retirement_that_names_a_card_leaves_that_card_able_to_run():
     script's `*)` arm and logs "unknown selector". The cron fires, nothing is
     created, and the board looks idle rather than broken.
 
-    Caught for real: `homelab-ai-fabric-status` was in that state (deployed
-    script carried one selector arm, last card created 2026-07-24T12) while its
-    `-v2` cron was being retired in favour of it. Retiring the cron without
-    unpausing the card would have taken the topic to zero coverage with nothing
-    in the repo saying so.
+    Caught for real: `homelab-ai-fabric-status` was in that state (paused, last
+    card created 2026-07-24T12) while its `-v2` cron was being retired in
+    favour of it. Retiring the cron without unpausing the card would have
+    taken the topic to zero coverage with nothing in the repo saying so.
     """
     defaults = load_defaults()
     paused = set(defaults["hermes_agent_kanban_paused_jobs"])
@@ -107,13 +106,13 @@ def test_the_card_footer_asks_for_a_full_report():
     wording is load-bearing, not cosmetic, and is checked here rather than
     remembered.
     """
-    enqueuer = (REPO_ROOT / "roles/hermes_agent/templates"
-                / "kanban-enqueue-recurring.sh.j2").read_text()
-    assert "deliver a FULL REPORT to Slack" in enqueuer
+    body = (REPO_ROOT / "roles/hermes_agent/templates"
+            / "kanban-card-body.md.j2").read_text()
+    assert "deliver a FULL REPORT to Slack" in body
     # kanban_complete's summary still has to be one line — the board digest
     # (kanban-digest.py) renders it as a single Slack bullet.
-    assert "ONE-LINE summary" in enqueuer
-    assert "post once, never twice" in enqueuer, (
+    assert "ONE-LINE summary" in body
+    assert "post once, never twice" in body, (
         "a card whose own prompt posts a report must not also post the footer's")
 
 

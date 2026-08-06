@@ -394,18 +394,22 @@ Every recurring workload — the Splunk fleet above, `github-triage`,
 pass — is a **Kanban card**, not an agentic cron job. The gateway's in-process
 board dispatcher (`config.yaml` `kanban:` block) spawns a **fresh worker session
 per card**, so a corrupted session can never carry forward between runs
-(INC-17120). Kanban has no native recurrence, so a thin fleet of `cron create
---no-agent --script` jobs — one per workload, on the same schedule the old
-agentic cron used, plus one daily safety net — enqueues the cards. These crons
-run a script only (no LLM session, nothing to poison); `hermes cron list` is
-now script-only. On a guest provisioned before the migration, the converge
-removes the old bare-named agentic crons
-(`hermes_agent_superseded_agentic_cron_names`) so they cannot double-fire
-alongside their `-enqueue` twins. Each card carries an idempotency key
-`<job>-<slot>`, so a
-double-fire or backfill never duplicates a card.
+(INC-17120). Kanban has no native recurrence (`hermes cron`'s only payloads
+are an LLM prompt or `--script <file>`), so a per-card entry on the OS's own
+crontab fires a single native `hermes kanban create` call directly — no
+script anywhere. On a guest converged before this design, the role removes
+the old bare-named agentic crons (`hermes_agent_superseded_agentic_cron_names`)
+and the old `<job>-enqueue` script crons
+(`hermes_agent_superseded_kanban_enqueuer_cron_names`) so nothing double-fires
+alongside its replacement. Each card carries a STABLE idempotency key (its own
+`job` name): a still-open card from a previous fire is found and reused rather
+than duplicated, which is what stops a blocked card from piling up a duplicate
+on every fire. Completion alone does not free the key (`done` != `archived`,
+and nothing auto-archives), so every card's body has the worker run
+`hermes kanban archive "$HERMES_KANBAN_TASK"` as its last action after a
+successful `kanban_complete`.
 
-**Cards post a full report, not a sentence.** The enqueuer appends a shared
+**Cards post a full report, not a sentence.** Every card body carries a shared
 footer telling the worker to `hermes send` a full report to the `#hermes-all`
 channel variable — headline line, then the concrete values/counts/statuses
 observed that run, one per line, clean checks included, under 25 lines — and
@@ -419,23 +423,20 @@ daily**; anything more frequent belongs on the board. But a `-v2` cron posts a
 full report, so while the footer asked for a one-line summary, switching one off
 silently downgraded its topic from a report to a sentence. Footer first, then
 the retirement — and the replacement card must be off
-`hermes_agent_kanban_paused_jobs`, or its enqueuer fires into the enqueue
-script's unknown-selector arm and creates nothing at all. Both are enforced by
-`tests/hermes_agent/test_retired_direct_crons.py`.
+`hermes_agent_kanban_paused_jobs`, or nothing creates it either. Both are
+enforced by `tests/hermes_agent/test_retired_direct_crons.py`.
 
-A self-perpetuating **8h reviewer** card (00:00 / 08:00 / 16:00 UTC) reviews the
-last 8h of board activity, files follow-ups for anything missed or broken, posts
-a digest to `#hermes-all`, and creates the next slot's reviewer card as `blocked`
-so it cannot run early; the next enqueuer fire unblocks it. The daily safety-net
-enqueuer (`all --backfill`) re-creates any missing card and unblocks any due
-blocked card, so the reviewer chain self-heals if a link is ever dropped.
+An **8h reviewer** card (00:00 / 08:00 / 16:00 UTC) reviews the last 8h of
+board activity, files follow-ups for anything missed or broken, and posts a
+digest to `#hermes-all`. It runs on the same per-card crontab schedule as
+every other card — no daily safety net, and no self-perpetuation trick to fake
+a future-dated fire: the crontab entry itself is the time gate now.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `hermes_agent_kanban_cards` | — | the per-workload card table (title, cadence, schedule, prompt var, skills, retry budget) |
 | `hermes_agent_slack_hermes_all_channel` | firehose channel id | channel each card posts its completion **report** to |
 | `hermes_agent_kanban_reviewer_schedule` | `0 */8 * * *` | the 8h reviewer slots |
-| `hermes_agent_kanban_safety_net_schedule` | `33 4 * * *` | daily chain-break backfill sweep |
 
 ### Master board digest (`kanban-digest`)
 

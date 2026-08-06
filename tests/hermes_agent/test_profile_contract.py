@@ -197,7 +197,7 @@ def test_every_profile_has_a_soul_addendum_template_on_disk() -> None:
 def test_profiles_tasks_are_wired_before_the_enqueuer_reconcile() -> None:
     tasks = (ROLE_ROOT / "tasks" / "main.yml").read_text()
     profiles_idx = tasks.index("Reconcile named Hermes operating profiles")
-    enqueuer_idx = tasks.index("Reconcile the per-workload Kanban enqueuer crons")
+    enqueuer_idx = tasks.index("Reconcile the per-workload Kanban card system crons")
     assert profiles_idx < enqueuer_idx
 
 

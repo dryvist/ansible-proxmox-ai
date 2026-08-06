@@ -28,7 +28,7 @@ GATE = "Assert the Splunk MCP token authenticates against the gateway route"
 def test_the_gate_exists_and_runs_before_cards_are_reconciled() -> None:
     probe = MAIN_TASKS.find(PROBE)
     gate = MAIN_TASKS.find(GATE)
-    reconcile = MAIN_TASKS.find("Reconcile the per-workload Kanban enqueuer crons")
+    reconcile = MAIN_TASKS.find("Reconcile the per-workload Kanban card system crons")
     assert probe != -1, "the Splunk MCP auth probe task is missing"
     assert gate != -1, "the Splunk MCP auth assertion task is missing"
     assert reconcile != -1

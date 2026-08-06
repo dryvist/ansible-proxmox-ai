@@ -1,0 +1,83 @@
+---
+# Reconcile ONE OS-crontab entry that fires a native `hermes kanban create`
+# directly at its scheduled time (#83 native-cron redesign — replaces
+# kanban-enqueue-recurring.sh.j2 and its `--no-agent --script` cron). `hermes
+# cron` has no kanban-aware action: `--script` always requires a script FILE
+# under ~/.hermes/scripts (verified against the installed CLI's --help), and a
+# bare prompt would burn an LLM turn per fire, making a deterministic enqueue
+# non-deterministic. So recurrence moves to the user's real OS crontab, and the
+# payload is one native `kanban create` invocation with no script anywhere.
+#
+# STABLE idempotency key (the card's `job` name, not a slot): create_task()'s
+# dedup only excludes status='archived' (verified against the installed
+# hermes_cli/kanban_db.py source on the guest), so firing with the SAME key
+# every time means a still-open (running/blocked) card from a previous fire is
+# found and reused rather than duplicated — that is what stops a blocked card
+# from piling up a new duplicate on every fire. Completion alone does not free
+# the key (done != archived, and nothing auto-archives a done task), so
+# kanban-card-body.md.j2's shared footer tells the worker to run
+# `hermes kanban archive "$HERMES_KANBAN_TASK"` as its last action after a
+# successful kanban_complete. A blocked card is deliberately left un-archived.
+#
+# item fields: the same per-card table as before (job, title, schedule,
+# prompt_var, assignee, max_runtime, max_retries, skills, enabled) minus the
+# retired `interval_hours`-driven slotting and `unblock` chain — timing is now
+# the crontab schedule itself, not a pre-created blocked next-slot card.
+# `schedule` must be a plain 5-field cron expression.
+#
+# Paused (hermes_agent_kanban_paused_jobs) or capability-gated-off cards are
+# SKIPPED entirely here — no create, no remove — same disable-don't-delete
+# contract as reconcile_enqueuer_cron.yml: a converge never touches whatever
+# crontab state the operator already has for a job that is not currently active.
+- name: "Kanban card cron | Effective-active for {{ item.job }}"
+  ansible.builtin.set_fact:
+    hermes_agent_kanban_cron_active: >-
+      {{ (item.enabled | default(true) | bool)
+         and (item.job not in hermes_agent_kanban_paused_jobs) }}
+
+- name: "Kanban card cron | Deploy body file for {{ item.job }}"
+  ansible.builtin.template:
+    src: kanban-card-body.md.j2
+    dest: "{{ hermes_agent_hermes_home }}/kanban-bodies/{{ item.job }}.md"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+  vars:
+    card: "{{ item }}"
+  when: hermes_agent_kanban_cron_active | bool
+
+# `%` is cron's own newline/argument separator inside a job command, so every
+# literal `%` in the appended date format has to be escaped as `\%` here — this
+# job string lands directly in the crontab, unlike the old script where the
+# date call ran inside a file and needed no escaping.
+- name: "Kanban card cron | Build create command for {{ item.job }}"
+  ansible.builtin.set_fact:
+    hermes_agent_kanban_cron_job: >-
+      HERMES_HOME={{ hermes_agent_hermes_home }} {{ hermes_agent_bin }} kanban
+      create '{{ item.title }}' --body "$(cat
+      {{ hermes_agent_hermes_home }}/kanban-bodies/{{ item.job }}.md)
+
+
+      CURRENT UTC TIME: $(date -u +\%Y-\%m-\%dT\%H:\%M:\%SZ). This is the
+      clock, not a guess: use it for every date you state. Never recall a
+      date from memory or infer one." --idempotency-key {{ item.job }}
+      {% if item.assignee | length > 0 %}--assignee '{{ item.assignee }}'{% endif %}
+      --max-runtime '{{ item.max_runtime }}' --max-retries {{ item.max_retries }}
+      {% for skill in item.skills %}--skill '{{ skill }}' {% endfor -%}
+      {% if hermes_agent_kanban_goal_mode | bool %}--goal
+      --goal-max-turns {{ hermes_agent_kanban_goal_max_turns }}{% endif %}
+      >> {{ hermes_agent_log_directory }}/kanban-cron.log 2>&1
+  when: hermes_agent_kanban_cron_active | bool
+
+- name: "Kanban card cron | Reconcile crontab entry for {{ item.job }}"
+  ansible.builtin.cron:
+    name: "kanban-{{ item.job }}"
+    user: "{{ hermes_agent_user }}"
+    job: "{{ hermes_agent_kanban_cron_job }}"
+    minute: "{{ item.schedule.split(' ')[0] }}"
+    hour: "{{ item.schedule.split(' ')[1] }}"
+    day: "{{ item.schedule.split(' ')[2] }}"
+    month: "{{ item.schedule.split(' ')[3] }}"
+    weekday: "{{ item.schedule.split(' ')[4] }}"
+    state: present
+  when: hermes_agent_kanban_cron_active | bool

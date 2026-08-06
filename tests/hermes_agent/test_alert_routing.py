@@ -109,7 +109,7 @@ def _deliver_targets(pattern: str, ctx: Mapping[str, object], text: str) -> str:
     return _ENV.from_string(match.group(1)).render(**ctx).strip()
 
 
-ENQUEUER = (ROLE / "templates" / "kanban-enqueue-recurring.sh.j2").read_text()
+ENQUEUER = (ROLE / "templates" / "kanban-card-body.md.j2").read_text()
 # The one line every recurring card is told to post its report with. A card may
 # name a second destination for the all-healthy case, so this renders the whole
 # instruction and reads back every destination in it rather than matching one.

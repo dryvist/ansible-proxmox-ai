@@ -29,19 +29,29 @@ retired that model: a long-lived cron session accumulated state between runs,
 and corrupted compression bookkeeping crash-looped the `splunk-*` jobs
 (INC-17120). What replaced it has two layers:
 
-1. **Recurrence** — a thin fleet of `cron create --no-agent --script` jobs.
-   Script-only, no agent and no LLM session, so there is nothing to poison.
-   Each fires on its workload's schedule and emits exactly one `kanban create`
-   per slot with idempotency key `<job>-<slot>`, so a double-fire or a backfill
-   never duplicates a card. Reconciled by `tasks/reconcile_enqueuer_cron.yml`;
-   a card named `<job>` yields the cron `<job>-enqueue`.
+1. **Recurrence** — a per-card OS-crontab entry whose command is one native
+   `hermes kanban create` call, nothing else. `hermes cron` has no
+   kanban-aware action (its only payloads are an LLM prompt, which would burn
+   a turn per fire and make enqueue non-deterministic, or `--script <file>`,
+   which is the shell-wrapper design this replaced), so recurrence lives in
+   the OS's own crontab instead. Each card carries a STABLE idempotency key
+   (its `job` name) — create_task()'s dedup only excludes archived tasks, so
+   the same key on every fire finds a still-open card from a previous fire
+   and reuses it rather than duplicating it. Since completion alone does not
+   archive a task, every card's body tells the worker to
+   `hermes kanban archive "$HERMES_KANBAN_TASK"` as its last action after a
+   successful `kanban_complete`, freeing the key for the next occurrence.
+   Reconciled by `tasks/reconcile_kanban_card_cron.yml`; a card named `<job>`
+   yields the crontab entry `kanban-<job>`.
 2. **Execution** — the gateway's in-process Kanban board engine
    (`config.yaml` `kanban:` block) dispatches each card in a **fresh, isolated
    worker session**. That per-run freshness is the entire point of #83.
 
 `tasks/main.yml` actively *removes* the pre-migration bare-named agentic crons
-(`hermes_agent_superseded_agentic_cron_names`), so a guest provisioned before
-the migration does not double-fire alongside its enqueuer twin.
+(`hermes_agent_superseded_agentic_cron_names`) and the pre-native-cron
+`<job>-enqueue` script crons (`hermes_agent_superseded_kanban_enqueuer_cron_names`),
+so a guest converged before either migration does not double-fire alongside
+its replacement.
 
 ### Kanban cards (`hermes_agent_kanban_cards`)
 
@@ -51,10 +61,9 @@ and ai-news was lifted 2026-07-31). The rest are on
 `hermes_agent_kanban_paused_jobs` — a deliberate throughput throttle
 (2026-07-24, Zammad #17143) against the single shared serving deployment. A
 paused job is skipped entirely by the reconcile (no create, no remove, so the
-operator's state is untouched) and is not rendered as a selector arm in the
-enqueuer script, so the `all --backfill` safety net cannot revive it either.
-Lift the throttle by *removing* a job from that list once capacity is proven
-— `fleet-health` (last row) is the audit's recommended next lift.
+operator's crontab state is untouched). Lift the throttle by *removing* a job
+from that list once capacity is proven — `fleet-health` (last row) is the
+audit's recommended next lift.
 
 The 2026-08-01 audit **removed** the `splunk-digest` card outright (not
 paused): its script-fed replacement, `splunk-status-digest` below, already
@@ -100,12 +109,18 @@ is false never has its enqueuer created — the role runs inert, never errors.
 
 Card output does **not** go to per-job channels. Every worker posts its
 completion report to `hermes_agent_slack_hermes_all_channel` (`#hermes-all`);
-the enqueuer appends that instruction as a footer to the card body, because
-Kanban cards have no native delivery channel.
+every card body (`kanban-card-body.md.j2`) carries that instruction as a
+shared footer, because Kanban cards have no native delivery channel.
 
-`review` is self-perpetuating: its worker creates the next slot's card as
-`initial_status=blocked`, and the enqueuer unblocks it at the slot boundary
-(`unblock: true`) — the adaptation for a CLI with no `--scheduled-at`.
+`review` runs on the same per-card crontab schedule as every other card — it
+no longer pre-creates its own next occurrence as a blocked card, because the
+crontab entry itself is now the time gate.
+
+### System crontab (`kanban-<job>`)
+
+One entry per active card, on the `hermes_agent_user` crontab. The command is
+a single native `hermes kanban create` call with no script file involved —
+see "The two layers" above.
 
 ### Script crons (`--no-agent --script`)
 
@@ -115,8 +130,6 @@ stdout is delivered verbatim.
 
 | Cron | Schedule (UTC) | Script | Delivery |
 | --- | --- | --- | --- |
-| `<job>-enqueue` (one per card) | the card's schedule | `kanban-enqueue-recurring.sh` | `local` (silent — it only creates the card) |
-| `kanban-enqueue-safety-net` | `33 4 * * *` | same, selector `all --backfill` | `local` — **itself paused** |
 | `splunk-status-digest` | `52 7-23 * * *` | `splunk-digest.py` | `slack:<hermes-all>` |
 | `kanban-digest` | `*/15 * * * *` | `kanban-digest.py` | `slack:<digest>` |
 | `splunk-error-digest` | `37 * * * *` | `splunk-error-digest.py` | `slack:<digest>` |

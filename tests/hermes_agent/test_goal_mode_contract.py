@@ -590,18 +590,23 @@ def test_idempotent_create_does_not_mutate_terminal_history(status: str) -> None
 
 
 def test_enqueuer_goal_flags_follow_the_role_toggle() -> None:
-    enqueuer = (ROLE_ROOT / "templates" / "kanban-enqueue-recurring.sh.j2").read_text()
+    # Native-cron redesign: the --goal flag lives in the crontab job command
+    # (reconcile_kanban_card_cron.yml), not the card body any more — the body
+    # is pure prompt text with no CLI flags in it at all.
+    cron_task = (ROLE_ROOT / "tasks" / "reconcile_kanban_card_cron.yml").read_text()
     # One budget for the whole board, no per-card fallback expression. The loop
     # re-sends its accumulated conversation each turn, so the budget prices
     # prefill quadratically against a serving tier that admits one request at a
     # time — and it is spent only by cards that are already failing, which is
     # when that tier has least room. See hermes_agent_kanban_goal_max_turns.
     assert (
-        "{% if hermes_agent_kanban_goal_mode | bool %} --goal --goal-max-turns "
-        "{{ hermes_agent_kanban_goal_max_turns }}{% endif %}"
-        in enqueuer
+        "{% if hermes_agent_kanban_goal_mode | bool %}--goal\n"
+        "      --goal-max-turns {{ hermes_agent_kanban_goal_max_turns }}{% endif %}"
+        in cron_task
     )
-    assert "card.goal_max_turns" not in enqueuer
+    assert "item.goal_max_turns" not in cron_task
+
+    body = (ROLE_ROOT / "templates" / "kanban-card-body.md.j2").read_text()
     # The report destination is per-card as of the four-channel split: cards opt
     # in with `channel:`, everything else falls back to the work channel. Routing
     # itself is pinned in test_alert_routing.py; what matters here is that the
@@ -610,20 +615,25 @@ def test_enqueuer_goal_flags_follow_the_role_toggle() -> None:
     assert (
         "hermes send --to slack:"
         "{{ card.channel | default(hermes_agent_slack_hermes_all_channel, true) }}"
-    ) in enqueuer
-    assert "kind=needs_input" in enqueuer
-    assert "status=pending" not in enqueuer
+    ) in body
+    assert "kind=needs_input" in body
+    assert "status=pending" not in body
 
 
-def test_reviewer_child_goal_fields_follow_the_role_toggle() -> None:
+def test_reviewer_prompt_carries_no_leftover_self_perpetuation() -> None:
+    """The native-cron redesign made the reviewer's own next-occurrence
+    pre-create (create the next slot blocked, have the enqueuer unblock it)
+    unnecessary: the crontab entry is now the time gate for every card,
+    reviewer included. Pins that the chain-continuation step actually left the
+    prompt rather than merely stopped being tested.
+    """
     enabled = _render_reviewer_prompt(True)
     disabled = _render_reviewer_prompt(False)
 
-    assert "initial_status=blocked, goal_mode=true, and goal_max_turns=3" in enabled
-    assert "preserves this card's bounded goal loop" in enabled
-    assert "goal_mode=true" not in disabled
-    assert "goal_max_turns=" not in disabled
-    assert "bounded goal loop" not in disabled
+    for rendered in (enabled, disabled):
+        assert "initial_status=blocked" not in rendered
+        assert "bounded goal loop" not in rendered
+        assert "NEXT slot key" not in rendered
 
 
 def test_hermes_inference_paths_use_the_declared_alias() -> None:
