@@ -1,0 +1,49 @@
+---
+# {{ ansible_managed }}
+# Two independent services on one LXC: hermes-workspace (chat UI for the
+# hermes_agent gateway) and mission-control (OpenClaw operations dashboard,
+# NOT wired to Hermes). Neither depends on the other.
+services:
+  {{ hermes_ui_docker_workspace_service }}:
+    image: {{ hermes_ui_docker_workspace_image }}
+    container_name: {{ hermes_ui_docker_workspace_container_name }}
+    restart: {{ hermes_ui_docker_restart_policy }}
+    ports:
+      - "{{ hermes_ui_docker_workspace_port }}:{{ hermes_ui_docker_workspace_internal_port }}"
+    environment:
+      PORT: "{{ hermes_ui_docker_workspace_internal_port }}"
+      # Fails closed without this: hermes-workspace refuses a non-loopback
+      # bind unless HERMES_PASSWORD is set.
+      HERMES_PASSWORD: "{{ hermes_ui_docker_workspace_password }}"
+      COOKIE_SECURE: "1"
+      TRUST_PROXY: "1"
+      HERMES_API_URL: "{{ hermes_ui_docker_workspace_hermes_api_url }}"
+{% if hermes_ui_docker_workspace_hermes_api_token | length > 0 %}
+      HERMES_API_TOKEN: "{{ hermes_ui_docker_workspace_hermes_api_token }}"
+{% endif %}
+      HERMES_DASHBOARD_URL: "{{ hermes_ui_docker_workspace_hermes_dashboard_url }}"
+
+  {{ hermes_ui_docker_mission_control_service }}:
+    build:
+      context: ./mission-control
+      args:
+        MC_VERSION: "{{ hermes_ui_docker_mission_control_ref }}"
+        # NEXT_PUBLIC_* are inlined at build time (Next.js contract) — this is
+        # what lets mission-control run with no OpenClaw gateway reachable.
+        NEXT_PUBLIC_GATEWAY_OPTIONAL: "{{ hermes_ui_docker_mission_control_gateway_optional }}"
+    image: homelab/mission-control:local
+    container_name: {{ hermes_ui_docker_mission_control_container_name }}
+    restart: {{ hermes_ui_docker_restart_policy }}
+    ports:
+      - "{{ hermes_ui_docker_mission_control_port }}:{{ hermes_ui_docker_mission_control_internal_port }}"
+    volumes:
+      - {{ hermes_ui_docker_mission_control_data_dir }}:/app/.data
+    environment:
+      PORT: "{{ hermes_ui_docker_mission_control_internal_port }}"
+      MC_ALLOWED_HOSTS: "{{ hermes_ui_docker_mission_control_allowed_hosts }}"
+      MC_COOKIE_SECURE: "1"
+      MC_ENABLE_HSTS: "1"
+      # Seed the admin account from env (no gateway means no /setup flow to
+      # click through manually).
+      AUTH_USER: "{{ hermes_ui_docker_mission_control_auth_user }}"
+      AUTH_PASS: "{{ hermes_ui_docker_mission_control_auth_pass }}"
