@@ -44,6 +44,7 @@ Common edits:
 | Add/remove a consumer alias | that entry's `stable_aliases` |
 | Add an OpenRouter model | one registry entry + seed its `key_field` |
 | Retire a model | `enabled: false` (or delete the entry) |
+| Enable/disable the cluster fallback | `llm_router_cluster_leg_available` **and** the cluster entry's `servable`, together |
 
 ## Tiers (one proxy, two backends)
 

@@ -417,6 +417,40 @@ llm_router_model_group_aliases: >-
           | zip(llm_router_alias_pairs | map(attribute=0)
                 | map(attribute='client_model_id'))) }}
 
+# --- Cluster leg availability -------------------------------------------------
+# Nothing in this repo (nor anything tofu-proxmox publishes) reports whether
+# the two-Mac JACCL cluster leg is actually reachable right now — the closest
+# thing, llm_router_cluster_port, is a static port constant that exists
+# whether or not anything is listening behind it. Until a real signal exists,
+# this is the single explicit switch every cluster-dependent decision below
+# reads, so there is exactly one place to flip rather than several that can
+# drift apart.
+#
+# Default false: both hosts have programs.mlx.clusterMode.enable = false,
+# committed in dryvist/nix-darwin (lib/hosts/mac-studio.nix — coordinator —
+# and macbook-m4.nix — worker) since 2026-08-05, because the Thunderbolt
+# interconnect between them is physically disconnected. With clusterMode off,
+# the gate's :11440 site reverse-proxies to nothing, so anything routed at it
+# 502s unconditionally, not intermittently.
+#
+# Flip to true only once BOTH are true, and flip back the moment either stops
+# being true:
+#   1. clusterMode.enable = true on both mac-studio.nix and macbook-m4.nix
+#      (the TB cable is reconnected and cluster mode is re-enabled on both
+#      hosts).
+#   2. A cluster window is actually up (mlx-lm rank 0 is answering behind the
+#      gate's cluster TLS site).
+# Flipping this also requires flipping the GLM-4.7 registry entry's
+# `servable` back to true in llm-models.yml — tasks/assert-cluster-leg.yml
+# fails the converge if only one of the two moves, which is deliberate: see
+# that file for why.
+#
+# If a live signal for either condition becomes available (a published tofu
+# constant, a health-check fact), point this at that instead of a
+# manually-set boolean — this default-off toggle is the fallback, not the
+# destination.
+llm_router_cluster_leg_available: false
+
 # --- hermes-default automatic failover across the cluster + standalone gates -
 # The cluster and standalone backends are mutually exclusive (see the model_list
 # comment above): whichever is up, hermes-default must answer from it, and the
@@ -447,8 +481,16 @@ llm_router_model_group_aliases: >-
 # confirms this: litellm/proxy/route_llm_request.py dispatches on
 # `data["model"] in llm_router.model_group_alias` without ever rewriting
 # data["model"]. A fallback keyed on the resolved primary id would never fire.
-llm_router_hermes_default_fallback_chain:
-  - "{{ llm_router_cluster_model }}"
+#
+# The chain tracks llm_router_cluster_leg_available rather than asserting the
+# cluster model unconditionally: with the cluster leg down (the default),
+# this resolves to an empty list, config.yaml.j2 omits the `fallbacks:` key
+# entirely, and a failed primary surfaces its real error instead of taking a
+# guaranteed-502 detour through a target that cannot answer. Known cost of
+# the old unconditional chain, measured 2026-08-02..08-05: 720 gate 5xx
+# reached callers unretried as "Error doing the fallback: BadGatewayError".
+llm_router_hermes_default_fallback_chain: >-
+  {{ [llm_router_cluster_model] if llm_router_cluster_leg_available else [] }}
 # Background health checks send REAL test requests to every deployment — on the
 # llama-swap fast tier each probe spawns the target model, and with 3 routers
 # probing every model this both churns VRAM constantly and (pre swap-groups)

@@ -1,0 +1,109 @@
+---
+# Pins the cluster-leg reachability guard from
+# roles/llm_router/tasks/assert-cluster-leg.yml.
+#
+# WHY THIS TEST EXISTS. llm-models.yml's `servable` field is a manually
+# asserted claim, never derived from or validated against anything — that is
+# what let the GLM-4.7 cluster entry stay marked servable: true for a month
+# after both hosts' clusterMode.enable went false on 2026-08-05, so every
+# fallback attempt against it was a guaranteed 502. A registry entry alone
+# proves nothing about this guard: it has to fail loudly the moment a
+# cluster-tier entry claims servable: true while
+# llm_router_cluster_leg_available says the leg is down, not just render a
+# config that happens to still look fine.
+#
+# llm_router_cluster_leg_available is overridden with set_fact throughout,
+# never a plain vars: block on the import_tasks call — "Load the role
+# defaults as they ship" loads that variable's own false default via
+# include_vars, which outranks both play vars and task vars of the same
+# name (Ansible variable precedence), so anything weaker gets silently
+# clobbered back to false. set_fact is the lowest tier that reliably wins.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_cluster_leg_guard.yml -i localhost, -c local
+- name: Verify the cluster-leg reachability guard and its failure path
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main.yml"
+
+    # --- 1. Today's shipped state: leg down, registry agrees (servable: false) ---
+    - name: Assert the guard passes against the real llm-models.yml with the leg unavailable
+      block:
+        - name: Load the fabric model registry the way the converge does
+          ansible.builtin.include_role:
+            name: llm_router
+            tasks_from: registry.yml
+
+        - name: Force the cluster leg unavailable for this scenario
+          ansible.builtin.set_fact:
+            llm_router_cluster_leg_available: false
+
+        - name: Import the cluster-leg guard
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-cluster-leg.yml"
+      rescue:
+        - name: Fail because the shipped registry does not agree with an unavailable leg
+          ansible.builtin.fail:
+            msg: >-
+              The guard rejected the repo's own committed state
+              (llm_router_cluster_leg_available: false). This means the
+              GLM-4.7 entry in llm-models.yml has drifted back to
+              servable: true without llm_router_cluster_leg_available also
+              being flipped true — fix llm-models.yml, not this test.
+
+    # --- 2. The drift the guard exists to catch: servable true, leg down ---
+    - name: "Prove a stale servable: true fails the guard when the leg is unavailable"
+      block:
+        - name: "Simulate a registry where the cluster entry still claims servable: true"
+          ansible.builtin.set_fact:
+            llm_router_registry_enabled:
+              - client_model_id: mlx-community/GLM-4.7-REAP-50-mxfp4
+                serving_role: cluster
+                servable: true
+
+        - name: Force the cluster leg unavailable for this scenario
+          ansible.builtin.set_fact:
+            llm_router_cluster_leg_available: false
+
+        - name: Import the cluster-leg guard
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-cluster-leg.yml"
+
+        - name: "Fail because the guard admitted a stale servable: true"
+          ansible.builtin.fail:
+            msg: >-
+              tasks/assert-cluster-leg.yml PASSED with a cluster-tier entry
+              claiming servable: true while llm_router_cluster_leg_available
+              is false. That guard is the only thing standing between the
+              registry silently drifting from what the role believes is
+              reachable — exactly the bug that kept GLM-4.7 advertised for a
+              month.
+      rescue:
+        - name: Confirm the guard failed for the servable/reachable drift specifically
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'Servable/reachable drift' in (ansible_failed_result.msg | default(''))"
+              - "'GLM-4.7' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              The guard failed, but not for the reason expected — got:
+              {{ ansible_failed_result.msg | default('(no message)') }}
+            success_msg: "Guard correctly rejects servable: true with the cluster leg unavailable."
+
+    # --- 3. The paired state that must pass: servable: true, leg available ---
+    - name: Simulate a registry where servable true is paired with an available leg
+      ansible.builtin.set_fact:
+        llm_router_registry_enabled:
+          - client_model_id: mlx-community/GLM-4.7-REAP-50-mxfp4
+            serving_role: cluster
+            servable: true
+
+    - name: Force the cluster leg available for this scenario
+      ansible.builtin.set_fact:
+        llm_router_cluster_leg_available: true
+
+    - name: Import the cluster-leg guard
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-cluster-leg.yml"
