@@ -1,9 +1,24 @@
 # {{ ansible_managed }}
+# Ship stdout/stderr to journald with tag `agentgateway` instead of the
+# default json-file driver, which stays on local disk and never reaches the
+# SIEM. Tag is a bare identifier (no ':' or whitespace) so rsyslog's
+# syslog-header regex extracts it as $programname. The host's rsyslog
+# forwarder (ansible-proxmox-apps) matches on that tag and forwards it, on
+# this stack's own port (tofu-proxmox constants), to this stack's own
+# dedicated Splunk index — one index per service, not a shared one. Shared by
+# every service in this stack (gateway + MCP sidecars) — one tag, one index,
+# for the whole stack.
+x-logging: &agentgateway_docker_logging
+  driver: journald
+  options:
+    tag: agentgateway
+
 services:
   agentgateway:
     image: {{ agentgateway_docker_image }}
     container_name: {{ agentgateway_docker_container_name }}
     restart: {{ agentgateway_docker_restart_policy }}
+    logging: *agentgateway_docker_logging
     command: ["-f", "/config.yaml"]
     ports:
       - "{{ agentgateway_docker_proxy_port }}:{{ agentgateway_docker_proxy_port }}"
@@ -21,6 +36,7 @@ services:
     image: {{ agentgateway_docker_vikunja_mcp_image }}
     container_name: mcp-vikunja
     restart: {{ agentgateway_docker_restart_policy }}
+    logging: *agentgateway_docker_logging
     command:
       - "--stdio"
       - "npx -y @democratize-technology/vikunja-mcp@{{ agentgateway_docker_vikunja_mcp_version }}"
@@ -43,6 +59,7 @@ services:
     image: {{ agentgateway_docker_qdrant_mcp_image }}
     container_name: mcp-nautobot
     restart: {{ agentgateway_docker_restart_policy }}
+    logging: *agentgateway_docker_logging
     entrypoint: ["uv"]
     command:
       - "run"
@@ -67,6 +84,7 @@ services:
     image: {{ agentgateway_docker_qdrant_mcp_image }}
     container_name: mcp-qdrant
     restart: {{ agentgateway_docker_restart_policy }}
+    logging: *agentgateway_docker_logging
     entrypoint: ["uvx"]
     command:
       - "mcp-server-qdrant=={{ agentgateway_docker_qdrant_mcp_version }}"
@@ -89,6 +107,7 @@ services:
     image: {{ agentgateway_docker_qdrant_mcp_image }}
     container_name: mcp-docs
     restart: {{ agentgateway_docker_restart_policy }}
+    logging: *agentgateway_docker_logging
     entrypoint: ["uv"]
     command:
       - "run"

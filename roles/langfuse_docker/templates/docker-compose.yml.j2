@@ -9,10 +9,25 @@
 #
 # OTLP trace ingest is served by langfuse-web at :3000/api/public/otel; no
 # extra service or env is needed for OpenTelemetry clients.
+#
+# Ship stdout/stderr to journald with tag `langfuse` instead of the default
+# json-file driver, which stays on local disk and never reaches the SIEM.
+# Tag is a bare identifier (no ':' or whitespace) so rsyslog's syslog-header
+# regex extracts it as $programname. The host's rsyslog forwarder
+# (ansible-proxmox-apps) matches on that tag and forwards it, on this
+# stack's own port (tofu-proxmox constants), to this stack's own dedicated
+# Splunk index — one index per service, not a shared one. Shared by every
+# service in this stack — one tag, one index, for the whole stack.
+x-logging: &langfuse_docker_logging
+  driver: journald
+  options:
+    tag: langfuse
+
 services:
   {{ langfuse_docker_postgres_service }}:
     image: {{ langfuse_docker_postgres_image }}
     restart: {{ langfuse_docker_restart_policy }}
+    logging: *langfuse_docker_logging
     environment:
       POSTGRES_USER: {{ langfuse_docker_postgres_user }}
       POSTGRES_PASSWORD: "{{ langfuse_docker_postgres_password }}"
@@ -30,6 +45,7 @@ services:
   {{ langfuse_docker_clickhouse_service }}:
     image: {{ langfuse_docker_clickhouse_image }}
     restart: {{ langfuse_docker_restart_policy }}
+    logging: *langfuse_docker_logging
     user: "{{ langfuse_docker_clickhouse_uid }}:{{ langfuse_docker_clickhouse_uid }}"
     environment:
       CLICKHOUSE_DB: {{ langfuse_docker_clickhouse_db }}
@@ -48,6 +64,7 @@ services:
   {{ langfuse_docker_redis_service }}:
     image: {{ langfuse_docker_redis_image }}
     restart: {{ langfuse_docker_restart_policy }}
+    logging: *langfuse_docker_logging
     command: >-
       --requirepass {{ langfuse_docker_redis_auth }}
       --maxmemory-policy noeviction
@@ -63,6 +80,7 @@ services:
     image: {{ langfuse_docker_worker_image }}
     container_name: {{ langfuse_docker_worker_container_name }}
     restart: {{ langfuse_docker_restart_policy }}
+    logging: *langfuse_docker_logging
     depends_on:
       {{ langfuse_docker_postgres_service }}:
         condition: service_healthy
@@ -114,6 +132,7 @@ services:
     image: {{ langfuse_docker_web_image }}
     container_name: {{ langfuse_docker_container_name }}
     restart: {{ langfuse_docker_restart_policy }}
+    logging: *langfuse_docker_logging
     depends_on:
       {{ langfuse_docker_postgres_service }}:
         condition: service_healthy

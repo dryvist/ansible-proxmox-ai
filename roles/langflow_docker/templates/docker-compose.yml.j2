@@ -1,9 +1,24 @@
 ---
 # Self-hosted LangFlow (postgres + app) via Docker Compose.
 # Rendered by ansible-proxmox-apps/roles/langflow_docker.
+#
+# Ship stdout/stderr to journald with tag `langflow` instead of the default
+# json-file driver, which stays on local disk and never reaches the SIEM.
+# Tag is a bare identifier (no ':' or whitespace) so rsyslog's syslog-header
+# regex extracts it as $programname. The host's rsyslog forwarder
+# (ansible-proxmox-apps) matches on that tag and forwards it, on this
+# stack's own port (tofu-proxmox constants), to this stack's own dedicated
+# Splunk index — one index per service, not a shared one. Shared by both
+# services in this stack — one tag, one index, for the whole stack.
+x-logging: &langflow_docker_logging
+  driver: journald
+  options:
+    tag: langflow
+
 services:
   {{ langflow_docker_db_service }}:
     image: {{ langflow_docker_postgres_image }}
+    logging: *langflow_docker_logging
     environment:
       POSTGRES_USER: {{ langflow_docker_db_user }}
       POSTGRES_PASSWORD: "{{ langflow_docker_db_password }}"
@@ -15,6 +30,7 @@ services:
   {{ langflow_docker_app_service }}:
     image: {{ langflow_docker_app_image }}
     container_name: "{{ langflow_docker_container_name }}"
+    logging: *langflow_docker_logging
     depends_on:
       - {{ langflow_docker_db_service }}
     environment:
