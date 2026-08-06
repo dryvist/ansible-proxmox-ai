@@ -330,7 +330,8 @@ def overrun_lines(rows, now_epoch):
     return out
 
 
-def stall_alarm(board, run_rows, prior_ticks, threshold, max_in_progress):
+def stall_alarm(board, run_rows, running_rows, now_epoch, prior_ticks, threshold,
+                max_in_progress):
     """(new_streak, alarm_line_or_None) — alarm (a): the board is not draining.
 
     NOT "nothing is running" — a single wedged run at max_in_progress=1 shows
@@ -355,6 +356,11 @@ def stall_alarm(board, run_rows, prior_ticks, threshold, max_in_progress):
     the CURRENT running count, useful context either way) and stops there;
     when it is not, it says the cause is undetermined and names the live
     possibilities rather than guessing.
+
+    `running_rows`/`now_epoch` are the same RUNNING_SQL rows overrun_lines()
+    already reaches — reused here (no new query) to name how long the oldest
+    running occupant has been going, which is what separates "legitimately
+    long task" from "wedged" at a glance.
     """
     ready, running = board.get("ready", 0), board.get("running", 0)
     if not (ready > 0 and not run_rows):
@@ -368,9 +374,11 @@ def stall_alarm(board, run_rows, prior_ticks, threshold, max_in_progress):
                  "genuine worker spawn failure")
     else:
         cause = f"in_progress {running}/{max_in_progress} (cap)"
+    started = [r["run_started"] for r in running_rows if r["run_started"]]
+    age_note = f", oldest running {fmt_dur(now_epoch - min(started))}" if started else ""
     line = (f":rotating_light: Stalled board — {ready} ready card(s), {running} "
-            f"running but nothing finished, for {streak} consecutive digest "
-            f"ticks. {cause}.")
+            f"running but nothing finished{age_note}, for {streak} consecutive "
+            f"digest ticks. {cause}.")
     return streak, line
 
 
@@ -527,8 +535,8 @@ def main():
         finally:
             conn.close()
 
-        new_stall, stall_line = stall_alarm(board, run_rows, stall_ticks_prior,
-                                            STALL_TICKS_THRESHOLD,
+        new_stall, stall_line = stall_alarm(board, run_rows, running_rows, now_epoch,
+                                            stall_ticks_prior, STALL_TICKS_THRESHOLD,
                                             read_max_in_progress())
         timeout_line = timeout_alarm(run_rows, TIMEOUT_RATE_THRESHOLD)
         new_blocked, blocked_line = blocked_growth_alarm(
