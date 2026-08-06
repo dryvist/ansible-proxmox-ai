@@ -390,9 +390,13 @@ def test_no_reconciled_cron_name_is_a_substring_of_another_job():
     direct = {job["name"] for job in defaults["hermes_agent_direct_cron_jobs"]}
     enqueuers = {card["job"] + "-enqueue" for card in defaults.get("hermes_agent_kanban_cards", [])}
     triage = {job["name"] for job in defaults["hermes_agent_triage_jobs"]}
+    # hermes_agent_kanban_safety_net_cron_name is DELETED (native-cron
+    # reframe removed the whole safety-net job); 'kanban-enqueue-safety-net'
+    # survives only as a literal in hermes_agent_superseded_kanban_enqueuer_cron_names
+    # (a name to remove-if-present, never reconciled), so it belongs in the
+    # universe set below, not in the reconciled set here.
     scripts = triage | {
         defaults["hermes_agent_splunk_status_digest_cron_name"],
-        defaults["hermes_agent_kanban_safety_net_cron_name"],
         defaults["hermes_agent_kanban_digest_cron_name"],
     }
     reconciled = direct | enqueuers | scripts

@@ -6,27 +6,26 @@
 # remove+recreate (the CLI's `cron edit` flag set for script jobs is not relied
 # on — recreate re-pins schedule/selector/script deterministically).
 #
-# item fields: schedule, enabled, and EITHER {job} (name/selector derived) OR
-# explicit {name, selector}. script defaults to the shared enqueuer script.
+# item fields: name, schedule, enabled, script, deliver. Every call site (the
+# script-fed Splunk/kanban digests, native-cron reframe) passes these
+# explicitly — there is no longer a Kanban-card-derived {job} shape or a
+# shared default script, both retired with the per-card enqueuer.
 #
-# A job is ACTIVE iff its capability gate (item.enabled) is true AND it is not on
-# the throughput-throttle pause list. A paused/disabled job is SKIPPED entirely
-# here — no create, no remove — so a converge leaves whatever state the operator
-# last set it to (disable-don't-delete) and never re-enables a throttled job.
-- name: "Enqueuer cron | Effective-active for {{ item.name if item.name is defined else item.job ~ '-enqueue' }}"
+# A job is ACTIVE iff its capability gate (item.enabled) is true. A
+# disabled job is SKIPPED entirely here — no create, no remove — so a
+# converge leaves whatever state the operator last set it to
+# (disable-don't-delete).
+- name: "Enqueuer cron | Effective-active for {{ item.name }}"
   ansible.builtin.set_fact:
-    hermes_agent_enqueuer_active: >-
-      {{ (item.enabled | default(true) | bool)
-         and ((item.job | default(item.name)) not in hermes_agent_kanban_paused_jobs) }}
+    hermes_agent_enqueuer_active: "{{ item.enabled | default(true) | bool }}"
 
-- name: "Enqueuer cron | Resolve fields for {{ item.name if item.name is defined else item.job ~ '-enqueue' }}"
+- name: "Enqueuer cron | Resolve fields for {{ item.name }}"
   ansible.builtin.set_fact:
-    hermes_agent_enqueuer_name: "{{ item.name if item.name is defined else item.job ~ '-enqueue' }}"
-    # Selector is the script's positional arg. Enqueuers pass their workload
-    # (item.job); a script that takes no positional (e.g. the status digest)
-    # supplies neither selector nor job and gets an empty selector (omitted below).
-    hermes_agent_enqueuer_selector: "{{ item.selector | default(item.job | default('')) }}"
-    hermes_agent_enqueuer_script: "{{ item.script | default(hermes_agent_kanban_enqueue_script_name) }}"
+    hermes_agent_enqueuer_name: "{{ item.name }}"
+    # Selector is the script's positional arg; empty for scripts that take none
+    # (e.g. the status digest).
+    hermes_agent_enqueuer_selector: "{{ item.selector | default('') }}"
+    hermes_agent_enqueuer_script: "{{ item.script }}"
     # Delivery target: enqueuers keep stdout empty and deliver 'local'; a digest
     # script delivers its stdout verbatim to e.g. slack:<channel>.
     hermes_agent_enqueuer_deliver: "{{ item.deliver | default('local') }}"

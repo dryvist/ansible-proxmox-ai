@@ -278,17 +278,6 @@ def _goal_fields(conn: sqlite3.Connection) -> tuple[int, int | None]:
     return row["goal_mode"], row["goal_max_turns"]
 
 
-def _render_reviewer_prompt(goal_mode: bool) -> str:
-    defaults = yaml.safe_load((ROLE_ROOT / "defaults" / "main.yml").read_text())
-    environment = Environment(autoescape=False)
-    environment.filters["bool"] = bool
-    return environment.from_string(defaults["hermes_agent_reviewer_card_prompt"]).render(
-        hermes_agent_kanban_goal_mode=goal_mode,
-        hermes_agent_kanban_goal_max_turns=3,
-        hermes_agent_slack_hermes_all_channel="C00000000",
-    )
-
-
 def _source_postconditions(
     completion_source: str,
     reconcile_source: str,
@@ -589,41 +578,45 @@ def test_idempotent_create_does_not_mutate_terminal_history(status: str) -> None
     assert _goal_fields(conn) == (0, 5)
 
 
-def test_enqueuer_goal_flags_follow_the_role_toggle() -> None:
-    enqueuer = (ROLE_ROOT / "templates" / "kanban-enqueue-recurring.sh.j2").read_text()
-    # One budget for the whole board, no per-card fallback expression. The loop
-    # re-sends its accumulated conversation each turn, so the budget prices
-    # prefill quadratically against a serving tier that admits one request at a
-    # time — and it is spent only by cards that are already failing, which is
-    # when that tier has least room. See hermes_agent_kanban_goal_max_turns.
-    assert (
-        "{% if hermes_agent_kanban_goal_mode | bool %} --goal --goal-max-turns "
-        "{{ hermes_agent_kanban_goal_max_turns }}{% endif %}"
-        in enqueuer
+# test_enqueuer_goal_flags_follow_the_role_toggle DELETED (native-cron
+# reframe): kanban-enqueue-recurring.sh.j2 is gone. The one surviving Kanban
+# card's crontab entry (reconcile_kanban_card_cron.yml) calls
+# `hermes kanban create` with no --goal/--goal-max-turns flags at all — goal
+# mode on a kanban task is set later, by the reviewer job filing a follow-up
+# (still governed by hermes_agent_kanban_goal_mode, asserted elsewhere in this
+# file against the Python patches, not against a template that no longer
+# exists). kanban-card-body.md.j2 also carries no per-card `channel:`
+# override — the report destination is hardcoded to
+# hermes_agent_slack_hermes_all_channel (see test_alert_routing.py).
+#
+# EVIDENCE CONTRACT / kind=needs_input wording lives in kanban-card-body.md.j2
+# now; pinned in the file's own read below.
+def test_the_kanban_card_body_still_carries_the_evidence_and_block_contract() -> None:
+    body = (ROLE_ROOT / "templates" / "kanban-card-body.md.j2").read_text()
+    assert "kind=needs_input" in body
+    assert "status=pending" not in body
+    assert "hermes send --to slack:{{ hermes_agent_slack_hermes_all_channel }}" in body
+
+
+def test_reviewer_prompt_carries_no_leftover_self_perpetuation() -> None:
+    """The native-cron redesign made the reviewer's own next-occurrence
+    pre-create (create the next slot blocked, have the enqueuer unblock it)
+    unnecessary: the crontab/cron entry is now the time gate for every job,
+    reviewer included — it is a plain hermes_agent_direct_cron_jobs entry, not
+    a kanban card. Pins that the chain-continuation step actually left the
+    prompt, rather than merely stopped being tested: no goal_mode Jinja
+    conditional exists in it at all any more, so it renders identically
+    regardless of hermes_agent_kanban_goal_mode.
+    """
+    defaults = yaml.safe_load((ROLE_ROOT / "defaults" / "main.yml").read_text())
+    prompt = str(defaults["hermes_agent_reviewer_card_prompt"])
+    assert "{%" not in prompt, "no Jinja conditionals should remain in the reviewer prompt"
+    assert "initial_status=blocked" not in prompt
+    assert "goal_mode" not in prompt
+    assert "bounded goal loop" not in prompt
+    assert prompt.strip().endswith(
+        'Save the updated gap fingerprint back to "review-last".'
     )
-    assert "card.goal_max_turns" not in enqueuer
-    # The report destination is per-card as of the four-channel split: cards opt
-    # in with `channel:`, everything else falls back to the work channel. Routing
-    # itself is pinned in test_alert_routing.py; what matters here is that the
-    # footer still tells the worker to send exactly one report via the native
-    # sender, with the fallback intact.
-    assert (
-        "hermes send --to slack:"
-        "{{ card.channel | default(hermes_agent_slack_hermes_all_channel, true) }}"
-    ) in enqueuer
-    assert "kind=needs_input" in enqueuer
-    assert "status=pending" not in enqueuer
-
-
-def test_reviewer_child_goal_fields_follow_the_role_toggle() -> None:
-    enabled = _render_reviewer_prompt(True)
-    disabled = _render_reviewer_prompt(False)
-
-    assert "initial_status=blocked, goal_mode=true, and goal_max_turns=3" in enabled
-    assert "preserves this card's bounded goal loop" in enabled
-    assert "goal_mode=true" not in disabled
-    assert "goal_max_turns=" not in disabled
-    assert "bounded goal loop" not in disabled
 
 
 def test_hermes_inference_paths_use_the_declared_alias() -> None:

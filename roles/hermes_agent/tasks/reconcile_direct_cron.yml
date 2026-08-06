@@ -6,16 +6,19 @@
 # `cron edit` is not relied on — recreate re-pins schedule/prompt/skill/deliver
 # deterministically).
 #
-# item fields: name, schedule, prompt_file, skill (may be ""), enabled.
-# The Slack channel is role-global (hermes_agent_digest_slack_channel); the
-# caller only enters this loop once it has asserted the channel is non-empty.
+# item fields: name, schedule, EITHER prompt_file (loaded from the pinned
+# catalog) OR prompt_var (name of an already-resolved var, inline or
+# catalog-preloaded — same lookup('vars', ...) pattern the retired kanban card
+# table used), skill (may be ""), enabled, and an optional deliver override
+# (defaults to the shared digest channel).
 - name: "Direct cron | Load prompt + deliver target for {{ item.name }}"
   ansible.builtin.set_fact:
     hermes_agent_direct_prompt: >-
-      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
-         ~ item.prompt_file, rstrip=false)
+      {{ (lookup('vars', item.prompt_var) if item.prompt_var is defined else
+          lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+            ~ item.prompt_file, rstrip=false))
          | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
-    hermes_agent_direct_deliver: "slack:{{ hermes_agent_digest_slack_channel }}"
+    hermes_agent_direct_deliver: "{{ item.deliver | default('slack:' ~ hermes_agent_digest_slack_channel) }}"
   when: item.enabled | bool
 
 - name: "Direct cron | Build create argv for {{ item.name }}"

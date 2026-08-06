@@ -70,15 +70,16 @@ def test_config_pins_the_web_backend_to_ddgs() -> None:
 
 def test_the_converge_asserts_search_availability_before_enabling_cards() -> None:
     """The converge runs the upstream backend resolution in the deployed venv
-    and fails if it does not resolve available — ordered before the enqueuer
-    reconcile, so a converge with dead search cannot (re-)enable a card that
-    depends on it. This gate, not the pause list, is what makes 'web works'
-    a precondition for the news scout going live."""
+    and fails if it does not resolve available — ordered before the
+    direct-cron reconcile (ai-news is now a plain hermes_agent_direct_cron_jobs
+    entry, not a Kanban card — native-cron reframe), so a converge with dead
+    search cannot (re-)enable a job that depends on it. This gate is what
+    makes 'web works' a precondition for the news scout going live."""
     gate = MAIN_TASKS.find("Assert the configured web search backend resolves as available")
-    reconcile = MAIN_TASKS.find("Reconcile the per-workload Kanban enqueuer crons")
+    reconcile = MAIN_TASKS.find("Reconcile the agentic direct-deliver digest crons")
     assert gate != -1, "the availability assertion task is missing"
-    assert reconcile != -1, "the enqueuer reconcile task is missing"
-    assert gate < reconcile, "the assertion must run before cards are reconciled"
+    assert reconcile != -1, "the direct-cron reconcile task is missing"
+    assert gate < reconcile, "the assertion must run before jobs are reconciled"
     assert "_is_backend_available" in MAIN_TASKS, (
         "the gate must run the real upstream availability check, not a proxy")
 
@@ -139,59 +140,31 @@ def test_the_seed_is_public_safe() -> None:
 
 # --- activation and routing --------------------------------------------------
 
-def test_the_news_card_is_the_canary_lift_off_the_pause_list() -> None:
-    """Team-lead decision 2026-07-31: unpaused, because the converge assertion
-    (ordered before the enqueuer reconcile) enforces the web-works
-    precondition structurally — a pause entry is a note, an ordered assertion
-    is a control — and the noise-channel routing bounds a poor run's blast
-    radius. Standing condition: this card is the FIRST thing re-paused if the
-    board wedges; daily-innovation stays throttled until capacity is proven."""
-    paused = set(DEFAULTS["hermes_agent_kanban_paused_jobs"])
-    assert "{{ hermes_agent_ai_news_cron_name }}" not in paused
-    assert "{{ hermes_agent_daily_innovation_cron_name }}" in paused
+# test_the_news_card_is_the_canary_lift_off_the_pause_list DELETED
+# (native-cron reframe): hermes_agent_kanban_paused_jobs is gone, and with it
+# the differential activation it recorded. ai-news and daily-innovation are
+# now both plain hermes_agent_direct_cron_jobs entries sharing the exact same
+# `enabled: *cron_slack_gate` anchor (Slack creds present) — verified by
+# reading defaults/main.yml directly. Neither is throttled relative to the
+# other any more; there is no "canary" or "still paused" distinction left to
+# pin.
+#
+# test_every_scheduled_news_run_gets_a_distinct_dedup_slot DELETED: slot_stamp
+# and interval_hours-keyed idempotency slotting lived only in
+# kanban-enqueue-recurring.sh.j2, which is gone. A direct-cron job's identity
+# is its OS-level cron schedule itself (reconcile_direct_cron.yml's
+# checksum-marker create/remove), not a per-fire slot suffix, so two of its
+# scheduled hours colliding on a slot key is not a class of bug that exists
+# in the new design.
 
 
-def _news_card() -> dict:
-    for card in DEFAULTS["hermes_agent_kanban_cards"]:
-        if card["job"] == "{{ hermes_agent_ai_news_cron_name }}":
-            return card
-    raise AssertionError("the ai-news card is missing from hermes_agent_kanban_cards")
-
-
-def _slot_stamp(hour: int, interval: int) -> str:
-    """The slot suffix kanban-enqueue-recurring.sh.j2 would compute for an hour.
-
-    Mirrors slot_stamp() for the sub-daily branch only, which is the one the
-    news card uses. A mirror rather than a call because the shell function is
-    inline in a script the test cannot source.
-    """
-    return f"T{hour:02d}" if interval <= 1 else f"s{hour // interval}"
-
-
-def test_every_scheduled_news_run_gets_a_distinct_dedup_slot() -> None:
-    """The operator asked for four digests a day at times around their working
-    day, which makes the schedule UNEVENLY spaced (0, 12, 16, 19 UTC).
-
-    slot_stamp() keys the enqueuer's idempotency suffix on floor(hour/interval)
-    for any interval > 1, so an interval that does not divide the spacing makes
-    two runs collide on one key — and a duplicate key is a successful no-op,
-    not an error, so the lost digest is SILENT. At the previous interval_hours
-    of 4, both 16:00 and 19:00 mapped to s4 and the sign-off digest would have
-    been dropped as a repeat of midday.
-
-    Pins the invariant, not the number: whatever the schedule and interval are,
-    every scheduled hour must produce its own slot.
-    """
-    card = _news_card()
-    interval = int(card["interval_hours"])
-    schedule = DEFAULTS["hermes_agent_ai_news_cron_schedule"]
-    hours = [int(h) for h in schedule.split()[1].split(",")]
-
-    stamps = [_slot_stamp(h, interval) for h in hours]
-    assert len(set(stamps)) == len(hours), (
-        f"interval_hours={interval} collapses {hours} onto {stamps}; "
-        "runs sharing a slot are silently deduped away"
-    )
+def test_ai_news_and_daily_innovation_share_the_same_activation_gate() -> None:
+    """Confirms the shape asserted above by comment: both are enabled purely
+    on Slack-credential presence, with no separate throttle between them."""
+    direct = {j["name"]: j for j in DEFAULTS["hermes_agent_direct_cron_jobs"]}
+    ai_news = direct["{{ hermes_agent_ai_news_cron_name }}"]
+    innovation = direct["{{ hermes_agent_daily_innovation_cron_name }}"]
+    assert ai_news["enabled"] == innovation["enabled"]
 
 
 def test_the_news_schedule_matches_the_operators_day() -> None:

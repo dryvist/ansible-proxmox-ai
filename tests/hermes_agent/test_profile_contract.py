@@ -194,11 +194,15 @@ def test_every_profile_has_a_soul_addendum_template_on_disk() -> None:
         assert addendum.is_file(), f"missing {addendum}"
 
 
-def test_profiles_tasks_are_wired_before_the_enqueuer_reconcile() -> None:
+def test_profiles_tasks_are_wired_before_the_kanban_card_reconcile() -> None:
+    """Native-cron reframe: only docs-sync is still a Kanban card (its
+    `assignee` needs a profile to already exist), so the task it must precede
+    is now "Reconcile the docs-sync Kanban card cron", not the retired
+    per-workload enqueuer reconcile."""
     tasks = (ROLE_ROOT / "tasks" / "main.yml").read_text()
     profiles_idx = tasks.index("Reconcile named Hermes operating profiles")
-    enqueuer_idx = tasks.index("Reconcile the per-workload Kanban enqueuer crons")
-    assert profiles_idx < enqueuer_idx
+    kanban_idx = tasks.index("Reconcile the docs-sync Kanban card cron")
+    assert profiles_idx < kanban_idx
 
 
 def test_llm_wiki_skill_is_materializable_into_any_profile_that_opts_in() -> None:

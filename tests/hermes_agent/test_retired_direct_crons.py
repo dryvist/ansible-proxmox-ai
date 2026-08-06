@@ -12,6 +12,7 @@ flag. This check makes that pairing mandatory instead of remembered.
 Runs bare (`python3 tests/hermes_agent/test_retired_direct_crons.py`) or under
 pytest.
 """
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -54,6 +55,15 @@ def test_every_disabled_direct_cron_has_a_recognised_pause_task():
                for job in jobs if isinstance(job, dict)
                for field in job
                if f"cron pause {{{{ item.{field} }}}}" in tasks}
+    # A third shape (native-cron reframe, "Pause the *-v2 crons the reframe
+    # replaces 1-for-1"): `cron pause {{ item }}` looped over a literal list
+    # of job-name strings, not a var or a dict field. Recognised the same
+    # proxy way — a bare `cron pause {{ item }}` line followed by its own
+    # `loop:` block of literal names.
+    bare_loop = re.search(
+        r"cron pause \{\{ item \}\}.*?\n\s*loop:\n((?:\s*-\s*\S+\n)+)", tasks, re.S)
+    if bare_loop:
+        paused |= {line.strip().lstrip("- ").strip() for line in bare_loop.group(1).splitlines()}
 
     missing = sorted(set(disabled) - paused)
     assert not missing, (
@@ -62,59 +72,36 @@ def test_every_disabled_direct_cron_has_a_recognised_pause_task():
         "already on the guest keeps firing until something pauses it.")
 
 
-def test_a_retirement_that_names_a_card_leaves_that_card_able_to_run():
-    """`replaced_by_card` must name a card that is enabled and NOT paused.
+# test_a_retirement_that_names_a_card_leaves_that_card_able_to_run DELETED
+# (native-cron reframe): `replaced_by_card` no longer exists anywhere in
+# hermes_agent_direct_cron_jobs — confirmed by grepping defaults/main.yml for
+# it (zero matches). Every retirement now that used to name a replacement
+# kanban card instead replaces one -v2 direct-cron entry with a bare-named
+# direct-cron entry of its own (see "Pause the *-v2 crons the reframe
+# replaces 1-for-1" in tasks/main.yml); only docs-sync is still an actual
+# Kanban card, and nothing retires in its favour. There is no
+# machine-checkable "names a card" pairing left to pin.
 
-    A paused job is skipped whole by reconcile_enqueuer_cron.yml AND rendered
-    out of kanban-enqueue-recurring.sh.j2, so its enqueuer cron — which keeps
-    running, because a paused job is never removed either — falls through to the
-    script's `*)` arm and logs "unknown selector". The cron fires, nothing is
-    created, and the board looks idle rather than broken.
 
-    Caught for real: `homelab-ai-fabric-status` was in that state (deployed
-    script carried one selector arm, last card created 2026-07-24T12) while its
-    `-v2` cron was being retired in favour of it. Retiring the cron without
-    unpausing the card would have taken the topic to zero coverage with nothing
-    in the repo saying so.
+def test_the_kanban_card_body_asks_for_a_full_report():
+    """The precondition for the one remaining Kanban card (docs-sync).
+
+    kanban-enqueue-recurring.sh.j2's shared footer is gone; the same
+    instruction now lives directly in kanban-card-body.md.j2, the body every
+    kanban card (just the one, now) is rendered from. While the old footer
+    asked for a one-line summary, switching a cron off silently downgraded
+    that topic from a report to a sentence — so the wording is load-bearing,
+    not cosmetic, and is checked here rather than remembered. The old
+    "post once, never twice" per-card opt-out is gone too: with only one
+    Kanban card left there is no second card sharing this body to double-post
+    against.
     """
-    defaults = load_defaults()
-    paused = set(defaults["hermes_agent_kanban_paused_jobs"])
-    cards = {card["job"]: card for card in defaults["hermes_agent_kanban_cards"]}
-
-    for job in defaults["hermes_agent_direct_cron_jobs"]:
-        card_ref = job.get("replaced_by_card")
-        if not card_ref:
-            continue
-        assert not job.get("enabled"), (
-            f"{job['name']} names a replacement card but is still enabled")
-        assert card_ref in cards, (
-            f"{job['name']} is replaced by {card_ref}, which is not a kanban card")
-        assert card_ref not in paused, (
-            f"{job['name']} is retired in favour of the {card_ref} card, but that "
-            "card is on hermes_agent_kanban_paused_jobs — its enqueuer would fire "
-            "into the script's unknown-selector arm and create nothing, leaving "
-            "the topic unreported by either path.")
-        assert cards[card_ref].get("enabled"), (
-            f"{card_ref} replaces {job['name']} but the card itself is disabled")
-
-
-def test_the_card_footer_asks_for_a_full_report():
-    """The precondition for every cadence retirement.
-
-    A `-v2` cron posts a full report; its card posts whatever the shared footer
-    asks for. While the footer asked for a one-line summary, switching a cron off
-    silently downgraded that topic from a report to a sentence — so the footer
-    wording is load-bearing, not cosmetic, and is checked here rather than
-    remembered.
-    """
-    enqueuer = (REPO_ROOT / "roles/hermes_agent/templates"
-                / "kanban-enqueue-recurring.sh.j2").read_text()
-    assert "deliver a FULL REPORT to Slack" in enqueuer
+    body = (REPO_ROOT / "roles/hermes_agent/templates"
+            / "kanban-card-body.md.j2").read_text()
+    assert "deliver a FULL REPORT to Slack" in body
     # kanban_complete's summary still has to be one line — the board digest
     # (kanban-digest.py) renders it as a single Slack bullet.
-    assert "ONE-LINE summary" in enqueuer
-    assert "post once, never twice" in enqueuer, (
-        "a card whose own prompt posts a report must not also post the footer's")
+    assert "ONE-LINE summary" in body
 
 
 if __name__ == "__main__":
