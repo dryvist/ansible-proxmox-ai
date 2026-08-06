@@ -114,6 +114,41 @@ def _reap(pid, signal_fn=None):
                 pass
     return killed
 '''
+PINNED_STALE_RECLAIM_TERMINATE_SOURCE = '''\
+def _reclaim(pid, signal_fn=None):
+    info = {"terminated": False, "sigkill": False}
+    kill = signal_fn if signal_fn is not None else (
+        os.kill if hasattr(os, "kill") else None
+    )
+    if kill is None:
+        return info
+
+    info["termination_attempted"] = True
+    try:
+        kill(int(pid), signal.SIGTERM)
+    except ProcessLookupError:
+        info["terminated"] = True
+        return info
+    except OSError:
+        return info
+
+    for _ in range(10):
+        if not _pid_alive(pid):
+            info["terminated"] = True
+            return info
+        time.sleep(0.5)
+
+    if _pid_alive(pid):
+        try:
+            _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+            kill(int(pid), _sigkill)
+            info["sigkill"] = True
+        except (ProcessLookupError, OSError):
+            return info
+
+    info["terminated"] = not _pid_alive(pid)
+    return info
+'''
 PINNED_WORKER_SPAWN_SOURCE = '''\
 def build_worker_argv(task, prompt):
     cmd = []
@@ -973,6 +1008,23 @@ def test_installed_source_postconditions_fail_closed() -> None:
         + worker_reap_source
     )
     reconcile_source += worker_reap_source
+
+    stale_reclaim_source = PINNED_STALE_RECLAIM_TERMINATE_SOURCE
+    for patch_name in (
+        "Patch Hermes stale-reclaim worker termination to verify PID safety before signaling",
+        "Patch Hermes stale-reclaim worker termination to signal the worker's process group",
+        "Patch Hermes stale-reclaim worker termination to escalate on the worker's process group",
+    ):
+        stale_reclaim_source = _apply_runtime_patch(patch_name, stale_reclaim_source)
+    # The blockinfile-inserted identity-check helper both the timeout-path
+    # and stale-reclaim-path signal sites call into.
+    stale_reclaim_source = (
+        _task(
+            "Patch Hermes worker-reap helper to verify PID identity before signaling"
+        )["ansible.builtin.blockinfile"]["block"]
+        + stale_reclaim_source
+    )
+    reconcile_source += stale_reclaim_source
     retry_source = "".join(
         (
             _apply_runtime_patch(
@@ -1142,6 +1194,16 @@ def test_installed_source_postconditions_fail_closed() -> None:
         _source_postconditions(
             completion_source,
             reconcile_source.replace(worker_reap_source, ""),
+            retry_source,
+            auxiliary_source,
+        )
+    )
+    # Stale-reclaim process-group guard dropped: reconcile_source reverts to
+    # not carrying the patched reclaim termination at all — must go red.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source.replace(stale_reclaim_source, ""),
             retry_source,
             auxiliary_source,
         )
