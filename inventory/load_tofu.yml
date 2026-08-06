@@ -98,7 +98,7 @@
             ) +
             (
               ['hermes_agent_group']
-              if 'hermes-agent' in (item.value.tags | default([]))
+              if (item.value.tags | default([])) | intersect(['hermes-agent', 'hermes-donna'])
               else []
             ) +
             (
@@ -196,6 +196,23 @@
         # omit it entirely) — both normalize to '' here.
         container_reserved_ip: "{{ item.value.reserved_ip | default('', true) }}"
         host_tags: "{{ item.value.tags | default([]) }}"
+        # Which Hermes agent this guest runs. The deployment.json tag is the
+        # single source of truth; roles/hermes_agent/defaults derives
+        # hermes_agent_id from this, and every shared-service handle (Slack app
+        # + channels, OpenBao domain, Vikunja project, memory bank, OTel name)
+        # derives from that in turn.
+        #
+        # Deliberately a SEPARATE name from hermes_agent_id, and this indirection
+        # is load-bearing: three operational playbooks (recover-hermes-queue,
+        # cluster-hermes-pause, cluster-hermes-resume) pull the seeded-cron list
+        # by loading the whole role defaults file through `vars_files`, and play
+        # vars_files OUTRANKS inventory host/group vars. Setting the identity
+        # under its own name — one the defaults file never defines — is what
+        # keeps those plays from silently reverting every guest to the first
+        # agent and reconciling it with the first agent's credentials.
+        hermes_agent_identity: >-
+          {{ 'donna' if 'hermes-donna' in (item.value.tags | default([]))
+             else 'hermes' }}
       vars:
         tofu_load_ssh_containers: [hermes-agent, llm-router-1, llm-router-2, llm-router-3]
       loop: "{{ tofu_data.containers | dict2items }}"
