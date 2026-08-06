@@ -1259,6 +1259,30 @@ hermes_agent_kanban_digest_enabled: >-
      and hermes_agent_slack_app_token | length > 0
      and hermes_agent_kanban_digest_channel | length > 0 }}
 
+# Board-health alarms the digest raises alongside its worker-failure split
+# above, routed to the same issues channel and never heartbeat-gated: a
+# stalled or growing-blocked board is exactly the failure mode that stays
+# invisible to every other health signal (kanban-digest.py.j2 for the logic).
+#
+# (a) Stalled board: ready cards sitting with zero running, sustained this
+# many CONSECUTIVE digest ticks. A single tick must never page — the
+# dispatcher's own cycle (kanban.dispatch_interval_seconds, config.yaml.j2,
+# 60s) can legitimately land between two digest samples. 3 ticks at the
+# current 15-minute soak cadence is 45 minutes; retune together with
+# hermes_agent_kanban_digest_interval_minutes if that moves to its intended
+# hourly steady state, or 3 ticks becomes 3 hours.
+hermes_agent_kanban_digest_stall_ticks_threshold: 3
+# (b) Task-timeout rate: task_runs.outcome == 'timed_out' rows counted in the
+# SAME window RUNS_SQL already fetches (no new query) — alarms once this many
+# land inside one digest run. 3 in a single window is well above incidental
+# noise without waiting for a long crash-loop to prove itself.
+hermes_agent_kanban_digest_timeout_threshold: 3
+# (c) Blocked-task growth: alarms on a RISING delta since the previous tick,
+# never the raw blocked count — a long-standing blocked card must not page
+# forever, only a fresh pile-up. 3 newly-blocked cards between two ticks is a
+# pile-up, not routine churn.
+hermes_agent_kanban_digest_blocked_growth_threshold: 3
+
 # --- Retire the agentic anomaly hunt (duplicative; nothing replaces it) -------
 # Unlike every other retirement here, this one has no replacement job: the
 # anomaly hunt's factual content is a strict subset of what splunk-status-digest

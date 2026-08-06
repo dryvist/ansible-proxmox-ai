@@ -37,6 +37,9 @@ TMP = Path(tempfile.mkdtemp(prefix="kanban-digest-selfcheck-"))
 # Stand-ins for the values Ansible renders from defaults/main.yml.
 FIXTURE_CONFIG = {
     "DB_PATH": str(TMP / "kanban.db"),
+    # No file at this path by default: read_max_in_progress() must degrade to
+    # None, never raise, when config.yaml has not been deployed yet.
+    "CONFIG_PATH": str(TMP / "config.yaml"),
     "STATE_PATH": str(TMP / "kanban-digest.json"),
     "TITLE": "Kanban Board Digest",
     "INTERVAL_MIN": 15,
@@ -46,6 +49,9 @@ FIXTURE_CONFIG = {
     # caller can fall back to inlining the failure lines.
     "HERMES_BIN": str(TMP / "no-such-hermes-binary"),
     "ISSUES_MARKER": "[ISSUES]",
+    "STALL_TICKS_THRESHOLD": 3,
+    "TIMEOUT_RATE_THRESHOLD": 3,
+    "BLOCKED_GROWTH_THRESHOLD": 3,
 }
 
 # Columns as they exist on the live board. Only what the digest reads.
