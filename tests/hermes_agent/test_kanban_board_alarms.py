@@ -77,17 +77,21 @@ DIGEST = load_digest_module()
 
 # --- alarm (a): stalled board — ready work, nothing running ------------------
 
+NO_RUNS = []
+A_FINISHED_RUN = [{"outcome": "completed"}]
+
+
 def test_stall_alarm_does_not_fire_before_the_threshold():
     board = {"ready": 2, "running": 0}
-    ticks, line = DIGEST.stall_alarm(board, 0, threshold=3, max_in_progress=1)
+    ticks, line = DIGEST.stall_alarm(board, NO_RUNS, 0, threshold=3, max_in_progress=1)
     assert (ticks, line) == (1, None)
-    ticks, line = DIGEST.stall_alarm(board, 1, threshold=3, max_in_progress=1)
+    ticks, line = DIGEST.stall_alarm(board, NO_RUNS, 1, threshold=3, max_in_progress=1)
     assert (ticks, line) == (2, None), "a single quiet tick must never page"
 
 
 def test_stall_alarm_fires_once_the_streak_reaches_the_threshold():
     board = {"ready": 2, "running": 0}
-    ticks, line = DIGEST.stall_alarm(board, 2, threshold=3, max_in_progress=1)
+    ticks, line = DIGEST.stall_alarm(board, NO_RUNS, 2, threshold=3, max_in_progress=1)
     assert ticks == 3
     assert line is not None
     assert "3 consecutive digest ticks" in line
@@ -97,18 +101,28 @@ def test_stall_alarm_fires_once_the_streak_reaches_the_threshold():
 def test_stall_alarm_repeats_every_tick_once_it_holds():
     """Like overrun_lines(), a stalled board is not stale news."""
     board = {"ready": 5, "running": 0}
-    ticks, line = DIGEST.stall_alarm(board, 6, threshold=3, max_in_progress=1)
+    ticks, line = DIGEST.stall_alarm(board, NO_RUNS, 6, threshold=3, max_in_progress=1)
     assert ticks == 7 and line is not None
 
 
-def test_stall_alarm_resets_on_any_running_worker():
+def test_stall_alarm_fires_on_a_run_wedged_at_the_cap_even_though_something_is_running():
+    """The bug this alarm exists to fix: at max_in_progress=1, a single wedged
+    run shows running=1 forever, so "running == 0" would never trigger. The
+    real incident had ready=17, running=1, zero finishes, for hours."""
+    board = {"ready": 17, "running": 1}
+    ticks, line = DIGEST.stall_alarm(board, NO_RUNS, 2, threshold=3, max_in_progress=1)
+    assert ticks == 3 and line is not None
+    assert "17 ready card(s)" in line and "1 running but nothing finished" in line
+
+
+def test_stall_alarm_resets_when_any_run_finishes_even_with_ready_work_left():
     board = {"ready": 5, "running": 1}
-    assert DIGEST.stall_alarm(board, 9, threshold=3, max_in_progress=1) == (0, None)
+    assert DIGEST.stall_alarm(board, A_FINISHED_RUN, 9, threshold=3, max_in_progress=1) == (0, None)
 
 
 def test_stall_alarm_resets_when_the_ready_queue_is_empty():
     board = {"ready": 0, "running": 0}
-    assert DIGEST.stall_alarm(board, 9, threshold=3, max_in_progress=1) == (0, None)
+    assert DIGEST.stall_alarm(board, NO_RUNS, 9, threshold=3, max_in_progress=1) == (0, None)
 
 
 def test_stall_alarm_with_a_readable_cap_states_the_fact_not_a_spawn_failure():
@@ -116,18 +130,25 @@ def test_stall_alarm_with_a_readable_cap_states_the_fact_not_a_spawn_failure():
     warning blamed venv/PATH/credentials when the real cause was a configured
     max_in_progress=1 cap. This alarm must never make that same leap."""
     board = {"ready": 3, "running": 0}
-    _, line = DIGEST.stall_alarm(board, 2, threshold=3, max_in_progress=1)
+    _, line = DIGEST.stall_alarm(board, NO_RUNS, 2, threshold=3, max_in_progress=1)
     assert "in_progress 0/1 (cap)" in line
     for misleading in ("spawn fail", "check profile health", "venv", "credentials", "PATH"):
         assert misleading.lower() not in line.lower(), f"must not imply {misleading!r}"
 
 
-def test_stall_alarm_with_an_unreadable_cap_names_both_possibilities():
+def test_stall_alarm_readable_cap_reports_the_actual_running_count_not_zero():
+    """The real incident's shape: running=1 at cap=1, nothing finishing."""
+    board = {"ready": 17, "running": 1}
+    _, line = DIGEST.stall_alarm(board, NO_RUNS, 2, threshold=3, max_in_progress=1)
+    assert "in_progress 1/1 (cap)" in line
+
+
+def test_stall_alarm_with_an_unreadable_cap_names_the_live_possibilities():
     board = {"ready": 3, "running": 0}
-    _, line = DIGEST.stall_alarm(board, 2, threshold=3, max_in_progress=None)
+    _, line = DIGEST.stall_alarm(board, NO_RUNS, 2, threshold=3, max_in_progress=None)
     assert "undetermined" in line
     assert "max_in_progress" in line and "spawn failure" in line, \
-        "an unreadable cap must name both live possibilities, not assert one"
+        "an unreadable cap must name live possibilities, not assert one"
 
 
 # --- alarm (b): task-timeout rate ---------------------------------------------
@@ -194,6 +215,23 @@ def test_read_max_in_progress_parses_the_rendered_config_line():
                     "  max_in_progress_per_profile: 2\n")
     try:
         assert DIGEST.read_max_in_progress() == 2
+    finally:
+        path.unlink()
+
+
+def test_read_max_in_progress_is_not_fooled_by_the_per_profile_sibling_key():
+    """config.yaml.j2 renders both keys adjacent, with the SAME leading digits
+    possible for each (e.g. both 1). The anchored `max_in_progress:` pattern
+    must bind to the sum-cap key even when the per-profile key differs, and
+    regardless of which key line comes first."""
+    path = Path(DIGEST.CONFIG_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.write_text("kanban:\n  max_in_progress: 1\n  max_in_progress_per_profile: 9\n")
+        assert DIGEST.read_max_in_progress() == 1, "must not match the _per_profile line"
+
+        path.write_text("kanban:\n  max_in_progress_per_profile: 9\n  max_in_progress: 1\n")
+        assert DIGEST.read_max_in_progress() == 1, "must hold with the sibling key listed first"
     finally:
         path.unlink()
 

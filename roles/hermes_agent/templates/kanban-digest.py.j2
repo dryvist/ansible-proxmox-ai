@@ -66,14 +66,15 @@ INTERVAL_MIN = {{ hermes_agent_kanban_digest_interval_minutes }}
 # identical board counts. Real board activity is NEVER subject to this gate — a
 # failure, an overrun or a completion posts every run, immediately.
 HEARTBEAT_HOURS = {{ hermes_agent_kanban_digest_heartbeat_hours }}
-# --- board alarms: ready-with-nothing-running, timeout rate, blocked growth --
+# --- board alarms: board-not-draining, timeout rate, blocked growth ---------
 # All three route to the issues channel (send_to_issues) like the failure
 # split above, never the work log, and are never heartbeat-suppressed — a
 # stalled or growing-blocked board is exactly what "everything looks green"
 # means here.
-# Consecutive digest ticks of "ready work, zero running" before alarm (a)
-# fires. Sustained, not single-tick: one dispatch cycle (config.yaml
-# kanban.dispatch_interval_seconds) can legitimately land between samples.
+# Consecutive digest ticks of "ready work waiting, nothing finished" before
+# alarm (a) fires. Sustained, not single-tick: a single legitimate run can
+# span longer than one window, so one quiet tick must never page — only a
+# streak of them, long enough that a normal run would have finished by then.
 STALL_TICKS_THRESHOLD = {{ hermes_agent_kanban_digest_stall_ticks_threshold }}
 # Count of task_runs.outcome == 'timed_out' within one digest window (alarm b).
 TIMEOUT_RATE_THRESHOLD = {{ hermes_agent_kanban_digest_timeout_threshold }}
@@ -329,10 +330,19 @@ def overrun_lines(rows, now_epoch):
     return out
 
 
-def stall_alarm(board, prior_ticks, threshold, max_in_progress):
-    """(new_streak, alarm_line_or_None) — alarm (a): ready work, nothing running.
+def stall_alarm(board, run_rows, prior_ticks, threshold, max_in_progress):
+    """(new_streak, alarm_line_or_None) — alarm (a): the board is not draining.
 
-    The streak counts CONSECUTIVE ticks with ready cards and zero running;
+    NOT "nothing is running" — a single wedged run at max_in_progress=1 shows
+    running=1 forever and that condition would never fire. The real signal is
+    "nothing FINISHED": ready cards are waiting AND no run in this window
+    reached ANY terminal outcome. RUNS_SQL already filters to `ended_at IS NOT
+    NULL`, so a non-empty run_rows already means something finished — no new
+    query, no outcome enum to hardcode. This one condition catches all three
+    shapes: nothing running at all, one run wedged forever at the cap, and
+    workers churning and failing without the queue moving.
+
+    The streak counts CONSECUTIVE ticks with ready cards and zero finishes;
     anything else resets it to 0, so one busy tick clears the alarm rather
     than requiring a cool-down. Once it fires it repeats every tick while the
     condition holds — like overrun_lines(), a stalled board is not stale news.
@@ -341,23 +351,26 @@ def stall_alarm(board, prior_ticks, threshold, max_in_progress):
     health...") has asserted a cause the data does not establish — it fired on
     a configured max_in_progress=1 cap and sent an operator hunting through
     venv and credentials for an hour. This alarm never repeats that mistake:
-    when the cap is readable it states the fact (`in_progress 0/N`) and stops
-    there; when it is not, it says the cause is undetermined and names the two
-    live possibilities rather than guessing.
+    when the cap is readable it states the fact (`in_progress N/M`, N being
+    the CURRENT running count, useful context either way) and stops there;
+    when it is not, it says the cause is undetermined and names the live
+    possibilities rather than guessing.
     """
     ready, running = board.get("ready", 0), board.get("running", 0)
-    if not (ready > 0 and running == 0):
+    if not (ready > 0 and not run_rows):
         return 0, None
     streak = prior_ticks + 1
     if streak < threshold:
         return streak, None
     if max_in_progress is None:
         cause = ("cause undetermined: could be the configured max_in_progress "
-                 "cap or a genuine worker spawn failure")
+                 "cap, a run that is wedged rather than progressing, or a "
+                 "genuine worker spawn failure")
     else:
-        cause = f"in_progress 0/{max_in_progress} (cap)"
-    line = (f":rotating_light: Stalled board — {ready} ready card(s), 0 running, "
-            f"for {streak} consecutive digest ticks. {cause}.")
+        cause = f"in_progress {running}/{max_in_progress} (cap)"
+    line = (f":rotating_light: Stalled board — {ready} ready card(s), {running} "
+            f"running but nothing finished, for {streak} consecutive digest "
+            f"ticks. {cause}.")
     return streak, line
 
 
@@ -514,7 +527,7 @@ def main():
         finally:
             conn.close()
 
-        new_stall, stall_line = stall_alarm(board, stall_ticks_prior,
+        new_stall, stall_line = stall_alarm(board, run_rows, stall_ticks_prior,
                                             STALL_TICKS_THRESHOLD,
                                             read_max_in_progress())
         timeout_line = timeout_alarm(run_rows, TIMEOUT_RATE_THRESHOLD)
