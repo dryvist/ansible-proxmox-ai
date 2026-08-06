@@ -1,13 +1,7 @@
 ---
-# The other half of the budget contract: a spend budget WITHOUT a shared store
-# must fail the build.
-#
-# WHY THIS TEST EXISTS, and why it is separate from the allowlist test. That
-# test proves a budget and a store are rendered together in the shipped
-# configuration. It cannot prove that the pairing is ENFORCED — deleting the
-# assert would leave it passing, because the shipped configuration would still
-# have both. This one removes the store, keeps the budget, and requires the
-# converge to stop.
+# The budget/store contract, from both ends: the ceiling must arm itself when a
+# spend store exists, stay honestly absent when one does not, and a hand-written
+# budget with no store must fail the build outright.
 #
 # The failure being guarded against is the one that already happened. A budget
 # was configured on this proxy once with nothing to track spend in. LiteLLM
@@ -17,8 +11,98 @@
 # rolling converge reset it. It rendered fine, converged green, and reported a
 # limit that did not hold. Only the pairing makes the number honest.
 #
+# PLAY ORDER IS LOAD-BEARING. The derivation plays run FIRST, before anything
+# calls set_fact. set_fact (precedence 19) outranks include_vars (18) and
+# persists across plays for the same host, so a derivation check placed after
+# the assert cases below reads the leftover facts instead of the file it means
+# to test — and reports the derivation broken when it is fine. That misfire
+# happened while writing this test.
+#
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_budget_requires_store.yml -i localhost, -c local
+
+- name: Verify no ceiling is claimed while no spend store exists
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ai_subdomain: example.test
+  tasks:
+    # The assert in the last play is a backstop against a hand-written pair. It
+    # cannot tell whether inventory/group_vars/llm_router_group.yml actually
+    # arms the ceiling when the store appears or leaves it off when it does not.
+    # Get that backwards and the assert still passes — silently, in the
+    # direction that matters: a ceiling that never arms reads exactly like one
+    # that did.
+    - name: Load the real router group_vars with NO store in inventory
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/llm_router_group.yml"
+
+    - name: The ceiling stays off, and honestly absent, with no store
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - (llm_router_openrouter_budget_limit | float) == 0
+          - (llm_router_redis_host | trim) == ''
+        fail_msg: >-
+          With no llm_redis_group member, llm_router_group.yml still derived a
+          budget of {{ llm_router_openrouter_budget_limit }} against host
+          '{{ llm_router_redis_host }}'. That is the unbacked ceiling this whole
+          contract exists to prevent, reintroduced by the defaults meant to
+          prevent it.
+        success_msg: No store in inventory, so no ceiling is claimed.
+
+    # `groups` is populated by add_host rather than faked with set_fact, because
+    # it is a magic variable — a set_fact of the same name does not change what
+    # the group_vars expression reads, so the test would pass while measuring
+    # nothing.
+    - name: Put a spend store into the inventory
+      ansible.builtin.add_host:
+        name: llm-redis-under-test
+        groups: llm_redis_group
+
+# A SECOND play, and that is not stylistic either. `groups` is snapshotted per
+# play, so a host already running when add_host fires keeps the membership it
+# started with. The play boundary is what makes the new group visible, and it
+# mirrors the real converge, where load_tofu.yml builds the groups in its own
+# play before any consumer runs.
+- name: Verify the ceiling arms once a spend store is in the inventory
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ai_subdomain: example.test
+  tasks:
+    - name: Confirm the store really is in the inventory now
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'llm-redis-under-test' in (groups['llm_redis_group'] | default([]))"
+        fail_msg: >-
+          add_host did not place the store in llm_redis_group, so the assertion
+          below would report on an empty inventory and pass for the wrong
+          reason.
+
+    - name: Read the real router group_vars with the store present
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/llm_router_group.yml"
+
+    - name: The ceiling arms itself once the store joins the inventory
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - (llm_router_openrouter_budget_limit | float) > 0
+          - llm_router_redis_host == 'llm-redis.example.test'
+        fail_msg: >-
+          A member of llm_redis_group is in the inventory but the derived pair
+          is budget={{ llm_router_openrouter_budget_limit }},
+          host='{{ llm_router_redis_host }}'. The ceiling never arms, so the
+          store is paid for and does nothing — a failure that looks identical to
+          a working configuration from every angle except the spend it was
+          supposed to cap.
+        success_msg: Store present, so the ceiling arms and names it by FQDN.
+
+# Last, because every case below calls set_fact and those facts outlive the
+# play. The assert is the backstop for a pair written by hand somewhere the
+# derivation does not reach — host_vars, extra vars, a future group_vars.
 - name: Verify an unbacked spend budget fails the build
   hosts: localhost
   gather_facts: false
