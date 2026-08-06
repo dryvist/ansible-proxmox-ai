@@ -92,7 +92,7 @@ def _patched_reclaim_source() -> str:
 
 
 class _NoSleepTime:
-    def sleep(self, seconds: float) -> None:
+    def sleep(self, _seconds: float) -> None:
         pass
 
 
@@ -116,16 +116,19 @@ def _load_patched_reclaim(source: str, *, own_pid: int, pid_alive: bool, is_herm
         handle.write(source)
         handle.close()
         spec = importlib.util.spec_from_file_location("_patched_reclaim", handle.name)
+        assert spec is not None and spec.loader is not None, (
+            "patched reclaim fragment did not resolve to a loadable module"
+        )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     finally:
         os.unlink(handle.name)
 
-    module.os = _FixedPid(own_pid)
-    module.signal = signal_module
-    module.time = _NoSleepTime()
-    module._pid_alive = lambda pid: pid_alive
-    module._pid_is_hermes_worker = lambda pid: is_hermes_worker
+    setattr(module, "os", _FixedPid(own_pid))
+    setattr(module, "signal", signal_module)
+    setattr(module, "time", _NoSleepTime())
+    setattr(module, "_pid_alive", lambda _pid: pid_alive)
+    setattr(module, "_pid_is_hermes_worker", lambda _pid: is_hermes_worker)
     return module._reclaim
 
 
