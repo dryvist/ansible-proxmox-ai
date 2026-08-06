@@ -56,15 +56,16 @@ openbao_secrets_bao_addr_candidates: >-
 # (`openbao_approles`/`openbao_policies`) — the OpenBao server config stays
 # in that repo; this repo only CONSUMES the local-llm domain.
 openbao_secrets_domains:
-  # Apps domain — ONLY the Hindsight credentials this repo's hindsight_docker
-  # role consumes (the ai-VLAN memory Postgres credentials are generated at
-  # source under apps/hindsight by ansible-proxmox-apps' roles/openbao, next
-  # to the other app DB credentials).
+  # Apps domain — non-Hermes-identity app credentials generated at source by
+  # ansible-proxmox-apps' roles/openbao, next to the other app DB/auth
+  # credentials this repo's Docker-in-LXC roles consume.
   - name: apps
     role_id_env: APPS_VAULT_ROLE_ID
     secret_id_env: APPS_VAULT_SECRET_ID
     paths:
       - apps/hindsight  # hindsight_db_password, hindsight_cp_access_key (+ replication)
+      - apps/hermes-ui  # hermes_ui_workspace_password, hermes_ui_hermes_api_token,
+                        #   hermes_ui_mission_control_auth_user/_auth_pass
   # Public (non-secret) fabric coordination data — mirrors the "non-secret
   # coordination path" precedent in tofu-proxmox's SECRETS_HIERARCHY.md
   # (secret/platform/terrakube/main). Read-only, own least-privilege AppRole
@@ -116,6 +117,16 @@ openbao_secrets_domains:
     paths:
       - ai/hermes  # HERMES_VIKUNJA_API_TOKEN, and the rest of ai/hermes
                    #   once their consumers migrate off local-llm's grant
+  # Second agent identity, same shape as `hermes` above. Deliberately NOT given
+  # a fallback onto local-llm's ai/* grant: that grant can read ai/hermes, so
+  # falling back would hand this agent the FIRST agent's Slack, Vikunja and
+  # GitHub credentials. Absent creds resolve empty and each feature stays off
+  # (see roles/hermes_agent/defaults, every integration is presence-gated).
+  - name: donna
+    role_id_env: DONNA_VAULT_ROLE_ID
+    secret_id_env: DONNA_VAULT_SECRET_ID
+    paths:
+      - ai/donna
   - name: local-llm
     role_id_env: LOCAL_LLM_VAULT_ROLE_ID
     secret_id_env: LOCAL_LLM_VAULT_SECRET_ID
@@ -155,3 +166,8 @@ openbao_secrets_domains:
                        #   S3_ACCESS_KEY_ID,S3_SECRET_ACCESS_KEY,PUBLIC_KEY,SECRET_KEY,
                        #   INIT_USER_EMAIL,INIT_USER_PASSWORD} — fully seeded 2026-07-05
       - ai/langflow    # LANGFLOW_{SUPERUSER,SUPERUSER_PASSWORD,DB_PASSWORD}
+      - ai/dify        # DIFY_SECRET_KEY — the session/credential-protection key.
+                       #   PROMOTED from the running guest, never regenerated: a
+                       #   fresh value cannot decrypt what the existing value
+                       #   encrypted, and nothing reports an error when that
+                       #   happens. Operator-seeded like its ai/* siblings.

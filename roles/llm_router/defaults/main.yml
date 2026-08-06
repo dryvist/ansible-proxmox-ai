@@ -8,10 +8,11 @@
 # Two tiers, both reached through this one proxy:
 #   large — the mlx-community/* models on the neutral `llm-large` runner
 #           (bearer auth). One deployment each; no cross-tier fallback.
-#   light — qwen3-4b / embeddings. TWO deployments per model name: the GPU
-#           `llm-fast` box AND the CPU `llm-light` standby, same model_name.
-#           LiteLLM load-balances the pair and cools a failed deployment
-#           down, so a GPU outage drains to CPU automatically.
+#   light — qwen3-4b / embeddings. The CPU `llm-light` deployment always
+#           renders; the GPU `llm-fast` one renders only when
+#           llm_router_llm_fast_enabled is true. With that false there is ONE
+#           deployment per model name and no standby. With both, they share a
+#           model_name and LiteLLM load-balances and cools down the pair.
 #
 # Restart-on-failure is applied DRY by the shared systemd_restart_policy role via
 # group_vars, not here.
@@ -31,7 +32,14 @@ llm_router_env_file: "{{ llm_router_config_dir }}/litellm.env"
 # (pip resolves v3, which errors on init), and Langfuse ingestion already
 # arrives via the designed OTLP -> Cribl Edge fan-out path.
 llm_router_pip_packages:
-  - "litellm[proxy]"
+  # Pinned: the retry/backoff behavior documented in this role's defaults
+  # (retry_after, RateLimitErrorRetries, num_retries — see llm_router config
+  # template) was verified against this version's tagged source
+  # (router.py's async_function_with_retries/_time_to_sleep_before_retry,
+  # utils.py's _calculate_retry_after, and exceptions.py's retry-count
+  # string construction). Bumping the pin is a deliberate act; re-verify
+  # those functions against the new tag before moving it.
+  - "litellm[proxy]==1.90.3"
   # LiteLLM's auth-error handler unconditionally `import prisma`s to classify
   # whether a failed request is a DB outage, but litellm[proxy] no longer pulls
   # prisma. On this DB-less proxy the import raised ModuleNotFoundError, turning
@@ -185,9 +193,10 @@ llm_router_registry_enabled: >-
 # bearer-authed, no cross-tier fallback.
 llm_router_large_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'large') | list }}
-# light: the llama-swap model names, served as-is. Each becomes TWO same-name
-# deployments (GPU llm-fast + CPU llm-light) in the rendered config, so LiteLLM
-# load-balances the pair and a GPU outage drains to CPU automatically.
+# light: the llama-swap model names, served as-is. Each becomes a CPU
+# `llm-light` deployment, plus a same-name GPU `llm-fast` deployment only when
+# llm_router_llm_fast_enabled is true — that toggle is what decides whether the
+# tier is a load-balanced pair or a single deployment with no standby.
 llm_router_light_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'light') | list }}
 
@@ -250,24 +259,73 @@ llm_router_openrouter_models: >-
 # They bound the RATE at which spend can accumulate; they are not a spend cap
 # and must not be described as one.
 #
-# What is deliberately NOT here: a LiteLLM spend budget.
-# `router_settings.provider_budget_config` tracks spend in REDIS, and
-# `max_budget`/`budget_duration` on virtual keys live in LiteLLM's
-# Postgres-backed key management. This proxy has neither, on purpose — see the
-# prisma note at the top of this file ("We use no database"), and the
-# fabric-router ADR, where DB-lessness is the load-bearing reason a single
-# front door in the call path is acceptable at all: a replicated stateless
-# front, not a stateful bottleneck.
-#
-# Configuring a budget anyway would be WORSE than having none. With three
-# replicas and no Redis each member would count only its own spend, so the
-# rendered config would advertise a limit that is really 3x, and every rolling
-# converge would reset it. That manufactures the appearance of a control, which
-# is the one outcome worse than the absence of one. Adding Redis or Postgres to
-# the estate's front door is an architecture decision, not a line in this file.
+# They remain per-instance even now that a spend cap exists below: they bound
+# the RATE at which spend accumulates, which is what stops a runaway caller
+# exhausting a whole period before the shared counter observes it. Do not
+# describe them as the cap.
 llm_router_openrouter_rpm: 60
 llm_router_openrouter_tpm: 200000
 llm_router_openrouter_max_parallel_requests: 4
+
+# --- Shared spend store, and the spend cap it makes real ---------------------
+# This block reverses a deliberate removal, so the reasoning for the removal
+# matters. A budget was configured here once and backed out, because
+# `router_settings.provider_budget_config` tracks spend in REDIS and this proxy
+# had none: llm_router_group is a three-member pool (serial: 1 in
+# playbooks/site.yml), so each member would have counted only its own spend.
+# The rendered config would have advertised a ceiling that was really 3x, and
+# every rolling converge would have reset it. A control that reports a limit it
+# does not hold is worse than an absent one, so it went.
+#
+# What changed is the premise, not the judgement: there is now a shared store
+# (roles/redis), so the ceiling is a single estate-wide number rather than
+# three private ones, and it survives a member restart. The cap below is real
+# in a way the earlier one was not.
+#
+# HONEST SCOPE, because "a budget exists" is not the same as "spend is capped
+# right now". LiteLLM reads through a DualCache — in-memory first, Redis on
+# miss — so if Redis becomes unreachable the ceiling degrades back to
+# per-member counting rather than failing closed. That is the right trade for
+# the fabric's single front door (a store outage must not take serving down
+# with it), but it means Redis is a CORRECTNESS dependency, not just an
+# optimisation. The assert in tasks/assert.yml is what stops a budget from
+# being rendered without one.
+#
+# What is still deliberately NOT here: `fail_closed_budget_enforcement`.
+# It is a `general_settings` key, not a router_settings one, and it governs
+# LiteLLM's key/team/user/org/tag budgets — the virtual-key system backed by
+# POSTGRES. Its documented behaviour is to validate spend against "the
+# authoritative database" and return 503 when spend can be verified against
+# neither Redis nor the database. This proxy issues no virtual keys and has no
+# database (see the prisma note at the top of this file), so the setting would
+# be either inert — claiming a control that does not exist, which is precisely
+# the defect the earlier removal was fixing — or, if it engaged, a 503
+# generator on the fabric's only front door. Adding Postgres is a separate
+# architecture decision; adding Redis did not make this setting real.
+#
+# Empty by default: the cap is only rendered when a store is configured, so a
+# deployment without one gets no budget rather than a dishonest one.
+llm_router_redis_host: ""
+llm_router_redis_port: "{{ tofu_data.constants.service_ports.redis_default }}"
+llm_router_redis_password: >-
+  {{ bao_local_llm_secrets.LLM_ROUTER_REDIS_PASSWORD
+     | default(lookup('env', 'LLM_ROUTER_REDIS_PASSWORD'), true) }}
+
+# Period ceiling on OpenRouter egress, in USD. Enforced by the router against
+# the shared store above, so it binds every caller — including a noncompliant
+# or compromised one — rather than only the callers that choose to read the
+# policy. Caller-side escalation rules still apply; they are now a first line
+# rather than the only one.
+#
+# ZERO in the ROLE, set together with the store in group_vars/llm_router_group.
+# The role must be able to converge honestly on a deployment that has no shared
+# store — that configuration ran for good reason and is not a defect — so the
+# default here is "no budget", not "a budget nobody can enforce". Turning the
+# ceiling on is one edit that sets this and llm_router_redis_host together, and
+# assert-budget-backing.yml fails the build if anything ever sets one without
+# the other.
+llm_router_openrouter_budget_limit: 0
+llm_router_openrouter_budget_period: 1d
 
 # --- Routing behaviour -------------------------------------------------------
 # Load-balance across same-name deployments; cool a failed one down so traffic
@@ -296,6 +354,22 @@ llm_router_cooldown_time: 30
 # (server guard > this > Hermes client read), so it is sourced from the
 # single-source-of-truth constant (all.yml) the Layer-1 assert checks — resolves
 # to 2400.
+# DELIBERATELY 0 — this is failover timing, not a missing retry budget.
+#
+# LiteLLM engages the `fallbacks` chain only AFTER num_retries is exhausted, so
+# 0 means a failed primary hands over to the next model group immediately. That
+# is the whole mechanism behind hermes-default's automatic cluster/standalone
+# failover, and raising it delays every failover by up to
+# llm_router_retry_max_delay_seconds (pinned to 40s alongside the rate-limit
+# path). test_goal_mode_contract pins this value for that reason.
+#
+# Known cost, measured 2026-08-02..08-05: 720 gate 5xx reached callers
+# unretried, clustered around model-swap/reload windows where the upstream port
+# is briefly unserved. With the cluster leg down the fallback target is absent,
+# so those surface as "Error doing the fallback: BadGatewayError" rather than
+# being ridden out. Fixing that means separating 5xx retry from failover
+# ordering (e.g. a retry policy scoped to the primary deployment), NOT flipping
+# this number — that would trade a transient 502 for a slow failover.
 llm_router_num_retries: 0
 llm_router_request_timeout_seconds: "{{ ai_router_request_timeout_seconds }}"
 # Rate limits are absorbed HERE, not by the caller. The serving tier admits one
@@ -319,7 +393,13 @@ llm_router_rate_limit_retries: 8
 # MAX_RETRY_DELAY to the same value (see llm_router_retry_max_delay_seconds).
 # Waiting whole tens of seconds is correct here: the blocker is a multi-minute
 # generation, so sub-second exponential backoff just burns attempts.
-llm_router_retry_after_seconds: 40
+#
+# Resolves to the all.yml constant (was a bare 40) so the brain watchdog's probe
+# deadline can be asserted against it from roles/hermes_agent — the two roles
+# never share a play, so a role-local literal was unassertable. Value unchanged;
+# raise it in all.yml, and expect the hermes_agent assert to demand the probe
+# timeout move with it.
+llm_router_retry_after_seconds: "{{ ai_router_retry_after_seconds }}"
 # Raises LiteLLM's global backoff ceiling so retry_after is not clamped. Only the
 # rate-limit path retries at all (num_retries is 0 and no other error type has a
 # retry policy), so this has no other blast radius.
@@ -393,6 +473,40 @@ llm_router_model_group_aliases: >-
           | zip(llm_router_alias_pairs | map(attribute=0)
                 | map(attribute='client_model_id'))) }}
 
+# --- Cluster leg availability -------------------------------------------------
+# Nothing in this repo (nor anything tofu-proxmox publishes) reports whether
+# the two-Mac JACCL cluster leg is actually reachable right now — the closest
+# thing, llm_router_cluster_port, is a static port constant that exists
+# whether or not anything is listening behind it. Until a real signal exists,
+# this is the single explicit switch every cluster-dependent decision below
+# reads, so there is exactly one place to flip rather than several that can
+# drift apart.
+#
+# Default false: both hosts have programs.mlx.clusterMode.enable = false,
+# committed in dryvist/nix-darwin (lib/hosts/mac-studio.nix — coordinator —
+# and macbook-m4.nix — worker) since 2026-08-05, because the Thunderbolt
+# interconnect between them is physically disconnected. With clusterMode off,
+# the gate's :11440 site reverse-proxies to nothing, so anything routed at it
+# 502s unconditionally, not intermittently.
+#
+# Flip to true only once BOTH are true, and flip back the moment either stops
+# being true:
+#   1. clusterMode.enable = true on both mac-studio.nix and macbook-m4.nix
+#      (the TB cable is reconnected and cluster mode is re-enabled on both
+#      hosts).
+#   2. A cluster window is actually up (mlx-lm rank 0 is answering behind the
+#      gate's cluster TLS site).
+# Flipping this also requires flipping the GLM-4.7 registry entry's
+# `servable` back to true in llm-models.yml — tasks/assert-cluster-leg.yml
+# fails the converge if only one of the two moves, which is deliberate: see
+# that file for why.
+#
+# If a live signal for either condition becomes available (a published tofu
+# constant, a health-check fact), point this at that instead of a
+# manually-set boolean — this default-off toggle is the fallback, not the
+# destination.
+llm_router_cluster_leg_available: false
+
 # --- hermes-default automatic failover across the cluster + standalone gates -
 # The cluster and standalone backends are mutually exclusive (see the model_list
 # comment above): whichever is up, hermes-default must answer from it, and the
@@ -423,8 +537,16 @@ llm_router_model_group_aliases: >-
 # confirms this: litellm/proxy/route_llm_request.py dispatches on
 # `data["model"] in llm_router.model_group_alias` without ever rewriting
 # data["model"]. A fallback keyed on the resolved primary id would never fire.
-llm_router_hermes_default_fallback_chain:
-  - "{{ llm_router_cluster_model }}"
+#
+# The chain tracks llm_router_cluster_leg_available rather than asserting the
+# cluster model unconditionally: with the cluster leg down (the default),
+# this resolves to an empty list, config.yaml.j2 omits the `fallbacks:` key
+# entirely, and a failed primary surfaces its real error instead of taking a
+# guaranteed-502 detour through a target that cannot answer. Known cost of
+# the old unconditional chain, measured 2026-08-02..08-05: 720 gate 5xx
+# reached callers unretried as "Error doing the fallback: BadGatewayError".
+llm_router_hermes_default_fallback_chain: >-
+  {{ [llm_router_cluster_model] if llm_router_cluster_leg_available else [] }}
 # Background health checks send REAL test requests to every deployment — on the
 # llama-swap fast tier each probe spawns the target model, and with 3 routers
 # probing every model this both churns VRAM constantly and (pre swap-groups)
@@ -456,12 +578,15 @@ llm_router_llm_large_bearer: >-
 llm_router_light_api_key: "sk-noauth"
 
 # --- Observability -----------------------------------------------------------
-# OTLP traces only. Cribl Edge is the OTLP/HTTP receiver (base URL; the
+# OTLP traces only. Cribl Stream is the OTLP/HTTP receiver (base URL; the
 # exporter appends the signal path) and fans the spans out to Langfuse (and
 # Splunk) — the router holds no Langfuse credentials.
-llm_router_otel_http_port: >-
-  {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['otel_traces_http'] }}
-llm_router_otel_endpoint: "http://cribl-edge.{{ llm_router_subdomain }}:{{ llm_router_otel_http_port }}"
+#
+# Single definition: derived from the shared orchestration endpoint rather than
+# repeating the host/port composition. Two independently-maintained copies of
+# the same URL is how one of them ends up pointing at a receiver that no longer
+# exists without anything noticing.
+llm_router_otel_endpoint: "{{ ai_orchestration_otel_endpoint }}"
 
 # Whether the routers carry the llm-fast (GPU) deployments. False while the
 # GPU host is frozen (see llama_cpp_service_enabled): the firewall DROPs

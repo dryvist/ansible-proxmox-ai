@@ -1,0 +1,107 @@
+---
+# hermes-ui: one LXC running two independent Docker Compose services behind
+# Traefik/Authelia — hermes-workspace (outsourc-e/hermes-workspace, chat UI
+# for the hermes_agent gateway) and mission-control (builderz-labs/
+# mission-control, an OpenClaw operations dashboard; NOT wired to Hermes).
+# Neither app talks to the other; they only share this guest and its
+# reverse-proxy front door.
+
+# --- hermes-workspace --------------------------------------------------------
+# Published image (ghcr.io/outsourc-e/hermes-workspace) — pinned tag,
+# Renovate-trackable. Pin to the highest semver tag actually PUBLISHED to
+# ghcr.io (verified via the registry tag list — the v2.3.0 GitHub release tag
+# was never pushed as a Docker image tag; v2.1.3 is the newest that exists).
+hermes_ui_docker_workspace_image: "ghcr.io/outsourc-e/hermes-workspace:v2.1.3"
+hermes_ui_docker_workspace_service: hermes-workspace
+hermes_ui_docker_workspace_container_name: hermes-workspace
+# Internal port is fixed by the upstream image (PORT=3000 default).
+hermes_ui_docker_workspace_internal_port: 3000
+
+# hermes-workspace refuses a non-loopback bind without HERMES_PASSWORD.
+# bao-first (apps/hermes-ui), env fallback for molecule/local runs.
+hermes_ui_docker_workspace_password: >-
+  {{ bao_apps_secrets.hermes_ui_workspace_password
+     | default(lookup('env', 'HERMES_UI_WORKSPACE_PASSWORD'), true) }}
+
+# Reaches the hermes_agent gateway (job API) and dashboard, both Traefik-fronted
+# (see ansible-proxmox-ai's sibling terraform-proxmox repo, constants.tf:
+# hermes_api -> https://hermes-api.<sub>, hermes_dashboard -> https://hermes.<sub>).
+hermes_ui_docker_workspace_hermes_api_url: >-
+  https://hermes-api.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}
+hermes_ui_docker_workspace_hermes_dashboard_url: >-
+  https://hermes.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}
+# Bearer token for the gateway's job API, when HERMES_API_SERVER_KEY is set
+# server-side. Optional: an empty value just means the workspace UI dials the
+# gateway unauthenticated, same inert-until-creds posture as the rest of this
+# repo's optional integrations.
+hermes_ui_docker_workspace_hermes_api_token: >-
+  {{ bao_apps_secrets.hermes_ui_hermes_api_token
+     | default(lookup('env', 'HERMES_UI_HERMES_API_TOKEN'), true) }}
+
+# --- mission-control ----------------------------------------------------------
+# Upstream publishes ghcr.io/builderz-labs/mission-control, but its
+# NEXT_PUBLIC_GATEWAY_* values are baked into the client bundle at image BUILD
+# time and the published image is built with NEXT_PUBLIC_GATEWAY_OPTIONAL
+# unset (gateway required). This deployment runs mission-control WITHOUT an
+# OpenClaw gateway, so the image is rebuilt locally from a pinned source tag
+# with NEXT_PUBLIC_GATEWAY_OPTIONAL=true baked in — same build-from-source
+# pattern as roles/langgraph_docker's agent-chat-ui build.
+hermes_ui_docker_mission_control_repo: "https://github.com/builderz-labs/mission-control.git"
+hermes_ui_docker_mission_control_ref: "v2.3.0"
+hermes_ui_docker_mission_control_service: mission-control
+hermes_ui_docker_mission_control_container_name: mission-control
+hermes_ui_docker_mission_control_internal_port: 3000
+
+# mission-control has no reachable OpenClaw gateway on this deployment.
+hermes_ui_docker_mission_control_gateway_optional: "true"
+
+# Auth: seeded from env at container start (see .env.example AUTH_USER/
+# AUTH_PASS), NOT baked at build time. bao-first (apps/hermes-ui), env
+# fallback for molecule/local runs.
+hermes_ui_docker_mission_control_auth_user: >-
+  {{ bao_apps_secrets.hermes_ui_mission_control_auth_user
+     | default(lookup('env', 'HERMES_UI_MISSION_CONTROL_AUTH_USER'), true) }}
+hermes_ui_docker_mission_control_auth_pass: >-
+  {{ bao_apps_secrets.hermes_ui_mission_control_auth_pass
+     | default(lookup('env', 'HERMES_UI_MISSION_CONTROL_AUTH_PASS'), true) }}
+
+# Hosts the Traefik ingress presents this app as — mission-control fails
+# closed (403) on any Host header not in this allowlist.
+hermes_ui_docker_mission_control_allowed_hosts: >-
+  mission-control.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }},localhost,127.0.0.1
+
+# --- Shared guest layout -------------------------------------------------------
+hermes_ui_docker_data_dir: /opt/hermes-ui
+# Mission-control's SQLite state (its only stateful service — hermes-workspace
+# is stateless, all durable state lives in the hermes_agent gateway it talks
+# to) — bind-mounted so it survives a compose recreate/image rebuild.
+hermes_ui_docker_state_dir: /var/lib/hermes-ui
+hermes_ui_docker_mission_control_data_dir: "{{ hermes_ui_docker_state_dir }}/mission-control"
+# mission-control's runtime image runs as uid/gid 1001 (nextjs:nodejs, see its
+# Dockerfile) and chown's this path itself on first boot only if it owns the
+# mount; pre-creating it root-owned would break that.
+hermes_ui_docker_mission_control_uid: 1001
+hermes_ui_docker_mission_control_gid: 1001
+
+hermes_ui_docker_restart_policy: unless-stopped
+hermes_ui_docker_storage_driver: "fuse-overlayfs"
+
+# Ports come from the tofu-owned pipeline constants (service_ports) — never
+# literals here. mandatory() fails the play loudly on a stale inventory.
+_hermes_ui_docker_port_err: >-
+  tofu_data.constants.service_ports.hermes_ui_* missing —
+  regenerate tofu_inventory.json (apply tofu-proxmox)
+hermes_ui_docker_workspace_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['hermes_ui_workspace']
+     | mandatory(_hermes_ui_docker_port_err) }}
+hermes_ui_docker_mission_control_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['hermes_ui_mission_control']
+     | mandatory(_hermes_ui_docker_port_err) }}
+
+hermes_ui_docker_health_retries: 30
+hermes_ui_docker_health_delay: 10

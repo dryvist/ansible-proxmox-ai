@@ -1,0 +1,40 @@
+---
+# Cluster-leg reachability contract, split into its own file so the failure
+# path can be exercised directly by tests/llm_router/test_cluster_leg_guard.yml
+# without standing up the whole render. Imported by assert.yml; not a
+# standalone entry point for a converge.
+#
+# Guards against the drift that let a disabled subsystem keep being
+# advertised for a month: llm-models.yml's `servable` field is a manually
+# asserted claim (see its schema comment), never checked against whether the
+# role has any reason to believe the serving path is actually up. This fails
+# the converge the instant a cluster-tier entry claims servable: true while
+# llm_router_cluster_leg_available (defaults/main.yml) says the leg is down,
+# instead of staying silent the way GLM-4.7's plain servable: true did from
+# 2026-08-05 onward.
+- name: Assert no cluster-tier registry entry claims servable without an enabled serving path
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - not (_llm_router_cluster_servable_entries | length > 0 and not llm_router_cluster_leg_available)
+    fail_msg: >-
+      Servable/reachable drift (roles/llm_router/tasks/assert-cluster-leg.yml):
+      [{{ _llm_router_cluster_servable_entries | map(attribute='client_model_id') | join(', ') }}]
+      in llm-models.yml declare serving_role: cluster and servable: true, but
+      llm_router_cluster_leg_available is false — nothing backs up the claim
+      that a serving path is actually up. Either the registry entry is stale
+      (set servable: false until the cluster leg is genuinely reachable
+      again) or llm_router_cluster_leg_available itself is stale (flip it
+      true only once BOTH hosts' clusterMode.enable are true and a cluster
+      window is actually up — see its comment in defaults/main.yml).
+    success_msg: >-
+      No cluster-tier registry entry claims servable without
+      llm_router_cluster_leg_available being true.
+  vars:
+    _llm_router_cluster_servable_entries: >-
+      {{ llm_router_registry_enabled
+         | selectattr('serving_role', 'defined')
+         | selectattr('serving_role', 'equalto', 'cluster')
+         | selectattr('servable', 'defined')
+         | selectattr('servable')
+         | list }}

@@ -1,6 +1,68 @@
 ---
 # fabric_watchdog: probe script + oneshot service + timer. State lives in
 # fabric_watchdog_state_dir so alerts fire only on up/down transitions.
+
+# Registry-derived reachability targets: catches an advertised (servable:
+# true) serving path whose backend has been switched off entirely elsewhere —
+# the converge-time registry assert (llm_router/tasks/assert.yml) only checks
+# that the registry is internally consistent, not that a path it advertises
+# is still there. Loaded the SAME way the llm_router converge does (see that
+# role's registry.yml) — include_role also pulls in llm_router's base-url
+# defaults below, so no URL is reconstructed by hand here.
+- name: Load the fabric model registry
+  ansible.builtin.include_role:
+    name: llm_router
+    tasks_from: registry.yml
+
+- name: Derive the distinct advertised (tier, endpoint) serving paths
+  ansible.builtin.set_fact:
+    fabric_watchdog_registry_combos: >-
+      {{ (llm_router_model_registry | selectattr('servable', 'defined') | selectattr('servable')
+          | map(attribute='tier') | list)
+         | zip(llm_router_model_registry | selectattr('servable', 'defined') | selectattr('servable')
+               | map(attribute='endpoint', default='default') | list)
+         | map('join', ':') | unique | list }}
+
+# Maps each combo to its base URL. Deliberately a small, explicit table, not
+# itself derived: llm-models.yml is pure data with NO host/port/URL literals
+# by design (its own header comment) — those live in the role, selected
+# symbolically by tier/endpoint. A combo missing from this table fails the
+# assert below rather than being silently skipped, so a newly-advertised
+# (tier, endpoint) pair cannot go unmonitored the way the cluster path did.
+- name: Define the known (tier, endpoint) combo to base-URL map
+  ansible.builtin.set_fact:
+    fabric_watchdog_known_combo_urls:
+      "large:default": "{{ llm_router_llm_large_base_url }}"
+      "large:cluster": "{{ llm_router_llm_large_cluster_base_url }}"
+
+- name: Assert every advertised combo has a known probe URL
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        fabric_watchdog_registry_combos
+        | difference(fabric_watchdog_known_combo_urls.keys() | list) | length == 0
+    fail_msg: >-
+      llm-models.yml advertises (tier:endpoint) combination(s)
+      {{ fabric_watchdog_registry_combos
+         | difference(fabric_watchdog_known_combo_urls.keys() | list) | join(', ') }}
+      with no probe URL registered in fabric_watchdog_known_combo_urls
+      (roles/fabric_watchdog/tasks/main.yml) — add one so this reachability
+      alarm covers it.
+
+# Reuses the SAME probe shape as the existing llm-front-door target: a plain
+# GET to the OpenAI-compatible /models listing endpoint, no Authorization
+# header. That endpoint never invokes a model, so this costs nothing on the
+# contended single-concurrency inference slot; 401 (auth required, nothing
+# sent) counts as UP exactly like the existing target, because it proves the
+# backend answered at the HTTP layer at all.
+- name: Build reachability targets for every advertised serving path
+  ansible.builtin.set_fact:
+    fabric_watchdog_targets: >-
+      {{ fabric_watchdog_targets + [{'name': 'llm-' ~ (item | replace(':', '-')),
+         'url': fabric_watchdog_known_combo_urls[item] ~ '/models', 'ok_codes': '200 401'}] }}
+  loop: "{{ fabric_watchdog_registry_combos }}"
+
 - name: Create fabric-watchdog state directory
   ansible.builtin.file:
     path: "{{ fabric_watchdog_state_dir }}"

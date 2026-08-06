@@ -74,18 +74,31 @@ def _resolve(env_overrides: dict[str, str]) -> dict[str, str]:
         "HERMES_SLACK_DIGEST_CHANNEL": "C_DIGEST",
         **env_overrides,
     }
-    names = [k for k in DEFAULTS if "channel" in k] + ["fabric_watchdog_alert_channel"]
+    def _lookup(plugin: str, name: str) -> str:
+        """Stand in for Ansible's lookup plugin against the simulated env.
+
+        A real callable rather than a regex substitution on the source text:
+        the channel vars build their env-var NAME from the agent identity
+        (`'SLACK_' ~ (hermes_agent_id | upper) ~ '_ISSUES_CHANNEL'`), so there
+        is no literal in the source to match. Evaluating the expression is also
+        what the converge actually does, which is the behaviour worth pinning.
+        """
+        assert plugin == "env", f"only the env lookup is simulated, got {plugin!r}"
+        return env.get(name, "")
+
+    # hermes_agent_id leads: every channel name below derives its env-var name
+    # from it, so it has to be in the context before the first channel renders.
+    names = (
+        ["hermes_agent_id"]
+        + [k for k in DEFAULTS if "channel" in k]
+        + ["fabric_watchdog_alert_channel"]
+    )
     source = {**DEFAULTS, "fabric_watchdog_alert_channel": FABRIC_DEFAULTS["fabric_watchdog_alert_channel"]}
     ctx: dict[str, str] = {}
     for _ in range(4):  # a few passes is plenty for this shallow dependency graph
         for name in names:
             tpl = str(source[name])
-            if "lookup(" in tpl:
-                # Substitute the env lookup with its simulated value first.
-                def sub(m: re.Match[str]) -> str:
-                    return repr(env.get(m.group(1), ""))
-                tpl = re.sub(r"lookup\(\s*'env',\s*'(\w+)'\s*\)", sub, tpl)
-            ctx[name] = _ENV.from_string(tpl).render(**ctx).strip()
+            ctx[name] = _ENV.from_string(tpl).render(**ctx, lookup=_lookup).strip()
     return ctx
 
 
@@ -96,31 +109,41 @@ def _deliver_targets(pattern: str, ctx: Mapping[str, object], text: str) -> str:
     return _ENV.from_string(match.group(1)).render(**ctx).strip()
 
 
-ENQUEUER = (ROLE / "templates" / "kanban-enqueue-recurring.sh.j2").read_text()
-# The one place every recurring card is told where to post its report.
-CARD_REPORT = r'hermes send --to (slack:\{\{ card\.channel[^\n]*?\}\}) --quiet'
+# kanban-enqueue-recurring.sh.j2 is GONE (native-cron reframe, 18/18). It used
+# to be the one enqueuer script for every recurring card, with per-card
+# `channel` / `channel_when_healthy` / `terse_when_healthy` outcome-based split
+# routing. All 18 cards it enqueued, including the former "Docs sync" card,
+# are now plain `hermes_agent_direct_cron_jobs` entries — the gateway runs the
+# prompt itself and delivers straight to Slack via one fixed `deliver:` per job
+# (tasks/reconcile_direct_cron.yml). hermes_agent_kanban_cards no longer
+# exists. `--deliver` cannot express a per-outcome split itself, but the split
+# is restored as shared prompt text (templates/direct-cron-footer.md.j2) —
+# see the outcome-split tests below.
 
 
-def _card(title: str) -> dict:
-    for card in DEFAULTS["hermes_agent_kanban_cards"]:
-        if card["title"] == title:
-            return card
-    raise AssertionError(f"no kanban card titled {title!r}")
+def _direct_job(cron_name_var: str) -> dict:
+    """The hermes_agent_direct_cron_jobs entry whose name is `{{ <var> }}`."""
+    marker = "{{ " + cron_name_var + " }}"
+    for job in DEFAULTS["hermes_agent_direct_cron_jobs"]:
+        if str(job.get("name", "")).strip() == marker:
+            return job
+    raise AssertionError(f"no direct cron job named via {cron_name_var!r}")
 
 
-def _card_report_channel(title: str, ctx: dict[str, str]) -> str:
-    """Where this card's report actually goes, rendered as the enqueuer renders it."""
-    card = dict(_card(title))
-    if "channel" in card:
-        card["channel"] = _ENV.from_string(str(card["channel"])).render(**ctx).strip()
-    return _deliver_targets(CARD_REPORT, {**ctx, "card": card}, ENQUEUER)
+def _direct_deliver(cron_name_var: str, ctx: dict[str, str]) -> str:
+    """The single, fixed `deliver:` target for a direct-cron job."""
+    return _ENV.from_string(str(_direct_job(cron_name_var)["deliver"])).render(**ctx).strip()
 
 
 SPLUNK_STATUS = r'deliver: "(slack:\{\{ hermes_agent_splunk_status_digest_channel \}\})"'
 KANBAN = r'deliver: "(slack:\{\{ hermes_agent_kanban_digest_channel \}\})"'
 TRIAGE = r'deliver: "(slack:\{\{ hermes_agent_triage_channel \}\})"'
 ZAMMAD_CLOSE = r'deliver: "(slack:\{\{ hermes_agent_slack_hermes_all_channel \}\})"'
-DIRECT = r'hermes_agent_direct_deliver: "(slack:\{\{ hermes_agent_digest_slack_channel \}\})"'
+# The fallback deliver expression is `item.deliver | default('slack:' ~ var)`,
+# not a standalone quoted string like the other call sites — item.deliver is
+# per-job (rendered separately by the per-job tests above), so only the
+# DEFAULT half (no per-job override) is checked with this pattern.
+DIRECT = r"default\('slack:' ~ (hermes_agent_digest_slack_channel)\)"
 
 
 # --- the four-way contract ---------------------------------------------------
@@ -170,10 +193,23 @@ def test_hermes_all_is_not_an_alias_of_the_firehose() -> None:
     ``{{ hermes_agent_slack_firehose_channel }}``, no configuration could make
     the work channel distinct from the firehose — every tier resolved to one id.
     """
-    raw = str(DEFAULTS["hermes_agent_slack_hermes_all_channel"])
-    assert "lookup('env', 'SLACK_HERMES_ALL_CHANNEL')" in raw
+    # Asserted as behaviour, not as a source-text match. The env-var name is
+    # now built from the agent identity so a second agent reads its own
+    # channel, which means there is no literal in defaults to grep for — and
+    # the property that actually matters was never the spelling. These two
+    # cases pin it from both sides: its own channel wins when set, and the
+    # firehose is only ever reached as a fallback.
     ctx = _resolve(CONFIGURED)
     assert ctx["hermes_agent_slack_hermes_all_channel"] == "C_ALL" != "C_FIRE"
+
+    unset = _resolve({k: v for k, v in CONFIGURED.items() if k != "SLACK_HERMES_ALL_CHANNEL"})
+    assert unset["hermes_agent_slack_hermes_all_channel"] == "C_FIRE"
+
+    # And the identity really does select the name, so the second agent cannot
+    # silently inherit this one's work channel.
+    assert _resolve({**CONFIGURED, "SLACK_DONNA_ALL_CHANNEL": "C_DONNA"})[
+        "hermes_agent_slack_hermes_all_channel"
+    ] == "C_ALL"
 
 
 def test_the_four_channels_resolve_to_four_distinct_surfaces() -> None:
@@ -187,58 +223,75 @@ def test_the_four_channels_resolve_to_four_distinct_surfaces() -> None:
     assert len(live) == 4, f"emitters collapsed onto fewer channels: {live}"
 
 
-# --- per-card routing: the recurring board is not one undifferentiated tier ----
+# --- per-job routing: the recurring fleet is not one undifferentiated tier ----
+#
+# Outcome-based split routing (channel_when_healthy) and terse_when_healthy
+# are restored as PROMPT TEXT, not a hermes_agent_direct_cron_jobs field
+# `--deliver` can express: `--deliver` is one fixed target (the breaking-run
+# destination, issues, checked below), and the shared reporting footer
+# (templates/direct-cron-footer.md.j2, appended to every job's prompt by
+# reconcile_direct_cron.yml) instructs the model to self-route to
+# channel_when_healthy via `hermes send` + a trailing [SILENT] on an
+# all-clear run, so --deliver does not also post it.
 
-def test_the_fabric_status_card_reports_to_the_issues_channel() -> None:
-    """The operator's stated requirement for #hermes-issues: nothing but an
-    hourly daytime all-clear while Hermes and its dependencies are up, and the
-    error detail when they are not. Both halves are this one card's output, so
-    the card posts to issues whether the news is good or bad — which is also
-    what keeps silence in that channel distinguishable from a dead watchdog."""
-    assert _card_report_channel("Homelab AI fabric status", _resolve(CONFIGURED)) == "slack:C_ISSUES"
+def test_the_fabric_status_job_deliver_is_the_breaking_run_channel() -> None:
+    """`--deliver` (issues) is the default/breaking-run destination; the
+    all-clear destination (noise) is on the item as channel_when_healthy and
+    is only reachable via the prompt footer's self-send branch, not --deliver
+    itself — see test_the_fabric_status_job_carries_the_outcome_split below."""
+    ctx = _resolve(CONFIGURED)
+    assert _direct_deliver("hermes_agent_daily_status_cron_name", ctx) == "slack:C_ISSUES"
 
 
-def test_scouting_cards_report_to_the_noise_channel() -> None:
+def test_the_fabric_status_job_carries_the_outcome_split() -> None:
+    job = _direct_job("hermes_agent_daily_status_cron_name")
+    assert "channel_when_healthy" in job
+    assert job["channel_when_healthy"] == "slack:{{ hermes_agent_slack_noise_channel }}"
+    assert job.get("terse_when_healthy") is True
+    # No other job carries the split — it was one card's behaviour, not a
+    # general one.
+    others = [j for j in DEFAULTS["hermes_agent_direct_cron_jobs"]
+              if j is not job and "channel_when_healthy" in j]
+    assert others == [], [j.get("name") for j in others]
+
+
+def test_the_shared_footer_renders_the_outcome_split_and_the_default_case() -> None:
+    """The footer template itself, not just the data feeding it — pins that
+    the self-send + [SILENT] branch and the evidence contract are both
+    actually present in the rendered text, for a job with the split and one
+    without."""
+    footer = (ROLE / "templates" / "direct-cron-footer.md.j2").read_text()
+    split = _ENV.from_string(footer).render(
+        item={"channel_when_healthy": "slack:C_NOISE", "terse_when_healthy": True},
+        deliver="slack:C_ISSUES", ansible_managed="TEST",
+    )
+    default = _ENV.from_string(footer).render(item={}, deliver="slack:C_ALL", ansible_managed="TEST")
+    assert "hermes send --to slack:C_NOISE" in split
+    assert "[SILENT]" in split
+    assert "All systems operational" in split
+    assert "do not call `hermes send` yourself" in default
+    for rendered in (split, default):
+        assert "EVIDENCE CONTRACT" in rendered
+        assert "do NOT invent a result" in rendered
+
+
+def test_scouting_jobs_report_to_the_noise_channel() -> None:
     """~28% of the audited corpus was low-urgency polling. These two are its
     recurring source: reading material on a fixed cadence, never an observation
     that something changed."""
     ctx = _resolve(CONFIGURED)
-    for title in ("AI news scout", "Daily innovation proposal"):
-        assert _card_report_channel(title, ctx) == "slack:C_NOISE", title
+    for var in ("hermes_agent_ai_news_cron_name", "hermes_agent_daily_innovation_cron_name"):
+        assert _direct_deliver(var, ctx) == "slack:C_NOISE", var
 
 
-def test_cards_without_an_override_still_report_to_the_work_channel() -> None:
-    """The override is opt-in. Every card that observes the estate — including
-    the docs and Splunk fleets — stays on the work surface by omitting it."""
+def test_the_former_kanban_cards_still_report_to_the_work_channel() -> None:
+    """Splunk triage sweep, Docs-site study and docs-sync were Kanban cards
+    before the reframe (18/18 to cron); they are now direct-cron jobs but keep
+    the same destination."""
     ctx = _resolve(CONFIGURED)
-    for title in ("Splunk triage sweep", "Docs sync", "Docs-site study"):
-        assert "channel" not in _card(title), f"{title} gained an override"
-        assert _card_report_channel(title, ctx) == "slack:C_ALL", title
-
-
-def test_an_unset_override_target_falls_back_to_the_work_channel() -> None:
-    """An override naming a channel the operator never configured must degrade to
-    the work channel, never to `slack:` with an empty id."""
-    ctx = _resolve({})
-    for title in ("Homelab AI fabric status", "AI news scout"):
-        assert _card_report_channel(title, ctx) == "slack:C_FIRE", title
-
-
-def test_only_the_fabric_status_card_collapses_its_all_clear() -> None:
-    """The operator wants #hermes-issues silent-but-alive: one line when healthy,
-    detail when not. That inverts the report contract, so it is opt-in per card —
-    for every other card a clean check IS the finding and must be named."""
-    terse = [c["title"] for c in DEFAULTS["hermes_agent_kanban_cards"]
-             if c.get("terse_when_healthy")]
-    assert terse == ["Homelab AI fabric status"], terse
-
-    branch = re.search(r"(\{% if card\.terse_when_healthy.*?\{% endif %\})", ENQUEUER, re.S)
-    assert branch, "the report-shape branch is gone from the enqueuer footer"
-    body = _ENV.from_string(branch.group(1))
-    assert "All systems operational" in body.render(card={"terse_when_healthy": True})
-    # The default branch must still forbid the unnamed "all healthy" summary that
-    # the terse branch mandates — otherwise the opt-in silently became the norm.
-    assert "without naming them" in body.render(card={})
+    for var in ("hermes_agent_splunk_triage_cron_name", "hermes_agent_docs_study_cron_name",
+                "hermes_agent_docs_sync_cron_name"):
+        assert _direct_deliver(var, ctx) == "slack:C_ALL", var
 
 
 def test_the_fabric_status_card_is_told_its_endpoints_instead_of_guessing() -> None:
@@ -282,7 +335,9 @@ def test_unset_channels_reproduce_todays_routing_exactly() -> None:
     assert _deliver_targets(SPLUNK_STATUS, ctx, MAIN_TASKS) == "slack:C_FIRE"
     assert _deliver_targets(TRIAGE, ctx, MAIN_TASKS) == "slack:C_DIGEST"
     assert _deliver_targets(KANBAN, ctx, MAIN_TASKS) == "slack:C_FIRE"
-    assert _deliver_targets(DIRECT, ctx, DIRECT_TASKS) == "slack:C_DIGEST"
+    match = re.search(DIRECT, DIRECT_TASKS)
+    assert match, "the direct-cron default deliver expression moved"
+    assert "slack:" + ctx[match.group(1)] == "slack:C_DIGEST"
     assert ctx["fabric_watchdog_alert_channel"] == "C_DIGEST"
 
 

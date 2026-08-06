@@ -12,7 +12,12 @@ ansible_become_method: sudo
 ai_subdomain: "{{ lookup('env', 'PROXMOX_SUBDOMAIN') | mandatory('PROXMOX_SUBDOMAIN required') }}"
 ai_otel_http_port: >-
   {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['otel_traces_http'] }}
-ai_orchestration_otel_endpoint: "http://cribl-edge.{{ ai_subdomain }}:{{ ai_otel_http_port }}"
+# The OTLP trace listener lives on Cribl Stream, not Edge. Edge's OTLP input
+# was removed when trace fan-out (Splunk + Langfuse) consolidated onto Stream;
+# pointing producers at Edge means every span is POSTed at a host that no
+# longer accepts them, which is silent — an exporter's delivery failure does
+# not surface in the producing service.
+ai_orchestration_otel_endpoint: "http://cribl-stream.{{ ai_subdomain }}:{{ ai_otel_http_port }}"
 
 # Heavy-tier LLM serving host — short hostname and reserved address, read from
 # the inventory artifact and NEVER written here.
@@ -151,6 +156,16 @@ ai_escalation_rubric:
 # to these, so the rendered configs stay byte-identical to the prior literals.
 ai_stream_read_timeout_seconds: 1800
 ai_router_request_timeout_seconds: 2400
+# Router minimum sleep between rate-limit (429) retries. Named here for the same
+# reason as the two above: the brain watchdog's probe deadline must OUTLIVE one
+# backoff or no retry can complete inside a probe, and that assert lives in
+# roles/hermes_agent while the value is consumed by roles/llm_router — two roles
+# that never share a play. Consumer: llm_router_retry_after_seconds.
+#
+# It is also the brain watchdog's tolerance floor: the router absorbs 429s for
+# rate_limit_retries x this value (~320s), so anything the watchdog reports as
+# DOWN sooner than that is reporting an outage the real work path survives.
+ai_router_retry_after_seconds: 40
 
 # Per-model serving concurrency ceiling. THE single numeric definition now
 # lives upstream in dryvist/tofu-proxmox's

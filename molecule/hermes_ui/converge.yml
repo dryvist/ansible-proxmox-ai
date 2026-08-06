@@ -1,0 +1,71 @@
+---
+# Molecule converge playbook
+# Tests the hermes_ui_docker role against the test container. Both apps are
+# stateless-enough for CI: mission-control's SQLite lives on the bind mount,
+# hermes-workspace holds no state of its own.
+
+- name: Converge
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    # Override storage driver for Docker-in-Docker (vfs required, not fuse-overlayfs)
+    hermes_ui_docker_storage_driver: vfs
+    # Values normally injected from tofu_data.constants / OpenBao
+    hermes_ui_docker_workspace_port: 3000
+    hermes_ui_docker_mission_control_port: 3001
+    hermes_ui_docker_workspace_password: molecule-test-password
+    hermes_ui_docker_mission_control_auth_user: molecule-admin
+    hermes_ui_docker_mission_control_auth_pass: molecule-test-password
+    # The production readiness gate assumes a real fabric hostname; point it
+    # somewhere inert instead (never called during converge — hermes-workspace
+    # does not health-check its own gateway on boot).
+    hermes_ui_docker_workspace_hermes_api_url: "http://127.0.0.1:9"
+    hermes_ui_docker_workspace_hermes_dashboard_url: "http://127.0.0.1:9"
+    hermes_ui_docker_mission_control_allowed_hosts: "localhost,127.0.0.1"
+
+  tasks:
+    - name: Bootstrap Docker (same role the hermes_ui_docker meta dependency uses)
+      ansible.builtin.include_role:
+        name: docker_engine
+      vars:
+        docker_engine_configure_daemon_json: true
+        docker_engine_storage_driver: vfs
+
+    - name: Converge hermes-ui with container-log capture on failure
+      block:
+        - name: Include hermes_ui_docker role
+          ansible.builtin.include_role:
+            name: hermes_ui_docker
+      rescue:
+        - name: Dump hermes-workspace container logs (diagnosis)
+          ansible.builtin.command: docker logs --tail 80 hermes-workspace
+          register: hermes_ui_molecule_workspace_logs
+          changed_when: false
+          failed_when: false
+
+        - name: Dump mission-control container logs (diagnosis)
+          ansible.builtin.command: docker logs --tail 80 mission-control
+          register: hermes_ui_molecule_mc_logs
+          changed_when: false
+          failed_when: false
+
+        - name: Dump docker state (diagnosis)
+          ansible.builtin.command: docker ps -a
+          register: hermes_ui_molecule_ps
+          changed_when: false
+          failed_when: false
+
+        - name: Fail with the captured diagnostics
+          ansible.builtin.fail:
+            msg: |
+              hermes-ui converge failed.
+              docker ps -a:
+              {{ hermes_ui_molecule_ps.stdout | default('') }}
+              hermes-workspace logs:
+              {{ hermes_ui_molecule_workspace_logs.stdout | default('') }}
+              {{ hermes_ui_molecule_workspace_logs.stderr | default('') }}
+              mission-control logs:
+              {{ hermes_ui_molecule_mc_logs.stdout | default('') }}
+              {{ hermes_ui_molecule_mc_logs.stderr | default('') }}

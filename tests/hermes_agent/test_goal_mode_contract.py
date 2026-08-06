@@ -35,25 +35,6 @@ def create_task(conn, *, idempotency_key=None, goal_mode=False, goal_max_turns=N
     raise RuntimeError("insert path")
 '''
 PINNED_GOAL_COMPLETION_SOURCE = "                    verdict, reason, _ = judge_goal(\n"
-PINNED_RETRY_DELAY_SOURCE = (
-    "                wait_time = _retry_after if _retry_after else "
-    "jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)\n"
-)
-PINNED_INVALID_RESPONSE_RETRY_SOURCE = (
-    "                    wait_time = jittered_backoff("
-    "retry_count, base_delay=5.0, max_delay=120.0)\n"
-)
-PINNED_ADAPTIVE_BACKOFF_SOURCE = (
-    "                if is_rate_limited and not _retry_after:\n"
-)
-PINNED_TRANSPORT_RECOVERY_SOURCE = (
-    "                    if not _retry.primary_recovery_attempted and "
-    "agent._try_recover_primary_transport(\n"
-)
-PINNED_TOKEN_USAGE_SOURCE = (
-    "                    if agent.verbose_logging:\n"
-    '                        logging.debug(f"Token usage: {usage}")\n'
-)
 # Verbatim upstream lines at the pinned tag (v2026.7.7.2), indentation
 # included — `_apply_runtime_patch` re-runs the role's own regexp against
 # these, so a copy that drifts from upstream would silently stop patching
@@ -72,20 +53,75 @@ PINNED_PROTOCOL_VIOLATION_SOURCE = (
     '                    "worker exited cleanly (rc=0) without calling "\n'
     '                    "kanban_complete or kanban_block — protocol violation"\n'
 )
+PINNED_PROTOCOL_RETRY_SOURCE = (
+    "                failure_limit=1 if (protocol_violation or is_systemic) "
+    "else None,\n"
+)
 PINNED_CRON_DELIVERY_SOURCE = (
     "            deliver_content = final_response if success else "
     "_summarize_cron_failure_for_delivery(job, error)\n"
     "                    delivery_error = _deliver_result(job, deliver_content, "
     "adapters=adapters, loop=loop)\n"
 )
-MALFORMED_TOKEN_USAGE_SOURCE = (
-    "                   if True:\n"
-    '                       logging.debug(f"Token usage: {usage}")\n'
-)
-PATCHED_TOKEN_USAGE_SOURCE = (
-    "                    if True:\n"
-    '                        logging.debug(f"Token usage: {usage}")\n'
-)
+PINNED_WORKER_REAP_SOURCE = '''\
+def _reap(pid, signal_fn=None):
+    killed = False
+    kill = signal_fn if signal_fn is not None else (
+        os.kill if hasattr(os, "kill") else None
+    )
+    if kill is not None:
+        try:
+            kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            pass
+        for _ in range(10):
+            if not _pid_alive(pid):
+                break
+            time.sleep(0.5)
+        if _pid_alive(pid):
+            try:
+                _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+                kill(pid, _sigkill)
+                killed = True
+            except (ProcessLookupError, OSError):
+                pass
+    return killed
+'''
+PINNED_STALE_RECLAIM_TERMINATE_SOURCE = '''\
+def _reclaim(pid, signal_fn=None):
+    info = {"terminated": False, "sigkill": False}
+    kill = signal_fn if signal_fn is not None else (
+        os.kill if hasattr(os, "kill") else None
+    )
+    if kill is None:
+        return info
+
+    info["termination_attempted"] = True
+    try:
+        kill(int(pid), signal.SIGTERM)
+    except ProcessLookupError:
+        info["terminated"] = True
+        return info
+    except OSError:
+        return info
+
+    for _ in range(10):
+        if not _pid_alive(pid):
+            info["terminated"] = True
+            return info
+        time.sleep(0.5)
+
+    if _pid_alive(pid):
+        try:
+            _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+            kill(int(pid), _sigkill)
+            info["sigkill"] = True
+        except (ProcessLookupError, OSError):
+            return info
+
+    info["terminated"] = not _pid_alive(pid)
+    return info
+'''
 PINNED_WORKER_SPAWN_SOURCE = '''\
 def build_worker_argv(task, prompt):
     cmd = []
@@ -103,6 +139,46 @@ PINNED_HINDSIGHT_PREFETCH_SOURCE = (
     "            except Exception as e:\n"
     '                logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)\n'
 )
+# Verbatim upstream shape of run_agent.py's _sync_external_memory_for_turn —
+# indentation included, same drift protection as the other PINNED_*_SOURCE
+# fixtures above. Full behavioral coverage of the four patches this feeds
+# lives in test_memory_sync_observability.py; this copy exists only so
+# _source_postconditions() below has something to default the new
+# hermes_agent_run_agent_source context var to.
+PINNED_SYNC_EXTERNAL_MEMORY_SOURCE = '''\
+class _Agent:
+    def _sync_external_memory_for_turn(
+        self,
+        *,
+        original_user_message,
+        final_response,
+        interrupted,
+        messages=None,
+    ) -> None:
+        if interrupted:
+            return
+        if not (self._memory_manager and final_response and original_user_message):
+            return
+        user_text = _summarize_user_message_for_log(original_user_message, sep="\\n")
+        response_text = _summarize_user_message_for_log(final_response, sep="\\n")
+        if not (user_text and response_text):
+            return
+        try:
+            sync_kwargs = {"session_id": self.session_id or ""}
+            if messages is not None:
+                sync_kwargs["messages"] = messages
+            self._memory_manager.sync_all(
+                user_text,
+                response_text,
+                **sync_kwargs,
+            )
+            self._memory_manager.queue_prefetch_all(
+                user_text,
+                session_id=self.session_id or "",
+            )
+        except Exception:
+            pass
+'''
 # Reduced run_kanban_goal_loop skeleton: the control flow that matters
 # (status poll, judge, budget check, worker turn, increment) with the two
 # patch anchor sites VERBATIM from upstream v2026.7.7.2 — indentation
@@ -187,6 +263,14 @@ PATCHED_HINDSIGHT_PREFETCH_SOURCE = _apply_runtime_patch(
     "Patch Hermes auto-recall prefetch failure to log at warning, not debug",
     PINNED_HINDSIGHT_PREFETCH_SOURCE,
 )
+PATCHED_RUN_AGENT_SOURCE = PINNED_SYNC_EXTERNAL_MEMORY_SOURCE
+for _run_agent_task_name in (
+    'Patch _sync_external_memory_for_turn to log its "interrupted" skip',
+    "Patch _sync_external_memory_for_turn to log its missing-input skip",
+    "Patch _sync_external_memory_for_turn to log its empty-flatten skip",
+    "Patch _sync_external_memory_for_turn to log its swallowed exception",
+):
+    PATCHED_RUN_AGENT_SOURCE = _apply_runtime_patch(_run_agent_task_name, PATCHED_RUN_AGENT_SOURCE)
 PATCHED_KANBAN_GOAL_LOOP_SOURCE = _apply_runtime_patch(
     "Patch Hermes kanban goal loop to retry judge errors without burning turns",
     _apply_runtime_patch(
@@ -274,17 +358,6 @@ def _goal_fields(conn: sqlite3.Connection) -> tuple[int, int | None]:
     return row["goal_mode"], row["goal_max_turns"]
 
 
-def _render_reviewer_prompt(goal_mode: bool) -> str:
-    defaults = yaml.safe_load((ROLE_ROOT / "defaults" / "main.yml").read_text())
-    environment = Environment(autoescape=False)
-    environment.filters["bool"] = bool
-    return environment.from_string(defaults["hermes_agent_reviewer_card_prompt"]).render(
-        hermes_agent_kanban_goal_mode=goal_mode,
-        hermes_agent_kanban_goal_max_turns=3,
-        hermes_agent_slack_hermes_all_channel="C00000000",
-    )
-
-
 def _source_postconditions(
     completion_source: str,
     reconcile_source: str,
@@ -294,6 +367,7 @@ def _source_postconditions(
     cron_scheduler_source: str = PATCHED_CRON_DELIVERY_SOURCE,
     hindsight_plugin_source: str = PATCHED_HINDSIGHT_PREFETCH_SOURCE,
     goal_judge_source: str = PATCHED_GOAL_JUDGE_SOURCE,
+    run_agent_source: str = PATCHED_RUN_AGENT_SOURCE,
 ) -> tuple[bool, ...]:
     task = _task("Assert installed Hermes pinned-source patches")
     environment = Environment(autoescape=False)
@@ -307,6 +381,7 @@ def _source_postconditions(
         "hermes_agent_compressor_source": compressor_source,
         "hermes_agent_cron_scheduler_source": cron_scheduler_source,
         "hermes_agent_hindsight_plugin_source": hindsight_plugin_source,
+        "hermes_agent_run_agent_source": run_agent_source,
     }
     return tuple(
         bool(environment.compile_expression(condition)(**context))
@@ -331,57 +406,58 @@ def test_hindsight_prefetch_patch_logs_at_warning() -> None:
     assert "logger.debug" not in patched
 
 
-@pytest.mark.parametrize(
-    "source",
-    (
-        PINNED_TOKEN_USAGE_SOURCE,
-        MALFORMED_TOKEN_USAGE_SOURCE,
-        PATCHED_TOKEN_USAGE_SOURCE,
-    ),
-)
-def test_token_usage_metric_patch_normalizes_known_source_states(source: str) -> None:
-    patched = _apply_runtime_patch(
-        "Enable prompt-safe Hermes token usage metrics at DEBUG",
-        source,
-    )
-    assert patched == PATCHED_TOKEN_USAGE_SOURCE
+def test_auxiliary_retry_budgets_are_bounded() -> None:
+    """What remains true after the client-side backoff hacks were reverted.
 
-
-def test_model_calls_retry_once_after_fifteen_seconds() -> None:
+    Retry *counts* (how many attempts) are a deliberate, unrelated config —
+    unlike the removed patches, which forced a flat *wait time* between
+    retries. Only the counts and the auxiliary-path fixed delay survive.
+    """
     config_template = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
     assert "Upstream counts total attempts" in config_template
     assert "api_max_retries: 2" in config_template
     assert "transient_retries: 1" in config_template
 
-    patched = _apply_runtime_patch(
-        "Patch Hermes exception retry delay for the local serial backend",
-        PINNED_RETRY_DELAY_SOURCE,
-    )
-    assert "wait_time = 15.0" in patched
-    assert "jittered_backoff" not in patched
-
-    invalid_response = _apply_runtime_patch(
-        "Patch Hermes invalid-response retry delay for the local serial backend",
-        PINNED_INVALID_RESPONSE_RETRY_SOURCE,
-    )
-    assert "wait_time = 15.0" in invalid_response
-
-    adaptive = _apply_runtime_patch(
-        "Disable adaptive rate-limit backoff for the local serial backend",
-        PINNED_ADAPTIVE_BACKOFF_SOURCE,
-    )
-    assert "if False and" in adaptive
-
-    transport = _apply_runtime_patch(
-        "Disable the extra transport-recovery attempt cycle",
-        PINNED_TRANSPORT_RECOVERY_SOURCE,
-    )
-    assert "if False and" in transport
-
     tasks = (ROLE_ROOT / "tasks" / "main.yml").read_text()
     assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in tasks
     assert "status in (408, 429)" in tasks
     assert 'resolved_provider != "custom"' in tasks
+
+
+# The six conversation_loop.py patches that forced a flat unjittered retry
+# wait, disabled adaptive rate-limit backoff and transport recovery, and
+# permanently forced debug logging on. All six reapplied on every converge
+# once merged; removing them from the task list is the actual fix, so the
+# regression this guards is a silent re-add of any one of them.
+REVERTED_CLIENT_BACKOFF_PATCH_NAMES = (
+    "Patch Hermes exception retry delay for the local serial backend",
+    "Patch Hermes invalid-response retry delay for the local serial backend",
+    "Disable adaptive rate-limit backoff for the local serial backend",
+    "Disable the extra transport-recovery attempt cycle",
+    "Enable prompt-safe Hermes request size metrics at DEBUG",
+    "Enable prompt-safe Hermes token usage metrics at DEBUG",
+)
+KEPT_MAX_TOKENS_CEILING_PATCH_NAMES = (
+    "Patch hermes-agent retry boost to respect the configured max_tokens ceiling",
+    "Patch hermes-agent length-continuation boost to respect the configured "
+    "max_tokens ceiling",
+)
+
+
+def test_client_side_backoff_hacks_stay_reverted() -> None:
+    task_names = {
+        item.get("name")
+        for item in yaml.safe_load((ROLE_ROOT / "tasks" / "main.yml").read_text())
+    }
+    for name in REVERTED_CLIENT_BACKOFF_PATCH_NAMES:
+        assert name not in task_names, f"reintroduced: {name}"
+    for name in KEPT_MAX_TOKENS_CEILING_PATCH_NAMES:
+        assert name in task_names, f"missing: {name}"
+
+    tasks_text = (ROLE_ROOT / "tasks" / "main.yml").read_text()
+    assert "wait_time = 15.0" not in tasks_text
+    assert "if False and is_rate_limited" not in tasks_text
+    assert "if False and not _retry.primary_recovery_attempted" not in tasks_text
 
 
 def test_worker_spawn_patch_enters_quiet_goal_loop_path() -> None:
@@ -585,35 +661,43 @@ def test_idempotent_create_does_not_mutate_terminal_history(status: str) -> None
     assert _goal_fields(conn) == (0, 5)
 
 
-def test_enqueuer_goal_flags_follow_the_role_toggle() -> None:
-    enqueuer = (ROLE_ROOT / "templates" / "kanban-enqueue-recurring.sh.j2").read_text()
-    assert (
-        "{% if hermes_agent_kanban_goal_mode | bool %} --goal --goal-max-turns "
-        "{{ hermes_agent_kanban_goal_max_turns }}{% endif %}"
-        in enqueuer
+# test_enqueuer_goal_flags_follow_the_role_toggle DELETED (native-cron
+# reframe, 18/18): kanban-enqueue-recurring.sh.j2 and every Kanban card
+# (including docs-sync) are gone — there is no enqueuer template and no
+# per-card `channel:` override left to test at all. hermes_agent_kanban_cards
+# no longer exists; hermes_agent_kanban_goal_mode still governs ad-hoc/
+# follow-up kanban work (the reviewer job filing a gap card, etc.), asserted
+# elsewhere in this file against the Python patches, not against a template.
+#
+# test_the_kanban_card_body_still_carries_the_evidence_and_block_contract was
+# removed: kanban-card-body.md.j2 no longer exists (18/18 to cron). Its
+# kanban_block(kind=needs_input) escalation and self-directed `hermes send`
+# instruction were Kanban-task machinery — a cron job has no task to block and
+# already delivers natively via `--deliver`, so neither applies. The one piece
+# of real value in that wrapper, the evidence-contract anti-fabrication
+# instruction (cite the query, never invent a number), is NOT reproduced
+# anywhere for the 18 converted jobs — flagged in the PR, not silently lost.
+
+
+def test_reviewer_prompt_carries_no_leftover_self_perpetuation() -> None:
+    """The native-cron redesign made the reviewer's own next-occurrence
+    pre-create (create the next slot blocked, have the enqueuer unblock it)
+    unnecessary: the crontab/cron entry is now the time gate for every job,
+    reviewer included — it is a plain hermes_agent_direct_cron_jobs entry, not
+    a kanban card. Pins that the chain-continuation step actually left the
+    prompt, rather than merely stopped being tested: no goal_mode Jinja
+    conditional exists in it at all any more, so it renders identically
+    regardless of hermes_agent_kanban_goal_mode.
+    """
+    defaults = yaml.safe_load((ROLE_ROOT / "defaults" / "main.yml").read_text())
+    prompt = str(defaults["hermes_agent_reviewer_card_prompt"])
+    assert "{%" not in prompt, "no Jinja conditionals should remain in the reviewer prompt"
+    assert "initial_status=blocked" not in prompt
+    assert "goal_mode" not in prompt
+    assert "bounded goal loop" not in prompt
+    assert prompt.strip().endswith(
+        'Save the updated gap fingerprint back to "review-last".'
     )
-    # The report destination is per-card as of the four-channel split: cards opt
-    # in with `channel:`, everything else falls back to the work channel. Routing
-    # itself is pinned in test_alert_routing.py; what matters here is that the
-    # footer still tells the worker to send exactly one report via the native
-    # sender, with the fallback intact.
-    assert (
-        "hermes send --to slack:"
-        "{{ card.channel | default(hermes_agent_slack_hermes_all_channel, true) }}"
-    ) in enqueuer
-    assert "kind=needs_input" in enqueuer
-    assert "status=pending" not in enqueuer
-
-
-def test_reviewer_child_goal_fields_follow_the_role_toggle() -> None:
-    enabled = _render_reviewer_prompt(True)
-    disabled = _render_reviewer_prompt(False)
-
-    assert "initial_status=blocked, goal_mode=true, and goal_max_turns=3" in enabled
-    assert "preserves this card's bounded goal loop" in enabled
-    assert "goal_mode=true" not in disabled
-    assert "goal_max_turns=" not in disabled
-    assert "bounded goal loop" not in disabled
 
 
 def test_hermes_inference_paths_use_the_declared_alias() -> None:
@@ -677,18 +761,31 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         "interim-brain": hermes_backend,
     }
     # Both selectors must be declared servable, or the alias indirection just
-    # moves the 404 one level down. The cluster model is servable too — it is
-    # hermes-default's router_settings.fallbacks target while a cluster window
-    # is up (roles/llm_router/defaults/main.yml,
-    # llm_router_hermes_default_fallback_chain) — same reasoning: an
-    # unroutable fallback target 404s instead of failing over.
+    # moves the 404 one level down.
+    #
+    # The cluster model is servable ONLY while the cluster leg is actually
+    # available. It is hermes-default's router_settings.fallbacks target while
+    # a cluster window is up, and an unroutable fallback target 502s instead of
+    # failing over — which is exactly what it did, unnoticed, from 2026-08-05
+    # (both hosts' clusterMode disabled, TB cable out) until #365.
+    #
+    # Derive the expectation from llm_router_cluster_leg_available rather than
+    # re-pinning a literal: that var is the single switch #365 introduced, and
+    # roles/llm_router/tasks/assert-cluster-leg.yml already fails the converge
+    # if it and the registry's `servable` disagree. Following it here means
+    # this test tracks the leg coming back instead of going red the moment it
+    # does — re-pinning a literal is the drift this whole indirection exists
+    # to prevent.
     #
     # `servable` is deliberately NOT `enabled`: every large-tier entry is
-    # enabled (the router offers it), only these three are servable (the
-    # backend answers for it). Conflating them yields a 404, not an answer.
+    # enabled (the router offers it), only these are servable (the backend
+    # answers for it). Conflating them yields a 404, not an answer.
+    expected_servable = [hermes_backend, judge_backend]
+    if router_defaults["llm_router_cluster_leg_available"]:
+        expected_servable.append(by_role["cluster"]["client_model_id"])
     assert [
         entry["client_model_id"] for entry in registry if entry.get("servable")
-    ] == [hermes_backend, judge_backend, by_role["cluster"]["client_model_id"]]
+    ] == expected_servable
     hermes_entries = [
         entry for entry in registry if entry["client_model_id"] == hermes_backend
     ]
@@ -720,12 +817,17 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # hermes_goal_judge_model == "goal-judge"), but its backend is llama-swap
     # swap-class in the deployed config (nix-ai
     # modules/mlx/llama-swap-topology.nix — worker pinned ttl=0, judge
-    # ttl=900), and a measured ~79s cold load exceeds the 60s judge timeout.
+    # ttl=900), and a measured ~79s cold load would exceed the judge timeout.
     # Flipping this to "{{ hermes_goal_judge_model }}" without that residency
     # fix landing first breaks card judgement — measured live 2026-08, not
     # theoretical. Do not flip it back without re-measuring.
+    #
+    # The timeout below is unrelated: it is raised on MEASURED tail latency
+    # of hermes_agent_model itself (the pinned model the judge actually
+    # calls today), not on the cold-load case above — see defaults/main.yml's
+    # ADDENDUM comment for the full figures.
     assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_agent_model }}"
-    assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == 60
+    assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == 150
     assert "goal_judge:" in config
     assert "model: {{ hermes_agent_kanban_goal_judge_model | to_json }}" in config
     assert "base_url: '{{ hermes_agent_model_base_url }}'" in config
@@ -763,6 +865,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "agent/context_compressor.py",
         "cron/scheduler.py",
         "plugins/memory/hindsight/__init__.py",
+        "run_agent.py",
     ]
 
     assert_task = _task("Assert installed Hermes pinned-source patches")
@@ -800,6 +903,14 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "registered for dispatcher-spawned workers (HERMES_KANBAN_TASK "
         in conditions
     )
+    # The message and the retry rule are asserted as a pair: the message tells
+    # the operator the card will be retried, so it must not be able to land
+    # while the forced first-failure give-up is still in the source.
+    assert (
+        "a missing toolset. The card is retried within its own max_retries"
+        in conditions
+    )
+    assert "failure_limit=1 if is_systemic else None," in conditions
     assert (
         'logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)'
         in conditions
@@ -825,7 +936,6 @@ def test_installed_source_postconditions_fail_closed() -> None:
         for condition in assert_task["ansible.builtin.assert"]["that"]
     )
     assert 'resolved_provider != "custom"' in conditions
-    assert "Token usage:" in conditions
     assert "update the pinned-source patches" in assert_task["ansible.builtin.assert"][
         "fail_msg"
     ]
@@ -849,33 +959,49 @@ def test_installed_source_postconditions_fail_closed() -> None:
             "model-did-not-call case",
             PINNED_PROTOCOL_VIOLATION_SOURCE,
         )
-    )
-    retry_source = "".join(
-        (
-            _apply_runtime_patch(
-                "Patch Hermes exception retry delay for the local serial backend",
-                PINNED_RETRY_DELAY_SOURCE,
-            ),
-            _apply_runtime_patch(
-                "Patch Hermes invalid-response retry delay for the local serial backend",
-                PINNED_INVALID_RESPONSE_RETRY_SOURCE,
-            ),
-            _apply_runtime_patch(
-                "Disable adaptive rate-limit backoff for the local serial backend",
-                PINNED_ADAPTIVE_BACKOFF_SOURCE,
-            ),
-            _apply_runtime_patch(
-                "Disable the extra transport-recovery attempt cycle",
-                PINNED_TRANSPORT_RECOVERY_SOURCE,
-            ),
+        + _apply_runtime_patch(
+            "Patch Hermes protocol-violation crashes to retry within the card budget",
+            PINNED_PROTOCOL_RETRY_SOURCE,
         )
     )
-    retry_source += "# Log request details if verbose\n        if True:\n"
-    retry_source += _apply_runtime_patch(
-        "Enable prompt-safe Hermes token usage metrics at DEBUG",
-        PINNED_TOKEN_USAGE_SOURCE,
+    worker_reap_source = PINNED_WORKER_REAP_SOURCE
+    for patch_name in (
+        "Patch Hermes worker-reap timeout path to verify PID safety before signaling",
+        "Patch Hermes worker-reap timeout path to signal the worker's process group",
+        "Patch Hermes worker-reap timeout path to escalate on the worker's process group",
+    ):
+        worker_reap_source = _apply_runtime_patch(patch_name, worker_reap_source)
+    # The blockinfile-inserted identity-check helper the three replaces
+    # above call into — landed separately from them at converge time, so
+    # the assert conditions checking for it need it present here too.
+    worker_reap_source = (
+        _task(
+            "Patch Hermes worker-reap helper to verify PID identity before signaling"
+        )["ansible.builtin.blockinfile"]["block"]
+        + worker_reap_source
     )
-    retry_source += _apply_runtime_patch(
+    reconcile_source += worker_reap_source
+
+    stale_reclaim_source = PINNED_STALE_RECLAIM_TERMINATE_SOURCE
+    for patch_name in (
+        "Patch Hermes stale-reclaim worker termination to verify PID safety before signaling",
+        "Patch Hermes stale-reclaim worker termination to signal the worker's process group",
+        "Patch Hermes stale-reclaim worker termination to escalate on the worker's process group",
+    ):
+        stale_reclaim_source = _apply_runtime_patch(patch_name, stale_reclaim_source)
+    # The blockinfile-inserted identity-check helper both the timeout-path
+    # and stale-reclaim-path signal sites call into.
+    stale_reclaim_source = (
+        _task(
+            "Patch Hermes worker-reap helper to verify PID identity before signaling"
+        )["ansible.builtin.blockinfile"]["block"]
+        + stale_reclaim_source
+    )
+    reconcile_source += stale_reclaim_source
+    # The six client-side backoff hacks are gone (see
+    # test_client_side_backoff_hacks_stay_reverted); only the two kept
+    # max_tokens-ceiling patches still contribute to this source.
+    retry_source = _apply_runtime_patch(
         "Patch hermes-agent retry boost to respect the configured max_tokens ceiling",
         PINNED_TC_BOOST_CAP_SOURCE,
     )
@@ -900,7 +1026,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
         _source_postconditions(
             PINNED_GOAL_COMPLETION_SOURCE,
             PINNED_CREATE_TASK_SOURCE,
-            PINNED_RETRY_DELAY_SOURCE,
+            "",
             "",
         )
     )
@@ -939,6 +1065,20 @@ def test_installed_source_postconditions_fail_closed() -> None:
             reconcile_source.replace(
                 "registered for dispatcher-spawned workers (HERMES_KANBAN_TASK ",
                 "",
+            ),
+            retry_source,
+            auxiliary_source,
+        )
+    )
+    # The forced first-failure give-up left in place: a protocol violation
+    # would still retire the card on its first occurrence, so the postconditions
+    # must go red even though the reworded message landed.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source.replace(
+                "failure_limit=1 if is_systemic else None,",
+                "failure_limit=1 if (protocol_violation or is_systemic) else None,",
             ),
             retry_source,
             auxiliary_source,
@@ -997,5 +1137,25 @@ def test_installed_source_postconditions_fail_closed() -> None:
             retry_source,
             auxiliary_source,
             hindsight_plugin_source=PINNED_HINDSIGHT_PREFETCH_SOURCE,
+        )
+    )
+    # Worker-reap process-group guard dropped: reconcile_source reverts to
+    # not carrying the patched reap at all — must go red.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source.replace(worker_reap_source, ""),
+            retry_source,
+            auxiliary_source,
+        )
+    )
+    # Stale-reclaim process-group guard dropped: reconcile_source reverts to
+    # not carrying the patched reclaim termination at all — must go red.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source.replace(stale_reclaim_source, ""),
+            retry_source,
+            auxiliary_source,
         )
     )

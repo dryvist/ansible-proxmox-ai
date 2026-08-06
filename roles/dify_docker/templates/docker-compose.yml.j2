@@ -6,6 +6,20 @@
 # a YAML anchor) trimmed to the services this homelab runs. Service names are
 # the in-network DNS identifiers, referenced directly; only IPs and ports that
 # exist in tofu_data are parametrized.
+# Ship stdout/stderr to journald with tag `dify` instead of the default
+# json-file driver, which stays on local disk and never reaches the SIEM.
+# Tag is a bare identifier (no ':' or whitespace) so rsyslog's syslog-header
+# regex extracts it as $programname. The host's rsyslog forwarder
+# (ansible-proxmox-apps) matches on that tag and forwards it, on this
+# stack's own port (tofu-proxmox constants), to this stack's own dedicated
+# Splunk index — one index per service, not a shared one. Shared by every
+# service in this stack (api/worker/db/redis/... included) — one tag, one
+# index, for the whole stack.
+x-logging: &dify_docker_logging
+  driver: journald
+  options:
+    tag: dify
+
 x-shared-env: &dify-api-worker-env
   LOG_LEVEL: "INFO"
   DEPLOY_ENV: "PRODUCTION"
@@ -72,6 +86,7 @@ services:
   api:
     image: {{ dify_docker_api_image }}
     restart: {{ dify_docker_restart_policy }}
+    logging: *dify_docker_logging
     environment:
       <<: *dify-api-worker-env
       MODE: "api"
@@ -88,6 +103,7 @@ services:
   worker:
     image: {{ dify_docker_api_image }}
     restart: {{ dify_docker_restart_policy }}
+    logging: *dify_docker_logging
     environment:
       <<: *dify-api-worker-env
       MODE: "worker"
@@ -104,6 +120,7 @@ services:
   worker_beat:
     image: {{ dify_docker_api_image }}
     restart: {{ dify_docker_restart_policy }}
+    logging: *dify_docker_logging
     environment:
       <<: *dify-api-worker-env
       MODE: "beat"
@@ -114,6 +131,7 @@ services:
   web:
     image: {{ dify_docker_web_image }}
     restart: {{ dify_docker_restart_policy }}
+    logging: *dify_docker_logging
     environment:
       CONSOLE_API_URL: "{{ dify_docker_public_url }}"
       APP_API_URL: "{{ dify_docker_public_url }}"
@@ -122,6 +140,7 @@ services:
   db:
     image: {{ dify_docker_postgres_image }}
     restart: {{ dify_docker_restart_policy }}
+    logging: *dify_docker_logging
     environment:
       POSTGRES_USER: "{{ dify_docker_db_user }}"
       POSTGRES_PASSWORD: "{{ dify_docker_db_password }}"
@@ -140,6 +159,7 @@ services:
   redis:
     image: {{ dify_docker_redis_image }}
     restart: {{ dify_docker_restart_policy }}
+    logging: *dify_docker_logging
     command: redis-server --requirepass {{ dify_docker_redis_password }}
     volumes:
       - {{ dify_docker_data_dir }}/redis:/data
@@ -147,6 +167,7 @@ services:
   weaviate:
     image: {{ dify_docker_weaviate_image }}
     restart: {{ dify_docker_restart_policy }}
+    logging: *dify_docker_logging
     environment:
       PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
       QUERY_DEFAULTS_LIMIT: "25"
@@ -164,6 +185,7 @@ services:
   sandbox:
     image: {{ dify_docker_sandbox_image }}
     restart: {{ dify_docker_restart_policy }}
+    logging: *dify_docker_logging
     environment:
       API_KEY: "{{ dify_docker_sandbox_api_key }}"
       GIN_MODE: "release"
@@ -180,6 +202,7 @@ services:
   ssrf_proxy:
     image: {{ dify_docker_ssrf_proxy_image }}
     restart: {{ dify_docker_restart_policy }}
+    logging: *dify_docker_logging
     volumes:
       - {{ dify_docker_data_dir }}/ssrf_proxy/squid.conf:/etc/squid/squid.conf:ro
 
@@ -191,6 +214,7 @@ services:
   plugin_daemon:
     image: {{ dify_docker_plugin_daemon_image }}
     restart: {{ dify_docker_restart_policy }}
+    logging: *dify_docker_logging
     environment:
       DB_HOST: "db"
       DB_PORT: "{{ dify_docker_postgres_port }}"
@@ -225,6 +249,7 @@ services:
     image: {{ dify_docker_nginx_image }}
     container_name: "{{ dify_docker_container_name }}"
     restart: {{ dify_docker_restart_policy }}
+    logging: *dify_docker_logging
     depends_on:
       - api
       - web

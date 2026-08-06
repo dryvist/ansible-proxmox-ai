@@ -18,3 +18,40 @@ llm_router_llm_fast_enabled: false
 syslog_forwarder_program_routes:
   - program: litellm
     port: "{{ tofu_data.constants.ai_log_routing.homelab_llm.port | default(10323) }}"
+
+# Shared spend store, and the OpenRouter ceiling it makes real. These two are
+# set TOGETHER and must stay that way: LiteLLM counts provider spend in Redis,
+# and this group is a multi-member pool converged serial: 1, so a budget without
+# a shared store would advertise a ceiling that is really N times its stated
+# value and reset on every rolling converge. That configuration shipped once and
+# was backed out for exactly that reason;
+# roles/llm_router/tasks/assert-budget-backing.yml now fails the build rather
+# than let the pair separate again.
+#
+# The role itself defaults to neither, so a deployment without a store converges
+# honestly with no budget rather than an unenforceable one.
+#
+# FQDN, never an address — the store moves with its reservation.
+#
+# The name matches the `llm-redis` tag the firewall policy keys on
+# (tofu-proxmox#829) and the llm-* convention its neighbours on this VLAN
+# already use, so the guest, the tag, and this reference are one word rather
+# than three spellings of the same thing.
+#
+# Both derive from ONE condition — whether a guest carrying that tag is
+# actually in the inventory — rather than being two literals a comment asks a
+# future reader to keep in step. Written as literals, the pair is only as good
+# as the discipline of whoever edits next: setting the budget here before the
+# guest exists renders a ceiling against a host that is not serving, which is
+# the unbacked-ceiling defect this whole change exists to prevent, reintroduced
+# by the change meant to fix it. Derived, the ceiling arms itself the moment the
+# store joins the inventory and is honestly absent before then, so no converge
+# ever advertises a limit that does not hold and no follow-up edit can be
+# forgotten. assert-budget-backing.yml stays as the backstop for anyone who
+# sets these by hand somewhere else (host_vars, extra vars).
+_llm_router_spend_store_present: >-
+  {{ (groups['llm_redis_group'] | default([])) | length > 0 }}
+llm_router_redis_host: >-
+  {{ ('llm-redis.' ~ ai_subdomain) if (_llm_router_spend_store_present | bool) else '' }}
+llm_router_openrouter_budget_limit: "{{ 1.0 if (_llm_router_spend_store_present | bool) else 0 }}"
+llm_router_openrouter_budget_period: 1d

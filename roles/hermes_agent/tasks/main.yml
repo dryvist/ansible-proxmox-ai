@@ -85,9 +85,18 @@
       {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
          ~ hermes_agent_docs_sync_cron_prompt_file, rstrip=false)
          | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_repo_scorecard_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_repo_scorecard_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_secrets_audit_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_secrets_audit_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
 
 # The splunk-digest kanban card that used to write memory key
-# "splunk-digest-last" is REMOVED (see defaults, hermes_agent_kanban_cards);
+# "splunk-digest-last" is REMOVED (retired 2026-08-01, well before the
+# native-cron reframe deleted hermes_agent_kanban_cards entirely);
 # hermes-splunk-triage's catalog prompt used to recall that key before
 # alerting, which was a dangling read once nothing wrote it any more — always
 # missed, so the "already covered, don't re-alert" branch could never fire.
@@ -103,8 +112,8 @@
     fail_msg: >-
       hermes_agent_splunk_triage_cron_prompt (from the pinned ai-llm-prompts
       catalog) recalls memory key "splunk-digest-last", which nothing writes
-      any more — the splunk-digest kanban card that used to own it is removed
-      (see hermes_agent_kanban_cards in defaults/main.yml). A recall of a key
+      any more — the splunk-digest kanban card that used to own it was
+      removed in the 2026-08-01 kanban audit. A recall of a key
       nothing writes always finds nothing, so any "already covered, don't
       re-alert" branch built on it can never fire. Fix the prompt in
       dryvist/ai-llm-prompts to recall a key a currently-running job actually
@@ -173,6 +182,53 @@
       bash {{ hermes_agent_installer_path }}
       --branch {{ hermes_agent_version }} --skip-setup --non-interactive
     creates: "{{ hermes_agent_bin }}"
+
+# The dashboard SPA is NOT shipped down the git-checkout install path. Upstream
+# gitignores hermes_cli/web_dist/ and builds it in release CI, so the published
+# PyPI wheel carries the bundle but a `--branch <tag>` checkout never does, and
+# install.sh runs no frontend build of its own. Result: the dashboard answers
+# {"error":"Frontend not built. Run: cd web && npm run build"} on / while every
+# /api/* route stays healthy — it looks like an outage and is a missing artifact.
+#
+# Building alone does not fix it, because two different trees are in play. The
+# app is installed as a REGULAR wheel, so hermes_cli/web_server.py resolves its
+# default dist as Path(__file__).parent / "web_dist" INSIDE site-packages, while
+# `npm run build` writes to the CHECKOUT (web/vite.config.ts outDir
+# "../hermes_cli/web_dist"). The build output and the search path never meet.
+#
+# HERMES_WEB_DIST on the dashboard unit is the seam upstream provides for exactly
+# this (their Dockerfile and Nix package both set it). Pointing it at the
+# checkout's output is also the durable choice: `hermes update` rebuilds that
+# same path via _build_web_ui(PROJECT_ROOT / "web"), so the daemon keeps the
+# bundle current after we seed it here, instead of us racing its self-updates.
+#
+# npm ci is deliberately NOT run: the installer already populated node_modules in
+# both the root and the web workspace, and the repo pins a single root
+# package-lock.json for an npm workspace, so a lone `npm ci` inside web/ would
+# fight that layout.
+- name: Build the Hermes dashboard frontend bundle
+  ansible.builtin.command:
+    cmd: npm run build
+    chdir: "{{ hermes_agent_install_dir }}/web"
+    creates: "{{ hermes_agent_web_dist }}/index.html"
+  notify: Restart hermes-dashboard
+
+# A build that exits 0 but emits nothing still leaves the dashboard 404ing, and
+# the creates guard above would then skip the rebuild forever. Fail the converge
+# on the artifact, not on the exit code.
+- name: Assert the dashboard bundle exists
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_web_dist }}/index.html"
+  register: hermes_agent_web_dist_stat
+
+- name: Fail when the dashboard bundle is missing
+  ansible.builtin.fail:
+    msg: >-
+      {{ hermes_agent_web_dist }}/index.html is absent after the frontend build.
+      The dashboard will serve "Frontend not built" on /. Check that node and npm
+      are on PATH in the guest and that {{ hermes_agent_install_dir }}/web
+      has its node_modules populated.
+  when: not hermes_agent_web_dist_stat.stat.exists
 
 # Upstream bug (NousResearch/hermes-agent, agent/conversation_loop.py):
 # the length-continuation and truncated-tool-call retry paths boost
@@ -286,38 +342,6 @@
       \1    continue
       \1judge_failures = 0
       \1_log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
-  notify: Restart hermes-gateway
-
-- name: Patch Hermes exception retry delay for the local serial backend
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
-    regexp: >-
-      ^([ \t]*)wait_time = _retry_after if _retry_after else
-      jittered_backoff\(retry_count, base_delay=2\.0, max_delay=60\.0\)$
-    replace: '\g<1>wait_time = 15.0'
-  notify: Restart hermes-gateway
-
-- name: Patch Hermes invalid-response retry delay for the local serial backend
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
-    regexp: '^([ \t]*)wait_time = jittered_backoff\(retry_count, base_delay=5\.0, max_delay=120\.0\)$'
-    replace: '\g<1>wait_time = 15.0'
-  notify: Restart hermes-gateway
-
-- name: Disable adaptive rate-limit backoff for the local serial backend
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
-    regexp: >-
-      ^([ \t]*)if (?:is_rate_limited|\(is_rate_limited or
-      _is_zai_coding_overload\)) and not _retry_after:$
-    replace: '\g<1>if False and is_rate_limited and not _retry_after:'
-  notify: Restart hermes-gateway
-
-- name: Disable the extra transport-recovery attempt cycle
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
-    regexp: '^([ \t]*)if not _retry\.primary_recovery_attempted and agent\._try_recover_primary_transport\($'
-    replace: '\g<1>if False and not _retry.primary_recovery_attempted and agent._try_recover_primary_transport('
   notify: Restart hermes-gateway
 
 # A model that writes its tool call as TEXT (`<function=...>`, `<parameter=...>`)
@@ -443,20 +467,6 @@
     replace: '\g<1>if should_fallback and (is_auto or (is_capacity_error and resolved_provider != "custom")):'
   notify: Restart hermes-gateway
 
-- name: Enable prompt-safe Hermes request size metrics at DEBUG
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
-    regexp: '([ \t]+# Log request details if verbose\n)[ \t]+if agent\.verbose_logging:'
-    replace: '\g<1>        if True:'
-  notify: Restart hermes-gateway
-
-- name: Enable prompt-safe Hermes token usage metrics at DEBUG
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
-    regexp: '^([ \t]*)(?:if agent\.verbose_logging|if True):\n[ \t]+logging\.debug\(f"Token usage:'
-    replace: '                    if True:\n                        logging.debug(f"Token usage:'
-  notify: Restart hermes-gateway
-
 # The dispatcher sets HERMES_KANBAN_GOAL_MODE, but the pinned CLI only invokes
 # its goal-loop wrapper on the machine-readable quiet path. Without --quiet,
 # workers take the ordinary single-query path, return text, and exit rc=0 while
@@ -480,18 +490,52 @@
 # lifecycle tools are always present. That makes this unambiguously a
 # model-did-not-call violation, not a missing toolset — say so, so the operator
 # is not sent hunting a registration bug that cannot occur here.
+#
+# The closing sentence tracks the retry patch below it: while a protocol
+# violation forced an immediate give-up, "a plain retry will not help" was the
+# operative advice; now that the card gets its own bounded retries, the message
+# has to say what actually happens next. The regexp therefore matches EITHER the
+# pinned upstream text or the previously-patched text — the source tree is
+# installed once behind a `creates` guard, never re-extracted, so a guest
+# converged before this change still carries the old sentence and would
+# otherwise be unreachable by any patch keyed to pristine source.
 - name: Patch Hermes protocol-violation message to name the model-did-not-call case
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
     regexp: |-
       ^([ \t]*)"worker exited cleanly \(rc=0\) without calling "
-      \1"kanban_complete or kanban_block — protocol violation"$
+      \1"kanban_complete or kanban_block(?: — protocol violation"|\. Lifecycle tools are always "
+      \1"registered for dispatcher-spawned workers \(HERMES_KANBAN_TASK "
+      \1"set\), so this is a model-did-not-call protocol violation, not "
+      \1"a missing toolset; a plain retry will not help\.")$
     replace: |-
       \1"worker exited cleanly (rc=0) without calling "
       \1"kanban_complete or kanban_block. Lifecycle tools are always "
       \1"registered for dispatcher-spawned workers (HERMES_KANBAN_TASK "
       \1"set), so this is a model-did-not-call protocol violation, not "
-      \1"a missing toolset; a plain retry will not help."
+      \1"a missing toolset. The card is retried within its own max_retries "
+      \1"budget before it blocks."
+  notify: Restart hermes-gateway
+
+# A clean exit with the task still running means the run produced work whose
+# outcome was never recorded — the operator may already hold the output while
+# the board shows a failure. Upstream forces the breaker to trip on the FIRST
+# such exit, so that card can never be attempted again by anything: its status
+# is terminal, and the counter is already at the limit that stops
+# `recompute_ready` from promoting it back.
+#
+# Dropping the force hands the decision to the per-card `max_retries`, which is
+# the same bounded budget every other failure answers to — a small number of
+# attempts, then a block that a human sees. The systemic-fingerprint force is
+# deliberately left in place: many workers failing the same way at once is a
+# fabric problem, and retrying into it is how a single fault becomes a
+# thundering herd against one serving slot.
+- name: Patch Hermes protocol-violation crashes to retry within the card budget
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: >-
+      ^([ \t]*)failure_limit=1 if \(protocol_violation or is_systemic\) else None,$
+    replace: \g<1>failure_limit=1 if is_systemic else None,
   notify: Restart hermes-gateway
 
 # An idempotency hit returns before create_task applies new fields. Upgrade only
@@ -529,6 +573,116 @@
       \1    return row["id"]
   notify: Restart hermes-gateway
 
+# Upstream's timeout reaper (enforce_max_runtime) and the stale-reclaim path
+# (detect_stale_running) both terminate a host-local worker for a different
+# reason but must not diverge in HOW they do it, so both route through the
+# same identity-check helper. Workers are spawned with start_new_session=True,
+# making each worker the leader of its own process group, but the reapers
+# signal only the recorded PID, not that group — a worker that itself forked
+# a child (MCP server, tool subprocess) leaves that child orphaned and
+# running indefinitely after the top-level PID is gone. Helper inserted via
+# blockinfile (idempotent markers) ahead of the function it guards; the
+# kill() call sites below (timeout path and stale-reclaim path) route
+# through it.
+- name: Patch Hermes worker-reap helper to verify PID identity before signaling
+  ansible.builtin.blockinfile:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK worker reap identity guard"
+    insertbefore: '^def enforce_max_runtime\('
+    block: |
+      def _pid_is_hermes_worker(pid: int) -> bool:
+          """Best-effort check that ``pid`` still looks like a hermes worker.
+
+          Guards against signaling a PID the OS has recycled for an
+          unrelated process between the time it was recorded and the time
+          we act on it.
+          """
+          try:
+              proc = subprocess.run(
+                  ["ps", "-o", "command=", "-p", str(int(pid))],
+                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                  text=True, timeout=1, check=False,
+              )
+          except (OSError, subprocess.SubprocessError, TimeoutError):
+              return False
+          if proc.returncode != 0:
+              return False
+          cmdline = proc.stdout or ""
+          return "hermes" in cmdline and "chat" in cmdline
+
+
+  notify: Restart hermes-gateway
+
+# Never signal PID 0/negative/1(init), this gateway process itself
+# (dispatch_in_gateway: true runs enforce_max_runtime inside the gateway
+# process, so os.getpid() at this call site IS the gateway's own PID), or a
+# PID the OS has recycled for something no longer a hermes worker.
+- name: Patch Hermes worker-reap timeout path to verify PID safety before signaling
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)if kill is not None:$'
+    replace: |-
+      \1if (
+      \1    kill is not None and pid > 1 and pid != os.getpid()
+      \1    and _pid_is_hermes_worker(pid)
+      \1):
+  notify: Restart hermes-gateway
+
+# Signal the worker's process group (negative pid), not just the recorded
+# PID, so a child process the worker itself spawned is reaped too.
+- name: Patch Hermes worker-reap timeout path to signal the worker's process group
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)kill\(pid, signal\.SIGTERM\)$'
+    replace: '\1kill(-pid, signal.SIGTERM)'
+  notify: Restart hermes-gateway
+
+- name: Patch Hermes worker-reap timeout path to escalate on the worker's process group
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)kill\(pid, _sigkill\)$'
+    replace: '\1kill(-pid, _sigkill)'
+  notify: Restart hermes-gateway
+
+# Never signal PID 0/negative/1(init), this gateway process itself
+# (dispatch_in_gateway: true runs this reclaim path inside the gateway
+# process), or a PID the OS has recycled for something no longer a hermes
+# worker. The pid<=0 check above already excludes 0/negative; this adds the
+# remaining cases.
+- name: Patch Hermes stale-reclaim worker termination to verify PID safety before signaling
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: |-
+      ^([ \t]*)if kill is None:$
+      \1    return info$
+      $
+      \1info\["termination_attempted"\] = True$
+    replace: |-
+      \1if kill is None:
+      \1    return info
+      \1if pid <= 1 or pid == os.getpid() or not _pid_is_hermes_worker(pid):
+      \1    return info
+
+      \1info["termination_attempted"] = True
+  notify: Restart hermes-gateway
+
+# Signal the worker's process group (negative pid), not just the recorded
+# PID, so a child process the worker itself spawned is reaped too. Same
+# start_new_session=True reasoning as the timeout-path patches above.
+- name: Patch Hermes stale-reclaim worker termination to signal the worker's process group
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)kill\(int\(pid\), signal\.SIGTERM\)$'
+    replace: '\1kill(-int(pid), signal.SIGTERM)'
+  notify: Restart hermes-gateway
+
+- name: Patch Hermes stale-reclaim worker termination to escalate on the worker's process group
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)kill\(int\(pid\), _sigkill\)$'
+    replace: '\1kill(-int(pid), _sigkill)'
+  notify: Restart hermes-gateway
+
 # Auto-recall (the per-turn prefetch injected into context before the model
 # sees a message) swallows every failure at DEBUG and returns "" — recall
 # silently degrades to "no memories" with no signal distinguishable from
@@ -560,6 +714,7 @@
     - "{{ hermes_agent_install_dir }}/agent/context_compressor.py"
     - "{{ hermes_agent_install_dir }}/cron/scheduler.py"
     - "{{ hermes_agent_install_dir }}/plugins/memory/hindsight/__init__.py"
+    - "{{ hermes_agent_install_dir }}/run_agent.py"
   register: hermes_agent_goal_mode_sources
   changed_when: false
 
@@ -581,6 +736,8 @@
       {{ hermes_agent_goal_mode_sources.results[6].content | b64decode }}
     hermes_agent_hindsight_plugin_source: >-
       {{ hermes_agent_goal_mode_sources.results[7].content | b64decode }}
+    hermes_agent_run_agent_source: >-
+      {{ hermes_agent_goal_mode_sources.results[8].content | b64decode }}
   ansible.builtin.assert:
     quiet: true
     that:
@@ -608,23 +765,49 @@
       - >-
         "('triage', 'todo', 'scheduled', 'ready', 'blocked', 'review')"
         in hermes_agent_goal_reconcile_source
+      # Both halves of the protocol-violation change, asserted separately: the
+      # message is what an operator reads, the failure_limit is what actually
+      # decides whether the card is ever attempted again, and either landing
+      # without the other leaves the two contradicting each other.
+      - >-
+        'a missing toolset. The card is retried within its own max_retries'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'failure_limit=1 if is_systemic else None,'
+        in hermes_agent_goal_reconcile_source
+      # Worker-reap process-group guard: the identity check function, the
+      # safety condition guarding the timeout path's and the stale-reclaim
+      # path's signal sites, and all four signal sites themselves — each
+      # asserted so a partial landing (helper present but a call site
+      # unpatched, or vice versa) fails loudly.
+      - >-
+        'def _pid_is_hermes_worker(pid: int) -> bool:'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'kill is not None and pid > 1 and pid != os.getpid()'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'and _pid_is_hermes_worker(pid)'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'kill(-pid, signal.SIGTERM)'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'kill(-pid, _sigkill)'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'if pid <= 1 or pid == os.getpid() or not _pid_is_hermes_worker(pid):'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'kill(-int(pid), signal.SIGTERM)'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'kill(-int(pid), _sigkill)'
+        in hermes_agent_goal_reconcile_source
       - >-
         ('DEFAULT_JUDGE_TIMEOUT = '
          ~ (hermes_agent_kanban_goal_judge_timeout_seconds | float | string))
         in hermes_agent_goal_judge_source
-      - "hermes_agent_retry_source.count('wait_time = 15.0') >= 2"
-      - >-
-        'if False and is_rate_limited and not _retry_after:'
-        in hermes_agent_retry_source
-      - >-
-        'if False and not _retry.primary_recovery_attempted and agent._try_recover_primary_transport('
-        in hermes_agent_retry_source
-      - >-
-        '# Log request details if verbose\n        if True:'
-        in hermes_agent_retry_source
-      - >-
-        'if True:\n                        logging.debug(f"Token usage:'
-        in hermes_agent_retry_source
       - >-
         '_TRANSIENT_RETRY_BACKOFF_BASE = 15.0'
         in hermes_agent_auxiliary_source
@@ -681,10 +864,76 @@
       - >-
         'return "continue", f"judge error: {type(exc).__name__}", False, None'
         in hermes_agent_goal_judge_source
+      # The four _sync_external_memory_for_turn() observability log lines —
+      # one per silent exit. All four or none: the patch tasks above touch
+      # adjacent lines in the same function, so a partial landing here means
+      # a regex stopped matching upstream and the rest silently no-op'd.
+      - >-
+        'Hermes external-memory sync/prefetch skipped: turn interrupted'
+        in hermes_agent_run_agent_source
+      - >-
+        'Hermes external-memory sync/prefetch skipped: missing manager=%s'
+        in hermes_agent_run_agent_source
+      - >-
+        'Hermes external-memory sync/prefetch skipped: empty after flatten'
+        in hermes_agent_run_agent_source
+      - >-
+        'Hermes external-memory sync_all/queue_prefetch_all failed: %s'
+        in hermes_agent_run_agent_source
     fail_msg: >-
       The pinned Hermes source changed and one or more required source
       patches were not installed; update the pinned-source patches before
       converging.
+
+# Everything above reads the SOURCE TREE, which is not necessarily the code
+# that runs. The venv lives INSIDE the install dir, so
+# <install_dir>/agent/conversation_loop.py and
+# <install_dir>/venv/lib/python3.*/site-packages/agent/conversation_loop.py are
+# two different files, and only the second one is imported once the package is
+# installed non-editably. It is installed non-editably: the Slack extra below
+# uses `uv pip install "hermes-agent[slack] @ <install_dir>"`, a path install
+# rather than `-e`, and uv skips it entirely once the requirement is satisfied.
+# So after `hermes update` rewrites the source and the patch tasks re-apply
+# themselves, nothing necessarily copies the result into site-packages — and
+# the assertion above still passes, having checked a file nothing imports.
+#
+# This compares the two by checksum. Equal, or no installed copy at all (an
+# editable install, where the source tree IS the imported code), means the
+# patches are live and every assertion above is meaningful. Different means
+# they are not, and the daemon is running unpatched upstream code carrying the
+# retry-storm and IndexError bugs those patches exist to fix.
+- name: Locate any installed copy of a patched module inside the Hermes venv
+  ansible.builtin.find:
+    paths: "{{ hermes_agent_install_dir }}/venv/lib"
+    patterns: conversation_loop.py
+    recurse: true
+    get_checksum: true
+  register: hermes_agent_installed_module_copies
+  changed_when: false
+
+- name: Checksum the patched source the assertions above just verified
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
+    checksum_algorithm: sha1
+  register: hermes_agent_patched_source
+
+- name: Fail when the patched source is not the code the daemon imports
+  vars:
+    hermes_agent_installed_checksums: >-
+      {{ hermes_agent_installed_module_copies.files | map(attribute='checksum') | list }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_installed_checksums | reject('equalto', hermes_agent_patched_source.stat.checksum)
+        | list | length == 0
+    fail_msg: >-
+      An installed copy of conversation_loop.py under the venv differs from the
+      patched source, so the pinned-source patches above are not in the code the
+      daemon imports and are silently doing nothing. Reinstall the package from
+      the patched source (the path install used for the Slack extra below) so
+      the patches reach site-packages, then re-converge. Do not silence this
+      assertion — it is the only thing separating "patched" from "looks patched".
 
 - name: Check whether the Hermes OTEL plugin file exists
   ansible.builtin.stat:
@@ -822,12 +1071,16 @@
 
 # SOUL.md = the persona/behavior surface upstream loads FRESH on every message
 # (no restart needed) — the role the AGENTS.md chain plays for Claude Code.
-# The bundle composes it at BUILD time from ai-assistant-instructions'
-# agentsmd/prompts/autonomous-base.md + nix-hermes data/soul/hermes-variant.md
-# (edit intent in those sources, never a vendored copy here). Ansible owns the
-# file; Hermes self-edits MEMORY.md, not SOUL.md, so no agent-written state is
-# overwritten. backup:true preserves the pre-management content once on first
-# converge.
+# The bundle composes it at BUILD time from the ai-llm-prompts flake input:
+# auto-ai-agent/autonomous-base.md + auto-ai-agent/hermes.md, with their OKF
+# frontmatter stripped (see nix-hermes lib/bundle.nix). Edit intent in THOSE
+# sources. nix-hermes vendors no prompt of its own — the path this comment used
+# to name, data/soul/hermes-variant.md, no longer exists, and looking for it
+# costs a real detour.
+#
+# Ansible owns the file; Hermes self-edits MEMORY.md, not SOUL.md, so no
+# agent-written state is overwritten. backup:true preserves the pre-management
+# content once on first converge.
 - name: Deploy the Hermes SOUL.md (shared behavioral base + Hermes variant)
   ansible.builtin.copy:
     src: "{{ hermes_agent_bundle_path }}/SOUL.md"
@@ -837,6 +1090,26 @@
     mode: "0644"
     backup: true
   when: hermes_agent_soul_managed | bool
+
+# USER.md = what Hermes knows about the operator. Upstream loads it alongside
+# MEMORY.md (config.yaml sets user_profile_enabled), and BOTH are agent-owned:
+# Hermes edits this file as it learns, so a converge that rewrote it would
+# silently delete everything the agent had figured out.
+#
+# force: no is therefore the whole point, and is NOT the SOUL.md pattern above —
+# SOUL.md is role-owned and re-copied every run. This seeds the file once, on a
+# guest that has none, and never touches it again. The seed carries only what
+# the operator has stated directly (working hours, output expectations, the
+# write-routing law); everything else Hermes learns and writes itself.
+- name: Seed the Hermes operator profile (USER.md) if the agent has none yet
+  ansible.builtin.template:
+    src: USER.md.j2
+    dest: "{{ hermes_agent_hermes_home }}/USER.md"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0644"
+    force: false
+  when: hermes_agent_seed_user_profile | bool
 
 # --- Hindsight memory: local embedded daemon ---------------------------------
 # The provider name in config.yaml is not enough: hindsight defaults to CLOUD
@@ -860,6 +1133,110 @@
     'Installed' in hermes_agent_hindsight_install.stderr
     or 'Uninstalled' in hermes_agent_hindsight_install.stderr
   when: hermes_agent_memory_provider == 'hindsight'
+  notify: Restart hermes-gateway
+
+# Measured 2026-08-06: prefetch only delivers memory into the turn 15.4% of
+# the time (Splunk, 18d, index=hermes) because prefetch() joins its
+# background thread for a HARDCODED 3.0s, decoupled from HINDSIGHT_TIMEOUT —
+# no config field feeds it, confirmed by reading the installed source, not
+# assumed. Recall is fast in isolation (67-256ms measured) but gets starved:
+# every Hindsight operation shares ONE process-global event loop
+# (_get_loop()/_run_sync()), so a retain job stuck in its LLM-connection
+# retry sequence (measured up to ~2min) blocks recall from even starting.
+# The debug log line anchors this to the per-turn prefetch() path only — the
+# textually-identical join(timeout=3.0) at shutdown is deliberately left
+# alone; extending drain-on-shutdown isn't the fix and isn't user-facing.
+# See hermes_agent_hindsight_prefetch_timeout_seconds for the full writeup.
+- name: Patch Hindsight prefetch join timeout off the hardcoded 3.0s
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/plugins/memory/hindsight/__init__.py"
+    regexp: |-
+      ^([ \t]*)logger\.debug\("Prefetch: waiting for background thread to complete"\)$
+      \1self\._prefetch_thread\.join\(timeout=3\.0\)$
+    replace: |-
+      \1logger.debug("Prefetch: waiting for background thread to complete")
+      \1self._prefetch_thread.join(timeout={{ hermes_agent_hindsight_prefetch_timeout_seconds | float }})
+  when: hermes_agent_memory_provider == 'hindsight'
+  notify: Restart hermes-gateway
+
+# _sync_external_memory_for_turn() (run_agent.py) is the ONLY place that
+# queues the next turn's prefetch — it runs at end-of-turn and has four
+# silent exits (three early returns plus a bare except) with no logging at
+# any of them. prefetch_all() (turn_context.py), by contrast, runs
+# unconditionally at the start of every turn. So a turn whose predecessor hit
+# any of these four exits leaves nothing queued, and the next turn's prefetch
+# correctly reports empty with zero trace of why upstream. This does not
+# change what any of the four exits DO — same interrupted-turn skip, same
+# best-effort swallow — it only makes each one observable. Log level matches
+# the existing "Hindsight prefetch failed" bump above: warning, not debug, so
+# it actually reaches Splunk. No message/user/response text in any line.
+- name: Patch _sync_external_memory_for_turn to log its "interrupted" skip
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/run_agent.py"
+    regexp: |-
+      ^(\s*)if interrupted:$
+      \1    return$
+    replace: |-
+      \1if interrupted:
+      \1    logger.warning(
+      \1        "Hermes external-memory sync/prefetch skipped: turn interrupted (session=%s)",
+      \1        self.session_id or "",
+      \1    )
+      \1    return
+  notify: Restart hermes-gateway
+
+- name: Patch _sync_external_memory_for_turn to log its missing-input skip
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/run_agent.py"
+    regexp: |-
+      ^(\s*)if not \(self\._memory_manager and final_response and original_user_message\):$
+      \1    return$
+    replace: |-
+      \1if not (self._memory_manager and final_response and original_user_message):
+      \1    logger.warning(
+      \1        "Hermes external-memory sync/prefetch skipped: missing manager=%s "
+      \1        "final_response=%s original_user_message=%s (session=%s)",
+      \1        bool(self._memory_manager), bool(final_response), bool(original_user_message), self.session_id or "",
+      \1    )
+      \1    return
+  notify: Restart hermes-gateway
+
+- name: Patch _sync_external_memory_for_turn to log its empty-flatten skip
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/run_agent.py"
+    regexp: |-
+      ^(\s*)if not \(user_text and response_text\):$
+      \1    return$
+    replace: |-
+      \1if not (user_text and response_text):
+      \1    logger.warning(
+      \1        "Hermes external-memory sync/prefetch skipped: empty after flatten "
+      \1        "user_text=%s response_text=%s (session=%s)",
+      \1        bool(user_text), bool(response_text), self.session_id or "",
+      \1    )
+      \1    return
+  notify: Restart hermes-gateway
+
+- name: Patch _sync_external_memory_for_turn to log its swallowed exception
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/run_agent.py"
+    regexp: |-
+      ^(\s*)    self\._memory_manager\.queue_prefetch_all\($
+      \1        user_text,$
+      \1        session_id=self\.session_id or "",$
+      \1    \)$
+      \1except Exception:$
+      \1    pass$
+    replace: |-
+      \1    self._memory_manager.queue_prefetch_all(
+      \1        user_text,
+      \1        session_id=self.session_id or "",
+      \1    )
+      \1except Exception as exc:
+      \1    logger.warning(
+      \1        "Hermes external-memory sync_all/queue_prefetch_all failed: %s (session=%s)",
+      \1        exc, self.session_id or "", exc_info=True,
+      \1    )
   notify: Restart hermes-gateway
 
 - name: Ensure the hindsight config dir exists
@@ -928,15 +1305,16 @@
        | map(attribute='name') | list }}
   changed_when: true
 
-# One-time (but idempotent) migration cleanup (#83): a guest provisioned before
-# the Kanban migration still runs the OLD bare-named agentic crons. The drift GC
-# above only matches the new `-enqueue` names, so those old crons would linger
-# and double-fire alongside their enqueuer twins. Remove any superseded bare
-# name that is actually present in the store. Reuses the slurp above (the drift
-# task only touches `-enqueue` names, so the bare-name view is still accurate);
+# One-time (but idempotent) migration cleanup: a guest converged before the
+# reframe still runs the OLD `<job>-enqueue` `--no-agent --script` crons in
+# `hermes cron`'s own job store. The script they ran no longer exists on disk,
+# so left in place they would start failing loudly instead of quietly going
+# away when the new bare-named agentic cron fleet takes over (see below — the
+# reframe made bare names the desired end state again, so this is a one-way
+# migration, not a legacy name to keep excluding). Reuses the slurp above;
 # self-safe base64("{}") default makes a missing jobs.json a no-op. Empty loop
 # after the first converge -> idempotent.
-- name: "Remove superseded pre-migration agentic cron jobs (kanban migration #83)"
+- name: "Remove superseded kanban-enqueuer script crons (native-cron reframe)"
   ansible.builtin.command: "{{ hermes_agent_bin }} cron remove {{ item }}"
   environment:
     HERMES_HOME: "{{ hermes_agent_hermes_home }}"
@@ -946,14 +1324,13 @@
     {{ (hermes_agent_cron_store.content | default('e30=', true) | b64decode | from_json).jobs
        | default([])
        | map(attribute='name') | list
-       | select('in', hermes_agent_superseded_agentic_cron_names) | list }}
+       | select('in', hermes_agent_superseded_kanban_enqueuer_cron_names) | list }}
   changed_when: true
 
-# The recurring agentic workloads (daily status, operator summary, Zammad
-# review, Splunk fleet, GitHub triage, nightly wiki) are dispatched as Kanban
-# cards now, not agentic crons (kanban migration, #83). They are enqueued by the
-# script-only `--no-agent` cron fleet reconciled after the skills/prompts are in
-# place (see "Kanban enqueuer fleet" below).
+# The recurring workloads (daily status, operator summary, Zammad review,
+# Splunk fleet, GitHub triage, nightly wiki, ...) are agentic direct-deliver
+# cron jobs again (reframe: repetitive scheduled work is a cron job, Kanban is
+# for genuine discrete tasks — see hermes_agent_direct_cron_jobs below).
 
 - name: Ensure the wiki directory exists
   ansible.builtin.file:
@@ -1075,29 +1452,22 @@
   loop_control:
     label: "{{ item.id }}"
 
-# --- Kanban enqueuer fleet (kanban migration, #83) ---------------------------
-# Every recurring workload is a Kanban card dispatched by the gateway's in-process
-# board engine (config.yaml kanban: block) — a FRESH worker session per run,
-# eliminating the persistent-cron-session failure class (INC-17120). The
-# recurrence layer is a thin fleet of `--no-agent --script` crons (no LLM, so
-# nothing to poison) that enqueue those cards. All the skills the cards reference
+# --- Recurring workload fleet (kanban migration #83; reframed to cron) -------
+# Recurring reports/sweeps/digests are agentic direct-deliver cron jobs, not
+# Kanban cards — a card is for a genuine discrete unit of work tracked to
+# completion on a board (docs-sync, below), not "run this at this time,
+# repeatedly". Every job still runs in the gateway's fresh, isolated per-run
+# session (eliminating the persistent-cron-session failure class, INC-17120)
+# and every converted prompt keeps its existing recall-last / work-the-delta /
+# save-fingerprint / [SILENT] structure verbatim — the cron dispatcher natively
+# suppresses delivery on a bare `[SILENT]` response. All the skills referenced
 # (dryvist/splunk-monitor, dryvist/github-issues, dryvist/zammad-incidents,
-# llm-wiki) are already materialized above, so a card's `--skill` resolves when a
-# worker runs it.
+# dryvist/docs-pr, llm-wiki) are already materialized above, so a job's
+# `--skill` resolves when it runs.
 - name: Ensure the Hermes scripts directory exists
   ansible.builtin.file:
     path: "{{ hermes_agent_hermes_home }}/scripts"
     state: directory
-    owner: "{{ hermes_agent_user }}"
-    group: "{{ hermes_agent_user }}"
-    mode: "0750"
-
-# Rendered AFTER the prompt set_facts above so lookup('vars', card.prompt_var)
-# resolves each card body (catalog + inline prompts alike) at render time.
-- name: Deploy the Kanban recurring-task enqueuer script
-  ansible.builtin.template:
-    src: kanban-enqueue-recurring.sh.j2
-    dest: "{{ hermes_agent_hermes_home }}/scripts/{{ hermes_agent_kanban_enqueue_script_name }}"
     owner: "{{ hermes_agent_user }}"
     group: "{{ hermes_agent_user }}"
     mode: "0750"
@@ -1324,41 +1694,68 @@
     - hermes_agent_splunk_mcp_url | length > 0
     - hermes_agent_splunk_mcp_token | length > 0
 
-# One `<job>-enqueue` script cron per card, same schedule the old agentic cron
-# used; each enqueues its workload's current-slot card. Disabled cards create no
-# cron (the include is gated on item.enabled).
-- name: Reconcile the per-workload Kanban enqueuer crons
-  ansible.builtin.include_tasks: reconcile_enqueuer_cron.yml
-  loop: "{{ hermes_agent_kanban_cards }}"
-  loop_control:
-    label: "{{ item.job }}"
-
-# Nine agentic direct-deliver digest crons (Phase 5). The Slack channel is never
-# hardcoded: skip the whole fleet with a loud warning when it is unset.
-- name: Warn when the digest Slack channel is unset (direct-deliver crons skipped)
+# 27 agentic direct-deliver crons (Phase 5 originals + all 18 converted from
+# Kanban recurrence, native-cron redesign, including docs-sync — see the PR
+# for the assignee/max_runtime/max_retries/outcome-split gap report): every
+# recurring report/sweep/digest
+# workload. The Slack channel is never hardcoded: skip the whole fleet with a
+# loud warning when NEITHER the shared digest channel NOR the general Slack
+# capability gate is satisfied (most converted entries carry their own
+# `deliver:` and do not depend on the shared digest channel at all).
+- name: Warn when Slack is not configured (direct-deliver crons skipped)
   ansible.builtin.debug:
     msg: >-
-      hermes_agent_digest_slack_channel is empty (HERMES_SLACK_DIGEST_CHANNEL
-      unset) — skipping all {{ hermes_agent_direct_cron_jobs | length }} agentic
-      direct-deliver digest crons. Set it to reconcile them.
-  when: hermes_agent_digest_slack_channel | length == 0
+      Neither hermes_agent_digest_slack_channel nor the Slack bot/app
+      token + home channel are set — skipping all
+      {{ hermes_agent_direct_cron_jobs | length }} agentic direct-deliver
+      crons.
+  when:
+    - hermes_agent_digest_slack_channel | length == 0
+    - >-
+      hermes_agent_slack_bot_token | length == 0
+      or hermes_agent_slack_app_token | length == 0
+      or hermes_agent_slack_home_channel | length == 0
 
 - name: Reconcile the agentic direct-deliver digest crons
   ansible.builtin.include_tasks: reconcile_direct_cron.yml
   loop: "{{ hermes_agent_direct_cron_jobs }}"
   loop_control:
     label: "{{ item.name }}"
-  when: hermes_agent_digest_slack_channel | length > 0
+  when: >-
+    hermes_agent_digest_slack_channel | length > 0
+    or (hermes_agent_slack_bot_token | length > 0
+        and hermes_agent_slack_app_token | length > 0
+        and hermes_agent_slack_home_channel | length > 0)
 
-# The daily chain-break safety net: one enqueuer cron in `all --backfill` mode.
-- name: Reconcile the daily Kanban safety-net enqueuer cron
-  ansible.builtin.include_tasks: reconcile_enqueuer_cron.yml
-  vars:
-    item:
-      name: "{{ hermes_agent_kanban_safety_net_cron_name }}"
-      schedule: "{{ hermes_agent_kanban_safety_net_schedule }}"
-      selector: "all --backfill"
-      enabled: "{{ hermes_agent_kanban_safety_net_enabled }}"
+# See hermes_agent_profile_cron_tick_timeout (defaults) for why this exists:
+# a job registered under a named profile's HERMES_HOME needs its OWN ticker,
+# since `hermes cron`'s ticker runs in-process inside whichever gateway
+# registered it and only the default profile's gateway is persistent.
+- name: "Reconcile the profile cron tick trigger for {{ item }}"
+  ansible.builtin.cron:
+    name: "hermes-cron-tick-{{ item }}"
+    user: "{{ hermes_agent_user }}"
+    job: >-
+      HERMES_HOME={{ hermes_agent_hermes_home }}/profiles/{{ item }}
+      timeout {{ hermes_agent_profile_cron_tick_timeout }}
+      {{ hermes_agent_bin }} cron tick
+      >> {{ hermes_agent_log_directory }}/cron-tick-{{ item }}.log 2>&1
+    minute: "*/5"
+    state: present
+  loop:
+    - homelab-admin
+    - splunk-admin
+  when: >-
+    hermes_agent_direct_cron_jobs
+    | selectattr('hermes_home', 'defined')
+    | selectattr('hermes_home', 'search', item)
+    | selectattr('enabled') | list | length > 0
+
+# No daily backfill safety net any more: it existed to re-create a slot-keyed
+# Kanban card a missed fire would otherwise drop forever. Recurring work is a
+# cron job now (native [SILENT] delivery suppression already handles "nothing
+# new to report"), and docs-sync's per-run key means a missed fire is simply a
+# card that never got created that week — nothing to backfill.
 
 # The script-fed Splunk status digest: a --no-agent --script cron whose stdout
 # (real numbers the script gathered itself) is delivered verbatim to Slack. No
@@ -1416,12 +1813,8 @@
   become_user: "{{ hermes_agent_user }}"
   register: hermes_agent_active_cron_list
   changed_when: false
-  when: >-
-    (hermes_agent_splunk_status_digest_enabled | bool)
-    or (hermes_agent_triage_enabled | bool)
-    or (hermes_agent_retire_anomaly_hunt | bool)
-    or (hermes_agent_retire_fabric_status_v2 | bool)
-    or (hermes_agent_retire_splunk_parsing_v2 | bool)
+  # Always needed now: pausing the three now-superseded *-v2 crons below
+  # (zammad/github/summary) is unconditional, not a staged-rollout toggle.
 
 - name: Pause the superseded v3 LLM digest cron (disable-don't-delete)
   ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ hermes_agent_superseded_digest_cron_name }}"
@@ -1469,10 +1862,9 @@
 
 # Retire the 6-hourly fabric-status cron: it fails the cadence rule (a cron earns
 # its place only as a daily-or-rarer report), and the hourly homelab-ai-fabric-status
-# card now covers the topic — the card footer asks for a full report, and the card
-# is off hermes_agent_kanban_paused_jobs so its enqueuer actually creates it.
-# enabled:false stops reconcile from re-creating this job; only this pause stops
-# the one already on the guest.
+# job (now a hermes_agent_direct_cron_jobs entry, native-cron reframe) covers the
+# topic. enabled:false stops reconcile from re-creating this job; only this pause
+# stops the one already on the guest.
 - name: Pause the retired 6-hourly fabric-status cron (disable-don't-delete)
   ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ hermes_agent_retired_fabric_status_cron_name }}"
   environment:
@@ -1499,6 +1891,24 @@
   when:
     - hermes_agent_retire_splunk_parsing_v2 | bool
     - hermes_agent_retired_splunk_parsing_v2_cron_name in (hermes_agent_active_cron_list.stdout | default(''))
+
+# Retire the 3 *-v2 direct crons the reframe now duplicates 1-for-1 under a
+# bare name (zammad-review, github-monitor, daily-summary — same topic, same
+# recall/save prompt content, same schedule). disable-don't-delete: enabled:
+# false in hermes_agent_direct_cron_jobs stops reconcile from re-creating them;
+# only this pause stops the ones already on the guest.
+- name: Pause the *-v2 crons the reframe replaces 1-for-1 (disable-don't-delete)
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ item }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  loop:
+    - zammad-incident-review-v2
+    - github-org-triage-v2
+    - daily-operator-summary-v2
+  when: item in (hermes_agent_active_cron_list.stdout | default(''))
 
 # Zammad stale-ticket auto-close cron (disabled by default; see defaults). Closures
 # deliver to Slack for auditability. Gated on the auto-close flag AND zammad + slack
@@ -1616,6 +2026,28 @@
     - hermes_agent_brain_watchdog_enabled | bool
     - hermes_agent_slack_bot_token | length > 0
     - hermes_agent_slack_app_token | length > 0
+
+# OnFailure= target for the long-running units (gateway, dashboard,
+# vikunja-bridge), which now carry a StartLimit so their Restart=always loop is
+# bounded. Deployed unconditionally: those units exist regardless of whether the
+# brain watchdog is enabled, so gating this on the watchdog would leave them
+# referencing a unit that was never installed. Path is literal, matching the
+# ExecStart= in templates/hermes-unit-alert@.service.j2 -- keep them in sync.
+- name: Deploy the Hermes per-unit failure alert script
+  ansible.builtin.template:
+    src: hermes-unit-alert.sh.j2
+    dest: /usr/local/bin/hermes-unit-alert.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy the Hermes per-unit failure alert systemd template
+  ansible.builtin.template:
+    src: "hermes-unit-alert@.service.j2"
+    dest: "/etc/systemd/system/hermes-unit-alert@.service"
+    owner: root
+    group: root
+    mode: "0644"
 
 - name: Deploy the Hermes brain-health watchdog systemd units
   ansible.builtin.template:

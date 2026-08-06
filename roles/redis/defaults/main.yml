@@ -1,0 +1,58 @@
+---
+# redis role — the shared store the LiteLLM router pool counts spend in.
+#
+# WHY THIS EXISTS AS ITS OWN GUEST. Every other Redis in this estate is
+# colocated with the one workload that uses it (Dify bundles its own, Nautobot
+# and Zammad run one on loopback, Immich bundles valkey). That pattern is right
+# for a single-instance consumer and WRONG here, and not by a little: the
+# router is a three-member pool, so a colocated instance would give each member
+# its own private counter — which is exactly the miscount that made the
+# unbacked budget worth removing in the first place. A shared ceiling needs a
+# shared store, and a shared store cannot live inside one of the things sharing
+# it.
+#
+# SCOPE. This is deliberately not a general-purpose estate cache. One workload,
+# one instance, matching how object storage is split per workload here. A
+# second consumer gets its own instance rather than a second logical DB in this
+# one, so a runaway neighbour cannot evict spend counters.
+
+redis_service: redis-server
+redis_config_file: /etc/redis/redis.conf
+redis_data_dir: /var/lib/redis
+redis_user: redis
+redis_group: redis
+
+# Port from the tofu constants registry, never a literal — same requirement as
+# every other port in this repository.
+redis_port: "{{ tofu_data.constants.service_ports.redis_default }}"
+
+# Bind address. The router members reach this over the AI VLAN, so loopback is
+# not an option (that is the colocated pattern this role exists to avoid).
+# Defaults to the guest's own inventory address; the Proxmox firewall is what
+# restricts who may dial it, as it does for every other service here.
+redis_bind_address: "{{ ansible_host | default(inventory_hostname) }}"
+
+# AUTH is mandatory, not optional. An unauthenticated Redis reachable on a VLAN
+# is a remote-code-execution primitive (CONFIG SET dir + SAVE), so there is no
+# "no password" branch and no default value — an absent secret fails the
+# converge rather than silently standing up an open instance.
+redis_password: >-
+  {{ bao_local_llm_secrets.LLM_ROUTER_REDIS_PASSWORD
+     | default(lookup('env', 'LLM_ROUTER_REDIS_PASSWORD'), true)
+     | mandatory('LLM_ROUTER_REDIS_PASSWORD must be set (OpenBao secret/ai/llm-router field
+                  LLM_ROUTER_REDIS_PASSWORD, or the env fallback)') }}
+
+# Spend counters are cheap and small; this instance holds nothing else.
+redis_maxmemory: 256mb
+
+# noeviction, deliberately. The default policy would evict keys under pressure,
+# and the keys here ARE the spend ceiling — silently dropping one raises the
+# effective budget instead of enforcing it. Failing writes is the correct
+# behaviour for a store whose whole purpose is to say "no".
+redis_maxmemory_policy: noeviction
+
+# Persistence ON. A restart that came back empty would reset the period's
+# accumulated spend to zero, which is one of the two specific failures that
+# made the unbacked budget dishonest (the other being per-member counting).
+# appendonly gives a bounded-loss recovery rather than the last RDB snapshot.
+redis_appendonly: "yes"

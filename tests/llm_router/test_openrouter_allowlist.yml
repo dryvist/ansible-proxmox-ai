@@ -1,7 +1,7 @@
 ---
 # Pins the OpenRouter egress contract: the registry is the allowlist, every
-# egress deployment is rate-limited, and no spend budget is CLAIMED that this
-# storage-less proxy cannot actually hold.
+# egress deployment is rate-limited, and any spend budget that appears is
+# backed by the shared store that makes it true.
 #
 # WHY THIS TEST EXISTS. Until 2026-08 the role rendered an `openrouter/*`
 # passthrough entry authenticated with one already-seeded key, which exposed the
@@ -38,6 +38,11 @@
           ollama_api: 11434
           llm_cluster_api: 11440
           otel_traces_http: 4318
+          # The spend store's port. config.yaml renders it as a literal int
+          # rather than an os.environ/ marker, so the render needs it present —
+          # this test failed without it, which is the render proving the
+          # dependency rather than a reviewer noticing it.
+          redis_default: 6379
     # Seeds every registry key_field so the OpenRouter entries actually render.
     # Without this they are inert (unseeded keys emit nothing) and the
     # allowlist assertions below would pass against an EMPTY list — proving
@@ -51,12 +56,28 @@
     llm_router_llm_large_bearer: test-bearer-token
     ai_router_request_timeout_seconds: 2400
     ai_stream_read_timeout_seconds: 1800
+    # group_vars/all.yml is not loaded under `-i localhost,`, so the all.yml
+    # constants the role defaults reference must be supplied here.
+    ai_router_retry_after_seconds: 40
     hermes_brain_model: hermes-default
     hermes_goal_judge_model: goal-judge
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
         file: "{{ _role_dir }}/defaults/main.yml"
+
+    # set_fact, not a play var: include_vars above binds the role defaults at a
+    # HIGHER precedence than a play var, so a play-level override is silently
+    # discarded and the shipped empty default wins. Caught by this test failing
+    # on first run.
+    - name: Configure a shared spend store, as a budget-carrying deployment has
+      ansible.builtin.set_fact:
+        llm_router_redis_host: redis.example.test
+        llm_router_redis_password: test-only-not-a-real-password
+        # The role ships neither; a budget-carrying deployment sets both in
+        # group_vars. Setting only the store here would render no budget and the
+        # assertion below would fail for a misleading reason.
+        llm_router_openrouter_budget_limit: 1.0
 
     - name: Load the fabric model registry the way the converge does
       ansible.builtin.include_role:
@@ -141,40 +162,85 @@
         _registry_or: >-
           {{ llm_router_openrouter_models | map(attribute='client_model_id') | list }}
 
-    - name: No LiteLLM spend budget is configured on this storage-less proxy
-      # The INVERSE of what this assertion originally said, and the correction
-      # matters more than the original claim did.
+    - name: A rendered spend budget is present AND backed by a shared store
+      # This assertion has now been inverted TWICE, and the pair of reversals is
+      # the point rather than an embarrassment — so read what is actually being
+      # pinned before touching it.
       #
-      # LiteLLM's spend controls need storage this proxy does not have:
-      # provider_budget_config tracks spend in REDIS, and max_budget /
-      # budget_duration on virtual keys live in its Postgres-backed key
-      # management. This proxy is deliberately DB-less (see the prisma note in
-      # the role defaults: "We use no database") and has no Redis, because
-      # DB-lessness is the load-bearing reason a single front door in the call
-      # path is acceptable — a replicated stateless front, not a stateful
-      # bottleneck.
+      # It first said "a budget is configured". That was false: LiteLLM tracks
+      # provider spend in REDIS, and this proxy had none, so with a
+      # multi-member pool each member counted only its own spend. The rendered
+      # ceiling was really Nx and reset on every rolling converge.
       #
-      # Configuring a budget anyway would be worse than configuring none.
-      # llm_router_group is a three-member pool, so with no shared store each
-      # member counts only its own spend: the rendered config would advertise a
-      # ceiling that is really 3x, and every rolling converge would reset it.
-      # An operator reading that config would believe in a control that does not
-      # hold. This assertion exists to keep anyone from re-adding it as a
-      # config line, because it is an architecture decision (add Redis or
-      # Postgres to the estate's front door) and not a template edit.
+      # It then said "NO budget is configured", which was true and honest for a
+      # storage-less proxy but is not the destination state.
+      #
+      # It now pins the INVARIANT that survives both: a budget may appear only
+      # together with the store that makes it true. That is stronger than either
+      # earlier form, because neither half can be re-added alone — adding a
+      # budget without a store fails here, which is the regression that produced
+      # the first reversal.
       ansible.builtin.assert:
         quiet: true
         that:
-          - "'provider_budget_config' not in (_config.router_settings | default({}))"
-          - "'fail_closed_budget_enforcement' not in (_config.litellm_settings | default({}))"
+          - "'provider_budget_config' in (_config.router_settings | default({}))"
+          - >-
+            (_config.router_settings.provider_budget_config.openrouter.budget_limit
+             | float) > 0
+          - >-
+            (_config.router_settings.provider_budget_config.openrouter.time_period
+             | length) > 0
+          # The half that makes the budget honest. Without these the ceiling
+          # above is per-member fiction.
+          - "'redis_host' in (_config.router_settings | default({}))"
+          # An int, not an os.environ/ marker — see config.yaml.j2.
+          - (_config.router_settings.redis_port | int) > 0
+          - "'redis_password' in (_config.router_settings | default({}))"
+          # Credentials resolve through the EnvironmentFile, never as literals
+          # in a config file this role writes to disk.
+          - _config.router_settings.redis_password is search('^os.environ/')
+          - _config.router_settings.redis_host is search('^os.environ/')
         fail_msg: >-
-          The rendered config carries a LiteLLM spend budget, but this proxy has
-          neither Redis nor a database to track spend in, and runs as a
-          three-member pool. The ceiling it advertises would be 3x its stated
-          value and would reset on every rolling converge. Do not re-add it as a
-          config line — adding a shared store to the fabric's front door is an
-          architecture decision.
-        success_msg: "no unbacked spend budget is claimed in the rendered config"
+          The rendered config does not pin a store-backed spend budget.
+          provider_budget_config and redis_host/redis_port/redis_password must
+          appear TOGETHER: LiteLLM tracks provider spend in Redis, and
+          llm_router_group is a multi-member pool converged serial: 1, so a
+          budget without a shared store advertises a ceiling that is really Nx
+          its stated value and resets on every rolling converge. That is the
+          exact defect this assertion was inverted once to remove.
+          If the intent is to run with no budget, remove the budget rather than
+          the store — an unbacked budget is worse than none.
+        success_msg: >-
+          spend budget is present and backed by a shared store, with credentials
+          resolved from the environment
+
+    - name: No Postgres-backed budget setting is claimed without Postgres
+      # fail_closed_budget_enforcement is NOT the sibling of the budget above,
+      # despite reading like one. It is a general_settings key governing
+      # LiteLLM's key/team/user/org/tag budgets — the virtual-key system backed
+      # by POSTGRES — and its documented behaviour is to validate spend against
+      # the authoritative database and return 503 when spend can be verified
+      # against neither Redis nor the database.
+      #
+      # This proxy issues no virtual keys and has no database, so adding Redis
+      # did not make this setting real. It would be inert (claiming a control
+      # that does not exist, the original defect) or, if it engaged, a 503
+      # generator on the fabric's only front door. Adding Postgres is a separate
+      # architecture decision.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'fail_closed_budget_enforcement' not in (_config.general_settings | default({}))"
+          - "'fail_closed_budget_enforcement' not in (_config.litellm_settings | default({}))"
+          - "'fail_closed_budget_enforcement' not in (_config.router_settings | default({}))"
+        fail_msg: >-
+          The rendered config sets fail_closed_budget_enforcement, which
+          validates spend against a POSTGRES-backed virtual-key budget system
+          this proxy does not run. It would be inert at best, and at worst 503
+          every budgeted request on the fabric's only front door. Redis backs
+          provider_budget_config; it does not back this.
+        success_msg: >-
+          no Postgres-backed budget setting is claimed on a database-less proxy
 
     - name: Every egress deployment carries rate and concurrency limits
       ansible.builtin.assert:

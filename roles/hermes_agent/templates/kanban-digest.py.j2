@@ -33,12 +33,15 @@ upstream for `kanban runs --since`.
 import datetime as dt
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
 
 # --- config (rendered from roles/hermes_agent/defaults/main.yml) ---------------
 DB_PATH = "{{ hermes_agent_hermes_home }}/kanban.db"
+# Same directory as DB_PATH; read for the board-alarm cap check below.
+CONFIG_PATH = "{{ hermes_agent_hermes_home }}/config.yaml"
 # Where worker-failure lines go instead of the work log. Empty disables the
 # split entirely and restores the single-post behaviour.
 ISSUES_CHANNEL = "{{ hermes_agent_kanban_digest_issues_channel }}"
@@ -63,9 +66,27 @@ INTERVAL_MIN = {{ hermes_agent_kanban_digest_interval_minutes }}
 # identical board counts. Real board activity is NEVER subject to this gate — a
 # failure, an overrun or a completion posts every run, immediately.
 HEARTBEAT_HOURS = {{ hermes_agent_kanban_digest_heartbeat_hours }}
+# --- board alarms: board-not-draining, timeout rate, blocked growth ---------
+# All three route to the issues channel (send_to_issues) like the failure
+# split above, never the work log, and are never heartbeat-suppressed — a
+# stalled or growing-blocked board is exactly what "everything looks green"
+# means here.
+# Consecutive digest ticks of "ready work waiting, nothing finished" before
+# alarm (a) fires. Sustained, not single-tick: a single legitimate run can
+# span longer than one window, so one quiet tick must never page — only a
+# streak of them, long enough that a normal run would have finished by then.
+STALL_TICKS_THRESHOLD = {{ hermes_agent_kanban_digest_stall_ticks_threshold }}
+# Count of task_runs.outcome == 'timed_out' within one digest window (alarm b).
+TIMEOUT_RATE_THRESHOLD = {{ hermes_agent_kanban_digest_timeout_threshold }}
+# Rise in the blocked-card count since the previous tick (alarm c) — a delta,
+# never the raw count, so a long-standing blocked card does not page forever.
+BLOCKED_GROWTH_THRESHOLD = {{ hermes_agent_kanban_digest_blocked_growth_threshold }}
 # Bumped when the state shape changes. An older/absent value is treated as no
 # usable state, which takes the announced fallback path rather than erroring.
 # 2: carries last_post_epoch alongside last_run_epoch for the heartbeat gate.
+# stall_ticks/last_blocked_count (alarms a/c) are additive fields under this
+# same schema: a state file missing them just starts each counter at 0, which
+# needs no fallback note of its own (see load_counters()).
 STATE_SCHEMA = 2
 # Upstream's `hermes cron` executor skips Slack delivery when a --script cron's
 # STDOUT is exactly this string — the same contract the Splunk digests use.
@@ -150,13 +171,36 @@ def load_state():
     return float(last), posted, ""
 
 
-def save_state(now_epoch, last_post_epoch):
+def save_state(now_epoch, last_post_epoch, stall_ticks=0, last_blocked_count=0):
     os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
     tmp = STATE_PATH + ".tmp"
     with open(tmp, "w") as f:
         json.dump({"schema": STATE_SCHEMA, "last_run_epoch": now_epoch,
-                   "last_post_epoch": last_post_epoch}, f)
+                   "last_post_epoch": last_post_epoch,
+                   "stall_ticks": stall_ticks,
+                   "last_blocked_count": last_blocked_count}, f)
     os.replace(tmp, STATE_PATH)
+
+
+def load_counters():
+    """(stall_ticks, blocked_count) baselines for alarms (a) and (c).
+
+    Independent of load_state()'s interval-fallback semantics: these counters
+    have no "fallback window" to reason about, so any read failure or missing
+    key just resets to 0 — the correct "not alarming yet" starting point for
+    both a stall streak and a blocked-count baseline.
+    """
+    try:
+        with open(STATE_PATH) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        return 0, 0
+    if not isinstance(state, dict):
+        return 0, 0
+    stall = state.get("stall_ticks")
+    blocked = state.get("last_blocked_count")
+    return (stall if isinstance(stall, int) else 0,
+            blocked if isinstance(blocked, int) else 0)
 
 
 def heartbeat_due(now_epoch, last_post_epoch):
@@ -178,6 +222,23 @@ def connect(db_path):
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def read_max_in_progress():
+    """Configured `kanban.max_in_progress` cap, or None if it cannot be read.
+
+    A regex against config.yaml.j2's single rendered line, not a YAML parser —
+    pulling in a YAML dependency to read one integer is not worth it, and the
+    line shape (`  max_in_progress: N`) is Ansible's own template, not board
+    data that could vary in shape. None (never a guessed number) is what lets
+    the stall alarm say the cause is undetermined instead of asserting one.
+    """
+    try:
+        text = open(CONFIG_PATH).read()
+    except OSError:
+        return None
+    match = re.search(r"^\s*max_in_progress:\s*(\d+)\s*$", text, re.M)
+    return int(match.group(1)) if match else None
 
 
 def group_runs(rows):
@@ -269,6 +330,88 @@ def overrun_lines(rows, now_epoch):
     return out
 
 
+def stall_alarm(board, run_rows, running_rows, now_epoch, prior_ticks, threshold,
+                max_in_progress):
+    """(new_streak, alarm_line_or_None) — alarm (a): the board is not draining.
+
+    NOT "nothing is running" — a single wedged run at max_in_progress=1 shows
+    running=1 forever and that condition would never fire. The real signal is
+    "nothing FINISHED": ready cards are waiting AND no run in this window
+    reached ANY terminal outcome. RUNS_SQL already filters to `ended_at IS NOT
+    NULL`, so a non-empty run_rows already means something finished — no new
+    query, no outcome enum to hardcode. This one condition catches all three
+    shapes: nothing running at all, one run wedged forever at the cap, and
+    workers churning and failing without the queue moving.
+
+    The streak counts CONSECUTIVE ticks with ready cards and zero finishes;
+    anything else resets it to 0, so one busy tick clears the alarm rather
+    than requiring a cool-down. Once it fires it repeats every tick while the
+    condition holds — like overrun_lines(), a stalled board is not stale news.
+
+    The gateway's own dispatcher warning ("0 workers spawned. Check profile
+    health...") has asserted a cause the data does not establish — it fired on
+    a configured max_in_progress=1 cap and sent an operator hunting through
+    venv and credentials for an hour. This alarm never repeats that mistake:
+    when the cap is readable it states the fact (`in_progress N/M`, N being
+    the CURRENT running count, useful context either way) and stops there;
+    when it is not, it says the cause is undetermined and names the live
+    possibilities rather than guessing.
+
+    `running_rows`/`now_epoch` are the same RUNNING_SQL rows overrun_lines()
+    already reaches — reused here (no new query) to name how long the oldest
+    running occupant has been going, which is what separates "legitimately
+    long task" from "wedged" at a glance.
+    """
+    ready, running = board.get("ready", 0), board.get("running", 0)
+    if not (ready > 0 and not run_rows):
+        return 0, None
+    streak = prior_ticks + 1
+    if streak < threshold:
+        return streak, None
+    if max_in_progress is None:
+        cause = ("cause undetermined: could be the configured max_in_progress "
+                 "cap, a run that is wedged rather than progressing, or a "
+                 "genuine worker spawn failure")
+    else:
+        cause = f"in_progress {running}/{max_in_progress} (cap)"
+    started = [r["run_started"] for r in running_rows if r["run_started"]]
+    age_note = f", oldest running {fmt_dur(now_epoch - min(started))}" if started else ""
+    line = (f":rotating_light: Stalled board — {ready} ready card(s), {running} "
+            f"running but nothing finished{age_note}, for {streak} consecutive "
+            f"digest ticks. {cause}.")
+    return streak, line
+
+
+def timeout_alarm(run_rows, threshold):
+    """Alarm (b): task-timeout rate. A count over rows RUNS_SQL already fetched
+    — no new query — so this is window-scoped like completed/failed, not a
+    running streak: a burst of timeouts in one window is worth flagging even
+    if the next window is clean.
+    """
+    count = sum(1 for r in run_rows if r["outcome"] == "timed_out")
+    if count < threshold:
+        return None
+    return (f":alarm_clock: {count} task run(s) timed out in this digest "
+            f"window (threshold {threshold}).")
+
+
+def blocked_growth_alarm(board, prior_blocked, threshold):
+    """(new_blocked_count, alarm_line_or_None) — alarm (c): blocked pile-up.
+
+    Alarms on a RISING delta since the previous tick, never the raw count — a
+    long-standing blocked card must not page forever, only a fresh pile-up.
+    The returned count is always the current board count (alarm or not), so
+    the caller has a baseline to persist for the next tick either way.
+    """
+    current = board.get("blocked", 0)
+    delta = current - prior_blocked
+    if delta < threshold:
+        return current, None
+    line = (f":chart_with_upwards_trend: Blocked cards grew by {delta} since "
+            f"the previous tick (now {current}, threshold {threshold}).")
+    return current, line
+
+
 def send_to_issues(text):
     """Post `text` to the issues channel. True on success, False on any failure.
 
@@ -302,7 +445,7 @@ def section(lines, heading):
 
 
 def build_digest(run_rows, running_rows, board, now, since, note, due=True,
-                 split_failures=False):
+                 split_failures=False, extra_issue_lines=()):
     """Return (slack_text, issues_text).
 
     slack_text is SILENT when a quiet run is heartbeat-suppressed.
@@ -317,6 +460,13 @@ def build_digest(run_rows, running_rows, board, now, since, note, due=True,
     timeouts, max_runtime overruns) — Hermes being broken, not board activity.
     The peel happens BEFORE the heartbeat gate so a run whose only content was
     failures counts as quiet for the work log rather than posting a bare header.
+
+    `extra_issue_lines` carries the already-rendered board-alarm lines (stall,
+    timeout rate, blocked growth — computed by the caller in main(), which
+    owns the state/config reads those alarms need). Like the failure peel
+    above, these land ONLY in issues_text and are never heartbeat-gated: a
+    stalled or growing-blocked board is exactly the "everything looks green"
+    failure mode this digest exists to catch.
     """
     now_epoch = now.timestamp()
     span = fmt_dur(now_epoch - since)
@@ -325,14 +475,20 @@ def build_digest(run_rows, running_rows, board, now, since, note, due=True,
     failed = failed_lines(by_task)
     overrun = overrun_lines(running_rows, now_epoch)
 
-    issues_text = ""
+    issues_blocks = []
     if split_failures and failed:
-        issues_text = "\n".join(
+        issues_blocks.append("\n".join(
             [f"*{TITLE} — worker failures* — {now.strftime('%Y-%m-%d %H:%M UTC')} "
              f"(since {dt.datetime.fromtimestamp(since, dt.timezone.utc).strftime('%H:%M UTC')}, {span})"]
             + section(failed, "Failed / retried / left open")
-        )
+        ))
         failed = []
+    if extra_issue_lines:
+        issues_blocks.append("\n".join(
+            [f"*{TITLE} — board alarms* — {now.strftime('%Y-%m-%d %H:%M UTC')}"]
+            + [f"• {line}" for line in extra_issue_lines]
+        ))
+    issues_text = "\n\n".join(issues_blocks)
 
     # NEVER post a message whose entire content is "nothing happened" unless the
     # heartbeat interval has elapsed. Decided before any text is built so the
@@ -370,6 +526,7 @@ def main():
         since, last_post, note = load_state()
         if since is None:
             since = now_epoch - INTERVAL_MIN * 60
+        stall_ticks_prior, blocked_prior = load_counters()
         conn = connect(DB_PATH)
         try:
             run_rows = list(conn.execute(RUNS_SQL, (since, now_epoch)))
@@ -377,10 +534,20 @@ def main():
             board = {row[0]: row[1] for row in conn.execute(BOARD_SQL)}
         finally:
             conn.close()
+
+        new_stall, stall_line = stall_alarm(board, run_rows, running_rows, now_epoch,
+                                            stall_ticks_prior, STALL_TICKS_THRESHOLD,
+                                            read_max_in_progress())
+        timeout_line = timeout_alarm(run_rows, TIMEOUT_RATE_THRESHOLD)
+        new_blocked, blocked_line = blocked_growth_alarm(
+            board, blocked_prior, BLOCKED_GROWTH_THRESHOLD)
+        alarms = [line for line in (stall_line, timeout_line, blocked_line) if line]
+
         text, issues_text = build_digest(run_rows, running_rows, board, now,
                                          since, note,
                                          heartbeat_due(now_epoch, last_post),
-                                         split_failures=bool(ISSUES_CHANNEL))
+                                         split_failures=bool(ISSUES_CHANNEL),
+                                         extra_issue_lines=alarms)
     except Exception as e:  # noqa: BLE001 - deliberately broad; failure must be delivered
         print(f"{ISSUES_MARKER} :warning: {TITLE} FAILED: {type(e).__name__}: {str(e)[:200]}")
         return 0
@@ -394,8 +561,11 @@ def main():
 
     # The window always advances — a suppressed run still covered it, and
     # re-covering it would double-report the next real activity. Only
-    # last_post_epoch is held back, and only when nothing was delivered.
-    save_state(now_epoch, last_post if text == SILENT else now_epoch)
+    # last_post_epoch is held back, and only when nothing was delivered. The
+    # two alarm counters always advance too, regardless of what got posted —
+    # they track board state across ticks, not delivery.
+    save_state(now_epoch, last_post if text == SILENT else now_epoch,
+              new_stall, new_blocked)
     print(text)
     return 0
 

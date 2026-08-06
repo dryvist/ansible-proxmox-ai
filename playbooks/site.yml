@@ -50,6 +50,13 @@
         # same guests, no new identity to provision for the successor role.
         bao_agent_guest_secrets: "{{ openbao_secrets_by_domain['ai-runner'] | default({}) }}"
         bao_hermes_secrets: "{{ openbao_secrets_by_domain['hermes'] | default({}) }}"
+        # The whole map, so an identity-keyed consumer can select its OWN
+        # domain by name (hermes_agent_bao, keyed on hermes_agent_id) instead
+        # of needing a new binding line here per agent. Written from the
+        # controller expression rather than the vars: entry below to keep the
+        # set_fact free of a same-name self-reference.
+        openbao_secrets_by_domain: >-
+          {{ hostvars['localhost'].openbao_secrets_by_domain | default({}) }}
       vars:
         openbao_secrets_by_domain: "{{ hostvars['localhost'].openbao_secrets_by_domain | default({}) }}"
       no_log: true
@@ -172,6 +179,21 @@
     - ai
   roles:
     - role: llama_cpp
+
+# Ordered BEFORE the router pool on purpose. This is the store the routers
+# count spend in, so converging it second would leave the first router of a
+# rolling pass pointed at a store that is not serving yet. A shared ceiling is
+# only a ceiling once every member can reach the same counter.
+- name: Configure the shared spend store for the router pool
+  hosts: llm_redis_group
+  become: true
+  gather_facts: true
+  tags:
+    - llm_redis
+    - llm
+    - ai
+  roles:
+    - role: redis
 
 - name: Configure the LiteLLM router (fabric front door)
   hosts: llm_router_group

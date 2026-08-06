@@ -21,7 +21,9 @@ def test_rsyslog_routes_unit_children_and_file_logs() -> None:
     assert 'freshStartTail="off"' in RSYSLOG
 
 
-def test_prompt_safe_context_metrics_are_enabled_without_verbose_payload_logging() -> None:
-    assert "Enable prompt-safe Hermes request size metrics at DEBUG" in TASKS
-    assert "Enable prompt-safe Hermes token usage metrics at DEBUG" in TASKS
+def test_verbose_payload_logging_is_not_forced_on() -> None:
+    # Reverted: these two patches forced request/token-usage debug logging on
+    # unconditionally, regardless of the configured verbose_logging setting.
+    assert "Enable prompt-safe Hermes request size metrics at DEBUG" not in TASKS
+    assert "Enable prompt-safe Hermes token usage metrics at DEBUG" not in TASKS
     assert "verbose_logging: true" not in DEFAULTS

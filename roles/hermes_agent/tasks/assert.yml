@@ -33,6 +33,13 @@
       #     exactly what the cap exists to prevent. Negative values clamp to
       #     0 upstream, so they are equally forbidden.
       - hermes_agent_api_max_concurrent_runs | int >= 1
+      # (5) The brain watchdog's probe deadline must exceed the router's
+      #     rate-limit backoff, or no retry can ever complete inside a probe and
+      #     the watchdog only ever measures "is the slot free right now". This
+      #     invariant was documented in defaults for weeks but never enforced,
+      #     so raising retry_after past the probe timeout would silently degrade
+      #     the watchdog into a saturation detector. Asserted, not narrated.
+      - hermes_agent_brain_watchdog_probe_timeout | int > ai_router_retry_after_seconds | int
     fail_msg: >-
       Hermes Agent brain-wiring contract violated (roles/hermes_agent/tasks/assert.yml).
       (1) model.context_length is {{ hermes_agent_model_context_length }}; it must be
@@ -45,11 +52,21 @@
       (4) hermes_agent_api_max_concurrent_runs is
       {{ hermes_agent_api_max_concurrent_runs }}; it must be >= 1 — 0 disables the
       upstream cap entirely and exposes the single shared brain to request floods.
+      (5) brain watchdog probe timeout is
+      {{ hermes_agent_brain_watchdog_probe_timeout }} and the router rate-limit
+      backoff is {{ ai_router_retry_after_seconds }}; the probe must OUTLIVE one
+      backoff or no retry can ever complete inside it, leaving the watchdog
+      measuring "is the slot free right now" instead of "can the brain serve".
+      Raise hermes_agent_brain_watchdog_probe_timeout (keeping it under
+      hermes_agent_brain_watchdog_interval so probes cannot overlap) or lower
+      ai_router_retry_after_seconds.
     success_msg: >-
       Hermes Agent brain-wiring contracts hold (context_length
       {{ hermes_agent_model_context_length }} >= 64000; read
       {{ hermes_agent_stream_read_timeout }} < router {{ ai_router_request_timeout_seconds }};
-      api cap {{ hermes_agent_api_max_concurrent_runs }} >= 1).
+      api cap {{ hermes_agent_api_max_concurrent_runs }} >= 1; watchdog probe
+      {{ hermes_agent_brain_watchdog_probe_timeout }} > backoff
+      {{ ai_router_retry_after_seconds }}).
 
 - name: Assert Hermes recurring goal-mode settings are valid
   ansible.builtin.assert:
@@ -65,82 +82,23 @@
     fail_msg: >-
       Goal mode requires a positive hermes_agent_kanban_goal_max_turns and a
       non-empty hermes_agent_kanban_goal_judge_model, and a judge timeout of
-      at least 30 seconds.
+      at least 30 seconds. No card may carry its own goal_max_turns: the goal
+      loop re-sends the whole accumulated conversation every turn, so a bigger
+      budget costs prefill quadratically, and it is only ever spent by a card
+      that is already failing — which is when the serving tier has least room.
+      Raise hermes_agent_kanban_goal_max_turns for everything, or not at all.
 
-# Upstream's dispatcher buckets a card whose assignee names no real profile
-# as skipped_nonspawnable and NEVER spawns it — a typo'd assignee silently
-# sits ready forever with no error anywhere. Converting that into a loud
-# converge failure is the whole point of this assert (see hermes_agent_profiles
-# in defaults/main.yml for the profile concept).
-- name: Assert every Kanban card assignee names a real profile or the default
-  ansible.builtin.assert:
-    quiet: true
-    that:
-      - >-
-        hermes_agent_kanban_cards
-        | rejectattr('assignee', 'equalto', '')
-        | map(attribute='assignee')
-        | reject('in', hermes_agent_profiles | map(attribute='name') | list)
-        | list | length == 0
-    fail_msg: >-
-      One or more hermes_agent_kanban_cards entries name an assignee that is
-      not in hermes_agent_profiles. Upstream buckets an unresolvable assignee
-      as skipped_nonspawnable and never spawns a worker for it — the card
-      would silently sit ready forever. Fix the card's assignee (empty string
-      for the default profile) or add the profile to hermes_agent_profiles.
-      Cards seen:
-      {{ hermes_agent_kanban_cards | map(attribute='job') | list }};
-      known profiles: {{ hermes_agent_profiles | map(attribute='name') | list }}.
-    success_msg: >-
-      Every Kanban card assignee resolves to the default profile or a name in
-      hermes_agent_profiles ({{ hermes_agent_profiles | map(attribute='name') | list }}).
+# The max_retries floor and the assignee/profile-validity checks that used to
+# live here validated hermes_agent_kanban_cards, which no longer exists
+# (native-cron reframe: all 18 former cards are hermes_agent_direct_cron_jobs
+# entries now). Neither field carries over to a plain `hermes cron create` job
+# — see the PR that introduced this change for the explicit gap report on
+# assignee/profile, max_runtime and max_retries not being expressible there.
 
-# A direct-cron retirement that names a replacement card is a promise: the
-# topic stays covered, just through the card instead of the cron. Nothing
-# enforced that promise at converge time before this — only
-# tests/hermes_agent/test_retired_direct_crons.py checked it, against the raw
-# YAML, and only if someone remembered to run pytest. Caught for real:
-# `homelab-ai-fabric-status` sat on hermes_agent_kanban_paused_jobs for a
-# stretch while its `-v2` cron was being retired in its favour — a paused
-# card's enqueuer renders no selector arm
-# (kanban-enqueue-recurring.sh.j2), so its still-active `-v2` cron's
-# replacement created nothing either, and the topic silently went to zero
-# coverage. This is the same invariant, enforced every converge.
-- name: Assert every direct-cron retirement's replacement card is enabled and unpaused
-  ansible.builtin.assert:
-    quiet: true
-    that:
-      - >-
-        hermes_agent_direct_cron_jobs
-        | selectattr('replaced_by_card', 'defined')
-        | selectattr('enabled') | list | length == 0
-      - >-
-        hermes_agent_direct_cron_jobs
-        | selectattr('replaced_by_card', 'defined')
-        | rejectattr('replaced_by_card', 'in',
-            hermes_agent_kanban_cards | map(attribute='job') | list
-            | reject('in', hermes_agent_kanban_paused_jobs) | list)
-        | list | length == 0
-    fail_msg: >-
-      A hermes_agent_direct_cron_jobs retirement is broken. Either it names a
-      replaced_by_card while still enabled:true (both paths would post — pick
-      one), or its replaced_by_card is not the `job` of a currently-enabled,
-      unpaused hermes_agent_kanban_cards entry (a paused card's enqueuer
-      renders no selector arm, so nothing creates it — the topic goes
-      unreported by both the retired cron and its replacement). Fix the
-      card name, unpause it, or set the cron back to enabled:true, in the
-      same change. Retirements still enabled:
-      {{ hermes_agent_direct_cron_jobs | selectattr('replaced_by_card', 'defined')
-         | selectattr('enabled') | map(attribute='name') | list }}.
-      Retirements with a dead replacement:
-      {{ hermes_agent_direct_cron_jobs | selectattr('replaced_by_card', 'defined')
-         | rejectattr('replaced_by_card', 'in',
-             hermes_agent_kanban_cards | map(attribute='job') | list
-             | reject('in', hermes_agent_kanban_paused_jobs) | list)
-         | map(attribute='name') | list }}.
-    success_msg: >-
-      Every direct-cron retirement names an enabled, unpaused replacement
-      card and is itself disabled.
+# The replaced_by_card retirement chain (a direct-cron retirement naming a
+# Kanban card as its replacement) does not exist any more (native-cron
+# reframe): every former card is itself now a hermes_agent_direct_cron_jobs
+# entry, so there is no cron-to-card handoff left to promise or assert.
 
 # A profile can carry the Splunk skill while declaring no splunk MCP server,
 # and nothing notices. The skill loads, the agent believes it can query Splunk,

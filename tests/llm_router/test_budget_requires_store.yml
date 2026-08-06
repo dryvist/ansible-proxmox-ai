@@ -1,0 +1,218 @@
+---
+# The budget/store contract, from both ends: the ceiling must arm itself when a
+# spend store exists, stay honestly absent when one does not, and a hand-written
+# budget with no store must fail the build outright.
+#
+# The failure being guarded against is the one that already happened. A budget
+# was configured on this proxy once with nothing to track spend in. LiteLLM
+# counts provider spend in Redis, and llm_router_group is a multi-member pool
+# converged serial: 1, so each member counted only its own: the rendered config
+# advertised a ceiling that was really N times its stated value, and every
+# rolling converge reset it. It rendered fine, converged green, and reported a
+# limit that did not hold. Only the pairing makes the number honest.
+#
+# PLAY ORDER IS LOAD-BEARING. The derivation plays run FIRST, before anything
+# calls set_fact. set_fact (precedence 19) outranks include_vars (18) and
+# persists across plays for the same host, so a derivation check placed after
+# the assert cases below reads the leftover facts instead of the file it means
+# to test — and reports the derivation broken when it is fine. That misfire
+# happened while writing this test.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_budget_requires_store.yml -i localhost, -c local
+
+- name: Verify no ceiling is claimed while no spend store exists
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ai_subdomain: example.test
+  tasks:
+    # The assert in the last play is a backstop against a hand-written pair. It
+    # cannot tell whether inventory/group_vars/llm_router_group.yml actually
+    # arms the ceiling when the store appears or leaves it off when it does not.
+    # Get that backwards and the assert still passes — silently, in the
+    # direction that matters: a ceiling that never arms reads exactly like one
+    # that did.
+    - name: Load the real router group_vars with NO store in inventory
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/llm_router_group.yml"
+
+    - name: The ceiling stays off, and honestly absent, with no store
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - (llm_router_openrouter_budget_limit | float) == 0
+          - (llm_router_redis_host | trim) == ''
+        fail_msg: >-
+          With no llm_redis_group member, llm_router_group.yml still derived a
+          budget of {{ llm_router_openrouter_budget_limit }} against host
+          '{{ llm_router_redis_host }}'. That is the unbacked ceiling this whole
+          contract exists to prevent, reintroduced by the defaults meant to
+          prevent it.
+        success_msg: No store in inventory, so no ceiling is claimed.
+
+    # `groups` is populated by add_host rather than faked with set_fact, because
+    # it is a magic variable — a set_fact of the same name does not change what
+    # the group_vars expression reads, so the test would pass while measuring
+    # nothing.
+    - name: Put a spend store into the inventory
+      ansible.builtin.add_host:
+        name: llm-redis-under-test
+        groups: llm_redis_group
+
+# A SECOND play, and that is not stylistic either. `groups` is snapshotted per
+# play, so a host already running when add_host fires keeps the membership it
+# started with. The play boundary is what makes the new group visible, and it
+# mirrors the real converge, where load_tofu.yml builds the groups in its own
+# play before any consumer runs.
+- name: Verify the ceiling arms once a spend store is in the inventory
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ai_subdomain: example.test
+  tasks:
+    - name: Confirm the store really is in the inventory now
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'llm-redis-under-test' in (groups['llm_redis_group'] | default([]))"
+        fail_msg: >-
+          add_host did not place the store in llm_redis_group, so the assertion
+          below would report on an empty inventory and pass for the wrong
+          reason.
+
+    - name: Read the real router group_vars with the store present
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/llm_router_group.yml"
+
+    - name: The ceiling arms itself once the store joins the inventory
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - (llm_router_openrouter_budget_limit | float) > 0
+          - llm_router_redis_host == 'llm-redis.example.test'
+        fail_msg: >-
+          A member of llm_redis_group is in the inventory but the derived pair
+          is budget={{ llm_router_openrouter_budget_limit }},
+          host='{{ llm_router_redis_host }}'. The ceiling never arms, so the
+          store is paid for and does nothing — a failure that looks identical to
+          a working configuration from every angle except the spend it was
+          supposed to cap.
+        success_msg: Store present, so the ceiling arms and names it by FQDN.
+
+# Last, because every case below calls set_fact and those facts outlive the
+# play. The assert is the backstop for a pair written by hand somewhere the
+# derivation does not reach — host_vars, extra vars, a future group_vars.
+- name: Verify an unbacked spend budget fails the build
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main.yml"
+
+    # set_fact, not a play var: include_vars binds the role defaults at a higher
+    # precedence than a play var, so a play-level override is discarded.
+    - name: Configure a budget with NO shared store behind it
+      ansible.builtin.set_fact:
+        llm_router_openrouter_budget_limit: 1.0
+        llm_router_openrouter_budget_period: 1d
+        llm_router_redis_host: ""
+
+    - name: Prove the unbacked budget stops the converge
+      block:
+        - name: Import the budget-backing assert with no store configured
+          ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-budget-backing.yml
+
+        - name: Fail because the assert admitted an unbacked budget
+          ansible.builtin.fail:
+            msg: >-
+              roles/llm_router/tasks/assert-budget-backing.yml PASSED with a
+              spend budget and no shared store. That assert is the only thing
+              keeping the two coupled, and without it the config can once again
+              advertise a ceiling that is really N times its stated value and
+              resets on every rolling converge.
+      rescue:
+        - name: Confirm the failure was the budget-backing assert
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'Spend budget configured with no shared store' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              Something failed, but not the budget-backing assert — got
+              {{ ansible_failed_result.msg | default('(none)') }}. A failure
+              from anywhere else would make this test pass for the wrong reason.
+            success_msg: An unbacked spend budget is fatal.
+
+    # The inverse must NOT fire: a store with no budget is merely unused, and
+    # making that fatal would block the honest storage-less configuration this
+    # proxy ran for good reason. Without this, an assert written as a plain
+    # "both or neither" would pass the case above and still be wrong.
+    - name: Assert a store with no budget is permitted
+      ansible.builtin.set_fact:
+        llm_router_openrouter_budget_limit: 0
+        llm_router_redis_host: redis.example.test
+
+    - name: Import the budget-backing assert with a store and no budget
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-budget-backing.yml
+
+    # And neither-nor, which is exactly the configuration that shipped between
+    # the two inversions. It must stay valid: this contract is about honesty,
+    # not about mandating a budget.
+    - name: Assert neither a budget nor a store is permitted
+      ansible.builtin.set_fact:
+        llm_router_openrouter_budget_limit: 0
+        llm_router_redis_host: ""
+
+    - name: Import the budget-backing assert with neither configured
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-budget-backing.yml
+
+    # A named host with no credential is the second route to the same dishonest
+    # ceiling: roles/redis makes AUTH mandatory, so an empty password means every
+    # spend read is refused and LiteLLM falls back to per-member counting. The
+    # host leg alone passes this, which is why it needs its own case.
+    - name: Configure a budget against a named store with NO credential
+      ansible.builtin.set_fact:
+        llm_router_openrouter_budget_limit: 1.0
+        llm_router_redis_host: redis.example.test
+        llm_router_redis_password: ""
+
+    - name: Prove a credential-less store stops the converge
+      block:
+        - name: Import the budget-backing assert with no store credential
+          ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-budget-backing.yml
+
+        - name: Fail because the assert admitted an unreachable store
+          ansible.builtin.fail:
+            msg: >-
+              roles/llm_router/tasks/assert-budget-backing.yml PASSED with a
+              spend budget against a store it holds no credential for. Naming a
+              host is not reaching it — the ceiling would degrade silently to
+              per-member counting, which is the same defect the host check
+              prevents, reached by a different route.
+      rescue:
+        - name: Confirm the failure was the credential assert
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'Spend budget configured with no store credential' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              Something failed, but not the store-credential assert — got
+              {{ ansible_failed_result.msg | default('(none)') }}. In
+              particular, failing on the HOST leg here would mean this case
+              never exercised the credential leg at all.
+            success_msg: A budget against a credential-less store is fatal.
+
+    # And the fully-configured pair must still pass, or the two legs above would
+    # be satisfied by an assert that simply never lets a budget through.
+    - name: Assert a budget with both a store and its credential is permitted
+      ansible.builtin.set_fact:
+        llm_router_openrouter_budget_limit: 1.0
+        llm_router_openrouter_budget_period: 1d
+        llm_router_redis_host: redis.example.test
+        llm_router_redis_password: not-a-real-password
+
+    - name: Import the budget-backing assert with the pair fully configured
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-budget-backing.yml

@@ -4,17 +4,43 @@
 systemd_restart_policy_services:
   - hermes-gateway
 
-# GitHub App creds for the autonomous docs-contributor. Bao-first (local-llm
-# domain, secret/ai/hermes), env fallback — empty until the App is provisioned.
+# --- Per-agent OpenBao view ---------------------------------------------------
+# This group serves EVERY agent identity (hermes_agent_id, defaulted in the role
+# and overridden per guest in host_vars), so a credential read here must resolve
+# against the reading agent's own secrets, not a hardcoded one.
+#
+# `hermes_agent_bao` is that view: the identity's OWN least-privilege domain
+# (ai/<id>, one AppRole per agent) layered over the broad local-llm ai/* grant.
+# The broad grant is included ONLY for the pre-existing `hermes` identity, whose
+# fields are still read through it — see roles/openbao_secrets/defaults, where
+# the per-identity domain is marked NOT YET CONSUMED. A second agent must never
+# inherit it: local-llm can read ai/hermes, so a blanket fallback would hand the
+# new agent the first agent's Slack, Vikunja and GitHub credentials.
+#
+# Both layers are empty when OpenBao is skipped, so every consumer below still
+# falls through to its env fallback exactly as before. The day the per-identity
+# role_id/secret_id land in Doppler, that domain starts resolving and wins the
+# combine — the migration completes with no further edit here.
+hermes_agent_bao: >-
+  {{ (bao_local_llm_secrets if hermes_agent_id == 'hermes' else {})
+     | combine((openbao_secrets_by_domain | default({})).get(hermes_agent_id, {})) }}
+
+# Field names: the ones carrying an agent prefix derive it from the identity, so
+# `hermes` reads exactly the field it reads today. Unprefixed fields stay bare —
+# the KV path (ai/<id>) already scopes them, and repeating the identity inside a
+# path that names it would be redundant.
+
+# GitHub App creds for the autonomous docs-contributor. Bao-first (the identity's
+# domain, secret/ai/<id>), env fallback — empty until the App is provisioned.
 hermes_agent_github_app_id: >-
-  {{ bao_local_llm_secrets.HERMES_GITHUB_APP_ID
-     | default(lookup('env', 'HERMES_GITHUB_APP_ID'), true) }}
+  {{ hermes_agent_bao[hermes_agent_id | upper ~ '_GITHUB_APP_ID']
+     | default(lookup('env', hermes_agent_id | upper ~ '_GITHUB_APP_ID'), true) }}
 hermes_agent_github_app_installation_id: >-
-  {{ bao_local_llm_secrets.HERMES_GITHUB_APP_INSTALLATION_ID
-     | default(lookup('env', 'HERMES_GITHUB_APP_INSTALLATION_ID'), true) }}
+  {{ hermes_agent_bao[hermes_agent_id | upper ~ '_GITHUB_APP_INSTALLATION_ID']
+     | default(lookup('env', hermes_agent_id | upper ~ '_GITHUB_APP_INSTALLATION_ID'), true) }}
 hermes_agent_github_app_private_key: >-
-  {{ bao_local_llm_secrets.HERMES_GITHUB_APP_PRIVATE_KEY
-     | default(lookup('env', 'HERMES_GITHUB_APP_PRIVATE_KEY'), true) }}
+  {{ hermes_agent_bao[hermes_agent_id | upper ~ '_GITHUB_APP_PRIVATE_KEY']
+     | default(lookup('env', hermes_agent_id | upper ~ '_GITHUB_APP_PRIVATE_KEY'), true) }}
 
 # Shared Splunk MCP client token (read/search access). Bao-first (local-llm
 # domain, secret/ai/mcp/splunk), env fallback — empty until the creds are
@@ -30,12 +56,14 @@ hermes_agent_context7_api_key: >-
   {{ bao_local_llm_secrets.CONTEXT7_API_KEY
      | default(lookup('env', 'CONTEXT7_API_KEY'), true) }}
 
-# Inbound webhook receiver global HMAC secret. Bao-first (local-llm domain,
-# secret/ai/hermes, generated-if-absent at the least-shared tier — hermes is its
-# only consumer), env fallback. Global fallback for every route that doesn't set
-# its own secret; empty disables the webhook platform (see defaults).
+# Inbound webhook receiver global HMAC secret. Bao-first (the identity's own
+# domain, secret/ai/<id>, generated-if-absent at the least-shared tier — one
+# agent is its only consumer), env fallback. Global fallback for every route
+# that doesn't set its own secret; empty disables the webhook platform (see
+# defaults). Per-agent by construction: two gateways sharing one HMAC secret
+# would let either verify the other's inbound payloads.
 hermes_agent_webhook_secret: >-
-  {{ bao_local_llm_secrets.WEBHOOK_SECRET
+  {{ hermes_agent_bao.WEBHOOK_SECRET
      | default(lookup('env', 'WEBHOOK_SECRET'), true) }}
 
 # Inbound job-submission API bearer key. Bao-first (local-llm domain,
@@ -44,8 +72,8 @@ hermes_agent_webhook_secret: >-
 # https://hermes-api.<sub> with it), so it lives in the shared engine — seeded
 # programmatically, never hand-typed. Empty disables the platform (see defaults).
 hermes_agent_api_server_key: >-
-  {{ bao_local_llm_secrets.HERMES_API_SERVER_KEY
-     | default(lookup('env', 'HERMES_API_SERVER_KEY'), true) }}
+  {{ hermes_agent_bao[hermes_agent_id | upper ~ '_API_SERVER_KEY']
+     | default(lookup('env', hermes_agent_id | upper ~ '_API_SERVER_KEY'), true) }}
 
 # Zammad ITSM client (dryvist/zammad-incidents skill). The canonical API pair is
 # published at secret/ai/mcp/zammad; legacy environment names remain only as a
@@ -63,7 +91,7 @@ hermes_agent_zammad_api_token: >-
 # env fallback — empty until the token is present. See the dryvist/github-issues
 # skill for usage.
 hermes_agent_github_issues_pat: >-
-  {{ bao_local_llm_secrets.GH_PAT_WRITE_PROJECT_ISSUES
+  {{ hermes_agent_bao.GH_PAT_WRITE_PROJECT_ISSUES
      | default(lookup('env', 'GH_PAT_WRITE_PROJECT_ISSUES'), true) }}
 
 # Read-only GitHub security-alert token for the bot-PR triage job (reads
@@ -71,7 +99,7 @@ hermes_agent_github_issues_pat: >-
 # the issues PAT (which supplies the label write). Bao-first (local-llm domain,
 # secret/ai/hermes), env fallback — empty until seeded.
 hermes_agent_github_alerts_token: >-
-  {{ bao_local_llm_secrets.GH_TOKEN_SECURITY_ALERTS_READ
+  {{ hermes_agent_bao.GH_TOKEN_SECURITY_ALERTS_READ
      | default(lookup('env', 'GH_TOKEN_SECURITY_ALERTS_READ'), true) }}
 
 # Codex CLI auth (ChatGPT-OAuth ~/.codex/auth.json) for the isolated
@@ -80,7 +108,7 @@ hermes_agent_github_alerts_token: >-
 # is only a bootstrap snapshot, and Codex's guest-side refresh takes over after
 # first login (see roles/codex_runner/README.md).
 codex_runner_auth_json: >-
-  {{ bao_local_llm_secrets.CODEX_AUTH_JSON
+  {{ hermes_agent_bao.CODEX_AUTH_JSON
      | default(lookup('env', 'CODEX_AUTH_JSON'), true) }}
 
 # --- Vikunja Kanban bridge ----------------------------------------------------
@@ -107,5 +135,5 @@ hermes_agent_vikunja_bridge_enabled: true
 # permission groups from projects — a token holding only `projects` 401s on
 # listing views and cannot drive this bridge.
 hermes_agent_vikunja_bridge_token: >-
-  {{ bao_local_llm_secrets.HERMES_VIKUNJA_API_TOKEN
-     | default(lookup('env', 'HERMES_VIKUNJA_API_TOKEN'), true) }}
+  {{ hermes_agent_bao[hermes_agent_id | upper ~ '_VIKUNJA_API_TOKEN']
+     | default(lookup('env', hermes_agent_id | upper ~ '_VIKUNJA_API_TOKEN'), true) }}

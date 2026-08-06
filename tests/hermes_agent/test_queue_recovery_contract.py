@@ -38,9 +38,21 @@ def test_queue_recovery_archives_each_board_before_reconciling() -> None:
 
 
 def test_heartbeat_is_limited_to_waking_hours() -> None:
-    defaults = yaml.safe_load(DEFAULTS.read_text())
+    """Hourly, and only while the operator is awake.
 
-    assert defaults["hermes_agent_daily_status_cron_schedule"] == "0 8-22 * * *"
+    Asserts the HOUR field, not the whole expression. It used to pin the exact
+    string "0 8-22 * * *", which made the minute part of a contract that is
+    about waking hours — so moving the card off minute :00 to stop it colliding
+    with the */15 board digest every hour failed a test named for something
+    else. The minute is deliberately free to change; where it may land is the
+    separate concern owned by test_cron_stagger.py.
+    """
+    defaults = yaml.safe_load(DEFAULTS.read_text())
+    minute, hours, dom, month, dow = defaults["hermes_agent_daily_status_cron_schedule"].split()
+
+    assert hours == "8-22", "the heartbeat must stay inside waking hours"
+    assert (dom, month, dow) == ("*", "*", "*"), "the heartbeat runs every day"
+    assert minute.isdigit(), f"the heartbeat runs once per hour, not on {minute!r}"
 
 
 def test_watchdog_reports_command_outcomes_not_only_desired_count() -> None:
@@ -50,3 +62,38 @@ def test_watchdog_reports_command_outcomes_not_only_desired_count() -> None:
     assert "CRON_FAILED=0" in watchdog
     assert "succeeded=${CRON_SUCCEEDED} failed=${CRON_FAILED}" in watchdog
     assert "does not verify Kanban queue health" in watchdog
+
+
+# test_no_card_is_retired_by_its_first_failure was removed: `max_retries` no
+# longer exists on anything (18/18 native-cron reframe) — `hermes cron create`
+# has no failure-limit/retry-budget flag at all, unlike `kanban create`.
+# Flagged as a real gap in the PR, not silently dropped: every converted job
+# now has NO retry protection whatsoever, kanban's circuit breaker included.
+
+
+def test_fleet_health_fires_weekly() -> None:
+    """The card that watches the other cards must outlive one bad run.
+
+    Native-cron reframe: fleet-health is now a plain
+    hermes_agent_direct_cron_jobs entry, not a Kanban card — it has no
+    `max_retries` (kanban-only, see defaults' field docs) and no
+    `interval_hours`/slot key (that whole mechanism lived only in the retired
+    kanban-enqueue-recurring.sh.j2). A direct-cron job has nothing to
+    "retire" it on a bad run: reconcile_direct_cron.yml just re-fires it on
+    its next scheduled tick, so surviving one lost run is automatic. What
+    still matters, and is still checkable, is that the tick itself stays
+    weekly rather than drifting to daily and burning the serving slot.
+    """
+    defaults = yaml.safe_load(DEFAULTS.read_text())
+    direct = {j["name"]: j for j in defaults["hermes_agent_direct_cron_jobs"]}
+    assert "{{ hermes_agent_fleet_health_cron_name }}" in direct
+
+    # Weekly cron: a fixed day-of-week field, not a wildcard.
+    assert defaults["hermes_agent_fleet_health_cron_schedule"].split()[-1] not in ("*", "?")
+
+
+# test_slot_stamp_gives_one_key_per_period DELETED (native-cron reframe):
+# slot_stamp() and interval_hours-keyed idempotency slotting lived only in
+# kanban-enqueue-recurring.sh.j2, which is gone. A direct-cron job's identity
+# is the checksum-marker create/remove in reconcile_direct_cron.yml, keyed on
+# its own name — there is no per-fire slot-key arithmetic left to execute.
