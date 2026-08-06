@@ -170,7 +170,7 @@
         # falls back to the node value itself when the map omits the key
         # (e.g. the generic test-fixture node key).
         #
-        # Guests in tofu_load_ssh_containers converge over direct ssh to their
+        # Guests where tofu_ssh_container is true converge over direct ssh to their
         # own FQDN (the contract's `ip` field) instead of pct-exec-via-node:
         # pct exec on PVE 9.2.4 closes the channel mid module-upload (large
         # stdin), failing every play at Gathering Facts with the misleading
@@ -178,11 +178,11 @@
         # client-CA (root login, `ansible` principal), and the guest's host
         # key in the pinned SSH_KNOWN_HOSTS set.
         ansible_host: >-
-          {{ item.value.ip if item.key in tofu_load_ssh_containers
+          {{ item.value.ip if tofu_ssh_container
              else (tofu_data.nodes[item.value.node] | default({})).role
                   | default(item.value.node, true) ~ '.' ~ tofu_data.domain }}
         ansible_connection: >-
-          {{ 'ssh' if item.key in tofu_load_ssh_containers
+          {{ 'ssh' if tofu_ssh_container
              else item.value.ansible_connection }}
         ansible_user: root
         ansible_ssh_private_key_file: "{{ lookup('env', 'PROXMOX_SSH_KEY_PATH') }}"
@@ -214,7 +214,13 @@
           {{ 'donna' if 'hermes-donna' in (item.value.tags | default([]))
              else 'hermes' }}
       vars:
-        tofu_load_ssh_containers: [hermes-agent, llm-router-1, llm-router-2, llm-router-3]
+        # Derived from tags, per-item, rather than a hand-maintained name
+        # list: 'hermes-agent' covers every Hermes agent guest (hermes-donna
+        # guests carry both tags — see hermes_agent_identity above), and
+        # 'llm-router' covers every LLM router guest.
+        tofu_ssh_container: >-
+          {{ (item.value.tags | default([]))
+             | intersect(['hermes-agent', 'llm-router']) | length > 0 }}
       loop: "{{ tofu_data.containers | dict2items }}"
       changed_when: false
       when:
