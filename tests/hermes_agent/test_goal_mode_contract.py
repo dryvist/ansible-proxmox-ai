@@ -752,18 +752,31 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         "interim-brain": hermes_backend,
     }
     # Both selectors must be declared servable, or the alias indirection just
-    # moves the 404 one level down. The cluster model is servable too — it is
-    # hermes-default's router_settings.fallbacks target while a cluster window
-    # is up (roles/llm_router/defaults/main.yml,
-    # llm_router_hermes_default_fallback_chain) — same reasoning: an
-    # unroutable fallback target 404s instead of failing over.
+    # moves the 404 one level down.
+    #
+    # The cluster model is servable ONLY while the cluster leg is actually
+    # available. It is hermes-default's router_settings.fallbacks target while
+    # a cluster window is up, and an unroutable fallback target 502s instead of
+    # failing over — which is exactly what it did, unnoticed, from 2026-08-05
+    # (both hosts' clusterMode disabled, TB cable out) until #365.
+    #
+    # Derive the expectation from llm_router_cluster_leg_available rather than
+    # re-pinning a literal: that var is the single switch #365 introduced, and
+    # roles/llm_router/tasks/assert-cluster-leg.yml already fails the converge
+    # if it and the registry's `servable` disagree. Following it here means
+    # this test tracks the leg coming back instead of going red the moment it
+    # does — re-pinning a literal is the drift this whole indirection exists
+    # to prevent.
     #
     # `servable` is deliberately NOT `enabled`: every large-tier entry is
-    # enabled (the router offers it), only these three are servable (the
-    # backend answers for it). Conflating them yields a 404, not an answer.
+    # enabled (the router offers it), only these are servable (the backend
+    # answers for it). Conflating them yields a 404, not an answer.
+    expected_servable = [hermes_backend, judge_backend]
+    if router_defaults["llm_router_cluster_leg_available"]:
+        expected_servable.append(by_role["cluster"]["client_model_id"])
     assert [
         entry["client_model_id"] for entry in registry if entry.get("servable")
-    ] == [hermes_backend, judge_backend, by_role["cluster"]["client_model_id"]]
+    ] == expected_servable
     hermes_entries = [
         entry for entry in registry if entry["client_model_id"] == hermes_backend
     ]
