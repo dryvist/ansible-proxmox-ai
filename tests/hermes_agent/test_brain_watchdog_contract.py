@@ -277,6 +277,27 @@ def test_saturation_is_classified_busy_not_down() -> None:
     assert "busy=$(( busy + 1 ))" in WATCHDOG
 
 
+def test_non_timeout_curl_failures_still_classify_down() -> None:
+    """rc 28 (our own deadline) is busy; every other curl failure is not.
+
+    2026-08-06: confirmed there is no retry loop anywhere in this script (one
+    curl call, no --retry, no bash retry, no systemd Restart=) — the single
+    ai_router_retry_after_seconds-derived deadline in probe_timeout already IS
+    "one timeout resolves to busy and returns". This pins the other half of
+    that contract: a connection refused (7), a DNS failure (6), a TLS failure
+    (35), or any other non-28 rc must still fall through to 'down' rather than
+    being swallowed by the busy path — that's the difference between a
+    saturated-but-alive backend and a genuinely unreachable one.
+    """
+    probe_fn = WATCHDOG.split("probe_state() {", 1)[1].split("\n}\n", 1)[0]
+    assert (
+        "if (( rc != 0 )); then\n"
+        "    (( rc == 28 )) && { printf 'busy'; return; }\n"
+        "    printf 'down'; return\n"
+        "  fi" in probe_fn
+    ), "a non-28 curl failure must fall through to printf 'down', not busy"
+
+
 def test_busy_does_not_touch_the_down_or_up_streak() -> None:
     """Busy is neither evidence of failure nor evidence of recovery.
 
