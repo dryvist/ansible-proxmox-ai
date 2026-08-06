@@ -730,6 +730,56 @@
       patches were not installed; update the pinned-source patches before
       converging.
 
+# Everything above reads the SOURCE TREE, which is not necessarily the code
+# that runs. The venv lives INSIDE the install dir, so
+# <install_dir>/agent/conversation_loop.py and
+# <install_dir>/venv/lib/python3.*/site-packages/agent/conversation_loop.py are
+# two different files, and only the second one is imported once the package is
+# installed non-editably. It is installed non-editably: the Slack extra below
+# uses `uv pip install "hermes-agent[slack] @ <install_dir>"`, a path install
+# rather than `-e`, and uv skips it entirely once the requirement is satisfied.
+# So after `hermes update` rewrites the source and the patch tasks re-apply
+# themselves, nothing necessarily copies the result into site-packages — and
+# the assertion above still passes, having checked a file nothing imports.
+#
+# This compares the two by checksum. Equal, or no installed copy at all (an
+# editable install, where the source tree IS the imported code), means the
+# patches are live and every assertion above is meaningful. Different means
+# they are not, and the daemon is running unpatched upstream code carrying the
+# retry-storm and IndexError bugs those patches exist to fix.
+- name: Locate any installed copy of a patched module inside the Hermes venv
+  ansible.builtin.find:
+    paths: "{{ hermes_agent_install_dir }}/venv/lib"
+    patterns: conversation_loop.py
+    recurse: true
+    get_checksum: true
+  register: hermes_agent_installed_module_copies
+  changed_when: false
+
+- name: Checksum the patched source the assertions above just verified
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
+    checksum_algorithm: sha1
+  register: hermes_agent_patched_source
+
+- name: Fail when the patched source is not the code the daemon imports
+  vars:
+    hermes_agent_installed_checksums: >-
+      {{ hermes_agent_installed_module_copies.files | map(attribute='checksum') | list }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_installed_checksums | reject('equalto', hermes_agent_patched_source.stat.checksum)
+        | list | length == 0
+    fail_msg: >-
+      An installed copy of conversation_loop.py under the venv differs from the
+      patched source, so the pinned-source patches above are not in the code the
+      daemon imports and are silently doing nothing. Reinstall the package from
+      the patched source (the path install used for the Slack extra below) so
+      the patches reach site-packages, then re-converge. Do not silence this
+      assertion — it is the only thing separating "patched" from "looks patched".
+
 - name: Check whether the Hermes OTEL plugin file exists
   ansible.builtin.stat:
     path: "{{ hermes_agent_install_dir }}/plugins/observability/otel/__init__.py"
