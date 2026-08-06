@@ -99,7 +99,7 @@ hermes_agent_bundle_flake_ref: "github:dryvist/nix-hermes/nix-hermes-v0.10.0#her
 # prompt edit lands in the catalog first; this pin then moves to that merge
 # commit, so the converge is the only thing that changes what a job says.
 hermes_agent_prompts_flake_ref: >-
-  github:dryvist/ai-llm-prompts/b231d16d2d2f0e7edceaf638b247e46e7d7a4c17#auto-ai-agent
+  github:dryvist/ai-llm-prompts/29b655f956427eed8608bf412ee1dd7c6f50d959#auto-ai-agent
 hermes_agent_webhook_prompt_file: hermes-inbound-webhook.md
 hermes_agent_curriculum_prompt_files:
   orient: hermes-curriculum-orient.md
@@ -521,6 +521,35 @@ hermes_agent_direct_cron_jobs:
     enabled: >-
       {{ hermes_agent_docs_sync_enabled | bool
          and hermes_agent_github_app_private_key | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  # Absorbed from the retired estate-briefing cloud routine. Read-only scoring,
+  # so the issues PAT is enough — it opens an issue only for a repo whose CI has
+  # been failing across runs, which is issue write, never a commit.
+  - name: "{{ hermes_agent_repo_scorecard_cron_name }}"
+    schedule: "{{ hermes_agent_repo_scorecard_cron_schedule }}"
+    prompt_var: hermes_agent_repo_scorecard_cron_prompt
+    skill: dryvist/github-issues
+    deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    enabled: >-
+      {{ hermes_agent_repo_scorecard_enabled | bool
+         and hermes_agent_github_issues_pat | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  # Absorbed from the retired repo-audit cloud routine. Needs the alerts token
+  # for its contents:read (scanning source) on top of the issues PAT (filing the
+  # finding) — same two-token shape as bot-pr-triage above.
+  - name: "{{ hermes_agent_secrets_audit_cron_name }}"
+    schedule: "{{ hermes_agent_secrets_audit_cron_schedule }}"
+    prompt_var: hermes_agent_secrets_audit_cron_prompt
+    skill: dryvist/github-issues
+    deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    enabled: >-
+      {{ hermes_agent_secrets_audit_enabled | bool
+         and hermes_agent_github_alerts_token | length > 0
+         and hermes_agent_github_issues_pat | length > 0
          and hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
@@ -1563,6 +1592,39 @@ hermes_agent_docs_sync_enabled: true
 hermes_agent_docs_sync_cron_name: docs-sync
 hermes_agent_docs_sync_cron_schedule: "13 8 * * 1"
 hermes_agent_docs_sync_cron_prompt_file: hermes-docs-sync.md
+
+# --- Repo scorecard: weekly weighted repo-health scoring, read-only ---------
+# Absorbed from the retired estate-briefing cloud routine (2026-08-06), which
+# ran on a substrate that has produced nothing since 2026-07-01. Only the
+# weekly scorecard survived the move: the daily-briefing half was already
+# duplicated by github-triage and the daily summary. Scores every non-archived
+# repo 0-100 on seven weighted factors and reports week-over-week deltas.
+#
+# Delta state is a MEMORY key (repo-scorecard-last), not a state repo — the
+# routine's state-file path is exactly what broke, and memory is the store
+# every other Hermes job already uses. Monday 09:19 keeps it clear of
+# docs-sync (Mon 08:13) so the two weekly jobs never start together.
+hermes_agent_repo_scorecard_enabled: true
+hermes_agent_repo_scorecard_cron_name: repo-scorecard
+hermes_agent_repo_scorecard_cron_schedule: "19 9 * * 1"
+hermes_agent_repo_scorecard_cron_prompt_file: hermes-repo-scorecard.md
+
+# --- Secrets policy audit: issue-only credential scan -----------------------
+# Absorbed from the retired repo-audit cloud routine (2026-08-06). Only the
+# secrets-policy rule moved: it files an issue and never a pull request, which
+# is what makes it legal for an agent that must never make code commits. The
+# no-scripts and claude-md-staleness rules stayed behind — existing skills
+# already cover both, and the 3-rule daily rotation was a scheduling artifact.
+#
+# Gated on BOTH tokens for the same reason bot-pr-triage is: the alerts token
+# carries the contents:read needed to scan source, the issues PAT carries the
+# issue write. The prompt itself also refuses to run without the read token
+# rather than scanning nothing and reporting a clean estate. Daily 05:31 sits
+# clear of the */6 sweeps (:26, :43) and the hourly fabric status (:04).
+hermes_agent_secrets_audit_enabled: true
+hermes_agent_secrets_audit_cron_name: secrets-policy-audit
+hermes_agent_secrets_audit_cron_schedule: "31 5 * * *"
+hermes_agent_secrets_audit_cron_prompt_file: hermes-secrets-policy-audit.md
 
 # --- Daily operator summary: the home channel's ONE curated post ------------
 # 3-tier routing gives the verbose crons the firehose channel; this job is what
