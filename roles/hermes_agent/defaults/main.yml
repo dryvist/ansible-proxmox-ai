@@ -684,6 +684,33 @@ hermes_agent_hindsight_client_pin: "==0.6.1"
 # it means patching/forking hermes-agent. The available lever here is making
 # an outage IMPOSSIBLE to miss (fabric_watchdog) rather than patching a
 # dependency we don't own.
+#
+# UPDATE 2026-08-06 — one of the above IS now patched, because it turned out
+# to be the dominant failure, not a rare edge case. Measured via Splunk over
+# 18 days of index=hermes: prefetch delivers memory into the turn only 15.4%
+# of the time (472 GOT_RESULTS vs 1,983 NO_RESULTS + 613 FAILED). Retain works
+# fine (1,040 successful writes) and recall itself is fast in isolation
+# (67-256ms measured directly against the service) — the loss is NOT an empty
+# database and NOT recall being slow. Root cause, read from the installed
+# source: prefetch() joins its background thread for a HARDCODED 3.0s
+# (`self._prefetch_thread.join(timeout=3.0)`), completely decoupled from the
+# configurable HINDSIGHT_TIMEOUT — no config field feeds that literal, this
+# was confirmed by grepping the whole file, not assumed. Recall gets starved
+# because every Hindsight operation (recall AND retain) schedules onto ONE
+# process-global asyncio event loop (`_get_loop()`/`_run_sync()`); a retain
+# job stuck in its LLM-connection retry sequence (measured: 4 attempts
+# spanning ~2 minutes) occupies that shared loop for the whole sequence, so a
+# recall queued during that window can't even start before the fixed 3s join
+# gives up. See the patch task "Patch Hindsight prefetch join timeout..."
+# below and hermes_agent_hindsight_prefetch_timeout_seconds. This does NOT
+# fully fix worst-case starvation (a retain stuck for the full ~2min backoff
+# still outlasts any turn-latency-reasonable join) — it is the cheap first
+# lever per the "verify by the ratio" acceptance test in the Hindsight plan;
+# a structural fix (recall on its own event loop, never blockable by retain)
+# is the deeper fix if this doesn't move GOT_RESULTS share enough. The other
+# two gaps above (is_available() no-op, retain has zero retry) remain
+# unpatched — fabric_watchdog is still the lever for those.
+hermes_agent_hindsight_prefetch_timeout_seconds: 10
 
 # --- Logging: config.yaml `logging.level` (installed hermes-agent's
 # hermes_logging.py reads cfg["logging"]["level"], default "INFO" if unset).

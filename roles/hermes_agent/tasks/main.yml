@@ -930,6 +930,30 @@
   when: hermes_agent_memory_provider == 'hindsight'
   notify: Restart hermes-gateway
 
+# Measured 2026-08-06: prefetch only delivers memory into the turn 15.4% of
+# the time (Splunk, 18d, index=hermes) because prefetch() joins its
+# background thread for a HARDCODED 3.0s, decoupled from HINDSIGHT_TIMEOUT —
+# no config field feeds it, confirmed by reading the installed source, not
+# assumed. Recall is fast in isolation (67-256ms measured) but gets starved:
+# every Hindsight operation shares ONE process-global event loop
+# (_get_loop()/_run_sync()), so a retain job stuck in its LLM-connection
+# retry sequence (measured up to ~2min) blocks recall from even starting.
+# The debug log line anchors this to the per-turn prefetch() path only — the
+# textually-identical join(timeout=3.0) at shutdown is deliberately left
+# alone; extending drain-on-shutdown isn't the fix and isn't user-facing.
+# See hermes_agent_hindsight_prefetch_timeout_seconds for the full writeup.
+- name: Patch Hindsight prefetch join timeout off the hardcoded 3.0s
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/plugins/memory/hindsight/__init__.py"
+    regexp: |-
+      ^([ \t]*)logger\.debug\("Prefetch: waiting for background thread to complete"\)$
+      \1self\._prefetch_thread\.join\(timeout=3\.0\)$
+    replace: |-
+      \1logger.debug("Prefetch: waiting for background thread to complete")
+      \1self._prefetch_thread.join(timeout={{ hermes_agent_hindsight_prefetch_timeout_seconds | float }})
+  when: hermes_agent_memory_provider == 'hindsight'
+  notify: Restart hermes-gateway
+
 - name: Ensure the hindsight config dir exists
   ansible.builtin.file:
     path: "{{ hermes_agent_hermes_home }}/hindsight"
