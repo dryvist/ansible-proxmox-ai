@@ -168,7 +168,13 @@
         quiet: true
         that:
           - hermes_agent_dashboard_probe.status == 302
-          - hermes_agent_dashboard_probe.location | default('') is match('^/auth/login')
+          # Compare the PATH, not the raw header. `uri` resolves Location
+          # against the request URL, so this arrives absolute
+          # (http://127.0.0.1:8080/auth/login?...) even though the server sends
+          # the relative form curl -I shows. Anchoring on '^/auth/login' failed
+          # a correctly-behaving dashboard on this gate's very first run.
+          # urlsplit('path') normalises both forms to /auth/login.
+          - (hermes_agent_dashboard_probe.location | default('') | urlsplit('path')) == '/auth/login'
           - "'provider=self-hosted' in (hermes_agent_dashboard_probe.location | default(''))"
         fail_msg: >-
           The Hermes dashboard on port {{ hermes_agent_dashboard_port }} did not
