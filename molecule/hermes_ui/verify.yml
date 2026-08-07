@@ -7,10 +7,13 @@
   become: true
   gather_facts: true
 
+  # Literals, deliberately: verify must fail if a default changes unannounced,
+  # which importing the role's defaults here would hide.
   vars:
     hermes_ui_docker_data_dir: /opt/hermes-ui
     hermes_ui_docker_workspace_port: 3000
     hermes_ui_docker_mission_control_port: 3001
+    hermes_ui_docker_workspace_service: hermes-workspace
 
   tasks:
     - name: Stat the rendered docker-compose file
@@ -30,18 +33,48 @@
       register: hermes_ui_compose_content
       no_log: true
 
-    - name: Assert compose wiring (both services, distinct ports, secrets present)
+    # The auth variable is asserted against the PARSED document, not the raw
+    # text. A substring check over the whole file is satisfied by a comment
+    # that merely mentions the name — which is exactly how the wrong variable
+    # (HERMES_PASSWORD, a name absent from the image) survived here while
+    # hermes-workspace restart-looped refusing to start.
+    # Its own task rather than an inline `vars:` entry so a parse failure is
+    # attributable. Written inline first, it failed inside a no_log assert and
+    # reported only "censored" — the play's vars are literals and do not
+    # include the service name, so the lookup raised before any condition ran.
+    - name: Parse the workspace service environment out of the compose file
+      ansible.builtin.set_fact:
+        hermes_ui_workspace_env: "{{ _compose.services[hermes_ui_docker_workspace_service].environment }}"
+      vars:
+        _compose: "{{ hermes_ui_compose_content.content | b64decode | from_yaml }}"
+      no_log: true
+
+    - name: Assert compose wiring (both services, distinct ports)
       ansible.builtin.assert:
         that:
           - "'ghcr.io/outsourc-e/hermes-workspace' in hermes_ui_compose_rendered"
-          - "'HERMES_PASSWORD' in hermes_ui_compose_rendered"
           - "'./mission-control' in hermes_ui_compose_rendered"
           - "'NEXT_PUBLIC_GATEWAY_OPTIONAL: \"true\"' in hermes_ui_compose_rendered"
           - "'3000:3000' in hermes_ui_compose_rendered"
           - "'3001:3000' in hermes_ui_compose_rendered"
       vars:
         hermes_ui_compose_rendered: "{{ hermes_ui_compose_content.content | b64decode }}"
-      no_log: true
+        # Only the compose TEXT is in scope here, and it carries no secret
+        # value that the assert conditions above can echo.
+
+    # Asserted against the parsed mapping, never the raw text. A substring
+    # check over the whole file is satisfied by a comment that merely mentions
+    # the name — which is how HERMES_PASSWORD, a name absent from the image,
+    # survived here while hermes-workspace restart-looped refusing to start.
+    - name: Assert the workspace auth gate is wired to the name the image reads
+      ansible.builtin.assert:
+        that:
+          - hermes_ui_workspace_env.CLAUDE_PASSWORD | default('') | length > 0
+          - "'HERMES_PASSWORD' not in hermes_ui_workspace_env"
+        fail_msg: >-
+          The workspace environment does not carry a non-empty CLAUDE_PASSWORD,
+          or still carries the dead HERMES_PASSWORD key. Keys present:
+          {{ hermes_ui_workspace_env.keys() | list }}
 
     - name: Check both containers are running
       ansible.builtin.command: >-
