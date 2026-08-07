@@ -20,6 +20,33 @@
     hermes_home: /var/lib/hermes/.hermes
     hermes_user: hermes
   tasks:
+    - name: Read the live cron fleet before resuming
+      ansible.builtin.command: "{{ hermes_bin }} cron list --all"
+      environment:
+        HERMES_HOME: "{{ hermes_home }}"
+      become: true
+      become_user: "{{ hermes_user }}"
+      register: hermes_agent_resume_preflight_cron_list
+      changed_when: false
+
+    # Same drift the pause playbook guards against — proven live 2026-08-07,
+    # only 1/15 derived names matched. Catch it here too: a resume that
+    # silently no-ops leaves the seeded fleet paused indefinitely with a
+    # green recap.
+    - name: Fail loudly if the derived resume list has drifted from the live crontab
+      ansible.builtin.assert:
+        that:
+          - (hermes_agent_cluster_pause_cron_names
+             | reject('in', hermes_agent_resume_preflight_cron_list.stdout) | list) == []
+        fail_msg: >-
+          Cron names missing from the live crontab (naming drift — converge
+          hermes_agent on this host, do not hand-edit the pause list):
+          {{ hermes_agent_cluster_pause_cron_names
+             | reject('in', hermes_agent_resume_preflight_cron_list.stdout) | list }}
+        success_msg: >-
+          All {{ hermes_agent_cluster_pause_cron_names | length }} derived cron
+          names found in the live crontab.
+
     # Restart BEFORE resuming crons, so the first resumed job talks to a gateway
     # that has re-read the upstream rather than one still holding stale state.
     #
