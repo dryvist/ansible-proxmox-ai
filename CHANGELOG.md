@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.24.1...v0.24.2) (2026-08-07)
+
+
+### Bug Fixes
+
+* **renovate:** track the digest-pinned squid image ([#392](https://github.com/dryvist/ansible-proxmox-ai/issues/392)) ([b8d73e3](https://github.com/dryvist/ansible-proxmox-ai/commit/b8d73e363a63beb6cdb10eae27f0328b4a12a395))
+
 ## [0.24.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.24.0...v0.24.1) (2026-08-07)
 
 
