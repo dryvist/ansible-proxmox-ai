@@ -699,6 +699,110 @@
     replace: '\1logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)'
   notify: Restart hermes-gateway
 
+# Measured 2026-08-06: prefetch only delivers memory into the turn 15.4% of
+# the time (Splunk, 18d, index=hermes) because prefetch() joins its
+# background thread for a HARDCODED 3.0s, decoupled from HINDSIGHT_TIMEOUT —
+# no config field feeds it, confirmed by reading the installed source, not
+# assumed. Recall is fast in isolation (67-256ms measured) but gets starved:
+# every Hindsight operation shares ONE process-global event loop
+# (_get_loop()/_run_sync()), so a retain job stuck in its LLM-connection
+# retry sequence (measured up to ~2min) blocks recall from even starting.
+# The debug log line anchors this to the per-turn prefetch() path only — the
+# textually-identical join(timeout=3.0) at shutdown is deliberately left
+# alone; extending drain-on-shutdown isn't the fix and isn't user-facing.
+# See hermes_agent_hindsight_prefetch_timeout_seconds for the full writeup.
+- name: Patch Hindsight prefetch join timeout off the hardcoded 3.0s
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/plugins/memory/hindsight/__init__.py"
+    regexp: |-
+      ^([ \t]*)logger\.debug\("Prefetch: waiting for background thread to complete"\)$
+      \1self\._prefetch_thread\.join\(timeout=3\.0\)$
+    replace: |-
+      \1logger.debug("Prefetch: waiting for background thread to complete")
+      \1self._prefetch_thread.join(timeout={{ hermes_agent_hindsight_prefetch_timeout_seconds | float }})
+  when: hermes_agent_memory_provider == 'hindsight'
+  notify: Restart hermes-gateway
+
+# _sync_external_memory_for_turn() (run_agent.py) is the ONLY place that
+# queues the next turn's prefetch — it runs at end-of-turn and has four
+# silent exits (three early returns plus a bare except) with no logging at
+# any of them. prefetch_all() (turn_context.py), by contrast, runs
+# unconditionally at the start of every turn. So a turn whose predecessor hit
+# any of these four exits leaves nothing queued, and the next turn's prefetch
+# correctly reports empty with zero trace of why upstream. This does not
+# change what any of the four exits DO — same interrupted-turn skip, same
+# best-effort swallow — it only makes each one observable. Log level matches
+# the existing "Hindsight prefetch failed" bump above: warning, not debug, so
+# it actually reaches Splunk. No message/user/response text in any line.
+- name: Patch _sync_external_memory_for_turn to log its "interrupted" skip
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/run_agent.py"
+    regexp: |-
+      ^(\s*)if interrupted:$
+      \1    return$
+    replace: |-
+      \1if interrupted:
+      \1    logger.warning(
+      \1        "Hermes external-memory sync/prefetch skipped: turn interrupted (session=%s)",
+      \1        self.session_id or "",
+      \1    )
+      \1    return
+  notify: Restart hermes-gateway
+
+- name: Patch _sync_external_memory_for_turn to log its missing-input skip
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/run_agent.py"
+    regexp: |-
+      ^(\s*)if not \(self\._memory_manager and final_response and original_user_message\):$
+      \1    return$
+    replace: |-
+      \1if not (self._memory_manager and final_response and original_user_message):
+      \1    logger.warning(
+      \1        "Hermes external-memory sync/prefetch skipped: missing manager=%s "
+      \1        "final_response=%s original_user_message=%s (session=%s)",
+      \1        bool(self._memory_manager), bool(final_response), bool(original_user_message), self.session_id or "",
+      \1    )
+      \1    return
+  notify: Restart hermes-gateway
+
+- name: Patch _sync_external_memory_for_turn to log its empty-flatten skip
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/run_agent.py"
+    regexp: |-
+      ^(\s*)if not \(user_text and response_text\):$
+      \1    return$
+    replace: |-
+      \1if not (user_text and response_text):
+      \1    logger.warning(
+      \1        "Hermes external-memory sync/prefetch skipped: empty after flatten "
+      \1        "user_text=%s response_text=%s (session=%s)",
+      \1        bool(user_text), bool(response_text), self.session_id or "",
+      \1    )
+      \1    return
+  notify: Restart hermes-gateway
+
+- name: Patch _sync_external_memory_for_turn to log its swallowed exception
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/run_agent.py"
+    regexp: |-
+      ^(\s*)    self\._memory_manager\.queue_prefetch_all\($
+      \1        user_text,$
+      \1        session_id=self\.session_id or "",$
+      \1    \)$
+      \1except Exception:$
+      \1    pass$
+    replace: |-
+      \1    self._memory_manager.queue_prefetch_all(
+      \1        user_text,
+      \1        session_id=self.session_id or "",
+      \1    )
+      \1except Exception as exc:
+      \1    logger.warning(
+      \1        "Hermes external-memory sync_all/queue_prefetch_all failed: %s (session=%s)",
+      \1        exc, self.session_id or "", exc_info=True,
+      \1    )
+  notify: Restart hermes-gateway
+
 - name: Read installed Hermes pinned-source patches
   ansible.builtin.slurp:
     src: "{{ item }}"
@@ -1133,110 +1237,6 @@
     'Installed' in hermes_agent_hindsight_install.stderr
     or 'Uninstalled' in hermes_agent_hindsight_install.stderr
   when: hermes_agent_memory_provider == 'hindsight'
-  notify: Restart hermes-gateway
-
-# Measured 2026-08-06: prefetch only delivers memory into the turn 15.4% of
-# the time (Splunk, 18d, index=hermes) because prefetch() joins its
-# background thread for a HARDCODED 3.0s, decoupled from HINDSIGHT_TIMEOUT —
-# no config field feeds it, confirmed by reading the installed source, not
-# assumed. Recall is fast in isolation (67-256ms measured) but gets starved:
-# every Hindsight operation shares ONE process-global event loop
-# (_get_loop()/_run_sync()), so a retain job stuck in its LLM-connection
-# retry sequence (measured up to ~2min) blocks recall from even starting.
-# The debug log line anchors this to the per-turn prefetch() path only — the
-# textually-identical join(timeout=3.0) at shutdown is deliberately left
-# alone; extending drain-on-shutdown isn't the fix and isn't user-facing.
-# See hermes_agent_hindsight_prefetch_timeout_seconds for the full writeup.
-- name: Patch Hindsight prefetch join timeout off the hardcoded 3.0s
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/plugins/memory/hindsight/__init__.py"
-    regexp: |-
-      ^([ \t]*)logger\.debug\("Prefetch: waiting for background thread to complete"\)$
-      \1self\._prefetch_thread\.join\(timeout=3\.0\)$
-    replace: |-
-      \1logger.debug("Prefetch: waiting for background thread to complete")
-      \1self._prefetch_thread.join(timeout={{ hermes_agent_hindsight_prefetch_timeout_seconds | float }})
-  when: hermes_agent_memory_provider == 'hindsight'
-  notify: Restart hermes-gateway
-
-# _sync_external_memory_for_turn() (run_agent.py) is the ONLY place that
-# queues the next turn's prefetch — it runs at end-of-turn and has four
-# silent exits (three early returns plus a bare except) with no logging at
-# any of them. prefetch_all() (turn_context.py), by contrast, runs
-# unconditionally at the start of every turn. So a turn whose predecessor hit
-# any of these four exits leaves nothing queued, and the next turn's prefetch
-# correctly reports empty with zero trace of why upstream. This does not
-# change what any of the four exits DO — same interrupted-turn skip, same
-# best-effort swallow — it only makes each one observable. Log level matches
-# the existing "Hindsight prefetch failed" bump above: warning, not debug, so
-# it actually reaches Splunk. No message/user/response text in any line.
-- name: Patch _sync_external_memory_for_turn to log its "interrupted" skip
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/run_agent.py"
-    regexp: |-
-      ^(\s*)if interrupted:$
-      \1    return$
-    replace: |-
-      \1if interrupted:
-      \1    logger.warning(
-      \1        "Hermes external-memory sync/prefetch skipped: turn interrupted (session=%s)",
-      \1        self.session_id or "",
-      \1    )
-      \1    return
-  notify: Restart hermes-gateway
-
-- name: Patch _sync_external_memory_for_turn to log its missing-input skip
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/run_agent.py"
-    regexp: |-
-      ^(\s*)if not \(self\._memory_manager and final_response and original_user_message\):$
-      \1    return$
-    replace: |-
-      \1if not (self._memory_manager and final_response and original_user_message):
-      \1    logger.warning(
-      \1        "Hermes external-memory sync/prefetch skipped: missing manager=%s "
-      \1        "final_response=%s original_user_message=%s (session=%s)",
-      \1        bool(self._memory_manager), bool(final_response), bool(original_user_message), self.session_id or "",
-      \1    )
-      \1    return
-  notify: Restart hermes-gateway
-
-- name: Patch _sync_external_memory_for_turn to log its empty-flatten skip
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/run_agent.py"
-    regexp: |-
-      ^(\s*)if not \(user_text and response_text\):$
-      \1    return$
-    replace: |-
-      \1if not (user_text and response_text):
-      \1    logger.warning(
-      \1        "Hermes external-memory sync/prefetch skipped: empty after flatten "
-      \1        "user_text=%s response_text=%s (session=%s)",
-      \1        bool(user_text), bool(response_text), self.session_id or "",
-      \1    )
-      \1    return
-  notify: Restart hermes-gateway
-
-- name: Patch _sync_external_memory_for_turn to log its swallowed exception
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/run_agent.py"
-    regexp: |-
-      ^(\s*)    self\._memory_manager\.queue_prefetch_all\($
-      \1        user_text,$
-      \1        session_id=self\.session_id or "",$
-      \1    \)$
-      \1except Exception:$
-      \1    pass$
-    replace: |-
-      \1    self._memory_manager.queue_prefetch_all(
-      \1        user_text,
-      \1        session_id=self.session_id or "",
-      \1    )
-      \1except Exception as exc:
-      \1    logger.warning(
-      \1        "Hermes external-memory sync_all/queue_prefetch_all failed: %s (session=%s)",
-      \1        exc, self.session_id or "", exc_info=True,
-      \1    )
   notify: Restart hermes-gateway
 
 - name: Ensure the hindsight config dir exists
