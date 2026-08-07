@@ -15,10 +15,17 @@
     agent_guest_home: /home/agent
 
   tasks:
-    - name: Load the role defaults (the deny mirror under test)
-      ansible.builtin.include_vars:
-        file: "{{ playbook_dir }}/../../roles/agent_guest/defaults/main.yml"
-        name: agent_guest_defaults
+    # policy.yml's own header: "A test that hand-rolled its own `nix eval`
+    # would still pass while the converge's own invocation was broken" — so
+    # verify uses the SAME interface converge does, not a hand-rolled read of
+    # defaults/main.yml. That hand-rolled read was itself a real defect this
+    # scenario turned up: agent_guest_residual_deny is resolved at runtime by
+    # policy.yml (see its header), not a literal in defaults/main.yml, so
+    # `include_vars` on that file alone never contained the key.
+    - name: Evaluate the residual deny policy (same interface converge uses)
+      ansible.builtin.include_role:
+        name: agent_guest
+        tasks_from: policy.yml
 
     - name: Read the rendered policy files
       ansible.builtin.slurp:
@@ -29,27 +36,46 @@
         - .codex/rules/default.rules
         - .gemini/policies/autonomous.toml
 
-    - name: Assert every deny prefix reached all three tools in its native format
+    # Parsed into facts rather than checked as whole-file substrings: a
+    # substring match is satisfied by a comment that merely mentions the name.
+    # Own task (not no_log, unlike hermes_ui's — none of these three files
+    # carry a secret value) so a parse failure is attributable rather than
+    # buried inside the assert below.
+    - name: Parse the rendered policy files
       vars:
-        _deny: "{{ agent_guest_defaults.agent_guest_residual_deny }}"
-        _claude: "{{ agent_guest_policies.results[0].content | b64decode }}"
         _codex: "{{ agent_guest_policies.results[1].content | b64decode }}"
-        _gemini: "{{ agent_guest_policies.results[2].content | b64decode }}"
+      ansible.builtin.set_fact:
+        agent_guest_claude: "{{ agent_guest_policies.results[0].content | b64decode | from_json }}"
+        agent_guest_gemini: "{{ agent_guest_policies.results[2].content | b64decode | community.general.from_toml }}"
+        agent_guest_codex_rules: "{{ _codex.splitlines() | select('match', '^prefix_rule') | list }}"
+
+    - name: Assert every deny prefix reached all three tools in its native format
+      # Each comparison is precomputed via its own `{{ }}`-templated var, and
+      # `that:` only checks the resulting lengths. A chained
+      # filter+regex_replace expression evaluated bare inside `that:` (no
+      # `{{ }}`) was empirically observed to disagree with the identical
+      # expression evaluated as a `{{ }}` template — reproduced against a
+      # fixed, already-converged container (same settings.json both times).
+      vars:
+        _deny: "{{ agent_guest_residual_deny }}"
+        _claude_deny: "{{ agent_guest_claude.permissions.deny }}"
+        _gemini_prefixes: "{{ agent_guest_gemini.rule | map(attribute='commandPrefix') | list }}"
+        _claude_expected: >-
+          {{ _deny | map('regex_replace', '^(.*)$', 'Bash(\1 *)') | list }}
+        _claude_missing: "{{ _claude_expected | difference(_claude_deny) }}"
+        _gemini_missing: "{{ _deny | difference(_gemini_prefixes) }}"
       ansible.builtin.assert:
         that:
-          - >-
-            _deny | map('regex_replace', '^(.*)$', 'Bash(\1 *)')
-            | reject('in', _claude) | list | length == 0
-          - >-
-            _deny | map('regex_replace', '^(.*)$', 'commandPrefix = "\1"')
-            | reject('in', _gemini) | list | length == 0
-          - _codex.splitlines() | select('match', '^prefix_rule') | list | length == _deny | length
+          - _claude_missing | length == 0
+          - _gemini_missing | length == 0
+          - agent_guest_codex_rules | length == _deny | length
           # bypassPermissions without an enforced deny list is the failure mode
           # this whole mirror exists to prevent.
-          - "'bypassPermissions' in _claude"
+          - agent_guest_claude.permissions.defaultMode == 'bypassPermissions'
         fail_msg: >-
           The autonomous deny mirror did not reach every tool — one of the three
           renderers dropped entries from agent_guest_residual_deny.
+          claude missing={{ _claude_missing }} gemini missing={{ _gemini_missing }}
 
     - name: Run the job runner's own self-check (parse + launch-flag assertions)
       ansible.builtin.command:
