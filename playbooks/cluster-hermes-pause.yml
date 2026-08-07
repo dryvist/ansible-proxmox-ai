@@ -28,6 +28,38 @@
     hermes_home: /var/lib/hermes/.hermes
     hermes_user: hermes
   tasks:
+    - name: Read the live cron fleet before pausing
+      ansible.builtin.command: "{{ hermes_bin }} cron list --all"
+      environment:
+        HERMES_HOME: "{{ hermes_home }}"
+      become: true
+      become_user: "{{ hermes_user }}"
+      register: hermes_agent_pause_preflight_cron_list
+      changed_when: false
+
+    # Proven live 2026-08-07: the derived list matched only 1/15 live cron
+    # names because the guest still ran pre-reframe `-enqueue`/`-digest`
+    # names — the role deploys post-reframe bare names, so the drift was the
+    # guest, not this list, but the pause silently no-op'd instead of saying
+    # so. Also the drill that caught splunk-status-digest self-reverting
+    # paused -> active between two pause runs minutes apart: unexplained, and
+    # this assertion is what would catch a recurrence (it would show up here
+    # as a name present live but absent from `hermes cron pause`'s own report
+    # on a later run, or simply as this assertion failing again).
+    - name: Fail loudly if the derived pause list has drifted from the live crontab
+      ansible.builtin.assert:
+        that:
+          - (hermes_agent_cluster_pause_cron_names
+             | reject('in', hermes_agent_pause_preflight_cron_list.stdout) | list) == []
+        fail_msg: >-
+          Cron names missing from the live crontab (naming drift — converge
+          hermes_agent on this host, do not hand-edit the pause list):
+          {{ hermes_agent_cluster_pause_cron_names
+             | reject('in', hermes_agent_pause_preflight_cron_list.stdout) | list }}
+        success_msg: >-
+          All {{ hermes_agent_cluster_pause_cron_names | length }} derived cron
+          names found in the live crontab.
+
     - name: Stop the brain-health watchdog timer (kills the down-alert + auto-resume)
       ansible.builtin.systemd:
         name: hermes-brain-watchdog.timer
