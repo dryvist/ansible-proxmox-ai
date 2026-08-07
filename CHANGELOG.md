@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.24.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.24.0...v0.24.1) (2026-08-07)
+
+
+### Bug Fixes
+
+* **fabric_watchdog:** expose llm_router vars to the play with include_role public ([#386](https://github.com/dryvist/ansible-proxmox-ai/issues/386)) ([e36a58c](https://github.com/dryvist/ansible-proxmox-ai/commit/e36a58c670bd81049aea17635143640a48e8655b))
+* **hermes_agent:** apply prefetch observability patches before the pinned-source assert ([#385](https://github.com/dryvist/ansible-proxmox-ai/issues/385)) ([900c672](https://github.com/dryvist/ansible-proxmox-ai/commit/900c6720ac55a3cffea9e10e025df080430fe71e))
+* **hermes_ui:** workspace never started — wrong auth env var, found by running its molecule scenario ([#380](https://github.com/dryvist/ansible-proxmox-ai/issues/380)) ([a999b8c](https://github.com/dryvist/ansible-proxmox-ai/commit/a999b8c82e6fac62d00d241d960dc71f4ef0b466))
+* **hermes:** preflight-assert derived cron names against the live crontab ([#387](https://github.com/dryvist/ansible-proxmox-ai/issues/387)) ([d9c0cfc](https://github.com/dryvist/ansible-proxmox-ai/commit/d9c0cfc663ecd05bcc81395cf5620200abcae646))
+* **images:** pin the two images Renovate could never bump ([#384](https://github.com/dryvist/ansible-proxmox-ai/issues/384)) ([434271c](https://github.com/dryvist/ansible-proxmox-ai/commit/434271c99a6533b2156edf1f0daee0651e63c5d2))
+
 ## [0.24.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.23.2...v0.24.0) (2026-08-06)
 
 
