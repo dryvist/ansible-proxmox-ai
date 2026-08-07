@@ -9,6 +9,7 @@
 
   vars:
     llamaindex_data_dir: /opt/llamaindex
+    llamaindex_qdrant_collection: homelab_docs
 
   tasks:
     - name: Check LlamaIndex data directory exists
@@ -63,12 +64,21 @@
         src: "{{ llamaindex_data_dir }}/config.yaml"
       register: config_content
 
+    # Parsed into a fact rather than checked as a whole-file substring: a
+    # substring match is satisfied by a comment that merely mentions the name,
+    # which is how a dead/renamed key can survive verify indefinitely.
+    - name: Parse the rendered LlamaIndex config.yaml
+      ansible.builtin.set_fact:
+        llamaindex_config: "{{ config_content.content | b64decode | from_yaml }}"
+
     - name: Assert config.yaml has expected content
       ansible.builtin.assert:
         that:
-          - "'embeddings' in (config_content.content | b64decode)"
-          - "'qdrant' in (config_content.content | b64decode)"
-        fail_msg: "config.yaml does not contain expected LlamaIndex configuration"
+          - "'embeddings' in llamaindex_config"
+          - "'qdrant' in llamaindex_config"
+        fail_msg: >-
+          config.yaml does not contain expected LlamaIndex configuration
+          (top-level keys: {{ llamaindex_config.keys() | list }})
 
     - name: Check the legacy Ollama binary is gone
       ansible.builtin.stat:
@@ -84,9 +94,11 @@
     - name: Assert config.yaml declares the index collection and sources
       ansible.builtin.assert:
         that:
-          - "'collection' in (config_content.content | b64decode)"
-          - "'sources' in (config_content.content | b64decode)"
-        fail_msg: "config.yaml is missing the index collection/sources block"
+          - llamaindex_config.index.collection == llamaindex_qdrant_collection
+          - llamaindex_config.index.sources | default([]) | length > 0
+        fail_msg: >-
+          config.yaml is missing the index collection/sources block
+          (index: {{ llamaindex_config.index | default({}) }})
 
     - name: Check the RAG indexer script was deployed
       ansible.builtin.stat:

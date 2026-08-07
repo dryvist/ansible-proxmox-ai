@@ -49,25 +49,34 @@
         src: "{{ qdrant_docker_data_dir }}/docker-compose.yml"
       register: compose_content
 
-    - name: Assert docker-compose.yml references correct qdrant image
-      ansible.builtin.assert:
-        that:
-          - "qdrant_docker_image_repo in (compose_content.content | b64decode)"
-        fail_msg: "docker-compose.yml does not reference expected image repo {{ qdrant_docker_image_repo }}"
+    # Parsed into a fact rather than checked as a whole-file substring: a
+    # substring match is satisfied by a comment that merely mentions the name,
+    # which is how a dead/renamed variable can survive verify indefinitely.
+    - name: Parse the rendered docker-compose file
+      ansible.builtin.set_fact:
+        qdrant_compose: "{{ compose_content.content | b64decode | from_yaml }}"
 
-    - name: Assert docker-compose.yml has correct container name
+    - name: Assert docker-compose.yml references correct qdrant image and container name
       ansible.builtin.assert:
         that:
-          - "qdrant_docker_container_name in (compose_content.content | b64decode)"
-        fail_msg: "docker-compose.yml does not have expected container name"
+          - qdrant_docker_image_repo in qdrant_compose.services.qdrant.image
+          - qdrant_compose.services.qdrant.container_name == qdrant_docker_container_name
+        fail_msg: >-
+          docker-compose.yml service block does not match the expected
+          image/container name (got {{ qdrant_compose.services.qdrant }})
 
     - name: Assert docker-compose.yml mounts required volumes
+      vars:
+        qdrant_expected_volumes:
+          - "{{ qdrant_docker_data_dir }}/storage:/qdrant/storage"
+          - "{{ qdrant_docker_data_dir }}/snapshots:/qdrant/snapshots"
+          - "{{ qdrant_docker_data_dir }}/config/config.yaml:/qdrant/config/production.yaml:ro"
       ansible.builtin.assert:
         that:
-          - "'/qdrant/storage' in (compose_content.content | b64decode)"
-          - "'/qdrant/snapshots' in (compose_content.content | b64decode)"
-          - "'/qdrant/config/production.yaml' in (compose_content.content | b64decode)"
-        fail_msg: "docker-compose.yml is missing required Qdrant volume mounts"
+          - qdrant_expected_volumes | difference(qdrant_compose.services.qdrant.volumes) | length == 0
+        fail_msg: >-
+          docker-compose.yml is missing required Qdrant volume mounts
+          (got {{ qdrant_compose.services.qdrant.volumes }})
 
     - name: Check config.yaml was deployed
       ansible.builtin.stat:
@@ -85,14 +94,18 @@
         src: "{{ qdrant_docker_data_dir }}/config/config.yaml"
       register: config_content
 
+    - name: Parse the rendered qdrant config.yaml
+      ansible.builtin.set_fact:
+        qdrant_config: "{{ config_content.content | b64decode | from_yaml }}"
+
     - name: Assert config.yaml has expected content
       ansible.builtin.assert:
         that:
-          - "'storage_path: /qdrant/storage' in (config_content.content | b64decode)"
-          - "'snapshots_path: /qdrant/snapshots' in (config_content.content | b64decode)"
-          - "'http_port: 6333' in (config_content.content | b64decode)"
-          - "'grpc_port: 6334' in (config_content.content | b64decode)"
-        fail_msg: "config.yaml does not contain expected Qdrant configuration"
+          - qdrant_config.storage.storage_path == '/qdrant/storage'
+          - qdrant_config.storage.snapshots_path == '/qdrant/snapshots'
+          - qdrant_config.service.http_port == 6333
+          - qdrant_config.service.grpc_port == 6334
+        fail_msg: "config.yaml does not contain expected Qdrant configuration ({{ qdrant_config }})"
 
     - name: Check Docker service is running
       ansible.builtin.systemd:
