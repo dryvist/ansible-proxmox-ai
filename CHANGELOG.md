@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.24.2...v0.24.3) (2026-08-07)
+
+
+### Bug Fixes
+
+* **molecule:** close the CI coverage hole and convert substring asserts to structural ([#388](https://github.com/dryvist/ansible-proxmox-ai/issues/388)) ([32c5e86](https://github.com/dryvist/ansible-proxmox-ai/commit/32c5e86d3a630b84e70767a6c1ff8a0515066437))
+
 ## [0.24.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.24.1...v0.24.2) (2026-08-07)
 
 
