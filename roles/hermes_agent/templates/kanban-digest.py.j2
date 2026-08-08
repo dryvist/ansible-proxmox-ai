@@ -104,6 +104,18 @@ OK = "completed"
 # Where a card is allowed to be once its run ended. Anything else means the run
 # stopped but the card did not finish — the "exits open" failure mode.
 SETTLED = ("done", "archived")
+# A worker that already delivered its own full report to Slack says so in its
+# own summary (the report-generating crons all end with some phrasing of this).
+# Quoting that summary here would restate the same finding a second time in the
+# same 15-minute window — one message from the worker, one from this digest.
+# When the summary says the report already went out, point at it instead.
+REPORT_ALREADY_POSTED = re.compile(r"report\s+(?:was\s+)?(?:delivered|posted)\s+to\s+slack", re.I)
+# Streak length (tasks.consecutive_failures, which already spans every prior
+# window — no new state needed) at which a failing card's line switches from
+# the plain marker to the same ESCALATING treatment splunk-triage.py.j2 gives a
+# worsening error signature: a card still failing on its Nth consecutive tick
+# is not new information delivered the same way as its first failure.
+ESCALATE_AT = 2
 
 RUNS_SQL = """
 SELECT r.task_id, r.outcome, r.started_at, r.ended_at, r.summary, r.error,
@@ -273,7 +285,11 @@ def completed_lines(by_task):
             elapsed = last["ended_at"] - last["started_at"]
         retried = len(e["attempts"]) - len(wins)
         retry_note = f", after {retried} failed attempt(s)" if retried else ""
-        summary = clip(last["summary"]) or "(the worker recorded no summary)"
+        summary_raw = last["summary"] or ""
+        if REPORT_ALREADY_POSTED.search(summary_raw):
+            summary = "posted its own full report to Slack — see that message"
+        else:
+            summary = clip(summary_raw) or "(the worker recorded no summary)"
         out.append(f":white_check_mark: *{e['title']}* [{task_id}] "
                    f"{fmt_dur(elapsed)}{retry_note} — {summary}")
     return out
@@ -301,7 +317,8 @@ def failed_lines(by_task):
         detail = clip(last["error"] or last["summary"], 200)
         streak = e["consecutive_failures"] or 0
         streak_note = f", {streak} consecutive failures" if streak > 1 else ""
-        out.append(f":x: *{e['title']}* [{task_id}] {outcomes}{tries}, {landed}"
+        marker = (":rotating_light: *ESCALATING*" if streak >= ESCALATE_AT else ":x:")
+        out.append(f"{marker} *{e['title']}* [{task_id}] {outcomes}{tries}, {landed}"
                    f"{streak_note}" + (f" — {detail}" if detail else ""))
     return out
 
