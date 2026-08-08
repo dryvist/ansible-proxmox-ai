@@ -85,7 +85,7 @@ without failing the converge).
 
 Choosing a profile is the **default action** for new recurring work — not an
 advanced option. `default` is not the absence of a choice; it is correct only
-for cross-domain, board-meta, or GitHub work (say why in the PR).
+for cross-domain, board-meta, or write-bearing GitHub work (say why in the PR).
 
 A **profile** is a fully independent `HERMES_HOME` directory (own
 `config.yaml`, `.env`, `SOUL.md`, skills) that a Kanban card selects
@@ -133,16 +133,26 @@ written to memory by any profile should be treated as private to it.
 
 | Profile | Mission | Has | Must NOT have (tools/MCP/skills — memory is shared across every profile, see above) |
 | --- | --- | --- | --- |
-| `default` | Cross-domain, board-meta, GitHub | everything (unchanged) | — |
+| `default` | Cross-domain, board-meta, write-bearing GitHub | everything (unchanged) | — |
 | `splunk-admin` | Read-only SIEM: SPL, alert + report | Splunk + Docs MCP, `splunk-monitor` skill | GitHub, Zammad, other MCP/skills |
 | `homelab-admin` | Incidents + fabric health | Docs MCP (+ Vikunja/Nautobot later), `zammad-incidents` skill | Splunk, GitHub, other MCP/skills |
+| `github-maint` | Read-only repo review + proposals | Docs MCP, `github-issues` skill, read-only token | GitHub writes, `docs-pr`, Splunk, Zammad, other |
 
-**Assigning a job to a profile is not possible any more.** `hermes cron
+`github-maint` is the one profile whose headline constraint is enforced by a
+**credential** rather than by tool availability. It renders the read-only
+token under the same `.env` key the `github-issues` skill authenticates with,
+so the skill works unchanged and every write call fails at the API. Its
+proposals leave through Slack and `kanban_create`; it opens no issues, files
+no pull requests, and posts no comments.
+
+**A job selects its profile by `HERMES_HOME`, not by a flag.** `hermes cron
 create` has no profile-selection flag (unlike `kanban create`'s `--assignee`),
-so every `hermes_agent_direct_cron_jobs` entry runs under the default profile
-regardless of what its pre-reframe Kanban card used to name — 6 of the 18
-converted jobs (2 → `homelab-admin`, 4 → `splunk-admin`) lost this. See the PR
-that removed `hermes_agent_kanban_cards` for the full gap report.
+so an entry in `hermes_agent_direct_cron_jobs` sets `hermes_home:` to the
+profile's directory instead — the create, the lookup, and the periodic tick
+all run against that store. An entry that omits `hermes_home:` runs under the
+default profile, which is what the 18 converted jobs did on landing; the
+splunk-* jobs, the zammad review, the fabric status, and `github-maint-review`
+carry it today.
 
 **Adding a new profile**: add an entry to `hermes_agent_profiles`
 (`mcp`/`env`/`skills`/`soul_addendum_file`), add a
@@ -236,6 +246,12 @@ and GraphQL (Projects v2) calls and the usage guardrails.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `hermes_agent_github_issues_pat` | `""` | issues + org-projects PAT (bao/env) |
+| `hermes_agent_github_read_token` | `""` | read-only org token for `github-maint` (bao/env) |
+
+The `github-maint` profile gets `hermes_agent_github_read_token` under the same
+`GH_PAT_WRITE_PROJECT_ISSUES` key instead — the key is what the skill reads, the
+value is what carries the scope. Every other profile renders the key blank, so
+the read/write PAT above never leaves the default profile.
 
 ## Operational log shipping (index=hermes)
 

@@ -109,6 +109,7 @@ def test_profile_env_lists_never_grant_a_forbidden_credential_section() -> None:
     forbidden_sections = {
         "splunk-admin": {"zammad", "github"},
         "homelab-admin": {"splunk", "github"},
+        "github-maint": {"splunk", "zammad"},
     }
     for profile in _profiles():
         forbidden = forbidden_sections.get(profile["name"], set())
@@ -124,6 +125,7 @@ def test_profile_mcp_lists_never_grant_a_forbidden_server() -> None:
     forbidden_mcp = {
         "splunk-admin": {"codex", "context7", "vikunja", "nautobot"},
         "homelab-admin": {"splunk", "codex", "context7"},
+        "github-maint": {"splunk", "codex", "context7", "vikunja", "nautobot"},
     }
     for profile in _profiles():
         forbidden = forbidden_mcp.get(profile["name"], set())
@@ -139,6 +141,9 @@ def test_profile_skill_lists_never_grant_a_forbidden_skill() -> None:
     forbidden_skills = {
         "splunk-admin": {"dryvist/github-issues", "dryvist/zammad-incidents", "dryvist/docs-pr"},
         "homelab-admin": {"dryvist/splunk-monitor", "dryvist/github-issues", "dryvist/docs-pr"},
+        # docs-pr is the SIGNED-COMMIT path — a read-only profile must never
+        # carry it, and that is the one GitHub skill github-maint is denied.
+        "github-maint": {"dryvist/splunk-monitor", "dryvist/zammad-incidents", "dryvist/docs-pr"},
     }
     for profile in _profiles():
         forbidden = forbidden_skills.get(profile["name"], set())
@@ -198,6 +203,45 @@ def test_llm_wiki_skill_is_materializable_into_any_profile_that_opts_in() -> Non
     )
 
 
+def test_github_maint_cron_runs_in_its_own_profile_behind_the_read_token() -> None:
+    """The job's read-only property comes from WHERE it runs, not its prompt.
+
+    Two things carry it: the job must point HERMES_HOME at the github-maint
+    profile (whose .env holds the read-only token and blanks everything else),
+    and it must stay disabled until that token is actually seeded. Drop either
+    and the job silently becomes an ordinary default-profile job holding the
+    read/write PAT — which is exactly what it exists not to be.
+    """
+    defaults = _defaults()
+    jobs = {
+        entry["name"]: entry for entry in defaults["hermes_agent_direct_cron_jobs"]
+    }
+    entry = jobs["{{ hermes_agent_github_maint_cron_name }}"]
+
+    assert entry["hermes_home"].endswith("/profiles/github-maint")
+    assert "hermes_agent_github_read_token | length > 0" in entry["enabled"]
+    assert "hermes_agent_github_issues_pat" not in entry["enabled"]
+    assert defaults["hermes_agent_github_read_token"] == ""
+
+    # Least-shared tier: the read token belongs in one profile's .env, not in
+    # the default profile's, which already holds the broader write PAT.
+    default_env = (ROLE_ROOT / "templates" / "hermes-env.j2").read_text()
+    assert "hermes_agent_github_read_token" not in default_env
+
+
+def test_every_profile_cron_store_gets_its_own_tick_trigger() -> None:
+    """A job on a named profile registers in that profile's own cron store,
+    which only that profile's ticker drains — the default gateway's in-process
+    ticker never sees it. The tick loop must therefore cover every profile, so
+    it is derived from hermes_agent_profiles rather than hand-kept: a
+    hardcoded list leaves a new profile's job created, scheduled, and silent.
+    """
+    tasks = (ROLE_ROOT / "tasks" / "main.yml").read_text()
+    assert (
+        "loop: \"{{ hermes_agent_profiles | map(attribute='name') | list }}\"" in tasks
+    ), "the profile cron tick trigger must loop over every profile, not a fixed list"
+
+
 def test_profile_config_template_renders_scoped_mcp_only() -> None:
     env = _jinja_env()
     src = (ROLE_ROOT / "templates" / "config-profile.yaml.j2").read_text()
@@ -236,12 +280,17 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         hermes_agent_zammad_api_token="ZAMTOK",
         hermes_agent_wiki_enabled=True,
         hermes_agent_wiki_path="/var/lib/hermes/wiki",
+        hermes_agent_github_read_token="READTOK",
+        # Rendered into the context but wired to NOTHING in the profile
+        # template — see the GH_PAT_WRITE_PROJECT_ISSUES assertion below.
+        hermes_agent_github_issues_pat="WRITETOK",
     )
-    always_blank = ("GH_PAT_WRITE_PROJECT_ISSUES", "GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "CONTEXT7_API_KEY")
+    always_blank = ("GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "CONTEXT7_API_KEY")
     section_keys = {
         "slack": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
         "splunk": ("SPLUNK_MCP_URL", "SPLUNK_MCP_TOKEN"),
         "zammad": ("ZAMMAD_URL", "ZAMMAD_API_TOKEN"),
+        "github": ("GH_PAT_WRITE_PROJECT_ISSUES",),
     }
 
     for profile in _profiles():
@@ -267,4 +316,13 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         # disk but no path for it to read.
         assert values["WIKI_PATH"] == "/var/lib/hermes/wiki", (
             f"{profile['name']}: WIKI_PATH must be set whenever hermes_agent_wiki_enabled is true"
+        )
+        # The read-only contract, asserted on the VALUE rather than the key:
+        # GH_PAT_WRITE_PROJECT_ISSUES is the variable the bundled
+        # dryvist/github-issues skill authenticates with, so a github-granted
+        # profile has to render it — but it must carry the read-only token.
+        # If it ever rendered the default profile's read/write PAT instead,
+        # every "read-only" claim on that profile would be prompt-deep only.
+        assert values["GH_PAT_WRITE_PROJECT_ISSUES"] != "WRITETOK", (
+            f"{profile['name']}: the read/write issues PAT must never reach a profile .env"
         )
