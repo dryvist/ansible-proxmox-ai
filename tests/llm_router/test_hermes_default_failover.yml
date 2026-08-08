@@ -72,27 +72,44 @@
     ai_router_retry_after_seconds: 40
     hermes_brain_model: hermes-default
     hermes_goal_judge_model: goal-judge
-    # The state this repo ships in: both hosts' clusterMode.enable are false,
-    # so the leg is unavailable. Explicit here even though it matches the
-    # role default, so this play keeps testing the right thing if that
-    # default ever changes.
-    llm_router_cluster_leg_available: false
+    # The leg-unavailable state, which this play pins regardless of what the
+    # role currently ships. Not set here as a plain play var — the defaults
+    # load below outranks one, the same trap the leg-available play documents;
+    # the set_fact after that load is what makes it stick.
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
         file: "{{ _role_dir }}/defaults/main.yml"
 
+    # include_vars outranks a plain play var, so this scenario's whole premise
+    # would silently follow whatever the role currently defaults to. set_fact
+    # outranks include_vars, which is what actually pins it.
+    - name: Force the cluster leg unavailable for this scenario
+      ansible.builtin.set_fact:
+        llm_router_cluster_leg_available: false
+
     # Every model name the render below emits comes from here; the defaults are
     # projections of it. Loaded through the role's own task file so this test
     # exercises the converge's real path derivation (llm_router_registry_file
-    # resolves off role_path) instead of a path spelled here. The real
-    # llm-models.yml ships with the GLM-4.7 entry's servable: false, matching
-    # llm_router_cluster_leg_available: false above — that pairing is what
-    # tasks/assert-cluster-leg.yml (run below) requires.
+    # resolves off role_path) instead of a path spelled here.
     - name: Load the fabric model registry the way the converge does
       ansible.builtin.include_role:
         name: llm_router
         tasks_from: registry.yml
+
+    # The paired half of the flip forced above, mirroring how the leg-available
+    # play simulates its own pairing: tasks/assert-cluster-leg.yml (run below)
+    # requires the GLM-4.7 entry's servable to track
+    # llm_router_cluster_leg_available, and pinning this scenario to the
+    # registry as-shipped would tie it back to the default it must not depend on.
+    - name: Simulate the registry state that pairs with the leg being unavailable
+      ansible.builtin.set_fact:
+        llm_router_model_registry: >-
+          {{ (llm_router_model_registry
+              | rejectattr('client_model_id', 'equalto', llm_router_cluster_model) | list)
+             + [(llm_router_model_registry
+                 | selectattr('client_model_id', 'equalto', llm_router_cluster_model)
+                 | first) | combine({'servable': false})] }}
 
     - name: Run the role's real render-time asserts against these vars
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert.yml"
@@ -223,14 +240,13 @@
         name: llm_router
         tasks_from: registry.yml
 
-    # llm-models.yml ships with the GLM-4.7 entry's servable: false, matching
-    # today's real llm_router_cluster_leg_available: false default — see its
-    # comment. This simulates the PAIRED edit an operator makes together with
-    # flipping llm_router_cluster_leg_available: true (defaults/main.yml
-    # says so explicitly, and tasks/assert-cluster-leg.yml enforces it): the
-    # registry entry's servable claim flips back to true in the same change.
-    # Without this, the asserts below would correctly fail — that failure
-    # mode is what test_cluster_leg_guard.yml pins directly.
+    # The PAIRED edit an operator makes together with flipping
+    # llm_router_cluster_leg_available: true (defaults/main.yml says so
+    # explicitly, and tasks/assert-cluster-leg.yml enforces it): the registry
+    # entry's servable claim moves in the same change. Forced here rather than
+    # read from llm-models.yml so this scenario holds whichever way the
+    # registry currently ships. Without it the asserts below would correctly
+    # fail — that failure mode is what test_cluster_leg_guard.yml pins directly.
     - name: Simulate the registry state once the paired servable flip has been made
       ansible.builtin.set_fact:
         llm_router_model_registry: >-

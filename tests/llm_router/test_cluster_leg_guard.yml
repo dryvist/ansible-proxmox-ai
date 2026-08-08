@@ -12,12 +12,12 @@
 # llm_router_cluster_leg_available says the leg is down, not just render a
 # config that happens to still look fine.
 #
-# llm_router_cluster_leg_available is overridden with set_fact throughout,
-# never a plain vars: block on the import_tasks call — "Load the role
-# defaults as they ship" loads that variable's own false default via
+# Where llm_router_cluster_leg_available is overridden below it is done with
+# set_fact, never a plain vars: block on the import_tasks call — "Load the role
+# defaults as they ship" loads that variable's own shipped default via
 # include_vars, which outranks both play vars and task vars of the same
 # name (Ansible variable precedence), so anything weaker gets silently
-# clobbered back to false. set_fact is the lowest tier that reliably wins.
+# clobbered back to it. set_fact is the lowest tier that reliably wins.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_cluster_leg_guard.yml -i localhost, -c local
@@ -31,29 +31,30 @@
       ansible.builtin.include_vars:
         file: "{{ _role_dir }}/defaults/main.yml"
 
-    # --- 1. Today's shipped state: leg down, registry agrees (servable: false) ---
-    - name: Assert the guard passes against the real llm-models.yml with the leg unavailable
+    # --- 1. The shipped state, whichever way it currently sits, is coherent ---
+    # Deliberately overrides nothing: the guard runs against the committed
+    # llm-models.yml and the committed llm_router_cluster_leg_available
+    # default together, so the two halves of the flip can never be committed
+    # out of step in either direction. Scenarios 2 and 3 below pin the guard's
+    # actual behaviour with explicit set_fact overrides.
+    - name: Assert the guard passes against the repo's own committed state
       block:
         - name: Load the fabric model registry the way the converge does
           ansible.builtin.include_role:
             name: llm_router
             tasks_from: registry.yml
 
-        - name: Force the cluster leg unavailable for this scenario
-          ansible.builtin.set_fact:
-            llm_router_cluster_leg_available: false
-
         - name: Import the cluster-leg guard
           ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-cluster-leg.yml"
       rescue:
-        - name: Fail because the shipped registry does not agree with an unavailable leg
+        - name: Fail because the two halves of the flip disagree as committed
           ansible.builtin.fail:
             msg: >-
               The guard rejected the repo's own committed state
-              (llm_router_cluster_leg_available: false). This means the
-              GLM-4.7 entry in llm-models.yml has drifted back to
-              servable: true without llm_router_cluster_leg_available also
-              being flipped true — fix llm-models.yml, not this test.
+              (llm_router_cluster_leg_available:
+              {{ llm_router_cluster_leg_available }}). The GLM-4.7 entry's
+              servable in llm-models.yml and that default must move together —
+              fix whichever one is stale, not this test.
 
     # --- 2. The drift the guard exists to catch: servable true, leg down ---
     - name: "Prove a stale servable: true fails the guard when the leg is unavailable"
