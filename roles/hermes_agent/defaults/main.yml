@@ -461,6 +461,21 @@ hermes_agent_direct_cron_jobs:
          and hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
+  # The only GitHub job that runs OUTSIDE the default profile: github-maint
+  # carries the read-only token and nothing else, so the read-only contract is
+  # the credential rather than the prompt.
+  - name: "{{ hermes_agent_github_maint_cron_name }}"
+    schedule: "{{ hermes_agent_github_maint_cron_schedule }}"
+    prompt_var: hermes_agent_github_maint_cron_prompt
+    skill: dryvist/github-issues
+    deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    hermes_home: "{{ hermes_agent_hermes_home }}/profiles/github-maint"
+    enabled: >-
+      {{ hermes_agent_github_maint_enabled | bool
+         and hermes_agent_github_read_token | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
   - name: "{{ hermes_agent_kanban_reviewer_job }}"
     schedule: "{{ hermes_agent_kanban_reviewer_schedule }}"
     prompt_var: hermes_agent_reviewer_card_prompt
@@ -1185,6 +1200,24 @@ hermes_agent_github_issues_pat: ""
 # (see group_vars); empty until seeded — the card stays disabled until then.
 hermes_agent_github_alerts_token: ""
 
+# --- GitHub read-only token (github-maint profile) -------------------------
+# Read-only across the dryvist org: issues, pull requests, contents, metadata.
+# NO write scope of any kind — no issues:write, no comments, no labels, no
+# pushes. This is the ONLY GitHub credential the github-maint profile carries,
+# and it is what makes that profile's read-only contract enforceable rather
+# than advisory: a write call fails at the API, not at the prompt.
+#
+# Delivered under the GH_PAT_WRITE_PROJECT_ISSUES key in that profile's .env
+# (templates/hermes-env-profile.j2) because that is the variable the bundled
+# dryvist/github-issues skill authenticates with — the key name is the
+# transport, the VALUE carries the scope. Reusing it is what lets the profile
+# reuse the existing skill unchanged instead of forking one.
+#
+# Bao-first (local-llm domain, secret/ai/hermes), env fallback (see
+# group_vars); empty until seeded, which keeps the github-maint cron below
+# inert — same posture as the alerts token above.
+hermes_agent_github_read_token: ""
+
 # --- Splunk MCP client (read/search access to the SIEM) ---
 # Registers the Splunk MCP Server as an HTTP MCP server in config.yaml so Hermes
 # can query the environment (run_splunk_query, get_indexes, ...) with its own
@@ -1583,6 +1616,46 @@ hermes_agent_bot_pr_triage_enabled: true
 hermes_agent_bot_pr_triage_cron_name: bot-pr-triage
 hermes_agent_bot_pr_triage_cron_schedule: "43 */6 * * *"
 hermes_agent_bot_pr_triage_cron_prompt_file: hermes-bot-pr-triage.md
+
+# --- Repo maintenance review: read-only, github-maint profile ---------------
+# Runs in the github-maint profile, whose only GitHub credential is the
+# read-only hermes_agent_github_read_token — so this job physically cannot
+# write to GitHub, unlike github-triage (:26) and bot-pr-triage (:43), which
+# stay in the default profile with the write PAT and are NOT touched by this.
+# Deliberately overlaps github-triage's topic at a different depth: that job
+# reports what moved on the board, this one reads the newest open issues
+# closely enough to say what fixing them would take. Consolidating the two is
+# an open question, not something this job assumes.
+#
+# Every run is a fresh isolated session (no context carry-over), and the
+# prompt bounds the slice explicitly — a fixed repo count and issue count, one
+# digest out — because an unbounded org-wide sweep is what makes a job like
+# this expensive. Minute 8 of every 4th hour keeps it clear of the */6 GitHub
+# sweeps and the Splunk fleet (tests/hermes_agent/test_cron_stagger.py).
+hermes_agent_github_maint_enabled: true
+hermes_agent_github_maint_cron_name: github-maint-review
+hermes_agent_github_maint_cron_schedule: "8 */4 * * *"
+hermes_agent_github_maint_cron_prompt: >-
+  You are the read-only repository-maintenance review for the dryvist
+  organization. Your GitHub credential cannot write: never open, comment on,
+  label, or close anything, and never report a proposal as if you had filed
+  it. Recall memory key "github-maint-last" (the issue numbers and repos you
+  covered last run) and work the DELTA. Bound this run hard: list open issues
+  across dryvist repositories sorted newest first, take at most the 10 you
+  have not already reviewed, and stop searching once you have them. For each,
+  read the issue body and enough of the repository to judge it, then classify
+  it as EASY WIN (a small, well-understood change you can describe concretely),
+  NEEDS OWNER (real work or an unresolved decision), or UNCLEAR (the request
+  cannot be acted on as written, and what is missing). For every easy win,
+  state in two or three lines what would change, which files or areas it
+  touches, and what would prove it worked — enough that a human could act on
+  it without repeating your reading. Post ONE dense digest here: the
+  classification counts, then the easy wins in full, then one line each for
+  the rest. No Markdown tables, no restating an issue you already covered in
+  an earlier run. If nothing new is open since your last run, reply with
+  exactly [SILENT]. File anything worth durable follow-up with kanban_create,
+  not on GitHub. Save the updated repo+issue-number map back to
+  "github-maint-last".
 
 # --- Docs sync: bounded delta -> signed draft PRs via the docs-pr skill -----
 # Weekly (Mon 08:13 UTC). Discovers doc-worthy deltas since the last run and
@@ -2025,9 +2098,11 @@ hermes_agent_fleet_health_cron_prompt: >-
 #
 # DECISION RULE (the default action for new recurring work): choose a profile
 # FIRST. `default` is not the absence of a choice — it is correct only for
-# cross-domain, board-meta, or GitHub work, and the card/PR should say why.
+# cross-domain, board-meta, or WRITE-bearing GitHub work (the jobs that label,
+# comment, or file issues), and the card/PR should say why.
 # SIEM-shaped work is splunk-admin; incident/infra-shaped work is
-# homelab-admin; work that fits neither and is not cross-domain is the signal
+# homelab-admin; read-only repository review and maintenance analysis is
+# github-maint; work that fits none and is not cross-domain is the signal
 # to propose a NEW profile, not to widen an existing one — a profile is scoped
 # by what it must NOT reach, not by what it might someday need.
 #
@@ -2061,6 +2136,12 @@ hermes_agent_profiles:
     env: [slack, zammad]
     skills: [dryvist/zammad-incidents]
     soul_addendum_file: soul-homelab-admin.md.j2
+  - name: github-maint
+    description: Read-only repository-maintenance analyst (proposals out-of-band, no repo writes)
+    mcp: [docs]
+    env: [slack, github]
+    skills: [dryvist/github-issues]
+    soul_addendum_file: soul-github-maint.md.j2
 
 # Kanban is no longer used for recurring work at all (native-cron reframe,
 # 18/18): the board keeps doing what it is actually for — ad-hoc work and the
