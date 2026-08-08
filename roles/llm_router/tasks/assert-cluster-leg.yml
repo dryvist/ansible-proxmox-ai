@@ -7,12 +7,18 @@
 # Guards against the drift that let a disabled subsystem keep being
 # advertised for a month: llm-models.yml's `servable` field is a manually
 # asserted claim (see its schema comment), never checked against whether the
-# role has any reason to believe the serving path is actually up. This fails
-# the converge the instant a cluster-tier entry claims servable: true while
-# llm_router_cluster_leg_available (defaults/main.yml) says the leg is down,
-# instead of staying silent the way GLM-4.7's plain servable: true did from
-# 2026-08-05 onward.
-- name: Assert no cluster-tier registry entry claims servable without an enabled serving path
+# role has any reason to believe the serving path exists. This fails the
+# converge the instant a cluster-tier entry claims servable: true while
+# llm_router_cluster_leg_available (defaults/main.yml) says the leg is
+# de-wired, instead of staying silent the way GLM-4.7's plain servable: true
+# did from 2026-08-05 onward.
+#
+# Both halves are WIRED claims, not window state. This guard cannot see whether
+# a cluster window is up and does not need to: the fallback chain the two halves
+# gate is reached only after the primary has already failed, so LiteLLM decides
+# per request which leg answers. Flipping either half at teardown is what this
+# guard's fail_msg used to advise and is now the documented wrong move.
+- name: Assert no cluster-tier registry entry claims servable without a wired serving path
   ansible.builtin.assert:
     quiet: true
     that:
@@ -22,11 +28,14 @@
       [{{ _llm_router_cluster_servable_entries | map(attribute='client_model_id') | join(', ') }}]
       in llm-models.yml declare serving_role: cluster and servable: true, but
       llm_router_cluster_leg_available is false — nothing backs up the claim
-      that a serving path is actually up. Either the registry entry is stale
-      (set servable: false until the cluster leg is genuinely reachable
-      again) or llm_router_cluster_leg_available itself is stale (flip it
-      true only once BOTH hosts' clusterMode.enable are true and a cluster
-      window is actually up — see its comment in defaults/main.yml).
+      that a serving path exists at all. The two are a pair and must move in
+      one change. Both describe WIRING, never whether a cluster window is
+      currently up: set them true whenever the Thunderbolt interconnect is
+      connected and clusterMode.enable is true on both Macs, and false only
+      when the leg is decommissioned. Do NOT flip either one at cluster
+      teardown — that is window state, LiteLLM handles it per request, and
+      clearing it there leaves hermes-default unserved until the next converge.
+      See llm_router_cluster_leg_available in defaults/main.yml.
     success_msg: >-
       No cluster-tier registry entry claims servable without
       llm_router_cluster_leg_available being true.
