@@ -473,38 +473,40 @@ llm_router_model_group_aliases: >-
           | zip(llm_router_alias_pairs | map(attribute=0)
                 | map(attribute='client_model_id'))) }}
 
-# --- Cluster leg availability -------------------------------------------------
-# Nothing in this repo (nor anything tofu-proxmox publishes) reports whether
-# the two-Mac JACCL cluster leg is actually reachable right now — the closest
-# thing, llm_router_cluster_port, is a static port constant that exists
-# whether or not anything is listening behind it. Until a real signal exists,
-# this is the single explicit switch every cluster-dependent decision below
-# reads, so there is exactly one place to flip rather than several that can
-# drift apart.
+# --- Cluster leg wiring ---------------------------------------------------------
+# WIRED, not "a window is up right now". This declares whether the two-Mac JACCL
+# cluster leg exists as a failover target at all — a hardware/topology fact that
+# changes on human timescales — and NOT whether rank 0 happens to be answering
+# this minute. That distinction is the whole point, so read it before flipping:
 #
-# Default false: both hosts have programs.mlx.clusterMode.enable = false,
-# committed in dryvist/nix-darwin (lib/hosts/mac-studio.nix — coordinator —
-# and macbook-m4.nix — worker) since 2026-08-05, because the Thunderbolt
-# interconnect between them is physically disconnected. With clusterMode off,
-# the gate's :11440 site reverse-proxies to nothing, so anything routed at it
-# 502s unconditionally, not intermittently.
+# Per-window state is deliberately NOT tracked here, because LiteLLM already
+# decides it per request. The chain below is reached only after the primary has
+# already failed, so a cluster that is not serving right now costs one fast 502
+# from the gate's :11440 site and the caller then sees an error it was going to
+# see anyway — while a cluster that IS serving answers the request. Encoding
+# window state in this variable would instead require a converge, a LiteLLM
+# restart and a hermes-gateway restart on every window open and close, leaving
+# hermes-default unserved for as long as that took (measured 2026-08-08: ~5h).
 #
-# Flip to true only once BOTH are true, and flip back the moment either stops
-# being true:
-#   1. clusterMode.enable = true on both mac-studio.nix and macbook-m4.nix
-#      (the TB cable is reconnected and cluster mode is re-enabled on both
-#      hosts).
-#   2. A cluster window is actually up (mlx-lm rank 0 is answering behind the
-#      gate's cluster TLS site).
-# Flipping this also requires flipping the GLM-4.7 registry entry's
-# `servable` back to true in llm-models.yml — tasks/assert-cluster-leg.yml
+# So: true whenever the cluster leg is wired and may serve. Flip to false only
+# when the leg is genuinely decommissioned for a stretch — the Thunderbolt
+# interconnect unplugged, or programs.mlx.clusterMode.enable set false on both
+# mac-studio.nix and macbook-m4.nix in dryvist/nix-darwin — because with
+# clusterMode off the gate's :11440 site reverse-proxies to nothing and every
+# fallback attempt is a guaranteed 502 that only muddies the error a caller
+# already had (measured 2026-08-02..08-05, while the leg was de-wired: 720 gate
+# 5xx surfaced as "Error doing the fallback: BadGatewayError" rather than as the
+# primary's own error — a diagnosability cost, not an availability one; the
+# request had already failed at the primary in both worlds).
+#
+# NEVER flip this false as part of a cluster teardown. Teardown is window state,
+# and clearing the leg there restores the unserved-until-converged behaviour
+# above on the next window.
+#
+# Flipping it (either way) requires moving the GLM-4.7 registry entry's
+# `servable` in llm-models.yml in the same change — tasks/assert-cluster-leg.yml
 # fails the converge if only one of the two moves, which is deliberate: see
 # that file for why.
-#
-# If a live signal for either condition becomes available (a published tofu
-# constant, a health-check fact), point this at that instead of a
-# manually-set boolean — this default-off toggle is the fallback, not the
-# destination.
 llm_router_cluster_leg_available: true
 
 # --- hermes-default automatic failover across the cluster + standalone gates -
@@ -538,13 +540,21 @@ llm_router_cluster_leg_available: true
 # `data["model"] in llm_router.model_group_alias` without ever rewriting
 # data["model"]. A fallback keyed on the resolved primary id would never fire.
 #
-# The chain tracks llm_router_cluster_leg_available rather than asserting the
-# cluster model unconditionally: with the cluster leg down (the default),
-# this resolves to an empty list, config.yaml.j2 omits the `fallbacks:` key
-# entirely, and a failed primary surfaces its real error instead of taking a
-# guaranteed-502 detour through a target that cannot answer. Known cost of
-# the old unconditional chain, measured 2026-08-02..08-05: 720 gate 5xx
-# reached callers unretried as "Error doing the fallback: BadGatewayError".
+# The chain tracks llm_router_cluster_leg_available — which is a WIRED claim,
+# not a per-window one — so with the leg wired the `fallbacks:` key is rendered
+# permanently and a cluster window needs no converge, no LiteLLM restart and no
+# hermes-gateway restart to be picked up: the failover is decided per request,
+# inside LiteLLM. With the leg de-wired the chain resolves to an empty list and
+# config.yaml.j2 omits the key entirely, so a failed primary surfaces its own
+# error instead of a fallback-wrapped one (2026-08-02..08-05: 720 gate 5xx
+# reached callers as "Error doing the fallback: BadGatewayError").
+#
+# Ordering inside LiteLLM is retries-then-fallbacks, verified against the pinned
+# litellm 1.90.3: async_function_with_fallbacks calls async_function_with_retries
+# inside its own try, and the retry_policy (llm_router_rate_limit_retries) is
+# consulted inside THAT function. So a 429 spends its full
+# retries x retry_after budget on the primary before the chain is touched — the
+# 2026-07-24 cron kill cannot be re-created by a permanently-rendered chain.
 llm_router_hermes_default_fallback_chain: >-
   {{ [llm_router_cluster_model] if llm_router_cluster_leg_available else [] }}
 # Background health checks send REAL test requests to every deployment — on the

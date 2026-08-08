@@ -104,6 +104,43 @@
       ({{ llm_router_hermes_default_fallback_chain | join(', ') }}) resolves
       into the servable set.
 
+- name: Assert no fallback target serves a smaller context than the primary
+  # The chain is rendered permanently while the cluster leg is wired (see
+  # llm_router_cluster_leg_available), so a target with a smaller context_window
+  # would not be a rare edge — it would silently poison every hermes-default
+  # request that failed over, which is the exact "degrade the caller instead of
+  # failing loud" outcome the no-cross-tier-fallback rule in config.yaml.j2
+  # forbids. Same-tier membership does not imply it: both are tier: large today
+  # only because both registry entries happen to carry 65536.
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_narrow_fallbacks | length == 0
+    fail_msg: >-
+      Context-narrowing fallback (roles/llm_router/tasks/assert.yml): fallback
+      target(s) [{{ _llm_router_narrow_fallbacks | join(', ') }}] serve a
+      smaller context_window than the primary
+      {{ llm_router_primary_model }} ({{ _llm_router_primary_context }}).
+      hermes-default would fail over to a model that cannot hold the request
+      it was sent, so the caller is answered wrongly instead of erroring.
+      Either raise the target's context_window to match the primary or drop it
+      from llm_router_hermes_default_fallback_chain.
+    success_msg: >-
+      Every fallback target holds at least the primary's
+      {{ _llm_router_primary_context }}-token context.
+  vars:
+    _llm_router_primary_context: >-
+      {{ llm_router_large_models
+         | selectattr('client_model_id', 'equalto', llm_router_primary_model)
+         | map(attribute='context_window') | first | default(0) }}
+    _llm_router_narrow_fallbacks: >-
+      {{ llm_router_large_models
+         | selectattr('client_model_id', 'in', llm_router_hermes_default_fallback_chain)
+         | selectattr('context_window', 'defined')
+         | rejectattr('context_window', 'none')
+         | selectattr('context_window', 'lt', _llm_router_primary_context | int)
+         | map(attribute='client_model_id') | list }}
+
 # Cluster-leg reachability contract. Its own file so a test can import exactly
 # this task and prove the failure path, rather than re-stating its condition.
 - name: Assert cluster-tier servable claims are backed by an enabled serving path

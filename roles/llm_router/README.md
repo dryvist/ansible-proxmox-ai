@@ -44,7 +44,13 @@ Common edits:
 | Add/remove a consumer alias | that entry's `stable_aliases` |
 | Add an OpenRouter model | one registry entry + seed its `key_field` |
 | Retire a model | `enabled: false` (or delete the entry) |
-| Enable/disable the cluster fallback | `llm_router_cluster_leg_available` **and** the cluster entry's `servable`, together |
+| Declare the cluster leg wired/de-wired | `llm_router_cluster_leg_available` **and** the cluster entry's `servable`, together |
+
+`llm_router_cluster_leg_available` is a **wiring** claim, not a per-window one.
+With the leg wired, `router_settings.fallbacks` is rendered permanently and a
+cluster window is picked up per request by LiteLLM — opening or tearing down a
+window needs no converge and no restart. Flip it false only when the leg is
+decommissioned, never at teardown.
 
 ## Tiers (one proxy, two backends)
 
