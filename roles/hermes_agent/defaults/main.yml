@@ -178,9 +178,18 @@ hermes_agent_slack_bot_token: >-
   {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_BOT_TOKEN') | default('', true) }}
 hermes_agent_slack_app_token: >-
   {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_APP_TOKEN') | default('', true) }}
-hermes_agent_slack_allowed_users: "{{ lookup('env', 'SLACK_MEMBER_ID') | default('', true) }}"
-hermes_agent_slack_home_channel: "{{ lookup('env', 'SLACK_HOME_CHANNEL') | default('', true) }}"
-hermes_agent_slack_home_channel_name: "{{ lookup('env', 'SLACK_HOME_CHANNEL_NAME') | default('', true) }}"
+# Identity-prefixed var wins when set (Donna's own allowed-user/home-channel);
+# otherwise falls back to the original unprefixed var, so hermes_agent_id: hermes
+# keeps reading the same Doppler vars it always has (no SLACK_HERMES_* exist).
+hermes_agent_slack_allowed_users: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_MEMBER_ID')
+     | default(lookup('env', 'SLACK_MEMBER_ID'), true) | default('', true) }}
+hermes_agent_slack_home_channel: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_HOME_CHANNEL')
+     | default(lookup('env', 'SLACK_HOME_CHANNEL'), true) | default('', true) }}
+hermes_agent_slack_home_channel_name: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_HOME_CHANNEL_NAME')
+     | default(lookup('env', 'SLACK_HOME_CHANNEL_NAME'), true) | default('', true) }}
 
 # 4-channel Slack routing (operator decision 2026-07-31). The previous 3-tier
 # scheme collapsed: firehose, digest and hermes_all all resolved to ONE id, so
@@ -202,7 +211,10 @@ hermes_agent_slack_home_channel_name: "{{ lookup('env', 'SLACK_HOME_CHANNEL_NAME
 # Every id is an env lookup fed by Doppler at converge time — never hardcoded.
 # Each defaults EMPTY and falls back to prior behaviour, so an unset var leaves
 # routing exactly as it was rather than silently emptying a channel.
-hermes_agent_slack_firehose_channel: "{{ lookup('env', 'SLACK_FIREHOSE_CHANNEL') | default('', true) }}"
+# Same identity-prefixed-wins, unprefixed-fallback pattern as above.
+hermes_agent_slack_firehose_channel: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_FIREHOSE_CHANNEL')
+     | default(lookup('env', 'SLACK_FIREHOSE_CHANNEL'), true) | default('', true) }}
 hermes_agent_slack_issues_channel: >-
   {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_ISSUES_CHANNEL') | default('', true) }}
 hermes_agent_slack_noise_channel: >-
@@ -698,9 +710,14 @@ hermes_agent_dashboard_host: 0.0.0.0
 hermes_agent_dashboard_port: >-
   {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['hermes_dashboard']
      | mandatory('tofu_data.constants.service_ports.hermes_dashboard missing — regenerate tofu_inventory.json') }}
-hermes_agent_dashboard_public_url: "https://hermes.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
+# `hostname` is the guest's own tofu-proxmox row key (set as a fact by
+# inventory/load_tofu.yml's "Set the guest hostname fact" task) — the same
+# name Traefik routes on, since an ingress row's hostname defaults to its row
+# key. For hermes_agent_id: hermes that key is "hermes" (byte-identical to
+# the prior literal); for donna it is "hermes-donna".
+hermes_agent_dashboard_public_url: "https://{{ hostname }}.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
 hermes_agent_dashboard_oidc_issuer: "https://authelia.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
-hermes_agent_dashboard_oidc_client_id: hermes-dashboard
+hermes_agent_dashboard_oidc_client_id: "{{ hostname }}-dashboard"
 
 # --- Persona: the shared behavioral base (SOUL.md) ----------------------------
 # Copy the composed SOUL.md out of the pinned nix-hermes bundle
