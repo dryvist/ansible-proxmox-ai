@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.25.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.24.3...v0.25.0) (2026-08-09)
+
+
+### Features
+
+* **hermes_agent:** add read-only github-maint profile and its review cron ([#401](https://github.com/dryvist/ansible-proxmox-ai/issues/401)) ([ca89afb](https://github.com/dryvist/ansible-proxmox-ai/commit/ca89afbcc43bc31140dd40c58db7e4f38652711a))
+* **llm_router:** enable the cluster fallback leg for hermes-default ([#402](https://github.com/dryvist/ansible-proxmox-ai/issues/402)) ([78901c7](https://github.com/dryvist/ansible-proxmox-ai/commit/78901c7ad94af85719917b48726c301f771e6ea5))
+* **openbao_secrets:** grant the local-llm domain the llm-router secret path ([#405](https://github.com/dryvist/ansible-proxmox-ai/issues/405)) ([776e8bc](https://github.com/dryvist/ansible-proxmox-ai/commit/776e8bcd197b104ec68facf4bdeaf266245249a4))
+
+
+### Bug Fixes
+
+* **codex_runner:** install sudo with the node toolchain ([#403](https://github.com/dryvist/ansible-proxmox-ai/issues/403)) ([df36726](https://github.com/dryvist/ansible-proxmox-ai/commit/df36726914f756968252e43aea674e35ee6b9d9d))
+* **hermes_agent:** dedup posted reports and escalate repeat card failures in kanban digest ([#400](https://github.com/dryvist/ansible-proxmox-ai/issues/400)) ([b375eef](https://github.com/dryvist/ansible-proxmox-ai/commit/b375eefc625e55f7559cb9378e3b8d147c6ab656))
+* **hermes_agent:** scope agent workload to the agent identity ([#410](https://github.com/dryvist/ansible-proxmox-ai/issues/410)) ([5c2b9c7](https://github.com/dryvist/ansible-proxmox-ai/commit/5c2b9c781a639d9cd279541f896ed18955bfba62))
+* **hermes_agent:** scope Slack routing and dashboard identity vars to the agent identity ([#409](https://github.com/dryvist/ansible-proxmox-ai/issues/409)) ([1f219a5](https://github.com/dryvist/ansible-proxmox-ai/commit/1f219a595f547843a13a285cd9ba208a87292d09))
+* **hermes_agent:** scope vikunja bridge opt-in to provisioned identities ([#404](https://github.com/dryvist/ansible-proxmox-ai/issues/404)) ([e8973d6](https://github.com/dryvist/ansible-proxmox-ai/commit/e8973d6d3b1630f7816a64a8b6060bf3f4ab5da2))
+* **hermes_agent:** withdraw script-fed crons from agents that do not own them ([#411](https://github.com/dryvist/ansible-proxmox-ai/issues/411)) ([384f31d](https://github.com/dryvist/ansible-proxmox-ai/commit/384f31dae079da59964b5768dd8dbc1e7a21ae44))
+* **llm_redis:** converge the shared spend store and name it from inventory ([#408](https://github.com/dryvist/ansible-proxmox-ai/issues/408)) ([3025100](https://github.com/dryvist/ansible-proxmox-ai/commit/3025100f3dc4f7e188ee094d9a5f555e5bab3edf))
+* **llm_router:** scope the cluster fallback leg to wiring, not window state ([#406](https://github.com/dryvist/ansible-proxmox-ai/issues/406)) ([f539b86](https://github.com/dryvist/ansible-proxmox-ai/commit/f539b86dff7d7ac58b0d9844e82a5cd0fed8e667))
+
 ## [0.24.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.24.2...v0.24.3) (2026-08-07)
 
 
