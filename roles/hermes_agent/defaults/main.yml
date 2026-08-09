@@ -250,6 +250,43 @@ hermes_agent_cron_failure_deliver: >-
 hermes_agent_digest_slack_channel: >-
   {{ lookup('env', (hermes_agent_id | upper) ~ '_SLACK_DIGEST_CHANNEL') | default('', true) }}
 
+# --- Which identities a job belongs to ---------------------------------------
+# The identity plumbing above scopes an agent's CREDENTIALS and HANDLES (Slack
+# app, OpenBao domain, Vikunja project, memory bank, OTel name). It never
+# scoped the WORKLOAD, so every hermes_agent guest reconciled the entire
+# job table below regardless of who it was. A second agent provisioned as a
+# personal assistant therefore came up running the first agent's
+# infrastructure and coding duties — GitHub org/PR triage, Splunk digests,
+# Zammad review, the kanban reviewer — duplicating that work rather than
+# doing its own.
+#
+# A job now declares the identities it belongs to. The default below is
+# deliberately the ORIGINAL ops identity and NOT "everyone": a newly
+# provisioned agent must opt in to each duty explicitly, so adding an agent
+# can never again silently clone the ops workload. Give a job an explicit
+# `identities:` list to share or move it.
+hermes_agent_job_identities_default: [hermes]
+
+# The same rule for the script-fed job families (Splunk status digest, Splunk
+# triage, Kanban digest, Zammad auto-close). Those reconcile through
+# reconcile_enqueuer_cron.yml, which already REMOVES a job whose `enabled` gate
+# is false, so ANDing this flag into their gates withdraws them from an agent
+# that should not run them — it does not merely stop re-creating them.
+hermes_agent_ops_workload_enabled: >-
+  {{ hermes_agent_id in hermes_agent_job_identities_default }}
+
+# The direct-cron entries THIS agent owns. The reconcile loop deliberately does
+# not use this — it must iterate the full table so it can withdraw jobs that
+# are installed but no longer owned. This view is for the questions that are
+# genuinely about ownership, such as whether a named profile has any job left
+# to tick.
+hermes_agent_direct_cron_jobs_owned: >-
+  {{ ((hermes_agent_direct_cron_jobs | rejectattr('identities', 'defined') | list)
+      if (hermes_agent_ops_workload_enabled | bool) else [])
+     + (hermes_agent_direct_cron_jobs
+        | selectattr('identities', 'defined')
+        | selectattr('identities', 'contains', hermes_agent_id) | list) }}
+
 # `hermes cron`'s ticker runs IN-PROCESS inside whichever gateway registered
 # the job (cron/scheduler.py: "Cron is per-profile by design") — only the
 # default profile's gateway runs persistently (hermes-gateway.service), so a
@@ -265,7 +302,104 @@ hermes_agent_digest_slack_channel: >-
 # `timeout` at all, so this covers only the profile-scoped jobs.
 hermes_agent_profile_cron_tick_timeout: 45m
 
+# --- Assistant-identity prompts ----------------------------------------------
+# Inline rather than prompt_file entries because the prompt catalog is an
+# immutable pinned package built from an external repo — nothing in THIS repo
+# can add a file to it. The role already supports prompt_var for exactly this.
+#
+# THE HARD LINE, and it is the whole point of these three jobs: an assistant
+# identity does no IT work. Not GitHub, not repositories, not pull requests or
+# issues, not infrastructure, not Splunk, not incidents, not deployments, not
+# CI. Those belong to the ops identity and are already scoped to it. Each
+# prompt states the exclusion explicitly rather than relying on the absence of
+# tools, because a model asked for "anything blocked" will otherwise happily
+# report a stalled pull request. The credential lockout in group_vars is the
+# mechanical backstop; this is the behavioural one.
+hermes_agent_assistant_exclusion_clause: |
+  ABSOLUTE SCOPE LIMIT. You are a personal assistant, not an engineer. Never
+  report on, summarise, or raise: GitHub (issues, pull requests, reviews,
+  releases, Dependabot), source code or repositories, CI or builds or
+  deployments, infrastructure, servers, containers, Splunk, logs, monitoring,
+  security alerts, or incidents. Another agent owns all of that and is already
+  reporting on it — repeating any of it is duplicated work and a mistake.
+  If an item is technical, silently skip it. Never mention that you skipped it,
+  and never explain this rule in your output.
+
+hermes_agent_assistant_daily_brief_prompt: |
+  Write {{ hermes_agent_display_name }}'s daily brief for the person you
+  assist. Keep it short enough to read in under a minute.
+
+  Cover, in this order, and omit any section that is empty:
+  1. What is due today, from your own task project only.
+  2. What is overdue and still matters.
+  3. Anything waiting on a decision from the person you assist.
+
+  Write in plain prose with short bullets. No preamble, no sign-off, no
+  restating these instructions. If there is genuinely nothing worth saying,
+  reply with exactly [SILENT] and nothing else — a brief that says "nothing
+  to report" every morning trains the reader to ignore it.
+
+  {{ hermes_agent_assistant_exclusion_clause }}
+
+hermes_agent_assistant_nudge_prompt: |
+  Find what is stalled specifically on the person you assist, and say so.
+
+  A thing qualifies only if THEY are the blocker: a question you asked that
+  they have not answered, an approval nobody can proceed without, a task
+  assigned to them that has not moved. Work that is merely unfinished does
+  NOT qualify — someone else is already carrying it.
+
+  Consult your memory before writing so you do not raise the same item twice
+  in a row. Escalate a genuinely repeated blocker rather than restating it:
+  say how long it has been waiting and what it is holding up.
+
+  One line per item, naming the item and the decision needed. If nothing is
+  actually blocked on them, reply with exactly [SILENT] and nothing else.
+
+  {{ hermes_agent_assistant_exclusion_clause }}
+
+hermes_agent_assistant_task_triage_prompt: |
+  Review your own task project and keep it honest.
+
+  Look for: items overdue by enough to be misleading, items with no due date
+  that have sat untouched long enough to be stale, duplicates, and anything
+  finished in practice but still open. Propose a specific disposition for each
+  — reschedule to a named date, close, merge into another item, or drop — and
+  ask for confirmation on anything you are not confident about.
+
+  Change nothing without being asked. Read and recommend only.
+
+  Group by disposition rather than listing everything flatly. If the project
+  is in good shape, reply with exactly [SILENT] and nothing else.
+
+  {{ hermes_agent_assistant_exclusion_clause }}
+
 hermes_agent_direct_cron_jobs:
+  # --- Assistant-identity duties ---------------------------------------------
+  # Scoped by `identities` so the ops agent never picks them up, exactly as the
+  # ops jobs below are never picked up by an assistant. Schedules are UTC
+  # (hermes_agent_timezone is pinned).
+  - name: assistant-daily-brief
+    schedule: "0 12 * * *"
+    prompt_var: hermes_agent_assistant_daily_brief_prompt
+    skill: ""
+    enabled: true
+    identities: [donna]
+  # Working hours only, and deliberately not hourly: a nudge that arrives
+  # constantly is noise, and noise is how a blocker list gets ignored.
+  - name: assistant-decision-nudge
+    schedule: "0 13,17,21 * * *"
+    prompt_var: hermes_agent_assistant_nudge_prompt
+    skill: ""
+    enabled: true
+    identities: [donna]
+  - name: assistant-task-triage
+    schedule: "0 14 * * 1"
+    prompt_var: hermes_agent_assistant_task_triage_prompt
+    skill: ""
+    enabled: true
+    identities: [donna]
+
   # Paused, NEVER reconciled: superseded by the script-fed splunk-security-digest
   # (hermes_agent_triage_jobs). Leaked raw <function=...> markup to Slack twice on
   # 2026-07-24, and never ran the SPL this prompt specifies.
