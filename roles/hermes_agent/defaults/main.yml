@@ -250,6 +250,43 @@ hermes_agent_cron_failure_deliver: >-
 hermes_agent_digest_slack_channel: >-
   {{ lookup('env', (hermes_agent_id | upper) ~ '_SLACK_DIGEST_CHANNEL') | default('', true) }}
 
+# --- Which identities a job belongs to ---------------------------------------
+# The identity plumbing above scopes an agent's CREDENTIALS and HANDLES (Slack
+# app, OpenBao domain, Vikunja project, memory bank, OTel name). It never
+# scoped the WORKLOAD, so every hermes_agent guest reconciled the entire
+# job table below regardless of who it was. A second agent provisioned as a
+# personal assistant therefore came up running the first agent's
+# infrastructure and coding duties — GitHub org/PR triage, Splunk digests,
+# Zammad review, the kanban reviewer — duplicating that work rather than
+# doing its own.
+#
+# A job now declares the identities it belongs to. The default below is
+# deliberately the ORIGINAL ops identity and NOT "everyone": a newly
+# provisioned agent must opt in to each duty explicitly, so adding an agent
+# can never again silently clone the ops workload. Give a job an explicit
+# `identities:` list to share or move it.
+hermes_agent_job_identities_default: [hermes]
+
+# The same rule for the script-fed job families (Splunk status digest, Splunk
+# triage, Kanban digest, Zammad auto-close). Those reconcile through
+# reconcile_enqueuer_cron.yml, which already REMOVES a job whose `enabled` gate
+# is false, so ANDing this flag into their gates withdraws them from an agent
+# that should not run them — it does not merely stop re-creating them.
+hermes_agent_ops_workload_enabled: >-
+  {{ hermes_agent_id in hermes_agent_job_identities_default }}
+
+# The direct-cron entries THIS agent owns. The reconcile loop deliberately does
+# not use this — it must iterate the full table so it can withdraw jobs that
+# are installed but no longer owned. This view is for the questions that are
+# genuinely about ownership, such as whether a named profile has any job left
+# to tick.
+hermes_agent_direct_cron_jobs_owned: >-
+  {{ ((hermes_agent_direct_cron_jobs | rejectattr('identities', 'defined') | list)
+      if (hermes_agent_ops_workload_enabled | bool) else [])
+     + (hermes_agent_direct_cron_jobs
+        | selectattr('identities', 'defined')
+        | selectattr('identities', 'contains', hermes_agent_id) | list) }}
+
 # `hermes cron`'s ticker runs IN-PROCESS inside whichever gateway registered
 # the job (cron/scheduler.py: "Cron is per-profile by design") — only the
 # default profile's gateway runs persistently (hermes-gateway.service), so a

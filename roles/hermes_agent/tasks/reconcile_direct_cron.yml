@@ -12,6 +12,20 @@
 # table used), skill (may be ""), enabled, an optional deliver override
 # (defaults to the shared digest channel), and optional channel_when_healthy /
 # terse_when_healthy (outcome-based routing — see direct-cron-footer.md.j2).
+# A job runs here only if it is enabled AND belongs to THIS agent identity.
+# Both halves matter and they are not interchangeable: `enabled: false` alone
+# has never removed anything (every task below is gated on it, so a disabled
+# job is merely not re-created), which is why an identity that should not own
+# a job must reach the explicit removal task further down rather than simply
+# being skipped. Skipping would leave a previously-installed job firing on
+# that guest forever.
+- name: "Direct cron | Decide agent ownership for {{ item.name }}"
+  ansible.builtin.set_fact:
+    hermes_agent_direct_wanted: >-
+      {{ (item.enabled | bool)
+         and (hermes_agent_id in
+              (item.identities | default(hermes_agent_job_identities_default))) }}
+
 - name: "Direct cron | Resolve deliver target for {{ item.name }}"
   ansible.builtin.set_fact:
     hermes_agent_direct_deliver: "{{ item.deliver | default('slack:' ~ hermes_agent_digest_slack_channel) }}"
@@ -26,7 +40,7 @@
          ~ '\n\n' ~
          (lookup('template', role_path ~ '/templates/direct-cron-footer.md.j2',
                  template_vars={'item': item, 'deliver': hermes_agent_direct_deliver}) | trim) }}
-  when: item.enabled | bool
+  when: hermes_agent_direct_wanted | bool
 
 - name: "Direct cron | Build create argv for {{ item.name }}"
   ansible.builtin.set_fact:
@@ -35,8 +49,11 @@
           hermes_agent_direct_prompt, '--name', item.name]
          + (['--skill', item.skill] if (item.skill | default('') | length > 0) else [])
          + ['--deliver', hermes_agent_direct_deliver] }}
-  when: item.enabled | bool
+  when: hermes_agent_direct_wanted | bool
 
+# Deliberately NOT gated on hermes_agent_direct_wanted: the removal task below
+# needs to know whether an unwanted job is currently installed, and that is
+# exactly the case where the gate is false. Read-only either way.
 - name: "Direct cron | Look up {{ item.name }}"
   ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
   environment:
@@ -45,7 +62,29 @@
   become_user: "{{ hermes_agent_user }}"
   register: hermes_agent_direct_cron_list
   changed_when: false
-  when: item.enabled | bool
+
+# Withdraw a job this agent must not run. Without this, scoping a job to
+# another identity would only stop it being RE-created: an agent that already
+# had it installed would keep firing it indefinitely, which is precisely how a
+# second agent ended up duplicating the first agent's duties.
+- name: "Direct cron | Remove job not owned by this agent: {{ item.name }}"
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron remove {{ item.name }}"
+  environment:
+    HERMES_HOME: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  when:
+    - not (hermes_agent_direct_wanted | bool)
+    - item.name in (hermes_agent_direct_cron_list.stdout | default(''))
+
+# Drop the desired-state marker too, so a later re-scoping of this job back to
+# this agent is seen as absent-and-create rather than unchanged-and-skip.
+- name: "Direct cron | Clear desired-state marker for withdrawn {{ item.name }}"
+  ansible.builtin.file:
+    path: "{{ hermes_agent_managed_cron_state_dir }}/{{ item.name }}.sha256"
+    state: absent
+  when: not (hermes_agent_direct_wanted | bool)
 
 - name: "Direct cron | Calculate desired state for {{ item.name }}"
   ansible.builtin.set_fact:
@@ -54,7 +93,7 @@
           'skill': item.skill | default(''),
           'deliver': hermes_agent_direct_deliver}
          | to_json | hash('sha256') }}
-  when: item.enabled | bool
+  when: hermes_agent_direct_wanted | bool
 
 - name: "Direct cron | Check desired-state marker for {{ item.name }}"
   ansible.builtin.copy:
@@ -65,7 +104,7 @@
     mode: "0640"
   check_mode: true
   register: hermes_agent_direct_marker_probe
-  when: item.enabled | bool
+  when: hermes_agent_direct_wanted | bool
 
 # A changed marker on an EXISTING job means schedule/prompt/skill/deliver
 # drifted: remove it so the create below re-pins the new definition. No drift
@@ -78,7 +117,7 @@
   become_user: "{{ hermes_agent_user }}"
   changed_when: true
   when:
-    - item.enabled | bool
+    - hermes_agent_direct_wanted | bool
     - item.name in (hermes_agent_direct_cron_list.stdout | default(''))
     - hermes_agent_direct_marker_probe.changed | bool
 
@@ -91,7 +130,7 @@
   become_user: "{{ hermes_agent_user }}"
   changed_when: true
   when:
-    - item.enabled | bool
+    - hermes_agent_direct_wanted | bool
     - >-
       item.name not in (hermes_agent_direct_cron_list.stdout | default(''))
       or hermes_agent_direct_marker_probe.changed | bool
@@ -103,4 +142,4 @@
     owner: "{{ hermes_agent_user }}"
     group: "{{ hermes_agent_user }}"
     mode: "0640"
-  when: item.enabled | bool
+  when: hermes_agent_direct_wanted | bool
