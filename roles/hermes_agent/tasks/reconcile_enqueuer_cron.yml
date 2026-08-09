@@ -15,6 +15,13 @@
 # disabled job is SKIPPED entirely here — no create, no remove — so a
 # converge leaves whatever state the operator last set it to
 # (disable-don't-delete).
+#
+# Ownership is the one exception, and it is judged separately from capability.
+# A job this agent identity does not own is actively withdrawn below, because
+# "not mine" is a different condition from "my credential is missing": the
+# second should survive a converge untouched, the first must not survive at
+# all. Both collapse into item.enabled being false, which is why the removal
+# path reads hermes_agent_ops_workload_enabled directly instead.
 - name: "Enqueuer cron | Effective-active for {{ item.name }}"
   ansible.builtin.set_fact:
     hermes_agent_enqueuer_active: "{{ item.enabled | default(true) | bool }}"
@@ -31,7 +38,12 @@
     hermes_agent_enqueuer_deliver: "{{ item.deliver | default('local') }}"
   when: hermes_agent_enqueuer_active | bool
 
-- name: "Enqueuer cron | Look up {{ hermes_agent_enqueuer_name }}"
+# Also runs when the job is inactive-because-unowned: the withdrawal below has
+# to know whether anything is installed, and that is exactly the case where the
+# active gate is false. Titled from item.name, not the resolved name — "Resolve
+# fields" is still gated on active, so the resolved name is undefined here on an
+# agent that does not own the job.
+- name: "Enqueuer cron | Look up {{ item.name }}"
   ansible.builtin.command: "{{ hermes_agent_bin }} cron list --all"
   environment:
     HERMES_HOME: "{{ hermes_agent_hermes_home }}"
@@ -39,7 +51,35 @@
   become_user: "{{ hermes_agent_user }}"
   register: hermes_agent_enqueuer_cron_list
   changed_when: false
-  when: hermes_agent_enqueuer_active | bool
+  when: >-
+    (hermes_agent_enqueuer_active | bool)
+    or not (hermes_agent_ops_workload_enabled | bool)
+
+# Withdraw a job this agent identity does not own. Without this, scoping a job
+# away from an identity only stops it being RE-created — an agent that already
+# had it installed keeps firing it indefinitely, which is the duplication this
+# scoping exists to end. Keyed on item.name, which "Resolve fields" assigns to
+# the resolved name verbatim, so it matches what the create path installed.
+- name: "Enqueuer cron | Remove job not owned by this agent: {{ item.name }}"
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron remove {{ item.name }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  when:
+    - not (hermes_agent_ops_workload_enabled | bool)
+    - item.name in (hermes_agent_enqueuer_cron_list.stdout | default(''))
+
+# Drop the desired-state marker alongside the withdrawn job so a later
+# re-grant recreates from a clean slate rather than matching a stale checksum.
+- name: "Enqueuer cron | Clear desired-state marker for withdrawn {{ item.name }}"
+  ansible.builtin.file:
+    path: "{{ hermes_agent_managed_cron_state_dir }}/{{ item.name }}.sha256"
+    state: absent
+  when:
+    - not (hermes_agent_ops_workload_enabled | bool)
+    - item.name in (hermes_agent_enqueuer_cron_list.stdout | default(''))
 
 - name: "Enqueuer cron | Calculate desired state for {{ hermes_agent_enqueuer_name }}"
   ansible.builtin.set_fact:

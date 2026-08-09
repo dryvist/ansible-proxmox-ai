@@ -1,11 +1,12 @@
 ---
 # Pins the hermes-default cluster-failover contract added alongside the
-# two-Mac cluster bring-up, and its later correction: the chain now TRACKS
-# llm_router_cluster_leg_available (defaults/main.yml) instead of asserting
-# the cluster target unconditionally, so it goes empty while the cluster leg
-# is down and comes back automatically once the leg is marked available
-# again. Both branches are pinned below so the re-enable path cannot rot
-# unnoticed the way the original unconditional chain did.
+# two-Mac cluster bring-up. The chain TRACKS llm_router_cluster_leg_available
+# (defaults/main.yml), which is a WIRING claim and not a per-window one: with
+# the leg wired the chain is rendered permanently, so a cluster window opening
+# or closing needs no converge and no restart — LiteLLM picks the live leg per
+# request. With the leg de-wired the chain goes empty and a failed primary
+# surfaces its own error. Both branches are pinned below so neither path can
+# rot unnoticed.
 #
 # WHY THIS TEST EXISTS. Before the original version of this fallback chain,
 # bringing the cluster up would have taken Hermes' brain offline: cluster-join
@@ -24,11 +25,12 @@
 #     of failing over (same class of bug tests/llm_router/test_alias_servable.yml
 #     exists for, on the alias side).
 # Measured 2026-08-02..08-05: with the cluster leg disconnected since
-# 2026-08-05 and the chain still unconditional, 720 gate 5xx reached callers
-# unretried as "Error doing the fallback: BadGatewayError" — a fallback chain
-# that ALWAYS names a target is strictly worse than none when that target
-# cannot possibly answer. That is the failure the leg-unavailable play below
-# pins.
+# 2026-08-05 and the chain still rendered, 720 gate 5xx reached callers
+# unretried as "Error doing the fallback: BadGatewayError". Those requests had
+# already failed at the primary (llm_router_num_retries is 0), so the cost was
+# the error text, not the outcome — but naming a target that cannot possibly
+# answer buys nothing, which is why the de-wired branch empties the chain. That
+# is the behaviour the de-wired play below pins.
 # None of this is visible from `ansible-lint` or `--syntax-check`; it only
 # shows up in the RENDERED config.yaml, which is what this test inspects.
 #
@@ -36,7 +38,7 @@
 # through ansible.cfg's cwd-relative roles_path):
 #   ansible-playbook tests/llm_router/test_hermes_default_failover.yml -i localhost, -c local
 
-- name: Verify hermes-default's chain is empty while the cluster leg is unavailable
+- name: Verify hermes-default's chain is empty while the cluster leg is de-wired
   hosts: localhost
   gather_facts: false
   vars:
@@ -72,27 +74,44 @@
     ai_router_retry_after_seconds: 40
     hermes_brain_model: hermes-default
     hermes_goal_judge_model: goal-judge
-    # The state this repo ships in: both hosts' clusterMode.enable are false,
-    # so the leg is unavailable. Explicit here even though it matches the
-    # role default, so this play keeps testing the right thing if that
-    # default ever changes.
-    llm_router_cluster_leg_available: false
+    # The de-wired state, which this play pins regardless of what the
+    # role currently ships. Not set here as a plain play var — the defaults
+    # load below outranks one, the same trap the wired play documents;
+    # the set_fact after that load is what makes it stick.
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
         file: "{{ _role_dir }}/defaults/main.yml"
 
+    # include_vars outranks a plain play var, so this scenario's whole premise
+    # would silently follow whatever the role currently defaults to. set_fact
+    # outranks include_vars, which is what actually pins it.
+    - name: Force the cluster leg de-wired for this scenario
+      ansible.builtin.set_fact:
+        llm_router_cluster_leg_available: false
+
     # Every model name the render below emits comes from here; the defaults are
     # projections of it. Loaded through the role's own task file so this test
     # exercises the converge's real path derivation (llm_router_registry_file
-    # resolves off role_path) instead of a path spelled here. The real
-    # llm-models.yml ships with the GLM-4.7 entry's servable: false, matching
-    # llm_router_cluster_leg_available: false above — that pairing is what
-    # tasks/assert-cluster-leg.yml (run below) requires.
+    # resolves off role_path) instead of a path spelled here.
     - name: Load the fabric model registry the way the converge does
       ansible.builtin.include_role:
         name: llm_router
         tasks_from: registry.yml
+
+    # The paired half of the flip forced above, mirroring how the wired
+    # play simulates its own pairing: tasks/assert-cluster-leg.yml (run below)
+    # requires the GLM-4.7 entry's servable to track
+    # llm_router_cluster_leg_available, and pinning this scenario to the
+    # registry as-shipped would tie it back to the default it must not depend on.
+    - name: Simulate the registry state that pairs with the leg being de-wired
+      ansible.builtin.set_fact:
+        llm_router_model_registry: >-
+          {{ (llm_router_model_registry
+              | rejectattr('client_model_id', 'equalto', llm_router_cluster_model) | list)
+             + [(llm_router_model_registry
+                 | selectattr('client_model_id', 'equalto', llm_router_cluster_model)
+                 | first) | combine({'servable': false})] }}
 
     - name: Run the role's real render-time asserts against these vars
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert.yml"
@@ -174,7 +193,7 @@
           Fallback chain is empty and router_settings.fallbacks is omitted —
           a failed primary surfaces its real error.
 
-- name: Verify hermes-default's chain reaches the cluster backend once the leg is available
+- name: Verify hermes-default's chain reaches the cluster backend once the leg is wired
   hosts: localhost
   gather_facts: false
   vars:
@@ -198,13 +217,14 @@
     ai_router_retry_after_seconds: 40
     hermes_brain_model: hermes-default
     hermes_goal_judge_model: goal-judge
-    # The future state this play simulates: the TB cable is back,
-    # clusterMode.enable is true on both hosts, and a cluster window is up.
-    # Not set here as a plain play var — "Load the role defaults as they
-    # ship" below loads llm_router_cluster_leg_available's own false default
+    # The state this play simulates: the leg is WIRED (TB cable connected,
+    # clusterMode.enable true on both hosts). Whether a cluster window is up
+    # right now is deliberately not modelled — it is not an input to the
+    # render. Not set here as a plain play var — "Load the role defaults as
+    # they ship" below loads llm_router_cluster_leg_available's own default
     # via include_vars, which outranks a play var of the same name and would
-    # silently clobber it back to false. The "Force the cluster leg
-    # available" task after that load is what actually makes this stick.
+    # silently clobber it. The "Force the cluster leg available" task after
+    # that load is what actually makes this stick.
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
@@ -214,7 +234,7 @@
     # play-level llm_router_cluster_leg_available: true would otherwise be
     # clobbered right back to the role's own false default. set_fact outranks
     # include_vars, which is what actually makes the override stick.
-    - name: Force the cluster leg available for this scenario
+    - name: Force the cluster leg wired for this scenario
       ansible.builtin.set_fact:
         llm_router_cluster_leg_available: true
 
@@ -223,14 +243,13 @@
         name: llm_router
         tasks_from: registry.yml
 
-    # llm-models.yml ships with the GLM-4.7 entry's servable: false, matching
-    # today's real llm_router_cluster_leg_available: false default — see its
-    # comment. This simulates the PAIRED edit an operator makes together with
-    # flipping llm_router_cluster_leg_available: true (defaults/main.yml
-    # says so explicitly, and tasks/assert-cluster-leg.yml enforces it): the
-    # registry entry's servable claim flips back to true in the same change.
-    # Without this, the asserts below would correctly fail — that failure
-    # mode is what test_cluster_leg_guard.yml pins directly.
+    # The PAIRED edit an operator makes together with flipping
+    # llm_router_cluster_leg_available: true (defaults/main.yml says so
+    # explicitly, and tasks/assert-cluster-leg.yml enforces it): the registry
+    # entry's servable claim moves in the same change. Forced here rather than
+    # read from llm-models.yml so this scenario holds whichever way the
+    # registry currently ships. Without it the asserts below would correctly
+    # fail — that failure mode is what test_cluster_leg_guard.yml pins directly.
     - name: Simulate the registry state once the paired servable flip has been made
       ansible.builtin.set_fact:
         llm_router_model_registry: >-
@@ -288,3 +307,73 @@
         _cluster_entries: >-
           {{ _config.model_list
              | selectattr('model_name', 'equalto', llm_router_cluster_model) | list }}
+
+    # The chain is rendered permanently while the leg is wired, so this is not
+    # an edge case — every failed-over request depends on it. A target with a
+    # smaller window would be answered by a model that cannot hold the request,
+    # which is worse than the error it replaced.
+    - name: The rendered fallback target holds at least the primary's context window
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _cluster_ctx | int >= _primary_ctx | int
+          - _cluster_ctx | int > 0
+        fail_msg: >-
+          Fallback target {{ llm_router_cluster_model }} renders
+          max_input_tokens {{ _cluster_ctx }} against the primary
+          {{ llm_router_primary_model }}'s {{ _primary_ctx }}. A narrower
+          fallback compresses the caller to death on every failover; the
+          "Assert no fallback target serves a smaller context than the primary"
+          check in roles/llm_router/tasks/assert.yml should have caught this
+          before the render.
+        success_msg: >-
+          Fallback target holds {{ _cluster_ctx }} tokens, at or above the
+          primary's {{ _primary_ctx }}.
+      vars:
+        _primary_ctx: >-
+          {{ (_config.model_list
+              | selectattr('model_name', 'equalto', llm_router_primary_model)
+              | first).model_info.max_input_tokens }}
+        _cluster_ctx: >-
+          {{ (_config.model_list
+              | selectattr('model_name', 'equalto', llm_router_cluster_model)
+              | first).model_info.max_input_tokens }}
+
+    # The render assertion above passes today only because both entries happen
+    # to carry 65536. Pin the GUARD too, or a later registry edit that narrows
+    # the fallback target would sail through the converge and be caught only by
+    # the render check in this file — after the config was already accepted.
+    - name: Prove the render-time guard rejects a context-narrowing fallback target
+      block:
+        - name: Narrow the fallback target below the primary's context window
+          ansible.builtin.set_fact:
+            llm_router_model_registry: >-
+              {{ (llm_router_model_registry
+                  | rejectattr('client_model_id', 'equalto', llm_router_cluster_model) | list)
+                 + [(llm_router_model_registry
+                     | selectattr('client_model_id', 'equalto', llm_router_cluster_model)
+                     | first) | combine({'servable': true, 'context_window': 8192})] }}
+
+        - name: Run the role's real render-time asserts against the narrowed target
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert.yml"
+
+        - name: Fail because the guard admitted a context-narrowing fallback
+          ansible.builtin.fail:
+            msg: >-
+              roles/llm_router/tasks/assert.yml PASSED with
+              {{ llm_router_cluster_model }} serving an 8192-token context
+              while the primary serves more. With the chain rendered
+              permanently, that silently compresses every failed-over
+              hermes-default request instead of erroring.
+      rescue:
+        - name: Confirm the guard failed for the context-narrowing reason specifically
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'Context-narrowing fallback' in (ansible_failed_result.msg | default(''))"
+              - "'GLM-4.7' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              The asserts failed, but not for the reason expected — got:
+              {{ ansible_failed_result.msg | default('(no message)') }}
+            success_msg: >-
+              Guard correctly rejects a fallback target narrower than the primary.

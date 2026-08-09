@@ -178,9 +178,18 @@ hermes_agent_slack_bot_token: >-
   {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_BOT_TOKEN') | default('', true) }}
 hermes_agent_slack_app_token: >-
   {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_APP_TOKEN') | default('', true) }}
-hermes_agent_slack_allowed_users: "{{ lookup('env', 'SLACK_MEMBER_ID') | default('', true) }}"
-hermes_agent_slack_home_channel: "{{ lookup('env', 'SLACK_HOME_CHANNEL') | default('', true) }}"
-hermes_agent_slack_home_channel_name: "{{ lookup('env', 'SLACK_HOME_CHANNEL_NAME') | default('', true) }}"
+# Identity-prefixed var wins when set (Donna's own allowed-user/home-channel);
+# otherwise falls back to the original unprefixed var, so hermes_agent_id: hermes
+# keeps reading the same Doppler vars it always has (no SLACK_HERMES_* exist).
+hermes_agent_slack_allowed_users: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_MEMBER_ID')
+     | default(lookup('env', 'SLACK_MEMBER_ID'), true) | default('', true) }}
+hermes_agent_slack_home_channel: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_HOME_CHANNEL')
+     | default(lookup('env', 'SLACK_HOME_CHANNEL'), true) | default('', true) }}
+hermes_agent_slack_home_channel_name: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_HOME_CHANNEL_NAME')
+     | default(lookup('env', 'SLACK_HOME_CHANNEL_NAME'), true) | default('', true) }}
 
 # 4-channel Slack routing (operator decision 2026-07-31). The previous 3-tier
 # scheme collapsed: firehose, digest and hermes_all all resolved to ONE id, so
@@ -202,7 +211,10 @@ hermes_agent_slack_home_channel_name: "{{ lookup('env', 'SLACK_HOME_CHANNEL_NAME
 # Every id is an env lookup fed by Doppler at converge time — never hardcoded.
 # Each defaults EMPTY and falls back to prior behaviour, so an unset var leaves
 # routing exactly as it was rather than silently emptying a channel.
-hermes_agent_slack_firehose_channel: "{{ lookup('env', 'SLACK_FIREHOSE_CHANNEL') | default('', true) }}"
+# Same identity-prefixed-wins, unprefixed-fallback pattern as above.
+hermes_agent_slack_firehose_channel: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_FIREHOSE_CHANNEL')
+     | default(lookup('env', 'SLACK_FIREHOSE_CHANNEL'), true) | default('', true) }}
 hermes_agent_slack_issues_channel: >-
   {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_ISSUES_CHANNEL') | default('', true) }}
 hermes_agent_slack_noise_channel: >-
@@ -238,6 +250,48 @@ hermes_agent_cron_failure_deliver: >-
 hermes_agent_digest_slack_channel: >-
   {{ lookup('env', (hermes_agent_id | upper) ~ '_SLACK_DIGEST_CHANNEL') | default('', true) }}
 
+# --- Which identities a job belongs to ---------------------------------------
+# The identity plumbing above scopes an agent's CREDENTIALS and HANDLES (Slack
+# app, OpenBao domain, Vikunja project, memory bank, OTel name). It never
+# scoped the WORKLOAD, so every hermes_agent guest reconciled the entire
+# job table below regardless of who it was. A second agent provisioned as a
+# personal assistant therefore came up running the first agent's
+# infrastructure and coding duties — GitHub org/PR triage, Splunk digests,
+# Zammad review, the kanban reviewer — duplicating that work rather than
+# doing its own.
+#
+# A job now declares the identities it belongs to. The default below is
+# deliberately the ORIGINAL ops identity and NOT "everyone": a newly
+# provisioned agent must opt in to each duty explicitly, so adding an agent
+# can never again silently clone the ops workload. Give a job an explicit
+# `identities:` list to share or move it.
+hermes_agent_job_identities_default: [hermes]
+
+# The same rule for the script-fed job families (Splunk status digest, Splunk
+# triage, Kanban digest, Zammad auto-close). Those reconcile through
+# reconcile_enqueuer_cron.yml, where ANDing this flag into a job's gate does
+# two different things depending on WHY the gate is false. If this flag is the
+# reason — the identity does not own the workload — the job is actively
+# withdrawn: that file checks this flag directly, independently of item.enabled.
+# If the job's OWN capability gate is the reason (a missing credential, a
+# feature flag turned off), the installed job is left alone and only
+# re-creation stops (disable-don't-delete). Ownership and capability are judged
+# separately; only the former removes anything.
+hermes_agent_ops_workload_enabled: >-
+  {{ hermes_agent_id in hermes_agent_job_identities_default }}
+
+# The direct-cron entries THIS agent owns. The reconcile loop deliberately does
+# not use this — it must iterate the full table so it can withdraw jobs that
+# are installed but no longer owned. This view is for the questions that are
+# genuinely about ownership, such as whether a named profile has any job left
+# to tick.
+hermes_agent_direct_cron_jobs_owned: >-
+  {{ ((hermes_agent_direct_cron_jobs | rejectattr('identities', 'defined') | list)
+      if (hermes_agent_ops_workload_enabled | bool) else [])
+     + (hermes_agent_direct_cron_jobs
+        | selectattr('identities', 'defined')
+        | selectattr('identities', 'contains', hermes_agent_id) | list) }}
+
 # `hermes cron`'s ticker runs IN-PROCESS inside whichever gateway registered
 # the job (cron/scheduler.py: "Cron is per-profile by design") — only the
 # default profile's gateway runs persistently (hermes-gateway.service), so a
@@ -253,7 +307,104 @@ hermes_agent_digest_slack_channel: >-
 # `timeout` at all, so this covers only the profile-scoped jobs.
 hermes_agent_profile_cron_tick_timeout: 45m
 
+# --- Assistant-identity prompts ----------------------------------------------
+# Inline rather than prompt_file entries because the prompt catalog is an
+# immutable pinned package built from an external repo — nothing in THIS repo
+# can add a file to it. The role already supports prompt_var for exactly this.
+#
+# THE HARD LINE, and it is the whole point of these three jobs: an assistant
+# identity does no IT work. Not GitHub, not repositories, not pull requests or
+# issues, not infrastructure, not Splunk, not incidents, not deployments, not
+# CI. Those belong to the ops identity and are already scoped to it. Each
+# prompt states the exclusion explicitly rather than relying on the absence of
+# tools, because a model asked for "anything blocked" will otherwise happily
+# report a stalled pull request. The credential lockout in group_vars is the
+# mechanical backstop; this is the behavioural one.
+hermes_agent_assistant_exclusion_clause: |
+  ABSOLUTE SCOPE LIMIT. You are a personal assistant, not an engineer. Never
+  report on, summarise, or raise: GitHub (issues, pull requests, reviews,
+  releases, Dependabot), source code or repositories, CI or builds or
+  deployments, infrastructure, servers, containers, Splunk, logs, monitoring,
+  security alerts, or incidents. Another agent owns all of that and is already
+  reporting on it — repeating any of it is duplicated work and a mistake.
+  If an item is technical, silently skip it. Never mention that you skipped it,
+  and never explain this rule in your output.
+
+hermes_agent_assistant_daily_brief_prompt: |
+  Write {{ hermes_agent_display_name }}'s daily brief for the person you
+  assist. Keep it short enough to read in under a minute.
+
+  Cover, in this order, and omit any section that is empty:
+  1. What is due today, from your own task project only.
+  2. What is overdue and still matters.
+  3. Anything waiting on a decision from the person you assist.
+
+  Write in plain prose with short bullets. No preamble, no sign-off, no
+  restating these instructions. If there is genuinely nothing worth saying,
+  reply with exactly [SILENT] and nothing else — a brief that says "nothing
+  to report" every morning trains the reader to ignore it.
+
+  {{ hermes_agent_assistant_exclusion_clause }}
+
+hermes_agent_assistant_nudge_prompt: |
+  Find what is stalled specifically on the person you assist, and say so.
+
+  A thing qualifies only if THEY are the blocker: a question you asked that
+  they have not answered, an approval nobody can proceed without, a task
+  assigned to them that has not moved. Work that is merely unfinished does
+  NOT qualify — someone else is already carrying it.
+
+  Consult your memory before writing so you do not raise the same item twice
+  in a row. Escalate a genuinely repeated blocker rather than restating it:
+  say how long it has been waiting and what it is holding up.
+
+  One line per item, naming the item and the decision needed. If nothing is
+  actually blocked on them, reply with exactly [SILENT] and nothing else.
+
+  {{ hermes_agent_assistant_exclusion_clause }}
+
+hermes_agent_assistant_task_triage_prompt: |
+  Review your own task project and keep it honest.
+
+  Look for: items overdue by enough to be misleading, items with no due date
+  that have sat untouched long enough to be stale, duplicates, and anything
+  finished in practice but still open. Propose a specific disposition for each
+  — reschedule to a named date, close, merge into another item, or drop — and
+  ask for confirmation on anything you are not confident about.
+
+  Change nothing without being asked. Read and recommend only.
+
+  Group by disposition rather than listing everything flatly. If the project
+  is in good shape, reply with exactly [SILENT] and nothing else.
+
+  {{ hermes_agent_assistant_exclusion_clause }}
+
 hermes_agent_direct_cron_jobs:
+  # --- Assistant-identity duties ---------------------------------------------
+  # Scoped by `identities` so the ops agent never picks them up, exactly as the
+  # ops jobs below are never picked up by an assistant. Schedules are UTC
+  # (hermes_agent_timezone is pinned).
+  - name: assistant-daily-brief
+    schedule: "0 12 * * *"
+    prompt_var: hermes_agent_assistant_daily_brief_prompt
+    skill: ""
+    enabled: true
+    identities: [donna]
+  # Working hours only, and deliberately not hourly: a nudge that arrives
+  # constantly is noise, and noise is how a blocker list gets ignored.
+  - name: assistant-decision-nudge
+    schedule: "0 13,17,21 * * *"
+    prompt_var: hermes_agent_assistant_nudge_prompt
+    skill: ""
+    enabled: true
+    identities: [donna]
+  - name: assistant-task-triage
+    schedule: "0 14 * * 1"
+    prompt_var: hermes_agent_assistant_task_triage_prompt
+    skill: ""
+    enabled: true
+    identities: [donna]
+
   # Paused, NEVER reconciled: superseded by the script-fed splunk-security-digest
   # (hermes_agent_triage_jobs). Leaked raw <function=...> markup to Slack twice on
   # 2026-07-24, and never ran the SPL this prompt specifies.
@@ -458,6 +609,21 @@ hermes_agent_direct_cron_jobs:
       {{ hermes_agent_bot_pr_triage_enabled | bool
          and hermes_agent_github_alerts_token | length > 0
          and hermes_agent_github_issues_pat | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  # The only GitHub job that runs OUTSIDE the default profile: github-maint
+  # carries the read-only token and nothing else, so the read-only contract is
+  # the credential rather than the prompt.
+  - name: "{{ hermes_agent_github_maint_cron_name }}"
+    schedule: "{{ hermes_agent_github_maint_cron_schedule }}"
+    prompt_var: hermes_agent_github_maint_cron_prompt
+    skill: dryvist/github-issues
+    deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    hermes_home: "{{ hermes_agent_hermes_home }}/profiles/github-maint"
+    enabled: >-
+      {{ hermes_agent_github_maint_enabled | bool
+         and hermes_agent_github_read_token | length > 0
          and hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
@@ -683,9 +849,14 @@ hermes_agent_dashboard_host: 0.0.0.0
 hermes_agent_dashboard_port: >-
   {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['hermes_dashboard']
      | mandatory('tofu_data.constants.service_ports.hermes_dashboard missing — regenerate tofu_inventory.json') }}
-hermes_agent_dashboard_public_url: "https://hermes.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
+# `hostname` is the guest's own tofu-proxmox row key (set as a fact by
+# inventory/load_tofu.yml's "Set the guest hostname fact" task) — the same
+# name Traefik routes on, since an ingress row's hostname defaults to its row
+# key. For hermes_agent_id: hermes that key is "hermes" (byte-identical to
+# the prior literal); for donna it is "hermes-donna".
+hermes_agent_dashboard_public_url: "https://{{ hostname }}.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
 hermes_agent_dashboard_oidc_issuer: "https://authelia.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
-hermes_agent_dashboard_oidc_client_id: hermes-dashboard
+hermes_agent_dashboard_oidc_client_id: "{{ hostname }}-dashboard"
 
 # --- Persona: the shared behavioral base (SOUL.md) ----------------------------
 # Copy the composed SOUL.md out of the pinned nix-hermes bundle
@@ -1185,6 +1356,24 @@ hermes_agent_github_issues_pat: ""
 # (see group_vars); empty until seeded — the card stays disabled until then.
 hermes_agent_github_alerts_token: ""
 
+# --- GitHub read-only token (github-maint profile) -------------------------
+# Read-only across the dryvist org: issues, pull requests, contents, metadata.
+# NO write scope of any kind — no issues:write, no comments, no labels, no
+# pushes. This is the ONLY GitHub credential the github-maint profile carries,
+# and it is what makes that profile's read-only contract enforceable rather
+# than advisory: a write call fails at the API, not at the prompt.
+#
+# Delivered under the GH_PAT_WRITE_PROJECT_ISSUES key in that profile's .env
+# (templates/hermes-env-profile.j2) because that is the variable the bundled
+# dryvist/github-issues skill authenticates with — the key name is the
+# transport, the VALUE carries the scope. Reusing it is what lets the profile
+# reuse the existing skill unchanged instead of forking one.
+#
+# Bao-first (local-llm domain, secret/ai/hermes), env fallback (see
+# group_vars); empty until seeded, which keeps the github-maint cron below
+# inert — same posture as the alerts token above.
+hermes_agent_github_read_token: ""
+
 # --- Splunk MCP client (read/search access to the SIEM) ---
 # Registers the Splunk MCP Server as an HTTP MCP server in config.yaml so Hermes
 # can query the environment (run_splunk_query, get_indexes, ...) with its own
@@ -1583,6 +1772,46 @@ hermes_agent_bot_pr_triage_enabled: true
 hermes_agent_bot_pr_triage_cron_name: bot-pr-triage
 hermes_agent_bot_pr_triage_cron_schedule: "43 */6 * * *"
 hermes_agent_bot_pr_triage_cron_prompt_file: hermes-bot-pr-triage.md
+
+# --- Repo maintenance review: read-only, github-maint profile ---------------
+# Runs in the github-maint profile, whose only GitHub credential is the
+# read-only hermes_agent_github_read_token — so this job physically cannot
+# write to GitHub, unlike github-triage (:26) and bot-pr-triage (:43), which
+# stay in the default profile with the write PAT and are NOT touched by this.
+# Deliberately overlaps github-triage's topic at a different depth: that job
+# reports what moved on the board, this one reads the newest open issues
+# closely enough to say what fixing them would take. Consolidating the two is
+# an open question, not something this job assumes.
+#
+# Every run is a fresh isolated session (no context carry-over), and the
+# prompt bounds the slice explicitly — a fixed repo count and issue count, one
+# digest out — because an unbounded org-wide sweep is what makes a job like
+# this expensive. Minute 8 of every 4th hour keeps it clear of the */6 GitHub
+# sweeps and the Splunk fleet (tests/hermes_agent/test_cron_stagger.py).
+hermes_agent_github_maint_enabled: true
+hermes_agent_github_maint_cron_name: github-maint-review
+hermes_agent_github_maint_cron_schedule: "8 */4 * * *"
+hermes_agent_github_maint_cron_prompt: >-
+  You are the read-only repository-maintenance review for the dryvist
+  organization. Your GitHub credential cannot write: never open, comment on,
+  label, or close anything, and never report a proposal as if you had filed
+  it. Recall memory key "github-maint-last" (the issue numbers and repos you
+  covered last run) and work the DELTA. Bound this run hard: list open issues
+  across dryvist repositories sorted newest first, take at most the 10 you
+  have not already reviewed, and stop searching once you have them. For each,
+  read the issue body and enough of the repository to judge it, then classify
+  it as EASY WIN (a small, well-understood change you can describe concretely),
+  NEEDS OWNER (real work or an unresolved decision), or UNCLEAR (the request
+  cannot be acted on as written, and what is missing). For every easy win,
+  state in two or three lines what would change, which files or areas it
+  touches, and what would prove it worked — enough that a human could act on
+  it without repeating your reading. Post ONE dense digest here: the
+  classification counts, then the easy wins in full, then one line each for
+  the rest. No Markdown tables, no restating an issue you already covered in
+  an earlier run. If nothing new is open since your last run, reply with
+  exactly [SILENT]. File anything worth durable follow-up with kanban_create,
+  not on GitHub. Save the updated repo+issue-number map back to
+  "github-maint-last".
 
 # --- Docs sync: bounded delta -> signed draft PRs via the docs-pr skill -----
 # Weekly (Mon 08:13 UTC). Discovers doc-worthy deltas since the last run and
@@ -2025,9 +2254,11 @@ hermes_agent_fleet_health_cron_prompt: >-
 #
 # DECISION RULE (the default action for new recurring work): choose a profile
 # FIRST. `default` is not the absence of a choice — it is correct only for
-# cross-domain, board-meta, or GitHub work, and the card/PR should say why.
+# cross-domain, board-meta, or WRITE-bearing GitHub work (the jobs that label,
+# comment, or file issues), and the card/PR should say why.
 # SIEM-shaped work is splunk-admin; incident/infra-shaped work is
-# homelab-admin; work that fits neither and is not cross-domain is the signal
+# homelab-admin; read-only repository review and maintenance analysis is
+# github-maint; work that fits none and is not cross-domain is the signal
 # to propose a NEW profile, not to widen an existing one — a profile is scoped
 # by what it must NOT reach, not by what it might someday need.
 #
@@ -2061,6 +2292,12 @@ hermes_agent_profiles:
     env: [slack, zammad]
     skills: [dryvist/zammad-incidents]
     soul_addendum_file: soul-homelab-admin.md.j2
+  - name: github-maint
+    description: Read-only repository-maintenance analyst (proposals out-of-band, no repo writes)
+    mcp: [docs]
+    env: [slack, github]
+    skills: [dryvist/github-issues]
+    soul_addendum_file: soul-github-maint.md.j2
 
 # Kanban is no longer used for recurring work at all (native-cron reframe,
 # 18/18): the board keeps doing what it is actually for — ad-hoc work and the

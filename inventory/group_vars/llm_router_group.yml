@@ -33,10 +33,24 @@ syslog_forwarder_program_routes:
 #
 # FQDN, never an address — the store moves with its reservation.
 #
-# The name matches the `llm-redis` tag the firewall policy keys on
-# (tofu-proxmox#829) and the llm-* convention its neighbours on this VLAN
-# already use, so the guest, the tag, and this reference are one word rather
-# than three spellings of the same thing.
+# The FQDN is READ FROM THE GUEST, not spelled out here. This was previously
+# built as the literal ('llm-redis.' ~ ai_subdomain), which assumed the guest's
+# name matched the tag and assumed it sat under the management subdomain.
+# Neither holds: the guest carrying the tag is numbered, and the inventory
+# contract publishes it under the estate domain, so the literal named a host
+# that does not resolve and the ceiling could never reach its store. Taking the
+# name from the same inventory entry that decides the store exists at all keeps
+# the two from disagreeing again — the guest can be renamed or renumbered and
+# this follows it.
+#
+# container_ip rather than ansible_host: the contract puts the guest's own
+# FQDN there for DHCP-first guests whether or not the guest is on the direct-
+# ssh path, while ansible_host is the NODE's FQDN for anything still going
+# through pct-exec.
+#
+# [0] because this is a single-instance store by design — see roles/redis
+# defaults on why a second consumer gets its own guest rather than a second
+# logical DB in this one.
 #
 # Both derive from ONE condition — whether a guest carrying that tag is
 # actually in the inventory — rather than being two literals a comment asks a
@@ -52,6 +66,7 @@ syslog_forwarder_program_routes:
 _llm_router_spend_store_present: >-
   {{ (groups['llm_redis_group'] | default([])) | length > 0 }}
 llm_router_redis_host: >-
-  {{ ('llm-redis.' ~ ai_subdomain) if (_llm_router_spend_store_present | bool) else '' }}
+  {{ hostvars[(groups['llm_redis_group'] | default([]))[0]].container_ip
+     if (_llm_router_spend_store_present | bool) else '' }}
 llm_router_openrouter_budget_limit: "{{ 1.0 if (_llm_router_spend_store_present | bool) else 0 }}"
 llm_router_openrouter_budget_period: 1d

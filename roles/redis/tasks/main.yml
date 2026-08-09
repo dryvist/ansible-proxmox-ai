@@ -18,6 +18,35 @@
     group: "{{ redis_group }}"
     mode: "0750"
 
+# Debian's redis-server.service sets PrivateUsers, which needs user-namespace
+# setup an unprivileged Proxmox LXC denies: the unit dies with
+# "Failed to set up user namespacing: Permission denied" and status=217/USER
+# before redis ever reads its config. Same override the nautobot role in
+# ansible-proxmox-apps already carries for the same package and the same
+# reason. Written before the start task below, whose daemon_reload picks the
+# drop-in up; the notify covers a later change to the override alone.
+- name: Ensure the redis systemd override directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/redis-server.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy the unprivileged-LXC systemd override
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/redis-server.service.d/lxc-override.conf
+    content: |
+      # Managed by Ansible (redis role).
+      # Debian's Redis unit enables PrivateUsers, which requires user namespace
+      # setup that unprivileged Proxmox LXCs deny.
+      [Service]
+      PrivateUsers=no
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart redis
+
 - name: Render the redis configuration
   ansible.builtin.template:
     src: redis.conf.j2

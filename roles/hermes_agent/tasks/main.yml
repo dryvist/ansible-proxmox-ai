@@ -1707,7 +1707,7 @@
     msg: >-
       Neither hermes_agent_digest_slack_channel nor the Slack bot/app
       token + home channel are set — skipping all
-      {{ hermes_agent_direct_cron_jobs | length }} agentic direct-deliver
+      {{ hermes_agent_direct_cron_jobs_owned | length }} agentic direct-deliver
       crons.
   when:
     - hermes_agent_digest_slack_channel | length == 0
@@ -1742,11 +1742,13 @@
       >> {{ hermes_agent_log_directory }}/cron-tick-{{ item }}.log 2>&1
     minute: "*/5"
     state: present
-  loop:
-    - homelab-admin
-    - splunk-admin
+  # Derived from hermes_agent_profiles, not hand-kept: a hardcoded list means
+  # a new profile's job is created under its own store and then never ticks —
+  # registered, scheduled, silent. The `when` below already skips a profile
+  # with no enabled job pointing at it, so deriving adds no stray cron entries.
+  loop: "{{ hermes_agent_profiles | map(attribute='name') | list }}"
   when: >-
-    hermes_agent_direct_cron_jobs
+    hermes_agent_direct_cron_jobs_owned
     | selectattr('hermes_home', 'defined')
     | selectattr('hermes_home', 'search', item)
     | selectattr('enabled') | list | length > 0
@@ -1768,7 +1770,9 @@
       schedule: "{{ hermes_agent_splunk_status_digest_cron_schedule }}"
       script: "{{ hermes_agent_splunk_status_digest_script_name }}"
       deliver: "slack:{{ hermes_agent_splunk_status_digest_channel }}"
-      enabled: "{{ hermes_agent_splunk_status_digest_enabled }}"
+      enabled: >-
+        {{ hermes_agent_splunk_status_digest_enabled | bool
+           and hermes_agent_ops_workload_enabled | bool }}
 
 # The master Kanban digest cron: same --no-agent --script contract. Deliberately
 # NOT added to hermes_agent_seeded_cron_names — that list is what a cluster
@@ -1781,7 +1785,9 @@
       schedule: "{{ hermes_agent_kanban_digest_cron_schedule }}"
       script: "{{ hermes_agent_kanban_digest_script_name }}"
       deliver: "slack:{{ hermes_agent_kanban_digest_channel }}"
-      enabled: "{{ hermes_agent_kanban_digest_enabled }}"
+      enabled: >-
+        {{ hermes_agent_kanban_digest_enabled | bool
+           and hermes_agent_ops_workload_enabled | bool }}
 
 # The script-fed Splunk triage digests: same --no-agent --script contract as the
 # status digest. Their stdout (numbers each script gathered itself) is delivered
@@ -1796,7 +1802,9 @@
       schedule: "{{ triage_job.schedule }}"
       script: "{{ triage_job.name }}.py"
       deliver: "slack:{{ hermes_agent_triage_channel }}"
-      enabled: "{{ hermes_agent_triage_enabled }}"
+      enabled: >-
+        {{ hermes_agent_triage_enabled | bool
+           and hermes_agent_ops_workload_enabled | bool }}
   loop: "{{ hermes_agent_triage_jobs }}"
   loop_control:
     loop_var: triage_job
@@ -1923,6 +1931,7 @@
       deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
       enabled: >-
         {{ hermes_agent_zammad_autoclose_enabled | bool
+           and hermes_agent_ops_workload_enabled | bool
            and hermes_agent_zammad_url | length > 0
            and hermes_agent_zammad_api_token | length > 0
            and hermes_agent_slack_hermes_all_channel | length > 0 }}

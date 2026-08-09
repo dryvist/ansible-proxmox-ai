@@ -55,10 +55,18 @@
     # it is a magic variable — a set_fact of the same name does not change what
     # the group_vars expression reads, so the test would pass while measuring
     # nothing.
+    # container_ip carries the guest's own FQDN, exactly as load_tofu.yml sets
+    # it from the inventory contract's `ip` field. It is set here because the
+    # derivation READS it — the router names the store by the guest's published
+    # FQDN rather than by a literal built from ai_subdomain, which is what made
+    # the old value NXDOMAIN. Deliberately unlike the host's own name, so a
+    # derivation that went back to guessing from the inventory_hostname would
+    # fail this test instead of passing by coincidence.
     - name: Put a spend store into the inventory
       ansible.builtin.add_host:
         name: llm-redis-under-test
         groups: llm_redis_group
+        container_ip: llm-redis-under-test-1.example.test
 
 # A SECOND play, and that is not stylistic either. `groups` is snapshotted per
 # play, so a host already running when add_host fires keeps the membership it
@@ -90,7 +98,7 @@
         quiet: true
         that:
           - (llm_router_openrouter_budget_limit | float) > 0
-          - llm_router_redis_host == 'llm-redis.example.test'
+          - llm_router_redis_host == 'llm-redis-under-test-1.example.test'
         fail_msg: >-
           A member of llm_redis_group is in the inventory but the derived pair
           is budget={{ llm_router_openrouter_budget_limit }},

@@ -159,6 +159,19 @@ def test_completed_card_reports_the_workers_own_summary():
     assert "t_aa" in text and "10m" in text
 
 
+def test_completed_card_that_already_posted_its_own_report_is_not_requoted():
+    """A report-generating cron (splunk-triage etc.) says in its own summary
+    that it already delivered the full report to Slack. Quoting that summary
+    here would restate the same finding twice in the same window."""
+    text = digest(
+        [{"id": "t_kk", "title": "Splunk triage sweep", "status": "done"}],
+        [{"id": 1, "task_id": "t_kk", "outcome": "completed", "started_at": NOW - 700,
+          "ended_at": NOW - 100,
+          "summary": "RED (firewall index 99.3%), full report delivered to Slack."}])
+    assert "posted its own full report to Slack" in text
+    assert "firewall index 99.3%" not in text, "the finding must not be requoted"
+
+
 def test_completed_card_with_no_summary_says_so_rather_than_inventing_one():
     text = digest(
         [{"id": "t_aa", "title": "Nightly wiki", "status": "done"}],
@@ -180,6 +193,27 @@ def test_retries_collapse_to_one_line_naming_every_outcome():
     assert text.count("t_bb") == 1, "a retried card is one finding, not three"
     assert "x3" in text and "crashed" in text and "timed_out" in text
     assert "3 consecutive failures" in text
+
+
+def test_a_card_failing_a_second_consecutive_time_is_visually_escalated():
+    """A card still failing on its 2nd+ consecutive tick is not the same signal
+    as its first failure — mirrors the ESCALATING treatment splunk-triage.py.j2
+    already gives a worsening error signature."""
+    text = digest(
+        [{"id": "t_esc", "title": "AI news scout", "status": "blocked",
+          "consecutive_failures": 2}],
+        [{"id": 1, "task_id": "t_esc", "outcome": "timed_out", "ended_at": NOW - 100}])
+    assert ":rotating_light: *ESCALATING*" in text
+    assert ":x: *AI news scout*" not in text
+
+
+def test_a_cards_first_failure_uses_the_plain_marker():
+    text = digest(
+        [{"id": "t_first", "title": "AI news scout", "status": "blocked",
+          "consecutive_failures": 1}],
+        [{"id": 1, "task_id": "t_first", "outcome": "timed_out", "ended_at": NOW - 100}])
+    assert ":x: *AI news scout*" in text
+    assert "ESCALATING" not in text
 
 
 def test_a_card_that_exits_open_is_reported_with_where_it_stopped():
