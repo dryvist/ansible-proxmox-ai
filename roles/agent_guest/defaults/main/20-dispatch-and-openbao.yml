@@ -1,0 +1,81 @@
+---
+# --- Dispatch queue (Vikunja) -----------------------------------------------
+# Absorbed from ai_runner: one Vikunja project is the queue, one task is a job,
+# and this guest's profile label scopes which jobs it claims. FQDN-first Traefik
+# vhost; empty base URL disables dispatch cleanly (guest converges, stays idle).
+agent_guest_vikunja_url: >-
+  https://vikunja.{{ lookup('env', 'PROXMOX_SUBDOMAIN') | default('', true) }}
+agent_guest_vikunja_project: "AI Jobs"
+agent_guest_profile_label: "profile:ai-proxied"
+agent_guest_poll_interval: 2min
+# Hard per-job wall clock, enforced by systemd RuntimeMaxSec rather than the
+# in-process timeout ai_runner used — a wedged CLI is killed with its whole
+# cgroup, not left holding a claim.
+agent_guest_task_max_sec: 3600
+# RuntimeMaxSec bounds a job that is WEDGED. It does nothing about one that is
+# running away — a fork bomb or a memory hog reaches the guest's own limits
+# long before the wall clock, taking the poller and Cribl Edge down with it and
+# stranding undelivered transcripts. These two cap that: "The engineering
+# question becomes how to cap the blast radius."
+# https://www.anthropic.com/engineering/how-we-contain-claude
+# Sized against a 4-core / 8192 MB pool guest, leaving headroom for the poller,
+# Cribl Edge and sshd. Raise deliberately; a job needing more than this is a
+# sign the job is wrong, not that the cap is.
+agent_guest_task_memory_max: 6G
+agent_guest_task_cpu_quota: 300%
+agent_guest_task_default_base: develop
+agent_guest_worker_script: /usr/local/bin/agent-task
+
+# Repos a job is permitted to clone and open a PR against, as fnmatch patterns.
+#
+# The `repo` field arrives in the job's front-matter — queue content, which is
+# the one attacker-reachable input to this guest. Without this list, any task
+# that reaches the queue can direct the runner to clone and push to anything
+# the injected GITHUB_TOKEN can reach, so the token's own scope would be the
+# only thing standing in the way. That is a single layer, and it is currently
+# an UNKNOWN one: the `agent-guest` GitHub permission set does not exist yet,
+# so the token's real reach is undefined. This list is the layer that does not
+# depend on that being resolved correctly.
+#
+# Anthropic's framing for why queue content gets this treatment: "Tool output
+# is an attack surface even when the tool is trusted."
+# https://www.anthropic.com/engineering/how-we-contain-claude
+agent_guest_repo_allowlist:
+  - "dryvist/*"
+  - "JacobPEvans-personal/*"
+
+# --- Result push (ntfy) ------------------------------------------------------
+# Absorbed from ai_runner unchanged. Empty topic disables the push; the worker
+# still comments the outcome on the Vikunja task.
+agent_guest_ntfy_topic: "ai-jobs"
+agent_guest_ntfy_url: >-
+  https://ntfy.{{ lookup('env', 'PROXMOX_SUBDOMAIN') | default('', true) }}/{{ agent_guest_ntfy_topic }}
+
+# --- OpenBao Agent (process-supervisor mode) --------------------------------
+# The job runner never holds a static credential: `bao agent` authenticates with
+# the guest's own AppRole, renders the tokens into the child process
+# environment, and execs the runner as its supervised child.
+#
+# NOTE the deliberate absence of ANTHROPIC_API_KEY — ai_runner seeded it and
+# that was a defect: it outranks CLAUDE_CODE_OAUTH_TOKEN in claude's auth
+# precedence, silently flipping billing off the subscription. Never reintroduce.
+# Keep in sync with ansible-proxmox-apps roles/openbao `openbao_version`.
+agent_guest_openbao_version: "2.5.5"
+agent_guest_openbao_deb_url: >-
+  https://github.com/openbao/openbao/releases/download/v{{
+  agent_guest_openbao_version }}/openbao_{{ agent_guest_openbao_version
+  }}_linux_amd64.deb
+agent_guest_bao_bin: /usr/bin/bao
+# AppRole credentials are seeded out of band into this dir; the role creates it
+# but never writes a secret into it. See README.
+agent_guest_approle_dir: "{{ agent_guest_config_dir }}/approle"
+agent_guest_bao_addr: >-
+  https://openbao.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN environment variable is required (Doppler)') }}
+# GitHub App installation token, minted per job by the github secrets engine —
+# never a static PAT in KV.
+agent_guest_github_token_path: github/token/agent-guest
+# Claude's long-lived headless token (KV v2 — note the data/ infix), from
+# `claude setup-token`. Subscription billing, 1-year life.
+agent_guest_claude_token_path: secret/data/ai/saas/claude
+agent_guest_runner_bin: "{{ agent_guest_worker_script }}"
