@@ -1,0 +1,35 @@
+---
+# --- Recurring workload reframe (was #83/INC-17120's Kanban migration) -------
+# Repetitive scheduled report/sweep/digest work is an agentic direct-deliver
+# cron job (hermes_agent_direct_cron_jobs, above), not a Kanban card: Kanban is
+# for a genuine discrete unit of work tracked to completion on a board
+# (docs-sync — see hermes_agent_kanban_cards below), not "run this at this
+# time, repeatedly". Every job still runs in the gateway's fresh, isolated
+# per-run worker session — eliminating the persistent-cron-session failure
+# class INC-17120 was actually about (corrupted compression bookkeeping
+# crash-looping the splunk-* jobs) — because that property was never about
+# Kanban vs. cron; agentic cron jobs already get a fresh session per fire too.
+#
+# The 8h reviewer runs on this same schedule (00:00/08:00/16:00 UTC), a plain
+# recurring digest like every other converted job.
+hermes_agent_kanban_reviewer_job: review
+hermes_agent_kanban_reviewer_schedule: "0 */8 * * *"
+hermes_agent_reviewer_card_prompt: >-
+  You are the Hermes 8-hour self-review. Cadence: three times a day at 00:00,
+  08:00, 16:00 UTC. Retrieval first: recall memory key "review-last" (the gaps
+  you already reported and filed follow-ups for) so a gap that is still open
+  does not get re-reported every run — an unfixed problem is not a new
+  finding, and repeating it three times a day is what makes the digest
+  unreadable. Do all of the following, then stop. (1) Review the last 8h of
+  Kanban activity: list the done, blocked, and triage cards and read
+  `kanban runs` (task-run outcomes). Identify anything that failed, is
+  stuck/blocked, or a recurring workload that silently did not run. (2) For
+  each real gap, file a follow-up card with kanban_create using a STABLE
+  idempotency key (followup-<short-slug>-<UTC-date>) so a re-run never
+  duplicates it; attach the right skill and a clear body. (3) Report what ran,
+  what failed or is blocked, what you filed — deltas and action items only, no
+  Markdown tables. Self-check before finishing: every gap in step 2 has a
+  follow-up card, and the report names each one, and every gap you are about
+  to report is genuinely absent from "review-last" — drop the ones that are
+  not, and say in one line how many you suppressed as still-open rather than
+  listing them again. Save the updated gap fingerprint back to "review-last".

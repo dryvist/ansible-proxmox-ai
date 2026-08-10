@@ -1,0 +1,138 @@
+---
+
+- name: Assert Hermes Agent brain-wiring contracts hold before converging
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # (1) Hermes Agent HARD context floor. The agent refuses to start against
+      #     any model declaring under 64,000 tokens ("below the minimum 64,000
+      #     required"); at 60,000 every seeded cron failed on 2026-07-08.
+      #     context_length is declared explicitly in config.yaml.j2 because
+      #     custom/vLLM providers carry no context catalog Hermes can probe.
+      - hermes_agent_model_context_length | int >= 64000
+      # (3) Client-is-decider timeout chain. The Hermes stream read timeout must
+      #     sit BELOW the router's per-attempt timeout so the CLIENT gives up
+      #     first (by design) while the router keeps waiting on a healthy
+      #     generation. Both values are the single-source constants in all.yml;
+      #     the outermost link (nix-darwin MLX model server guard, 3600s) lives
+      #     out of this repo's reach and is not assertable here.
+      - hermes_agent_stream_read_timeout | int < ai_router_request_timeout_seconds | int
+      # (4) Job-API concurrency cap must be a real cap. Upstream treats 0 as
+      #     "cap disabled" — on a single shared serving deployment that means
+      #     an unbounded request flood lands directly on the brain, which is
+      #     exactly what the cap exists to prevent. Negative values clamp to
+      #     0 upstream, so they are equally forbidden.
+      - hermes_agent_api_max_concurrent_runs | int >= 1
+      # (5) The brain watchdog's probe deadline must exceed the router's
+      #     rate-limit backoff, or no retry can ever complete inside a probe and
+      #     the watchdog only ever measures "is the slot free right now". This
+      #     invariant was documented in defaults for weeks but never enforced,
+      #     so raising retry_after past the probe timeout would silently degrade
+      #     the watchdog into a saturation detector. Asserted, not narrated.
+      - hermes_agent_brain_watchdog_probe_timeout | int > ai_router_retry_after_seconds | int
+    fail_msg: >-
+      Hermes Agent brain-wiring contract violated (roles/hermes_agent/tasks/assert.yml).
+      (1) model.context_length is {{ hermes_agent_model_context_length }}; it must be
+      >= 64000 — the Hermes Agent hard floor that rejected 60000 at startup and
+      failed every seeded cron on 2026-07-08 (raise hermes_agent_model_context_length).
+      (3) stream read timeout is {{ hermes_agent_stream_read_timeout }} and the router
+      per-attempt timeout is {{ ai_router_request_timeout_seconds }}; read must be < router
+      so the client decides (chain: hermes read < router attempt < nix-darwin server
+      guard 3600). Fix the offending value in all.yml / roles/hermes_agent/defaults.
+      (4) hermes_agent_api_max_concurrent_runs is
+      {{ hermes_agent_api_max_concurrent_runs }}; it must be >= 1 — 0 disables the
+      upstream cap entirely and exposes the single shared brain to request floods.
+      (5) brain watchdog probe timeout is
+      {{ hermes_agent_brain_watchdog_probe_timeout }} and the router rate-limit
+      backoff is {{ ai_router_retry_after_seconds }}; the probe must OUTLIVE one
+      backoff or no retry can ever complete inside it, leaving the watchdog
+      measuring "is the slot free right now" instead of "can the brain serve".
+      Raise hermes_agent_brain_watchdog_probe_timeout (keeping it under
+      hermes_agent_brain_watchdog_interval so probes cannot overlap) or lower
+      ai_router_retry_after_seconds.
+    success_msg: >-
+      Hermes Agent brain-wiring contracts hold (context_length
+      {{ hermes_agent_model_context_length }} >= 64000; read
+      {{ hermes_agent_stream_read_timeout }} < router {{ ai_router_request_timeout_seconds }};
+      api cap {{ hermes_agent_api_max_concurrent_runs }} >= 1; watchdog probe
+      {{ hermes_agent_brain_watchdog_probe_timeout }} > backoff
+      {{ ai_router_retry_after_seconds }}).
+
+- name: Assert Hermes recurring goal-mode settings are valid
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - not (hermes_agent_kanban_goal_mode | bool) or hermes_agent_kanban_goal_max_turns | int >= 1
+      - >-
+        not (hermes_agent_kanban_goal_mode | bool)
+        or hermes_agent_kanban_goal_judge_model | trim | length > 0
+      - >-
+        not (hermes_agent_kanban_goal_mode | bool)
+        or hermes_agent_kanban_goal_judge_timeout_seconds | int >= 30
+    fail_msg: >-
+      Goal mode requires a positive hermes_agent_kanban_goal_max_turns and a
+      non-empty hermes_agent_kanban_goal_judge_model, and a judge timeout of
+      at least 30 seconds. No card may carry its own goal_max_turns: the goal
+      loop re-sends the whole accumulated conversation every turn, so a bigger
+      budget costs prefill quadratically, and it is only ever spent by a card
+      that is already failing — which is when the serving tier has least room.
+      Raise hermes_agent_kanban_goal_max_turns for everything, or not at all.
+
+# The max_retries floor and the assignee/profile-validity checks that used to
+# live here validated hermes_agent_kanban_cards, which no longer exists
+# (native-cron reframe: all 18 former cards are hermes_agent_direct_cron_jobs
+# entries now). Neither field carries over to a plain `hermes cron create` job
+# — see the PR that introduced this change for the explicit gap report on
+# assignee/profile, max_runtime and max_retries not being expressible there.
+
+# The replaced_by_card retirement chain (a direct-cron retirement naming a
+# Kanban card as its replacement) does not exist any more (native-cron
+# reframe): every former card is itself now a hermes_agent_direct_cron_jobs
+# entry, so there is no cron-to-card handoff left to promise or assert.
+
+# A profile can carry the Splunk skill while declaring no splunk MCP server,
+# and nothing notices. The skill loads, the agent believes it can query Splunk,
+# and every SPL call fails at RUNTIME inside a job — visible only as a card
+# that produces nothing useful, on the profile that exists precisely to query
+# Splunk. tests/hermes_agent/test_profile_contract.py already proves the
+# rendered mcp_servers matches the declared `mcp` list, but that is a pytest
+# check of SELF-consistency: it never runs during a converge, and it stays
+# green for a profile whose `mcp` legitimately dropped `splunk` while the
+# skill stayed. This asserts the cross-field invariant instead.
+#
+# `map(attribute='mcp', default=[])` is deliberate — a profile with the skill
+# and NO `mcp` key at all is a violation, not an exemption, and plain
+# rejectattr('mcp', ...) would raise on it rather than report it.
+# selectattr('skills', 'defined') keeps profiles that declare no skills (a
+# legitimate shape) out of the check instead of erroring on them.
+- name: Assert every profile carrying the Splunk skill also declares the splunk MCP server
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_profiles
+        | selectattr('skills', 'defined')
+        | selectattr('skills', 'contains', 'dryvist/splunk-monitor')
+        | map(attribute='mcp', default=[])
+        | reject('contains', 'splunk')
+        | list | length == 0
+    fail_msg: >-
+      A profile lists the dryvist/splunk-monitor skill but does not declare
+      'splunk' in its mcp list, so its rendered config.yaml will carry the
+      skill with no Splunk MCP server behind it and every SPL call will fail
+      at runtime. Offending profiles:
+      {{ hermes_agent_profiles | selectattr('skills', 'defined')
+         | selectattr('skills', 'contains', 'dryvist/splunk-monitor')
+         | rejectattr('mcp', 'defined') | map(attribute='name') | list
+       + (hermes_agent_profiles | selectattr('skills', 'defined')
+         | selectattr('skills', 'contains', 'dryvist/splunk-monitor')
+         | selectattr('mcp', 'defined') | rejectattr('mcp', 'contains', 'splunk')
+         | map(attribute='name') | list) }}.
+    success_msg: >-
+      Every profile carrying dryvist/splunk-monitor also declares the splunk
+      MCP server.
+
+# Same failure mode as the card assert above, reached by the other door: the
+# Vikunja bridge creates cards at RUNTIME, so a typo'd assignee there produces
+# skipped_nonspawnable cards for every task the operator files — and the only
+# symptom is their board never moving. Caught at converge instead.

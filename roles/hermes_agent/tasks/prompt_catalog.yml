@@ -1,0 +1,118 @@
+---
+- name: Build the pinned prompt catalog on the controller
+  ansible.builtin.command:
+    cmd: >-
+      nix build --out-link /tmp/hermes-agent-prompts --print-out-paths
+      "{{ hermes_agent_prompts_flake_ref }}"
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+  run_once: true
+  register: hermes_agent_prompts_build
+  changed_when: false
+
+- name: Resolve the prompt catalog package path
+  ansible.builtin.set_fact:
+    hermes_agent_prompts_path: >-
+      {{ hermes_agent_prompts_build.stdout_lines | last
+         }}/share/ai-llm-prompts/auto-ai-agent
+
+- name: Load active Hermes prompts from the immutable catalog
+  ansible.builtin.set_fact:
+    # The fabric-status body is the one prompt that needs live topology appended:
+    # the catalog is public, so it cannot name an endpoint, and without one the
+    # worker invents addresses and reports a healthy fabric as a total outage.
+    # See hermes_agent_daily_status_endpoints in defaults for the measurement.
+    hermes_agent_daily_status_cron_prompt: >-
+      {{ (lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+          ~ hermes_agent_daily_status_cron_prompt_file, rstrip=false)
+          | regex_replace('(?s)^---\n.*?\n---\n', '') | trim)
+         ~ '\n\n' ~ hermes_agent_daily_status_endpoints | trim }}
+    hermes_agent_nightly_wiki_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_nightly_wiki_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_splunk_triage_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_splunk_triage_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_splunk_security_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_splunk_security_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_splunk_parsing_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_splunk_parsing_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_splunk_deepdive_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_splunk_deepdive_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_github_monitor_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_github_monitor_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_webhook_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_webhook_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_bot_pr_triage_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_bot_pr_triage_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_docs_sync_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_docs_sync_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_repo_scorecard_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_repo_scorecard_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+    hermes_agent_secrets_audit_cron_prompt: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_secrets_audit_cron_prompt_file, rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') | trim }}
+
+# The splunk-digest kanban card that used to write memory key
+# "splunk-digest-last" is REMOVED (retired 2026-08-01, well before the
+# native-cron reframe deleted hermes_agent_kanban_cards entirely);
+# hermes-splunk-triage's catalog prompt used to recall that key before
+# alerting, which was a dangling read once nothing wrote it any more — always
+# missed, so the "already covered, don't re-alert" branch could never fire.
+# Fixed in the ai-llm-prompts catalog (splunk-triage now recalls its own
+# "splunk-triage-last"); this catches a REGRESSION of the same bug — a future
+# catalog edit that reintroduces a recall of a key only a removed or paused
+# job could ever write — at converge time instead of silently shipping it.
+- name: Assert the Splunk triage prompt does not recall a dead job's memory key
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "'splunk-digest-last' not in hermes_agent_splunk_triage_cron_prompt"
+    fail_msg: >-
+      hermes_agent_splunk_triage_cron_prompt (from the pinned ai-llm-prompts
+      catalog) recalls memory key "splunk-digest-last", which nothing writes
+      any more — the splunk-digest kanban card that used to own it was
+      removed in the 2026-08-01 kanban audit. A recall of a key
+      nothing writes always finds nothing, so any "already covered, don't
+      re-alert" branch built on it can never fire. Fix the prompt in
+      dryvist/ai-llm-prompts to recall a key a currently-running job actually
+      writes (its own, by preference — see splunk-triage-last), then bump
+      hermes_agent_prompts_flake_ref to the merge commit.
+    success_msg: >-
+      hermes_agent_splunk_triage_cron_prompt does not recall the dead
+      splunk-digest-last memory key.
+
+- name: Assert every curriculum prompt resolves from the catalog
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - item.id in hermes_agent_curriculum_prompt_files
+      - >-
+        (hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_curriculum_prompt_files[item.id]) is file
+    fail_msg: >-
+      Curriculum job '{{ item.id }}' has no prompt in the pinned catalog package.
+  loop: "{{ hermes_agent_curriculum.jobs }}"
+  loop_control:
+    label: "{{ item.id }}"

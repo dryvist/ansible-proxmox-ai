@@ -1,0 +1,61 @@
+---
+# --- Autonomous config mirror ----------------------------------------------
+# Committed mirror of dryvist/nix-ai `profiles.autonomous.residualDeny` — that
+# repo is the source of truth for all three tools' deny policy. Regenerate with:
+#   nix eval github:dryvist/nix-ai#lib.profiles.autonomous.residualDeny --json
+#
+# This ONE list is what nix-ai's three renderers consume, so it is what this
+# role mirrors — not their five rendered outputs. The templates reproduce each
+# tool's native format from it (Claude `Bash(<prefix> *)` deny entries, Codex
+# `prefix_rule` tokens, Gemini Policy-Engine `commandPrefix` rules), byte-equal
+# to `nix eval github:dryvist/nix-ai#lib.renderAutonomous`.
+# NO LITERAL LIST HERE ANY MORE. It is evaluated from the pinned nix-ai ref
+# below by tasks/policy.yml and set as a fact before any template consumes it.
+#
+# The 14-entry copy that used to sit here was byte-identical to nix-ai's, which
+# is exactly why it had to go: a copy that agrees today is not a copy that
+# agrees after the next edit, and nothing compared them. nix-ai b56f999 records
+# this renderer living in four places and the same invalid-defaultApprovalMode
+# bug shipping in two copies, fixed twice (#1464, dryvist/nix-agy#1).
+#
+# Pinned, not floating: a policy list that changes under a converge without a
+# reviewed version bump is its own hazard. Bump deliberately; a bad ref fails
+# the converge loudly at the controller eval step, the same contract the
+# hermes_agent bundle pin already runs under.
+agent_guest_policy_flake_ref: "github:dryvist/nix-ai/0a264ccdc528794839878e696f9524d642b45a79"
+agent_guest_policy_attr: "lib.profiles.autonomous.residualDeny"
+
+# Deliberately NO fallback list. A fallback would let a failed eval silently
+# render a weaker policy than intended onto an agent running with standing
+# credentials and bypassPermissions — the failure mode is "the deny list
+# quietly got shorter", which nothing downstream would notice. Undefined here
+# means every consuming template fails loudly instead.
+
+# Claude Code enforces permissions.deny even under bypassPermissions, so the
+# residual deny is real protection here, not decoration.
+agent_guest_claude_settings:
+  $schema: https://json.schemastore.org/claude-code-settings.json
+  permissions:
+    allow: []
+    ask: []
+    defaultMode: bypassPermissions
+    deny: >-
+      {{ agent_guest_residual_deny | map('regex_replace', '^(.*)$', 'Bash(\1 *)') | list }}
+
+# Gemini's own sandbox is off — the LXC is already the boundary. The yolo
+# approval mode is set by the LAUNCH FLAG only: gemini-cli 0.53 does not just
+# strip defaultApprovalMode:"yolo" from settings — it HARD-ERRORS on it (the
+# enum admits default|auto_edit|plan) and refuses to start. The job runner's
+# `--approval-mode yolo` is the one and only yolo carrier; never put it here.
+# security.auth.selectedType pins the auth method so a headless run never
+# stops at the interactive auth-method picker.
+agent_guest_gemini_policy_path: "{{ agent_guest_home }}/.gemini/policies/autonomous.toml"
+agent_guest_gemini_settings:
+  $schema: https://raw.githubusercontent.com/google-gemini/gemini-cli/main/schemas/settings.schema.json
+  security:
+    auth:
+      selectedType: oauth-personal
+  policyPaths:
+    - "{{ agent_guest_gemini_policy_path }}"
+  tools:
+    sandbox: false

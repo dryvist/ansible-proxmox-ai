@@ -1,0 +1,58 @@
+---
+# --- Headless first-run provisioning ------------------------------------------
+# GET /console/api/setup reports {"step":"not_started"} until installation is
+# finished; the POST creates the admin workspace and completes setup so the UI
+# never shows /install. Skipped on every converge after the first.
+- name: Check whether Dify setup is finished
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ dify_docker_web_port }}/console/api/setup"
+    return_content: true
+  register: dify_docker_setup_state
+
+- name: Complete Dify setup (create admin)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ dify_docker_web_port }}/console/api/setup"
+    method: POST
+    body_format: json
+    body:
+      email: "{{ dify_docker_admin_email }}"
+      name: "admin"
+      password: "{{ dify_docker_admin_password }}"
+    status_code: [200, 201]
+  # json is absent when the endpoint returns non-JSON (proxy error page);
+  # guard it so the check degrades to "skip" instead of a templating error.
+  when: (dify_docker_setup_state.json | default({})).step | default('') == 'not_started'
+  changed_when: true
+  no_log: true
+
+# --- Model-provider provisioning ---------------------------------------------
+# Dify 1.x stores model providers as plugins plus per-model credentials in the
+# console DB. The legacy OPENAI_API_BASE env var is kept as an SDK fallback, but
+# this block makes the local LiteLLM router usable in the UI after converge.
+- name: Log in to Dify console for model-provider provisioning
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ dify_docker_web_port }}/console/api/login"
+    method: POST
+    body_format: json
+    body:
+      email: "{{ dify_docker_admin_email }}"
+      password: "{{ dify_docker_admin_password }}"
+    status_code: 200
+  register: dify_docker_console_login
+  when: dify_docker_provision_model_provider | bool
+  changed_when: false
+  no_log: true
+
+- name: Store Dify console session tokens
+  ansible.builtin.set_fact:
+    dify_docker_console_api_base: "http://127.0.0.1:{{ dify_docker_web_port }}/console/api"
+    dify_docker_console_cookies: "{{ dify_docker_console_login.cookies_string }}"
+    dify_docker_model_provider_api_base: >-
+      {{ dify_docker_console_api_base }}/workspaces/current/model-providers/{{
+      dify_docker_model_provider_id | urlencode }}
+    dify_docker_plugin_tasks_api_base: "{{ dify_docker_console_api_base }}/workspaces/current/plugin/tasks"
+    dify_docker_console_csrf_token: >-
+      {{ dify_docker_console_login.cookies.csrf_token
+         | default(dify_docker_console_login.cookies['__Host-csrf_token'] | default('')) }}
+  when: dify_docker_provision_model_provider | bool
+  no_log: true

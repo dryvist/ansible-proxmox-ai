@@ -1,0 +1,67 @@
+---
+# The versioned curriculum (H-9): the graded five-job set the job API
+# executes, plus the grading sheet, rubric schema and submission runbook.
+# curriculum.yml is the canonical manifest — prompts, order, budgets and each
+# job's machine-checkable success_checks (contract-asserted in assert.yml).
+# Materialized on the guest so the agent can read its own curriculum (the
+# `improve` job reviews it) and so a future recurring eval can execute it
+# locally; submissions themselves arrive via the inbound job API.
+- name: Deploy the versioned curriculum (manifest, jobs, grading, runbook)
+  ansible.builtin.copy:
+    src: curriculum/
+    dest: "{{ hermes_agent_hermes_home }}/curriculum/"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+    directory_mode: "0750"
+
+- name: Ensure the catalog-backed curriculum jobs directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_agent_hermes_home }}/curriculum/jobs"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+
+- name: Deploy curriculum prompt bodies from the immutable catalog
+  ansible.builtin.copy:
+    content: >-
+      {{ lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+         ~ hermes_agent_curriculum_prompt_files[item.id], rstrip=false)
+         | regex_replace('(?s)^---\n.*?\n---\n', '') }}
+    dest: "{{ hermes_agent_hermes_home }}/curriculum/{{ item.prompt_file }}"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+  loop: "{{ hermes_agent_curriculum.jobs }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+# --- Recurring workload fleet (kanban migration #83; reframed to cron) -------
+# Recurring reports/sweeps/digests are agentic direct-deliver cron jobs, not
+# Kanban cards — a card is for a genuine discrete unit of work tracked to
+# completion on a board (docs-sync, below), not "run this at this time,
+# repeatedly". Every job still runs in the gateway's fresh, isolated per-run
+# session (eliminating the persistent-cron-session failure class, INC-17120)
+# and every converted prompt keeps its existing recall-last / work-the-delta /
+# save-fingerprint / [SILENT] structure verbatim — the cron dispatcher natively
+# suppresses delivery on a bare `[SILENT]` response. All the skills referenced
+# (dryvist/splunk-monitor, dryvist/github-issues, dryvist/zammad-incidents,
+# dryvist/docs-pr, llm-wiki) are already materialized above, so a job's
+# `--skill` resolves when it runs.
+- name: Ensure the Hermes scripts directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_agent_hermes_home }}/scripts"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+
+# State dir for the script-fed digest's delta fingerprint (last-posted state).
+- name: Ensure the Hermes state directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_agent_hermes_home }}/state"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"

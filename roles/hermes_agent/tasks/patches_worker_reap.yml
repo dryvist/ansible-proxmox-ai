@@ -1,0 +1,230 @@
+---
+# Upstream's timeout reaper (enforce_max_runtime) and the stale-reclaim path
+# (detect_stale_running) both terminate a host-local worker for a different
+# reason but must not diverge in HOW they do it, so both route through the
+# same identity-check helper. Workers are spawned with start_new_session=True,
+# making each worker the leader of its own process group, but the reapers
+# signal only the recorded PID, not that group — a worker that itself forked
+# a child (MCP server, tool subprocess) leaves that child orphaned and
+# running indefinitely after the top-level PID is gone. Helper inserted via
+# blockinfile (idempotent markers) ahead of the function it guards; the
+# kill() call sites below (timeout path and stale-reclaim path) route
+# through it.
+- name: Patch Hermes worker-reap helper to verify PID identity before signaling
+  ansible.builtin.blockinfile:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK worker reap identity guard"
+    insertbefore: '^def enforce_max_runtime\('
+    block: |
+      def _pid_is_hermes_worker(pid: int) -> bool:
+          """Best-effort check that ``pid`` still looks like a hermes worker.
+
+          Guards against signaling a PID the OS has recycled for an
+          unrelated process between the time it was recorded and the time
+          we act on it.
+          """
+          try:
+              proc = subprocess.run(
+                  ["ps", "-o", "command=", "-p", str(int(pid))],
+                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                  text=True, timeout=1, check=False,
+              )
+          except (OSError, subprocess.SubprocessError, TimeoutError):
+              return False
+          if proc.returncode != 0:
+              return False
+          cmdline = proc.stdout or ""
+          return "hermes" in cmdline and "chat" in cmdline
+
+
+  notify: Restart hermes-gateway
+
+# Never signal PID 0/negative/1(init), this gateway process itself
+# (dispatch_in_gateway: true runs enforce_max_runtime inside the gateway
+# process, so os.getpid() at this call site IS the gateway's own PID), or a
+# PID the OS has recycled for something no longer a hermes worker.
+- name: Patch Hermes worker-reap timeout path to verify PID safety before signaling
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)if kill is not None:$'
+    replace: |-
+      \1if (
+      \1    kill is not None and pid > 1 and pid != os.getpid()
+      \1    and _pid_is_hermes_worker(pid)
+      \1):
+  notify: Restart hermes-gateway
+
+# Signal the worker's process group (negative pid), not just the recorded
+# PID, so a child process the worker itself spawned is reaped too.
+- name: Patch Hermes worker-reap timeout path to signal the worker's process group
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)kill\(pid, signal\.SIGTERM\)$'
+    replace: '\1kill(-pid, signal.SIGTERM)'
+  notify: Restart hermes-gateway
+
+- name: Patch Hermes worker-reap timeout path to escalate on the worker's process group
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)kill\(pid, _sigkill\)$'
+    replace: '\1kill(-pid, _sigkill)'
+  notify: Restart hermes-gateway
+
+# Never signal PID 0/negative/1(init), this gateway process itself
+# (dispatch_in_gateway: true runs this reclaim path inside the gateway
+# process), or a PID the OS has recycled for something no longer a hermes
+# worker. The pid<=0 check above already excludes 0/negative; this adds the
+# remaining cases.
+- name: Patch Hermes stale-reclaim worker termination to verify PID safety before signaling
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: |-
+      ^([ \t]*)if kill is None:$
+      \1    return info$
+      $
+      \1info\["termination_attempted"\] = True$
+    replace: |-
+      \1if kill is None:
+      \1    return info
+      \1if pid <= 1 or pid == os.getpid() or not _pid_is_hermes_worker(pid):
+      \1    return info
+
+      \1info["termination_attempted"] = True
+  notify: Restart hermes-gateway
+
+# Signal the worker's process group (negative pid), not just the recorded
+# PID, so a child process the worker itself spawned is reaped too. Same
+# start_new_session=True reasoning as the timeout-path patches above.
+- name: Patch Hermes stale-reclaim worker termination to signal the worker's process group
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)kill\(int\(pid\), signal\.SIGTERM\)$'
+    replace: '\1kill(-int(pid), signal.SIGTERM)'
+  notify: Restart hermes-gateway
+
+- name: Patch Hermes stale-reclaim worker termination to escalate on the worker's process group
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)kill\(int\(pid\), _sigkill\)$'
+    replace: '\1kill(-int(pid), _sigkill)'
+  notify: Restart hermes-gateway
+
+# Auto-recall (the per-turn prefetch injected into context before the model
+# sees a message) swallows every failure at DEBUG and returns "" — recall
+# silently degrades to "no memories" with no signal distinguishable from
+# routine debug noise. Bring it up to the same severity auto-retain's
+# equivalent failure already logs at (_writer_loop, a few hundred lines
+# below in the same file) so a Hindsight outage is at least searchable in
+# Splunk as a warning, not buried in DEBUG chatter. Not a retry — the bar is
+# detectability, not resilience; fabric_watchdog (roles/fabric_watchdog)
+# covers actual outage alerting.
+- name: Patch Hermes auto-recall prefetch failure to log at warning, not debug
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/plugins/memory/hindsight/__init__.py"
+    regexp: '^(\s*)logger\.debug\("Hindsight prefetch failed: %s", e, exc_info=True\)$'
+    replace: '\1logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)'
+  notify: Restart hermes-gateway
+
+# Measured 2026-08-06: prefetch only delivers memory into the turn 15.4% of
+# the time (Splunk, 18d, index=hermes) because prefetch() joins its
+# background thread for a HARDCODED 3.0s, decoupled from HINDSIGHT_TIMEOUT —
+# no config field feeds it, confirmed by reading the installed source, not
+# assumed. Recall is fast in isolation (67-256ms measured) but gets starved:
+# every Hindsight operation shares ONE process-global event loop
+# (_get_loop()/_run_sync()), so a retain job stuck in its LLM-connection
+# retry sequence (measured up to ~2min) blocks recall from even starting.
+# The debug log line anchors this to the per-turn prefetch() path only — the
+# textually-identical join(timeout=3.0) at shutdown is deliberately left
+# alone; extending drain-on-shutdown isn't the fix and isn't user-facing.
+# See hermes_agent_hindsight_prefetch_timeout_seconds for the full writeup.
+- name: Patch Hindsight prefetch join timeout off the hardcoded 3.0s
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/plugins/memory/hindsight/__init__.py"
+    regexp: |-
+      ^([ \t]*)logger\.debug\("Prefetch: waiting for background thread to complete"\)$
+      \1self\._prefetch_thread\.join\(timeout=3\.0\)$
+    replace: |-
+      \1logger.debug("Prefetch: waiting for background thread to complete")
+      \1self._prefetch_thread.join(timeout={{ hermes_agent_hindsight_prefetch_timeout_seconds | float }})
+  when: hermes_agent_memory_provider == 'hindsight'
+  notify: Restart hermes-gateway
+
+# _sync_external_memory_for_turn() (run_agent.py) is the ONLY place that
+# queues the next turn's prefetch — it runs at end-of-turn and has four
+# silent exits (three early returns plus a bare except) with no logging at
+# any of them. prefetch_all() (turn_context.py), by contrast, runs
+# unconditionally at the start of every turn. So a turn whose predecessor hit
+# any of these four exits leaves nothing queued, and the next turn's prefetch
+# correctly reports empty with zero trace of why upstream. This does not
+# change what any of the four exits DO — same interrupted-turn skip, same
+# best-effort swallow — it only makes each one observable. Log level matches
+# the existing "Hindsight prefetch failed" bump above: warning, not debug, so
+# it actually reaches Splunk. No message/user/response text in any line.
+- name: Patch _sync_external_memory_for_turn to log its "interrupted" skip
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/run_agent.py"
+    regexp: |-
+      ^(\s*)if interrupted:$
+      \1    return$
+    replace: |-
+      \1if interrupted:
+      \1    logger.warning(
+      \1        "Hermes external-memory sync/prefetch skipped: turn interrupted (session=%s)",
+      \1        self.session_id or "",
+      \1    )
+      \1    return
+  notify: Restart hermes-gateway
+
+- name: Patch _sync_external_memory_for_turn to log its missing-input skip
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/run_agent.py"
+    regexp: |-
+      ^(\s*)if not \(self\._memory_manager and final_response and original_user_message\):$
+      \1    return$
+    replace: |-
+      \1if not (self._memory_manager and final_response and original_user_message):
+      \1    logger.warning(
+      \1        "Hermes external-memory sync/prefetch skipped: missing manager=%s "
+      \1        "final_response=%s original_user_message=%s (session=%s)",
+      \1        bool(self._memory_manager), bool(final_response), bool(original_user_message), self.session_id or "",
+      \1    )
+      \1    return
+  notify: Restart hermes-gateway
+
+- name: Patch _sync_external_memory_for_turn to log its empty-flatten skip
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/run_agent.py"
+    regexp: |-
+      ^(\s*)if not \(user_text and response_text\):$
+      \1    return$
+    replace: |-
+      \1if not (user_text and response_text):
+      \1    logger.warning(
+      \1        "Hermes external-memory sync/prefetch skipped: empty after flatten "
+      \1        "user_text=%s response_text=%s (session=%s)",
+      \1        bool(user_text), bool(response_text), self.session_id or "",
+      \1    )
+      \1    return
+  notify: Restart hermes-gateway
+
+- name: Patch _sync_external_memory_for_turn to log its swallowed exception
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/run_agent.py"
+    regexp: |-
+      ^(\s*)    self\._memory_manager\.queue_prefetch_all\($
+      \1        user_text,$
+      \1        session_id=self\.session_id or "",$
+      \1    \)$
+      \1except Exception:$
+      \1    pass$
+    replace: |-
+      \1    self._memory_manager.queue_prefetch_all(
+      \1        user_text,
+      \1        session_id=self.session_id or "",
+      \1    )
+      \1except Exception as exc:
+      \1    logger.warning(
+      \1        "Hermes external-memory sync_all/queue_prefetch_all failed: %s (session=%s)",
+      \1        exc, self.session_id or "", exc_info=True,
+      \1    )
+  notify: Restart hermes-gateway

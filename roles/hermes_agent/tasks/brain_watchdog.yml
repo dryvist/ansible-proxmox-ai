@@ -1,0 +1,107 @@
+---
+# --- Brain-health watchdog ---------------------------------------------------
+# A single-deployment brain (ai_default_model) with no fallback + upstream that ALWAYS
+# delivers cron failures means a brain outage DMs the operator twice an hour per
+# seeded job while nothing pages that the brain is down. This timer probes the
+# brain end-to-end and, on a debounced transition, pauses/resumes the seeded
+# fleet and alerts once per edge (Slack DM + urgent ntfy). Gated on the Slack
+# tokens that seed the spammy fleet in the first place — no fleet, nothing to
+# guard. Enabled by default (see defaults/main.yml for why) — the disable path
+# below stays in place for hosts that set the flag false.
+- name: Check for the retained Hermes brain-health watchdog timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/hermes-brain-watchdog.timer
+  register: hermes_agent_brain_watchdog_timer_unit
+  when: not (hermes_agent_brain_watchdog_enabled | bool)
+
+- name: Stop and disable the Hermes brain-health watchdog timer
+  ansible.builtin.systemd:
+    name: hermes-brain-watchdog.timer
+    state: stopped
+    enabled: false
+    daemon_reload: true
+  when:
+    - not (hermes_agent_brain_watchdog_enabled | bool)
+    - hermes_agent_brain_watchdog_timer_unit.stat.exists | default(false)
+
+- name: Deploy the Hermes brain-health watchdog script
+  ansible.builtin.template:
+    src: hermes-brain-watchdog.sh.j2
+    dest: "{{ hermes_agent_brain_watchdog_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart hermes-brain-watchdog timer
+  when:
+    - hermes_agent_brain_watchdog_enabled | bool
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+
+# Who watches the watchdog (stopgap -- see README.md "Watchdog
+# self-monitoring"): fired by hermes-brain-watchdog.service's OnFailure= only
+# when a probe cycle crashes. Runs as root, independent of the hermes
+# user/.env. dest: is a literal, not a role variable, so it never touches
+# defaults/main.yml -- keep it in sync with the ExecStart= path in
+# templates/hermes-brain-watchdog-alert.service.j2 if either one moves.
+- name: Deploy the Hermes brain-health watchdog self-check alert script
+  ansible.builtin.template:
+    src: hermes-brain-watchdog-alert.sh.j2
+    dest: /usr/local/bin/hermes-brain-watchdog-alert.sh
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart hermes-brain-watchdog timer
+  when:
+    - hermes_agent_brain_watchdog_enabled | bool
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+
+# OnFailure= target for the long-running units (gateway, dashboard,
+# vikunja-bridge), which now carry a StartLimit so their Restart=always loop is
+# bounded. Deployed unconditionally: those units exist regardless of whether the
+# brain watchdog is enabled, so gating this on the watchdog would leave them
+# referencing a unit that was never installed. Path is literal, matching the
+# ExecStart= in templates/hermes-unit-alert@.service.j2 -- keep them in sync.
+- name: Deploy the Hermes per-unit failure alert script
+  ansible.builtin.template:
+    src: hermes-unit-alert.sh.j2
+    dest: /usr/local/bin/hermes-unit-alert.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy the Hermes per-unit failure alert systemd template
+  ansible.builtin.template:
+    src: "hermes-unit-alert@.service.j2"
+    dest: "/etc/systemd/system/hermes-unit-alert@.service"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy the Hermes brain-health watchdog systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - hermes-brain-watchdog.service
+    - hermes-brain-watchdog.timer
+    - hermes-brain-watchdog-alert.service
+  notify: Restart hermes-brain-watchdog timer
+  when:
+    - hermes_agent_brain_watchdog_enabled | bool
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0
+
+- name: Enable and start the Hermes brain-health watchdog timer
+  ansible.builtin.systemd:
+    name: hermes-brain-watchdog.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+  when:
+    - hermes_agent_brain_watchdog_enabled | bool
+    - hermes_agent_slack_bot_token | length > 0
+    - hermes_agent_slack_app_token | length > 0

@@ -1,93 +1,18 @@
 ---
 # THE MODEL REGISTRY — the single place any model name, alias, tier, or
-# enabled/disabled state is written for the whole AI fabric.
+# enabled/disabled state is written for the whole AI fabric. Everything
+# downstream DERIVES from this file: roles/llm_router/defaults/ projects these
+# entries into the role's tier views, and templates/config.yaml.j2 renders the
+# LiteLLM `model_list` + `router_settings.model_group_alias` from those. A
+# model name written twice is the defect class this file exists to remove.
 #
-# Everything downstream DERIVES from this file and nothing re-spells a model
-# name: roles/llm_router/defaults/main.yml projects these entries into the
-# role's tier views and selector vars, and templates/config.yaml.j2 renders the
-# LiteLLM `model_list` + `router_settings.model_group_alias` from those. A model
-# name written twice is the defect class this file exists to remove — on
-# 2026-07-28 every consumer alias in the router pointed at something the serving
-# host does not serve (four simultaneous live 404s) precisely because the alias
-# map and the serving host's enabled set had no shared definition.
+# PURE DATA, DELIBERATELY — no Jinja, no host/port/URL literals, no secrets;
+# topology values stay in the role, selected by `tier`/`endpoint` below.
 #
-# PURE DATA, DELIBERATELY. No Jinja, no host/port/URL literals, no secrets. It
-# parses standalone with any YAML reader so CI can generate the published alias
-# contract from it without an Ansible run. Anything topology-shaped (base URLs,
-# ports, bearer env names) stays in the role, selected symbolically by `tier`
-# and `endpoint` below.
+# Field reference, the "why" behind PURE DATA, and incident history:
+# docs/LLM_MODELS_SCHEMA.md — split out to keep this data file under the
+# repo's per-file token budget.
 #
-# ── Schema ──────────────────────────────────────────────────────────────────
-#
-# Required on every entry:
-#   client_model_id   What a caller sends. Rendered as the LiteLLM
-#                     `model_list[].model_name`. This is the ONLY name a
-#                     consumer may use besides a stable alias.
-#   upstream_model_id The id the backend itself serves. Written explicitly even
-#                     where it currently equals client_model_id: the two are
-#                     independent naming decisions, and collapsing them is how a
-#                     rename upstream silently becomes a rename for callers.
-#   provider          LiteLLM provider prefix — `openai` (any OpenAI-compatible
-#                     backend, which is every local tier) or `openrouter`.
-#   tier              `large` | `light` | `openrouter`. Selects which backend
-#                     endpoint the role renders and the deployment shape (light
-#                     entries become TWO same-name deployments, GPU + CPU).
-#   enabled           false removes the entry from the rendered config entirely.
-#
-# Optional:
-#   litellm_model_name  Explicit override for `litellm_params.model`. Omitted
-#                       everywhere today because the value is STRUCTURALLY
-#                       composed as `<provider>/<upstream_model_id>` — it is a
-#                       derivation, not a third independent name. Set it only
-#                       when a backend needs a LiteLLM route string that is not
-#                       that composition.
-#   context_window      The backend's EFFECTIVE SERVING window — what its
-#                       KV-cache budget (nix-ai catalog cacheMemoryMb) sustains,
-#                       NOT the model's native max_position_embeddings. Renders
-#                       as model_info.max_input_tokens/max_tokens and is the
-#                       fabric's input enforcement via enable_pre_call_checks;
-#                       Hermes auto-compacts at 75% of it. LiteLLM has no
-#                       built-in entry for these backend ids, so an omitted
-#                       value resolves max_input_tokens to null and every client
-#                       that reads it falls back to a near-zero context guess
-#                       and compresses its requests to death (outage
-#                       2026-07-08). Advertising the NATIVE window is the
-#                       opposite failure: sessions grow past the serving ceiling
-#                       and die mid-stream instead of compacting.
-#   servable            The serving host will actually answer for this id.
-#                       DISTINCT FROM `enabled`, and conflating them is a real
-#                       outage: the serving host runs llama-swap in single-model
-#                       mode, so every non-resident model is demoted to
-#                       `disabledModels` and returns HTTP 404 — not a degraded
-#                       answer, no answer. `enabled` means "the router offers
-#                       it"; `servable` means "the backend serves it". Alias and
-#                       fallback targets must be servable. NOTE servable does
-#                       NOT mean pre-loaded or residency-pinned: the small tier
-#                       is servable and still evictable (ttl=900), with a
-#                       measured ~79s cold load.
-#   serving_role        `primary` | `small` | `cluster`. Names the entry the
-#                       fabric's selector vars point at, so repointing the
-#                       serving host is a move of this one field.
-#   stable_aliases      Consumer-facing role names for this entry, rendered into
-#                       `router_settings.model_group_alias`. HARD RULE (AGENTS.md):
-#                       an alias carries ZERO deployment configuration and never
-#                       becomes its own model_list entry — duplicating a physical
-#                       entry's context_window/extra_body/api_base under a second
-#                       name silently drifts from the real backend every time the
-#                       model changes (root cause of the #1004 diagnosis cost).
-#   endpoint            Symbolic backend selector WITHIN a tier. Only `cluster`
-#                       is defined today (the two-Mac cluster gate's own TLS
-#                       site); omitted means the tier's normal endpoint. The
-#                       actual URL/port lives in the role, never here.
-#   extra_body          Sampling parameters forwarded to the backend verbatim.
-#   embedding           light tier only — marks the entry as an embeddings group.
-#   standby             large tier only — also render a same-id, same-window
-#                       failover deployment when the role has a standby backend
-#                       URL configured.
-#   key_field           openrouter tier only — the per-model field in OpenBao
-#                       secrets-external/ai/saas/openrouter. An entry whose key
-#                       is not seeded renders nothing, so the list is safe to
-#                       extend ahead of key seeding.
 
 llm_router_model_registry:
   # ── large tier ──────────────────────────────────────────────────────────────

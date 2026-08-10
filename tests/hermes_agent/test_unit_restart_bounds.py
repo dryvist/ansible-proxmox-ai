@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from _role_files import role_defaults_text, role_tasks_text
 
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
 TEMPLATES = ROLE / "templates"
-DEFAULTS = (ROLE / "defaults" / "main.yml").read_text()
-TASKS = (ROLE / "tasks" / "main.yml").read_text()
+DEFAULTS = role_defaults_text(ROLE)
+TASKS = role_tasks_text(ROLE)
 
 LONG_RUNNING = [
     "hermes-gateway.service.j2",

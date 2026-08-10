@@ -25,13 +25,15 @@ import types
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+from _role_files import role_defaults, role_tasks_text
+
 ROLE = REPO_ROOT / "roles/hermes_agent"
 TEMPLATE_PATH = ROLE / "templates/vikunja-bridge.py.j2"
 TEMPLATE = TEMPLATE_PATH.read_text()
 SERVICE = (ROLE / "templates/hermes-vikunja-bridge.service.j2").read_text()
 ENV_TEMPLATE = (ROLE / "templates/hermes-vikunja-bridge.env.j2").read_text()
-TASKS = (ROLE / "tasks/main.yml").read_text()
-DEFAULTS_PATH = ROLE / "defaults/main.yml"
+TASKS = role_tasks_text(ROLE)
+DEFAULTS_PATH = ROLE
 
 STATE_DIR = tempfile.mkdtemp(prefix="vikunja-bridge-selfcheck-")
 # Stand-ins for what Ansible renders from roles/hermes_agent/defaults/main.yml.
@@ -264,15 +266,14 @@ def test_intake_is_keyed_on_the_vikunja_task_so_a_crash_cannot_double_dispatch()
 
 
 def test_the_bridge_is_off_by_default_and_asserts_its_own_credential():
-    import yaml
-    defaults = yaml.safe_load(DEFAULTS_PATH.read_text())
+    defaults = role_defaults(DEFAULTS_PATH)
     assert defaults["hermes_agent_vikunja_bridge_enabled"] is False, (
         "a bridge that writes to the operator's board must be opted into")
     # It does not need — and must not silently depend on — the read-only MCP
     # route: every operation it performs is a write.
     assert defaults["hermes_agent_vikunja_mcp_enabled"] is False
 
-    asserts = (ROLE / "tasks/assert.yml").read_text()
+    asserts = role_tasks_text(ROLE, "assert.yml")
     assert "hermes_agent_vikunja_bridge_token | length > 0" in asserts, (
         "enabling the bridge with no token must fail the converge, not ship a no-op")
     assert "hermes_agent_vikunja_bridge_card_assignee" in asserts
