@@ -1,0 +1,74 @@
+---
+# --- Guest SSH hardening ------------------------------------------------------
+# Flagged by the agent's own security self-audit: password auth was accepted on
+# the guest's sshd. Ansible reaches this guest via proxmox_pct_remote (through
+# the PVE host), not sshd, so this cannot lock out converges.
+- name: Disable SSH password authentication
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PasswordAuthentication\s'
+    line: PasswordAuthentication no
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Restart sshd
+
+# --- Cron model-drift recovery ------------------------------------------------
+# Unpinned AGENTIC cron jobs snapshot the global default model at creation and
+# FAIL CLOSED when model.default later changes (upstream spend guard, hermes-agent
+# #44585). Post-migration the seeded fleet is script-only `--no-agent` enqueuers,
+# which carry no model_snapshot at all — the `model_snapshot`-defined filter below
+# skips them, so this task is a self-correcting no-op for the current fleet. It is
+# retained so any future agentic seeded job is still auto-recovered on a repoint:
+# remove the drifted job here and let create-if-absent seeding recreate it,
+# snapshotting the new model. No drift means nothing is removed (idempotent).
+- name: Read the cron job store to detect model-snapshot drift
+  ansible.builtin.slurp:
+    src: "{{ hermes_agent_hermes_home }}/cron/jobs.json"
+  register: hermes_agent_cron_store
+  failed_when: false
+
+- name: Remove role-seeded cron jobs whose model snapshot drifted
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron remove {{ item }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  # The loop expression is templated before `when` would be evaluated
+  # (per-item semantics), so it must be self-safe: default the slurped
+  # content to base64("{}") when jobs.json does not exist yet (fresh
+  # install) — the loop resolves to [] and the task is a no-op.
+  loop: >-
+    {{ (hermes_agent_cron_store.content | default('e30=', true) | b64decode | from_json).jobs
+       | default([])
+       | selectattr('name', 'in', hermes_agent_seeded_cron_names)
+       | selectattr('model_snapshot', 'defined')
+       | rejectattr('model_snapshot', 'none')
+       | rejectattr('model_snapshot', 'equalto', hermes_agent_model)
+       | map(attribute='name') | list }}
+  changed_when: true
+
+# One-time (but idempotent) migration cleanup: a guest converged before the
+# reframe still runs the OLD `<job>-enqueue` `--no-agent --script` crons in
+# `hermes cron`'s own job store. The script they ran no longer exists on disk,
+# so left in place they would start failing loudly instead of quietly going
+# away when the new bare-named agentic cron fleet takes over (see below — the
+# reframe made bare names the desired end state again, so this is a one-way
+# migration, not a legacy name to keep excluding). Reuses the slurp above;
+# self-safe base64("{}") default makes a missing jobs.json a no-op. Empty loop
+# after the first converge -> idempotent.
+- name: "Remove superseded kanban-enqueuer script crons (native-cron reframe)"
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron remove {{ item }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  loop: >-
+    {{ (hermes_agent_cron_store.content | default('e30=', true) | b64decode | from_json).jobs
+       | default([])
+       | map(attribute='name') | list
+       | select('in', hermes_agent_superseded_kanban_enqueuer_cron_names) | list }}
+  changed_when: true
+
+# The recurring workloads (daily status, operator summary, Zammad review,
+# Splunk fleet, GitHub triage, nightly wiki, ...) are agentic direct-deliver
+# cron jobs again (reframe: repetitive scheduled work is a cron job, Kanban is
+# for genuine discrete tasks — see hermes_agent_direct_cron_jobs below).

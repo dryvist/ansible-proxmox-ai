@@ -1,0 +1,71 @@
+---
+# --- Agentic direct-deliver digest crons (declarative; Phase 5) --------------
+# Nine hand-created "direct deliver" digest jobs, now reconciled by the role
+# (tasks/reconcile_direct_cron.yml) instead of being live-patched onto the
+# guest. Each is an AGENTIC cron (unlike the --no-agent kanban enqueuers): the
+# gateway runs the prompt and delivers the model's final response straight to
+# Slack. Bodies live in the pinned ai-llm-prompts catalog (prompt_file), loaded
+# and frontmatter-stripped at reconcile time exactly like the *_cron_prompt_file
+# vars elsewhere in this file.
+#
+# The Slack channel is NEVER hardcoded: it comes from this var, and the whole
+# reconcile loop is skipped (with a loud warning) when it is empty.
+hermes_agent_digest_slack_channel: >-
+  {{ lookup('env', (hermes_agent_id | upper) ~ '_SLACK_DIGEST_CHANNEL') | default('', true) }}
+
+# --- Which identities a job belongs to ---------------------------------------
+# The identity plumbing above scopes an agent's CREDENTIALS and HANDLES (Slack
+# app, OpenBao domain, Vikunja project, memory bank, OTel name). It never
+# scoped the WORKLOAD, so every hermes_agent guest reconciled the entire
+# job table below regardless of who it was. A second agent provisioned as a
+# personal assistant therefore came up running the first agent's
+# infrastructure and coding duties — GitHub org/PR triage, Splunk digests,
+# Zammad review, the kanban reviewer — duplicating that work rather than
+# doing its own.
+#
+# A job now declares the identities it belongs to. The default below is
+# deliberately the ORIGINAL ops identity and NOT "everyone": a newly
+# provisioned agent must opt in to each duty explicitly, so adding an agent
+# can never again silently clone the ops workload. Give a job an explicit
+# `identities:` list to share or move it.
+hermes_agent_job_identities_default: [hermes]
+
+# The same rule for the script-fed job families (Splunk status digest, Splunk
+# triage, Kanban digest, Zammad auto-close). Those reconcile through
+# reconcile_enqueuer_cron.yml, where ANDing this flag into a job's gate does
+# two different things depending on WHY the gate is false. If this flag is the
+# reason — the identity does not own the workload — the job is actively
+# withdrawn: that file checks this flag directly, independently of item.enabled.
+# If the job's OWN capability gate is the reason (a missing credential, a
+# feature flag turned off), the installed job is left alone and only
+# re-creation stops (disable-don't-delete). Ownership and capability are judged
+# separately; only the former removes anything.
+hermes_agent_ops_workload_enabled: >-
+  {{ hermes_agent_id in hermes_agent_job_identities_default }}
+
+# The direct-cron entries THIS agent owns. The reconcile loop deliberately does
+# not use this — it must iterate the full table so it can withdraw jobs that
+# are installed but no longer owned. This view is for the questions that are
+# genuinely about ownership, such as whether a named profile has any job left
+# to tick.
+hermes_agent_direct_cron_jobs_owned: >-
+  {{ ((hermes_agent_direct_cron_jobs | rejectattr('identities', 'defined') | list)
+      if (hermes_agent_ops_workload_enabled | bool) else [])
+     + (hermes_agent_direct_cron_jobs
+        | selectattr('identities', 'defined')
+        | selectattr('identities', 'contains', hermes_agent_id) | list) }}
+
+# `hermes cron`'s ticker runs IN-PROCESS inside whichever gateway registered
+# the job (cron/scheduler.py: "Cron is per-profile by design") — only the
+# default profile's gateway runs persistently (hermes-gateway.service), so a
+# job registered under a named profile's HERMES_HOME (hermes_home: below)
+# needs something else ticking that profile, or it sits registered and never
+# fires. `hermes cron tick` ("run due jobs once and exit") is the native
+# trigger — reconciled per-profile in tasks/main.yml. This value also bounds
+# one tick's wall-clock time (`timeout`, coreutils): an approximation of the
+# per-job max_runtime ceiling the retired Kanban cards had, not an exact one —
+# a tick can process more than one due job if several land in the same
+# 5-minute window, and `hermes cron create`'s in-process gateway execution
+# (every job NOT on a named profile) has no external invocation to wrap with
+# `timeout` at all, so this covers only the profile-scoped jobs.
+hermes_agent_profile_cron_tick_timeout: 45m

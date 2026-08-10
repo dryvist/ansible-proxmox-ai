@@ -1,0 +1,83 @@
+---
+hermes_agent_slack_hermes_all_channel: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_ALL_CHANNEL')
+     | default(hermes_agent_slack_firehose_channel, true) }}
+
+# Post scheduled (cron) output as FRESH top-level channel messages, not threaded
+# replies under one ever-growing root. Each cron run is already an isolated
+# session; this makes its Slack surface match. reply_in_thread=false → flat
+# top-level posts; cron_continuable_surface=in_channel → those flat posts stay
+# continuable (an in-channel reply continues that run's session) with no thread.
+# Rendered into config.yaml's platforms.slack block only when Slack is configured.
+hermes_agent_slack_reply_in_thread: false
+hermes_agent_slack_cron_continuable_surface: in_channel
+
+# Hourly (waking-hours) Slack status report seeded into Hermes' built-in cron
+# scheduler. The role creates the job on converge; the gateway starts executing
+# it on the next daemon run once the Slack gateway is configured. Runs at the
+# top of every hour from 08:00–22:00 local so there is a fresh heartbeat in
+# Slack at least once an hour during waking hours even when nothing else fires
+# (the var name keeps "daily" for stability — the schedule is the source of
+# truth). Keep the prompt cheap: a short status line, no heavy tool fan-out.
+#
+# Delta discipline (2026-07-18): every fresh session used to re-post the same
+# 4 static status lines every single hour even when nothing changed. Memory
+# (already an always-available cron toolset) is the reuse target — no new
+# state infrastructure — so the job fingerprints its own findings and checks
+# them against its last post before deciding how much to say.
+hermes_agent_daily_status_cron_name: homelab-ai-fabric-status
+# Post once per local waking hour. The queue-recovery acceptance gate verifies
+# the full enqueue-to-Slack path during this window.
+#
+# Moved off minute :00 on 2026-08-05. This is the only HOURLY agentic card, and
+# at :00 it started in the same second as the kanban-digest tick (*/15) — 15
+# collisions a day, every day, against a serving tier that admits ONE in-flight
+# request per model and rejects the rest with an instant 429. Minute :00 also
+# carries three daily/8-hourly cards (nightly-wiki, daily-summary, the 8h
+# self-review), so it was the single most contended minute in the role.
+#
+# HONEST LIMIT: this separates STARTS, not overlap. Agentic cards here carry
+# max_runtime of 25-45m, so a long run still spans the next card's start. The
+# structural fix is capacity or admission control, not a minute offset —
+# tracked separately. This is the cheap half.
+hermes_agent_daily_status_cron_schedule: "4 8-22 * * *"
+hermes_agent_daily_status_cron_prompt_file: hermes-daily-fabric-status.md
+
+# The catalog body names the checks but not a single endpoint, so the worker
+# invented them — and every one it invented was wrong. Measured 2026-07-31: it
+# curled localhost:8000 and :8001 for an API that listens on
+# hermes_agent_api_server_port and a dashboard on hermes_agent_dashboard_port,
+# localhost ports for two services that live behind their own FQDNs, and a
+# domain that does not resolve at all. Every probe returned 000, so it posted an
+# hourly total-outage alarm while the fabric was healthy (mcp 406, llm 401, both
+# the documented healthy codes). That card now reports to the issues channel,
+# where the operator asked for near-silence, so fabricated alarms are the one
+# failure mode that would make the channel worthless.
+#
+# Endpoints are topology and must never enter the public prompt catalog, so they
+# are appended at converge from the same variables the services are deployed
+# from. External front doors are deliberately absent: fabric_watchdog probes mcp
+# and llm every 2 minutes with proven ok_codes and alerts to this same channel,
+# so duplicating them here would only add a slower, less reliable second opinion.
+hermes_agent_daily_status_endpoints: |
+  PROBE EXACTLY THESE, AND NOTHING ELSE. Every address you need is listed here.
+  Do not guess, infer, complete, or recall a hostname or port from anywhere else
+  — an address not on this list is wrong, and a result from one is a fabricated
+  finding rather than evidence, however plausible it reads.
+
+  Probe each URL with: curl -sS -o /dev/null -w '%{http_code}' <url>
+
+    gateway process   pgrep -fa hermes-gateway
+    gateway API       http://localhost:{{ hermes_agent_api_server_port }}/
+    dashboard         http://localhost:{{ hermes_agent_dashboard_port }}/
+    memory pool       https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/
+
+  Reading the results. Any HTTP status at all — 200, 302, 401, 403, 404 — means
+  the service answered, so it is UP; authentication and routing are not health.
+  Only 000 means the probe never reached anything, and 000 is reported as a
+  "probe failed" observation, never as a service being down. Never escalate a
+  single 000: state what you saw and re-check it next run.
+
+  Do NOT probe the MCP fabric or the LLM front door. fabric_watchdog already
+  probes both every 2 minutes and alerts to this same channel on each
+  transition, so a second opinion here is slower and would double-report.

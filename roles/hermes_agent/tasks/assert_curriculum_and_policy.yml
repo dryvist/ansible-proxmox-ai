@@ -1,0 +1,177 @@
+---
+- name: Assert the Vikunja bridge card assignee names a real profile or the default
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_vikunja_bridge_card_assignee | length == 0
+        or hermes_agent_vikunja_bridge_card_assignee
+           in (hermes_agent_profiles | map(attribute='name') | list)
+    fail_msg: >-
+      hermes_agent_vikunja_bridge_card_assignee is
+      {{ hermes_agent_vikunja_bridge_card_assignee | to_json }}, which is not in
+      hermes_agent_profiles. Every card the bridge creates would be bucketed
+      skipped_nonspawnable and never run, so the operator's tasks would sit in
+      the in-progress column forever with no error. Use an empty string for the
+      default profile, or a name in
+      {{ hermes_agent_profiles | map(attribute='name') | list }}.
+    success_msg: >-
+      The Vikunja bridge card assignee resolves to the default profile or a
+      known profile.
+
+# A bridge switched on with no credential is a daemon that can only log
+# "bridge idle" forever. Fail the converge instead of shipping a no-op service.
+- name: Assert the Vikunja bridge has a write token when it is enabled
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_vikunja_bridge_token | length > 0
+    fail_msg: >-
+      hermes_agent_vikunja_bridge_enabled is true but no Vikunja write token is
+      set. Supply {{ hermes_agent_id | upper }}_VIKUNJA_API_TOKEN in the
+      converge environment (Doppler, SOPS or OpenBao — the role does not care
+      which). The token must be WRITE-scoped on the bridge's project: it moves
+      tasks between buckets, which needs the projects/views_buckets_tasks
+      permission, not just task read/write. Note this is a SEPARATE credential
+      from ai_runner's VIKUNJA_API_TOKEN, deliberately — different guest,
+      different scope.
+    success_msg: The Vikunja bridge has a write token.
+  when: hermes_agent_vikunja_bridge_enabled | bool
+
+# Curriculum manifest contracts. The manifest is the machine-readable side of
+# the graded curriculum; these checks guarantee every job the queue would
+# execute has a prompt file that exists, a unique id, and at least one
+# machine-checkable success gate — so a manifest edit can never silently ship
+# an unexecutable or ungradeable job.
+- name: Load the curriculum manifest for contract checks
+  ansible.builtin.set_fact:
+    hermes_agent_curriculum: >-
+      {{ lookup('ansible.builtin.file', role_path ~ '/files/curriculum/curriculum.yml')
+         | from_yaml }}
+
+- name: Assert every curriculum job is executable and machine-checkable
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_curriculum.jobs | length > 0
+      # Unique ids — duplicate ids would make run results ungradeable.
+      - >-
+        hermes_agent_curriculum.jobs | map(attribute='id') | list | unique | length
+        == hermes_agent_curriculum.jobs | length
+      # Every job names the guest-relative prompt file materialized from the catalog.
+      - >-
+        hermes_agent_curriculum.jobs
+        | selectattr('prompt_file', 'undefined') | list | length == 0
+      # Every job has at least one machine-checkable success gate.
+      - >-
+        hermes_agent_curriculum.jobs
+        | selectattr('success_checks', 'undefined') | list | length == 0
+      - >-
+        hermes_agent_curriculum.jobs
+        | map(attribute='success_checks', default=[])
+        | map('length') | min > 0
+    fail_msg: >-
+      Curriculum manifest contract violated
+      (roles/hermes_agent/files/curriculum/curriculum.yml): every job needs a
+      unique id, a prompt_file, and a non-empty success_checks list. Jobs seen:
+      {{ hermes_agent_curriculum.jobs | map(attribute='id') | list }}.
+    success_msg: >-
+      Curriculum manifest contracts hold
+      ({{ hermes_agent_curriculum.jobs | length }} jobs, all with prompt files
+      and machine-checkable success gates).
+
+# H-17 tool-policy contracts. Negative regression checks: these confirm the
+# safety net actually excludes what it exists to exclude, so a future edit
+# that quietly re-adds a persistence or injection surface fails the play
+# before the config deploys.
+- name: Assert the runner-enforced tool policy excludes what it must exclude
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # Every platform allowlist must be a real (non-empty) list — an empty
+      # allowlist silently falls back to upstream's platform default, which
+      # is the opposite of a policy.
+      - hermes_agent_api_server_toolsets | length > 0
+      - hermes_agent_cron_toolsets | length > 0
+      - hermes_agent_slack_toolsets | length > 0
+      # An API-submitted (untrusted-input) run must never be able to schedule
+      # persistent jobs, drive a browser, delegate sub-agents, or block on a
+      # clarifying question. Cron gets the same envelope. Slack (interactive,
+      # allowed-users-gated) is intentionally allowed `clarify` — the
+      # headless rationale doesn't apply — but still excluded from the other
+      # three: their risk is the capability itself, not the trust level of
+      # whoever triggered it.
+      - >-
+        ['cronjob', 'browser', 'delegation', 'clarify']
+        | intersect(hermes_agent_api_server_toolsets) | length == 0
+      - >-
+        ['cronjob', 'browser', 'delegation', 'clarify']
+        | intersect(hermes_agent_cron_toolsets) | length == 0
+      - >-
+        ['cronjob', 'browser', 'delegation']
+        | intersect(hermes_agent_slack_toolsets) | length == 0
+      # A toolset cannot be both globally denied and platform-allowlisted:
+      # upstream resolves that contradiction by silently dropping the tool,
+      # which reads as a mysterious "Unknown tool" at run time. Catch it here.
+      - >-
+        hermes_agent_disabled_toolsets
+        | intersect(hermes_agent_api_server_toolsets) | length == 0
+      - >-
+        hermes_agent_disabled_toolsets
+        | intersect(hermes_agent_cron_toolsets) | length == 0
+      - >-
+        hermes_agent_disabled_toolsets
+        | intersect(hermes_agent_slack_toolsets) | length == 0
+    fail_msg: >-
+      Hermes tool-policy contract violated (roles/hermes_agent/tasks/assert.yml).
+      The api_server/cron/slack allowlists must be non-empty; api_server and
+      cron must not contain any of cronjob/browser/delegation/clarify; slack
+      must not contain any of cronjob/browser/delegation; and none may
+      overlap hermes_agent_disabled_toolsets (api_server:
+      {{ hermes_agent_api_server_toolsets }}; cron: {{ hermes_agent_cron_toolsets }};
+      slack: {{ hermes_agent_slack_toolsets }};
+      denied: {{ hermes_agent_disabled_toolsets }}). Fix the lists in
+      roles/hermes_agent/defaults/main.yml.
+    success_msg: >-
+      Hermes tool-policy contracts hold ({{ hermes_agent_api_server_toolsets | length }}
+      api_server toolsets, {{ hermes_agent_cron_toolsets | length }} cron toolsets,
+      {{ hermes_agent_slack_toolsets | length }} slack toolsets,
+      {{ hermes_agent_disabled_toolsets | length }} globally denied).
+
+# The dryvist skills + SOUL.md come from the pinned nix-hermes bundle, built
+# on the CONTROLLER during converge — fail here, before any config deploys,
+# when the controller has no nix. (Read-only; safe in check mode.)
+- name: Assert the controller has nix for the content-bundle build
+  ansible.builtin.command:
+    cmd: nix --version
+  delegate_to: localhost
+  # become must be disabled via the VARIABLE, not just the keyword: group_vars
+  # sets the connection var ansible_become: true, and connection vars outrank
+  # task keywords — with only the keyword this task sudo-prompts on the
+  # controller and kills the converge.
+  become: false
+  vars:
+    ansible_become: false
+  run_once: true
+  changed_when: false
+
+# Reports which path ai_llm_concurrency resolved through. This is deliberately
+# a notice and not a failure: the published artifact legitimately lags a
+# constants.tf change until the next apply republishes it, and failing here
+# would recreate the very converge outage the fallback exists to prevent. It
+# exists so the migration shim in group_vars/all.yml cannot become permanent
+# by being invisible — once this stops reporting the fallback, delete the
+# shim, this task, and ai_llm_concurrency_from_fallback together.
+- name: Report whether serving concurrency came from the published constant
+  ansible.builtin.debug:
+    msg: >-
+      {{
+        'ai_llm_concurrency=' ~ (ai_llm_concurrency | int) ~ ' resolved from the ROLLOUT FALLBACK — '
+        ~ 'the published inventory artifact has no constants.serving key yet. '
+        ~ 'Run an apply to republish it, then remove the fallback in '
+        ~ 'inventory/group_vars/all.yml and this task.'
+        if (ai_llm_concurrency_from_fallback | bool)
+        else 'ai_llm_concurrency=' ~ (ai_llm_concurrency | int)
+             ~ ' resolved from the published constant; the rollout fallback is now dead code and should be deleted.'
+      }}
+  run_once: true

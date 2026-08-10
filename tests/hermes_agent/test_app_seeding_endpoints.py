@@ -14,12 +14,10 @@ under pytest.
 import re
 from pathlib import Path
 
-import yaml
+from _role_files import role_defaults
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULTS = yaml.safe_load(
-    (REPO_ROOT / "roles/hermes_agent/defaults/main.yml").read_text()
-)
+DEFAULTS = role_defaults(REPO_ROOT / "roles" / "hermes_agent")
 
 
 def test_the_prompt_embeds_the_endpoints_block() -> None:

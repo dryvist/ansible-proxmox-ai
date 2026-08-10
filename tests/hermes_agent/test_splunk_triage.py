@@ -22,10 +22,11 @@ import re
 import tempfile
 import types
 from pathlib import Path
+from _role_files import role_defaults, role_tasks_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPO_ROOT / "roles/hermes_agent/templates/splunk-triage.py.j2"
-TASKS_PATH = REPO_ROOT / "roles/hermes_agent/tasks/main.yml"
+TASKS_PATH = REPO_ROOT / "roles" / "hermes_agent"
 
 STATE_DIR = tempfile.mkdtemp(prefix="splunk-triage-selfcheck-")
 # Stand-ins for the values Ansible renders from roles/hermes_agent/defaults/main.yml.
@@ -74,7 +75,7 @@ def load_markup_guard():
     level. Executing the shipped text (rather than a copy) is the point — a
     drifted guard fails here instead of in Slack.
     """
-    lines = TASKS_PATH.read_text().splitlines()
+    lines = role_tasks_text(TASKS_PATH).splitlines()
     start = next(i for i, line in enumerate(lines)
                  if line.strip() == "block: |"
                  and "def _cron_markup_guard" in "\n".join(lines[i:i + 3]))
@@ -386,7 +387,7 @@ def test_no_reconciled_cron_name_is_a_substring_of_another_job():
     import itertools
     import yaml
 
-    defaults = yaml.safe_load((REPO_ROOT / "roles/hermes_agent/defaults/main.yml").read_text())
+    defaults = role_defaults(REPO_ROOT / "roles" / "hermes_agent")
     direct = {job["name"] for job in defaults["hermes_agent_direct_cron_jobs"]}
     triage = {job["name"] for job in defaults["hermes_agent_triage_jobs"]}
     # hermes_agent_kanban_safety_net_cron_name is DELETED (native-cron
@@ -418,7 +419,7 @@ def test_every_configured_triage_job_renders_and_is_distinct():
     """
     import yaml
 
-    defaults = yaml.safe_load((REPO_ROOT / "roles/hermes_agent/defaults/main.yml").read_text())
+    defaults = role_defaults(REPO_ROOT / "roles" / "hermes_agent")
     jobs = defaults["hermes_agent_triage_jobs"]
     assert len(jobs) >= 2, "expected at least the error and security digests"
 
@@ -563,7 +564,7 @@ def test_no_configured_index_is_a_typo():
     """
     import yaml
 
-    defaults = yaml.safe_load((REPO_ROOT / "roles/hermes_agent/defaults/main.yml").read_text())
+    defaults = role_defaults(REPO_ROOT / "roles" / "hermes_agent")
     for job in defaults["hermes_agent_triage_jobs"]:
         unknown = set(job["indexes"]) - KNOWN_INDEXES
         assert not unknown, (

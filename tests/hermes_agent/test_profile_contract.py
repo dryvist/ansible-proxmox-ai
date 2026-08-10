@@ -6,6 +6,7 @@ from typing import Any
 
 import yaml
 from jinja2 import Environment
+from _role_files import role_defaults, role_tasks_text
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -50,7 +51,7 @@ def _jinja_env() -> Environment:
 
 
 def _defaults() -> dict[str, Any]:
-    return yaml.safe_load((ROLE_ROOT / "defaults" / "main.yml").read_text())
+    return role_defaults(ROLE_ROOT)
 
 
 def _group_vars_all() -> dict[str, Any]:
@@ -181,7 +182,7 @@ def test_profiles_tasks_are_wired_before_the_direct_cron_reconcile() -> None:
     assignee field at all (see the PR's gap report). Profiles still need to be
     wired before the direct-cron reconcile loop runs, since some of its
     prompts reference profile-scoped skills."""
-    tasks = (ROLE_ROOT / "tasks" / "main.yml").read_text()
+    tasks = role_tasks_text(ROLE_ROOT)
     profiles_idx = tasks.index("Reconcile named Hermes operating profiles")
     direct_idx = tasks.index("Reconcile the agentic direct-deliver digest crons")
     assert profiles_idx < direct_idx
@@ -236,7 +237,7 @@ def test_every_profile_cron_store_gets_its_own_tick_trigger() -> None:
     it is derived from hermes_agent_profiles rather than hand-kept: a
     hardcoded list leaves a new profile's job created, scheduled, and silent.
     """
-    tasks = (ROLE_ROOT / "tasks" / "main.yml").read_text()
+    tasks = role_tasks_text(ROLE_ROOT)
     assert (
         "loop: \"{{ hermes_agent_profiles | map(attribute='name') | list }}\"" in tasks
     ), "the profile cron tick trigger must loop over every profile, not a fixed list"

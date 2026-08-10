@@ -1,8 +1,9 @@
 from pathlib import Path
+from _role_files import role_tasks_text
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TASKS = (REPO_ROOT / "roles/hermes_agent/tasks/main.yml").read_text()
+TASKS = role_tasks_text(REPO_ROOT / "roles" / "hermes_agent")
 
 
 def test_zammad_skill_has_one_canonical_deployed_path() -> None:

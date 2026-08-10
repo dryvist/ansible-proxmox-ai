@@ -1,0 +1,253 @@
+---
+# --- Splunk MCP client (read/search access to the SIEM) ---
+# Registers the Splunk MCP Server as an HTTP MCP server in config.yaml so Hermes
+# can query the environment (run_splunk_query, get_indexes, ...) with its own
+# scoped token. Dialed through the shared agentgateway MCP plane (one governed
+# front door per target; the gateway federates to the Splunk MCP Server), same
+# posture as the context7/docs routes below — the URL is the gateway route,
+# not a secret. The scoped bearer token stays bao-first (see group_vars) and is
+# the remaining credential; empty until seeded, so queries simply fail to
+# authenticate until then while the agent still starts cleanly.
+hermes_agent_splunk_mcp_enabled: true
+hermes_agent_splunk_mcp_url: >-
+  https://mcp.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}/splunk
+hermes_agent_splunk_mcp_token: ""
+
+# Zammad ITSM client (dryvist/zammad-incidents skill — the incident-management
+# system of record). Bao-first, env fallback (see group_vars). An empty URL or
+# token means the skill simply has nothing to call until Zammad is deployed and
+# its API token is seeded; the agent still starts cleanly.
+hermes_agent_zammad_url: ""
+hermes_agent_zammad_api_token: ""
+
+# Zammad stale-ticket auto-close. Brought under role management from a
+# hand-placed script (/var/lib/hermes/scripts/zammad-auto-close.py) that carried
+# a CLEARTEXT API token and the internal hostname literal — both removed; the
+# managed script sources ZAMMAD_URL + ZAMMAD_API_TOKEN from .env at runtime.
+# Wired as a --no-agent --script cron but DISABLED by default: it mutates ticket
+# state (closes state=new tickets untouched > N days), so enable only after a
+# live dry-run confirms the search/close behavior against this Zammad instance.
+# The previously-hardcoded token should be rotated. Closures deliver to Slack for
+# auditability; the script is silent on a run that closes nothing.
+hermes_agent_zammad_autoclose_enabled: false
+hermes_agent_zammad_autoclose_cron_name: zammad-auto-close
+# Daily at :17 past 05h — staggered clear of the other cron minutes.
+hermes_agent_zammad_autoclose_schedule: "17 5 * * *"
+hermes_agent_zammad_autoclose_script_name: zammad-auto-close.py
+hermes_agent_zammad_autoclose_days: 7
+
+# --- Splunk monitor: 24/7 self-directed SIEM analyst -----------------------
+# Seeds a small fleet of Hermes cron jobs, each carrying the dryvist/splunk-monitor
+# skill. That skill encodes the HARD query-safety rails (bounded queries only —
+# tstats/stats/head, narrow time windows) plus a self-directed investigative
+# method: Hermes decides what to hunt for, remembers baselines, and alerts only on
+# confirmed anomalies. Every cron job runs in a FRESH isolated agent session, so
+# context never builds up run-to-run.
+#
+# Routing (user decision): anomaly alerts DM the operator, the routine digest
+# posts to the Slack home channel. Delivery of anomaly jobs is suppressed
+# whenever the run ends in the `[SILENT]` marker (skill contract), so a normal
+# run costs zero notifications.
+#
+# Gated (in tasks) on BOTH the Splunk MCP URL being set (can query) AND the Slack
+# tokens being set (can deliver) — a job that can't do both is never created.
+hermes_agent_splunk_monitor_enabled: true
+
+# Dedicated channel for the splunk-admin domain. NEVER hardcoded: it comes from
+# the environment like every other channel id, and defaults to EMPTY so every
+# consumer below falls back to its previous target until an id is configured.
+hermes_agent_slack_splunk_channel: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_SPLUNK_CHANNEL') | default('', true) }}
+
+# Per-job cron definitions. Prompts stay short — the skill carries the discipline;
+# the prompt only sets each run's posture (a lens, not a checklist) and reinforces
+# the [SILENT]-unless-anomaly / always-deliver-the-digest delivery contract.
+# Minutes are staggered so no two monitoring runs fire in the same minute
+# (bounds concurrent load on the shared LLM serving tier).
+#
+# Cadence calmed 2026-07-16 (operator decision): the old fleet (triage every
+# 15 min, security 2x/hr, parsing+digest hourly) generated most of the
+# concurrent load on the single serving engine — the load that triggered the
+# legacy vllm-mlx batch-scheduler wedge (nix-ai#1234; backend now disabled)
+# and the llama-swap 429 bursts.
+# Homelab triage does not need 15-minute latency; ~85% fewer LLM calls with
+# zero overlapping start minutes.
+hermes_agent_splunk_triage_cron_name: splunk-triage
+hermes_agent_splunk_triage_cron_schedule: "7 * * * *"
+hermes_agent_splunk_triage_cron_prompt_file: hermes-splunk-triage.md
+
+hermes_agent_splunk_security_cron_name: splunk-security
+hermes_agent_splunk_security_cron_schedule: "22 */6 * * *"
+hermes_agent_splunk_security_cron_prompt_file: hermes-splunk-security.md
+
+hermes_agent_splunk_parsing_cron_name: splunk-parsing
+hermes_agent_splunk_parsing_cron_schedule: "37 2 * * *"
+hermes_agent_splunk_parsing_cron_prompt_file: hermes-splunk-parsing.md
+
+# Quiet research run: builds long-term knowledge (RAG) rather than alerting.
+hermes_agent_splunk_deepdive_cron_name: splunk-deepdive
+hermes_agent_splunk_deepdive_cron_schedule: "11 3 * * *"
+hermes_agent_splunk_deepdive_cron_prompt_file: hermes-splunk-deepdive.md
+
+# The LLM splunk-digest kanban card that used to own this topic is REMOVED
+# (2026-08-01 kanban audit), not merely paused: its script-fed replacement
+# below fully covers the "routine status post" it existed for, and leaving it
+# defined-but-paused was actively harmful — hermes-splunk-triage's prompt
+# recalled memory key "splunk-digest-last", written only by this card's
+# worker, and once the card stopped running that recall was a dangling read
+# that always found nothing (fixed separately in the ai-llm-prompts catalog:
+# splunk-triage now recalls/saves its own "splunk-triage-last" key). If a
+# quiet, memory-backed Splunk status card is ever wanted again, give it a
+# name that isn't recalled from anywhere else, so retiring it can never leave
+# a foreign prompt's memory recall silently dead again.
+
+# --- Script-fed Splunk status digest (structural anti-fabrication fix) ---------
+# Replaces the LLM digest path (removed, see above; the hand-created
+# splunk-hourly-digest-v3 direct cron is paused at converge, disable-don't-delete).
+# This is a `--no-agent
+# --script` cron: splunk-digest.py gathers the numbers itself via the Splunk MCP
+# and its STDOUT is delivered VERBATIM to Slack — NO LLM in the fact path, nothing
+# to poison (the Zammad #17143 fabrications were the model inventing "33 indexes /
+# no anomalies" with zero tool calls, and narrating over an empty result set). An
+# absent / zero-volume / stale expected index is rendered as an explicit INGEST
+# SILENCE anomaly, never "no anomalies" — the exact blind spot that masked the
+# #17144 ~10.5h ingestion outage.
+#
+# Cadence (operator decision 2026-07-26, supersedes the original "always
+# delivered, never [SILENT]" heartbeat law from 2026-07-16): a fully-quiet run
+# (no critical condition, nothing novel anywhere in the escalation ladder) now
+# goes [SILENT] unless HEARTBEAT_HOURS (module constant in splunk-digest.py.j2,
+# currently 6) has elapsed since the last real post — 38 of 40 runs in one UTC
+# day were carrying zero information ("Health state unchanged") under the old
+# rule. A CRITICAL finding is exempt and always posts, every run, for as long
+# as it holds, so this never delays or hides a real ingest anomaly.
+#
+# Waking hours (operator decision 2026-07-26): the digest is an operator-facing
+# Slack surface, and a post landing at 03:52 is read at 08:00 with the same
+# value it would have had if it had waited. The run window is therefore
+# 07:00-23:59 local (17 runs/day instead of 24). This composes with — and does
+# not replace — the HEARTBEAT_HOURS gate above: the gate decides whether a
+# QUIET run says anything, this schedule decides whether a run happens at all.
+# Consequence to accept knowingly: a CRITICAL condition that begins after the
+# 23:52 run is not surfaced by THIS job until 07:52. That is deliberate — the
+# digest is a status surface, not a pager. Real-time alerting is the
+# silent-unless-anomaly `splunk-triage` DM path, which is unchanged and still
+# runs on its own schedule; do not widen this window to compensate for a gap
+# there, fix the alerting path instead.
+hermes_agent_splunk_status_digest_cron_name: splunk-status-digest
+hermes_agent_splunk_status_digest_cron_schedule: "52 7-23 * * *"
+hermes_agent_splunk_status_digest_script_name: splunk-digest.py
+# The hand-created LLM digest direct cron this script-fed digest supersedes. It
+# is paused (never deleted) once the script-fed digest is enabled, so the two
+# never double-post. `cron list` shows only ENABLED jobs -> pausing is a no-op
+# after the first converge.
+hermes_agent_superseded_digest_cron_name: splunk-hourly-digest-v3
+# Indexes that must always be reporting; absent / zero / stale => ingest anomaly.
+# An entry here is exempt from the per-day novelty gate and re-fires a CRITICAL
+# INGEST SILENCE every run for as long as it is silent — so only list an index
+# that is genuinely expected to carry data right now. Listing a
+# structurally-empty index manufactures a permanent false positive, which is
+# precisely the way to train the operator to ignore this alert class.
+#
+# `network` was such an entry and is removed. It is superseded, not empty: it
+# holds 89 real IPFIX events from a single ~11h window on 2026-06-11/12 and
+# nothing since, because the per-index HEC split moved the pipeline to
+# index=netflow (ansible-proxmox-apps #1270 finishes that rename). So the alert
+# was not catching a live pipeline that died — it was watching a name the
+# pipeline stopped writing to over a month ago, and would have kept firing
+# forever no matter how healthy the pipeline got.
+#
+# `netflow` is deliberately NOT substituted in. It is the correct name, but it
+# is structurally empty for an upstream reason: the UniFi UDW reports NetFlow
+# export enabled and emits zero packets to the collector (Zammad #17146; the
+# same gap is recorded in tofu-unifi gateway-telemetry.tf and is why
+# ansible-splunk ships its `netflow` ingest detector disabled). Adding it here
+# would relocate the false positive, not remove it. Add `netflow` back the same
+# day the gateway starts exporting — and flip that ansible-splunk detector to
+# disabled: 0 in the same change.
+hermes_agent_splunk_digest_expected_indexes:
+  - os
+  - firewall
+hermes_agent_splunk_digest_staleness_minutes: 60
+hermes_agent_splunk_digest_window: "-24h"
+# PER-DAY NOVELTY GATE (operator requirement). Routine information may be
+# presented ONCE per UTC day: the full index table is the day's first post, and
+# every later observation is a discrete finding with a stable identity key,
+# suppressed if that key is already in the day-scoped ledger the script keeps in
+# its state file. CRITICAL conditions (ingest silence, an index gone to zero, a
+# host-fleet drop) are exempt and repeat every run for as long as they persist.
+# A run with nothing novel at the index level escalates -- host level, then
+# sourcetype/composition -- instead of falling back to boilerplate; only a
+# genuinely exhausted search says so, and names what it searched.
+# The knobs that shape a finding's identity (percent bands, per-run cap) are
+# module constants in the script, not vars here: one number, one consumer.
+# Splunk domain surface when one is configured, else the work log as before.
+hermes_agent_splunk_status_digest_channel: >-
+  {{ hermes_agent_slack_splunk_channel
+     | default(hermes_agent_slack_hermes_all_channel, true) }}
+hermes_agent_splunk_status_digest_enabled: >-
+  {{ hermes_agent_splunk_monitor_enabled | bool
+     and hermes_agent_splunk_mcp_url | length > 0
+     and hermes_agent_slack_bot_token | length > 0
+     and hermes_agent_slack_app_token | length > 0
+     and hermes_agent_slack_hermes_all_channel | length > 0 }}
+
+# --- Script-fed Splunk triage digests (no LLM in the fact path) --------------
+# Supersedes the agentic splunk-error-triage-v2 and splunk-security-lens-v2
+# direct crons, which posted raw tool-call markup to Slack instead of reports.
+# Verified from agent.log: the model intends a tool call, the harness fails to
+# parse it, and the unparsed text arrives as
+# `Turn ended: reason=text_response(finish_reason=stop)` — indistinguishable
+# from a finished report, so delivery ships it. It happens both on the first
+# turn with no tool run AND on the turn after a successful tool result, and both
+# with and without the prompt's anti-markup clause: an unreliable emitter, not a
+# prompt defect. Worse, the model never ran the SPL the prompt specified — the
+# log is full of self-invented substitutes filtering on unpopulated fields — so
+# these jobs were producing wrong facts even on runs that did not leak markup.
+#
+# One script (splunk-triage.py.j2), rendered once per job. Adding a job here is
+# config, not code. Shared knobs (top_n, max_findings, channel, enable gate) stay
+# role-level below; per-job identity lives in this list.
+#
+# NAMES: reconcile_enqueuer_cron.yml tests job existence with a SUBSTRING match
+# against `cron list --all`, which lists PAUSED jobs too. A name contained in
+# another job's name reads as already-present and fires `cron remove` for a job
+# that does not exist. Hence splunk-error-digest, not splunk-error-triage (which
+# sits inside splunk-error-triage-v2). tests/hermes_agent enforces this.
+hermes_agent_triage_jobs:
+  # INDEXES MUST CARRY DATA. The prompts these replace searched `index=os OR
+  # index=network`. `network` exists but holds 89 events, all older than a
+  # month, so that half of every search returned nothing while the `os` half
+  # returned plausible rows — invisible in the output. (`netflow`, where the
+  # pipeline actually writes, holds 2.) Network-shaped data lives in `firewall`.
+  # Enumerate indexes with `| eventcount summarize=false index=*`, never with
+  # tstats, which only shows indexes with data in the search window.
+  - name: splunk-error-digest
+    title: Splunk error triage
+    schedule: "37 * * * *"
+    indexes: [os]
+    terms: [error, failed, critical]
+    window: "-1h"
+    supersedes: splunk-error-triage-v2
+  - name: splunk-security-digest
+    title: Splunk security lens
+    schedule: "22 */6 * * *"
+    indexes: [os, firewall]
+    terms: [failed, denied, unauthorized, invalid]
+    window: "-6h"
+    supersedes: splunk-security-lens-v2
+
+hermes_agent_triage_top_n: 12
+hermes_agent_triage_max_findings: 8
+# The Splunk triage digests are the Splunk domain: they go to the domain channel
+# when one is configured, else the previous digest surface unchanged.
+hermes_agent_triage_channel: >-
+  {{ hermes_agent_slack_splunk_channel
+     | default(hermes_agent_digest_slack_channel, true) }}
+hermes_agent_triage_enabled: >-
+  {{ hermes_agent_splunk_monitor_enabled | bool
+     and hermes_agent_splunk_mcp_url | length > 0
+     and hermes_agent_slack_bot_token | length > 0
+     and hermes_agent_slack_app_token | length > 0
+     and hermes_agent_digest_slack_channel | length > 0 }}

@@ -1,0 +1,195 @@
+---
+# --- Layer 2 post-converge verification gate (tasks/verify.yml) --------------
+# After the gateway (re)starts, a real end-to-end probe proves the brain wiring
+# actually works before the converge is called done — every 2026-07-08 breakage
+# was a config mistake that a single tool-call probe (or a journal grep) would
+# have surfaced immediately. Disable only where there is no live brain to reach
+# (mirrors llamaindex_verify_router); default on for real converges.
+hermes_agent_verify_enabled: true
+# journalctl tail scanned for fatal config-rejection lines since the restart.
+hermes_agent_verify_journal_lines: 200
+# Fatal startup/config-rejection substrings Hermes emits when the brain wiring is
+# wrong: the context floor rejection ("below the minimum 64,000 required") and an
+# unknown/mis-aliased model ("Model <id> does not exist"). Match => gate fails.
+hermes_agent_verify_fatal_log_patterns:
+  - "below the minimum"
+  - "does not exist"
+# The live tool-call probe forces a tool call through the router at the resolved
+# brain and asserts a structurally valid tool_call comes back (non-empty
+# function.name — the exact "invalid tool call" shape of the outage). Generous
+# per-attempt timeout: the swap-tier brain may be loading on first hit.
+hermes_agent_verify_probe_timeout: 300
+hermes_agent_verify_probe_retries: 3
+hermes_agent_verify_probe_delay: 10
+
+# --- Brain-health watchdog: stop cron-failure spam during brain outages -------
+# The default brain (ai_default_model) is a single-deployment model (llm_router role) with no viable
+# fallback, and upstream Hermes ALWAYS delivers a cron failure ("Failed jobs
+# always deliver regardless of the [SILENT] marker"). So a brain outage makes the
+# stateless seeded fleet fail-and-DM the operator twice an hour per job, while
+# nothing pages that the brain is even down (service_deadman watches DNS/Traefik/
+# HAProxy/OpenBao, not the LLM fabric). This watchdog closes both gaps: a systemd
+# timer probes the brain end-to-end and, on a DEBOUNCED transition, pauses/resumes
+# the seeded cron fleet and alerts EXACTLY ONCE per edge. See templates/ +
+# tasks/main.yml and the README.
+#
+# Re-enabled 2026-08-01: Hermes' in-process one-retry policy (goals.py /
+# conversation_loop.py patches above) only covers a single flaky call. It does
+# nothing when the whole llm-gate Caddy process dies (exit 78/EX_CONFIG, twice
+# in one night) and takes BOTH the primary and fallback serving legs down at
+# once -- every seeded cron fires, 500s, and DMs the operator on repeat with
+# nobody paged that the brain is down. That is exactly the gap this watchdog
+# closes; test_brain_watchdog_contract.py pins the pause/resume safety
+# properties (debounced edges, streak reset, disableable escalation) that make
+# enabling this safe.
+# Start-rate bound for the long-running units (gateway, dashboard,
+# vikunja-bridge). All three are Restart=always; unbounded, a config-broken unit
+# restarted every 5-10s indefinitely, burning CPU while reporting "activating"
+# and alerting nobody.
+#
+# 5 starts per 300s tolerates an ordinary flaky start (a dependency still coming
+# up) while catching a genuine crash loop within ~30s of wall time. On hitting
+# it systemd stops retrying AND the unit's OnFailure= fires
+# hermes-unit-alert@<unit>, so the service does not simply die quietly — the
+# bound and the page are a pair, and neither is safe to ship without the other.
+hermes_agent_unit_restart_interval_sec: 300
+hermes_agent_unit_restart_burst: 5
+
+hermes_agent_brain_watchdog_enabled: true
+hermes_agent_brain_watchdog_script_path: /usr/local/bin/hermes-brain-watchdog.sh
+# Probe cadence (systemd OnUnitActiveSec).
+#
+# 2026-08-06: measured over 61h of production Splunk data, this probe (at the
+# prior 60s cadence) occupied the single-slot serving backend for 56.5% of
+# wall-clock time — nearly as much as every real agent call combined. A
+# max_tokens=1 probe is not free on a contended backend: most of that time was
+# the probe itself queueing/timing out, not generating one token.
+#
+# Widening the interval is the safe lever. The other candidate — shrinking
+# hermes_agent_brain_watchdog_probe_timeout — is NOT available: that deadline
+# is asserted (roles/hermes_agent/tasks/assert.yml) to exceed
+# ai_router_retry_after_seconds so a rate-limited probe can still observe one
+# router retry; lowering it below that either fails the assert or requires
+# lowering the router's own production retry policy, which is a much larger
+# change than a watchdog cadence and out of scope here.
+#
+# 180s cuts invocation frequency 3x (60/hr -> 20/hr), projecting occupancy
+# from 56.5% down to roughly 19% (linear in invocation count — an estimate,
+# not a guarantee). Detection time (interval x hermes_agent_brain_watchdog_down_after)
+# moves from 3min to 9min, and the busy-grace tolerance
+# (interval x hermes_agent_brain_watchdog_busy_grace_probes) from 15min to
+# 45min — both still bounded, and 9min is the same order of magnitude as the
+# ~320s a real request already tolerates from router retries. Was "60s
+# matches service_deadman" — that pairing was cosmetic, not asserted, and
+# survives no worse for now diverging from it.
+#
+# If an external deadman ping grace period (hermes_agent_brain_watchdog_healthcheck_url)
+# was tuned against the old 60s cadence, it needs a matching bump — that
+# config lives outside this repo and is not touched here.
+hermes_agent_brain_watchdog_interval: "180s"
+# Per-probe curl deadline. MUST exceed llm_router_retry_after_seconds (40), the
+# router's minimum sleep before it retries a 429. The single-slot serving backend
+# answers a probe one of two ways and nothing in between: the slot is free and it
+# returns in well under a second, or the slot is busy, the router takes a 429 and
+# sleeps retry_after before trying again. A deadline below retry_after can
+# therefore never see a retry succeed — it measures "is the slot free right now",
+# not "can the brain serve". 45 clears 40 with headroom while staying under the
+# 60s interval, so probes cannot overlap. Raise this in step with retry_after,
+# never below it — assert.yml now enforces that pairing instead of this comment.
+#
+# 2026-08-05: this ceiling admits exactly ONE router retry (40s sleep + a
+# sub-second 1-token generation ~= 40.5s), so a probe needing two retries still
+# hits the deadline. That is now HARMLESS rather than a false outage: the
+# watchdog classifies curl rc 28 as busy, not down (see probe_state in
+# templates/hermes-brain-watchdog.sh.j2). Do NOT raise this past the interval to
+# buy more retries — overlapping probes would compound the contention they are
+# measuring. Widen hermes_agent_brain_watchdog_busy_grace_probes instead.
+hermes_agent_brain_watchdog_probe_timeout: 45
+# Hysteresis: consecutive failures before declaring DOWN (pause+alert), and
+# consecutive successes before declaring UP (resume+alert). down_after=3 over the
+# 60s cadence (~3 min) rides rotation-flip bounces and cold reloads so the
+# watchdog never becomes a new source of spam; up_after=2 damps flapping.
+# Both are role vars — tune per environment. TRADEOFF: for an INTERMITTENT
+# serving-stack wedge (INC-17083: brain briefly recovers then re-freezes), a
+# higher up_after (e.g. 4-6) keeps the fleet paused LONGER across brief-recovery
+# windows so fewer crons fire at a re-wedging brain — at the cost of slower
+# resume after a genuine recovery. Default stays 2 (fast recovery); raise it if
+# a flapping-wedge class dominates.
+hermes_agent_brain_watchdog_down_after: 3
+hermes_agent_brain_watchdog_up_after: 2
+# Consecutive BUSY probes (HTTP 429, or curl rc 28 while the router sleeps
+# between rate-limit retries) tolerated before the brain is escalated to DOWN.
+#
+# Busy means alive-and-declining-work, so it must not trip a DOWN edge — that
+# misclassification is what made ordinary contention pause the cron fleet and
+# page hourly (57% of gate requests were 429 over 2026-08-01..08-05, each one
+# counted as an outage). But busy must not become a permanent mute either: if
+# nothing can serve a single 1-token probe for this many cycles, real jobs are
+# failing too, because the router itself gives up after
+# rate_limit_retries x retry_after (~320s).
+#
+# 15 at the 60s cadence = 15 minutes of unbroken saturation before paging, ~3x
+# the router's own tolerance. Set 0 to disable the escalation entirely — do not,
+# outside a deliberate maintenance window; it converts this watchdog into one
+# that can never report a saturated brain.
+hermes_agent_brain_watchdog_busy_grace_probes: 15
+# Converge a paused fleet back to running whenever the brain probes healthy,
+# instead of relying only on a down->up edge.
+#
+# Without this the fleet can stay paused INDEFINITELY. The DOWN branch pauses
+# the fleet and persists the state in two separate steps, so a kill in that
+# window leaves the jobs paused while the state file still says "up" — and the
+# resume is gated on state == "down", so it never fires. cluster-hermes-pause.yml
+# reaches the same end state by design, since it pauses via ansible and never
+# writes the state file. Nothing else un-pauses: there is no `cron resume` in
+# this role's tasks, so a converge does not repair it either.
+#
+# Safe against deliberate maintenance pauses because that playbook also stops
+# this timer — no timer, no reconcile. A future pause path that leaves the timer
+# running MUST also write the state file, or it will fight this.
+#
+# Set false only to debug a reconcile loop; it re-opens the indefinite pause.
+hermes_agent_brain_watchdog_reconcile_paused: true
+# Flap coalescing (2026-07-18): down_after/up_after debounce brief bounces, but
+# a genuinely UNSTABLE backend still produces one clean alert per edge — a
+# confirmed 31h-unstable backend produced dozens of up/down DM pairs. Once a
+# down/up cycle completes, further edges within this cooldown are coalesced
+# (counted, cooldown extended) into one eventual summary instead of alerting
+# individually. 3600s (60 min) is long enough to absorb a flapping episode
+# without swallowing a second, genuinely independent outage hours later.
+hermes_agent_brain_watchdog_flap_cooldown_seconds: 3600
+# Sustained-flap escalation (INC-17083, 2026-07-19): the coalescer above only
+# emits a summary once the brain STABILIZES (flap_summary_check). A wedge that
+# flaps for hours without a clean recovery never stabilizes, so no summary ever
+# fires and a multi-hour instability is SILENT to the operator — observed live
+# as 15 flaps over ~2.5h with zero alert (every edge coalesced). Fix: while
+# STILL flapping, fire ONE loud page once the episode crosses either threshold
+# below, then re-arm with a long cooldown so a genuine long wedge pages at most
+# hourly, not per-flap. Set threshold to 0 to disable.
+hermes_agent_brain_watchdog_sustained_flap_threshold: 5       # coalesced flaps, or
+hermes_agent_brain_watchdog_sustained_flap_seconds: 1800      # unstable this long (30m)
+hermes_agent_brain_watchdog_sustained_flap_rearm_seconds: 3600  # re-page at most hourly
+# Urgent page target. Same topic service_deadman pages on ("same feed as other
+# homelab outages", operator decision) — the brain is now a keystone.
+# FQDN-first: the Traefik-fronted ntfy service name; DHCP/DNS own the address.
+# The service lives on the PROXMOX_SUBDOMAIN zone (same zone the working brain
+# probe URL uses, hermes_agent_model_base_url). tofu_data.domain rendered the
+# bare parent zone instead, where the ntfy vhost has no route/cert — every page
+# failed the TLS/connect and was swallowed by the watchdog's `|| true`.
+hermes_agent_brain_watchdog_ntfy_topic: "keystone"
+hermes_agent_brain_watchdog_ntfy_url: >-
+  https://ntfy.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/{{ hermes_agent_brain_watchdog_ntfy_topic }}
+
+# External deadman OK-ping (silent-Mac / LXC-down gap, INC-17114). The ntfy +
+# Slack alerts above only fire when THIS watchdog DETECTS a brain outage — they
+# run on this LXC, so a powered-off LXC, a masked timer, or a wedged systemd
+# silences them with no page at all. So on every healthy probe the watchdog also
+# pings an external healthchecks-style deadman; when that ping STOPS (this host
+# gone, timer dead, or the brain unreachable — which includes a silent Mac
+# serving host), the external service pages on its own. Injection-agnostic: the
+# full ping URL is read from the environment (provision a check in the
+# healthchecks LXC and export its URL, mirroring the service_deadman
+# DEADMAN_HC_URL_* convention). Empty => ping skipped, all other behaviour
+# unchanged.
+hermes_agent_brain_watchdog_healthcheck_url: >-
+  {{ lookup('env', 'DEADMAN_HC_URL_HERMES_BRAIN') | default('', true) }}

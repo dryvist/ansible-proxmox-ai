@@ -1,0 +1,128 @@
+---
+# --- Brain: the LiteLLM router (the fabric front door, OpenAI-compatible /v1) ---
+# Reached by its neutral Traefik FQDN — never a hardcoded IP. The router routes by
+# model alias, so the agent just names the model it wants. The api key is the
+# router master key, env-sourced (SOPS/Doppler).
+# The model comes from the router role alias in inventory/group_vars/all.yml.
+# Physical model IDs remain centralized in the router/MLX catalog.
+hermes_agent_model: "{{ hermes_brain_model }}"
+hermes_agent_model_base_url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1"
+hermes_agent_model_api_mode: chat_completions
+# Context compression uses the same >=64K-capable router alias as the agent.
+hermes_agent_compression_model: "{{ hermes_brain_model }}"
+# Session reset policy (see config.yaml.j2 session_reset block): daily boundary
+# hour and idle timeout that bound EVERY session's lifetime.
+hermes_agent_session_reset_at_hour: 4
+hermes_agent_session_reset_idle_minutes: 1440
+# The context window Hermes budgets against and compacts under (it compresses at
+# hermes_agent_context_compression_threshold * this value). It matches the
+# router's served 65,536-token window so compaction begins at 49,152 tokens,
+# before LiteLLM's pre-call context check can reject the request.
+hermes_agent_model_context_length: 65536
+# Match the official MLX server's output cap and preserve input headroom.
+hermes_agent_model_max_tokens: 8192
+# Hermes classifies the brain endpoint by HOSTNAME STRING, never by DNS
+# resolution (agent/model_metadata.py is_local_endpoint: loopback, RFC-1918
+# IP literals, container suffixes, dot-less names). Our router base_url is an
+# FQDN, so Hermes applies its strict REMOTE-provider timeouts — 120s stream
+# read, 180s stale-stream kill — to a local model whose thinking-mode prefill
+# on a 20-60K context legitimately exceeds both. Confirmed live 2026-07-08:
+# "Stream stale for 180s (threshold 180s) ... Killing connection" followed by
+# a 0-char truncated stub that surfaces as "Model generated invalid tool
+# call". These overrides restore the values Hermes itself auto-applies to
+# endpoints it recognizes as local (read 1800s; stale kept enabled but far
+# above any healthy prefill).
+# The read value is the innermost link of the fabric-wide timeout chain, so it is
+# sourced from the single-source-of-truth constant (all.yml) that the Layer-1
+# assert checks against the router's per-attempt timeout — resolves to 1800.
+hermes_agent_stream_read_timeout: "{{ ai_stream_read_timeout_seconds }}"
+hermes_agent_stream_stale_timeout: 900
+# Per-call MCP tool timeout (config_servers.<srv>.timeout). The hermes-agent
+# runtime already ENFORCES this bound (tools/mcp_tool._run_on_mcp_loop raises
+# TimeoutError at the deadline and returns a clean tool error), but the per-server
+# key was undeclared, so it fell back to the 300s default. Declaring it at 180s
+# makes a hung-but-connected MCP upstream fail a data card's tool call in 3 min
+# instead of 5 — the card then fails/requeues via max_retries + kanban
+# failure_limit within its max_runtime, so a dead MCP never freezes the sole
+# worker slot indefinitely (Vikunja 815). 180s still allows a legitimately slow
+# bounded Splunk search. The brain call is separately bounded by
+# hermes_agent_stream_stale_timeout above.
+hermes_agent_mcp_tool_timeout_seconds: 180
+# The api key IS the LiteLLM router master key; source it from the canonical
+# LLM_ROUTER_MASTER_KEY env (same as the llm_router role) so no per-run mapping
+# is needed. HERMES_AGENT_MODEL_API_KEY still overrides if explicitly set.
+hermes_agent_model_api_key: >-
+  {{ lookup('env', 'HERMES_AGENT_MODEL_API_KEY')
+     | default(lookup('env', 'LLM_ROUTER_MASTER_KEY'), true) }}
+
+# --- Slack gateway (Socket Mode) ---
+# Sourced the same way as the model key: plain env lookup, fed by Doppler at
+# converge time (iac-conf-mgmt/prd, where these were added alongside
+# LLM_ROUTER_MASTER_KEY). Empty-string defaults keep the role inert — and the
+# gateway Slack-free — until all five are actually set.
+# Per-agent by construction: two agents sharing one bot token would each open a
+# Socket Mode connection, and the platform round-robins events between them — a
+# DM gets answered by whichever connection wins the race, nondeterministically.
+# A second agent therefore needs its own app and its own token pair, which is
+# what deriving the variable NAME from the identity buys.
+hermes_agent_slack_bot_token: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_BOT_TOKEN') | default('', true) }}
+hermes_agent_slack_app_token: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_APP_TOKEN') | default('', true) }}
+# Identity-prefixed var wins when set (Donna's own allowed-user/home-channel);
+# otherwise falls back to the original unprefixed var, so hermes_agent_id: hermes
+# keeps reading the same Doppler vars it always has (no SLACK_HERMES_* exist).
+hermes_agent_slack_allowed_users: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_MEMBER_ID')
+     | default(lookup('env', 'SLACK_MEMBER_ID'), true) | default('', true) }}
+hermes_agent_slack_home_channel: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_HOME_CHANNEL')
+     | default(lookup('env', 'SLACK_HOME_CHANNEL'), true) | default('', true) }}
+hermes_agent_slack_home_channel_name: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_HOME_CHANNEL_NAME')
+     | default(lookup('env', 'SLACK_HOME_CHANNEL_NAME'), true) | default('', true) }}
+
+# 4-channel Slack routing (operator decision 2026-07-31). The previous 3-tier
+# scheme collapsed: firehose, digest and hermes_all all resolved to ONE id, so
+# every emitter landed in the same channel. A 13-day audit of 1084 messages
+# found ~52% of that channel was Hermes reporting its own breakage and ~28% was
+# null-result polling, leaving ~10-17% actual work.
+#
+# The discriminator is the OBSERVATION PATH, never a keyword. Hermes reporting a
+# failure it observed is work (#hermes-all / #hermes-splunk); Hermes failing to
+# observe is breakage (#hermes-issues). Keyword routing on "error"/"litellm"
+# would misroute the most valuable posts in the corpus — Splunk-observed
+# litellm errors on the llm-routers are findings, produced by a job that worked.
+#
+#   #hermes-all     real thinking, work, and findings
+#   #hermes-issues  Hermes itself not functional
+#   #hermes-splunk  the Splunk digest domain
+#   #hermes-noise   "no change since" / heartbeat polls
+#
+# Every id is an env lookup fed by Doppler at converge time — never hardcoded.
+# Each defaults EMPTY and falls back to prior behaviour, so an unset var leaves
+# routing exactly as it was rather than silently emptying a channel.
+# Same identity-prefixed-wins, unprefixed-fallback pattern as above.
+hermes_agent_slack_firehose_channel: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_FIREHOSE_CHANNEL')
+     | default(lookup('env', 'SLACK_FIREHOSE_CHANNEL'), true) | default('', true) }}
+hermes_agent_slack_issues_channel: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_ISSUES_CHANNEL') | default('', true) }}
+hermes_agent_slack_noise_channel: >-
+  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_NOISE_CHANNEL') | default('', true) }}
+
+# The prefix a script-fed cron prints to declare that its OWN observation path
+# failed. Those scripts deliberately exit 0 and print their failure so it gets
+# delivered, so the runner sees success — this is how they say otherwise. ONE
+# definition, templated into both the scheduler patch and every script that
+# emits it, so the producer and the consumer cannot drift.
+hermes_agent_cron_issues_marker: "[ISSUES]"
+
+# Delivery target a FAILED cron run is redirected to, patched into upstream's
+# scheduler (tasks/main.yml). Covers both a runner-reported failure and a
+# script-fed job that declared its own with the marker above. Empty leaves
+# every result on its job's own channel, i.e. previous behaviour.
+hermes_agent_cron_failure_deliver: >-
+  {{ 'slack:' ~ hermes_agent_slack_issues_channel
+     if (hermes_agent_slack_issues_channel | length > 0)
+     else '' }}

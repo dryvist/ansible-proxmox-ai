@@ -28,10 +28,11 @@ import sqlite3
 import tempfile
 import types
 from pathlib import Path
+from _role_files import role_defaults
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPO_ROOT / "roles/hermes_agent/templates/kanban-digest.py.j2"
-DEFAULTS_PATH = REPO_ROOT / "roles/hermes_agent/defaults/main.yml"
+DEFAULTS_PATH = REPO_ROOT / "roles" / "hermes_agent"
 
 TMP = Path(tempfile.mkdtemp(prefix="kanban-digest-selfcheck-"))
 # Stand-ins for the values Ansible renders from defaults/main.yml.
@@ -374,7 +375,7 @@ def test_a_suppressed_run_advances_the_window_but_not_the_last_post():
 def test_the_heartbeat_ceiling_is_configurable_not_a_literal():
     import yaml
 
-    defaults = yaml.safe_load(DEFAULTS_PATH.read_text())
+    defaults = role_defaults(DEFAULTS_PATH)
     assert defaults["hermes_agent_kanban_digest_heartbeat_hours"] == 6
     source = TEMPLATE_PATH.read_text()
     assert "HEARTBEAT_HOURS = {{ hermes_agent_kanban_digest_heartbeat_hours }}" in source
@@ -421,7 +422,7 @@ def test_a_long_summary_is_clipped_with_a_visible_marker():
 def test_schedule_and_fallback_window_come_from_the_one_interval_variable():
     import yaml
 
-    defaults = yaml.safe_load(DEFAULTS_PATH.read_text())
+    defaults = role_defaults(DEFAULTS_PATH)
     interval = defaults["hermes_agent_kanban_digest_interval_minutes"]
     assert interval == 15, "soak cadence; steady state is hourly (60)"
     schedule = defaults["hermes_agent_kanban_digest_cron_schedule"]
@@ -439,7 +440,7 @@ def test_the_digest_channels_are_never_literal_ids():
     """Both destinations stay env-fed expressions — an id in git is the defect."""
     import yaml
 
-    defaults = yaml.safe_load(DEFAULTS_PATH.read_text())
+    defaults = role_defaults(DEFAULTS_PATH)
     for var in ("hermes_agent_kanban_digest_channel",
                 "hermes_agent_kanban_digest_issues_channel"):
         channel = defaults[var]

@@ -10,6 +10,8 @@ import pytest
 import yaml
 from jinja2 import Environment
 
+from _role_files import role_defaults, role_tasks, role_tasks_text
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles" / "hermes_agent"
@@ -225,7 +227,7 @@ JUDGE_ERROR = ("continue", "judge error: NotFoundError", False, None)
 
 
 def _task(name: str) -> dict[str, Any]:
-    tasks = yaml.safe_load((ROLE_ROOT / "tasks" / "main.yml").read_text())
+    tasks = role_tasks(ROLE_ROOT)
     return next(item for item in tasks if item.get("name") == name)
 
 
@@ -418,7 +420,7 @@ def test_auxiliary_retry_budgets_are_bounded() -> None:
     assert "api_max_retries: 2" in config_template
     assert "transient_retries: 1" in config_template
 
-    tasks = (ROLE_ROOT / "tasks" / "main.yml").read_text()
+    tasks = role_tasks_text(ROLE_ROOT)
     assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in tasks
     assert "status in (408, 429)" in tasks
     assert 'resolved_provider != "custom"' in tasks
@@ -447,14 +449,14 @@ KEPT_MAX_TOKENS_CEILING_PATCH_NAMES = (
 def test_client_side_backoff_hacks_stay_reverted() -> None:
     task_names = {
         item.get("name")
-        for item in yaml.safe_load((ROLE_ROOT / "tasks" / "main.yml").read_text())
+        for item in role_tasks(ROLE_ROOT)
     }
     for name in REVERTED_CLIENT_BACKOFF_PATCH_NAMES:
         assert name not in task_names, f"reintroduced: {name}"
     for name in KEPT_MAX_TOKENS_CEILING_PATCH_NAMES:
         assert name in task_names, f"missing: {name}"
 
-    tasks_text = (ROLE_ROOT / "tasks" / "main.yml").read_text()
+    tasks_text = role_tasks_text(ROLE_ROOT)
     assert "wait_time = 15.0" not in tasks_text
     assert "if False and is_rate_limited" not in tasks_text
     assert "if False and not _retry.primary_recovery_attempted" not in tasks_text
@@ -689,7 +691,7 @@ def test_reviewer_prompt_carries_no_leftover_self_perpetuation() -> None:
     conditional exists in it at all any more, so it renders identically
     regardless of hermes_agent_kanban_goal_mode.
     """
-    defaults = yaml.safe_load((ROLE_ROOT / "defaults" / "main.yml").read_text())
+    defaults = role_defaults(ROLE_ROOT)
     prompt = str(defaults["hermes_agent_reviewer_card_prompt"])
     assert "{%" not in prompt, "no Jinja conditionals should remain in the reviewer prompt"
     assert "initial_status=blocked" not in prompt
@@ -701,7 +703,7 @@ def test_reviewer_prompt_carries_no_leftover_self_perpetuation() -> None:
 
 
 def test_hermes_inference_paths_use_the_declared_alias() -> None:
-    defaults = yaml.safe_load((ROLE_ROOT / "defaults" / "main.yml").read_text())
+    defaults = role_defaults(ROLE_ROOT)
     group_vars = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all.yml").read_text())
     hindsight_group_vars = yaml.safe_load(
         (REPO_ROOT / "inventory/group_vars/hindsight_group.yml").read_text()
@@ -709,8 +711,7 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     hindsight_compose = (
         REPO_ROOT / "roles/hindsight_docker/templates/docker-compose.yml.j2"
     ).read_text()
-    router_defaults_text = (REPO_ROOT / "roles/llm_router/defaults/main.yml").read_text()
-    router_defaults = yaml.safe_load(router_defaults_text)
+    router_defaults = role_defaults(REPO_ROOT / "roles" / "llm_router")
     registry = yaml.safe_load((REPO_ROOT / "llm-models.yml").read_text())[
         "llm_router_model_registry"
     ]

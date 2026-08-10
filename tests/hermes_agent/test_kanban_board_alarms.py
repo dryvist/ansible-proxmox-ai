@@ -20,10 +20,11 @@ import importlib.util
 import re
 import tempfile
 from pathlib import Path
+from _role_files import role_defaults
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPO_ROOT / "roles/hermes_agent/templates/kanban-digest.py.j2"
-DEFAULTS_PATH = REPO_ROOT / "roles/hermes_agent/defaults/main.yml"
+DEFAULTS_PATH = REPO_ROOT / "roles" / "hermes_agent"
 
 TMP = Path(tempfile.mkdtemp(prefix="kanban-board-alarms-selfcheck-"))
 FIXTURE_CONFIG = {
@@ -298,7 +299,7 @@ def test_no_alarms_means_no_issues_block_added():
 def test_thresholds_are_role_variables_not_hardcoded():
     import yaml
 
-    defaults = yaml.safe_load(DEFAULTS_PATH.read_text())
+    defaults = role_defaults(DEFAULTS_PATH)
     for var in ("hermes_agent_kanban_digest_stall_ticks_threshold",
                 "hermes_agent_kanban_digest_timeout_threshold",
                 "hermes_agent_kanban_digest_blocked_growth_threshold"):

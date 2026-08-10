@@ -30,11 +30,12 @@ import re
 from pathlib import Path
 
 import yaml
+from _role_files import role_defaults, role_tasks_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "roles" / "hermes_agent"
-DEFAULTS = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text())
-MAIN_TASKS = (ROLE / "tasks" / "main.yml").read_text()
+DEFAULTS = role_defaults(ROLE)
+MAIN_TASKS = role_tasks_text(ROLE)
 TEMPLATE = ROLE / "templates" / "USER.md.j2"
 CONFIG_TEMPLATE = (ROLE / "templates" / "config.yaml.j2").read_text()
 

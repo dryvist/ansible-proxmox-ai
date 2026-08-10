@@ -21,6 +21,7 @@ import re
 import tempfile
 import types
 from pathlib import Path
+from _role_files import role_defaults
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPO_ROOT / "roles/hermes_agent/templates/splunk-digest.py.j2"
@@ -378,9 +379,7 @@ def test_waking_hours_schedule_never_outruns_the_heartbeat_gate():
     against each other so raising HEARTBEAT_HOURS or narrowing the window
     cannot silently break that guarantee.
     """
-    import yaml
-    defaults = yaml.safe_load(
-        (REPO_ROOT / "roles/hermes_agent/defaults/main.yml").read_text())
+    defaults = role_defaults(REPO_ROOT / "roles" / "hermes_agent")
     schedule = defaults["hermes_agent_splunk_status_digest_cron_schedule"]
 
     minute, hours = schedule.split()[0], schedule.split()[1]

@@ -22,10 +22,11 @@ under pytest.
 """
 import re
 from pathlib import Path
+from _role_files import role_defaults_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ENQUEUER_PATH = REPO_ROOT / "roles/hermes_agent/tasks/reconcile_enqueuer_cron.yml"
-DEFAULTS_PATH = REPO_ROOT / "roles/hermes_agent/defaults/main.yml"
+DEFAULTS_PATH = REPO_ROOT / "roles" / "hermes_agent"
 
 OWNERSHIP_GATE = "hermes_agent_ops_workload_enabled"
 
@@ -79,7 +80,7 @@ def test_the_cron_listing_runs_for_unowned_jobs_too():
 
 def test_the_defaults_comment_does_not_claim_enabled_false_removes():
     """The comment previously asserted behaviour the code did not implement."""
-    text = DEFAULTS_PATH.read_text()
+    text = role_defaults_text(DEFAULTS_PATH)
     idx = text.find(f"{OWNERSHIP_GATE}:")
     assert idx != -1, f"{OWNERSHIP_GATE} not found in defaults"
     preamble = text[max(0, idx - 1200):idx]

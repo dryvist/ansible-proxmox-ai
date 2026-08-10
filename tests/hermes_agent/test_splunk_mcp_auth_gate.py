@@ -17,9 +17,10 @@ pytest.
 """
 
 from pathlib import Path
+from _role_files import role_tasks_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MAIN_TASKS = (REPO_ROOT / "roles/hermes_agent/tasks/main.yml").read_text()
+MAIN_TASKS = role_tasks_text(REPO_ROOT / "roles" / "hermes_agent")
 
 PROBE = "Probe the Splunk MCP token against the gateway route"
 GATE = "Assert the Splunk MCP token authenticates against the gateway route"

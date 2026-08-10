@@ -1,0 +1,97 @@
+---
+hermes_agent_direct_cron_jobs_legacy_v2:
+
+  # Paused, NEVER reconciled: superseded by the script-fed splunk-security-digest
+  # (hermes_agent_triage_jobs). Leaked raw <function=...> markup to Slack twice on
+  # 2026-07-24, and never ran the SPL this prompt specifies.
+  - name: splunk-security-lens-v2
+    schedule: "22 */6 * * *"
+    prompt_file: hermes-digest-splunk-security-lens.md
+    skill: ""
+    enabled: false
+  # Paused, NEVER reconciled: superseded by the script-fed splunk-error-triage
+  # (hermes_agent_error_triage_cron_name), which pauses this agentic job so the
+  # two never double-post. This job delivered raw <function=...> tool-call markup
+  # to Slack instead of a report — see hermes_agent_superseded_error_triage_cron_name.
+  - name: splunk-error-triage-v2
+    schedule: "37 * * * *"
+    prompt_file: hermes-digest-splunk-error-triage.md
+    skill: ""
+    enabled: false
+  # RETIRED (2026-08-01 kanban audit), replaced by the splunk-parsing kanban
+  # card (same daily cadence — a 1-for-1 swap, not a throughput increase).
+  # This job's fixed SPL was `index=os OR index=network | stats count by
+  # sourcetype | sort -count | head 15`: `index=network` is the same
+  # stale/near-empty index the daily-operator-summary fix above already
+  # dropped for `firewall`, so half of every run's table silently omitted the
+  # real network-shaped data — a confidently wrong daily post, not just a
+  # crude one. It also had no memory dedup and no [SILENT] path, so it always
+  # posted regardless of whether anything needed attention. The kanban card
+  # sweeps for real data-quality signals (timestamp-extraction failures,
+  # line-merge anomalies, new/unknown sourcetypes) with memory-backed delta
+  # discipline and posts only when something is actually off.
+  - name: splunk-parsing-quality-v2
+    schedule: "17 3 * * *"
+    prompt_file: hermes-digest-splunk-parsing-quality.md
+    skill: ""
+    enabled: false
+  # RETIRED, not superseded: nothing replaces this job because nothing needs to.
+  # Its SPL is `index=* | stats count by index, sourcetype | sort -count | head 15`
+  # — the same two group-by fields splunk-status-digest already computes hourly
+  # from tstats, over ALL pairs rather than the top 15, and with the host and
+  # liveness dimensions on top. Its own `sort -count | head 15` also throws away
+  # the long tail, so it cannot surface the "pattern nobody monitors" its prompt
+  # asks for; the digest's composition tier reports a new or vanished sourcetype
+  # at any volume. The only content it adds is a static top-15 table restated
+  # every 12h, which is exactly the boilerplate the per-day novelty contract
+  # (#183) exists to stop. See hermes_agent_retire_anomaly_hunt below.
+  - name: anomaly-hunt-v2
+    schedule: "41 6,18 * * *"
+    prompt_file: hermes-digest-anomaly-hunt.md
+    skill: ""
+    enabled: false
+  # RETIRED on cadence: a cron is justified only when it is a genuine daily
+  # report over the previous day, or runs LESS often than daily. Everything more
+  # frequent belongs on the board, where a fresh worker session per run and the
+  # retry/timeout machinery already exist. `3 */6 * * *` is every six hours, so
+  # this fails the rule; the four daily `-v2` jobs beside it pass and stay.
+  #
+  # Its replacement is `homelab-ai-fabric-status` below (hourly 08-22, so
+  # coverage improves rather than degrades) — a hermes_agent_direct_cron_jobs
+  # entry as of the native-cron reframe, not a Kanban card; each fires its own
+  # isolated worker session directly, so there is no enqueuer-selector step to
+  # go stale.
+  # enabled:false only stops reconcile from re-creating it; the `cron pause`
+  # task in tasks/main.yml is what stops the job already on the guest.
+  - name: homelab-ai-fabric-status-v2
+    schedule: "3 */6 * * *"
+    prompt_file: hermes-digest-homelab-ai-fabric-status.md
+    skill: ""
+    enabled: false
+  # RETIRED (native-cron reframe): duplicates the bare-named entry below on the
+  # same topic, same recall/save prompt, same schedule — see
+  # "Pause the *-v2 crons the reframe replaces 1-for-1" in tasks/main.yml.
+  - name: zammad-incident-review-v2
+    schedule: "9 13 * * *"
+    prompt_file: hermes-digest-zammad-incident-review.md
+    skill: dryvist/zammad-incidents
+    enabled: false
+  - name: github-org-triage-v2
+    schedule: "26 8 * * *"
+    prompt_file: hermes-digest-github-org-triage.md
+    skill: dryvist/github-issues
+    enabled: false
+  - name: daily-operator-summary-v2
+    schedule: "31 12 * * *"
+    prompt_file: hermes-digest-daily-operator-summary.md
+    skill: ""
+    enabled: false
+  # Paused, NEVER reconciled: superseded by the script-fed splunk-status-digest
+  # (hermes_agent_splunk_status_digest_cron_name), which pauses this LLM digest
+  # so the two never double-post. enabled:false keeps this reconcile from
+  # re-creating or re-enabling it. See hermes_agent_superseded_digest_cron_name.
+  - name: splunk-hourly-digest-v3
+    schedule: "52 * * * *"
+    prompt_file: hermes-splunk-digest.md
+    skill: ""
+    enabled: false

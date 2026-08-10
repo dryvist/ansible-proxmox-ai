@@ -41,14 +41,15 @@ from pathlib import Path
 
 import yaml
 from jinja2 import Environment
+from _role_files import role_defaults, role_tasks, role_tasks_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "roles" / "hermes_agent"
-DEFAULTS = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text())
+DEFAULTS = role_defaults(ROLE)
 FABRIC_DEFAULTS = yaml.safe_load(
     (REPO_ROOT / "roles" / "fabric_watchdog" / "defaults" / "main.yml").read_text()
 )
-MAIN_TASKS = (ROLE / "tasks" / "main.yml").read_text()
+MAIN_TASKS = role_tasks_text(ROLE)
 DIRECT_TASKS = (ROLE / "tasks" / "reconcile_direct_cron.yml").read_text()
 
 _ENV = Environment(autoescape=False)
@@ -412,7 +413,7 @@ def _load_route_helper(issues_target: str, marker: str = "[ISSUES]"):
     import logging
     import types
 
-    tasks = yaml.safe_load((ROLE / "tasks" / "main.yml").read_text())
+    tasks = role_tasks(ROLE)
     block = next(
         t["ansible.builtin.blockinfile"]["block"]
         for t in tasks
@@ -484,7 +485,7 @@ def test_the_marker_has_one_definition_shared_by_producer_and_consumer() -> None
     """Two hard-coded copies would drift and silently stop routing."""
     block = next(
         t["ansible.builtin.blockinfile"]["block"]
-        for t in yaml.safe_load(MAIN_TASKS)
+        for t in role_tasks(ROLE)
         if t.get("name") == "Patch Hermes cron delivery with a tool-call markup guard"
     )
     assert "{{ hermes_agent_cron_issues_marker }}" in block

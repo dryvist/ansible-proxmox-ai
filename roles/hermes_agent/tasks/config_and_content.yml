@@ -1,0 +1,125 @@
+---
+- name: Deploy the Hermes secrets file (.env)
+  ansible.builtin.template:
+    src: hermes-env.j2
+    dest: "{{ hermes_agent_hermes_home }}/.env"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart hermes-gateway
+
+- name: Deploy the Hermes config.yaml (brain -> LiteLLM router, memory -> Hindsight, budget)
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ hermes_agent_hermes_home }}/config.yaml"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+  notify: Restart hermes-gateway
+
+# --- nix-hermes content bundle: SOUL.md + the dryvist skills ------------------
+# Content is built by the pinned nix-hermes flake ref on the CONTROLLER (the
+# only side with nix; the guest never needs it) and byte-copied over. First
+# build needs network; the nix store caches re-runs. changed_when: false —
+# building never mutates the guest.
+- name: Build the nix-hermes content bundle on the controller
+  ansible.builtin.command:
+    cmd: nix build --no-link --print-out-paths "{{ hermes_agent_bundle_flake_ref }}"
+  delegate_to: localhost
+  # See assert.yml: the ansible_become connection var outranks the keyword.
+  become: false
+  vars:
+    ansible_become: false
+  run_once: true
+  register: hermes_agent_bundle_build
+  changed_when: false
+
+- name: Resolve the nix-hermes bundle store path
+  ansible.builtin.set_fact:
+    hermes_agent_bundle_path: "{{ hermes_agent_bundle_build.stdout_lines | last }}"
+
+# SOUL.md = the persona/behavior surface upstream loads FRESH on every message
+# (no restart needed) — the role the AGENTS.md chain plays for Claude Code.
+# The bundle composes it at BUILD time from the ai-llm-prompts flake input:
+# auto-ai-agent/autonomous-base.md + auto-ai-agent/hermes.md, with their OKF
+# frontmatter stripped (see nix-hermes lib/bundle.nix). Edit intent in THOSE
+# sources. nix-hermes vendors no prompt of its own — the path this comment used
+# to name, data/soul/hermes-variant.md, no longer exists, and looking for it
+# costs a real detour.
+#
+# Ansible owns the file; Hermes self-edits MEMORY.md, not SOUL.md, so no
+# agent-written state is overwritten. backup:true preserves the pre-management
+# content once on first converge.
+- name: Deploy the Hermes SOUL.md (shared behavioral base + Hermes variant)
+  ansible.builtin.copy:
+    src: "{{ hermes_agent_bundle_path }}/SOUL.md"
+    dest: "{{ hermes_agent_hermes_home }}/SOUL.md"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0644"
+    backup: true
+  when: hermes_agent_soul_managed | bool
+
+# USER.md = what Hermes knows about the operator. Upstream loads it alongside
+# MEMORY.md (config.yaml sets user_profile_enabled), and BOTH are agent-owned:
+# Hermes edits this file as it learns, so a converge that rewrote it would
+# silently delete everything the agent had figured out.
+#
+# force: no is therefore the whole point, and is NOT the SOUL.md pattern above —
+# SOUL.md is role-owned and re-copied every run. This seeds the file once, on a
+# guest that has none, and never touches it again. The seed carries only what
+# the operator has stated directly (working hours, output expectations, the
+# write-routing law); everything else Hermes learns and writes itself.
+- name: Seed the Hermes operator profile (USER.md) if the agent has none yet
+  ansible.builtin.template:
+    src: USER.md.j2
+    dest: "{{ hermes_agent_hermes_home }}/USER.md"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0644"
+    force: false
+  when: hermes_agent_seed_user_profile | bool
+
+# --- Hindsight memory: local embedded daemon ---------------------------------
+# The provider name in config.yaml is not enough: hindsight defaults to CLOUD
+# mode, and with no HINDSIGHT_API_KEY its is_available() is false — every
+# memory tool call fails with "Memory is not available" (the recurring digest
+# warning). local_embedded needs (a) the hindsight-all package in the venv,
+# (b) $HERMES_HOME/hindsight/config.json selecting the mode + the extraction
+# LLM (the same router brain), (c) HINDSIGHT_LLM_API_KEY in .env (rendered by
+# hermes-env.j2).
+# local_embedded needs the full daemon stack (hindsight-all, ~200 MB);
+# local_external only needs the pinned HTTP client the plugin drives.
+- name: Install the Hindsight stack into the Hermes venv
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_uv_bin }} pip install
+      --python {{ hermes_agent_venv_python }}
+      {{ 'hindsight-all' if hermes_agent_memory_mode == 'local_embedded' else '' }}
+      "hindsight-client{{ hermes_agent_hindsight_client_pin }}"
+  register: hermes_agent_hindsight_install
+  changed_when: >-
+    'Installed' in hermes_agent_hindsight_install.stderr
+    or 'Uninstalled' in hermes_agent_hindsight_install.stderr
+  when: hermes_agent_memory_provider == 'hindsight'
+  notify: Restart hermes-gateway
+
+- name: Ensure the hindsight config dir exists
+  ansible.builtin.file:
+    path: "{{ hermes_agent_hermes_home }}/hindsight"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+  when: hermes_agent_memory_provider == 'hindsight'
+
+- name: Deploy the hindsight provider config (mode + embedded-daemon LLM)
+  ansible.builtin.template:
+    src: hindsight-config.json.j2
+    dest: "{{ hermes_agent_hermes_home }}/hindsight/config.json"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+  notify: Restart hermes-gateway
+  when: hermes_agent_memory_provider == 'hindsight'
