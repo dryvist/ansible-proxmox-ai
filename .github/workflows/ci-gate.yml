@@ -55,14 +55,34 @@ jobs:
     uses: ./.github/workflows/_molecule.yml
     secrets: inherit
 
+  # Deliberately UNCONDITIONAL — no `needs: ci`, no change filter. A version
+  # pin and its checksum are two lines that must move together, and the whole
+  # point of the gate is to catch the case where only one of them did. Gating
+  # it on a path filter would mean a mismatch reaching main whenever the filter
+  # judged the change irrelevant, which is exactly the judgement that cannot be
+  # trusted here. It is one curl per pin, so running it always costs nothing.
+  installer-sha:
+    name: Installer checksums
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Verify each pinned version matches its checksum
+        run: .github/scripts/check-installer-sha.sh
+
   gate:
     name: Merge Gate
-    needs: [ci, data-contract, molecule]
+    needs: [ci, data-contract, molecule, installer-sha]
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - name: Check all results
         uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # release/v1
         with:
+          # installer-sha is NOT skippable: it always runs, so a skip means it
+          # was tampered with or errored, and either must fail the gate.
           allowed-skips: data-contract, molecule
           jobs: ${{ toJSON(needs) }}
