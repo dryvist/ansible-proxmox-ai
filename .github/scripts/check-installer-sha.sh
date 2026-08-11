@@ -19,8 +19,11 @@ set -o pipefail
 FIX=0
 [[ "${1:-}" == "--fix" ]] && FIX=1
 
+# The URL template's %s is filled with the VERSION as stored, so a pin whose
+# upstream ref carries a prefix puts that prefix in the template — the variable
+# itself stays bare so a version bump can write it cleanly.
 readonly PINS=(
-  "roles/hermes_agent/defaults/main/10-installer-and-bundles.yml|hermes_agent_version|hermes_agent_installer_sha256|https://raw.githubusercontent.com/NousResearch/hermes-agent/%s/scripts/install.sh"
+  "roles/hermes_agent/defaults/main/10-installer-and-bundles.yml|hermes_agent_version|hermes_agent_installer_sha256|https://raw.githubusercontent.com/NousResearch/hermes-agent/v%s/scripts/install.sh"
 )
 
 # One workdir for the whole run, removed once. A trap set inside the loop would
