@@ -63,11 +63,44 @@ terminal:
 # Web research backend, pinned so the auto-detect cascade can never silently
 # fall back to a keyless firecrawl default that fails every call (the state
 # this deployment was in until 2026-07-31). ddgs = keyless DuckDuckGo,
-# search-only, installed into the venv by tasks/main.yml. web_extract has no
-# keyless provider and stays unavailable by design — workers read pages with
-# curl via the terminal toolset.
+# search-only, installed into the venv by tasks/browser.yml.
+#
+# SEARCH and EXTRACT are separate backends and stay that way. ddgs finds pages
+# and cannot read one; extraction now points at the self-hosted Firecrawl
+# service, which reads a page and returns markdown. Prompts that told the agent
+# to curl raw HTML — the workaround while extraction had no backend at all —
+# are obsolete; web_extract is the supported path.
 web:
   backend: ddgs
+{% if hermes_agent_firecrawl_enabled | bool %}
+  extract_backend: firecrawl
+{% endif %}
+
+# Browser tools (browser_navigate / _snapshot / _click / _type / _vision / ...).
+#
+# cloud_provider is DELIBERATELY unset. With no cloud provider and no cdp_url,
+# the tool runs in LOCAL mode against the apt Chromium via the agent-browser
+# CLI (agent/browser_registry.py). Naming one would select Browserbase or
+# Browser Use Cloud — paid services this estate has no credential for. Note
+# upstream's own warning: setting FIRECRAWL_API_KEY for web extract must NOT
+# route the BROWSER to Firecrawl, which is why cloud providers require explicit
+# configuration and why this key stays absent.
+browser:
+  headed: false
+  record_sessions: false
+  inactivity_timeout: {{ hermes_agent_browser_inactivity_timeout }}
+  # Upstream defaults this FALSE, which would block the majority of what these
+  # agents need to read — Splunk, Zammad, Vikunja, Traefik and the docs site
+  # are all internal FQDNs resolving to private addresses, and browsing them is
+  # the reason the browser is on each agent guest at all.
+  #
+  # The SSRF protection it disables is, per upstream's own note in
+  # browser_tool.py, "only meaningful for cloud backends where the agent could
+  # reach internal resources on a remote machine". This is a local backend: the
+  # agent already holds a shell on this guest and can curl any of these hosts
+  # directly. Enabling it grants no reach the agent does not already have, and
+  # the LXC remains the boundary.
+  allow_private_urls: true
 
 # Headless daemon: no TUI streaming.
 display:

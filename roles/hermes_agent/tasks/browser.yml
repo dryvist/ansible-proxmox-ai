@@ -1,0 +1,150 @@
+---
+# Browser capability: Chromium + the agent-browser CLI, on every Hermes guest.
+#
+# READ THIS BEFORE CHANGING THE DEPENDENCY. The tool that drives the browser at
+# the pinned release is `agent-browser`, an **npm/Node** CLI. It is NOT the
+# PyPI `browser-use` package: at v2026.8.3 `plugins/browser/browser_use/` is
+# the browser-use *cloud* provider (api.browser-use.com, needs
+# BROWSER_USE_API_KEY), and the local `browser_exec` tool the upstream docs
+# site describes does not exist in the release at all — `tools/browser_use_cli.py`
+# is on upstream main only. Verified by reading the v2026.8.3 tree: zero
+# occurrences of `browser_exec` in toolsets.py, browser_tool.py or
+# config_defaults.py. Installing the Python package here would be dead weight
+# and would advertise a capability the release cannot provide.
+#
+# What the release DOES provide, from tools/browser_tool.py at v2026.8.3, is
+# the CDP-driven family: browser_navigate, browser_snapshot, browser_click,
+# browser_type, browser_scroll, browser_press, browser_back, browser_vision,
+# browser_console, browser_get_images, browser_screenshots. Local mode is the
+# default (no cloud_provider configured, no CDP override).
+#
+# WHY PER-INSTANCE, not a shared browser container. Hermes auto-spawns a local
+# Chromium for private/loopback/LAN URLs whatever backend is configured, and
+# most of what these agents read IS internal (Splunk, Zammad, Vikunja, Traefik,
+# the docs site) — a central browser would not remove the local one, only add a
+# second thing to run. A browser session is also per-conversation state
+# (cookies, auth, page stack). And the LXC is already the blast-radius boundary
+# for the agent's terminal and web tools; moving the browser outside it
+# relocates that risk rather than reducing it. Clean EXTRACTION is the part
+# worth centralising, and that is Firecrawl — a real service, reached over the
+# network.
+#
+# Identity-agnostic on purpose: the agent identity selects credentials and cron
+# jobs, never OS packages. Both guests get the same browser.
+
+# Debian ships Chromium as a real .deb. This matters: on Ubuntu the `chromium`
+# package is a snap transitional shim, snapd does not run in an unprivileged
+# LXC, and the install would report success while leaving a binary that cannot
+# start. The guests are built from the Debian 13 CT template
+# (proxmox_ct_template_debian in tofu-proxmox), so the .deb is what is
+# installed. Re-check this assertion if the template family ever changes.
+- name: Assert the guest is Debian before installing Chromium from apt
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['distribution'] != 'Ubuntu'
+    fail_msg: >-
+      Chromium is installed from apt as a real package, which holds on Debian.
+      This guest reports {{ ansible_facts['distribution'] }}. On Ubuntu the
+      chromium package is a snap shim that cannot run in an unprivileged LXC,
+      and the install would succeed while leaving a broken binary. Source
+      Chromium another way rather than letting this pass.
+
+# state: latest, deliberately, and it is the only floating version in this
+# role. A browser is a security-critical surface reachable by untrusted page
+# content, so "whatever the distro currently ships" is the correct target and
+# every converge re-asserts it. There is no version string for Renovate to
+# own, which is what makes floating safe here rather than invisible: apt is the
+# authority and the converge is the refresh.
+#
+# Installing Chromium from apt rather than letting agent-browser download its
+# own Playwright build is deliberate. agent-browser checks, in order:
+# AGENT_BROWSER_EXECUTABLE_PATH, then system chrome/chromium on PATH, then its
+# Playwright cache (tools/browser_tool.py::_chromium_installed). Pointing it at
+# the distro package means one browser on the guest, patched by apt on the same
+# cadence as everything else, instead of a second unmanaged copy in a cache
+# directory that nothing upgrades.
+- name: Install Chromium and the fonts a headless render needs
+  ansible.builtin.apt:
+    name:
+      - chromium
+      # Without these, headless Chromium renders CJK and emoji as blank boxes.
+      # A page the agent cannot read is a page it will summarise wrongly.
+      - fonts-liberation
+      - fonts-noto-color-emoji
+      - fonts-noto-cjk
+    state: latest # noqa package-latest
+    update_cache: true
+    cache_valid_time: 3600
+  notify: Restart hermes-gateway
+
+# agent-browser is a Node process. npx is the upstream fallback path, but a
+# global install is what makes the CLI resolvable without a network round-trip
+# on first use — and a cron turn is a bad place to discover npx is fetching a
+# package.
+- name: Install Node.js and npm for the agent-browser CLI
+  ansible.builtin.apt:
+    name:
+      - nodejs
+      - npm
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# Pinned and Renovate-annotated at the variable itself, in
+# defaults/main/75-browser.yml — an annotation here would be invisible, because
+# the shared annotation manager only scans role DEFAULTS files.
+- name: Install the agent-browser CLI globally
+  community.general.npm:
+    name: agent-browser
+    version: "{{ hermes_agent_agent_browser_version }}"
+    global: true
+    state: present
+  notify: Restart hermes-gateway
+
+# Proves the CLI RUNS rather than merely resolving. Upstream's own
+# agent_browser_runnable() does exactly this and explains why: npm's
+# postinstall can leave a dangling global symlink that `which` still reports
+# while exec fails with 127, silently breaking every browser tool.
+- name: Verify the agent-browser CLI actually executes
+  ansible.builtin.command:
+    cmd: agent-browser --version
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_agent_browser_probe
+  changed_when: false
+
+# Proves the browser starts, not merely that the package resolved.
+# --no-sandbox is required here and is not a weakened check: Chromium's sandbox
+# needs user namespaces an unprivileged LXC does not grant, and the container
+# is the security boundary instead — already how this guest's terminal and web
+# tools are scoped. Upstream surfaces this exact flag as the remedy for
+# "Chromium sandbox launch failed".
+- name: Verify Chromium actually starts headless as the hermes user
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_chromium_executable }}
+      --headless --no-sandbox --disable-gpu --dump-dom about:blank
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_chromium_probe
+  changed_when: false
+
+# web_extract's Firecrawl backend imports the SDK lazily, through
+# tools.lazy_deps.ensure. That path cannot work in this venv — the same broken
+# lazy pip-install the Hindsight client pin already documents (no pip,
+# no ensurepip). So the extra is installed explicitly, exactly like ddgs and
+# the Slack extra, or every web_extract call fails at import with the config
+# looking correct.
+- name: Install the Firecrawl SDK into the Hermes venv for web_extract
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_uv_bin }} pip install
+      --python {{ hermes_agent_venv_python }}
+      "firecrawl-py=={{ hermes_agent_firecrawl_py_version }}"
+  register: hermes_agent_firecrawl_py_install
+  changed_when: >-
+    'Installed' in hermes_agent_firecrawl_py_install.stderr
+    or 'Uninstalled' in hermes_agent_firecrawl_py_install.stderr
+  when: hermes_agent_firecrawl_enabled | bool
+  notify: Restart hermes-gateway
