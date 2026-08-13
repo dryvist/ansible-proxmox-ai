@@ -49,6 +49,11 @@ not yet live-validated:
 - [Brain and MCP](docs/brain-and-mcp.md) — brain model selection, Context7
   live docs, docs RAG search, and Codex escalation via MCP.
 
+Browser Use is installed as its official CLI in the Hermes virtual environment.
+It attaches to a loopback-only Chromium CDP service and is available through
+Hermes's existing terminal toolset and the upstream `browser-use` skill; this
+does not configure a Browser Use Cloud provider or credential.
+
 See also [docs/HERMES_OPS.md](../../docs/HERMES_OPS.md) for the operations
 runbook (cron fleet, memory, credentials, serving self-heal) — this README
 covers the role's configuration surface; that doc covers running it.

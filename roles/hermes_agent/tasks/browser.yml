@@ -1,16 +1,8 @@
 ---
-# Browser capability: Chromium + the agent-browser CLI, on every Hermes guest.
-#
-# READ THIS BEFORE CHANGING THE DEPENDENCY. The tool that drives the browser at
-# the pinned release is `agent-browser`, an **npm/Node** CLI. It is NOT the
-# PyPI `browser-use` package: at v2026.8.3 `plugins/browser/browser_use/` is
-# the browser-use *cloud* provider (api.browser-use.com, needs
-# BROWSER_USE_API_KEY), and the local `browser_exec` tool the upstream docs
-# site describes does not exist in the release at all — `tools/browser_use_cli.py`
-# is on upstream main only. Verified by reading the v2026.8.3 tree: zero
-# occurrences of `browser_exec` in toolsets.py, browser_tool.py or
-# config_defaults.py. Installing the Python package here would be dead weight
-# and would advertise a capability the release cannot provide.
+# Browser capability: Chromium + the agent-browser CLI + Browser Use CLI on
+# every Hermes guest. Hermes's native tools keep using agent-browser; Browser
+# Use is separately available through the terminal toolset and its upstream
+# skill, attached to the loopback-only CDP service below.
 #
 # What the release DOES provide, from tools/browser_tool.py at v2026.8.3, is
 # the CDP-driven family: browser_navigate, browser_snapshot, browser_click,
@@ -129,6 +121,48 @@
   become_user: "{{ hermes_agent_user }}"
   register: hermes_agent_chromium_probe
   changed_when: false
+
+# Browser Use is intentionally a terminal CLI, not Hermes's browser-use cloud
+# provider. It shares the apt-managed Chromium through the loopback-only CDP
+# service below, so no second downloaded browser or cloud credential is needed.
+- name: Install the official Browser Use CLI into the Hermes venv
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_uv_bin }} pip install
+      --python {{ hermes_agent_venv_python }}
+      "browser-use=={{ hermes_agent_browser_use_version }}"
+  register: hermes_agent_browser_use_install
+  changed_when: >-
+    'Installed' in hermes_agent_browser_use_install.stderr
+    or 'Uninstalled' in hermes_agent_browser_use_install.stderr
+  notify: Restart hermes-gateway
+
+- name: Create persistent Browser Use state and Chromium profile directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+  loop:
+    - "{{ hermes_agent_browser_use_home }}"
+    - "{{ hermes_agent_browser_use_home }}/chromium-profile"
+
+- name: Deploy the loopback-only Chromium CDP service for Browser Use
+  ansible.builtin.template:
+    src: hermes-browser-use-chromium.service.j2
+    dest: /etc/systemd/system/hermes-browser-use-chromium.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart hermes-browser-use-chromium
+
+- name: Enable and start the Browser Use Chromium CDP service
+  ansible.builtin.systemd:
+    name: hermes-browser-use-chromium
+    state: started
+    enabled: true
+    daemon_reload: true
 
 # web_extract's Firecrawl backend imports the SDK lazily, through
 # tools.lazy_deps.ensure. That path cannot work in this venv — the same broken

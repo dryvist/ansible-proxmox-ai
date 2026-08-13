@@ -26,6 +26,52 @@
       retries: 5
       delay: 2
 
+    - name: Gate — Browser Use Chromium CDP service is active
+      ansible.builtin.systemd:
+        name: hermes-browser-use-chromium
+      register: hermes_agent_browser_use_chromium_state
+      until: hermes_agent_browser_use_chromium_state.status.ActiveState | default('') == 'active'
+      retries: 5
+      delay: 2
+
+    - name: Gate — Browser Use reads Cribl global-secrets documentation
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {{ hermes_agent_install_dir }}/venv/bin/browser-use <<'PY'
+        new_tab("https://docs.cribl.io/stream/global-secrets-add-use/")
+        wait_for_load()
+        text = js("document.body.innerText")
+        assert "Global secrets" in text
+        assert "<secretFolderId>/<globalSecretId>" in text
+        for line in text.splitlines():
+            if "Global secrets" in line or "<secretFolderId>/<globalSecretId>" in line:
+                print(line.strip())
+        PY
+      args:
+        executable: /bin/bash
+      environment:
+        HOME: "{{ hermes_agent_home }}"
+        HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+        BROWSER_USE_HOME: "{{ hermes_agent_browser_use_home }}"
+        BH_HOME: "{{ hermes_agent_browser_use_home }}"
+        BH_CHROME_PATH: "{{ hermes_agent_chromium_executable }}"
+        BU_CDP_URL: "{{ hermes_agent_browser_use_cdp_url }}"
+      become: true
+      become_user: "{{ hermes_agent_user }}"
+      register: hermes_agent_browser_use_cribl_probe
+      changed_when: false
+
+    - name: Gate — Browser Use returned the expected Cribl reference syntax
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'Global secrets' in hermes_agent_browser_use_cribl_probe.stdout"
+          - "'<secretFolderId>/<globalSecretId>' in hermes_agent_browser_use_cribl_probe.stdout"
+        fail_msg: >-
+          Browser Use could not retrieve the public Cribl global-secrets guide
+          through the local CDP browser. Inspect hermes-browser-use-chromium,
+          {{ hermes_agent_browser_use_cdp_url }}, and the CLI output above.
+
     # Bound the read to THIS process start: a bare `-n 200` straddles the
     # restart and re-matches errors the converge just fixed — a false gate
     # failure observed 2026-07-16 (pre-fix "context window below minimum"
