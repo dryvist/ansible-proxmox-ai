@@ -26,14 +26,15 @@ pytest. Plain asserts, no fixtures, no framework.
 from pathlib import Path
 
 import yaml
+from _role_files import role_defaults, role_tasks_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULTS_PATH = REPO_ROOT / "roles/hermes_agent/defaults/main.yml"
-TASKS_PATH = REPO_ROOT / "roles/hermes_agent/tasks/main.yml"
+DEFAULTS_PATH = REPO_ROOT / "roles" / "hermes_agent"
+TASKS_PATH = REPO_ROOT / "roles" / "hermes_agent"
 
 
 def _defaults():
-    return yaml.safe_load(DEFAULTS_PATH.read_text())
+    return role_defaults(DEFAULTS_PATH)
 
 
 def _direct_crons():
@@ -52,7 +53,7 @@ def test_splunk_digest_card_is_fully_removed() -> None:
     assert "hermes_agent_splunk_digest_cron_prompt_file" not in defaults
     # The prompt-loading set_fact for the removed card must be gone too, or a
     # converge quietly keeps building an unused catalog lookup.
-    tasks = TASKS_PATH.read_text()
+    tasks = role_tasks_text(TASKS_PATH)
     assert "hermes_agent_splunk_digest_cron_prompt" not in tasks
 
 
@@ -64,7 +65,7 @@ def test_splunk_triage_prompt_regression_guard_exists() -> None:
     # guard task exists and names the right var and dead key, not that it
     # currently passes (that needs the rendered catalog prompt, which this
     # repo does not fetch).
-    tasks_text = TASKS_PATH.read_text()
+    tasks_text = role_tasks_text(TASKS_PATH)
     assert "Assert the Splunk triage prompt does not recall a dead job's memory key" in tasks_text
     assert "hermes_agent_splunk_triage_cron_prompt" in tasks_text
     assert "splunk-digest-last" in tasks_text
@@ -88,7 +89,7 @@ def test_splunk_parsing_quality_v2_is_retired_in_favour_of_the_direct_cron() -> 
 
     # The retirement's pause task (disable-don't-delete) is wired the same
     # way as every other direct-cron retirement in this file.
-    tasks = TASKS_PATH.read_text()
+    tasks = role_tasks_text(TASKS_PATH)
     assert "hermes_agent_retire_splunk_parsing_v2" in tasks
     assert "cron pause {{ hermes_agent_retired_splunk_parsing_v2_cron_name }}" in tasks
     defaults = _defaults()

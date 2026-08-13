@@ -1,0 +1,177 @@
+---
+# News scout: read the news and turn it into a few suggestions the operator can
+# act on, tuned to their interests. Two design decisions carry this card:
+#
+# Interests are DERIVED at runtime, not frozen here. The seed list below is the
+# static floor; the living profile is the wiki interests note, which each run
+# refreshes from what Hermes' own memory shows the operator recently worked on.
+# (The previous prompt told the worker to learn from Slack reactions on its
+# past posts — impossible: upstream hard-disables the messaging toolset in
+# every cron context, so a cron worker can send via the `hermes send` CLI but
+# can never read a channel. The learning loop now uses inputs a cron worker
+# actually has: memory recall and explicit operator feedback stored there.)
+#
+# Every reported item must carry a URL that came out of a tool result THIS run.
+# The web toolset was silently non-functional for months (no search backend
+# installed — see the ddgs install in tasks/main.yml), so this card's old
+# "scan major AI sources" instruction was fabrication bait of exactly the
+# daily-status-endpoints shape. The prompt now fails loudly when search is
+# down instead of letting the model improvise headlines.
+hermes_agent_ai_news_cron_name: ai-news
+# Four fixed times a day, chosen by the operator around their actual working
+# day rather than a round interval: before work, midday, just before sign-off,
+# and bedtime. These are UTC expressions (hermes_agent_timezone is UTC) tuned
+# for EDT (UTC-4):
+#
+#   12:00 UTC -> 08:00 ET   before work
+#   16:00 UTC -> 12:00 ET   midday
+#   19:00 UTC -> 15:00 ET   just before sign-off
+#   00:00 UTC -> 20:00 ET   bedtime (the previous ET day)
+#
+# DST HAZARD, stated so the next reader does not have to rediscover it: when ET
+# returns to EST (UTC-5) in November these all land an hour earlier — 07:00,
+# 11:00, 14:00, 19:00 ET. The durable fix is a per-card timezone or moving the
+# role off UTC, which would shift every OTHER seeded schedule here and so is
+# deliberately not done in this change. Tracked in Vikunja.
+# Minute :19 is deliberate and must stay free of other jobs. :13 (the minute
+# this first landed on) already carries anomaly-hunt, whose "13 */12 * * *"
+# collides with the 00:13 and 12:13 news runs — two agentic cards starting
+# together against a serving tier that admits ONE in-flight request per model.
+hermes_agent_ai_news_cron_schedule: "19 0,12,16,19 * * *"
+hermes_agent_ai_news_cron_prompt: >-
+  You are the Hermes news scout (every 4 hours): read the news and turn it into
+  AT MOST 3 suggestions the operator can act on, tuned to their interests.
+  Retrieval first: read your interests note at
+  {{ hermes_agent_wiki_path }}/ai-news-interests.md — create it from the
+  INTEREST SEED below if absent — and recall memory key "ai-news-last"
+  (fingerprints of items already reported) so you never repeat one. Refresh the
+  note each run: recall from memory what the operator recently worked on or
+  asked about, merge those topics in, and note which topics you scouted so runs
+  rotate. The seed is the fixed floor; the note is the living profile.
+  Scouting: pick the 3-4 note topics closest to recent operator activity and
+  search them with the web_search tool. Read a promising result with the
+  web_extract tool, which returns clean markdown; fall back to
+  `curl -sL --max-time 30 <url>` in the terminal only if web_extract errors.
+  Every candidate MUST carry a URL that appeared
+  in a tool result THIS run — if web_search errors or returns nothing, report
+  that in one line
+  and stop; never substitute a remembered or plausible-looking URL, and never
+  report an item you did not retrieve this run. Selection bar (relevance beats
+  recency): keep an item ONLY if it connects to a named interest AND you can
+  say what the operator could do with it; prefer items from the last few days;
+  skip rumor, marketing, funding news, and anything matching "ai-news-last".
+  Output contract: each kept item is exactly 3 lines — what happened (with its
+  URL), why it matters to THIS estate (name the interest, service, or repo it
+  touches), and what you would research or try next. At most 3 items; if
+  nothing clears the bar the report is the single line "No news cleared the
+  bar this run." If an item is genuinely actionable now against something this
+  estate runs (a security advisory for a deployed service, a release that
+  fixes a known problem), ALSO file it with kanban_create using idempotency
+  key news-<slug>-<UTC-date> so it enters board triage — that, not another
+  Slack channel, is how a suggestion becomes work. Self-check: does every item
+  carry a this-run URL and an estate-tied "why"? Save the updated fingerprints
+  to "ai-news-last" and write the refreshed note.
+
+
+  {{ hermes_agent_ai_news_interests }}
+
+# The static floor of the interest profile, appended verbatim to the news-scout
+# card body. Reviewable and overridable without touching the prompt; host_vars
+# may replace it wholesale. PUBLIC-SAFE ONLY: this repo is public, so entries
+# are technology and product names already visible in the operator's public
+# repos — never hostnames, addresses, or private topology. The living profile
+# (the wiki note the prompt maintains) stays on the guest and may hold more.
+hermes_agent_ai_news_interests: |-
+  INTEREST SEED (static floor — the interests note starts from this and grows):
+  - Infrastructure as code: Proxmox VE, OpenTofu/Terraform, Terrakube,
+    Ansible, UniFi networking
+  - Secrets and identity: OpenBao/Vault, ephemeral credentials, SSH
+    certificate authorities
+  - Observability and SIEM: Splunk, Cribl Edge/Stream, OpenTelemetry, syslog
+    pipelines
+  - Local LLM serving: MLX on Apple Silicon, quantization, llama.cpp, LiteLLM
+    routing, open-weight model releases (DeepSeek, Qwen, Hermes, Llama)
+  - AI agents and tooling: agent frameworks, MCP, Claude Code, Codex, Gemini
+    CLI, multi-agent orchestration, agent memory systems
+  - Nix: nix-darwin, home-manager, flakes, reproducible dev environments
+  - Self-hosted services this estate runs: Traefik, Authelia, Technitium DNS,
+    Vikunja, Zammad, Nautobot, Qdrant, PostgreSQL, Plex and the *arr stack
+  - Security advisories (CVEs, supply-chain compromises) affecting anything
+    above
+  - GitHub automation: Actions, Renovate, release-please
+
+# Daily innovation: propose one concrete, genuinely-new improvement per day,
+# checked against a wiki log so it never repeats a past proposal.
+hermes_agent_daily_innovation_cron_name: daily-innovation
+hermes_agent_daily_innovation_cron_schedule: "47 6 * * *"
+hermes_agent_daily_innovation_cron_prompt: >-
+  You are the Hermes daily-innovation proposer: each run, propose at least ONE
+  concrete, novel improvement to how you help the operator run the homelab.
+  Retrieval first: read your proposal log at
+  {{ hermes_agent_wiki_path }}/innovation-log.md (create it if absent) and
+  recall memory key "innovation-last" — your idea MUST be genuinely new, not a
+  restatement of a past proposal or an already-open issue or card. Ground it in
+  what you have actually observed: your recent cron findings, memory, and the
+  gaps in your own workflow (a missing check, a manual step you could automate,
+  a better signal). The news scout's recent finds are a first-class source too
+  — recall memory key "ai-news-last" and read the interests note at
+  {{ hermes_agent_wiki_path }}/ai-news-interests.md; an external development
+  that unlocks an estate improvement is exactly the kind of proposal wanted.
+  One well-formed proposal beats five vague ones. Output
+  contract: write the proposal as a GitHub issue via the dryvist/github-issues
+  skill (respect issue caps) OR, if you cannot file, as a Kanban card via
+  kanban_create with a stable idempotency key innovation-<slug>-<UTC-date>; the
+  proposal states the problem, the concrete change, and how you would verify it
+  helped. Append a one-line entry to the innovation log so future runs can see
+  it. Post a short Slack summary (the proposal in 2-3 lines). Self-check: is
+  this absent from the innovation log AND from open issues and cards? If every
+  new idea you formed is a duplicate, say so in one line and propose nothing
+  rather than pad. Save the updated fingerprint to "innovation-last".
+
+# App seeding: self-retiring bootstrap of the Langflow + Langfuse platforms. It
+# cannot remove its own enqueuer, so it self-gates on a wiki completion marker
+# and fast no-ops once both sub-tasks are done.
+hermes_agent_app_seeding_cron_name: app-seeding
+hermes_agent_app_seeding_cron_schedule: "53 7 * * *"
+hermes_agent_app_seeding_cron_prompt: >-
+  You are the Hermes app-seeding task (self-retiring): bootstrap the Langflow
+  and Langfuse app platforms so they are usable, then stop. FIRST, retrieval:
+  read your completion marker at
+  {{ hermes_agent_wiki_path }}/app-seeding-done.md. If it records BOTH sub-tasks
+  complete, do nothing further — post one line saying app-seeding is already
+  done and finish (you cannot remove your own enqueuer, so a fast no-op is how
+  you retire). Otherwise, do only the not-yet-done sub-tasks: (1) Langflow —
+  create ONE minimal starter flow that calls the fabric router (the
+  OpenAI-compatible endpoint at {{ hermes_agent_model_base_url }}) with a
+  trivial prompt, and confirm it runs end-to-end. (2) Langfuse — create the
+  org and project, then PROPOSE (as a GitHub issue or a Kanban card — do NOT
+  wire it live) how homelab LLM traffic should export traces into it. Verify
+  each sub-task before marking it done: the flow actually executes, the Langfuse
+  project actually exists. Output contract: record each completed sub-task in
+  the completion marker with the date and what you did; when BOTH are done,
+  write the final "complete" line so future runs no-op. Post a short Slack
+  summary of what you seeded this run. Self-check: did you verify each thing you
+  marked done, and did you avoid re-doing an already-complete sub-task?
+
+
+  {{ hermes_agent_app_seeding_endpoints }}
+
+# Appended to the app-seeding card body — the daily-status lesson applied
+# before this card ever runs: a worker given tasks but no addresses invents
+# them (measured 2026-07-31 on the fabric-status card: every invented probe
+# returned 000 and a healthy fabric was reported as a total outage). Bases are
+# the Traefik front doors, derived from the same env the services are deployed
+# from; never a literal.
+hermes_agent_app_seeding_endpoints: |-
+  ENDPOINTS — USE EXACTLY THESE, AND NOTHING ELSE. Do not guess, infer, or
+  recall a hostname or port from anywhere else; an address not on this list
+  is wrong, and a result from one is a fabricated finding rather than
+  evidence, however plausible it reads.
+
+    Langflow  https://langflow.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}
+    Langfuse  https://langfuse.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}
+
+  Both sit behind the estate auth proxy: an HTTP redirect on first contact
+  means the service answered. If an API call needs a credential you do not
+  hold, record the sub-task as blocked in the completion marker and say so in
+  the Slack summary — never try another hostname or port.

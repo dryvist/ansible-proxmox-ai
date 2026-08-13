@@ -1,0 +1,122 @@
+---
+# --- Context7 MCP client (current library/framework docs on demand) ---
+# Registers Context7 so Hermes can pull up-to-date, version-specific docs
+# mid-task. Bao-first, env fallback (see group_vars); the entry is omitted
+# until the API key is set. Dialed through the shared agentgateway MCP plane
+# (one governed front door per target; the gateway federates outbound HTTPS
+# to Context7) — set the URL back to https://mcp.context7.com/mcp to bypass
+# the gateway.
+hermes_agent_context7_mcp_enabled: true
+hermes_agent_context7_mcp_url: >-
+  https://mcp.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}/context7
+hermes_agent_context7_api_key: ""
+
+# --- Qdrant MCP client (persistent vector memory) — REMOVED, see docs MCP ---
+# Was `hermes_agent_qdrant_mcp_enabled`/`_url`, registering the generic
+# qdrant-store/qdrant-find tools over the `agent_memories` collection. Deleted
+# 2026-08: wired into both named profiles' mcp lists since their creation but
+# never referenced by any prompt or skill in this repo OR nix-hermes (grepped
+# both — zero hits on qdrant-store/qdrant-find/agent_memories outside the
+# wiring itself). Hermes already has a real, structured memory system —
+# `memory.provider: hindsight` below, shared across every profile — so this
+# was a second, undifferentiated store with no guidance on which one to use
+# for what: pure confusion risk, not a capability anyone exercised. Re-add it
+# (same shape as the docs MCP client below) only alongside an actual skill or
+# prompt that tells the agent when to reach for it over Hindsight.
+
+# --- Docs MCP client (RAG search over the estate's homelab_docs index) ---
+# Registers the search_docs tool, dialed through the shared agentgateway MCP
+# plane (same posture as context7 above: keyless for the caller, the
+# gateway's mcp-docs sidecar holds the router credential — see
+# agentgateway_docker_docs_mcp_* in the agentgateway_docker role). Defaults ON:
+# the gateway /docs route is enabled by default
+# (agentgateway_docker_docs_mcp_enabled: true) and the homelab_docs Qdrant
+# collection it searches is rebuilt nightly by the llamaindex role
+# (llamaindex_index_on_calendar) — this is the estate's only document-
+# retrieval index, so leaving it unwired here made it invisible to Hermes.
+hermes_agent_docs_mcp_enabled: true
+hermes_agent_docs_mcp_url: >-
+  https://mcp.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}/docs
+
+# --- Vikunja MCP client (read-only task board) ---
+# Thin pointer to the shared agentgateway /vikunja route — the gateway sidecar
+# holds the read token, so this is keyless (same posture as docs/context7).
+# DISABLED by default: unlike splunk/docs (whose gateway routes always exist),
+# the /vikunja route itself is omitted until the operator seeds the read token
+# on the gateway. With this enabled but the route absent, Hermes retries and
+# parks on "MCP server 'vikunja' failed initial connection" EVERY session (log
+# noise, observed in soak). Flip to true in the same change that seeds the token
+# and converges agentgateway so the route is live — same as nautobot below.
+hermes_agent_vikunja_mcp_enabled: false
+hermes_agent_vikunja_mcp_url: >-
+  https://mcp.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}/vikunja
+
+# --- Vikunja Kanban bridge (operator board -> Hermes board) -------------------
+# A poll daemon that makes the operator's Vikunja board drive Hermes: a task in
+# the READY bucket becomes a Hermes Kanban card, the task moves across the
+# operator's buckets as the card starts and finishes, and the card's recorded
+# result is commented back onto the task. Recurring work still comes from the
+# enqueuer fleet (#83); this is the on-demand, operator-authored half.
+#
+# WHY THIS DOES NOT USE THE VIKUNJA MCP ROUTE ABOVE. Every write here — bucket
+# move, comment, done — needs a WRITE credential, and the gateway's /vikunja
+# route is read-only by construction (the sidecar holds a READ token). Enabling
+# hermes_agent_vikunja_mcp_enabled would therefore buy the bridge nothing while
+# adding the documented per-session "failed initial connection" park, since the
+# route is still not seeded. The bridge talks plain REST with its own token and
+# the MCP flag stays false. Flip that flag when the agent should READ the board
+# conversationally — a separate decision from this bridge.
+#
+# SINGLE WRITER. The bridge is the only thing that writes to the operator's
+# board: the card body explicitly forbids the worker from touching Vikunja
+# itself, so a card's result reaches the operator by exactly one path and two
+# surfaces can never disagree.
+#
+# Disabled by default: it needs an operator-seeded write token AND a Vikunja
+# project whose bucket names match the four below. Empty token = inert.
+hermes_agent_vikunja_bridge_enabled: false
+hermes_agent_vikunja_bridge_service: hermes-vikunja-bridge
+hermes_agent_vikunja_bridge_script_name: vikunja-bridge.py
+hermes_agent_vikunja_bridge_state_name: vikunja-bridge.json
+hermes_agent_vikunja_bridge_env_file: "{{ hermes_agent_hermes_home }}/vikunja-bridge.env"
+# FQDN-first Traefik vhost, no port — the address belongs to DNS.
+hermes_agent_vikunja_bridge_url: >-
+  https://vikunja.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}
+hermes_agent_vikunja_bridge_project: "{{ hermes_agent_id | capitalize }}"
+# Bucket titles on that project's Kanban view. READY is the only REQUIRED one —
+# it is where the operator puts work and where intake reads from. The other
+# three are optional: a board missing one still gets its result comment, which
+# is what actually carries the answer.
+hermes_agent_vikunja_bridge_bucket_ready: "Ready"
+hermes_agent_vikunja_bridge_bucket_in_progress: "In Progress"
+hermes_agent_vikunja_bridge_bucket_done: "Done"
+hermes_agent_vikunja_bridge_bucket_blocked: "Blocked"
+# An empty label means "every undone task in READY is fair game". A non-empty
+# one is a second, explicit opt-in — the safer default posture for a board the
+# operator also uses for their own non-Hermes tasks.
+hermes_agent_vikunja_bridge_intake_label: "{{ hermes_agent_id }}"
+hermes_agent_vikunja_bridge_poll_interval_seconds: 60
+# Per-tick intake cap. This is a RATE limit, not a concurrency limit: board
+# concurrency is already bounded by kanban.max_in_progress (config.yaml), which
+# is the single source of truth for how many workers the shared serving
+# deployment can carry. This only stops one bulk paste into Vikunja from
+# creating fifty cards in a single tick.
+hermes_agent_vikunja_bridge_max_intake_per_tick: 3
+hermes_agent_vikunja_bridge_card_max_runtime: "45m"
+hermes_agent_vikunja_bridge_card_max_retries: 2
+# "" leaves the card to kanban.default_assignee; a name here must exist in
+# hermes_agent_profiles (asserted in assert.yml).
+hermes_agent_vikunja_bridge_card_assignee: ""
+# WRITE-scoped Vikunja API token. Deliberately its OWN env var, not the
+# VIKUNJA_API_TOKEN that ai_runner reads: that is a different guest needing a
+# different scope, and sharing one credential across both would hand each the
+# other's permissions. Injection-agnostic per repo convention — Doppler, SOPS
+# or OpenBao all satisfy it, the role only sees the environment. Overridden
+# bao-first by inventory/group_vars/hermes_agent_group.yml (local-llm domain,
+# secret/ai/hermes) — this default is only the last-resort fallback shape.
+hermes_agent_vikunja_bridge_token: >-
+  {{ lookup('env', 'HERMES_VIKUNJA_API_TOKEN') | default('', true) }}

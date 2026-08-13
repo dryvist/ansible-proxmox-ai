@@ -1,0 +1,80 @@
+---
+# =============================================================================
+# Config + Compose Files
+# =============================================================================
+
+- name: Render Dify squid (ssrf_proxy) configuration
+  ansible.builtin.template:
+    src: squid.conf.j2
+    dest: "{{ dify_docker_data_dir }}/ssrf_proxy/squid.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart dify
+
+- name: Render Dify nginx routing configuration
+  ansible.builtin.template:
+    src: nginx-default.conf.j2
+    dest: "{{ dify_docker_data_dir }}/nginx/default.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart dify
+
+# Only consumed on first postgres init (empty PGDATA); no notify because postgres
+# never re-runs initdb.d against an existing cluster.
+- name: Render Dify postgres plugin-database init script
+  ansible.builtin.template:
+    src: postgres-init-plugin-db.sql.j2
+    dest: "{{ dify_docker_data_dir }}/postgres-init/create-plugin-db.sql"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Render Dify docker-compose.yml
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ dify_docker_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0600"  # contains SECRET_KEY + DB/Redis/sandbox/weaviate secrets
+  no_log: true
+  notify: Restart dify
+
+# =============================================================================
+# Deploy via Docker Compose
+# =============================================================================
+
+- name: Deploy Dify via docker compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ dify_docker_data_dir }}"
+    state: present
+  register: dify_docker_compose_result
+  changed_when: >-
+    (dify_docker_compose_result.actions | default([]))
+    | selectattr('status', 'in', ['Creating', 'Recreating', 'Pulling', 'Building'])
+    | list | length > 0
+  no_log: true
+
+# =============================================================================
+# Health Check
+# First boot can take several minutes: image pulls, postgres initdb, the api
+# running migrations against the fresh DB, and weaviate warming up.
+# =============================================================================
+
+- name: Wait for Dify web port to accept TCP connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ dify_docker_web_port }}"
+    timeout: 300
+
+- name: Verify Dify web UI renders through nginx
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ dify_docker_web_port }}/"
+    method: GET
+    status_code: 200
+  register: dify_docker_health
+  retries: 30
+  delay: 10
+  until: dify_docker_health.status == 200
+  changed_when: false

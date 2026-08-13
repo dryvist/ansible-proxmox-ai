@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from _role_files import role_tasks
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -52,7 +53,7 @@ REAP_SIGKILL_PATCH_NAME = (
 
 
 def _task(name: str) -> dict[str, Any]:
-    tasks = yaml.safe_load((ROLE_ROOT / "tasks" / "main.yml").read_text())
+    tasks = role_tasks(ROLE_ROOT)
     return next(item for item in tasks if item.get("name") == name)
 
 

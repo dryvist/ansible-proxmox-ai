@@ -1,0 +1,83 @@
+---
+# --- Work-supply cards (Track C): give the agent proactive, self-directed work --
+# Five recurring Kanban workloads that widen what Hermes does for the operator
+# beyond the monitor/triage fleet: hunt the observability unknown-unknowns, study
+# the public docs for drift, scout AI news, propose one novel improvement a day,
+# and self-retiringly seed the app platforms. Same card contract as every entry
+# above (name + schedule + inline prompt_var); enqueued by the same script-only
+# `--no-agent` fleet, so each run is a fresh isolated worker session. Minutes are
+# staggered clear of the existing cron minutes (0,7,11,22,26,33,37,41,52) so no
+# two enqueuers fire in the same minute. Prompts are retrieval-first (recall a
+# memory key so a run never re-reports/re-files what it already saw), carry an
+# explicit output contract, and end with a self-check. The enqueuer appends the
+# shared "post a full report to #hermes-all, then kanban_complete with a one-line
+# summary" footer, so the prompts own the WORK, not the delivery mechanics. A
+# prompt that already specifies its own Slack post keeps it — the footer says to
+# post once, so the two never double-deliver.
+
+# Anomaly hunt: the unknown-unknowns lens the scheduled Splunk/GitHub lenses do
+# not cover. Splunk-monitor skill carries the bounded-query safety rails;
+# github-issues lets it file confirmed findings.
+#
+# Audited 2026-08-01 against the script-fed digests that did not exist when
+# this card was designed: its own anomaly-hunt-v2 direct-cron twin WAS retired
+# outright (see hermes_agent_direct_cron_jobs) because its fixed top-15 SPL
+# was a strict subset of splunk-status-digest. This kanban card is NOT the
+# same case — checked each of its three hunting axes individually:
+# (1) new error signatures overlaps splunk-error-digest's signature
+# clustering, and (2)/(3) silent sources / volume anomalies overlap
+# splunk-status-digest's ingest-silence and percent-band findings, BUT both
+# scripts only watch the two hardcoded `hermes_agent_splunk_digest_expected_indexes`
+# (os, firewall); this card hunts across whatever it chooses, and can file a
+# kanban_create follow-up card, which a `--no-agent` script cannot. Keep it —
+# do not apply the direct-cron retirement here without re-checking that gap.
+hermes_agent_anomaly_hunt_cron_name: anomaly-hunt
+hermes_agent_anomaly_hunt_cron_schedule: "13 */12 * * *"
+hermes_agent_anomaly_hunt_cron_prompt: >-
+  You are the Hermes 12-hour anomaly hunt: find the UNKNOWN-unknowns in the
+  observability fabric that the scheduled Splunk and GitHub lenses are not
+  already looking for. Retrieval first: recall memory key "anomaly-hunt-last"
+  (the signatures and sources you already flagged) so you never re-report a
+  known issue. Then hunt with BOUNDED queries ONLY (tstats/stats/head, narrow
+  time windows — the dryvist/splunk-monitor skill's hard rails apply): (1) NEW
+  error signatures absent from your baseline; (2) sources that fell SILENT or
+  stopped — a host or sourcetype that reported yesterday and not today, an
+  ingest gap; (3) volume anomalies — a source spiking or collapsing. Confirm
+  every candidate against a SECOND query before calling it real; one noisy
+  sample is not an anomaly. Output contract: for each CONFIRMED new finding,
+  file a kanban_create follow-up card (the default-profile reviewer triages
+  it from there — this profile carries no GitHub credential) with a
+  one-paragraph description and the exact bounded query that shows it, then
+  post it to Slack too. DM the operator only for a confirmed HIGH-severity
+  finding; otherwise stay quiet. Self-check before finishing: did every finding
+  survive a second confirming query, and is it genuinely absent from
+  "anomaly-hunt-last"? Drop any that fail. Save the updated signature/source
+  fingerprint back to "anomaly-hunt-last". If nothing new is confirmed, say so
+  in one line.
+
+# Docs study: read the public docs for drift/gaps/broken claims via the web
+# toolset, file at most 2 issues, Slack summary.
+hermes_agent_docs_study_cron_name: docs-study
+hermes_agent_docs_study_cron_schedule: "43 5 * * *"
+hermes_agent_docs_study_cron_prompt: >-
+  You are the Hermes daily docs-study pass: read the operator's public
+  documentation and find where it has drifted from reality. Retrieval first:
+  recall memory key "docs-study-last" (pages and claims you already checked and
+  filed) so you do not re-file a known gap, and rotate to a DIFFERENT area each
+  run (record which). Find pages with the web_search tool and read them with
+  the web_extract tool, which returns clean markdown; fall back to
+  `curl -sL --max-time 30 <url>` in the terminal only if web_extract errors.
+  Every page you cite must come from a tool result
+  THIS run. Study the public documentation site
+  and the repository docs it is built from. Look for: claims that no longer
+  match how the system behaves, broken or outdated commands and links, missing
+  setup steps, and internal contradictions. Verify a suspected drift against a
+  SECOND source (the repo, a linked reference) before filing — never file on a
+  single reading. Output contract: file at MOST 2 GitHub issues via the
+  dryvist/github-issues skill for the highest-value gaps (respect its issue
+  caps; if you cannot file, fall back to kanban_create with a stable
+  idempotency key docs-<slug>-<UTC-date>). Post a short Slack summary of what
+  you studied, what drifted, and what you filed — deltas only, no Markdown
+  tables, at most 8 lines. Self-check: is each filed gap backed by two sources
+  and absent from "docs-study-last"? Save the updated checked-areas fingerprint
+  back to "docs-study-last".

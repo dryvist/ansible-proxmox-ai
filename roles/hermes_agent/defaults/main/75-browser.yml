@@ -1,0 +1,78 @@
+---
+# --- Browser capability (Chromium + the agent-browser CLI) --------------------
+# See tasks/browser.yml for why the driver is the npm `agent-browser` CLI and
+# NOT the PyPI `browser-use` package, why the browser lives on every agent
+# guest rather than in one shared container, and why Chromium itself carries no
+# version pin.
+
+# The agent-browser CLI (npm). Pinned so the agent's tool surface cannot shift
+# mid-week without a reviewable diff, and annotated here — in a role DEFAULTS
+# file — because that is the only place the shared annotation manager scans.
+# An annotation beside the install task would never be read.
+# The pinned hermes-agent needs 0.26+ (browser_tool.py::_chromium_installed
+# reads Playwright-cache layouts introduced there) and 0.25.3+ for the
+# --engine flag. Pinned at current latest rather than the floor; Renovate
+# proposes the moves.
+# renovate: datasource=npm depName=agent-browser
+hermes_agent_agent_browser_version: "0.34.0"
+
+# Browser Use's official CLI is available through Hermes's terminal toolset and
+# its upstream skill. Keep this package pin Renovate-managed.
+# renovate: datasource=pypi depName=browser-use
+hermes_agent_browser_use_version: "0.13.7"
+hermes_agent_browser_use_home: "{{ hermes_agent_home }}/.browser-use"
+hermes_agent_browser_use_cdp_port: 9222
+hermes_agent_browser_use_cdp_url: >-
+  http://127.0.0.1:{{ hermes_agent_browser_use_cdp_port }}
+
+# The Firecrawl SDK, installed explicitly into the venv because the plugin
+# imports it lazily and this venv cannot service a lazy pip install.
+#
+# Deliberately NOT latest: this matches the version hermes-agent's own
+# `firecrawl` extra declares at the pinned release (firecrawl-py==4.17.0), and
+# the plugin is written against that SDK's API. Treat it like the Hindsight
+# client pin — it moves WITH the agent, not ahead of it. Renovate will propose
+# newer ones; check the plugin still imports cleanly before taking them.
+# renovate: datasource=pypi depName=firecrawl-py
+hermes_agent_firecrawl_py_version: "4.17.0"
+
+# Where agent-browser finds the browser. This is the FIRST thing it checks
+# (tools/browser_tool.py::_chromium_installed), ahead of PATH and ahead of its
+# own Playwright cache, so setting it explicitly keeps one apt-managed Chromium
+# on the guest instead of a second unmanaged copy in a cache directory.
+hermes_agent_chromium_executable: /usr/bin/chromium
+
+# Chromium's sandbox needs user namespaces an unprivileged LXC does not grant,
+# so without this the browser fails to start — upstream names this exact flag
+# as the remedy. Not a disabled check: the container IS the security boundary
+# here, which is already how the agent's terminal and web tools are scoped.
+# Removing it does not harden the guest, it only stops the browser working.
+hermes_agent_browser_args: "--no-sandbox"
+
+# How long a browser session may sit idle before it is reaped. Upstream
+# default, surfaced here so it is tunable without patching config.
+hermes_agent_browser_inactivity_timeout: 120
+
+# --- Firecrawl (self-hosted, shared by every agent) ---------------------------
+# Extraction is the half of the `web` toolset that had NO backend: web.backend
+# is ddgs, which searches but cannot read a page, so prompts told the agent to
+# curl raw HTML. Firecrawl fills that, and unlike the browser it earns its own
+# guest — a real multi-process service with state, shared over the network.
+#
+# The backend is selected by web.extract_backend in config.yaml, which takes
+# precedence over the shared web.backend key (agent/web_search_registry.py).
+# Both are set: ddgs keeps search, firecrawl takes extract.
+#
+# Self-hosted, so no SaaS credential. FIRECRAWL_API_URL is what redirects the
+# SDK away from the cloud; the key is an INTERNAL placeholder the service does
+# not verify (it runs with USE_DB_AUTHENTICATION=false) and exists only because
+# the client refuses an empty one. Access control is the firewall, which admits
+# only the Hermes container IDs.
+hermes_agent_firecrawl_enabled: true
+hermes_agent_firecrawl_api_url: >-
+  https://firecrawl.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}
+# Empty here and resolved in inventory/group_vars/hermes_agent_group.yml, the
+# same split every other credential in this role uses: the role declares the
+# knob, the inventory supplies the value from OpenBao.
+hermes_agent_firecrawl_api_key: ""

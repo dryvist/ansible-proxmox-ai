@@ -1,0 +1,333 @@
+from __future__ import annotations
+
+from conftest import (
+    PATCHED_KANBAN_GOAL_LOOP_SOURCE,
+    PINNED_BOOST_CAP_SOURCE,
+    PINNED_COMPRESSOR_SCAN_SOURCE,
+    PINNED_CREATE_TASK_SOURCE,
+    PINNED_CRON_DELIVERY_SOURCE,
+    PINNED_GOAL_COMPLETION_SOURCE,
+    PINNED_HINDSIGHT_PREFETCH_SOURCE,
+    PINNED_JUDGE_ERROR_SENTINEL_SOURCE,
+    PINNED_KANBAN_GOAL_LOOP_SOURCE,
+    PINNED_PROTOCOL_RETRY_SOURCE,
+    PINNED_PROTOCOL_VIOLATION_SOURCE,
+    PINNED_STALE_RECLAIM_TERMINATE_SOURCE,
+    PINNED_TC_BOOST_CAP_SOURCE,
+    PINNED_WORKER_REAP_SOURCE,
+    PINNED_WORKER_SPAWN_SOURCE,
+    _apply_runtime_patch,
+    _source_postconditions,
+    _task,
+)
+
+def test_installed_source_postconditions_fail_closed() -> None:
+    read_task = _task("Read installed Hermes pinned-source patches")
+    assert "ansible.builtin.slurp" in read_task
+    assert read_task["register"] == "hermes_agent_goal_mode_sources"
+    # The assert task indexes results[] positionally, so the slurp order is
+    # load-bearing: a file inserted anywhere but the end silently re-points
+    # every later assertion at the wrong source.
+    assert [path.split("}}/")[-1] for path in read_task["loop"]] == [
+        "tools/kanban_tools.py",
+        "hermes_cli/kanban_db.py",
+        "hermes_cli/goals.py",
+        "agent/conversation_loop.py",
+        "agent/auxiliary_client.py",
+        "agent/context_compressor.py",
+        "cron/scheduler.py",
+        "plugins/memory/hindsight/__init__.py",
+        "run_agent.py",
+    ]
+
+    assert_task = _task("Assert installed Hermes pinned-source patches")
+    conditions = " ".join(assert_task["ansible.builtin.assert"]["that"])
+    assert "verdict, reason, _, _ = judge_goal(" in conditions
+    assert "DEFAULT_JUDGE_TIMEOUT =" in conditions
+    assert "SELECT id, status FROM tasks" in conditions
+    assert (
+        'if goal_mode and row["status"] in ("triage", "todo", "scheduled", '
+        '"ready", "blocked", "review"):'
+        in conditions
+    )
+    assert "goal_max_turns = COALESCE(?, goal_max_turns)" in conditions
+    assert any(
+        '*(["--quiet"] if task.goal_mode else []),' in condition
+        and ".count(" in condition
+        and ") == 1" in condition
+        for condition in assert_task["ansible.builtin.assert"]["that"]
+    )
+    assert any(
+        '"-q", prompt,' in condition
+        and ".count(" in condition
+        and ") == 1" in condition
+        for condition in assert_task["ansible.builtin.assert"]["that"]
+    )
+    assert '["--quiet"]' in conditions
+    assert "WHERE id = ? AND status IN" in conditions
+    assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in conditions
+    assert "status in (408, 429)" in conditions
+    assert "for idx in range(min(end, len(messages)) - 1, start - 1, -1):" in conditions
+    assert "deliver_content = _cron_markup_guard(job, output_file," in conditions
+    # A failed run must reach the issues channel, not the work surface.
+    assert "_deliver_result(_routed_job, deliver_content," in conditions
+    assert (
+        "registered for dispatcher-spawned workers (HERMES_KANBAN_TASK "
+        in conditions
+    )
+    # The message and the retry rule are asserted as a pair: the message tells
+    # the operator the card will be retried, so it must not be able to land
+    # while the forced first-failure give-up is still in the source.
+    assert (
+        "a missing toolset. The card is retried within its own max_retries"
+        in conditions
+    )
+    assert "failure_limit=1 if is_systemic else None," in conditions
+    assert (
+        'logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)'
+        in conditions
+    )
+    assert 'if reason.startswith("judge error: "):' in conditions
+    assert "blocked_judge_unreachable" in conditions
+    # The upstream sentinel producer must stay pinned: reworded upstream, the
+    # guard would silently never fire.
+    assert (
+        'return "continue", f"judge error: {type(exc).__name__}", False, None'
+        in conditions
+    )
+    assert any(
+        "judge_failures = 0" in condition
+        and ".count(" in condition
+        and ") == 2" in condition
+        for condition in assert_task["ansible.builtin.assert"]["that"]
+    )
+    assert any(
+        "_boost_cap = agent.max_tokens if agent.max_tokens else max(" in condition
+        and ".count(" in condition
+        and ") == 2" in condition
+        for condition in assert_task["ansible.builtin.assert"]["that"]
+    )
+    assert 'resolved_provider != "custom"' in conditions
+    assert "update the pinned-source patches" in assert_task["ansible.builtin.assert"][
+        "fail_msg"
+    ]
+
+    completion_source = _apply_runtime_patch(
+        "Patch Hermes goal completion gate for the four-value judge result",
+        PINNED_GOAL_COMPLETION_SOURCE,
+    )
+    reconcile_source = _apply_runtime_patch(
+        "Patch Hermes idempotent create to reconcile goal-mode fields",
+        PINNED_CREATE_TASK_SOURCE,
+    )
+    reconcile_source = (
+        _apply_runtime_patch(
+            "Patch Hermes Kanban workers to enter the quiet goal-loop path",
+            PINNED_WORKER_SPAWN_SOURCE,
+        )
+        + reconcile_source
+        + _apply_runtime_patch(
+            "Patch Hermes protocol-violation message to name the "
+            "model-did-not-call case",
+            PINNED_PROTOCOL_VIOLATION_SOURCE,
+        )
+        + _apply_runtime_patch(
+            "Patch Hermes protocol-violation crashes to retry within the card budget",
+            PINNED_PROTOCOL_RETRY_SOURCE,
+        )
+    )
+    worker_reap_source = PINNED_WORKER_REAP_SOURCE
+    for patch_name in (
+        "Patch Hermes worker-reap timeout path to verify PID safety before signaling",
+        "Patch Hermes worker-reap timeout path to signal the worker's process group",
+        "Patch Hermes worker-reap timeout path to escalate on the worker's process group",
+    ):
+        worker_reap_source = _apply_runtime_patch(patch_name, worker_reap_source)
+    # The blockinfile-inserted identity-check helper the three replaces
+    # above call into — landed separately from them at converge time, so
+    # the assert conditions checking for it need it present here too.
+    worker_reap_source = (
+        _task(
+            "Patch Hermes worker-reap helper to verify PID identity before signaling"
+        )["ansible.builtin.blockinfile"]["block"]
+        + worker_reap_source
+    )
+    reconcile_source += worker_reap_source
+
+    stale_reclaim_source = PINNED_STALE_RECLAIM_TERMINATE_SOURCE
+    for patch_name in (
+        "Patch Hermes stale-reclaim worker termination to verify PID safety before signaling",
+        "Patch Hermes stale-reclaim worker termination to signal the worker's process group",
+        "Patch Hermes stale-reclaim worker termination to escalate on the worker's process group",
+    ):
+        stale_reclaim_source = _apply_runtime_patch(patch_name, stale_reclaim_source)
+    # The blockinfile-inserted identity-check helper both the timeout-path
+    # and stale-reclaim-path signal sites call into.
+    stale_reclaim_source = (
+        _task(
+            "Patch Hermes worker-reap helper to verify PID identity before signaling"
+        )["ansible.builtin.blockinfile"]["block"]
+        + stale_reclaim_source
+    )
+    reconcile_source += stale_reclaim_source
+    # The six client-side backoff hacks are gone (see
+    # test_client_side_backoff_hacks_stay_reverted); only the two kept
+    # max_tokens-ceiling patches still contribute to this source.
+    retry_source = _apply_runtime_patch(
+        "Patch hermes-agent retry boost to respect the configured max_tokens ceiling",
+        PINNED_TC_BOOST_CAP_SOURCE,
+    )
+    retry_source += _apply_runtime_patch(
+        "Patch hermes-agent length-continuation boost to respect the configured "
+        "max_tokens ceiling",
+        PINNED_BOOST_CAP_SOURCE,
+    )
+    auxiliary_source = "\n".join(
+        (
+            "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0",
+            "return isinstance(status, int) and (status in (408, 429) or 500 <= status < 600)",
+            'if should_fallback and (is_auto or (is_capacity_error and resolved_provider != "custom")):',
+        )
+    )
+    assert all(
+        _source_postconditions(
+            completion_source, reconcile_source, retry_source, auxiliary_source
+        )
+    )
+    assert not all(
+        _source_postconditions(
+            PINNED_GOAL_COMPLETION_SOURCE,
+            PINNED_CREATE_TASK_SOURCE,
+            "",
+            "",
+        )
+    )
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source.replace("COALESCE(?, goal_max_turns)", "?"),
+            retry_source,
+            auxiliary_source,
+        )
+    )
+    # Each newly-covered patch, dropped one at a time. Without these the
+    # assertions could be decorative — present in the task file, but
+    # incapable of going red on the failure they exist to catch.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            compressor_source=PINNED_COMPRESSOR_SCAN_SOURCE,
+        )
+    )
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            cron_scheduler_source=PINNED_CRON_DELIVERY_SOURCE,
+        )
+    )
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source.replace(
+                "registered for dispatcher-spawned workers (HERMES_KANBAN_TASK ",
+                "",
+            ),
+            retry_source,
+            auxiliary_source,
+        )
+    )
+    # The forced first-failure give-up left in place: a protocol violation
+    # would still retire the card on its first occurrence, so the postconditions
+    # must go red even though the reworded message landed.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source.replace(
+                "failure_limit=1 if is_systemic else None,",
+                "failure_limit=1 if (protocol_violation or is_systemic) else None,",
+            ),
+            retry_source,
+            auxiliary_source,
+        )
+    )
+    # The judge-error guard dropped (upstream loop unpatched): must go red
+    # even though the sentinel producer is still present.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            goal_judge_source=(
+                "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
+                + PINNED_JUDGE_ERROR_SENTINEL_SOURCE
+                + PINNED_KANBAN_GOAL_LOOP_SOURCE
+            ),
+        )
+    )
+    # The upstream sentinel producer drifted out from under the guard: the
+    # patched loop alone must not satisfy the postconditions.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            goal_judge_source=(
+                "DEFAULT_JUDGE_TIMEOUT = 60.0\n" + PATCHED_KANBAN_GOAL_LOOP_SOURCE
+            ),
+        )
+    )
+    # The length-continuation boost dropped while the _tc_ one landed. The
+    # needle `_boost_cap = agent.max_tokens ...` still occurs once (inside
+    # the _tc_boost_cap line), so only the ==2 count catches this — a plain
+    # substring assertion would pass here with the patch missing.
+    retry_source_tc_only = retry_source.replace(
+        "_boost_cap = agent.max_tokens if agent.max_tokens else max("
+        "32768, _requested_cap or 0)",
+        "_boost_cap = max(32768, _requested_cap or 0)",
+    )
+    assert "_tc_boost_cap = agent.max_tokens" in retry_source_tc_only
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source_tc_only,
+            auxiliary_source,
+        )
+    )
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            hindsight_plugin_source=PINNED_HINDSIGHT_PREFETCH_SOURCE,
+        )
+    )
+    # Worker-reap process-group guard dropped: reconcile_source reverts to
+    # not carrying the patched reap at all — must go red.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source.replace(worker_reap_source, ""),
+            retry_source,
+            auxiliary_source,
+        )
+    )
+    # Stale-reclaim process-group guard dropped: reconcile_source reverts to
+    # not carrying the patched reclaim termination at all — must go red.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source.replace(stale_reclaim_source, ""),
+            retry_source,
+            auxiliary_source,
+        )
+    )

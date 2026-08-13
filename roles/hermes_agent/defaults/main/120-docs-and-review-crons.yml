@@ -1,0 +1,96 @@
+---
+# --- Docs sync: bounded delta -> signed draft PRs via the docs-pr skill -----
+# Weekly (Mon 08:13 UTC). Discovers doc-worthy deltas since the last run and
+# defers privacy routing, signed commits, and redaction to the docs-pr skill
+# (which uses the hermes GitHub App above). Body from the pinned catalog.
+hermes_agent_docs_sync_enabled: true
+hermes_agent_docs_sync_cron_name: docs-sync
+hermes_agent_docs_sync_cron_schedule: "13 8 * * 1"
+hermes_agent_docs_sync_cron_prompt_file: hermes-docs-sync.md
+
+# --- Repo scorecard: weekly weighted repo-health scoring, read-only ---------
+# Absorbed from the retired estate-briefing cloud routine (2026-08-06), which
+# ran on a substrate that has produced nothing since 2026-07-01. Only the
+# weekly scorecard survived the move: the daily-briefing half was already
+# duplicated by github-triage and the daily summary. Scores every non-archived
+# repo 0-100 on seven weighted factors and reports week-over-week deltas.
+#
+# Delta state is a MEMORY key (repo-scorecard-last), not a state repo — the
+# routine's state-file path is exactly what broke, and memory is the store
+# every other Hermes job already uses. Monday 09:19 keeps it clear of
+# docs-sync (Mon 08:13) so the two weekly jobs never start together.
+hermes_agent_repo_scorecard_enabled: true
+hermes_agent_repo_scorecard_cron_name: repo-scorecard
+hermes_agent_repo_scorecard_cron_schedule: "19 9 * * 1"
+hermes_agent_repo_scorecard_cron_prompt_file: hermes-repo-scorecard.md
+
+# --- Secrets policy audit: issue-only credential scan -----------------------
+# Absorbed from the retired repo-audit cloud routine (2026-08-06). Only the
+# secrets-policy rule moved: it files an issue and never a pull request, which
+# is what makes it legal for an agent that must never make code commits. The
+# no-scripts and claude-md-staleness rules stayed behind — existing skills
+# already cover both, and the 3-rule daily rotation was a scheduling artifact.
+#
+# Gated on BOTH tokens for the same reason bot-pr-triage is: the alerts token
+# carries the contents:read needed to scan source, the issues PAT carries the
+# issue write. The prompt itself also refuses to run without the read token
+# rather than scanning nothing and reporting a clean estate. Daily 05:31 sits
+# clear of the */6 sweeps (:26, :43) and the hourly fabric status (:04).
+hermes_agent_secrets_audit_enabled: true
+hermes_agent_secrets_audit_cron_name: secrets-policy-audit
+hermes_agent_secrets_audit_cron_schedule: "31 5 * * *"
+hermes_agent_secrets_audit_cron_prompt_file: hermes-secrets-policy-audit.md
+
+# --- Daily operator summary: the home channel's ONE curated post ------------
+# 3-tier routing gives the verbose crons the firehose channel; this job is what
+# the home channel is FOR now — a once-daily, delta-only rollup across every
+# domain Hermes watches. It reads its own recent findings (memory/wiki), not
+# the world — no new queries beyond what a claim needs to be current.
+hermes_agent_summary_cron_name: daily-summary
+# 12:00 UTC — start of the operator's day; the previous 24h of findings are in.
+hermes_agent_summary_cron_schedule: "0 12 * * *"
+hermes_agent_summary_cron_prompt: >-
+  Post the once-daily operator summary to this channel, built from your own
+  last-24h cron findings and memory (Splunk, Zammad incidents
+  opened/updated/resolved, fabric health, GitHub org findings). For Splunk
+  ingest volume specifically, recall memory key "daily-operator-summary-last"
+  (saved by the separate daily-operator-summary-v2 job) instead of re-querying
+  it yourself — that job already owns per-index event/host counts; do not
+  duplicate its Splunk tool calls here. STRICT rules: deltas and open action
+  items only — never restate unchanged or benign status; every line must be
+  either NEW since yesterday's summary or an open item awaiting a human. Lead
+  with anything needing operator action. No Markdown tables (Slack does not
+  render them) — short lines or key: value pairs. At most 15 lines. Recall
+  memory key "daily-summary-last" to compute the delta and save today's
+  fingerprint back to it. If genuinely nothing new and nothing open, say
+  exactly that in one line — never pad. Self-check before posting: every line
+  is a delta or an open action item — drop anything that is unchanged or
+  benign status.
+
+# --- Zammad review: proactive incident lifecycle across ALL queues ----------
+# Operator directive 2026-07-18: Hermes proactively READS open Zammad
+# incidents (not just its own), proves finished ones complete, enriches open
+# ones, resolves what it can prove, and DMs genuinely NEW incidents. The
+# working report always posts to the firehose; the DM is reserved for new
+# incidents so it stays an urgent-only surface. Gated (in tasks) on the Zammad
+# URL + token being set alongside the Slack gates.
+hermes_agent_zammad_review_cron_name: zammad-review
+# Every 2h at :41 — staggered clear of the other cron minutes (0,7,22,26,52).
+hermes_agent_zammad_review_cron_schedule: "41 */2 * * *"
+hermes_agent_zammad_review_cron_prompt: >-
+  Review open Zammad incidents across ALL groups and queues, not just your
+  own. Recall memory key "zammad-review-last" (incident ids + states you saw
+  last run) and work the DELTA. For each open incident: (1) check whether
+  evidence now proves it complete — verify with your available probes (fabric
+  health checks, prior article history), and if proven, RESOLVE the ticket yourself
+  with a closing article stating the evidence — never just recommend closing;
+  (2) if you find genuinely NEW information or a plausible solution, append
+  ONE article with it — never repeat what an earlier article already says;
+  (3) leave incidents you cannot advance untouched. If any incident is NEW
+  since your last run, DM the operator immediately: one line per incident —
+  id, title, severity, why it matters. Then post your working report here:
+  what you reviewed, advanced, resolved (with evidence), and skipped. No
+  Markdown tables. Self-check before finishing: every article you appended
+  carries NEW information not already in the ticket, and every resolution cites
+  the evidence that proved it. Save the updated id+state map back to
+  "zammad-review-last".

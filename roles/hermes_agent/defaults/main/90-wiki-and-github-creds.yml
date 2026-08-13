@@ -1,0 +1,84 @@
+---
+# --- llm-wiki knowledge base ---
+hermes_agent_wiki_enabled: true
+hermes_agent_wiki_path: "{{ hermes_agent_home }}/wiki"
+hermes_agent_context_compression_enabled: true
+# MEASURED FAILURE MODE — read this before changing the threshold or the card
+# runtime budgets. Compaction can enter a self-sustaining loop that consumes a
+# card's ENTIRE budget while producing nothing.
+#
+# 2026-08-05, one card's own log over a 35-minute window: 19 lines total, of
+# which 17 were "compacting context" and 2 were anything else. One of the two
+# was the agent stating the mechanism itself — "Memory is full. I need to
+# compact it". Fleet-wide over 7 days: 1,065 compaction events against 412
+# card-run starts, 23 "Session compressed N times - accuracy may degrade", and
+# 10 "Memory is full".
+#
+# Each cycle is expensive because compaction ships the whole near-full context
+# back: those calls carried 178-213 KB payloads and took 43-68s, against a
+# 15.7s p50 for ordinary work calls. Gate contention does not CAUSE the loop but
+# roughly doubles its cost (68% of attempts in the sampled window were 429).
+#
+# What distinguishes a failing run is NOT call count or prompt size. A run of
+# the same card that COMPLETED did 22 compactions — more than the failed one —
+# but each was followed by productive output. The failed run's are back-to-back
+# with nothing in between. The property that matters is whether a compaction
+# yields ground back to work.
+#
+# DO NOT "fix" this by raising the card max_runtime. The loop is unbounded, so a
+# bigger budget buys more compactions, not more work.
+#
+# The threshold itself is NOT misconfigured: 0.75 x 65,536 = 49,152 tokens, and
+# the live router really does serve hermes-default with max_input_tokens=65536
+# (verified against /model/info, not inferred). Measured prompt sizes on the
+# serving tier are median 3,366 / p90 49,941, i.e. p90 sits ON the trigger. The
+# underlying model supports far more than the router advertises, so raising the
+# ceiling is possible — but it is a ROUTER change first, and KV-cache growth
+# then interacts with the per-worker memory budget in nix-darwin
+# hosts/common/residency-budget.nix. Do not raise this value alone.
+#
+# Evidence and both candidate fixes: Zammad 17202.
+hermes_agent_context_compression_threshold: 0.75
+hermes_agent_nightly_wiki_cron_name: hermes-nightly-wiki
+hermes_agent_nightly_wiki_cron_schedule: "0 2 * * *"
+hermes_agent_nightly_wiki_cron_prompt_file: hermes-nightly-wiki-health.md
+
+# --- autonomous GitHub docs-contributor ---
+hermes_agent_github_app_id: ""
+hermes_agent_github_app_installation_id: ""
+hermes_agent_github_app_private_key: ""
+
+# --- GitHub issues + org projects PAT (fine-grained) ---
+# Grants read/write GitHub Issues across ALL repos and read/write Projects (v2)
+# in the dryvist org — for triaging/creating/updating issues and managing project
+# boards. NOT for code commits (that is the signed docs-pr / GitHub App path) and
+# NOT for merges. Bao-first (local-llm domain, secret/ai/hermes), env fallback
+# (see group_vars); empty until the token is present. The bundled
+# dryvist/github-issues skill documents how the agent should use it.
+hermes_agent_github_issues_pat: ""
+
+# --- GitHub security-alert read token (for the bot-PR triage job) ---
+# Read-only. Reads code-scanning + Dependabot alerts and PR files/diffs across
+# all repos (security_events:read, vulnerability_alerts:read, contents:read,
+# pull_requests:read). Separate from the issues PAT, which supplies the label
+# WRITE. The bot-pr-triage card gates on BOTH tokens. Bao-first, env fallback
+# (see group_vars); empty until seeded — the card stays disabled until then.
+hermes_agent_github_alerts_token: ""
+
+# --- GitHub read-only token (github-maint profile) -------------------------
+# Read-only across the dryvist org: issues, pull requests, contents, metadata.
+# NO write scope of any kind — no issues:write, no comments, no labels, no
+# pushes. This is the ONLY GitHub credential the github-maint profile carries,
+# and it is what makes that profile's read-only contract enforceable rather
+# than advisory: a write call fails at the API, not at the prompt.
+#
+# Delivered under the GH_PAT_WRITE_PROJECT_ISSUES key in that profile's .env
+# (templates/hermes-env-profile.j2) because that is the variable the bundled
+# dryvist/github-issues skill authenticates with — the key name is the
+# transport, the VALUE carries the scope. Reusing it is what lets the profile
+# reuse the existing skill unchanged instead of forking one.
+#
+# Bao-first (local-llm domain, secret/ai/hermes), env fallback (see
+# group_vars); empty until seeded, which keeps the github-maint cron below
+# inert — same posture as the alerts token above.
+hermes_agent_github_read_token: ""

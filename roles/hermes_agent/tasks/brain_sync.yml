@@ -1,0 +1,77 @@
+---
+# --- Retained optional brain runtime sync ------------------------------------
+# Disabled by default while model selection is owned directly by router aliases.
+- name: Check for the retained Hermes brain-sync timer
+  ansible.builtin.stat:
+    path: /etc/systemd/system/hermes-brain-sync.timer
+  register: hermes_agent_brain_sync_timer_unit
+  when: not (hermes_agent_brain_sync_enabled | bool)
+
+- name: Stop and disable the retained Hermes brain-sync timer
+  ansible.builtin.systemd:
+    name: hermes-brain-sync.timer
+    state: stopped
+    enabled: false
+    daemon_reload: true
+  when:
+    - not (hermes_agent_brain_sync_enabled | bool)
+    - hermes_agent_brain_sync_timer_unit.stat.exists | default(false)
+
+- name: Ensure the brain-sync state directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_agent_brain_sync_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: hermes_agent_brain_sync_enabled | bool
+
+- name: Seed the brain-sync state file with the converge-time default
+  ansible.builtin.copy:
+    content: "{{ hermes_agent_model }}\n"
+    dest: "{{ hermes_agent_brain_sync_state_file }}"
+    owner: root
+    group: root
+    mode: "0644" # world-readable: the hermes-owned brain-watchdog reads this too
+  when: hermes_agent_brain_sync_enabled | bool
+
+- name: Deploy the brain-sync OpenBao credential file (root-only, separate from .env)
+  ansible.builtin.template:
+    src: hermes-brain-sync.env.j2
+    dest: "{{ hermes_agent_brain_sync_env_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: hermes_agent_brain_sync_enabled | bool
+
+- name: Deploy the Hermes brain-sync script
+  ansible.builtin.template:
+    src: hermes-brain-sync.sh.j2
+    dest: "{{ hermes_agent_brain_sync_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart hermes-brain-sync timer
+  when: hermes_agent_brain_sync_enabled | bool
+
+- name: Deploy the Hermes brain-sync systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - hermes-brain-sync.service
+    - hermes-brain-sync.timer
+  notify: Restart hermes-brain-sync timer
+  when: hermes_agent_brain_sync_enabled | bool
+
+- name: Enable and start the Hermes brain-sync timer
+  ansible.builtin.systemd:
+    name: hermes-brain-sync.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: hermes_agent_brain_sync_enabled | bool
