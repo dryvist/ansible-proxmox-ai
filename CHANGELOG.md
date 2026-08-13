@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.26.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.25.0...v0.26.0) (2026-08-13)
+
+
+### Features
+
+* enable local Browser Use for Hermes ([#426](https://github.com/dryvist/ansible-proxmox-ai/issues/426)) ([ee88eb9](https://github.com/dryvist/ansible-proxmox-ai/commit/ee88eb93e7f63204992b1f68a008303bd41dd75f))
+* **hermes_agent:** add browser tools and a configured web extract backend ([#420](https://github.com/dryvist/ansible-proxmox-ai/issues/420)) ([d4a9a91](https://github.com/dryvist/ansible-proxmox-ai/commit/d4a9a9151317e70ab3faedf3e0f7b80a70148c1d))
+
+
+### Bug Fixes
+
+* **hermes_agent:** store the version bare and derive the tag ([#424](https://github.com/dryvist/ansible-proxmox-ai/issues/424)) ([94c1a66](https://github.com/dryvist/ansible-proxmox-ai/commit/94c1a663ad24853ba22dd24dde001e0058477c85))
+* **renovate:** restore dependency tracking for the hermes_agent pins ([#419](https://github.com/dryvist/ansible-proxmox-ai/issues/419)) ([4b1db12](https://github.com/dryvist/ansible-proxmox-ai/commit/4b1db12b599ebfc240e3ca1cbf5927664fb37ec3))
+* **renovate:** restore the nix-hermes pin's own extractVersion ([#425](https://github.com/dryvist/ansible-proxmox-ai/issues/425)) ([de7efd7](https://github.com/dryvist/ansible-proxmox-ai/commit/de7efd75eaa529ff219072095439040c26def3dd))
+
 ## [0.25.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.24.3...v0.25.0) (2026-08-09)
 
 
