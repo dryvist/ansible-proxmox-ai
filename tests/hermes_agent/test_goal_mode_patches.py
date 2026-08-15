@@ -19,6 +19,7 @@ from conftest import (
     PINNED_GOAL_COMPLETION_SOURCE,
     PINNED_HINDSIGHT_PREFETCH_SOURCE,
     PINNED_WORKER_SPAWN_SOURCE,
+    PATCHED_JUDGE_CALL_SOURCE,
     PATCHED_KANBAN_GOAL_LOOP_SOURCE,
     role_tasks,
     role_tasks_text,
@@ -202,6 +203,43 @@ def test_judge_failure_counter_resets_on_any_real_verdict() -> None:
     assert state["worker_turns"] == 2
     assert result["turns_used"] == 3
     assert fake_time.sleeps == [15.0] * 8
+
+
+GOAL_JUDGE_LATENCY_PATCH_NAMES = (
+    "Patch Hermes goal judge to time its model call",
+    "Patch Hermes goal judge to emit its model call latency",
+)
+
+
+def test_goal_judge_emits_the_worker_latency_field_shape() -> None:
+    # The judge call must be timed around the call itself and reported with the
+    # worker line's own `model=` / `latency=%.1fs` fields — same names, same
+    # seconds, same format — so one Splunk search covers both call paths.
+    assert PATCHED_JUDGE_CALL_SOURCE.count("_judge_started = time.monotonic()") == 1
+    assert (
+        '"goal judge: API call model=%s latency=%.1fs",'
+        in PATCHED_JUDGE_CALL_SOURCE
+    )
+    assert PATCHED_JUDGE_CALL_SOURCE.index(
+        "_judge_started = time.monotonic()"
+    ) < PATCHED_JUDGE_CALL_SOURCE.index("resp = call_llm(")
+    # Emitted after the call returned and before the verdict is parsed, so a
+    # failed call (which returns early) never reports a latency.
+    assert PATCHED_JUDGE_CALL_SOURCE.index(
+        "latency=%.1fs"
+    ) < PATCHED_JUDGE_CALL_SOURCE.index("_parse_judge_response(raw)")
+    # The insertions carry their own indentation from the regexp capture, so
+    # compile the result: a mis-indented insert is a SyntaxError on the guest.
+    compile("def judge_goal():\n" + PATCHED_JUDGE_CALL_SOURCE, "<patched>", "exec")
+
+
+def test_goal_judge_latency_patches_are_idempotent() -> None:
+    # Both patches self-normalize (optional-group regexps): every converge
+    # re-runs them over already-patched source, and a second insertion would
+    # double-time and double-log every judge verdict.
+    patched = PATCHED_JUDGE_CALL_SOURCE
+    for name in GOAL_JUDGE_LATENCY_PATCH_NAMES:
+        assert _apply_runtime_patch(name, patched) == patched
 
 
 def test_judge_error_guard_patches_are_idempotent() -> None:

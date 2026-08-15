@@ -113,6 +113,57 @@
       \1_log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
   notify: Restart hermes-gateway
 
+# index=hermes is this fabric's latency telemetry (roles/hermes_agent/docs/splunk.md).
+# The worker path emits its own timing — `API call #N: model=... latency=%.1fs`
+# from conversation_loop.py — but the goal judge's model call goes out through
+# the auxiliary client, which emits no timing at all, so judge latency is
+# unmeasurable from the index the rest of the fabric is measured in.
+#
+# The two patches below time that call at its own call site and log it with the
+# SAME `model=` / `latency=` field names, units and `%.1fs` format the worker
+# line uses, so a single search covers both paths. Split in two because each
+# insertion is a PREFIX to its anchor, which is what makes the
+# `(?:...\n\1)*` optional-repeat form self-normalizing: re-running either patch
+# over already-patched source rewrites it byte-identically instead of inserting
+# a second copy (`hermes update` re-extracts the source, so both re-run every
+# converge). The call anchor carries JUDGE_SYSTEM_PROMPT deliberately — the same
+# `call_llm(task="goal_judge", ...)` shape also appears in `draft_contract`,
+# which is a one-off contract draft, not the per-turn verdict being measured.
+- name: Patch Hermes goal judge to time its model call
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
+    regexp: |-
+      ^([ \t]*)(?:_judge_started = time\.monotonic\(\)\n\1)*resp = call_llm\($
+      \1    task="goal_judge",$
+      \1    messages=\[$
+      \1        \{"role": "system", "content": JUDGE_SYSTEM_PROMPT\},$
+    replace: |-
+      \1_judge_started = time.monotonic()
+      \1resp = call_llm(
+      \1    task="goal_judge",
+      \1    messages=[
+      \1        {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+  notify: Restart hermes-gateway
+
+- name: Patch Hermes goal judge to emit its model call latency
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
+    regexp: |-
+      ^([ \t]*)(?:logger\.info\($
+      \1    "goal judge: API call model=%s latency=%\.1fs",$
+      \1    getattr\(resp, "model", None\) or "unknown",$
+      \1    time\.monotonic\(\) - _judge_started,$
+      \1\)$
+      \1)*verdict, reason, parse_failed, wait_directive = _parse_judge_response\(raw\)$
+    replace: |-
+      \1logger.info(
+      \1    "goal judge: API call model=%s latency=%.1fs",
+      \1    getattr(resp, "model", None) or "unknown",
+      \1    time.monotonic() - _judge_started,
+      \1)
+      \1verdict, reason, parse_failed, wait_directive = _parse_judge_response(raw)
+  notify: Restart hermes-gateway
+
 # A model that writes its tool call as TEXT (`<function=...>`, `<parameter=...>`)
 # instead of issuing it leaves that markup as its entire final response, and cron
 # delivery posts it verbatim — garbage in Slack, observed on three separate
