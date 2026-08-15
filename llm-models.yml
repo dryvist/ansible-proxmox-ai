@@ -9,9 +9,11 @@
 # PURE DATA, DELIBERATELY — no Jinja, no host/port/URL literals, no secrets;
 # topology values stay in the role, selected by `tier`/`endpoint` below.
 #
-# Field reference, the "why" behind PURE DATA, and incident history:
-# docs/LLM_MODELS_SCHEMA.md — split out to keep this data file under the
-# repo's per-file token budget.
+# Field reference and the "why" behind PURE DATA: docs/LLM_MODELS_SCHEMA.md.
+# Per-entry incident history and selection rationale:
+# docs/LLM_MODELS_REGISTRY_NOTES.md. Both split out of here to keep this data
+# file under the repo's per-file token budget — the same reason applies to the
+# next long note anyone wants to add: write it there, leave a pointer here.
 #
 
 llm_router_model_registry:
@@ -35,20 +37,33 @@ llm_router_model_registry:
     enabled: true
     context_window: 32768
 
-  # THE RESIDENT. 65536, not the 32768 it carried until 2026-07-28: that was the
-  # SWAP-class figure, and this model is resident. Its resident profile in nix-ai
-  # catalog-data.nix is provisioned cacheMemoryMb = 16384 with
-  # maxRequestTokens = 65536, and the catalog comment states 65536 "avoids the
-  # 32768 truncation/retry death-loop". Advertising half the real window does not
-  # protect anything — it just makes Hermes auto-compact at 24.5K (75% of 32768)
-  # when ~49K is actually available.
+  # THE PRIMARY, since 2026-08-14. The serving host now holds TWO models warm
+  # (dryvist/nix-darwin lib/hosts/mac-studio.nix, "Two warm brains"): a dense 27B
+  # for deliberate work and the 35B MoE below for routine work. This entry is the
+  # deliberate one, so the consumer aliases resolve here.
+  #
+  # 65536 matches its resident profile in nix-ai catalog-data.nix
+  # (cacheMemoryMb = 16384, maxRequestTokens = 65536). Advertising half the real
+  # window does not protect anything — it just makes Hermes auto-compact at 24.5K
+  # (75% of 32768) when ~49K is actually available.
+  #
+  # THINKING IS ON for this model, configured serving-side: the catalog passes
+  # --chat-template-args {"reasoning_effort":"medium"} and this registry does not
+  # restate it. That is deliberate — sampling/serving posture belongs to whoever
+  # launches the worker, and a second spelling here is the drift this file
+  # exists to remove. Unset, the model's own template defaults the effort to
+  # `xhigh`, which measured 0 answer characters on 3 of 3 runs; `medium` answers
+  # and finishes. It is a prompt string, not a budget, so responses are longer
+  # and slower than the 35B's — that is the point of a deliberate tier, and the
+  # router's own request budget (ai_router_request_timeout_seconds 2400,
+  # ai_stream_read_timeout_seconds 1800) already covers minutes-long answers.
   #
   # Its aliases are the fabric's stable consumer handles. `interim-brain` is a
   # handle so hermes_brain_model (or secret/ai/public/brain) can repoint in one
   # line; it tracks the primary rather than naming its own model, because a
   # second physical id there is exactly the drift this registry prevents.
-  - client_model_id: mlx-community/Qwen3.6-35B-A3B-4bit
-    upstream_model_id: mlx-community/Qwen3.6-35B-A3B-4bit
+  - client_model_id: mlx-community/Qwen3.8-27B-4bit
+    upstream_model_id: mlx-community/Qwen3.8-27B-4bit
     provider: openai
     tier: large
     enabled: true
@@ -60,29 +75,51 @@ llm_router_model_registry:
       - tool-calling
       - interim-brain
 
-  # THE SMALL TIER — the on-demand 9B that stays servable beside the resident
-  # (nix-ai alwaysAvailableModels) and never evicts it. A first-class entry
-  # because goal-judge points here, and an alias target with no context_window
-  # falls through the "*" wildcard to a null max_input_tokens and compresses its
-  # caller to death. 32768 is the small-cache tier figure, matching the swap
-  # flags it loads under.
+  # THE ROUTINE TIER — the second warm model, resident beside the primary rather
+  # than swapping against it (nix-darwin maxResidentWorkers = 2). It held
+  # `serving_role: primary` and all three consumer aliases until 2026-08-14; both
+  # moved to the 27B above and this entry stayed servable, because it is: the
+  # host serves it, verified from the worker's own command line at converge.
   #
-  # It is the only model that may differ from the primary (user decision
-  # 2026-07-28 — concurrency belongs to the largest accurate model, the small
-  # tier stays cross-family to it, which is also what an LLM judge should be).
-  # The judge runs here and NOT on the worker's model: same-model judging is
-  # self-preference bias by construction, and it also made worker and judge
-  # contend for one serving slot.
+  # It carries a serving_role rather than none so the registry's real invariant
+  # still holds — servable if and only if the entry names the role it serves in.
+  # Its 65536 window is the same resident profile figure as the primary's.
   #
-  # CORRECTED 2026-08: this used to be described as "always up for the judge".
-  # Measured live against the deployed serving host and it is false — the
-  # deployed llama-swap config (nix-ai modules/mlx/llama-swap-topology.nix) has
-  # the PRIMARY pinned resident (ttl=0) and THIS model as the evictable
-  # swap-class member (ttl=900), the opposite of what was claimed. Measured
-  # cold-load after eviction: ~79s, which exceeds
-  # hermes_agent_kanban_goal_judge_timeout_seconds (60s) — see the goal-judge
-  # comment in roles/hermes_agent/defaults/main.yml for the full incident and the
-  # precondition for using this model as the judge target again.
+  # IT IS ALSO THE UNIVERSAL JUDGE (2026-08-15). `goal-judge` moved here from
+  # the 9B for one reason: residency. This model is pinned resident (ttl=0) and
+  # cannot be evicted, so a judge call costs no cold load — where the 9B is
+  # swap-class (ttl=900) with a MEASURED ~79s cold load, and at the 2-3 goal
+  # cards/hour this fabric drains it evicts between nearly every card, so almost
+  # every judge call paid that tax in full. Residency was always the real fix;
+  # it arrived with maxResidentWorkers = 2 rather than with a timeout raise.
+  #
+  # It stays cross-generation to the worker (Qwen3.6 judging Qwen3.8), which is
+  # what the no-self-preference rule actually requires, and thinking is off here
+  # so a verdict does not pay the primary's deliberation cost. The judge and the
+  # worker are separate resident workers with their own serving slots, so they
+  # no longer serialize against each other either.
+  - client_model_id: mlx-community/Qwen3.6-35B-A3B-4bit
+    upstream_model_id: mlx-community/Qwen3.6-35B-A3B-4bit
+    provider: openai
+    tier: large
+    enabled: true
+    context_window: 65536
+    servable: true
+    serving_role: routine
+    stable_aliases:
+      - goal-judge
+
+  # THE SMALL TIER — the on-demand 9B that stays servable beside the two warm
+  # models and never evicts either. 32768 is the small-cache tier figure,
+  # matching the swap flags it loads under.
+  #
+  # It HELD `goal-judge` until 2026-08-15; that alias moved to the resident 35B
+  # because this model's swap-class cold load (~79s, measured) was the judge's
+  # actual failure mode. It keeps serving_role: small and stays servable — it is
+  # the trivial-task tier and an hourly note-capture pipe requests its physical
+  # id — it just is not the judge. Why it is a first-class entry rather than a
+  # bare alias target, and the full cold-load correction:
+  # docs/LLM_MODELS_REGISTRY_NOTES.md.
   - client_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
     upstream_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
     provider: openai
@@ -91,32 +128,14 @@ llm_router_model_registry:
     context_window: 32768
     servable: true
     serving_role: small
-    stable_aliases:
-      - goal-judge
 
   # OptiQ-4bit: the agentic-bench-winning brain (ai_default_model, all.yml). A
   # first-class entry — NOT passthrough — so the default model carries an
-  # explicit max_input_tokens: the wildcard "*" entry sets none, and a null there
-  # makes Hermes/OpenWebUI fall back to a near-zero context guess and compress
-  # every request to death.
-  #
-  # extra_body.repetition_penalty: the anti-repetition-loop fix. In long agentic
-  # sessions this brain emitted ~37 IDENTICAL tool calls per turn (Hermes dedups
-  # + executes once, the model re-emits next turn, the task never advances). The
-  # 20/20-clean agentic bench and the looping production sessions differ only in
-  # sampling. A gentle 1.05 repetition penalty directly taxes verbatim
-  # re-emission while staying mild enough to preserve tool-call JSON validity.
-  # extra_body carries it through the router to the MLX model server.
-  # (temperature is deliberately NOT pinned: 0.7 would merely restate the engine
-  # fallback the loop already runs under. If 1.05 is insufficient, the next lever
-  # is to match the clean bench's sampling — temperature ~1.0 /
-  # presence_penalty 0.0 — added to this same extra_body.)
-  #
-  # standby: OptiQ is the hermes-brain (PR #59) and the only brain that stays
-  # resident beside the shard, so it is the entry that gets a same-id failover
-  # sibling when a standby backend exists. Inert by default — see the standby var
-  # block in roles/llm_router/defaults/main.yml for the dedicated-port topology
-  # and the wired-ceiling safety gate.
+  # explicit max_input_tokens rather than falling through the "*" wildcard to a
+  # null one. The repetition_penalty is the anti-repetition-loop fix, and
+  # `standby` marks it as the entry that gets a failover sibling: both, and why
+  # temperature is deliberately not pinned, in
+  # docs/LLM_MODELS_REGISTRY_NOTES.md.
   - client_model_id: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
     upstream_model_id: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
     provider: openai
@@ -169,25 +188,14 @@ llm_router_model_registry:
   # combined), served by mlx-lm rank 0 behind the gate's own cluster TLS site — a
   # DIFFERENT port on the same host, hence `endpoint: cluster`. Reachable only
   # while a cluster window is up (cable in); normal serving quiesces during
-  # windows, so this entry is what keeps a brain reachable then.
+  # windows, so this entry is what keeps a brain reachable then. It is
+  # hermes-default's fallback target and carries NO stable_aliases by design.
   #
-  # servable: false — NOT reachable right now. Both hosts have
-  # programs.mlx.clusterMode.enable = false (dryvist/nix-darwin, committed
-  # 2026-08-05, Thunderbolt cable physically disconnected), so no cluster
-  # window can come up and this entry's serving path is unconditionally
-  # empty. When true, this is hermes-default's fallback target while a
-  # window is up — a real, reachable target, not a stale alias. It carries
-  # NO stable_aliases either way: hermes-default resolves to the primary and
-  # reaches this entry through router_settings.fallbacks, so both backends
-  # answer under one consumer name without a second alias pinning traffic to
-  # a gate that is usually down.
-  #
-  # Flip back to true ONLY together with llm_router_cluster_leg_available in
-  # roles/llm_router/defaults/main.yml. tasks/assert-cluster-leg.yml fails
-  # the converge if the two disagree — deliberately, since this field is a
-  # manual claim and nothing else catches it drifting from what the role
-  # believes is actually reachable (the exact drift that let this stay
-  # advertised for a month after the cable came out).
+  # `servable` moves ONLY together with llm_router_cluster_leg_available in
+  # roles/llm_router/defaults/main/50-servable.yml —
+  # tasks/assert-cluster-leg.yml fails the converge if the two disagree.
+  # Why, and the month-long drift that motivated it:
+  # docs/LLM_MODELS_REGISTRY_NOTES.md.
   - client_model_id: mlx-community/GLM-4.7-REAP-50-mxfp4
     upstream_model_id: mlx-community/GLM-4.7-REAP-50-mxfp4
     provider: openai
@@ -221,27 +229,12 @@ llm_router_model_registry:
   # flaky or rate-limited upstream must not be able to degrade the local brain;
   # consumers opt in by requesting the id explicitly.
   #
-  # Key model (deliberate): ONE OpenRouter API key PER MODEL, irrespective of
-  # which harness or caller makes the request. key_field names the per-model
-  # field in OpenBao — canonically secrets-external/ai/saas/openrouter (an
-  # internet-reachable SaaS credential), dual-mounted with the internal path
-  # during the migration. context_window is the model's real serving window
-  # (never null — the compress-death rule applies to every entry).
-  #
-  # Operator disclosure 2026-07-19: these keys are ACCOUNT-WIDE — the per-model
-  # field names were a naming-level guardrail, not a technical one. Because of
-  # that, THIS LIST IS THE EGRESS ALLOWLIST: an entry here with a seeded key is
-  # the only way a model becomes reachable, and the `openrouter/*` passthrough
-  # that used to route around it is gone.
-  #
-  # There is no router-enforced SPEND cap, and nothing here should be read as
-  # claiming one — the proxy has no Redis or database to track spend in, by
-  # design. What the router does enforce is a rate ceiling per egress
-  # deployment. Caller-side policy (deliberate escalation, :free rules) is
-  # therefore still doing real work here rather than being a backstop.
-  #
-  # Free endpoint: rate-limited, and the vendor logs prompt/session data on the
-  # :free variant — never send confidential material through this model.
+  # THIS LIST IS THE EGRESS ALLOWLIST: an entry with a seeded key_field is the
+  # only way a model becomes reachable. One key per model in OpenBao under
+  # secrets-external/ai/saas/openrouter; keys are account-wide, there is no
+  # router-enforced spend cap, and the :free variant is logged by the vendor.
+  # Full disclosure and the rate-vs-spend distinction:
+  # docs/LLM_MODELS_REGISTRY_NOTES.md.
   - client_model_id: nvidia/nemotron-3-ultra-550b-a55b:free
     upstream_model_id: nvidia/nemotron-3-ultra-550b-a55b:free
     provider: openrouter
@@ -259,27 +252,12 @@ llm_router_model_registry:
     context_window: 1000000
     key_field: deepseek-deepseek-v4-flash
 
-  # MiniMax, TWO entries. The live keyless catalog
-  # (https://openrouter.ai/api/v1/models, read 2026-08-02) carries eight
-  # `minimax/*` ids, so "add MiniMax" is a selection, not a lookup — and since
-  # the delegation doctrine tells callers to take the cheapest tier that can
-  # actually do a subtask, one entry would force every MiniMax call to pay for
-  # whichever shape it did not need. These two cover both:
-  #
-  #   minimax-m2.5  204,800 ctx   $0.15 / $0.90 per Mtok  — the cheap default
-  #   minimax-m3  1,048,576 ctx   $0.30 / $1.20 per Mtok  — the long-context one
-  #
-  # context_window is the catalog's real serving window in both cases, not a
-  # round number: the servable-alias contract test exists because an inflated
-  # window is the compress-death failure, and an entry advertising more than the
-  # backend serves dies mid-stream instead of compacting. (DeepSeek's 1000000
-  # above is a pre-existing rounding of the same 1048576 window — left alone
-  # rather than widened in a PR about something else.)
-  #
-  # Both are PAID — neither has a `:free` variant — so both fall under the rate
-  # ceilings the role applies to every egress deployment. Note those are rate
-  # limits, not a spend cap: this proxy has no store to track spend in. See the
-  # egress block in roles/llm_router/defaults/main.yml.
+  # MiniMax, TWO entries deliberately — m2.5 is the cheap default and m3 the
+  # long-context one, so a caller taking the cheapest tier that can do the job
+  # is not forced to pay for a shape it does not need. Both windows are the
+  # catalog's real serving windows, not round numbers. The selection, the
+  # pricing table, and why an inflated window is the compress-death failure:
+  # docs/LLM_MODELS_REGISTRY_NOTES.md.
   #
   # Inert until `minimax-minimax-m2-5` and `minimax-minimax-m3` are seeded under
   # secrets-external/ai/saas/openrouter — an unseeded key_field renders no entry

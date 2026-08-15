@@ -56,18 +56,28 @@ Optional:
                       and die mid-stream instead of compacting.
   servable            The serving host will actually answer for this id.
                       DISTINCT FROM `enabled`, and conflating them is a real
-                      outage: the serving host runs llama-swap in single-model
-                      mode, so every non-resident model is demoted to
-                      `disabledModels` and returns HTTP 404 — not a degraded
-                      answer, no answer. `enabled` means "the router offers
-                      it"; `servable` means "the backend serves it". Alias and
-                      fallback targets must be servable. NOTE servable does
-                      NOT mean pre-loaded or residency-pinned: the small tier
-                      is servable and still evictable (ttl=900), with a
-                      measured ~79s cold load.
-  serving_role        `primary` | `small` | `cluster`. Names the entry the
-                      fabric's selector vars point at, so repointing the
-                      serving host is a move of this one field.
+                      outage: the serving host serves only the models its own
+                      config enables, and every other catalogued model is
+                      demoted to `disabledModels` and returns HTTP 404 — not a
+                      degraded answer, no answer. `enabled` means "the router
+                      offers it"; `servable` means "the backend serves it".
+                      Alias and fallback targets must be servable. NOTE
+                      servable does NOT mean pre-loaded or residency-pinned:
+                      the small tier is servable and still evictable
+                      (ttl=900), with a measured ~79s cold load.
+  serving_role        `primary` | `routine` | `small` | `cluster`. Names the
+                      role this entry serves in. Repointing the serving host
+                      is a move of this one field: `primary` is what the
+                      consumer aliases and the fabric's selector vars follow.
+                      `routine` names the second warm model on a host that
+                      holds more than one — no selector reads it today, and it
+                      exists so the invariant below stays exact.
+                      INVARIANT: servable if and only if serving_role is set.
+                      Both halves are load-bearing — a servable entry with no
+                      role is a model nothing can name, and a role with no
+                      `servable` is a selector pointing at a 404.
+                      tests/hermes_agent/test_goal_mode_contract.py enforces
+                      it.
   stable_aliases      Consumer-facing role names for this entry, rendered into
                       `router_settings.model_group_alias`. HARD RULE (AGENTS.md):
                       an alias carries ZERO deployment configuration and never

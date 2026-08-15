@@ -72,7 +72,16 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         if entry.get("enabled") and "serving_role" in entry
     }
     hermes_backend = by_role["primary"]["client_model_id"]
-    judge_backend = by_role["small"]["client_model_id"]
+    # The judge follows its ALIAS, not a serving_role. `small` names the
+    # trivial-task tier and held the judge until 2026-08-15; the two came apart
+    # when the judge moved to a resident backend to escape the small tier's
+    # cold load, and deriving from serving_role here would have silently kept
+    # asserting the old wiring.
+    judge_backend = next(
+        entry["client_model_id"]
+        for entry in registry
+        if entry.get("enabled") and "goal-judge" in entry.get("stable_aliases", [])
+    )
     assert group_vars["hermes_brain_model"] == hermes_alias
     # The judge rides its own alias now — a judge on the worker's model is
     # self-preference bias, and the two serialize against one serving slot.
@@ -123,12 +132,32 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # `servable` is deliberately NOT `enabled`: every large-tier entry is
     # enabled (the router offers it), only these are servable (the backend
     # answers for it). Conflating them yields a 404, not an answer.
-    expected_servable = [hermes_backend, judge_backend]
-    if router_defaults["llm_router_cluster_leg_available"]:
-        expected_servable.append(by_role["cluster"]["client_model_id"])
+    #
+    # The contract is a BICONDITIONAL — servable if and only if the entry names
+    # a serving_role — and BOTH sides derive from the registry. This used to
+    # name the expected ids through by_role["primary"]/["small"], which held
+    # only while the serving host ran exactly one warm model: since 2026-08-14
+    # it holds two, and a second servable model with no role to name it would
+    # have failed a true statement. Deriving keeps the check real rather than
+    # loosening it — flipping `servable` on a dead entry, or dropping it from a
+    # live one, still fails here.
+    expected_servable = [
+        entry["client_model_id"]
+        for entry in registry
+        if entry.get("enabled")
+        and "serving_role" in entry
+        and (
+            entry["serving_role"] != "cluster"
+            or router_defaults["llm_router_cluster_leg_available"]
+        )
+    ]
     assert [
         entry["client_model_id"] for entry in registry if entry.get("servable")
     ] == expected_servable
+    # Both selectors the fabric actually points at must be in that set, named
+    # through by_role rather than by literal.
+    assert hermes_backend in expected_servable
+    assert judge_backend in expected_servable
     hermes_entries = [
         entry for entry in registry if entry["client_model_id"] == hermes_backend
     ]
@@ -154,22 +183,17 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert router_defaults["llm_router_rate_limit_retries"] == 8
     assert "model_group_alias:" in router_config
     assert "llm_router_model_group_aliases.items()" in router_config
-    # Still pinned to the worker model, deliberately, per the measured
-    # blocker recorded at length in defaults/main.yml: the `goal-judge` alias
-    # is live and its DESIGN is correct (same var this test already asserts,
-    # hermes_goal_judge_model == "goal-judge"), but its backend is llama-swap
-    # swap-class in the deployed config (nix-ai
-    # modules/mlx/llama-swap-topology.nix — worker pinned ttl=0, judge
-    # ttl=900), and a measured ~79s cold load would exceed the judge timeout.
-    # Flipping this to "{{ hermes_goal_judge_model }}" without that residency
-    # fix landing first breaks card judgement — measured live 2026-08, not
-    # theoretical. Do not flip it back without re-measuring.
+    # Reads the alias, not the worker model. This was pinned to
+    # hermes_agent_model until 2026-08-15 for a measured reason — `goal-judge`
+    # resolved to a swap-class backend whose ~79s cold load exceeded the judge
+    # timeout — and the stated precondition for flipping it was a residency fix
+    # in the serving host, which landed with maxResidentWorkers = 2. The judge
+    # backend is now pinned resident, so the cold-load case cannot occur.
     #
-    # The timeout below is unrelated: it is raised on MEASURED tail latency
-    # of hermes_agent_model itself (the pinned model the judge actually
-    # calls today), not on the cold-load case above — see defaults/main.yml's
-    # ADDENDUM comment for the full figures.
-    assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_agent_model }}"
+    # Pinning it back to the worker model reintroduces self-preference bias
+    # AND makes judge and worker share one model; do not do it without
+    # re-measuring what changed.
+    assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_goal_judge_model }}"
     assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == 150
     assert "goal_judge:" in config
     assert "model: {{ hermes_agent_kanban_goal_judge_model | to_json }}" in config
