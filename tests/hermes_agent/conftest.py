@@ -242,6 +242,35 @@ PINNED_JUDGE_ERROR_SENTINEL_SOURCE = (
     "False, None, True\n"
 )
 JUDGE_ERROR = ("continue", "judge error: NotFoundError", False, None, True)
+# Verbatim upstream judge_goal call site and verdict parse — the two anchors
+# the latency patches key on, indentation included since the role's regexes
+# capture and reuse it. Identical in v2026.8.3 and v2026.8.13.
+PINNED_JUDGE_CALL_SOURCE = '''\
+    try:
+        # Route through call_llm so auxiliary.goal_judge.* config
+        # (provider/model/base_url, extra_body, reasoning_effort, retries)
+        # all apply — the direct-create path dropped extra_body (#35566).
+        resp = call_llm(
+            task="goal_judge",
+            messages=[
+                {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            max_tokens=_goal_judge_max_tokens(),
+            timeout=timeout,
+        )
+    except Exception as exc:
+        logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
+        return "continue", f"judge error: {type(exc).__name__}", False, None, True
+
+    try:
+        raw = resp.choices[0].message.content or ""
+    except Exception:
+        raw = ""
+
+    verdict, reason, parse_failed, wait_directive = _parse_judge_response(raw)
+'''
 
 
 def _task(name: str) -> dict[str, Any]:
@@ -303,10 +332,18 @@ PATCHED_KANBAN_GOAL_LOOP_SOURCE = _apply_runtime_patch(
         PINNED_KANBAN_GOAL_LOOP_SOURCE,
     ),
 )
+PATCHED_JUDGE_CALL_SOURCE = _apply_runtime_patch(
+    "Patch Hermes goal judge to emit its model call latency",
+    _apply_runtime_patch(
+        "Patch Hermes goal judge to time its model call",
+        PINNED_JUDGE_CALL_SOURCE,
+    ),
+)
 PATCHED_GOAL_JUDGE_SOURCE = (
     "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
     + PINNED_JUDGE_ERROR_SENTINEL_SOURCE
     + PATCHED_KANBAN_GOAL_LOOP_SOURCE
+    + PATCHED_JUDGE_CALL_SOURCE
 )
 
 
