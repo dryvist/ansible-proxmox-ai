@@ -60,3 +60,43 @@
       \1            )
       \1    return row["id"]
   notify: Restart hermes-gateway
+
+# `_goal_mode_handoff_rejection` runs the completion-gate judge only when
+# `_goal_judge_available()` says a judge is reachable, and that probe returns
+# False on two paths that log NOTHING: the auxiliary client import/lookup
+# raising, and a lookup that yields no client or no model. The gate is then
+# skipped silently — a goal-mode card completes without ever being judged, and
+# the only externally visible symptom is an absence: no judge verdict, no judge
+# latency, no error. Same silent-success shape as a helper that exits 0 having
+# exported nothing.
+#
+# Fail-open is the right BEHAVIOR here (an unreachable judge must not wedge
+# every goal-mode worker) and is deliberately preserved — the patch only makes
+# the decision say why it was taken. WARNING, not debug: this is the difference
+# between "the judge passed the card" and "nothing judged the card at all".
+- name: Patch Hermes goal-judge availability probe to log why it declines
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/tools/kanban_tools.py"
+    regexp: |-
+      ^([ \t]*)client, model = get_text_auxiliary_client\("goal_judge"\)$
+      ([ \t]*)except Exception:$
+      \2    return False$
+      \2return client is not None and bool\(model\)$
+    replace: |-
+      \1client, model = get_text_auxiliary_client("goal_judge")
+      \2except Exception:
+      \2    logger.warning(
+      \2        "goal judge unavailable: auxiliary client lookup failed; the "
+      \2        "goal-mode completion gate is SKIPPED and the card completes "
+      \2        "unjudged", exc_info=True,
+      \2    )
+      \2    return False
+      \2if client is None or not model:
+      \2    logger.warning(
+      \2        "goal judge unavailable: client=%s model=%r; the goal-mode "
+      \2        "completion gate is SKIPPED and the card completes unjudged",
+      \2        client is not None, model,
+      \2    )
+      \2    return False
+      \2return True
+  notify: Restart hermes-gateway

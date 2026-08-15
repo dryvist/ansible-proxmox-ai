@@ -19,6 +19,7 @@ from conftest import (
     PINNED_HINDSIGHT_PREFETCH_SOURCE,
     PINNED_WORKER_SPAWN_SOURCE,
     PATCHED_JUDGE_CALL_SOURCE,
+    PATCHED_JUDGE_AVAILABLE_SOURCE,
     PATCHED_KANBAN_GOAL_LOOP_SOURCE,
     role_tasks,
     role_tasks_text,
@@ -40,6 +41,40 @@ def test_upstream_adopted_patches_stay_retired() -> None:
     task_names = {item.get("name") for item in role_tasks(ROLE_ROOT)}
     for name in RETIRED_UPSTREAM_ADOPTED_PATCH_NAMES:
         assert name not in task_names, f"reintroduced: {name}"
+
+
+def test_goal_judge_availability_probe_logs_both_declines() -> None:
+    # Fail-open is preserved — an unreachable judge must not wedge goal-mode
+    # workers — but neither decline may be silent: a skipped completion gate
+    # means the card completed with nothing judging it.
+    namespace: dict[str, Any] = {}
+    exec(PATCHED_JUDGE_AVAILABLE_SOURCE, namespace)  # noqa: S102
+    warnings: list[tuple] = []
+    namespace["logger"] = type(
+        "L", (), {"warning": lambda self, *a, **k: warnings.append(a)}
+    )()
+
+    namespace["get_text_auxiliary_client"] = lambda task: (_ for _ in ()).throw(
+        RuntimeError("no config")
+    )
+    namespace["__builtins__"] = __builtins__
+    assert namespace["_goal_judge_available"]() is False
+    assert len(warnings) == 1
+
+    # A lookup that succeeds but yields nothing usable is the second silent
+    # path, and it is the one a missing API key produces.
+    import sys as _sys
+    import types as _types
+
+    stub = _types.ModuleType("agent.auxiliary_client")
+    stub.get_text_auxiliary_client = lambda task: (None, "")
+    _sys.modules["agent.auxiliary_client"] = stub
+    try:
+        assert namespace["_goal_judge_available"]() is False
+    finally:
+        del _sys.modules["agent.auxiliary_client"]
+    assert len(warnings) == 2
+    assert all("goal judge unavailable" in str(call[0]) for call in warnings)
 
 
 def test_hindsight_prefetch_patch_logs_at_warning() -> None:
