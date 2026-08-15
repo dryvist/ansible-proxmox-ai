@@ -1,0 +1,121 @@
+---
+# Opt-in goal mode for native cron jobs.
+#
+# WHY THIS EXISTS. `goal_mode` is a per-card Kanban flag, and the only thing
+# that ever set it was the reviewer card's self-perpetuation chain, deleted
+# when the recurring cards became native cron jobs. Nothing has created a
+# goal-mode card since, so the auxiliary judge has been idle — and an idle
+# judge is an unmeasurable one. This restores judged execution WITHOUT putting
+# recurring work back on the board: the judge drives a cron job's own
+# conversation instead of a card.
+#
+# WHAT IT DOES NOT DO. It creates no Kanban card, touches no card state, and
+# changes nothing for any job not named in `hermes_agent_cron_goal_mode_jobs`.
+# With the env unset the patched call is byte-equivalent to upstream's.
+#
+# THE TURN BUDGET IS ROLE-WIDE, DELIBERATELY. `assert_brain_and_bridge.yml`
+# forbids per-item budgets: the loop re-sends the accumulated conversation
+# every turn, so a bigger budget costs prefill quadratically and is only ever
+# spent by a job already failing. Raise it for everything or not at all.
+
+- name: Patch Hermes cron scheduler with an opt-in goal-mode runner
+  ansible.builtin.blockinfile:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK cron goal mode"
+    insertbefore: '^def run_job\('
+    block: |
+      # Jobs whose conversation is re-driven under the auxiliary judge until it
+      # agrees the prompt's objective is met, or the turn budget is spent.
+      # Comma-separated job names; empty disables the whole path.
+      def _cron_goal_jobs():
+          raw = os.environ.get("HERMES_CRON_GOAL_JOBS") or ""
+          return {n.strip() for n in raw.split(",") if n.strip()}
+
+
+      def _cron_goal_max_turns():
+          try:
+              return int(os.environ.get("HERMES_CRON_GOAL_MAX_TURNS") or 0) or None
+          except ValueError:
+              return None
+
+
+      def _hermes_cron_goal_run(agent, prompt, job_name):
+          """Run a cron job's conversation, optionally under the goal judge.
+
+          Returns the LAST ``run_conversation`` dict, so every downstream
+          consumer — the ``isinstance(result, dict)`` guard, the failed/
+          completed unwrap, ``final_response`` — sees exactly the contract it
+          saw before this patch existed. The goal loop's own decision dict is
+          logged, never returned; returning it would sail through the dict
+          guard and then be misread as a failed run.
+          """
+          result = agent.run_conversation(prompt)
+          if job_name not in _cron_goal_jobs() or not isinstance(result, dict):
+              return result
+          try:
+              from hermes_cli.goals import run_kanban_goal_loop
+          except Exception:
+              logger.warning(
+                  "Job '%s': goal mode requested but hermes_cli.goals is "
+                  "unavailable — ran a single unjudged turn",
+                  job_name,
+              )
+              return result
+
+          # The judge's continuation feedback is worthless without the history
+          # it is judging, and a cron agent holds none between calls: history
+          # travels in the result dict and must be fed back explicitly.
+          state = {"result": result}
+
+          def _run_turn(text):
+              prior = state["result"].get("messages")
+              nxt = agent.run_conversation(text, conversation_history=prior)
+              if isinstance(nxt, dict):
+                  state["result"] = nxt
+                  return nxt.get("final_response") or ""
+              return ""
+
+          def _block(reason):
+              # No card to park in a sticky blocked state, so the budget
+              # exhausting must at least be loud — a judge that never agreed
+              # is a finding, not a quiet success.
+              logger.warning(
+                  "Job '%s': spent its goal turn budget without the judge "
+                  "agreeing the objective was met: %s",
+                  job_name,
+                  reason,
+              )
+
+          _budget = _cron_goal_max_turns()
+          decision = run_kanban_goal_loop(
+              task_id="cron:" + str(job_name),
+              goal_text=prompt,
+              run_turn=_run_turn,
+              # A cron run owns no card, so nothing can terminate it out of
+              # band. Reporting "not terminal" keeps the judge authoritative.
+              task_status_fn=lambda: None,
+              block_fn=_block,
+              first_response=result.get("final_response") or "",
+              log=logger,
+              **({"max_turns": _budget} if _budget else {})
+          )
+          logger.info(
+              "Job '%s': goal mode outcome=%s turns_used=%s",
+              job_name,
+              decision.get("outcome"),
+              decision.get("turns_used"),
+          )
+          return state["result"]
+  notify: Restart hermes-gateway
+
+- name: Route the cron conversation through the goal-mode runner
+  # Idempotent: the rewritten line no longer matches its own regexp.
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: >-
+      ^([ \t]*)_cron_future = _cron_pool\.submit\(_cron_context\.run,
+      agent\.run_conversation, prompt\)$
+    replace: >-
+      \g<1>_cron_future = _cron_pool.submit(_cron_context.run,
+      _hermes_cron_goal_run, agent, prompt, job_name)
+  notify: Restart hermes-gateway
