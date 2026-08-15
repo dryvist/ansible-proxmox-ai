@@ -41,7 +41,11 @@
   ansible.builtin.assert:
     quiet: true
     that:
-      - "'verdict, reason, _, _ = judge_goal(' in hermes_agent_goal_completion_source"
+      # Upstream's own five-value unpack, not a patch result: the role's arity
+      # patch is retired because the pinned release fixed it upstream. Still
+      # asserted — a drift back to a shorter tuple silently re-opens the
+      # fail-open completion gate this line exists to close.
+      - "'verdict, reason, _, _, _ = judge_goal(' in hermes_agent_goal_completion_source"
       - >-
         hermes_agent_goal_reconcile_source.count(
           '*(["--quiet"] if task.goal_mode else []),'
@@ -65,12 +69,13 @@
       - >-
         "('triage', 'todo', 'scheduled', 'ready', 'blocked', 'review')"
         in hermes_agent_goal_reconcile_source
-      # Both halves of the protocol-violation change, asserted separately: the
-      # message is what an operator reads, the failure_limit is what actually
-      # decides whether the card is ever attempted again, and either landing
-      # without the other leaves the two contradicting each other.
+      # Both halves of the protocol-violation behavior, now supplied by upstream
+      # itself rather than by a role patch (both patches retired). The message is
+      # what an operator reads, the failure_limit is what actually decides
+      # whether the card is ever attempted again, and either regressing leaves a
+      # clean-exit card retired on its first violation again.
       - >-
-        'a missing toolset. The card is retried within its own max_retries'
+        'without a terminal kanban call counts as failed no'
         in hermes_agent_goal_reconcile_source
       - >-
         'failure_limit=1 if is_systemic else None,'
@@ -131,30 +136,38 @@
         hermes_agent_retry_source.count(
           '_boost_cap = agent.max_tokens if agent.max_tokens else max('
         ) == 2
+      # Inverted, because upstream restructured the scan this once clamped:
+      # the clamp patch is retired, and what still matters is that the
+      # unbounded reverse scan (the IndexError source) never comes back.
       - >-
-        'for idx in range(min(end, len(messages)) - 1, start - 1, -1):'
-        in hermes_agent_compressor_source
+        'for idx in range(end - 1, start - 1, -1):'
+        not in hermes_agent_compressor_source
       - >-
         'deliver_content = _cron_markup_guard(job, output_file,'
         in hermes_agent_cron_scheduler_source
       - >-
         '_deliver_result(_routed_job, deliver_content,'
         in hermes_agent_cron_scheduler_source
+      # The second assertion on the retired message patch is gone with it: it
+      # pinned wording that patch produced, which exists in no upstream release,
+      # so it could only ever fail. The message itself is asserted above.
+      # Absence, not presence: upstream dropped this log line outright after
+      # the pinned release, so the role's debug-to-warning patch applies on one
+      # version and is a no-op on the other. Either way the defect — a prefetch
+      # failure hidden at debug level — must not be present.
       - >-
-        'registered for dispatcher-spawned workers (HERMES_KANBAN_TASK '
-        in hermes_agent_goal_reconcile_source
-      - >-
-        'logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)'
-        in hermes_agent_hindsight_plugin_source
+        'logger.debug("Hindsight prefetch failed:'
+        not in hermes_agent_hindsight_plugin_source
       # The kanban goal loop's judge-error guard: both halves of the patch
       # (counter init + guard reset = exactly 2 occurrences), the bounded
-      # blocked outcome, and — critically — the UPSTREAM producer line of the
-      # "judge error: " sentinel the guard keys on. If upstream rewords that
-      # sentinel, the guard would silently never fire and every judge outage
-      # would burn full turn budgets again; pin it so the converge fails
-      # loudly instead.
+      # blocked outcome, and the UPSTREAM producer of the transport flag the
+      # guard keys on. Keyed on `_transport_failed` rather than the old
+      # "judge error: " text — the text pin is what silently died when upstream
+      # added a fifth return value, leaving the guard dead and judge failures
+      # burning whole turn budgets. Pinning the producer keeps an upstream
+      # change to the flag itself a loud converge failure.
       - >-
-        'if reason.startswith("judge error: "):'
+        'if _transport_failed:'
         in hermes_agent_goal_judge_source
       - >-
         hermes_agent_goal_judge_source.count('judge_failures = 0') == 2
@@ -162,7 +175,7 @@
         '"outcome": "blocked_judge_unreachable"'
         in hermes_agent_goal_judge_source
       - >-
-        'return "continue", f"judge error: {type(exc).__name__}", False, None'
+        'return "continue", f"judge error: {type(exc).__name__}", False, None, True'
         in hermes_agent_goal_judge_source
       # The four _sync_external_memory_for_turn() observability log lines —
       # one per silent exit. All four or none: the patch tasks above touch

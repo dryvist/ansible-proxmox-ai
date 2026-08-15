@@ -210,21 +210,28 @@
 - name: Patch _sync_external_memory_for_turn to log its swallowed exception
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/run_agent.py"
+    # The call's own indentation is captured separately from the handler's
+    # (two independent line-anchored groups) instead of assuming the handler
+    # sits exactly one level out. Upstream wrapped the prefetch in an
+    # `if not is_trivial_prompt(user_text):` guard, which added a level and
+    # silently killed the old fixed-offset anchor — and de-indenting the call
+    # to fit would have moved the prefetch OUT of that guard, changing
+    # behavior. Reproducing both indents verbatim keeps the guard intact.
     regexp: |-
-      ^(\s*)    self\._memory_manager\.queue_prefetch_all\($
-      \1        user_text,$
-      \1        session_id=self\.session_id or "",$
-      \1    \)$
-      \1except Exception:$
-      \1    pass$
+      ^([ \t]*)self\._memory_manager\.queue_prefetch_all\($
+      \1    user_text,$
+      \1    session_id=self\.session_id or "",$
+      \1\)$
+      ([ \t]*)except Exception:$
+      \2    pass$
     replace: |-
-      \1    self._memory_manager.queue_prefetch_all(
-      \1        user_text,
-      \1        session_id=self.session_id or "",
-      \1    )
-      \1except Exception as exc:
-      \1    logger.warning(
-      \1        "Hermes external-memory sync_all/queue_prefetch_all failed: %s (session=%s)",
-      \1        exc, self.session_id or "", exc_info=True,
-      \1    )
+      \1self._memory_manager.queue_prefetch_all(
+      \1    user_text,
+      \1    session_id=self.session_id or "",
+      \1)
+      \2except Exception as exc:
+      \2    logger.warning(
+      \2        "Hermes external-memory sync_all/queue_prefetch_all failed: %s (session=%s)",
+      \2        exc, self.session_id or "", exc_info=True,
+      \2    )
   notify: Restart hermes-gateway

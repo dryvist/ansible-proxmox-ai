@@ -44,11 +44,14 @@ def create_task(conn, *, idempotency_key=None, goal_mode=False, goal_max_turns=N
             return row["id"]
     raise RuntimeError("insert path")
 '''
-PINNED_GOAL_COMPLETION_SOURCE = "                    verdict, reason, _ = judge_goal(\n"
-# Verbatim upstream lines at the pinned tag (v2026.7.7.2), indentation
-# included — `_apply_runtime_patch` re-runs the role's own regexp against
-# these, so a copy that drifts from upstream would silently stop patching
-# and the test would go green on nothing.
+PINNED_GOAL_COMPLETION_SOURCE = "        verdict, reason, _, _, _ = judge_goal(\n"
+# Verbatim upstream lines at the pinned release, indentation included —
+# `_apply_runtime_patch` re-runs the role's own regexp against these, so a copy
+# that drifts from upstream silently stops patching and the test goes green on
+# nothing. That is not hypothetical: these were pinned to v2026.7.7.2 while the
+# role installed a much later release, which is exactly how four patches came to
+# match zero times without a single test failing. Re-verify these against the
+# real tarball whenever hermes_agent_version moves.
 PINNED_TC_BOOST_CAP_SOURCE = (
     "                                _tc_boost_cap = max("
     "32768, _tc_requested_cap or 0)\n"
@@ -59,13 +62,19 @@ PINNED_BOOST_CAP_SOURCE = (
 PINNED_COMPRESSOR_SCAN_SOURCE = (
     "        for idx in range(end - 1, start - 1, -1):\n"
 )
+# Upstream now supplies both protocol-violation behaviors itself, so these are
+# no longer patch INPUTS — they are the upstream text the retained assertions
+# pin. Both role patches were retired for matching zero times.
 PINNED_PROTOCOL_VIOLATION_SOURCE = (
     '                    "worker exited cleanly (rc=0) without calling "\n'
-    '                    "kanban_complete or kanban_block — protocol violation"\n'
+    '                    "kanban_complete or kanban_block — protocol violation. "\n'
+    '                    "If the prior run already did the work, verify it and "\n'
+    '                    "report the result via kanban_complete; a run that ends "\n'
+    '                    "without a terminal kanban call counts as failed no "\n'
+    '                    "matter what it did."\n'
 )
 PINNED_PROTOCOL_RETRY_SOURCE = (
-    "                failure_limit=1 if (protocol_violation or is_systemic) "
-    "else None,\n"
+    "                failure_limit=1 if is_systemic else None,\n"
 )
 PINNED_CRON_DELIVERY_SOURCE = (
     "            deliver_content = final_response if success else "
@@ -191,7 +200,7 @@ class _Agent:
 '''
 # Reduced run_kanban_goal_loop skeleton: the control flow that matters
 # (status poll, judge, budget check, worker turn, increment) with the two
-# patch anchor sites VERBATIM from upstream v2026.7.7.2 — indentation
+# patch anchor sites VERBATIM from the pinned upstream release — indentation
 # included, since the role's regexes capture and reuse it.
 PINNED_KANBAN_GOAL_LOOP_SOURCE = '''\
 def run_kanban_goal_loop(*, task_id, goal_text, run_turn, task_status_fn,
@@ -212,7 +221,7 @@ def run_kanban_goal_loop(*, task_id, goal_text, run_turn, task_status_fn,
         if status not in ("running", "ready"):
             return {"outcome": "stopped", "turns_used": turns_used, "reason": f"status={status}"}
 
-        verdict, reason, _parse_failed, _wait = judge_goal(goal_text, last_response)
+        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
@@ -224,14 +233,15 @@ def run_kanban_goal_loop(*, task_id, goal_text, run_turn, task_status_fn,
         last_response = run_turn("continue") or ""
         turns_used += 1
 '''
-# Verbatim upstream producer of the "judge error: " sentinel the guard keys
-# on (judge_goal's except handler). Kept pinned so the fail-closed test
-# proves the converge assert goes red when upstream rewords it.
+# Verbatim upstream producer of the transport-failure flag the guard keys on
+# (judge_goal's except handler; the trailing True IS the flag). Kept pinned so
+# the fail-closed test proves the converge assert goes red if upstream stops
+# setting it.
 PINNED_JUDGE_ERROR_SENTINEL_SOURCE = (
     '        return "continue", f"judge error: {type(exc).__name__}", '
-    "False, None\n"
+    "False, None, True\n"
 )
-JUDGE_ERROR = ("continue", "judge error: NotFoundError", False, None)
+JUDGE_ERROR = ("continue", "judge error: NotFoundError", False, None, True)
 
 
 def _task(name: str) -> dict[str, Any]:
@@ -258,9 +268,11 @@ def _apply_runtime_patch(name: str, source: str) -> str:
 # Derived by running the role's own patch over the pinned upstream line,
 # never hand-written — a hand-copied "expected" string can drift from what
 # the role actually produces and would assert against itself.
-PATCHED_COMPRESSOR_SCAN_SOURCE = _apply_runtime_patch(
-    "Patch hermes-agent context summary scan to use the live message bound",
-    PINNED_COMPRESSOR_SCAN_SOURCE,
+# Upstream restructured this scan away; the clamp patch is retired and the
+# assertion inverted, so the "patched" source is simply source without the
+# unbounded reverse scan in it.
+PATCHED_COMPRESSOR_SCAN_SOURCE = (
+    "        for idx in range(start, end):\n"
 )
 PATCHED_CRON_DELIVERY_SOURCE = _apply_runtime_patch(
     "Route failed cron deliveries to the issues channel",
@@ -273,6 +285,9 @@ PATCHED_HINDSIGHT_PREFETCH_SOURCE = _apply_runtime_patch(
     "Patch Hermes auto-recall prefetch failure to log at warning, not debug",
     PINNED_HINDSIGHT_PREFETCH_SOURCE,
 )
+# Current upstream dropped the line entirely — also a passing state, since the
+# assertion is now "the debug form is absent".
+UPSTREAM_HINDSIGHT_PREFETCH_LINE_REMOVED = ""
 PATCHED_RUN_AGENT_SOURCE = PINNED_SYNC_EXTERNAL_MEMORY_SOURCE
 for _run_agent_task_name in (
     'Patch _sync_external_memory_for_turn to log its "interrupted" skip',
@@ -310,7 +325,7 @@ def _patched_goal_loop(judge_results: list[tuple]) -> tuple[Any, _FakeTime]:
     results = iter(judge_results)
 
     def judge_goal(goal: str, response: str) -> tuple:
-        return next(results, ("continue", "keep going", False, None))
+        return next(results, ("continue", "keep going", False, None, False))
 
     fake_time = _FakeTime()
     namespace: dict[str, Any] = {

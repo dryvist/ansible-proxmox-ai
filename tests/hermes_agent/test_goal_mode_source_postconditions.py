@@ -42,7 +42,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
 
     assert_task = _task("Assert installed Hermes pinned-source patches")
     conditions = " ".join(assert_task["ansible.builtin.assert"]["that"])
-    assert "verdict, reason, _, _ = judge_goal(" in conditions
+    assert "verdict, reason, _, _, _ = judge_goal(" in conditions
     assert "DEFAULT_JUDGE_TIMEOUT =" in conditions
     assert "SELECT id, status FROM tasks" in conditions
     assert (
@@ -67,32 +67,25 @@ def test_installed_source_postconditions_fail_closed() -> None:
     assert "WHERE id = ? AND status IN" in conditions
     assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in conditions
     assert "status in (408, 429)" in conditions
-    assert "for idx in range(min(end, len(messages)) - 1, start - 1, -1):" in conditions
+    assert "for idx in range(end - 1, start - 1, -1):" in conditions
     assert "deliver_content = _cron_markup_guard(job, output_file," in conditions
     # A failed run must reach the issues channel, not the work surface.
     assert "_deliver_result(_routed_job, deliver_content," in conditions
-    assert (
-        "registered for dispatcher-spawned workers (HERMES_KANBAN_TASK "
-        in conditions
-    )
     # The message and the retry rule are asserted as a pair: the message tells
     # the operator the card will be retried, so it must not be able to land
     # while the forced first-failure give-up is still in the source.
     assert (
-        "a missing toolset. The card is retried within its own max_retries"
+        "without a terminal kanban call counts as failed no"
         in conditions
     )
     assert "failure_limit=1 if is_systemic else None," in conditions
-    assert (
-        'logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)'
-        in conditions
-    )
-    assert 'if reason.startswith("judge error: "):' in conditions
+    assert 'logger.debug("Hindsight prefetch failed:' in conditions
+    assert "if _transport_failed:" in conditions
     assert "blocked_judge_unreachable" in conditions
     # The upstream sentinel producer must stay pinned: reworded upstream, the
     # guard would silently never fire.
     assert (
-        'return "continue", f"judge error: {type(exc).__name__}", False, None'
+        'return "continue", f"judge error: {type(exc).__name__}", False, None, True'
         in conditions
     )
     assert any(
@@ -112,10 +105,9 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "fail_msg"
     ]
 
-    completion_source = _apply_runtime_patch(
-        "Patch Hermes goal completion gate for the four-value judge result",
-        PINNED_GOAL_COMPLETION_SOURCE,
-    )
+    # Upstream-supplied now, not patch output: the arity, message, and
+    # failure_limit patches were retired for matching zero times.
+    completion_source = PINNED_GOAL_COMPLETION_SOURCE
     reconcile_source = _apply_runtime_patch(
         "Patch Hermes idempotent create to reconcile goal-mode fields",
         PINNED_CREATE_TASK_SOURCE,
@@ -126,15 +118,8 @@ def test_installed_source_postconditions_fail_closed() -> None:
             PINNED_WORKER_SPAWN_SOURCE,
         )
         + reconcile_source
-        + _apply_runtime_patch(
-            "Patch Hermes protocol-violation message to name the "
-            "model-did-not-call case",
-            PINNED_PROTOCOL_VIOLATION_SOURCE,
-        )
-        + _apply_runtime_patch(
-            "Patch Hermes protocol-violation crashes to retry within the card budget",
-            PINNED_PROTOCOL_RETRY_SOURCE,
-        )
+        + PINNED_PROTOCOL_VIOLATION_SOURCE
+        + PINNED_PROTOCOL_RETRY_SOURCE
     )
     worker_reap_source = PINNED_WORKER_REAP_SOURCE
     for patch_name in (
@@ -235,16 +220,16 @@ def test_installed_source_postconditions_fail_closed() -> None:
         _source_postconditions(
             completion_source,
             reconcile_source.replace(
-                "registered for dispatcher-spawned workers (HERMES_KANBAN_TASK ",
+                "without a terminal kanban call counts as failed no",
                 "",
             ),
             retry_source,
             auxiliary_source,
         )
     )
-    # The forced first-failure give-up left in place: a protocol violation
-    # would still retire the card on its first occurrence, so the postconditions
-    # must go red even though the reworded message landed.
+    # The forced first-failure give-up back in upstream: a protocol violation
+    # would again retire the card on its first occurrence, so the postconditions
+    # must go red even though the message is intact.
     assert not all(
         _source_postconditions(
             completion_source,
