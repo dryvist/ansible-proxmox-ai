@@ -47,22 +47,33 @@
   ansible.builtin.set_fact:
     _config: "{{ _rendered_config | from_yaml }}"
 
-- name: Hermes-default's rendered fallback chain reaches the cluster backend
+- name: Hermes-default's rendered fallback chain is cluster then routine then small, in that order
+  # ORDER IS THE ASSERTION, not just membership. The operator requirement is
+  # that the evictable small tier is the ABSOLUTE last resort — reached only
+  # after every larger brain has failed — so a chain carrying the right three
+  # entries in the wrong order still violates it. litellm 1.90.3 walks
+  # fallback_model_group front to back (router_utils/fallback_event_handlers.py,
+  # run_async_fallback), so list position is the priority.
   ansible.builtin.assert:
     quiet: true
     that:
-      - llm_router_hermes_default_fallback_chain == [llm_router_cluster_model]
+      - >-
+        llm_router_hermes_default_fallback_chain
+        == [llm_router_cluster_model, llm_router_routine_model, llm_router_small_model]
       - _config.router_settings.fallbacks is defined
-      - _hermes_fallback_entries | length == 1
-      - _hermes_fallback_entries | first == llm_router_cluster_model
+      - >-
+        _hermes_fallback_entries
+        == [llm_router_cluster_model, llm_router_routine_model, llm_router_small_model]
     fail_msg: >-
-      router_settings.fallbacks does not contain a "hermes-default" entry
-      resolving to {{ llm_router_cluster_model }}; got
+      router_settings.fallbacks must route hermes-default to
+      [{{ llm_router_cluster_model }}, {{ llm_router_routine_model }},
+      {{ llm_router_small_model }}] in exactly that order; got
       {{ _config.router_settings.fallbacks | default('(missing)') }}.
+      The small tier out of last place means a human request can be served by
+      the narrow, evictable model while a larger brain was still available.
     success_msg: >-
-      router_settings.fallbacks routes hermes-default ->
-      [{{ llm_router_cluster_model }}] — both backends are reachable
-      under the hermes-default name.
+      router_settings.fallbacks routes hermes-default -> cluster -> routine ->
+      small, with the small tier last.
   vars:
     _hermes_fallback_entries: >-
       {{ _config.router_settings.fallbacks | default([])

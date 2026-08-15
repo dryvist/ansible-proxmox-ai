@@ -41,6 +41,15 @@ llm_router_small_model: >-
   {{ llm_router_registry_enabled | selectattr('serving_role', 'defined')
      | selectattr('serving_role', 'equalto', 'small')
      | map(attribute='client_model_id') | first }}
+# The routine tier: the SECOND resident model, warm beside the primary rather
+# than swapping against it (maxResidentWorkers = 2). It carries the primary's
+# full context window and is pinned resident, so as a failover target it costs
+# no cold load — which is what makes it the right entry to sit between the
+# cluster leg and the evictable small tier in the chain below.
+llm_router_routine_model: >-
+  {{ llm_router_registry_enabled | selectattr('serving_role', 'defined')
+     | selectattr('serving_role', 'equalto', 'routine')
+     | map(attribute='client_model_id') | first }}
 # The two-Mac cluster brain: servable ONLY while a cluster window is up, exactly
 # when the primary is not (cluster-join boots the standalone agent out). Part of
 # the servable set because hermes-default's fallback chain (below) is a real,
@@ -137,10 +146,12 @@ llm_router_cluster_leg_available: true
 # not a per-window one — so with the leg wired the `fallbacks:` key is rendered
 # permanently and a cluster window needs no converge, no LiteLLM restart and no
 # hermes-gateway restart to be picked up: the failover is decided per request,
-# inside LiteLLM. With the leg de-wired the chain resolves to an empty list and
-# config.yaml.j2 omits the key entirely, so a failed primary surfaces its own
-# error instead of a fallback-wrapped one (2026-08-02..08-05: 720 gate 5xx
-# reached callers as "Error doing the fallback: BadGatewayError").
+# inside LiteLLM. De-wiring the leg drops it from the chain; the chain itself no
+# longer empties, because the routine and small tiers below are appended
+# unconditionally, so `fallbacks:` is always rendered. The 2026-08-02..08-05
+# symptom (720 gate 5xx reaching callers as "Error doing the fallback:
+# BadGatewayError") came from a chain whose ONLY target was down — the fix for
+# that is a target that is always up, not an absent key.
 #
 # Ordering inside LiteLLM is retries-then-fallbacks, verified against the pinned
 # litellm 1.90.3: async_function_with_fallbacks calls async_function_with_retries
@@ -148,8 +159,37 @@ llm_router_cluster_leg_available: true
 # consulted inside THAT function. So a 429 spends its full
 # retries x retry_after budget on the primary before the chain is touched — the
 # 2026-07-24 cron kill cannot be re-created by a permanently-rendered chain.
+#
+# A MULTI-ENTRY CHAIN REALLY IS TRIED IN ORDER — the fact the whole design rests
+# on, and not an assumption. Verified against litellm 1.90.3's own source
+# (router_utils/fallback_event_handlers.py, run_async_fallback): it is a
+# `for mg in fallback_model_group:` loop whose body catches Exception, records it
+# as error_from_fallbacks and CONTINUES to the next entry, raising only the last
+# error after every entry has failed. So a dead cluster leg costs one fast 502
+# and the request lands on the next entry rather than surfacing that 502 to the
+# caller. The loop is bounded by ROUTER_MAX_FALLBACKS (constants.py, default 5)
+# counted cumulatively across the whole chain, which the three entries here sit
+# comfortably under; a chain longer than five entries would silently truncate.
+#
+# ORDER, largest-capable brain first, last resort last (operator requirement):
+#   1. cluster  — the two-Mac brain, servable only inside a cluster window,
+#                 which is exactly when the primary is not. Present only while
+#                 the leg is wired.
+#   2. routine  — the second RESIDENT model. Full primary-equivalent context,
+#                 pinned resident so it cannot be evicted and answers warm. This
+#                 is the entry that makes the chain useful outside a cluster
+#                 window, where previously it had no reachable target at all.
+#   3. small    — ABSOLUTE LAST RESORT. Reached only when the primary, the
+#                 cluster leg AND the routine tier have all failed. It is
+#                 swap-class (evictable, ttl 900s) with a measured ~79s cold
+#                 load and a narrower context than the primary, so it is a
+#                 degraded answer — but a degraded answer beats the 429 a human
+#                 gets today. Its weights must stay cached under HF_HOME: the
+#                 worker runs HF_HUB_OFFLINE=1, so an uncached id 502s slowly
+#                 instead of failing fast.
 llm_router_hermes_default_fallback_chain: >-
-  {{ [llm_router_cluster_model] if llm_router_cluster_leg_available else [] }}
+  {{ ([llm_router_cluster_model] if llm_router_cluster_leg_available else [])
+     + [llm_router_routine_model, llm_router_small_model] }}
 # Background health checks send REAL test requests to every deployment — on the
 # llama-swap fast tier each probe spawns the target model, and with 3 routers
 # probing every model this both churns VRAM constantly and (pre swap-groups)

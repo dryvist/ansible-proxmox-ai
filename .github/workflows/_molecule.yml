@@ -12,19 +12,29 @@ permissions:
   contents: read
 
 jobs:
+  # The matrix is DERIVED from the scenarios on disk, never hand-written — see
+  # .github/scripts/discover-molecule-scenarios.sh for why.
+  discover:
+    name: Discover scenarios
+    runs-on: ubuntu-latest
+    outputs:
+      scenarios: ${{ steps.find.outputs.scenarios }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Find molecule scenarios
+        id: find
+        run: .github/scripts/discover-molecule-scenarios.sh
+
   test:
     name: Molecule (${{ matrix.scenario }})
     runs-on: ubuntu-latest
+    needs: discover
     strategy:
       fail-fast: false
       matrix:
-        scenario:
-          - llamaindex
-          - qdrant
-          - hindsight
-          - hermes_ui
-          - agent_guest
-          - ai_runner
+        scenario: ${{ fromJSON(needs.discover.outputs.scenarios) }}
 
     steps:
       - name: Checkout code
@@ -85,8 +95,11 @@ jobs:
           # molecule/*/molecule.yml provisioner.env):
           #   qdrant      -> QDRANT_API_KEY
           #   llamaindex  -> QDRANT_API_KEY
-          #   agent_guest, ai_runner, hindsight, hermes_ui -> none (their
+          #   agent_guest, ai_runner, hindsight, hermes_ui, vllm -> none (their
           #   env vars carry defaults or read from lookup('env', ...) with a
           #   fallback; verified against each scenario's provisioner.env)
+          # This list is itself hand-maintained, so it can go stale the same way
+          # the matrix above did. It is a comment, not a gate — a scenario
+          # missing from it still runs and still receives the variable below.
           QDRANT_API_KEY: ${{ steps.doppler.outputs.QDRANT_API_KEY }}
         run: molecule test -s "$MOLECULE_SCENARIO"

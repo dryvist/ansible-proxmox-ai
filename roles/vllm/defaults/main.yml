@@ -51,11 +51,19 @@ vllm_nvidia_repo_uri: >-
 vllm_nvidia_repo_key_url: >-
   https://developer.download.nvidia.com/compute/cuda/repos/debian{{
   ansible_distribution_major_version }}/x86_64/8793F200.pub
-# Userspace only. `cuda-drivers` and `nvidia-open` drag in DKMS and a kernel
-# module — never add those here.
+# Userspace only, and the package name matters. `libcuda1` is the CUDA driver
+# library itself — the one vLLM links. Its candidate version tracks the same
+# repo the host driver came from, so guest and host stay in step by
+# construction rather than by a pin someone has to remember to bump.
+#
+# MEASURED alternatives, both wrong here:
+#   nvidia-driver-cuda  — pulls DKMS, binutils, make and libc6-dev. That is the
+#                         kernel-module build path; an LXC shares the host
+#                         kernel and must never build one.
+#   cuda-drivers        — branch metapackage, same problem.
+# Never add either.
 vllm_nvidia_userspace_packages:
-  - nvidia-compute-utils
-  - libnvidia-compute
+  - libcuda1
 
 # Device nodes the service user must be able to open. Bound in by
 # lxc_gpu_features; this role only resolves their owning groups at run time,
@@ -77,6 +85,12 @@ vllm_gpu_device_nodes:
 # apt therefore goes through the estate's internal apt-cacher-ng, which is
 # reachable on the internal path. pip and HuggingFace need no proxy: they are
 # https and 443 is already open.
+#
+# https sources must be sent DIRECT rather than through the cache. apt applies
+# the http proxy to https sources when no https proxy is set, and
+# apt-cacher-ng refuses the resulting CONNECT with
+# "403 CONNECT denied (ask the admin to allow HTTPS tunnels)" — which fails
+# the NVIDIA repo even though 443 reaches it directly.
 vllm_apt_proxy_enabled: true
 vllm_apt_proxy_host: "apt-cacher-ng.{{ tofu_data.domain }}"
 vllm_apt_proxy_port: "{{ tofu_data.constants.service_ports.apt_cacher_ng | default(3142) }}"
@@ -109,6 +123,42 @@ vllm_max_model_len: 16384
 # rather than silently escaping the other one.
 vllm_max_param_billions: 15
 vllm_model_param_billions: 14
+
+# --- Service environment ------------------------------------------------------
+# One map rather than a line per variable in the unit template, so adding a
+# setting is a defaults edit and every consumer sees the same list.
+#
+# HF_HOME / VLLM_CACHE_ROOT: HuggingFace downloads and the compiled-graph cache
+# both land under the data dir, which is on the guest's own disk. Without them
+# they default to the service user's home and are re-downloaded on every
+# rebuild.
+#
+# VLLM_USE_FLASHINFER_SAMPLER=0: REQUIRED on this guest, and its absence is not
+# a performance question — it is a hard crash loop. FlashInfer's top-k/top-p
+# sampler is JIT-compiled on first use, and its build step calls
+# get_cuda_path(), which needs `nvcc`. This guest carries NVIDIA USERSPACE
+# libraries only, by design (see the userspace section above), so there is no
+# compiler and the call raises:
+#
+#   RuntimeError: Could not find nvcc and default cuda_home='/usr/local/cuda'
+#                 doesn't exist
+#
+# The shape of the failure is what makes it expensive: the engine loads the
+# weights to VRAM successfully first, so the service reports `active`, the GPU
+# shows gigabytes resident, and only the sampler init fails — after which the
+# process exits 1 and systemd restarts it. Measured at NRestarts=132 before this
+# was found. `systemctl is-active` is therefore NOT evidence that vLLM is
+# serving; only a request that returns a completion is.
+#
+# Setting this to 0 selects vLLM's PyTorch-native sampler (Triton for batch
+# >= 8), which is a supported, documented backend requiring no compiler. It is
+# an explicit opt-out the upstream env var exists to provide, not a check being
+# silenced. Installing a CUDA toolkit in the guest to satisfy the JIT would
+# instead undo the deliberate userspace-only boundary.
+vllm_environment:
+  HF_HOME: "{{ vllm_data_dir }}/hf"
+  VLLM_CACHE_ROOT: "{{ vllm_data_dir }}/cache"
+  VLLM_USE_FLASHINFER_SAMPLER: "0"
 
 vllm_service_name: vllm
 vllm_service_enabled: true
