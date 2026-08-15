@@ -51,6 +51,9 @@ PINNED_CRON_DELIVERY_SOURCE = (
     "_summarize_cron_failure_for_delivery(job, error)\n"
     "                    delivery_error = _deliver_result(job, deliver_content, "
     "adapters=adapters, loop=loop)\n"
+    # Upstream's line; the memory patch deliberately leaves it in place.
+    "            skip_memory=True,  # Cron system prompts would corrupt user "
+    "representations\n"
 )
 # Verbatim from cron/scheduler.py — the single run_conversation submit that
 # opt-in cron goal mode wraps.

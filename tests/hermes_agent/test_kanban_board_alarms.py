@@ -30,6 +30,7 @@ TMP = Path(tempfile.mkdtemp(prefix="kanban-board-alarms-selfcheck-"))
 FIXTURE_CONFIG = {
     "DB_PATH": str(TMP / "kanban.db"),
     "CONFIG_PATH": str(TMP / "config.yaml"),
+    "PROFILES_DIR": str(TMP / "profiles"),
     "STATE_PATH": str(TMP / "kanban-digest.json"),
     "TITLE": "Kanban Board Digest",
     "INTERVAL_MIN": 15,
@@ -174,6 +175,14 @@ def test_stall_alarm_omits_the_age_note_when_no_running_rows_are_available():
     assert "oldest running" not in line
 
 
+
+
+def test_stall_alarm_still_fires_without_the_rows():
+    _, line = DIGEST.stall_alarm({"ready": 2, "running": 0}, NO_RUNS, NO_RUNNING,
+                                 NOW, 2, 3, 1)
+    assert line and "non-profile" not in line
+
+
 # --- alarm (b): task-timeout rate ---------------------------------------------
 
 def _run(outcome):
@@ -297,8 +306,6 @@ def test_no_alarms_means_no_issues_block_added():
 # --- thresholds are configurable, not literals --------------------------------
 
 def test_thresholds_are_role_variables_not_hardcoded():
-    import yaml
-
     defaults = role_defaults(DEFAULTS_PATH)
     for var in ("hermes_agent_kanban_digest_stall_ticks_threshold",
                 "hermes_agent_kanban_digest_timeout_threshold",

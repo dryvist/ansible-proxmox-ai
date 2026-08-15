@@ -90,12 +90,18 @@ def _apply_runtime_patch(name: str, source: str) -> str:
 PATCHED_COMPRESSOR_SCAN_SOURCE = (
     "        for idx in range(start, end):\n"
 )
-PATCHED_CRON_DELIVERY_SOURCE = _apply_runtime_patch(
-    "Route failed cron deliveries to the issues channel",
-    _apply_runtime_patch(
-        "Route cron delivery content through the markup guard",
-        PINNED_CRON_DELIVERY_SOURCE,
-    ),
+PATCHED_CRON_DELIVERY_SOURCE = (
+    # Code lives in the task's vars; `block:` is only an indent expression.
+    _task("Rebind the built-in memory store for cron agents")["vars"][
+        "_hermes_cron_memory_block"
+    ]
+    + _apply_runtime_patch(
+        "Route failed cron deliveries to the issues channel",
+        _apply_runtime_patch(
+            "Route cron delivery content through the markup guard",
+            PINNED_CRON_DELIVERY_SOURCE,
+        ),
+    )
 )
 # cron/scheduler.py carries the opt-in goal-mode runner too, and
 # patches_verify.yml asserts on all of it against ONE source string — so this
