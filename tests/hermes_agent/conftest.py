@@ -231,6 +231,17 @@ PINNED_JUDGE_ERROR_SENTINEL_SOURCE = (
     '        return "continue", f"judge error: {type(exc).__name__}", '
     "False, None\n"
 )
+# Verbatim upstream `_goal_judge_available` tail — the completion gate's
+# reachability probe, whose two False paths logged nothing.
+PINNED_JUDGE_AVAILABLE_SOURCE = '''\
+def _goal_judge_available() -> bool:
+    try:
+        from agent.auxiliary_client import get_text_auxiliary_client
+        client, model = get_text_auxiliary_client("goal_judge")
+    except Exception:
+        return False
+    return client is not None and bool(model)
+'''
 JUDGE_ERROR = ("continue", "judge error: NotFoundError", False, None)
 # Verbatim upstream judge_goal call site and verdict parse — the two anchors
 # the latency patches key on, indentation included since the role's regexes
@@ -323,6 +334,10 @@ PATCHED_JUDGE_CALL_SOURCE = _apply_runtime_patch(
         "Patch Hermes goal judge to time its model call",
         PINNED_JUDGE_CALL_SOURCE,
     ),
+)
+PATCHED_JUDGE_AVAILABLE_SOURCE = _apply_runtime_patch(
+    "Patch Hermes goal-judge availability probe to log why it declines",
+    PINNED_JUDGE_AVAILABLE_SOURCE,
 )
 PATCHED_GOAL_JUDGE_SOURCE = (
     "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
