@@ -25,6 +25,7 @@ FIXTURE_CONFIG = {
     # No file at this path by default: read_max_in_progress() must degrade to
     # None, never raise, when config.yaml has not been deployed yet.
     "CONFIG_PATH": str(TMP / "config.yaml"),
+    "PROFILES_DIR": str(TMP / "profiles"),
     "STATE_PATH": str(TMP / "kanban-digest.json"),
     "TITLE": "Kanban Board Digest",
     "INTERVAL_MIN": 15,
@@ -44,7 +45,8 @@ TASKS_DDL = """
 CREATE TABLE tasks (
   id TEXT PRIMARY KEY, title TEXT, status TEXT, started_at INTEGER,
   completed_at INTEGER, consecutive_failures INTEGER, max_retries INTEGER,
-  max_runtime_seconds INTEGER, last_heartbeat_at INTEGER, current_run_id INTEGER
+  max_runtime_seconds INTEGER, last_heartbeat_at INTEGER, current_run_id INTEGER,
+  assignee TEXT
 )
 """
 RUNS_DDL = """

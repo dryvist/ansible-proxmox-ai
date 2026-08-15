@@ -99,20 +99,31 @@
       expected {{ llm_router_primary_model }}.
     success_msg: "hermes-default alias -> {{ llm_router_primary_model }} (standalone, primary)"
 
-- name: The rendered fallback chain is empty and no fallbacks key is emitted
+- name: The rendered fallback chain drops the cluster leg but still reaches a serving model
+  # De-wiring the leg must remove the guaranteed-502 detour through a cluster
+  # target that cannot answer — it must NOT leave the chain empty. An empty
+  # chain is what made a saturated primary reach a HUMAN caller as a bare 429
+  # (P1, 2026-08-11): with no fallback, LiteLLM had nowhere to send the request.
+  # The resident routine tier and the on-demand small tier are servable
+  # regardless of the leg, so they are appended unconditionally.
   ansible.builtin.assert:
     quiet: true
     that:
-      - llm_router_hermes_default_fallback_chain == []
-      - "'fallbacks' not in _config.router_settings"
+      - llm_router_hermes_default_fallback_chain == [llm_router_routine_model, llm_router_small_model]
+      - llm_router_cluster_model not in llm_router_hermes_default_fallback_chain
+      - _config.router_settings.fallbacks is defined
+      - _hermes_fallback_entries == [llm_router_routine_model, llm_router_small_model]
     fail_msg: >-
-      Expected an empty llm_router_hermes_default_fallback_chain and no
-      router_settings.fallbacks key while
-      llm_router_cluster_leg_available is false; got chain
-      {{ llm_router_hermes_default_fallback_chain }} and
-      router_settings {{ _config.router_settings }}. A non-empty chain
-      here means every failed primary request takes one guaranteed-502
-      detour through a cluster target that cannot answer.
+      With llm_router_cluster_leg_available false, expected the chain to be
+      [{{ llm_router_routine_model }}, {{ llm_router_small_model }}] — the
+      cluster leg dropped, the always-servable tiers kept. Got chain
+      {{ llm_router_hermes_default_fallback_chain }} and rendered fallbacks
+      {{ _config.router_settings.fallbacks | default('(missing)') }}.
     success_msg: >-
-      Fallback chain is empty and router_settings.fallbacks is omitted —
-      a failed primary surfaces its real error.
+      Cluster leg dropped from the chain; hermes-default still falls back to
+      the resident routine tier and then the small tier as a last resort.
+  vars:
+    _hermes_fallback_entries: >-
+      {{ _config.router_settings.fallbacks | default([])
+         | selectattr('hermes-default', 'defined')
+         | map(attribute='hermes-default') | flatten }}

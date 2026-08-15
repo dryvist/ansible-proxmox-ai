@@ -148,6 +148,30 @@
       - >-
         '_deliver_result(_routed_job, deliver_content,'
         in hermes_agent_cron_scheduler_source
+      # The cron built-in memory rebind. Both halves asserted: the store
+      # construction is what makes the memory tool answer at all, and the
+      # `_cfg`-derived enable flags are what keep it honest — a landing that
+      # constructed the store but read the flags from somewhere else would
+      # re-enable memory for cron even after config.yaml turned it off.
+      - >-
+        'from tools.memory_tool import MemoryStore as _CronMemoryStore'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        'agent._memory_enabled = _mem_cfg.get("memory_enabled", False)'
+        in hermes_agent_cron_scheduler_source
+      # The flag this patch deliberately does NOT remove. If a future upstream
+      # bump drops it, the external provider is silently back in cron's path
+      # and starts building user representations from machine-authored
+      # prompts — the exact corruption its own comment warns about.
+      - >-
+        'skip_memory=True,  # Cron system prompts would corrupt user representations'
+        in hermes_agent_cron_scheduler_source
+      # Creation-time assignee validation. Both creation paths carry the same
+      # anchor line, so the count is what proves the second one landed.
+      - >-
+        hermes_agent_goal_reconcile_source.count(
+          '_known_profiles = list_profiles_on_disk()'
+        ) == 2
       # The second assertion on the retired message patch is gone with it: it
       # pinned wording that patch produced, which exists in no upstream release,
       # so it could only ever fail. The message itself is asserted above.

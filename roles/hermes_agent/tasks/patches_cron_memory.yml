@@ -1,0 +1,90 @@
+---
+# Restore the built-in memory store for cron-initiated agents.
+#
+# Upstream builds every cron agent with `skip_memory=True` (cron/scheduler.py,
+# "Cron system prompts would corrupt user representations"). That flag is
+# correct and stays: it is what keeps a cron job's system prompt out of the
+# EXTERNAL memory provider, whose whole job is building a representation of the
+# USER, which a machine-authored prompt would poison.
+#
+# But the flag is coarser than its own comment. agent/agent_init.py gates BOTH
+# subsystems on it — the external provider AND the built-in MEMORY.md/USER.md
+# store — behind one `if not skip_memory:`. So a cron agent gets
+# `_memory_store = None` while the `memory` toolset is still advertised to it,
+# and tools/memory_tool.py answers every call with "Memory is not available.".
+# The model then paraphrases that into its report: the P1 symptom of
+# 2026-08-11 was a triage job posting "Memory is unavailable in this
+# environment" to chat, with no Hermes code emitting that sentence anywhere.
+#
+# The shape below is upstream's own: agent/background_review.py pairs
+# `skip_memory=True` with an explicit `_memory_store` rebind for exactly this
+# reason — keep the external provider out, keep the built-in store in. Values
+# are read from the loaded `memory.*` config rather than hardcoded, so turning
+# memory off in config.yaml still turns it off for cron.
+#
+# blockinfile, not replace: its markers are what make re-inserting idempotent
+# across converges, and `hermes update` self-updates the app out from under this
+# checkout, so the patch has to re-apply every time.
+- name: Rebind the built-in memory store for cron agents
+  ansible.builtin.blockinfile:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    marker: "        # {mark} ANSIBLE MANAGED BLOCK cron memory store"
+    insertbefore: '^        # Run the agent with an \*inactivity\*-based timeout'
+    # The indent filter is load-bearing, not cosmetic. A YAML block scalar
+    # strips common leading indentation, so writing the enclosing function
+    # body's 8 spaces literally below yields a block at column 0 and a
+    # SyntaxError in the daemon's own module (measured against the real
+    # installed source). Jinja renders after that strip, which is what puts
+    # the indentation back.
+    block: "{{ _hermes_cron_memory_block | indent(8, true) }}"
+  vars:
+    _hermes_cron_memory_block: |
+      try:
+          _mem_cfg = _cfg.get("memory") or {}
+          agent._memory_enabled = _mem_cfg.get("memory_enabled", False)
+          agent._user_profile_enabled = _mem_cfg.get("user_profile_enabled", False)
+          # No nudges for a machine-authored prompt: a cron job either writes a
+          # memory because its prompt told it to, or it does not.
+          agent._memory_nudge_interval = 0
+          if agent._memory_enabled or agent._user_profile_enabled:
+              from tools.memory_tool import MemoryStore as _CronMemoryStore
+              agent._memory_store = _CronMemoryStore(
+                  memory_char_limit=_mem_cfg.get("memory_char_limit", 2200),
+                  user_char_limit=_mem_cfg.get("user_char_limit", 1375),
+              )
+              agent._memory_store.load_from_disk()
+      except Exception as _cron_mem_exc:
+          # Logged, never swallowed. Upstream's own init writes `pass` here, and
+          # that silence is why an absent store read as a model hallucination
+          # for three days instead of as a defect.
+          logger.warning(
+              "Job '%s': built-in memory store unavailable, memory tool will "
+              "report unavailable: %s", job_id, _cron_mem_exc,
+          )
+  # The gateway hosts the in-gateway cron jobs in a long-lived process and will
+  # keep running the unpatched module until it restarts. Verifying with
+  # `hermes cron run <job>` exercises only the crontab path, which spawns fresh
+  # and passes green while every in-gateway job stays broken.
+  notify: Restart hermes-gateway
+
+# A card whose assignee is not a profile on disk is bucketed
+# `skipped_nonspawnable` and never runs — silently, forever. Reject it where it
+# is created instead. Hits both creation paths (create_task,
+# specify_triage_task); the lookahead is what keeps it idempotent.
+- name: Reject Kanban cards created for an assignee with no profile
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: |-
+      ^(    assignee = _canonical_assignee\(assignee\))$\n(?!    _known_profiles)
+    # `|` not `|-`: the regexp consumes the anchor's newline, so the
+    # replacement has to end with one or it swallows the next line.
+    replace: |
+      \g<1>
+          _known_profiles = list_profiles_on_disk()
+          if assignee and _known_profiles and assignee not in _known_profiles:
+              raise ValueError(
+                  f"assignee {assignee!r} is not a profile on disk "
+                  f"({', '.join(_known_profiles)}); the dispatcher would skip "
+                  "this card as non-spawnable on every tick"
+              )
+  notify: Restart hermes-gateway
