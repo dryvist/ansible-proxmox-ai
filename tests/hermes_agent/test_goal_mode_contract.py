@@ -123,12 +123,32 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # `servable` is deliberately NOT `enabled`: every large-tier entry is
     # enabled (the router offers it), only these are servable (the backend
     # answers for it). Conflating them yields a 404, not an answer.
-    expected_servable = [hermes_backend, judge_backend]
-    if router_defaults["llm_router_cluster_leg_available"]:
-        expected_servable.append(by_role["cluster"]["client_model_id"])
+    #
+    # The contract is a BICONDITIONAL — servable if and only if the entry names
+    # a serving_role — and BOTH sides derive from the registry. This used to
+    # name the expected ids through by_role["primary"]/["small"], which held
+    # only while the serving host ran exactly one warm model: since 2026-08-14
+    # it holds two, and a second servable model with no role to name it would
+    # have failed a true statement. Deriving keeps the check real rather than
+    # loosening it — flipping `servable` on a dead entry, or dropping it from a
+    # live one, still fails here.
+    expected_servable = [
+        entry["client_model_id"]
+        for entry in registry
+        if entry.get("enabled")
+        and "serving_role" in entry
+        and (
+            entry["serving_role"] != "cluster"
+            or router_defaults["llm_router_cluster_leg_available"]
+        )
+    ]
     assert [
         entry["client_model_id"] for entry in registry if entry.get("servable")
     ] == expected_servable
+    # Both selectors the fabric actually points at must be in that set, named
+    # through by_role rather than by literal.
+    assert hermes_backend in expected_servable
+    assert judge_backend in expected_servable
     hermes_entries = [
         entry for entry in registry if entry["client_model_id"] == hermes_backend
     ]

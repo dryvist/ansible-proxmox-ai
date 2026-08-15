@@ -35,20 +35,33 @@ llm_router_model_registry:
     enabled: true
     context_window: 32768
 
-  # THE RESIDENT. 65536, not the 32768 it carried until 2026-07-28: that was the
-  # SWAP-class figure, and this model is resident. Its resident profile in nix-ai
-  # catalog-data.nix is provisioned cacheMemoryMb = 16384 with
-  # maxRequestTokens = 65536, and the catalog comment states 65536 "avoids the
-  # 32768 truncation/retry death-loop". Advertising half the real window does not
-  # protect anything — it just makes Hermes auto-compact at 24.5K (75% of 32768)
-  # when ~49K is actually available.
+  # THE PRIMARY, since 2026-08-14. The serving host now holds TWO models warm
+  # (dryvist/nix-darwin lib/hosts/mac-studio.nix, "Two warm brains"): a dense 27B
+  # for deliberate work and the 35B MoE below for routine work. This entry is the
+  # deliberate one, so the consumer aliases resolve here.
+  #
+  # 65536 matches its resident profile in nix-ai catalog-data.nix
+  # (cacheMemoryMb = 16384, maxRequestTokens = 65536). Advertising half the real
+  # window does not protect anything — it just makes Hermes auto-compact at 24.5K
+  # (75% of 32768) when ~49K is actually available.
+  #
+  # THINKING IS ON for this model, configured serving-side: the catalog passes
+  # --chat-template-args {"reasoning_effort":"medium"} and this registry does not
+  # restate it. That is deliberate — sampling/serving posture belongs to whoever
+  # launches the worker, and a second spelling here is the drift this file
+  # exists to remove. Unset, the model's own template defaults the effort to
+  # `xhigh`, which measured 0 answer characters on 3 of 3 runs; `medium` answers
+  # and finishes. It is a prompt string, not a budget, so responses are longer
+  # and slower than the 35B's — that is the point of a deliberate tier, and the
+  # router's own request budget (ai_router_request_timeout_seconds 2400,
+  # ai_stream_read_timeout_seconds 1800) already covers minutes-long answers.
   #
   # Its aliases are the fabric's stable consumer handles. `interim-brain` is a
   # handle so hermes_brain_model (or secret/ai/public/brain) can repoint in one
   # line; it tracks the primary rather than naming its own model, because a
   # second physical id there is exactly the drift this registry prevents.
-  - client_model_id: mlx-community/Qwen3.6-35B-A3B-4bit
-    upstream_model_id: mlx-community/Qwen3.6-35B-A3B-4bit
+  - client_model_id: mlx-community/Qwen3.8-27B-4bit
+    upstream_model_id: mlx-community/Qwen3.8-27B-4bit
     provider: openai
     tier: large
     enabled: true
@@ -60,8 +73,27 @@ llm_router_model_registry:
       - tool-calling
       - interim-brain
 
-  # THE SMALL TIER — the on-demand 9B that stays servable beside the resident
-  # (nix-ai alwaysAvailableModels) and never evicts it. A first-class entry
+  # THE ROUTINE TIER — the second warm model, resident beside the primary rather
+  # than swapping against it (nix-darwin maxResidentWorkers = 2). It held
+  # `serving_role: primary` and all three consumer aliases until 2026-08-14; both
+  # moved to the 27B above and this entry stayed servable, because it is: the
+  # host serves it, verified from the worker's own command line at converge.
+  #
+  # It carries a serving_role rather than none so the registry's real invariant
+  # still holds — servable if and only if the entry names the role it serves in.
+  # Nothing selects `routine` today; it is a name for a fact, not a switch. Its
+  # 65536 window is the same resident profile figure as the primary's.
+  - client_model_id: mlx-community/Qwen3.6-35B-A3B-4bit
+    upstream_model_id: mlx-community/Qwen3.6-35B-A3B-4bit
+    provider: openai
+    tier: large
+    enabled: true
+    context_window: 65536
+    servable: true
+    serving_role: routine
+
+  # THE SMALL TIER — the on-demand 9B that stays servable beside the two warm
+  # models and never evicts either. A first-class entry
   # because goal-judge points here, and an alias target with no context_window
   # falls through the "*" wildcard to a null max_input_tokens and compresses its
   # caller to death. 32768 is the small-cache tier figure, matching the swap
@@ -77,7 +109,7 @@ llm_router_model_registry:
   # CORRECTED 2026-08: this used to be described as "always up for the judge".
   # Measured live against the deployed serving host and it is false — the
   # deployed llama-swap config (nix-ai modules/mlx/llama-swap-topology.nix) has
-  # the PRIMARY pinned resident (ttl=0) and THIS model as the evictable
+  # the warm models pinned resident (ttl=0) and THIS model as the evictable
   # swap-class member (ttl=900), the opposite of what was claimed. Measured
   # cold-load after eviction: ~79s, which exceeds
   # hermes_agent_kanban_goal_judge_timeout_seconds (60s) — see the goal-judge
