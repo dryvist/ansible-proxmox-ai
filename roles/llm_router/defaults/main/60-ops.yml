@@ -48,6 +48,59 @@ llm_router_llm_fast_enabled: true
 # registrations win over the wildcard).
 llm_router_large_passthrough_enabled: true
 
+# Admission cap on the LOCAL large tier, so the router QUEUES excess work
+# instead of firing it at a backend that will refuse it.
+#
+# Without this the local deployments carry no rpm/tpm/max_parallel_requests at
+# all (only the OpenRouter egress tier did), so LiteLLM admitted every inbound
+# request immediately and forwarded it to an mlx-lm-server running
+# `--decode-concurrency 2 --prompt-concurrency 2`. That backend accepts 2
+# in-flight and 429s the rest INSTANTLY. Measured 2026-08-15 over 6h:
+# 12,201.6 s of model time against 43,200 slot-seconds = ~28% utilisation,
+# while 51-234 requests per hour were rejected. The tier was never busy; it was
+# UNBUFFERED, and bursty arrivals lost. Every agent-mode Hermes cron had been
+# dying on its first call since 2026-08-07 (Zammad AI/LLM Serving).
+#
+# Why a rejection is invisible on the usual dashboards, which is why this ran
+# for eight days: a refused request occupies no slot and emits no latency row,
+# so exactly the traffic that is failing is absent from utilisation and latency
+# stats. Do not read "low utilisation" here as headroom.
+#
+# PER-INSTANCE, exactly like the OpenRouter ceilings above — and for a stronger
+# reason than convention. LiteLLM implements max_parallel_requests as an
+# `asyncio.Semaphore` cached `local_only=True` (router_utils/
+# client_initalization_utils.py), so it is an in-process gate that AWAITS, and
+# it CANNOT be shared across the pool via the redis store. The redis-backed
+# parallel limiter is a different mechanism that REJECTS rather than queues
+# ("a rejected request never occupies a slot"), so it would only move the 429
+# one hop upstream. Queueing and pool-wide coordination are not simultaneously
+# available for this control; queueing is the one worth having.
+#
+# Consequence, stated rather than discovered: llm_router_group is a three-member
+# pool, so the estate-wide in-flight ceiling is 3x this number. At 1 that is 3
+# against a backend admitting 2 — a deliberate 1-over overcommit, because no
+# integer makes three independent semaphores sum to 2. Each member still queues
+# its own excess, which converts the great majority of instant rejections into
+# waits. RAISING THIS IS NOT A CAPACITY IMPROVEMENT: at 2 the pool admits 6 at a
+# 2-slot backend, which is the original defect with extra steps.
+#
+# Trading latency for completion is the intended direction on this tier: its
+# stated objective is accuracy over throughput, and a queued request waits while
+# a rejected one kills a job outright.
+llm_router_local_max_parallel_requests: 1
+
+# Same control for the zero-config passthrough tier, kept SEPARATE because the
+# tradeoff differs. LiteLLM keys the semaphore per deployment and the wildcard
+# is ONE deployment fronting every untuned model, so a single value serialises
+# them against each other: a long document-OCR decode can hold the slot a small
+# on-demand model wanted. Accepted, because the alternative is this tier
+# flooding the same backend the tuned brain and judge depend on.
+#
+# 2 rather than 1: these are on-demand, bursty, mostly single-stream jobs, and
+# unlike the tuned tier there is no long-running agent conversation to protect.
+# Set to 0 to omit the cap entirely and restore unbounded passthrough.
+llm_router_passthrough_max_parallel_requests: 2
+
 # Daily brain rotation + night-cluster deployment shapes were deleted
 # 2026-07-16 (no-op since both phases served the same model; night cluster not
 # provisioned). The default brain is a real model id served directly (no
