@@ -30,14 +30,15 @@
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
     marker: "        # {mark} ANSIBLE MANAGED BLOCK cron memory store"
     insertbefore: '^        # Run the agent with an \*inactivity\*-based timeout'
-    # The `indent(8, true)` is load-bearing, not cosmetic. A YAML block scalar
-    # strips the common leading indentation, so writing the 8 spaces of the
-    # enclosing function body literally in the block below produces a block at
-    # column 0 and a SyntaxError in the daemon's own module (measured, against
-    # the real installed source, before this filter was added). Jinja renders
-    # after that strip, which is why re-adding the indent here works.
-    block: |
-      {% filter indent(8, true) -%}
+    # The indent filter is load-bearing, not cosmetic. A YAML block scalar
+    # strips common leading indentation, so writing the enclosing function
+    # body's 8 spaces literally below yields a block at column 0 and a
+    # SyntaxError in the daemon's own module (measured against the real
+    # installed source). Jinja renders after that strip, which is what puts
+    # the indentation back.
+    block: "{{ _hermes_cron_memory_block | indent(8, true) }}"
+  vars:
+    _hermes_cron_memory_block: |
       try:
           _mem_cfg = _cfg.get("memory") or {}
           agent._memory_enabled = _mem_cfg.get("memory_enabled", False)
@@ -60,7 +61,6 @@
               "Job '%s': built-in memory store unavailable, memory tool will "
               "report unavailable: %s", job_id, _cron_mem_exc,
           )
-      {%- endfilter %}
   # The gateway hosts the in-gateway cron jobs in a long-lived process and will
   # keep running the unpatched module until it restarts. Verifying with
   # `hermes cron run <job>` exercises only the crontab path, which spawns fresh

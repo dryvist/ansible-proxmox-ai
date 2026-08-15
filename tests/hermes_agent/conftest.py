@@ -304,9 +304,12 @@ PATCHED_COMPRESSOR_SCAN_SOURCE = (
     "        for idx in range(start, end):\n"
 )
 PATCHED_CRON_DELIVERY_SOURCE = (
-    _task("Rebind the built-in memory store for cron agents")[
-        "ansible.builtin.blockinfile"
-    ]["block"]
+    # The task's `block:` is an indent expression, so the code itself lives in
+    # the task's vars. Read the vars — reading `block` would yield the Jinja
+    # expression and every assertion below would pass against nothing.
+    _task("Rebind the built-in memory store for cron agents")["vars"][
+        "_hermes_cron_memory_block"
+    ]
     + _apply_runtime_patch(
         "Route failed cron deliveries to the issues channel",
         _apply_runtime_patch(
