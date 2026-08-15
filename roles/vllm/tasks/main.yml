@@ -1,0 +1,177 @@
+---
+# Every task is skipped under Docker virtualization (molecule): there is no GPU,
+# no systemd worth driving, and no point installing a multi-gigabyte wheel to
+# prove a guard works. The scenario covers the guard branch and the rendered
+# unit, and says so rather than implying real coverage.
+
+- name: Assert the served model is within this guest's parameter ceiling
+  ansible.builtin.assert:
+    that:
+      - vllm_model_param_billions | float <= vllm_max_param_billions | float
+    fail_msg: >-
+      {{ vllm_model }} is {{ vllm_model_param_billions }}B, above this guest's
+      ceiling of {{ vllm_max_param_billions }}B. The ceiling is per-guest on
+      purpose — raise it here deliberately after checking the card's VRAM and
+      the KV-cache budget, rather than serving a model that will OOM at load or
+      mid-request.
+    success_msg: >-
+      {{ vllm_model }} ({{ vllm_model_param_billions }}B) is within the
+      {{ vllm_max_param_billions }}B ceiling for this guest.
+  tags:
+    - vllm
+
+- name: Create the vllm group
+  ansible.builtin.group:
+    name: "{{ vllm_group }}"
+    system: true
+    state: present
+  tags:
+    - vllm
+
+- name: Create the vllm service user
+  ansible.builtin.user:
+    name: "{{ vllm_user }}"
+    group: "{{ vllm_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ vllm_data_dir }}"
+    create_home: false
+  tags:
+    - vllm
+
+- name: Create the install and data directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ vllm_user }}"
+    group: "{{ vllm_group }}"
+    mode: "0755"
+  loop:
+    - "{{ vllm_install_dir }}"
+    - "{{ vllm_data_dir }}"
+  tags:
+    - vllm
+
+# --- NVIDIA userspace --------------------------------------------------------
+
+- name: Add NVIDIA's apt repository
+  ansible.builtin.deb822_repository:
+    name: nvidia-cuda
+    types: deb
+    uris: "{{ vllm_nvidia_repo_uri | trim }}"
+    # A flat repository: the suite is the literal "/" and there are no
+    # components. Same shape the host driver role uses, deliberately, so both
+    # sides of the CUDA boundary resolve from one source.
+    suites: /
+    signed_by: "{{ vllm_nvidia_repo_key_url | trim }}"
+    enabled: true
+    state: present
+  when:
+    - vllm_nvidia_repo_enabled | bool
+    - ansible_virtualization_type | default('') != 'docker'
+  tags:
+    - vllm
+
+- name: Install the NVIDIA userspace libraries
+  ansible.builtin.apt:
+    name: "{{ vllm_nvidia_userspace_packages }}"
+    state: present
+    update_cache: true
+  when:
+    - vllm_nvidia_repo_enabled | bool
+    - ansible_virtualization_type | default('') != 'docker'
+  notify: Restart vllm
+  tags:
+    - vllm
+
+# --- GPU device access -------------------------------------------------------
+# The nodes are bound in by ansible-proxmox's lxc_gpu_features. Stat them rather
+# than assuming, because a container whose device entries point at paths the
+# host does not have starts perfectly happily and simply has no GPU — the
+# failure then surfaces much later as inference silently running on CPU.
+
+- name: Stat the GPU device nodes
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ vllm_gpu_device_nodes }}"
+  register: vllm_gpu_dev_stat
+  when: ansible_virtualization_type | default('') != 'docker'
+  tags:
+    - vllm
+
+- name: Assert every GPU device node is present in the container
+  ansible.builtin.assert:
+    that:
+      - vllm_gpu_dev_stat.results | rejectattr('stat.exists') | list | length == 0
+    fail_msg: >-
+      Missing GPU device nodes in this container:
+      {{ vllm_gpu_dev_stat.results | rejectattr('stat.exists')
+         | map(attribute='item') | list }}.
+      Run the ansible-proxmox lxc_gpu_features role against the host. If they
+      are missing on the HOST too, the device-nodes unit did not run — note that
+      reading those nodes is what creates them, so check on a fresh boot before
+      anything touches the GPU.
+  when: ansible_virtualization_type | default('') != 'docker'
+  tags:
+    - vllm
+
+# Resolve the owning groups at run time rather than declaring them: the NVIDIA
+# character-device majors are assigned dynamically at module load, so the group
+# mapping is not knowable ahead of time.
+- name: Add the service user to the groups owning the GPU devices
+  ansible.builtin.user:
+    name: "{{ vllm_user }}"
+    groups: "{{ vllm_gpu_dev_stat.results | map(attribute='stat.gr_name') | list | unique }}"
+    append: true
+  when: ansible_virtualization_type | default('') != 'docker'
+  notify: Restart vllm
+  tags:
+    - vllm
+
+# --- vLLM itself -------------------------------------------------------------
+
+- name: Install python3-venv
+  ansible.builtin.apt:
+    name:
+      - python3-venv
+      - python3-pip
+    state: present
+  when: ansible_virtualization_type | default('') != 'docker'
+  tags:
+    - vllm
+
+# The whole install. The wheel bundles the CUDA runtime, so nothing is compiled
+# and no CUDA toolkit is installed alongside it.
+- name: Install vLLM from the official wheel
+  ansible.builtin.pip:
+    name: "{{ vllm_pip_spec }}"
+    virtualenv: "{{ vllm_venv }}"
+    virtualenv_command: python3 -m venv
+    state: "{{ 'present' if vllm_version else 'latest' }}"
+  become: true
+  become_user: "{{ vllm_user }}"
+  when: ansible_virtualization_type | default('') != 'docker'
+  notify: Restart vllm
+  tags:
+    - vllm
+
+- name: Install the vllm systemd unit
+  ansible.builtin.template:
+    src: vllm.service.j2
+    dest: "/etc/systemd/system/{{ vllm_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart vllm
+  tags:
+    - vllm
+
+- name: Enable and start vllm
+  ansible.builtin.systemd_service:
+    name: "{{ vllm_service_name }}"
+    enabled: "{{ vllm_service_enabled | bool }}"
+    state: "{{ 'started' if vllm_service_enabled | bool else 'stopped' }}"
+    daemon_reload: true
+  when: ansible_virtualization_type | default('') != 'docker'
+  tags:
+    - vllm
