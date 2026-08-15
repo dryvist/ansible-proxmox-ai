@@ -65,6 +65,15 @@
           Re-run the tofu-proxmox Terrakube workspace so the inventory is
           republished with `nodes` and `domain` populated.
 
+    # Tag -> group mapping note (kept OUT of the Jinja expression below: `#` is
+    # not a comment inside {{ }}, it is a syntax error).
+    #
+    # `llm-fast` is a CAPABILITY tag. In tofu it selects the shared serving-API
+    # firewall groups, and every GPU serving guest carries it whatever engine it
+    # runs. It used to double as the signal for WHICH role serves, which stopped
+    # being true once a second engine existed. `llm-vllm` names the
+    # IMPLEMENTATION, so a guest declaring it is excluded from llm_fast_group
+    # and does not receive both serving roles.
     - name: Add AI LXC containers to inventory (proxmox_pct_remote connection)
       ansible.builtin.add_host:
         name: "{{ item.key }}"
@@ -104,6 +113,12 @@
             (
               ['llm_fast_group']
               if 'llm-fast' in (item.value.tags | default([]))
+              and 'llm-vllm' not in (item.value.tags | default([]))
+              else []
+            ) +
+            (
+              ['llm_vllm_group']
+              if 'llm-vllm' in (item.value.tags | default([]))
               else []
             ) +
             (
@@ -239,7 +254,7 @@
         # the real fix and is tracked separately.
         tofu_ssh_container: >-
           {{ (item.value.tags | default([]))
-             | intersect(['hermes-agent', 'llm-router', 'llm-redis'])
+             | intersect(['hermes-agent', 'llm-router', 'llm-redis', 'llm-vllm'])
              | length > 0 }}
       loop: "{{ tofu_data.containers | dict2items }}"
       changed_when: false

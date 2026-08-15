@@ -1,0 +1,33 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=vLLM OpenAI-compatible inference server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User={{ vllm_user }}
+Group={{ vllm_group }}
+
+# HuggingFace downloads and the compiled-graph cache both land under the data
+# dir, which is on the guest's own disk. Without HF_HOME they default to the
+# service user's home and would be re-downloaded on every rebuild.
+Environment=HF_HOME={{ vllm_data_dir }}/hf
+Environment=VLLM_CACHE_ROOT={{ vllm_data_dir }}/cache
+
+ExecStart={{ vllm_venv }}/bin/vllm serve {{ vllm_model }} \
+    --served-model-name {{ vllm_served_model_name }} \
+    --host {{ vllm_listen_host }} \
+    --port {{ vllm_api_port }} \
+    --quantization {{ vllm_quantization }} \
+    --gpu-memory-utilization {{ vllm_gpu_memory_utilization }} \
+    --max-model-len {{ vllm_max_model_len }}
+
+# A cold start downloads weights and builds CUDA graphs, which is minutes, not
+# seconds. A short timeout here reads as a crash loop and is not one.
+TimeoutStartSec=1800
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

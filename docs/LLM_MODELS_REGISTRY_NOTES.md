@@ -10,6 +10,28 @@ Different jobs, different files. The schema doc says what a **field** means;
 this one says why a particular **entry** looks the way it does. Add a note here
 and leave a one-line pointer at the entry — never the reverse.
 
+## The primary (`mlx-community/Qwen3.8-27B-4bit`)
+
+### Thinking is configured serving-side, not here
+
+The catalog starts this worker with
+`--chat-template-args {"reasoning_effort":"medium"}` and the registry does not
+restate it. That is deliberate: sampling and serving posture belong to whoever
+launches the worker, and a second spelling in the registry is exactly the drift
+this file exists to remove.
+
+Leaving it unset is not neutral. The model's own chat template then defaults the
+effort to `xhigh`, which **measured 0 answer characters on 3 of 3 runs** —
+it thinks until it runs out of budget and emits nothing. `medium` answers and
+finishes.
+
+`reasoning_effort` is a prompt string, not a token budget, so responses on this
+tier are longer and slower than the 35B's. That is the point of a deliberate
+tier rather than a regression, and the router's own request budget already
+covers minutes-long answers (`ai_router_request_timeout_seconds` 2400,
+`ai_stream_read_timeout_seconds` 1800). Do not shorten either one to make this
+tier look faster.
+
 ## The small tier (`mlx-community/Qwen3.5-9B-MLX-4bit`)
 
 `goal-judge` points here, and it is a first-class entry rather than an alias
