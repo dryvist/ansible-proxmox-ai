@@ -23,12 +23,25 @@
 # "Installed"/"Uninstalled" summary line so idempotency reporting stays honest.
 # uv writes that summary to STDERR, not stdout — check stderr (an empty-repo
 # reinstall of nothing leaves both blank, correctly reporting ok/unchanged).
+#
+# EDITABLE (-e), not a path install. Two independent reasons, either sufficient:
+#
+# 1. Upstream forbids the non-editable form outright. From 0.20.0 the build
+#    backend raises `RuntimeError: Building wheels or sdists for hermes-agent is
+#    not supported` and names `uv pip install -e .` as the supported route, so
+#    `"hermes-agent[slack] @ <dir>"` now fails the converge on a live guest.
+# 2. It matches what the base install already does — upstream's own install.sh
+#    runs `uv pip install -e "<dir>[all]"`. The path install was overwriting an
+#    editable install with a wheel COPY under site-packages, which is exactly
+#    the two-trees hazard patches_verify.yml exists to catch: the patch tasks
+#    rewrite the source tree while the daemon imports the copy. Editable makes
+#    the source tree the imported code, so that class of drift cannot occur.
 - name: Install the Slack platform extra into the Hermes venv
   ansible.builtin.command:
     cmd: >-
       {{ hermes_agent_uv_bin }} pip install
       --python {{ hermes_agent_venv_python }}
-      "hermes-agent[slack] @ {{ hermes_agent_install_dir }}"
+      -e "{{ hermes_agent_install_dir }}[slack]"
   register: hermes_agent_slack_extra_install
   changed_when: >-
     'Installed' in hermes_agent_slack_extra_install.stderr
