@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.29.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.28.3...v0.29.0) (2026-08-15)
+
+
+### Features
+
+* **vllm:** serve the NVIDIA GPU guest with vLLM from official wheels ([#460](https://github.com/dryvist/ansible-proxmox-ai/issues/460)) ([c9b18c9](https://github.com/dryvist/ansible-proxmox-ai/commit/c9b18c97a3b066b5801c72d6cc3da36aa184f59a))
+
+
+### Bug Fixes
+
+* **hermes_agent:** install the Slack extra editable, as upstream requires ([#461](https://github.com/dryvist/ansible-proxmox-ai/issues/461)) ([d042854](https://github.com/dryvist/ansible-proxmox-ai/commit/d042854438be90e3fbbf7d8e96f6efe9a2b8af32))
+* **inventory:** converge vLLM guests over ssh rather than pct exec ([#464](https://github.com/dryvist/ansible-proxmox-ai/issues/464)) ([c84d723](https://github.com/dryvist/ansible-proxmox-ai/commit/c84d723f3d37802e7408967343c2cbe9fb7278ac))
+* **vllm:** route guest apt through the internal caching proxy ([#465](https://github.com/dryvist/ansible-proxmox-ai/issues/465)) ([1d8ca04](https://github.com/dryvist/ansible-proxmox-ai/commit/1d8ca047fdf70449f465b3c7574b482cc18c32ba))
+
 ## [0.28.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.28.2...v0.28.3) (2026-08-15)
 
 
