@@ -133,9 +133,29 @@
       {{ llm_router_large_models
          | selectattr('client_model_id', 'equalto', llm_router_primary_model)
          | map(attribute='context_window') | first | default(0) }}
+    # Every chain entry EXCEPT the last-resort tail must hold the primary's
+    # context. The tail is exempt deliberately: it is the only entry that is
+    # servable when every resident brain has already failed, so requiring full
+    # context of it would mean no reachable fallback at all in exactly the case
+    # the chain exists for. Two things make the exemption safe, and both must
+    # stay true:
+    #   - enable_pre_call_checks (config.yaml.j2) rejects an over-long request
+    #     before it is routed, so a narrow tail errors rather than answering a
+    #     request it could not hold. That is the precise harm this assert names.
+    #   - the caller can tell a fallback answer from a primary one. NOT from the
+    #     response body: an aliased request echoes the ALIAS back in `model`
+    #     (verified live — requesting "goal-judge" returns model "goal-judge",
+    #     never the physical id), so the body attributes nothing. The signal is
+    #     the response HEADERS, which litellm 1.90.3 sets in
+    #     router_utils/add_retry_fallback_headers.py the moment a fallback
+    #     succeeds: x-litellm-attempted-fallbacks (0 = primary served),
+    #     x-litellm-model-id and x-litellm-model-api-base (which backend).
+    #     A consumer that reports "which model answered" must read those
+    #     headers; one that reports body.model is reporting what it asked for,
+    #     not what replied.
     _llm_router_narrow_fallbacks: >-
       {{ llm_router_large_models
-         | selectattr('client_model_id', 'in', llm_router_hermes_default_fallback_chain)
+         | selectattr('client_model_id', 'in', llm_router_hermes_default_fallback_chain[:-1])
          | selectattr('context_window', 'defined')
          | rejectattr('context_window', 'none')
          | selectattr('context_window', 'lt', _llm_router_primary_context | int)
