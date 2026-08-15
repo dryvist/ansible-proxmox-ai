@@ -174,6 +174,65 @@ def test_stall_alarm_omits_the_age_note_when_no_running_rows_are_available():
     assert "oldest running" not in line
 
 
+# --- the unspawnable-assignee diagnostic -------------------------------------
+# "in_progress 0/1 (cap)" is true and useless when every ready card names a
+# non-profile: the dispatcher skips them silently and the board looks capped
+# rather than dead. Faking the module (absent here) also pins that the digest
+# asks the dispatcher's own check instead of re-scanning profiles itself.
+import contextlib
+import sys
+import types as _t
+
+
+@contextlib.contextmanager
+def known_profiles(*names):
+    pkg = _t.ModuleType("hermes_cli")
+    pkg.__path__ = []
+    mod = _t.ModuleType("hermes_cli.kanban_db")
+    setattr(mod, "list_profiles_on_disk", lambda: list(names))
+    sys.modules.update({"hermes_cli": pkg, "hermes_cli.kanban_db": mod})
+    try:
+        yield
+    finally:
+        for m in ("hermes_cli.kanban_db", "hermes_cli"):
+            sys.modules.pop(m, None)
+
+
+def test_stall_alarm_names_the_ready_assignees_that_are_not_real_profiles():
+    rows = [{"assignee": "operator", "n": 9}, {"assignee": "hermes", "n": 5}]
+    with known_profiles("default", "github-maint"):
+        _, line = DIGEST.stall_alarm({"ready": 14, "running": 0}, NO_RUNS, NO_RUNNING,
+                                     NOW, 2, 3, 1, rows)
+    assert "14 ready card(s) name a non-profile assignee" in line
+    assert "operator x9" in line and "hermes x5" in line
+    assert "Known: default, github-maint" in line
+
+
+def test_stall_alarm_adds_no_note_when_every_ready_assignee_is_real():
+    """A valid-assignee stall is a different fault; a false accusation sends the
+    operator hunting a profile problem that does not exist."""
+    with known_profiles("default"):
+        _, line = DIGEST.stall_alarm({"ready": 3, "running": 0}, NO_RUNS, NO_RUNNING,
+                                     NOW, 2, 3, 1, [{"assignee": "default", "n": 3}])
+    assert "non-profile" not in line
+
+
+def test_unassigned_ready_cards_are_reported_under_a_readable_name():
+    with known_profiles("default"):
+        assert "(unassigned) x4" in DIGEST.unspawnable_note([{"assignee": "", "n": 4}])
+
+
+def test_unspawnable_note_degrades_to_silence_when_profiles_are_unreadable():
+    """Must still page. A crash report here would replace the stall alarm."""
+    assert DIGEST.unspawnable_note([{"assignee": "whoever", "n": 1}]) == ""
+
+
+def test_stall_alarm_still_fires_without_the_rows():
+    _, line = DIGEST.stall_alarm({"ready": 2, "running": 0}, NO_RUNS, NO_RUNNING,
+                                 NOW, 2, 3, 1)
+    assert line and "non-profile" not in line
+
+
 # --- alarm (b): task-timeout rate ---------------------------------------------
 
 def _run(outcome):
@@ -297,8 +356,6 @@ def test_no_alarms_means_no_issues_block_added():
 # --- thresholds are configurable, not literals --------------------------------
 
 def test_thresholds_are_role_variables_not_hardcoded():
-    import yaml
-
     defaults = role_defaults(DEFAULTS_PATH)
     for var in ("hermes_agent_kanban_digest_stall_ticks_threshold",
                 "hermes_agent_kanban_digest_timeout_threshold",

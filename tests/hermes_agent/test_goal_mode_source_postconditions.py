@@ -170,6 +170,16 @@ def test_installed_source_postconditions_fail_closed() -> None:
     # The six client-side backoff hacks are gone (see
     # test_client_side_backoff_hacks_stay_reverted); only the two kept
     # max_tokens-ceiling patches still contribute to this source.
+    # Both kanban_db.py creation paths carry the same anchor line, and the
+    # assignee guard is asserted by COUNT — so the fixture needs both, or a
+    # patch that only reached one would still pass here.
+    for _tail in ("    if not title or not title.strip():\n",
+                  "    with write_txn(conn):\n"):
+        reconcile_source += _apply_runtime_patch(
+            "Reject Kanban cards created for an assignee with no profile",
+            "    assignee = _canonical_assignee(assignee)\n" + _tail,
+        )
+
     retry_source = _apply_runtime_patch(
         "Patch hermes-agent retry boost to respect the configured max_tokens ceiling",
         PINNED_TC_BOOST_CAP_SOURCE,

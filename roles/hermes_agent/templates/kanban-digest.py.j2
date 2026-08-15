@@ -135,6 +135,16 @@ SELECT t.id, t.title, t.max_runtime_seconds, t.last_heartbeat_at,
  WHERE t.status = 'running'
 """
 BOARD_SQL = "SELECT status, COUNT(*) FROM tasks GROUP BY status"
+# Who the ready cards wait on. An assignee that isn't a real profile is bucketed
+# `skipped_nonspawnable` silently, every tick — 238 of them in the 2026-08-11 P1,
+# while the alarm reported only a concurrency number.
+READY_ASSIGNEE_SQL = """
+SELECT COALESCE(NULLIF(TRIM(assignee), ''), '') AS assignee, COUNT(*) AS n
+  FROM tasks
+ WHERE status = 'ready'
+ GROUP BY 1
+ ORDER BY n DESC, assignee
+"""
 
 
 def fmt_dur(seconds):
@@ -347,8 +357,28 @@ def overrun_lines(rows, now_epoch):
     return out
 
 
+def unspawnable_note(ready_assignee_rows):
+    """Name ready-card assignees the dispatcher won't spawn, or ''.
+
+    Uses the dispatcher's own profile discovery so the note can't drift from
+    the check that decides. Unavailable import -> '', alarm still fires.
+    """
+    try:
+        from hermes_cli.kanban_db import list_profiles_on_disk
+        known = set(list_profiles_on_disk())
+    except Exception:
+        return ""
+    bad = [(r["assignee"] or "(unassigned)", r["n"])
+           for r in ready_assignee_rows if known and (r["assignee"] or "") not in known]
+    if not bad:
+        return ""
+    return (f" {sum(n for _, n in bad)} ready card(s) name a non-profile assignee, "
+            f"skipped every tick: {', '.join(f'{a} x{n}' for a, n in bad)}. "
+            f"Known: {', '.join(sorted(known))}.")
+
+
 def stall_alarm(board, run_rows, running_rows, now_epoch, prior_ticks, threshold,
-                max_in_progress):
+                max_in_progress, ready_assignee_rows=()):
     """(new_streak, alarm_line_or_None) — alarm (a): the board is not draining.
 
     NOT "nothing is running" — a single wedged run at max_in_progress=1 shows
@@ -395,7 +425,8 @@ def stall_alarm(board, run_rows, running_rows, now_epoch, prior_ticks, threshold
     age_note = f", oldest running {fmt_dur(now_epoch - min(started))}" if started else ""
     line = (f":rotating_light: Stalled board — {ready} ready card(s), {running} "
             f"running but nothing finished{age_note}, for {streak} consecutive "
-            f"digest ticks. {cause}.")
+            f"digest ticks. {cause}."
+            f"{unspawnable_note(ready_assignee_rows)}")
     return streak, line
 
 
@@ -549,12 +580,14 @@ def main():
             run_rows = list(conn.execute(RUNS_SQL, (since, now_epoch)))
             running_rows = list(conn.execute(RUNNING_SQL))
             board = {row[0]: row[1] for row in conn.execute(BOARD_SQL)}
+            ready_assignee_rows = list(conn.execute(READY_ASSIGNEE_SQL))
         finally:
             conn.close()
 
         new_stall, stall_line = stall_alarm(board, run_rows, running_rows, now_epoch,
                                             stall_ticks_prior, STALL_TICKS_THRESHOLD,
-                                            read_max_in_progress())
+                                            read_max_in_progress(),
+                                            ready_assignee_rows)
         timeout_line = timeout_alarm(run_rows, TIMEOUT_RATE_THRESHOLD)
         new_blocked, blocked_line = blocked_growth_alarm(
             board, blocked_prior, BLOCKED_GROWTH_THRESHOLD)

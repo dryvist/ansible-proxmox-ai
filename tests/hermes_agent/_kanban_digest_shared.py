@@ -44,7 +44,8 @@ TASKS_DDL = """
 CREATE TABLE tasks (
   id TEXT PRIMARY KEY, title TEXT, status TEXT, started_at INTEGER,
   completed_at INTEGER, consecutive_failures INTEGER, max_retries INTEGER,
-  max_runtime_seconds INTEGER, last_heartbeat_at INTEGER, current_run_id INTEGER
+  max_runtime_seconds INTEGER, last_heartbeat_at INTEGER, current_run_id INTEGER,
+  assignee TEXT
 )
 """
 RUNS_DDL = """

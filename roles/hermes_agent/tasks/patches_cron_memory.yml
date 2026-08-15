@@ -66,3 +66,25 @@
   # `hermes cron run <job>` exercises only the crontab path, which spawns fresh
   # and passes green while every in-gateway job stays broken.
   notify: Restart hermes-gateway
+
+# A card whose assignee is not a profile on disk is bucketed
+# `skipped_nonspawnable` and never runs — silently, forever. Reject it where it
+# is created instead. Hits both creation paths (create_task,
+# specify_triage_task); the lookahead is what keeps it idempotent.
+- name: Reject Kanban cards created for an assignee with no profile
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: |-
+      ^(    assignee = _canonical_assignee\(assignee\))$\n(?!    _known_profiles)
+    # `|` not `|-`: the regexp consumes the anchor's newline, so the
+    # replacement has to end with one or it swallows the next line.
+    replace: |
+      \g<1>
+          _known_profiles = list_profiles_on_disk()
+          if assignee and _known_profiles and assignee not in _known_profiles:
+              raise ValueError(
+                  f"assignee {assignee!r} is not a profile on disk "
+                  f"({', '.join(_known_profiles)}); the dispatcher would skip "
+                  "this card as non-spawnable on every tick"
+              )
+  notify: Restart hermes-gateway
