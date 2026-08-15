@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.28.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.27.0...v0.28.0) (2026-08-15)
+
+
+### Features
+
+* **docling:** route Open WebUI uploads through docling's VLM pipeline ([#435](https://github.com/dryvist/ansible-proxmox-ai/issues/435)) ([5fc3e07](https://github.com/dryvist/ansible-proxmox-ai/commit/5fc3e07081941b7d80ec501f6bf6b2cdbbd82b88))
+* **hermes_agent:** register the grep.app MCP client ([#438](https://github.com/dryvist/ansible-proxmox-ai/issues/438)) ([edf2f2a](https://github.com/dryvist/ansible-proxmox-ai/commit/edf2f2a481eb4a4748331871d48bd69b98591556))
+
+
+### Bug Fixes
+
+* **agent_guest:** quote flow-mapping scalar containing a URL ([#437](https://github.com/dryvist/ansible-proxmox-ai/issues/437)) ([399670e](https://github.com/dryvist/ansible-proxmox-ai/commit/399670e79197beec7c191c030bf7358d5c01a7ea))
+* **llm_router:** disable unservable registry entries, repoint escalation tier ([#436](https://github.com/dryvist/ansible-proxmox-ai/issues/436)) ([59fde70](https://github.com/dryvist/ansible-proxmox-ai/commit/59fde7047d5f0afc1e37247087af6a3e495ca882))
+* **openbao_secrets:** warn loudly when --check makes OpenBao reads inert ([#434](https://github.com/dryvist/ansible-proxmox-ai/issues/434)) ([2fb540a](https://github.com/dryvist/ansible-proxmox-ai/commit/2fb540aa672959e4cd878dde42091fc14afba428))
+
 ## [0.27.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.26.0...v0.27.0) (2026-08-15)
 
 
