@@ -83,8 +83,21 @@ llm_router_model_registry:
   #
   # It carries a serving_role rather than none so the registry's real invariant
   # still holds — servable if and only if the entry names the role it serves in.
-  # Nothing selects `routine` today; it is a name for a fact, not a switch. Its
-  # 65536 window is the same resident profile figure as the primary's.
+  # Its 65536 window is the same resident profile figure as the primary's.
+  #
+  # IT IS ALSO THE UNIVERSAL JUDGE (2026-08-15). `goal-judge` moved here from
+  # the 9B for one reason: residency. This model is pinned resident (ttl=0) and
+  # cannot be evicted, so a judge call costs no cold load — where the 9B is
+  # swap-class (ttl=900) with a MEASURED ~79s cold load, and at the 2-3 goal
+  # cards/hour this fabric drains it evicts between nearly every card, so almost
+  # every judge call paid that tax in full. Residency was always the real fix;
+  # it arrived with maxResidentWorkers = 2 rather than with a timeout raise.
+  #
+  # It stays cross-generation to the worker (Qwen3.6 judging Qwen3.8), which is
+  # what the no-self-preference rule actually requires, and thinking is off here
+  # so a verdict does not pay the primary's deliberation cost. The judge and the
+  # worker are separate resident workers with their own serving slots, so they
+  # no longer serialize against each other either.
   - client_model_id: mlx-community/Qwen3.6-35B-A3B-4bit
     upstream_model_id: mlx-community/Qwen3.6-35B-A3B-4bit
     provider: openai
@@ -93,12 +106,19 @@ llm_router_model_registry:
     context_window: 65536
     servable: true
     serving_role: routine
+    stable_aliases:
+      - goal-judge
 
   # THE SMALL TIER — the on-demand 9B that stays servable beside the two warm
-  # models and never evicts either. goal-judge points here, cross-family to the
-  # primary on purpose. 32768 is the small-cache tier figure, matching the swap
-  # flags it loads under. Why it is a first-class entry, why the judge does not
-  # ride the worker's model, and the measured ~79s cold-load correction:
+  # models and never evicts either. 32768 is the small-cache tier figure,
+  # matching the swap flags it loads under.
+  #
+  # It HELD `goal-judge` until 2026-08-15; that alias moved to the resident 35B
+  # because this model's swap-class cold load (~79s, measured) was the judge's
+  # actual failure mode. It keeps serving_role: small and stays servable — it is
+  # the trivial-task tier and an hourly note-capture pipe requests its physical
+  # id — it just is not the judge. Why it is a first-class entry rather than a
+  # bare alias target, and the full cold-load correction:
   # docs/LLM_MODELS_REGISTRY_NOTES.md.
   - client_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
     upstream_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
@@ -108,8 +128,6 @@ llm_router_model_registry:
     context_window: 32768
     servable: true
     serving_role: small
-    stable_aliases:
-      - goal-judge
 
   # OptiQ-4bit: the agentic-bench-winning brain (ai_default_model, all.yml). A
   # first-class entry — NOT passthrough — so the default model carries an

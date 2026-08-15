@@ -58,110 +58,43 @@ hermes_agent_kanban_goal_mode: true
 # this one for serving pressure.
 hermes_agent_kanban_goal_max_turns: 8
 # THIS IS THE REAL JUDGE. It is what config.yaml.j2 renders into
-# auxiliary.goal_judge.model, and it is DELIBERATELY pinned to the WORKER
-# model, not the `goal-judge` router alias — that is a measured blocker, not
-# an oversight, and not the same claim as the old "config drift" pin (#162)
-# this comment used to defend. Do not re-flip this without re-measuring.
+# auxiliary.goal_judge.model, and since 2026-08-15 it reads the `goal-judge`
+# router alias — the design this fabric always intended, unblocked at last.
 #
-# The design intent IS correct (inventory/group_vars/all.yml:156-170 argues it
-# well: same-model judging is self-preference bias, and the serving tier's
-# one-in-flight-per-model limit makes worker and judge on the same model
-# serialize). `hermes_goal_judge_model` there already names the `goal-judge`
-# alias for exactly this reason. The gap was never the design — it was that
-# `hermes_agent_kanban_goal_judge_model` (THIS var, the one that actually
-# reaches inference) never read it. Repointing `hermes_goal_judge_model`
-# itself does nothing on its own: it is consumed by exactly one other thing,
-# the llm_router compress-death assert, and confusing the two is the
-# "differ by a prefix" trap already made once (2026-07-29).
+# WHY IT WAS PINNED TO THE WORKER UNTIL NOW. The design intent was never in
+# doubt (all.yml argues it well: same-model judging is self-preference bias,
+# and two roles on one model serialize against a single serving slot).
+# `hermes_goal_judge_model` has named the alias for exactly that reason all
+# along. What blocked the flip was residency: `goal-judge` resolved to the 9B,
+# which llama-swap held swap-class at ttl=900, and its MEASURED ~79s cold load
+# meant the first judge call after any eviction simply failed. At the 2-3 goal
+# cards/hour this fabric drains, that was nearly every call. Measured live
+# 2026-08: four attempts through the alias over ~13 min returned two 429s and
+# two ~197s empty responses — never a completion.
 #
-# MEASURED 2026-08 (live, brain healthy) why flipping this today would break
-# card judgement:
-#  - `goal-judge` IS a live, registered alias (present in /v1/models) — not
-#    dead config.
-#  - A completion through the alias 502s: "No fallback model group found for
-#    original model_group=goal-judge ... Available Model Group Fallbacks=None".
-#  - Direct to its backend (mlx-community/Qwen3.5-9B-MLX-4bit) on the Studio
-#    loopback, 4 attempts over ~13 min: two 429 "Too many requests", two ~197s
-#    empty responses. It never returned a completion in that window.
-#  - CORRECTION (2026-08-02): an earlier revision of this block cited the
-#    Studio warmup log's climbing cold-load times (0.4s, 35.2s, 79.0s, 79.0s,
-#    79.3s) as evidence that THIS model — the judge — was being evicted and
-#    re-warmed. That attribution was wrong, and it is worth understanding
-#    why, because the trap is still live.
+# WHAT CHANGED. The serving host went to maxResidentWorkers = 2 (nix-darwin
+# 2.36.0), so `goal-judge` now points at Qwen3.6-35B-A3B-4bit, which is pinned
+# RESIDENT (ttl=0) and cannot be evicted. Cold load is gone — not shortened,
+# gone — and judge and worker are separate resident workers with their own
+# slots, so they no longer contend. That was always the stated precondition for
+# this flip, and it is a module change that landed, not a value someone raised.
 #
-#    `goal-judge` NAMES TWO DIFFERENT MODELS depending on which system
-#    resolves it:
-#      * LiteLLM router (roles/llm_router/defaults/main.yml, model_group_alias)
-#        maps goal-judge -> llm_router_small_model = Qwen3.5-9B-MLX-4bit.
-#        Hermes talks to the ROUTER, so a Hermes judge call lands on the 9B.
-#      * llama-swap on the Studio resolves goal-judge from its OWN alias
-#        table, where it is one of the WORKER's aliases (verified live:
-#        exactly one occurrence of "goal-judge" in the deployed
-#        llama-swap.json, in Qwen3.6-35B-A3B-4bit's alias list, ttl=0; the 9B
-#        has aliases:null and is reachable only by physical id).
+# THE TWO-RESOLVER TRAP, now closed — worth keeping, because it cost a
+# misdiagnosis once. `goal-judge` is resolved by two independent systems:
+#   * the LiteLLM router, from this registry's model_group_alias;
+#   * llama-swap on the serving host, from its OWN alias table.
+# Those pointed at DIFFERENT models for a while (router -> 9B, llama-swap ->
+# the resident worker), so a warmup log showing climbing cold-load times was
+# read as evidence about the judge when it was about the worker. They now name
+# the same physical model on both sides, by design. If you move the judge, move
+# BOTH or the trap reopens.
 #
-#    nix-ai's warmup sends {"model": "goal-judge"} to llama-swap, so those
-#    warm timings are the WORKER being repeatedly cold-loaded, not the judge.
-#    Their real cause was an uncapped cluster-link stand-down loop force-
-#    reloading the resident (Vikunja 1015, Zammad 17184).
-#
-#    The CONCLUSION below is unaffected — it rests on the router-side
-#    measurements above, which were taken through the alias Hermes actually
-#    uses — but do not cite the warmup log as judge evidence again.
-#  - Root cause: the deployed llama-swap config (nix-ai
-#    modules/mlx/llama-swap-topology.nix) has the WORKER
-#    (Qwen3.6-35B-A3B-4bit) pinned resident (ttl=0) and the JUDGE
-#    (Qwen3.5-9B-MLX-4bit) as the evictable swap-class member (ttl=900) — the
-#    opposite of what roles/llm_router/defaults/main.yml's comment claimed
-#    ("the 9B is always up for the judge"; corrected there in this same
-#    change). A ~79s cold load against
-#    hermes_agent_kanban_goal_judge_timeout_seconds (60s) means the FIRST
-#    judge call after any eviction fails outright; auxiliary.transient_retries
-#    (1) might catch a second attempt, but the measured runs above show it
-#    isn't even reliably getting a completion within several retries.
-#
-# EXACT PRECONDITION to flip this line to "{{ hermes_goal_judge_model }}":
-# a nix-ai module change (Phase B, needs darwin-rebuild — NOT something this
-# Ansible-only repo can fix), THEN re-measure, THEN this flip and a raised
-# hermes_agent_kanban_goal_judge_timeout_seconds land IN THE SAME CHANGE. Do
-# not do either half alone:
-#  - Raising the timeout WITHOUT the flip is dead config today — the judge
-#    still resolves to hermes_agent_model (ttl=0, no cold load), so there is
-#    nothing for a raised timeout to protect. Don't add it speculatively.
-#  - Flipping WITHOUT a residency fix breaks judging (measured above).
-#  - Residency itself is NOT a value flip. Read: nix-ai's
-#    alwaysAvailableModels option is documented as an on-demand swap tier
-#    BESIDE the one ttl=0 resident — there is no existing option to pin a
-#    SECOND model resident. Giving the judge real residency is new nix-ai
-#    module/option work, not a config change.
-#  - Even a correctly-raised timeout only makes the judge WORK, not FAST: at
-#    the ~2-3 goal cards/hour this fabric drains (#162), the judge model
-#    will keep evicting between cards on today's ttl=900, so nearly every
-#    judge call would still pay the full cold-load tax. Residency is the
-#    actual fix for throughput; a timeout raise alone is a correctness
-#    patch, not the solution — don't mistake one for the other.
-#
-# ADDENDUM (timeout raised 60 -> 150): the warning above is about the MODEL
-# pin and still holds unchanged — this change does not touch
-# hermes_agent_kanban_goal_judge_model. The TIMEOUT below is raised for a
-# separate, independently measured reason: tail latency on hermes_agent_model
-# itself (the pinned worker the judge actually calls), NOT the cold-load case
-# the warning above describes — that case cannot occur while this var stays
-# pinned to hermes_agent_model.
-#
-# MEASURED (61h, n=4,178 successful primary-model calls): p50 15.7s / p90
-# 63.2s / p95 106.2s / p99 425.1s / max 762.5s. The prior 60s timeout sat
-# BELOW p90 — roughly 10% of ordinary calls exceeded it with nothing unusual
-# happening. Corroborated by an independent measurement over the same
-# window: 27 judge APITimeoutErrors against 258 successful verdicts
-# (27/285 ~= 9.5%), matching the p90 prediction closely without being derived
-# from it.
-#
-# 150s covers p95 (106.2s, ~42% headroom) without chasing p99/max (425s /
-# 762s) — goals.py retries the judge up to 5 times, so this value is paid up
-# to 5x per card: 5 * 150s = 750s against the 2700s task budget (~28%).
-# Covering the full tail would let one slow judge call burn the whole budget
-# by itself; 150s trades a bounded worst case for eliminating the
-# ordinary-latency failures the measurement above found.
-hermes_agent_kanban_goal_judge_model: "{{ hermes_agent_model }}"
+# THE TIMEOUT BELOW IS NOT RE-TUNED HERE, deliberately. 150s was derived from a
+# measured distribution of this very model serving as the worker (61h, n=4,178:
+# p50 15.7s / p90 63.2s / p95 106.2s), and as the judge it now does strictly
+# less work per call — thinking off, short verdicts, no longer sharing a slot.
+# So the existing value is if anything conservative, and raising or lowering it
+# without a fresh measurement is exactly the speculative change this file has
+# refused twice. Re-measure after the flip has run a while, then tune once.
+hermes_agent_kanban_goal_judge_model: "{{ hermes_goal_judge_model }}"
 hermes_agent_kanban_goal_judge_timeout_seconds: 150
