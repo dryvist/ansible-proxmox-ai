@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.26.0...v0.27.0) (2026-08-15)
+
+
+### Features
+
+* **llm_router:** move serving_role primary to the dense 27B ([#430](https://github.com/dryvist/ansible-proxmox-ai/issues/430)) ([530e82b](https://github.com/dryvist/ansible-proxmox-ai/commit/530e82bf860ac1a227ecd5d287c2c5df42ea6987))
+
 ## [0.26.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.25.0...v0.26.0) (2026-08-13)
 
 
