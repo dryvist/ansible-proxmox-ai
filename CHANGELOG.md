@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.28.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.28.0...v0.28.1) (2026-08-15)
+
+
+### Bug Fixes
+
+* **hermes_agent:** emit latency on the goal-judge call path ([#444](https://github.com/dryvist/ansible-proxmox-ai/issues/444)) ([915e225](https://github.com/dryvist/ansible-proxmox-ai/commit/915e2258577263166d85ecfcaff881a9a87aafc7))
+* **hermes_agent:** log why the goal-judge availability probe declines ([#446](https://github.com/dryvist/ansible-proxmox-ai/issues/446)) ([87d4ead](https://github.com/dryvist/ansible-proxmox-ai/commit/87d4ead7ad8dddbb2414c4f313afc55e26ce915f))
+* **llm_router:** warn when the escalation tier collapses onto the default ([#443](https://github.com/dryvist/ansible-proxmox-ai/issues/443)) ([b58744a](https://github.com/dryvist/ansible-proxmox-ai/commit/b58744adfbb6c913f58daf2f22a98ebc83f01dce))
+
 ## [0.28.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.27.0...v0.28.0) (2026-08-15)
 
 
