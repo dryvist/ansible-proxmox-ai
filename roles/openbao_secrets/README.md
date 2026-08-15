@@ -229,3 +229,30 @@ its AppRole/policy created upstream (see above) and its role_id/secret_id
 copied onto the `hermes_agent`/`open_webui` guests for their brain-sync
 timers — the controller-side fetch and the guest-side runtime poll are two
 separate consumers of the same identity.
+
+## What does not actually validate this repo
+
+Two `ansible-playbook` flags that look like safe pre-flight checks give
+misleading results against this role and this repo's dynamic inventory.
+Neither is a bug to work around — know what each one actually tells you.
+
+- **`--check` is a guaranteed false negative on every OpenBao-gated
+  assertion.** `community.hashi_vault.vault_login` declares
+  `supports_check_mode: true` but short-circuits under check mode, returning
+  a null `client_token` instead of authenticating. That null token flows into
+  every `vault_kv2_get` call in `fetch_domain.yml`; each read fails (silently
+  — `failed_when: false` + `no_log: true`), every domain merges empty, and
+  any downstream presence-gated assertion (e.g. "no Vikunja write token is
+  set") trips. This is indistinguishable from a genuinely missing credential
+  by output alone. The role now emits a loud warning naming this exact cause
+  whenever OpenBao is otherwise reachable and configured but the run is
+  `--check`. Treat a `--check` failure on a bao-sourced assertion as
+  uninformative; run the real converge (or at minimum this role without
+  `--check`) to know whether the credential is actually missing.
+- **`--list-hosts` reports 0 hosts.** This repo's inventory groups
+  (`hermes_agent_group`, `ai_runner`, ...) are not static — they are built at
+  runtime by `add_host` in `inventory/load_tofu.yml`, which itself is a play
+  that has to execute before those groups exist. `--list-hosts` never runs
+  plays, so it only ever sees the static inventory, which is empty. A "0
+  hosts" result says nothing about whether the playbook or its host groups
+  are actually broken.
