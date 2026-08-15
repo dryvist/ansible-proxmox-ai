@@ -75,6 +75,14 @@ PINNED_CRON_DELIVERY_SOURCE = (
     "                    delivery_error = _deliver_result(job, deliver_content, "
     "adapters=adapters, loop=loop)\n"
 )
+# Verbatim from cron/scheduler.py — the single run_conversation submit that
+# opt-in cron goal mode wraps.
+PINNED_CRON_SUBMIT_SOURCE = (
+    "        _cron_context = contextvars.copy_context()\n"
+    "        _cron_future = _cron_pool.submit(_cron_context.run,"
+    " agent.run_conversation, prompt)\n"
+    "        _inactivity_timeout = False\n"
+)
 PINNED_WORKER_REAP_SOURCE = '''\
 def _reap(pid, signal_fn=None):
     killed = False
@@ -304,6 +312,20 @@ PATCHED_CRON_DELIVERY_SOURCE = _apply_runtime_patch(
         "Route cron delivery content through the markup guard",
         PINNED_CRON_DELIVERY_SOURCE,
     ),
+)
+# cron/scheduler.py carries the opt-in goal-mode runner too, and
+# patches_verify.yml asserts on all of it against ONE source string — so this
+# snippet has to represent every scheduler patch, not just the delivery pair.
+# Built by running the real patch tasks, never by pasting their expected
+# output: a hand-copied snippet is what let seven dead patches stay green.
+PATCHED_CRON_DELIVERY_SOURCE += (
+    _task("Patch Hermes cron scheduler with an opt-in goal-mode runner")[
+        "ansible.builtin.blockinfile"
+    ]["block"]
+    + _apply_runtime_patch(
+        "Route the cron conversation through the goal-mode runner",
+        PINNED_CRON_SUBMIT_SOURCE,
+    )
 )
 PATCHED_HINDSIGHT_PREFETCH_SOURCE = _apply_runtime_patch(
     "Patch Hermes auto-recall prefetch failure to log at warning, not debug",
