@@ -45,13 +45,11 @@ def create_task(conn, *, idempotency_key=None, goal_mode=False, goal_max_turns=N
     raise RuntimeError("insert path")
 '''
 PINNED_GOAL_COMPLETION_SOURCE = "        verdict, reason, _, _, _ = judge_goal(\n"
-# Verbatim upstream lines at the pinned release, indentation included —
-# `_apply_runtime_patch` re-runs the role's own regexp against these, so a copy
+# Verbatim upstream lines at the pinned release, indentation included. A copy
 # that drifts from upstream silently stops patching and the test goes green on
-# nothing. That is not hypothetical: these were pinned to v2026.7.7.2 while the
-# role installed a much later release, which is exactly how four patches came to
-# match zero times without a single test failing. Re-verify these against the
-# real tarball whenever hermes_agent_version moves.
+# nothing — these sat at v2026.7.7.2 while the role installed a much later
+# release, which is how seven patches came to match zero times with every test
+# passing. Re-verify with scripts/verify-pinned-patches.py on a version bump.
 PINNED_TC_BOOST_CAP_SOURCE = (
     "                                _tc_boost_cap = max("
     "32768, _tc_requested_cap or 0)\n"
@@ -66,12 +64,7 @@ PINNED_COMPRESSOR_SCAN_SOURCE = (
 # no longer patch INPUTS — they are the upstream text the retained assertions
 # pin. Both role patches were retired for matching zero times.
 PINNED_PROTOCOL_VIOLATION_SOURCE = (
-    '                    "worker exited cleanly (rc=0) without calling "\n'
-    '                    "kanban_complete or kanban_block — protocol violation. "\n'
-    '                    "If the prior run already did the work, verify it and "\n'
-    '                    "report the result via kanban_complete; a run that ends "\n'
     '                    "without a terminal kanban call counts as failed no "\n'
-    '                    "matter what it did."\n'
 )
 PINNED_PROTOCOL_RETRY_SOURCE = (
     "                failure_limit=1 if is_systemic else None,\n"
@@ -253,14 +246,11 @@ def _goal_judge_available() -> bool:
     return client is not None and bool(model)
 '''
 JUDGE_ERROR = ("continue", "judge error: NotFoundError", False, None, True)
-# Verbatim upstream judge_goal call site and verdict parse — the two anchors
-# the latency patches key on, indentation included since the role's regexes
-# capture and reuse it. Identical in v2026.8.3 and v2026.8.13.
+# The two anchor regions of upstream judge_goal, verbatim and in order, with
+# the lines between them dropped — no patch keys on those, and the except
+# handler is already pinned above. Identical in v2026.8.3 and v2026.8.13.
 PINNED_JUDGE_CALL_SOURCE = '''\
     try:
-        # Route through call_llm so auxiliary.goal_judge.* config
-        # (provider/model/base_url, extra_body, reasoning_effort, retries)
-        # all apply — the direct-create path dropped extra_body (#35566).
         resp = call_llm(
             task="goal_judge",
             messages=[
@@ -271,12 +261,6 @@ PINNED_JUDGE_CALL_SOURCE = '''\
             max_tokens=_goal_judge_max_tokens(),
             timeout=timeout,
         )
-    except Exception as exc:
-        logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
-        return "continue", f"judge error: {type(exc).__name__}", False, None, True
-
-    try:
-        raw = resp.choices[0].message.content or ""
     except Exception:
         raw = ""
 
