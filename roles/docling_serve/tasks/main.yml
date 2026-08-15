@@ -1,0 +1,50 @@
+---
+# docling-serve Docker deployment.
+#
+# Installs Docker + Compose on the target LXC (docker_engine meta dependency)
+# and deploys the single docling-serve container via Docker Compose.
+
+- name: Create docling-serve data directory
+  ansible.builtin.file:
+    path: "{{ docling_serve_data_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy docling-serve docker-compose template
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ docling_serve_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart docling-serve
+
+- name: Deploy docling-serve via docker compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ docling_serve_data_dir }}"
+    state: present
+  register: docling_serve_compose_result
+  changed_when: >-
+    (docling_serve_compose_result.actions | default([]))
+    | selectattr('status', 'in', ['Creating', 'Recreating', 'Pulling', 'Building'])
+    | list | length > 0
+
+# Apply any pending config-change restart before health-checking, so the check
+# validates the NEW container rather than the previous one.
+- name: Flush handlers (restart on config change before health check)
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify docling-serve health endpoint responds
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ docling_serve_port }}/health"
+    method: GET
+    status_code: 200
+  register: docling_serve_health
+  # The image bakes every model in, but they are loaded at boot before uvicorn
+  # binds, so first start is minutes rather than seconds.
+  retries: 40
+  delay: 15
+  until: docling_serve_health.status == 200
+  changed_when: false

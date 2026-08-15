@@ -1,0 +1,50 @@
+---
+# docling-serve — the estate's document content-extraction service (PDF/Office
+# -> Markdown, layout + table structure + OCR). Open WebUI is the only caller:
+# its server-side loader POSTs uploads to /v1/convert/file and indexes the
+# Markdown that comes back. Single-container Docker-Compose-in-LXC stack.
+#
+# Stateless — the image bakes in every model (layout, TableFormer, easyocr,
+# rapidocr) and results are single-use, so nothing on disk survives worth
+# keeping. Recovery = re-apply the LXC + re-run this role.
+
+# =============================================================================
+# Container image — pinned. Bump via Renovate or manual review.
+# quay.io is the upstream-published registry (mirrors ghcr.io).
+# =============================================================================
+docling_serve_image: "quay.io/docling-project/docling-serve:v1.30.0"
+
+docling_serve_container_name: docling-serve
+
+docling_serve_restart_policy: unless-stopped
+
+# =============================================================================
+# Filesystem layout — holds the rendered compose file and nothing else.
+# =============================================================================
+docling_serve_data_dir: /opt/docling-serve
+
+# =============================================================================
+# Port — from the OpenTofu pipeline_constants (DRY: no port literals).
+# =============================================================================
+docling_serve_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['docling_serve_api']
+     | mandatory('tofu_data.constants.service_ports.docling_serve_api missing —
+       regenerate tofu_inventory.json via `tofu output -json ansible_inventory`.') }}
+
+# Any API-backed vision-language path (picture description, the vlm pipeline)
+# is refused by docling-serve unless remote services are explicitly enabled —
+# it treats calling an outside endpoint as opt-in. Open WebUI routes scanned
+# pages at the LLM router, so this must stay true or those requests 400.
+docling_serve_enable_remote_services: true
+
+# Open WebUI sends the whole VLM conversion config on every request rather than
+# naming a server-side preset, and the policy layer rejects any request carrying
+# vlm_pipeline_custom_config with a 422 unless this is on. The model id and
+# endpoint therefore stay in one place (the open_webui role) instead of being
+# split across both repos.
+docling_serve_allow_custom_vlm_config: true
+
+# Upstream serves a browser demo UI on the same port. Left off: the only caller
+# is Open WebUI's loader, and the ingress route is deliberately un-SSO'd.
+docling_serve_enable_ui: false

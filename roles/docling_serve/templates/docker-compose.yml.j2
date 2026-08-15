@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+# Ship stdout/stderr to journald with tag `docling-serve` instead of the default
+# json-file driver, which stays on local disk and never reaches the SIEM. Tag is
+# a bare identifier (no ':' or whitespace) so rsyslog's syslog-header regex
+# extracts it as $programname. The host's rsyslog forwarder
+# (ansible-proxmox-apps) matches on that tag and forwards it, on this stack's
+# own port (tofu-proxmox constants), to this stack's own dedicated Splunk index.
+x-logging: &docling_serve_logging
+  driver: journald
+  options:
+    tag: docling-serve
+
+services:
+  docling-serve:
+    image: {{ docling_serve_image }}
+    container_name: {{ docling_serve_container_name }}
+    restart: {{ docling_serve_restart_policy }}
+    logging: *docling_serve_logging
+    ports:
+      - "{{ docling_serve_port }}:{{ docling_serve_port }}"
+    environment:
+      # The bind port is uvicorn's, not the app's — docling-serve reads it under
+      # the UVICORN_ prefix. DOCLING_SERVE_PORT is silently absorbed and ignored.
+      UVICORN_PORT: "{{ docling_serve_port }}"
+      DOCLING_SERVE_ENABLE_REMOTE_SERVICES: "{{ docling_serve_enable_remote_services | bool | lower }}"
+      DOCLING_SERVE_ALLOW_CUSTOM_VLM_CONFIG: "{{ docling_serve_allow_custom_vlm_config | bool | lower }}"
+      # No DOCLING_SERVE_MAX_DOCUMENT_TIMEOUT: it defaults to 7 days and a
+      # request that omits document_timeout is normalised to exactly that
+      # ceiling, so whole-document VLM conversion has no server-side deadline to
+      # raise. Set it only to impose a limit, never to grant headroom.
+      DOCLING_SERVE_ENABLE_UI: "{{ docling_serve_enable_ui | bool | lower }}"
