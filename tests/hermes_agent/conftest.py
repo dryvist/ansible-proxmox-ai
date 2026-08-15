@@ -74,9 +74,7 @@ PINNED_CRON_DELIVERY_SOURCE = (
     "_summarize_cron_failure_for_delivery(job, error)\n"
     "                    delivery_error = _deliver_result(job, deliver_content, "
     "adapters=adapters, loop=loop)\n"
-    # Upstream's own line, kept because the memory patch deliberately leaves it
-    # in place: it keeps the EXTERNAL provider out of cron while the block below
-    # restores the built-in store.
+    # Upstream's own line; the memory patch deliberately leaves it in place.
     "            skip_memory=True,  # Cron system prompts would corrupt user "
     "representations\n"
 )
@@ -304,9 +302,7 @@ PATCHED_COMPRESSOR_SCAN_SOURCE = (
     "        for idx in range(start, end):\n"
 )
 PATCHED_CRON_DELIVERY_SOURCE = (
-    # The task's `block:` is an indent expression, so the code itself lives in
-    # the task's vars. Read the vars — reading `block` would yield the Jinja
-    # expression and every assertion below would pass against nothing.
+    # Code lives in the task's vars; `block:` is only an indent expression.
     _task("Rebind the built-in memory store for cron agents")["vars"][
         "_hermes_cron_memory_block"
     ]
