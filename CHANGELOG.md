@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.28.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.28.2...v0.28.3) (2026-08-15)
+
+
+### Bug Fixes
+
+* **hermes_agent:** converge the app checkout to the pinned release every run ([#456](https://github.com/dryvist/ansible-proxmox-ai/issues/456)) ([6722995](https://github.com/dryvist/ansible-proxmox-ai/commit/6722995a95836f258b1211d207c037c3805b69cc))
+* **llm_router:** cap in-flight admission on local deployments so excess queues ([#455](https://github.com/dryvist/ansible-proxmox-ai/issues/455)) ([59fe2f6](https://github.com/dryvist/ansible-proxmox-ai/commit/59fe2f6e400e4fbdbfdadb3478be4a92d87e202a))
+
 ## [0.28.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.28.1...v0.28.2) (2026-08-15)
 
 
