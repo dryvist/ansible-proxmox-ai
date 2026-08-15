@@ -5,8 +5,12 @@
 # pin is (a) the installer script, fetched from the tag's immutable raw URL and
 # sha256-verified, and (b) the app checkout, via the installer's --branch <tag>.
 #
-# Ansible pins the PLATFORM version for the ONE-TIME install (creates guard on the
-# binary); the Hermes daemon self-updates the app thereafter (`hermes update`).
+# This version is CONVERGED STATE, not an install-time default. Ansible owns the
+# app checkout's ref on every run, so a guest that drifted (the daemon's own
+# `hermes update`, a manual touch) is pulled back to the pin. It used to be
+# seeded once behind a `creates` guard, which let two guests sit two releases
+# behind the pin and one release apart from each other while the source patches
+# anchored to the pin quietly matched nothing.
 # To move the pinned floor: bump hermes_agent_version AND refresh the sha256
 # (curl the URL below, `sha256sum`). A stale checksum fails the converge loudly —
 # by design, that is the tamper/rug-pull guard.
@@ -36,6 +40,12 @@ hermes_agent_version: "2026.8.3"
 # The upstream tag for the pinned version. Every reference that needs a git ref
 # uses THIS, never hermes_agent_version directly.
 hermes_agent_version_tag: "v{{ hermes_agent_version }}"
+# The app checkout's origin. Ansible owns the checkout ref directly (git module,
+# tasks/install_and_dashboard.yml) rather than delegating it to the installer's
+# --branch, so that hermes_agent_version is enforced on EVERY converge instead of
+# only on a guest's first install. HTTPS, not SSH: the guests hold no deploy key
+# and the repository is public.
+hermes_agent_repo_url: "https://github.com/NousResearch/hermes-agent.git"
 hermes_agent_installer_url: >-
   https://raw.githubusercontent.com/NousResearch/hermes-agent/{{
   hermes_agent_version_tag }}/scripts/install.sh
