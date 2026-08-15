@@ -12,63 +12,19 @@
       \1"-q", prompt,
   notify: Restart hermes-gateway
 
-# Zammad #17143 item 3: the crash classifier flags a dispatcher worker that
-# exited rc=0 with its task still running as a protocol violation, but the
-# message did not distinguish "kanban tools were never registered" from "the
-# model just didn't call one". A dispatcher-spawned worker ALWAYS has
-# HERMES_KANBAN_TASK set before exec (kanban_db._default_spawn — both the goal
-# and classic paths go through the one spawner) and the schema gate force-adds
-# the kanban toolset on that env (model_tools._compute_tool_definitions), so the
-# lifecycle tools are always present. That makes this unambiguously a
-# model-did-not-call violation, not a missing toolset — say so, so the operator
-# is not sent hunting a registration bug that cannot occur here.
-#
-# The closing sentence tracks the retry patch below it: while a protocol
-# violation forced an immediate give-up, "a plain retry will not help" was the
-# operative advice; now that the card gets its own bounded retries, the message
-# has to say what actually happens next. The regexp therefore matches EITHER the
-# pinned upstream text or the previously-patched text — the source tree is
-# installed once behind a `creates` guard, never re-extracted, so a guest
-# converged before this change still carries the old sentence and would
-# otherwise be unreachable by any patch keyed to pristine source.
-- name: Patch Hermes protocol-violation message to name the model-did-not-call case
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
-    regexp: |-
-      ^([ \t]*)"worker exited cleanly \(rc=0\) without calling "
-      \1"kanban_complete or kanban_block(?: — protocol violation"|\. Lifecycle tools are always "
-      \1"registered for dispatcher-spawned workers \(HERMES_KANBAN_TASK "
-      \1"set\), so this is a model-did-not-call protocol violation, not "
-      \1"a missing toolset; a plain retry will not help\.")$
-    replace: |-
-      \1"worker exited cleanly (rc=0) without calling "
-      \1"kanban_complete or kanban_block. Lifecycle tools are always "
-      \1"registered for dispatcher-spawned workers (HERMES_KANBAN_TASK "
-      \1"set), so this is a model-did-not-call protocol violation, not "
-      \1"a missing toolset. The card is retried within its own max_retries "
-      \1"budget before it blocks."
-  notify: Restart hermes-gateway
-
-# A clean exit with the task still running means the run produced work whose
-# outcome was never recorded — the operator may already hold the output while
-# the board shows a failure. Upstream forces the breaker to trip on the FIRST
-# such exit, so that card can never be attempted again by anything: its status
-# is terminal, and the counter is already at the limit that stops
-# `recompute_ready` from promoting it back.
-#
-# Dropping the force hands the decision to the per-card `max_retries`, which is
-# the same bounded budget every other failure answers to — a small number of
-# attempts, then a block that a human sees. The systemic-fingerprint force is
-# deliberately left in place: many workers failing the same way at once is a
-# fabric problem, and retrying into it is how a single fault becomes a
-# thundering herd against one serving slot.
-- name: Patch Hermes protocol-violation crashes to retry within the card budget
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
-    regexp: >-
-      ^([ \t]*)failure_limit=1 if \(protocol_violation or is_systemic\) else None,$
-    replace: \g<1>failure_limit=1 if is_systemic else None,
-  notify: Restart hermes-gateway
+# The two protocol-violation patches that used to sit here are GONE because
+# upstream adopted both behaviors itself. Verified against the pinned release
+# and current upstream: the clean-exit message now ends "— protocol violation.
+# If the prior run already did the work, verify it and report the result via
+# kanban_complete; a run that ends without a terminal kanban call counts as
+# failed no matter what it did.", and the crash path already reads
+# `failure_limit=1 if is_systemic else None,` with protocol violations routed
+# through their own bounded `violation_limit` streak. Both regexps therefore
+# matched ZERO times, so the patches were silently doing nothing while
+# patches_verify.yml still asserted their results — a converge would have
+# mutated source, fired the restart handler, and only then failed the assert.
+# The assertions are kept and retargeted at the upstream text that now supplies
+# the behavior, so an upstream regression still fails the converge loudly.
 
 # An idempotency hit returns before create_task applies new fields. Upgrade only
 # active goal-enabled repeats in place so a current-slot card is reconciled

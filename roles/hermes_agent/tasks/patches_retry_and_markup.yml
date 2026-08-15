@@ -28,25 +28,19 @@
     replace: '\1_boost_cap = agent.max_tokens if agent.max_tokens else max(32768, _requested_cap or 0)'
   notify: Restart hermes-gateway
 
-# The compressor can retain an end offset computed before tool-message cleanup.
-# Clamp it to the current list length so scheduled runs do not abort on IndexError.
-- name: Patch hermes-agent context summary scan to use the live message bound
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/agent/context_compressor.py"
-    regexp: '^(\s*)for idx in range\(end - 1, start - 1, -1\):$'
-    replace: '\1for idx in range(min(end, len(messages)) - 1, start - 1, -1):'
-  notify: Restart hermes-gateway
+# The compressor-scan clamp that used to sit here is GONE. It guarded an
+# IndexError from a stale `end` offset in `for idx in range(end - 1, start - 1,
+# -1):` — a loop upstream has since restructured away entirely (no reverse scan
+# over a retained `end` remains in either the pinned release or current
+# upstream), so the regexp matched ZERO times. Its assertion below is inverted
+# rather than dropped: it now fails if the unbounded reverse scan ever returns.
 
-# Pinned Hermes returns four values from judge_goal, while kanban_complete still
-# unpacks the former three-value contract. The caught ValueError silently makes
-# the completion gate fail open. Keep the installed source consistent until the
-# pinned release includes the upstream fix.
-- name: Patch Hermes goal completion gate for the four-value judge result
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/tools/kanban_tools.py"
-    regexp: '^([ \t]*)verdict, reason, _ = judge_goal\($'
-    replace: '\1verdict, reason, _, _ = judge_goal('
-  notify: Restart hermes-gateway
+# The completion-gate arity patch that used to sit here is GONE: the pinned
+# release carries the upstream fix it was waiting for. `judge_goal` returns five
+# values and kanban_tools unpacks five, so the regexp matched ZERO times against
+# both the pinned release and current upstream. Its assertion below is kept and
+# retargeted at upstream's own five-value unpack, so a future arity change still
+# fails the converge instead of silently restoring the fail-open gate.
 
 - name: Patch Hermes goal judge timeout for the local light tier
   ansible.builtin.replace:
@@ -66,10 +60,15 @@
 # 15s local-backend delay, consuming NO turn; five consecutive failures block
 # the card cleanly with a "no worker turns were consumed" reason — sticky
 # blocked, i.e. retryable once the backend is healthy — so a total outage can
-# never spin the loop forever. Any real verdict resets the counter. The guard
-# keys on the exact "judge error: " sentinel judge_goal produces, and the
-# assert below pins that producer line too, so upstream drift fails the
-# converge loudly instead of silently re-arming the turn burn.
+# never spin the loop forever. Any real verdict resets the counter.
+#
+# The guard now keys on upstream's own `_transport_failed` return value, not on
+# the "judge error: " text it used to string-match. That sentinel pin is exactly
+# what drifted: `judge_goal` grew a fifth return value, the four-value anchor
+# stopped matching, and the guard went dead while its assertion still passed on
+# an unrelated line — judge failures have been burning whole turn budgets again
+# ever since. A flag the function returns cannot be reworded out from under the
+# guard the way a message can.
 - name: Patch Hermes kanban goal loop to count consecutive judge failures
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
@@ -83,15 +82,15 @@
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
     regexp: |-
-      ^([ \t]*)verdict, reason, _parse_failed, _wait = judge_goal\(goal_text, last_response\)$
+      ^([ \t]*)verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal\(goal_text, last_response\)$
       \1if verdict == "wait":$
       \1    verdict = "continue"$
       \1_log\(f"kanban goal loop: turn \{turns_used\}/\{max_turns\} verdict=\{verdict\} reason=.*\)$
     replace: |-
-      \1verdict, reason, _parse_failed, _wait = judge_goal(goal_text, last_response)
+      \1verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
       \1if verdict == "wait":
       \1    verdict = "continue"
-      \1if reason.startswith("judge error: "):
+      \1if _transport_failed:
       \1    judge_failures += 1
       \1    _log(
       \1        f"kanban goal loop: judge call failed ({judge_failures}/5, "

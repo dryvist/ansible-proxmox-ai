@@ -16,7 +16,6 @@ from conftest import (
     _patched_goal_loop,
     _task,
     _task_db,
-    PINNED_GOAL_COMPLETION_SOURCE,
     PINNED_HINDSIGHT_PREFETCH_SOURCE,
     PINNED_WORKER_SPAWN_SOURCE,
     PATCHED_JUDGE_CALL_SOURCE,
@@ -26,12 +25,22 @@ from conftest import (
     role_tasks_text,
 )
 
-def test_goal_completion_patch_uses_current_judge_contract() -> None:
-    patched = _apply_runtime_patch(
-        "Patch Hermes goal completion gate for the four-value judge result",
-        PINNED_GOAL_COMPLETION_SOURCE,
-    )
-    assert "verdict, reason, _, _ = judge_goal(" in patched
+RETIRED_UPSTREAM_ADOPTED_PATCH_NAMES = (
+    "Patch Hermes goal completion gate for the four-value judge result",
+    "Patch Hermes protocol-violation message to name the model-did-not-call case",
+    "Patch Hermes protocol-violation crashes to retry within the card budget",
+)
+
+
+def test_upstream_adopted_patches_stay_retired() -> None:
+    # All three matched zero times against the pinned release and current
+    # upstream because upstream shipped the behavior itself. Re-adding one puts
+    # a dead regexp back in front of patches_verify, which runs after the patch
+    # tasks — the converge would mutate a live guest, fire the restart handler,
+    # and only then fail.
+    task_names = {item.get("name") for item in role_tasks(ROLE_ROOT)}
+    for name in RETIRED_UPSTREAM_ADOPTED_PATCH_NAMES:
+        assert name not in task_names, f"reintroduced: {name}"
 
 
 def test_goal_judge_availability_probe_logs_both_declines() -> None:
@@ -212,7 +221,7 @@ def test_judge_failure_counter_resets_on_any_real_verdict() -> None:
     loop, fake_time = _patched_goal_loop(
         [
             *[JUDGE_ERROR] * 4,
-            ("continue", "made progress", False, None),
+            ("continue", "made progress", False, None, False),
             *[JUDGE_ERROR] * 4,
         ]
     )
