@@ -67,6 +67,22 @@ vllm_gpu_device_nodes:
   - /dev/nvidia-uvm
   - /dev/nvidia-uvm-tools
 
+# --- apt egress --------------------------------------------------------------
+# This guest's VLAN permits outbound 443 and the internal network, and BLOCKS
+# outbound 80 (measured: port 443 open, port 80 blocked). Debian's default
+# sources are http://, so a plain `apt-get update` times out on every Debian
+# repo while the NVIDIA repo above — which is https — succeeds. The failure
+# surfaces as "Failed to update apt cache after N retries" with no cause.
+#
+# apt therefore goes through the estate's internal apt-cacher-ng, which is
+# reachable on the internal path. pip and HuggingFace need no proxy: they are
+# https and 443 is already open.
+vllm_apt_proxy_enabled: true
+vllm_apt_proxy_host: "apt-cacher-ng.{{ tofu_data.domain }}"
+vllm_apt_proxy_port: "{{ tofu_data.constants.service_ports.apt_cacher_ng | default(3142) }}"
+vllm_apt_proxy_url: "http://{{ vllm_apt_proxy_host }}:{{ vllm_apt_proxy_port }}"
+vllm_apt_proxy_conf: /etc/apt/apt.conf.d/01-vllm-proxy
+
 # --- Serving ------------------------------------------------------------------
 # Port from the tofu constants registry — no hardcoded ports. Hard-required so a
 # missing constant fails loud rather than silently guessing a default.
