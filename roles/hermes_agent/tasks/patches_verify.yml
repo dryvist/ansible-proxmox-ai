@@ -219,12 +219,14 @@
 # <install_dir>/agent/conversation_loop.py and
 # <install_dir>/venv/lib/python3.*/site-packages/agent/conversation_loop.py are
 # two different files, and only the second one is imported once the package is
-# installed non-editably. It is installed non-editably: the Slack extra below
-# uses `uv pip install "hermes-agent[slack] @ <install_dir>"`, a path install
-# rather than `-e`, and uv skips it entirely once the requirement is satisfied.
-# So after `hermes update` rewrites the source and the patch tasks re-apply
-# themselves, nothing necessarily copies the result into site-packages — and
-# the assertion above still passes, having checked a file nothing imports.
+# installed non-editably. Every install path is editable as of 2026-08-15 — both
+# upstream's install.sh and the Slack extra below use `uv pip install -e`, and
+# upstream's build backend refuses the non-editable form outright from 0.20.0 —
+# so the source tree IS the imported code and no second copy should exist. This
+# check stays because the failure it catches is silent: if any future path
+# reintroduces a wheel copy, the patch tasks would rewrite the source tree while
+# the daemon kept importing site-packages, and the assertions above would still
+# pass, having checked a file nothing imports.
 #
 # This compares the two by checksum. Equal, or no installed copy at all (an
 # editable install, where the source tree IS the imported code), means the
@@ -259,7 +261,9 @@
     fail_msg: >-
       An installed copy of conversation_loop.py under the venv differs from the
       patched source, so the pinned-source patches above are not in the code the
-      daemon imports and are silently doing nothing. Reinstall the package from
-      the patched source (the path install used for the Slack extra below) so
-      the patches reach site-packages, then re-converge. Do not silence this
-      assertion — it is the only thing separating "patched" from "looks patched".
+      daemon imports and are silently doing nothing. Something reinstalled the
+      package non-editably; find it and make it editable (`uv pip install -e`),
+      then re-converge. Do NOT fix this by copying the patched files over the
+      installed ones — that leaves the same two trees to drift apart again. Do
+      not silence this assertion either — it is the only thing separating
+      "patched" from "looks patched".
