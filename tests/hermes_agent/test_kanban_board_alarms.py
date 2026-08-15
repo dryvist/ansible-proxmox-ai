@@ -30,6 +30,7 @@ TMP = Path(tempfile.mkdtemp(prefix="kanban-board-alarms-selfcheck-"))
 FIXTURE_CONFIG = {
     "DB_PATH": str(TMP / "kanban.db"),
     "CONFIG_PATH": str(TMP / "config.yaml"),
+    "PROFILES_DIR": str(TMP / "profiles"),
     "STATE_PATH": str(TMP / "kanban-digest.json"),
     "TITLE": "Kanban Board Digest",
     "INTERVAL_MIN": 15,
@@ -177,25 +178,33 @@ def test_stall_alarm_omits_the_age_note_when_no_running_rows_are_available():
 # --- the unspawnable-assignee diagnostic -------------------------------------
 # "in_progress 0/1 (cap)" is true and useless when every ready card names a
 # non-profile: the dispatcher skips them silently and the board looks capped
-# rather than dead. Faking the module (absent here) also pins that the digest
-# asks the dispatcher's own check instead of re-scanning profiles itself.
+# rather than dead.
+#
+# Profiles are discovered by SCANNING PROFILES_DIR, not by importing the agent
+# package. The import version shipped and then silently never fired: the digest
+# runs as a --no-agent --script cron under system python, which cannot import
+# hermes_cli, so the guard swallowed ImportError and returned '' forever. These
+# tests build a real profiles directory so they exercise the same code path
+# production does — a fake module would have passed while production stayed mute.
 import contextlib
-import sys
-import types as _t
+import os
+import tempfile
 
 
 @contextlib.contextmanager
 def known_profiles(*names):
-    pkg = _t.ModuleType("hermes_cli")
-    pkg.__path__ = []
-    mod = _t.ModuleType("hermes_cli.kanban_db")
-    setattr(mod, "list_profiles_on_disk", lambda: list(names))
-    sys.modules.update({"hermes_cli": pkg, "hermes_cli.kanban_db": mod})
+    root = tempfile.mkdtemp(prefix="kanban-profiles-")
+    for n in names:
+        if n == "default":
+            continue  # implicit, never a directory
+        os.makedirs(os.path.join(root, n))
+        open(os.path.join(root, n, "config.yaml"), "w").close()
+    prev = DIGEST.PROFILES_DIR
+    setattr(DIGEST, "PROFILES_DIR", root)
     try:
         yield
     finally:
-        for m in ("hermes_cli.kanban_db", "hermes_cli"):
-            sys.modules.pop(m, None)
+        setattr(DIGEST, "PROFILES_DIR", prev)
 
 
 def test_stall_alarm_names_the_ready_assignees_that_are_not_real_profiles():
@@ -224,7 +233,21 @@ def test_unassigned_ready_cards_are_reported_under_a_readable_name():
 
 def test_unspawnable_note_degrades_to_silence_when_profiles_are_unreadable():
     """Must still page. A crash report here would replace the stall alarm."""
-    assert DIGEST.unspawnable_note([{"assignee": "whoever", "n": 1}]) == ""
+    prev = DIGEST.PROFILES_DIR
+    setattr(DIGEST, "PROFILES_DIR", "/nonexistent/profiles")
+    try:
+        assert DIGEST.unspawnable_note([{"assignee": "whoever", "n": 1}]) == ""
+    finally:
+        setattr(DIGEST, "PROFILES_DIR", prev)
+
+
+def test_profile_discovery_does_not_import_the_agent_package():
+    """The import version silently never fired in production: the digest runs
+    under system python, which cannot import hermes_cli, so the guard swallowed
+    the ImportError and returned '' forever. Scanning is what makes it work."""
+    src = TEMPLATE_PATH.read_text()
+    assert "list_profiles_on_disk" not in src
+    assert "os.scandir(PROFILES_DIR)" in src
 
 
 def test_stall_alarm_still_fires_without_the_rows():

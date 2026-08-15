@@ -42,6 +42,7 @@ import sys
 DB_PATH = "{{ hermes_agent_hermes_home }}/kanban.db"
 # Same directory as DB_PATH; read for the board-alarm cap check below.
 CONFIG_PATH = "{{ hermes_agent_hermes_home }}/config.yaml"
+PROFILES_DIR = "{{ hermes_agent_hermes_home }}/profiles"
 # Where worker-failure lines go instead of the work log. Empty disables the
 # split entirely and restores the single-post behaviour.
 ISSUES_CHANNEL = "{{ hermes_agent_kanban_digest_issues_channel }}"
@@ -357,17 +358,29 @@ def overrun_lines(rows, now_epoch):
     return out
 
 
-def unspawnable_note(ready_assignee_rows):
-    """Name ready-card assignees the dispatcher won't spawn, or ''.
+def known_profiles():
+    """Assignees the dispatcher can spawn: PROFILES_DIR entries carrying a
+    config.yaml, plus the implicit 'default'.
 
-    Uses the dispatcher's own profile discovery so the note can't drift from
-    the check that decides. Unavailable import -> '', alarm still fires.
+    Scanned, not imported. This script runs as a --no-agent --script cron under
+    system python, which cannot import the agent package — an import-based
+    lookup returned nothing and silently suppressed the note (measured against
+    the deployed script, 2026-08-15). Mirrors the dispatcher's own discovery
+    rule; if that rule ever changes, this must follow.
     """
+    names = {"default"}
     try:
-        from hermes_cli.kanban_db import list_profiles_on_disk
-        known = set(list_profiles_on_disk())
-    except Exception:
-        return ""
+        for e in os.scandir(PROFILES_DIR):
+            if e.is_dir() and os.path.isfile(os.path.join(e.path, "config.yaml")):
+                names.add(e.name)
+    except OSError:
+        return set()
+    return names
+
+
+def unspawnable_note(ready_assignee_rows):
+    """Name ready-card assignees the dispatcher won't spawn, or ''."""
+    known = known_profiles()
     bad = [(r["assignee"] or "(unassigned)", r["n"])
            for r in ready_assignee_rows if known and (r["assignee"] or "") not in known]
     if not bad:

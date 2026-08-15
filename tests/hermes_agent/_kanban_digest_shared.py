@@ -25,6 +25,7 @@ FIXTURE_CONFIG = {
     # No file at this path by default: read_max_in_progress() must degrade to
     # None, never raise, when config.yaml has not been deployed yet.
     "CONFIG_PATH": str(TMP / "config.yaml"),
+    "PROFILES_DIR": str(TMP / "profiles"),
     "STATE_PATH": str(TMP / "kanban-digest.json"),
     "TITLE": "Kanban Board Digest",
     "INTERVAL_MIN": 15,
