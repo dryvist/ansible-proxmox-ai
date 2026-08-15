@@ -8,6 +8,8 @@ from conftest import (
     PINNED_CRON_DELIVERY_SOURCE,
     PINNED_GOAL_COMPLETION_SOURCE,
     PINNED_HINDSIGHT_PREFETCH_SOURCE,
+    PATCHED_JUDGE_CALL_SOURCE,
+    PINNED_JUDGE_CALL_SOURCE,
     PINNED_JUDGE_ERROR_SENTINEL_SOURCE,
     PINNED_KANBAN_GOAL_LOOP_SOURCE,
     PINNED_PROTOCOL_RETRY_SOURCE,
@@ -268,6 +270,38 @@ def test_installed_source_postconditions_fail_closed() -> None:
                 "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
                 + PINNED_JUDGE_ERROR_SENTINEL_SOURCE
                 + PINNED_KANBAN_GOAL_LOOP_SOURCE
+            ),
+        )
+    )
+    # The judge latency emission dropped (upstream call site unpatched): judge
+    # timing would be missing from the index the fabric is measured in, so the
+    # converge must go red rather than pass quietly.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            goal_judge_source=(
+                "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
+                + PINNED_JUDGE_ERROR_SENTINEL_SOURCE
+                + PATCHED_KANBAN_GOAL_LOOP_SOURCE
+                + PINNED_JUDGE_CALL_SOURCE
+            ),
+        )
+    )
+    # A double insertion is equally wrong: the count assertion must reject it.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            goal_judge_source=(
+                "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
+                + PINNED_JUDGE_ERROR_SENTINEL_SOURCE
+                + PATCHED_KANBAN_GOAL_LOOP_SOURCE
+                + PATCHED_JUDGE_CALL_SOURCE * 2
             ),
         )
     )
