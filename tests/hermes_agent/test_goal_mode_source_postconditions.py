@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from conftest import (
+    PATCHED_JUDGE_AVAILABLE_SOURCE,
     PATCHED_KANBAN_GOAL_LOOP_SOURCE,
+    PINNED_JUDGE_AVAILABLE_SOURCE,
     PINNED_BOOST_CAP_SOURCE,
     PINNED_COMPRESSOR_SCAN_SOURCE,
     PINNED_CREATE_TASK_SOURCE,
     PINNED_CRON_DELIVERY_SOURCE,
     PINNED_GOAL_COMPLETION_SOURCE,
     PINNED_HINDSIGHT_PREFETCH_SOURCE,
+    PATCHED_JUDGE_CALL_SOURCE,
+    PINNED_JUDGE_CALL_SOURCE,
     PINNED_JUDGE_ERROR_SENTINEL_SOURCE,
     PINNED_KANBAN_GOAL_LOOP_SOURCE,
     PINNED_PROTOCOL_RETRY_SOURCE,
@@ -43,6 +47,12 @@ def test_installed_source_postconditions_fail_closed() -> None:
     assert_task = _task("Assert installed Hermes pinned-source patches")
     conditions = " ".join(assert_task["ansible.builtin.assert"]["that"])
     assert "verdict, reason, _, _ = judge_goal(" in conditions
+    assert any(
+        "goal judge unavailable:" in condition
+        and ".count(" in condition
+        and ") == 2" in condition
+        for condition in assert_task["ansible.builtin.assert"]["that"]
+    )
     assert "DEFAULT_JUDGE_TIMEOUT =" in conditions
     assert "SELECT id, status FROM tasks" in conditions
     assert (
@@ -116,6 +126,8 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "Patch Hermes goal completion gate for the four-value judge result",
         PINNED_GOAL_COMPLETION_SOURCE,
     )
+    # Same module as the completion gate, so it rides the same source var.
+    completion_source += PATCHED_JUDGE_AVAILABLE_SOURCE
     reconcile_source = _apply_runtime_patch(
         "Patch Hermes idempotent create to reconcile goal-mode fields",
         PINNED_CREATE_TASK_SOURCE,
@@ -269,6 +281,53 @@ def test_installed_source_postconditions_fail_closed() -> None:
                 + PINNED_JUDGE_ERROR_SENTINEL_SOURCE
                 + PINNED_KANBAN_GOAL_LOOP_SOURCE
             ),
+        )
+    )
+    # The judge latency emission dropped (upstream call site unpatched): judge
+    # timing would be missing from the index the fabric is measured in, so the
+    # converge must go red rather than pass quietly.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            goal_judge_source=(
+                "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
+                + PINNED_JUDGE_ERROR_SENTINEL_SOURCE
+                + PATCHED_KANBAN_GOAL_LOOP_SOURCE
+                + PINNED_JUDGE_CALL_SOURCE
+            ),
+        )
+    )
+    # A double insertion is equally wrong: the count assertion must reject it.
+    assert not all(
+        _source_postconditions(
+            completion_source,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            goal_judge_source=(
+                "DEFAULT_JUDGE_TIMEOUT = 60.0\n"
+                + PINNED_JUDGE_ERROR_SENTINEL_SOURCE
+                + PATCHED_KANBAN_GOAL_LOOP_SOURCE
+                + PATCHED_JUDGE_CALL_SOURCE * 2
+            ),
+        )
+    )
+    # The availability probe left unpatched: a goal-mode card can complete
+    # with the completion gate silently skipped, which is exactly the state
+    # that leaves no trace anywhere. Must go red.
+    assert not all(
+        _source_postconditions(
+            _apply_runtime_patch(
+                "Patch Hermes goal completion gate for the four-value judge result",
+                PINNED_GOAL_COMPLETION_SOURCE,
+            )
+            + PINNED_JUDGE_AVAILABLE_SOURCE,
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
         )
     )
     # The upstream sentinel producer drifted out from under the guard: the

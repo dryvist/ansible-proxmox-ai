@@ -28,6 +28,12 @@ index=hermes
 | table _time log_stream session model duration_seconds _raw
 ```
 
+Both model call paths feed that search. The worker emits `model=` and
+`latency=` on every API call; a pinned-source patch (see
+`tasks/patches_retry_and_markup.yml`) times the goal judge's own call at its
+call site and emits the same two fields in the same units and format, so judge
+timing is measurable in the same query rather than invisible.
+
 ## Splunk search access
 
 Registers the **Splunk MCP Server** (Splunkbase 7931, deployed by `ansible-splunk`)
