@@ -1,0 +1,74 @@
+---
+# Molecule converge playbook for the vllm role.
+#
+# Play 1 converges the role as production does, which under Docker reduces to
+# the parameter-ceiling assert plus the rendered systemd unit.
+#
+# Play 2 proves the ceiling assert actually fires. A guard that has never been
+# observed failing is indistinguishable from a guard that cannot fail, and this
+# one is the only thing standing between a model and a card too small for it.
+
+- name: Converge
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    # Values normally injected by the load_tofu play from the published
+    # inventory. Stubbed here so the role's hard-required lookups resolve;
+    # the scenario asserts the port reaches the unit, which is what makes a
+    # missing constant fail loud rather than silently defaulting.
+    tofu_data:
+      domain: molecule.invalid
+      constants:
+        service_ports:
+          llm_fast_api: 10434
+          apt_cacher_ng: 3142
+
+  tasks:
+    - name: Include the vllm role
+      ansible.builtin.include_role:
+        name: vllm
+
+- name: Prove the parameter ceiling assert fires
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    tofu_data:
+      domain: molecule.invalid
+      constants:
+        service_ports:
+          llm_fast_api: 10434
+          apt_cacher_ng: 3142
+
+  tasks:
+    - name: Converge with a model above this guest's ceiling
+      block:
+        - name: Include the vllm role with an oversized model
+          ansible.builtin.include_role:
+            name: vllm
+          vars:
+            vllm_model: molecule/Oversized-Model
+            vllm_model_param_billions: 999
+            vllm_max_param_billions: 15
+
+        - name: Record that the guard did NOT fire
+          ansible.builtin.set_fact:
+            vllm_molecule_ceiling_fired: false
+
+      rescue:
+        - name: Record that the guard fired
+          ansible.builtin.set_fact:
+            vllm_molecule_ceiling_fired: true
+
+    - name: Assert the ceiling guard refused the oversized model
+      ansible.builtin.assert:
+        that:
+          - vllm_molecule_ceiling_fired | bool
+        fail_msg: >-
+          A 999B model was accepted against a 15B ceiling. The assert in
+          roles/vllm/tasks/main.yml is not gating anything, so every future
+          model change is unguarded.
+        success_msg: The parameter ceiling assert refused a model above the ceiling.

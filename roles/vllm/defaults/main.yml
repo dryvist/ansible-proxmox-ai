@@ -124,5 +124,41 @@ vllm_max_model_len: 16384
 vllm_max_param_billions: 15
 vllm_model_param_billions: 14
 
+# --- Service environment ------------------------------------------------------
+# One map rather than a line per variable in the unit template, so adding a
+# setting is a defaults edit and every consumer sees the same list.
+#
+# HF_HOME / VLLM_CACHE_ROOT: HuggingFace downloads and the compiled-graph cache
+# both land under the data dir, which is on the guest's own disk. Without them
+# they default to the service user's home and are re-downloaded on every
+# rebuild.
+#
+# VLLM_USE_FLASHINFER_SAMPLER=0: REQUIRED on this guest, and its absence is not
+# a performance question — it is a hard crash loop. FlashInfer's top-k/top-p
+# sampler is JIT-compiled on first use, and its build step calls
+# get_cuda_path(), which needs `nvcc`. This guest carries NVIDIA USERSPACE
+# libraries only, by design (see the userspace section above), so there is no
+# compiler and the call raises:
+#
+#   RuntimeError: Could not find nvcc and default cuda_home='/usr/local/cuda'
+#                 doesn't exist
+#
+# The shape of the failure is what makes it expensive: the engine loads the
+# weights to VRAM successfully first, so the service reports `active`, the GPU
+# shows gigabytes resident, and only the sampler init fails — after which the
+# process exits 1 and systemd restarts it. Measured at NRestarts=132 before this
+# was found. `systemctl is-active` is therefore NOT evidence that vLLM is
+# serving; only a request that returns a completion is.
+#
+# Setting this to 0 selects vLLM's PyTorch-native sampler (Triton for batch
+# >= 8), which is a supported, documented backend requiring no compiler. It is
+# an explicit opt-out the upstream env var exists to provide, not a check being
+# silenced. Installing a CUDA toolkit in the guest to satisfy the JIT would
+# instead undo the deliberate userspace-only boundary.
+vllm_environment:
+  HF_HOME: "{{ vllm_data_dir }}/hf"
+  VLLM_CACHE_ROOT: "{{ vllm_data_dir }}/cache"
+  VLLM_USE_FLASHINFER_SAMPLER: "0"
+
 vllm_service_name: vllm
 vllm_service_enabled: true
