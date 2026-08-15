@@ -31,11 +31,16 @@ _RENDER_CONTEXT: dict[str, Any] = {
     "hermes_agent_session_reset_idle_minutes": 1440,
     "hermes_agent_mcp_tool_timeout_seconds": 180,
     "hermes_agent_docs_mcp_url": "https://mcp.example.com/docs",
+    # grep.app is the one MCP client that dials upstream directly rather than a
+    # gateway route, so the real URL is the fixture value too — there is no
+    # per-estate hostname to stand in for.
+    "hermes_agent_grep_mcp_url": "https://mcp.grep.app",
     "hermes_agent_vikunja_mcp_url": "https://mcp.example.com/vikunja",
     "hermes_agent_nautobot_mcp_url": "https://mcp.example.com/nautobot",
     "hermes_agent_splunk_mcp_enabled": True,
     "hermes_agent_splunk_mcp_url": "https://mcp.example.com/splunk",
     "hermes_agent_docs_mcp_enabled": True,
+    "hermes_agent_grep_mcp_enabled": True,
     "hermes_agent_vikunja_mcp_enabled": False,
     "hermes_agent_nautobot_mcp_enabled": False,
     "hermes_agent_timezone": "UTC",

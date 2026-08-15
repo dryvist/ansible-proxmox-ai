@@ -35,6 +35,83 @@ open_webui_url: "https://{{ open_webui_hostname }}"
 # store in Doppler/SOPS. Must NOT change between runs or sessions invalidate.
 open_webui_secret_key: "{{ lookup('env', 'OPEN_WEBUI_SECRET_KEY') }}"
 
+# --- Document extraction: docling-serve ---------------------------------------
+# Uploads go to the docling-serve guest instead of Open WebUI's bundled
+# extractor, so a scanned PDF yields text rather than an empty document.
+# Reached through Traefik at the `docling-serve` ingress entry (tofu ingress.tf),
+# derived from PROXMOX_SUBDOMAIN — never a hardcoded host.
+open_webui_content_extraction_engine: docling
+open_webui_docling_server_url: "https://docling-serve.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
+
+# The vision model every page is converted by. NOT yet finalised — this must
+# match an id the serving host actually advertises through the router, or every
+# page 404s at the router. Purpose-built for whole-document OCR with optical
+# context compression, which is why routing whole pages at it is the design and
+# not an extravagance.
+open_webui_docling_vlm_model: "mlx-community/Unlimited-OCR-bf16"
+
+# Whole-document VLM conversion, as `VlmConvertOptions` — model_spec (what the
+# model is and how to prompt it) plus engine_options (how to reach it). Verified
+# against docling 2.118.0, the version docling-serve v1.30.0 pins; field names
+# differ from docling `main`, so re-check both on an image bump.
+#
+# docling reaches the model over the SAME OpenAI-compatible router as the chat
+# completions above, on the router's own key — one endpoint, one credential.
+# It wants the full /chat/completions path, not the /v1 base.
+open_webui_docling_vlm_config:
+  model_spec:
+    name: unlimited-ocr
+    default_repo_id: "{{ open_webui_docling_vlm_model }}"
+    # The prompt the model was trained on for page parsing, quoted verbatim from
+    # its model card — anything else degrades it to generic captioning.
+    prompt: "document parsing."
+    # docling 2.118.0's ResponseFormat has no unlimited_ocr_* member (that
+    # arrived after this pin), so the generic markdown parser handles the output.
+    response_format: markdown
+    # Raised from docling's 4096 default: that is a whole page of dense markdown
+    # and a truncated page fails silently, as short-but-valid output.
+    max_new_tokens: 8192
+  engine_options:
+    engine_type: api
+    url: "{{ open_webui_openai_api_base_url }}/chat/completions"
+    headers:
+      Authorization: "Bearer {{ open_webui_openai_api_key }}"
+    # Setting params at all makes the engine skip the model_spec-derived
+    # defaults entirely rather than merging them, so the model id has to be
+    # named here even though default_repo_id already carries it.
+    params:
+      model: "{{ open_webui_docling_vlm_model }}"
+    # The serving worker decodes one request at a time, so a second concurrent
+    # page would only queue behind the first and burn its timeout. Pinned rather
+    # than left to docling's default, which is 1 today but is not a promise.
+    concurrency: 1
+    # Per-page, not per-document. A full page through a local VLM is far slower
+    # than a chat turn, and at concurrency 1 pages wait behind each other too.
+    timeout: 600
+
+# Open WebUI forwards these verbatim as multipart form fields to docling's
+# /v1/convert/file, so every nested object has to arrive as an escaped JSON
+# STRING (hence the per-value to_json) — a raw object is silently dropped.
+#
+# `vlm` routes EVERY page through the model above instead of the layout +
+# TableFormer + local-OCR chain, trading throughput for accuracy on the scanned
+# and mixed documents that are the reason this service exists.
+open_webui_docling_params:
+  pipeline: vlm
+  # Inert under the `vlm` pipeline — kept so the standard pipeline is still
+  # fully configured for any caller that selects it. ocr_engine is the
+  # deprecated spelling of ocr_preset and is only synced when ocr_preset is
+  # unset, so setting both would silently drop this value.
+  do_ocr: true
+  force_ocr: false
+  ocr_preset: easyocr
+  ocr_lang: ["en"]
+  table_mode: accurate
+  # No do_picture_description: with whole pages already going through the VLM,
+  # a second per-figure captioning pass re-sends crops of what the page-level
+  # conversion just read.
+  vlm_pipeline_custom_config: "{{ open_webui_docling_vlm_config | to_json }}"
+
 # --- Observability: native OTLP/HTTP to the shared Cribl Edge receiver --------
 open_webui_otel_endpoint: "{{ ai_orchestration_otel_endpoint }}"
 open_webui_otel_service_name: open-webui
