@@ -1,0 +1,104 @@
+---
+# agent_guest — successor to roles/ai_runner. Converges a pooled Debian LXC
+# (ai-runner-pool-NN, `ai-proxied` firewall profile) into an autonomous coding
+# agent guest: it pulls jobs off the Vikunja queue, runs one headless CLI agent
+# per job under OpenBao Agent supervision, and opens a PR with the result.
+#
+# Safety is the LXC + firewall boundary, NOT the agent level — the agents run in
+# permission-skipping mode by design, so a guest must only ever live behind a
+# restrictive egress profile. Same posture ai_runner documented; unchanged.
+#
+# That ordering is deliberate and matches Anthropic's published guidance:
+# "Design for containment at the environment layer first, then steer behavior
+# at the model layer."  The reason it must be that way round is that anything
+# enforced at the model layer is a tendency, not a limit — "Because models are
+# probabilistic, these shape only what the agent *tends* to do, not what it is
+# theoretically capable of doing."  So every control in this role is placed to
+# hold when the agent behaves badly, not merely when it behaves well:
+# "The deterministic boundary is what gets hit when everything probabilistic
+# misses."  https://www.anthropic.com/engineering/how-we-contain-claude
+#
+# Practical consequence when editing this file: if a safeguard here only works
+# because the CLI chooses to respect it, it is decoration. The load-bearing
+# controls are the firewall profile, the squid allowlist, the unit's resource
+# and filesystem confinement, and the repo allowlist below.
+#
+# Secrets stay injection-agnostic: defaults read `lookup('env', ...)`, group_vars
+# overrides bao-first. Never bake a backend into a default.
+
+# --- Identity ---------------------------------------------------------------
+# uid 1000 + /home/agent matches the paths the nix-ai autonomous render bakes.
+# No sudo: the runner never needs root, and a job that thinks it does is a gap
+# in this role to fix, not a privilege to grant.
+agent_guest_user: agent
+agent_guest_uid: 1000
+agent_guest_home: "/home/{{ agent_guest_user }}"
+agent_guest_config_dir: /etc/agent-guest
+
+# --- Egress proxy (the ONLY WAN path) ---------------------------------------
+# An `ai-proxied` guest has no direct WAN firewall rule: everything outbound
+# goes CONNECT through the squid guest, where the domain allowlist lives
+# (roles/squid). Both coordinates are inventory-derived — the proxy's own FQDN
+# from the `squid`-tagged group, the port from the tofu constants.
+agent_guest_proxy_host: >-
+  {{ groups['squid_group'] | default([]) | map('extract', hostvars, 'container_ip') | select('truthy') | first
+     | mandatory('no member of squid_group — the `squid`-tagged LXC must be in the published tofu inventory') }}
+agent_guest_proxy_port: >-
+  {{ tofu_data.constants.service_ports.squid_proxy
+     | mandatory('tofu_data.constants.service_ports.squid_proxy missing — regenerate tofu_inventory.json') }}
+agent_guest_proxy_url: "http://{{ agent_guest_proxy_host }}:{{ agent_guest_proxy_port }}"
+# Internal destinations must NOT be routed at squid: OpenBao, Cribl, DNS and NTP
+# are reachable directly, and squid would deny them anyway — its allowlist is
+# external-only. RFC1918 covers the estate by address, the domain by name.
+agent_guest_no_proxy: >-
+  localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.{{
+  tofu_data.domain | mandatory('tofu_data.domain missing — regenerate tofu_inventory.json') }}
+# Both cases: curl/git/node read the lowercase pair, most Go and Java tooling
+# the uppercase. Applied to every Ansible task that fetches from the internet,
+# to the login shell, to systemd's default environment, and to each job unit.
+agent_guest_proxy_env:
+  http_proxy: "{{ agent_guest_proxy_url }}"
+  https_proxy: "{{ agent_guest_proxy_url }}"
+  no_proxy: "{{ agent_guest_no_proxy }}"
+  HTTP_PROXY: "{{ agent_guest_proxy_url }}"
+  HTTPS_PROXY: "{{ agent_guest_proxy_url }}"
+  NO_PROXY: "{{ agent_guest_no_proxy }}"
+agent_guest_apt_proxy_conf: /etc/apt/apt.conf.d/01-agent-guest-proxy
+agent_guest_profile_proxy_script: /etc/profile.d/agent-guest-proxy.sh
+agent_guest_systemd_proxy_conf: /etc/systemd/system.conf.d/10-agent-guest-proxy.conf
+
+# --- CLI toolchain ----------------------------------------------------------
+# Unpinned, unlike ai_runner's version floors: the three agent CLIs ship
+# breaking-fast and the newest stable is the supported one (AGENTS.md "Version
+# management"). ai_runner's `creates`-guarded install never upgraded on a version
+# bump anyway — the community.general.npm module with state=latest actually
+# reconciles. Only gitleaks carries a version: it is a GitHub release tarball
+# with no apt channel, so Renovate pins it.
+agent_guest_apt_packages:
+  - ca-certificates
+  - curl
+  - git
+  - gpg          # apt_repository needs a gpg binary on minimal LXC templates
+  - jq
+  - nodejs
+  - npm
+  - python3
+  - ripgrep
+  - tar
+# @google/gemini-cli is NOT here: Google refuses individual OAuth on it
+# (IneligibleTierError); the third CLI is agy, installed in toolchain.yml
+# via Antigravity's own installer (ansible-proxmox-ai#245).
+agent_guest_npm_clis:
+  - "@anthropic-ai/claude-code"
+  - "@openai/codex"
+agent_guest_npm_prefix: /usr/local
+agent_guest_claude_bin: "{{ agent_guest_npm_prefix }}/bin/claude"
+agent_guest_codex_bin: "{{ agent_guest_npm_prefix }}/bin/codex"
+# agy installs per-user (Antigravity's installer), not into the npm prefix.
+agent_guest_agy_bin: "{{ agent_guest_home }}/.local/bin/agy"
+agent_guest_gh_keyring: /etc/apt/keyrings/githubcli.asc
+agent_guest_gitleaks_version: "8.30.0"
+agent_guest_gitleaks_url: >-
+  https://github.com/gitleaks/gitleaks/releases/download/v{{
+  agent_guest_gitleaks_version }}/gitleaks_{{ agent_guest_gitleaks_version
+  }}_linux_x64.tar.gz

@@ -1,0 +1,269 @@
+---
+- name: Read installed Hermes pinned-source patches
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop:
+    - "{{ hermes_agent_install_dir }}/tools/kanban_tools.py"
+    - "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    - "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
+    - "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
+    - "{{ hermes_agent_install_dir }}/agent/auxiliary_client.py"
+    # Appended, never reordered — the assert below indexes results[] by
+    # position, so inserting into the middle would silently re-point every
+    # later assertion at the wrong file.
+    - "{{ hermes_agent_install_dir }}/agent/context_compressor.py"
+    - "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    - "{{ hermes_agent_install_dir }}/plugins/memory/hindsight/__init__.py"
+    - "{{ hermes_agent_install_dir }}/run_agent.py"
+  register: hermes_agent_goal_mode_sources
+  changed_when: false
+
+- name: Assert installed Hermes pinned-source patches
+  vars:
+    hermes_agent_goal_completion_source: >-
+      {{ hermes_agent_goal_mode_sources.results[0].content | b64decode }}
+    hermes_agent_goal_reconcile_source: >-
+      {{ hermes_agent_goal_mode_sources.results[1].content | b64decode }}
+    hermes_agent_goal_judge_source: >-
+      {{ hermes_agent_goal_mode_sources.results[2].content | b64decode }}
+    hermes_agent_retry_source: >-
+      {{ hermes_agent_goal_mode_sources.results[3].content | b64decode }}
+    hermes_agent_auxiliary_source: >-
+      {{ hermes_agent_goal_mode_sources.results[4].content | b64decode }}
+    hermes_agent_compressor_source: >-
+      {{ hermes_agent_goal_mode_sources.results[5].content | b64decode }}
+    hermes_agent_cron_scheduler_source: >-
+      {{ hermes_agent_goal_mode_sources.results[6].content | b64decode }}
+    hermes_agent_hindsight_plugin_source: >-
+      {{ hermes_agent_goal_mode_sources.results[7].content | b64decode }}
+    hermes_agent_run_agent_source: >-
+      {{ hermes_agent_goal_mode_sources.results[8].content | b64decode }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # Upstream's own five-value unpack, not a patch result: the role's arity
+      # patch is retired because the pinned release fixed it upstream. Still
+      # asserted — a drift back to a shorter tuple silently re-opens the
+      # fail-open completion gate this line exists to close.
+      - "'verdict, reason, _, _, _ = judge_goal(' in hermes_agent_goal_completion_source"
+      - >-
+        hermes_agent_goal_reconcile_source.count(
+          '*(["--quiet"] if task.goal_mode else []),'
+        ) == 1
+      - >-
+        hermes_agent_goal_reconcile_source.count(
+          '"-q", prompt,'
+        ) == 1
+      - >-
+        'SELECT id, status FROM tasks WHERE idempotency_key = ?'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'if goal_mode and row["status"] in ("triage", "todo", "scheduled", "ready", "blocked", "review"):'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'goal_max_turns = COALESCE(?, goal_max_turns)'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'WHERE id = ? AND status IN'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        "('triage', 'todo', 'scheduled', 'ready', 'blocked', 'review')"
+        in hermes_agent_goal_reconcile_source
+      # Both halves of the protocol-violation behavior, now supplied by upstream
+      # itself rather than by a role patch (both patches retired). The message is
+      # what an operator reads, the failure_limit is what actually decides
+      # whether the card is ever attempted again, and either regressing leaves a
+      # clean-exit card retired on its first violation again.
+      - >-
+        'without a terminal kanban call counts as failed no'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'failure_limit=1 if is_systemic else None,'
+        in hermes_agent_goal_reconcile_source
+      # Worker-reap process-group guard: the identity check function, the
+      # safety condition guarding the timeout path's and the stale-reclaim
+      # path's signal sites, and all four signal sites themselves — each
+      # asserted so a partial landing (helper present but a call site
+      # unpatched, or vice versa) fails loudly.
+      - >-
+        'def _pid_is_hermes_worker(pid: int) -> bool:'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'kill is not None and pid > 1 and pid != os.getpid()'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'and _pid_is_hermes_worker(pid)'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'kill(-pid, signal.SIGTERM)'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'kill(-pid, _sigkill)'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'if pid <= 1 or pid == os.getpid() or not _pid_is_hermes_worker(pid):'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'kill(-int(pid), signal.SIGTERM)'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        'kill(-int(pid), _sigkill)'
+        in hermes_agent_goal_reconcile_source
+      - >-
+        ('DEFAULT_JUDGE_TIMEOUT = '
+         ~ (hermes_agent_kanban_goal_judge_timeout_seconds | float | string))
+        in hermes_agent_goal_judge_source
+      - >-
+        '_TRANSIENT_RETRY_BACKOFF_BASE = 15.0'
+        in hermes_agent_auxiliary_source
+      - >-
+        'status in (408, 429)'
+        in hermes_agent_auxiliary_source
+      - >-
+        'resolved_provider != "custom"'
+        in hermes_agent_auxiliary_source
+      # `_tc_boost_cap` CONTAINS the substring `_boost_cap`, so a bare
+      # `'_boost_cap = agent.max_tokens' in ...` would be satisfied by the
+      # _tc_ line alone and pass with the length-continuation patch missing.
+      # Count instead: both patched lines match the shorter needle, so 2 is
+      # the only value that proves BOTH landed (verified against upstream
+      # v2026.7.7.2 — unpatched 0, either patch alone 1, both 2).
+      - >-
+        hermes_agent_retry_source.count(
+          '_tc_boost_cap = agent.max_tokens if agent.max_tokens else max('
+        ) >= 1
+      - >-
+        hermes_agent_retry_source.count(
+          '_boost_cap = agent.max_tokens if agent.max_tokens else max('
+        ) == 2
+      # Inverted, because upstream restructured the scan this once clamped:
+      # the clamp patch is retired, and what still matters is that the
+      # unbounded reverse scan (the IndexError source) never comes back.
+      - >-
+        'for idx in range(end - 1, start - 1, -1):'
+        not in hermes_agent_compressor_source
+      - >-
+        'deliver_content = _cron_markup_guard(job, output_file,'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        '_deliver_result(_routed_job, deliver_content,'
+        in hermes_agent_cron_scheduler_source
+      # The second assertion on the retired message patch is gone with it: it
+      # pinned wording that patch produced, which exists in no upstream release,
+      # so it could only ever fail. The message itself is asserted above.
+      # Absence, not presence: upstream dropped this log line outright after
+      # the pinned release, so the role's debug-to-warning patch applies on one
+      # version and is a no-op on the other. Either way the defect — a prefetch
+      # failure hidden at debug level — must not be present.
+      - >-
+        'logger.debug("Hindsight prefetch failed:'
+        not in hermes_agent_hindsight_plugin_source
+      # The kanban goal loop's judge-error guard: both halves of the patch
+      # (counter init + guard reset = exactly 2 occurrences), the bounded
+      # blocked outcome, and the UPSTREAM producer of the transport flag the
+      # guard keys on. Keyed on `_transport_failed` rather than the old
+      # "judge error: " text — the text pin is what silently died when upstream
+      # added a fifth return value, leaving the guard dead and judge failures
+      # burning whole turn budgets. Pinning the producer keeps an upstream
+      # change to the flag itself a loud converge failure.
+      - >-
+        'if _transport_failed:'
+        in hermes_agent_goal_judge_source
+      # The availability probe's two silent declines, now logged. Asserted on
+      # kanban_tools (the completion gate's own module): without these, a
+      # goal-mode card can complete unjudged and leave no trace anywhere.
+      - >-
+        hermes_agent_goal_completion_source.count(
+          'goal judge unavailable:'
+        ) == 2
+      - >-
+        hermes_agent_goal_judge_source.count('judge_failures = 0') == 2
+      - >-
+        '"outcome": "blocked_judge_unreachable"'
+        in hermes_agent_goal_judge_source
+      - >-
+        'return "continue", f"judge error: {type(exc).__name__}", False, None, True'
+        in hermes_agent_goal_judge_source
+      # The judge's own call timing, in the worker line's field shape. Counted,
+      # not just present: a second insertion would time and log every verdict
+      # twice, and the Splunk field would then read from whichever line landed
+      # last. Both halves asserted — a timer with no emission measures nothing.
+      - >-
+        hermes_agent_goal_judge_source.count('_judge_started = time.monotonic()') == 1
+      - >-
+        '"goal judge: API call model=%s latency=%.1fs",'
+        in hermes_agent_goal_judge_source
+      # The four _sync_external_memory_for_turn() observability log lines —
+      # one per silent exit. All four or none: the patch tasks above touch
+      # adjacent lines in the same function, so a partial landing here means
+      # a regex stopped matching upstream and the rest silently no-op'd.
+      - >-
+        'Hermes external-memory sync/prefetch skipped: turn interrupted'
+        in hermes_agent_run_agent_source
+      - >-
+        'Hermes external-memory sync/prefetch skipped: missing manager=%s'
+        in hermes_agent_run_agent_source
+      - >-
+        'Hermes external-memory sync/prefetch skipped: empty after flatten'
+        in hermes_agent_run_agent_source
+      - >-
+        'Hermes external-memory sync_all/queue_prefetch_all failed: %s'
+        in hermes_agent_run_agent_source
+    fail_msg: >-
+      The pinned Hermes source changed and one or more required source
+      patches were not installed; update the pinned-source patches before
+      converging.
+
+# Everything above reads the SOURCE TREE, which is not necessarily the code
+# that runs. The venv lives INSIDE the install dir, so
+# <install_dir>/agent/conversation_loop.py and
+# <install_dir>/venv/lib/python3.*/site-packages/agent/conversation_loop.py are
+# two different files, and only the second one is imported once the package is
+# installed non-editably. Every install path is editable as of 2026-08-15 — both
+# upstream's install.sh and the Slack extra below use `uv pip install -e`, and
+# upstream's build backend refuses the non-editable form outright from 0.20.0 —
+# so the source tree IS the imported code and no second copy should exist. This
+# check stays because the failure it catches is silent: if any future path
+# reintroduces a wheel copy, the patch tasks would rewrite the source tree while
+# the daemon kept importing site-packages, and the assertions above would still
+# pass, having checked a file nothing imports.
+#
+# This compares the two by checksum. Equal, or no installed copy at all (an
+# editable install, where the source tree IS the imported code), means the
+# patches are live and every assertion above is meaningful. Different means
+# they are not, and the daemon is running unpatched upstream code carrying the
+# retry-storm and IndexError bugs those patches exist to fix.
+- name: Locate any installed copy of a patched module inside the Hermes venv
+  ansible.builtin.find:
+    paths: "{{ hermes_agent_install_dir }}/venv/lib"
+    patterns: conversation_loop.py
+    recurse: true
+    get_checksum: true
+  register: hermes_agent_installed_module_copies
+  changed_when: false
+
+- name: Checksum the patched source the assertions above just verified
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
+    checksum_algorithm: sha1
+  register: hermes_agent_patched_source
+
+- name: Fail when the patched source is not the code the daemon imports
+  vars:
+    hermes_agent_installed_checksums: >-
+      {{ hermes_agent_installed_module_copies.files | map(attribute='checksum') | list }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        hermes_agent_installed_checksums | reject('equalto', hermes_agent_patched_source.stat.checksum)
+        | list | length == 0
+    fail_msg: >-
+      An installed copy of conversation_loop.py under the venv differs from the
+      patched source, so the pinned-source patches above are not in the code the
+      daemon imports and are silently doing nothing. Something reinstalled the
+      package non-editably; find it and make it editable (`uv pip install -e`),
+      then re-converge. Do NOT fix this by copying the patched files over the
+      installed ones — that leaves the same two trees to drift apart again. Do
+      not silence this assertion either — it is the only thing separating
+      "patched" from "looks patched".

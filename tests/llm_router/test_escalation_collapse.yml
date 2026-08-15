@@ -1,0 +1,121 @@
+---
+# The escalation-distinctness warning, from both ends: it must fire when the
+# deep-analysis tier resolves to the same model as the broad tier, and stay
+# silent when the two are genuinely different.
+#
+# The condition is NOT re-stated here. Both plays import
+# roles/llm_router/tasks/assert-escalation-tier.yml and read the registered
+# result of the warning task itself, so the test cannot drift away from the
+# guard it is testing — a skipped task still registers.
+#
+# Play 1 loads the REAL inventory/group_vars/all.yml with no OpenBao facts in
+# scope, which is exactly the "OpenBao unavailable" shape: ai_default_model
+# takes its literal fallback, the broad tier follows it, and the warning must
+# fire if that literal is what the deep tier already names.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_escalation_collapse.yml -i localhost, -c local
+
+- name: Verify the warning fires when both tiers resolve to one model
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ai_escalation_rubric:
+      version: 1
+      tiers:
+        - id: broad
+          router_model: "{{ ai_default_model }}"
+          status: active
+        - id: deep-analysis
+          router_model: mlx-community/Collapsed-Test-4bit
+          status: active
+          constraint: resident-only
+    # No bao_ai_public_secrets in scope: ai_default_model falls back to its
+    # literal, which here is the id the deep tier already names.
+    ai_default_model: >-
+      {{ bao_ai_public_secrets.active_model
+         | default('mlx-community/Collapsed-Test-4bit', true) }}
+  tasks:
+    - name: Evaluate the escalation-distinctness guard
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-escalation-tier.yml
+
+    - name: The collapse warning fired
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_escalation_collapse_warning is not skipped
+          - "'credential-path failure' in llm_router_escalation_collapse_warning.msg"
+        fail_msg: >-
+          The deep-analysis and broad tiers both resolve to
+          {{ ai_default_model }}, and the guard stayed silent. That is the
+          silent escalation collapse itself, reproduced by the check meant to
+          surface it.
+        success_msg: >-
+          Collapsed tiers raise the warning, naming the unresolved OpenBao
+          value as the cause.
+
+- name: Verify the warning stays silent when the tiers are genuinely distinct
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ai_escalation_rubric:
+      version: 1
+      tiers:
+        - id: broad
+          router_model: "{{ ai_default_model }}"
+          status: active
+        - id: deep-analysis
+          router_model: mlx-community/Deep-Test-4bit
+          status: active
+          constraint: resident-only
+    bao_ai_public_secrets:
+      active_model: mlx-community/Broad-Test-4bit
+    ai_default_model: >-
+      {{ bao_ai_public_secrets.active_model
+         | default('mlx-community/Collapsed-Test-4bit', true) }}
+  tasks:
+    - name: Evaluate the escalation-distinctness guard
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-escalation-tier.yml
+
+    - name: No warning on a real two-tier rubric
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_escalation_collapse_warning is skipped
+        fail_msg: >-
+          The tiers name different models
+          (mlx-community/Deep-Test-4bit vs {{ ai_default_model }}) and the
+          guard warned anyway. A warning that fires on a healthy rubric is one
+          an operator learns to ignore, which costs the real one its meaning.
+        success_msg: Distinct tiers converge quietly.
+
+- name: Verify a blocked tier cannot raise the warning
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # cluster-deep's shape: a tier that is not active and carries no model.
+    # It defers work rather than downgrading it, so it is not a collapse.
+    ai_escalation_rubric:
+      version: 1
+      tiers:
+        - id: broad
+          router_model: "{{ ai_default_model }}"
+          status: active
+        - id: deep-analysis
+          router_model: null
+          status: blocked-upstream
+    ai_default_model: mlx-community/Broad-Test-4bit
+  tasks:
+    - name: Evaluate the escalation-distinctness guard
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-escalation-tier.yml
+
+    - name: No warning for a tier that is not serving traffic
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_escalation_collapse_warning is skipped
+        fail_msg: >-
+          A deep tier with status blocked-upstream and no router_model raised
+          the collapse warning. Nothing routes to it, so there is nothing to
+          collapse.
+        success_msg: A blocked deep tier is silent, as intended.

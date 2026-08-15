@@ -1,0 +1,102 @@
+---
+# The dispatcher sets HERMES_KANBAN_GOAL_MODE, but the pinned CLI only invokes
+# its goal-loop wrapper on the machine-readable quiet path. Without --quiet,
+# workers take the ordinary single-query path, return text, and exit rc=0 while
+# their card remains running.
+- name: Patch Hermes Kanban workers to enter the quiet goal-loop path
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: '^([ \t]*)(?:\*\(\["--quiet"\] if task\.goal_mode else \[\]\),\n\1)*"-q", prompt,$'
+    replace: |-
+      \1*(["--quiet"] if task.goal_mode else []),
+      \1"-q", prompt,
+  notify: Restart hermes-gateway
+
+# The two protocol-violation patches that used to sit here are GONE because
+# upstream adopted both behaviors itself. Verified against the pinned release
+# and current upstream: the clean-exit message now ends "— protocol violation.
+# If the prior run already did the work, verify it and report the result via
+# kanban_complete; a run that ends without a terminal kanban call counts as
+# failed no matter what it did.", and the crash path already reads
+# `failure_limit=1 if is_systemic else None,` with protocol violations routed
+# through their own bounded `violation_limit` streak. Both regexps therefore
+# matched ZERO times, so the patches were silently doing nothing while
+# patches_verify.yml still asserted their results — a converge would have
+# mutated source, fired the restart handler, and only then failed the assert.
+# The assertions are kept and retargeted at the upstream text that now supplies
+# the behavior, so an upstream regression still fails the converge loudly.
+
+# An idempotency hit returns before create_task applies new fields. Upgrade only
+# active goal-enabled repeats in place so a current-slot card is reconciled
+# without mutating completed history or downgrading an existing goal card.
+- name: Patch Hermes idempotent create to reconcile goal-mode fields
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
+    regexp: |-
+      ^([ \t]*)row = conn\.execute\($
+      \1    "SELECT id FROM tasks WHERE idempotency_key = \? "$
+      \1    "AND status != 'archived' "$
+      \1    "ORDER BY created_at DESC LIMIT 1",$
+      \1    \(idempotency_key,\),$
+      \1\)\.fetchone\(\)$
+      \1if row:$
+      \1    return row\["id"\]$
+    replace: |-
+      \1row = conn.execute(
+      \1    "SELECT id, status FROM tasks WHERE idempotency_key = ? "
+      \1    "AND status != 'archived' "
+      \1    "ORDER BY created_at DESC LIMIT 1",
+      \1    (idempotency_key,),
+      \1).fetchone()
+      \1if row:
+      \1    if goal_mode and row["status"] in ("triage", "todo", "scheduled", "ready", "blocked", "review"):
+      \1        with write_txn(conn):
+      \1            conn.execute(
+      \1                "UPDATE tasks SET goal_mode = 1, "
+      \1                "goal_max_turns = COALESCE(?, goal_max_turns) "
+      \1                "WHERE id = ? AND status IN "
+      \1                "('triage', 'todo', 'scheduled', 'ready', 'blocked', 'review')",
+      \1                (int(goal_max_turns) if goal_max_turns is not None else None, row["id"]),
+      \1            )
+      \1    return row["id"]
+  notify: Restart hermes-gateway
+
+# `_goal_mode_handoff_rejection` runs the completion-gate judge only when
+# `_goal_judge_available()` says a judge is reachable, and that probe returns
+# False on two paths that log NOTHING: the auxiliary client import/lookup
+# raising, and a lookup that yields no client or no model. The gate is then
+# skipped silently — a goal-mode card completes without ever being judged, and
+# the only externally visible symptom is an absence: no judge verdict, no judge
+# latency, no error. Same silent-success shape as a helper that exits 0 having
+# exported nothing.
+#
+# Fail-open is the right BEHAVIOR here (an unreachable judge must not wedge
+# every goal-mode worker) and is deliberately preserved — the patch only makes
+# the decision say why it was taken. WARNING, not debug: this is the difference
+# between "the judge passed the card" and "nothing judged the card at all".
+- name: Patch Hermes goal-judge availability probe to log why it declines
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/tools/kanban_tools.py"
+    regexp: |-
+      ^([ \t]*)client, model = get_text_auxiliary_client\("goal_judge"\)$
+      ([ \t]*)except Exception:$
+      \2    return False$
+      \2return client is not None and bool\(model\)$
+    replace: |-
+      \1client, model = get_text_auxiliary_client("goal_judge")
+      \2except Exception:
+      \2    logger.warning(
+      \2        "goal judge unavailable: auxiliary client lookup failed; the "
+      \2        "goal-mode completion gate is SKIPPED and the card completes "
+      \2        "unjudged", exc_info=True,
+      \2    )
+      \2    return False
+      \2if client is None or not model:
+      \2    logger.warning(
+      \2        "goal judge unavailable: client=%s model=%r; the goal-mode "
+      \2        "completion gate is SKIPPED and the card completes unjudged",
+      \2        client is not None, model,
+      \2    )
+      \2    return False
+      \2return True
+  notify: Restart hermes-gateway

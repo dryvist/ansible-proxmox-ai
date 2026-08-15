@@ -1,0 +1,165 @@
+---
+# --- Fleet health: Hermes watching its OWN reliability trend (2026-08-01) -----
+# The one gap the 2026-08-01 kanban audit found with no card covering it:
+# every existing card watches a DOWNSTREAM system (Splunk, Zammad, GitHub,
+# the fabric); nothing watches whether HERMES ITSELF is getting more or less
+# reliable at running them. Weekly (not hourly/daily like the monitor fleet —
+# a reliability TREND needs a window longer than one throttle-limited board's
+# worth of runs to mean anything) and read-only over `kanban runs`; it never
+# proposes touching serving infrastructure, only files a follow-up card for a
+# human or a separate change to act on. Distinct from the `review` card
+# above: `review` catches an operational gap in the last 8h (stuck, blocked,
+# silently-not-run); this catches a reliability trend across weeks. Different
+# time horizons, not a duplicate.
+hermes_agent_fleet_health_cron_name: fleet-health
+hermes_agent_fleet_health_cron_schedule: "3 10 * * 1"
+hermes_agent_fleet_health_cron_prompt: >-
+  You are the Hermes weekly fleet-health pass: look for REGRESSION in your own
+  reliability over the last 7 days — not in any downstream system you
+  monitor. Retrieval first: recall memory key "fleet-health-last" (the
+  per-card outcome counts you saved last week) so you compare against a real
+  baseline, not from scratch. Then read `kanban runs` for the window and
+  compute, per recurring card, its completed / failed / retried /
+  turn-budget-exhausted counts. Flag ONLY a card whose failure or retry rate
+  got genuinely worse than the recalled baseline (a single bad run in a
+  low-volume card is not a regression) or that produced zero runs when its
+  schedule implies it should have run (a silently-stopped enqueuer). For each
+  CONFIRMED regression, file one kanban_create follow-up card naming the
+  workload, the before/after counts, and cite the exact `kanban runs` rows
+  behind them — never assert a regression you cannot point to in that output.
+  If the fleet's run history is too thin to say anything meaningful, say
+  exactly that instead of speculating from a handful of runs. You can only
+  observe and file a follow-up card;
+  never propose or attempt to restart, reconfigure, or converge any serving
+  infrastructure yourself. Self-check before finishing: does every flagged
+  regression cite real before/after counts from `kanban runs`, and is the
+  baseline genuinely stale-comparable rather than one noisy run? Save this
+  week's per-card counts back to "fleet-health-last". If nothing regressed,
+  say so in one line.
+
+# --- Named operating profiles (Hermes agent identities) -----------------------
+# A profile is a fully independent HERMES_HOME directory (own config.yaml,
+# .env, SOUL.md, memory, skills) that a Kanban card selects via its `assignee`
+# field below — the dispatcher spawns `hermes -p <assignee> chat ...` with
+# HERMES_HOME pointed at that profile's directory, so the assignee is the
+# ENTIRE tool/credential envelope the worker runs under (see
+# roles/hermes_agent/README.md "Operating profiles"). One shared
+# gateway/dispatcher/board serves every profile; there is no per-profile
+# gateway, cron store, or Slack bot (tasks/profiles.yml sets
+# kanban.dispatch_in_gateway: false in every profile's own config.yaml as a
+# belt-and-braces guard against that).
+#
+# DECISION RULE (the default action for new recurring work): choose a profile
+# FIRST. `default` is not the absence of a choice — it is correct only for
+# cross-domain, board-meta, or WRITE-bearing GitHub work (the jobs that label,
+# comment, or file issues), and the card/PR should say why.
+# SIEM-shaped work is splunk-admin; incident/infra-shaped work is
+# homelab-admin; read-only repository review and maintenance analysis is
+# github-maint; work that fits none and is not cross-domain is the signal
+# to propose a NEW profile, not to widen an existing one — a profile is scoped
+# by what it must NOT reach, not by what it might someday need.
+#
+# `env` names the .env sections templates/hermes-env-profile.j2 renders with a
+# real value; every OTHER credential the template knows about is rendered
+# BLANK for this profile (dotenv override=True on load) — that blanking IS the
+# isolation mechanism: a spawned worker inherits the gateway process's full
+# environment, so simply omitting a line would leave the default profile's
+# credential silently readable. `mcp` names the mcp_servers entries
+# templates/config-profile.yaml.j2 renders. `skills` are copied from the
+# nix-hermes bundle into the profile's own skills/dryvist/ dir — a card's
+# --skill only resolves what its assignee actually has.
+#
+# NOTE: profile isolation is a CONFIG/tool-availability boundary, not an OS
+# sandbox — every profile runs as the same `hermes` OS user in the same LXC,
+# so a worker with the terminal/file toolset can still read another profile's
+# files on disk by hand. The blast-radius boundary is the LXC (see the role
+# header comment); a profile boundary keeps a job's ordinary tool calls,
+# skills, and prompts scoped to what it is meant to reach — it does not stop a
+# deliberately adversarial instruction from reading a sibling profile's .env.
+hermes_agent_profiles:
+  - name: splunk-admin
+    description: Read-only SIEM analyst (bounded SPL, alert + report, no remediation)
+    mcp: [splunk, docs]
+    env: [slack, splunk]
+    skills: [dryvist/splunk-monitor]
+    soul_addendum_file: soul-splunk-admin.md.j2
+  - name: homelab-admin
+    description: Incident lifecycle + fabric health (evidence-before-resolve)
+    mcp: [docs]                    # + vikunja/nautobot once their gateway routes go live
+    env: [slack, zammad]
+    skills: [dryvist/zammad-incidents]
+    soul_addendum_file: soul-homelab-admin.md.j2
+  - name: github-maint
+    description: Read-only repository-maintenance analyst (proposals out-of-band, no repo writes)
+    # grep: literal code search over public GitHub. Scoped to this profile
+    # alone — a repository-maintenance analyst is the one that needs to see how
+    # other projects solved something; the SIEM and incident profiles do not,
+    # and profiles are bounded by what they must NOT reach.
+    mcp: [docs, grep]
+    env: [slack, github]
+    skills: [dryvist/github-issues]
+    soul_addendum_file: soul-github-maint.md.j2
+
+# Kanban is no longer used for recurring work at all (native-cron reframe,
+# 18/18): the board keeps doing what it is actually for — ad-hoc work and the
+# follow-up cards these cron jobs themselves file via kanban_create (review's
+# gap follow-ups, anomaly-hunt's findings, ai-news's actionable items) — but
+# nothing here declares a recurring Kanban card any more. docs-sync (below,
+# hermes_agent_direct_cron_jobs) was the last one; `hermes cron create` has no
+# max_runtime/max_retries/assignee equivalent to kanban create's, so those
+# three fields do not carry over for any of the 18 — see the PR that removed
+# hermes_agent_kanban_cards for the full gap report.
+
+# Every `hermes cron`-managed job this role seeds that is NOT agentic (script
+# only, no model snapshot) — every agentic job (the whole
+# hermes_agent_direct_cron_jobs fleet, including all 18 converted ones) is
+# covered by hermes_agent_cluster_pause_cron_names below instead. The
+# model-drift recovery task (tasks/main.yml) only ever removes jobs on this
+# list — user/agent jobs are never touched.
+# Script (`--no-agent`) jobs carry no model snapshot, so the drift GC's
+# `model_snapshot`-defined filter skips them naturally (no guard change needed).
+hermes_agent_seeded_cron_names: >-
+  {{ [hermes_agent_splunk_status_digest_cron_name,
+      hermes_agent_zammad_autoclose_cron_name] }}
+
+# Everything a cluster window must silence, derived — never a second hand-kept
+# list. Every `enabled` job in hermes_agent_direct_cron_jobs runs the brain and
+# delivers straight to Slack, so during a cluster window (brain unloaded off
+# the day-proxy) they fail and DM the operator — exactly what
+# cluster-hermes-pause.yml exists to prevent.
+#
+# Observed 2026-07-25 (pre-reframe): the pause playbook reported failed=0 with
+# the watchdog inactive, and five brain-dependent jobs were still `[active]`
+# afterwards. A green recap certified the pause by proxy: it proved the loop
+# ran over its list, never that the list covered the fleet — the reason this
+# is derived from the actual job table rather than hand-kept.
+#
+# Only `enabled` direct jobs are included: the disabled ones are already
+# paused and never reconciled, so naming them would just add no-op
+# `cron pause` calls.
+hermes_agent_cluster_pause_cron_names: >-
+  {{ hermes_agent_seeded_cron_names
+     + (hermes_agent_direct_cron_jobs
+        | selectattr('enabled', 'defined') | selectattr('enabled')
+        | map(attribute='name') | list) }}
+
+# The `<job>-enqueue` `--no-agent --script` crons the native-cron reframe
+# replaced with bare-named agentic direct-cron jobs (hermes_agent_direct_cron_jobs
+# above) or, for docs-sync, an OS-crontab `kanban create` entry. A guest
+# converged before the reframe still carries these in `hermes cron`'s own job
+# store; the script they ran no longer exists on disk, so left in place they
+# would start failing loudly instead of quietly going away. Removed if-present,
+# so it is a no-op on fresh installs and on every converge after the first
+# post-reframe one.
+hermes_agent_superseded_kanban_enqueuer_cron_names: >-
+  {{ ([hermes_agent_daily_status_cron_name, hermes_agent_nightly_wiki_cron_name,
+       hermes_agent_summary_cron_name, hermes_agent_zammad_review_cron_name,
+       hermes_agent_splunk_triage_cron_name, hermes_agent_splunk_security_cron_name,
+       hermes_agent_splunk_parsing_cron_name, hermes_agent_splunk_deepdive_cron_name,
+       hermes_agent_github_monitor_cron_name, hermes_agent_bot_pr_triage_cron_name,
+       hermes_agent_docs_sync_cron_name, hermes_agent_kanban_reviewer_job,
+       hermes_agent_anomaly_hunt_cron_name, hermes_agent_docs_study_cron_name,
+       hermes_agent_ai_news_cron_name, hermes_agent_daily_innovation_cron_name,
+       hermes_agent_app_seeding_cron_name, hermes_agent_fleet_health_cron_name]
+      | map('regex_replace', '$', '-enqueue') | list)
+     + ['kanban-enqueue-safety-net'] }}

@@ -1,0 +1,91 @@
+---
+- name: Ensure the wiki directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_agent_wiki_path }}"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+  when: hermes_agent_wiki_enabled | bool
+
+- name: Materialize llm-wiki skill
+  ansible.builtin.copy:
+    src: "{{ hermes_agent_install_dir }}/skills/research/llm-wiki"
+    dest: "{{ hermes_agent_hermes_home }}/skills/"
+    remote_src: true
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: preserve
+  when: hermes_agent_wiki_enabled | bool
+
+- name: Deploy the GitHub App private key
+  ansible.builtin.copy:
+    content: "{{ hermes_agent_github_app_private_key }}"
+    dest: "{{ hermes_agent_hermes_home }}/github-app.pem"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0600"
+  no_log: true
+  when: hermes_agent_github_app_private_key | length > 0
+
+- name: Install githubkit into the Hermes venv
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_uv_bin }} pip install
+      --python {{ hermes_agent_venv_python }}
+      'githubkit[auth-app]'
+  register: hermes_agent_githubkit_install
+  changed_when: >-
+    'Installed' in hermes_agent_githubkit_install.stderr
+    or 'Uninstalled' in hermes_agent_githubkit_install.stderr
+  when: hermes_agent_github_app_private_key | length > 0
+
+- name: Materialize upstream github skills
+  ansible.builtin.copy:
+    src: "{{ hermes_agent_install_dir }}/skills/github"
+    dest: "{{ hermes_agent_hermes_home }}/skills/"
+    remote_src: true
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: preserve
+
+# All dryvist skills (docs-pr, github-issues, zammad-incidents, splunk-monitor)
+# arrive in one copy from the nix-hermes bundle built above. This deploys
+# BEFORE the curriculum and every cron-seeding step, so `cron create --skill
+# dryvist/splunk-monitor` (and zammad-incidents delivery references) always
+# resolve. splunk-monitor is present even when the monitor fleet is disabled —
+# an unreferenced skill on disk is inert.
+- name: Deploy the dryvist skills from the nix-hermes bundle
+  ansible.builtin.copy:
+    src: "{{ hermes_agent_bundle_path }}/skills/dryvist/"
+    dest: "{{ hermes_agent_hermes_home }}/skills/dryvist/"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+    directory_mode: "0750"
+
+- name: Deploy the official Browser Use skill from the nix-hermes bundle
+  ansible.builtin.copy:
+    src: "{{ hermes_agent_bundle_path }}/skills/browser-use/"
+    dest: "{{ hermes_agent_hermes_home }}/skills/browser-use/"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+    directory_mode: "0750"
+
+- name: Remove the conflicting legacy Zammad skill copy
+  ansible.builtin.file:
+    path: "{{ hermes_agent_hermes_home }}/skills/research/dryvist-zammad-incidents"
+    state: absent
+
+# --- Named operating profiles (see hermes_agent_profiles, defaults/main.yml) --
+# Runs AFTER the shared dryvist skills bundle above (so hermes_agent_bundle_path
+# is resolved and every profile-scoped skill copy below has a source) and
+# BEFORE the Kanban enqueuer crons are reconciled (so a card's --assignee and
+# --skill always resolve against a profile that already exists on first
+# converge, never a race between the two).
+- name: Reconcile named Hermes operating profiles
+  ansible.builtin.include_tasks: profiles.yml
+  loop: "{{ hermes_agent_profiles }}"
+  loop_control:
+    label: "{{ item.name }}"

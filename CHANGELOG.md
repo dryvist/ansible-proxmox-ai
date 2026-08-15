@@ -1,5 +1,101 @@
 # Changelog
 
+## [0.29.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.28.3...v0.29.0) (2026-08-15)
+
+
+### Features
+
+* **vllm:** serve the NVIDIA GPU guest with vLLM from official wheels ([#460](https://github.com/dryvist/ansible-proxmox-ai/issues/460)) ([c9b18c9](https://github.com/dryvist/ansible-proxmox-ai/commit/c9b18c97a3b066b5801c72d6cc3da36aa184f59a))
+
+
+### Bug Fixes
+
+* **hermes_agent:** install the Slack extra editable, as upstream requires ([#461](https://github.com/dryvist/ansible-proxmox-ai/issues/461)) ([d042854](https://github.com/dryvist/ansible-proxmox-ai/commit/d042854438be90e3fbbf7d8e96f6efe9a2b8af32))
+* **inventory:** converge vLLM guests over ssh rather than pct exec ([#464](https://github.com/dryvist/ansible-proxmox-ai/issues/464)) ([c84d723](https://github.com/dryvist/ansible-proxmox-ai/commit/c84d723f3d37802e7408967343c2cbe9fb7278ac))
+* **vllm:** route guest apt through the internal caching proxy ([#465](https://github.com/dryvist/ansible-proxmox-ai/issues/465)) ([1d8ca04](https://github.com/dryvist/ansible-proxmox-ai/commit/1d8ca047fdf70449f465b3c7574b482cc18c32ba))
+
+## [0.28.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.28.2...v0.28.3) (2026-08-15)
+
+
+### Bug Fixes
+
+* **hermes_agent:** converge the app checkout to the pinned release every run ([#456](https://github.com/dryvist/ansible-proxmox-ai/issues/456)) ([6722995](https://github.com/dryvist/ansible-proxmox-ai/commit/6722995a95836f258b1211d207c037c3805b69cc))
+* **llm_router:** cap in-flight admission on local deployments so excess queues ([#455](https://github.com/dryvist/ansible-proxmox-ai/issues/455)) ([59fe2f6](https://github.com/dryvist/ansible-proxmox-ai/commit/59fe2f6e400e4fbdbfdadb3478be4a92d87e202a))
+
+## [0.28.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.28.1...v0.28.2) (2026-08-15)
+
+
+### Bug Fixes
+
+* **hermes_agent:** re-anchor pinned-source patches to current upstream ([#445](https://github.com/dryvist/ansible-proxmox-ai/issues/445)) ([9fc24b6](https://github.com/dryvist/ansible-proxmox-ai/commit/9fc24b6e20c1492d64b09307c07ff39284dab672))
+
+## [0.28.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.28.0...v0.28.1) (2026-08-15)
+
+
+### Bug Fixes
+
+* **hermes_agent:** emit latency on the goal-judge call path ([#444](https://github.com/dryvist/ansible-proxmox-ai/issues/444)) ([915e225](https://github.com/dryvist/ansible-proxmox-ai/commit/915e2258577263166d85ecfcaff881a9a87aafc7))
+* **hermes_agent:** log why the goal-judge availability probe declines ([#446](https://github.com/dryvist/ansible-proxmox-ai/issues/446)) ([87d4ead](https://github.com/dryvist/ansible-proxmox-ai/commit/87d4ead7ad8dddbb2414c4f313afc55e26ce915f))
+* **llm_router:** warn when the escalation tier collapses onto the default ([#443](https://github.com/dryvist/ansible-proxmox-ai/issues/443)) ([b58744a](https://github.com/dryvist/ansible-proxmox-ai/commit/b58744adfbb6c913f58daf2f22a98ebc83f01dce))
+
+## [0.28.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.27.0...v0.28.0) (2026-08-15)
+
+
+### Features
+
+* **docling:** route Open WebUI uploads through docling's VLM pipeline ([#435](https://github.com/dryvist/ansible-proxmox-ai/issues/435)) ([5fc3e07](https://github.com/dryvist/ansible-proxmox-ai/commit/5fc3e07081941b7d80ec501f6bf6b2cdbbd82b88))
+* **hermes_agent:** register the grep.app MCP client ([#438](https://github.com/dryvist/ansible-proxmox-ai/issues/438)) ([edf2f2a](https://github.com/dryvist/ansible-proxmox-ai/commit/edf2f2a481eb4a4748331871d48bd69b98591556))
+
+
+### Bug Fixes
+
+* **agent_guest:** quote flow-mapping scalar containing a URL ([#437](https://github.com/dryvist/ansible-proxmox-ai/issues/437)) ([399670e](https://github.com/dryvist/ansible-proxmox-ai/commit/399670e79197beec7c191c030bf7358d5c01a7ea))
+* **llm_router:** disable unservable registry entries, repoint escalation tier ([#436](https://github.com/dryvist/ansible-proxmox-ai/issues/436)) ([59fde70](https://github.com/dryvist/ansible-proxmox-ai/commit/59fde7047d5f0afc1e37247087af6a3e495ca882))
+* **openbao_secrets:** warn loudly when --check makes OpenBao reads inert ([#434](https://github.com/dryvist/ansible-proxmox-ai/issues/434)) ([2fb540a](https://github.com/dryvist/ansible-proxmox-ai/commit/2fb540aa672959e4cd878dde42091fc14afba428))
+
+## [0.27.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.26.0...v0.27.0) (2026-08-15)
+
+
+### Features
+
+* **llm_router:** move serving_role primary to the dense 27B ([#430](https://github.com/dryvist/ansible-proxmox-ai/issues/430)) ([530e82b](https://github.com/dryvist/ansible-proxmox-ai/commit/530e82bf860ac1a227ecd5d287c2c5df42ea6987))
+
+## [0.26.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.25.0...v0.26.0) (2026-08-13)
+
+
+### Features
+
+* enable local Browser Use for Hermes ([#426](https://github.com/dryvist/ansible-proxmox-ai/issues/426)) ([ee88eb9](https://github.com/dryvist/ansible-proxmox-ai/commit/ee88eb93e7f63204992b1f68a008303bd41dd75f))
+* **hermes_agent:** add browser tools and a configured web extract backend ([#420](https://github.com/dryvist/ansible-proxmox-ai/issues/420)) ([d4a9a91](https://github.com/dryvist/ansible-proxmox-ai/commit/d4a9a9151317e70ab3faedf3e0f7b80a70148c1d))
+
+
+### Bug Fixes
+
+* **hermes_agent:** store the version bare and derive the tag ([#424](https://github.com/dryvist/ansible-proxmox-ai/issues/424)) ([94c1a66](https://github.com/dryvist/ansible-proxmox-ai/commit/94c1a663ad24853ba22dd24dde001e0058477c85))
+* **renovate:** restore dependency tracking for the hermes_agent pins ([#419](https://github.com/dryvist/ansible-proxmox-ai/issues/419)) ([4b1db12](https://github.com/dryvist/ansible-proxmox-ai/commit/4b1db12b599ebfc240e3ca1cbf5927664fb37ec3))
+* **renovate:** restore the nix-hermes pin's own extractVersion ([#425](https://github.com/dryvist/ansible-proxmox-ai/issues/425)) ([de7efd7](https://github.com/dryvist/ansible-proxmox-ai/commit/de7efd75eaa529ff219072095439040c26def3dd))
+
+## [0.25.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.24.3...v0.25.0) (2026-08-09)
+
+
+### Features
+
+* **hermes_agent:** add read-only github-maint profile and its review cron ([#401](https://github.com/dryvist/ansible-proxmox-ai/issues/401)) ([ca89afb](https://github.com/dryvist/ansible-proxmox-ai/commit/ca89afbcc43bc31140dd40c58db7e4f38652711a))
+* **llm_router:** enable the cluster fallback leg for hermes-default ([#402](https://github.com/dryvist/ansible-proxmox-ai/issues/402)) ([78901c7](https://github.com/dryvist/ansible-proxmox-ai/commit/78901c7ad94af85719917b48726c301f771e6ea5))
+* **openbao_secrets:** grant the local-llm domain the llm-router secret path ([#405](https://github.com/dryvist/ansible-proxmox-ai/issues/405)) ([776e8bc](https://github.com/dryvist/ansible-proxmox-ai/commit/776e8bcd197b104ec68facf4bdeaf266245249a4))
+
+
+### Bug Fixes
+
+* **codex_runner:** install sudo with the node toolchain ([#403](https://github.com/dryvist/ansible-proxmox-ai/issues/403)) ([df36726](https://github.com/dryvist/ansible-proxmox-ai/commit/df36726914f756968252e43aea674e35ee6b9d9d))
+* **hermes_agent:** dedup posted reports and escalate repeat card failures in kanban digest ([#400](https://github.com/dryvist/ansible-proxmox-ai/issues/400)) ([b375eef](https://github.com/dryvist/ansible-proxmox-ai/commit/b375eefc625e55f7559cb9378e3b8d147c6ab656))
+* **hermes_agent:** scope agent workload to the agent identity ([#410](https://github.com/dryvist/ansible-proxmox-ai/issues/410)) ([5c2b9c7](https://github.com/dryvist/ansible-proxmox-ai/commit/5c2b9c781a639d9cd279541f896ed18955bfba62))
+* **hermes_agent:** scope Slack routing and dashboard identity vars to the agent identity ([#409](https://github.com/dryvist/ansible-proxmox-ai/issues/409)) ([1f219a5](https://github.com/dryvist/ansible-proxmox-ai/commit/1f219a595f547843a13a285cd9ba208a87292d09))
+* **hermes_agent:** scope vikunja bridge opt-in to provisioned identities ([#404](https://github.com/dryvist/ansible-proxmox-ai/issues/404)) ([e8973d6](https://github.com/dryvist/ansible-proxmox-ai/commit/e8973d6d3b1630f7816a64a8b6060bf3f4ab5da2))
+* **hermes_agent:** withdraw script-fed crons from agents that do not own them ([#411](https://github.com/dryvist/ansible-proxmox-ai/issues/411)) ([384f31d](https://github.com/dryvist/ansible-proxmox-ai/commit/384f31dae079da59964b5768dd8dbc1e7a21ae44))
+* **llm_redis:** converge the shared spend store and name it from inventory ([#408](https://github.com/dryvist/ansible-proxmox-ai/issues/408)) ([3025100](https://github.com/dryvist/ansible-proxmox-ai/commit/3025100f3dc4f7e188ee094d9a5f555e5bab3edf))
+* **llm_router:** scope the cluster fallback leg to wiring, not window state ([#406](https://github.com/dryvist/ansible-proxmox-ai/issues/406)) ([f539b86](https://github.com/dryvist/ansible-proxmox-ai/commit/f539b86dff7d7ac58b0d9844e82a5cd0fed8e667))
+
 ## [0.24.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.24.2...v0.24.3) (2026-08-07)
 
 

@@ -1,0 +1,48 @@
+---
+# --- CLI trace telemetry (OTLP -> Cribl Stream -> Langfuse + Splunk) ---------
+# One endpoint, Cribl forks. http/protobuf is load-bearing: Cribl in_otel and
+# Langfuse are both HTTP-only — grpc silently fails. Claude spans are beta and
+# need both CLAUDE_CODE_* flags. GEMINI_CLI_TRUST_WORKSPACE skips the headless
+# folder-trust prompt.
+agent_guest_otel_endpoint: >-
+  https://otel.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN environment variable is required (Doppler)') }}
+agent_guest_task_env:
+  CLAUDE_CODE_ENABLE_TELEMETRY: "1"
+  CLAUDE_CODE_ENHANCED_TELEMETRY_BETA: "1"
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_EXPORTER_OTLP_ENDPOINT: "{{ agent_guest_otel_endpoint }}"
+  GEMINI_CLI_TRUST_WORKSPACE: "true"
+# Codex reads trace config from config.toml, not OTEL_* env. Off until the
+# [otel] TOML schema is verified against the installed codex at canary — a
+# config.toml parse error would kill every codex job.
+agent_guest_codex_otel_enabled: false
+
+# --- Queue credential (env-fallback default; bao-first in group_vars) --------
+agent_guest_vikunja_token: "{{ lookup('env', 'VIKUNJA_API_TOKEN') | default('', true) }}"
+
+# --- Transcript shipping (standalone Cribl Edge) ----------------------------
+# The three CLIs write transcripts under the agent's home; a per-guest Cribl
+# Edge tails them and ships to the HAProxy-fronted Stream frontends. The journal
+# is NOT duplicated here — the estate's syslog forwarder already ships it.
+# The rolling `latest` URL, matching the cribl_edge role's documented pattern:
+# the versioned form (dl/<v>/cribl-<v>-linux-x64.tgz) 404s upstream for every
+# version probed — Cribl retired that layout.
+agent_guest_cribl_tarball_url: https://cdn.cribl.io/dl/latest/cribl-linux-x64.tgz
+agent_guest_cribl_install_dir: /opt/cribl
+agent_guest_cribl_user: cribl
+agent_guest_cribl_group: cribl
+agent_guest_cribl_service_name: cribl-edge
+# The stable `syslog` CNAME -> HAProxy, which balances the Cribl Stream per-CLI
+# frontends. FQDN only, never an IP.
+agent_guest_cribl_stream_host: >-
+  syslog.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN environment variable is required (Doppler)') }}
+# Ports come from the tofu ai_log_routing constant — never a literal here.
+agent_guest_log_routing: >-
+  {{ hostvars['localhost']['tofu_data']['constants']['ai_log_routing'] }}
+agent_guest_cribl_ports:
+  claude: "{{ agent_guest_log_routing['claude_code']['port'] }}"
+  codex: "{{ agent_guest_log_routing['codex_cli']['port'] }}"
+  gemini: "{{ agent_guest_log_routing['agy_cli']['port'] }}"

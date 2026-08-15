@@ -63,11 +63,28 @@ terminal:
 # Web research backend, pinned so the auto-detect cascade can never silently
 # fall back to a keyless firecrawl default that fails every call (the state
 # this deployment was in until 2026-07-31). ddgs = keyless DuckDuckGo,
-# search-only, installed into the venv by tasks/main.yml. web_extract has no
-# keyless provider and stays unavailable by design — workers read pages with
-# curl via the terminal toolset.
+# search-only, installed into the venv by tasks/browser.yml.
+#
+# SEARCH and EXTRACT are separate backends and stay that way. ddgs finds pages
+# and cannot read one; extraction now points at the self-hosted Firecrawl
+# service, which reads a page and returns markdown. Prompts that told the agent
+# to curl raw HTML — the workaround while extraction had no backend at all —
+# are obsolete; web_extract is the supported path.
 web:
   backend: ddgs
+{% if hermes_agent_firecrawl_enabled | bool %}
+  extract_backend: firecrawl
+{% endif %}
+
+# Browser tools. cloud_provider stays UNSET so the tools run locally against
+# the apt Chromium; naming one selects a paid cloud backend. allow_private_urls
+# is on because the estate's own services are what these agents read. Rationale
+# for both, and for --no-sandbox, is in defaults/main/75-browser.yml.
+browser:
+  headed: false
+  record_sessions: false
+  inactivity_timeout: {{ hermes_agent_browser_inactivity_timeout }}
+  allow_private_urls: true
 
 # Headless daemon: no TUI streaming.
 display:
@@ -231,10 +248,11 @@ platforms:
    is actually set, below. #}
 {% set _mcp_context7 = (hermes_agent_context7_mcp_enabled | bool) %}
 {% set _mcp_docs = (hermes_agent_docs_mcp_enabled | bool) %}
+{% set _mcp_grep = (hermes_agent_grep_mcp_enabled | bool) %}
 {% set _mcp_vikunja = (hermes_agent_vikunja_mcp_enabled | bool) %}
 {% set _mcp_nautobot = (hermes_agent_nautobot_mcp_enabled | bool) %}
 {% set _mcp_escalation = (hermes_agent_codex_mcp_enabled | bool) %}
-{% if _mcp_splunk or _mcp_context7 or _mcp_docs or _mcp_vikunja or _mcp_nautobot or _mcp_escalation %}
+{% if _mcp_splunk or _mcp_context7 or _mcp_docs or _mcp_grep or _mcp_vikunja or _mcp_nautobot or _mcp_escalation %}
 # MCP servers. ${VARS} resolve from .env at connect time, so tokens/endpoints
 # never land in this file. The Splunk entry is omitted until its creds are
 # present; Context7 is keyless so it renders whenever enabled.
@@ -266,6 +284,14 @@ mcp_servers:
   docs:
     timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
     url: "{{ hermes_agent_docs_mcp_url }}"
+{% endif %}
+{% if _mcp_grep %}
+  # grep.app — literal code search across public GitHub (searchGitHub). Keyless
+  # and dialed upstream directly rather than through the gateway MCP plane; see
+  # defaults for why.
+  grep:
+    timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
+    url: "{{ hermes_agent_grep_mcp_url }}"
 {% endif %}
 {% if _mcp_vikunja %}
   # Vikunja task board — read-only task/project/label tools via the shared

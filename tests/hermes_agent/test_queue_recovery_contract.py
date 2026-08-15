@@ -2,12 +2,14 @@ from pathlib import Path
 
 import yaml
 
+from _role_files import role_defaults
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO_ROOT / "playbooks" / "recover-hermes-queue.yml"
 BOARD_TASKS = REPO_ROOT / "playbooks" / "tasks" / "recover-hermes-queue-board.yml"
 WATCHDOG = REPO_ROOT / "roles" / "hermes_agent" / "templates" / "hermes-brain-watchdog.sh.j2"
-DEFAULTS = REPO_ROOT / "roles" / "hermes_agent" / "defaults" / "main.yml"
+DEFAULTS = REPO_ROOT / "roles" / "hermes_agent"
 
 
 def test_queue_recovery_requires_confirmation_and_uses_native_archival() -> None:
@@ -47,7 +49,7 @@ def test_heartbeat_is_limited_to_waking_hours() -> None:
     else. The minute is deliberately free to change; where it may land is the
     separate concern owned by test_cron_stagger.py.
     """
-    defaults = yaml.safe_load(DEFAULTS.read_text())
+    defaults = role_defaults(DEFAULTS)
     minute, hours, dom, month, dow = defaults["hermes_agent_daily_status_cron_schedule"].split()
 
     assert hours == "8-22", "the heartbeat must stay inside waking hours"
@@ -84,7 +86,7 @@ def test_fleet_health_fires_weekly() -> None:
     still matters, and is still checkable, is that the tick itself stays
     weekly rather than drifting to daily and burning the serving slot.
     """
-    defaults = yaml.safe_load(DEFAULTS.read_text())
+    defaults = role_defaults(DEFAULTS)
     direct = {j["name"]: j for j in defaults["hermes_agent_direct_cron_jobs"]}
     assert "{{ hermes_agent_fleet_health_cron_name }}" in direct
 

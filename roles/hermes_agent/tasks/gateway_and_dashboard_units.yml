@@ -1,0 +1,43 @@
+---
+# Restart=always now lives in the unit itself (see the template); remove the
+# stale drop-in a prior mechanism left behind (Restart=on-failure, dated Jul 6)
+# so it can't override the unit's own policy.
+- name: Remove the stale restart-policy drop-in
+  ansible.builtin.file:
+    path: /etc/systemd/system/hermes-gateway.service.d/99-restart-policy.conf
+    state: absent
+  notify: Restart hermes-gateway
+
+- name: Deploy the hermes-gateway systemd unit
+  ansible.builtin.template:
+    src: hermes-gateway.service.j2
+    dest: /etc/systemd/system/hermes-gateway.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart hermes-gateway
+
+- name: Deploy the authenticated Hermes Dashboard systemd unit
+  ansible.builtin.template:
+    src: hermes-dashboard.service.j2
+    dest: /etc/systemd/system/hermes-dashboard.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart hermes-dashboard
+  when: hermes_agent_dashboard_enabled | bool
+
+- name: Enable and start the Hermes gateway
+  ansible.builtin.systemd:
+    name: hermes-gateway
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Enable and start the Hermes Dashboard
+  ansible.builtin.systemd:
+    name: hermes-dashboard
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: hermes_agent_dashboard_enabled | bool

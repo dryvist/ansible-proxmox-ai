@@ -1,0 +1,129 @@
+---
+# Internal subdomain (pve.<apex>), never hardcoded — the derived model endpoints
+# and the Langfuse host are built from it.
+llm_router_subdomain: >-
+  {{ lookup('env', 'PROXMOX_SUBDOMAIN') | mandatory('PROXMOX_SUBDOMAIN required') }}
+
+# --- Ports (DRY from the tofu ports registry; no hardcodes) ------------------
+# The proxy's own listen port + the two backend tiers' ports. Hard-required like
+# every other role's port so a missing constant fails loud rather than guessing.
+# NOTE: service_ports.llm_router_api and service_ports.llm_fast_api are added by
+# the parallel terraform-proxmox constants PR — this role depends on both.
+llm_router_api_port: "{{ tofu_data.constants.service_ports.llm_router_api }}"
+llm_router_light_port: "{{ tofu_data.constants.service_ports.llm_fast_api }}"
+# llm-large speaks the Ollama-compatible API on the standard Ollama port.
+llm_router_large_port: "{{ tofu_data.constants.service_ports.ollama_api }}"
+# The gate's second TLS site fronting the two-Mac cluster endpoint (mlx-lm
+# rank 0); live only while a cluster window is up. Renamed from
+# llm_night_api to llm_cluster_api in tofu-proxmox PR #726 (d179b5b,
+# 2026-07-21) — the old name resolves to nothing and this reference silently
+# fell back to the standalone base URL's port instead of erroring (proven at
+# render time, not just suspected:
+# tests/llm_router/test_hermes_default_failover.yml pins the current name so
+# it cannot regress unnoticed).
+llm_router_cluster_port: "{{ tofu_data.constants.service_ports.llm_cluster_api }}"
+
+# --- Backend base URLs (derived; never a hardcoded IP) -----------------------
+llm_router_llm_fast_base_url: "http://llm-fast.{{ llm_router_subdomain }}:{{ llm_router_light_port }}/v1"
+llm_router_llm_light_base_url: "http://llm-light.{{ llm_router_subdomain }}:{{ llm_router_light_port }}/v1"
+
+# The NVIDIA/CUDA serving guest (vLLM). Same serving-API port as the light tier
+# — the port names the protocol, and the HOST is what distinguishes the backend,
+# so a second constant for the same OpenAI API would be a second place to keep
+# in sync for no gain.
+#
+# Single deployment, deliberately: there is no CPU standby for this model. vLLM
+# serves ONE model per instance, so a drain-to-CPU pair like the light tier's
+# would need a second backend actually serving the same weights, and none
+# exists. A failure here surfaces as that model being unavailable rather than
+# silently degrading to something slower and different.
+llm_router_llm_vllm_enabled: true
+llm_router_llm_vllm_base_url: "http://llm-4080.{{ llm_router_subdomain }}:{{ llm_router_light_port }}/v1"
+# The large-tier gate (a caddy TLS front on the Mac Studio, apex-level cert via
+# Route53 DNS-01) reverse-proxies to the host's llama-swap. It has always been
+# addressed apex-level (one label under the subdomain's parent), because the
+# ACME client locates the hosted zone by stripping a single label — an
+# <alias>.<subdomain> name fails the TLS handshake (no SNI cert).
+#
+# The host is reached by its OWN permanent name, not a floating `llm-large`
+# service alias. The alias needed a *second* DNS record published + maintained
+# by something outside this fabric; on 2026-07-06 that record silently vanished
+# (resolved fine at 21:51, NXDOMAIN by 22:42) and every brain request 500'd with
+# ClientConnectorDNSError — a single point of failure with no benefit while there
+# is exactly one serving host. Its own `<serving-host>.<apex>` record — the name
+# resolved from constants.serving.host — is that canonical record (stable, also
+# its SSH name) and is on the very same caddy cert, so it satisfies
+# the apex-cert constraint identically with no extra record to keep alive.
+# (Restoring/decoupling behind an alias again is a DNS follow-up, not a router
+# concern — see PR notes.)
+llm_router_apex_domain: "{{ llm_router_subdomain | split('.', 1) | last }}"
+# Host comes from the `llm_large_serving_host` single source (all.yml), which
+# now reads tofu-proxmox's published constants.serving.host rather than a value
+# committed here — so the name is not a literal repeated across roles OR across
+# repositories. Still its own permanent per-host record, NOT the floating alias
+# (see above).
+llm_router_llm_large_host: "{{ llm_large_serving_host }}"
+llm_router_llm_large_fqdn: "{{ llm_router_llm_large_host }}.{{ llm_router_apex_domain }}"
+llm_router_llm_large_base_url: "https://{{ llm_router_llm_large_fqdn }}:{{ llm_router_large_port }}/v1"
+# The gate's cluster TLS site — a different port on the same host, fronting
+# mlx-lm rank 0. Registry entries select it symbolically with `endpoint: cluster`
+# so no URL or port is ever written in the registry itself.
+llm_router_llm_large_cluster_base_url: >-
+  https://{{ llm_router_llm_large_fqdn }}:{{ llm_router_cluster_port }}/v1
+
+# --- Standby brain backend (default OFF) -------------------------------------
+# A SAME-MODEL, SAME-CONTEXT failover sibling for the default brain, addressing
+# the single-Studio brain SPOF (Zammad INC-17080: a Studio reboot takes the sole
+# large-tier backend unreachable, so Hermes' brain-watchdog pauses the cron
+# fleet). This is NOT a cross-tier alias: the standby serves the IDENTICAL model
+# id at the IDENTICAL context window, so it fails over without the
+# smaller-context "poison the caller" failure the no-cross-tier-fallback rule
+# guards against (a smaller-context fallback is still forbidden).
+#
+# TOPOLOGY = DEDICATED-PORT (lifecycle-e2e, 2026-07-19). The cluster-join
+# quiesce boots out the main llama-swap agent (:11434). This retained standby
+# design is inert and must remain disabled while the legacy vllm-mlx backend is
+# disabled.
+#
+# Default empty = DISABLED: with no URL set, the rendered config.yaml is
+# byte-identical to today (no standby deployment, no extra env var). To enable:
+#   1. nix: OptiQ resident + a dedicated exempt launchd agent/gated port that
+#      cluster-join's reap + zero-proc guard + watcher unload all EXCLUDE
+#      (lifecycle-e2e, sequenced after PR #1285 settles).
+#   2. Set llm_router_llm_large_standby_base_url to that port's /v1 URL and
+#      seed llm_router_llm_large_standby_bearer (OpenBao, same pattern).
+#
+# WIRED CEILING — both hosts are pinned to the SAME iogpu.wired_limit_mb
+# (102400, measured on both 2026-07-24). This is deliberate: it matches the
+# memory the MacBook makes available, and the Studio runs the same number on
+# purpose — accepting unused memory there — to keep the two hosts identical and
+# the setup simple. Raising the Studio later is a possible future, NOT the
+# current design; do not treat a higher ceiling as a prerequisite for anything
+# here. Unbounded wired previously wedged a host (INC-17076), which is why the
+# ceiling is enforced rather than advisory.
+#
+# The enforcement wiring landed in nix-darwin #1769 and both hosts are rebuilt
+# on it (both on darwin-system 26.05.adda04f, verified 2026-07-24), so that
+# prerequisite is SATISFIED. OptiQ+shard coexistence must still be validated
+# EMPIRICALLY under the deployed ceiling (cluster-join's INC-17075 swap guard
+# must pass), not assumed.
+# Dedicated exempt-OptiQ port = 11442 (lifecycle-e2e contract 2026-07-19). A NIX
+# LITERAL, not a tofu constant — the :1144x gate-site ports are nix literals
+# (cluster = clusterUpstreamPort 11440); the standalone OptiQ agent binds
+# 127.0.0.1:11442 and llm-gate fronts a THIRD gated site optiqUpstreamPort 11442
+# with the SAME bearer + cert as llm-large/cluster. Firm for now; e2e may bump to
+# 11450 for port-range margin and will confirm when the nix agent PR lands.
+llm_router_llm_large_standby_port: 11442
+# DEFAULT EMPTY = DISABLED: with no URL the standby block is skipped and the
+# rendered config.yaml/litellm.env are byte-identical to today (verified by
+# render). Merging this PR is therefore behavior-neutral — nothing changes on
+# converge until the URL below is set. To ACTIVATE (one line), only after both:
+# (a) the standalone :11442 OptiQ agent exists (nix, lifecycle-e2e) — STILL
+#     UNMET: no such launchd agent on either host, and :11442 is closed on both
+#     (verified 2026-07-24).
+# (b) the wired ceiling is deployed — SATISFIED; see the wired-ceiling note above.
+# Then set this to the large FQDN + standby port /v1 URL — converging while (a)
+# is unmet routes hermes-brain failover at a port that does not exist yet.
+llm_router_llm_large_standby_base_url: ""
+# Same bearer as the llm-large gate (the OptiQ site shares its token + cert).
+llm_router_llm_large_standby_bearer: "{{ llm_router_llm_large_bearer }}"

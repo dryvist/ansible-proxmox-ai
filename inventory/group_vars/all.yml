@@ -68,11 +68,14 @@ llm_large_serving_source: >-
 # 2026-07-18: the deepseek-v4-flash STOPGAP (cloud egress while local serving
 # flapped) is superseded — the flap's root causes are fixed and verified
 # (llm-gate secret-zero env-file, nix-darwin#1742; macOS Local Network
-# privacy platform-curl, #1743), and the resident 80B Instruct brain is the
-# 2026-07-17 agentic-bench winner (nix-ai#1272). Local >=75B mandate stands.
+# privacy platform-curl, #1743). The 80B Instruct brain the 2026-07-17
+# agentic-bench win names is NOT SERVED (live 404, verified 2026-08-14;
+# disabled in llm-models.yml), so the literal fallback below points at the
+# resident primary instead — repoint to the 80B only once a backend actually
+# serves it again.
 ai_default_model: >-
   {{ bao_ai_public_secrets.active_model
-     | default('mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit', true) }}
+     | default('mlx-community/Qwen3.8-27B-4bit', true) }}
 
 # Hermes Agent's OWN brain, structurally DECOUPLED from ai_default_model (user
 # decision 2026-07-19) so the agent brain and the ai-default fabric brain CAN
@@ -82,6 +85,26 @@ ai_default_model: >-
 # Physical MLX model IDs belong only in that catalog.
 hermes_brain_model: hermes-default
 
+# SELECTION PHILOSOPHY (2026-08-15, operator decision) — ACCURACY OVER SPEED.
+# Where a tier choice trades quality against latency, this fabric takes the
+# quality. A model that answers in four minutes and is right is worth more than
+# one that answers in twenty seconds and is not, because a wrong answer is not
+# cheap work — it is negative work, and something downstream pays to undo it.
+#
+# The reason this is affordable: the fabric runs continuously, unattended. A
+# slow model working 24/7 completes an enormous amount; wall-clock latency per
+# call only matters where a human is waiting, which is the minority of calls
+# here. So the effort goes into better, more focused prompts — the lever that
+# actually moves output quality — not into shaving seconds.
+#
+# This is NOT a licence to put everything on the biggest model. Two limits:
+# a task that is genuinely a short classification (the goal judge is the
+# canonical one) belongs on the cheap tier, because the deliberate model buys
+# nothing there and takes a slot the real work wants; and no timeout may be
+# widened without a measurement (see the judge timeout in
+# roles/hermes_agent/defaults/main/60-kanban-dispatcher.yml). Deliberate where
+# it pays, cheap where it does not.
+#
 # Escalation rubric v1 — WHICH tier a task deserves, encoded as data (from the
 # 2026-07-12 document benchmark: two planted traps, three model classes).
 # Consumers: each tier names the REAL router model id it escalates to (no
@@ -108,8 +131,13 @@ ai_escalation_rubric:
     # worth invoking while the backend is RESIDENT (a cold escalation pays a
     # multi-minute swap load and can wedge the serving proxy), and with a
     # generous output-token budget (thinking output truncates at small caps).
+    # mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit is NOT SERVED (live 404,
+    # verified 2026-08-14; disabled in llm-models.yml) — this tier now points
+    # at the resident primary instead, which already runs with thinking on
+    # (see the primary entry's own comment in llm-models.yml). Repoint back to
+    # the 80B only once a backend actually serves it again.
     - id: deep-analysis
-      router_model: mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit
+      router_model: mlx-community/Qwen3.8-27B-4bit
       status: active
       constraint: resident-only
     # The cluster-served deep tier: queued deep packets during a cluster
@@ -227,12 +255,27 @@ bao_ai_public_secrets: {}
 # 1. A judge scoring its own model's output is self-preference bias by
 #    construction. It survives blind evaluation (the perplexity asymmetry is
 #    intrinsic to the scorer), so "the judge cannot see the author" is not a
-#    defence. `goal-judge` resolves to the cross-family small tier.
+#    defence. `goal-judge` resolves to a model of a different generation than
+#    whatever serves as the worker.
 # 2. The serving tier admits one in-flight request per model, so a worker and a
 #    judge on the SAME model serialize against each other — the judge queues
 #    behind the very generation it was spawned to score.
 #
+# THE JUDGE IS UNIVERSAL AND IT IS NOT THE WORKER — no exceptions, no
+# per-caller override, no "just this once" fallback to the brain. Every
+# evaluation the fabric performs goes through this alias. A judge that
+# sometimes resolves to the worker is worse than one that always does, because
+# the bias then varies by call and nothing downstream can correct for it.
+#
+# It is also deliberately the SMALLER model, and that is not a cost compromise.
+# The worker is the tier that should think hard; a verdict is a short,
+# well-specified classification, and spending the deliberate model's minutes on
+# it buys nothing while taking the slot the actual work wants. Judge cheap,
+# work deep.
+#
 # Until 2026-07-28 this read `hermes-default`, which made the `goal-judge` alias
 # dead config: it was defined, asserted, and named by nothing. Pointing here is
-# what makes it real.
+# what makes it real — and until 2026-08-15 the var that actually reached
+# inference (hermes_agent_kanban_goal_judge_model) still bypassed it. Both now
+# read this alias.
 hermes_goal_judge_model: goal-judge

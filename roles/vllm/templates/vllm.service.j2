@@ -1,0 +1,31 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=vLLM OpenAI-compatible inference server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User={{ vllm_user }}
+Group={{ vllm_group }}
+
+{% for name, value in vllm_environment.items() %}
+Environment={{ name }}={{ value }}
+{% endfor %}
+
+ExecStart={{ vllm_venv }}/bin/vllm serve {{ vllm_model }} \
+    --served-model-name {{ vllm_served_model_name }} \
+    --host {{ vllm_listen_host }} \
+    --port {{ vllm_api_port }} \
+    --quantization {{ vllm_quantization }} \
+    --gpu-memory-utilization {{ vllm_gpu_memory_utilization }} \
+    --max-model-len {{ vllm_max_model_len }}
+
+# A cold start downloads weights and builds CUDA graphs, which is minutes, not
+# seconds. A short timeout here reads as a crash loop and is not one.
+TimeoutStartSec=1800
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

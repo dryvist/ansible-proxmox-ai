@@ -30,10 +30,11 @@ import re
 from pathlib import Path
 
 import yaml
+from _role_files import role_defaults
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "roles" / "hermes_agent"
-DEFAULTS = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text())
+DEFAULTS = role_defaults(ROLE)
 
 # A memory key as the prompts write it: a quoted kebab-case name ending -last,
 # -cooldown or -ignore. Quoted because unquoted prose mentions of a job name

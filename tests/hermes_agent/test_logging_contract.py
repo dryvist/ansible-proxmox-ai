@@ -1,10 +1,11 @@
 from pathlib import Path
+from _role_files import role_defaults_text, role_tasks_text
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULTS = (REPO_ROOT / "roles/hermes_agent/defaults/main.yml").read_text()
+DEFAULTS = role_defaults_text(REPO_ROOT / "roles" / "hermes_agent")
 RSYSLOG = (REPO_ROOT / "roles/hermes_agent/templates/hermes-agent-rsyslog.conf.j2").read_text()
-TASKS = (REPO_ROOT / "roles/hermes_agent/tasks/main.yml").read_text()
+TASKS = role_tasks_text(REPO_ROOT / "roles" / "hermes_agent")
 
 
 def test_debug_logging_remains_enabled() -> None:

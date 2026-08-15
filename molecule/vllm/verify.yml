@@ -1,0 +1,149 @@
+---
+# Molecule verify playbook for the vllm role.
+#
+# Asserts against the systemd unit the role actually rendered. The unit is the
+# only production artifact this role produces that a container can observe, and
+# it is where the failure this scenario exists to prevent lives.
+
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    unit_path: /etc/systemd/system/vllm.service
+
+    # The Environment lines the unit must carry, written out in full rather
+    # than rebuilt from the role's own vllm_environment map. Two reasons, and
+    # the second is the important one:
+    #   1. Role defaults are not in scope in this play, so the map is not
+    #      available here anyway.
+    #   2. A test that regenerates its expectation from the implementation's
+    #      own data agrees with any bug that data contains. Dropping an entry
+    #      from vllm_environment would silently shrink the expectation and
+    #      still pass.
+    expected_environment:
+      - Environment=HF_HOME=/var/lib/vllm/hf
+      - Environment=VLLM_CACHE_ROOT=/var/lib/vllm/cache
+      - Environment=VLLM_USE_FLASHINFER_SAMPLER=0
+
+  tasks:
+    - name: Read the rendered vllm unit
+      ansible.builtin.slurp:
+        src: "{{ unit_path }}"
+      register: vllm_unit_raw
+
+    - name: Decode the unit into lines
+      ansible.builtin.set_fact:
+        vllm_unit: "{{ vllm_unit_raw.content | b64decode }}"
+        vllm_unit_lines: >-
+          {{ (vllm_unit_raw.content | b64decode).splitlines()
+             | map('trim') | select('truthy') | list }}
+
+    # --- 1. the FlashInfer sampler opt-out ------------------------------------
+    # THE regression this scenario exists for. FlashInfer's top-k/top-p sampler
+    # JIT-compiles on first use and calls get_cuda_path(), which needs nvcc.
+    # This guest carries NVIDIA userspace libraries only and has no compiler, so
+    # without this line the engine loads weights to VRAM, reports the service
+    # `active`, and then exits 1 the moment a request needs the sampler —
+    # restarting forever. Measured at NRestarts=132.
+    #
+    # The line is asserted verbatim rather than by a substring search for
+    # "FLASHINFER", because several unrelated vLLM env vars share that
+    # substring and any of them would satisfy a looser check.
+    - name: Assert the FlashInfer sampler is explicitly disabled
+      ansible.builtin.assert:
+        that:
+          - "'Environment=VLLM_USE_FLASHINFER_SAMPLER=0' in vllm_unit_lines"
+        fail_msg: >-
+          The unit does not disable the FlashInfer sampler. vLLM will start,
+          report active, hold weights in VRAM, and crash-loop on the first
+          request. Rendered Environment lines:
+          {{ vllm_unit_lines | select('match', '^Environment=') | list }}
+        success_msg: The FlashInfer sampler is explicitly disabled in the unit.
+
+    # --- 2. the environment map did not drop its other entries ----------------
+    # Moving three separate Environment lines into one dict is exactly the kind
+    # of refactor that silently loses an entry.
+    - name: Assert every expected environment line reached the unit
+      ansible.builtin.assert:
+        that:
+          - item in vllm_unit_lines
+        fail_msg: >-
+          Missing from the rendered unit: "{{ item }}". Rendered:
+          {{ vllm_unit_lines | select('match', '^Environment=') | list }}
+        success_msg: 'Present: "{{ item }}"'
+      loop: "{{ expected_environment }}"
+
+    # The set must match exactly, not merely contain the expected lines — an
+    # extra Environment line is a change nobody declared here.
+    - name: Assert the unit carries no environment lines beyond the expected set
+      ansible.builtin.assert:
+        that:
+          - vllm_unit_lines | select('match', '^Environment=') | list | sort
+            == expected_environment | sort
+        fail_msg: >-
+          The unit's Environment lines do not match the expected set.
+          Rendered: {{ vllm_unit_lines | select('match', '^Environment=') | list | sort }}
+          Expected: {{ expected_environment | sort }}
+
+    # --- 3. no environment variable rendered empty ----------------------------
+    # An undefined value renders as `Environment=NAME=` — syntactically valid,
+    # silently wrong, and invisible until the service misbehaves at runtime.
+    - name: Assert no environment variable rendered with an empty value
+      ansible.builtin.assert:
+        that:
+          - vllm_unit_lines | select('match', '^Environment=[^=]+=$') | list | length == 0
+        fail_msg: >-
+          These environment variables rendered with no value:
+          {{ vllm_unit_lines | select('match', '^Environment=[^=]+=$') | list }}
+
+    # --- 4. the serving port came from the tofu constants registry ------------
+    # The port is hard-required precisely so a missing constant fails loud. If
+    # a default ever creeps in, two hosts end up on one port and a wrong-host
+    # answer becomes indistinguishable from a right one.
+    - name: Assert the serving port from the constants registry reached ExecStart
+      ansible.builtin.assert:
+        that:
+          - "'--port 10434' in vllm_unit"
+        fail_msg: >-
+          ExecStart does not carry the port from tofu_data.constants. ExecStart:
+          {{ vllm_unit_lines | select('search', 'ExecStart|--port') | list }}
+
+    # --- 5. nothing was left untemplated --------------------------------------
+    # Matched by escaped regex rather than by an `in` test against a literal.
+    # Writing the delimiter pair literally here would open a real expression in
+    # this very file — the check would then fail to parse instead of failing to
+    # match, which is a different bug wearing the same error message.
+    - name: Assert no Jinja delimiters survived into the unit
+      ansible.builtin.assert:
+        that:
+          - jinja_expr_open not in vllm_unit
+          - jinja_stmt_open not in vllm_unit
+        fail_msg: >-
+          The rendered unit still contains Jinja delimiters, so a variable did
+          not resolve.
+      vars:
+        jinja_expr_open: "{{ '{' * 2 }}"
+        jinja_stmt_open: "{{ '{' ~ '%' }}"
+
+    # --- 6. the cold-start timeout is still generous --------------------------
+    # A short timeout here reads as a crash loop and is not one; this is the
+    # discriminator between "still loading weights" and "actually broken".
+    - name: Assert the cold-start timeout survives
+      ansible.builtin.assert:
+        that:
+          - "'TimeoutStartSec=1800' in vllm_unit_lines"
+        fail_msg: >-
+          The generous cold-start timeout is gone. A model download plus CUDA
+          graph capture takes minutes, and a short timeout will kill it and
+          present as a crash loop.
+
+    # --- assertion count, printed ---------------------------------------------
+    # A scenario that runs zero assertions exits 0 and looks identical to one
+    # that ran them all. Print the count so the log carries the evidence.
+    - name: Report how many assertions this scenario actually ran
+      ansible.builtin.debug:
+        msg: >-
+          vllm verify ran {{ 6 + (expected_environment | length) }} assertions
+          against {{ unit_path }}, plus 1 in converge for the parameter ceiling.

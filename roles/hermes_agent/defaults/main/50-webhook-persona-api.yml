@@ -1,0 +1,86 @@
+---
+# --- Inbound webhook receiver (event-driven agent trigger) ------------------
+# The `hermes gateway` webhook platform: an HTTP receiver (/webhooks/<name>,
+# HMAC-signed) so any homelab agent/system can trigger Hermes without speaking
+# A2A. Traefik fronts it as https://hermes.<sub>/webhooks/<name>; the guest
+# firewall opens the port from internal only (modules/firewall in terraform-proxmox).
+# The adapter binds 0.0.0.0 by default (Traefik reaches it from another guest).
+# Port is DRY from the tofu pipeline constant — never a literal. The global HMAC
+# secret is bao-first (group_vars) and injected via .env (WEBHOOK_SECRET), never
+# config.yaml; the platform only renders when a secret is present (a route with
+# no secret and no global secret fails the adapter at startup, by design).
+hermes_agent_webhook_enabled: true
+hermes_agent_webhook_port: >-
+  {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['hermes_webhook']
+     | mandatory('tofu_data.constants.service_ports.hermes_webhook missing — regenerate tofu_inventory.json') }}
+
+# The interactive Dashboard is a separate process from the queue-driven gateway.
+# It is deliberately non-loopback only when its native OIDC guard is configured;
+# Traefik then adds the estate-wide forwardAuth gate at the same hostname.
+hermes_agent_dashboard_enabled: true
+hermes_agent_dashboard_host: 0.0.0.0
+hermes_agent_dashboard_port: >-
+  {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['hermes_dashboard']
+     | mandatory('tofu_data.constants.service_ports.hermes_dashboard missing — regenerate tofu_inventory.json') }}
+# `hostname` is the guest's own tofu-proxmox row key (set as a fact by
+# inventory/load_tofu.yml's "Set the guest hostname fact" task) — the same
+# name Traefik routes on, since an ingress row's hostname defaults to its row
+# key. For hermes_agent_id: hermes that key is "hermes" (byte-identical to
+# the prior literal); for donna it is "hermes-donna".
+hermes_agent_dashboard_public_url: "https://{{ hostname }}.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
+hermes_agent_dashboard_oidc_issuer: "https://authelia.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
+hermes_agent_dashboard_oidc_client_id: "{{ hostname }}-dashboard"
+
+# --- Persona: the shared behavioral base (SOUL.md) ----------------------------
+# Copy the composed SOUL.md out of the pinned nix-hermes bundle
+# (hermes_agent_bundle_flake_ref above) over the upstream-default persona.
+# Upstream reloads SOUL.md per message, so no restart is needed.
+#
+# There is no SOUL.md.j2 in this role and nothing is vendored from
+# ai-assistant-instructions — this comment claimed both for a while. The content
+# is composed at BUILD time by nix-hermes from the ai-llm-prompts flake input
+# (auto-ai-agent/autonomous-base.md + auto-ai-agent/hermes.md); edit intent
+# THERE, then release nix-hermes and bump the pin.
+#
+# Flip false to hand the file back to manual/agent ownership.
+hermes_agent_soul_managed: true
+
+# The operator profile Hermes keeps about the person it works for. Seeded ONCE
+# from templates/USER.md.j2 and then owned by the agent — upstream loads it
+# alongside MEMORY.md (config.yaml sets user_profile_enabled) and Hermes edits it
+# as it learns, so the deploy task uses force:false and a converge never
+# overwrites it. Flip false to skip seeding entirely on a guest that should start
+# with no profile at all.
+hermes_agent_seed_user_profile: true
+
+# --- Inbound job-submission API (`api_server` platform) ----------------------
+# The `hermes gateway` api_server platform: a bearer-authenticated HTTP API
+# (POST /v1/runs enqueues an agent run -> 202 + run_id; /api/jobs is cron CRUD;
+# GET /health). The SANCTIONED non-exec path to submit work to the agent — the
+# webhook above is event-trigger-only (pre-declared routes, no job submission).
+# Traefik fronts it as https://hermes-api.<sub>; the guest firewall opens the
+# port from internal only (modules/firewall in terraform-proxmox). Enablement is
+# key-presence (empty key = platform off, port closed) — the same contract as
+# the Slack tokens; upstream also refuses to start the platform without a key.
+# Key is bao-first (group_vars); port DRY from the tofu constant. Upstream
+# defaults to a loopback bind, so the non-loopback host below only takes effect
+# when the key-gated platform renders at all.
+hermes_agent_api_server_key: "{{ lookup('env', 'HERMES_API_SERVER_KEY') | default('', true) }}"
+hermes_agent_api_server_host: "0.0.0.0"
+hermes_agent_api_server_port: >-
+  {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['hermes_api']
+     | mandatory('tofu_data.constants.service_ports.hermes_api missing — regenerate tofu_inventory.json') }}
+# Queue hardening: cap in-flight agent runs across ALL of the platform's
+# agent-serving endpoints (/v1/runs, /v1/chat/completions, /v1/responses).
+# Upstream reads this from config.yaml (gateway.api_server.max_concurrent_runs)
+# and refuses over-cap submissions with 429 + Retry-After — the submitter
+# retries, nothing stacks unbounded prefills on the shared brain. Upstream's
+# default (10) is sized for cloud brains; ours is a SINGLE serving deployment
+# the cron fleet already shares, and the serving tier runs one stream well
+# but does not batch (measured 2-stream aggregate ~0.71x of single-stream,
+# 2026-07-11 bench). 2 = one operator submission + one background/curriculum
+# run in flight; anything more waits at the door, not in the GPU queue.
+# 0 would disable the cap entirely — assert.yml forbids that.
+# Derived from ai_llm_concurrency (all.yml) so this cap scales with the
+# serving tier's admitted concurrency; resolves to 2 at the current value of 1.
+hermes_agent_api_max_concurrent_runs: "{{ ai_llm_concurrency | int * 2 }}"

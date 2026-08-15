@@ -41,6 +41,18 @@ terminal:
 # into the shared venv (tasks/main.yml).
 web:
   backend: ddgs
+{% if hermes_agent_firecrawl_enabled | bool %}
+  extract_backend: firecrawl
+{% endif %}
+
+# Same reasoning as the gateway config: no cloud_provider, so the browser tools
+# run locally against the apt Chromium; and allow_private_urls on, because a
+# worker that cannot reach the estate's own services can do none of the work
+# these profiles exist for.
+browser:
+  headed: false
+  record_sessions: false
+  allow_private_urls: true
 
 display:
   streaming: false
@@ -56,11 +68,28 @@ compression:
   summary_model: {{ hermes_agent_compression_model }}
 
 {% if hermes_agent_kanban_goal_mode | bool %}
-# Every seeded recurring card runs goal_mode=true, and a card assigned to
-# this profile is judged from ITS OWN config.yaml (the spawned worker reads
-# the assignee's HERMES_HOME) — this block must exist here too, identical to
-# the default profile's, or goal-mode completion judging fails for any card
-# this profile owns.
+# A card assigned to this profile is judged from ITS OWN config.yaml (the
+# spawned worker reads the assignee's HERMES_HOME) — this block must exist
+# here too, identical to the default profile's, or goal-mode completion
+# judging fails for any card this profile owns.
+#
+# INTENT vs REALITY. This comment used to open "Every seeded recurring card
+# runs goal_mode=true". That is the design intent, and the code does not
+# implement it: upstream's `--goal` is opt-in (`action="store_true"`, default
+# False), and NO card-creation path in this role passes it — the Vikunja
+# bridge's `hermes kanban create` sends title, body, idempotency key,
+# max-runtime, max-retries and an optional assignee, and nothing else creates
+# cards. `hermes_agent_kanban_goal_mode` only gates whether this auxiliary
+# block is rendered; it never reaches a card. So goal_mode is off for every
+# card this role seeds, and both judge paths (the completion gate and the goal
+# loop) are unreachable unless a card is created with `--goal` /
+# `goal_mode=True` from outside the role.
+#
+# Closing the gap is a live behavior change, not a doc fix: goal mode adds up
+# to hermes_agent_kanban_goal_max_turns extra worker conversations per card
+# against a serving tier that admits one request at a time, so it is an
+# operator decision. Left open deliberately; this block stays because it is
+# what makes goal-mode judging work the moment a goal card does exist.
 auxiliary:
   transient_retries: 1
   goal_judge:
@@ -91,9 +120,10 @@ kanban:
 
 {% set _mcp_splunk = ('splunk' in hermes_agent_profile.mcp) and (hermes_agent_splunk_mcp_enabled | bool) and (hermes_agent_splunk_mcp_url | length > 0) %}
 {% set _mcp_docs = ('docs' in hermes_agent_profile.mcp) and (hermes_agent_docs_mcp_enabled | bool) %}
+{% set _mcp_grep = ('grep' in hermes_agent_profile.mcp) and (hermes_agent_grep_mcp_enabled | bool) %}
 {% set _mcp_vikunja = ('vikunja' in hermes_agent_profile.mcp) and (hermes_agent_vikunja_mcp_enabled | bool) %}
 {% set _mcp_nautobot = ('nautobot' in hermes_agent_profile.mcp) and (hermes_agent_nautobot_mcp_enabled | bool) %}
-{% if _mcp_splunk or _mcp_docs or _mcp_vikunja or _mcp_nautobot %}
+{% if _mcp_splunk or _mcp_docs or _mcp_grep or _mcp_vikunja or _mcp_nautobot %}
 # MCP servers this profile is scoped to reach. ${VARS} resolve from THIS
 # profile's own .env at connect time — never the default profile's.
 mcp_servers:
@@ -108,6 +138,11 @@ mcp_servers:
   docs:
     timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
     url: "{{ hermes_agent_docs_mcp_url }}"
+{% endif %}
+{% if _mcp_grep %}
+  grep:
+    timeout: {{ hermes_agent_mcp_tool_timeout_seconds }}
+    url: "{{ hermes_agent_grep_mcp_url }}"
 {% endif %}
 {% if _mcp_vikunja %}
   vikunja:

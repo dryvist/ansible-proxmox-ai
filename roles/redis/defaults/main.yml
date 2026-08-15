@@ -28,9 +28,17 @@ redis_port: "{{ tofu_data.constants.service_ports.redis_default }}"
 
 # Bind address. The router members reach this over the AI VLAN, so loopback is
 # not an option (that is the colocated pattern this role exists to avoid).
-# Defaults to the guest's own inventory address; the Proxmox firewall is what
-# restricts who may dial it, as it does for every other service here.
-redis_bind_address: "{{ ansible_host | default(inventory_hostname) }}"
+# The Proxmox firewall is what restricts who may dial it, as it does for every
+# other service here.
+#
+# The GATHERED INTERFACE ADDRESS, never ansible_host. ansible_host is an FQDN
+# for these guests, and Debian's /etc/hosts maps a guest's own FQDN to
+# 127.0.1.1 — so `bind <fqdn>` silently bound redis to loopback, reachable by
+# nothing on the VLAN, which is the exact colocated-store failure this role
+# exists to prevent and it looks like a healthy converge from every angle.
+# Loopback is listed as well so an on-box redis-cli check works without
+# reopening the interface question.
+redis_bind_address: "{{ ansible_default_ipv4.address }} 127.0.0.1"
 
 # AUTH is mandatory, not optional. An unauthenticated Redis reachable on a VLAN
 # is a remote-code-execution primitive (CONFIG SET dir + SAVE), so there is no

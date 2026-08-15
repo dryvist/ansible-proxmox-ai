@@ -1,0 +1,80 @@
+---
+# --- Routing behaviour -------------------------------------------------------
+# Load-balance across same-name deployments; cool a failed one down so traffic
+# drains to its sibling (GPU -> CPU). No cross-tier fallbacks.
+llm_router_routing_strategy: simple-shuffle
+llm_router_allowed_fails: 2
+llm_router_cooldown_time: 30
+# Forward each request to the MLX backend once. This governs GENUINE failures
+# only — a 429 means the backend never started the work, so it is retried under
+# the separate rate-limit policy below rather than counted here.
+# request_timeout_seconds bounds a single attempt; large-tier generations can
+# legitimately run for minutes, so this is generous, not a tight SLA.
+# Timeout chain — each OUTER layer outlives the inner one, so no intermediate
+# guard kills a still-healthy generation and the CLIENT is the sole decider:
+#   MLX model server guard 3600s (nix-darwin) > router attempt 2400s >
+#   Hermes client stream read 1800s.
+# 2400 (was 1200, was 300): guards are set to realistic ceilings on the
+# assumption the request almost always completes even at unusually high
+# limits. A 32k-token large-tier generation runs ~1560s at 21 tok/s and longer
+# when requests batch; the old 300s server guard masked everything (proven
+# cause of the 18:27 UTC cron failures) and 1200 here would have been the next
+# binding kill. At 2400 the router now sits ABOVE the client's 1800s ceiling,
+# so the client times out first (by design) while the router waits — and
+# below the 3600s server guard.
+# The per-attempt timeout is the MIDDLE link of the fabric-wide timeout chain
+# (server guard > this > Hermes client read), so it is sourced from the
+# single-source-of-truth constant (all.yml) the Layer-1 assert checks — resolves
+# to 2400.
+# DELIBERATELY 0 — this is failover timing, not a missing retry budget.
+#
+# LiteLLM engages the `fallbacks` chain only AFTER num_retries is exhausted, so
+# 0 means a failed primary hands over to the next model group immediately. That
+# is the whole mechanism behind hermes-default's automatic cluster/standalone
+# failover, and raising it delays every failover by up to
+# llm_router_retry_max_delay_seconds (pinned to 40s alongside the rate-limit
+# path). test_goal_mode_contract pins this value for that reason.
+#
+# Known cost, measured 2026-08-02..08-05: 720 gate 5xx reached callers
+# unretried, clustered around model-swap/reload windows where the upstream port
+# is briefly unserved. With the cluster leg down the fallback target is absent,
+# so those surface as "Error doing the fallback: BadGatewayError" rather than
+# being ridden out. Fixing that means separating 5xx retry from failover
+# ordering (e.g. a retry policy scoped to the primary deployment), NOT flipping
+# this number — that would trade a transient 502 for a slow failover.
+llm_router_num_retries: 0
+llm_router_request_timeout_seconds: "{{ ai_router_request_timeout_seconds }}"
+# Rate limits are absorbed HERE, not by the caller. The serving tier admits one
+# in-flight request per model (llama-swap concurrencyLimit) and rejects the rest
+# instantly — its own option doc names this router as the layer that "absorbs
+# 429s via its retry policy". Passing the 429 straight through instead (the
+# previous 0/0 setting) made that contract a no-op: on 2026-07-24 the
+# homelab-ai-fabric-status-v2 cron died outright because a 3m31s generation held
+# the slot while the caller's entire tolerance was one 15-second retry. A 429 is
+# "the slot is busy", never "the work is impossible", so it must not be fatal.
+#
+# Tolerance = rate_limit_retries x retry_after_seconds. 8 x 40s ~= 320s, sized
+# above the longest slot occupancy actually observed in that incident (211s) with
+# margin. Rejections cost microseconds, so the retry loop spends only the sleeps;
+# the budget still fits under the client's 1800s read ceiling with ~1480s left
+# for the generation itself.
+llm_router_rate_limit_retries: 8
+# Minimum sleep between rate-limit retries (LiteLLM router_settings.retry_after).
+# LiteLLM boxes each backoff into [retry_after, MAX_RETRY_DELAY]; the ceiling
+# defaults to 8s and would silently clamp this, so the service env pins
+# MAX_RETRY_DELAY to the same value (see llm_router_retry_max_delay_seconds).
+# Waiting whole tens of seconds is correct here: the blocker is a multi-minute
+# generation, so sub-second exponential backoff just burns attempts.
+#
+# Resolves to the all.yml constant (was a bare 40) so the brain watchdog's probe
+# deadline can be asserted against it from roles/hermes_agent — the two roles
+# never share a play, so a role-local literal was unassertable. Value unchanged;
+# raise it in all.yml, and expect the hermes_agent assert to demand the probe
+# timeout move with it.
+llm_router_retry_after_seconds: "{{ ai_router_retry_after_seconds }}"
+# Raises LiteLLM's global backoff ceiling so retry_after is not clamped. Only the
+# rate-limit path retries at all (num_retries is 0 and no other error type has a
+# retry policy), so this has no other blast radius.
+llm_router_retry_max_delay_seconds: "{{ llm_router_retry_after_seconds }}"
+# Rate-limit failures do not cool down the otherwise healthy deployment.
+llm_router_rate_limit_allowed_fails: 1000

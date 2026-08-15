@@ -1,0 +1,186 @@
+---
+# --- Master Kanban digest (no LLM in the fact path) --------------------------
+# What the board DID since this digest last ran: cards completed (with enough of
+# each worker's own summary to be useful), cards that failed, retried or exited
+# open, and cards still running past their own max_runtime. One report covering
+# every workload — the mechanism that lets a pile of duplicate per-workload crons
+# be retired.
+#
+# `--no-agent --script`, same contract as the Splunk digests: the script reads
+# kanban.db READ-ONLY and its stdout is delivered verbatim. That property is not
+# stylistic here — this is the surface that reports a wedged board, and a wedged
+# board is usually a wedged brain, so a digest that needed the brain would go
+# quiet in precisely the failure it exists to announce. It is deliberately absent
+# from hermes_agent_seeded_cron_names for the same reason: a cluster window
+# silences that list, and this must keep reporting through one.
+#
+# 15 minutes is the SOAK cadence, while the board's failure modes (466 crashed
+# and 59 timed_out runs on the board at the time of writing) are still being
+# characterised. Intended steady state is hourly — set this to 60 and the
+# schedule below follows. It is the only place the interval is written: the
+# script's no-state fallback window is rendered from this same number, so the
+# schedule and the fallback cannot drift apart.
+hermes_agent_kanban_digest_interval_minutes: 15
+hermes_agent_kanban_digest_cron_schedule: >-
+  {{ '*/' ~ hermes_agent_kanban_digest_interval_minutes ~ ' * * * *'
+     if (hermes_agent_kanban_digest_interval_minutes | int) < 60
+     else '9 * * * *' }}
+# Quiet-post ceiling. A run with no completion, failure, retry or overrun to
+# report goes [SILENT] until this many hours have passed since the last
+# DELIVERED post. Real board activity is never gated by it. Same shape as
+# splunk-status-digest's HEARTBEAT_HOURS (#215): at the 15-minute cadence above
+# the quiet branch was firing ~90 times a day with identical board counts, which
+# is the noise this removes. Lower it if an outage of the digest itself needs to
+# surface faster; 0 disables suppression entirely and restores the old behaviour.
+hermes_agent_kanban_digest_heartbeat_hours: 6
+hermes_agent_kanban_digest_cron_name: kanban-digest
+hermes_agent_kanban_digest_script_name: kanban-digest.py
+hermes_agent_kanban_digest_state_name: kanban-digest.json
+hermes_agent_kanban_digest_title: Kanban Board Digest
+# The board digest is a work log: completions and overruns belong in #hermes-all.
+# Its failure section is routed separately to the issues channel by the script
+# itself (kanban-digest.py.j2), because worker turn-budget exhaustion and judge
+# timeouts are Hermes being broken, not board activity. Never a hardcoded id.
+hermes_agent_kanban_digest_channel: >-
+  {{ hermes_agent_slack_hermes_all_channel
+     | default(hermes_agent_digest_slack_channel, true) }}
+# Where the digest's "Failed / retried / left open" section goes. Empty disables
+# the split and leaves the failure lines inline, i.e. previous behaviour.
+hermes_agent_kanban_digest_issues_channel: "{{ hermes_agent_slack_issues_channel }}"
+# No Splunk or brain dependency in the gate — only "can it deliver".
+hermes_agent_kanban_digest_enabled: >-
+  {{ hermes_agent_slack_bot_token | length > 0
+     and hermes_agent_slack_app_token | length > 0
+     and hermes_agent_kanban_digest_channel | length > 0 }}
+
+# Board-health alarms the digest raises alongside its worker-failure split
+# above, routed to the same issues channel and never heartbeat-gated: a
+# stalled or growing-blocked board is exactly the failure mode that stays
+# invisible to every other health signal (kanban-digest.py.j2 for the logic).
+#
+# (a) Stalled board: ready cards waiting AND no run reached a terminal
+# outcome in the window (NOT "zero running" — a single run wedged forever at
+# a max_in_progress cap still shows running > 0 the whole time, and must
+# still alarm), sustained this many CONSECUTIVE digest ticks. A single tick
+# must never page: a legitimate run can span longer than one window, so this
+# needs enough ticks that a normal run would have finished by then, not just
+# one dispatcher cycle (kanban.dispatch_interval_seconds, config.yaml.j2,
+# 60s) landing between samples. 3 ticks at the current 15-minute soak cadence
+# is 45 minutes; retune together with hermes_agent_kanban_digest_interval_minutes
+# if that moves to its intended hourly steady state, or 3 ticks becomes 3 hours.
+hermes_agent_kanban_digest_stall_ticks_threshold: 3
+# (b) Task-timeout rate: task_runs.outcome == 'timed_out' rows counted in the
+# SAME window RUNS_SQL already fetches (no new query) — alarms once this many
+# land inside one digest run. 3 in a single window is well above incidental
+# noise without waiting for a long crash-loop to prove itself.
+hermes_agent_kanban_digest_timeout_threshold: 3
+# (c) Blocked-task growth: alarms on a RISING delta since the previous tick,
+# never the raw blocked count — a long-standing blocked card must not page
+# forever, only a fresh pile-up. 3 newly-blocked cards between two ticks is a
+# pile-up, not routine churn.
+hermes_agent_kanban_digest_blocked_growth_threshold: 3
+
+# --- Retire the agentic anomaly hunt (duplicative; nothing replaces it) -------
+# Unlike every other retirement here, this one has no replacement job: the
+# anomaly hunt's factual content is a strict subset of what splunk-status-digest
+# already computes (see the comment on its hermes_agent_direct_cron_jobs entry).
+# `enabled: false` alone would NOT stop it — reconcile_direct_cron.yml skips a
+# disabled entry entirely, so the live cron would keep firing forever. The pause
+# below is what actually retires it. Set false to keep the job running.
+hermes_agent_retire_anomaly_hunt: true
+hermes_agent_retired_anomaly_hunt_cron_name: anomaly-hunt-v2
+
+# --- Retire the 6-hourly fabric-status cron (the card replaces it) ------------
+# Same disable-don't-delete shape as the anomaly hunt: `enabled: false` on the
+# hermes_agent_direct_cron_jobs entry stops reconcile from re-creating the job,
+# and only the pause below stops the one already on the guest. Set false to keep
+# the cron running (the card runs either way, so that means both post).
+hermes_agent_retire_fabric_status_v2: true
+hermes_agent_retired_fabric_status_cron_name: homelab-ai-fabric-status-v2
+
+# --- Retire the daily splunk-parsing-quality-v2 cron (the card replaces it) ---
+# Same disable-don't-delete shape as the two retirements above: `enabled:
+# false` on the hermes_agent_direct_cron_jobs entry stops reconcile from
+# re-creating the job, and only the pause below stops the one already on the
+# guest. Set false to keep the cron running (the card runs either way once
+# unpaused, so that means both post — and the cron's query is proven wrong,
+# see the comment on its hermes_agent_direct_cron_jobs entry).
+hermes_agent_retire_splunk_parsing_v2: true
+hermes_agent_retired_splunk_parsing_v2_cron_name: splunk-parsing-quality-v2
+
+# The Splunk monitor workloads are dispatched as Kanban cards now, not agentic
+# cron jobs (kanban migration, #83) — see hermes_agent_kanban_cards below, which
+# reuses the per-job name/schedule/prompt vars above. The old
+# hermes_agent_splunk_cron_jobs aggregate (seeded five agentic crons) is gone.
+
+# --- GitHub monitor: periodic read-only org-triage sweep -------------------
+# The poll-based counterpart to the Splunk fleet, reusing the existing
+# dryvist/github-issues skill + its PAT — no webhook ingress, no new skill.
+# Each run is a fresh isolated agent session (context never builds up run to
+# run). Read-only by contract: it reports, it never comments/labels/closes.
+# Minute 12 keeps it clear of the Splunk minutes above (bounds concurrent load
+# on the shared serving tier). Gated in tasks on BOTH the github-issues PAT
+# (can query) AND the Slack tokens (can deliver) — same shape as splunk.
+hermes_agent_github_monitor_enabled: true
+hermes_agent_github_monitor_cron_name: github-triage
+hermes_agent_github_monitor_cron_schedule: "26 */6 * * *"
+# Delta discipline (2026-07-18): the same top-5 + counts were getting restated
+# in full every sweep even when the list hadn't moved. Memory carries the
+# last-posted list across runs (same reuse-what-exists pattern as the Splunk
+# jobs above) so an unchanged sweep costs one line instead of a full repost.
+hermes_agent_github_monitor_cron_prompt_file: hermes-github-triage.md
+
+# The GitHub triage workload is a Kanban card now (kanban migration, #83) — see
+# hermes_agent_kanban_cards below. The old hermes_agent_github_cron_jobs aggregate
+# (one agentic cron) is gone; its name/schedule/prompt vars above are reused.
+
+# --- Bot PR security triage: label + escalate, never merge ------------------
+# Reads CodeQL/Dependabot alerts, runs the deterministic gates, labels
+# auto-merge-deps, and Slack/Codex-escalates high/critical. It never merges —
+# deterministic CI owns the merge. Reuses the github-issues skill (label write)
+# plus the read-only alerts token above. Minute 43 keeps it clear of the other
+# */6 sweeps (github-triage :26). Body from the pinned catalog (set_fact).
+hermes_agent_bot_pr_triage_enabled: true
+hermes_agent_bot_pr_triage_cron_name: bot-pr-triage
+hermes_agent_bot_pr_triage_cron_schedule: "43 */6 * * *"
+hermes_agent_bot_pr_triage_cron_prompt_file: hermes-bot-pr-triage.md
+
+# --- Repo maintenance review: read-only, github-maint profile ---------------
+# Runs in the github-maint profile, whose only GitHub credential is the
+# read-only hermes_agent_github_read_token — so this job physically cannot
+# write to GitHub, unlike github-triage (:26) and bot-pr-triage (:43), which
+# stay in the default profile with the write PAT and are NOT touched by this.
+# Deliberately overlaps github-triage's topic at a different depth: that job
+# reports what moved on the board, this one reads the newest open issues
+# closely enough to say what fixing them would take. Consolidating the two is
+# an open question, not something this job assumes.
+#
+# Every run is a fresh isolated session (no context carry-over), and the
+# prompt bounds the slice explicitly — a fixed repo count and issue count, one
+# digest out — because an unbounded org-wide sweep is what makes a job like
+# this expensive. Minute 8 of every 4th hour keeps it clear of the */6 GitHub
+# sweeps and the Splunk fleet (tests/hermes_agent/test_cron_stagger.py).
+hermes_agent_github_maint_enabled: true
+hermes_agent_github_maint_cron_name: github-maint-review
+hermes_agent_github_maint_cron_schedule: "8 */4 * * *"
+hermes_agent_github_maint_cron_prompt: >-
+  You are the read-only repository-maintenance review for the dryvist
+  organization. Your GitHub credential cannot write: never open, comment on,
+  label, or close anything, and never report a proposal as if you had filed
+  it. Recall memory key "github-maint-last" (the issue numbers and repos you
+  covered last run) and work the DELTA. Bound this run hard: list open issues
+  across dryvist repositories sorted newest first, take at most the 10 you
+  have not already reviewed, and stop searching once you have them. For each,
+  read the issue body and enough of the repository to judge it, then classify
+  it as EASY WIN (a small, well-understood change you can describe concretely),
+  NEEDS OWNER (real work or an unresolved decision), or UNCLEAR (the request
+  cannot be acted on as written, and what is missing). For every easy win,
+  state in two or three lines what would change, which files or areas it
+  touches, and what would prove it worked — enough that a human could act on
+  it without repeating your reading. Post ONE dense digest here: the
+  classification counts, then the easy wins in full, then one line each for
+  the rest. No Markdown tables, no restating an issue you already covered in
+  an earlier run. If nothing new is open since your last run, reply with
+  exactly [SILENT]. File anything worth durable follow-up with kanban_create,
+  not on GitHub. Save the updated repo+issue-number map back to
+  "github-maint-last".

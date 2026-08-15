@@ -1,0 +1,51 @@
+---
+# =============================================================================
+# Seed app (best-effort, idempotent, non-fatal). Gives the user a chat app to
+# open immediately. Reuses the console session established above.
+# =============================================================================
+
+- name: List existing Dify apps (seed idempotency check)
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/apps?page=1&limit=100"
+    method: GET
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    status_code: 200
+    return_content: true
+  register: dify_docker_apps_list
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_seed_app | bool
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Create the Dify seed chat app (first run only)
+  ansible.builtin.uri:
+    url: "{{ dify_docker_console_api_base }}/apps"
+    method: POST
+    headers:
+      Cookie: "{{ dify_docker_console_cookies }}"
+      X-CSRF-Token: "{{ dify_docker_console_csrf_token }}"
+    body_format: json
+    body:
+      name: "{{ dify_docker_seed_app_name }}"
+      mode: chat
+      icon_type: emoji
+      icon: "🤖"
+      icon_background: "#FFEAD5"
+      description: "Homelab starter chat app, bound to the workspace default model."
+    status_code: [200, 201]
+  register: dify_docker_seed_app_create
+  # Non-fatal: the console app-create payload drifts across Dify minors, and the
+  # stack is fully usable without the seed (models are already provisioned).
+  failed_when: false
+  changed_when: dify_docker_seed_app_create.status in [200, 201]
+  when:
+    - dify_docker_provision_model_provider | bool
+    - dify_docker_seed_app | bool
+    - dify_docker_apps_list.status | default(0) == 200
+    - dify_docker_seed_app_name not in
+      (dify_docker_apps_list.json.data | default([]) | map(attribute='name') | list)
+  no_log: true

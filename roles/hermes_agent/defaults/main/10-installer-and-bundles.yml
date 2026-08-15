@@ -1,0 +1,79 @@
+---
+# --- Pinned, checksum-verified installer (NO curl|bash of a moving remote script) ---
+# Hermes ships as a Python app built from a git checkout (uv venv + pip install),
+# not a released binary — so there is no binary artifact to checksum. What we CAN
+# pin is (a) the installer script, fetched from the tag's immutable raw URL and
+# sha256-verified, and (b) the app checkout, via the installer's --branch <tag>.
+#
+# This version is CONVERGED STATE, not an install-time default. Ansible owns the
+# app checkout's ref on every run, so a guest that drifted (the daemon's own
+# `hermes update`, a manual touch) is pulled back to the pin. It used to be
+# seeded once behind a `creates` guard, which let two guests sit two releases
+# behind the pin and one release apart from each other while the source patches
+# anchored to the pin quietly matched nothing.
+# To move the pinned floor: bump hermes_agent_version AND refresh the sha256
+# (curl the URL below, `sha256sum`). A stale checksum fails the converge loudly —
+# by design, that is the tamper/rug-pull guard.
+#
+# Renovate proposes the version; it cannot compute the checksum. The two are
+# kept in step by .github/workflows/fix-installer-sha.yml, which recomputes the
+# sha on the Renovate branch, and by the installer-sha CI gate, which fails ANY
+# pull request whose sha does not match its version. Converge-time failure is
+# too late — by then a broken update has already merged.
+#
+# versioning=loose because upstream tags are not semver: they are date-shaped
+# and vary in segment count (2026.8.3 alongside 2026.7.7.2), which
+# semver-coerced silently truncates.
+#
+# The value is a BARE version and the `v` lives in the tag reference below.
+# That is not cosmetic. github-releases hands Renovate versions with the prefix
+# already stripped, and loose versioning does not put it back — so a bump into
+# a `v`-prefixed variable writes a bare version and every consumer that pastes
+# it into a tag reference silently points at a tag that does not exist. That
+# happened on the first real bump: Renovate rewrote v2026.7.7.2 to 2026.8.3,
+# and the installer URL 404'd (the prefix-less tag does not exist upstream).
+# The installer-sha gate caught it before merge. Same version-plus-derived-ref
+# shape the openbao role uses, and the same reason the Hindsight client pin is
+# split.
+# renovate: datasource=github-releases depName=NousResearch/hermes-agent versioning=loose
+hermes_agent_version: "2026.8.3"
+# The upstream tag for the pinned version. Every reference that needs a git ref
+# uses THIS, never hermes_agent_version directly.
+hermes_agent_version_tag: "v{{ hermes_agent_version }}"
+# The app checkout's origin. Ansible owns the checkout ref directly (git module,
+# tasks/install_and_dashboard.yml) rather than delegating it to the installer's
+# --branch, so that hermes_agent_version is enforced on EVERY converge instead of
+# only on a guest's first install. HTTPS, not SSH: the guests hold no deploy key
+# and the repository is public.
+hermes_agent_repo_url: "https://github.com/NousResearch/hermes-agent.git"
+hermes_agent_installer_url: >-
+  https://raw.githubusercontent.com/NousResearch/hermes-agent/{{
+  hermes_agent_version_tag }}/scripts/install.sh
+hermes_agent_installer_sha256: "45f589461248c7a6ec3aecd7522a69dd49c5c8dbf4798ba1296af5c0c5e7ccd3"
+# Version-stamped so a version bump downloads (and re-verifies) a fresh copy
+# instead of reusing a stale cached file.
+hermes_agent_installer_path: "/usr/local/lib/hermes-agent-installer-{{ hermes_agent_version }}.sh"
+
+# --- Pinned nix-hermes content bundle (skills + SOUL persona) -----------------
+# The dryvist skills and SOUL.md are CONTENT owned by the nix-hermes flake
+# (github:dryvist/nix-hermes); the converge builds this pinned ref on the
+# CONTROLLER (which has nix) and byte-copies the result to the guest. SOUL.md
+# is composed there at build time from ai-assistant-instructions'
+# autonomous-base.md + the Hermes variant — no vendored copy to drift.
+# Bump the tag deliberately: renovate opens the PR on each nix-hermes release;
+# a bad ref fails the converge loudly at the controller build step.
+hermes_agent_bundle_flake_ref: "github:dryvist/nix-hermes/nix-hermes-v0.14.0#hermes-bundle"
+# --- Pinned prompt catalog (dryvist/ai-llm-prompts) --------------------------
+# Supplies every prompt body the reconciles resolve by filename, including the
+# 8 hermes-digest-*.md files referenced by hermes_agent_direct_cron_jobs. A
+# prompt edit lands in the catalog first; this pin then moves to that merge
+# commit, so the converge is the only thing that changes what a job says.
+hermes_agent_prompts_flake_ref: >-
+  github:dryvist/ai-llm-prompts/29b655f956427eed8608bf412ee1dd7c6f50d959#auto-ai-agent
+hermes_agent_webhook_prompt_file: hermes-inbound-webhook.md
+hermes_agent_curriculum_prompt_files:
+  orient: hermes-curriculum-orient.md
+  reposweep: hermes-curriculum-reposweep.md
+  splunk: hermes-curriculum-splunk.md
+  apps: hermes-curriculum-apps.md
+  improve: hermes-curriculum-improve.md

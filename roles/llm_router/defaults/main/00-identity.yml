@@ -1,0 +1,52 @@
+---
+# llm_router role defaults — a LiteLLM proxy (the fabric's single OpenAI-compatible
+# front door) on each guest tagged `llm-router`. Native install: a Python venv +
+# systemd, config at /etc/litellm/config.yaml. Fronted by Traefik at
+# https://llm.<subdomain>. Physical backends have one deployment entry each;
+# stable consumer role names resolve through model_group_alias below.
+#
+# Two tiers, both reached through this one proxy:
+#   large — the mlx-community/* models on the neutral `llm-large` runner
+#           (bearer auth). One deployment each; no cross-tier fallback.
+#   light — qwen3-4b / embeddings. The CPU `llm-light` deployment always
+#           renders; the GPU `llm-fast` one renders only when
+#           llm_router_llm_fast_enabled is true. With that false there is ONE
+#           deployment per model name and no standby. With both, they share a
+#           model_name and LiteLLM load-balances and cools down the pair.
+#
+# Restart-on-failure is applied DRY by the shared systemd_restart_policy role via
+# group_vars, not here.
+
+llm_router_user: litellm
+llm_router_group: litellm
+llm_router_home: /var/lib/litellm
+llm_router_venv: /opt/litellm-venv
+llm_router_service: litellm
+llm_router_config_dir: /etc/litellm
+llm_router_config_file: "{{ llm_router_config_dir }}/config.yaml"
+llm_router_env_file: "{{ llm_router_config_dir }}/litellm.env"
+
+# Installed into the venv (state: present — pinned by the ecosystem, never here).
+# The opentelemetry exporter backs the single OTLP logging callback below.
+# No direct langfuse SDK: LiteLLM's "langfuse" callback needs the v2 SDK
+# (pip resolves v3, which errors on init), and Langfuse ingestion already
+# arrives via the designed OTLP -> Cribl Edge fan-out path.
+llm_router_pip_packages:
+  # Pinned: the retry/backoff behavior documented in this role's defaults
+  # (retry_after, RateLimitErrorRetries, num_retries — see llm_router config
+  # template) was verified against this version's tagged source
+  # (router.py's async_function_with_retries/_time_to_sleep_before_retry,
+  # utils.py's _calculate_retry_after, and exceptions.py's retry-count
+  # string construction). Bumping the pin is a deliberate act; re-verify
+  # those functions against the new tag before moving it.
+  - "litellm[proxy]==1.90.3"
+  # LiteLLM's auth-error handler unconditionally `import prisma`s to classify
+  # whether a failed request is a DB outage, but litellm[proxy] no longer pulls
+  # prisma. On this DB-less proxy the import raised ModuleNotFoundError, turning
+  # every rejected/absent key into a 500 instead of a 401 (masking real auth
+  # failures as opaque errors). We use no database; prisma is present only so the
+  # handler's isinstance checks resolve and it returns the correct 401.
+  - prisma
+  - opentelemetry-api
+  - opentelemetry-sdk
+  - opentelemetry-exporter-otlp

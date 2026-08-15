@@ -1,0 +1,177 @@
+---
+# Pins that every LOCAL deployment carries an in-flight admission cap, so the
+# router queues excess work instead of forwarding it to a backend that refuses
+# it.
+#
+# WHY THIS TEST EXISTS. Until 2026-08 `rpm`, `tpm` and `max_parallel_requests`
+# were set on the OpenRouter egress tier ONLY. No local deployment carried a
+# ceiling of any kind, so LiteLLM admitted every inbound request and forwarded
+# it to an mlx-lm-server running `--decode-concurrency 2 --prompt-concurrency 2`.
+# That backend accepts 2 in-flight and 429s the remainder INSTANTLY.
+#
+# Measured on the live fabric 2026-08-15 over a 6h window: 12,201.6 s of model
+# time against 43,200 slot-seconds — ~28% utilisation — while 51-234 requests
+# per hour were rejected. The tier was never busy, it was UNBUFFERED, and every
+# agent-mode Hermes cron had been dying on its first call since 2026-08-07.
+#
+# The failure was invisible for eight days for a reason worth restating: a
+# refused request occupies no slot and emits no latency row, so precisely the
+# traffic that is failing is absent from both utilisation and latency stats.
+# "Low utilisation" was not headroom, it was the symptom.
+#
+# It is also invisible to ansible-lint and --syntax-check: the render succeeds
+# with or without the cap. Only the RENDERED config shows it, which is what this
+# test inspects — the same reason test_openrouter_allowlist.yml exists.
+#
+# Run (from the REPO ROOT — the registry load resolves the llm_router role
+# through ansible.cfg's cwd-relative roles_path):
+#   ansible-playbook tests/llm_router/test_local_admission_cap.yml -i localhost, -c local
+- name: Verify local deployments carry an in-flight admission cap
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          llm_cluster_api: 11440
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Render the real config.yaml.j2 template into a string
+      ansible.builtin.set_fact:
+        _rendered_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') }}"
+
+    - name: Parse the rendered config as YAML
+      ansible.builtin.set_fact:
+        _config: "{{ _rendered_config | from_yaml }}"
+
+    # Local = anything pointed at the large-tier backends. Two exclusions:
+    # the OpenRouter tier carries its own ceilings (tuned for paid egress rate,
+    # not backend in-flight capacity), and the "*" passthrough shares the same
+    # api_base but has its OWN knob and is asserted separately below. Leaving
+    # the wildcard in here made the value assertion fail with [1, 2] on first
+    # run — the test finding its own selector bug rather than a code defect.
+    - name: Select the local (large-tier) deployments
+      ansible.builtin.set_fact:
+        _local: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'search', 'llm-large|llm-cluster')
+             | rejectattr('model_name', 'equalto', '*')
+             | list }}
+
+    - name: The test is not vacuous — local deployments actually rendered
+      # Without this an empty selection would satisfy every assertion below and
+      # report success while proving nothing. The same trap the OpenRouter
+      # allowlist test guards with its key seeding.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _local | length > 0
+        fail_msg: >-
+          No local deployments rendered, so the assertions below would pass
+          vacuously. The registry or the render is broken, not the cap.
+        success_msg: "{{ _local | length }} local deployment(s) rendered"
+
+    - name: Every local deployment carries max_parallel_requests
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _uncapped | length == 0
+        fail_msg: >-
+          {{ _uncapped | length }} local deployment(s) render with no
+          max_parallel_requests ({{ _uncapped | join(', ') }}). LiteLLM will
+          admit unbounded concurrency and forward it to a backend that accepts
+          2 in-flight, which refuses the excess INSTANTLY rather than queueing.
+          That is the 2026-08-07 agent-cron outage.
+        success_msg: "all {{ _local | length }} local deployment(s) carry an admission cap"
+      vars:
+        _uncapped: >-
+          {{ _local
+             | rejectattr('litellm_params.max_parallel_requests', 'defined')
+             | map(attribute='model_name') | list }}
+
+    - name: The cap matches the documented default, not an arbitrary literal
+      # Pins the value to the variable so a future edit moves the default rather
+      # than scattering literals through the template.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _values | unique == [llm_router_local_max_parallel_requests | int]
+        fail_msg: >-
+          Local deployments render max_parallel_requests {{ _values | unique }},
+          expected {{ llm_router_local_max_parallel_requests }} from
+          llm_router_local_max_parallel_requests.
+        success_msg: "cap == llm_router_local_max_parallel_requests ({{ llm_router_local_max_parallel_requests }})"
+      vars:
+        _values: >-
+          {{ _local | map(attribute='litellm_params.max_parallel_requests')
+             | map('int') | list }}
+
+    # The pool multiplies this. Three members each hold an INDEPENDENT
+    # asyncio.Semaphore (LiteLLM caches it local_only=True, so redis cannot
+    # share it), meaning the estate-wide ceiling is 3x whatever renders here.
+    # At 1 that is 3 against a 2-slot backend — a deliberate 1-over overcommit,
+    # because no integer makes three independent semaphores sum to 2. At 2 it
+    # would be 6, which is the original defect with extra steps.
+    - name: The per-member cap stays low enough that the pool does not re-flood
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_local_max_parallel_requests | int >= 1
+          - llm_router_local_max_parallel_requests | int <= 1
+        fail_msg: >-
+          llm_router_local_max_parallel_requests is
+          {{ llm_router_local_max_parallel_requests }}. Three pool members each
+          hold an independent in-process semaphore, so the backend sees 3x this
+          number against 2 available slots. Raising it is not a capacity
+          improvement — it restores the unbuffered flood this cap exists to stop.
+          If the backend's --decode-concurrency has genuinely increased, change
+          that first and update this bound WITH the measurement that justifies it.
+        success_msg: "per-member cap 1 => pool ceiling 3 against a 2-slot backend"
+
+    - name: The passthrough wildcard is capped independently when enabled
+      # Separate knob on purpose: LiteLLM keys the semaphore per DEPLOYMENT and
+      # the wildcard is one deployment fronting every untuned model, so its
+      # value serialises them against each other. 0 disables the cap entirely.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _wild | length == 0
+            or llm_router_passthrough_max_parallel_requests | int == 0
+            or _wild[0].litellm_params.max_parallel_requests | int
+              == llm_router_passthrough_max_parallel_requests | int
+        fail_msg: >-
+          The "*" passthrough deployment does not carry
+          llm_router_passthrough_max_parallel_requests
+          ({{ llm_router_passthrough_max_parallel_requests }}). Uncapped, the
+          zero-config tier floods the same backend the tuned brain and judge
+          depend on.
+        success_msg: "passthrough wildcard cap agrees with its own knob"
+      vars:
+        _wild: >-
+          {{ _config.model_list | selectattr('model_name', 'equalto', '*') | list }}

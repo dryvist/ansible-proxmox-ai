@@ -1,0 +1,131 @@
+---
+# --- Memory: best self-hostable as of June 2026 (Agy-validated) ---
+# Hindsight: local knowledge-graph + multi-strategy retrieval. Runs alongside the
+# always-on built-in MEMORY.md/USER.md. The whole HERMES_HOME is the durable surface.
+# The provider name alone is NOT enough: hindsight defaults to CLOUD mode, and
+# with no HINDSIGHT_API_KEY its is_available() returns false — every memory
+# tool call warns "Memory is not available" (the recurring digest warning).
+# local_embedded runs the daemon in-guest (hindsight-all, ~200 MB, installed
+# below) and needs an LLM for entity extraction — pointed at the same router
+# alias the agent brain uses, so memory never adds an external dependency.
+hermes_agent_memory_provider: hindsight
+# local_external: the plugin dials the standalone HA Hindsight service (two
+# stateless replicas behind the Traefik pool) instead of running the embedded
+# daemon in-guest. The upstream plugin's mode set is
+# {cloud, local_embedded, local_external}; local_external takes api_url (+
+# optional api_key — omitted here: the API is unauthenticated inside the
+# default-deny firewall). local_embedded remains supported for rollback.
+hermes_agent_memory_mode: local_external
+hermes_agent_memory_api_url: >-
+  https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
+  | mandatory('PROXMOX_SUBDOMAIN required (Doppler)') }}
+hermes_agent_memory_llm_model: "{{ hermes_brain_model }}"
+
+# Per-AGENT memory isolation — deliberately not per-profile.
+#
+# The memory service is multi-tenant by bank: every route is scoped
+# /v1/<tenant>/banks/<bank_id>/..., so two agents pointed at ONE deployment stay
+# fully separated as long as their bank ids differ. A second agent therefore
+# needs no second memory instance, no second database, and no extra container.
+#
+# This is a static bank_id, NOT bank_id_template, and that is load-bearing:
+# tasks/profiles.yml documents an explicit decision to leave the template unset
+# so every profile of one agent SHARES a bank. That keeps the default profile
+# able to read a moved job's findings and preserves memory continuity when a
+# card changes assignee. Setting a {profile} template here would silently
+# reverse that decision for the existing agent. Isolate agents, not profiles.
+#
+# The value matches the plugin's own static default for the existing agent, so
+# this is a no-op for it and only takes effect for a differently-named agent.
+hermes_agent_memory_bank_id: "{{ hermes_agent_id }}"
+# The gateway's hindsight plugin hard-pins this client version and its lazy
+# pip-install can never succeed in the venv (no pip/ensurepip) — with
+# hindsight-all's newer client resolved, every memory call fails "Memory is
+# not available". Pin what the plugin pins; bump with the hermes-agent package.
+# Verified 2026-07-31 against the pinned hermes-agent v2026.7.7.2 plugin
+# source: _MIN_CLIENT_VERSION == "0.6.1", so this pin exactly satisfies the
+# plugin's own >=0.6.1 check and its auto-upgrade-on-mismatch code path (which
+# would hit the same broken lazy pip-install) never triggers.
+#
+# Split into a bare version plus a derived constraint so Renovate can see it.
+# The annotation manager captures whatever follows the colon as the version, so
+# an "==0.6.1" literal resolves to nothing on PyPI and the pin stays invisible —
+# which is exactly how it sat three minor versions behind unnoticed. Same
+# version-plus-derived-string shape the openbao role uses for its plugin pins.
+#
+# renovate: datasource=pypi depName=hindsight-client
+hermes_agent_hindsight_client_version: "0.9.0"
+hermes_agent_hindsight_client_pin: "=={{ hermes_agent_hindsight_client_version }}"
+
+# --- Memory resilience: what actually happens when Hindsight is down ---------
+# Read directly from the pinned plugin source (plugins/memory/hindsight/
+# __init__.py in NousResearch/hermes-agent@v2026.7.7.2) — do not assume
+# behavior from upstream docs, they don't describe local_external's failure
+# path. Two real gaps, one non-gap:
+#  - is_available() is a NO-OP for local_external mode: it unconditionally
+#    returns True without ever contacting the service. Hermes has no built-in
+#    way to know Hindsight is down short of an actual memory call failing.
+#  - Auto-recall (the per-turn prefetch injected into context before the
+#    model sees the user's message) runs on a background thread and is
+#    genuinely silent on failure: `logger.debug("Hindsight prefetch failed:
+#    %s", ...)` and returns "". Recall degrades to "no memories" with no
+#    signal to the agent or the operator beyond a DEBUG log line — this is
+#    the failure mode fabric_watchdog's new `hindsight` target (see
+#    roles/fabric_watchdog/defaults/main.yml) exists to catch actively
+#    instead of relying on someone noticing recall going quiet.
+#  - Auto-retain (the background writer draining sync_turn's queue) logs
+#    failures at WARNING (visible in Splunk at our DEBUG log level) but does
+#    not retry and does not propagate — a dropped retain during an outage is
+#    permanently lost, not queued for replay.
+#  - Non-gap: explicit tool calls (hindsight_recall/_retain/_reflect, when the
+#    model invokes them directly) DO surface failures — handle_tool_call
+#    catches the exception and returns tool_error(...), which the agent sees
+#    as a failed tool call, not silence.
+#  - `_run_hindsight_operation`'s one-retry-after-reconnect logic is
+#    local_embedded-only (recovers from the embedded daemon's idle-shutdown);
+#    it never fires for local_external, so a transient 5xx/timeout against the
+#    standalone service gets zero retries anywhere in this call chain.
+# All of the above lives in the upstream pip package, not this repo — fixing
+# it means patching/forking hermes-agent. The available lever here is making
+# an outage IMPOSSIBLE to miss (fabric_watchdog) rather than patching a
+# dependency we don't own.
+#
+# UPDATE 2026-08-06 — one of the above IS now patched, because it turned out
+# to be the dominant failure, not a rare edge case. Measured via Splunk over
+# 18 days of index=hermes: prefetch delivers memory into the turn only 15.4%
+# of the time (472 GOT_RESULTS vs 1,983 NO_RESULTS + 613 FAILED). Retain works
+# fine (1,040 successful writes) and recall itself is fast in isolation
+# (67-256ms measured directly against the service) — the loss is NOT an empty
+# database and NOT recall being slow. Root cause, read from the installed
+# source: prefetch() joins its background thread for a HARDCODED 3.0s
+# (`self._prefetch_thread.join(timeout=3.0)`), completely decoupled from the
+# configurable HINDSIGHT_TIMEOUT — no config field feeds that literal, this
+# was confirmed by grepping the whole file, not assumed. Recall gets starved
+# because every Hindsight operation (recall AND retain) schedules onto ONE
+# process-global asyncio event loop (`_get_loop()`/`_run_sync()`); a retain
+# job stuck in its LLM-connection retry sequence (measured: 4 attempts
+# spanning ~2 minutes) occupies that shared loop for the whole sequence, so a
+# recall queued during that window can't even start before the fixed 3s join
+# gives up. See the patch task "Patch Hindsight prefetch join timeout..."
+# below and hermes_agent_hindsight_prefetch_timeout_seconds. This does NOT
+# fully fix worst-case starvation (a retain stuck for the full ~2min backoff
+# still outlasts any turn-latency-reasonable join) — it is the cheap first
+# lever per the "verify by the ratio" acceptance test in the Hindsight plan;
+# a structural fix (recall on its own event loop, never blockable by retain)
+# is the deeper fix if this doesn't move GOT_RESULTS share enough. The other
+# two gaps above (is_available() no-op, retain has zero retry) remain
+# unpatched — fabric_watchdog is still the lever for those.
+hermes_agent_hindsight_prefetch_timeout_seconds: 10
+
+# --- Logging: config.yaml `logging.level` (installed hermes-agent's
+# hermes_logging.py reads cfg["logging"]["level"], default "INFO" if unset).
+# DEBUG (not the noisier "trace" — hermes-agent has no such level) so the
+# rsyslog->Cribl->Splunk index=hermes chain carries pre-error context and
+# config-at-point-in-time lines. rsyslog forwards by programname ('hermes'),
+# unaffected by log level, so this only raises event volume, not routing —
+# index=hermes runs ~1.3k events/4h at INFO; expect a multiple of that at
+# DEBUG (Splunk ingestion has headroom; noted here for visibility).
+hermes_agent_log_level: DEBUG
+
+# --- Safety: cap the agentic loop so a runaway can't pin the GPU overnight ---
+hermes_agent_max_turns: 90

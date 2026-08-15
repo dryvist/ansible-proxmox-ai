@@ -1,0 +1,40 @@
+---
+# Per-file token budgets, counted with the same offline tiktoken encoding an
+# agent's context is measured in. First matching glob wins, so specific
+# patterns come first.
+#
+# The point is NOT file size for its own sake. It is that an agent asked to
+# change one thing should not have to read six unrelated things to find it.
+# A file over budget is a file doing too many jobs; the fix is to split it into
+# atomic, well-named files so the agent reads only the one it needs. Raising a
+# budget to accommodate a file inverts that and is not the remedy.
+limits:
+  # A deployed Python or shell script rendered from a .j2 template is a single
+  # runtime artifact: it is written once to the target host and run as one
+  # process. Splitting it into sourced/imported fragments would add
+  # deployment and failure modes (multiple files to land in the right place,
+  # a broken import path) without giving a reader less to read, since the
+  # whole script is the unit of behaviour any change has to reason about.
+  # Budgeted separately and higher for that reason, not grandfathered — see
+  # ansible-servarr's ".sh.j2" carve-out, extended here to ".py.j2" because
+  # roles/hermes_agent ships several oversized Python cron scripts this way
+  # (splunk-digest.py.j2 9785 tok, kanban-digest.py.j2 6801,
+  # hermes-brain-watchdog.sh.j2 6766, splunk-triage.py.j2 6191,
+  # vikunja-bridge.py.j2 5800) with no natural data/code seam: each is one
+  # function-heavy script reading its own rendered config block, and every
+  # attempted split point would cut through a function body or duplicate the
+  # config-loading preamble. 10000 covers the largest of the five with room
+  # to grow; a script that outgrows it is a signal to look again, not to
+  # raise this further.
+  "*.py.j2": 10000
+  "*.sh.j2": 10000
+
+  "*.yml": 4000
+  "*.yaml": 4000
+  "*.j2": 4000
+  "*.py": 4000
+  "*.md": 4000
+
+exclude:
+  # Append-only release history — length is inherent and it is read by section.
+  - "CHANGELOG.md"

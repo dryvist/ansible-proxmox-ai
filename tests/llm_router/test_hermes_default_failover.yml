@@ -1,11 +1,12 @@
 ---
 # Pins the hermes-default cluster-failover contract added alongside the
-# two-Mac cluster bring-up, and its later correction: the chain now TRACKS
-# llm_router_cluster_leg_available (defaults/main.yml) instead of asserting
-# the cluster target unconditionally, so it goes empty while the cluster leg
-# is down and comes back automatically once the leg is marked available
-# again. Both branches are pinned below so the re-enable path cannot rot
-# unnoticed the way the original unconditional chain did.
+# two-Mac cluster bring-up. The chain TRACKS llm_router_cluster_leg_available
+# (defaults/main.yml), which is a WIRING claim and not a per-window one: with
+# the leg wired the chain is rendered permanently, so a cluster window opening
+# or closing needs no converge and no restart — LiteLLM picks the live leg per
+# request. With the leg de-wired the chain goes empty and a failed primary
+# surfaces its own error. Both branches are pinned below so neither path can
+# rot unnoticed.
 #
 # WHY THIS TEST EXISTS. Before the original version of this fallback chain,
 # bringing the cluster up would have taken Hermes' brain offline: cluster-join
@@ -24,11 +25,12 @@
 #     of failing over (same class of bug tests/llm_router/test_alias_servable.yml
 #     exists for, on the alias side).
 # Measured 2026-08-02..08-05: with the cluster leg disconnected since
-# 2026-08-05 and the chain still unconditional, 720 gate 5xx reached callers
-# unretried as "Error doing the fallback: BadGatewayError" — a fallback chain
-# that ALWAYS names a target is strictly worse than none when that target
-# cannot possibly answer. That is the failure the leg-unavailable play below
-# pins.
+# 2026-08-05 and the chain still rendered, 720 gate 5xx reached callers
+# unretried as "Error doing the fallback: BadGatewayError". Those requests had
+# already failed at the primary (llm_router_num_retries is 0), so the cost was
+# the error text, not the outcome — but naming a target that cannot possibly
+# answer buys nothing, which is why the de-wired branch empties the chain. That
+# is the behaviour the de-wired play below pins.
 # None of this is visible from `ansible-lint` or `--syntax-check`; it only
 # shows up in the RENDERED config.yaml, which is what this test inspects.
 #
@@ -36,7 +38,7 @@
 # through ansible.cfg's cwd-relative roles_path):
 #   ansible-playbook tests/llm_router/test_hermes_default_failover.yml -i localhost, -c local
 
-- name: Verify hermes-default's chain is empty while the cluster leg is unavailable
+- name: Verify hermes-default's chain is empty while the cluster leg is de-wired
   hosts: localhost
   gather_facts: false
   vars:
@@ -60,7 +62,7 @@
     # Mirrors inventory/group_vars/all.yml's ai_default_model default (its
     # own template needs bao_ai_public_secrets, out of scope for this role
     # test) — a real first-class llm_router_large_models entry either way.
-    ai_default_model: mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
     llm_large_serving_host: llm-large
     llm_router_subdomain: "pve.example.test"
     llm_router_master_key: sk-test-master
@@ -72,126 +74,15 @@
     ai_router_retry_after_seconds: 40
     hermes_brain_model: hermes-default
     hermes_goal_judge_model: goal-judge
-    # The leg-unavailable state, which this play pins regardless of what the
+    # The de-wired state, which this play pins regardless of what the
     # role currently ships. Not set here as a plain play var — the defaults
-    # load below outranks one, the same trap the leg-available play documents;
+    # load below outranks one, the same trap the wired play documents;
     # the set_fact after that load is what makes it stick.
   tasks:
-    - name: Load the role defaults as they ship
-      ansible.builtin.include_vars:
-        file: "{{ _role_dir }}/defaults/main.yml"
+    - name: Verify the chain while the cluster leg is de-wired
+      ansible.builtin.import_tasks: tasks/verify_dewired.yml
 
-    # include_vars outranks a plain play var, so this scenario's whole premise
-    # would silently follow whatever the role currently defaults to. set_fact
-    # outranks include_vars, which is what actually pins it.
-    - name: Force the cluster leg unavailable for this scenario
-      ansible.builtin.set_fact:
-        llm_router_cluster_leg_available: false
-
-    # Every model name the render below emits comes from here; the defaults are
-    # projections of it. Loaded through the role's own task file so this test
-    # exercises the converge's real path derivation (llm_router_registry_file
-    # resolves off role_path) instead of a path spelled here.
-    - name: Load the fabric model registry the way the converge does
-      ansible.builtin.include_role:
-        name: llm_router
-        tasks_from: registry.yml
-
-    # The paired half of the flip forced above, mirroring how the leg-available
-    # play simulates its own pairing: tasks/assert-cluster-leg.yml (run below)
-    # requires the GLM-4.7 entry's servable to track
-    # llm_router_cluster_leg_available, and pinning this scenario to the
-    # registry as-shipped would tie it back to the default it must not depend on.
-    - name: Simulate the registry state that pairs with the leg being unavailable
-      ansible.builtin.set_fact:
-        llm_router_model_registry: >-
-          {{ (llm_router_model_registry
-              | rejectattr('client_model_id', 'equalto', llm_router_cluster_model) | list)
-             + [(llm_router_model_registry
-                 | selectattr('client_model_id', 'equalto', llm_router_cluster_model)
-                 | first) | combine({'servable': false})] }}
-
-    - name: Run the role's real render-time asserts against these vars
-      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert.yml"
-
-    - name: Render the real config.yaml.j2 template into a string
-      ansible.builtin.set_fact:
-        _rendered_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') }}"
-
-    - name: Parse the rendered config as YAML
-      ansible.builtin.set_fact:
-        _config: "{{ _rendered_config | from_yaml }}"
-
-    - name: The primary (standalone) backend is registered at the standalone port
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _primary_entries | length > 0
-          - "':11434/v1' in (_primary_entries | first).litellm_params.api_base"
-        fail_msg: >-
-          Expected {{ llm_router_primary_model }} in the rendered model_list
-          with api_base ending :11434/v1 (llm_router_large_port); got
-          {{ _primary_entries }}.
-        success_msg: "primary backend ({{ llm_router_primary_model }}) present at :11434"
-      vars:
-        _primary_entries: >-
-          {{ _config.model_list
-             | selectattr('model_name', 'equalto', llm_router_primary_model) | list }}
-
-    - name: The cluster backend still renders directly, at the CLUSTER port, even though it is not fallback-reachable
-      # Direct-dial registration is independent of fallback reachability: the
-      # model_list entry always renders for enabled registry entries. This is
-      # also the port-constant regression check: with the stale
-      # `llm_night_api` name, this entry's api_base silently re-derives
-      # :11434 (proven while writing this test) instead of failing to render.
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _cluster_entries | length > 0
-          - "':11440/v1' in (_cluster_entries | first).litellm_params.api_base"
-          - "':11434' not in (_cluster_entries | first).litellm_params.api_base"
-        fail_msg: >-
-          Expected {{ llm_router_cluster_model }} in the rendered model_list
-          with api_base ending :11440/v1 (llm_router_cluster_port, sourced from
-          tofu_data.constants.service_ports.llm_cluster_api). Got
-          {{ _cluster_entries }} — if this shows :11434, llm_router_cluster_port
-          in defaults/main.yml has regressed to the retired llm_night_api name.
-        success_msg: "cluster backend ({{ llm_router_cluster_model }}) present at its own :11440 site"
-      vars:
-        _cluster_entries: >-
-          {{ _config.model_list
-             | selectattr('model_name', 'equalto', llm_router_cluster_model) | list }}
-
-    - name: Hermes-default's alias resolves to the primary backend
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _config.router_settings.model_group_alias['hermes-default'] == llm_router_primary_model
-        fail_msg: >-
-          router_settings.model_group_alias['hermes-default'] is
-          {{ _config.router_settings.model_group_alias.get('hermes-default') }},
-          expected {{ llm_router_primary_model }}.
-        success_msg: "hermes-default alias -> {{ llm_router_primary_model }} (standalone, primary)"
-
-    - name: The rendered fallback chain is empty and no fallbacks key is emitted
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - llm_router_hermes_default_fallback_chain == []
-          - "'fallbacks' not in _config.router_settings"
-        fail_msg: >-
-          Expected an empty llm_router_hermes_default_fallback_chain and no
-          router_settings.fallbacks key while
-          llm_router_cluster_leg_available is false; got chain
-          {{ llm_router_hermes_default_fallback_chain }} and
-          router_settings {{ _config.router_settings }}. A non-empty chain
-          here means every failed primary request takes one guaranteed-502
-          detour through a cluster target that cannot answer.
-        success_msg: >-
-          Fallback chain is empty and router_settings.fallbacks is omitted —
-          a failed primary surfaces its real error.
-
-- name: Verify hermes-default's chain reaches the cluster backend once the leg is available
+- name: Verify hermes-default's chain reaches the cluster backend once the leg is wired
   hosts: localhost
   gather_facts: false
   vars:
@@ -205,7 +96,7 @@
           llm_cluster_api: 11440
           otel_traces_http: 4318
     bao_local_llm_secrets: {}
-    ai_default_model: mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
     llm_large_serving_host: llm-large
     llm_router_subdomain: "pve.example.test"
     llm_router_master_key: sk-test-master
@@ -215,92 +106,15 @@
     ai_router_retry_after_seconds: 40
     hermes_brain_model: hermes-default
     hermes_goal_judge_model: goal-judge
-    # The future state this play simulates: the TB cable is back,
-    # clusterMode.enable is true on both hosts, and a cluster window is up.
-    # Not set here as a plain play var — "Load the role defaults as they
-    # ship" below loads llm_router_cluster_leg_available's own false default
-    # via include_vars, which outranks a play var of the same name and would
-    # silently clobber it back to false. The "Force the cluster leg
-    # available" task after that load is what actually makes this stick.
+    # The state this play simulates: the leg is WIRED (TB cable connected,
+    # clusterMode.enable true on both hosts). Whether a cluster window is up
+    # right now is deliberately not modelled — it is not an input to the
+    # render. Not set here as a plain play var — "Load the role defaults as
+    # they ship" (see tasks/verify_wired.yml) loads
+    # llm_router_cluster_leg_available's own default via include_vars, which
+    # outranks a play var of the same name and would silently clobber it. The
+    # "Force the cluster leg available" task after that load is what actually
+    # makes this stick.
   tasks:
-    - name: Load the role defaults as they ship
-      ansible.builtin.include_vars:
-        file: "{{ _role_dir }}/defaults/main.yml"
-
-    # include_vars (above) outranks a plain play var of the same name, so the
-    # play-level llm_router_cluster_leg_available: true would otherwise be
-    # clobbered right back to the role's own false default. set_fact outranks
-    # include_vars, which is what actually makes the override stick.
-    - name: Force the cluster leg available for this scenario
-      ansible.builtin.set_fact:
-        llm_router_cluster_leg_available: true
-
-    - name: Load the fabric model registry the way the converge does
-      ansible.builtin.include_role:
-        name: llm_router
-        tasks_from: registry.yml
-
-    # The PAIRED edit an operator makes together with flipping
-    # llm_router_cluster_leg_available: true (defaults/main.yml says so
-    # explicitly, and tasks/assert-cluster-leg.yml enforces it): the registry
-    # entry's servable claim moves in the same change. Forced here rather than
-    # read from llm-models.yml so this scenario holds whichever way the
-    # registry currently ships. Without it the asserts below would correctly
-    # fail — that failure mode is what test_cluster_leg_guard.yml pins directly.
-    - name: Simulate the registry state once the paired servable flip has been made
-      ansible.builtin.set_fact:
-        llm_router_model_registry: >-
-          {{ (llm_router_model_registry
-              | rejectattr('client_model_id', 'equalto', llm_router_cluster_model) | list)
-             + [(llm_router_model_registry
-                 | selectattr('client_model_id', 'equalto', llm_router_cluster_model)
-                 | first) | combine({'servable': true})] }}
-
-    - name: Run the role's real render-time asserts against these vars
-      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert.yml"
-
-    - name: Render the real config.yaml.j2 template into a string
-      ansible.builtin.set_fact:
-        _rendered_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') }}"
-
-    - name: Parse the rendered config as YAML
-      ansible.builtin.set_fact:
-        _config: "{{ _rendered_config | from_yaml }}"
-
-    - name: Hermes-default's rendered fallback chain reaches the cluster backend
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - llm_router_hermes_default_fallback_chain == [llm_router_cluster_model]
-          - _config.router_settings.fallbacks is defined
-          - _hermes_fallback_entries | length == 1
-          - _hermes_fallback_entries | first == llm_router_cluster_model
-        fail_msg: >-
-          router_settings.fallbacks does not contain a "hermes-default" entry
-          resolving to {{ llm_router_cluster_model }}; got
-          {{ _config.router_settings.fallbacks | default('(missing)') }}.
-        success_msg: >-
-          router_settings.fallbacks routes hermes-default ->
-          [{{ llm_router_cluster_model }}] — both backends are reachable
-          under the hermes-default name.
-      vars:
-        _hermes_fallback_entries: >-
-          {{ _config.router_settings.fallbacks | default([])
-             | selectattr('hermes-default', 'defined')
-             | map(attribute='hermes-default') | flatten }}
-
-    - name: The cluster backend is registered at the CLUSTER port, not the standalone one
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _cluster_entries | length > 0
-          - "':11440/v1' in (_cluster_entries | first).litellm_params.api_base"
-          - "':11434' not in (_cluster_entries | first).litellm_params.api_base"
-        fail_msg: >-
-          Expected {{ llm_router_cluster_model }} in the rendered model_list
-          with api_base ending :11440/v1; got {{ _cluster_entries }}.
-        success_msg: "cluster backend ({{ llm_router_cluster_model }}) present at its own :11440 site"
-      vars:
-        _cluster_entries: >-
-          {{ _config.model_list
-             | selectattr('model_name', 'equalto', llm_router_cluster_model) | list }}
+    - name: Verify the chain once the cluster leg is wired
+      ansible.builtin.import_tasks: tasks/verify_wired.yml

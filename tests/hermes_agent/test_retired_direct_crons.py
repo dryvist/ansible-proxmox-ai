@@ -14,20 +14,21 @@ pytest.
 """
 import re
 from pathlib import Path
+from _role_files import role_defaults, role_tasks_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULTS_PATH = REPO_ROOT / "roles/hermes_agent/defaults/main.yml"
-TASKS_PATH = REPO_ROOT / "roles/hermes_agent/tasks/main.yml"
+DEFAULTS_PATH = REPO_ROOT / "roles" / "hermes_agent"
+TASKS_PATH = REPO_ROOT / "roles" / "hermes_agent"
 
 
 def load_defaults():
     import yaml
-    return yaml.safe_load(DEFAULTS_PATH.read_text())
+    return role_defaults(DEFAULTS_PATH)
 
 
 def test_every_disabled_direct_cron_has_a_recognised_pause_task():
     defaults = load_defaults()
-    tasks = TASKS_PATH.read_text()
+    tasks = role_tasks_text(TASKS_PATH)
 
     disabled = [job["name"] for job in defaults["hermes_agent_direct_cron_jobs"]
                 if not job.get("enabled")]

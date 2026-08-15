@@ -1,11 +1,20 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["local>dryvist/.github"],
+  "extends": [
+    "local>dryvist/.github"
+  ],
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Bump the nix-hermes content-bundle pin (hermes_agent role) on each nix-hermes release.",
-      "managerFilePatterns": ["/^roles/hermes_agent/defaults/main\\.yml$/"],
+      "description": [
+        "Bump the nix-hermes content-bundle pin (hermes_agent role) on each nix-hermes release.",
+        "A bespoke manager rather than a `# renovate:` annotation because the version is EMBEDDED in a flake URL. The shared annotation manager captures everything after the colon as currentValue, which for this var would be the whole `github:owner/repo/tag#output` string \u2014 not a version any datasource can resolve.",
+        "The file pattern covers both role-defaults layouts (`defaults/main.yml` and `defaults/main/*.yml`). Matching only the file form leaves this pin untracked with no warning the moment the role is split."
+      ],
+      "managerFilePatterns": [
+        "/^roles/hermes_agent/defaults/main\\.yml$/",
+        "/^roles/hermes_agent/defaults/main/.+\\.ya?ml$/"
+      ],
       "matchStrings": [
         "github:dryvist/nix-hermes/nix-hermes-v(?<currentValue>[0-9.]+)#"
       ],
@@ -15,8 +24,28 @@
     },
     {
       "customType": "regex",
+      "description": [
+        "Bump the ai-llm-prompts catalog pin (hermes_agent role), which is a bare 40-char commit sha embedded in a flake URL written as a folded scalar.",
+        "Tracked as `git-refs` against the catalog's default branch: there are no releases or tags to key on, so currentDigest is the only thing that can move. Without this the sha is inert \u2014 nothing can ever propose an update to it, and a prompt change in the catalog reaches no agent until someone edits this line by hand."
+      ],
+      "managerFilePatterns": [
+        "/^roles/hermes_agent/defaults/main\\.yml$/",
+        "/^roles/hermes_agent/defaults/main/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "github:dryvist/ai-llm-prompts/(?<currentDigest>[0-9a-f]{40})#"
+      ],
+      "datasourceTemplate": "git-refs",
+      "depNameTemplate": "https://github.com/dryvist/ai-llm-prompts",
+      "currentValueTemplate": "main"
+    },
+    {
+      "customType": "regex",
       "description": "Digest-pinned image vars in Ansible role defaults, written as a folded scalar. The shared dryvist/.github ansible-image manager only matches a quoted `_image: \"repo:tag\"` on one line and captures no digest, so a `repo:tag@sha256:...` ref is invisible to it twice over: the folded scalar breaks the quoting, and the digest would land inside currentValue and fail the docker lookup. This manager splits tag and digest into their own groups, so Renovate proposes a digest update when the tag is rebuilt. Needed for images whose upstream publishes no semver tag (dify's ubuntu/squid), where the digest is the only thing that can move.",
-      "managerFilePatterns": ["/^roles/.+/defaults/main\\.ya?ml$/"],
+      "managerFilePatterns": [
+        "/^roles/.+/defaults/main\\.ya?ml$/",
+        "/^roles/.+/defaults/main/.+\\.ya?ml$/"
+      ],
       "matchStrings": [
         "_image:\\s*>-\\s*\\n\\s+(?<depName>[^:\\s\"']+):(?<currentValue>[^@\\s\"']+)@(?<currentDigest>sha256:[a-f0-9]{64})"
       ],
@@ -25,10 +54,30 @@
   ],
   "packageRules": [
     {
+      "description": [
+        "Restore the nix-hermes bundle pin's own extractVersion.",
+        "The shared preset carries a packageRule matching custom.regex + github-releases that force-sets extractVersion to ^v(?<version>.+)$. That is correct for upstreams whose tags are plain vX.Y.Z, and it silently breaks any whose tags are not: it OVERRIDES the extractVersionTemplate the manager declares, so nix-hermes tags (nix-hermes-vX.Y.Z) match nothing and every release is discarded before comparison. The datasource returns a populated mostRecentTimestamp alongside an EMPTY releases array, and the pin never proposes an update.",
+        "Reproduced by flattening the whole preset chain into one config and running a lookup dry-run: updates [] under the full chain, 0.12.0 under config:recommended plus this manager alone. Repo config merges after the preset, so re-stating extractVersion here wins without touching an org-wide rule other repos depend on."
+      ],
+      "matchDatasources": [
+        "github-releases"
+      ],
+      "matchPackageNames": [
+        "dryvist/nix-hermes"
+      ],
+      "extractVersion": "^nix-hermes-v(?<version>.+)$"
+    },
+    {
       "description": "OpenProject AIO majors need a deliberate sequential upgrade + bundled Postgres data migration (see #928). Block automatic major bumps; minor/patch still flow.",
-      "matchDatasources": ["docker"],
-      "matchPackageNames": ["openproject/openproject"],
-      "matchUpdateTypes": ["major"],
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "openproject/openproject"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
       "enabled": false
     }
   ]

@@ -1,0 +1,160 @@
+---
+# --- THE SERVABLE SET + consumer aliases (projected from the registry) --------
+# The serving host holds a bounded set of models warm (nix-ai
+# llama-swap-topology.nix, sized by maxResidentWorkers — TWO since 2026-08-14,
+# one deliberate and one routine), plus a small evictable swap tier beside them.
+# Every other catalogued model is deliberately demoted to `disabledModels`, and
+# a request naming one gets a 404 — by design, so a caller can never be answered
+# by a resident's weights under another model's name.
+#
+# Which means an alias pointing anywhere outside this set is not "slightly
+# stale", it is UNROUTABLE. Measured 2026-07-28 against the live gate, before
+# any shared definition existed: hermes-default, tool-calling, goal-judge and
+# interim-brain ALL returned 404 — every consumer alias at once, because the
+# alias map and the serving host's enabled set had no common source. It stayed
+# invisible while llama-swap still grafted disabled ids onto the resident
+# (Hermes was answered by a model nobody selected); nix-ai#1441 removed that
+# graft and the 404s surfaced.
+#
+# So a serving-side change is recorded in ONE place — the registry's `servable`
+# and `serving_role` fields — every selector and alias below derives from it, and
+# llm_router_servable_models feeds the assert that refuses a converge if any
+# alias or fallback target escapes the set. Repointing the serving host means
+# moving `serving_role: primary` to another registry entry and nothing else.
+#
+# `servable` is NOT `enabled`: enabled means the router offers the id at all
+# (every large-tier entry is), servable means the backend will actually answer
+# for it (only the role-bearing entries are). Conflating the two is what
+# produces a 404 instead of an answer. Counts are deliberately not written here
+# — a number in a comment is the first thing to go stale.
+llm_router_primary_model: >-
+  {{ llm_router_registry_enabled | selectattr('serving_role', 'defined')
+     | selectattr('serving_role', 'equalto', 'primary')
+     | map(attribute='client_model_id') | first }}
+# The small tier: judge/trivial work, and the only model that may differ from
+# the primary (user decision 2026-07-28 — concurrency belongs to the largest
+# accurate model, the small tier stays cross-family to it, which is also what an
+# LLM judge should be). See its registry entry for the measured residency
+# caveat: servable does not mean pre-loaded, and its cold load exceeds the
+# judge timeout.
+llm_router_small_model: >-
+  {{ llm_router_registry_enabled | selectattr('serving_role', 'defined')
+     | selectattr('serving_role', 'equalto', 'small')
+     | map(attribute='client_model_id') | first }}
+# The two-Mac cluster brain: servable ONLY while a cluster window is up, exactly
+# when the primary is not (cluster-join boots the standalone agent out). Part of
+# the servable set because hermes-default's fallback chain (below) is a real,
+# reachable target for it — not a stale alias like the ones the incident above
+# was about.
+llm_router_cluster_model: >-
+  {{ llm_router_registry_enabled | selectattr('serving_role', 'defined')
+     | selectattr('serving_role', 'equalto', 'cluster')
+     | map(attribute='client_model_id') | first }}
+llm_router_servable_models: >-
+  {{ llm_router_registry_enabled | selectattr('servable', 'defined')
+     | selectattr('servable') | map(attribute='client_model_id') | list }}
+
+# Stable consumer role names, from each registry entry's `stable_aliases`.
+# Aliases carry no deployment configuration; each points to exactly one physical
+# model_list entry — and, by construction, only ever at the entry that declared
+# it, which is always a member of the servable set above.
+llm_router_alias_pairs: >-
+  {{ llm_router_registry_enabled | selectattr('stable_aliases', 'defined')
+     | subelements('stable_aliases') | list }}
+llm_router_model_group_aliases: >-
+  {{ dict(llm_router_alias_pairs | map(attribute=1)
+          | zip(llm_router_alias_pairs | map(attribute=0)
+                | map(attribute='client_model_id'))) }}
+
+# --- Cluster leg wiring ---------------------------------------------------------
+# WIRED, not "a window is up right now". This declares whether the two-Mac JACCL
+# cluster leg exists as a failover target at all — a hardware/topology fact that
+# changes on human timescales — and NOT whether rank 0 happens to be answering
+# this minute. That distinction is the whole point, so read it before flipping:
+#
+# Per-window state is deliberately NOT tracked here, because LiteLLM already
+# decides it per request. The chain below is reached only after the primary has
+# already failed, so a cluster that is not serving right now costs one fast 502
+# from the gate's :11440 site and the caller then sees an error it was going to
+# see anyway — while a cluster that IS serving answers the request. Encoding
+# window state in this variable would instead require a converge, a LiteLLM
+# restart and a hermes-gateway restart on every window open and close, leaving
+# hermes-default unserved for as long as that took (measured 2026-08-08: ~5h).
+#
+# So: true whenever the cluster leg is wired and may serve. Flip to false only
+# when the leg is genuinely decommissioned for a stretch — the Thunderbolt
+# interconnect unplugged, or programs.mlx.clusterMode.enable set false on both
+# mac-studio.nix and macbook-m4.nix in dryvist/nix-darwin — because with
+# clusterMode off the gate's :11440 site reverse-proxies to nothing and every
+# fallback attempt is a guaranteed 502 that only muddies the error a caller
+# already had (measured 2026-08-02..08-05, while the leg was de-wired: 720 gate
+# 5xx surfaced as "Error doing the fallback: BadGatewayError" rather than as the
+# primary's own error — a diagnosability cost, not an availability one; the
+# request had already failed at the primary in both worlds).
+#
+# NEVER flip this false as part of a cluster teardown. Teardown is window state,
+# and clearing the leg there restores the unserved-until-converged behaviour
+# above on the next window.
+#
+# Flipping it (either way) requires moving the GLM-4.7 registry entry's
+# `servable` in llm-models.yml in the same change — tasks/assert-cluster-leg.yml
+# fails the converge if only one of the two moves, which is deliberate: see
+# that file for why.
+llm_router_cluster_leg_available: true
+
+# --- hermes-default automatic failover across the cluster + standalone gates -
+# The cluster and standalone backends are mutually exclusive (see the model_list
+# comment above): whichever is up, hermes-default must answer from it, and the
+# dead one must be skipped automatically — no converge, no manual interlock
+# (operator standing requirement). LiteLLM's own general `fallbacks` mechanism
+# does exactly this: when a call for a model group fails (after
+# llm_router_num_retries and, per-deployment, llm_router_allowed_fails /
+# llm_router_cooldown_time), the router tries the next model group in the
+# chain instead of surfacing the error.
+#
+# Ordering: the alias resolves to the primary (standalone, :11434) FIRST — the
+# steady state, live outside a cluster window — and this chain names what to
+# try next, in order, when that fails. During a cluster window the primary is
+# the one that is down, so every request takes one failed attempt against it
+# before landing on the cluster entry; outside a window the primary answers
+# directly and the chain is never touched. No reverse entry is needed: every
+# hermes-default request always starts at the alias (never at a physical model
+# id directly), so there is no path that enters at the cluster side first.
+#
+# The fallback KEY below is the alias name "hermes-default", not
+# llm_router_primary_model. Verified against the installed litellm package
+# (litellm/router.py: Router.acompletion sets kwargs["model"] = model, then
+# calls async_function_with_fallbacks(**kwargs) BEFORE model_group_alias is
+# resolved — that resolution happens later, inside deployment selection
+# (_get_model_from_alias). async_function_with_fallbacks reads
+# model_group = kwargs.get("model") at the top, so the fallback lookup always
+# sees the alias the caller requested, not the id it resolves to. The proxy
+# confirms this: litellm/proxy/route_llm_request.py dispatches on
+# `data["model"] in llm_router.model_group_alias` without ever rewriting
+# data["model"]. A fallback keyed on the resolved primary id would never fire.
+#
+# The chain tracks llm_router_cluster_leg_available — which is a WIRED claim,
+# not a per-window one — so with the leg wired the `fallbacks:` key is rendered
+# permanently and a cluster window needs no converge, no LiteLLM restart and no
+# hermes-gateway restart to be picked up: the failover is decided per request,
+# inside LiteLLM. With the leg de-wired the chain resolves to an empty list and
+# config.yaml.j2 omits the key entirely, so a failed primary surfaces its own
+# error instead of a fallback-wrapped one (2026-08-02..08-05: 720 gate 5xx
+# reached callers as "Error doing the fallback: BadGatewayError").
+#
+# Ordering inside LiteLLM is retries-then-fallbacks, verified against the pinned
+# litellm 1.90.3: async_function_with_fallbacks calls async_function_with_retries
+# inside its own try, and the retry_policy (llm_router_rate_limit_retries) is
+# consulted inside THAT function. So a 429 spends its full
+# retries x retry_after budget on the primary before the chain is touched — the
+# 2026-07-24 cron kill cannot be re-created by a permanently-rendered chain.
+llm_router_hermes_default_fallback_chain: >-
+  {{ [llm_router_cluster_model] if llm_router_cluster_leg_available else [] }}
+# Background health checks send REAL test requests to every deployment — on the
+# llama-swap fast tier each probe spawns the target model, and with 3 routers
+# probing every model this both churns VRAM constantly and (pre swap-groups)
+# triple-loaded the 16 GB card and hard-hung the GPU host. Passive recovery
+# (allowed_fails + cooldown_time) already re-admits drained deployments, so
+# active probing stays OFF by default.
+llm_router_background_health_checks: false
+llm_router_health_check_interval: 300

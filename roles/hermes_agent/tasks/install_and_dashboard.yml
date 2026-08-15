@@ -1,0 +1,135 @@
+---
+# update_cache stays false, matching syslog_route.yml below: these guests reach
+# internal mirrors only. Refreshing the cache makes every converge depend on the
+# apt caching proxy being up, so an unrelated proxy outage hard-fails this play
+# even when the packages are already present and nothing would change.
+- name: Install role prerequisites (installer + clone)
+  ansible.builtin.apt:
+    name:
+      - curl
+      - ca-certificates
+      - git
+      - sudo
+      - jq # hermes-brain-sync.sh JSON parsing (OpenBao KV, router /v1/model/info)
+    state: present
+    update_cache: false
+
+# Fetch the installer from the pinned release tag's immutable raw URL and verify
+# its sha256 BEFORE running it — no `curl <url> | bash` of a moving remote script.
+# A checksum mismatch (upstream changed the tag, MITM, rug-pull) fails here, loud.
+- name: Fetch the pinned Hermes installer (checksum-verified)
+  ansible.builtin.get_url:
+    url: "{{ hermes_agent_installer_url }}"
+    dest: "{{ hermes_agent_installer_path }}"
+    checksum: "sha256:{{ hermes_agent_installer_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+# Run the VERIFIED local installer (root + play become: true) -> system-wide FHS
+# layout: binary /usr/local/bin/hermes, code /usr/local/lib/hermes-agent. Do NOT
+# pass --dir: an explicit dir disables the root-FHS auto-layout and drops the
+# launcher in /root/.local/bin instead of /usr/local/bin (breaks hermes_agent_bin).
+# --branch {{ version }}: the installer git-clones the app at this release TAG
+# (`git clone --depth 1 --branch <tag>`), pinning the app checkout too. The
+# installer handles its own Python/uv/venv/Node/ripgrep/ffmpeg deps.
+# --skip-setup: the installer's final step is an INTERACTIVE `hermes setup` wizard
+# that reads /dev/tty and hangs forever under Ansible (no controlling TTY). We skip
+# it and configure declaratively via the config.yaml/.env templates below;
+# --non-interactive defaults any remaining prompt instead of blocking.
+#
+# THE PIN IS ENFORCED, NOT SEEDED. This task used to carry `creates:
+# {{ hermes_agent_bin }}`, which bound hermes_agent_version only on a guest's
+# FIRST install and let the self-updating daemon own the version thereafter.
+# Measured 2026-08-15: hermes-agent sat at pyproject 0.18.0 and hermes-donna at
+# 0.18.2 against a pin of 2026.8.3 (0.20.0) — two releases behind AND drifted
+# apart from each other. Everything downstream presumes the pin is real: the
+# source patches under tasks/patches_*.yml are anchored to the pinned release's
+# code, and patches_verify.yml asserts against it. A decorative pin makes those
+# patches silently dead (`replace` reports `ok` for "matched nothing" just as it
+# does for "already applied"), which is how a dead judge-error retry guard went
+# unnoticed. So: the installed checkout's release tag is real state, and a
+# converge moves it.
+- name: Pin the Hermes checkout to the release tag
+  ansible.builtin.git:
+    repo: "{{ hermes_agent_repo_url }}"
+    dest: "{{ hermes_agent_install_dir }}"
+    version: "{{ hermes_agent_version_tag }}"
+    depth: 1
+    # force discards the working-tree modifications the patches_*.yml tasks
+    # leave behind. Two reasons it is required rather than merely convenient:
+    # without it the module refuses to run at all on a dirty checkout, and the
+    # installer's own update path would otherwise autostash those hunks and
+    # (non-interactively) replay the OLD patches onto the NEW release. Every
+    # patch task re-applies below and each is idempotent, so discarding here
+    # loses nothing and makes the upgrade deterministic.
+    force: true
+  register: hermes_agent_checkout
+
+# Only when the checkout actually moved. The installer is the expensive half —
+# uv venv, pip install, node deps — and re-running it on an unchanged tree
+# every converge would churn a live guest for nothing. Comparing the commit
+# before/after is precise where `changed` is not: force above rewrites the
+# working tree on every run, so the task reports changed whenever the patches
+# are in place, which is always.
+- name: Install or upgrade Hermes Agent to the pinned release
+  ansible.builtin.command:
+    cmd: >-
+      bash {{ hermes_agent_installer_path }}
+      --branch {{ hermes_agent_version_tag }} --skip-setup --non-interactive
+  register: hermes_agent_install
+  changed_when: true
+  when: hermes_agent_checkout.before != hermes_agent_checkout.after
+
+# The dashboard SPA is NOT shipped down the git-checkout install path. Upstream
+# gitignores hermes_cli/web_dist/ and builds it in release CI, so the published
+# PyPI wheel carries the bundle but a `--branch <tag>` checkout never does, and
+# install.sh runs no frontend build of its own. Result: the dashboard answers
+# {"error":"Frontend not built. Run: cd web && npm run build"} on / while every
+# /api/* route stays healthy — it looks like an outage and is a missing artifact.
+#
+# Building alone does not fix it, because two different trees are in play. The
+# app is installed as a REGULAR wheel, so hermes_cli/web_server.py resolves its
+# default dist as Path(__file__).parent / "web_dist" INSIDE site-packages, while
+# `npm run build` writes to the CHECKOUT (web/vite.config.ts outDir
+# "../hermes_cli/web_dist"). The build output and the search path never meet.
+#
+# HERMES_WEB_DIST on the dashboard unit is the seam upstream provides for exactly
+# this (their Dockerfile and Nix package both set it). Pointing it at the
+# checkout's output is also the durable choice: `hermes update` rebuilds that
+# same path via _build_web_ui(PROJECT_ROOT / "web"), so the daemon keeps the
+# bundle current after we seed it here, instead of us racing its self-updates.
+#
+# npm ci is deliberately NOT run: the installer already populated node_modules in
+# both the root and the web workspace, and the repo pins a single root
+# package-lock.json for an npm workspace, so a lone `npm ci` inside web/ would
+# fight that layout.
+#
+# The `creates` guard is DROPPED on an upgrade. web_dist/ is gitignored, so it
+# survives the checkout moving to a new release — the guard would then skip the
+# rebuild forever and serve the previous release's bundle against the new API.
+- name: Build the Hermes dashboard frontend bundle
+  ansible.builtin.command:
+    cmd: npm run build
+    chdir: "{{ hermes_agent_install_dir }}/web"
+    creates: >-
+      {{ omit if hermes_agent_install is changed
+         else hermes_agent_web_dist ~ '/index.html' }}
+  notify: Restart hermes-dashboard
+
+# A build that exits 0 but emits nothing still leaves the dashboard 404ing, and
+# the creates guard above would then skip the rebuild forever. Fail the converge
+# on the artifact, not on the exit code.
+- name: Assert the dashboard bundle exists
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_web_dist }}/index.html"
+  register: hermes_agent_web_dist_stat
+
+- name: Fail when the dashboard bundle is missing
+  ansible.builtin.fail:
+    msg: >-
+      {{ hermes_agent_web_dist }}/index.html is absent after the frontend build.
+      The dashboard will serve "Frontend not built" on /. Check that node and npm
+      are on PATH in the guest and that {{ hermes_agent_install_dir }}/web
+      has its node_modules populated.
+  when: not hermes_agent_web_dist_stat.stat.exists
