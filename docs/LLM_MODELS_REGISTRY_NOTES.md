@@ -122,11 +122,16 @@ field names were a naming-level guardrail, not a technical one. Because of that,
 only way a model becomes reachable, and the `openrouter/*` passthrough that used
 to route around it is gone.
 
-There is no router-enforced SPEND cap, and nothing here should be read as
-claiming one — the proxy has no store to track spend in, by design. What the
-router does enforce is a rate ceiling per egress deployment. Caller-side policy
-(deliberate escalation, `:free` rules) is therefore still doing real work rather
-than being a backstop.
+The spend-cap mechanism exists and is live-wired — Redis-backed
+(`roles/redis`), enforced via `router_settings.provider_budget_config` in
+`config.yaml.j2`, guarded by `tasks/assert-budget-backing.yml` (fails the
+converge if the shared store and the cap separate). It is currently
+**disabled**: `llm_router_openrouter_budget_limit` defaults to `0`. Enabling
+it is a config change (set the limit), not an architecture change. The
+router does separately enforce a rate ceiling per egress deployment
+regardless of the spend cap's state. Caller-side policy (deliberate
+escalation, `:free` rules) is therefore still doing real work rather than
+being the only backstop.
 
 The `:free` endpoint is rate-limited, and the vendor logs prompt/session data on
 that variant — never send confidential material through it.
