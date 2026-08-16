@@ -239,17 +239,37 @@ llm_router_model_registry:
     enabled: true
     embedding: true
 
-  # ── vLLM tier (NVIDIA/CUDA guest) ───────────────────────────────────────────
-  # Served by vLLM from official CUDA wheels. upstream_model_id is the
-  # --served-model-name vLLM is started with, NOT the HuggingFace repo id, so
-  # the two must stay in step with roles/vllm's vllm_served_model_name.
+  # ── NVIDIA GPU tier ─────────────────────────────────────────────────────────
+  # The tier key stays `vllm` deliberately. It names the ROUTER TIER and its
+  # base URL, not the engine, and renaming it would churn the router defaults,
+  # this registry and the inventory group for no functional gain. The guest
+  # now serves with llama.cpp, not vLLM.
   #
-  # Single deployment, no CPU standby: vLLM serves one model per instance and
-  # nothing else serves these weights. 14B AWQ at 4-bit fits the 16 GB card with
-  # KV headroom; the context window is held well below the model's native limit
-  # because KV cache grows linearly with it.
-  - client_model_id: qwen3-14b
-    upstream_model_id: qwen3-14b
+  # CORRECTED — this block previously read "Served by vLLM from official CUDA
+  # wheels" and described a 14B AWQ model. Both are out of date, and the
+  # reasoning behind them should not be re-derived:
+  #   - vLLM cannot read Qwen3.8-27B here. It registers the architecture, but
+  #     the weights only exist below 4-bit as GGUF, and the out-of-tree GGUF
+  #     plugin has NO merged adapter for the qwen3_5 hybrid architecture. No
+  #     safetensors quant fits 16 GB either (4-bit builds measure 15.7-19.5 GB).
+  #   - "llama.cpp ships no Linux CUDA binary" is TRUE and is NOT a reason
+  #     llama.cpp cannot use this card. Upstream ships a prebuilt Linux VULKAN
+  #     binary that runs on NVIDIA, which is what serves this model.
+  #
+  # upstream_model_id is the name the serving host actually answers to — for
+  # llama-swap that is the model's `name` in llama_cpp_models, so the two must
+  # stay in step with inventory/group_vars/llm_vllm_group.yml.
+  #
+  # Single deployment, no CPU standby: nothing else serves these weights. The
+  # context window is held well below the model's native limit because KV cache
+  # grows linearly with it, and this card has 16 GB with ~11.9 GB of that taken
+  # by the weights.
+  #
+  # ROLLBACK: set vllm_service_enabled back to true and llama_cpp off in that
+  # group_vars file, and change this entry back to qwen3-14b. The vLLM venv and
+  # its weights are still on the guest, so rollback costs no download.
+  - client_model_id: qwen3.8-27b
+    upstream_model_id: qwen3.8-27b
     provider: openai
     tier: vllm
     enabled: true
