@@ -21,6 +21,7 @@ from conftest import (
     PINNED_WORKER_REAP_SOURCE,
     PINNED_WORKER_SPAWN_SOURCE,
     _apply_runtime_patch,
+    _combined_assert_task,
     _source_postconditions,
     _task,
 )
@@ -45,7 +46,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "hermes_cli/main.py",
     ]
 
-    assert_task = _task("Assert installed Hermes pinned-source patches")
+    assert_task = _combined_assert_task()
     conditions = " ".join(assert_task["ansible.builtin.assert"]["that"])
     assert "verdict, reason, _, _, _ = judge_goal(" in conditions
     assert any(

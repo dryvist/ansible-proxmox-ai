@@ -274,6 +274,20 @@ PATCHED_CLI_MAIN_SOURCE = PINNED_CLI_MAIN_SOURCE.replace(
 )
 
 
+def _combined_assert_task() -> dict[str, Any]:
+    """Recombine the token-limit-split source-patch assert (2026-08-16) back
+    into one dict, so every caller still sees the full `that:`/fail_msg it
+    saw before the split — same conditions, just relocated across two files.
+    """
+    a = _task("Assert installed Hermes pinned-source patches")["ansible.builtin.assert"]
+    b = _task("Assert installed Hermes pinned-source patches (cron/memory/judge half)")[
+        "ansible.builtin.assert"
+    ]
+    return {
+        "ansible.builtin.assert": {"that": a["that"] + b["that"], "fail_msg": a["fail_msg"]}
+    }
+
+
 def _source_postconditions(
     completion_source: str,
     reconcile_source: str,
@@ -286,7 +300,7 @@ def _source_postconditions(
     run_agent_source: str = PATCHED_RUN_AGENT_SOURCE,
     cli_main_source: str = PATCHED_CLI_MAIN_SOURCE,
 ) -> tuple[bool, ...]:
-    task = _task("Assert installed Hermes pinned-source patches")
+    that = _combined_assert_task()["ansible.builtin.assert"]["that"]
     environment = Environment(autoescape=False)
     context = {
         "hermes_agent_goal_completion_source": completion_source,
@@ -302,8 +316,7 @@ def _source_postconditions(
         "hermes_agent_cli_main_source": cli_main_source,
     }
     return tuple(
-        bool(environment.compile_expression(condition)(**context))
-        for condition in task["ansible.builtin.assert"]["that"]
+        bool(environment.compile_expression(condition)(**context)) for condition in that
     )
 
 
