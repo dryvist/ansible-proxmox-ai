@@ -184,11 +184,28 @@
 # Open WebUI reports onboarding=true until a first user exists; the first
 # signup becomes the admin. Provision it here so the UI never shows the
 # wizard. Skipped on every converge after the first.
+# This is the FIRST request after the service restart the handlers just flushed,
+# so it races the application's startup. Open WebUI runs migrations and imports
+# its instrumentation before binding, which takes seconds, and an unretried
+# probe fails with "Connection refused" on a converge that in fact succeeded —
+# measured on the 0.11.0 upgrade, where the app was serving normally moments
+# later. Wait for the port to accept connections, then retry the request.
+- name: Wait for Open WebUI to accept connections after the restart
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ open_webui_port }}"
+    timeout: 180
+
 - name: Check whether Open WebUI is onboarded
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ open_webui_port }}/api/config"
     return_content: true
   register: open_webui_cfg
+  # An open port is not a served request: uvicorn binds before the app is
+  # ready, so the first /api/config can still 502 or reset.
+  retries: 10
+  delay: 6
+  until: open_webui_cfg is succeeded
 
 - name: Create the admin account (first signup)
   ansible.builtin.uri:
