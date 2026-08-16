@@ -1,0 +1,175 @@
+---
+# Second half of patches_verify.yml's assertion, split out solely to stay
+# under the repo's per-file token budget (see .token-limits.yaml) — not a
+# behavioral change. Reuses hermes_agent_goal_mode_sources, registered by the
+# slurp task in patches_verify.yml (both files are include_tasks'd from the
+# same play in tasks/main.yml, back to back, so the registered fact is still
+# in scope). The cron delivery path, memory rebind, and judge-transport
+# patches happen to cluster here; the split point is just where the previous
+# file's token budget ran out, not a meaningful grouping on its own.
+- name: Assert installed Hermes pinned-source patches (cron/memory/judge half)
+  vars:
+    hermes_agent_goal_completion_source: >-
+      {{ hermes_agent_goal_mode_sources.results[0].content | b64decode }}
+    hermes_agent_goal_reconcile_source: >-
+      {{ hermes_agent_goal_mode_sources.results[1].content | b64decode }}
+    hermes_agent_goal_judge_source: >-
+      {{ hermes_agent_goal_mode_sources.results[2].content | b64decode }}
+    hermes_agent_compressor_source: >-
+      {{ hermes_agent_goal_mode_sources.results[5].content | b64decode }}
+    hermes_agent_cron_scheduler_source: >-
+      {{ hermes_agent_goal_mode_sources.results[6].content | b64decode }}
+    hermes_agent_hindsight_plugin_source: >-
+      {{ hermes_agent_goal_mode_sources.results[7].content | b64decode }}
+    hermes_agent_run_agent_source: >-
+      {{ hermes_agent_goal_mode_sources.results[8].content | b64decode }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # Inverted, because upstream restructured the scan this once clamped:
+      # the clamp patch is retired, and what still matters is that the
+      # unbounded reverse scan (the IndexError source) never comes back.
+      - >-
+        'for idx in range(end - 1, start - 1, -1):'
+        not in hermes_agent_compressor_source
+      # No longer anchored on "deliver_content = " directly: the
+      # output-validity guard below now wraps this call rather than sitting
+      # beside it, so the markup guard call is nested one level in. The
+      # substring alone still proves it is wired into the delivery path.
+      - >-
+        '_cron_markup_guard(job, output_file,'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        '_deliver_result(_routed_job, deliver_content,'
+        in hermes_agent_cron_scheduler_source
+      # Output-validity guard: the helper landed AND the delivery call was
+      # rewritten to route through it. Either alone is a silent no-op in a
+      # different direction — presence without the call site is dead code
+      # that never suppresses anything; the call site without the helper is
+      # a NameError on every cron delivery.
+      - >-
+        'def _cron_output_validity_guard(job, output_file, content, success):'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        'deliver_content = _cron_output_validity_guard(job, output_file,'
+        in hermes_agent_cron_scheduler_source
+      # A legitimate [SILENT] run must defer to upstream's own silence
+      # matcher, never get rewritten into a false "too short" failure before
+      # upstream's own suppression check (run_job, later in this same file)
+      # ever sees the marker.
+      - >-
+        'if _is_cron_silence_response(text):'
+        in hermes_agent_cron_scheduler_source
+      # The guard above calls this upstream helper unconditionally on every
+      # successful cron delivery. Pinned separately so a future
+      # hermes_agent_version bump that renames or drops it fails the
+      # converge loudly, instead of NameError-ing the first cron job that
+      # completes after the upgrade.
+      - >-
+        'def _is_cron_silence_response(text: str) -> bool:'
+        in hermes_agent_cron_scheduler_source
+      # Opt-in cron goal mode. BOTH halves are asserted, because either one
+      # alone is a silent no-op in a different direction: the helper without
+      # the call site is dead code that never judges anything, and the call
+      # site without the helper is a NameError on every cron fire.
+      - >-
+        'def _hermes_cron_goal_run(agent, prompt, job_name):'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        '_hermes_cron_goal_run, agent, prompt, job_name)'
+        in hermes_agent_cron_scheduler_source
+      # And the upstream call it replaced must be GONE — a `replace` that
+      # matched nothing still reports ok, so presence of the new line is not
+      # by itself proof the old path stopped being used.
+      - >-
+        '_cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)'
+        not in hermes_agent_cron_scheduler_source
+      # The cron built-in memory rebind. Both halves asserted: the store
+      # construction is what makes the memory tool answer at all, and the
+      # `_cfg`-derived enable flags are what keep it honest — a landing that
+      # constructed the store but read the flags from somewhere else would
+      # re-enable memory for cron even after config.yaml turned it off.
+      - >-
+        'from tools.memory_tool import MemoryStore as _CronMemoryStore'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        'agent._memory_enabled = _mem_cfg.get("memory_enabled", False)'
+        in hermes_agent_cron_scheduler_source
+      # The flag this patch deliberately does NOT remove. If a future upstream
+      # bump drops it, the external provider is silently back in cron's path
+      # and starts building user representations from machine-authored
+      # prompts — the exact corruption its own comment warns about.
+      - >-
+        'skip_memory=True,  # Cron system prompts would corrupt user representations'
+        in hermes_agent_cron_scheduler_source
+      # Creation-time assignee validation. Both creation paths carry the same
+      # anchor line, so the count is what proves the second one landed.
+      - >-
+        hermes_agent_goal_reconcile_source.count(
+          '_known_profiles = list_profiles_on_disk()'
+        ) == 2
+      # The second assertion on the retired message patch is gone with it: it
+      # pinned wording that patch produced, which exists in no upstream release,
+      # so it could only ever fail. The message itself is asserted above.
+      # Absence, not presence: upstream dropped this log line outright after
+      # the pinned release, so the role's debug-to-warning patch applies on one
+      # version and is a no-op on the other. Either way the defect — a prefetch
+      # failure hidden at debug level — must not be present.
+      - >-
+        'logger.debug("Hindsight prefetch failed:'
+        not in hermes_agent_hindsight_plugin_source
+      # The kanban goal loop's judge-error guard: both halves of the patch
+      # (counter init + guard reset = exactly 2 occurrences), the bounded
+      # blocked outcome, and the UPSTREAM producer of the transport flag the
+      # guard keys on. Keyed on `_transport_failed` rather than the old
+      # "judge error: " text — the text pin is what silently died when upstream
+      # added a fifth return value, leaving the guard dead and judge failures
+      # burning whole turn budgets. Pinning the producer keeps an upstream
+      # change to the flag itself a loud converge failure.
+      - >-
+        'if _transport_failed:'
+        in hermes_agent_goal_judge_source
+      # The availability probe's two silent declines, now logged. Asserted on
+      # kanban_tools (the completion gate's own module): without these, a
+      # goal-mode card can complete unjudged and leave no trace anywhere.
+      - >-
+        hermes_agent_goal_completion_source.count(
+          'goal judge unavailable:'
+        ) == 2
+      - >-
+        hermes_agent_goal_judge_source.count('judge_failures = 0') == 2
+      - >-
+        '"outcome": "blocked_judge_unreachable"'
+        in hermes_agent_goal_judge_source
+      - >-
+        'return "continue", f"judge error: {type(exc).__name__}", False, None, True'
+        in hermes_agent_goal_judge_source
+      # The judge's own call timing, in the worker line's field shape. Counted,
+      # not just present: a second insertion would time and log every verdict
+      # twice, and the Splunk field would then read from whichever line landed
+      # last. Both halves asserted — a timer with no emission measures nothing.
+      - >-
+        hermes_agent_goal_judge_source.count('_judge_started = time.monotonic()') == 1
+      - >-
+        '"goal judge: API call model=%s latency=%.1fs",'
+        in hermes_agent_goal_judge_source
+      # The four _sync_external_memory_for_turn() observability log lines —
+      # one per silent exit. All four or none: the patch tasks above touch
+      # adjacent lines in the same function, so a partial landing here means
+      # a regex stopped matching upstream and the rest silently no-op'd.
+      - >-
+        'Hermes external-memory sync/prefetch skipped: turn interrupted'
+        in hermes_agent_run_agent_source
+      - >-
+        'Hermes external-memory sync/prefetch skipped: missing manager=%s'
+        in hermes_agent_run_agent_source
+      - >-
+        'Hermes external-memory sync/prefetch skipped: empty after flatten'
+        in hermes_agent_run_agent_source
+      - >-
+        'Hermes external-memory sync_all/queue_prefetch_all failed: %s'
+        in hermes_agent_run_agent_source
+    fail_msg: >-
+      The pinned Hermes source changed and one or more required source
+      patches were not installed (cron/memory/judge half); update the
+      pinned-source patches before converging.
