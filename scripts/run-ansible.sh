@@ -144,5 +144,30 @@ set +e
 ansible-playbook "$PLAYBOOK" "$@" 2>&1 | tee "$LOG_FILE"
 STATUS=${PIPESTATUS[0]}
 set -e
+
+# A --limit naming a group that matched nothing (bad group name, a group only
+# populated by a DIFFERENT repo's inventory loader, a typo) still lets the
+# play recap come back green — localhost (the inventory-loader host) always
+# ran, so a naive "did anything run" check is never satisfied by absence.
+# If --limit asked for anything beyond bare localhost, the recap must show at
+# least one non-localhost host, or this run touched nothing it was asked to.
+LIMIT_VAL=""
+prev=""
+for a in "$@"; do
+  [[ $prev == "--limit" || $prev == "-l" ]] && LIMIT_VAL="$a"
+  [[ $a == --limit=* ]] && LIMIT_VAL="${a#--limit=}"
+  prev="$a"
+done
+NON_LOCALHOST_LIMIT=$(tr ',' '\n' <<<"$LIMIT_VAL" | grep -vx 'localhost' | grep -v '^$' || true)
+if [[ -n $NON_LOCALHOST_LIMIT ]]; then
+  RECAP_HOSTS=$(awk '/^PLAY RECAP/{f=1;next} f && NF{print $1}' "$LOG_FILE")
+  NON_LOCALHOST_RECAP=$(grep -vx 'localhost' <<<"$RECAP_HOSTS" || true)
+  if [[ -z $NON_LOCALHOST_RECAP ]]; then
+    echo "ERROR: --limit ($LIMIT_VAL) asked for hosts beyond localhost, but the play recap shows only localhost — this run did nothing." >&2
+    echo "Check the group name against the inventory loader that actually populates it (it may live in a different repo)." >&2
+    STATUS=1
+  fi
+fi
+
 echo "Run log: $LOG_FILE"
 exit "$STATUS"
