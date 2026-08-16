@@ -41,6 +41,19 @@ if [[ -n $BRANCH ]]; then
   fi
 fi
 
+# The SHA check above only proves the CHECKED-OUT COMMIT matches origin — it
+# is blind to uncommitted edits to tracked files, which deploy content that
+# matches neither the remote nor a clean checkout of that commit and still
+# exit 0 with a green recap, same failure shape the SHA check exists for.
+# --untracked-files=no: this repo carries untracked working state (a
+# published tofu-inventory cache, a resolved shared role) that is not
+# playbook drift, so counting it would refuse every routine run.
+if [[ -n $(git -C "$REPO_ROOT" status --porcelain --untracked-files=no) ]] && [[ -z ${ALLOW_STALE_CHECKOUT:-} ]]; then
+  echo "ERROR: working tree has uncommitted changes to tracked files — refusing to converge from unreviewed local edits." >&2
+  echo "Commit or stash them, or set ALLOW_STALE_CHECKOUT=1 for a deliberate override." >&2
+  exit 1
+fi
+
 CERT_DIR=""
 RUNNER_BAO_TOKEN=""
 
