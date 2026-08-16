@@ -38,7 +38,30 @@ llm_router_llm_light_base_url: "http://llm-light.{{ llm_router_subdomain }}:{{ l
 # exists. A failure here surfaces as that model being unavailable rather than
 # silently degrading to something slower and different.
 llm_router_llm_vllm_enabled: true
-llm_router_llm_vllm_base_url: "http://llm-4080.{{ llm_router_subdomain }}:{{ llm_router_light_port }}/v1"
+# APEX-level, unlike the llm-fast and llm-light URLs above, and the difference
+# is not cosmetic — it is the difference between resolving and not.
+#
+# technitium_dns publishes A records under the subdomain ONLY for guests that
+# carry a declared address. Leased guests are skipped there deliberately: their
+# address lives in the DHCP lease, the gateway answers for its own lease-table
+# clients, and publishing a second copy in a second system is the drift that
+# addressing model exists to prevent. So a leased guest resolves at
+# `<hostname>.<apex>` and NOT at `<hostname>.<subdomain>`.
+#
+# llm-fast and llm-light are network-tier guests with declared addresses, so the
+# subdomain form works for them. This guest is leased, so it does not — and
+# copying their pattern here is exactly the mistake that shipped. Measured from
+# a router guest: the sibling backends resolve under the subdomain, this one
+# resolves only at the apex and returns no record under the subdomain.
+#
+# The failure mode is worth naming, because nothing reported it. The router
+# advertised the model in /v1/models and every request to it failed with
+# "OpenAIException - Connection error" and no fallback group, while the backend
+# itself was healthy — a TCP connect to its serving port succeeded and an HTTP
+# request to the apex name returned 200. An entry that is advertised while its
+# upstream cannot be resolved looks identical to a working one from the model
+# list alone.
+llm_router_llm_vllm_base_url: "http://llm-4080.{{ llm_router_apex_domain }}:{{ llm_router_light_port }}/v1"
 # The large-tier gate (a caddy TLS front on the Mac Studio, apex-level cert via
 # Route53 DNS-01) reverse-proxies to the host's llama-swap. It has always been
 # addressed apex-level (one label under the subdomain's parent), because the
