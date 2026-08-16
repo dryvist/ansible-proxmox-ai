@@ -105,9 +105,7 @@
       into the servable set.
 
 - name: Assert no fallback target serves a smaller context than the primary
-  # The chain is rendered permanently while the cluster leg is wired (see
-  # llm_router_cluster_leg_available), so a target with a smaller context_window
-  # would not be a rare edge — it would silently poison every hermes-default
+  # A target with a smaller context_window would silently poison every hermes-default
   # request that failed over, which is the exact "degrade the caller instead of
   # failing loud" outcome the no-cross-tier-fallback rule in config.yaml.j2
   # forbids. Same-tier membership does not imply it: both are tier: large today
@@ -146,7 +144,7 @@
     #     response body: an aliased request echoes the ALIAS back in `model`
     #     (verified live — requesting "goal-judge" returns model "goal-judge",
     #     never the physical id), so the body attributes nothing. The signal is
-    #     the response HEADERS, which litellm 1.90.3 sets in
+    #     the response HEADERS, which litellm 1.97.0 sets in
     #     router_utils/add_retry_fallback_headers.py the moment a fallback
     #     succeeds: x-litellm-attempted-fallbacks (0 = primary served),
     #     x-litellm-model-id and x-litellm-model-api-base (which backend).
@@ -160,11 +158,6 @@
          | rejectattr('context_window', 'none')
          | selectattr('context_window', 'lt', _llm_router_primary_context | int)
          | map(attribute='client_model_id') | list }}
-
-# Cluster-leg reachability contract. Its own file so a test can import exactly
-# this task and prove the failure path, rather than re-stating its condition.
-- name: Assert cluster-tier servable claims are backed by an enabled serving path
-  ansible.builtin.import_tasks: assert-cluster-leg.yml
 
 - name: Assert the rate-limit retry budget actually absorbs a 429 and fits the timeout chain
   ansible.builtin.assert:
