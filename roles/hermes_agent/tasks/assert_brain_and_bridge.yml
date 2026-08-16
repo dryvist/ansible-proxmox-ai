@@ -17,6 +17,11 @@
       #     the outermost link (nix-darwin MLX model server guard, 3600s) lives
       #     out of this repo's reach and is not assertable here.
       - hermes_agent_stream_read_timeout | int < ai_router_request_timeout_seconds | int
+      # (3b) Same client-is-decider rule for cron's non-streaming hard wall
+      #     clock (HERMES_CRON_TIMEOUT): it must sit below the router's
+      #     per-attempt timeout too, or the router could kill a call the cron
+      #     job would otherwise have accepted.
+      - hermes_agent_cron_timeout_seconds | int < ai_router_request_timeout_seconds | int
       # (4) Job-API concurrency cap must be a real cap. Upstream treats 0 as
       #     "cap disabled" — on a single shared serving deployment that means
       #     an unbounded request flood lands directly on the brain, which is
@@ -39,6 +44,9 @@
       per-attempt timeout is {{ ai_router_request_timeout_seconds }}; read must be < router
       so the client decides (chain: hermes read < router attempt < nix-darwin server
       guard 3600). Fix the offending value in all.yml / roles/hermes_agent/defaults.
+      (3b) cron hard wall clock is {{ hermes_agent_cron_timeout_seconds }} and the
+      router per-attempt timeout is {{ ai_router_request_timeout_seconds }}; cron
+      timeout must be < router for the same client-is-decider reason as (3).
       (4) hermes_agent_api_max_concurrent_runs is
       {{ hermes_agent_api_max_concurrent_runs }}; it must be >= 1 — 0 disables the
       upstream cap entirely and exposes the single shared brain to request floods.
@@ -54,7 +62,9 @@
       Hermes Agent brain-wiring contracts hold (context_length
       {{ hermes_agent_model_context_length }} >= 64000; read
       {{ hermes_agent_stream_read_timeout }} < router {{ ai_router_request_timeout_seconds }};
-      api cap {{ hermes_agent_api_max_concurrent_runs }} >= 1; watchdog probe
+      cron hard wall {{ hermes_agent_cron_timeout_seconds }} < router
+      {{ ai_router_request_timeout_seconds }}; api cap
+      {{ hermes_agent_api_max_concurrent_runs }} >= 1; watchdog probe
       {{ hermes_agent_brain_watchdog_probe_timeout }} > backoff
       {{ ai_router_retry_after_seconds }}).
 
