@@ -133,6 +133,20 @@ The OpenBao secrets pre-fetch play is tagged `always`, so scoped `--tags`
 runs get their secrets automatically — no `--tags openbao_secrets,<role>`
 pairing is needed (unlike ansible-proxmox-apps).
 
+`scripts/run-ansible.sh` also refuses to converge from a checkout that is
+behind its tracked branch — a stale checkout deploys old content and still
+exits 0 with a green play recap, with nothing in the output to tell the
+difference. `ALLOW_STALE_CHECKOUT=1` is the deliberate escape hatch for a
+pinned replay. **The guard covers a stale branch checkout, not every way a
+checkout can be wrong.** On a detached HEAD (how GitHub Actions checks out a
+PR, or a manual `git checkout <sha>`) there is no tracked branch to compare
+against, so the guard skips the staleness comparison entirely rather than
+erroring — before that exemption was added (#503), a detached checkout hit
+an unrelated git error (`origin/HEAD` failing to resolve) and aborted the
+whole converge, misread as a guard failure. Detached-HEAD converges are
+intentionally ungated by this check; verify a pinned-commit run some other
+way if staleness matters there.
+
 ### Two execution paths
 
 1. **Provisioning-driven (tofu-proxmox first).** Guest shells, DNS, and the
