@@ -22,16 +22,18 @@
   An explicit mode (`local_external` today) + the rendered
   `hindsight/config.json` is what makes memory actually work. Verify with a
   non-fatal `hermes memory status` probe (run in `verify.yml`).
-- **Shared across profiles, by design.** Every named profile gets the same
-  `hindsight/config.json` (mode + `api_url`), and neither sets `bank_id` nor
-  `bank_id_template` — verified against the pinned hermes-agent's
-  `plugins/memory/hindsight/__init__.py`: with `bank_id_template` unset,
-  `_resolve_bank_id_template` always falls back to the static `bank_id`
-  (default `"hermes"`), which every profile therefore shares. Moving a
-  recurring card's `assignee` does **not** reset its memory continuity, and
-  `daily-summary` (default) can still recall a moved job's findings. Memory
-  is explicitly **not** part of the profile isolation boundary — do not rely
-  on it to separate what one profile "knows" from another.
+- **Managed client and readiness gate:** the role installs its exact
+  `hindsight-client` pin with the installer's uv binary into Hermes's own venv;
+  it never relies on the plugin's lazy pip/ensurepip fallback. The post-converge
+  gate verifies that distribution and performs a read-only recall through the
+  rendered config. An empty recall result is valid; a failed request is not.
+- **Separate agents; shared profiles.** Every Hermes agent uses the same mode
+  and Hindsight API endpoint, but its static `bank_id` derives from
+  `hermes_agent_id`. Different agents therefore retain and recall distinct
+  memory banks. Named profiles within one agent receive the same config and
+  share that agent's bank because `bank_id_template` is deliberately unset.
+  Moving a recurring card's assignee between profiles does not reset its
+  memory continuity. Memory is not a profile isolation boundary.
 
 > If you see a runtime loop of a repeated memory status line (e.g.
 > `Opening memory…Opening memory…`), that is the **brain degenerating**, not a
