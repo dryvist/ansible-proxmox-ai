@@ -21,6 +21,7 @@ from conftest import (
     PINNED_WORKER_REAP_SOURCE,
     PINNED_WORKER_SPAWN_SOURCE,
     _apply_runtime_patch,
+    _combined_assert_task,
     _source_postconditions,
     _task,
 )
@@ -45,7 +46,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "hermes_cli/main.py",
     ]
 
-    assert_task = _task("Assert installed Hermes pinned-source patches")
+    assert_task = _combined_assert_task()
     conditions = " ".join(assert_task["ansible.builtin.assert"]["that"])
     assert "verdict, reason, _, _, _ = judge_goal(" in conditions
     assert any(
@@ -79,9 +80,15 @@ def test_installed_source_postconditions_fail_closed() -> None:
     assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in conditions
     assert "status in (408, 429)" in conditions
     assert "for idx in range(end - 1, start - 1, -1):" in conditions
-    assert "deliver_content = _cron_markup_guard(job, output_file," in conditions
+    assert "_cron_markup_guard(job, output_file," in conditions
     # A failed run must reach the issues channel, not the work surface.
     assert "_deliver_result(_routed_job, deliver_content," in conditions
+    # Output-validity guard: wraps the markup guard's call, so it must be
+    # present and wired to the actual delivery-content assignment.
+    assert "def _cron_output_validity_guard(job, output_file, content, success):" in conditions
+    assert "deliver_content = _cron_output_validity_guard(job, output_file," in conditions
+    assert "if _is_cron_silence_response(text):" in conditions
+    assert "def _is_cron_silence_response(text: str) -> bool:" in conditions
     # The message and the retry rule are asserted as a pair: the message tells
     # the operator the card will be retried, so it must not be able to land
     # while the forced first-failure give-up is still in the source.

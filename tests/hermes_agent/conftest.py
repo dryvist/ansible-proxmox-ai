@@ -100,11 +100,27 @@ PATCHED_CRON_DELIVERY_SOURCE = (
     _task("Rebind the built-in memory store for cron agents")["vars"][
         "_hermes_cron_memory_block"
     ]
+    # The output-validity guard's own def line, needed for the postcondition
+    # that checks it landed. Raw block text (unrendered Jinja placeholders
+    # and all) — the postcondition only substring-matches the def line, which
+    # carries no templating, so rendering is unnecessary here; the guard's
+    # actual runtime behaviour is exec'd and rendered separately in
+    # test_cron_output_validity.py.
+    + _task("Patch Hermes cron delivery with an output-validity guard")[
+        "ansible.builtin.blockinfile"
+    ]["block"]
+    # Upstream's own silence-matcher def line, pinned by
+    # patches_verify.yml so a version bump that drops it fails loudly rather
+    # than NameError-ing the guard above at runtime.
+    + '\ndef _is_cron_silence_response(text: str) -> bool:\n'
     + _apply_runtime_patch(
         "Route failed cron deliveries to the issues channel",
         _apply_runtime_patch(
-            "Route cron delivery content through the markup guard",
-            PINNED_CRON_DELIVERY_SOURCE,
+            "Route cron delivery content through the output-validity guard",
+            _apply_runtime_patch(
+                "Route cron delivery content through the markup guard",
+                PINNED_CRON_DELIVERY_SOURCE,
+            ),
         ),
     )
 )
@@ -258,6 +274,20 @@ PATCHED_CLI_MAIN_SOURCE = PINNED_CLI_MAIN_SOURCE.replace(
 )
 
 
+def _combined_assert_task() -> dict[str, Any]:
+    """Recombine the token-limit-split source-patch assert (2026-08-16) back
+    into one dict, so every caller still sees the full `that:`/fail_msg it
+    saw before the split — same conditions, just relocated across two files.
+    """
+    a = _task("Assert installed Hermes pinned-source patches")["ansible.builtin.assert"]
+    b = _task("Assert installed Hermes pinned-source patches (cron/memory/judge half)")[
+        "ansible.builtin.assert"
+    ]
+    return {
+        "ansible.builtin.assert": {"that": a["that"] + b["that"], "fail_msg": a["fail_msg"]}
+    }
+
+
 def _source_postconditions(
     completion_source: str,
     reconcile_source: str,
@@ -270,7 +300,7 @@ def _source_postconditions(
     run_agent_source: str = PATCHED_RUN_AGENT_SOURCE,
     cli_main_source: str = PATCHED_CLI_MAIN_SOURCE,
 ) -> tuple[bool, ...]:
-    task = _task("Assert installed Hermes pinned-source patches")
+    that = _combined_assert_task()["ansible.builtin.assert"]["that"]
     environment = Environment(autoescape=False)
     context = {
         "hermes_agent_goal_completion_source": completion_source,
@@ -286,8 +316,7 @@ def _source_postconditions(
         "hermes_agent_cli_main_source": cli_main_source,
     }
     return tuple(
-        bool(environment.compile_expression(condition)(**context))
-        for condition in task["ansible.builtin.assert"]["that"]
+        bool(environment.compile_expression(condition)(**context)) for condition in that
     )
 
 
