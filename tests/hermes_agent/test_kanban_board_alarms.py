@@ -36,6 +36,7 @@ FIXTURE_CONFIG = {
     "INTERVAL_MIN": 15,
     "HEARTBEAT_HOURS": 6,
     "ISSUES_CHANNEL": "C_ISSUES",
+    "NOISE_CHANNEL": "C_NOISE",
     "HERMES_BIN": str(TMP / "no-such-hermes-binary"),
     "ISSUES_MARKER": "[ISSUES]",
     "STALL_TICKS_THRESHOLD": 3,
@@ -274,11 +275,12 @@ def test_extra_issue_lines_land_in_issues_text_not_the_work_log():
     import datetime as dt
 
     now = dt.datetime.now(dt.timezone.utc)
-    text, issues = DIGEST.build_digest(
+    text, issues, heartbeat_text = DIGEST.build_digest(
         [], [], {"ready": 1}, now, now.timestamp() - 900, "",
         due=True, extra_issue_lines=["a stall alarm line"])
     assert "board alarms" in issues and "a stall alarm line" in issues
     assert "a stall alarm line" not in text
+    assert "a stall alarm line" not in heartbeat_text
 
 
 def test_extra_issue_lines_survive_heartbeat_suppression():
@@ -287,10 +289,11 @@ def test_extra_issue_lines_survive_heartbeat_suppression():
     import datetime as dt
 
     now = dt.datetime.now(dt.timezone.utc)
-    text, issues = DIGEST.build_digest(
+    text, issues, heartbeat_text = DIGEST.build_digest(
         [], [], {"ready": 1}, now, now.timestamp() - 900, "",
         due=False, extra_issue_lines=["a stall alarm line"])
     assert text == DIGEST.SILENT
+    assert heartbeat_text == ""
     assert "a stall alarm line" in issues
 
 
@@ -298,7 +301,7 @@ def test_no_alarms_means_no_issues_block_added():
     import datetime as dt
 
     now = dt.datetime.now(dt.timezone.utc)
-    _, issues = DIGEST.build_digest(
+    _, issues, _ = DIGEST.build_digest(
         [], [], {}, now, now.timestamp() - 900, "", due=True, extra_issue_lines=[])
     assert issues == ""
 

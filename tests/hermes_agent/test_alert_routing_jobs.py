@@ -97,13 +97,24 @@ def test_scouting_jobs_report_to_the_noise_channel() -> None:
 
 
 def test_the_former_kanban_cards_still_report_to_the_work_channel() -> None:
-    """Splunk triage sweep, Docs-site study and docs-sync were Kanban cards
-    before the reframe (18/18 to cron); they are now direct-cron jobs but keep
-    the same destination."""
+    """Docs-site study and docs-sync were Kanban cards before the reframe
+    (18/18 to cron); they are now direct-cron jobs but keep the same
+    destination. Splunk triage was also one of them, but its domain-channel
+    fix (below) moved it off the work channel onto the Splunk digest one."""
     ctx = _resolve(CONFIGURED)
-    for var in ("hermes_agent_splunk_triage_cron_name", "hermes_agent_docs_study_cron_name",
-                "hermes_agent_docs_sync_cron_name"):
+    for var in ("hermes_agent_docs_study_cron_name", "hermes_agent_docs_sync_cron_name"):
         assert _direct_deliver(var, ctx) == "slack:C_ALL", var
+
+
+def test_agentic_splunk_domain_crons_report_to_the_splunk_channel() -> None:
+    """splunk-triage/security/parsing/deepdive and anomaly-hunt share the Splunk
+    digest domain with the script-fed splunk-status/error/security digests
+    (100-splunk.yml) — they must land on the same channel, not the work log."""
+    ctx = _resolve(CONFIGURED)
+    for var in ("hermes_agent_splunk_triage_cron_name", "hermes_agent_splunk_security_cron_name",
+                "hermes_agent_splunk_parsing_cron_name", "hermes_agent_splunk_deepdive_cron_name",
+                "hermes_agent_anomaly_hunt_cron_name"):
+        assert _direct_deliver(var, ctx) == "slack:C_SPLUNK", var
 
 
 def test_the_fabric_status_card_is_told_its_endpoints_instead_of_guessing() -> None:

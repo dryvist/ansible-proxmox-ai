@@ -31,6 +31,7 @@ FIXTURE_CONFIG = {
     "INTERVAL_MIN": 15,
     "HEARTBEAT_HOURS": 6,
     "ISSUES_CHANNEL": "C_ISSUES",
+    "NOISE_CHANNEL": "C_NOISE",
     # Deliberately absent: send_to_issues must report failure, not raise, so the
     # caller can fall back to inlining the failure lines.
     "HERMES_BIN": str(TMP / "no-such-hermes-binary"),
@@ -123,12 +124,21 @@ def now_dt():
 
 
 def digest(tasks, runs, since=NOW - 900, note="", due=True):
-    """The work-log post only — what #hermes-all receives."""
-    text, _ = DIGEST.build_digest(*board(tasks, runs), now_dt(), since, note, due)
+    """The work-log post only — what #hermes-all receives. SILENT on the
+    quiet-but-due branch: that text now goes to the noise channel instead
+    (see heartbeat() below), never to the work log."""
+    text, _, _ = DIGEST.build_digest(*board(tasks, runs), now_dt(), since, note, due)
     return text
+
+
+def heartbeat(tasks, runs, since=NOW - 900, note="", due=True):
+    """The heartbeat post only — what the noise channel receives."""
+    _, _, heartbeat_text = DIGEST.build_digest(*board(tasks, runs), now_dt(), since, note, due)
+    return heartbeat_text
 
 
 def digest_split(tasks, runs, since=NOW - 900, note="", due=True):
     """(work_log_text, issues_text) with failure routing enabled."""
-    return DIGEST.build_digest(*board(tasks, runs), now_dt(), since, note, due,
-                               split_failures=True)
+    text, issues_text, _ = DIGEST.build_digest(*board(tasks, runs), now_dt(), since, note, due,
+                                               split_failures=True)
+    return text, issues_text
