@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.30.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.29.0...v0.30.0) (2026-08-15)
+
+
+### Features
+
+* **hermes_agent:** run selected cron jobs under the goal judge ([#472](https://github.com/dryvist/ansible-proxmox-ai/issues/472)) ([38ba221](https://github.com/dryvist/ansible-proxmox-ai/commit/38ba2218b938208af3decb7d242dca3ef5154bb8))
+* **hermes_ui_docker:** wire the hermes-ui converge path ([#407](https://github.com/dryvist/ansible-proxmox-ai/issues/407)) ([7beea66](https://github.com/dryvist/ansible-proxmox-ai/commit/7beea665d3360c0f3df1ac624b7b6b4293bc2f51))
+
+
+### Bug Fixes
+
+* **hermes_agent,llm_router:** cron memory store, kanban stall diagnostics, resident fallback chain ([#448](https://github.com/dryvist/ansible-proxmox-ai/issues/448)) ([c54b336](https://github.com/dryvist/ansible-proxmox-ai/commit/c54b336631cf1c1d308b582c2f99104bc15b44f9))
+* **vllm:** disable the FlashInfer sampler and guard the restart handler ([#471](https://github.com/dryvist/ansible-proxmox-ai/issues/471)) ([52288a8](https://github.com/dryvist/ansible-proxmox-ai/commit/52288a88119fe4a1f49844165b8bcf7cdd1724a0))
+* **vllm:** drop the undefined ansible_managed reference in apt proxy content ([#468](https://github.com/dryvist/ansible-proxmox-ai/issues/468)) ([bb3130f](https://github.com/dryvist/ansible-proxmox-ai/commit/bb3130f48650fc5cb8340400874ad9bf1f9bf1b1))
+* **vllm:** install libcuda1 as the guest NVIDIA userspace library ([#470](https://github.com/dryvist/ansible-proxmox-ai/issues/470)) ([05440e8](https://github.com/dryvist/ansible-proxmox-ai/commit/05440e85d175a0fab81f1f581b81d569c0a16f6a))
+* **vllm:** send https apt sources direct rather than through the cache ([#469](https://github.com/dryvist/ansible-proxmox-ai/issues/469)) ([dca30a6](https://github.com/dryvist/ansible-proxmox-ai/commit/dca30a686c537165c2d9f85df8d5896c1fc635f5))
+
 ## [0.29.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.28.3...v0.29.0) (2026-08-15)
 
 
