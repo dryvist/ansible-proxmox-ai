@@ -6,6 +6,9 @@
 llm_router_hermes_virtual_models: >-
   {{ llm_router_registry_enabled
      | selectattr('tier', 'equalto', 'hermes-router') | list }}
+llm_router_hermes_cloud_router_models: >-
+  {{ llm_router_registry_enabled
+     | selectattr('tier', 'equalto', 'hermes-cloud-router') | list }}
 llm_router_hermes_cloud_models: >-
   {{ llm_router_registry_enabled
      | selectattr('tier', 'equalto', 'hermes-cloud') | list }}
@@ -28,9 +31,48 @@ llm_router_hermes_cloud_models_credentialed: >-
   {%- endfor -%}
   {{ ns.models }}
 
+# Virtual provider routers use the same provider credential gate as their
+# physical tier deployments. They hold no API key themselves; the selected
+# routine/agentic deployment is the only provider call.
+llm_router_hermes_cloud_router_models_credentialed: >-
+  {%- set ns = namespace(models=[]) -%}
+  {%- for m in llm_router_hermes_cloud_router_models -%}
+  {%- set key = bao_local_llm_secrets[m.key_field]
+       | default(lookup('env', m.credential_env), true) -%}
+  {%- if key | trim | length > 0 -%}
+  {%- set ns.models = ns.models + [m] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.models }}
+
 llm_router_hermes_cloud_fallback_groups: >-
-  {{ llm_router_hermes_cloud_models_credentialed
-     | map(attribute='route_group') | unique | list }}
+  {%- set ns = namespace(groups=[]) -%}
+  {%- for m in llm_router_hermes_cloud_models_credentialed -%}
+  {%- set group = m.fallback_group | default(m.route_group) -%}
+  {%- if group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups }}
+
+# LiteLLM's global 429 retry policy exists for the local serving tier. Tagged
+# v1.97.0 source gives a matching model-group policy precedence over that
+# global policy, so enumerate every credential-backed cloud alias and physical
+# group here. This keeps each paid provider to one attempt before fallback,
+# including an explicit request to a physical cloud group.
+llm_router_hermes_cloud_zero_retry_groups: >-
+  {%- set ns = namespace(groups=[]) -%}
+  {%- for group in llm_router_hermes_cloud_fallback_groups -%}
+  {%- if group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- for m in llm_router_hermes_cloud_models_credentialed -%}
+  {%- if m.route_group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [m.route_group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups }}
 
 # LiteLLM 1.97 records the original alias, not the complexity-selected local
 # group, as attempted. Re-listing a local group here can therefore call the same

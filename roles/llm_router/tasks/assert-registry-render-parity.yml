@@ -46,12 +46,27 @@
     that:
       - _llm_router_enabled_unrendered | length == 0
       - _llm_router_rendered_unregistered | length == 0
+      - _llm_router_cloud_fallback_missing_router | length == 0
+      - _llm_router_cloud_router_not_fallback | length == 0
+      - _llm_router_cloud_router_missing_target | length == 0
     fail_msg: >-
       Registry and rendered model_list disagree.
       {% if _llm_router_enabled_unrendered | length > 0 %}
       ENABLED BUT NOT RENDERED: {{ _llm_router_enabled_unrendered | join(', ') }}
       — the registry advertises these but the template renders no deployment,
       so a caller (or a fallback target) naming one reaches nothing.
+      {% endif %}
+      {% if _llm_router_cloud_fallback_missing_router | length > 0 %}
+      CLOUD FALLBACK NOT RENDERED:
+      {{ _llm_router_cloud_fallback_missing_router | join(', ') }}.
+      {% endif %}
+      {% if _llm_router_cloud_router_not_fallback | length > 0 %}
+      CLOUD ROUTER NOT IN FALLBACK CHAIN:
+      {{ _llm_router_cloud_router_not_fallback | join(', ') }}.
+      {% endif %}
+      {% if _llm_router_cloud_router_missing_target | length > 0 %}
+      CLOUD ROUTER TARGET NOT RENDERED:
+      {{ _llm_router_cloud_router_missing_target | join(', ') }}.
       {% endif %}
       {% if _llm_router_rendered_unregistered | length > 0 %}
       RENDERED BUT NOT REGISTERED: {{ _llm_router_rendered_unregistered | join(', ') }}
@@ -70,19 +85,19 @@
     _llm_router_rendered_names: >-
       {{ _llm_router_parity_config.model_list | default([])
          | map(attribute='model_name') | unique | list }}
-    # The OpenRouter tier is exempt from the enabled-but-unrendered direction,
+    # The provider-key-gated tiers are exempt from enabled-but-unrendered,
     # and this is by design, not an oversight. Those entries are key-gated:
     # config.yaml.j2 renders one only when its provider key is seeded, and
     # "an unseeded model renders no entry at all" is the documented behaviour
-    # of the egress allowlist. Four such entries are enabled and unseeded
-    # today, so without this exemption the check fires four false positives on
-    # a correct config — and an assert that cries wolf gets disabled, which
+    # of the egress allowlist and Hermes cloud path. Without this exemption the
+    # check fires false positives on a correct keyless config — and an assert
+    # that cries wolf gets disabled, which
     # would cost more than the drift it was added to catch. The other
     # direction below still covers OpenRouter fully: anything rendered under a
     # name no enabled entry owns still fails.
     _llm_router_parity_expected: >-
       {{ llm_router_registry_enabled
-         | rejectattr('tier', 'in', ['openrouter', 'hermes-cloud'])
+         | rejectattr('tier', 'in', ['openrouter', 'hermes-cloud', 'hermes-cloud-router'])
          | map(attribute='client_model_id') | unique | list }}
     _llm_router_enabled_unrendered: >-
       {{ _llm_router_parity_expected | difference(_llm_router_rendered_names) }}
@@ -93,3 +108,20 @@
       {{ _llm_router_rendered_names
          | difference(llm_router_registry_enabled_route_names)
          | difference(['*']) }}
+    _llm_router_cloud_router_names: >-
+      {{ llm_router_hermes_cloud_router_models_credentialed
+         | map(attribute='client_model_id') | unique | list }}
+    _llm_router_cloud_router_targets: >-
+      {{ ((llm_router_hermes_cloud_router_models_credentialed
+           | map(attribute='routine_model') | list)
+          + (llm_router_hermes_cloud_router_models_credentialed
+             | map(attribute='agentic_model') | list)) | unique | list }}
+    _llm_router_cloud_fallback_missing_router: >-
+      {{ llm_router_hermes_cloud_fallback_groups
+         | difference(_llm_router_rendered_names) }}
+    _llm_router_cloud_router_not_fallback: >-
+      {{ _llm_router_cloud_router_names
+         | difference(llm_router_hermes_cloud_fallback_groups) }}
+    _llm_router_cloud_router_missing_target: >-
+      {{ _llm_router_cloud_router_targets
+         | difference(_llm_router_rendered_names) }}
