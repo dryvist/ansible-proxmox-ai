@@ -18,6 +18,24 @@ usage() {
 PLAYBOOK="$1"
 shift
 
+# A converge from a checkout behind its remote branch deploys stale content
+# and still exits 0 with a green play recap — nothing in the output
+# distinguishes it from a real deployment. Refuse by default; ALLOW_STALE_CHECKOUT=1
+# is the deliberate escape hatch for a pinned replay.
+REPO_ROOT=$(git rev-parse --show-toplevel)
+BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)
+git -C "$REPO_ROOT" fetch --quiet origin "$BRANCH"
+LOCAL_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD)
+REMOTE_SHA=$(git -C "$REPO_ROOT" rev-parse "origin/$BRANCH")
+if [[ $LOCAL_SHA != "$REMOTE_SHA" ]] && [[ -z ${ALLOW_STALE_CHECKOUT:-} ]]; then
+  BEHIND=$(git -C "$REPO_ROOT" rev-list --count "$LOCAL_SHA..$REMOTE_SHA")
+  echo "ERROR: checkout is $BEHIND commit(s) behind origin/$BRANCH — refusing to converge." >&2
+  echo "  local:  $LOCAL_SHA" >&2
+  echo "  remote: $REMOTE_SHA" >&2
+  echo "Run 'git pull --ff-only origin $BRANCH', or set ALLOW_STALE_CHECKOUT=1 for a deliberate pinned replay." >&2
+  exit 1
+fi
+
 CERT_DIR=""
 RUNNER_BAO_TOKEN=""
 
@@ -33,6 +51,9 @@ revoke_runner_token() {
   return 1
 }
 
+# shellcheck disable=SC2329 # false positive: invoked via `trap cleanup EXIT` below.
+# Reproduced in isolation — shellcheck stops crediting the trap reference once
+# the script ends in an explicit `exit`, which the run log below now does.
 cleanup() {
   local status=$?
   revoke_runner_token || true
@@ -112,4 +133,16 @@ if [[ -n ${SSH_KNOWN_HOSTS:-} ]]; then
   export ANSIBLE_SSH_COMMON_ARGS="-o UserKnownHostsFile=$CERT_DIR/known_hosts -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes${ANSIBLE_SSH_COMMON_ARGS:+ $ANSIBLE_SSH_COMMON_ARGS}"
 fi
 
-ansible-playbook "$PLAYBOOK" "$@"
+# A converge is the highest-consequence thing this repo does; without a
+# persisted log, reconstructing what happened after the fact means trusting
+# a green recap or digging through unrelated evidence (sshd logins, reflog).
+LOG_DIR="$REPO_ROOT/.ansible-run-logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$PLAYBOOK" .yml).log"
+echo "Logging this run to $LOG_FILE"
+set +e
+ansible-playbook "$PLAYBOOK" "$@" 2>&1 | tee "$LOG_FILE"
+STATUS=${PIPESTATUS[0]}
+set -e
+echo "Run log: $LOG_FILE"
+exit "$STATUS"
