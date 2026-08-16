@@ -1,0 +1,63 @@
+---
+# Backend selection for the llama_cpp role.
+#
+# WHAT THIS COVERS, and why it is scoped this way. The role deploys a PREBUILT
+# upstream binary chosen by a name regex, so the realistic defect is picking the
+# wrong asset — not a task failing. A wrong pick is also the most expensive kind
+# of bug here, because several near-miss assets exist in every upstream release
+# and installing the wrong one produces a server that starts, serves, and is
+# quietly on the wrong backend (or the wrong CPU architecture).
+#
+# WHAT THIS DOES NOT COVER, stated rather than implied: it does not converge the
+# role against a GPU. A Docker container has no /dev/nvidia*, no /dev/kfd, and
+# no Vulkan ICD, so the device-access tasks and the vulkaninfo visibility gate
+# cannot run here. Those are verified on the live guest at converge time — the
+# gate exists precisely because that is the only place the answer is real.
+- name: Converge
+  hosts: all
+  gather_facts: false
+
+  vars:
+    tofu_data:
+      domain: molecule.invalid
+      constants:
+        service_ports:
+          llm_fast_api: 10434
+
+    # A REAL asset list, copied verbatim from an upstream llama.cpp release.
+    # Real rather than invented, because the value of this test is entirely in
+    # the near-misses that actually ship: `vulkan-arm64` differs from
+    # `vulkan-x64` by one token, and a regex anchored loosely matches both.
+    # An invented list would contain only the cases the author already
+    # thought of, which is the same set the regex already handles.
+    upstream_assets:
+      - llama-b10448-bin-ubuntu-arm64.tar.gz
+      - llama-b10448-bin-ubuntu-openvino-2026.2.1-x64.tar.gz
+      - llama-b10448-bin-ubuntu-s390x.tar.gz
+      - llama-b10448-bin-ubuntu-sycl-fp16-x64.tar.gz
+      - llama-b10448-bin-ubuntu-sycl-fp32-x64.tar.gz
+      - llama-b10448-bin-ubuntu-vulkan-arm64.tar.gz
+      - llama-b10448-bin-ubuntu-vulkan-x64.tar.gz
+      - llama-b10448-bin-ubuntu-x64.tar.gz
+      - llama-b10444-bin-ubuntu-rocm-6.4-x64.tar.gz
+
+    expected:
+      vulkan:
+        asset: llama-b10448-bin-ubuntu-vulkan-x64.tar.gz
+        devices: ['/dev/nvidia0', '/dev/nvidiactl', '/dev/nvidia-uvm', '/dev/nvidia-uvm-tools']
+        gpu: true
+      rocm:
+        asset: llama-b10444-bin-ubuntu-rocm-6.4-x64.tar.gz
+        devices: ['/dev/kfd', '/dev/dri/card0', '/dev/dri/renderD128']
+        gpu: true
+      cpu:
+        asset: llama-b10448-bin-ubuntu-x64.tar.gz
+        devices: ['/dev/kfd', '/dev/dri/card0', '/dev/dri/renderD128']
+        gpu: false
+
+  tasks:
+    - name: Evaluate the role defaults for each backend
+      ansible.builtin.include_tasks: tasks/assert_backend.yml
+      loop: "{{ expected | dict2items }}"
+      loop_control:
+        loop_var: backend

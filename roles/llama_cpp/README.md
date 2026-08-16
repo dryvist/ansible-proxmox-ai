@@ -51,19 +51,40 @@ Both are members of the `chat` / `embeddings` llama-swap groups (`swap: false`
 for `embeddings`), so they stay loaded together. `hermes-4-14b` (14B) was
 removed — see "Absolute rule" above.
 
-## GPU toggle
+## GPU backend
 
-`llama_cpp_gpu: true` (default) builds the ROCm path: all layers offloaded
-(`-ngl 99`), `HSA_OVERRIDE_GFX_VERSION=10.3.0` for gfx1030. Setting it `false` (for a
-future CPU-only `llm-light` standby guest) skips every ROCm/GPU task, runs `-ngl 0`
-with a smaller context, and drops the GPU env from the unit.
+`llama_cpp_gpu_backend` selects which prebuilt upstream binary is deployed.
+Nothing is compiled — upstream publishes one Linux asset per backend.
+
+| Value | Build | Devices | Notes |
+| --- | --- | --- | --- |
+| `rocm` (default) | `ubuntu-rocm` | `/dev/kfd`, `/dev/dri` | `-ngl 99`, `HSA_OVERRIDE_GFX_VERSION=10.3.0` for gfx1030 |
+| `vulkan` | `ubuntu-vulkan` | `/dev/nvidia*` | the NVIDIA path; gated on a `vulkaninfo` device check |
+| `cpu` | `ubuntu` plain | none | `-ngl 0`, smaller context, all GPU tasks skipped |
+
+`llama_cpp_gpu` remains as a derived boolean (`backend != 'cpu'`) so existing
+task and template conditions were not touched.
+
+**Why Vulkan and not CUDA for NVIDIA.** Upstream ships no Linux CUDA release
+binary — the CUDA prebuilts are Windows-only. Vulkan is the Linux GPU backend
+upstream actually publishes, and it runs on NVIDIA. The NVIDIA Vulkan ICD
+reaches the card through `/dev/nvidia*` and does **not** need `/dev/dri`, which
+does not exist in an NVIDIA-passthrough LXC.
+
+**The Vulkan path is gated, not assumed.** If Vulkan cannot see a device,
+llama.cpp does not fail — it serves from the CPU, silently, while the unit
+reports active and completions return. The role therefore runs `vulkaninfo`
+and fails the converge when no device is reported, rather than shipping a
+GPU deployment that quietly is not one.
 
 ## Key variables (`defaults/main.yml`)
 
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `llama_cpp_api_port` | `tofu_data.constants.service_ports.llm_fast_api` | llama-swap listen port (no hardcode) |
-| `llama_cpp_gpu` | `true` | ROCm GPU vs CPU-only standby |
+| `llama_cpp_gpu_backend` | `rocm` | `rocm` \| `vulkan` \| `cpu` — selects the upstream asset |
+| `llama_cpp_max_param_billions` | `14` | per-guest ceiling, asserted everywhere; raise explicitly per guest |
+| `llama_cpp_vulkan_packages` | loader + `vulkan-tools` | `vulkaninfo` backs the device-visibility gate |
 | `llama_cpp_models` | 2-model list | served models + GGUF sources (each needs `param_billions`) |
 | `llama_cpp_install_dir` | `/opt/llama-cpp` | binary + bundled ROCm `.so` files (also `LD_LIBRARY_PATH`) |
 | `llama_cpp_models_dir` | `/var/lib/llama-cpp/models` | staged GGUFs (persistent volume) |
