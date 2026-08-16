@@ -38,73 +38,9 @@
     cache_valid_time: 3600
   when: llama_cpp_gpu_backend == 'vulkan'
 
-# --- Absolute GPU-size guardrail ---------------------------------------------
-# pve1 (llm-fast, RX 6800, 16 GB VRAM) has hard-locked 5x under GPU load; VRAM
-# eviction of a large model is the documented hard-hang cause (see the ABSOLUTE
-# RULE comment in defaults/main.yml). Scoped to the llm_fast_group ONLY — this
-# must never block a model served elsewhere (e.g. Qwen3.6-35B-A3B on the Mac
-# Studio, a completely different host/inventory). Do not remove the group_names
-# guard even though playbooks/site.yml only ever wires this role to
-# llm_fast_group today; the guard is what keeps a future re-use of this role
-# safe.
-- name: Assert every llm-fast model declares param_billions
-  ansible.builtin.assert:
-    that:
-      - (llama_cpp_models | rejectattr('param_billions', 'defined') | list | length) == 0
-    fail_msg: >-
-      One or more llama_cpp_models entries is missing param_billions
-      ({{ llama_cpp_models | rejectattr('param_billions', 'defined')
-          | map(attribute='name') | list }}) — required so the >=14B GPU
-      guardrail below can evaluate it. Add a param_billions value.
-  when: "'llm_fast_group' in group_names"
-
-- name: Assert no llm-fast model is >= 14B params (ABSOLUTE pve1 GPU rule)
-  ansible.builtin.assert:
-    that:
-      - (llama_cpp_models | map(attribute='param_billions', default=0) | select('ge', 14) | list | length) == 0
-    fail_msg: >-
-      One or more llama_cpp_models entries has param_billions >= 14
-      ({{ llama_cpp_models | selectattr('param_billions', 'defined')
-          | selectattr('param_billions', 'ge', 14)
-          | map(attribute='name') | list }}). pve1 (llm-fast) has hard-locked
-      repeatedly serving models this large — see defaults/main.yml. Do not add
-      a >=14B model to this GPU; serve it elsewhere.
-    success_msg: "No >=14B model configured for llm-fast — GPU guardrail OK."
-  when: "'llm_fast_group' in group_names"
-
-# --- Per-guest parameter ceiling ---------------------------------------------
-# Applies EVERYWHERE this role runs, unlike the llm-fast rule above. A guest
-# with a larger card raises llama_cpp_max_param_billions in its own vars; the
-# default is the same conservative 14, so a new guest cannot serve something
-# large merely by not being in llm_fast_group.
-- name: Assert every model declares param_billions
-  ansible.builtin.assert:
-    that:
-      - (llama_cpp_models | rejectattr('param_billions', 'defined') | list | length) == 0
-    fail_msg: >-
-      These models are missing param_billions:
-      {{ llama_cpp_models | rejectattr('param_billions', 'defined')
-         | map(attribute='name') | list }}. It is required so the per-guest
-      ceiling can evaluate them — an undeclared size would otherwise pass the
-      ceiling by being absent rather than by being small.
-
-- name: Assert no model exceeds this guest's parameter ceiling
-  ansible.builtin.assert:
-    that:
-      - (llama_cpp_models
-         | selectattr('param_billions', 'gt', llama_cpp_max_param_billions | float)
-         | list | length) == 0
-    fail_msg: >-
-      {{ llama_cpp_models
-         | selectattr('param_billions', 'gt', llama_cpp_max_param_billions | float)
-         | map(attribute='name') | list }} exceed this guest's ceiling of
-      {{ llama_cpp_max_param_billions }}B. Raise llama_cpp_max_param_billions
-      for this guest DELIBERATELY, after checking the card's VRAM and the
-      KV-cache budget at the configured context length — do not raise it to get
-      a converge past this message.
-    success_msg: >-
-      All models are within this guest's {{ llama_cpp_max_param_billions }}B
-      ceiling.
+# Model-size guardrails: the absolute llm-fast rule and the per-guest ceiling.
+- name: Enforce the model-size guardrails
+  ansible.builtin.include_tasks: guards.yml
 
 - name: Create the llama-cpp service group
   ansible.builtin.group:
@@ -135,71 +71,11 @@
       group: "{{ llama_cpp_group }}"
       mode: "0750"
 
-# --- GPU device access (clone of roles/ollama; GPU build only) ---------------
-# lxc_gpu_features binds the device nodes in with the HOST's group GIDs, which
-# rarely match the container's own render/video groups. Instead of forcing GIDs
-# (which collides), add the service user to whatever groups actually own the nodes,
-# resolved at runtime from the files themselves.
-- name: Stat the GPU device nodes to learn their owning groups
-  ansible.builtin.stat:
-    path: "{{ item }}"
-  loop: "{{ llama_cpp_gpu_device_nodes }}"
-  register: llama_cpp_gpu_dev_stat
+# Device-group resolution plus, on the vulkan backend, the visibility gate that
+# stops a silent CPU fallback from shipping as a GPU deployment.
+- name: Grant GPU device access and gate the Vulkan backend
+  ansible.builtin.include_tasks: gpu_access.yml
   when: llama_cpp_gpu | bool
-
-- name: Assert the GPU device nodes are present (passed in by lxc_gpu_features)
-  ansible.builtin.assert:
-    that:
-      - llama_cpp_gpu_dev_stat.results | rejectattr('stat.exists') | list | length == 0
-    fail_msg: >-
-      One or more GPU device nodes are missing in this container
-      ({{ llama_cpp_gpu_device_nodes | join(', ') }}). Run ansible-proxmox
-      lxc_gpu_features against this CT first.
-  when: llama_cpp_gpu | bool
-
-# --- Vulkan visibility gate ---------------------------------------------------
-# Device nodes existing does NOT mean Vulkan can use the card. llama.cpp's
-# Vulkan build enumerates devices through the loader and the vendor ICD, and
-# when it finds none it does not fail — it serves from the CPU, correctly and
-# very slowly. Every cheap signal agrees in that state: the unit is active, the
-# port listens, and completions return.
-#
-# So the fallback is gated here instead, before the service is ever configured:
-# vulkaninfo must report at least one physical device. This is the same class of
-# check as the >=14B guardrail — cheap at converge, expensive to discover later.
-- name: Probe Vulkan device visibility (vulkan backend)
-  ansible.builtin.command: vulkaninfo --summary
-  register: llama_cpp_vulkaninfo
-  changed_when: false
-  failed_when: false
-  when: llama_cpp_gpu_backend == 'vulkan'
-
-- name: Assert Vulkan can actually see a GPU
-  ansible.builtin.assert:
-    that:
-      - llama_cpp_vulkaninfo.rc == 0
-      - "'deviceName' in (llama_cpp_vulkaninfo.stdout | default(''))"
-    fail_msg: >-
-      vulkaninfo reported no usable Vulkan device (rc={{
-      llama_cpp_vulkaninfo.rc | default('n/a') }}). llama.cpp would still start
-      and serve — from the CPU, silently — so this is failed here rather than
-      shipped. Check that the vendor ICD in /usr/share/vulkan/icd.d matches the
-      HOST driver version and that the GPU device nodes above are bound in.
-      Output: {{ (llama_cpp_vulkaninfo.stdout | default(''))[:400] }}
-      {{ (llama_cpp_vulkaninfo.stderr | default(''))[:200] }}
-    success_msg: >-
-      Vulkan sees a GPU:
-      {{ (llama_cpp_vulkaninfo.stdout | default('')).split('\n')
-         | select('search', 'deviceName') | list }}
-  when: llama_cpp_gpu_backend == 'vulkan'
-
-- name: Add the llama-cpp user to the GPU device-owning groups
-  ansible.builtin.user:
-    name: "{{ llama_cpp_user }}"
-    groups: "{{ llama_cpp_gpu_dev_stat.results | map(attribute='stat.gr_name') | list | unique }}"
-    append: true
-  when: llama_cpp_gpu | bool
-  notify: Restart llama-swap
 
 # --- llama.cpp release (resolve latest, install once) ------------------------
 # Presence-guarded: the build tag moves every release, so we install once behind
