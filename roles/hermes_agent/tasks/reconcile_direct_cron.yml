@@ -42,13 +42,26 @@
                  template_vars={'item': item, 'deliver': hermes_agent_direct_deliver}) | trim) }}
   when: hermes_agent_direct_wanted | bool
 
+# --workdir is not cosmetic: read from the pinned hermes-agent v2026.8.3
+# source (hermes_cli/subcommands/cron.py) and its own docs (website/docs/
+# user-guide/features/cron.md) — "Cron jobs default to running detached from
+# any repo ... the terminal / file / code-exec tools run from whatever
+# working directory the gateway started in. Pass --workdir ... to change
+# that." Omitting it is what put the `review` cron's filesystem tools at
+# whatever cwd the ticking process happened to start in rather than
+# HERMES_HOME — for the 7 profile-scoped jobs (item.hermes_home set) that
+# ticking process is the `*/5 * * * *` crontab trigger, whose cwd is the
+# hermes user's plain $HOME, one level above the actual profile home. Pinned
+# to the same value already used for the HERMES_HOME env var below, so a
+# profile-scoped job's tools land in its own profile home.
 - name: "Direct cron | Build create argv for {{ item.name }}"
   ansible.builtin.set_fact:
     hermes_agent_direct_argv: >-
       {{ [hermes_agent_bin, 'cron', 'create', item.schedule,
           hermes_agent_direct_prompt, '--name', item.name]
          + (['--skill', item.skill] if (item.skill | default('') | length > 0) else [])
-         + ['--deliver', hermes_agent_direct_deliver] }}
+         + ['--deliver', hermes_agent_direct_deliver,
+            '--workdir', item.hermes_home | default(hermes_agent_hermes_home)] }}
   when: hermes_agent_direct_wanted | bool
 
 # Deliberately NOT gated on hermes_agent_direct_wanted: the removal task below
@@ -86,12 +99,18 @@
     state: absent
   when: not (hermes_agent_direct_wanted | bool)
 
+# 'workdir' is IN the checksum, not just the create argv, so a guest
+# converged before --workdir was added sees this as drift and gets its
+# existing (no-workdir) job removed and re-created below — a converge is
+# what heals an already broken job, not just what stops new ones from
+# breaking.
 - name: "Direct cron | Calculate desired state for {{ item.name }}"
   ansible.builtin.set_fact:
     hermes_agent_direct_checksum: >-
       {{ {'schedule': item.schedule, 'prompt': hermes_agent_direct_prompt,
           'skill': item.skill | default(''),
-          'deliver': hermes_agent_direct_deliver}
+          'deliver': hermes_agent_direct_deliver,
+          'workdir': item.hermes_home | default(hermes_agent_hermes_home)}
          | to_json | hash('sha256') }}
   when: hermes_agent_direct_wanted | bool
 

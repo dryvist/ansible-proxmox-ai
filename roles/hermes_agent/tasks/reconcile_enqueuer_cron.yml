@@ -81,12 +81,16 @@
     - not (hermes_agent_ops_workload_enabled | bool)
     - item.name in (hermes_agent_enqueuer_cron_list.stdout | default(''))
 
+# 'workdir' is IN the checksum (see reconcile_direct_cron.yml's "Calculate
+# desired state" task for why), so a guest converged before --workdir was
+# added has its existing job removed and re-created below.
 - name: "Enqueuer cron | Calculate desired state for {{ hermes_agent_enqueuer_name }}"
   ansible.builtin.set_fact:
     hermes_agent_enqueuer_checksum: >-
       {{ {'schedule': item.schedule, 'selector': hermes_agent_enqueuer_selector,
           'script': hermes_agent_enqueuer_script, 'no_agent': true,
-          'deliver': hermes_agent_enqueuer_deliver}
+          'deliver': hermes_agent_enqueuer_deliver,
+          'workdir': hermes_agent_hermes_home}
          | to_json | hash('sha256') }}
   when: hermes_agent_enqueuer_active | bool
 
@@ -116,6 +120,11 @@
     - hermes_agent_enqueuer_name in (hermes_agent_enqueuer_cron_list.stdout | default(''))
     - hermes_agent_enqueuer_marker_probe.changed | bool
 
+# --workdir pinned for the same reason as the agentic "Direct cron | Create"
+# task in reconcile_direct_cron.yml — see its "Build create argv" comment.
+# The pinned source (cron/scheduler.py) uses a job's workdir as its
+# subprocess cwd "when configured"; omitted, a script inherits whatever cwd
+# the ticking process started in instead of HERMES_HOME.
 - name: "Enqueuer cron | Create {{ hermes_agent_enqueuer_name }}"
   ansible.builtin.command:
     argv: >-
@@ -123,7 +132,8 @@
          + ([hermes_agent_enqueuer_selector] if (hermes_agent_enqueuer_selector | length > 0) else [])
          + ['--name', hermes_agent_enqueuer_name,
             '--script', hermes_agent_enqueuer_script,
-            '--no-agent', '--deliver', hermes_agent_enqueuer_deliver] }}
+            '--no-agent', '--deliver', hermes_agent_enqueuer_deliver,
+            '--workdir', hermes_agent_hermes_home] }}
   environment:
     HERMES_HOME: "{{ hermes_agent_hermes_home }}"
   become: true
