@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+{{ ansible_managed | comment }}
+"""Deterministic, no-LLM fabric-health digest. Replaces the agentic
+homelab-ai-fabric-status cron (hermes-daily-fabric-status.md).
+
+WHY THIS EXISTS (2026-08-16). The agentic version's catalog prompt asked the
+model to "check LLM router health, Hermes gateway health, Hindsight
+memory-pool health, and any merge-ready PRs" with no endpoint pinned — so the
+worker invented addresses. Measured 2026-07-31: it curled the wrong local
+ports for services that live behind their own FQDNs and a domain that does not
+resolve, got 000 on every guess, and posted a false total-outage alarm while
+the fabric was healthy. hermes_agent_daily_status_endpoints (defaults) was
+added after that incident specifically to pin the real 3 endpoints and
+forbid probing the LLM router/MCP fabric at all (fabric_watchdog already
+does that every 2 minutes and alerts to this same channel — a second
+opinion here would be slower and double-report). That override still
+contradicts the catalog prompt text it gets appended to; scripting this job
+removes the contradiction and the whole class of invented-endpoint bug by
+construction, not just moving it off the serving tier.
+
+STDOUT is delivered verbatim to Slack for the UNHEALTHY branch only (cron runs
+`--no-agent --deliver slack:<issues-channel>`); the HEALTHY branch posts a
+terse one-liner to the noise channel directly (Slack Web API, using the same
+bot token every other script reads from .env) and prints "[SILENT]" so the
+harness does not ALSO deliver to the issues channel. This dual-channel
+behaviour is REIMPLEMENTED from the agentic job's ansible+prompt config
+(channel_when_healthy / terse_when_healthy in reconcile_direct_cron.yml +
+direct-cron-footer.md.j2) — it is not something the script-fed enqueuer path
+supports natively, so do not "simplify" this to a single target; that would
+silently regress the one deliberate piece of operator UX this job has (the
+issues channel stays quiet unless something is actually wrong).
+
+MERGE-READY PRS: not implemented in this version. hermes_agent has no GitHub
+credential wired in anywhere (the agentic github-triage/bot-pr-triage jobs use
+a GitHub MCP tool, not a token this role owns) — adding one is a separate,
+small follow-up, not something to improvise here. See the PR description.
+
+Pure stdlib. Reads SLACK_BOT_TOKEN from the same .env every other script
+here reads; never prints it.
+"""
+import datetime as dt
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+ENV_PATH = "{{ hermes_agent_hermes_home }}/.env"
+STATE_PATH = "{{ hermes_agent_hermes_home }}/state/fabric-status.json"
+NOISE_CHANNEL = "{{ hermes_agent_slack_noise_channel }}"
+SILENT = "[SILENT]"
+# Post only once per real change, but never let a stale "no change" go longer
+# than this without a heartbeat (matches the agentic job's own 24h rule).
+MAX_QUIET_HOURS = 24
+
+# THE PINNED ENDPOINTS (see docstring: guessed ones already caused a false
+# outage alarm once). Only 000 (probe never reached anything) is reported as
+# a failure; any HTTP status at all means the service answered.
+CHECKS = [
+    ("gateway API", "http://localhost:{{ hermes_agent_api_server_port }}/"),
+    ("dashboard", "http://localhost:{{ hermes_agent_dashboard_port }}/"),
+    ("memory pool", "https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/"),
+]
+
+
+def read_env(path):
+    out = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                out[k] = v
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def probe(url):
+    """Returns (ok, detail). ok=False only on a probe that never reached
+    anything (000-equivalent) -- auth/routing status codes are UP, matching
+    the agentic job's own reading rule."""
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return True, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        return True, f"HTTP {e.code}"
+    except Exception as e:  # noqa: BLE001 - any connect failure is "probe failed"
+        return False, f"probe failed ({e.__class__.__name__})"
+
+
+def gateway_process_ok():
+    return (
+        subprocess.run(["pgrep", "-fa", "hermes-gateway"], capture_output=True).returncode
+        == 0
+    )
+
+
+def load_state():
+    try:
+        with open(STATE_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(state):
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, STATE_PATH)
+
+
+def post_to_slack(token, channel, text):
+    body = json.dumps({"channel": channel, "text": text}).encode()
+    req = urllib.request.Request(
+        "https://slack.com/api/chat.postMessage",
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        result = json.loads(resp.read())
+    if not result.get("ok"):
+        print(f"WARNING: Slack post to {channel} failed: {result.get('error')}", file=sys.stderr)
+
+
+def main():
+    env = read_env(ENV_PATH)
+    now = dt.datetime.now(dt.timezone.utc)
+
+    results = [("gateway process", gateway_process_ok(), None)]
+    for name, url in CHECKS:
+        ok, detail = probe(url)
+        results.append((name, ok, detail))
+
+    all_healthy = all(ok for _, ok, _ in results)
+    lines = [f"{name}: {'up' if ok else detail}" for name, ok, detail in results]
+    fingerprint = hashlib.sha256("\n".join(sorted(lines)).encode()).hexdigest()
+
+    state = load_state()
+    last_fp = state.get("fingerprint")
+    last_ts = state.get("ts")
+    quiet_ok = (
+        last_fp == fingerprint
+        and last_ts
+        and (now - dt.datetime.fromisoformat(last_ts)).total_seconds() < MAX_QUIET_HOURS * 3600
+    )
+
+    if all_healthy:
+        if not quiet_ok:
+            token = env.get("SLACK_BOT_TOKEN", "")
+            summary = f"All systems operational ({len(results)} checks passed)."
+            if token and NOISE_CHANNEL:
+                post_to_slack(token, NOISE_CHANNEL, summary)
+            else:
+                print(summary)  # no noise channel configured -- fall back to normal delivery
+                save_state({"fingerprint": fingerprint, "ts": now.isoformat()})
+                return 0
+        save_state({"fingerprint": fingerprint, "ts": now.isoformat()})
+        print(SILENT)
+        return 0
+
+    # Unhealthy: full report through the normal --deliver path (issues channel).
+    print("Fabric status: NOT all checks healthy.")
+    for line in lines:
+        print(f"  {line}")
+    save_state({"fingerprint": fingerprint, "ts": now.isoformat()})
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

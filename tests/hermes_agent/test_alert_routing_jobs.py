@@ -46,25 +46,40 @@ from _alert_routing_shared import (
 # channel_when_healthy via `hermes send` + a trailing [SILENT] on an
 # all-clear run, so --deliver does not also post it.
 
-def test_the_fabric_status_job_deliver_is_the_breaking_run_channel() -> None:
-    """`--deliver` (issues) is the default/breaking-run destination; the
-    all-clear destination (noise) is on the item as channel_when_healthy and
-    is only reachable via the prompt footer's self-send branch, not --deliver
-    itself — see test_the_fabric_status_job_carries_the_outcome_split below."""
+# homelab-ai-fabric-status moved from the agentic direct-cron path to the
+# script-fed enqueuer path (2026-08-16, fabric-status.py.j2) — see that
+# template's own docstring for why (a real invented-endpoint false-outage
+# alarm, and the resulting prompt/endpoints-override contradiction removed by
+# construction). The outcome split (issues on unhealthy, terse-to-noise on
+# healthy) is REIMPLEMENTED in the script itself now, not expressed via
+# channel_when_healthy/terse_when_healthy — the enqueuer path has no
+# equivalent fields for those. Its own self-check
+# (`python3 -c` rendering the template with fixed values, run at development
+# time — see the PR) pins both branches actually behaving that way; this file
+# pins only the wiring: the job is no longer a direct_cron_jobs entry, and its
+# --deliver default is the issues (breaking-run) channel.
+
+def test_the_fabric_status_job_is_no_longer_agentic() -> None:
+    """A naive port would have left the old direct-cron entry AND added the
+    new enqueuer one — fighting each other every converge. There must be
+    exactly one registration, and it is not this one."""
+    marker = "{{ hermes_agent_daily_status_cron_name }}"
+    for job in DEFAULTS["hermes_agent_direct_cron_jobs"]:
+        assert str(job.get("name", "")).strip() != marker, (
+            "homelab-ai-fabric-status is still a direct_cron_jobs entry; "
+            "it should only be reconciled via the script-fed enqueuer path now"
+        )
+
+
+FABRIC_STATUS = r'deliver: "(slack:\{\{ hermes_agent_slack_issues_channel \}\})"'
+
+
+def test_the_fabric_status_script_deliver_is_the_breaking_run_channel() -> None:
+    """The script suppresses this ([SILENT]) on its own healthy branch and
+    posts terse-to-noise directly instead — see fabric-status.py.j2. --deliver
+    itself is the unhealthy/breaking-run destination only."""
     ctx = _resolve(CONFIGURED)
-    assert _direct_deliver("hermes_agent_daily_status_cron_name", ctx) == "slack:C_ISSUES"
-
-
-def test_the_fabric_status_job_carries_the_outcome_split() -> None:
-    job = _direct_job("hermes_agent_daily_status_cron_name")
-    assert "channel_when_healthy" in job
-    assert job["channel_when_healthy"] == "slack:{{ hermes_agent_slack_noise_channel }}"
-    assert job.get("terse_when_healthy") is True
-    # No other job carries the split — it was one card's behaviour, not a
-    # general one.
-    others = [j for j in DEFAULTS["hermes_agent_direct_cron_jobs"]
-              if j is not job and "channel_when_healthy" in j]
-    assert others == [], [j.get("name") for j in others]
+    assert _deliver_targets(FABRIC_STATUS, ctx, MAIN_TASKS) == "slack:C_ISSUES"
 
 
 def test_the_shared_footer_renders_the_outcome_split_and_the_default_case() -> None:
@@ -117,36 +132,36 @@ def test_agentic_splunk_domain_crons_report_to_the_splunk_channel() -> None:
         assert _direct_deliver(var, ctx) == "slack:C_SPLUNK", var
 
 
-def test_the_fabric_status_card_is_told_its_endpoints_instead_of_guessing() -> None:
-    """Measured 2026-07-31: the public catalog body names checks but no address,
-    so the worker invented every one — localhost:8000/:8001 for services on other
-    ports, localhost for two that live behind their own FQDNs, and a domain that
-    does not resolve. All probes returned 000 and it posted hourly total-outage
-    alarms while mcp answered 406 and llm answered 401, their healthy codes.
+def test_the_fabric_status_endpoints_are_pinned_in_the_script_not_guessed() -> None:
+    """Measured 2026-07-31: the old agentic card's public catalog body named
+    checks but no address, so the worker invented every one — localhost:8000/
+    :8001 for services on other ports, localhost for two that live behind
+    their own FQDNs, and a domain that does not resolve. All probes returned
+    000 and it posted hourly total-outage alarms while mcp answered 406 and
+    llm answered 401, their healthy codes. That fed the channel the operator
+    wants near-silent, so a fabricated alarm was the one failure that made it
+    worthless. fabric-status.py.j2 now hardcodes the same 3 endpoints
+    (never the LLM router/MCP fabric — fabric_watchdog already covers those
+    every 2 minutes) directly, with no prose layer a model could drift from."""
+    script = (ROLE / "templates" / "fabric-status.py.j2").read_text()
 
-    That card feeds the channel the operator wants near-silent, so a fabricated
-    alarm is the one failure that makes the channel worthless."""
-    ep = str(DEFAULTS["hermes_agent_daily_status_endpoints"])
-
-    # Ports come from the deploy-time variables, never a literal a model can drift
-    # away from — and never the invented ones.
-    assert "{{ hermes_agent_api_server_port }}" in ep
-    assert "{{ hermes_agent_dashboard_port }}" in ep
+    assert "{{ hermes_agent_api_server_port }}" in script
+    assert "{{ hermes_agent_dashboard_port }}" in script
     for invented in ("localhost:8000", "localhost:8001", "localhost:6333", "localhost:8086"):
-        assert invented not in ep, f"{invented} was one of the invented endpoints"
+        assert invented not in script, f"{invented} was one of the invented endpoints"
 
-    assert "NOTHING ELSE" in ep and "Do not guess" in ep
-    # 000 is a failed probe, not a down service. Reporting it as an outage is what
-    # produced the alarms.
-    assert "probe failed" in ep
+    # Only a probe that never reached anything is a failure; any HTTP status
+    # at all (including 401/403/404/406) means the service answered.
+    assert "probe failed" in script
 
-    # fabric_watchdog owns the external front doors on a 2-minute cadence and
-    # alerts to this same channel; a second prober here only double-reports.
-    assert "Do NOT probe the MCP fabric or the LLM front door" in ep
-    assert "/v1/models" not in ep
+    # fabric_watchdog owns the external front doors; a second prober here
+    # would only double-report.
+    assert "llm front door" in script.lower() or "MCP fabric" in script
+    assert "/v1/models" not in script
 
-    # And it must actually reach the card: appended to the catalog body at load.
-    assert "hermes_agent_daily_status_endpoints" in MAIN_TASKS
+    # And it must actually reach the deployed guest: templated, not dead code.
+    deploys = (ROLE / "tasks" / "script_deploys.yml").read_text()
+    assert "fabric-status.py.j2" in deploys
 
 
 # --- inertness: an unconfigured id must change nothing ------------------------

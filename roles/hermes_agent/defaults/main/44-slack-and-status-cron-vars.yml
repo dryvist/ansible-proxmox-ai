@@ -41,43 +41,12 @@ hermes_agent_daily_status_cron_name: homelab-ai-fabric-status
 # structural fix is capacity or admission control, not a minute offset —
 # tracked separately. This is the cheap half.
 hermes_agent_daily_status_cron_schedule: "4 8-22 * * *"
-hermes_agent_daily_status_cron_prompt_file: hermes-daily-fabric-status.md
 
-# The catalog body names the checks but not a single endpoint, so the worker
-# invented them — and every one it invented was wrong. Measured 2026-07-31: it
-# curled localhost:8000 and :8001 for an API that listens on
-# hermes_agent_api_server_port and a dashboard on hermes_agent_dashboard_port,
-# localhost ports for two services that live behind their own FQDNs, and a
-# domain that does not resolve at all. Every probe returned 000, so it posted an
-# hourly total-outage alarm while the fabric was healthy (mcp 406, llm 401, both
-# the documented healthy codes). That card now reports to the issues channel,
-# where the operator asked for near-silence, so fabricated alarms are the one
-# failure mode that would make the channel worthless.
-#
-# Endpoints are topology and must never enter the public prompt catalog, so they
-# are appended at converge from the same variables the services are deployed
-# from. External front doors are deliberately absent: fabric_watchdog probes mcp
-# and llm every 2 minutes with proven ok_codes and alerts to this same channel,
-# so duplicating them here would only add a slower, less reliable second opinion.
-hermes_agent_daily_status_endpoints: |
-  PROBE EXACTLY THESE, AND NOTHING ELSE. Every address you need is listed here.
-  Do not guess, infer, complete, or recall a hostname or port from anywhere else
-  — an address not on this list is wrong, and a result from one is a fabricated
-  finding rather than evidence, however plausible it reads.
-
-  Probe each URL with: curl -sS -o /dev/null -w '%{http_code}' <url>
-
-    gateway process   pgrep -fa hermes-gateway
-    gateway API       http://localhost:{{ hermes_agent_api_server_port }}/
-    dashboard         http://localhost:{{ hermes_agent_dashboard_port }}/
-    memory pool       https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/
-
-  Reading the results. Any HTTP status at all — 200, 302, 401, 403, 404 — means
-  the service answered, so it is UP; authentication and routing are not health.
-  Only 000 means the probe never reached anything, and 000 is reported as a
-  "probe failed" observation, never as a service being down. Never escalate a
-  single 000: state what you saw and re-check it next run.
-
-  Do NOT probe the MCP fabric or the LLM front door. fabric_watchdog already
-  probes both every 2 minutes and alerts to this same channel on each
-  transition, so a second opinion here is slower and would double-report.
+# Script-fed since 2026-08-16 (fabric-status.py.j2) — see
+# tasks/prompt_catalog.yml for why the agentic prompt is no longer loaded.
+# The same 3 endpoints the old prompt's converge-time override pinned
+# (gateway process/API, dashboard, memory pool — deliberately NOT the LLM
+# router/MCP fabric, which fabric_watchdog already covers every 2 minutes)
+# are now hardcoded directly in the script rather than templated as prose,
+# so there is no longer a second copy of the endpoint list to keep in sync.
+hermes_agent_daily_status_script_name: fabric-status.py
