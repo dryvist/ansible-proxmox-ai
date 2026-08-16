@@ -5,17 +5,28 @@ vLLM OpenAI-compatible inference server on an NVIDIA GPU, in a privileged LXC.
 Serves one model on the GPU guest and registers with the LiteLLM router as an
 upstream, so the model appears in the chat UI that already exists.
 
-## Why vLLM rather than llama.cpp
+## Status: converged but stopped
 
-Upstream `ggml-org/llama.cpp` publishes **no Linux CUDA and no Linux ROCm release
-binary** — verified across 8 releases; the CUDA prebuilts are Windows-only. The
-`llama_cpp` role installs release tarballs, so it cannot reach CUDA at all. The
-remaining llama.cpp routes would be building from source or running a container,
-both of which add machinery that is not needed here.
+The NVIDIA guest sets `vllm_service_enabled: false` and serves through
+`llama_cpp` on the Vulkan backend instead. This role stays converged as the
+rollback path — the venv and weights remain on the guest, so reverting is a
+variable flip, not a re-download.
 
-vLLM publishes official manylinux wheels with CUDA bundled (`cp38-abi3`, so one
-wheel covers every CPython ≥ 3.8). `pip install` is the entire install: no
-compiler, no Docker, no NVIDIA Container Toolkit, no llama-swap.
+## Why this role is not the one serving
+
+**Corrected.** This section previously claimed llama.cpp publishes "no Linux
+CUDA and no Linux ROCm release binary" and concluded llama.cpp could not use an
+NVIDIA card. The ROCm half is **false** — upstream ships
+`llama-*-bin-ubuntu-rocm-*-x64.tar.gz`, which the `llama_cpp` role already
+selects for the AMD guest. The CUDA half is true and irrelevant: upstream also
+ships a prebuilt Linux **Vulkan** binary that runs on NVIDIA. Do not re-derive
+the old conclusion from the one true premise.
+
+vLLM remains a good fit for weights it can read: official manylinux wheels with
+CUDA bundled (`cp38-abi3`), so `pip install` is the whole install — no compiler,
+no Docker, no NVIDIA Container Toolkit. It cannot read Qwen3.8-27B, whose
+sub-4-bit weights exist only as GGUF and whose `qwen3_5` hybrid architecture has
+no merged adapter in the out-of-tree GGUF plugin.
 
 ## Requirements
 
@@ -44,7 +55,7 @@ The service speaks the OpenAI API on `llm_fast_api`:
 curl -s http://<gpu-guest>:<llm_fast_api>/v1/models
 curl -s http://<gpu-guest>:<llm_fast_api>/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"qwen3-14b","messages":[{"role":"user","content":"hello"}]}'
+  -d '{"model":"<vllm_served_model_name>","messages":[{"role":"user","content":"hello"}]}'
 ```
 
 ## The guest never installs a kernel module
