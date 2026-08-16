@@ -1,6 +1,6 @@
 ---
-# Proves the unit owned by llm_router can recover from an unexpected process
-# failure without relying on a drop-in role this repository does not install.
+# Proves the unit owned by llm_router recovers after every unexpected process
+# exit without relying on an external drop-in.
 - name: Verify LiteLLM has a bounded native restart policy
   hosts: localhost
   gather_facts: false
@@ -18,18 +18,16 @@
       ansible.builtin.set_fact:
         _unit: "{{ lookup('template', _role_dir ~ '/templates/litellm.service.j2') }}"
 
-    - name: Unexpected exits restart with bounded backoff
+    - name: Every unexpected exit restarts at a bounded cadence
       ansible.builtin.assert:
         quiet: true
         that:
-          - _unit is search('(?m)^Restart=on-failure$')
-          - _unit is search('(?m)^RestartSec=5s$')
+          - _unit is search('(?m)^Restart=always$')
+          - _unit is search('(?m)^RestartSec=15s$')
           - _unit is search('(?m)^StartLimitIntervalSec=60s$')
           - _unit is search('(?m)^StartLimitBurst=5$')
           - _unit is not search('systemd_restart_policy role')
         fail_msg: >-
-          The LiteLLM unit does not carry its own bounded restart policy. An
-          unexpected proxy exit would leave Hermes without its inference front
-          door because this repository does not install the formerly claimed
-          shared restart-policy drop-in.
-        success_msg: "LiteLLM restarts on failure with a bounded 5s backoff"
+          The LiteLLM unit does not restart every unexpected process exit at a
+          cadence below its start-rate limit.
+        success_msg: "LiteLLM restarts every unexpected exit at a 15s cadence"
