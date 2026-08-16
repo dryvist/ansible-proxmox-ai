@@ -179,41 +179,6 @@ class _Agent:
         except Exception:
             pass
 '''
-# Reduced run_kanban_goal_loop skeleton: the control flow that matters
-# (status poll, judge, budget check, worker turn, increment) with the two
-# patch anchor sites VERBATIM from the pinned upstream release — indentation
-# included, since the role's regexes capture and reuse it.
-PINNED_KANBAN_GOAL_LOOP_SOURCE = '''\
-def run_kanban_goal_loop(*, task_id, goal_text, run_turn, task_status_fn,
-                         block_fn, max_turns=8, first_response="", log=None):
-    def _log(msg):
-        if log is not None:
-            log(msg)
-
-    last_response = first_response or ""
-    # The first turn already consumed one unit of budget.
-    turns_used = 1
-    nudged_to_finalize = False
-
-    while True:
-        status = task_status_fn()
-        if status == "done":
-            return {"outcome": "completed_by_worker", "turns_used": turns_used, "reason": "worker completed the task"}
-        if status not in ("running", "ready"):
-            return {"outcome": "stopped", "turns_used": turns_used, "reason": f"status={status}"}
-
-        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
-        if verdict == "wait":
-            verdict = "continue"
-        _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
-
-        if turns_used >= max_turns:
-            block_fn("turn budget exhausted")
-            return {"outcome": "blocked_budget", "turns_used": turns_used, "reason": "turn budget exhausted"}
-
-        last_response = run_turn("continue") or ""
-        turns_used += 1
-'''
 # Verbatim upstream producer of the transport-failure flag the guard keys on
 # (judge_goal's except handler; the trailing True IS the flag). Kept pinned so
 # the fail-closed test proves the converge assert goes red if upstream stops

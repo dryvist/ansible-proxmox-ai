@@ -15,6 +15,7 @@ its token budget, whose remedy is splitting, never a bigger budget.
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -36,7 +37,6 @@ from _pinned_sources import (
     PINNED_JUDGE_AVAILABLE_SOURCE,
     PINNED_JUDGE_CALL_SOURCE,
     PINNED_JUDGE_ERROR_SENTINEL_SOURCE,
-    PINNED_KANBAN_GOAL_LOOP_SOURCE,
     PINNED_PROTOCOL_RETRY_SOURCE,
     PINNED_PROTOCOL_VIOLATION_SOURCE,
     PINNED_STALE_RECLAIM_TERMINATE_SOURCE,
@@ -44,6 +44,11 @@ from _pinned_sources import (
     PINNED_TC_BOOST_CAP_SOURCE,
     PINNED_WORKER_REAP_SOURCE,
     PINNED_WORKER_SPAWN_SOURCE,
+)
+from _pinned_goal_loop import (
+    KANBAN_GOAL_CONTINUATION_TEMPLATE,
+    KANBAN_GOAL_FINALIZE_TEMPLATE,
+    PINNED_KANBAN_GOAL_LOOP_SOURCE,
 )
 from _role_files import role_defaults, role_tasks, role_tasks_text
 
@@ -169,7 +174,7 @@ class _FakeTime:
 
 
 def _patched_goal_loop(judge_results: list[tuple]) -> tuple[Any, _FakeTime]:
-    """Exec the patched reduced loop with a scripted judge and fake clock."""
+    """Exec the patched verbatim loop with a scripted judge and fake clock."""
     results = iter(judge_results)
 
     def judge_goal(goal: str, response: str) -> tuple:
@@ -177,6 +182,13 @@ def _patched_goal_loop(judge_results: list[tuple]) -> tuple[Any, _FakeTime]:
 
     fake_time = _FakeTime()
     namespace: dict[str, Any] = {
+        # Upstream module-level names the verbatim loop closes over. The old
+        # hand-reduced copy inlined these; a verbatim one must be given them.
+        "DEFAULT_MAX_TURNS": 8,
+        "KANBAN_GOAL_CONTINUATION_TEMPLATE": "continue: {reason}",
+        "KANBAN_GOAL_FINALIZE_TEMPLATE": "finalize: {reason}",
+        "Dict": dict,
+        "Any": object,
         "judge_goal": judge_goal,
         "_truncate": lambda text, limit: text,
         "time": fake_time,
@@ -260,3 +272,39 @@ def _source_postconditions(
         bool(environment.compile_expression(condition)(**context))
         for condition in task["ansible.builtin.assert"]["that"]
     )
+
+
+BLOCK_TASK = "Patch Hermes cron scheduler with an opt-in goal-mode runner"
+
+
+def _goal_runner_namespace() -> dict[str, Any]:
+    """Exec the blockinfile payload in isolation and hand back its namespace."""
+    block = _task(BLOCK_TASK)["ansible.builtin.blockinfile"]["block"]
+    # The block is pure Python by design — no Jinja to render. If that ever
+    # stops being true this assertion is the early warning, not a NameError
+    # thrown from inside exec().
+    assert "{{" not in block, "block gained Jinja; render it before exec"
+    namespace: dict[str, Any] = {
+        "os": __import__("os"),
+        "logger": logging.getLogger("test.cron.goal"),
+    }
+    exec(compile(block, "cron-goal-block", "exec"), namespace)  # noqa: S102
+    return namespace
+
+
+class _StubAgent:
+    """Records every turn and the history it was handed."""
+
+    def __init__(self) -> None:
+        self.turns = 0
+        self.histories: list[Any] = []
+
+    def run_conversation(self, message, conversation_history=None):
+        self.turns += 1
+        self.histories.append(conversation_history)
+        return {
+            "final_response": f"resp{self.turns}",
+            "messages": [f"m{self.turns}"],
+            "completed": True,
+            "failed": False,
+        }
