@@ -126,9 +126,20 @@ hermes_agent_retired_splunk_parsing_v2_cron_name: splunk-parsing-quality-v2
 # Minute 12 keeps it clear of the Splunk minutes above (bounds concurrent load
 # on the shared serving tier). Gated in tasks on BOTH the github-issues PAT
 # (can query) AND the Slack tokens (can deliver) — same shape as splunk.
+#
+# Hours 2,8,14,20 (2026-08 stagger pass), not the old bare `*/6` (0,6,12,18):
+# splunk-security and bot-pr-triage below are ALSO every-6-hours, and all
+# three used to share `*/6`'s default hour-0 phase — three agentic cards
+# starting within a 21-minute band (:22/:26/:43), four times a day, against a
+# serving tier that admits only 2 concurrent requests (measured ~152s median /
+# ~211s max per call; the router's 8x40s retry budget gives ~320s before a
+# caller gives up — three starts that close together can burn that budget on
+# each other). Each of the three now owns a distinct 6-hour phase — this one,
+# splunk-security's (unchanged, hour 0), and bot-pr-triage's (hours 4,10,16,22)
+# — so no two of them ever share an hour.
 hermes_agent_github_monitor_enabled: true
 hermes_agent_github_monitor_cron_name: github-triage
-hermes_agent_github_monitor_cron_schedule: "26 */6 * * *"
+hermes_agent_github_monitor_cron_schedule: "26 2,8,14,20 * * *"
 # Delta discipline (2026-07-18): the same top-5 + counts were getting restated
 # in full every sweep even when the list hadn't moved. Memory carries the
 # last-posted list across runs (same reuse-what-exists pattern as the Splunk
@@ -145,9 +156,14 @@ hermes_agent_github_monitor_cron_prompt_file: hermes-github-triage.md
 # deterministic CI owns the merge. Reuses the github-issues skill (label write)
 # plus the read-only alerts token above. Minute 43 keeps it clear of the other
 # */6 sweeps (github-triage :26). Body from the pinned catalog (set_fact).
+#
+# Hours 4,10,16,22 (2026-08 stagger pass): the third leg of the same every-6h
+# rephase as github-triage above — see its comment for the full evidence. This
+# job now owns its own phase, distinct from splunk-security's (hour 0) and
+# github-triage's (hours 2,8,14,20).
 hermes_agent_bot_pr_triage_enabled: true
 hermes_agent_bot_pr_triage_cron_name: bot-pr-triage
-hermes_agent_bot_pr_triage_cron_schedule: "43 */6 * * *"
+hermes_agent_bot_pr_triage_cron_schedule: "43 4,10,16,22 * * *"
 hermes_agent_bot_pr_triage_cron_prompt_file: hermes-bot-pr-triage.md
 
 # --- Repo maintenance review: read-only, github-maint profile ---------------
@@ -165,9 +181,16 @@ hermes_agent_bot_pr_triage_cron_prompt_file: hermes-bot-pr-triage.md
 # digest out — because an unbounded org-wide sweep is what makes a job like
 # this expensive. Minute 8 of every 4th hour keeps it clear of the */6 GitHub
 # sweeps and the Splunk fleet (tests/hermes_agent/test_cron_stagger.py).
+#
+# Hours 1,5,9,13,17,21 (2026-08 stagger pass), not the old bare `*/4`
+# (0,4,8,12,16,20): those are exactly the hours splunk-security, github-triage
+# and bot-pr-triage's `*/6` phases land on (see github-triage's comment
+# above for the full evidence), so the old phase stacked this job on top of
+# one of those three every single time it fired. Moving to the odd hours
+# clears all three */6 jobs' phases entirely.
 hermes_agent_github_maint_enabled: true
 hermes_agent_github_maint_cron_name: github-maint-review
-hermes_agent_github_maint_cron_schedule: "8 */4 * * *"
+hermes_agent_github_maint_cron_schedule: "8 1,5,9,13,17,21 * * *"
 hermes_agent_github_maint_cron_prompt: >-
   You are the read-only repository-maintenance review for the dryvist
   organization. Your GitHub credential cannot write: never open, comment on,
