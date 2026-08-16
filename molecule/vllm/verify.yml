@@ -110,6 +110,22 @@
           ExecStart does not carry the port from tofu_data.constants. ExecStart:
           {{ vllm_unit_lines | select('search', 'ExecStart|--port') | list }}
 
+    # --- 4b. tool calling -----------------------------------------------------
+    # Both flags or neither: vLLM rejects `tool_choice: "auto"` unless BOTH are
+    # present, and the chat UI sends that on every ordinary message. The failure
+    # is a 400 from a model that is otherwise loaded and healthy, so it reads as
+    # a UI or router problem rather than a missing serving flag.
+    - name: Assert both tool-calling flags reached ExecStart
+      ansible.builtin.assert:
+        that:
+          - "'--enable-auto-tool-choice' in vllm_unit"
+          - "'--tool-call-parser hermes' in vllm_unit"
+        fail_msg: >-
+          ExecStart is missing a tool-calling flag. vLLM refuses
+          tool_choice=auto unless both --enable-auto-tool-choice and
+          --tool-call-parser are set, and the chat UI sends it on every turn.
+          ExecStart: {{ vllm_unit_lines | select('search', 'tool|ExecStart') | list }}
+
     # --- 5. nothing was left untemplated --------------------------------------
     # Matched by escaped regex rather than by an `in` test against a literal.
     # Writing the delimiter pair literally here would open a real expression in
@@ -145,5 +161,5 @@
     - name: Report how many assertions this scenario actually ran
       ansible.builtin.debug:
         msg: >-
-          vllm verify ran {{ 6 + (expected_environment | length) }} assertions
+          vllm verify ran {{ 7 + (expected_environment | length) }} assertions
           against {{ unit_path }}, plus 1 in converge for the parameter ceiling.
