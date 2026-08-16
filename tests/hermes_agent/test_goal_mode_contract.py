@@ -106,11 +106,24 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         if entry.get("enabled")
         for alias in entry.get("stable_aliases", [])
     }
+    # Exact equality, deliberately: a subset check would stop catching the stray
+    # alias this test exists to catch. So a new consumer-facing name is expected
+    # to land here — but derived through the registry, never pinned as a literal
+    # id, for the same reason the Hermes backends above are.
+    ocr_backend = next(
+        entry["client_model_id"]
+        for entry in registry
+        if entry.get("enabled") and entry.get("serving_role") == "ocr"
+    )
     assert aliases == {
         hermes_alias: hermes_backend,
         "tool-calling": hermes_backend,
         "goal-judge": judge_backend,
         "interim-brain": hermes_backend,
+        # The document tier is reached by image content parts, not by a selector
+        # var, so it has no hermes_* binding to assert — only that the name a
+        # human picks in the model list resolves to the vision entry.
+        "Unlimited OCR": ocr_backend,
     }
     # Both selectors must be declared servable, or the alias indirection just
     # moves the 404 one level down.
