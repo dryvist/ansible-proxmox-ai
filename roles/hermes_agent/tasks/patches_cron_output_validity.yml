@@ -1,0 +1,113 @@
+---
+# A cron run that returns almost nothing, or a sentence cut off mid-thought,
+# still exits with success=True and looks exactly like a completed job to
+# everything downstream. Observed live: an anomaly-sweep job posted its
+# entire "report" as the single word "Interesting", and a separate job
+# posted "Now let me check for new tickets since last run..." — a
+# mid-reasoning fragment, not a finished turn. Both were delivered to Slack
+# as normal successful runs. A degenerate completion like that is
+# indistinguishable, downstream, from "swept everything and found nothing" —
+# exactly the wrong conclusion to let stand unchallenged.
+#
+# This is the same choke point _cron_markup_guard (patches_retry_and_markup.yml)
+# already guards — every cron job's delivered content passes through it — so
+# this patch chains a second guard onto the same call rather than opening a
+# parallel path. It runs AFTER the markup guard (outermost in the call) so a
+# markup-guard warning, which already starts with ":warning:", is never
+# re-flagged as too short by this one.
+#
+# Declares failure the same way a script-fed cron does: prefixing the
+# existing _CRON_ISSUES_MARKER, which _cron_route already understands and
+# routes to the issues channel, stripping the marker before delivery. No new
+# routing mechanism, no parallel failure surface.
+- name: Patch Hermes cron delivery with an output-validity guard
+  ansible.builtin.blockinfile:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK cron output validity guard"
+    insertbefore: '^def _deliver_result\('
+    block: |
+      # Global kill switch and length floor for the output-validity guard
+      # below. Per-job floors override the global default; 0 disables the
+      # length check for that one job (a job that always needs it disabled
+      # entirely still gets caught by the truncation heuristic, which has
+      # no per-job override — it only matches an interrupted-thought shape,
+      # which no legitimate job output takes on purpose).
+      _CRON_OUTPUT_VALIDITY_ENABLED = {{ hermes_agent_cron_output_validity_enabled }}
+      _CRON_MIN_OUTPUT_LENGTH = {{ hermes_agent_cron_min_output_length }}
+      _CRON_MIN_OUTPUT_LENGTH_OVERRIDES = {{ hermes_agent_cron_min_output_length_overrides }}
+
+      # Lead-in phrases a model uses to narrate its NEXT step ("Now let me
+      # check...", "I'll look at..."), never how a finished report opens.
+      _CRON_LEADIN_RE = re.compile(
+          r"^\s*(now\s+)?(let'?s|let me|i'?ll|i will|i'm going to|"
+          r"i am going to|going to|next,?\s+i|first,?\s+i)\b",
+          re.IGNORECASE,
+      )
+
+
+      def _cron_output_looks_truncated(text):
+          """True if text reads like an interrupted thought, not a finished report.
+
+          Two independent signals, either is sufficient:
+            - it trails off with an ellipsis ("...", or the single "…" glyph)
+              — the conventional way a truncated stream ends; or
+            - it OPENS with a mid-task narration lead-in AND never reaches a
+              terminal sentence mark. A genuine report that happens to start
+              "I'll..." still ends with '.', '!', '?', a closing quote/paren,
+              or a code fence; only the interrupted version does not.
+          A bare short result ("Interesting") matches neither signal — it is
+          instead caught by the length floor below, which is the check meant
+          for that shape.
+          """
+          if text.endswith("...") or text.endswith("…"):
+              return True
+          if _CRON_LEADIN_RE.match(text) and not re.search(r'[.!?"\'`)\]]\s*$', text):
+              return True
+          return False
+
+
+      def _cron_output_validity_guard(job, output_file, content, success):
+          """Never deliver a degenerate or truncated fragment as a cron result.
+
+          Only runs on the success path: a run that already failed delivers
+          its own failure summary through _cron_route via `success`, and
+          rewriting that would destroy the real error for a generic
+          "too short" message instead of adding one more failure signal.
+          """
+          if not success or not _CRON_OUTPUT_VALIDITY_ENABLED:
+              return content
+          text = (content or "").strip()
+          if text.startswith(_CRON_ISSUES_MARKER) or text.startswith(":warning:"):
+              return content
+          name = job.get("name", job.get("id", "?"))
+          floor = _CRON_MIN_OUTPUT_LENGTH_OVERRIDES.get(name, _CRON_MIN_OUTPUT_LENGTH)
+          if floor and len(text) < floor:
+              reason = f"output too short ({len(text)} < {floor} chars) to be a real result"
+          elif _cron_output_looks_truncated(text):
+              reason = "output reads like an interrupted mid-reasoning fragment, not a finished report"
+          else:
+              return content
+          logger.error(
+              "Job '%s': %s — delivery suppressed", name, reason,
+          )
+          return (
+              f"{_CRON_ISSUES_MARKER} :warning: Cron '{name}' failed: {reason}. "
+              f"Raw run: {output_file}"
+          )
+  notify: Restart hermes-gateway
+
+- name: Route cron delivery content through the output-validity guard
+  # Idempotent: the rewritten line no longer matches its own regexp, because
+  # "deliver_content = " is no longer immediately followed by
+  # "_cron_markup_guard(job, output_file," once wrapped.
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: >-
+      ^([ \t]*)deliver_content = _cron_markup_guard\(job, output_file,
+      final_response if success else
+      _summarize_cron_failure_for_delivery\(job, error\)\)$
+    replace: >-
+      \g<1>deliver_content = _cron_output_validity_guard(job, output_file,
+      _cron_markup_guard(job, output_file, final_response if success else
+      _summarize_cron_failure_for_delivery(job, error)), success)
+  notify: Restart hermes-gateway

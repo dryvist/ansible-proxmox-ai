@@ -100,11 +100,23 @@ PATCHED_CRON_DELIVERY_SOURCE = (
     _task("Rebind the built-in memory store for cron agents")["vars"][
         "_hermes_cron_memory_block"
     ]
+    # The output-validity guard's own def line, needed for the postcondition
+    # that checks it landed. Raw block text (unrendered Jinja placeholders
+    # and all) — the postcondition only substring-matches the def line, which
+    # carries no templating, so rendering is unnecessary here; the guard's
+    # actual runtime behaviour is exec'd and rendered separately in
+    # test_cron_output_validity.py.
+    + _task("Patch Hermes cron delivery with an output-validity guard")[
+        "ansible.builtin.blockinfile"
+    ]["block"]
     + _apply_runtime_patch(
         "Route failed cron deliveries to the issues channel",
         _apply_runtime_patch(
-            "Route cron delivery content through the markup guard",
-            PINNED_CRON_DELIVERY_SOURCE,
+            "Route cron delivery content through the output-validity guard",
+            _apply_runtime_patch(
+                "Route cron delivery content through the markup guard",
+                PINNED_CRON_DELIVERY_SOURCE,
+            ),
         ),
     )
 )
