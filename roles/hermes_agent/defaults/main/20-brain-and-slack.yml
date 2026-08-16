@@ -37,6 +37,26 @@ hermes_agent_model_max_tokens: 8192
 # assert checks against the router's per-attempt timeout — resolves to 1800.
 hermes_agent_stream_read_timeout: "{{ ai_stream_read_timeout_seconds }}"
 hermes_agent_stream_stale_timeout: 900
+# Cron's inactivity watchdog (cron/scheduler.py) is a TOTAL-REQUEST-TIME budget
+# for cron jobs specifically, not a true idle detector: cron calls run
+# non-streaming (direct_api_call), which stamps the activity clock once before
+# the blocking request and never again, so seconds_since_activity == call
+# duration. Upstream default is 600s. Sized from live per-call latency
+# (index=hermes, "API call #N ... latency=") during the 2026-08-16 outage: 12h
+# p99 = 858.5s (7d baseline p99 300s; the fabric was running ~10x slower than
+# baseline). That p99 is a CENSORED sample: the latency= line only logs on a
+# successful response, so every call the old 600s watchdog killed is invisible
+# to it and the true tail is higher than 858.5s by an unknown amount. 1800s
+# clears the measured p99 with >2x margin and 210/211 observed samples —
+# deliberately NOT the one 2246.5s outlier, which may be a genuinely wedged
+# call rather than a slow completion (tracked separately, Vikunja project 48).
+# Kept below ai_router_request_timeout_seconds (2400s) so the router never
+# outlives a call the cron would have accepted — see assert (3b) below.
+# FOLLOW-UP (Vikunja): re-measure p99 from the now-uncensored latency= data
+# ~12-24h after this lands and compare to 858.5s — calls previously killed at
+# 600s will finally log real latencies, the first uncensored read on this
+# distribution.
+hermes_agent_cron_timeout_seconds: 1800
 # Per-call MCP tool timeout (config_servers.<srv>.timeout). The hermes-agent
 # runtime already ENFORCES this bound (tools/mcp_tool._run_on_mcp_loop raises
 # TimeoutError at the deadline and returns a clean tool error), but the per-server
