@@ -12,19 +12,33 @@
 {% macro litellm_model(m) %}{{ m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id) }}{% endmacro %}
 
 model_list:
+  # --- Hermes-only local complexity router ---
+{% for m in llm_router_hermes_virtual_models %}
+  - model_name: {{ m.client_model_id }}
+    litellm_params:
+      model: {{ litellm_model(m) }}
+      complexity_router_config:
+        tiers:
+          SIMPLE: {{ llm_router_routine_model }}
+          MEDIUM: {{ llm_router_routine_model }}
+          COMPLEX: {{ llm_router_primary_model }}
+          REASONING: {{ llm_router_primary_model }}
+        default_model: {{ llm_router_primary_model }}
+    model_info:
+      max_input_tokens: {{ m.context_window }}
+      max_tokens: {{ m.max_output_tokens }}
+{% endfor %}
+
   # --- large tier: one deployment each, bearer-authed to llm-large ---
   # Each tuned model is registered under its physical id: exact model_name
   # matches beat the "*" wildcard below, so the request routes to the TUNED
   # deployment (llama-swap: parsers, preload, batching) instead of falling
   # through to the zero-config dynamic tier.
 {% for m in llm_router_large_models %}
-{# Registry entries select a backend symbolically; the URL lives in the role. #}
-{% set _api_base = llm_router_llm_large_cluster_base_url if m.endpoint | default('') == 'cluster'
-                   else llm_router_llm_large_base_url %}
   - model_name: {{ m.client_model_id }}
     litellm_params:
       model: {{ litellm_model(m) }}
-      api_base: {{ _api_base }}
+      api_base: {{ llm_router_llm_large_base_url }}
       api_key: os.environ/LLM_LARGE_BEARER_TOKEN
       # In-flight admission cap, so excess work QUEUES here instead of being
       # refused by the backend. Without it this deployment carried no ceiling
@@ -109,14 +123,13 @@ model_list:
       max_parallel_requests: {{ llm_router_passthrough_max_parallel_requests }}
 {% endif %}
 {% endif %}
-  # --- OpenRouter egress tier: explicit opt-in by real upstream id, one key per MODEL ---
-  # Never chained into any fallbacks (see defaults). Keys come from OpenBao
-  # secrets-external/ai/saas/openrouter via the EnvironmentFile; an unseeded
-  # model renders no entry at all.
+  # --- OpenRouter egress tier: explicit ids, one provider key ---
+  # Never chained into any fallbacks (see defaults). Keys arrive through the
+  # managed provider EnvironmentFile; an unseeded model renders no entry.
 {% for m in llm_router_openrouter_models %}
-{% set _or_env = 'OPENROUTER_API_KEY_' ~ (m.key_field | upper | replace('-', '_')) %}
-{% set _or_key = bao_local_llm_secrets[m.key_field] | default(lookup('env', _or_env), true) %}
-{% if _or_key | length > 0 %}
+{% set _or_env = m.credential_env %}
+{% set _or_key = bao_local_llm_secrets[m.key_field] | default(lookup('env', m.credential_env), true) %}
+{% if _or_key | trim | length > 0 %}
   - model_name: {{ m.client_model_id }}
     litellm_params:
       model: {{ litellm_model(m) }}
@@ -131,6 +144,47 @@ model_list:
       max_input_tokens: {{ m.context_window }}
       max_tokens: {{ m.context_window }}
 {% endif %}
+{% endfor %}
+  # --- Hermes-only paid provider fallbacks ---
+  # An entry is emitted only when its exact credential resolves. Direct
+  # providers are separate failure domains; the final OpenRouter group contains
+  # only exact, multi-upstream model ids and is price-routed within that
+  # equivalent tier. No cloud group is an alias of a physical local model, so
+  # callers other than hermes-default do not inherit paid egress.
+{% for m in llm_router_hermes_cloud_models_credentialed %}
+  - model_name: {{ m.route_group }}
+    litellm_params:
+      model: {{ litellm_model(m) }}
+      api_key: os.environ/{{ m.credential_env }}
+{% if m.api_base is defined %}
+      api_base: {{ m.api_base }}
+{% endif %}
+      input_cost_per_token: {{ m.input_cost_per_token }}
+      output_cost_per_token: {{ m.output_cost_per_token }}
+      rpm: {{ llm_router_hermes_cloud_rpm }}
+      tpm: {{ llm_router_hermes_cloud_tpm }}
+      max_parallel_requests: {{ llm_router_hermes_cloud_max_parallel_requests }}
+      max_budget: {{ m.monthly_budget }}
+      budget_duration: {{ llm_router_hermes_cloud_monthly_budget_period }}
+{% if m.provider == 'openrouter' %}
+      # Exact model ids above are the model allowlist. OpenRouter may choose a
+      # healthy hosting endpoint only inside the price, parameter, collection
+      # and ZDR constraints below; no unrestricted auto-router is exposed.
+      extra_body:
+        provider:
+          sort: price
+          max_price:
+            prompt: 0.75
+            completion: 4.0
+          require_parameters: true
+          allow_fallbacks: true
+          data_collection: deny
+          zdr: true
+{% endif %}
+    model_info:
+      max_input_tokens: {{ m.context_window }}
+      max_output_tokens: {{ m.max_output_tokens }}
+      max_tokens: {{ m.max_output_tokens }}
 {% endfor %}
   # NOTE there is deliberately no `openrouter/*` passthrough entry. The loop
   # above IS the egress allowlist: a model the registry does not enable with a
@@ -184,6 +238,14 @@ model_list:
 
 router_settings:
   routing_strategy: {{ llm_router_routing_strategy }}
+{% if 'hermes-cloud-openrouter' in llm_router_hermes_cloud_fallback_groups %}
+  # Kimi and GLM are treated as equivalent final-resort agentic deployments;
+  # use their real token prices rather than falsifying costs to encode quality.
+  routing_groups:
+    - group_name: hermes-openrouter-value
+      models: [hermes-cloud-openrouter]
+      routing_strategy: cost-based-routing
+{% endif %}
   allowed_fails: {{ llm_router_allowed_fails }}
   cooldown_time: {{ llm_router_cooldown_time }}
   model_group_alias:
@@ -191,14 +253,13 @@ router_settings:
     {{ alias | to_json }}: {{ target | to_json }}
 {% endfor %}
 {% if llm_router_hermes_default_fallback_chain | length > 0 %}
-  # hermes-default automatic failover across the cluster + standalone gates
-  # (see defaults for the full ordering rationale and the source-verified
-  # reason the key is the ALIAS, not the resolved primary id). Same-tier only
-  # (every entry here carries the same context_window as the primary) — this
-  # is NOT the cross-tier fallback the no-fallback rule below still forbids.
+  # The source-verified fallback key is the original request name, not the
+  # complexity-selected local group. Only credential-backed provider groups
+  # render here, so no dead route or duplicate local attempt is advertised.
   fallbacks:
     - hermes-default: {{ llm_router_hermes_default_fallback_chain | to_json }}
 {% endif %}
+  max_fallbacks: {{ llm_router_max_fallbacks }}
   # No CROSS-TIER fallbacks for the default brain, on purpose: a fallback
   # serving a smaller context than the primary poisons callers instead of
   # degrading them (incident history: Zammad, AI/LLM Serving). Fail loud; the
@@ -207,6 +268,8 @@ router_settings:
   # Pre-call context-window checks so an over-long request is not routed to a model
   # that cannot serve it (no cross-tier fallback masks the error).
   enable_pre_call_checks: true
+  optional_pre_call_checks:
+    - enforce_model_rate_limits
   # Genuine failures are forwarded once so backend calls remain exactly bounded.
   # The rate-limit policy below overrides this for 429s only.
   num_retries: {{ llm_router_num_retries }}
@@ -239,10 +302,6 @@ router_settings:
   redis_port: {{ llm_router_redis_port }}
   redis_password: os.environ/LLM_ROUTER_REDIS_PASSWORD
 {% if llm_router_openrouter_budget_limit | float > 0 %}
-  # Period ceiling on paid egress, enforced against the store above so it binds
-  # every caller rather than only the compliant ones. The per-deployment rpm/tpm
-  # ceilings above bound the RATE spend accumulates at, so a runaway caller
-  # cannot exhaust the period before this counter observes it.
   provider_budget_config:
     openrouter:
       budget_limit: {{ llm_router_openrouter_budget_limit }}

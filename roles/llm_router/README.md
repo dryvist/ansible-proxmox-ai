@@ -18,7 +18,7 @@ tofu inventory). Tools come from the repo's Nix dev shell (`direnv allow`).
 the repo-root `llm-models.yml` registry — and this role is a projection of it.**
 `defaults/main.yml` derives its tier views (`llm_router_large_models`,
 `llm_router_light_models`, `llm_router_openrouter_models`), its selector vars
-(`llm_router_primary_model` / `_small_model` / `_cluster_model`), the servable
+(`llm_router_primary_model` / `_small_model` / `_routine_model`), the servable
 set and the alias map from that file; `templates/config.yaml.j2` renders the
 LiteLLM config from those views. Nothing in the role re-types a model id, and a
 test fails the build if anything starts to.
@@ -42,7 +42,7 @@ Common edits:
 | --- | --- |
 | Repoint the serving host | move `serving_role: primary` to another entry |
 | Add/remove a consumer alias | that entry's `stable_aliases` |
-| Add an OpenRouter model | one registry entry + seed its `key_field` |
+| Add an OpenRouter model | one registry entry; reuse the provider credential |
 | Retire a model | `enabled: false` (or delete the entry) |
 
 ## Tiers (one proxy, two backends)
@@ -54,7 +54,8 @@ a physical ID or a stable role from `llm_router_model_group_aliases`.
 | --- | --- | --- |
 | `mlx-community/*` large models (`Qwen3.6-35B-A3B-OptiQ-4bit`, `gpt-oss-120b-MXFP4-Q8`, …) | `llm-large` runner (`/v1`, bearer) | `LLM_LARGE_BEARER_TOKEN` |
 | `qwen3-4b`, `embeddings` | `llm-light` (CPU), plus `llm-fast` (GPU) when `llm_router_llm_fast_enabled` | none |
-| `nvidia/nemotron-3-ultra-550b-a55b:free` (extensible list) | OpenRouter (paid-SaaS egress) | one key **per model** |
+| OpenRouter allowlisted ids | OpenRouter (paid-SaaS egress) | one provider key |
+| `hermes-default` | local complexity router with credential-gated provider fallbacks | one key per API provider |
 
 Each light model id is registered as a CPU `llm-light` deployment, and as a second
 same-`model_name` GPU `llm-fast` deployment **only when `llm_router_llm_fast_enabled`
@@ -64,28 +65,23 @@ cools a failed deployment down (`allowed_fails` / `cooldown_time`), so a GPU out
 drains to CPU. There is **no** cross-tier fallback — a large
 request that fails surfaces the error rather than silently degrading to a small model.
 
-## OpenRouter egress tier (optional, per-model keys)
+## OpenRouter egress tier (optional, one provider key)
 
 Registry entries with `tier: openrouter` register OpenRouter-hosted models under
 their real upstream ids. Deliberate properties:
 
-- **One OpenRouter API key per MODEL** (never per harness/caller). Each entry's
-  `key_field` names its field in the OpenBao paid-SaaS key area, canonically
-  `secrets-external/ai/saas/openrouter` (an internet-reachable SaaS
-  credential; dual-mounted with the internal `secret/ai/saas/openrouter`
-  path during the migration); the `openbao_secrets` pre-play delivers it via
-  the `ai-saas-openrouter` policy leaf, and the rendered EnvironmentFile
-  carries it as `OPENROUTER_API_KEY_<KEY_FIELD upper-snaked>`.
+- **One OpenRouter API key for the provider.** Every OpenRouter registry entry
+  references `OPENROUTER_API_KEY`; exact model ids and provider policy enforce
+  access rather than model-specific credentials.
 - **Inert until seeded** — an entry whose key is absent renders nothing, so
   the list is safe to extend before the key exists.
 - **Opt-in only** — OpenRouter models are never chained into a fallback;
   consumers (Hermes, Open WebUI, workstation harnesses) must name the real
   upstream id to reach the SaaS egress.
 
-Seeding a new model (operator, once per model): mint a scoped key in the
-OpenRouter console, then
-`bao kv patch secrets-external/ai/saas/openrouter <model-slug>=<key>` and
-re-converge this role. The first entry is `nvidia/nemotron-3-ultra-550b-a55b:free`
+Seeding OpenRouter is a one-time provider operation: mint a dedicated LiteLLM
+key with its provider-side spend limit, store it as `OPENROUTER_API_KEY`, and
+re-converge this role. The first explicit entry is `nvidia/nemotron-3-ultra-550b-a55b:free`
 (rate-limited; NVIDIA logs prompts on the `:free` endpoint — never send
 confidential material through it).
 

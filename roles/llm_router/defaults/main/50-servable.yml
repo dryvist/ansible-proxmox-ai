@@ -43,9 +43,8 @@ llm_router_small_model: >-
      | map(attribute='client_model_id') | first }}
 # The routine tier: the SECOND resident model, warm beside the primary rather
 # than swapping against it (maxResidentWorkers = 2). It carries the primary's
-# full context window and is pinned resident, so as a failover target it costs
-# no cold load — which is what makes it the right entry to sit between the
-# cluster leg and the evictable small tier in the chain below.
+# full context window and is pinned resident, so local complexity selection
+# does not pay a cold-load penalty.
 llm_router_routine_model: >-
   {{ llm_router_registry_enabled | selectattr('serving_role', 'defined')
      | selectattr('serving_role', 'equalto', 'routine')
@@ -66,14 +65,6 @@ llm_router_model_group_aliases: >-
           | zip(llm_router_alias_pairs | map(attribute=0)
                 | map(attribute='client_model_id'))) }}
 
-# --- hermes-default local failover -------------------------------------------
-# The cluster path is abandoned. A failed primary moves directly to the second
-# resident model and then the evictable small model. The cloud value groups are
-# appended only when credentials render them; no dead or unapproved target is
-# advertised.
-llm_router_hermes_default_fallback_chain:
-  - "{{ llm_router_routine_model }}"
-  - "{{ llm_router_small_model }}"
 # Background health checks send REAL test requests to every deployment — on the
 # llama-swap fast tier each probe spawns the target model, and with 3 routers
 # probing every model this both churns VRAM constantly and (pre swap-groups)

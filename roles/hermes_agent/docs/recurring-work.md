@@ -81,8 +81,8 @@ reads `kanban.db` **read-only** (`mode=ro`) and its stdout is delivered verbatim
 No LLM and no network in the fact path, which is the point — this is the surface
 that announces a wedged board, and a wedged board is usually a wedged brain. For
 the same reason it is deliberately **absent from
-`hermes_agent_seeded_cron_names`**: a cluster window pauses that list, and this
-digest has to keep reporting through one.
+`hermes_agent_seeded_cron_names`** so brain-fleet reconciliation cannot pause
+the digest that reports a wedged board.
 
 `hermes kanban` has no "every run that ended since T" query — `list --json`
 carries task rows whose `result` column is null, and per-attempt outcome and

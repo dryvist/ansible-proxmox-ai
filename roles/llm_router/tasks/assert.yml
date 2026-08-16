@@ -48,7 +48,8 @@
     # converge where they point at the same id doesn't double-list.
     _llm_router_required_safe_models: >-
       {{ [ai_default_model,
-          llm_router_model_group_aliases.get(hermes_brain_model, hermes_brain_model),
+          llm_router_primary_model,
+          llm_router_routine_model,
           llm_router_model_group_aliases.get(hermes_goal_judge_model, hermes_goal_judge_model)]
          | unique }}
 
@@ -86,78 +87,21 @@
          | rejectattr('context_window', 'none')
          | map(attribute='client_model_id') | list }}
 
-- name: Assert hermes-default's fallback chain points only at servable models
+- name: Assert every advertised cloud fallback has a rendered credential
   ansible.builtin.assert:
     quiet: true
     that:
-      - llm_router_hermes_default_fallback_chain | difference(llm_router_servable_models) | length == 0
+      - llm_router_hermes_cloud_fallback_groups | length <= 3
+      - llm_router_hermes_default_fallback_chain == llm_router_hermes_cloud_fallback_groups
+      - llm_router_hermes_cloud_fallback_groups
+        | difference(['hermes-cloud-alibaba', 'hermes-cloud-gemini', 'hermes-cloud-openrouter'])
+        | length == 0
     fail_msg: >-
-      Unroutable fallback (roles/llm_router/tasks/assert.yml): hermes-default's
-      fallback chain {{ llm_router_hermes_default_fallback_chain }} names
-      model(s) not in llm_router_servable_models
-      [{{ llm_router_servable_models | join(', ') }}]. Same failure mode as the
-      alias assert above: the serving host runs llama-swap in single-model
-      mode, so a fallback target outside the servable set 404s instead of
-      answering when the primary fails over to it.
+      Hermes cloud fallback groups must be the bounded provider-diverse set;
+      got {{ llm_router_hermes_cloud_fallback_groups }}.
     success_msg: >-
-      hermes-default's fallback chain
-      ({{ llm_router_hermes_default_fallback_chain | join(', ') }}) resolves
-      into the servable set.
-
-- name: Assert no fallback target serves a smaller context than the primary
-  # A target with a smaller context_window would silently poison every hermes-default
-  # request that failed over, which is the exact "degrade the caller instead of
-  # failing loud" outcome the no-cross-tier-fallback rule in config.yaml.j2
-  # forbids. Same-tier membership does not imply it: both are tier: large today
-  # only because both registry entries happen to carry 65536.
-  ansible.builtin.assert:
-    quiet: true
-    that:
-      - _llm_router_narrow_fallbacks | length == 0
-    fail_msg: >-
-      Context-narrowing fallback (roles/llm_router/tasks/assert.yml): fallback
-      target(s) [{{ _llm_router_narrow_fallbacks | join(', ') }}] serve a
-      smaller context_window than the primary
-      {{ llm_router_primary_model }} ({{ _llm_router_primary_context }}).
-      hermes-default would fail over to a model that cannot hold the request
-      it was sent, so the caller is answered wrongly instead of erroring.
-      Either raise the target's context_window to match the primary or drop it
-      from llm_router_hermes_default_fallback_chain.
-    success_msg: >-
-      Every fallback target holds at least the primary's
-      {{ _llm_router_primary_context }}-token context.
-  vars:
-    _llm_router_primary_context: >-
-      {{ llm_router_large_models
-         | selectattr('client_model_id', 'equalto', llm_router_primary_model)
-         | map(attribute='context_window') | first | default(0) }}
-    # Every chain entry EXCEPT the last-resort tail must hold the primary's
-    # context. The tail is exempt deliberately: it is the only entry that is
-    # servable when every resident brain has already failed, so requiring full
-    # context of it would mean no reachable fallback at all in exactly the case
-    # the chain exists for. Two things make the exemption safe, and both must
-    # stay true:
-    #   - enable_pre_call_checks (config.yaml.j2) rejects an over-long request
-    #     before it is routed, so a narrow tail errors rather than answering a
-    #     request it could not hold. That is the precise harm this assert names.
-    #   - the caller can tell a fallback answer from a primary one. NOT from the
-    #     response body: an aliased request echoes the ALIAS back in `model`
-    #     (verified live — requesting "goal-judge" returns model "goal-judge",
-    #     never the physical id), so the body attributes nothing. The signal is
-    #     the response HEADERS, which litellm 1.97.0 sets in
-    #     router_utils/add_retry_fallback_headers.py the moment a fallback
-    #     succeeds: x-litellm-attempted-fallbacks (0 = primary served),
-    #     x-litellm-model-id and x-litellm-model-api-base (which backend).
-    #     A consumer that reports "which model answered" must read those
-    #     headers; one that reports body.model is reporting what it asked for,
-    #     not what replied.
-    _llm_router_narrow_fallbacks: >-
-      {{ llm_router_large_models
-         | selectattr('client_model_id', 'in', llm_router_hermes_default_fallback_chain[:-1])
-         | selectattr('context_window', 'defined')
-         | rejectattr('context_window', 'none')
-         | selectattr('context_window', 'lt', _llm_router_primary_context | int)
-         | map(attribute='client_model_id') | list }}
+      Hermes advertises {{ llm_router_hermes_cloud_fallback_groups | length }}
+      credential-backed cloud provider group(s), never more than three.
 
 - name: Assert the rate-limit retry budget actually absorbs a 429 and fits the timeout chain
   ansible.builtin.assert:
@@ -199,12 +143,6 @@
 # and prove it fires, rather than re-stating its condition.
 - name: Assert the spend budget is backed
   ansible.builtin.import_tasks: assert-budget-backing.yml
-
-# Escalation distinctness. Its own file for the same reason; a warning rather
-# than an assert because the collapse it names is a state the fabric currently
-# accepts on purpose.
-- name: Warn if the escalation tier has collapsed onto the default tier
-  ansible.builtin.import_tasks: assert-escalation-tier.yml
 
 # Registry/render parity. LAST, deliberately: it renders the whole config
 # template, so every cheaper assert above should have already rejected a bad

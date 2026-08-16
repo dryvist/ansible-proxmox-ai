@@ -130,8 +130,8 @@ The older "hourly heartbeat, never `[SILENT]`" law is **superseded** — see the
 
 `kanban-digest` is the master board report: it reads `kanban.db` read-only and
 says what every card did since its own previous run. It is deliberately
-excluded from `hermes_agent_seeded_cron_names` so it survives a cluster pause
-window — it is what tells you the board is wedged. A run with **nothing** to
+excluded from `hermes_agent_seeded_cron_names` because it is what tells you the
+board is wedged. A run with **nothing** to
 report (no completion, failure, retry or overrun) goes `[SILENT]` until
 `hermes_agent_kanban_digest_heartbeat_hours` (default 6) has elapsed since the
 last delivered post — the same gate `splunk-status-digest` carries. Real board

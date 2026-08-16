@@ -83,9 +83,13 @@ server-side quorum HA needs a fourth node and is out of scope.
 | --- | --- | --- | --- |
 | `apps` | `APPS_VAULT_ROLE_ID` / `_SECRET_ID` | `apps/hindsight` | `hindsight_docker` |
 | `ai-public` | `AI_PUBLIC_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/public/brain` (non-secret) | `ai_default_model` + brain-sync timers (below) |
-| `ai-runner` | `AI_RUNNER_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/vikunja`, `ai/saas/{anthropic,openai}` | job-runner guests (`ai_runner`, `agent_guest`) |
+| `ai-runner` | `AI_RUNNER_VAULT_ROLE_ID` / `_SECRET_ID` | dispatch and provider credentials | job-runner guests (`ai_runner`, `agent_guest`) |
 | `hermes` | `HERMES_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/hermes` (path-exact) | none yet — see below |
 | `local-llm` | `LOCAL_LLM_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/*`; exact paths in defaults | every AI role in this repo |
+
+String path entries use `openbao_secrets_kv_mount`. A mapping with `mount` and
+`path` selects another KV mount through the same native `vault_kv2_get` module;
+provider API keys use privately supplied mount and prefix parameters.
 
 Other resource domains (observability, media, ...) are fetched by the
 `ansible-proxmox-apps` copy of this role for the roles that live there.

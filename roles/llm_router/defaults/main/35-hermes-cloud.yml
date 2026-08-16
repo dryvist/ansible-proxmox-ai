@@ -1,0 +1,43 @@
+---
+# Hermes-only local complexity routing and paid provider fallbacks. Physical
+# local model groups stay unchanged, so Hindsight/Open WebUI callers retain a
+# local-only contract. Cloud groups render only when their exact credential is
+# present and the shared Redis budget store is configured.
+llm_router_hermes_virtual_models: >-
+  {{ llm_router_registry_enabled
+     | selectattr('tier', 'equalto', 'hermes-router') | list }}
+llm_router_hermes_cloud_models: >-
+  {{ llm_router_registry_enabled
+     | selectattr('tier', 'equalto', 'hermes-cloud') | list }}
+
+llm_router_hermes_cloud_rpm: 12
+llm_router_hermes_cloud_tpm: 500000
+llm_router_hermes_cloud_max_parallel_requests: 2
+llm_router_hermes_cloud_monthly_budget_period: 1mo
+
+# Credentialed projection is the only enabled cloud inventory. Registry order
+# owns provider preference, and one key is shared by all models for a provider.
+llm_router_hermes_cloud_models_credentialed: >-
+  {%- set ns = namespace(models=[]) -%}
+  {%- for m in llm_router_hermes_cloud_models -%}
+  {%- set key = bao_local_llm_secrets[m.key_field]
+       | default(lookup('env', m.credential_env), true) -%}
+  {%- if key | trim | length > 0 -%}
+  {%- set ns.models = ns.models + [m] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.models }}
+
+llm_router_hermes_cloud_fallback_groups: >-
+  {{ llm_router_hermes_cloud_models_credentialed
+     | map(attribute='route_group') | unique | list }}
+
+# LiteLLM 1.97 records the original alias, not the complexity-selected local
+# group, as attempted. Re-listing a local group here can therefore call the same
+# failed backend twice. Only distinct provider groups belong in this chain.
+llm_router_hermes_default_fallback_chain: >-
+  {{ llm_router_hermes_cloud_fallback_groups }}
+
+# One initial attempt plus every explicitly ordered fallback. This is a fallback
+# bound, not a retry budget; ordinary same-provider retries remain zero.
+llm_router_max_fallbacks: "{{ llm_router_hermes_default_fallback_chain | length }}"
