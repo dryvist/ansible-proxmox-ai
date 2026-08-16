@@ -1,0 +1,203 @@
+---
+# Pins the registry <-> rendered model_list parity guard
+# (roles/llm_router/tasks/assert-registry-render-parity.yml).
+#
+# WHY THIS TEST EXISTS. Every other assert in the role checks the registry
+# against itself, so both halves of the 2026-08-15 drift pair passed every
+# check and shipped: seven entries enabled and advertised while the serving
+# host 404'd them, and an entry enabled in the registry but absent from the
+# router's running model list. The guard closes that; this test proves the
+# guard actually fires, in both directions, rather than passing vacuously.
+#
+# The third play is the one that matters most. The OpenRouter tier is exempt
+# from the enabled-but-unrendered direction because those entries are
+# key-gated and render nothing when unseeded — four such entries ship enabled
+# and unseeded today. If that exemption ever regresses, the guard fires four
+# false positives on a correct config, and an assert that cries wolf gets
+# switched off. A passing guard is not enough; it has to stay quiet when it
+# should.
+#
+# Run (from the REPO ROOT — the registry load resolves the llm_router role
+# through ansible.cfg's cwd-relative roles_path):
+#   ansible-playbook tests/llm_router/test_registry_render_parity.yml -i localhost, -c local
+
+- name: The guard passes against the registry as it actually ships
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          llm_cluster_api: 11440
+          otel_traces_http: 4318
+    # Empty on purpose: it leaves every OpenRouter key unseeded, which is the
+    # exact state the tier exemption exists for.
+    bao_local_llm_secrets: {}
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Run the parity guard against the shipping registry
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"
+
+    - name: The shipping registry really does exercise both tiers this guard covers
+      # Guards against the whole test going vacuous: if the registry ever
+      # rendered nothing, every difference() above would be empty and the
+      # guard would "pass" while checking nothing at all.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_parity_config.model_list | length > 0
+          - llm_router_registry_enabled | rejectattr('tier', 'equalto', 'openrouter') | list | length > 0
+          - llm_router_registry_enabled | selectattr('tier', 'equalto', 'openrouter') | list | length > 0
+        fail_msg: >-
+          The parity guard passed but the fixture is degenerate — it must
+          render at least one deployment AND carry both an exempt (openrouter)
+          and a non-exempt registry entry, or it proves nothing.
+        success_msg: "Fixture is non-degenerate: both exempt and non-exempt tiers present."
+
+- name: The guard rejects an enabled entry the template renders nothing for
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          llm_cluster_api: 11440
+          otel_traces_http: 4318
+    bao_local_llm_secrets: {}
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Prove the guard catches an advertised entry nothing renders
+      block:
+        # Tier `orphan` matches none of the template's four loops, so this
+        # entry is enabled and advertised by the registry while rendering no
+        # deployment at all — the alive-but-unadvertised half of the pair.
+        - name: Add an enabled registry entry on a tier the template does not render
+          ansible.builtin.set_fact:
+            llm_router_model_registry: >-
+              {{ llm_router_model_registry + [{
+                   'client_model_id': 'test/orphaned-entry',
+                   'upstream_model_id': 'test/orphaned-entry',
+                   'provider': 'openai',
+                   'tier': 'orphan',
+                   'enabled': true,
+                   'context_window': 32768,
+                 }] }}
+
+        - name: Run the parity guard against the orphaned entry
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"
+
+        - name: Fail because the guard admitted an entry nothing renders
+          ansible.builtin.fail:
+            msg: >-
+              The parity guard PASSED with test/orphaned-entry enabled in the
+              registry and rendered nowhere. That is the exact shape of the
+              alive-but-unadvertised drift it was added to catch.
+      rescue:
+        - name: Confirm the guard failed for the unrendered-entry reason specifically
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'ENABLED BUT NOT RENDERED' in (ansible_failed_result.msg | default(''))"
+              - "'test/orphaned-entry' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              The guard failed, but not for the expected reason — got:
+              {{ ansible_failed_result.msg | default('(no message)') }}
+            success_msg: "Guard correctly rejects an enabled entry the template renders nothing for."
+
+        # set_fact persists for the host across every later play in the run,
+        # and it outranks the include_vars that registry.yml loads with — so
+        # without this the orphan follows the registry into the next play and
+        # fails it for the wrong reason. Cleaning up here rather than relying
+        # on this play running last keeps the plays order-independent.
+        - name: Drop the orphaned entry so later plays see the shipping registry
+          ansible.builtin.set_fact:
+            llm_router_model_registry: >-
+              {{ llm_router_model_registry
+                 | rejectattr('client_model_id', 'equalto', 'test/orphaned-entry') | list }}
+
+- name: The guard stays quiet for key-gated OpenRouter entries that are unseeded
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          llm_cluster_api: 11440
+          otel_traces_http: 4318
+    bao_local_llm_secrets: {}
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Confirm the fixture really does leave OpenRouter entries unrendered
+      # If this stops being true the exemption below is untested — the play
+      # would pass because there was nothing to exempt, not because the
+      # exemption works.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _unseeded_openrouter | length > 0
+          - (_unseeded_openrouter | difference(_rendered)) | length == _unseeded_openrouter | length
+        fail_msg: >-
+          Expected every enabled OpenRouter entry to render nothing with
+          bao_local_llm_secrets empty, but some rendered:
+          {{ _unseeded_openrouter | intersect(_rendered) }}.
+        success_msg: >-
+          {{ _unseeded_openrouter | length }} unseeded OpenRouter entries
+          render nothing, as the egress allowlist intends.
+      vars:
+        _rendered: >-
+          {{ (lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml).model_list
+             | default([]) | map(attribute='model_name') | unique | list }}
+        _unseeded_openrouter: >-
+          {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'openrouter')
+             | map(attribute='client_model_id') | list }}
+
+    - name: The guard passes anyway, because the exemption holds
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"
