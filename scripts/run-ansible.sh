@@ -22,18 +22,23 @@ shift
 # and still exits 0 with a green play recap — nothing in the output
 # distinguishes it from a real deployment. Refuse by default; ALLOW_STALE_CHECKOUT=1
 # is the deliberate escape hatch for a pinned replay.
+# Detached HEAD (how CI checks out a specific commit) isn't the stale-developer-
+# checkout case this guards against — there's no tracked branch to compare
+# against, so skip rather than fail on `git rev-parse origin/HEAD` nonsense.
 REPO_ROOT=$(git rev-parse --show-toplevel)
-BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)
-git -C "$REPO_ROOT" fetch --quiet origin "$BRANCH"
-LOCAL_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD)
-REMOTE_SHA=$(git -C "$REPO_ROOT" rev-parse "origin/$BRANCH")
-if [[ $LOCAL_SHA != "$REMOTE_SHA" ]] && [[ -z ${ALLOW_STALE_CHECKOUT:-} ]]; then
-  BEHIND=$(git -C "$REPO_ROOT" rev-list --count "$LOCAL_SHA..$REMOTE_SHA")
-  echo "ERROR: checkout is $BEHIND commit(s) behind origin/$BRANCH — refusing to converge." >&2
-  echo "  local:  $LOCAL_SHA" >&2
-  echo "  remote: $REMOTE_SHA" >&2
-  echo "Run 'git pull --ff-only origin $BRANCH', or set ALLOW_STALE_CHECKOUT=1 for a deliberate pinned replay." >&2
-  exit 1
+BRANCH=$(git -C "$REPO_ROOT" symbolic-ref -q --short HEAD || true)
+if [[ -n $BRANCH ]]; then
+  git -C "$REPO_ROOT" fetch --quiet origin "$BRANCH"
+  LOCAL_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD)
+  REMOTE_SHA=$(git -C "$REPO_ROOT" rev-parse "origin/$BRANCH")
+  if [[ $LOCAL_SHA != "$REMOTE_SHA" ]] && [[ -z ${ALLOW_STALE_CHECKOUT:-} ]]; then
+    BEHIND=$(git -C "$REPO_ROOT" rev-list --count "$LOCAL_SHA..$REMOTE_SHA")
+    echo "ERROR: checkout is $BEHIND commit(s) behind origin/$BRANCH — refusing to converge." >&2
+    echo "  local:  $LOCAL_SHA" >&2
+    echo "  remote: $REMOTE_SHA" >&2
+    echo "Run 'git pull --ff-only origin $BRANCH', or set ALLOW_STALE_CHECKOUT=1 for a deliberate pinned replay." >&2
+    exit 1
+  fi
 fi
 
 CERT_DIR=""
