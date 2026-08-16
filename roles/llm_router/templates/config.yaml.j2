@@ -1,14 +1,6 @@
 {{ ansible_managed | comment }}
-# LiteLLM proxy config (managed by the llm_router role). One OpenAI-compatible front
-# door for the whole fabric. Physical backends have one deployment entry each;
-# stable consumer names resolve through model_group_alias. Secrets come from the
-# systemd EnvironmentFile via os.environ/ — no credential literal lives here.
-#
-# Every model name below comes from the repo-root llm-models.yml registry, via
-# the role's tier views. Three names stay distinct on purpose and must not be
-# collapsed: `model_name` is what a CALLER sends (client_model_id),
-# `litellm_params.model` is LiteLLM's own provider-prefixed route string, and
-# the id after the prefix is what the UPSTREAM serves (upstream_model_id).
+# Managed LiteLLM proxy config. Models derive from llm-models.yml; credentials
+# resolve only through the systemd EnvironmentFile.
 {% macro litellm_model(m) %}{{ m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id) }}{% endmacro %}
 
 model_list:
@@ -30,22 +22,14 @@ model_list:
 {% endfor %}
 
   # --- large tier: one deployment each, bearer-authed to llm-large ---
-  # Each tuned model is registered under its physical id: exact model_name
-  # matches beat the "*" wildcard below, so the request routes to the TUNED
-  # deployment (llama-swap: parsers, preload, batching) instead of falling
-  # through to the zero-config dynamic tier.
+  # Exact tuned model names take precedence over the optional wildcard.
 {% for m in llm_router_large_models %}
   - model_name: {{ m.client_model_id }}
     litellm_params:
       model: {{ litellm_model(m) }}
       api_base: {{ llm_router_llm_large_base_url }}
       api_key: os.environ/LLM_LARGE_BEARER_TOKEN
-      # In-flight admission cap, so excess work QUEUES here instead of being
-      # refused by the backend. Without it this deployment carried no ceiling
-      # of any kind and forwarded everything to a server admitting 2 in-flight,
-      # which 429'd the remainder instantly. Per-instance and deliberately so —
-      # see llm_router_local_max_parallel_requests in defaults for why pool-wide
-      # coordination is not available for this control.
+      # Queue excess work at the router instead of flooding the backend.
       max_parallel_requests: {{ llm_router_local_max_parallel_requests }}
 {% if m.extra_body is defined %}
       # Per-model sampling defaults pinned at the router. extra_body is forwarded
@@ -59,31 +43,18 @@ model_list:
 {% endif %}
 {% if m.context_window is defined %}
     model_info:
-      # These mlx-community backend ids are unknown to LiteLLM's built-in
-      # model cost/context map, so without an explicit value here
-      # max_input_tokens resolves to null — enable_pre_call_checks then has
-      # nothing to check against and callers seeing that null (e.g. Hermes)
-      # fall back to a near-zero context guess and compress a request to
-      # death. Value = the model's real served context length.
+      # Explicit because these backend ids are absent from LiteLLM's catalog.
       max_input_tokens: {{ m.context_window }}
       max_tokens: {{ m.context_window }}
 {% endif %}
 {% if m.standby | default(false) and llm_router_llm_large_standby_base_url %}
-  # Standby sibling of {{ m.client_model_id }} on an off-Studio large-tier backend.
-  # SAME model id + SAME context window => a real failover deployment (LiteLLM
-  # groups both under this model_name), NOT a cross-tier alias — so it degrades
-  # the brain's availability without the smaller-context "poison the caller"
-  # failure the no-cross-tier-fallback rule guards against. Emitted only when
-  # llm_router_llm_large_standby_base_url is set (default OFF => byte-identical
-  # to the no-standby render). Motivation: single-Studio brain SPOF, INC-17080.
+  # Same-model, same-context standby; emitted only when configured.
   - model_name: {{ m.client_model_id }}
     litellm_params:
       model: {{ litellm_model(m) }}
       api_base: {{ llm_router_llm_large_standby_base_url }}
       api_key: os.environ/LLM_LARGE_STANDBY_BEARER_TOKEN
-      # Same admission cap as the primary sibling. A standby that admits without
-      # limit would simply relocate the rejection storm on failover, at the
-      # moment the fabric can least absorb it.
+      # Preserve the primary deployment's admission cap on failover.
       max_parallel_requests: {{ llm_router_local_max_parallel_requests }}
 {% if m.extra_body is defined %}
       extra_body:
@@ -167,9 +138,7 @@ model_list:
       max_budget: {{ m.monthly_budget }}
       budget_duration: {{ llm_router_hermes_cloud_monthly_budget_period }}
 {% if m.provider == 'openrouter' %}
-      # Exact model ids above are the model allowlist. OpenRouter may choose a
-      # healthy hosting endpoint only inside the price, parameter, collection
-      # and ZDR constraints below; no unrestricted auto-router is exposed.
+      # Provider selection stays inside the exact model and policy constraints.
       extra_body:
         provider:
           sort: price
