@@ -91,13 +91,13 @@ default profile's gateway (`hermes-gateway.service`) runs persistently, so a
 job registered under a named profile needs its own trigger. `hermes cron
 tick` ("run due jobs once and exit") is the native one; a `*/5 * * * *`
 crontab entry per profile (`hermes_agent_profile_cron_tick_timeout`) fires it,
-which also restores an approximate `max_runtime` ceiling for those 7 (`timeout
-<duration>` wraps the whole tick invocation — a per-tick cap, not strictly
-per-job, since more than one due job can land in the same 5-minute window).
-The other 11 converted jobs run inside the default gateway's in-process
-ticker, which has no external invocation point to wrap with `timeout` at
-all — those have no runtime cap, full stop; there is no native way to add one
-without a persistent gateway process per job, which nothing here stands up.
+which provides an additional outer ceiling for those 7 (`timeout <duration>`
+wraps the whole tick invocation — a per-tick cap, not strictly per-job, since
+more than one due job can land in the same 5-minute window). Every agentic cron
+conversation, including the default gateway's in-process jobs, is separately
+bounded by the role's monotonic aggregate wall clock. That is independent of
+upstream `HERMES_CRON_TIMEOUT`, which resets on API/tool/stream activity.
+Script-only jobs retain their separate native script timeout.
 `max_retries` (the failure-limit circuit breaker) has no `cron create`
 equivalent either and is not restored — an accepted, documented loss.
 

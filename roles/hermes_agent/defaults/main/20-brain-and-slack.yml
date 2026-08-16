@@ -37,11 +37,16 @@ hermes_agent_model_max_tokens: 8192
 # assert checks against the router's per-attempt timeout — resolves to 1800.
 hermes_agent_stream_read_timeout: "{{ ai_stream_read_timeout_seconds }}"
 hermes_agent_stream_stale_timeout: 900
-# Cron uses a non-streaming API call, so this upstream "inactivity" timeout is
-# effectively the job's hard request wall clock. Keep it separate from
-# hermes_agent_stream_stale_timeout, which remains the streaming idle-reset
-# guard, and below the router's per-attempt timeout.
-hermes_agent_cron_timeout_seconds: 1800
+# Upstream HERMES_CRON_TIMEOUT is an inactivity reset, not an aggregate job
+# deadline: every API/tool/stream activity refreshes it. Keep that native guard
+# below the independent wall clock so a genuinely stalled run is interrupted
+# without allowing an active loop to run forever.
+hermes_agent_cron_inactivity_timeout_seconds: 1800
+# Upstream v2026.8.3 has no aggregate cron deadline. The role's pinned-source
+# patch enforces this monotonic wall clock around the complete agent run,
+# independently of retries and activity. It must remain below the router's
+# per-attempt timeout so Hermes owns the outer job deadline.
+hermes_agent_cron_wall_timeout_seconds: 1800
 # Per-call MCP tool timeout (config_servers.<srv>.timeout). The hermes-agent
 # runtime already ENFORCES this bound (tools/mcp_tool._run_on_mcp_loop raises
 # TimeoutError at the deadline and returns a clean tool error), but the per-server

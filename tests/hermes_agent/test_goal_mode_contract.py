@@ -96,8 +96,16 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert defaults["hermes_agent_model_max_tokens"] == 8192
     assert defaults["hermes_agent_context_compression_threshold"] == 0.75
     assert defaults["hermes_agent_stream_stale_timeout"] == 900
-    assert defaults["hermes_agent_cron_timeout_seconds"] == 1800
-    assert "HERMES_CRON_TIMEOUT={{ hermes_agent_cron_timeout_seconds }}" in environment
+    assert defaults["hermes_agent_cron_inactivity_timeout_seconds"] == 1800
+    assert defaults["hermes_agent_cron_wall_timeout_seconds"] == 1800
+    assert (
+        "HERMES_CRON_TIMEOUT={{ hermes_agent_cron_inactivity_timeout_seconds }}"
+        in environment
+    )
+    assert (
+        "HERMES_CRON_WALL_TIMEOUT={{ hermes_agent_cron_wall_timeout_seconds }}"
+        in environment
+    )
     assert defaults["hermes_agent_brain_sync_enabled"] is False
     # Physical aliases belong to the entries they point at. `hermes-default` is
     # intentionally not one of them: it is a native LiteLLM complexity-router
