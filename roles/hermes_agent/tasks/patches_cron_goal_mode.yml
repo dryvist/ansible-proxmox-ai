@@ -53,7 +53,10 @@
           if job_name not in _cron_goal_jobs() or not isinstance(result, dict):
               return result
           try:
-              from hermes_cli.goals import run_kanban_goal_loop
+              from hermes_cli.goals import (
+                  KANBAN_GOAL_FINALIZE_TEMPLATE,
+                  run_kanban_goal_loop,
+              )
           except Exception:
               logger.warning(
                   "Job '%s': goal mode requested but hermes_cli.goals is "
@@ -62,14 +65,31 @@
               )
               return result
 
+          # The loop is written for Kanban cards and decides "still open" by
+          # asking the CARD's status. A cron run owns no card, so the adapter
+          # has to synthesize that status — and the ONLY value meaning "keep
+          # going" is "running"/"ready". Returning None reads as archived and
+          # exits before judge_goal is ever called.
+          finalize_sentinel = KANBAN_GOAL_FINALIZE_TEMPLATE.split("{reason}")[0]
+
           # The judge's continuation feedback is worthless without the history
           # it is judging, and a cron agent holds none between calls: history
           # travels in the result dict and must be fed back explicitly.
-          state = {"result": result}
+          state = {"result": result, "judged_done": False, "worker_turns": 1}
 
           def _run_turn(text):
+              # The finalize nudge is the loop telling the worker to call
+              # kanban_complete — i.e. the judge is SATISFIED. There is no card
+              # to complete here, so answering it would burn a full worker
+              # conversation to act on an instruction about an object that does
+              # not exist, and the loop would then label a satisfied judge
+              # `blocked_budget`. Take the verdict and terminate instead.
+              if text.startswith(finalize_sentinel):
+                  state["judged_done"] = True
+                  return ""
               prior = state["result"].get("messages")
               nxt = agent.run_conversation(text, conversation_history=prior)
+              state["worker_turns"] += 1
               if isinstance(nxt, dict):
                   state["result"] = nxt
                   return nxt.get("final_response") or ""
@@ -91,19 +111,21 @@
               task_id="cron:" + str(job_name),
               goal_text=prompt,
               run_turn=_run_turn,
-              # A cron run owns no card, so nothing can terminate it out of
-              # band. Reporting "not terminal" keeps the judge authoritative.
-              task_status_fn=lambda: None,
+              task_status_fn=lambda: "done" if state["judged_done"] else "running",
               block_fn=_block,
               first_response=result.get("final_response") or "",
               log=logger,
               **({"max_turns": _budget} if _budget else {})
           )
+          # worker_turns is the real cost (agent conversations); the loop's own
+          # turns_used counts the intercepted finalize nudge as a turn. Both are
+          # logged because eval needs cost and verdict separated.
           logger.info(
-              "Job '%s': goal mode outcome=%s turns_used=%s",
+              "Job '%s': goal mode outcome=%s turns_used=%s worker_turns=%s",
               job_name,
               decision.get("outcome"),
               decision.get("turns_used"),
+              state["worker_turns"],
           )
           return state["result"]
   notify: Restart hermes-gateway

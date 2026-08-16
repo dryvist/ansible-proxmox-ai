@@ -20,9 +20,12 @@ import yaml
 from jinja2 import Environment
 
 from conftest import (
+    KANBAN_GOAL_FINALIZE_TEMPLATE,
     PINNED_CRON_SUBMIT_SOURCE,
     ROLE_ROOT,
     _apply_runtime_patch,
+    _goal_runner_namespace,
+    _StubAgent,
     _task,
     role_defaults,
 )
@@ -30,40 +33,6 @@ from conftest import (
 
 REPLACE_TASK = "Route the cron conversation through the goal-mode runner"
 BLOCK_TASK = "Patch Hermes cron scheduler with an opt-in goal-mode runner"
-
-
-def _goal_runner_namespace() -> dict[str, Any]:
-    """Exec the blockinfile payload in isolation and hand back its namespace."""
-    block = _task(BLOCK_TASK)["ansible.builtin.blockinfile"]["block"]
-    # The block is pure Python by design — no Jinja to render. If that ever
-    # stops being true this assertion is the early warning, not a NameError
-    # thrown from inside exec().
-    assert "{{" not in block, "block gained Jinja; render it before exec"
-    namespace: dict[str, Any] = {
-        "os": __import__("os"),
-        "logger": logging.getLogger("test.cron.goal"),
-    }
-    exec(compile(block, "cron-goal-block", "exec"), namespace)  # noqa: S102
-    return namespace
-
-
-class _StubAgent:
-    """Records every turn and the history it was handed."""
-
-    def __init__(self) -> None:
-        self.turns = 0
-        self.histories: list[Any] = []
-
-    def run_conversation(self, message, conversation_history=None):
-        self.turns += 1
-        self.histories.append(conversation_history)
-        return {
-            "final_response": f"resp{self.turns}",
-            "messages": [f"m{self.turns}"],
-            "completed": True,
-            "failed": False,
-        }
-
 
 @pytest.fixture
 def stub_goals(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
@@ -77,9 +46,11 @@ def stub_goals(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         seen["goal_text"] = goal_text
         seen["max_turns"] = max_turns
         seen["first_response"] = first_response
-        # A cron run owns no card; the helper must report non-terminal or the
-        # loop would stop before judging anything.
-        assert task_status_fn() is None
+        # A cron run owns no card, so the adapter SYNTHESIZES a status. The
+        # real loop treats anything outside ("running", "ready") as terminal
+        # and returns before judging, so this must be one of those two — the
+        # shipped adapter returned None here and the judge never ran once.
+        assert task_status_fn() in ("running", "ready")
         run_turn("continue 1")
         run_turn("continue 2")
         block_fn("budget spent")
@@ -87,6 +58,7 @@ def stub_goals(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     goals = types.ModuleType("hermes_cli.goals")
     goals.run_kanban_goal_loop = fake_loop
+    goals.KANBAN_GOAL_FINALIZE_TEMPLATE = KANBAN_GOAL_FINALIZE_TEMPLATE
     package = types.ModuleType("hermes_cli")
     package.goals = goals
     monkeypatch.setitem(sys.modules, "hermes_cli", package)
@@ -208,9 +180,9 @@ def test_missing_goals_module_degrades_to_a_single_turn(
     assert result["final_response"] == "resp1"
 
 
-def test_allowlist_default_is_exactly_the_review_job() -> None:
+def test_allowlist_default_is_exactly_the_splunk_triage_job() -> None:
     defaults = role_defaults(ROLE_ROOT)
-    assert defaults["hermes_agent_cron_goal_mode_jobs"] == ["review"]
+    assert defaults["hermes_agent_cron_goal_mode_jobs"] == ["splunk-triage"]
     # Every added name multiplies that job's serving occupancy by up to the
     # turn budget, against a tier that admits one request at a time. Widening
     # this is a deliberate capacity decision, not a config tweak.
@@ -228,10 +200,10 @@ def test_gateway_unit_exports_the_allowlist_and_budget() -> None:
         hermes_agent_user="hermes",
         hermes_agent_hermes_home="/home/hermes/.hermes",
         hermes_agent_gateway_cmd="/usr/bin/true",
-        hermes_agent_cron_goal_mode_jobs=["review"],
+        hermes_agent_cron_goal_mode_jobs=["splunk-triage"],
         hermes_agent_kanban_goal_max_turns=8,
     )
-    assert "Environment=HERMES_CRON_GOAL_JOBS=review" in rendered
+    assert "Environment=HERMES_CRON_GOAL_JOBS=splunk-triage" in rendered
     assert "Environment=HERMES_CRON_GOAL_MAX_TURNS=8" in rendered
 
 
