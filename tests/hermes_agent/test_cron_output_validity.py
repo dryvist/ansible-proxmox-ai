@@ -28,6 +28,15 @@ _ENV = Environment(autoescape=False)
 _MARKER = "[ISSUES]"
 
 
+def _is_cron_silence_response(text):
+    """Stand-in for upstream's real matcher (gateway.response_filters,
+    shared with the webhook lane). Only needs to prove THIS guard defers to
+    whatever the real one says, not reproduce its bracketed/bracketless
+    variant handling — that contract belongs to and is tested by upstream.
+    """
+    return text.strip().upper() in ("[SILENT]", "SILENT", "NO_REPLY", "NO REPLY")
+
+
 def _load_guard(min_length=25, overrides=None, enabled=True):
     block = _task("Patch Hermes cron delivery with an output-validity guard")[
         "ansible.builtin.blockinfile"
@@ -38,11 +47,16 @@ def _load_guard(min_length=25, overrides=None, enabled=True):
         hermes_agent_cron_min_output_length_overrides=overrides or {},
     )
     mod = types.ModuleType("cron_output_validity")
-    # _CRON_ISSUES_MARKER is defined by the markup-guard block this one is
-    # patched alongside (patches_retry_and_markup.yml) — provided directly
-    # here rather than re-rendering that whole block, since only the marker
-    # name is a shared dependency.
-    mod.__dict__.update(re=re, logger=logging.getLogger("test"), _CRON_ISSUES_MARKER=_MARKER)
+    # _CRON_ISSUES_MARKER and _is_cron_silence_response are both defined
+    # elsewhere in upstream's cron/scheduler.py, in scope by the time this
+    # guard actually runs — provided directly here rather than re-rendering
+    # the whole module, since only the names are the shared dependency.
+    mod.__dict__.update(
+        re=re,
+        logger=logging.getLogger("test"),
+        _CRON_ISSUES_MARKER=_MARKER,
+        _is_cron_silence_response=_is_cron_silence_response,
+    )
     exec(compile(rendered, "cron-output-validity", "exec"), mod.__dict__)  # noqa: S102
     return mod
 
@@ -87,18 +101,23 @@ def test_content_already_flagged_by_the_markup_guard_is_not_double_flagged() -> 
     assert mod._cron_output_validity_guard(JOB, "/var/log/x.json", text, True) == text
 
 
-def test_per_job_override_can_disable_the_length_floor() -> None:
+def test_per_job_override_of_zero_exempts_the_job_from_both_checks() -> None:
+    """0 is an escape hatch from the WHOLE gate, not just the length floor —
+    a job can legitimately end without terminal punctuation (a bare URL, a
+    code fence, a table row, a bulleted list), so the truncation heuristic
+    must be skippable too."""
     mod = _load_guard(overrides={"anomaly-hunt": 0})
-    text = "ok"
-    assert mod._cron_output_validity_guard(JOB, "/var/log/x.json", text, True) == text
+    for text in ("ok", "Let me think about this..."):
+        assert mod._cron_output_validity_guard(JOB, "/var/log/x.json", text, True) == text
 
 
-def test_the_truncation_heuristic_still_applies_with_the_floor_disabled() -> None:
-    mod = _load_guard(overrides={"anomaly-hunt": 0})
-    content = mod._cron_output_validity_guard(
-        JOB, "/var/log/x.json", "Let me think about this...", True,
-    )
-    assert content.startswith(f"{_MARKER} :warning:")
+def test_a_legitimate_silent_response_is_never_flagged() -> None:
+    """A bare "[SILENT]" is 8 chars — well under the default floor — but
+    upstream's own suppression check reads this exact deliver_content value
+    right after this guard runs. Rewriting it here would turn a working
+    quiet-run suppression into a false failure alarm on every quiet cycle."""
+    mod = _load_guard()
+    assert mod._cron_output_validity_guard(JOB, "/var/log/x.json", "[SILENT]", True) == "[SILENT]"
 
 
 def test_the_global_kill_switch_disables_the_guard_entirely() -> None:

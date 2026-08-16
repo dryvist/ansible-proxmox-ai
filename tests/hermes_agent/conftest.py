@@ -109,6 +109,10 @@ PATCHED_CRON_DELIVERY_SOURCE = (
     + _task("Patch Hermes cron delivery with an output-validity guard")[
         "ansible.builtin.blockinfile"
     ]["block"]
+    # Upstream's own silence-matcher def line, pinned by
+    # patches_verify.yml so a version bump that drops it fails loudly rather
+    # than NameError-ing the guard above at runtime.
+    + '\ndef _is_cron_silence_response(text: str) -> bool:\n'
     + _apply_runtime_patch(
         "Route failed cron deliveries to the issues channel",
         _apply_runtime_patch(

@@ -86,6 +86,8 @@ def test_installed_source_postconditions_fail_closed() -> None:
     # present and wired to the actual delivery-content assignment.
     assert "def _cron_output_validity_guard(job, output_file, content, success):" in conditions
     assert "deliver_content = _cron_output_validity_guard(job, output_file," in conditions
+    assert "if _is_cron_silence_response(text):" in conditions
+    assert "def _is_cron_silence_response(text: str) -> bool:" in conditions
     # The message and the retry rule are asserted as a pair: the message tells
     # the operator the card will be retried, so it must not be able to land
     # while the forced first-failure give-up is still in the source.

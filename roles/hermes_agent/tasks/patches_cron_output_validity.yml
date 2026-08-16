@@ -27,11 +27,13 @@
     insertbefore: '^def _deliver_result\('
     block: |
       # Global kill switch and length floor for the output-validity guard
-      # below. Per-job floors override the global default; 0 disables the
-      # length check for that one job (a job that always needs it disabled
-      # entirely still gets caught by the truncation heuristic, which has
-      # no per-job override — it only matches an interrupted-thought shape,
-      # which no legitimate job output takes on purpose).
+      # below. Per-job floors override the global default; 0 exempts that
+      # job from the WHOLE gate (length floor and truncation heuristic
+      # both) — a job whose legitimate output can be short AND can
+      # legitimately end without terminal punctuation (a bare URL, a code
+      # fence, a table row, a bulleted list) needs the escape hatch to
+      # cover both, not just the length floor. Nobody using it costs
+      # nothing; a false failure on a real finding costs a lot.
       _CRON_OUTPUT_VALIDITY_ENABLED = {{ hermes_agent_cron_output_validity_enabled }}
       _CRON_MIN_OUTPUT_LENGTH = {{ hermes_agent_cron_min_output_length }}
       _CRON_MIN_OUTPUT_LENGTH_OVERRIDES = {{ hermes_agent_cron_min_output_length_overrides }}
@@ -73,15 +75,31 @@
           its own failure summary through _cron_route via `success`, and
           rewriting that would destroy the real error for a generic
           "too short" message instead of adding one more failure signal.
+
+          Upstream's own `deliver_content` — the exact string this wraps —
+          is what run_job's SILENCE check (_is_cron_silence_response) reads
+          right after this assignment to decide whether to skip delivery
+          entirely (a bare "[SILENT]" is 8 chars, well under any sane length
+          floor). Deferring to that same matcher here, rather than
+          reimplementing its bracketed/bracketless-variant contract, is what
+          keeps a legitimate silent run from being rewritten into a false
+          ":warning: ... too short" BEFORE upstream ever gets to see the
+          marker and suppress it — confirmed against the pinned
+          NousResearch/hermes-agent source (cron/scheduler.py): the silence
+          check runs strictly after this line, on this same variable.
           """
           if not success or not _CRON_OUTPUT_VALIDITY_ENABLED:
               return content
           text = (content or "").strip()
           if text.startswith(_CRON_ISSUES_MARKER) or text.startswith(":warning:"):
               return content
+          if _is_cron_silence_response(text):
+              return content
           name = job.get("name", job.get("id", "?"))
           floor = _CRON_MIN_OUTPUT_LENGTH_OVERRIDES.get(name, _CRON_MIN_OUTPUT_LENGTH)
-          if floor and len(text) < floor:
+          if not floor:
+              return content
+          if len(text) < floor:
               reason = f"output too short ({len(text)} < {floor} chars) to be a real result"
           elif _cron_output_looks_truncated(text):
               reason = "output reads like an interrupted mid-reasoning fragment, not a finished report"
