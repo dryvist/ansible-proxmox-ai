@@ -243,6 +243,21 @@ def _goal_fields(conn: sqlite3.Connection) -> tuple[int, int | None]:
     return row["goal_mode"], row["goal_max_turns"]
 
 
+# The cron CLI exit-code patch is a one-line `replace`, so the fixture states
+# both forms directly rather than re-deriving them: upstream drops the return
+# value, the patch hands it back.
+PINNED_CLI_MAIN_SOURCE = (
+    "def cmd_cron(args):\n"
+    '    """Cron job management."""\n'
+    "    from hermes_cli.cron import cron_command\n"
+    "\n"
+    "    cron_command(args)\n"
+)
+PATCHED_CLI_MAIN_SOURCE = PINNED_CLI_MAIN_SOURCE.replace(
+    "    cron_command(args)", "    return cron_command(args)"
+)
+
+
 def _source_postconditions(
     completion_source: str,
     reconcile_source: str,
@@ -253,6 +268,7 @@ def _source_postconditions(
     hindsight_plugin_source: str = PATCHED_HINDSIGHT_PREFETCH_SOURCE,
     goal_judge_source: str = PATCHED_GOAL_JUDGE_SOURCE,
     run_agent_source: str = PATCHED_RUN_AGENT_SOURCE,
+    cli_main_source: str = PATCHED_CLI_MAIN_SOURCE,
 ) -> tuple[bool, ...]:
     task = _task("Assert installed Hermes pinned-source patches")
     environment = Environment(autoescape=False)
@@ -267,6 +283,7 @@ def _source_postconditions(
         "hermes_agent_cron_scheduler_source": cron_scheduler_source,
         "hermes_agent_hindsight_plugin_source": hindsight_plugin_source,
         "hermes_agent_run_agent_source": run_agent_source,
+        "hermes_agent_cli_main_source": cli_main_source,
     }
     return tuple(
         bool(environment.compile_expression(condition)(**context))
