@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.30.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.30.0...v0.30.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* **hermes_agent:** make cron goal mode actually invoke the judge ([#478](https://github.com/dryvist/ansible-proxmox-ai/issues/478)) ([55a2416](https://github.com/dryvist/ansible-proxmox-ai/commit/55a24164a79552c23e95c063663d32ab1e9b40a4))
+* **inventory:** converge open-webui over direct ssh ([#479](https://github.com/dryvist/ansible-proxmox-ai/issues/479)) ([9183ca3](https://github.com/dryvist/ansible-proxmox-ai/commit/9183ca34f3c6c746281ebc58c57c104714a3da45))
+* **llm_router:** address the vLLM backend at the apex, not the subdomain ([#476](https://github.com/dryvist/ansible-proxmox-ai/issues/476)) ([b5bf347](https://github.com/dryvist/ansible-proxmox-ai/commit/b5bf34742f7ec7d2ed3cc5ace307f204e63ee54d))
+* **open_webui:** wait for readiness before the onboarding probe ([#480](https://github.com/dryvist/ansible-proxmox-ai/issues/480)) ([87295b4](https://github.com/dryvist/ansible-proxmox-ai/commit/87295b45214e455882f8f5dff3dd8521c30d7fae))
+* **vllm:** enable auto tool choice so chat requests are accepted ([#477](https://github.com/dryvist/ansible-proxmox-ai/issues/477)) ([4ee8c3d](https://github.com/dryvist/ansible-proxmox-ai/commit/4ee8c3dc91fb0f01669ab2aee145ae51d1396544))
+
 ## [0.30.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.29.0...v0.30.0) (2026-08-15)
 
 
