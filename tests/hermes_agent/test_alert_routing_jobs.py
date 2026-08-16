@@ -29,7 +29,6 @@ from _alert_routing_shared import (
     TRIAGE,
     _deliver_targets,
     _direct_deliver,
-    _direct_job,
     _ENV,
     _resolve,
 )
