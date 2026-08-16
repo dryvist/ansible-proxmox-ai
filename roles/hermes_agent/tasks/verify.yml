@@ -102,6 +102,43 @@
           {{ hermes_agent_verify_journal_lines }}.
         success_msg: Gateway journal is clean of fatal config-rejection lines.
 
+    # `hermes memory status` cannot prove this path in local_external mode:
+    # upstream's is_available() returns true without contacting Hindsight. Run
+    # one read-only recall through the same pinned client and rendered bank the
+    # gateway uses. Empty results are valid; this probe must never retain data.
+    - name: Gate — Hindsight performs a read-only recall from this agent bank
+      ansible.builtin.command:
+        argv:
+          - "{{ hermes_agent_venv_python }}"
+          - -c
+          - |
+            import asyncio
+            import json
+            from hindsight_client import Hindsight
+
+            with open("{{ hermes_agent_hermes_home }}/hindsight/config.json") as config_file:
+                config = json.load(config_file)
+
+            async def main():
+                client = Hindsight(base_url=config["api_url"])
+                await client.arecall(
+                    bank_id=config["bank_id"],
+                    query="ansible managed Hindsight readiness probe",
+                    budget="low",
+                    max_tokens=1,
+                    types=["observation"],
+                )
+
+            asyncio.run(main())
+      become: true
+      become_user: "{{ hermes_agent_user }}"
+      register: hermes_agent_hindsight_recall_probe
+      retries: "{{ hermes_agent_verify_probe_retries }}"
+      delay: "{{ hermes_agent_verify_probe_delay }}"
+      until: hermes_agent_hindsight_recall_probe.rc == 0
+      changed_when: false
+      when: hermes_agent_memory_provider == 'hindsight'
+
     # One REAL end-to-end probe: force a tool call through the router at the
     # resolved brain and require a structurally valid tool_call back. This is the
     # exact failure shape of the outage ("Model generated invalid tool call" /

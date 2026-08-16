@@ -55,6 +55,5 @@ Run via `site.yml` (`--tags hermes_agent`).
 
 Verify on the first converge: (a) `install.sh` runs clean non-interactively as root
 on a minimal Debian LXC; (b) `hermes gateway run --replace` stays up headless with no
-messaging platform; (c) Hindsight initialises from `config.yaml` alone (it may need
-its client package on first run — `memory status` check is non-fatal so it surfaces
-without failing the converge).
+messaging platform; (c) the role installs its pinned Hindsight client in the Hermes
+venv and completes a read-only recall against the rendered agent bank.
