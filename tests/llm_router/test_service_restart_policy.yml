@@ -1,0 +1,35 @@
+---
+# Proves the unit owned by llm_router can recover from an unexpected process
+# failure without relying on a drop-in role this repository does not install.
+- name: Verify LiteLLM has a bounded native restart policy
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_user: litellm
+    llm_router_group: litellm
+    llm_router_home: /var/lib/litellm
+    llm_router_env_file: /etc/litellm/litellm.env
+    llm_router_venv: /opt/litellm-venv
+    llm_router_config_file: /etc/litellm/config.yaml
+    llm_router_api_port: 4000
+  tasks:
+    - name: Render the real systemd unit
+      ansible.builtin.set_fact:
+        _unit: "{{ lookup('template', _role_dir ~ '/templates/litellm.service.j2') }}"
+
+    - name: Unexpected exits restart with bounded backoff
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _unit is search('(?m)^Restart=on-failure$')
+          - _unit is search('(?m)^RestartSec=5s$')
+          - _unit is search('(?m)^StartLimitIntervalSec=60s$')
+          - _unit is search('(?m)^StartLimitBurst=5$')
+          - _unit is not search('systemd_restart_policy role')
+        fail_msg: >-
+          The LiteLLM unit does not carry its own bounded restart policy. An
+          unexpected proxy exit would leave Hermes without its inference front
+          door because this repository does not install the formerly claimed
+          shared restart-policy drop-in.
+        success_msg: "LiteLLM restarts on failure with a bounded 5s backoff"

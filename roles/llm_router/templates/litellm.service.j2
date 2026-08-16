@@ -3,6 +3,9 @@
 Description=LiteLLM proxy — the LLM fabric front door (OpenAI-compatible)
 After=network-online.target
 Wants=network-online.target
+# Bound restart storms while still allowing recovery after the window rolls.
+StartLimitIntervalSec=60s
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -11,7 +14,12 @@ Group={{ llm_router_group }}
 WorkingDirectory={{ llm_router_home }}
 EnvironmentFile={{ llm_router_env_file }}
 ExecStart={{ llm_router_venv }}/bin/litellm --config {{ llm_router_config_file }} --host 0.0.0.0 --port {{ llm_router_api_port }}
-# Restart policy is managed by the systemd_restart_policy role (99-restart-policy.conf).
+# The router is Hermes' only inference front door. Keep recovery in the unit
+# this role owns: the shared restart-policy role is not present in this
+# repository's immutable homelab-contracts pin, so claiming an external
+# drop-in here left an unexpected proxy exit down indefinitely.
+Restart=on-failure
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
