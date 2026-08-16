@@ -42,13 +42,28 @@
   ansible.builtin.assert:
     that:
       - llama_cpp_vulkaninfo.rc == 0
-      - "'deviceName' in (llama_cpp_vulkaninfo.stdout | default(''))"
+      # A DISCRETE GPU, not merely "a Vulkan device".
+      #
+      # MEASURED on the live guest: vulkaninfo enumerates TWO devices — the
+      # RTX 4080 SUPER, and `llvmpipe`, Mesa's CPU software rasteriser, which
+      # reports deviceType PHYSICAL_DEVICE_TYPE_CPU. llvmpipe is a perfectly
+      # valid Vulkan device, so the original check ("a deviceName appears")
+      # would have PASSED on a host with no GPU at all.
+      #
+      # That is the exact defect this gate exists to catch, reproduced inside
+      # the gate: an assertion satisfiable by the state it is meant to rule
+      # out. A CPU-only host would have been certified GPU-ready, and the only
+      # remaining symptom would have been "inference is inexplicably slow".
+      - "'PHYSICAL_DEVICE_TYPE_DISCRETE_GPU' in (llama_cpp_vulkaninfo.stdout | default(''))"
     fail_msg: >-
-      vulkaninfo reported no usable Vulkan device (rc={{
-      llama_cpp_vulkaninfo.rc | default('n/a') }}). llama.cpp would still start
-      and serve — from the CPU, silently — so this is failed here rather than
-      shipped. Check that the vendor ICD in /usr/share/vulkan/icd.d matches the
-      HOST driver version and that the GPU device nodes above are bound in.
+      vulkaninfo reported no DISCRETE GPU (rc={{
+      llama_cpp_vulkaninfo.rc | default('n/a') }}). Note that a CPU software
+      rasteriser such as llvmpipe enumerates as a valid Vulkan device, so
+      "Vulkan works" is not the question — whether a real GPU is among the
+      devices is. llama.cpp would still start and serve, from the CPU and
+      silently, so this fails here rather than shipping. Check that the vendor
+      ICD in /usr/share/vulkan/icd.d matches the HOST driver version and that
+      the GPU device nodes above are bound in.
       Output: {{ (llama_cpp_vulkaninfo.stdout | default(''))[:400] }}
       {{ (llama_cpp_vulkaninfo.stderr | default(''))[:200] }}
     success_msg: >-
