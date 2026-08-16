@@ -1,0 +1,71 @@
+---
+# Asserted per backend. Loads the role's REAL defaults file rather than
+# restating its expressions: a test that re-implements the logic it checks
+# agrees with the implementation only by coincidence, and drifts silently the
+# first time either side changes.
+#
+# PRECEDENCE TRAP, found by this scenario on its first run. `include_vars` sits
+# at precedence 18 and task-level `vars:` at 17, so include_vars WINS. Setting
+# the backend as a task var therefore did nothing at all — every backend
+# evaluated as the defaults' `rocm`, and the vulkan case selected the ROCm
+# asset. `set_fact` is 19, so it overrides include_vars; the order below is
+# load-bearing, not stylistic.
+#
+# Worth noting WHICH assertion caught it: "exactly one asset matched" passed
+# for all three backends, because exactly one always did — the wrong one. Only
+# comparing against the EXPECTED asset name exposed it. A count is satisfiable
+# by the state it is meant to rule out; an identity is not.
+- name: "Load the role defaults with backend={{ backend.key }}"
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../../roles/llama_cpp/defaults/main.yml"
+
+# set_fact (precedence 19) outranks include_vars (18) — see the note above.
+- name: "Override the loaded default to backend={{ backend.key }}"
+  ansible.builtin.set_fact:
+    llama_cpp_gpu_backend: "{{ backend.key }}"
+
+- name: "Select the asset for backend={{ backend.key }}"
+  ansible.builtin.set_fact:
+    matched: >-
+      {{ upstream_assets
+         | select('match', llama_cpp_llamacpp_asset_regex) | list }}
+
+- name: "Assert exactly one asset matched for backend={{ backend.key }}"
+  ansible.builtin.assert:
+    that:
+      - matched | length == 1
+    fail_msg: >-
+      backend={{ backend.key }} matched {{ matched | length }} assets
+      ({{ matched }}). Exactly one must match: zero means the install fails
+      loud, but MORE THAN ONE is the dangerous case — the role takes the first
+      match, so an extra match silently decides the backend by release-ordering
+      rather than by this regex.
+
+- name: "Assert the matched asset is the intended one for backend={{ backend.key }}"
+  ansible.builtin.assert:
+    that:
+      - matched | first == backend.value.asset
+    fail_msg: >-
+      backend={{ backend.key }} selected {{ matched | first }}, expected
+      {{ backend.value.asset }}.
+    success_msg: "backend={{ backend.key }} -> {{ matched | first }}"
+
+- name: "Assert the device-node set for backend={{ backend.key }}"
+  ansible.builtin.assert:
+    that:
+      - (llama_cpp_gpu_device_nodes | default([])) == backend.value.devices
+    fail_msg: >-
+      backend={{ backend.key }} resolved device nodes
+      {{ llama_cpp_gpu_device_nodes | default([]) }}, expected
+      {{ backend.value.devices }}. The NVIDIA guest has no /dev/dri at all, so
+      carrying the AMD list across backends fails the device-presence assert
+      and reads as broken passthrough rather than as a wrong list.
+
+- name: "Assert the derived GPU boolean for backend={{ backend.key }}"
+  ansible.builtin.assert:
+    that:
+      - (llama_cpp_gpu | bool) == backend.value.gpu
+    fail_msg: >-
+      backend={{ backend.key }} derived llama_cpp_gpu={{ llama_cpp_gpu }},
+      expected {{ backend.value.gpu }}. Every pre-existing GPU task keys off
+      this boolean, so getting it wrong silently skips or runs all of them.

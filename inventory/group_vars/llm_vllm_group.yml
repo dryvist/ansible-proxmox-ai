@@ -1,0 +1,79 @@
+---
+# The RTX 4080 SUPER serving guest (16 GB Ada). Guests carry the `llm-vllm`
+# tofu tag -> llm_vllm_group.
+#
+# WHY THIS GROUP NOW RUNS llama.cpp AND NOT vLLM, despite the group's name.
+# The group name comes from the tofu tag and is deliberately NOT renamed —
+# renaming it would churn deployment.json, the inventory derivation, and the
+# ssh-path allowlist for no functional gain.
+#
+# vLLM cannot serve Qwen3.8-27B here, and the reason is not the one first
+# assumed. vLLM 0.27.1 does register the architecture, but reading these
+# weights needs the out-of-tree GGUF plugin, and that plugin has NO MERGED
+# adapter for the qwen3_5 hybrid architecture — every PR adding one is open or
+# closed-unmerged. The safetensors route does not fit either: nothing below
+# 4-bit is published and 4-bit builds measure 15.7-19.5 GB, which is the whole
+# card before any KV cache.
+#
+# llama.cpp implements the architecture and upstream ships a prebuilt Linux
+# Vulkan binary that runs on NVIDIA. That is a deployment of existing upstream
+# work, not a new inference stack.
+#
+# Do NOT re-derive "llama.cpp ships no Linux CUDA binary, therefore llama.cpp
+# cannot use this GPU". The first half is true and stays true; the second half
+# does not follow. Vulkan is the Linux GPU backend upstream publishes.
+
+# --- Engine swap --------------------------------------------------------------
+# STOPS the vLLM unit (the role sets state=stopped, enabled=false — it does not
+# merely skip), which is what releases the card. Measured: vLLM held
+# 15610 MiB of 16376 MiB while serving the 14B, leaving ~766 MiB free, so the
+# two engines cannot coexist on this card and this is not optional.
+#
+# This is also the rollback lever: set back to true and re-converge to restore
+# the previous 14B serving setup. The vLLM venv and its HuggingFace cache
+# (9.4 GB) are deliberately left in place on the guest's root disk, which has
+# 70 GB free, so rolling back costs no re-download.
+vllm_service_enabled: false
+
+# --- llama.cpp on Vulkan ------------------------------------------------------
+llama_cpp_gpu_backend: vulkan
+
+# Per-guest ceiling, raised DELIBERATELY from the role default of 14 to cover
+# this model's 27.78B on a 16 GB card. This is the ceiling mechanism working as
+# designed, not a check being weakened: the absolute >=14B rule for llm-fast is
+# a separate, group-scoped guard on different silicon and is untouched by this.
+llama_cpp_max_param_billions: 28
+
+# Context. Set EXPLICITLY rather than inherited: the role's GPU default is 8192,
+# and the vLLM setup this replaces served 16384. Inheriting the default would
+# have quietly halved the context as a side effect of changing engine — a
+# reduction has to be a measured decision, not a default.
+#
+# VRAM budget at this context, to be checked against measurement rather than
+# trusted: weights 11.91 GB, KV ~1 GB (only 16 of 64 layers use full attention,
+# 4 KV heads at head_dim 256 = 64 KiB/token), plus activations and graphs,
+# against 16376 MiB total. It fits, but not by a wide margin.
+#
+# IF IT DOES NOT FIT: step the QUANT down to UD-Q2_K_XL (10.68 GB) and record
+# the measurement that forced it. Do NOT cut this context to hide an OOM — that
+# turns a capability loss into an invisible one.
+llama_cpp_ctx_size: 16384
+
+llama_cpp_models:
+  - name: qwen3.8-27b
+    aliases: []
+    hf_repo: unsloth/Qwen3.8-27B-GGUF
+    # Unsloth Dynamic v3 (imatrix). Filename verified against the repo's file
+    # listing — the `UD-` prefix is part of the name, not a variant suffix.
+    gguf: Qwen3.8-27B-UD-IQ3_XXS.gguf
+    param_billions: 27.78
+    embeddings: false
+
+# Restart llama-swap on failure (shared systemd restart policy role).
+systemd_restart_policy_services:
+  - llama-swap
+
+# Serving logs to the homelab_llm AI ingest listener, matching llm_fast_group.
+syslog_forwarder_program_routes:
+  - program: llama-swap
+    port: "{{ tofu_data.constants.ai_log_routing.homelab_llm.port | default(10323) }}"

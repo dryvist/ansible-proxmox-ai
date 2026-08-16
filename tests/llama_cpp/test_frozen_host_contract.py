@@ -12,6 +12,7 @@ These assertions pin the parts that keep the freeze real, so a future edit that
 removes the gate fails here instead of on the host.
 """
 
+import re
 from pathlib import Path
 
 import yaml
@@ -21,6 +22,14 @@ ROLE = Path(__file__).resolve().parents[2] / "roles" / "llama_cpp"
 HANDLERS = yaml.safe_load((ROLE / "handlers" / "main.yml").read_text())
 DEFAULTS = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text())
 TASKS = (ROLE / "tasks" / "main.yml").read_text()
+
+# The guardrails moved into an include when tasks/main.yml was split to stay
+# under the token budget. Read main.yml PLUS the files it actually includes,
+# resolved from main.yml itself rather than hardcoded — a guard sitting in a
+# file nothing includes is not wired, so concatenating every file in the
+# directory would let a dead file satisfy these assertions.
+_INCLUDED = re.findall(r"include_tasks:\s*(\S+\.yml)", TASKS)
+REACHABLE_TASKS = TASKS + "".join((ROLE / "tasks" / name).read_text() for name in _INCLUDED)
 HOST_VARS = yaml.safe_load(
     (Path(__file__).resolve().parents[2] / "inventory" / "host_vars" / "llm-fast.yml").read_text()
 )
@@ -64,7 +73,18 @@ def test_no_model_reaches_the_size_that_hard_locks_the_gpu_host() -> None:
         )
 
 
+def test_the_guard_file_is_actually_included() -> None:
+    """Reachability, asserted separately from content.
+
+    Without this, the guard test below could pass on a file main.yml no longer
+    includes — the assertion would be satisfied by text that never executes,
+    which is the exact failure mode the guard exists to prevent.
+    """
+    assert _INCLUDED, "tasks/main.yml includes no task files; the guard lookup below would be misleading"
+    assert len(REACHABLE_TASKS) > len(TASKS), "no included file contributed any content"
+
+
 def test_the_converge_time_size_guard_is_still_wired() -> None:
     """The role asserts the size rule itself, so an override cannot smuggle a big model in."""
-    assert f"| select('ge', {MAX_PARAM_BILLIONS}) | list | length) == 0" in TASKS
-    assert "rejectattr('param_billions', 'defined') | list | length) == 0" in TASKS
+    assert f"| select('ge', {MAX_PARAM_BILLIONS}) | list | length) == 0" in REACHABLE_TASKS
+    assert "rejectattr('param_billions', 'defined') | list | length) == 0" in REACHABLE_TASKS
