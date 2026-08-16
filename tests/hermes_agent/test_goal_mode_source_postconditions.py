@@ -42,6 +42,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "cron/scheduler.py",
         "plugins/memory/hindsight/__init__.py",
         "run_agent.py",
+        "hermes_cli/main.py",
     ]
 
     assert_task = _task("Assert installed Hermes pinned-source patches")
@@ -380,4 +381,46 @@ def test_installed_source_postconditions_fail_closed() -> None:
             retry_source,
             auxiliary_source,
         )
+    )
+
+
+def test_cron_cli_exit_code_conditions_reject_unpatched_source() -> None:
+    """The cron exit-code assertion must fail against upstream's own source.
+
+    Upstream's ``cmd_cron`` calls ``cron_command(args)`` and discards the
+    return value, so a failed ``hermes cron`` action exits 0. Measured on the
+    live guest 2026-08-16: ``hermes cron run <missing>`` prints "Failed to run
+    job: ... not found" and still returns 0. It is loud to a human and silent
+    to a program, which is why the brain watchdog re-reads job state off
+    ``cron list --all`` rather than trusting ``$?``.
+
+    Asserting the patched form is present proves nothing on its own — a
+    condition that also holds for unpatched source would let the patch stop
+    applying unnoticed. This pins that it does not hold.
+    """
+    from jinja2 import Environment
+
+    from conftest import PATCHED_CLI_MAIN_SOURCE, PINNED_CLI_MAIN_SOURCE
+
+    conditions = [
+        c
+        for c in _task("Assert installed Hermes pinned-source patches")[
+            "ansible.builtin.assert"
+        ]["that"]
+        if "hermes_agent_cli_main_source" in c
+    ]
+    assert conditions, "no assertion covers the cron CLI exit code"
+
+    env = Environment(autoescape=False)
+
+    def _holds(source: str) -> bool:
+        return all(
+            bool(env.compile_expression(c)(hermes_agent_cli_main_source=source))
+            for c in conditions
+        )
+
+    assert _holds(PATCHED_CLI_MAIN_SOURCE)
+    assert not _holds(PINNED_CLI_MAIN_SOURCE), (
+        "the cron exit-code conditions hold against upstream's unpatched "
+        "cmd_cron, so the patch could silently stop applying"
     )

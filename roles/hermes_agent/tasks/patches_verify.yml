@@ -15,6 +15,7 @@
     - "{{ hermes_agent_install_dir }}/cron/scheduler.py"
     - "{{ hermes_agent_install_dir }}/plugins/memory/hindsight/__init__.py"
     - "{{ hermes_agent_install_dir }}/run_agent.py"
+    - "{{ hermes_agent_install_dir }}/hermes_cli/main.py"
   register: hermes_agent_goal_mode_sources
   changed_when: false
 
@@ -38,6 +39,8 @@
       {{ hermes_agent_goal_mode_sources.results[7].content | b64decode }}
     hermes_agent_run_agent_source: >-
       {{ hermes_agent_goal_mode_sources.results[8].content | b64decode }}
+    hermes_agent_cli_main_source: >-
+      {{ hermes_agent_goal_mode_sources.results[9].content | b64decode }}
   ansible.builtin.assert:
     quiet: true
     that:
@@ -46,6 +49,12 @@
       # asserted — a drift back to a shorter tuple silently re-opens the
       # fail-open completion gate this line exists to close.
       - "'verdict, reason, _, _, _ = judge_goal(' in hermes_agent_goal_completion_source"
+      # The cron CLI must hand its exit code back to the dispatcher. Upstream's
+      # cmd_cron drops it, so every failed `hermes cron` action exits 0 and any
+      # caller branching on $? reads a refusal as success. Asserted as a count
+      # so a re-added bare call alongside the patched one still fails.
+      - hermes_agent_cli_main_source.count('    return cron_command(args)') == 1
+      - hermes_agent_cli_main_source.count('\n    cron_command(args)') == 0
       - >-
         hermes_agent_goal_reconcile_source.count(
           '*(["--quiet"] if task.goal_mode else []),'
