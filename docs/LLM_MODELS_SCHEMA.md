@@ -65,13 +65,16 @@ Optional:
                       servable does NOT mean pre-loaded or residency-pinned:
                       the small tier is servable and still evictable
                       (ttl=900), with a measured ~79s cold load.
-  serving_role        `primary` | `routine` | `small` | `cluster`. Names the
+  serving_role        `primary` | `routine` | `small` | `cluster` | `ocr`. Names the
                       role this entry serves in. Repointing the serving host
                       is a move of this one field: `primary` is what the
                       consumer aliases and the fabric's selector vars follow.
                       `routine` names the second warm model on a host that
                       holds more than one — no selector reads it today, and it
-                      exists so the invariant below stays exact.
+                      exists so the invariant below stays exact. `ocr` is the
+                      vision-language document tier, reached by image content
+                      parts rather than by a selector var; it is named for the
+                      same reason `routine` is, so the invariant holds.
                       INVARIANT: servable if and only if serving_role is set.
                       Both halves are load-bearing — a servable entry with no
                       role is a model nothing can name, and a role with no
