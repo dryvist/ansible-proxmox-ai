@@ -33,14 +33,18 @@ llm_router_env_file: "{{ llm_router_config_dir }}/litellm.env"
 # (pip resolves v3, which errors on init), and Langfuse ingestion already
 # arrives via the designed OTLP -> Cribl Edge fan-out path.
 llm_router_pip_packages:
-  # Pinned: the retry/backoff behavior documented in this role's defaults
-  # (retry_after, RateLimitErrorRetries, num_retries — see llm_router config
-  # template) was verified against this version's tagged source
-  # (router.py's async_function_with_retries/_time_to_sleep_before_retry,
-  # utils.py's _calculate_retry_after, and exceptions.py's retry-count
-  # string construction). Bumping the pin is a deliberate act; re-verify
-  # those functions against the new tag before moving it.
-  - "litellm[proxy]==1.90.3"
+  # Pinned to the signed stable release. Retry/fallback, timeout, complexity
+  # routing, rate-limit enforcement and provider-budget behavior were verified
+  # against tag v1.97.0. In particular, timeout remains a per-deployment-attempt
+  # guard in tagged source, not Hermes' aggregate wall clock; the external
+  # 1800-second job ceiling remains independently load-bearing.
+  - "litellm[proxy]==1.97.0"
+  # LiteLLM's own v1.97.0 uv.lock pins this exact version. Its published proxy
+  # extra permits FastAPI <1, which currently resolves 0.141.1; that release
+  # removed get_flat_dependant while LiteLLM still imports it, so a fresh venv
+  # crashes before the proxy CLI can start. Keep the upstream-tested lock value
+  # until LiteLLM removes that import or tightens its published constraint.
+  - "fastapi==0.136.3"
   # LiteLLM's auth-error handler unconditionally `import prisma`s to classify
   # whether a failed request is a DB outage, but litellm[proxy] no longer pulls
   # prisma. On this DB-less proxy the import raised ModuleNotFoundError, turning
