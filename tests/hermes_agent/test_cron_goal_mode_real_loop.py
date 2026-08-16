@@ -22,8 +22,10 @@ from conftest import (
     KANBAN_GOAL_CONTINUATION_TEMPLATE,
     KANBAN_GOAL_FINALIZE_TEMPLATE,
     PINNED_KANBAN_GOAL_LOOP_SOURCE,
+    ROLE_ROOT,
     _goal_runner_namespace,
     _StubAgent,
+    role_tasks,
 )
 
 
@@ -121,6 +123,25 @@ def test_satisfied_judge_completes_without_a_wasted_turn(
 
     # One conversation: the original run. The finalize nudge is intercepted.
     assert agent.turns == 1
+
+
+def test_turn_budget_floor_forbids_the_degenerate_single_turn() -> None:
+    """max_turns=1 makes a satisfied judge indistinguishable from a failure.
+
+    The loop's budget check runs BEFORE run_turn, so at 1 it returns
+    blocked_budget on every run whatever the verdict, and the adapter's
+    finalize interception is unreachable. Verified against the real loop:
+    budget=1 with a "done" verdict yields blocked_budget plus a warning
+    saying the judge never agreed. The role must refuse to configure it.
+    """
+    conditions = " ".join(
+        str(condition)
+        for task in role_tasks(ROLE_ROOT)
+        if task.get("name") == "Assert Hermes recurring goal-mode settings are valid"
+        for condition in task["ansible.builtin.assert"]["that"]
+    )
+    assert "hermes_agent_kanban_goal_max_turns | int >= 2" in conditions
+    assert "int >= 1" not in conditions, "the >= 1 floor permits the degenerate case"
 
 
 def test_real_loop_still_returns_the_conversation_dict(

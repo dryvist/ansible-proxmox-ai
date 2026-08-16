@@ -62,7 +62,12 @@
   ansible.builtin.assert:
     quiet: true
     that:
-      - not (hermes_agent_kanban_goal_mode | bool) or hermes_agent_kanban_goal_max_turns | int >= 1
+      # >= 2, not >= 1. At exactly 1 the loop judges once and then hits its
+      # budget check BEFORE spending a turn, so it returns blocked_budget on
+      # every run whatever the verdict — including a satisfied one, which then
+      # logs "spent its goal turn budget without the judge agreeing". Goal mode
+      # at 1 cannot drive anything and can only mislabel success as failure.
+      - not (hermes_agent_kanban_goal_mode | bool) or hermes_agent_kanban_goal_max_turns | int >= 2
       - >-
         not (hermes_agent_kanban_goal_mode | bool)
         or hermes_agent_kanban_goal_judge_model | trim | length > 0
@@ -70,8 +75,10 @@
         not (hermes_agent_kanban_goal_mode | bool)
         or hermes_agent_kanban_goal_judge_timeout_seconds | int >= 30
     fail_msg: >-
-      Goal mode requires a positive hermes_agent_kanban_goal_max_turns and a
-      non-empty hermes_agent_kanban_goal_judge_model, and a judge timeout of
+      Goal mode requires hermes_agent_kanban_goal_max_turns >= 2 (at 1 the loop
+      blocks on budget before it can act on any verdict, so every run reports
+      blocked_budget — including satisfied ones), a non-empty
+      hermes_agent_kanban_goal_judge_model, and a judge timeout of
       at least 30 seconds. No card may carry its own goal_max_turns: the goal
       loop re-sends the whole accumulated conversation every turn, so a bigger
       budget costs prefill quadratically, and it is only ever spent by a card
