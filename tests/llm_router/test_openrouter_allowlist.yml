@@ -6,8 +6,7 @@
 # WHY THIS TEST EXISTS. Until 2026-08 the role rendered an `openrouter/*`
 # passthrough entry authenticated with one already-seeded key, which exposed the
 # entire live OpenRouter catalog. The keys are ACCOUNT-WIDE — the role's own
-# operator disclosure recorded that the per-model field names were "a
-# naming-level guardrail, not a technical one" — so the only real control was
+# provider credentials cannot act as model ACLs, so the only real control was
 # caller-side prose: a persona paragraph and a skill describing a daily budget
 # the agent tracked for ITSELF, in its own memory. That binds a compliant caller
 # and nothing else.
@@ -36,7 +35,6 @@
           llm_router_api: 4000
           llm_fast_api: 10434
           ollama_api: 11434
-          llm_cluster_api: 11440
           otel_traces_http: 4318
           # The spend store's port. config.yaml renders it as a literal int
           # rather than an os.environ/ marker, so the render needs it present —
@@ -139,7 +137,12 @@
              | selectattr('litellm_params.model', 'match', '^openrouter/')
              | map(attribute='model_name') | list }}
         _registry_or: >-
-          {{ llm_router_openrouter_models | map(attribute='client_model_id') | list }}
+          {%- set ns = namespace(names=[]) -%}
+          {%- for m in llm_router_registry_enabled
+                | selectattr('provider', 'equalto', 'openrouter') -%}
+          {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] -%}
+          {%- endfor -%}
+          {{ ns.names | unique }}
 
     - name: Every enabled registry egress entry is actually reachable
       # The converse direction. Without it, a template regression that dropped
@@ -160,7 +163,12 @@
              | selectattr('litellm_params.model', 'match', '^openrouter/')
              | map(attribute='model_name') | list }}
         _registry_or: >-
-          {{ llm_router_openrouter_models | map(attribute='client_model_id') | list }}
+          {%- set ns = namespace(names=[]) -%}
+          {%- for m in llm_router_registry_enabled
+                | selectattr('provider', 'equalto', 'openrouter') -%}
+          {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] -%}
+          {%- endfor -%}
+          {{ ns.names | unique }}
 
     - name: A rendered spend budget is present AND backed by a shared store
       # This assertion has now been inverted TWICE, and the pair of reversals is
