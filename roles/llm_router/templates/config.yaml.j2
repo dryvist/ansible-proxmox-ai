@@ -33,6 +33,9 @@ model_list:
       # see llm_router_local_max_parallel_requests in defaults for why pool-wide
       # coordination is not available for this control.
       max_parallel_requests: {{ llm_router_local_max_parallel_requests }}
+{% if m.client_model_id == llm_router_primary_model %}
+      num_retries: 2
+{% endif %}
 {% if m.extra_body is defined %}
       # Per-model sampling defaults pinned at the router. extra_body is forwarded
       # to the OpenAI-compatible backend VERBATIM (litellm_settings.drop_params
@@ -132,6 +135,18 @@ model_list:
       max_tokens: {{ m.context_window }}
 {% endif %}
 {% endfor %}
+{% if llm_router_hermes_openrouter_enabled | bool %}
+  - model_name: {{ llm_router_hermes_openrouter_fallback_id }}
+    litellm_params:
+      model: {{ llm_router_hermes_openrouter_model }}
+      api_key: os.environ/OPENROUTER_API_KEY
+      num_retries: 0
+      max_parallel_requests: 1
+      extra_body:
+        provider:
+          allow_fallbacks: false
+          data_collection: deny
+{% endif %}
   # NOTE there is deliberately no `openrouter/*` passthrough entry. The loop
   # above IS the egress allowlist: a model the registry does not enable with a
   # seeded key is not reachable through this router at all. See defaults for
@@ -198,6 +213,7 @@ router_settings:
   # is NOT the cross-tier fallback the no-fallback rule below still forbids.
   fallbacks:
     - hermes-default: {{ llm_router_hermes_default_fallback_chain | to_json }}
+  max_fallbacks: 1
 {% endif %}
   # No CROSS-TIER fallbacks for the default brain, on purpose: a fallback
   # serving a smaller context than the primary poisons callers instead of

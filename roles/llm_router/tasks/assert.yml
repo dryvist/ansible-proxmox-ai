@@ -86,23 +86,18 @@
          | rejectattr('context_window', 'none')
          | map(attribute='client_model_id') | list }}
 
-- name: Assert hermes-default's fallback chain points only at servable models
+- name: Assert hermes-default's fallback is the configured emergency route
   ansible.builtin.assert:
     quiet: true
     that:
-      - llm_router_hermes_default_fallback_chain | difference(llm_router_servable_models) | length == 0
+      - >-
+        llm_router_hermes_default_fallback_chain in
+        ([], [llm_router_hermes_openrouter_fallback_id])
     fail_msg: >-
-      Unroutable fallback (roles/llm_router/tasks/assert.yml): hermes-default's
-      fallback chain {{ llm_router_hermes_default_fallback_chain }} names
-      model(s) not in llm_router_servable_models
-      [{{ llm_router_servable_models | join(', ') }}]. Same failure mode as the
-      alias assert above: the serving host runs llama-swap in single-model
-      mode, so a fallback target outside the servable set 404s instead of
-      answering when the primary fails over to it.
+      Hermes fallback must be empty without the provider credential or contain
+      only the configured OpenRouter emergency target.
     success_msg: >-
-      hermes-default's fallback chain
-      ({{ llm_router_hermes_default_fallback_chain | join(', ') }}) resolves
-      into the servable set.
+      Hermes fallback has the expected single emergency target.
 
 - name: Assert no fallback target serves a smaller context than the primary
   # The chain is rendered permanently while the cluster leg is wired (see
