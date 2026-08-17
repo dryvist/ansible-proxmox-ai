@@ -57,22 +57,13 @@ def test_probe_deadline_exceeds_the_router_rate_limit_backoff() -> None:
     )
 
 
-def test_maintenance_playbooks_expect_the_timer_active_after_normal_operation() -> None:
+def test_queue_recovery_expects_the_timer_active_after_normal_operation() -> None:
     """The watchdog being enabled by default means every playbook that stops it
-    for a deliberate window (cluster pause, queue recovery) must bring it back
-    when that window ends — otherwise the very first maintenance op silently
+    for queue recovery must bring it back when that window ends — otherwise
+    the first maintenance operation silently
     re-disables auto-pause/resume for good, with no alert that it happened.
-
-    cluster-hermes-pause.yml legitimately stops the timer and stays that way
-    (it's reversed by resume, not by itself) so it is deliberately not covered
-    here.
     """
-    resume = (REPO_ROOT / "playbooks" / "cluster-hermes-resume.yml").read_text()
     recover = (REPO_ROOT / "playbooks" / "recover-hermes-queue.yml").read_text()
-
-    assert "enabled: true" in resume
-    assert "state: started" in resume
-    assert "ActiveState == 'inactive'" not in resume
 
     assert "ActiveState == 'active'" in recover
     assert "ActiveState == 'inactive'" not in recover
@@ -201,8 +192,6 @@ def test_a_paused_fleet_is_reconciled_not_only_edge_resumed() -> None:
     it never fires. The fleet then stays paused until some future outage happens
     to complete a whole down->up cycle, which may never come.
 
-    cluster-hermes-pause.yml reaches the identical end state by design, because
-    it pauses via ansible and never writes the state file at all.
     """
     assert "reconcile_fleet" in WATCHDOG, "a healthy brain must converge the fleet to running"
     # It must run on the healthy path when NO edge fired — that is the stuck case.

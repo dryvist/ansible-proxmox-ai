@@ -10,7 +10,6 @@ curriculum is deployed to `$HERMES_HOME/curriculum/` on every converge.
 | `curriculum.yml` | Canonical manifest: order, budgets, expected skills, and each job's **machine-checkable `success_checks`** |
 | `jobs/*.md` | Five catalog-backed prompts, materialized during converge and submitted verbatim as `POST /v1/runs` input |
 | `grading-sheet.md` | Four 0-3 dimensions per job + verified-claim spot checks + the cross-job omissions check |
-| `escalation-rubric-schema.md` | The feature schema (F1-F8) the graded runs populate to fit deep-vs-broad tier routing |
 | `submission-runbook.md` | Turnkey submission: preflight gates, key fetch, staggered submits, collection, grading |
 
 The jobs: `orient` (verified self-orientation), `reposweep` (read-only
@@ -23,8 +22,7 @@ run object, event stream, and GitHub — never the job's own summary.
 
 Layer-1 asserts guarantee the manifest is always executable: unique job ids,
 every `prompt_file` mapped to an immutable catalog artifact, and a non-empty
-`success_checks` list per job. Job ids follow clustered/normal naming (the original
-`night-orient` draft id shipped here as `orient`).
+`success_checks` list per job.
 
 ## Runner-enforced tool policy (per platform)
 
@@ -78,8 +76,8 @@ This watchdog closes both gaps with a small `systemd` timer
    (rotation flips, cold reloads) so the watchdog never becomes a *new* source of
    spam.
 3. **On a transition** — `hermes cron pause` (or `resume`) the brain-dependent
-   fleet (`hermes_agent_cluster_pause_cron_names`, the same list a cluster window
-   pauses; user/agent jobs are never touched), confirm each job's new state by
+   fleet (`hermes_agent_brain_dependent_cron_names`; user/agent jobs are never
+   touched), confirm each job's new state by
    reading `hermes cron list --all` back rather than trusting the command's exit
    code, and alert
    **exactly once** per edge to **both** a Slack DM (the operator, same place the
@@ -132,11 +130,9 @@ state:
   (`up` or `down`). If it reads `down`, the watchdog itself paused the seeded
   fleet on a debounced probe failure. If it reads `up` while jobs are still
   paused, the watchdog did not do it — look for a human cause instead
-  (`cluster-hermes-pause.yml`, `recover-hermes-queue.yml`, or a manual
-  `hermes cron pause`).
+  (`recover-hermes-queue.yml` or a manual `hermes cron pause`).
 - **Whether the timer is even running**: `systemctl is-active
-  hermes-brain-watchdog.timer`. The maintenance playbooks
-  (`cluster-hermes-pause.yml`, `recover-hermes-queue.yml`) explicitly stop the
+  hermes-brain-watchdog.timer`. The queue-recovery playbook explicitly stops the
   timer *before* pausing anything by hand, precisely so the watchdog cannot
   race a deliberate pause or auto-resume mid-maintenance. An inactive timer
   during a paused fleet is conclusive: this is not the watchdog.

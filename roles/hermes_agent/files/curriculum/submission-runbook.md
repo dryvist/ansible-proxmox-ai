@@ -104,7 +104,5 @@ grader.
 First evaluate every `success_checks` gate from `curriculum.yml` (run object,
 event stream, GitHub — never the job's own summary). Then score per
 `grading-sheet.md` (4 dimensions × 0–3 per job + spot-checked verified-claim
-rate + the cross-job omissions check), and fill the retrospective feature
-values in `escalation-rubric-schema.md` from the transcripts. These runs are
-the **broad-tier** datapoints; matched deep-tier packets rerun selected jobs
-when a cluster window is up.
+rate + the cross-job omissions check). Preserve the run artifacts for comparing
+future Hermes model revisions against the same workload.

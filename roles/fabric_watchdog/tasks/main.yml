@@ -18,39 +18,36 @@
     # host that never runs llm_router itself.
     public: true
 
-- name: Derive the distinct advertised (tier, endpoint) serving paths
+- name: Derive the distinct advertised serving tiers
   ansible.builtin.set_fact:
-    fabric_watchdog_registry_combos: >-
-      {{ (llm_router_model_registry | selectattr('servable', 'defined') | selectattr('servable')
-          | map(attribute='tier') | list)
-         | zip(llm_router_model_registry | selectattr('servable', 'defined') | selectattr('servable')
-               | map(attribute='endpoint', default='default') | list)
-         | map('join', ':') | unique | list }}
+    fabric_watchdog_registry_tiers: >-
+      {{ llm_router_model_registry
+         | selectattr('servable', 'defined') | selectattr('servable')
+         | map(attribute='tier') | unique | list }}
 
-# Maps each combo to its base URL. Deliberately a small, explicit table, not
+# Maps each tier to its base URL. Deliberately a small, explicit table, not
 # itself derived: llm-models.yml is pure data with NO host/port/URL literals
 # by design (its own header comment) — those live in the role, selected
-# symbolically by tier/endpoint. A combo missing from this table fails the
-# assert below rather than being silently skipped, so a newly-advertised
-# (tier, endpoint) pair cannot go unmonitored the way the cluster path did.
-- name: Define the known (tier, endpoint) combo to base-URL map
+# symbolically by tier. A tier missing from this table fails the assert below
+# rather than being silently skipped, so a newly advertised
+# tier cannot go unmonitored.
+- name: Define the known tier to base-URL map
   ansible.builtin.set_fact:
-    fabric_watchdog_known_combo_urls:
-      "large:default": "{{ llm_router_llm_large_base_url }}"
-      "large:cluster": "{{ llm_router_llm_large_cluster_base_url }}"
+    fabric_watchdog_known_tier_urls:
+      large: "{{ llm_router_llm_large_base_url }}"
 
-- name: Assert every advertised combo has a known probe URL
+- name: Assert every advertised tier has a known probe URL
   ansible.builtin.assert:
     quiet: true
     that:
       - >-
-        fabric_watchdog_registry_combos
-        | difference(fabric_watchdog_known_combo_urls.keys() | list) | length == 0
+        fabric_watchdog_registry_tiers
+        | difference(fabric_watchdog_known_tier_urls.keys() | list) | length == 0
     fail_msg: >-
-      llm-models.yml advertises (tier:endpoint) combination(s)
-      {{ fabric_watchdog_registry_combos
-         | difference(fabric_watchdog_known_combo_urls.keys() | list) | join(', ') }}
-      with no probe URL registered in fabric_watchdog_known_combo_urls
+      llm-models.yml advertises serving tier(s)
+      {{ fabric_watchdog_registry_tiers
+         | difference(fabric_watchdog_known_tier_urls.keys() | list) | join(', ') }}
+      with no probe URL registered in fabric_watchdog_known_tier_urls
       (roles/fabric_watchdog/tasks/main.yml) — add one so this reachability
       alarm covers it.
 
@@ -63,9 +60,9 @@
 - name: Build reachability targets for every advertised serving path
   ansible.builtin.set_fact:
     fabric_watchdog_targets: >-
-      {{ fabric_watchdog_targets + [{'name': 'llm-' ~ (item | replace(':', '-')),
-         'url': fabric_watchdog_known_combo_urls[item] ~ '/models', 'ok_codes': '200 401'}] }}
-  loop: "{{ fabric_watchdog_registry_combos }}"
+      {{ fabric_watchdog_targets + [{'name': 'llm-' ~ item,
+         'url': fabric_watchdog_known_tier_urls[item] ~ '/models', 'ok_codes': '200 401'}] }}
+  loop: "{{ fabric_watchdog_registry_tiers }}"
 
 - name: Create fabric-watchdog state directory
   ansible.builtin.file:
