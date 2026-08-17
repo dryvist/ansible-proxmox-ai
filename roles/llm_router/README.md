@@ -18,7 +18,7 @@ tofu inventory). Tools come from the repo's Nix dev shell (`direnv allow`).
 the repo-root `llm-models.yml` registry — and this role is a projection of it.**
 `defaults/main.yml` derives its tier views (`llm_router_large_models`,
 `llm_router_light_models`, `llm_router_openrouter_models`), its selector vars
-(`llm_router_primary_model` / `_small_model` / `_cluster_model`), the servable
+(`llm_router_primary_model` / `_routine_model` / `_small_model`), the servable
 set and the alias map from that file; `templates/config.yaml.j2` renders the
 LiteLLM config from those views. Nothing in the role re-types a model id, and a
 test fails the build if anything starts to.
@@ -27,7 +27,7 @@ Each entry keeps three names distinct on purpose — `client_model_id` (what a
 caller sends), the provider-prefixed LiteLLM route string, and
 `upstream_model_id` (what the backend serves) — so a rename on one side is never
 silently a rename on the others. Topology stays here, not there: the registry
-selects a backend symbolically (`tier`, and `endpoint: cluster`), and this role
+selects a backend symbolically (`tier`), and this role
 owns the URLs, ports and bearer env names. See the registry's own header for the
 full field reference.
 
@@ -44,13 +44,6 @@ Common edits:
 | Add/remove a consumer alias | that entry's `stable_aliases` |
 | Add an OpenRouter model | one registry entry + seed its `key_field` |
 | Retire a model | `enabled: false` (or delete the entry) |
-| Declare the cluster leg wired/de-wired | `llm_router_cluster_leg_available` **and** the cluster entry's `servable`, together |
-
-`llm_router_cluster_leg_available` is a **wiring** claim, not a per-window one.
-With the leg wired, `router_settings.fallbacks` is rendered permanently and a
-cluster window is picked up per request by LiteLLM — opening or tearing down a
-window needs no converge and no restart. Flip it false only when the leg is
-decommissioned, never at teardown.
 
 ## Tiers (one proxy, two backends)
 

@@ -84,26 +84,6 @@ a standby backend exists. Inert by default — see the standby var block in
 `roles/llm_router/defaults/main/` for the dedicated-port topology and the
 wired-ceiling safety gate.
 
-## The cluster brain (`mlx-community/GLM-4.7-REAP-50-mxfp4`)
-
-The two-Mac cluster brain (JACCL pipeline across both Macs, ~256 GB combined),
-served by mlx-lm rank 0 behind the gate's own cluster TLS site — a DIFFERENT
-port on the same host, hence `endpoint: cluster`. Reachable only while a
-cluster window is up (cable in); normal serving quiesces during windows, so
-this entry is what keeps a brain reachable then.
-
-It carries NO `stable_aliases` in either state: `hermes-default` resolves to the
-primary and reaches this entry through `router_settings.fallbacks`, so both
-backends answer under one consumer name without a second alias pinning traffic
-to a gate that is usually down.
-
-**Flipping `servable`** must happen together with `llm_router_cluster_leg_available`
-in `roles/llm_router/defaults/main/50-servable.yml`. `tasks/assert-cluster-leg.yml`
-fails the converge if the two disagree — deliberately, since this field is a
-manual claim and nothing else catches it drifting from what the role believes
-is actually reachable. That exact drift left the entry advertised for a month
-after the Thunderbolt cable came out.
-
 ## The OpenRouter egress tier
 
 Served under their REAL upstream ids. NEVER part of any fallback chain — a
