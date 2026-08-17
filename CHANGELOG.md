@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.30.1...v0.31.0) (2026-08-17)
+
+
+### Features
+
+* **llm_router:** assert registry and rendered model_list agree both ways ([#481](https://github.com/dryvist/ansible-proxmox-ai/issues/481)) ([1698977](https://github.com/dryvist/ansible-proxmox-ai/commit/16989777f59195c81714c628d48c16a729fd0ca1))
+
 ## [0.30.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.30.0...v0.30.1) (2026-08-16)
 
 
