@@ -1,0 +1,164 @@
+---
+# Upstream v2026.8.3 documents HERMES_CRON_TIMEOUT as an inactivity timeout:
+# tool calls, API calls, and streamed tokens reset it, so an active retry/tool
+# loop can run forever. Keep that useful native stall detector and add the
+# missing aggregate deadline around the same run_job monitor. The patch uses
+# upstream's own monotonic clock, poll loop, and request_hard_interrupt path.
+- name: Add aggregate cron wall-clock helpers
+  ansible.builtin.blockinfile:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK cron aggregate wall clock"
+    insertbefore: '^def run_job\('
+    block: |
+      def _hermes_cron_wall_timeout_limit():
+          """Return the configured aggregate cron deadline, or None when off."""
+          managed = float({{ hermes_agent_cron_wall_timeout_seconds | int }})
+          raw = os.getenv("HERMES_CRON_WALL_TIMEOUT", "").strip()
+          if not raw:
+              return managed
+          try:
+              value = float(raw)
+          except (TypeError, ValueError):
+              logger.warning(
+                  "Invalid HERMES_CRON_WALL_TIMEOUT=%r; using managed %.0fs limit",
+                  raw, managed,
+              )
+              return managed
+          return value if value > 0 else None
+
+
+      def _hermes_cron_wall_clock_expired(started, limit, now=None):
+          """Use a monotonic aggregate deadline that activity cannot reset."""
+          if limit is None:
+              return False
+          current = time.monotonic() if now is None else now
+          return current - started >= limit
+
+
+      def _hermes_cron_poll_timeout(started, limit, poll_interval, now=None):
+          """Shorten the final poll so the wall clock cannot overshoot."""
+          if limit is None:
+              return poll_interval
+          current = time.monotonic() if now is None else now
+          remaining = limit - (current - started)
+          return min(poll_interval, max(0.0, remaining))
+  notify: Restart hermes-gateway
+
+- name: Resolve the aggregate cron wall clock beside the inactivity timeout
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: |-
+      ^        _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None$(?!
+              _cron_wall_timeout_limit =)
+    replace: "{{ _hermes_cron_limits_block | indent(8, true) }}"
+  vars:
+    _hermes_cron_limits_block: |-
+      _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+      _cron_wall_timeout_limit = _hermes_cron_wall_timeout_limit()
+  notify: Restart hermes-gateway
+
+- name: Start the aggregate cron clock before submitting the conversation
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: '^        _cron_context = contextvars\.copy_context\(\)$'
+    replace: "{{ _hermes_cron_pre_submit_block | indent(8, true) }}"
+  vars:
+    _hermes_cron_pre_submit_block: |-
+      _cron_started_monotonic = time.monotonic()
+      _cron_context = contextvars.copy_context()  # wall clock starts before submit
+  notify: Restart hermes-gateway
+
+- name: Initialize the independent cron timeout result flags
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: '^        _inactivity_timeout = False$(?!\n        _hard_timeout = False)'
+    replace: "{{ _hermes_cron_start_block | indent(8, true) }}"
+  vars:
+    _hermes_cron_start_block: |-
+      _inactivity_timeout = False
+      _hard_timeout = False
+  notify: Restart hermes-gateway
+
+- name: Keep polling whenever either cron deadline is enabled
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: '^            if _cron_inactivity_limit is None:$'
+    replace: '            if _cron_inactivity_limit is None and _cron_wall_timeout_limit is None:'
+  notify: Restart hermes-gateway
+
+- name: Bound the final cron poll to the exact remaining wall budget
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: |-
+      ^            else:
+                      result = None
+                      while True:
+                          done, _ = concurrent\.futures\.wait\(
+                              \{_cron_future\}, timeout=_POLL_INTERVAL,
+                          \)$
+    replace: "{{ _hermes_cron_bounded_wait_block | indent(12, true) }}"
+  vars:
+    _hermes_cron_bounded_wait_block: |-
+      else:
+          result = None
+          while True:
+              _cron_wait_timeout = _hermes_cron_poll_timeout(
+                  _cron_started_monotonic,
+                  _cron_wall_timeout_limit,
+                  _POLL_INTERVAL,
+              )
+              done, _ = concurrent.futures.wait(
+                  {_cron_future}, timeout=_cron_wait_timeout,
+              )
+  notify: Restart hermes-gateway
+
+- name: Enforce the aggregate cron wall clock in the native poll loop
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: |-
+      ^(                    _heartbeat_run_claim_if_due\(\)
+      )(                    # Agent still running — check inactivity\.)$
+    replace: |-
+      \g<1>{{ _hermes_cron_wall_check_block | indent(20, true) }}
+      \g<2>
+  vars:
+    _hermes_cron_wall_check_block: |-
+      if _hermes_cron_wall_clock_expired(
+          _cron_started_monotonic, _cron_wall_timeout_limit
+      ):
+          _hard_timeout = True
+          break
+  notify: Restart hermes-gateway
+
+- name: Guard the native inactivity comparison when that detector is disabled
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: '^                    if _idle_secs >= _cron_inactivity_limit:$'
+    replace: "{{ _hermes_cron_idle_guard | indent(20, true) }}"
+  vars:
+    _hermes_cron_idle_guard: >-
+      if _cron_inactivity_limit is not None and
+      _idle_secs >= _cron_inactivity_limit:
+  notify: Restart hermes-gateway
+
+- name: Raise the aggregate cron timeout before the inactivity handler
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: '^        if _inactivity_timeout:$'
+    replace: "{{ _hermes_cron_hard_timeout_block | indent(8, true) }}"
+  vars:
+    _hermes_cron_hard_timeout_block: |-
+      if _hard_timeout:
+          elapsed = time.monotonic() - _cron_started_monotonic
+          logger.error(
+              "Job '%s' exceeded aggregate wall clock %.0fs (limit %.0fs)",
+              job_name, elapsed, _cron_wall_timeout_limit,
+          )
+          request_hard_interrupt(agent, "Cron job exceeded hard wall clock")
+          raise TimeoutError(
+              f"Cron job '{job_name}' exceeded aggregate wall clock "
+              f"{int(elapsed)}s (limit {int(_cron_wall_timeout_limit)}s)"
+          )
+
+      if _inactivity_timeout is True:
+  notify: Restart hermes-gateway
