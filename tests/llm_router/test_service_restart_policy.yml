@@ -1,0 +1,26 @@
+---
+- name: Verify LiteLLM has a bounded native restart policy
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_user: litellm
+    llm_router_group: litellm
+    llm_router_home: /var/lib/litellm
+    llm_router_env_file: /etc/litellm/litellm.env
+    llm_router_venv: /opt/litellm-venv
+    llm_router_config_file: /etc/litellm/config.yaml
+    llm_router_api_port: 4000
+  tasks:
+    - name: Render the role-owned systemd unit
+      ansible.builtin.set_fact:
+        _unit: "{{ lookup('template', _role_dir ~ '/templates/litellm.service.j2') }}"
+
+    - name: Unexpected exits restart at a bounded cadence
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _unit is search('(?m)^Restart=always$')
+          - _unit is search('(?m)^RestartSec=15s$')
+          - _unit is search('(?m)^StartLimitIntervalSec=60s$')
+          - _unit is search('(?m)^StartLimitBurst=5$')
