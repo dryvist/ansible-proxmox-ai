@@ -115,20 +115,6 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # Both selectors must be declared servable, or the alias indirection just
     # moves the 404 one level down.
     #
-    # The cluster model is servable ONLY while the cluster leg is actually
-    # available. It is hermes-default's router_settings.fallbacks target while
-    # a cluster window is up, and an unroutable fallback target 502s instead of
-    # failing over — which is exactly what it did, unnoticed, from 2026-08-05
-    # (both hosts' clusterMode disabled, TB cable out) until #365.
-    #
-    # Derive the expectation from llm_router_cluster_leg_available rather than
-    # re-pinning a literal: that var is the single switch #365 introduced, and
-    # roles/llm_router/tasks/assert-cluster-leg.yml already fails the converge
-    # if it and the registry's `servable` disagree. Following it here means
-    # this test tracks the leg coming back instead of going red the moment it
-    # does — re-pinning a literal is the drift this whole indirection exists
-    # to prevent.
-    #
     # `servable` is deliberately NOT `enabled`: every large-tier entry is
     # enabled (the router offers it), only these are servable (the backend
     # answers for it). Conflating them yields a 404, not an answer.
@@ -144,12 +130,7 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     expected_servable = [
         entry["client_model_id"]
         for entry in registry
-        if entry.get("enabled")
-        and "serving_role" in entry
-        and (
-            entry["serving_role"] != "cluster"
-            or router_defaults["llm_router_cluster_leg_available"]
-        )
+        if entry.get("enabled") and "serving_role" in entry
     ]
     assert [
         entry["client_model_id"] for entry in registry if entry.get("servable")
