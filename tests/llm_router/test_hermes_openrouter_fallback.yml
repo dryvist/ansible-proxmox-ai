@@ -1,0 +1,78 @@
+---
+- name: Verify the fixed Hermes OpenRouter fallback
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          llm_cluster_api: 11440
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: test-master-key
+    llm_router_llm_large_bearer: test-local-bearer
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults and registry
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Enable the provider only for this render
+      ansible.builtin.set_fact:
+        llm_router_hermes_openrouter_api_key: test-provider-key
+        llm_router_hermes_openrouter_enabled: true
+
+    - name: Render the router configuration and environment
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _environment: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+
+    - name: Assert three local attempts then one fixed provider request
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _primary.litellm_params.num_retries | int == 2
+          - _fallback | length == 1
+          - _fallback[0].litellm_params.model == 'openrouter/deepseek/deepseek-v4-flash-latest'
+          - _fallback[0].litellm_params.api_key == 'os.environ/OPENROUTER_API_KEY'
+          - _fallback[0].litellm_params.num_retries | int == 0
+          - not _fallback[0].litellm_params.extra_body.provider.allow_fallbacks
+          - "_config.router_settings.fallbacks == [{'hermes-default': ['hermes-openrouter-fallback']}]"
+          - _config.router_settings.max_fallbacks | int == 1
+          - _environment is search('(?m)^OPENROUTER_API_KEY=test-provider-key$')
+        fail_msg: Hermes does not render the required local-three-then-one-provider route.
+      vars:
+        _primary: >-
+          {{ _config.model_list | selectattr('model_name', 'equalto', llm_router_primary_model) | first }}
+        _fallback: >-
+          {{ _config.model_list | selectattr('model_name', 'equalto', 'hermes-openrouter-fallback') | list }}
+
+    - name: Disable the provider
+      ansible.builtin.set_fact:
+        llm_router_hermes_openrouter_api_key: ""
+        llm_router_hermes_openrouter_enabled: false
+
+    - name: Render without the provider
+      ansible.builtin.set_fact:
+        _without_provider: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Assert a missing provider key leaves Hermes local-only
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            (_without_provider.model_list | selectattr('model_name', 'equalto',
+            'hermes-openrouter-fallback') | list) | length == 0
+          - "'fallbacks' not in _without_provider.router_settings"
