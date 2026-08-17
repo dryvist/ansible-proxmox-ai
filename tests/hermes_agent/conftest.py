@@ -32,6 +32,7 @@ from _pinned_sources import (
     PINNED_CREATE_TASK_SOURCE,
     PINNED_CRON_DELIVERY_SOURCE,
     PINNED_CRON_SUBMIT_SOURCE,
+    PINNED_CRON_TIMEOUT_SOURCE,
     PINNED_GOAL_COMPLETION_SOURCE,
     PINNED_HINDSIGHT_PREFETCH_SOURCE,
     PINNED_JUDGE_AVAILABLE_SOURCE,
@@ -86,6 +87,20 @@ def _apply_runtime_patch(name: str, source: str) -> str:
     return patched
 
 
+def _apply_rendered_runtime_patch(name: str, source: str) -> str:
+    """Apply a replace task whose payload is rendered from its task vars."""
+    task = _task(name)
+    config = task["ansible.builtin.replace"]
+    replacement = Environment(autoescape=False).from_string(config["replace"]).render(
+        **task.get("vars", {})
+    )
+    patched, count = re.subn(
+        config["regexp"], replacement, source, flags=re.MULTILINE
+    )
+    assert count == 1
+    return patched
+
+
 # Derived by running the role's own patch over the pinned upstream line,
 # never hand-written — a hand-copied "expected" string can drift from what
 # the role actually produces and would assert against itself.
@@ -117,10 +132,34 @@ PATCHED_CRON_DELIVERY_SOURCE += (
     _task("Patch Hermes cron scheduler with an opt-in goal-mode runner")[
         "ansible.builtin.blockinfile"
     ]["block"]
-    + _apply_runtime_patch(
-        "Route the cron conversation through the goal-mode runner",
-        PINNED_CRON_SUBMIT_SOURCE,
+)
+# Production applies the goal-mode submit replacement before the wall-clock
+# patch rewrites the adjacent context line. Model that exact sequence on one
+# source snippet: appending separately patched copies would leave the original
+# direct submit in this synthetic module even though it is absent after a real
+# converge.
+PATCHED_CRON_TIMEOUT_SOURCE = _apply_runtime_patch(
+    "Route the cron conversation through the goal-mode runner",
+    PINNED_CRON_TIMEOUT_SOURCE,
+)
+for _cron_timeout_task_name in (
+    "Resolve the aggregate cron wall clock beside the inactivity timeout",
+    "Start the aggregate cron clock before submitting the conversation",
+    "Initialize the independent cron timeout result flags",
+    "Keep polling whenever either cron deadline is enabled",
+    "Bound the final cron poll to the exact remaining wall budget",
+    "Enforce the aggregate cron wall clock in the native poll loop",
+    "Guard the native inactivity comparison when that detector is disabled",
+    "Raise the aggregate cron timeout before the inactivity handler",
+):
+    PATCHED_CRON_TIMEOUT_SOURCE = _apply_rendered_runtime_patch(
+        _cron_timeout_task_name, PATCHED_CRON_TIMEOUT_SOURCE
     )
+PATCHED_CRON_DELIVERY_SOURCE += (
+    _task("Add aggregate cron wall-clock helpers")["ansible.builtin.blockinfile"][
+        "block"
+    ]
+    + PATCHED_CRON_TIMEOUT_SOURCE
 )
 PATCHED_HINDSIGHT_PREFETCH_SOURCE = _apply_runtime_patch(
     "Patch Hermes auto-recall prefetch failure to log at warning, not debug",

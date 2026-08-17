@@ -13,10 +13,10 @@ Run this when hermes_agent_version moves, before converging:
     python3 scripts/verify-pinned-patches.py            # the pinned version
     python3 scripts/verify-pinned-patches.py 2026.8.13  # plus another release
 
-Every patch should report exactly 1. Investigate anything else: 0 means the
-anchor is gone (re-anchor it, or retire the patch if upstream adopted the fix),
-and >1 means it hits more sites than intended — unless, like the auxiliary
-post-budget fallback, the duplicate site is real and deliberate.
+Every patch should report its declared expected count (one unless the task
+explicitly declares otherwise). Patches are applied to the in-memory source in
+role order after counting, because later patches can intentionally anchor on an
+earlier patch's output just as they do during a real converge.
 """
 
 from __future__ import annotations
@@ -27,6 +27,8 @@ import sys
 import tarfile
 import urllib.request
 from pathlib import Path
+
+from jinja2 import DebugUndefined, Environment, UndefinedError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "tests" / "hermes_agent"))
@@ -56,24 +58,44 @@ def upstream_sources(version: str) -> dict[str, str]:
 
 def main(versions: list[str]) -> int:
     tasks = [
-        (task["name"], task["ansible.builtin.replace"])
+        task
         for task in role_tasks(ROLE_ROOT)
         if "ansible.builtin.replace" in task
     ]
+    environment = Environment(autoescape=False, undefined=DebugUndefined)
     unexpected = 0
     for version in versions:
         print(f"== hermes-agent v{version}")
         sources = upstream_sources(version)
-        for name, config in tasks:
+        for task in tasks:
+            name = task["name"]
+            config = task["ansible.builtin.replace"]
+            expected = int(
+                task.get("vars", {}).get(
+                    "hermes_agent_pinned_patch_expected_matches", 1
+                )
+            )
             relative = str(config.get("path", "")).split("}}/")[-1]
             source = sources.get(relative)
             if source is None:
                 print(f"  n/a  {name}  ({relative} not in this release)")
                 continue
             count = len(re.findall(config["regexp"], source, flags=re.MULTILINE))
-            print(f"  {count:>3}  {name}")
-            unexpected += count != 1
-    print(f"\nmatches != 1: {unexpected}")
+            print(f"  {count:>3}/{expected:<3}  {name}")
+            unexpected += count != expected
+            if count:
+                try:
+                    replacement = environment.from_string(config["replace"]).render(
+                        **task.get("vars", {})
+                    )
+                except UndefinedError:
+                    # Matching is already proven. Preserve unresolved role vars
+                    # literally when a later patch does not depend on them.
+                    replacement = config["replace"]
+                sources[relative] = re.sub(
+                    config["regexp"], replacement, source, flags=re.MULTILINE
+                )
+    print(f"\nunexpected match counts: {unexpected}")
     return 1 if unexpected else 0
 
 
