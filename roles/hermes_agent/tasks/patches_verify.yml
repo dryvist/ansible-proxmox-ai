@@ -164,6 +164,38 @@
       - >-
         '_cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)'
         not in hermes_agent_cron_scheduler_source
+      # Aggregate cron wall clock. HERMES_CRON_TIMEOUT is upstream's native
+      # inactivity reset; these assertions prove the independent monotonic
+      # deadline helper, poll-loop call site, and hard-interrupt sink all land.
+      - >-
+        'def _hermes_cron_wall_timeout_limit():'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        'def _hermes_cron_wall_clock_expired(started, limit, now=None):'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        '_cron_inactivity_limit is None and _cron_wall_timeout_limit is None'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        '_cron_started_monotonic = time.monotonic()\n        '
+        '_cron_context = contextvars.copy_context()  # wall clock starts before submit\n        '
+        '_cron_future = _cron_pool.submit('
+        in hermes_agent_cron_scheduler_source
+      - >-
+        '_hermes_cron_wall_clock_expired('
+        in hermes_agent_cron_scheduler_source
+      - >-
+        'def _hermes_cron_poll_timeout(started, limit, poll_interval, now=None):'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        '_cron_wait_timeout = _hermes_cron_poll_timeout('
+        in hermes_agent_cron_scheduler_source
+      - >-
+        'request_hard_interrupt(agent, "Cron job exceeded hard wall clock")'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        'if _cron_inactivity_limit is not None and _idle_secs >= _cron_inactivity_limit:'
+        in hermes_agent_cron_scheduler_source
       # The cron built-in memory rebind. Both halves asserted: the store
       # construction is what makes the memory tool answer at all, and the
       # `_cfg`-derived enable flags are what keep it honest — a landing that
