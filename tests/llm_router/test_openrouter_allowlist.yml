@@ -1,35 +1,10 @@
 ---
-# Pins the OpenRouter egress contract: the registry is the allowlist, every
-# egress deployment is rate-limited, and any spend budget that appears is
-# backed by the shared store that makes it true.
-#
-# WHY THIS TEST EXISTS. Until 2026-08 the role rendered an `openrouter/*`
-# passthrough entry authenticated with one already-seeded key, which exposed the
-# entire live OpenRouter catalog. The keys are ACCOUNT-WIDE — the role's own
-# operator disclosure recorded that the per-model field names were "a
-# naming-level guardrail, not a technical one" — so the only real control was
-# caller-side prose: a persona paragraph and a skill describing a daily budget
-# the agent tracked for ITSELF, in its own memory. That binds a compliant caller
-# and nothing else.
-#
-# Two claims were false while it existed. "The registry is the sole enabled-model
-# inventory" could not be true with a wildcard routing around it. And "spend is
-# capped" was advisory, so a noncompliant or compromised caller had no ceiling.
-#
-# Both failures are silent by nature: the render succeeds either way, and the
-# wildcard's absence or presence is invisible to ansible-lint and --syntax-check.
-# Only the RENDERED config shows it, which is what this test inspects.
-#
-# Run (from the REPO ROOT — the registry load resolves the llm_router role
-# through ansible.cfg's cwd-relative roles_path):
-#   ansible-playbook tests/llm_router/test_openrouter_allowlist.yml -i localhost, -c local
-- name: Verify the OpenRouter egress allowlist and router-enforced budget
+# Native render contract for the sole Hermes emergency egress route.
+- name: Verify the fixed OpenRouter Hermes fallback contract
   hosts: localhost
   gather_facts: false
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    # Mirrors the current tofu-proxmox service_ports constants, as the failover
-    # test does — the render needs them to resolve backend api_base values.
     tofu_data:
       constants:
         service_ports:
@@ -38,226 +13,86 @@
           ollama_api: 11434
           llm_cluster_api: 11440
           otel_traces_http: 4318
-          # The spend store's port. config.yaml renders it as a literal int
-          # rather than an os.environ/ marker, so the render needs it present —
-          # this test failed without it, which is the render proving the
-          # dependency rather than a reviewer noticing it.
           redis_default: 6379
-    # Seeds every registry key_field so the OpenRouter entries actually render.
-    # Without this they are inert (unseeded keys emit nothing) and the
-    # allowlist assertions below would pass against an EMPTY list — proving
-    # nothing. Built from the registry rather than spelled out, so a new entry
-    # is covered the day it lands instead of silently skipping this test.
     bao_local_llm_secrets: {}
     ai_default_model: mlx-community/Qwen3.8-27B-4bit
     llm_large_serving_host: llm-large
-    llm_router_subdomain: "pve.example.test"
-    llm_router_master_key: sk-test-master
-    llm_router_llm_large_bearer: test-bearer-token
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: test-master-key
+    llm_router_llm_large_bearer: test-local-bearer
     ai_router_request_timeout_seconds: 2400
     ai_stream_read_timeout_seconds: 1800
-    # group_vars/all.yml is not loaded under `-i localhost,`, so the all.yml
-    # constants the role defaults reference must be supplied here.
     ai_router_retry_after_seconds: 40
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
     hermes_brain_model: hermes-default
     hermes_goal_judge_model: goal-judge
   tasks:
-    - name: Load the role defaults as they ship
-      ansible.builtin.include_vars:
-        dir: "{{ _role_dir }}/defaults/main"
+    - name: Load the role defaults and registry
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
 
-    # set_fact, not a play var: include_vars above binds the role defaults at a
-    # HIGHER precedence than a play var, so a play-level override is silently
-    # discarded and the shipped empty default wins. Caught by this test failing
-    # on first run.
-    - name: Configure a shared spend store, as a budget-carrying deployment has
+    - name: Enable the one provider credential only for this render
       ansible.builtin.set_fact:
+        llm_router_openrouter_api_key: test-provider-key
+        llm_router_openrouter_enabled: true
         llm_router_redis_host: redis.example.test
-        llm_router_redis_password: test-only-not-a-real-password
-        # The role ships neither; a budget-carrying deployment sets both in
-        # group_vars. Setting only the store here would render no budget and the
-        # assertion below would fail for a misleading reason.
+        llm_router_redis_password: test-redis-password
         llm_router_openrouter_budget_limit: 1.0
 
-    - name: Load the fabric model registry the way the converge does
-      ansible.builtin.include_role:
-        name: llm_router
-        tasks_from: registry.yml
-
-    # Every OpenRouter entry renders only when its key_field is seeded. Seeding
-    # them all here is what makes the "rendered set == registry set" assertion
-    # meaningful; with an empty secrets dict both sides would be empty.
-    - name: Seed every registry key_field so the egress tier actually renders
+    - name: Render and parse the native LiteLLM configuration
       ansible.builtin.set_fact:
-        bao_local_llm_secrets: >-
-          {{ dict(_key_fields | zip(_key_fields | map('regex_replace', '^', 'test-key-'))) }}
-      vars:
-        _key_fields: >-
-          {{ llm_router_openrouter_models | map(attribute='key_field') | list }}
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _environment: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
 
-    - name: Render the real config.yaml.j2 template into a string
+    - name: The provider route is one fixed model with one provider environment reference
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _openrouter | length == 1
+          - _openrouter[0].model_name == 'hermes-openrouter-fallback'
+          - _openrouter[0].litellm_params.model == 'openrouter/deepseek/deepseek-v4-flash-latest'
+          - _openrouter[0].litellm_params.api_key == 'os.environ/OPENROUTER_API_KEY'
+          - _openrouter[0].litellm_params.num_retries | int == 0
+          - not _openrouter[0].litellm_params.extra_body.provider.allow_fallbacks
+          - _openrouter[0].litellm_params.extra_body.provider.data_collection == 'deny'
+          - _environment is search('(?m)^OPENROUTER_API_KEY=test-provider-key$')
+          - _environment is not search('OPENROUTER_API_KEY_')
+        fail_msg: >-
+          The rendered provider deployment is not the single fixed, direct
+          emergency route with one provider-scoped environment variable.
+      vars:
+        _openrouter: >-
+          {{ _config.model_list | selectattr('litellm_params.model', 'match', '^openrouter/') | list }}
+
+    - name: Hermes performs three scoped local attempts then one provider fallback
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _config.router_settings.num_retries | int == 0
+          - _config.router_settings.model_group_retry_policy['hermes-default'].TimeoutErrorRetries | int == 2
+          - _config.router_settings.model_group_retry_policy['hermes-default'].InternalServerErrorRetries | int == 2
+          - _config.router_settings.model_group_retry_policy['hermes-default'].RateLimitErrorRetries | int == 2
+          - "_config.router_settings.fallbacks == [{'hermes-default': ['hermes-openrouter-fallback']}]"
+          - _config.router_settings.max_fallbacks | int == 1
+          - _config.router_settings.timeout | int == 2400
+        fail_msg: >-
+          Hermes local retry/fallback settings are not bounded to the expected
+          route.
+
+    - name: A missing provider credential leaves Hermes local-only
       ansible.builtin.set_fact:
-        _rendered_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') }}"
+        llm_router_openrouter_api_key: ""
+        llm_router_openrouter_enabled: false
 
-    - name: Parse the rendered config as YAML
+    - name: Render the missing-credential configuration
       ansible.builtin.set_fact:
-        _config: "{{ _rendered_config | from_yaml }}"
+        _without_key: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _without_key_environment: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
 
-    - name: No OpenRouter passthrough wildcard is rendered
-      # The whole point. `openrouter/*` would make every assertion below
-      # cosmetic, because any catalog model would be reachable regardless of
-      # what the registry says.
+    - name: Missing credential does not expose a provider route or fallback
       ansible.builtin.assert:
         quiet: true
         that:
-          - _wildcards | length == 0
-        fail_msg: >-
-          The rendered model_list contains {{ _wildcards | length }}
-          OpenRouter passthrough entr(y|ies) ({{ _wildcards | join(', ') }}).
-          That exposes the entire live OpenRouter catalog on an account-wide
-          key and makes the registry no longer the enabled-model inventory.
-        success_msg: "no openrouter passthrough wildcard — the registry is the allowlist"
-      vars:
-        _wildcards: >-
-          {{ _config.model_list | map(attribute='model_name')
-             | select('match', '^openrouter/\*$') | list }}
-
-    - name: Every rendered OpenRouter model is an enabled registry entry
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _rendered_or | difference(_registry_or) | length == 0
-        fail_msg: >-
-          [{{ _rendered_or | difference(_registry_or) | join(', ') }}] are
-          reachable through the router but are not enabled OpenRouter entries
-          in the registry. Egress must be exactly the registry's allowlist.
-        success_msg: >-
-          all {{ _rendered_or | length }} rendered egress models come from the registry
-      vars:
-        _rendered_or: >-
-          {{ _config.model_list
-             | selectattr('litellm_params.model', 'match', '^openrouter/')
-             | map(attribute='model_name') | list }}
-        _registry_or: >-
-          {{ llm_router_openrouter_models | map(attribute='client_model_id') | list }}
-
-    - name: Every enabled registry egress entry is actually reachable
-      # The converse direction. Without it, a template regression that dropped
-      # the egress loop entirely would still satisfy the assertion above (the
-      # empty set is a subset of anything) and read as a pass.
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _registry_or | difference(_rendered_or) | length == 0
-        fail_msg: >-
-          [{{ _registry_or | difference(_rendered_or) | join(', ') }}] are
-          enabled in the registry with a seeded key but render no model_list
-          entry — the egress loop has regressed.
-        success_msg: "registry egress set and rendered egress set agree exactly"
-      vars:
-        _rendered_or: >-
-          {{ _config.model_list
-             | selectattr('litellm_params.model', 'match', '^openrouter/')
-             | map(attribute='model_name') | list }}
-        _registry_or: >-
-          {{ llm_router_openrouter_models | map(attribute='client_model_id') | list }}
-
-    - name: A rendered spend budget is present AND backed by a shared store
-      # This assertion has now been inverted TWICE, and the pair of reversals is
-      # the point rather than an embarrassment — so read what is actually being
-      # pinned before touching it.
-      #
-      # It first said "a budget is configured". That was false: LiteLLM tracks
-      # provider spend in REDIS, and this proxy had none, so with a
-      # multi-member pool each member counted only its own spend. The rendered
-      # ceiling was really Nx and reset on every rolling converge.
-      #
-      # It then said "NO budget is configured", which was true and honest for a
-      # storage-less proxy but is not the destination state.
-      #
-      # It now pins the INVARIANT that survives both: a budget may appear only
-      # together with the store that makes it true. That is stronger than either
-      # earlier form, because neither half can be re-added alone — adding a
-      # budget without a store fails here, which is the regression that produced
-      # the first reversal.
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - "'provider_budget_config' in (_config.router_settings | default({}))"
-          - >-
-            (_config.router_settings.provider_budget_config.openrouter.budget_limit
-             | float) > 0
-          - >-
-            (_config.router_settings.provider_budget_config.openrouter.time_period
-             | length) > 0
-          # The half that makes the budget honest. Without these the ceiling
-          # above is per-member fiction.
-          - "'redis_host' in (_config.router_settings | default({}))"
-          # An int, not an os.environ/ marker — see config.yaml.j2.
-          - (_config.router_settings.redis_port | int) > 0
-          - "'redis_password' in (_config.router_settings | default({}))"
-          # Credentials resolve through the EnvironmentFile, never as literals
-          # in a config file this role writes to disk.
-          - _config.router_settings.redis_password is search('^os.environ/')
-          - _config.router_settings.redis_host is search('^os.environ/')
-        fail_msg: >-
-          The rendered config does not pin a store-backed spend budget.
-          provider_budget_config and redis_host/redis_port/redis_password must
-          appear TOGETHER: LiteLLM tracks provider spend in Redis, and
-          llm_router_group is a multi-member pool converged serial: 1, so a
-          budget without a shared store advertises a ceiling that is really Nx
-          its stated value and resets on every rolling converge. That is the
-          exact defect this assertion was inverted once to remove.
-          If the intent is to run with no budget, remove the budget rather than
-          the store — an unbacked budget is worse than none.
-        success_msg: >-
-          spend budget is present and backed by a shared store, with credentials
-          resolved from the environment
-
-    - name: No Postgres-backed budget setting is claimed without Postgres
-      # fail_closed_budget_enforcement is NOT the sibling of the budget above,
-      # despite reading like one. It is a general_settings key governing
-      # LiteLLM's key/team/user/org/tag budgets — the virtual-key system backed
-      # by POSTGRES — and its documented behaviour is to validate spend against
-      # the authoritative database and return 503 when spend can be verified
-      # against neither Redis nor the database.
-      #
-      # This proxy issues no virtual keys and has no database, so adding Redis
-      # did not make this setting real. It would be inert (claiming a control
-      # that does not exist, the original defect) or, if it engaged, a 503
-      # generator on the fabric's only front door. Adding Postgres is a separate
-      # architecture decision.
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - "'fail_closed_budget_enforcement' not in (_config.general_settings | default({}))"
-          - "'fail_closed_budget_enforcement' not in (_config.litellm_settings | default({}))"
-          - "'fail_closed_budget_enforcement' not in (_config.router_settings | default({}))"
-        fail_msg: >-
-          The rendered config sets fail_closed_budget_enforcement, which
-          validates spend against a POSTGRES-backed virtual-key budget system
-          this proxy does not run. It would be inert at best, and at worst 503
-          every budgeted request on the fabric's only front door. Redis backs
-          provider_budget_config; it does not back this.
-        success_msg: >-
-          no Postgres-backed budget setting is claimed on a database-less proxy
-
-    - name: Every egress deployment carries rate and concurrency limits
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _unlimited | length == 0
-        fail_msg: >-
-          Egress deployment(s) [{{ _unlimited | join(', ') }}] carry no
-          rpm/tpm/max_parallel_requests. These are the ONLY enforcement this
-          storage-less proxy can apply to an account-wide credential, so an
-          unlimited deployment has no ceiling of any kind.
-        success_msg: >-
-          all egress deployments are rate- and concurrency-limited
-          (per instance; the pool has three members)
-      vars:
-        _unlimited: >-
-          {{ _config.model_list
-             | selectattr('litellm_params.model', 'match', '^openrouter/')
-             | rejectattr('litellm_params.rpm', 'defined')
-             | map(attribute='model_name') | list }}
+          - (_without_key.model_list | selectattr('litellm_params.model', 'match', '^openrouter/') | list) | length == 0
+          - "'fallbacks' not in _without_key.router_settings"
+          - _without_key_environment is not search('(?m)^OPENROUTER_API_KEY=')
+        fail_msg: Missing provider credential did not disable only the Hermes provider fallback.

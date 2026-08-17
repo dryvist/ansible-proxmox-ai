@@ -104,61 +104,13 @@ manual claim and nothing else catches it drifting from what the role believes
 is actually reachable. That exact drift left the entry advertised for a month
 after the Thunderbolt cable came out.
 
-## The OpenRouter egress tier
+## Hermes emergency egress
 
-Served under their REAL upstream ids. NEVER part of any fallback chain — a
-flaky or rate-limited upstream must not be able to degrade the local brain;
-consumers opt in by requesting the id explicitly.
-
-**Key model (deliberate)**: ONE OpenRouter API key PER MODEL, irrespective of
-which harness or caller makes the request. `key_field` names the per-model field
-in OpenBao — canonically `secrets-external/ai/saas/openrouter`, an
-internet-reachable SaaS credential. `context_window` is the model's real serving
-window (never null — the compress-death rule applies to every entry).
-
-**Operator disclosure 2026-07-19**: these keys are ACCOUNT-WIDE — the per-model
-field names were a naming-level guardrail, not a technical one. Because of that,
-**the entry list is the egress allowlist**: an entry with a seeded key is the
-only way a model becomes reachable, and the `openrouter/*` passthrough that used
-to route around it is gone.
-
-The spend-cap mechanism exists and is live-wired — Redis-backed
-(`roles/redis`), enforced via `router_settings.provider_budget_config` in
-`config.yaml.j2`, guarded by `tasks/assert-budget-backing.yml` (fails the
-converge if the shared store and the cap separate). It is currently
-**disabled**: `llm_router_openrouter_budget_limit` defaults to `0`. Enabling
-it is a config change (set the limit), not an architecture change. The
-router does separately enforce a rate ceiling per egress deployment
-regardless of the spend cap's state. Caller-side policy (deliberate
-escalation, `:free` rules) is therefore still doing real work rather than
-being the only backstop.
-
-The `:free` endpoint is rate-limited, and the vendor logs prompt/session data on
-that variant — never send confidential material through it.
-
-### Why MiniMax is two entries
-
-The live keyless catalog (`https://openrouter.ai/api/v1/models`, read
-2026-08-02) carries eight `minimax/*` ids, so "add MiniMax" is a selection, not
-a lookup. Since the delegation doctrine tells callers to take the cheapest tier
-that can actually do a subtask, one entry would force every MiniMax call to pay
-for whichever shape it did not need:
-
-| id | context | price per Mtok (in / out) | role |
-| --- | --- | --- | --- |
-| `minimax-m2.5` | 204,800 | $0.15 / $0.90 | the cheap default |
-| `minimax-m3` | 1,048,576 | $0.30 / $1.20 | the long-context one |
-
-`context_window` is the catalog's real serving window in both cases, not a round
-number: the servable-alias contract test exists because an inflated window is
-the compress-death failure, and an entry advertising more than the backend
-serves dies mid-stream instead of compacting. (DeepSeek's `1000000` is a
-pre-existing rounding of the same 1,048,576 window — left alone rather than
-widened in a change about something else.)
-
-Both are PAID — neither has a `:free` variant — so both fall under the rate
-ceilings the role applies to every egress deployment. Those are rate limits, not
-a spend cap.
+The registry contains one fixed OpenRouter deployment. LiteLLM can reach it only
+as the `hermes-default` fallback after the scoped local retry policy is
+exhausted; it is not a caller-selectable catalog. Its credential is injected
+only into LiteLLM at converge time, and a missing credential leaves Hermes
+local-only.
 
 ## The OCR tier (`mlx-community/Unlimited-OCR-bf16`)
 

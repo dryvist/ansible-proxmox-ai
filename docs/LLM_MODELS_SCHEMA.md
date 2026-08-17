@@ -97,8 +97,6 @@ Optional:
   standby             large tier only — also render a same-id, same-window
                       failover deployment when the role has a standby backend
                       URL configured.
-  key_field           openrouter tier only — the per-model field in OpenBao
-                      secrets-external/ai/saas/openrouter. An entry whose key
-                      is not seeded renders nothing, so the list is safe to
-                      extend ahead of key seeding.
+  max_output_tokens   Optional provider output ceiling. Required for the
+                      fixed Hermes emergency egress entry.
 ```

@@ -109,33 +109,27 @@ model_list:
       max_parallel_requests: {{ llm_router_passthrough_max_parallel_requests }}
 {% endif %}
 {% endif %}
-  # --- OpenRouter egress tier: explicit opt-in by real upstream id, one key per MODEL ---
-  # Never chained into any fallbacks (see defaults). Keys come from OpenBao
-  # secrets-external/ai/saas/openrouter via the EnvironmentFile; an unseeded
-  # model renders no entry at all.
+  # --- Hermes emergency egress: one fixed provider deployment ---
 {% for m in llm_router_openrouter_models %}
-{% set _or_env = 'OPENROUTER_API_KEY_' ~ (m.key_field | upper | replace('-', '_')) %}
-{% set _or_key = bao_local_llm_secrets[m.key_field] | default(lookup('env', _or_env), true) %}
-{% if _or_key | length > 0 %}
+{% if llm_router_openrouter_enabled | bool %}
   - model_name: {{ m.client_model_id }}
     litellm_params:
       model: {{ litellm_model(m) }}
-      api_key: os.environ/{{ _or_env }}
-      # Rate and concurrency ceilings on paid egress. The spend cap below bounds
-      # the period; these bound the minute, so a runaway caller cannot exhaust a
-      # whole day's budget before the cap observes it.
+      api_key: os.environ/OPENROUTER_API_KEY
       rpm: {{ llm_router_openrouter_rpm }}
       tpm: {{ llm_router_openrouter_tpm }}
       max_parallel_requests: {{ llm_router_openrouter_max_parallel_requests }}
+      num_retries: 0
+      extra_body:
+        provider:
+          allow_fallbacks: {{ llm_router_openrouter_allow_fallbacks | to_json }}
+          data_collection: {{ llm_router_openrouter_data_collection }}
     model_info:
+      mode: chat
       max_input_tokens: {{ m.context_window }}
-      max_tokens: {{ m.context_window }}
+      max_tokens: {{ m.max_output_tokens }}
 {% endif %}
 {% endfor %}
-  # NOTE there is deliberately no `openrouter/*` passthrough entry. The loop
-  # above IS the egress allowlist: a model the registry does not enable with a
-  # seeded key is not reachable through this router at all. See defaults for
-  # why the wildcard was removed rather than tightened.
   # --- light tier ---
   # The CPU `llm-light` deployment always renders. The GPU `llm-fast` deployment
   # renders only when llm_router_llm_fast_enabled is true; with it false the tier
@@ -191,25 +185,23 @@ router_settings:
     {{ alias | to_json }}: {{ target | to_json }}
 {% endfor %}
 {% if llm_router_hermes_default_fallback_chain | length > 0 %}
-  # hermes-default automatic failover across the cluster + standalone gates
-  # (see defaults for the full ordering rationale and the source-verified
-  # reason the key is the ALIAS, not the resolved primary id). Same-tier only
-  # (every entry here carries the same context_window as the primary) — this
-  # is NOT the cross-tier fallback the no-fallback rule below still forbids.
+  # The key is the Hermes request alias, so every Hermes agent follows the same
+  # local-first route without receiving a provider credential.
   fallbacks:
     - hermes-default: {{ llm_router_hermes_default_fallback_chain | to_json }}
 {% endif %}
-  # No CROSS-TIER fallbacks for the default brain, on purpose: a fallback
-  # serving a smaller context than the primary poisons callers instead of
-  # degrading them (incident history: Zammad, AI/LLM Serving). Fail loud; the
-  # watchdog pauses. (The same-tier chain above is a same-context failover,
-  # not an exception to this.)
+  max_fallbacks: 1
   # Pre-call context-window checks so an over-long request is not routed to a model
   # that cannot serve it (no cross-tier fallback masks the error).
   enable_pre_call_checks: true
   # Genuine failures are forwarded once so backend calls remain exactly bounded.
   # The rate-limit policy below overrides this for 429s only.
   num_retries: {{ llm_router_num_retries }}
+  model_group_retry_policy:
+    hermes-default:
+      TimeoutErrorRetries: 2
+      InternalServerErrorRetries: 2
+      RateLimitErrorRetries: 2
   timeout: {{ llm_router_request_timeout_seconds }}
   # A 429 means the serving slot is busy, not that the work failed — wait it out
   # here so every consumer inherits the resilience instead of each one retrying.
