@@ -16,7 +16,7 @@ literals, no secrets. That is what lets it parse standalone with any YAML
 reader, so CI can generate the published alias contract
 (`scripts/generate_servable_aliases.py`) from it without an Ansible run.
 Anything topology-shaped (base URLs, ports, bearer env names) stays in
-`roles/llm_router/defaults/`, selected symbolically by `tier` and `endpoint`.
+`roles/llm_router/defaults/`, selected symbolically by `tier`.
 
 ```text
 Required on every entry:
@@ -27,11 +27,12 @@ Required on every entry:
                     where it currently equals client_model_id: the two are
                     independent naming decisions, and collapsing them is how a
                     rename upstream silently becomes a rename for callers.
-  provider          LiteLLM provider prefix — `openai` (any OpenAI-compatible
-                    backend, which is every local tier) or `openrouter`.
-  tier              `large` | `light` | `openrouter`. Selects which backend
-                    endpoint the role renders and the deployment shape (light
-                    entries become TWO same-name deployments, GPU + CPU).
+  provider          LiteLLM provider prefix — `openai` (local OpenAI-compatible
+                    backends), `auto_router`, `dashscope`, `gemini`, or
+                    `openrouter`.
+  tier              `large` | `light` | `vllm` | `hermes-router` |
+                    `hermes-cloud` | `openrouter`. Selects the deployment
+                    shape; light entries become two same-name deployments.
   enabled           false removes the entry from the rendered config entirely.
 
 Optional:
@@ -41,6 +42,9 @@ Optional:
                       derivation, not a third independent name. Set it only
                       when a backend needs a LiteLLM route string that is not
                       that composition.
+  route_group         Optional caller-facing model group shared by equivalent
+                      provider deployments. Used by Hermes cloud value groups;
+                      the registry parity check treats it as the rendered name.
   context_window      The backend's EFFECTIVE SERVING window — what its
                       KV-cache budget (nix-ai catalog cacheMemoryMb) sustains,
                       NOT the model's native max_position_embeddings. Renders
@@ -88,17 +92,23 @@ Optional:
                       entry's context_window/extra_body/api_base under a second
                       name silently drifts from the real backend every time the
                       model changes (root cause of the #1004 diagnosis cost).
-  endpoint            Symbolic backend selector WITHIN a tier. Only `cluster`
-                      is defined today (the two-Mac cluster gate's own TLS
-                      site); omitted means the tier's normal endpoint. The
-                      actual URL/port lives in the role, never here.
   extra_body          Sampling parameters forwarded to the backend verbatim.
   embedding           light tier only — marks the entry as an embeddings group.
   standby             large tier only — also render a same-id, same-window
                       failover deployment when the role has a standby backend
                       URL configured.
-  key_field           openrouter tier only — the per-model field in OpenBao
-                      secrets-external/ai/saas/openrouter. An entry whose key
-                      is not seeded renders nothing, so the list is safe to
-                      extend ahead of key seeding.
+  max_output_tokens   Maximum advertised output for the deployment.
+  input_cost_per_token / output_cost_per_token
+                      Real USD/token list prices used by cost routing and spend
+                      accounting. Never alter these to encode preference.
+  credential_env      One provider-level environment variable:
+                      `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, or
+                      `DASHSCOPE_API_KEY`.
+  key_field           Provider-level field in the provider's OpenBao KV path.
+                      Multiple models for one provider deliberately share it;
+                      model access is constrained by model_list and policy.
+  api_base            Optional explicit provider-region endpoint. Hermes uses
+                      Alibaba's International endpoint rather than an implicit
+                      region default.
+  monthly_budget      Deployment-level monthly USD ceiling, backed by Redis.
 ```

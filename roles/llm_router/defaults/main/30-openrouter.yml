@@ -1,17 +1,11 @@
 ---
-# --- OpenRouter egress tier (paid-SaaS; one key per MODEL) --------------------
+# --- OpenRouter egress tier (paid-SaaS; one provider key) ---------------------
 # OpenRouter-hosted models, served under their REAL upstream ids. NEVER part of
 # any fallback chain — a flaky/rate-limited upstream must not be able to degrade
 # the local brain; consumers opt in by requesting the id explicitly. Each entry
-# carries its own key_field, naming the per-model field in OpenBao
-# ai/saas/openrouter — canonically secrets-external/ai/saas/openrouter (an
-# internet-reachable SaaS credential), dual-mounted with the internal
-# secret/ai/saas/openrouter path during the migration (fetched into
-# bao_local_llm_secrets by the openbao_secrets pre-play via the
-# ai-saas-openrouter policy leaf; env fallback
-# OPENROUTER_API_KEY_<KEY_FIELD upper-snaked>). An entry whose key is not seeded
-# renders nothing (inert-until-creds), so the registry is safe to extend ahead of
-# key seeding.
+# shares the one `OPENROUTER_API_KEY` supplied to LiteLLM. Exact registry ids
+# and the provider policy are the allowlist; credentials are not model ACLs.
+# If the provider key is absent the tier renders nothing.
 llm_router_openrouter_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'openrouter') | list }}
 
@@ -23,9 +17,7 @@ llm_router_openrouter_models: >-
 # only stated control was caller-side prose — a persona paragraph and a skill
 # describing a daily budget the agent tracked for itself. That is advisory:
 # it binds a compliant caller and nothing else, and this role's own operator
-# disclosure already recorded that the per-model key-field names were "a
-# naming-level guardrail, not a technical one" because the keys are
-# ACCOUNT-WIDE.
+# provider key is account-scoped, so model access is enforced by configuration.
 #
 # Two properties made it worth removing rather than tightening. The registry
 # cannot be the sole enabled-model inventory while a wildcard routes around
@@ -36,9 +28,8 @@ llm_router_openrouter_models: >-
 #
 # What replaces it: the per-entry renders above ARE the allowlist. Every
 # reachable OpenRouter model is a registry entry with `enabled: true` and a
-# seeded key_field; anything else 400s at the router. Adding a model is one
-# registry line plus a key seed, which is the same cost the wildcard was
-# avoiding, paid once per model instead of never.
+# seeded provider key; anything else 400s at the router. Adding a model changes
+# the registry and tests, not the credential set.
 #
 # NOTE this removes the wildcard, not the caller-side policy. There is still no
 # router-enforced SPEND cap — this proxy has no store to track spend in — so
