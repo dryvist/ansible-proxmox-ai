@@ -21,6 +21,14 @@ openbao_secrets_bao_addr: "{{ lookup('env', 'BAO_ADDR') | default('', true) }}"
 # default; override only for a direct-to-node http bootstrap endpoint.
 openbao_secrets_validate_certs: true
 openbao_secrets_kv_mount: secret
+openbao_secrets_ai_api_key_mount: >-
+  {{ lookup('ansible.builtin.env', 'OPENBAO_AI_API_KEY_MOUNT')
+     | default(undef('OPENBAO_AI_API_KEY_MOUNT is empty'), true)
+     | mandatory('OPENBAO_AI_API_KEY_MOUNT must be supplied by private configuration') }}
+openbao_secrets_ai_api_key_path_prefix: >-
+  {{ lookup('ansible.builtin.env', 'OPENBAO_AI_API_KEY_PATH_PREFIX')
+     | default(undef('OPENBAO_AI_API_KEY_PATH_PREFIX is empty'), true)
+     | mandatory('OPENBAO_AI_API_KEY_PATH_PREFIX must be supplied by private configuration') }}
 
 # Hermes' inbound job API is key-presence gated.  The read-side local-llm
 # AppRole cannot seed the key.  A human-authorized, short-lived token carrying
@@ -100,8 +108,10 @@ openbao_secrets_domains:
     secret_id_env: AI_RUNNER_VAULT_SECRET_ID
     paths:
       - ai/vikunja          # VIKUNJA_API_TOKEN — the dispatch-queue credential
-      - ai/saas/anthropic   # ANTHROPIC_API_KEY
-      - ai/saas/openai      # OPENAI_API_KEY
+      - mount: "{{ openbao_secrets_ai_api_key_mount }}"
+        path: "{{ openbao_secrets_ai_api_key_path_prefix }}/anthropic"  # ANTHROPIC_API_KEY
+      - mount: "{{ openbao_secrets_ai_api_key_mount }}"
+        path: "{{ openbao_secrets_ai_api_key_path_prefix }}/openai"     # OPENAI_API_KEY
   # Hermes' own least-privilege AppRole (policy `hermes`, path-exact on
   # ai/hermes — NOT local-llm's broader ai/* grant), already provisioned
   # server-side. NOT YET CONSUMED: every ai/hermes field
@@ -143,26 +153,13 @@ openbao_secrets_domains:
       - ai/qdrant      # QDRANT_API_KEY
       - ai/open-webui  # OPEN_WEBUI_SECRET_KEY, OPEN_WEBUI_OPENAI_API_KEY
       - ai/hermes      # GH_PAT_WRITE_PROJECT_ISSUES, HERMES_GITHUB_APP_{ID,INSTALLATION_ID,
-                       #   PRIVATE_KEY}. The old account-wide OPENROUTER_API_KEY
-                       #   was transferred to the deepseek-deepseek-v4-flash
-                       #   per-model field in ai/saas/openrouter and removed
-                       #   from this path (2026-07-16).
-      - ai/saas/openrouter  # Paid-SaaS provider key area (ai/saas/<provider>).
-                       #   One field per OpenRouter MODEL (field name = model
-                       #   slug, e.g. nvidia-nemotron-3-ultra-550b-a55b-free),
-                       #   consumed by llm_router's OpenRouter egress tier.
-                       #   Readable via the ai-saas-openrouter policy leaf only —
-                       #   local-llm's broad ai/* read explicitly denies the rest
-                       #   of ai/saas/* (sibling providers: anthropic/google/
-                       #   openai seeded later for workstation consumers).
-                       #   Canonical home is the secrets-external mount (an
-                       #   internet-reachable SaaS credential); this path is
-                       #   still read against the internal mount
-                       #   (openbao_secrets_kv_mount) during the dual-mount
-                       #   transition and will move once the internal
-                       #   ai/saas/openrouter entry is deleted. Depends on
-                       #   dryvist/ansible-proxmox-apps PR #1281 (policy
-                       #   grant) landing + converging first.
+                       #   PRIVATE_KEY}.
+      - mount: "{{ openbao_secrets_ai_api_key_mount }}"
+        path: "{{ openbao_secrets_ai_api_key_path_prefix }}/openrouter"  # OPENROUTER_API_KEY
+      - mount: "{{ openbao_secrets_ai_api_key_mount }}"
+        path: "{{ openbao_secrets_ai_api_key_path_prefix }}/gemini"      # GEMINI_API_KEY
+      - mount: "{{ openbao_secrets_ai_api_key_mount }}"
+        path: "{{ openbao_secrets_ai_api_key_path_prefix }}/alibaba"     # DASHSCOPE_API_KEY
       - ai/mcp/splunk  # SPLUNK_MCP_URL, SPLUNK_MCP_TOKEN; merged into the same
                        #   bao_local_llm_secrets fact consumed by Hermes
       - ai/mcp/zammad  # ZAMMAD_MCP_URL, ZAMMAD_MCP_TOKEN; authoritative incident API pair
