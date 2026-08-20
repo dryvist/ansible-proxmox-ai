@@ -1,0 +1,40 @@
+---
+- name: Assert installed aggregate cron wall-clock patch
+  vars:
+    hermes_agent_cron_scheduler_source: >-
+      {{ hermes_agent_goal_mode_sources.results[6].content | b64decode }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        'def _hermes_cron_wall_timeout_limit():'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        'def _hermes_cron_wall_clock_expired(started, limit, now=None):'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        '_cron_inactivity_limit is None and _cron_wall_timeout_limit is None'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        ('_cron_started_monotonic = time.monotonic()\n        '
+         ~ '_cron_context = contextvars.copy_context()  # wall clock starts before submit\n        '
+         ~ '_cron_future = _cron_pool.submit(')
+        in hermes_agent_cron_scheduler_source
+      - >-
+        '_hermes_cron_wall_clock_expired('
+        in hermes_agent_cron_scheduler_source
+      - >-
+        'def _hermes_cron_poll_timeout(started, limit, poll_interval, now=None):'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        '_cron_wait_timeout = _hermes_cron_poll_timeout('
+        in hermes_agent_cron_scheduler_source
+      - >-
+        'request_hard_interrupt(agent, "Cron job exceeded hard wall clock")'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        'if _cron_inactivity_limit is not None and _idle_secs >= _cron_inactivity_limit:'
+        in hermes_agent_cron_scheduler_source
+    fail_msg: >-
+      The installed Hermes scheduler is missing the aggregate cron wall-clock
+      patch; update the pinned-source patch before converging.
