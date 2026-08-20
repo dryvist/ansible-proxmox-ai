@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.31.1...v0.31.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* **hermes_agent:** concatenate multi-line assertion in cron wall clock verify ([f8afa54](https://github.com/dryvist/ansible-proxmox-ai/commit/f8afa54edb0ce99695161147d595b2bd4653d92e))
+
 ## [0.31.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.31.0...v0.31.1) (2026-08-20)
 
 
