@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.31.0...v0.31.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **openbao_secrets:** provide sensible defaults for ai_api_key mount and prefix ([265c511](https://github.com/dryvist/ansible-proxmox-ai/commit/265c511139cc784d8a51a0a220fe8823066aae2a))
+
 ## [0.31.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.30.1...v0.31.0) (2026-08-17)
 
 
