@@ -90,26 +90,76 @@ Served under their REAL upstream ids. NEVER part of any fallback chain — a
 flaky or rate-limited upstream must not be able to degrade the local brain;
 consumers opt in by requesting the id explicitly.
 
-**Key model (deliberate)**: ONE OpenRouter API key PER MODEL, irrespective of
-which harness or caller makes the request. `key_field` names the per-model field
-in OpenBao — canonically `secrets-external/ai/saas/openrouter`, an
-internet-reachable SaaS credential. `context_window` is the model's real serving
-window (never null — the compress-death rule applies to every entry).
+LiteLLM receives one `OPENROUTER_API_KEY` for the OpenRouter API provider. Model
+access is not represented by extra credentials: **the entry list is the egress
+allowlist**, the unrestricted `openrouter/*` passthrough is absent, and Hermes'
+fallback group additionally pins exact model ids plus endpoint price, parameter,
+data-collection, and ZDR policy.
 
-**Operator disclosure 2026-07-19**: these keys are ACCOUNT-WIDE — the per-model
-field names were a naming-level guardrail, not a technical one. Because of that,
-**the entry list is the egress allowlist**: an entry with a seeded key is the
-only way a model becomes reachable, and the `openrouter/*` passthrough that used
-to route around it is gone.
-
-There is no router-enforced SPEND cap, and nothing here should be read as
-claiming one — the proxy has no store to track spend in, by design. What the
-router does enforce is a rate ceiling per egress deployment. Caller-side policy
-(deliberate escalation, `:free` rules) is therefore still doing real work rather
-than being a backstop.
+The spend-cap mechanism exists and is live-wired — Redis-backed
+(`roles/redis`), enforced via `router_settings.provider_budget_config` in
+`config.yaml.j2`, guarded by `tasks/assert-budget-backing.yml` (fails the
+converge if the shared store and the cap separate). It is currently
+**disabled**: `llm_router_openrouter_budget_limit` defaults to `0`. Enabling
+it is a config change (set the limit), not an architecture change. The
+router does separately enforce a rate ceiling per egress deployment
+regardless of the spend cap's state. Caller-side policy (deliberate
+escalation, `:free` rules) is therefore still doing real work rather than
+being the only backstop.
 
 The `:free` endpoint is rate-limited, and the vendor logs prompt/session data on
 that variant — never send confidential material through it.
+
+## Hermes local-first value routing
+
+`hermes-default` is a LiteLLM `auto_router/complexity_router` deployment. Its
+local heuristic sends SIMPLE/MEDIUM requests to the resident routine model and
+COMPLEX/REASONING requests to the resident primary; classification performs no
+provider call. If local serving fails, the original `hermes-default` request
+uses one credential-gated, ordered provider chain. Alibaba and Gemini each
+receive the original request through a second local heuristic classifier, so
+routine and agentic work do not pay for the same cloud model:
+
+- `hermes-cloud-alibaba`: Qwen 3.5 Flash at $0.10/$0.40 per million
+  input/output tokens for SIMPLE/MEDIUM work, and Qwen 3.6 Flash at
+  $0.25/$1.50 for COMPLEX/REASONING work, using the International endpoint.
+  The first is the lowest verified direct routine price; the second is the
+  selected lower-cost tool-capable, long-context agentic tier.
+- `hermes-cloud-gemini`: paid Gemini 3.5 Flash-Lite at $0.30/$2.50 per million
+  input/output tokens for SIMPLE/MEDIUM work, and paid Gemini 3.7 Flash at
+  $0.75/$3.75 through 2026-12-31 for COMPLEX/REASONING work. This is the
+  independent stable-provider path; operational prompts use the paid service.
+- `hermes-cloud-openrouter`: Kimi K2.6 at $0.60/$3.41 or GLM 5.2 at
+  $0.7308/$2.297 per million input/output tokens when verified. This is the
+  final gateway-diverse tier; both had multiple hosting endpoints, and LiteLLM
+  selects the eligible deployment with the lower configured token price.
+
+The value claim is scoped: cost-based routing compares real token prices only
+among models declared equivalent in the final OpenRouter tier. It does not
+pretend raw price measures quality. Direct providers remain deliberately ordered
+by verified price/capability and failure-domain independence.
+
+LiteLLM v1.97.0 recognizes all three provider prefixes and loads these exact
+ids with explicit pricing and model metadata, even where the release's bundled
+catalog does not yet list the new model remainder. That proves configuration
+compatibility, not upstream availability: activation still requires a real
+health request against every exact id. `mode: chat`, context/output metadata,
+per-attempt timeout, and zero deployment retries are explicit for every route.
+LiteLLM's model-group retry policy also pins every cloud alias and physical
+group to zero 429 retries. The global eight-retry policy therefore remains a
+local-serving congestion control and cannot delay or multiply paid-provider
+fallback attempts.
+
+Cloud entries render only when their single provider credential exists and the
+shared budget store is configured. Each physical deployment declares a
+131,072-token input limit, an 8,192-token generation default/model limit, 12
+RPM, 500,000 TPM, two concurrent requests, a 2,400-second attempt timeout, and
+zero deployment or rate-limit retries. The six deployment-level monthly
+ceilings total $10.00: $3.33 Alibaba, $3.33 Gemini, and $3.34 OpenRouter. The existing
+account-wide OpenRouter budget remains separately owned
+by `llm_router_openrouter_budget_limit`; no additional daily-provider ceiling
+is implied here. Re-verify OpenRouter live prices and Gemini promotional
+pricing before activation and before 2027-01-01.
 
 ### Why MiniMax is two entries
 

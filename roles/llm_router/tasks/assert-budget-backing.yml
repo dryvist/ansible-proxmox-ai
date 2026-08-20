@@ -11,13 +11,16 @@
       # with no budget is merely unused, not dishonest.
       - not (llm_router_openrouter_budget_limit | default(0) | float > 0)
         or (llm_router_redis_host | default('') | trim | length > 0)
+      - llm_router_hermes_cloud_fallback_groups | default([]) | length == 0
+        or (llm_router_redis_host | default('') | trim | length > 0)
     fail_msg: >-
-      Spend budget configured with no shared store
+      Provider or deployment spend budget configured with no shared store
       (roles/llm_router/tasks/assert-budget-backing.yml).
       llm_router_openrouter_budget_limit is
       {{ llm_router_openrouter_budget_limit | default(0) }} but
       llm_router_redis_host is empty.
-      LiteLLM tracks provider spend in Redis. llm_router_group is a multi-member
+      Hermes cloud groups={{ llm_router_hermes_cloud_fallback_groups | default([]) }}.
+      LiteLLM tracks provider and deployment spend in Redis. llm_router_group is a multi-member
       pool converged serial: 1, so with no shared store each member counts only
       its OWN spend: the rendered config would advertise a ceiling that is
       really N times the number written, and every rolling converge would reset
@@ -26,9 +29,9 @@
       earlier unbacked budget was backed out rather than left in.
       Either set llm_router_redis_host (roles/redis) or leave the budget at 0.
     success_msg: >-
-      {{ 'Spend budget ' ~ llm_router_openrouter_budget_limit ~ '/'
-         ~ llm_router_openrouter_budget_period ~ ' is backed by a shared store.'
-         if (llm_router_openrouter_budget_limit | default(0) | float > 0)
+      {{ 'Every rendered provider or deployment budget is backed by a shared store.'
+         if ((llm_router_openrouter_budget_limit | default(0) | float > 0)
+             or (llm_router_hermes_cloud_fallback_groups | default([]) | length > 0))
          else 'No spend budget configured; nothing to back.' }}
 
 # Naming a host is not reaching it. roles/redis makes AUTH mandatory and has no
@@ -44,8 +47,10 @@
     that:
       - not (llm_router_openrouter_budget_limit | default(0) | float > 0)
         or (llm_router_redis_password | default('') | trim | length > 0)
+      - llm_router_hermes_cloud_fallback_groups | default([]) | length == 0
+        or (llm_router_redis_password | default('') | trim | length > 0)
     fail_msg: >-
-      Spend budget configured with no store credential
+      Provider or deployment spend budget configured with no store credential
       (roles/llm_router/tasks/assert-budget-backing.yml).
       llm_router_openrouter_budget_limit is
       {{ llm_router_openrouter_budget_limit | default(0) }} against host
@@ -57,5 +62,6 @@
       would silently degrade to per-member counting.
     success_msg: >-
       {{ 'Store credential present, so the ceiling is enforceable.'
-         if (llm_router_openrouter_budget_limit | default(0) | float > 0)
+         if ((llm_router_openrouter_budget_limit | default(0) | float > 0)
+             or (llm_router_hermes_cloud_fallback_groups | default([]) | length > 0))
          else 'No spend budget configured; no credential needed.' }}

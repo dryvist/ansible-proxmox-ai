@@ -95,11 +95,9 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert defaults["hermes_agent_model_max_tokens"] == 8192
     assert defaults["hermes_agent_context_compression_threshold"] == 0.75
     assert defaults["hermes_agent_brain_sync_enabled"] is False
-    # An alias belongs to the entry it points at, so the whole consumer-facing
-    # name set is readable off the registry — and cannot name a model that is
-    # not there. A model_list deployment entry named after an alias is banned
-    # (AGENTS.md): the duplicate config drifts from the real backend every time
-    # the model changes.
+    # Physical aliases belong to the entries they point at. `hermes-default` is
+    # intentionally not one of them: it is a native LiteLLM complexity-router
+    # deployment, not duplicated configuration for a physical backend.
     aliases = {
         alias: entry["client_model_id"]
         for entry in registry
@@ -107,11 +105,18 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         for alias in entry.get("stable_aliases", [])
     }
     assert aliases == {
-        hermes_alias: hermes_backend,
         "tool-calling": hermes_backend,
         "goal-judge": judge_backend,
         "interim-brain": hermes_backend,
     }
+    hermes_router = next(
+        entry
+        for entry in registry
+        if entry.get("enabled") and entry["client_model_id"] == hermes_alias
+    )
+    assert hermes_router["tier"] == "hermes-router"
+    assert hermes_router["litellm_model_name"] == "auto_router/complexity_router"
+    assert "stable_aliases" not in hermes_router
     # Both selectors must be declared servable, or the alias indirection just
     # moves the 404 one level down.
     #

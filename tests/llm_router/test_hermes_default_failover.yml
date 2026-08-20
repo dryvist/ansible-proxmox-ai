@@ -1,8 +1,7 @@
 ---
-# The cluster path is deliberately absent. Hermes must fail over only to
-# enabled, locally servable models until an approved cloud credential causes a
-# cloud value group to render.
-- name: Verify Hermes local failover excludes abandoned targets
+# With no provider credential, the complexity router stays entirely local and
+# advertises no fallback route that could be selected but not authenticated.
+- name: Verify Hermes stays local when provider credentials are absent
   hosts: localhost
   gather_facts: false
   vars:
@@ -13,7 +12,6 @@
           llm_router_api: 4000
           llm_fast_api: 10434
           ollama_api: 11434
-          llm_cluster_api: 11440
           otel_traces_http: 4318
           redis_default: 6379
     bao_local_llm_secrets: {}
@@ -45,27 +43,33 @@
         _config: >-
           {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
 
-    - name: Hermes fails over only through the two enabled local tiers
+    - name: Hermes auto-routes locally and advertises no unseeded fallback
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_hermes_default_fallback_chain
-            == [llm_router_routine_model, llm_router_small_model]
-          - _rendered_chain == [llm_router_routine_model, llm_router_small_model]
-          - _cluster_models | length == 0
+          - llm_router_hermes_default_fallback_chain == []
+          - _config.router_settings.fallbacks is not defined
+          - _config.router_settings.max_fallbacks | int == 0
+          - _cloud_models | length == 0
+          - _hermes_router.litellm_params.model == 'auto_router/complexity_router'
+          - _hermes_router.litellm_params.complexity_router_config.tiers.SIMPLE
+            == llm_router_routine_model
+          - _hermes_router.litellm_params.complexity_router_config.tiers.MEDIUM
+            == llm_router_routine_model
+          - _hermes_router.litellm_params.complexity_router_config.tiers.COMPLEX
+            == llm_router_primary_model
+          - _hermes_router.litellm_params.complexity_router_config.tiers.REASONING
+            == llm_router_primary_model
         fail_msg: >-
-          Hermes' fallback chain must contain only the resident routine model
-          and the small last resort while cloud credentials are absent. Got
-          {{ _rendered_chain }}; abandoned cluster deployments:
-          {{ _cluster_models }}.
-        success_msg: "Hermes local failover excludes the abandoned cluster path"
+          Hermes must complexity-route only between the two resident models and
+          advertise no fallback when provider credentials are absent. Got
+          fallback={{ _config.router_settings.fallbacks | default([]) }},
+          cloud={{ _cloud_models }}.
+        success_msg: "Hermes auto-routing remains local-only without provider credentials"
       vars:
-        _rendered_chain: >-
-          {{ _config.router_settings.fallbacks
-             | selectattr('hermes-default', 'defined')
-             | map(attribute='hermes-default') | flatten }}
-        _cluster_models: >-
+        _cloud_models: >-
           {{ _config.model_list
-             | selectattr('litellm_params.api_base', 'defined')
-             | selectattr('litellm_params.api_base', 'search', ':11440/')
-             | map(attribute='model_name') | list }}
+             | selectattr('model_name', 'match', '^hermes-cloud-') | list }}
+        _hermes_router: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', 'hermes-default') | first }}
