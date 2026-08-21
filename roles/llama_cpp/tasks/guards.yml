@@ -1,0 +1,68 @@
+---
+# --- Absolute GPU-size guardrail ---------------------------------------------
+# pve1 (llm-fast, RX 6800, 16 GB VRAM) has hard-locked 5x under GPU load; VRAM
+# eviction of a large model is the documented hard-hang cause (see the ABSOLUTE
+# RULE comment in defaults/main.yml). Scoped to the llm_fast_group ONLY — this
+# must never block a model served elsewhere (e.g. Qwen3.6-35B-A3B on the Mac
+# Studio, a completely different host/inventory). Do not remove the group_names
+# guard even though playbooks/site.yml only ever wires this role to
+# llm_fast_group today; the guard is what keeps a future re-use of this role
+# safe.
+- name: Assert every llm-fast model declares param_billions
+  ansible.builtin.assert:
+    that:
+      - (llama_cpp_models | rejectattr('param_billions', 'defined') | list | length) == 0
+    fail_msg: >-
+      One or more llama_cpp_models entries is missing param_billions
+      ({{ llama_cpp_models | rejectattr('param_billions', 'defined')
+          | map(attribute='name') | list }}) — required so the >=14B GPU
+      guardrail below can evaluate it. Add a param_billions value.
+  when: "'llm_fast_group' in group_names"
+
+- name: Assert no llm-fast model is >= 14B params (ABSOLUTE pve1 GPU rule)
+  ansible.builtin.assert:
+    that:
+      - (llama_cpp_models | map(attribute='param_billions', default=0) | select('ge', 14) | list | length) == 0
+    fail_msg: >-
+      One or more llama_cpp_models entries has param_billions >= 14
+      ({{ llama_cpp_models | selectattr('param_billions', 'defined')
+          | selectattr('param_billions', 'ge', 14)
+          | map(attribute='name') | list }}). pve1 (llm-fast) has hard-locked
+      repeatedly serving models this large — see defaults/main.yml. Do not add
+      a >=14B model to this GPU; serve it elsewhere.
+    success_msg: "No >=14B model configured for llm-fast — GPU guardrail OK."
+  when: "'llm_fast_group' in group_names"
+
+# --- Per-guest parameter ceiling ---------------------------------------------
+# Applies EVERYWHERE this role runs, unlike the llm-fast rule above. A guest
+# with a larger card raises llama_cpp_max_param_billions in its own vars; the
+# default is the same conservative 14, so a new guest cannot serve something
+# large merely by not being in llm_fast_group.
+- name: Assert every model declares param_billions
+  ansible.builtin.assert:
+    that:
+      - (llama_cpp_models | rejectattr('param_billions', 'defined') | list | length) == 0
+    fail_msg: >-
+      These models are missing param_billions:
+      {{ llama_cpp_models | rejectattr('param_billions', 'defined')
+         | map(attribute='name') | list }}. It is required so the per-guest
+      ceiling can evaluate them — an undeclared size would otherwise pass the
+      ceiling by being absent rather than by being small.
+
+- name: Assert no model exceeds this guest's parameter ceiling
+  ansible.builtin.assert:
+    that:
+      - (llama_cpp_models
+         | selectattr('param_billions', 'gt', llama_cpp_max_param_billions | float)
+         | list | length) == 0
+    fail_msg: >-
+      {{ llama_cpp_models
+         | selectattr('param_billions', 'gt', llama_cpp_max_param_billions | float)
+         | map(attribute='name') | list }} exceed this guest's ceiling of
+      {{ llama_cpp_max_param_billions }}B. Raise llama_cpp_max_param_billions
+      for this guest DELIBERATELY, after checking the card's VRAM and the
+      KV-cache budget at the configured context length — do not raise it to get
+      a converge past this message.
+    success_msg: >-
+      All models are within this guest's {{ llama_cpp_max_param_billions }}B
+      ceiling.

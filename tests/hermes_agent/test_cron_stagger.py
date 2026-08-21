@@ -29,6 +29,7 @@ from pathlib import Path
 
 import yaml
 from _role_files import role_defaults
+from jinja2 import Environment
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "roles" / "hermes_agent"
@@ -36,17 +37,17 @@ DEFAULTS = role_defaults(ROLE)
 
 CRON_FIELD = re.compile(r"^[\d*/,\- ]+$")
 
+_JINJA_ENV = Environment(autoescape=False)
 
-def _schedules() -> dict[str, str]:
-    return {
-        name.replace("hermes_agent_", "").replace("_cron_schedule", ""): value
-        for name, value in DEFAULTS.items()
-        if name.startswith("hermes_agent_")
-        and name.endswith(("_cron_schedule", "_schedule"))
-        and isinstance(value, str)
-        and CRON_FIELD.match(value)
-        and len(value.split()) == 5
-    }
+
+def _render(value: str) -> str:
+    """Resolve a job-entry field against the role's own defaults — the same
+    data Ansible renders it from at converge time. A field is either a
+    literal string (the assistant-identity jobs and `review` — its name
+    lives in `130-workload-reframe.yml`, referenced by `43-*` as
+    `hermes_agent_kanban_reviewer_job`) or a whole-value `{{ hermes_agent_x
+    }}` reference (every other job); both render identically here."""
+    return _JINJA_ENV.from_string(value).render(**DEFAULTS)
 
 
 def _expand_field(field: str, span: int) -> set[int]:
@@ -78,8 +79,23 @@ def _minutes(expr: str) -> set[int]:
     return {h * 60 + m for h in hours for m in minutes}
 
 
-def _agentic_jobs() -> set[str]:
-    """Cards that run a model, i.e. the ones that contend for the serving slot.
+def _agentic_jobs() -> dict[str, str]:
+    """name -> cron schedule for every ENABLED entry in
+    hermes_agent_direct_cron_jobs — the fleet's single source of truth —
+    resolved directly from each entry's own `name`/`schedule` fields rather
+    than reconstructed by matching two independently-derived, independently
+    named lookups (a `*_cron_name`-shaped regex against the job list, a
+    `*_cron_schedule`/`*_schedule`-suffixed variable scan against every
+    default). That two-lookup shape is exactly what let a job through
+    unchecked: a literal `name:`/`schedule:` pair (the three
+    `assistant-*` jobs in `41-*`, and `review`, whose name is
+    `hermes_agent_kanban_reviewer_job` — no `_cron_name` suffix) never
+    matched either lookup's naming convention, so it silently sat outside
+    both dicts and this test never saw it. It is how the collision between
+    `assistant-daily-brief` and `daily-summary` (both `0 12 * * *` before
+    the 2026-08 stagger pass) went unnoticed. Resolving each entry's own
+    fields sidesteps the naming-convention guesswork entirely: literal or
+    templated, every job renders through the same path.
 
     Script-fed crons are excluded: they call APIs, not the brain. Native-cron
     reframe (18/18): every former board card, including docs-sync, is now a
@@ -88,26 +104,24 @@ def _agentic_jobs() -> set[str]:
     (``enabled: false`` literal, never reconciled) are excluded — there is no
     longer a separate paused-jobs list to check against.
     """
-    names: set[str] = set()
+    jobs: dict[str, str] = {}
     for entry in DEFAULTS["hermes_agent_direct_cron_jobs"]:
         if entry.get("enabled") is False:
             continue
-        key = entry.get("name", entry.get("job"))
-        match = re.fullmatch(r"\{\{\s*hermes_agent_(\w+?)_cron_name\s*\}\}", key)
-        names.add(match.group(1) if match else key)
-    return names
+        name = _render(entry["name"])
+        schedule = _render(entry["schedule"])
+        assert CRON_FIELD.match(schedule) and len(schedule.split()) == 5, (
+            f"{name}: schedule {schedule!r} does not look like a 5-field cron expression"
+        )
+        jobs[name] = schedule
+    return jobs
 
 
 def test_no_two_active_agentic_cards_start_in_the_same_minute() -> None:
     """The avoidable collision. Two model-driven cards starting together burn
     the router's rate-limit budget on each other rather than on real work."""
-    schedules = _schedules()
-    agentic = _agentic_jobs()
-
     by_minute: dict[int, list[str]] = defaultdict(list)
-    for name, expr in schedules.items():
-        if name not in agentic:
-            continue
+    for name, expr in _agentic_jobs().items():
         for minute in _minutes(expr):
             by_minute[minute].append(name)
 

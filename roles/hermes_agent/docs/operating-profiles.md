@@ -35,16 +35,14 @@ its assignee's profile entry, or the worker runs with the tool silently
 absent rather than inherited.
 
 **The isolation boundary is tools and credentials — memory is NOT part of
-it.** Every profile points at the same Hindsight memory bank: `bank_id`
-defaults to `"hermes"` and no profile sets `bank_id_template`, so
-`_resolve_bank_id_template` falls back to that one shared bank for all of
-them (verified against the pinned hindsight plugin source — see
-`hermes_agent_profiles` in `defaults/main.yml` and "Shared across profiles,
-by design" in [`docs/HERMES_OPS.md`](../../../docs/HERMES_OPS.md)). This is
-deliberate — it is what lets `daily-summary` on the `default` profile recall
-a card's findings after its `assignee` moves — but it means a `splunk-admin`
-worker can `memory recall` anything `homelab-admin` (or any other profile)
-ever wrote, and vice versa. The "Must NOT have" column below is a
+it.** Every profile points at the same Hindsight bank for its agent: the
+static `bank_id` derives from `hermes_agent_id`, and no profile sets
+`bank_id_template`, so `_resolve_bank_id_template` falls back to that one
+agent bank for all of its profiles. Different Hermes agents receive distinct
+banks. This is deliberate — it is what lets `daily-summary` on the `default`
+profile recall a card's findings after its `assignee` moves — but it means a
+`splunk-admin` worker can `memory recall` anything `homelab-admin` (or any
+other profile) for the same agent ever wrote. The "Must NOT have" column is a
 **tools/MCP/skills boundary only**; it is not a data boundary, and nothing
 written to memory by any profile should be treated as private to it.
 

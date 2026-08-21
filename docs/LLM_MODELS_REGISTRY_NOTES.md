@@ -184,3 +184,37 @@ widened in a change about something else.)
 Both are PAID — neither has a `:free` variant — so both fall under the rate
 ceilings the role applies to every egress deployment. Those are rate limits, not
 a spend cap.
+
+## The OCR tier (`mlx-community/Unlimited-OCR-bf16`)
+
+The only vision-language entry in the registry, and the only one that is not a
+chat brain. It is reached by image content parts rather than by a selector var,
+which is why no `llm_router_*_model` selector reads `serving_role: ocr`. The
+document-upload path routes every page of an upload through it on this same
+router, so a page conversion and a chat turn share one endpoint and one
+credential.
+
+**Why it is first-class rather than passthrough.** The `"*"` wildcard already
+surfaces the id, so visibility is not the reason. Two things are. It carries the
+`Unlimited OCR` alias, which is the name a person picks out of a model list —
+the physical repo id is not something to ask anyone to recognise. And it pins
+`max_input_tokens` from `context_window` instead of falling through the wildcard
+to a null one. That matters more here than for a chat model: a page's image
+tokens are large, and a truncated page fails as short-but-valid output rather
+than as an error, which is the hardest kind of failure to notice downstream.
+
+`context_window: 32768` is the model's own `max_position_embeddings`, read from
+`config.json` on the serving host rather than assumed from the family.
+
+**How `servable: true` was established (2026-08-15).** By a returned completion,
+not a `/v1/models` listing. A PDF with known ground truth was rasterized to a
+page image and sent to the serving host; the transcription came back containing
+every distinctive string in the source. This distinction earns its own paragraph
+because the registry's worst historical failure was seven entries that were
+enabled, advertised, and listed while the backend answered 404 for all of them —
+a listing is not evidence of service.
+
+Repeat requests stayed warm at roughly 2-8s per page with the worker resident
+between them, so a multi-page document does not pay a cold load per page. The
+entry is swap-class on the serving host with a 600s idle TTL, and is evictable
+under memory pressure sooner than that; both are correct for a bursty tier.

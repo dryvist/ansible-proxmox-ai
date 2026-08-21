@@ -28,6 +28,7 @@ FIXTURE_CONFIG = {
     "INTERVAL_MIN": 15,
     "HEARTBEAT_HOURS": 6,
     "ISSUES_CHANNEL": "C_ISSUES",
+    "NOISE_CHANNEL": "C_NOISE",
     "HERMES_BIN": str(TMP / "no-such-hermes-binary"),
     "ISSUES_MARKER": "[ISSUES]",
     "STALL_TICKS_THRESHOLD": 3,

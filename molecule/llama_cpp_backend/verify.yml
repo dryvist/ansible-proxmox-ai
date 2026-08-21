@@ -1,0 +1,66 @@
+---
+# The per-guest parameter ceiling.
+#
+# The role carries TWO size guards and they are not the same thing:
+#   - an ABSOLUTE >=14B rule scoped to llm_fast_group, from four host
+#     hard-locks on that card. Untouched, and must stay untouched.
+#   - a per-guest ceiling that applies everywhere, added because outside
+#     llm_fast_group the role previously enforced NOTHING — a new guest served
+#     any size at all by virtue of being in a different group.
+#
+# A guard nobody has watched fail is indistinguishable from a guard that cannot
+# fail, so this asserts the ceiling REFUSES an oversized model, not merely that
+# it accepts a small one. Accepting a small one is satisfied by a guard that
+# does nothing.
+- name: Verify
+  hosts: all
+  gather_facts: false
+
+  vars:
+    tofu_data:
+      domain: molecule.invalid
+      constants:
+        service_ports:
+          llm_fast_api: 10434
+
+  tasks:
+    - name: Converge with a model above the ceiling
+      block:
+        - name: Include the role with an oversized model
+          ansible.builtin.include_role:
+            name: llama_cpp
+            tasks_from: main
+          vars:
+            llama_cpp_max_param_billions: 28
+            llama_cpp_models:
+              - name: oversized
+                aliases: []
+                hf_repo: molecule/Oversized
+                gguf: oversized.gguf
+                param_billions: 999
+                embeddings: false
+
+        - name: Record that the ceiling did NOT fire
+          ansible.builtin.set_fact:
+            ceiling_fired: false
+
+      rescue:
+        - name: Record that the ceiling fired
+          ansible.builtin.set_fact:
+            ceiling_fired: true
+
+    - name: Assert the ceiling refused the oversized model
+      ansible.builtin.assert:
+        that:
+          - ceiling_fired | bool
+        fail_msg: >-
+          A 999B model was accepted against a 28B ceiling, so the per-guest
+          ceiling gates nothing and every future model change on every guest
+          running this role is unguarded.
+        success_msg: The per-guest ceiling refused a model above the limit.
+
+    - name: Report how many assertions this scenario ran
+      ansible.builtin.debug:
+        msg: >-
+          llama_cpp_backend ran 1 ceiling assertion here, plus 4 per backend
+          across 3 backends (12) in converge = 13 total.

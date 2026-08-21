@@ -61,7 +61,12 @@ hermes_agent_direct_cron_jobs_core:
     schedule: "{{ hermes_agent_splunk_triage_cron_schedule }}"
     prompt_var: hermes_agent_splunk_triage_cron_prompt
     skill: dryvist/splunk-monitor
-    deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    # Splunk-domain output belongs on the Splunk digest channel, same as the
+    # script-fed splunk-status/error/security digests (100-splunk.yml) —
+    # falls back to hermes_all so an unset var reproduces prior behaviour.
+    deliver: &splunk_deliver >-
+      slack:{{ hermes_agent_slack_splunk_channel
+               | default(hermes_agent_slack_hermes_all_channel, true) }}
     hermes_home: &splunk_home "{{ hermes_agent_hermes_home }}/profiles/splunk-admin"
     enabled: &cron_splunk_gate >-
       {{ hermes_agent_splunk_monitor_enabled | bool
@@ -73,21 +78,21 @@ hermes_agent_direct_cron_jobs_core:
     schedule: "{{ hermes_agent_splunk_security_cron_schedule }}"
     prompt_var: hermes_agent_splunk_security_cron_prompt
     skill: dryvist/splunk-monitor
-    deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    deliver: *splunk_deliver
     hermes_home: *splunk_home
     enabled: *cron_splunk_gate
   - name: "{{ hermes_agent_splunk_parsing_cron_name }}"
     schedule: "{{ hermes_agent_splunk_parsing_cron_schedule }}"
     prompt_var: hermes_agent_splunk_parsing_cron_prompt
     skill: dryvist/splunk-monitor
-    deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    deliver: *splunk_deliver
     hermes_home: *splunk_home
     enabled: *cron_splunk_gate
   - name: "{{ hermes_agent_splunk_deepdive_cron_name }}"
     schedule: "{{ hermes_agent_splunk_deepdive_cron_schedule }}"
     prompt_var: hermes_agent_splunk_deepdive_cron_prompt
     skill: dryvist/splunk-monitor
-    deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    deliver: *splunk_deliver
     hermes_home: *splunk_home
     enabled: *cron_splunk_gate
   - name: "{{ hermes_agent_github_monitor_cron_name }}"
@@ -141,7 +146,7 @@ hermes_agent_direct_cron_jobs_core:
     schedule: "{{ hermes_agent_anomaly_hunt_cron_schedule }}"
     prompt_var: hermes_agent_anomaly_hunt_cron_prompt
     skill: dryvist/splunk-monitor
-    deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    deliver: *splunk_deliver
     hermes_home: *splunk_home
     enabled: *cron_splunk_gate
   - name: "{{ hermes_agent_docs_study_cron_name }}"
@@ -159,6 +164,15 @@ hermes_agent_direct_cron_jobs_core:
     skill: ""
     deliver: "slack:{{ hermes_agent_slack_noise_channel }}"
     enabled: *cron_slack_gate
+    # Operator decision 2026-08-16: an AI-news digest is an executive-assistant
+    # deliverable, not an ops/coding one — moved from hermes to donna. Without
+    # `identities:` a job defaults to [hermes] (hermes_agent_job_identities_default,
+    # 30-cron-identities.yml); this explicit override both moves it onto donna
+    # AND removes it from hermes in the same converge — reconcile_direct_cron.yml's
+    # ownership check is `enabled and identity in identities`, so hermes no
+    # longer matches. hermes_agent_slack_noise_channel already resolves
+    # per-identity (SLACK_<ID>_NOISE_CHANNEL), so delivery needs no other change.
+    identities: [donna]
   - name: "{{ hermes_agent_daily_innovation_cron_name }}"
     schedule: "{{ hermes_agent_daily_innovation_cron_schedule }}"
     prompt_var: hermes_agent_daily_innovation_cron_prompt

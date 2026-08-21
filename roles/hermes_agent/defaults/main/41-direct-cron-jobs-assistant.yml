@@ -4,8 +4,31 @@ hermes_agent_direct_cron_jobs_assistant:
   # Scoped by `identities` so the ops agent never picks them up, exactly as the
   # ops jobs below are never picked up by an assistant. Schedules are UTC
   # (hermes_agent_timezone is pinned).
+  #
+  # FLEET-WIDE STAGGER NOTE (2026-08): every job below shares the gateway's
+  # serving tier with the ops-identity fleet in 43-direct-cron-jobs-core.yml
+  # and its siblings — the identity scope keeps CREDENTIALS separate, not
+  # compute. The tier admits exactly 2 concurrent requests; a single LLM call
+  # holds a slot for ~152s (median) to ~211s (max) measured on the serving
+  # host; the router absorbs a busy slot with 8 retries x 40s (~320s) before a
+  # caller gives up. A card runs 25-45 minutes wall-clock, issuing calls
+  # throughout (not continuously — it releases between tool calls), so two
+  # cards starting close together can still stack enough simultaneous calls to
+  # exhaust that budget. The rule applied across this fleet: no two agentic
+  # jobs share a start minute (enforced by
+  # tests/hermes_agent/test_cron_stagger.py, which this identity's jobs are
+  # NOT visible to — see that test's `_schedules()` docstring gap — so this
+  # comment is the record for these three), and no two `*/N`-periodic jobs
+  # share an hour-of-day phase. Not every pair fits: see the PR description
+  # for the residual clusters (all tied to fixed operator-facing hours) this
+  # pass could not fully clear.
   - name: assistant-daily-brief
-    schedule: "0 12 * * *"
+    # 12:35, not the old 12:00 (2026-08 stagger pass): exact collision with
+    # daily-summary (120-docs-and-review-crons.yml, also "0 12 * * *") — two
+    # agentic cards on two different identities, same serving tier, same
+    # minute. daily-summary's hour is intent-fixed ("start of the operator's
+    # day"); this job's was not, so it moved instead.
+    schedule: "35 12 * * *"
     prompt_var: hermes_agent_assistant_daily_brief_prompt
     skill: ""
     enabled: true

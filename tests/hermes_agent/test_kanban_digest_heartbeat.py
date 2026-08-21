@@ -31,6 +31,7 @@ from _kanban_digest_shared import (
     TEMPLATE_PATH,
     TMP,
     digest,
+    heartbeat,
     load_digest_module,
 )
 from pathlib import Path
@@ -46,7 +47,11 @@ def test_a_quiet_run_is_silent_when_the_heartbeat_has_not_elapsed():
 
 
 def test_a_quiet_run_still_posts_once_the_heartbeat_elapses():
-    text = digest([{"id": "t_q", "title": "Waiting", "status": "ready"}], [], due=True)
+    """The heartbeat itself is not a work-log entry: it goes to the noise
+    channel (heartbeat_text), never to #hermes-all (text stays SILENT)."""
+    tasks = [{"id": "t_q", "title": "Waiting", "status": "ready"}]
+    assert digest(tasks, [], due=True) == DIGEST.SILENT
+    text = heartbeat(tasks, [], due=True)
     assert "No board activity" in text
     assert "heartbeat" in text, "the heartbeat post must say why it is rare"
 
@@ -117,18 +122,18 @@ def test_the_heartbeat_ceiling_is_configurable_not_a_literal():
 # --- nothing happened is stated, not implied ----------------------------------
 
 def test_quiet_run_names_the_board_rather_than_posting_nothing():
-    text = digest([{"id": "t_hh", "title": "Waiting", "status": "ready"}], [])
+    text = heartbeat([{"id": "t_hh", "title": "Waiting", "status": "ready"}], [])
     assert "No board activity" in text
     assert "1 ready" in text, "the quiet line must name what it searched"
     assert text.splitlines()[0].startswith("*Kanban Board Digest*")
 
 
 def test_runs_outside_the_window_are_not_reported():
-    text = digest(
-        [{"id": "t_ii", "title": "Old", "status": "done"}],
-        [{"id": 1, "task_id": "t_ii", "outcome": "completed", "ended_at": NOW - 4000,
-          "summary": "old news"}])
-    assert "old news" not in text and "No board activity" in text
+    task = {"id": "t_ii", "title": "Old", "status": "done"}
+    runs = [{"id": 1, "task_id": "t_ii", "outcome": "completed", "ended_at": NOW - 4000,
+             "summary": "old news"}]
+    assert "old news" not in digest([task], runs)
+    assert "No board activity" in heartbeat([task], runs)
 
 
 def test_a_section_over_the_cap_says_how_many_it_hid():
@@ -170,7 +175,8 @@ def test_the_digest_channels_are_never_literal_ids():
     """Both destinations stay env-fed expressions — an id in git is the defect."""
     defaults = role_defaults(DEFAULTS_PATH)
     for var in ("hermes_agent_kanban_digest_channel",
-                "hermes_agent_kanban_digest_issues_channel"):
+                "hermes_agent_kanban_digest_issues_channel",
+                "hermes_agent_kanban_digest_noise_channel"):
         channel = defaults[var]
         assert "{{" in channel, f"{var} must stay a Jinja expression"
         assert not re.search(r"\bC0[A-Z0-9]{8,}\b", channel), \
@@ -182,6 +188,8 @@ def test_the_digest_channels_are_never_literal_ids():
         defaults["hermes_agent_kanban_digest_channel"]
     assert "hermes_agent_slack_issues_channel" in \
         defaults["hermes_agent_kanban_digest_issues_channel"]
+    assert "hermes_agent_slack_noise_channel" in \
+        defaults["hermes_agent_kanban_digest_noise_channel"]
 
 
 def test_a_broken_database_is_delivered_as_a_failure_not_as_silence():
