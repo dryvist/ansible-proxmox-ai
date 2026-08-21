@@ -1,5 +1,5 @@
 ---
-# Langfuse v3 (LLM observability) via Docker Compose in an LXC.
+# Langfuse v4 (LLM observability) via Docker Compose in an LXC.
 # Rendered by ansible-proxmox-apps/roles/langfuse_docker — do not edit by hand.
 #
 # Blob storage points at the homelab RustFS S3 (the upstream-bundled MinIO is
@@ -7,7 +7,7 @@
 # {{ langfuse_docker_data_dir }} (durable, snapshotted). Only langfuse-web is
 # published — every other service stays on the internal compose network.
 #
-# OTLP trace ingest is served by langfuse-web at :3000/api/public/otel; no
+# OTLP trace ingest is served by langfuse-web at :3000/api/public/otel/v1/traces; no
 # extra service or env is needed for OpenTelemetry clients.
 #
 # Ship stdout/stderr to journald with tag `langfuse` instead of the default
@@ -88,17 +88,9 @@ services:
         condition: service_healthy
       {{ langfuse_docker_redis_service }}:
         condition: service_healthy
+    ports:
+      - "127.0.0.1:3030:3030"
     environment: &langfuse_env
-      # Headless first-run provisioning — no-op once the DB is initialized.
-      LANGFUSE_INIT_ORG_ID: "{{ langfuse_docker_init_org }}"
-      LANGFUSE_INIT_ORG_NAME: "{{ langfuse_docker_init_org }}"
-      LANGFUSE_INIT_PROJECT_ID: "{{ langfuse_docker_init_project }}"
-      LANGFUSE_INIT_PROJECT_NAME: "{{ langfuse_docker_init_project }}"
-      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: "{{ langfuse_docker_init_public_key }}"
-      LANGFUSE_INIT_PROJECT_SECRET_KEY: "{{ langfuse_docker_init_secret_key }}"
-      LANGFUSE_INIT_USER_EMAIL: "{{ langfuse_docker_init_user_email }}"
-      LANGFUSE_INIT_USER_NAME: "admin"
-      LANGFUSE_INIT_USER_PASSWORD: "{{ langfuse_docker_init_user_password }}"
       DATABASE_URL: "{{ langfuse_docker_database_url }}"
       SALT: "{{ langfuse_docker_secrets.salt }}"
       ENCRYPTION_KEY: "{{ langfuse_docker_secrets.encryption_key }}"
@@ -127,6 +119,11 @@ services:
       LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: "{{ langfuse_docker_s3_secret_access_key }}"
       LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
       LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: "{{ langfuse_docker_s3_media_prefix }}"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider 'http://localhost:3030/api/health?failIfQueueConsumptionStuck=true' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
   langfuse-web:
     image: {{ langfuse_docker_web_image }}
@@ -147,7 +144,18 @@ services:
       # and the SSO provider (auth only runs in the web process, never the
       # worker).
       <<: *langfuse_env
+      # Headless first-run provisioning is handled by the web process only.
+      LANGFUSE_INIT_ORG_ID: "{{ langfuse_docker_init_org }}"
+      LANGFUSE_INIT_ORG_NAME: "{{ langfuse_docker_init_org }}"
+      LANGFUSE_INIT_PROJECT_ID: "{{ langfuse_docker_init_project }}"
+      LANGFUSE_INIT_PROJECT_NAME: "{{ langfuse_docker_init_project }}"
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: "{{ langfuse_docker_init_public_key }}"
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: "{{ langfuse_docker_init_secret_key }}"
+      LANGFUSE_INIT_USER_EMAIL: "{{ langfuse_docker_init_user_email }}"
+      LANGFUSE_INIT_USER_NAME: "admin"
+      LANGFUSE_INIT_USER_PASSWORD: "{{ langfuse_docker_init_user_password }}"
       NEXTAUTH_SECRET: "{{ langfuse_docker_secrets.nextauth_secret }}"
+      AUTH_DISABLE_SIGNUP: "true"
 {% if langfuse_docker_oidc_enabled | bool %}
       AUTH_CUSTOM_NAME: "{{ langfuse_docker_auth_custom_name }}"
       AUTH_CUSTOM_ISSUER: "{{ langfuse_docker_auth_custom_issuer }}"
