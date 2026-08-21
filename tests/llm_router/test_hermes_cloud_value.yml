@@ -1,0 +1,244 @@
+---
+- name: Verify Hermes provider-diverse value fallbacks and bounded controls
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Configure the shared budget store
+      ansible.builtin.set_fact:
+        llm_router_redis_host: redis.example.test
+        llm_router_redis_password: test-only-not-a-real-password
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Seed exactly one credential per API provider
+      ansible.builtin.set_fact:
+        bao_local_llm_secrets:
+          OPENROUTER_API_KEY: test-openrouter-provider-key
+          GEMINI_API_KEY: test-gemini-provider-key
+          DASHSCOPE_API_KEY: test-dashscope-provider-key
+
+    # The credential-derived defaults were evaluated before the set_fact above;
+    # reload this one defaults file exactly as a real play would evaluate it
+    # after Phase 0 publishes bao_local_llm_secrets.
+    - name: Re-evaluate the Hermes cloud projections with provider credentials
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
+
+    - name: Run the role's render-time assertions
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert.yml"
+
+    - name: Render and parse the real proxy config and environment
+      ansible.builtin.set_fact:
+        _config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+        _environment: >-
+          {{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}
+
+    - name: Provider chain, costs, and operational ceilings are exact
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_hermes_cloud_fallback_groups
+            == ['hermes-cloud-alibaba', 'hermes-cloud-gemini', 'hermes-cloud-openrouter']
+          - _fallback_chain
+            == ['hermes-cloud-alibaba', 'hermes-cloud-gemini', 'hermes-cloud-openrouter']
+          - _config.router_settings.max_fallbacks | int == _fallback_chain | length
+          - _config.router_settings.num_retries | int == 0
+          - _config.router_settings.retry_policy.RateLimitErrorRetries | int == 8
+          - llm_router_hermes_cloud_zero_retry_groups
+            == ['hermes-cloud-alibaba', 'hermes-cloud-gemini',
+                'hermes-cloud-openrouter', 'hermes-cloud-alibaba-routine',
+                'hermes-cloud-alibaba-agentic', 'hermes-cloud-gemini-routine',
+                'hermes-cloud-gemini-agentic']
+          - _cloud_retry_groups
+            == llm_router_hermes_cloud_zero_retry_groups | sort
+          - _nonzero_cloud_retry_groups | length == 0
+          - "'enforce_model_rate_limits' in _config.router_settings.optional_pre_call_checks"
+          - _cloud_models | length == 6
+          - _cloud_routers | length == 2
+          - _uncapped | length == 0
+          - _wrong_input_cap | length == 0
+          - _wrong_output_cap | length == 0
+          - _wrong_mode | length == 0
+          - _wrong_retry | length == 0
+          - _wrong_timeout | length == 0
+          - _missing_prices | length == 0
+          - _monthly_total | round(2) == 10.0
+          - >-
+            _alibaba_router.litellm_params.complexity_router_config.tiers
+            == {'SIMPLE': 'hermes-cloud-alibaba-routine',
+                'MEDIUM': 'hermes-cloud-alibaba-routine',
+                'COMPLEX': 'hermes-cloud-alibaba-agentic',
+                'REASONING': 'hermes-cloud-alibaba-agentic'}
+          - >-
+            _gemini_router.litellm_params.complexity_router_config.tiers
+            == {'SIMPLE': 'hermes-cloud-gemini-routine',
+                'MEDIUM': 'hermes-cloud-gemini-routine',
+                'COMPLEX': 'hermes-cloud-gemini-agentic',
+                'REASONING': 'hermes-cloud-gemini-agentic'}
+          - _config.router_settings.routing_groups[0].models == ['hermes-cloud-openrouter']
+          - _config.router_settings.routing_groups[0].routing_strategy == 'cost-based-routing'
+        fail_msg: >-
+          Hermes cloud policy drifted: chain={{ _fallback_chain }},
+          cloud_count={{ _cloud_models | length }}, monthly={{ _monthly_total }},
+          uncapped={{ _uncapped }}.
+        success_msg: >-
+          Hermes has three ordered provider groups, real prices, zero ordinary
+          or rate-limit retries, bounded rate/concurrency controls, and $10/month
+          deployment ceilings while local 429 handling remains unchanged.
+      vars:
+        _fallback_chain: >-
+          {{ _config.router_settings.fallbacks
+             | selectattr('hermes-default', 'defined')
+             | map(attribute='hermes-default') | flatten }}
+        _cloud_models: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'match', '^hermes-cloud-')
+             | selectattr('litellm_params.max_budget', 'defined') | list }}
+        _cloud_retry_groups: >-
+          {{ _config.router_settings.model_group_retry_policy.keys() | list | sort }}
+        _nonzero_cloud_retry_groups: >-
+          {%- set ns = namespace(groups=[]) -%}
+          {%- for group, policy in _config.router_settings.model_group_retry_policy.items() -%}
+          {%- if policy.RateLimitErrorRetries | int != 0 -%}
+          {%- set ns.groups = ns.groups + [group] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.groups }}
+        _cloud_routers: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'match', '^hermes-cloud-')
+             | selectattr('litellm_params.model', 'equalto', 'auto_router/complexity_router')
+             | list }}
+        _alibaba_router: >-
+          {{ _cloud_routers
+             | selectattr('model_name', 'equalto', 'hermes-cloud-alibaba')
+             | first }}
+        _gemini_router: >-
+          {{ _cloud_routers
+             | selectattr('model_name', 'equalto', 'hermes-cloud-gemini')
+             | first }}
+        _uncapped: >-
+          {{ _cloud_models
+             | rejectattr('litellm_params.rpm', 'defined')
+             | map(attribute='model_name') | list }}
+        _wrong_input_cap: >-
+          {{ _cloud_models
+             | rejectattr('model_info.max_input_tokens', 'equalto', 131072)
+             | map(attribute='model_name') | list }}
+        _wrong_output_cap: >-
+          {{ _cloud_models
+             | rejectattr('model_info.max_tokens', 'equalto', 8192)
+             | map(attribute='model_name') | list }}
+        _wrong_mode: >-
+          {{ _cloud_models
+             | rejectattr('model_info.mode', 'equalto', 'chat')
+             | map(attribute='model_name') | list }}
+        _wrong_retry: >-
+          {{ _cloud_models
+             | rejectattr('litellm_params.num_retries', 'equalto', 0)
+             | map(attribute='model_name') | list }}
+        _wrong_timeout: >-
+          {{ _cloud_models
+             | rejectattr('litellm_params.timeout', 'equalto', 2400)
+             | map(attribute='model_name') | list }}
+        _missing_prices: >-
+          {{ (_cloud_models
+              | rejectattr('litellm_params.input_cost_per_token', 'defined')
+              | map(attribute='model_name') | list)
+             + (_cloud_models
+                | rejectattr('litellm_params.output_cost_per_token', 'defined')
+                | map(attribute='model_name') | list) }}
+        _monthly_total: >-
+          {{ _cloud_models | map(attribute='litellm_params.max_budget')
+             | map('float') | sum }}
+
+    - name: One provider key each and strict OpenRouter policy are rendered
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _environment | regex_findall('(?m)^OPENROUTER_API_KEY=') | length == 1
+          - _environment | regex_findall('(?m)^GEMINI_API_KEY=') | length == 1
+          - _environment | regex_findall('(?m)^DASHSCOPE_API_KEY=') | length == 1
+          - _provider_api_keys | difference(_allowed_provider_api_keys) | length == 0
+          - _provider_api_keys | sort == _allowed_provider_api_keys | sort
+          - _registry_provider_api_keys | sort == _allowed_provider_api_keys | sort
+          - _openrouter_models | length == 2
+          - _bad_openrouter_policy | length == 0
+          - _bad_openrouter_price | length == 0
+          - _bad_openrouter_flags | length == 0
+        fail_msg: >-
+          Cloud credentials must be one per provider and every OpenRouter model
+          must carry the strict endpoint policy; provider-specific key counts or
+          policy fields drifted.
+        success_msg: >-
+          Exactly one key per provider; OpenRouter model access is constrained
+          by exact model ids, price, parameter, collection, and ZDR policy.
+      vars:
+        _provider_api_keys: >-
+          {{ _environment
+             | regex_findall('(?m)^([A-Z0-9_]*API_KEY[A-Z0-9_]*)=')
+             | unique | list }}
+        _registry_provider_api_keys: >-
+          {{ llm_router_hermes_cloud_models
+             | map(attribute='credential_env') | unique | list }}
+        _allowed_provider_api_keys:
+          - OPENROUTER_API_KEY
+          - GEMINI_API_KEY
+          - DASHSCOPE_API_KEY
+        _openrouter_models: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', 'hermes-cloud-openrouter') | list }}
+        _bad_openrouter_policy: >-
+          {{ _openrouter_models
+             | rejectattr('litellm_params.extra_body.provider.sort', 'equalto', 'price')
+             | map(attribute='model_name') | list }}
+        _bad_openrouter_price: >-
+          {{ (_openrouter_models
+              | rejectattr('litellm_params.extra_body.provider.max_price.prompt', 'equalto', 0.75)
+              | map(attribute='model_name') | list)
+             + (_openrouter_models
+                | rejectattr('litellm_params.extra_body.provider.max_price.completion', 'equalto', 4.0)
+                | map(attribute='model_name') | list) }}
+        _bad_openrouter_flags: >-
+          {{ (_openrouter_models
+              | rejectattr('litellm_params.extra_body.provider.require_parameters', 'equalto', true)
+              | map(attribute='model_name') | list)
+             + (_openrouter_models
+                | rejectattr('litellm_params.extra_body.provider.allow_fallbacks', 'equalto', true)
+                | map(attribute='model_name') | list)
+             + (_openrouter_models
+                | rejectattr('litellm_params.extra_body.provider.data_collection', 'equalto', 'deny')
+                | map(attribute='model_name') | list)
+             + (_openrouter_models
+                | rejectattr('litellm_params.extra_body.provider.zdr', 'equalto', true)
+                | map(attribute='model_name') | list) }}

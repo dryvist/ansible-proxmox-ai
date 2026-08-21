@@ -156,16 +156,15 @@ def test_board_readback_includes_paused_jobs() -> None:
     assert 'want="paused"' in WATCHDOG
 
 
-def test_watchdog_pauses_the_same_fleet_a_cluster_window_pauses() -> None:
+def test_watchdog_uses_the_derived_brain_dependent_fleet() -> None:
     """hermes_agent_seeded_cron_names covers only the script-fed `-enqueue`
     crons, which never call the brain. The enabled `*-v2` jobs that DO call it
     live in hermes_agent_direct_cron_jobs, so pausing the seeded list alone
-    left every brain-dependent job firing into a dead brain — the same gap
-    found on the cluster-pause path 2026-07-25. Both paths must derive from
-    one list so they cannot drift apart again.
+    would leave brain-dependent jobs firing into a dead brain. The watchdog's
+    list must derive from the actual enabled job inventory.
     """
-    assert "{{ hermes_agent_cluster_pause_cron_names | length }}" in WATCHDOG
-    assert "{% for job in hermes_agent_cluster_pause_cron_names %}" in WATCHDOG
+    assert "{{ hermes_agent_brain_dependent_cron_names | length }}" in WATCHDOG
+    assert "{% for job in hermes_agent_brain_dependent_cron_names %}" in WATCHDOG
 
 
 if __name__ == "__main__":

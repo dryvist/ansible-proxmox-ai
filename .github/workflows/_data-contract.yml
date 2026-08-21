@@ -74,14 +74,37 @@ jobs:
           ansible-playbook tests/llm_router/test_alias_servable.yml
           -i localhost, -c local
 
+      - name: Verify llm_router process-recovery contract
+        run: >-
+          ansible-playbook tests/llm_router/test_service_restart_policy.yml
+          -i localhost, -c local
+
+      # The no-credential half of the rendered fallback contract: local
+      # complexity routing remains available while no unauthenticated cloud
+      # group is advertised.
+      - name: Verify llm_router hermes-default failover contract
+        run: >-
+          ansible-playbook tests/llm_router/test_hermes_default_failover.yml
+          -i localhost, -c local
+
+      - name: Verify llm_router Hermes cloud value contract
+        run: >-
+          ansible-playbook tests/llm_router/test_hermes_cloud_value.yml
+          -i localhost, -c local
+
+      - name: Verify llm_router provider-key contract
+        run: >-
+          ansible-playbook tests/llm_router/test_hermes_provider_keys.yml
+          -i localhost, -c local
+
       # The paid-egress contract: the registry is the allowlist (no
       # `openrouter/*` passthrough), and the spend ceiling is enforced by the
       # router rather than described to the caller. Both failures are silent —
       # the render succeeds either way and neither ansible-lint nor
       # --syntax-check can see them.
-      - name: Verify Hermes OpenRouter fallback contract
+      - name: Verify llm_router OpenRouter allowlist and budget contract
         run: >-
-          ansible-playbook tests/llm_router/test_hermes_openrouter_fallback.yml
+          ansible-playbook tests/llm_router/test_openrouter_allowlist.yml
           -i localhost, -c local
 
       # The pairing invariant itself, proven from both sides: a budget with no
@@ -96,24 +119,6 @@ jobs:
         run: >-
           ansible-playbook tests/llm_router/test_budget_requires_store.yml
           -i localhost, -c local
-
-      # Pins the cluster-leg reachability guard (assert-cluster-leg.yml) — the
-      # GLM-4.7 entry stayed marked servable: true for a month after the
-      # cluster leg actually went unreachable, invisible to every check that
-      # ran until now.
-      - name: Verify llm_router cluster-leg reachability contract
-        run: >-
-          ansible-playbook tests/llm_router/test_cluster_leg_guard.yml
-          -i localhost, -c local
-
-      # Pins the escalation-distinctness warning (assert-escalation-tier.yml)
-      # from both ends: fires when the deep and broad tiers collapse onto the
-      # same model, stays silent when they genuinely differ.
-      - name: Verify llm_router escalation-tier distinctness warning
-        run: >-
-          ansible-playbook tests/llm_router/test_escalation_collapse.yml
-          -i localhost, -c local
-
       # Pins that every LOCAL deployment carries an in-flight admission cap.
       # Until 2026-08 only the OpenRouter egress tier had rpm/tpm/
       # max_parallel_requests, so LiteLLM admitted every inbound request to
@@ -139,7 +144,6 @@ jobs:
         run: >-
           ansible-playbook tests/llm_router/test_serving_identity.yml
           -i localhost, -c local
-
       # The published alias contract is DERIVED from the registry, so the thing
       # to test is that the generator still parses it and renders the same bytes
       # twice — a checksum on a nondeterministic render is decoration. Runs on

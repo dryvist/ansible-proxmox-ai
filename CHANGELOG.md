@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.31.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.31.1...v0.31.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* **hermes_agent:** concatenate multi-line assertion in cron wall clock verify ([f8afa54](https://github.com/dryvist/ansible-proxmox-ai/commit/f8afa54edb0ce99695161147d595b2bd4653d92e))
+
+## [0.31.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.31.0...v0.31.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **openbao_secrets:** provide sensible defaults for ai_api_key mount and prefix ([265c511](https://github.com/dryvist/ansible-proxmox-ai/commit/265c511139cc784d8a51a0a220fe8823066aae2a))
+
+## [0.31.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.30.1...v0.31.0) (2026-08-17)
+
+
+### Features
+
+* **llm_router:** assert registry and rendered model_list agree both ways ([#481](https://github.com/dryvist/ansible-proxmox-ai/issues/481)) ([1698977](https://github.com/dryvist/ansible-proxmox-ai/commit/16989777f59195c81714c628d48c16a729fd0ca1))
+
 ## [0.30.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.30.0...v0.30.1) (2026-08-16)
 
 

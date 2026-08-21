@@ -1,31 +1,10 @@
 ---
-# THE MODEL REGISTRY — the single place any model name, alias, tier, or
-# enabled/disabled state is written for the whole AI fabric. Everything
-# downstream DERIVES from this file: roles/llm_router/defaults/ projects these
-# entries into the role's tier views, and templates/config.yaml.j2 renders the
-# LiteLLM `model_list` + `router_settings.model_group_alias` from those. A
-# model name written twice is the defect class this file exists to remove.
-#
-# PURE DATA, DELIBERATELY — no Jinja, no host/port/URL literals, no secrets;
-# topology values stay in the role, selected by `tier`/`endpoint` below.
-#
-# Field reference and the "why" behind PURE DATA: docs/LLM_MODELS_SCHEMA.md.
-# Per-entry incident history and selection rationale:
-# docs/LLM_MODELS_REGISTRY_NOTES.md. Both split out of here to keep this data
-# file under the repo's per-file token budget — the same reason applies to the
-# next long note anyone wants to add: write it there, leave a pointer here.
-#
+# Canonical model, alias, tier, and enablement data. Role defaults project the
+# views rendered by config.yaml.j2. Schema and rationale live under docs/.
 
 llm_router_model_registry:
   # ── large tier ──────────────────────────────────────────────────────────────
-  # The mlx-community models on the neutral large-tier runner, bearer-authed.
-  # One deployment each, registered under the backend's own model id (the
-  # serving gate lists models under their full MLX repo ids) — no alias names.
-  # No cross-tier fallback. Native windows for reference: gpt-oss 131072,
-  # Qwen3* 262144; the served values below are deliberately smaller.
-  # NOT SERVED by the neutral large-tier runner today (live 404, verified
-  # 2026-08-14) — disabled rather than advertised. Re-enable only once a
-  # backend actually answers for this id.
+  # Disabled entries remain unadvertised until normal registry probes pass.
   - client_model_id: mlx-community/gpt-oss-120b-MXFP4-Q8
     upstream_model_id: mlx-community/gpt-oss-120b-MXFP4-Q8
     provider: openai
@@ -42,24 +21,7 @@ llm_router_model_registry:
     enabled: false
     context_window: 32768
 
-  # THE PRIMARY, since 2026-08-14. The serving host now holds TWO models warm
-  # (dryvist/nix-darwin lib/hosts/mac-studio.nix, "Two warm brains"): a dense 27B
-  # for deliberate work and the 35B MoE below for routine work. This entry is the
-  # deliberate one, so the consumer aliases resolve here.
-  #
-  # 65536 matches its resident profile in nix-ai catalog-data.nix
-  # (cacheMemoryMb = 16384, maxRequestTokens = 65536). Advertising half the real
-  # window does not protect anything — it just makes Hermes auto-compact at 24.5K
-  # (75% of 32768) when ~49K is actually available.
-  #
-  # THINKING IS ON, configured serving-side and deliberately not restated here.
-  # Why, plus the measured 0-answer result at the template's default `xhigh`:
-  # docs/LLM_MODELS_REGISTRY_NOTES.md.
-  #
-  # Its aliases are the fabric's stable consumer handles. `interim-brain` is a
-  # handle so hermes_brain_model (or secret/ai/public/brain) can repoint in one
-  # line; it tracks the primary rather than naming its own model, because a
-  # second physical id there is exactly the drift this registry prevents.
+  # Primary deliberate model; selection rationale is documented under docs/.
   - client_model_id: mlx-community/Qwen3.8-27B-4bit
     upstream_model_id: mlx-community/Qwen3.8-27B-4bit
     provider: openai
@@ -69,7 +31,6 @@ llm_router_model_registry:
     servable: true
     serving_role: primary
     stable_aliases:
-      - hermes-default
       - tool-calling
       - interim-brain
 
@@ -138,15 +99,7 @@ llm_router_model_registry:
     stable_aliases:
       - Unlimited OCR
 
-  # OptiQ-4bit: the agentic-bench-winning brain (ai_default_model, all.yml). A
-  # first-class entry — NOT passthrough — so the default model carries an
-  # explicit max_input_tokens rather than falling through the "*" wildcard to a
-  # null one. The repetition_penalty is the anti-repetition-loop fix, and
-  # `standby` marks it as the entry that gets a failover sibling: both, and why
-  # temperature is deliberately not pinned, in
-  # docs/LLM_MODELS_REGISTRY_NOTES.md.
-  # NOT SERVED (live 404, verified 2026-08-14) — disabled rather than
-  # advertised. Re-enable only once a backend actually answers for this id.
+  # Explicit context and sampling data are retained while this entry is disabled.
   - client_model_id: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
     upstream_model_id: mlx-community/Qwen3.6-35B-A3B-OptiQ-4bit
     provider: openai
@@ -156,12 +109,8 @@ llm_router_model_registry:
     extra_body: { repetition_penalty: 1.05 }
     standby: true
 
-  # NOT SERVED (live 404, verified 2026-08-14) — disabled rather than
-  # advertised. It was formerly the escalation rubric's deep-analysis target
-  # (ai_escalation_rubric, all.yml); that tier now points at the resident
-  # primary (mlx-community/Qwen3.8-27B-4bit, thinking on) instead, since this
-  # id cannot answer. Re-enable and repoint the rubric back only once a
-  # backend actually serves this id.
+  # NOT SERVED — disabled rather than advertised. Re-enable only after a
+  # backend actually serves this id and the normal registry checks pass.
   - client_model_id: mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit
     upstream_model_id: mlx-community/Qwen3-Next-80B-A3B-Thinking-4bit
     provider: openai
@@ -199,28 +148,15 @@ llm_router_model_registry:
     enabled: false
     context_window: 65536
 
-  # The two-Mac cluster brain (JACCL pipeline across both Macs, ~256 GB
-  # combined), served by mlx-lm rank 0 behind the gate's own cluster TLS site — a
-  # DIFFERENT port on the same host, hence `endpoint: cluster`. Reachable only
-  # while a cluster window is up (cable in); normal serving quiesces during
-  # windows, so this entry is what keeps a brain reachable then. It is
-  # hermes-default's fallback target and carries NO stable_aliases by design.
-  #
-  # `servable` moves ONLY together with llm_router_cluster_leg_available in
-  # roles/llm_router/defaults/main/50-servable.yml —
-  # tasks/assert-cluster-leg.yml fails the converge if the two disagree.
-  # Why, and the month-long drift that motivated it:
-  # docs/LLM_MODELS_REGISTRY_NOTES.md.
-  - client_model_id: mlx-community/GLM-4.7-REAP-50-mxfp4
-    upstream_model_id: mlx-community/GLM-4.7-REAP-50-mxfp4
-    provider: openai
-    tier: large
+  # Local complexity router; tier targets derive from serving_role entries.
+  - client_model_id: hermes-default
+    upstream_model_id: complexity_router
+    litellm_model_name: auto_router/complexity_router
+    provider: auto_router
+    tier: hermes-router
     enabled: true
     context_window: 65536
-    servable: true
-    serving_role: cluster
-    endpoint: cluster
-    extra_body: { repetition_penalty: 1.05 }
+    max_output_tokens: 8192
 
   # ── light tier ──────────────────────────────────────────────────────────────
   # The llama-swap model names, served as-is. Each becomes TWO same-name
@@ -255,26 +191,139 @@ llm_router_model_registry:
     enabled: true
     context_window: 16384
 
-  # ── OpenRouter egress tier (paid SaaS) ──────────────────────────────────────
-  # Served under their REAL upstream ids. NEVER part of any fallback chain — a
-  # flaky or rate-limited upstream must not be able to degrade the local brain;
-  # consumers opt in by requesting the id explicitly.
-  #
-  # THIS LIST IS THE EGRESS ALLOWLIST: an entry with a seeded key_field is the
-  # only way a model becomes reachable. One key per model in OpenBao under
-  # secrets-external/ai/saas/openrouter; keys are account-wide, there is no
-  - client_model_id: hermes-openrouter-fallback
-    upstream_model_id: deepseek/deepseek-v4-flash-latest
-    tier: hermes-emergency
-    enabled: false
+  # Hermes provider-diverse value fallbacks; one credential per provider.
+  - client_model_id: hermes-cloud-alibaba
+    upstream_model_id: complexity_router
+    litellm_model_name: auto_router/complexity_router
+    provider: auto_router
+    tier: hermes-cloud-router
+    enabled: true
+    context_window: 131072
+    max_output_tokens: 8192
+    routine_model: hermes-cloud-alibaba-routine
+    agentic_model: hermes-cloud-alibaba-agentic
+    credential_env: DASHSCOPE_API_KEY
+    key_field: DASHSCOPE_API_KEY
 
+  - client_model_id: hermes-cloud-alibaba-qwen3.5-flash
+    upstream_model_id: qwen3.5-flash
+    litellm_model_name: dashscope/qwen3.5-flash
+    provider: dashscope
+    tier: hermes-cloud
+    route_group: hermes-cloud-alibaba-routine
+    fallback_group: hermes-cloud-alibaba
+    enabled: true
+    context_window: 131072
+    max_output_tokens: 8192
+    input_cost_per_token: 0.0000001
+    output_cost_per_token: 0.0000004
+    credential_env: DASHSCOPE_API_KEY
+    key_field: DASHSCOPE_API_KEY
+    api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    monthly_budget: 1.665
+
+  - client_model_id: hermes-cloud-alibaba-qwen3.6-flash
+    upstream_model_id: qwen3.6-flash
+    litellm_model_name: dashscope/qwen3.6-flash
+    provider: dashscope
+    tier: hermes-cloud
+    route_group: hermes-cloud-alibaba-agentic
+    fallback_group: hermes-cloud-alibaba
+    enabled: true
+    context_window: 131072
+    max_output_tokens: 8192
+    input_cost_per_token: 0.00000025
+    output_cost_per_token: 0.0000015
+    credential_env: DASHSCOPE_API_KEY
+    key_field: DASHSCOPE_API_KEY
+    api_base: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    monthly_budget: 1.665
+
+  - client_model_id: hermes-cloud-gemini
+    upstream_model_id: complexity_router
+    litellm_model_name: auto_router/complexity_router
+    provider: auto_router
+    tier: hermes-cloud-router
+    enabled: true
+    context_window: 131072
+    max_output_tokens: 8192
+    routine_model: hermes-cloud-gemini-routine
+    agentic_model: hermes-cloud-gemini-agentic
+    credential_env: GEMINI_API_KEY
+    key_field: GEMINI_API_KEY
+
+  - client_model_id: hermes-cloud-gemini-3.5-flash-lite
+    upstream_model_id: gemini-3.5-flash-lite
+    litellm_model_name: gemini/gemini-3.5-flash-lite
+    provider: gemini
+    tier: hermes-cloud
+    route_group: hermes-cloud-gemini-routine
+    fallback_group: hermes-cloud-gemini
+    enabled: true
+    context_window: 131072
+    max_output_tokens: 8192
+    input_cost_per_token: 0.0000003
+    output_cost_per_token: 0.0000025
+    credential_env: GEMINI_API_KEY
+    key_field: GEMINI_API_KEY
+    monthly_budget: 1.665
+
+  - client_model_id: hermes-cloud-gemini-3.7-flash
+    upstream_model_id: gemini-3.7-flash
+    litellm_model_name: gemini/gemini-3.7-flash
+    provider: gemini
+    tier: hermes-cloud
+    route_group: hermes-cloud-gemini-agentic
+    fallback_group: hermes-cloud-gemini
+    enabled: true
+    context_window: 131072
+    max_output_tokens: 8192
+    input_cost_per_token: 0.00000075
+    output_cost_per_token: 0.00000375
+    credential_env: GEMINI_API_KEY
+    key_field: GEMINI_API_KEY
+    monthly_budget: 1.665
+
+  - client_model_id: hermes-cloud-openrouter-kimi-k2.6
+    upstream_model_id: moonshotai/kimi-k2.6
+    litellm_model_name: openrouter/moonshotai/kimi-k2.6
+    provider: openrouter
+    tier: hermes-cloud
+    route_group: hermes-cloud-openrouter
+    enabled: true
+    context_window: 131072
+    max_output_tokens: 8192
+    input_cost_per_token: 0.0000006
+    output_cost_per_token: 0.00000341
+    credential_env: OPENROUTER_API_KEY
+    key_field: OPENROUTER_API_KEY
+    monthly_budget: 1.67
+
+  - client_model_id: hermes-cloud-openrouter-glm-5.2
+    upstream_model_id: z-ai/glm-5.2
+    litellm_model_name: openrouter/z-ai/glm-5.2
+    provider: openrouter
+    tier: hermes-cloud
+    route_group: hermes-cloud-openrouter
+    enabled: true
+    context_window: 131072
+    max_output_tokens: 8192
+    input_cost_per_token: 0.0000007308
+    output_cost_per_token: 0.000002297
+    credential_env: OPENROUTER_API_KEY
+    key_field: OPENROUTER_API_KEY
+    monthly_budget: 1.67
+
+  # ── OpenRouter egress tier (paid SaaS) ──────────────────────────────────────
+  # Explicit opt-in allowlist sharing one OpenRouter provider credential.
   - client_model_id: nvidia/nemotron-3-ultra-550b-a55b:free
     upstream_model_id: nvidia/nemotron-3-ultra-550b-a55b:free
     provider: openrouter
     tier: openrouter
     enabled: true
     context_window: 1000000
-    key_field: nvidia-nemotron-3-ultra-550b-a55b-free
+    credential_env: OPENROUTER_API_KEY
+    key_field: OPENROUTER_API_KEY
 
   # Cheap paid egress: efficiency-optimized MoE. The workhorse escalation.
   - client_model_id: deepseek/deepseek-v4-flash
@@ -283,7 +332,8 @@ llm_router_model_registry:
     tier: openrouter
     enabled: true
     context_window: 1000000
-    key_field: deepseek-deepseek-v4-flash
+    credential_env: OPENROUTER_API_KEY
+    key_field: OPENROUTER_API_KEY
 
   # MiniMax, TWO entries deliberately — m2.5 is the cheap default and m3 the
   # long-context one, so a caller taking the cheapest tier that can do the job
@@ -292,16 +342,16 @@ llm_router_model_registry:
   # pricing table, and why an inflated window is the compress-death failure:
   # docs/LLM_MODELS_REGISTRY_NOTES.md.
   #
-  # Inert until `minimax-minimax-m2-5` and `minimax-minimax-m3` are seeded under
-  # secrets-external/ai/saas/openrouter — an unseeded key_field renders no entry
-  # at all, which is what makes both safe to land ahead of the secrets.
+  # Inert until the provider credential is seeded. A missing provider key
+  # renders no OpenRouter entry, so model additions can land safely first.
   - client_model_id: minimax/minimax-m2.5
     upstream_model_id: minimax/minimax-m2.5
     provider: openrouter
     tier: openrouter
     enabled: true
     context_window: 204800
-    key_field: minimax-minimax-m2-5
+    credential_env: OPENROUTER_API_KEY
+    key_field: OPENROUTER_API_KEY
 
   - client_model_id: minimax/minimax-m3
     upstream_model_id: minimax/minimax-m3
@@ -309,4 +359,5 @@ llm_router_model_registry:
     tier: openrouter
     enabled: true
     context_window: 1048576
-    key_field: minimax-minimax-m3
+    credential_env: OPENROUTER_API_KEY
+    key_field: OPENROUTER_API_KEY

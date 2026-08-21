@@ -53,17 +53,17 @@ SUSTAINED_FLAP_REARM="{{ hermes_agent_brain_watchdog_sustained_flap_rearm_second
 # Rendered at template time (the seeded list is static) so the script avoids
 # bash's array-length parameter form, whose brace-hash opener would be misread as
 # a Jinja comment start in this .j2 and mangle the template.
-JOB_COUNT="{{ hermes_agent_cluster_pause_cron_names | length }}"
+JOB_COUNT="{{ hermes_agent_brain_dependent_cron_names | length }}"
 
 # Brain-dependent cron fleet — the only jobs this watchdog touches (never
-# user/agent-created jobs). The SAME list a cluster window pauses, not the
+# user/agent-created jobs). This is the complete brain-dependent set, not the
 # narrower seeded list: `hermes_agent_seeded_cron_names` covers only the
 # script-fed `<job>-enqueue` crons, which do not call the brain, while the
 # enabled `*-v2` jobs that DO call it were absent — so a brain outage paused a
 # fleet of enqueuers and left every brain-dependent job firing. One list for
 # both pause paths, derived in defaults, so they cannot drift apart again.
 SEEDED_JOBS=(
-{% for job in hermes_agent_cluster_pause_cron_names %}
+{% for job in hermes_agent_brain_dependent_cron_names %}
   "{{ job }}"
 {% endfor %}
 )
@@ -368,14 +368,10 @@ flap_summary_check() {
 # the brain never goes down again, it stays paused forever, silently, with every
 # brain-dependent job simply not running.
 #
-# The same hole is reached by an entirely routine path: cluster-hermes-pause.yml
-# pauses via ansible and never touches the state file at all.
-#
-# Converging to desired state repairs both without needing the write to be
-# atomic. Deliberate maintenance pauses are NOT undone, because that playbook
-# also stops this timer — no timer, no reconcile. That interlock is what makes
-# this safe; if a future pause path leaves the timer running, it must set the
-# state file too or this will fight it.
+# Converging to desired state repairs the interrupted write without needing it
+# to be atomic. A deliberate maintenance path that pauses jobs must stop this
+# timer or persist the matching state, otherwise reconciliation will resume the
+# fleet.
 #
 # Silent by design (logger only, no Slack/ntfy): this is repair, not an
 # incident, and paging on it would re-create the noise this watchdog exists to

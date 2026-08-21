@@ -1,88 +1,7 @@
 ---
-# Pins the hermes-default cluster-failover contract added alongside the
-# two-Mac cluster bring-up. The chain TRACKS llm_router_cluster_leg_available
-# (defaults/main.yml), which is a WIRING claim and not a per-window one: with
-# the leg wired the chain is rendered permanently, so a cluster window opening
-# or closing needs no converge and no restart — LiteLLM picks the live leg per
-# request. With the leg de-wired the chain goes empty and a failed primary
-# surfaces its own error. Both branches are pinned below so neither path can
-# rot unnoticed.
-#
-# WHY THIS TEST EXISTS. Before the original version of this fallback chain,
-# bringing the cluster up would have taken Hermes' brain offline: cluster-join
-# boots out the standalone llama-swap agent (:11434), and hermes-default had
-# no path to the cluster gate's :11440 site — the cluster model_list entry
-# existed but no alias or fallback referenced it. Fixing that touched three
-# things at once (a stale tofu-proxmox port-constant name, the
-# servable-models allowlist, and a new router_settings.fallbacks chain), and
-# each one fails SILENTLY if it drifts:
-#   - the port constant fallback (proven empirically while building this
-#     test): a stale `llm_night_api` reference does not error, it silently
-#     re-derives the STANDALONE port for the cluster entry's api_base, so a
-#     "cluster" deployment quietly dials the wrong gate instead of failing
-#     loud.
-#   - a fallback chain entry outside llm_router_servable_models 404s instead
-#     of failing over (same class of bug tests/llm_router/test_alias_servable.yml
-#     exists for, on the alias side).
-# Measured 2026-08-02..08-05: with the cluster leg disconnected since
-# 2026-08-05 and the chain still rendered, 720 gate 5xx reached callers
-# unretried as "Error doing the fallback: BadGatewayError". Those requests had
-# already failed at the primary (llm_router_num_retries is 0), so the cost was
-# the error text, not the outcome — but naming a target that cannot possibly
-# answer buys nothing, which is why the de-wired branch empties the chain. That
-# is the behaviour the de-wired play below pins.
-# None of this is visible from `ansible-lint` or `--syntax-check`; it only
-# shows up in the RENDERED config.yaml, which is what this test inspects.
-#
-# Run (from the REPO ROOT — the registry load resolves the llm_router role
-# through ansible.cfg's cwd-relative roles_path):
-#   ansible-playbook tests/llm_router/test_hermes_default_failover.yml -i localhost, -c local
-
-- name: Verify hermes-default's chain is empty while the cluster leg is de-wired
-  hosts: localhost
-  gather_facts: false
-  vars:
-    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    # Deliberately mirrors the CURRENT tofu-proxmox service_ports constants
-    # (modules/proxmox-stack/constants.tf) and nothing else — in particular it
-    # does NOT define the retired `llm_night_api` key. If llm_router_cluster_port
-    # ever regresses to that name, the render below still succeeds (Ansible's
-    # nested templating swallows the undefined lookup rather than erroring),
-    # but the cluster entry's api_base silently falls back to the standalone
-    # port. The port-derivation assertion catches exactly that.
-    tofu_data:
-      constants:
-        service_ports:
-          llm_router_api: 4000
-          llm_fast_api: 10434
-          ollama_api: 11434
-          llm_cluster_api: 11440
-          otel_traces_http: 4318
-    bao_local_llm_secrets: {}
-    # Mirrors inventory/group_vars/all.yml's ai_default_model default (its
-    # own template needs bao_ai_public_secrets, out of scope for this role
-    # test) — a real first-class llm_router_large_models entry either way.
-    ai_default_model: mlx-community/Qwen3.8-27B-4bit
-    llm_large_serving_host: llm-large
-    llm_router_subdomain: "pve.example.test"
-    llm_router_master_key: sk-test-master
-    llm_router_llm_large_bearer: test-bearer-token
-    ai_router_request_timeout_seconds: 2400
-    ai_stream_read_timeout_seconds: 1800
-    # group_vars/all.yml is not loaded under `-i localhost,`, so the all.yml
-    # constants the role defaults reference must be supplied here.
-    ai_router_retry_after_seconds: 40
-    hermes_brain_model: hermes-default
-    hermes_goal_judge_model: goal-judge
-    # The de-wired state, which this play pins regardless of what the
-    # role currently ships. Not set here as a plain play var — the defaults
-    # load below outranks one, the same trap the wired play documents;
-    # the set_fact after that load is what makes it stick.
-  tasks:
-    - name: Verify the chain while the cluster leg is de-wired
-      ansible.builtin.import_tasks: tasks/verify_dewired.yml
-
-- name: Verify hermes-default's chain reaches the cluster backend once the leg is wired
+# With no provider credential, the complexity router stays entirely local and
+# advertises no fallback route that could be selected but not authenticated.
+- name: Verify Hermes stays local when provider credentials are absent
   hosts: localhost
   gather_facts: false
   vars:
@@ -93,12 +12,12 @@
           llm_router_api: 4000
           llm_fast_api: 10434
           ollama_api: 11434
-          llm_cluster_api: 11440
           otel_traces_http: 4318
+          redis_default: 6379
     bao_local_llm_secrets: {}
     ai_default_model: mlx-community/Qwen3.8-27B-4bit
     llm_large_serving_host: llm-large
-    llm_router_subdomain: "pve.example.test"
+    llm_router_subdomain: pve.example.test
     llm_router_master_key: sk-test-master
     llm_router_llm_large_bearer: test-bearer-token
     ai_router_request_timeout_seconds: 2400
@@ -106,15 +25,51 @@
     ai_router_retry_after_seconds: 40
     hermes_brain_model: hermes-default
     hermes_goal_judge_model: goal-judge
-    # The state this play simulates: the leg is WIRED (TB cable connected,
-    # clusterMode.enable true on both hosts). Whether a cluster window is up
-    # right now is deliberately not modelled — it is not an input to the
-    # render. Not set here as a plain play var — "Load the role defaults as
-    # they ship" (see tasks/verify_wired.yml) loads
-    # llm_router_cluster_leg_available's own default via include_vars, which
-    # outranks a play var of the same name and would silently clobber it. The
-    # "Force the cluster leg available" task after that load is what actually
-    # makes this stick.
   tasks:
-    - name: Verify the chain once the cluster leg is wired
-      ansible.builtin.import_tasks: tasks/verify_wired.yml
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Run the role's render-time assertions
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert.yml"
+
+    - name: Render and parse the real proxy config
+      ansible.builtin.set_fact:
+        _config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+
+    - name: Hermes auto-routes locally and advertises no unseeded fallback
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_hermes_default_fallback_chain == []
+          - _config.router_settings.fallbacks is not defined
+          - _config.router_settings.max_fallbacks | int == 0
+          - _cloud_models | length == 0
+          - _hermes_router.litellm_params.model == 'auto_router/complexity_router'
+          - _hermes_router.litellm_params.complexity_router_config.tiers.SIMPLE
+            == llm_router_routine_model
+          - _hermes_router.litellm_params.complexity_router_config.tiers.MEDIUM
+            == llm_router_routine_model
+          - _hermes_router.litellm_params.complexity_router_config.tiers.COMPLEX
+            == llm_router_primary_model
+          - _hermes_router.litellm_params.complexity_router_config.tiers.REASONING
+            == llm_router_primary_model
+        fail_msg: >-
+          Hermes must complexity-route only between the two resident models and
+          advertise no fallback when provider credentials are absent. Got
+          fallback={{ _config.router_settings.fallbacks | default([]) }},
+          cloud={{ _cloud_models }}.
+        success_msg: "Hermes auto-routing remains local-only without provider credentials"
+      vars:
+        _cloud_models: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'match', '^hermes-cloud-') | list }}
+        _hermes_router: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', 'hermes-default') | first }}

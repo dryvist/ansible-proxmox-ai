@@ -59,6 +59,7 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     ]
     router_config = (REPO_ROOT / "roles/llm_router/templates/config.yaml.j2").read_text()
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
+    environment = (ROLE_ROOT / "templates" / "hermes-env.j2").read_text()
 
     hermes_alias = "hermes-default"
     # Physical ids live in ONE file — the repo-root llm-models.yml registry —
@@ -94,12 +95,21 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert 'HINDSIGHT_API_LLM_MODEL: "{{ hindsight_docker_llm_model }}"' in hindsight_compose
     assert defaults["hermes_agent_model_max_tokens"] == 8192
     assert defaults["hermes_agent_context_compression_threshold"] == 0.75
+    assert defaults["hermes_agent_stream_stale_timeout"] == 900
+    assert defaults["hermes_agent_cron_inactivity_timeout_seconds"] == 1800
+    assert defaults["hermes_agent_cron_wall_timeout_seconds"] == 1800
+    assert (
+        "HERMES_CRON_TIMEOUT={{ hermes_agent_cron_inactivity_timeout_seconds }}"
+        in environment
+    )
+    assert (
+        "HERMES_CRON_WALL_TIMEOUT={{ hermes_agent_cron_wall_timeout_seconds }}"
+        in environment
+    )
     assert defaults["hermes_agent_brain_sync_enabled"] is False
-    # An alias belongs to the entry it points at, so the whole consumer-facing
-    # name set is readable off the registry — and cannot name a model that is
-    # not there. A model_list deployment entry named after an alias is banned
-    # (AGENTS.md): the duplicate config drifts from the real backend every time
-    # the model changes.
+    # Physical aliases belong to the entries they point at. `hermes-default` is
+    # intentionally not one of them: it is a native LiteLLM complexity-router
+    # deployment, not duplicated configuration for a physical backend.
     aliases = {
         alias: entry["client_model_id"]
         for entry in registry
@@ -116,7 +126,6 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         if entry.get("enabled") and entry.get("serving_role") == "ocr"
     )
     assert aliases == {
-        hermes_alias: hermes_backend,
         "tool-calling": hermes_backend,
         "goal-judge": judge_backend,
         "interim-brain": hermes_backend,
@@ -125,22 +134,16 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         # human picks in the model list resolves to the vision entry.
         "Unlimited OCR": ocr_backend,
     }
+    hermes_router = next(
+        entry
+        for entry in registry
+        if entry.get("enabled") and entry["client_model_id"] == hermes_alias
+    )
+    assert hermes_router["tier"] == "hermes-router"
+    assert hermes_router["litellm_model_name"] == "auto_router/complexity_router"
+    assert "stable_aliases" not in hermes_router
     # Both selectors must be declared servable, or the alias indirection just
     # moves the 404 one level down.
-    #
-    # The cluster model is servable ONLY while the cluster leg is actually
-    # available. It is hermes-default's router_settings.fallbacks target while
-    # a cluster window is up, and an unroutable fallback target 502s instead of
-    # failing over — which is exactly what it did, unnoticed, from 2026-08-05
-    # (both hosts' clusterMode disabled, TB cable out) until #365.
-    #
-    # Derive the expectation from llm_router_cluster_leg_available rather than
-    # re-pinning a literal: that var is the single switch #365 introduced, and
-    # roles/llm_router/tasks/assert-cluster-leg.yml already fails the converge
-    # if it and the registry's `servable` disagree. Following it here means
-    # this test tracks the leg coming back instead of going red the moment it
-    # does — re-pinning a literal is the drift this whole indirection exists
-    # to prevent.
     #
     # `servable` is deliberately NOT `enabled`: every large-tier entry is
     # enabled (the router offers it), only these are servable (the backend
@@ -157,12 +160,7 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     expected_servable = [
         entry["client_model_id"]
         for entry in registry
-        if entry.get("enabled")
-        and "serving_role" in entry
-        and (
-            entry["serving_role"] != "cluster"
-            or router_defaults["llm_router_cluster_leg_available"]
-        )
+        if entry.get("enabled") and "serving_role" in entry
     ]
     assert [
         entry["client_model_id"] for entry in registry if entry.get("servable")

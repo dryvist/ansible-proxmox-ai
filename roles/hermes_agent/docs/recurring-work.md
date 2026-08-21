@@ -37,13 +37,13 @@ itself — not assumed):
   profile needs its own trigger — `hermes cron tick` ("run due jobs once and
   exit"), fired every 5 minutes per profile
   (`hermes_agent_profile_cron_tick_timeout`, `tasks/main.yml`).
-- **`max_runtime`** — no `cron create` flag either. Partially restored for the
-  7 profile-scoped jobs only: `timeout <duration>` wraps their tick-trigger
-  invocation, an approximate per-TICK ceiling (more than one due job can share
-  a 5-minute window), not a strict per-job one. The other 11 run inside the
-  default gateway's in-process ticker, which has no external invocation point
-  to wrap at all — no runtime cap exists for them, and none can be added
-  without a persistent gateway process per job.
+- **`max_runtime`** — no `cron create` flag either. The role adds an internal
+  monotonic wall clock around every agentic cron conversation, independent of
+  upstream's reset-on-activity `HERMES_CRON_TIMEOUT`. The 7 profile-scoped jobs
+  additionally retain `timeout <duration>` around their tick-trigger invocation,
+  an approximate per-TICK outer ceiling (more than one due job can share a
+  5-minute window), not a second per-job setting. Script-only jobs retain their
+  separate native script timeout.
 - **`max_retries`** — no `cron create` equivalent. Not restored; an accepted,
   documented loss.
 - **Outcome-based delivery split** (`channel_when_healthy` /
@@ -81,8 +81,8 @@ reads `kanban.db` **read-only** (`mode=ro`) and its stdout is delivered verbatim
 No LLM and no network in the fact path, which is the point — this is the surface
 that announces a wedged board, and a wedged board is usually a wedged brain. For
 the same reason it is deliberately **absent from
-`hermes_agent_seeded_cron_names`**: a cluster window pauses that list, and this
-digest has to keep reporting through one.
+`hermes_agent_seeded_cron_names`** so brain-fleet reconciliation cannot pause
+the digest that reports a wedged board.
 
 `hermes kanban` has no "every run that ended since T" query — `list --json`
 carries task rows whose `result` column is null, and per-attempt outcome and
