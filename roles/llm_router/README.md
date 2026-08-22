@@ -85,6 +85,64 @@ re-converge this role. The first explicit entry is `nvidia/nemotron-3-ultra-550b
 (rate-limited; NVIDIA logs prompts on the `:free` endpoint — never send
 confidential material through it).
 
+## The vLLM tier and the Hermes local GPU leg
+
+The `vllm`-tier loop renders one deployment per model — vLLM serves a single
+model per instance and there is no standby serving the same weights, so this
+tier deliberately does not render a pair. The same loop also carries any
+`hermes-local` entries: distinct Hermes-fallback-chain rungs over that same
+backend/URL/key, not a second physical tier. A `context_window` here is
+mandatory rather than optional (unlike other tiers) because these backend ids
+are absent from LiteLLM's catalog — an omitted value silently resolves
+`max_input_tokens` to null, disables `enable_pre_call_checks` for the
+deployment, and lets an over-long request through to a model that cannot hold
+it (the compress-death outage class, 2026-07-08). `allowed_fails`/
+`cooldown_time` overrides on a `hermes-local` entry exist because busy is not
+unhealthy: a merely-busy single GPU must not be cooled out of rotation the way
+a real failure would be. Its `num_retries: 0` is the same idea — a
+single-instance local leg is only ever accepting or rejecting, never worth
+retrying, since a retry just re-queues behind the same busy box.
+
+## OpenRouter wildcard passthrough
+
+The enumerated OpenRouter loop is no longer the sole egress allowlist: any
+OpenRouter model is reachable by requesting `openrouter/<real-id>` directly
+(`model_name: "openrouter/*"`, `config.yaml.j2`). This is a deliberate
+reversal — read `defaults/main/30-openrouter.yml` before touching that block.
+
+It is **not** reachable through any fallback chain: LiteLLM resolves a
+fallback target by exact `model_name`, which skips wildcard rewriting and
+would forward the literal `"*"` upstream. It **is** more specific than the
+large-tier bare `"*"` (a longer pattern string ranks first in LiteLLM's
+`PatternMatchRouter`), so an `"openrouter/..."` request reaches this
+deployment and never the Mac gate. It carries no `max_budget`/`budget_duration`
+— there is no per-model spend figure to attach, and no separate shared-spend
+key for wildcard traffic distinct from the tier-wide Redis cap; that is a
+known gap, not an oversight.
+
+## Spend tracking (Redis)
+
+`router_settings.redis_host`/`redis_port`/`redis_password` back LiteLLM's
+provider spend tracking, and the `openrouter` `provider_budget_config` ceiling
+renders **only** when Redis is configured (`tasks/assert.yml` fails the build
+otherwise). Without a shared store, a multi-member pool would count only its
+own spend, silently turning a stated ceiling into N times its real value and
+resetting it on every rolling converge — a control that reports a limit it
+does not hold is worse than an absent one.
+
+`redis_host`/`redis_password` resolve through `os.environ/`, like every other
+secret in this config; `redis_port` renders as a literal int instead, because
+LiteLLM's documented Redis examples type it that way and an unresolved
+`os.environ/` marker where an int is expected risks failing at client
+construction — the port is not a secret either, so routing it through the
+EnvironmentFile bought nothing.
+
+Deliberately absent: `fail_closed_budget_enforcement`. It governs LiteLLM's
+Postgres-backed virtual-key budgets, not the provider budget above, and 503s
+when spend can't be verified against Redis or a database — this proxy issues
+no virtual keys and has no database, so it would be inert at best and a 503
+generator on the fabric's only front door at worst.
+
 ## Model role aliases
 
 Each physical backend has exactly one `model_list` deployment. Stable

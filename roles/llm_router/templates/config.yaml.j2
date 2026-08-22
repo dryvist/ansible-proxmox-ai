@@ -57,10 +57,8 @@ model_list:
       num_retries: 2
 {% endif %}
 {% if m.extra_body is defined %}
-      # Per-model sampling defaults pinned at the router. extra_body is forwarded
-      # to the OpenAI-compatible backend VERBATIM (litellm_settings.drop_params
-      # would otherwise strip a non-OpenAI param like repetition_penalty before
-      # it reaches the server). See the model entry in defaults for the evidence.
+      # Forwarded VERBATIM to the backend (drop_params would otherwise strip a
+      # non-OpenAI param like repetition_penalty). See the registry entry.
       extra_body:
 {% for _pk, _pv in m.extra_body.items() %}
         {{ _pk }}: {{ _pv }}
@@ -107,8 +105,7 @@ model_list:
 {% endif %}
 {% endif %}
   # --- OpenRouter egress tier: explicit ids, one provider key ---
-  # Never chained into any fallbacks (see defaults). Keys arrive through the
-  # managed provider EnvironmentFile; an unseeded model renders no entry.
+  # Never chained into fallbacks; an unseeded model renders no entry.
 {% for m in llm_router_openrouter_models %}
 {% set _or_env = m.credential_env %}
 {% set _or_key = bao_local_llm_secrets[m.key_field] | default(lookup('env', m.credential_env), true) %}
@@ -117,9 +114,8 @@ model_list:
     litellm_params:
       model: {{ litellm_model(m) }}
       api_key: os.environ/{{ _or_env }}
-      # Rate and concurrency ceilings on paid egress. The spend cap below bounds
-      # the period; these bound the minute, so a runaway caller cannot exhaust a
-      # whole day's budget before the cap observes it.
+      # Bound the minute so a runaway caller can't exhaust the period budget
+      # before it's observed.
       rpm: {{ llm_router_openrouter_rpm }}
       tpm: {{ llm_router_openrouter_tpm }}
       max_parallel_requests: {{ llm_router_openrouter_max_parallel_requests }}
@@ -129,11 +125,9 @@ model_list:
 {% endif %}
 {% endfor %}
   # --- Hermes-only paid provider fallbacks ---
-  # An entry is emitted only when its exact credential resolves. Direct
-  # providers are separate failure domains; the final OpenRouter group contains
-  # only exact, multi-upstream model ids and is price-routed within that
-  # equivalent tier. No cloud group is an alias of a physical local model, so
-  # callers other than hermes-default do not inherit paid egress.
+  # Emitted only when its exact credential resolves. No cloud group aliases a
+  # physical local model, so callers other than hermes-default never inherit
+  # paid egress.
 {% for m in llm_router_hermes_cloud_models_credentialed %}
   - model_name: {{ m.route_group }}
     litellm_params:
@@ -142,18 +136,23 @@ model_list:
 {% if m.api_base is defined %}
       api_base: {{ m.api_base }}
 {% endif %}
-      input_cost_per_token: {{ m.input_cost_per_token }}
-      output_cost_per_token: {{ m.output_cost_per_token }}
+      # Defaults to 0: a genuinely free preset (hermes-cloud-free) has no
+      # per-token price, and 0 is its real price, not a placeholder.
+      input_cost_per_token: {{ m.input_cost_per_token | default(0) }}
+      output_cost_per_token: {{ m.output_cost_per_token | default(0) }}
       max_tokens: {{ m.max_output_tokens }}
       rpm: {{ llm_router_hermes_cloud_rpm }}
       tpm: {{ llm_router_hermes_cloud_tpm }}
       max_parallel_requests: {{ llm_router_hermes_cloud_max_parallel_requests }}
       timeout: {{ llm_router_request_timeout_seconds }}
       num_retries: 0
+{% if m.monthly_budget is defined %}
+      # Absent on hermes-cloud-free: nothing to bound, and a rendered ceiling
+      # with no spend behind it would be dishonest. See assert-budget-backing.yml.
       max_budget: {{ m.monthly_budget }}
       budget_duration: {{ llm_router_hermes_cloud_monthly_budget_period }}
+{% endif %}
 {% if m.provider == 'openrouter' %}
-      # Provider selection stays inside the exact model and policy constraints.
       extra_body:
         provider:
           sort: price
@@ -163,7 +162,9 @@ model_list:
           require_parameters: true
           allow_fallbacks: true
           data_collection: deny
-          zdr: true
+          # Defaults true; see the free preset's entry in llm-models.yml for
+          # the one case where an entry sets zero_data_retention: false.
+          zdr: {{ m.zero_data_retention | default(true) | bool | lower }}
 {% endif %}
     model_info:
       mode: chat
@@ -171,16 +172,30 @@ model_list:
       max_output_tokens: {{ m.max_output_tokens }}
       max_tokens: {{ m.max_output_tokens }}
 {% endfor %}
-  # NOTE there is deliberately no `openrouter/*` passthrough entry. The loop
-  # above IS the egress allowlist: a model the registry does not enable with a
-  # seeded key is not reachable through this router at all. See defaults for
-  # why the wildcard was removed rather than tightened.
-  # --- light tier ---
-  # The CPU `llm-light` deployment always renders. The GPU `llm-fast` deployment
-  # renders only when llm_router_llm_fast_enabled is true; with it false the tier
-  # is a SINGLE deployment per model name and there is no standby to drain to.
-  # When both render they share a model_name, and LiteLLM load-balances the pair
-  # and cools a failed deployment down.
+{% if llm_router_openrouter_wildcard_enabled | bool %}
+{% set _wc_key = bao_local_llm_secrets.OPENROUTER_API_KEY | default(lookup('env', 'OPENROUTER_API_KEY'), true) %}
+{% if _wc_key | trim | length > 0 %}
+  # --- OpenRouter wildcard: last resort, explicit name only ---
+  # See "OpenRouter wildcard passthrough" in the role README for the reversal
+  # this represents, why it can't be reached via fallback, and why it ranks
+  # ahead of the large-tier bare "*".
+  - model_name: "openrouter/*"
+    litellm_params:
+      model: openrouter/*
+      api_key: os.environ/OPENROUTER_API_KEY
+      rpm: {{ llm_router_openrouter_rpm }}
+      tpm: {{ llm_router_openrouter_tpm }}
+      max_parallel_requests: {{ llm_router_openrouter_max_parallel_requests }}
+      # No max_budget/budget_duration — see README, "OpenRouter wildcard passthrough".
+      extra_body:
+        provider:
+          sort: price
+          data_collection: deny
+          zdr: true
+{% endif %}
+{% endif %}
+  # --- light tier --- (README "Tiers" — CPU always renders, GPU only when
+  # llm_router_llm_fast_enabled, sharing model_name so LiteLLM load-balances)
 {% for m in llm_router_light_models %}
 {% if llm_router_llm_fast_enabled %}
   - model_name: {{ m.client_model_id }}
@@ -204,19 +219,39 @@ model_list:
 {% endif %}
 {% endfor %}
 
-  # vLLM tier — the NVIDIA/CUDA guest. One deployment per model: vLLM serves a
-  # single model per instance and there is no standby serving the same weights,
-  # so this tier deliberately does not render a pair.
-{% for m in llm_router_vllm_models %}
+  # vLLM tier + hermes-local entries — see README "The vLLM tier and the
+  # Hermes local GPU leg".
+{% for m in llm_router_vllm_models + llm_router_hermes_local_models %}
 {% if llm_router_llm_vllm_enabled %}
   - model_name: {{ m.client_model_id }}
     litellm_params:
       model: {{ litellm_model(m) }}
       api_base: {{ llm_router_llm_vllm_base_url }}
       api_key: {{ llm_router_light_api_key }}
-{% if m.embedding | default(false) %}
+{% if m.num_retries is defined %}
+      num_retries: {{ m.num_retries }}
+{% endif %}
+{% if m.request_timeout is defined %}
+      timeout: {{ m.request_timeout }}
+{% endif %}
+{% if m.stream_timeout is defined %}
+      stream_timeout: {{ m.stream_timeout }}
+{% endif %}
+{% if m.embedding | default(false) or m.context_window is defined or m.allowed_fails is defined or m.cooldown_time is defined %}
     model_info:
+{% if m.embedding | default(false) %}
       mode: embedding
+{% elif m.context_window is defined %}
+      # Mandatory here — see README "The vLLM tier and the Hermes local GPU leg".
+      max_input_tokens: {{ m.context_window }}
+      max_tokens: {{ m.context_window }}
+{% endif %}
+{% if m.allowed_fails is defined %}
+      allowed_fails: {{ m.allowed_fails }}
+{% endif %}
+{% if m.cooldown_time is defined %}
+      cooldown_time: {{ m.cooldown_time }}
+{% endif %}
 {% endif %}
 {% endif %}
 {% endfor %}
@@ -243,8 +278,11 @@ router_settings:
   # render here, so no dead route or duplicate local attempt is advertised.
   fallbacks:
     - hermes-default: {{ llm_router_hermes_default_fallback_chain | to_json }}
-  max_fallbacks: 1
 {% endif %}
+  # Derived from the chain length (35-hermes-cloud.yml), not a fixed 1: this is
+  # a 5-leg chain now, and a hardcoded max_fallbacks here would silently cap
+  # every attempt after the first, truncating the whole fallback design while
+  # still rendering and passing every test that doesn't count fallback depth.
   max_fallbacks: {{ llm_router_max_fallbacks }}
   # No CROSS-TIER fallbacks for the default brain, on purpose: a fallback
   # serving a smaller context than the primary poisons callers instead of
@@ -256,8 +294,7 @@ router_settings:
   enable_pre_call_checks: true
   optional_pre_call_checks:
     - enforce_model_rate_limits
-  # Genuine failures are forwarded once so backend calls remain exactly bounded.
-  # The rate-limit policy below overrides this for 429s only.
+  # Bounded once; the rate-limit policy below overrides this for 429s only.
   num_retries: {{ llm_router_num_retries }}
   timeout: {{ llm_router_request_timeout_seconds }}
   # A 429 means the serving slot is busy, not that the work failed — wait it out
@@ -277,22 +314,10 @@ router_settings:
   allowed_fails_policy:
     RateLimitErrorAllowedFails: {{ llm_router_rate_limit_allowed_fails }}
 {% if llm_router_redis_host | length > 0 %}
-  # Shared spend store for the router pool. Without this every member would
-  # count only its own spend and the ceiling below would really be Nx, which is
-  # why the budget is rendered ONLY inside this block — a budget without a
-  # store is a control that reports a limit it does not hold, and the assert in
-  # tasks/assert.yml fails the build rather than let the two separate.
-  # Credentials come from the EnvironmentFile via os.environ/, like every other
-  # secret here; no literal lands in this file.
+  # Shared spend store — see README "Spend tracking (Redis)" for why the
+  # budget below renders only alongside it, and why redis_port is a literal
+  # int rather than an os.environ/ marker.
   redis_host: os.environ/LLM_ROUTER_REDIS_HOST
-  # Port is a LITERAL int, not an os.environ/ reference like its neighbours.
-  # LiteLLM's documented Redis examples show the port as an integer, and its
-  # os.environ/ indirection is documented for string fields; passing the
-  # unresolved marker where an int is expected risks failing at client
-  # construction rather than at render, which is the worst place to find out.
-  # It is also not a secret — it comes from the same public ports registry every
-  # other port here does — so routing it through the EnvironmentFile bought
-  # nothing.
   redis_port: {{ llm_router_redis_port }}
   redis_password: os.environ/LLM_ROUTER_REDIS_PASSWORD
 {% if llm_router_openrouter_budget_limit | float > 0 %}
@@ -302,19 +327,14 @@ router_settings:
       time_period: {{ llm_router_openrouter_budget_period }}
 {% endif %}
 {% else %}
-  # No spend store configured, so deliberately NO provider_budget_config.
-  # LiteLLM tracks provider spend in Redis; with a multi-member pool and no
-  # shared store each member counts only its own, so a rendered ceiling would
-  # really be Nx and would reset on every rolling converge. A control that
-  # reports a limit it does not hold is worse than an absent one. Set
-  # llm_router_redis_host to get a real cap; the rate ceilings on each egress
-  # deployment above work either way.
+  # No spend store configured, so deliberately NO provider_budget_config —
+  # see README "Spend tracking (Redis)". Set llm_router_redis_host for a real
+  # cap; the rate ceilings on each egress deployment above work either way.
 {% endif %}
-  # NOTE deliberately no `fail_closed_budget_enforcement`. It governs LiteLLM's
-  # POSTGRES-backed VIRTUAL-KEY budgets, not the provider budget above, and it
-  # 503s when spend cannot be verified. Attaching a database (below) does NOT
-  # make it appropriate: this proxy issues no virtual keys, so it stays inert at
-  # best and a 503 generator on the only front door at worst. See defaults.
+  # Deliberately no `fail_closed_budget_enforcement`: it governs LiteLLM's
+  # virtual-key budgets, not the provider budget above, and 503s when spend
+  # cannot be verified. Attaching a database does NOT make it appropriate —
+  # this proxy issues no virtual keys. See README "Spend tracking".
 
 general_settings:
   master_key: os.environ/LLM_ROUTER_MASTER_KEY
