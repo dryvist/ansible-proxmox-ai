@@ -7,7 +7,7 @@
 #
 # ABSOLUTE RULE: never serve a model with param_billions >= 14 on this GPU
 # (llm-fast, RX 6800, 16 GB VRAM). A single Hermes-4-14B (Q4, ~8.4 GB) load
-# hard-locked the pve1 HOST twice even alone, on top of two earlier co-resident
+# hard-locked the HOST twice even alone, on top of two earlier co-resident
 # load hard-locks (see llama_cpp_service_enabled below). The `param_billions`
 # field on every llama_cpp_models entry + the converge-time assert in
 # tasks/main.yml enforce this; never add a model here without a param_billions
@@ -40,11 +40,23 @@ llama_cpp_models_dir: "{{ llama_cpp_data_dir }}/models"
 llama_cpp_config_dir: /etc/llama-swap
 llama_cpp_config_file: "{{ llama_cpp_config_dir }}/config.yaml"
 
-# --- GPU toggle -------------------------------------------------------------
-# true  -> ROCm build, all layers offloaded (-ngl 99), gfx-version override.
-# false -> CPU-only standby (future `llm-light` guest): skips every ROCm/GPU task,
-#          runs -ngl 0 with a smaller context so it still answers on CPU.
-llama_cpp_gpu: true
+# --- GPU backend -------------------------------------------------------------
+# Which upstream llama.cpp build to deploy. Upstream ships a prebuilt Linux
+# binary per backend, so this selects an ASSET — nothing is compiled here.
+#
+#   rocm   -> AMD ROCm build, gfx-version override, /dev/kfd + /dev/dri.
+#   vulkan -> Vulkan build. This is the NVIDIA path: upstream publishes NO
+#             Linux CUDA binary (verified across releases — the CUDA prebuilts
+#             are Windows-only), and Vulkan is the Linux GPU backend upstream
+#             actually ships for this hardware. Uses /dev/nvidia*; the NVIDIA
+#             Vulkan ICD talks to those nodes directly and does NOT need
+#             /dev/dri, which is absent in an NVIDIA-passthrough LXC.
+#   cpu    -> CPU-only standby: skips every GPU task, -ngl 0, smaller context.
+#
+# `llama_cpp_gpu` stays as the derived boolean every existing task and template
+# already keys off, so adding a backend did not touch that logic.
+llama_cpp_gpu_backend: rocm
+llama_cpp_gpu: "{{ llama_cpp_gpu_backend != 'cpu' }}"
 
 # AMD RX 6800 = Navi 21 / gfx1030; ROCm needs the gfx-version override for this card.
 llama_cpp_hsa_override_gfx_version: "10.3.0"
@@ -57,16 +69,40 @@ llama_cpp_ctx_size: "{{ 8192 if llama_cpp_gpu | bool else 2048 }}"
 # GPU device nodes passed in by ansible-proxmox lxc_gpu_features. The role stats
 # these at runtime and adds the service user to whatever groups own them, so device
 # access works regardless of how host GIDs map to container groups.
-llama_cpp_gpu_device_nodes:
-  - /dev/kfd
-  - /dev/dri/card0
-  - /dev/dri/renderD128
+#
+# Per backend, because the node sets share nothing. MEASURED on the NVIDIA guest:
+# /dev/dri does NOT exist there at all, so carrying the AMD list over would fail
+# the device-presence assert and read as "passthrough is broken" when it is
+# simply a different driver stack.
+llama_cpp_gpu_device_nodes: >-
+  {{ ['/dev/nvidia0', '/dev/nvidiactl', '/dev/nvidia-uvm', '/dev/nvidia-uvm-tools']
+     if llama_cpp_gpu_backend == 'vulkan'
+     else ['/dev/kfd', '/dev/dri/card0', '/dev/dri/renderD128'] }}
 
 # Best-effort ROCm runtime packages for the container (the prebuilt ROCm llama.cpp
 # binary links against them). Left empty by default: exact provisioning is resolved
 # at the first live converge (the LXC template may already ship ROCm, or an AMD apt
 # repo may be needed). Override per host/group as validated.
 llama_cpp_rocm_packages: []
+
+# Vulkan userspace for the vulkan backend. The loader plus the vendor ICD are
+# what llama.cpp's Vulkan build links and discovers at runtime.
+#
+# `vulkan-tools` is here deliberately, not as a convenience: it provides
+# `vulkaninfo`, which is the ONLY way to prove the GPU is visible through
+# Vulkan from inside the guest before starting the server. Without it, a card
+# that Vulkan cannot see is indistinguishable from a working one until you are
+# reduced to guessing from throughput — and llama.cpp falls back to CPU
+# silently, which is exactly the failure this role must not ship. The
+# converge-time assert below turns that probe into a gate.
+#
+# NOTE: the NVIDIA ICD package must match the HOST driver. It is not pinned
+# here because it resolves from the same NVIDIA repo the host driver came from,
+# so both sides move together by construction rather than by a pin someone has
+# to remember to bump.
+llama_cpp_vulkan_packages:
+  - libvulkan1
+  - vulkan-tools
 
 # --- Release resolution (never pin a version — resolve latest at converge) ----
 # Query the GitHub "latest release" and pick the asset by NAME pattern, so both the
@@ -76,7 +112,9 @@ llama_cpp_swap_releases_api: "https://api.github.com/repos/mostlygeek/llama-swap
 # GPU build -> the ubuntu ROCm tarball; CPU build -> the plain ubuntu x64 tarball.
 llama_cpp_llamacpp_asset_regex: >-
   {{ '^llama-.*-bin-ubuntu-rocm-.*-x64[.]tar[.]gz$'
-     if llama_cpp_gpu | bool
+     if llama_cpp_gpu_backend == 'rocm'
+     else '^llama-.*-bin-ubuntu-vulkan-x64[.]tar[.]gz$'
+     if llama_cpp_gpu_backend == 'vulkan'
      else '^llama-.*-bin-ubuntu-x64[.]tar[.]gz$' }}
 llama_cpp_swap_asset_regex: '^llama-swap_.*_linux_amd64[.]tar[.]gz$'
 
@@ -128,4 +166,21 @@ llama_cpp_models:
 # large GPU allocations (qwen3-4b at 2.5 GB is fine). Do NOT re-enable on
 # llm-fast until the hardware question is settled (BIOS/PSU/memtest); the light
 # tier serves from llm-light (CPU) meanwhile.
+# --- Per-guest parameter ceiling ---------------------------------------------
+# The >=14B rule above is an ABSOLUTE, group-scoped rule for llm-fast, born of
+# four host hard-locks on that specific card. It is not a general ceiling, and
+# outside llm_fast_group the role previously enforced NOTHING — so re-using it
+# on another GPU ran with no size limit at all.
+#
+# That absence is the problem this closes. A ceiling that only exists on one
+# guest is not a ceiling; it is a special case. This one applies to EVERY host
+# running the role, defaulting to the same conservative 14 so nothing gets
+# quietly larger, and a guest with a bigger card raises it EXPLICITLY in its own
+# vars — a deliberate, reviewable act naming the number, rather than inheriting
+# permission by being in a different group.
+#
+# Raising this is not weakening a check. The llm-fast absolute rule is separate,
+# still group-scoped, and untouched by any value set here.
+llama_cpp_max_param_billions: 14
+
 llama_cpp_service_enabled: true

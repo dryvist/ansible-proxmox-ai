@@ -1,20 +1,20 @@
 ---
-# Langfuse v3 — LLM observability (traces, evals, prompt management) deployed as
+# Langfuse v4 — LLM observability (traces, evals, prompt management) deployed as
 # a Docker-Compose-in-LXC stack. Bundled stack: langfuse-web + langfuse-worker +
 # postgres + clickhouse + redis. The upstream-bundled MinIO is intentionally
 # DROPPED — blob storage points at the homelab RustFS S3 instead (see the
 # langfuse_docker_s3_* vars). All literals live here; the template references
 # vars only (DRY).
 #
-# OTLP trace ingest is served by langfuse-web at :3000/api/public/otel — no
-# extra service or env is required for OpenTelemetry clients.
+# OTLP trace ingest is served by langfuse-web at :3000/api/public/otel/v1/traces.
 
 # =============================================================================
-# Container images — pinned. Bump via Renovate or manual review.
+# Container images — maintained major release channel. Renovate keeps the
+# underlying dependency updates visible for review.
 # web and worker MUST share the same Langfuse version.
 # =============================================================================
-langfuse_docker_web_image: "langfuse/langfuse:3.225.1"
-langfuse_docker_worker_image: "langfuse/langfuse-worker:3.225.1"
+langfuse_docker_web_image: "docker.langfuse.com/langfuse/langfuse:4"
+langfuse_docker_worker_image: "docker.langfuse.com/langfuse/langfuse-worker:4"
 langfuse_docker_postgres_image: "postgres:17"
 # ClickHouse 24.8 is an upstream LTS line and satisfies Langfuse v3's minimum.
 langfuse_docker_clickhouse_image: "clickhouse/clickhouse-server:26.6"
@@ -92,6 +92,28 @@ langfuse_docker_web_port: >-
 # Matches the `langfuse` ingress entry in terraform-proxmox locals.tf.
 langfuse_docker_hostname: "langfuse.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
 langfuse_docker_nextauth_url: "https://{{ langfuse_docker_hostname }}"
+
+# =============================================================================
+# SSO via Authelia (custom OIDC provider). client_id is a fixed, non-secret
+# identifier that must match the client_id Authelia registers for this app
+# (ansible-proxmox-apps roles/authelia); the client_secret is the one shared
+# value both sides need and comes from the same OpenBao-generated secret
+# Authelia hashes into its own config. AUTH_CUSTOM_ALLOW_ACCOUNT_LINKING
+# lets a user who already has a local Langfuse account (email/password)
+# adopt it on first OIDC login instead of getting a second, empty account.
+# =============================================================================
+langfuse_docker_auth_custom_name: Authelia
+langfuse_docker_auth_custom_issuer: "https://authelia.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
+langfuse_docker_auth_custom_client_id: langfuse
+# Not mandatory(): the secret isn't wired into this repo's OpenBao fetch yet
+# (see the role README / PR notes), and every OTHER Langfuse converge must
+# keep working in the meantime. Empty means OIDC login isn't offered yet —
+# same non-fatal shape as Homarr's `homarr_oidc_enabled: false` default —
+# rather than a hard failure on every deploy.
+langfuse_docker_auth_custom_client_secret: >-
+  {{ lookup('env', 'LANGFUSE_OIDC_CLIENT_SECRET')
+     | mandatory('LANGFUSE_OIDC_CLIENT_SECRET unset') }}
+langfuse_docker_oidc_enabled: true
 
 # =============================================================================
 # Database identity + connection URLs (composed here; template stays literal).

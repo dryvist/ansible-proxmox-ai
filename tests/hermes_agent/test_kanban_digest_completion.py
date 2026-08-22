@@ -20,7 +20,7 @@ under pytest. Plain asserts, no fixtures, no framework.
 import json
 from pathlib import Path
 
-from _kanban_digest_shared import DIGEST, FIXTURE_CONFIG, NOW, digest
+from _kanban_digest_shared import DIGEST, FIXTURE_CONFIG, NOW, digest, heartbeat
 
 
 # --- contract 1: a completed card carries its result -------------------------
@@ -125,12 +125,13 @@ def test_running_card_past_its_max_runtime_is_reported():
 
 
 def test_running_card_without_a_recorded_max_runtime_is_not_judged():
-    text = digest(
-        [{"id": "t_ff", "title": "Long one", "status": "running",
-          "max_runtime_seconds": None, "current_run_id": 1}],
-        [{"id": 1, "task_id": "t_ff", "outcome": None, "started_at": NOW - 99999}])
+    task = {"id": "t_ff", "title": "Long one", "status": "running",
+            "max_runtime_seconds": None, "current_run_id": 1}
+    runs = [{"id": 1, "task_id": "t_ff", "outcome": None, "started_at": NOW - 99999}]
+    text = digest([task], runs)
     assert "Overrunning" not in text, "no limit recorded means no claim to make"
-    assert "No board activity" in text
+    assert text == DIGEST.SILENT, "no work-log content, so the noise heartbeat covers it"
+    assert "No board activity" in heartbeat([task], runs)
 
 
 def test_overrun_uses_the_current_attempts_start_not_the_first():
@@ -167,7 +168,9 @@ def test_a_future_timestamp_is_not_trusted():
 
 
 def test_the_fallback_note_reaches_the_post():
-    text = digest([], [], note="no usable state file — reporting the last 15 min instead")
+    """No board activity here, so the note lands in the heartbeat text, not
+    the (SILENT) work log — see test_kanban_digest_heartbeat.py."""
+    text = heartbeat([], [], note="no usable state file — reporting the last 15 min instead")
     assert "no usable state file" in text
 
 

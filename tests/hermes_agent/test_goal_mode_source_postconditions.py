@@ -21,6 +21,7 @@ from conftest import (
     PINNED_WORKER_REAP_SOURCE,
     PINNED_WORKER_SPAWN_SOURCE,
     _apply_runtime_patch,
+    _combined_assert_task,
     _source_postconditions,
     _task,
 )
@@ -42,9 +43,10 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "cron/scheduler.py",
         "plugins/memory/hindsight/__init__.py",
         "run_agent.py",
+        "hermes_cli/main.py",
     ]
 
-    assert_task = _task("Assert installed Hermes pinned-source patches")
+    assert_task = _combined_assert_task()
     conditions = " ".join(assert_task["ansible.builtin.assert"]["that"])
     assert "verdict, reason, _, _, _ = judge_goal(" in conditions
     assert any(
@@ -78,9 +80,15 @@ def test_installed_source_postconditions_fail_closed() -> None:
     assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in conditions
     assert "status in (408, 429)" in conditions
     assert "for idx in range(end - 1, start - 1, -1):" in conditions
-    assert "deliver_content = _cron_markup_guard(job, output_file," in conditions
+    assert "_cron_markup_guard(job, output_file," in conditions
     # A failed run must reach the issues channel, not the work surface.
     assert "_deliver_result(_routed_job, deliver_content," in conditions
+    # Output-validity guard: wraps the markup guard's call, so it must be
+    # present and wired to the actual delivery-content assignment.
+    assert "def _cron_output_validity_guard(job, output_file, content, success):" in conditions
+    assert "deliver_content = _cron_output_validity_guard(job, output_file," in conditions
+    assert "if _is_cron_silence_response(text):" in conditions
+    assert "def _is_cron_silence_response(text: str) -> bool:" in conditions
     # The message and the retry rule are asserted as a pair: the message tells
     # the operator the card will be retried, so it must not be able to land
     # while the forced first-failure give-up is still in the source.
@@ -380,4 +388,46 @@ def test_installed_source_postconditions_fail_closed() -> None:
             retry_source,
             auxiliary_source,
         )
+    )
+
+
+def test_cron_cli_exit_code_conditions_reject_unpatched_source() -> None:
+    """The cron exit-code assertion must fail against upstream's own source.
+
+    Upstream's ``cmd_cron`` calls ``cron_command(args)`` and discards the
+    return value, so a failed ``hermes cron`` action exits 0. Measured on the
+    live guest 2026-08-16: ``hermes cron run <missing>`` prints "Failed to run
+    job: ... not found" and still returns 0. It is loud to a human and silent
+    to a program, which is why the brain watchdog re-reads job state off
+    ``cron list --all`` rather than trusting ``$?``.
+
+    Asserting the patched form is present proves nothing on its own — a
+    condition that also holds for unpatched source would let the patch stop
+    applying unnoticed. This pins that it does not hold.
+    """
+    from jinja2 import Environment
+
+    from conftest import PATCHED_CLI_MAIN_SOURCE, PINNED_CLI_MAIN_SOURCE
+
+    conditions = [
+        c
+        for c in _task("Assert installed Hermes pinned-source patches")[
+            "ansible.builtin.assert"
+        ]["that"]
+        if "hermes_agent_cli_main_source" in c
+    ]
+    assert conditions, "no assertion covers the cron CLI exit code"
+
+    env = Environment(autoescape=False)
+
+    def _holds(source: str) -> bool:
+        return all(
+            bool(env.compile_expression(c)(hermes_agent_cli_main_source=source))
+            for c in conditions
+        )
+
+    assert _holds(PATCHED_CLI_MAIN_SOURCE)
+    assert not _holds(PINNED_CLI_MAIN_SOURCE), (
+        "the cron exit-code conditions hold against upstream's unpatched "
+        "cmd_cron, so the patch could silently stop applying"
     )

@@ -46,6 +46,9 @@ PROFILES_DIR = "{{ hermes_agent_hermes_home }}/profiles"
 # Where worker-failure lines go instead of the work log. Empty disables the
 # split entirely and restores the single-post behaviour.
 ISSUES_CHANNEL = "{{ hermes_agent_kanban_digest_issues_channel }}"
+# Where the "no board activity" heartbeat post goes instead of the work log.
+# Empty disables the split and restores the single-post behaviour.
+NOISE_CHANNEL = "{{ hermes_agent_kanban_digest_noise_channel }}"
 HERMES_BIN = "{{ hermes_agent_bin }}"
 # Prefix that tells the cron scheduler this run's own observation path
 # failed, so the post is routed to the issues channel instead of the work
@@ -494,6 +497,23 @@ def send_to_issues(text):
         return False
 
 
+def send_to_noise(text):
+    """Post `text` to the noise channel. True on success, False on any failure.
+
+    Same contract as send_to_issues: never raises, caller falls back to
+    inlining the text so a send problem degrades routing, not delivery.
+    """
+    if not NOISE_CHANNEL:
+        return False
+    try:
+        return subprocess.run(
+            [HERMES_BIN, "send", "--to", f"slack:{NOISE_CHANNEL}", "--quiet", text],
+            capture_output=True, timeout=30, check=False,
+        ).returncode == 0
+    except Exception:  # noqa: BLE001 - any failure means "fall back to inline"
+        return False
+
+
 def section(lines, heading):
     """Rendered section, capped, honest about what the cap hid."""
     if not lines:
@@ -507,9 +527,11 @@ def section(lines, heading):
 
 def build_digest(run_rows, running_rows, board, now, since, note, due=True,
                  split_failures=False, extra_issue_lines=()):
-    """Return (slack_text, issues_text).
+    """Return (slack_text, issues_text, heartbeat_text).
 
-    slack_text is SILENT when a quiet run is heartbeat-suppressed.
+    slack_text is SILENT when a quiet run is heartbeat-suppressed, and also
+    SILENT on the heartbeat-DUE quiet branch (that text moves to
+    heartbeat_text instead — see below).
 
     `due` is the heartbeat verdict and gates ONLY the fully-quiet branch. Any
     real board activity — a completion, a failure, an overrun — returns text
@@ -528,6 +550,10 @@ def build_digest(run_rows, running_rows, board, now, since, note, due=True,
     above, these land ONLY in issues_text and are never heartbeat-gated: a
     stalled or growing-blocked board is exactly the "everything looks green"
     failure mode this digest exists to catch.
+
+    The "no board activity" heartbeat note (due, nothing else to report) is a
+    work log by neither definition above — it belongs on the noise channel
+    (heartbeat_text), same split shape as the failure peel.
     """
     now_epoch = now.timestamp()
     span = fmt_dur(now_epoch - since)
@@ -555,10 +581,25 @@ def build_digest(run_rows, running_rows, board, now, since, note, due=True,
     # heartbeat interval has elapsed. Decided before any text is built so the
     # quiet path cannot leak a header-only post.
     if not (done or failed or overrun) and not due:
-        return SILENT, issues_text
+        return SILENT, issues_text, ""
 
     header = (f"*{TITLE}* — {now.strftime('%Y-%m-%d %H:%M UTC')} "
               f"(since {dt.datetime.fromtimestamp(since, dt.timezone.utc).strftime('%H:%M UTC')}, {span})")
+
+    if not (done or failed or overrun):
+        # Fully-quiet-but-due: this is the heartbeat itself, not a work-log
+        # entry, so it goes to the noise channel instead of `lines` below.
+        board_text = ", ".join(f"{v} {k}" for k, v in sorted(board.items())) or "empty"
+        heartbeat_lines = [header]
+        if note:
+            heartbeat_lines.append(f":information_source: {note}.")
+        heartbeat_lines.append(
+            f":mag: No board activity in the last {span} — no card completed, "
+            f"failed, was retried or exceeded its max_runtime. Board holds: "
+            f"{board_text}. (heartbeat — quiet runs stay silent for the next "
+            f"{HEARTBEAT_HOURS}h unless the board does something)")
+        return SILENT, issues_text, "\n".join(heartbeat_lines)
+
     lines = [header]
     if note:
         lines.append(f":information_source: {note}.")
@@ -567,14 +608,7 @@ def build_digest(run_rows, running_rows, board, now, since, note, due=True,
     lines += section(failed, "Failed / retried / left open")
     lines += section(done, "Completed")
 
-    if not (done or failed or overrun):
-        board_text = ", ".join(f"{v} {k}" for k, v in sorted(board.items())) or "empty"
-        lines.append("")
-        lines.append(f":mag: No board activity in the last {span} — no card completed, "
-                     f"failed, was retried or exceeded its max_runtime. Board holds: "
-                     f"{board_text}. (heartbeat — quiet runs stay silent for the next "
-                     f"{HEARTBEAT_HOURS}h unless the board does something)")
-    return "\n".join(lines), issues_text
+    return "\n".join(lines), issues_text, ""
 
 
 def main():
@@ -606,11 +640,11 @@ def main():
             board, blocked_prior, BLOCKED_GROWTH_THRESHOLD)
         alarms = [line for line in (stall_line, timeout_line, blocked_line) if line]
 
-        text, issues_text = build_digest(run_rows, running_rows, board, now,
-                                         since, note,
-                                         heartbeat_due(now_epoch, last_post),
-                                         split_failures=bool(ISSUES_CHANNEL),
-                                         extra_issue_lines=alarms)
+        text, issues_text, heartbeat_text = build_digest(
+            run_rows, running_rows, board, now, since, note,
+            heartbeat_due(now_epoch, last_post),
+            split_failures=bool(ISSUES_CHANNEL),
+            extra_issue_lines=alarms)
     except Exception as e:  # noqa: BLE001 - deliberately broad; failure must be delivered
         print(f"{ISSUES_MARKER} :warning: {TITLE} FAILED: {type(e).__name__}: {str(e)[:200]}")
         return 0
@@ -622,12 +656,20 @@ def main():
     if issues_text and not send_to_issues(issues_text):
         text = issues_text if text == SILENT else f"{text}\n\n{issues_text}"
 
+    # Heartbeat goes to the noise channel, same degrade-to-inline contract.
+    if heartbeat_text and not send_to_noise(heartbeat_text):
+        text = heartbeat_text if text == SILENT else f"{text}\n\n{heartbeat_text}"
+
     # The window always advances — a suppressed run still covered it, and
     # re-covering it would double-report the next real activity. Only
-    # last_post_epoch is held back, and only when nothing was delivered. The
-    # two alarm counters always advance too, regardless of what got posted —
-    # they track board state across ticks, not delivery.
-    save_state(now_epoch, last_post if text == SILENT else now_epoch,
+    # last_post_epoch is held back, and only when nothing was delivered —
+    # including a heartbeat that went to the noise channel rather than
+    # `text`, or the gate above would never see the next tick as suppressed
+    # and the heartbeat would fire every run instead of every HEARTBEAT_HOURS.
+    # The two alarm counters always advance too, regardless of what got
+    # posted — they track board state across ticks, not delivery.
+    delivered = text != SILENT or bool(heartbeat_text)
+    save_state(now_epoch, now_epoch if delivered else last_post,
               new_stall, new_blocked)
     print(text)
     return 0

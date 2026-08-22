@@ -18,6 +18,42 @@ usage() {
 PLAYBOOK="$1"
 shift
 
+# A converge from a checkout behind its remote branch deploys stale content
+# and still exits 0 with a green play recap — nothing in the output
+# distinguishes it from a real deployment. Refuse by default; ALLOW_STALE_CHECKOUT=1
+# is the deliberate escape hatch for a pinned replay.
+# Detached HEAD (how CI checks out a specific commit) isn't the stale-developer-
+# checkout case this guards against — there's no tracked branch to compare
+# against, so skip rather than fail on `git rev-parse origin/HEAD` nonsense.
+REPO_ROOT=$(git rev-parse --show-toplevel)
+BRANCH=$(git -C "$REPO_ROOT" symbolic-ref -q --short HEAD || true)
+if [[ -n $BRANCH ]]; then
+  git -C "$REPO_ROOT" fetch --quiet origin "$BRANCH"
+  LOCAL_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD)
+  REMOTE_SHA=$(git -C "$REPO_ROOT" rev-parse "origin/$BRANCH")
+  if [[ $LOCAL_SHA != "$REMOTE_SHA" ]] && [[ -z ${ALLOW_STALE_CHECKOUT:-} ]]; then
+    BEHIND=$(git -C "$REPO_ROOT" rev-list --count "$LOCAL_SHA..$REMOTE_SHA")
+    echo "ERROR: checkout is $BEHIND commit(s) behind origin/$BRANCH — refusing to converge." >&2
+    echo "  local:  $LOCAL_SHA" >&2
+    echo "  remote: $REMOTE_SHA" >&2
+    echo "Run 'git pull --ff-only origin $BRANCH', or set ALLOW_STALE_CHECKOUT=1 for a deliberate pinned replay." >&2
+    exit 1
+  fi
+fi
+
+# The SHA check above only proves the CHECKED-OUT COMMIT matches origin — it
+# is blind to uncommitted edits to tracked files, which deploy content that
+# matches neither the remote nor a clean checkout of that commit and still
+# exit 0 with a green recap, same failure shape the SHA check exists for.
+# --untracked-files=no: this repo carries untracked working state (a
+# published tofu-inventory cache, a resolved shared role) that is not
+# playbook drift, so counting it would refuse every routine run.
+if [[ -n $(git -C "$REPO_ROOT" status --porcelain --untracked-files=no) ]] && [[ -z ${ALLOW_STALE_CHECKOUT:-} ]]; then
+  echo "ERROR: working tree has uncommitted changes to tracked files — refusing to converge from unreviewed local edits." >&2
+  echo "Commit or stash them, or set ALLOW_STALE_CHECKOUT=1 for a deliberate override." >&2
+  exit 1
+fi
+
 CERT_DIR=""
 RUNNER_BAO_TOKEN=""
 
@@ -33,6 +69,9 @@ revoke_runner_token() {
   return 1
 }
 
+# shellcheck disable=SC2329 # false positive: invoked via `trap cleanup EXIT` below.
+# Reproduced in isolation — shellcheck stops crediting the trap reference once
+# the script ends in an explicit `exit`, which the run log below now does.
 cleanup() {
   local status=$?
   revoke_runner_token || true
@@ -112,4 +151,41 @@ if [[ -n ${SSH_KNOWN_HOSTS:-} ]]; then
   export ANSIBLE_SSH_COMMON_ARGS="-o UserKnownHostsFile=$CERT_DIR/known_hosts -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes${ANSIBLE_SSH_COMMON_ARGS:+ $ANSIBLE_SSH_COMMON_ARGS}"
 fi
 
-ansible-playbook "$PLAYBOOK" "$@"
+# A converge is the highest-consequence thing this repo does; without a
+# persisted log, reconstructing what happened after the fact means trusting
+# a green recap or digging through unrelated evidence (sshd logins, reflog).
+LOG_DIR="$REPO_ROOT/.ansible-run-logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$PLAYBOOK" .yml).log"
+echo "Logging this run to $LOG_FILE"
+set +e
+ansible-playbook "$PLAYBOOK" "$@" 2>&1 | tee "$LOG_FILE"
+STATUS=${PIPESTATUS[0]}
+set -e
+
+# A --limit naming a group that matched nothing (bad group name, a group only
+# populated by a DIFFERENT repo's inventory loader, a typo) still lets the
+# play recap come back green — localhost (the inventory-loader host) always
+# ran, so a naive "did anything run" check is never satisfied by absence.
+# If --limit asked for anything beyond bare localhost, the recap must show at
+# least one non-localhost host, or this run touched nothing it was asked to.
+LIMIT_VAL=""
+prev=""
+for a in "$@"; do
+  [[ $prev == "--limit" || $prev == "-l" ]] && LIMIT_VAL="$a"
+  [[ $a == --limit=* ]] && LIMIT_VAL="${a#--limit=}"
+  prev="$a"
+done
+NON_LOCALHOST_LIMIT=$(tr ',' '\n' <<<"$LIMIT_VAL" | grep -vx 'localhost' | grep -v '^$' || true)
+if [[ -n $NON_LOCALHOST_LIMIT ]]; then
+  RECAP_HOSTS=$(awk '/^PLAY RECAP/{f=1;next} f && NF{print $1}' "$LOG_FILE")
+  NON_LOCALHOST_RECAP=$(grep -vx 'localhost' <<<"$RECAP_HOSTS" || true)
+  if [[ -z $NON_LOCALHOST_RECAP ]]; then
+    echo "ERROR: --limit ($LIMIT_VAL) asked for hosts beyond localhost, but the play recap shows only localhost — this run did nothing." >&2
+    echo "Check the group name against the inventory loader that actually populates it (it may live in a different repo)." >&2
+    STATUS=1
+  fi
+fi
+
+echo "Run log: $LOG_FILE"
+exit "$STATUS"

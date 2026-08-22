@@ -2,12 +2,29 @@
 # vllm role defaults — vLLM OpenAI-compatible server on an NVIDIA GPU, in a
 # privileged LXC.
 #
-# WHY vLLM AND NOT llama.cpp. Upstream ggml-org/llama.cpp publishes NO Linux
-# CUDA and no Linux ROCm release binary — verified across 8 releases; the CUDA
-# prebuilts are Windows-only. So the llama_cpp role's release-asset mechanism
-# cannot reach CUDA at all, and the remaining ways to run llama.cpp on CUDA
-# would be building from source or running a container. vLLM ships official
-# manylinux wheels with CUDA bundled, so `pip install` is the whole install.
+# STATUS: this role is NOT currently serving on llm-4080. That guest sets
+# vllm_service_enabled: false and serves Qwen3.8-27B through llama.cpp on the
+# Vulkan backend — see inventory/group_vars/llm_vllm_group.yml. The role is
+# kept converged-but-stopped as the rollback path; its venv and weights stay on
+# the guest, so reverting is a variable flip and a converge, not a re-download.
+#
+# WHY vLLM WAS CHOSEN HERE ORIGINALLY, and the part of it that was WRONG.
+# Upstream ggml-org/llama.cpp publishes no Linux CUDA release binary — that is
+# TRUE and still true; the CUDA prebuilts are Windows-only. Two claims built on
+# top of it were not:
+#   - "no Linux ROCm release binary" is FALSE. Upstream ships
+#     llama-*-bin-ubuntu-rocm-*-x64.tar.gz, which is exactly what the llama_cpp
+#     role selects for the AMD guest.
+#   - "therefore llama.cpp cannot use an NVIDIA GPU here" does not follow.
+#     Upstream ships a prebuilt Linux VULKAN binary that runs on NVIDIA. The
+#     absence of a CUDA build says nothing about whether the card can be used.
+# Do not re-derive the old conclusion from the one true premise.
+#
+# vLLM remains a reasonable engine for models it can actually read: it ships
+# official manylinux wheels with CUDA bundled, so `pip install` is the whole
+# install. It cannot read Qwen3.8-27B, because those weights exist below 4-bit
+# only as GGUF and the out-of-tree GGUF plugin has no merged adapter for the
+# qwen3_5 hybrid architecture.
 #
 # WHY NOTHING IS BUILT OR REPACKAGED. The wheels are cp38-abi3, so one wheel
 # covers every CPython >= 3.8 and this guest's 3.13 is in range (vLLM declares

@@ -1,0 +1,42 @@
+---
+# Make `hermes cron` report failure to a CALLER, not just to a human reader.
+#
+# hermes_cli/cron.py's _job_action already does the right thing: on a failed
+# action it prints "Failed to <action> job: ..." and returns 1. cron_command
+# passes that up. But main.py's cmd_cron calls `cron_command(args)` and DROPS
+# the return value, so the handler always yields None — and the dispatcher
+# treats None as success (main.py: `rc = args.func(args)` /
+# `if isinstance(rc, int) and rc != 0: sys.exit(rc)`).
+#
+# MEASURED on the live guest 2026-08-16, which is also a correction to the
+# original report of this defect:
+#
+#   $ hermes cron run definitely-not-a-job-xyz
+#   Failed to run job: Job with ID or name 'definitely-not-a-job-xyz' not
+#   found. Use cronjob(action='list') to inspect jobs.
+#   $ echo $?
+#   0
+#
+# So it is NOT silent to a human, and it DOES accept a job name as well as an
+# id — both of which the original ticket got wrong. The real defect is
+# narrower and worse for automation: it is silent to a PROGRAM. Anything that
+# branches on $? sees success. The brain watchdog already had to work around
+# exactly this, and says so in its own source: "`hermes cron pause <missing>`
+# prints 'Job ... not found' and still exits 0, so a return code cannot tell
+# 'paused it' from 'there was nothing to pause'" — which is why it re-reads
+# state off `cron list --all` instead of trusting the exit code.
+#
+# One `return` fixes every cron subcommand at once, because they all funnel
+# through cron_command. Fixing it at the caller rather than in each subcommand
+# is the smaller diff and cannot be partially applied.
+#
+# The regexp requires the bare call with no `return`, so re-running is a
+# no-op once patched, and an upstream release that fixes this itself makes
+# this patch match nothing rather than corrupt the line.
+- name: Propagate the cron command's exit code instead of discarding it
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/main.py"
+    regexp: |-
+      ^(def cmd_cron\(args\):\n(?:.*\n)*?)    cron_command\(args\)$
+    replace: '\g<1>    return cron_command(args)'
+  notify: Restart hermes-gateway

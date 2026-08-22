@@ -69,7 +69,7 @@ Optional:
                       servable does NOT mean pre-loaded or residency-pinned:
                       the small tier is servable and still evictable
                       (ttl=900), with a measured ~79s cold load.
-  serving_role        `primary` | `routine` | `small` | `ocr`. Names the
+  serving_role        `primary` | `routine` | `small` | `cluster` | `ocr`. Names the
                       role this entry serves in. Repointing the serving host
                       is a move of this one field: `primary` is what the
                       consumer aliases and the fabric's selector vars follow.
