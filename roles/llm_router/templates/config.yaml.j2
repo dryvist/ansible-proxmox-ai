@@ -311,14 +311,31 @@ router_settings:
   # deployment above work either way.
 {% endif %}
   # NOTE deliberately no `fail_closed_budget_enforcement`. It is a
-  # general_settings key governing LiteLLM's POSTGRES-backed virtual-key
-  # budgets, not the provider budget above, and it 503s when spend can be
-  # verified against neither Redis nor a database. This proxy issues no virtual
-  # keys and has no database, so it would be inert at best and a 503 generator
-  # on the fabric's only front door at worst. See defaults.
+  # general_settings key governing LiteLLM's POSTGRES-backed VIRTUAL-KEY
+  # budgets, not the provider budget above, and it 503s when spend cannot be
+  # verified. A database may now be attached (below) for the Adaptive Router's
+  # learned state, but this proxy still issues no virtual keys, so the setting
+  # remains inert at best and a 503 generator on the fabric's only front door
+  # at worst. Attaching Postgres did NOT make it appropriate. See defaults.
 
 general_settings:
   master_key: os.environ/LLM_ROUTER_MASTER_KEY
+{% if llm_router_db_host | length > 0 %}
+  # Postgres for the Adaptive Router's learned quality estimates, which load at
+  # startup — without it the router forgets every observation on restart and
+  # silently reverts to cold-start priors. Gated on the same condition as the
+  # DATABASE_URL line in the EnvironmentFile, so config and env cannot separate.
+  # Referenced via os.environ/ because the URL embeds the password.
+  database_url: os.environ/DATABASE_URL
+  # config.yaml stays authoritative for the model list. This flag would move
+  # that authority INTO the database and break registry-is-SSOT; it is
+  # independent of adaptive routing, which needs only the connection above.
+  store_model_in_db: {{ llm_router_store_model_in_db | to_json }}
+  # Per-request spend/error rows would grow without bound on a volume shared
+  # with another service. Spend lives in Redis, traces go to the collector.
+  disable_spend_logs: {{ llm_router_disable_spend_logs | to_json }}
+  disable_error_logs: {{ llm_router_disable_error_logs | to_json }}
+{% endif %}
   # Active probes spawn models on the llama-swap tier (see defaults) — passive
   # recovery via allowed_fails/cooldown_time is the default; health_check_interval
   # is a general_settings field (LiteLLM rejects it under router_settings).
