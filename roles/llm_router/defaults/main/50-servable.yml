@@ -67,10 +67,21 @@ llm_router_model_group_aliases: >-
 
 
 # Background health checks send REAL test requests to every deployment — on the
-# llama-swap fast tier each probe spawns the target model, and with 3 routers
-# probing every model this both churns VRAM constantly and (pre swap-groups)
-# triple-loaded the 16 GB card and hard-hung the GPU host. Passive recovery
-# (allowed_fails + cooldown_time) already re-admits drained deployments, so
-# active probing stays OFF by default.
-llm_router_background_health_checks: false
+# llama-swap-backed tiers (large + standby, fast + light) each probe spawns or
+# evicts the target model, and with 3 routers probing every model this both
+# churns VRAM constantly and (pre swap-groups) triple-loaded the 16 GB card and
+# hard-hung the GPU host. Passive recovery (allowed_fails + cooldown_time)
+# already re-admits drained deployments, so active probing stays off there —
+# see config.yaml.j2's model_info.disable_background_health_check on those
+# deployments.
+#
+# Verified against the pinned litellm==1.97.0 tag (00-identity.yml): per-
+# deployment exclusion via model_info.disable_background_health_check ships in
+# that release (litellm/proxy/proxy_server.py's _run_background_health_check
+# filters on it unconditionally; health_check_skip_disabled_background_models
+# extends the same exclusion to an on-demand GET /health call). That makes it
+# safe to turn ON for the tiers that don't swap: the dedicated vLLM guest (one
+# fixed model, nothing to evict) and the credential-gated cloud legs
+# (OpenRouter, Hermes cloud fallbacks — remote SaaS, no local slot to occupy).
+llm_router_background_health_checks: true
 llm_router_health_check_interval: 300
