@@ -272,16 +272,22 @@ llm_router_model_registry:
     key_field: OPENROUTER_API_KEY
     # zero_data_retention is deliberately FALSE here and true everywhere else.
     # ZDR filters out any upstream that retains prompts, and the free models
-    # this preset exists to reach do retain them — so a ZDR-constrained request
-    # silently skips the intended target and lands on whatever free model is
-    # left, which is reliably the rate-limited one. Verified live 2026-08-22:
-    # with ZDR on, this rung returned upstream 429 on every attempt while the
-    # otherwise-identical unconstrained entry answered normally.
+    # this preset exists to reach do retain them — a ZDR-constrained request
+    # can only ever be served by the subset that does not, which is not what
+    # this rung is for. Operator decision, 2026-08-22: no ZDR on the free
+    # preset; zdr stays true on every paid leg and on the provider wildcard.
     #
     # The trade is explicit and was chosen deliberately: this rung sends
     # prompts to an upstream that may retain them. It is the free tier, it
     # sits behind both local tiers, and it is never the primary. Anything
     # that must not leave a retention-free path uses a different rung.
+    #
+    # NOT the reason: this rung's intermittent upstream 429s and timeouts.
+    # Those were measured against the preset directly with each provider
+    # constraint applied in isolation (none / data_collection only / zdr only
+    # / the full block) and all four behaved identically — the shared free
+    # pool is simply rate-limited some of the time. Changing zdr does not fix
+    # that and was never expected to; the fallback chain is what covers it.
     zero_data_retention: false
 
   # Hermes provider-diverse value fallbacks; one credential per provider.
