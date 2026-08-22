@@ -54,7 +54,7 @@ only when the Slack bot token is set, matching the other Slack-gated config.
 ## Brain-health watchdog (no cron-failure spam)
 
 The cron fleet above talks to a **single-deployment brain** (the real model id in
-`ai_default_model`, served by one Mac Studio via the `llm_router` proxy) with
+`hermes_brain_model`, served by one Mac Studio via the `llm_router` proxy) with
 **no viable fallback**. When
 that brain is unreachable, two upstream facts combine badly: each cron run is a
 **fresh, stateless session**, and upstream *always* delivers a failure —
