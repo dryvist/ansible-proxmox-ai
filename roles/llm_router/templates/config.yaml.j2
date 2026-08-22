@@ -310,15 +310,23 @@ router_settings:
   # llm_router_redis_host to get a real cap; the rate ceilings on each egress
   # deployment above work either way.
 {% endif %}
-  # NOTE deliberately no `fail_closed_budget_enforcement`. It is a
-  # general_settings key governing LiteLLM's POSTGRES-backed virtual-key
-  # budgets, not the provider budget above, and it 503s when spend can be
-  # verified against neither Redis nor a database. This proxy issues no virtual
-  # keys and has no database, so it would be inert at best and a 503 generator
-  # on the fabric's only front door at worst. See defaults.
+  # NOTE deliberately no `fail_closed_budget_enforcement`. It governs LiteLLM's
+  # POSTGRES-backed VIRTUAL-KEY budgets, not the provider budget above, and it
+  # 503s when spend cannot be verified. Attaching a database (below) does NOT
+  # make it appropriate: this proxy issues no virtual keys, so it stays inert at
+  # best and a 503 generator on the only front door at worst. See defaults.
 
 general_settings:
   master_key: os.environ/LLM_ROUTER_MASTER_KEY
+{% if llm_router_db_host | length > 0 %}
+  # Adaptive-router state. Gated on the same condition as DATABASE_URL in the
+  # EnvironmentFile, so config and env cannot separate. os.environ/ because the
+  # URL embeds the password. Rationale for all four: defaults/main/45-database.yml.
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: {{ llm_router_store_model_in_db | to_json }}
+  disable_spend_logs: {{ llm_router_disable_spend_logs | to_json }}
+  disable_error_logs: {{ llm_router_disable_error_logs | to_json }}
+{% endif %}
   # Active probes spawn models on the llama-swap tier (see defaults) — passive
   # recovery via allowed_fails/cooldown_time is the default; health_check_interval
   # is a general_settings field (LiteLLM rejects it under router_settings).
