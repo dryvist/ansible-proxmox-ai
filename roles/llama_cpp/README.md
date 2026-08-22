@@ -8,7 +8,7 @@ models co-resident, so a small general model + an embeddings model fit in
 16 GB at Q4 and answer without reload churn.
 
 **Absolute rule:** never serve a model with `param_billions >= 14` on this GPU.
-pve1 has hard-locked repeatedly under large-model GPU loads (VRAM eviction
+The host has hard-locked repeatedly under large-model GPU loads (VRAM eviction
 hard-hangs the host); a converge-time assert in `tasks/main.yml` enforces this,
 scoped to `llm_fast_group` only.
 
