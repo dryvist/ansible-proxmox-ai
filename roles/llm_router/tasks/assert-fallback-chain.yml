@@ -1,0 +1,94 @@
+---
+# Hermes fallback-chain contract: ordered composition, registry-backed
+# membership, no-single-provider-outage-empties-the-chain, depth bound. Its
+# own file so a test can import exactly this assert and prove each failure
+# mode, rather than restating its condition where every other Layer-1 assert
+# also runs.
+
+- name: Assert the Hermes fallback chain is ordered, registry-backed, and depth-bounded
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # Ordered composition against the REAL atomic vars (35-hermes-cloud.yml):
+      # local legs (free, fail-fast) precede every credentialed cloud group,
+      # each half in its own registry order. A set comparison would pass on a
+      # scrambled chain; LiteLLM tries the chain top to bottom, so order IS
+      # the contract.
+      - >-
+        llm_router_hermes_default_fallback_chain
+        == (llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups)
+      # Every rung is a fallback_group an enabled registry entry actually
+      # declares — never a stale or hand-typed name.
+      - "llm_router_hermes_default_fallback_chain | difference(_llm_router_declared_groups) | length == 0"
+      # No single provider's outage empties the chain. This permits the
+      # hermes-cloud-free / hermes-cloud-openrouter overlap (both are
+      # OpenRouter — losing it still leaves local-4080, alibaba, gemini) while
+      # still hard-failing a chain where every rung shares one provider.
+      # Exempt a 0/1-rung chain (e.g. zero cloud credentials seeded): with
+      # nothing to diversify against, "one provider" is inherent, not a design
+      # flaw — see test_hermes_default_failover.yml.
+      - >-
+        llm_router_hermes_default_fallback_chain | length <= 1
+        or _llm_router_unsafe_providers | length == 0
+      # Depth bound: 1 local + 4 cloud (free + 3 paid providers). A local leg
+      # is cheap to add — it fails fast on its own per-model override
+      # (request_timeout/stream_timeout, ~20s/10s here) rather than the
+      # router's global per-attempt timeout (ai_router_request_timeout_seconds).
+      # That global timeout is deliberately set ABOVE the client's stream-read
+      # ceiling (ai_stream_read_timeout_seconds) so the CLIENT, not the router,
+      # is what bounds one slow leg (see 40-routing.yml) — so this cap bounds
+      # PROVIDER COUNT (a reviewed onboarding decision each time it grows),
+      # not a summed worst-case timeout.
+      - "llm_router_hermes_default_fallback_chain | length <= 5"
+    fail_msg: >-
+      Hermes fallback chain is unsound (roles/llm_router/tasks/assert-fallback-chain.yml):
+      got {{ llm_router_hermes_default_fallback_chain }}, expected
+      {{ llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups }}
+      (local legs then cloud groups, registry order). Declared groups:
+      {{ _llm_router_declared_groups }}. Provider(s) whose outage would empty
+      the chain: {{ _llm_router_unsafe_providers }} (chain providers:
+      {{ _llm_router_chain_providers }}). Depth is capped at 5 (1 local + free
+      + 3 paid providers) — see the arithmetic comment above the assert before
+      raising it.
+    success_msg: >-
+      Hermes fallback chain is ordered
+      ({{ llm_router_hermes_default_fallback_chain | join(' -> ') }}), every
+      rung is a real registry entry, no single provider's outage empties it,
+      and depth stays within the 5-rung cap.
+  vars:
+    _llm_router_declared_groups: >-
+      {{ (llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups)
+         | unique | list }}
+    # First enabled registry entry to declare each fallback_group owns that
+    # group's provider. route_group fallback matters: entries sharing one
+    # fallback_group (e.g. the two hermes-cloud-openrouter leaves) often set
+    # only route_group, not their own fallback_group override.
+    _llm_router_group_providers: >-
+      {%- set ns = namespace(pairs=[]) -%}
+      {%- for m in llm_router_registry_enabled -%}
+      {%- set group = m.fallback_group | default(m.route_group, true) | default(none) -%}
+      {%- if group and (ns.pairs | selectattr('group', 'equalto', group) | list | length == 0) -%}
+      {%- set ns.pairs = ns.pairs + [{'group': group, 'provider': m.provider}] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.pairs }}
+    _llm_router_chain_providers: >-
+      {%- set ns = namespace(providers=[]) -%}
+      {%- for g in llm_router_hermes_default_fallback_chain -%}
+      {%- set match = _llm_router_group_providers | selectattr('group', 'equalto', g) | list -%}
+      {%- set ns.providers = ns.providers + [match[0].provider if match else ('UNKNOWN:' ~ g)] -%}
+      {%- endfor -%}
+      {{ ns.providers }}
+    # A provider is "unsafe" when removing every rung it owns leaves nothing —
+    # i.e. it owns every rung in the chain. Two-provider floor (surviving with
+    # >=2 rungs after the worst outage) was considered and rejected: that is a
+    # richness preference, not a correctness property, and would fail a
+    # legitimately short chain. One surviving rung is the hard requirement.
+    _llm_router_unsafe_providers: >-
+      {%- set ns = namespace(bad=[]) -%}
+      {%- for p in _llm_router_chain_providers | unique -%}
+      {%- if (_llm_router_chain_providers | reject('equalto', p) | list | length) == 0 -%}
+      {%- set ns.bad = ns.bad + [p] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.bad }}

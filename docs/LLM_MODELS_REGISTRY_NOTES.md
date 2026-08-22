@@ -32,6 +32,31 @@ covers minutes-long answers (`ai_router_request_timeout_seconds` 2400,
 `ai_stream_read_timeout_seconds` 1800). Do not shorten either one to make this
 tier look faster.
 
+## The routine tier (`mlx-community/Qwen3.6-35B-A3B-4bit`)
+
+The second warm model, resident beside the primary rather than swapping
+against it (nix-darwin `maxResidentWorkers = 2`). It held `serving_role:
+primary` and all three consumer aliases until 2026-08-14; both moved to the
+27B and this entry stayed servable, because it is: the host serves it,
+verified from the worker's own command line at converge. It carries a
+`serving_role` rather than none so the registry's real invariant still holds —
+servable if and only if the entry names the role it serves in. Its `65536`
+window is the same resident profile figure as the primary's.
+
+**It is also the universal judge (2026-08-15).** `goal-judge` moved here from
+the 9B for one reason: residency. This model is pinned resident (`ttl=0`) and
+cannot be evicted, so a judge call costs no cold load — where the 9B is
+swap-class (`ttl=900`) with a measured ~79s cold load, and at the 2-3 goal
+cards/hour this fabric drains it evicts between nearly every card, so almost
+every judge call paid that tax in full. Residency was always the real fix; it
+arrived with `maxResidentWorkers = 2` rather than with a timeout raise.
+
+It stays cross-generation to the worker (Qwen3.6 judging Qwen3.8), which is
+what the no-self-preference rule actually requires, and thinking is off here so
+a verdict does not pay the primary's deliberation cost. The judge and the
+worker are separate resident workers with their own serving slots, so they no
+longer serialize against each other either.
+
 ## The small tier (`mlx-community/Qwen3.5-9B-MLX-4bit`)
 
 `goal-judge` points here, and it is a first-class entry rather than an alias
@@ -184,6 +209,37 @@ widened in a change about something else.)
 Both are PAID — neither has a `:free` variant — so both fall under the rate
 ceilings the role applies to every egress deployment. Those are rate limits, not
 a spend cap.
+
+## The Hermes local GPU leg (`hermes-local-4080`)
+
+Same backend as the `vllm`-tier entry, wired as the local backup rung in the
+Hermes fallback chain (after the Mac tiers, before every paid leg). Fail-fast
+fields (`num_retries: 0`, short `request_timeout`/`stream_timeout`,
+`allowed_fails: 50`) mean "available or busy, don't retry me" — a single GPU
+either has a free slot or it does not.
+
+`context_window: 16384` (not the primary's 65536) is deliberate:
+`enable_pre_call_checks` skips a deployment whose window cannot hold the
+request, so this leg self-selects for short requests and a long one falls
+through without wasting an attempt.
+
+## The free OpenRouter preset (`hermes-cloud-free` / `best-free`)
+
+`@preset/best-free` is a server-side config edited in OpenRouter's dashboard,
+so the model behind it changes with no code change here. Never write a
+concrete model id in its place; the preset IS the pointer.
+
+`hermes-cloud-free` (`hermes-cloud` tier) and `best-free` (`openrouter` tier)
+name the same preset deliberately: they differ in tier and routing role, not
+target. The first is the free rung of the Hermes chain; the second is a plain
+handle a caller names directly. Neither can be an alias of the other — an
+alias may point only at a first-class large-tier entry — and `best-free` gets
+no `stable_aliases` for the same reason, hence the memorable `client_model_id`
+instead.
+
+`hermes-cloud-free` sets no `monthly_budget`: nothing to bound.
+`assert-budget-backing.yml` only fires on a budget with no store behind it, so
+absent is unused, not dishonest.
 
 ## The OCR tier (`mlx-community/Unlimited-OCR-bf16`)
 

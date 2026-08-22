@@ -90,12 +90,14 @@
         _environment: >-
           {{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}
 
-    - name: Only OpenRouter joins the Hermes fallback chain
+    - name: OpenRouter and the always-on legs join the Hermes fallback chain
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_hermes_default_fallback_chain == ['hermes-cloud-openrouter']
-          - _fallback_chain == ['hermes-cloud-openrouter']
+          - >-
+            llm_router_hermes_default_fallback_chain
+            == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-openrouter']
+          - "_fallback_chain == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-openrouter']"
           - _cloud_models | length == 2
           - _environment | regex_findall('(?m)^OPENROUTER_API_KEY=') | length == 1
           - _environment | regex_findall('(?m)^GEMINI_API_KEY=') | length == 0
@@ -170,14 +172,15 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_hermes_default_fallback_chain == []
-          - _config.router_settings.fallbacks is not defined
+          - llm_router_hermes_default_fallback_chain == ['hermes-local-4080']
+          - "_config.router_settings.fallbacks == [{'hermes-default': ['hermes-local-4080']}]"
           - _cloud_models | length == 0
           - _openrouter_egress | length == 0
           - _environment | regex_findall('(?m)^(OPENROUTER|GEMINI|DASHSCOPE)_API_KEY=') | length == 0
         fail_msg: >-
-          Whitespace-only secret fields must render neither deployments,
-          fallbacks, nor environment credentials.
+          Whitespace-only secret fields must render no cloud deployments,
+          fallbacks, or environment credentials -- only the not-credential-gated
+          local fallback.
       vars:
         _cloud_models: >-
           {{ _config.model_list

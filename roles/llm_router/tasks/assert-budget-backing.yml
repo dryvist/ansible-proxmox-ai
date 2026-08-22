@@ -11,7 +11,7 @@
       # with no budget is merely unused, not dishonest.
       - not (llm_router_openrouter_budget_limit | default(0) | float > 0)
         or (llm_router_redis_host | default('') | trim | length > 0)
-      - llm_router_hermes_cloud_fallback_groups | default([]) | length == 0
+      - not _llm_router_any_deployment_budget
         or (llm_router_redis_host | default('') | trim | length > 0)
     fail_msg: >-
       Provider or deployment spend budget configured with no shared store
@@ -19,7 +19,7 @@
       llm_router_openrouter_budget_limit is
       {{ llm_router_openrouter_budget_limit | default(0) }} but
       llm_router_redis_host is empty.
-      Hermes cloud groups={{ llm_router_hermes_cloud_fallback_groups | default([]) }}.
+      Budgeted deployments={{ _llm_router_budgeted_groups }}.
       LiteLLM tracks provider and deployment spend in Redis. llm_router_group is a multi-member
       pool converged serial: 1, so with no shared store each member counts only
       its OWN spend: the rendered config would advertise a ceiling that is
@@ -31,8 +31,21 @@
     success_msg: >-
       {{ 'Every rendered provider or deployment budget is backed by a shared store.'
          if ((llm_router_openrouter_budget_limit | default(0) | float > 0)
-             or (llm_router_hermes_cloud_fallback_groups | default([]) | length > 0))
+             or _llm_router_any_deployment_budget)
          else 'No spend budget configured; nothing to back.' }}
+  vars:
+    # Gated on an actual monthly_budget being declared, NOT on any cloud
+    # fallback group existing — hermes-cloud-free deliberately has no budget
+    # (a free preset has no spend to bound), and the local (hermes-local) tier
+    # never carries one either, so neither should force a Redis requirement.
+    # default([]) guards a test that imports this file standalone, without
+    # ever loading the model registry (test_budget_requires_store.yml) — an
+    # ungraceful undefined here breaks fail_msg/success_msg rendering even
+    # when the that: clause itself would have passed.
+    _llm_router_budgeted_groups: >-
+      {{ (llm_router_hermes_cloud_models_credentialed | default([]))
+         | selectattr('monthly_budget', 'defined') | map(attribute='route_group') | list }}
+    _llm_router_any_deployment_budget: "{{ _llm_router_budgeted_groups | length > 0 }}"
 
 # Naming a host is not reaching it. roles/redis makes AUTH mandatory and has no
 # passwordless branch, so an empty password here does not degrade to an
@@ -47,7 +60,7 @@
     that:
       - not (llm_router_openrouter_budget_limit | default(0) | float > 0)
         or (llm_router_redis_password | default('') | trim | length > 0)
-      - llm_router_hermes_cloud_fallback_groups | default([]) | length == 0
+      - not _llm_router_any_deployment_budget
         or (llm_router_redis_password | default('') | trim | length > 0)
     fail_msg: >-
       Provider or deployment spend budget configured with no store credential
@@ -63,5 +76,14 @@
     success_msg: >-
       {{ 'Store credential present, so the ceiling is enforceable.'
          if ((llm_router_openrouter_budget_limit | default(0) | float > 0)
-             or (llm_router_hermes_cloud_fallback_groups | default([]) | length > 0))
+             or _llm_router_any_deployment_budget)
          else 'No spend budget configured; no credential needed.' }}
+  vars:
+    # default([]) guards a test that imports this file standalone, without
+    # ever loading the model registry (test_budget_requires_store.yml) — an
+    # ungraceful undefined here breaks fail_msg/success_msg rendering even
+    # when the that: clause itself would have passed.
+    _llm_router_budgeted_groups: >-
+      {{ (llm_router_hermes_cloud_models_credentialed | default([]))
+         | selectattr('monthly_budget', 'defined') | map(attribute='route_group') | list }}
+    _llm_router_any_deployment_budget: "{{ _llm_router_budgeted_groups | length > 0 }}"

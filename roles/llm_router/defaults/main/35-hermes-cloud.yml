@@ -45,7 +45,26 @@ llm_router_hermes_cloud_router_models_credentialed: >-
   {%- endfor -%}
   {{ ns.models }}
 
-llm_router_hermes_cloud_fallback_groups: >-
+# Local (non-cloud, non-credential-gated) fallback groups, registry order. A
+# local leg has no credential to gate on, and filtering it the way the cloud
+# projection filters would silently render nothing.
+llm_router_local_fallback_groups: >-
+  {%- set ns = namespace(groups=[]) -%}
+  {%- for m in llm_router_hermes_local_models -%}
+  {%- set group = m.fallback_group | default(m.route_group) -%}
+  {%- if group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups }}
+
+# Pure cloud (credential-gated) fallback groups, registry order. Kept as its
+# own var — not just inlined into the combined one below — because
+# assert-budget-backing.yml needs a way to ask "is there a PAID leg" without
+# the local leg (which is never budgeted) tripping it, and because the assert
+# in assert.yml wants to check the combined chain's exact composition
+# (local-then-cloud) against its two parts independently.
+llm_router_hermes_cloud_only_fallback_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for m in llm_router_hermes_cloud_models_credentialed -%}
   {%- set group = m.fallback_group | default(m.route_group) -%}
@@ -55,11 +74,25 @@ llm_router_hermes_cloud_fallback_groups: >-
   {%- endfor -%}
   {{ ns.groups }}
 
+# NOTE ON NAMING: the hermes_cloud_* names below are historical. They now
+# build the WHOLE post-primary Hermes fallback chain, hermes-local legs
+# included, not only credential-gated cloud ones — kept unrenamed per the
+# repo's existing "vllm" tier-name precedent (a rename here would churn the
+# tests for no functional gain).
+#
+# Local legs go FIRST, ahead of every paid group: they are free, on-network
+# attempts. Order here is the concatenation itself, not a re-sort — a plain
+# `+` preserves each side's own registry order.
+llm_router_hermes_cloud_fallback_groups: >-
+  {{ llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups }}
+
 # LiteLLM's global 429 retry policy exists for the local serving tier. Tagged
 # v1.97.0 source gives a matching model-group policy precedence over that
-# global policy, so enumerate every credential-backed cloud alias and physical
-# group here. This keeps each paid provider to one attempt before fallback,
-# including an explicit request to a physical cloud group.
+# global policy, so enumerate every hermes-local and credential-backed cloud
+# alias/physical group here. This keeps each leg — local or paid — to one
+# attempt before fallback, including an explicit request to a physical group.
+# A local leg needs the identical zero-retry treatment: "busy" is not a
+# failure worth a 429 back-off any more than a paid provider's rate limit is.
 llm_router_hermes_cloud_zero_retry_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for group in llm_router_hermes_cloud_fallback_groups -%}
@@ -67,16 +100,17 @@ llm_router_hermes_cloud_zero_retry_groups: >-
   {%- set ns.groups = ns.groups + [group] -%}
   {%- endif -%}
   {%- endfor -%}
-  {%- for m in llm_router_hermes_cloud_models_credentialed -%}
+  {%- for m in llm_router_hermes_local_models + llm_router_hermes_cloud_models_credentialed -%}
   {%- if m.route_group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [m.route_group] -%}
   {%- endif -%}
   {%- endfor -%}
   {{ ns.groups }}
 
-# LiteLLM 1.97 records the original alias, not the complexity-selected local
-# group, as attempted. Re-listing a local group here can therefore call the same
-# failed backend twice. Only distinct provider groups belong in this chain.
+# The full post-primary Hermes chain: local legs then cloud groups, in
+# registry order (llm_router_hermes_cloud_fallback_groups builds both halves
+# despite its name — see the NOTE ON NAMING above). Verified against the
+# registry independently in roles/llm_router/tasks/assert.yml.
 llm_router_hermes_default_fallback_chain: >-
   {{ llm_router_hermes_cloud_fallback_groups }}
 

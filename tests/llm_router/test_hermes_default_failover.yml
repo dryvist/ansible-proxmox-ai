@@ -1,6 +1,7 @@
 ---
-# With no provider credential, the complexity router stays entirely local and
-# advertises no fallback route that could be selected but not authenticated.
+# With no provider credential, the complexity router advertises only the
+# local fallback (hermes-local-4080, not credential-gated) and no cloud
+# fallback route that could be selected but not authenticated.
 - name: Verify Hermes stays local when provider credentials are absent
   hosts: localhost
   gather_facts: false
@@ -47,9 +48,9 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_hermes_default_fallback_chain == []
-          - _config.router_settings.fallbacks is not defined
-          - _config.router_settings.max_fallbacks | int == 0
+          - llm_router_hermes_default_fallback_chain == ['hermes-local-4080']
+          - "_config.router_settings.fallbacks == [{'hermes-default': ['hermes-local-4080']}]"
+          - _config.router_settings.max_fallbacks | int == 1
           - _cloud_models | length == 0
           - _hermes_router.litellm_params.model == 'auto_router/complexity_router'
           - _hermes_router.litellm_params.complexity_router_config.tiers.SIMPLE
@@ -62,10 +63,10 @@
             == llm_router_primary_model
         fail_msg: >-
           Hermes must complexity-route only between the two resident models and
-          advertise no fallback when provider credentials are absent. Got
-          fallback={{ _config.router_settings.fallbacks | default([]) }},
+          advertise only the local fallback when provider credentials are
+          absent. Got fallback={{ _config.router_settings.fallbacks | default([]) }},
           cloud={{ _cloud_models }}.
-        success_msg: "Hermes auto-routing remains local-only without provider credentials"
+        success_msg: "Hermes auto-routing stays local-only (plus the local fallback) without provider credentials"
       vars:
         _cloud_models: >-
           {{ _config.model_list
