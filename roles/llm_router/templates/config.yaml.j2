@@ -142,16 +142,24 @@ model_list:
 {% if m.api_base is defined %}
       api_base: {{ m.api_base }}
 {% endif %}
-      input_cost_per_token: {{ m.input_cost_per_token }}
-      output_cost_per_token: {{ m.output_cost_per_token }}
+      # Defaults to 0 rather than requiring the field: a genuinely free preset
+      # (hermes-cloud-free) has no per-token price to declare, and 0 is that
+      # entry's real price, not a placeholder standing in for an unknown one.
+      input_cost_per_token: {{ m.input_cost_per_token | default(0) }}
+      output_cost_per_token: {{ m.output_cost_per_token | default(0) }}
       max_tokens: {{ m.max_output_tokens }}
       rpm: {{ llm_router_hermes_cloud_rpm }}
       tpm: {{ llm_router_hermes_cloud_tpm }}
       max_parallel_requests: {{ llm_router_hermes_cloud_max_parallel_requests }}
       timeout: {{ llm_router_request_timeout_seconds }}
       num_retries: 0
+{% if m.monthly_budget is defined %}
+      # Absent on a genuinely free entry (hermes-cloud-free): there is no
+      # spend to bound, and a rendered ceiling with nothing to meter against
+      # would be dishonest rather than merely unused. See assert-budget-backing.yml.
       max_budget: {{ m.monthly_budget }}
       budget_duration: {{ llm_router_hermes_cloud_monthly_budget_period }}
+{% endif %}
 {% if m.provider == 'openrouter' %}
       # Provider selection stays inside the exact model and policy constraints.
       extra_body:
@@ -171,10 +179,37 @@ model_list:
       max_output_tokens: {{ m.max_output_tokens }}
       max_tokens: {{ m.max_output_tokens }}
 {% endfor %}
-  # NOTE there is deliberately no `openrouter/*` passthrough entry. The loop
-  # above IS the egress allowlist: a model the registry does not enable with a
-  # seeded key is not reachable through this router at all. See defaults for
-  # why the wildcard was removed rather than tightened.
+{% if llm_router_openrouter_wildcard_enabled | bool %}
+{% set _wc_key = bao_local_llm_secrets.OPENROUTER_API_KEY | default(lookup('env', 'OPENROUTER_API_KEY'), true) %}
+{% if _wc_key | trim | length > 0 %}
+  # --- OpenRouter wildcard: last resort, explicit name only ---
+  # The enumerated loop above is no longer the sole egress allowlist: any
+  # OpenRouter model is now reachable by requesting "openrouter/<real-id>"
+  # directly. This is the reversal recorded in defaults/main/30-openrouter.yml
+  # — read it before touching this block. It is NOT reachable through any
+  # fallback chain: LiteLLM resolves a fallback target by exact model_name,
+  # which skips wildcard rewriting and would forward the literal "*" upstream.
+  # It IS more specific than the LARGE-tier bare "*" above (a longer pattern
+  # string ranks first in LiteLLM's PatternMatchRouter), so an
+  # "openrouter/..." request reaches this deployment and never the Mac gate.
+  - model_name: "openrouter/*"
+    litellm_params:
+      model: openrouter/*
+      api_key: os.environ/OPENROUTER_API_KEY
+      rpm: {{ llm_router_openrouter_rpm }}
+      tpm: {{ llm_router_openrouter_tpm }}
+      max_parallel_requests: {{ llm_router_openrouter_max_parallel_requests }}
+      # No max_budget/budget_duration: this deployment has no per-model spend
+      # figure to attach (unlike the enumerated entries), and there is no
+      # separate shared-spend key for wildcard traffic distinct from the
+      # tier-wide Redis cap in defaults. Gap, not an oversight.
+      extra_body:
+        provider:
+          sort: price
+          data_collection: deny
+          zdr: true
+{% endif %}
+{% endif %}
   # --- light tier ---
   # The CPU `llm-light` deployment always renders. The GPU `llm-fast` deployment
   # renders only when llm_router_llm_fast_enabled is true; with it false the tier
@@ -206,17 +241,48 @@ model_list:
 
   # vLLM tier — the NVIDIA/CUDA guest. One deployment per model: vLLM serves a
   # single model per instance and there is no standby serving the same weights,
-  # so this tier deliberately does not render a pair.
-{% for m in llm_router_vllm_models %}
+  # so this tier deliberately does not render a pair. Also carries any
+  # hermes-local entries: distinct Hermes-fallback-chain rungs over this same
+  # backend/URL/key, not a second physical tier — see llm_router README.
+{% for m in llm_router_vllm_models + llm_router_hermes_local_models %}
 {% if llm_router_llm_vllm_enabled %}
   - model_name: {{ m.client_model_id }}
     litellm_params:
       model: {{ litellm_model(m) }}
       api_base: {{ llm_router_llm_vllm_base_url }}
       api_key: {{ llm_router_light_api_key }}
-{% if m.embedding | default(false) %}
+{% if m.num_retries is defined %}
+      # A single-instance local leg is only ever accepting or rejecting, never
+      # worth retrying — a retry just re-queues behind the same busy box.
+      num_retries: {{ m.num_retries }}
+{% endif %}
+{% if m.request_timeout is defined %}
+      timeout: {{ m.request_timeout }}
+{% endif %}
+{% if m.stream_timeout is defined %}
+      stream_timeout: {{ m.stream_timeout }}
+{% endif %}
+{% if m.embedding | default(false) or m.context_window is defined or m.allowed_fails is defined or m.cooldown_time is defined %}
     model_info:
+{% if m.embedding | default(false) %}
       mode: embedding
+{% elif m.context_window is defined %}
+      # Mirrors the large tier: this backend id is absent from LiteLLM's
+      # catalog, so an omitted value here silently resolves max_input_tokens to
+      # null, disables enable_pre_call_checks for this deployment, and lets an
+      # over-long request through to a model that cannot hold it (the
+      # compress-death outage class, 2026-07-08).
+      max_input_tokens: {{ m.context_window }}
+      max_tokens: {{ m.context_window }}
+{% endif %}
+{% if m.allowed_fails is defined %}
+      # Deployment-level override: busy is not unhealthy, so a merely-busy box
+      # must not be cooled out of rotation the way a real failure would be.
+      allowed_fails: {{ m.allowed_fails }}
+{% endif %}
+{% if m.cooldown_time is defined %}
+      cooldown_time: {{ m.cooldown_time }}
+{% endif %}
 {% endif %}
 {% endif %}
 {% endfor %}
@@ -243,8 +309,11 @@ router_settings:
   # render here, so no dead route or duplicate local attempt is advertised.
   fallbacks:
     - hermes-default: {{ llm_router_hermes_default_fallback_chain | to_json }}
-  max_fallbacks: 1
 {% endif %}
+  # Derived from the chain length (35-hermes-cloud.yml), not a fixed 1: this is
+  # a 5-leg chain now, and a hardcoded max_fallbacks here would silently cap
+  # every attempt after the first, truncating the whole fallback design while
+  # still rendering and passing every test that doesn't count fallback depth.
   max_fallbacks: {{ llm_router_max_fallbacks }}
   # No CROSS-TIER fallbacks for the default brain, on purpose: a fallback
   # serving a smaller context than the primary poisons callers instead of

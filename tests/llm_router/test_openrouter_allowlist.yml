@@ -101,24 +101,90 @@
       ansible.builtin.set_fact:
         _config: "{{ _rendered_config | from_yaml }}"
 
-    - name: No OpenRouter passthrough wildcard is rendered
-      # The whole point. `openrouter/*` would make every assertion below
-      # cosmetic, because any catalog model would be reachable regardless of
-      # what the registry says.
+    # The operator has since reversed the "no wildcard" policy this test
+    # originally encoded (2026-08): a wildcard passthrough is now allowed, on
+    # the condition that it carries its own guards. So this no longer asserts
+    # "no wildcard exists" — it asserts "no EXTERNAL wildcard exists without
+    # its guards", which is the actual risk the original policy was standing
+    # in for. A wildcard's `*` targets an external provider if its api_base is
+    # not one of this role's own known-internal serving endpoints (derived
+    # from role defaults, not a hand-typed name) — the LARGE-tier bare "*"
+    # targets the local serving gate via api_base and is exempt; the OpenRouter
+    # "openrouter/*" sets no api_base at all and must carry the guard.
+    - name: Every external-provider wildcard carries its egress guards
       ansible.builtin.assert:
         quiet: true
         that:
-          - _wildcards | length == 0
+          - _unguarded_external_wildcards | length == 0
         fail_msg: >-
-          The rendered model_list contains {{ _wildcards | length }}
-          OpenRouter passthrough entr(y|ies) ({{ _wildcards | join(', ') }}).
-          That exposes the entire live OpenRouter catalog on an account-wide
-          key and makes the registry no longer the enabled-model inventory.
-        success_msg: "no openrouter passthrough wildcard — the registry is the allowlist"
+          External-provider wildcard(s) {{ _unguarded_external_wildcards
+            | map(attribute='model_name') | list }} are missing a required
+          guard (data_collection: deny, zdr: true, and non-zero rpm/tpm/
+          max_parallel_requests). An unguarded external wildcard exposes the
+          whole live catalog on an account-wide key with no rate ceiling.
+        success_msg: >-
+          {{ _external_wildcards | length }} external-provider wildcard(s)
+          all carry their egress guards ({{ _internal_wildcards | length }}
+          internal wildcard(s) exempt: they target this role's own serving
+          gate, not an external provider).
       vars:
-        _wildcards: >-
-          {{ _config.model_list | map(attribute='model_name')
-             | select('match', '^openrouter/\*$') | list }}
+        _internal_base_urls:
+          - "{{ llm_router_llm_large_base_url }}"
+          - "{{ llm_router_llm_fast_base_url }}"
+          - "{{ llm_router_llm_light_base_url }}"
+          - "{{ llm_router_llm_vllm_base_url }}"
+        _all_wildcards: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'match', '.*\*.*') | list }}
+        _internal_wildcards: >-
+          {{ _all_wildcards
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'in', _internal_base_urls)
+             | list }}
+        _external_wildcards: >-
+          {{ _all_wildcards
+             | rejectattr('litellm_params.api_base', 'defined')
+             | list
+             + (_all_wildcards
+                | selectattr('litellm_params.api_base', 'defined')
+                | rejectattr('litellm_params.api_base', 'in', _internal_base_urls)
+                | list) }}
+        _unguarded_external_wildcards: >-
+          {{ _external_wildcards
+             | rejectattr('litellm_params.extra_body.provider.data_collection', 'defined')
+             | list
+             + (_external_wildcards
+                | selectattr('litellm_params.extra_body.provider.data_collection', 'defined')
+                | rejectattr('litellm_params.extra_body.provider.data_collection', 'equalto', 'deny')
+                | list)
+             + (_external_wildcards
+                | rejectattr('litellm_params.extra_body.provider.zdr', 'defined')
+                | list)
+             + (_external_wildcards
+                | selectattr('litellm_params.extra_body.provider.zdr', 'defined')
+                | rejectattr('litellm_params.extra_body.provider.zdr', 'equalto', true)
+                | list)
+             + (_external_wildcards
+                | rejectattr('litellm_params.rpm', 'defined')
+                | list)
+             + (_external_wildcards
+                | selectattr('litellm_params.rpm', 'defined')
+                | rejectattr('litellm_params.rpm', 'gt', 0)
+                | list)
+             + (_external_wildcards
+                | rejectattr('litellm_params.tpm', 'defined')
+                | list)
+             + (_external_wildcards
+                | selectattr('litellm_params.tpm', 'defined')
+                | rejectattr('litellm_params.tpm', 'gt', 0)
+                | list)
+             + (_external_wildcards
+                | rejectattr('litellm_params.max_parallel_requests', 'defined')
+                | list)
+             + (_external_wildcards
+                | selectattr('litellm_params.max_parallel_requests', 'defined')
+                | rejectattr('litellm_params.max_parallel_requests', 'gt', 0)
+                | list) }}
 
     - name: Every rendered OpenRouter model is an enabled registry entry
       ansible.builtin.assert:
@@ -132,10 +198,15 @@
         success_msg: >-
           all {{ _rendered_or | length }} rendered egress models come from the registry
       vars:
+        # A model_name containing "*" is a wildcard pattern, not a
+        # registry-backed deployment (same rule as
+        # assert-registry-render-parity.yml) — it is reachable by design
+        # without an enumerated registry entry, which the task above verifies.
         _rendered_or: >-
           {{ _config.model_list
              | selectattr('litellm_params.model', 'match', '^openrouter/')
-             | map(attribute='model_name') | list }}
+             | map(attribute='model_name')
+             | reject('search', '\*') | list }}
         _registry_or: >-
           {%- set ns = namespace(names=[]) -%}
           {%- for m in llm_router_registry_enabled
