@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.32.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.31.2...v0.32.0) (2026-08-22)
+
+
+### Features
+
+* prepare Langfuse v4 deployment ([5031d26](https://github.com/dryvist/ansible-proxmox-ai/commit/5031d2668086e0ea3a18a0fbaaa17aea956cede7))
+* prepare Langfuse v4 deployment ([d51d9d2](https://github.com/dryvist/ansible-proxmox-ai/commit/d51d9d2945ba652fadeb518102e7a1798df6bb61))
+
 ## [0.31.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.31.1...v0.31.2) (2026-08-20)
 
 
