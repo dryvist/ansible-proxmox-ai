@@ -331,11 +331,22 @@ router_settings:
   # see README "Spend tracking (Redis)". Set llm_router_redis_host for a real
   # cap; the rate ceilings on each egress deployment above work either way.
 {% endif %}
-  # Deliberately no `fail_closed_budget_enforcement` — see README
-  # "Spend tracking (Redis)" for why it would be inert or actively harmful here.
+  # Deliberately no `fail_closed_budget_enforcement`: it governs LiteLLM's
+  # virtual-key budgets, not the provider budget above, and 503s when spend
+  # cannot be verified. Attaching a database does NOT make it appropriate —
+  # this proxy issues no virtual keys. See README "Spend tracking".
 
 general_settings:
   master_key: os.environ/LLM_ROUTER_MASTER_KEY
+{% if llm_router_db_host | length > 0 %}
+  # Adaptive-router state. Gated on the same condition as DATABASE_URL in the
+  # EnvironmentFile, so config and env cannot separate. os.environ/ because the
+  # URL embeds the password. Rationale for all four: defaults/main/45-database.yml.
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: {{ llm_router_store_model_in_db | to_json }}
+  disable_spend_logs: {{ llm_router_disable_spend_logs | to_json }}
+  disable_error_logs: {{ llm_router_disable_error_logs | to_json }}
+{% endif %}
   # Active probes spawn models on the llama-swap tier (see defaults) — passive
   # recovery via allowed_fails/cooldown_time is the default; health_check_interval
   # is a general_settings field (LiteLLM rejects it under router_settings).

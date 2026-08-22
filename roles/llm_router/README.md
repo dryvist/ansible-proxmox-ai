@@ -183,10 +183,35 @@ Traefik health checks need no credential.
   hard-required — a missing constant fails loud.
 - Secrets `LLM_ROUTER_MASTER_KEY` + `LLM_LARGE_BEARER_TOKEN` are env-sourced
   (SOPS/Doppler) today; the OpenBao migration is a separate phase.
-- `prisma` is installed into the venv even though the proxy is DB-less:
-  litellm[proxy] no longer pulls it, and LiteLLM's auth-error handler
-  unconditionally imports it to classify DB outages — without it, a rejected or
-  absent API key raised `ModuleNotFoundError` and returned 500 instead of 401.
+- `prisma` was originally installed into the venv while the proxy was DB-less,
+  for a reason unrelated to databases: litellm[proxy] no longer pulls it, and
+  LiteLLM's auth-error handler unconditionally imports it to classify DB
+  outages — without it, a rejected or absent API key raised
+  `ModuleNotFoundError` and returned 500 instead of 401. Its presence was never
+  evidence that DB mode was intended, and the dependency is still required when
+  no database is configured.
+
+### Database (optional)
+
+Set `llm_router_db_host` and the proxy attaches PostgreSQL for the **Adaptive
+Router's learned quality estimates**, which LiteLLM loads at startup. Leave it
+empty and the router still serves every request — it simply forgets each
+restart and reverts to cold-start priors, which is a silent degradation rather
+than a visible failure.
+
+Scope is deliberately narrow, and the reasoning is in
+`defaults/main/45-database.yml`:
+
+- `store_model_in_db` stays **false**. It is independent of adaptive routing and
+  would move model-list authority into the database, breaking registry-as-SSOT.
+- Spend and error logs stay **out** of the database — unbounded per-request
+  growth. Spend lives in Redis; traces go to the collector.
+- Credentials are bao-first from `apps/llm-router`, the same field the Postgres
+  converge in `ansible-proxmox-apps` uses to create the role, so the two ends
+  cannot drift.
+
+The database shares the ai-VLAN cluster that backs Hindsight, which already
+carries the estate's DR standard.
 
 ## Usage
 

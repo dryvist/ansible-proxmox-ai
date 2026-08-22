@@ -1,0 +1,65 @@
+---
+# =============================================================================
+# PostgreSQL backing store for the router's LEARNED ROUTING STATE.
+#
+# The Adaptive Router is a multi-armed bandit: it classifies each request and
+# tracks a quality estimate per model x request-type from satisfaction signals.
+# LiteLLM keeps those estimates in Postgres and loads them at startup. With no
+# database the router still serves every request — it just forgets on every
+# restart and silently falls back to cold-start priors. That is the dangerous
+# failure: a router permanently reverted to guesses behaves exactly like a
+# working one, and nothing surfaces it.
+#
+# Shares the ai-VLAN cluster that already backs Hindsight (postgres_ai_group in
+# ansible-proxmox-apps) rather than taking its own: this is a low-volume
+# metadata store, and that cluster already carries the estate's DR standard —
+# pg_dump timers, pgBackRest PITR, and off-node archive pulls.
+#
+# EMPTY BY DEFAULT, the same contract as the Redis spend store above: the role
+# must converge honestly on a deployment with no database rather than render a
+# DATABASE_URL pointing at nothing. inventory/group_vars/llm_router_group.yml
+# turns it on by setting the host.
+llm_router_db_host: ""
+# Port and identity are non-secret. The port comes from the published inventory
+# contract, never a literal — same treatment as the Redis port.
+llm_router_db_port: >-
+  {{ tofu_data['constants']['service_ports']['postgres_default']
+     | mandatory('tofu_data.constants.service_ports.postgres_default missing — regenerate the published inventory') }}
+llm_router_db_name: litellm
+llm_router_db_user: litellm
+# bao-first with an env fallback, identical shape to llm_router_redis_password.
+# Generated at source in ansible-proxmox-apps
+# (openbao_generated_app_secrets.llm-router) and read by BOTH ends from the same
+# apps/llm-router field, so the login this role dials and the role the Postgres
+# converge creates cannot drift apart.
+llm_router_db_password: >-
+  {{ bao_apps_secrets.llm_router_db_password
+     | default(lookup('env', 'LLM_ROUTER_DB_PASSWORD'), true) }}
+
+# LiteLLM sets NO default idle-connection lifetime, so a pooled connection can
+# sit idle until the server or a stateful firewall drops it, and the next
+# request fails on a connection the client still believes is open. Bounding the
+# idle lifetime below any such timeout makes the client recycle first.
+llm_router_db_max_idle_connection_lifetime: 60
+
+# Model configuration stays in config.yaml — this must remain false.
+#
+# store_model_in_db is INDEPENDENT of adaptive routing. Adaptive routing needs
+# the database for quality estimates; enabling this additionally makes the
+# DATABASE the source of truth for the model list, which would fight the
+# registry-is-SSOT architecture this role is built on: the rendered config would
+# stop describing what the proxy actually serves, and a converge would no longer
+# be able to correct it. Declared explicitly rather than left to LiteLLM's
+# default so the decision is visible in a diff.
+llm_router_store_model_in_db: false
+
+# Spend and error logs stay OUT of the database.
+#
+# Once DATABASE_URL is set, LiteLLM writes a spend-log row per request by
+# default. This cluster's volume is shared with Hindsight and the table has no
+# retention policy, so that grows without bound to buy telemetry this fabric
+# already has: spend and rate limiting live in Redis (roles/redis), and traces
+# go to the collector via the otel callback. Flip either to false only with a
+# retention plan.
+llm_router_disable_spend_logs: true
+llm_router_disable_error_logs: true
