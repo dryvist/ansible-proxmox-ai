@@ -84,5 +84,5 @@ capacity.
 **Verifying a new profile** (manual, not part of the converge — it burns an
 LLM run): see "Profile smoke test" in `docs/HERMES_OPS.md`.
 
-Full page: <https://docs.jacobpevans.com/ai/hermes-operating-profiles>
+Full page: <https://docs.jacobpevans.com/autonomous-agents/hermes-operating-profiles>
 (concept, table, and the decision rule for the public docs site).
