@@ -1,0 +1,100 @@
+---
+# Pins the backend DNS resolution contract
+# (roles/llm_router/tasks/assert-endpoint-dns.yml).
+#
+# WHY THIS TEST EXISTS. 10-network.yml documents a defect class where a
+# backend base URL is advertised while its hostname does not resolve on the
+# router guest — the model appears in /v1/models and every real request 500s
+# with a connection error. Nothing else in this role's asserts inspects DNS,
+# so a URL built from a subdomain form that never resolves (the apex-vs-
+# subdomain trap that class documents) ships silently. This proves the guard
+# both stays quiet on resolvable hosts and fails loud on an unresolvable one.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_endpoint_dns_assert.yml -i localhost, -c local
+
+- name: The guard passes when every advertised backend hostname resolves
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    # Every advertised base URL points at "localhost", which every runner
+    # resolves via /etc/hosts — this fixture is about the guard's own logic,
+    # not about the specific hostnames a real converge builds.
+    llm_router_llm_fast_base_url: "http://localhost:10434/v1"
+    llm_router_llm_light_base_url: "http://localhost:10434/v1"
+    llm_router_llm_large_base_url: "https://localhost:11434/v1"
+    llm_router_llm_vllm_enabled: true
+    llm_router_llm_vllm_base_url: "http://localhost:10434/v1"
+    llm_router_llm_large_standby_base_url: "https://localhost:11442/v1"
+  tasks:
+    - name: Run the DNS resolution guard against an all-resolvable fixture
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-endpoint-dns.yml"
+
+- name: The guard skips a disabled or empty backend rather than resolving it
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_llm_fast_base_url: "http://localhost:10434/v1"
+    llm_router_llm_light_base_url: "http://localhost:10434/v1"
+    llm_router_llm_large_base_url: "https://localhost:11434/v1"
+    # Disabled vllm tier and an empty (disabled) standby must not be resolved
+    # at all — a fixture host here would prove nothing about the real skip.
+    llm_router_llm_vllm_enabled: false
+    llm_router_llm_vllm_base_url: "http://bogus-vllm-fixture.invalid:10434/v1"
+    llm_router_llm_large_standby_base_url: ""
+  tasks:
+    - name: Run the DNS resolution guard against a fixture with disabled backends
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-endpoint-dns.yml"
+
+    - name: Confirm the disabled/empty backends were never in the resolved set
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'bogus-vllm-fixture.invalid' not in _llm_router_endpoint_hosts"
+        fail_msg: >-
+          The disabled vllm base URL's host was resolved anyway — the guard
+          is not honoring llm_router_llm_vllm_enabled / the empty-standby skip.
+        success_msg: "Disabled/empty backends are excluded from the resolved set."
+
+- name: The guard fails loud when an advertised backend hostname cannot resolve
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_llm_fast_base_url: "http://localhost:10434/v1"
+    llm_router_llm_light_base_url: "http://localhost:10434/v1"
+    # .invalid is reserved by RFC 2606 to never resolve.
+    llm_router_llm_large_base_url: "https://unresolvable-fixture.invalid:11434/v1"
+    llm_router_llm_vllm_enabled: false
+    llm_router_llm_vllm_base_url: ""
+    llm_router_llm_large_standby_base_url: ""
+  tasks:
+    - name: Prove an unresolvable backend host fails the guard
+      block:
+        - name: Import the DNS resolution guard with an unresolvable host
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-endpoint-dns.yml"
+
+        - name: Fail because the guard admitted an unresolvable backend host
+          ansible.builtin.fail:
+            msg: >-
+              roles/llm_router/tasks/assert-endpoint-dns.yml PASSED with
+              unresolvable-fixture.invalid advertised as a backend host. That
+              guard is the only thing standing between an advertised-but-dead
+              backend and a converge that ships it anyway.
+      rescue:
+        - name: Confirm the guard failed for the unresolvable-host reason specifically
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'Unresolvable backend host' in (ansible_failed_result.msg | default(''))"
+              - "'unresolvable-fixture.invalid' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              The guard failed, but not with its own message — got
+              {{ ansible_failed_result.msg | default('(none)') }}. A failure
+              from an unrelated task would make this test pass for the wrong
+              reason.
+            success_msg: >-
+              An unresolvable backend host is fatal, naming the host, with
+              the intended message.

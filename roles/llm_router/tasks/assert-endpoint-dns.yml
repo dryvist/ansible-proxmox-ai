@@ -1,0 +1,56 @@
+---
+# Converge-time DNS resolution assert for every backend base URL this config
+# advertises (10-network.yml's llm_router_llm_*_base_url set). Guards the
+# defect class documented on llm_router_llm_vllm_base_url there: a leased
+# guest resolves only at the apex, not under the subdomain, and an entry that
+# is advertised while its hostname cannot be resolved looks identical to a
+# healthy one from the model list alone — it only fails later, as a connection
+# error, once a real request reaches it.
+#
+# Runs ON the router guest (not the controller), because that is the resolver
+# path a live request actually takes. Read-only; safe in check mode, matching
+# the rest of this assert chain. Imported by assert.yml.
+
+- name: Resolve the set of backend hostnames this router config advertises
+  ansible.builtin.set_fact:
+    _llm_router_endpoint_hosts: >-
+      {{ (
+        [llm_router_llm_fast_base_url, llm_router_llm_light_base_url, llm_router_llm_large_base_url]
+        + ([llm_router_llm_vllm_base_url] if llm_router_llm_vllm_enabled else [])
+        + ([llm_router_llm_large_standby_base_url]
+           if llm_router_llm_large_standby_base_url | trim | length > 0 else [])
+      ) | map('urlsplit', 'hostname') | unique | list }}
+
+- name: Resolve each advertised backend hostname on this router guest
+  ansible.builtin.command: "getent hosts {{ item }}"
+  loop: "{{ _llm_router_endpoint_hosts }}"
+  loop_control:
+    label: "{{ item }}"
+  register: _llm_router_endpoint_dns
+  changed_when: false
+  # An unresolvable host is exactly the failure this file exists to report —
+  # the assert below collects every rc and names them together, rather than
+  # this loop stopping the play on the first one with a bare "non-zero return
+  # code" that does not say which host or why it matters.
+  failed_when: false
+  check_mode: false
+
+- name: Assert every advertised backend hostname resolves on the router guest
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_unresolved_hosts | length == 0
+    fail_msg: >-
+      Unresolvable backend host(s) (roles/llm_router/tasks/assert-endpoint-dns.yml):
+      [{{ _llm_router_unresolved_hosts | join(', ') }}] do not resolve via getent on
+      this router guest, but are advertised in a rendered backend base URL. A leased
+      guest resolves only at the apex, not under the subdomain — see
+      llm_router_llm_vllm_base_url's comment in defaults/main/10-network.yml for the
+      apex-vs-subdomain distinction this most often trips on.
+    success_msg: >-
+      All {{ _llm_router_endpoint_hosts | length }} advertised backend hostname(s)
+      resolve ({{ _llm_router_endpoint_hosts | join(', ') }}).
+  vars:
+    _llm_router_unresolved_hosts: >-
+      {{ _llm_router_endpoint_dns.results | selectattr('rc', 'ne', 0)
+         | map(attribute='item') | list }}
