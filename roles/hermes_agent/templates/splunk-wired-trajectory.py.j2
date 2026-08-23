@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+{{ ansible_managed | comment }}
+"""Deterministic, no-LLM watch on the wired-memory-ceiling ratio's TRAJECTORY.
+
+Complements (does not replace) the static 0.80 warn / 0.90 critical Splunk
+saved-search bands a parallel lane built on the same wired_ratio field — see
+defaults/main/102-wired-trajectory.yml for why both exist. A static band
+tells you the ratio is ALREADY in the danger zone; this script fits a trend
+line over the lookback window so it can say "climbing at X/hr, N hours from
+critical" — an approach warning, not a threshold alarm.
+
+STEP CHANGE vs SLOW CLIMB, and why the difference matters: a rank/model load
+moves the ratio by tens of percent in a SINGLE sample (a step) and is
+self-resolving once the load finishes. A leak accumulates a small amount every
+sample, drags the regression slope upward, and is only reclaimable by reboot
+(wired memory is not eligible for the normal reclaim paths). Conflating them
+would tell the operator to reboot for a load that was about to finish on its
+own, or to wait out something that never releases.
+
+Same no-LLM-in-the-fact-path contract as splunk-triage.py.j2 (stdout
+delivered verbatim to Slack via `--no-agent --deliver slack:<ch>`); no
+per-run state file, because the regression is computed fresh from the
+window's own samples each run — nothing to baseline against a previous run.
+
+Pure stdlib + the `mcp` client (present in the hermes-agent venv).
+"""
+import asyncio
+import json
+import sys
+
+# --- config (rendered from defaults/main/102-wired-trajectory.yml) -----------
+ENV_PATH = "{{ hermes_agent_hermes_home }}/.env"
+TITLE = "Wired-memory trajectory [wired-trajectory]"
+INDEX = "{{ hermes_agent_wired_trajectory_index }}"
+SOURCETYPE = "{{ hermes_agent_wired_trajectory_sourcetype }}"
+EARLIEST = "{{ hermes_agent_wired_trajectory_window }}"
+WINDOW = EARLIEST.lstrip("-")
+CRITICAL_RATIO = {{ hermes_agent_wired_trajectory_critical_ratio }}
+ISSUES_MARKER = "{{ hermes_agent_cron_issues_marker }}"
+
+# A step is judged by the RATE a single jump implies (delta / time-between-
+# samples), not by the raw delta — the same 0.05 jump means "rank load" at a
+# 15-minute cadence and "ordinary hourly noise" at a 6-hour cadence, and the
+# collector's actual cadence is unconfirmed (see the mac_perf precondition).
+# A rank/model load moves the ratio by tens of percent within one sample
+# interval; a sustained leak's own regression slope (CLIMB_MIN_SLOPE_PER_HOUR
+# below) is an order of magnitude smaller. Module constant, not an Ansible
+# var: it only means anything against this script's own implied-rate calc.
+# ponytail: fixed threshold, not derived from observed jitter (no real
+# telemetry exists yet). Tune once real samples are available.
+STEP_IMPLIED_RATE_PER_HOUR = 0.5
+# Minimum sustained slope (ratio per hour) worth calling a "climb" at all —
+# below this, a positive regression slope is noise, not a trend.
+CLIMB_MIN_SLOPE_PER_HOUR = 0.01
+
+# The window is written INLINE in the SPL (same fix as splunk-triage.py.j2):
+# the MCP's `earliest` argument is dropped on the floor by the server.
+SPL = (
+    f"search index={INDEX} sourcetype={SOURCETYPE} earliest={EARLIEST} latest=now"
+    ' | eval epoch=strftime(_time,"%s")'
+    " | table epoch wired_ratio wired_bytes wired_ceiling_bytes resident_bytes"
+    " | sort epoch"
+)
+
+
+async def run_query(url, token):
+    """Return the parsed results list, or raise on any failure."""
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp import ClientSession
+
+    async with streamablehttp_client(url, headers={"Authorization": f"Bearer {token}"}) as (r, w, _):
+        async with ClientSession(r, w) as s:
+            await s.initialize()
+            res = await s.call_tool("splunk_run_query", {"query": SPL, "earliest": EARLIEST})
+            if getattr(res, "isError", False):
+                raise RuntimeError("splunk_run_query returned isError=true")
+            data = res.structuredContent
+            if not isinstance(data, dict):
+                if res.content and getattr(res.content[0], "text", None):
+                    data = json.loads(res.content[0].text)
+                else:
+                    raise RuntimeError("no structuredContent and no text content")
+            return data.get("results", [])
+
+
+def load_env(path):
+    env = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip().strip('"').strip("'")
+    return env
+
+
+def parse_samples(results):
+    """[(epoch_seconds, ratio, wired_bytes, ceiling_bytes), ...] sorted by time.
+
+    A row missing or non-numeric on any field is dropped rather than crashing
+    the run — a single bad row must not hide every other sample.
+    """
+    samples = []
+    for row in results or []:
+        try:
+            epoch = int(float(row["epoch"]))
+            ratio = float(row["wired_ratio"])
+            wired = float(row.get("wired_bytes") or 0)
+            ceiling = float(row.get("wired_ceiling_bytes") or 0)
+        except (KeyError, TypeError, ValueError):
+            continue
+        samples.append((epoch, ratio, wired, ceiling))
+    samples.sort(key=lambda s: s[0])
+    return samples
+
+
+def slope_per_hour(samples):
+    """Least-squares slope of ratio vs. time (ratio per hour), or None with <2 samples."""
+    n = len(samples)
+    if n < 2:
+        return None
+    t0 = samples[0][0]
+    xs = [(s[0] - t0) / 3600.0 for s in samples]
+    ys = [s[1] for s in samples]
+    mean_x, mean_y = sum(xs) / n, sum(ys) / n
+    num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    den = sum((x - mean_x) ** 2 for x in xs)
+    return num / den if den else None
+
+
+def max_step_rate(samples):
+    """Highest per-hour rate any SINGLE sample-to-sample jump implies.
+
+    Normalized by the gap between those two samples specifically (not the
+    window's average cadence), so this is meaningful even if the collector's
+    cadence is uneven or unconfirmed. Two samples at the same timestamp are
+    skipped — a zero time delta cannot imply a finite rate.
+    """
+    rates = [
+        abs(samples[i + 1][1] - samples[i][1]) / ((samples[i + 1][0] - samples[i][0]) / 3600.0)
+        for i in range(len(samples) - 1)
+        if samples[i + 1][0] != samples[i][0]
+    ]
+    return max(rates) if rates else 0.0
+
+
+def gib(n):
+    return f"{n / (1024 ** 3):.1f} GiB"
+
+
+def build_report(samples):
+    if not samples:
+        # Zero rows is a fact, not an all-clear — identical either to a
+        # genuinely idle window or to the mac_perf pipeline having stopped.
+        return (
+            f"*{TITLE}*\n"
+            f"Zero rows for sourcetype={SOURCETYPE} in index={INDEX} over the "
+            f"{WINDOW} window — cannot tell a quiet window from a dead pipeline."
+        )
+
+    current = samples[-1]
+    current_ratio, current_wired, current_ceiling = current[1], current[2], current[3]
+    step_rate = max_step_rate(samples)
+    slope = slope_per_hour(samples)
+
+    lines = [f"*{TITLE}*", f"Current: {current_ratio:.3f} ({gib(current_wired)} of "
+             f"{gib(current_ceiling)}), {len(samples)} sample(s) over the {WINDOW} window."]
+
+    if step_rate >= STEP_IMPLIED_RATE_PER_HOUR:
+        lines.append(
+            f":zap: STEP CHANGE detected — one jump implied a "
+            f"{step_rate:.2f} ratio/hr rate, far above any sustained climb. "
+            f"Consistent with a rank/model load, not a leak; self-resolving "
+            f"once the load finishes."
+        )
+    elif slope is not None and slope >= CLIMB_MIN_SLOPE_PER_HOUR:
+        eta = ((CRITICAL_RATIO - current_ratio) / slope) if current_ratio < CRITICAL_RATIO else 0.0
+        eta_text = (f"~{eta:.1f}h to the {CRITICAL_RATIO:.2f} critical band at this rate"
+                    if eta > 0 else "already at or past the critical band")
+        lines.append(
+            f":chart_with_upwards_trend: SLOW CLIMB — {slope:+.3f} ratio/hr sustained "
+            f"over the window, {eta_text}. This shape (steady per-sample growth, no "
+            f"single jump) is consistent with a leak — wired memory is only "
+            f"reclaimable by reboot, unlike the step-change case above."
+        )
+    elif slope is not None and slope <= -CLIMB_MIN_SLOPE_PER_HOUR:
+        lines.append(f"Falling — {slope:+.3f} ratio/hr over the window.")
+    else:
+        lines.append("Stable — no meaningful step or sustained slope this window.")
+
+    return "\n".join(lines)
+
+
+def main():
+    # fail loud, never fabricate: any error is delivered, then exit 0.
+    try:
+        env = load_env(ENV_PATH)
+        url = env.get("SPLUNK_MCP_URL")
+        token = env.get("SPLUNK_MCP_TOKEN")
+        if not url or not token:
+            raise RuntimeError("SPLUNK_MCP_URL / SPLUNK_MCP_TOKEN missing from .env")
+        results = asyncio.run(run_query(url, token))
+    except Exception as e:  # noqa: BLE001 - deliberately broad; failure must be delivered
+        root = e
+        for _ in range(10):
+            sub = getattr(root, "exceptions", None)
+            if not sub:
+                break
+            root = sub[0]
+        print(f"{ISSUES_MARKER} :warning: {TITLE} FAILED: {type(root).__name__}: {str(root)[:200]}")
+        return 0
+
+    print(build_report(parse_samples(results)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
