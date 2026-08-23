@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.33.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.32.0...v0.33.0) (2026-08-23)
+
+
+### Features
+
+* **hermes_agent:** seed the self-audit self-correction cron job ([#549](https://github.com/dryvist/ansible-proxmox-ai/issues/549)) ([971b30a](https://github.com/dryvist/ansible-proxmox-ai/commit/971b30a8dba0314a2f58293f6b4dd48afc594bae))
+* **hermes_agent:** watch the wired-memory ceiling ratio's trajectory ([#547](https://github.com/dryvist/ansible-proxmox-ai/issues/547)) ([997104e](https://github.com/dryvist/ansible-proxmox-ai/commit/997104e47e62db5116d1748763f73722f35a6f3b))
+* **llm_router:** add a free hosted tier and a local GPU fallback leg ([#539](https://github.com/dryvist/ansible-proxmox-ai/issues/539)) ([1174999](https://github.com/dryvist/ansible-proxmox-ai/commit/117499903c91546acd9c65891317cdf3a3b8242f))
+* **llm_router:** assert every advertised backend hostname resolves ([#541](https://github.com/dryvist/ansible-proxmox-ai/issues/541)) ([7c2f646](https://github.com/dryvist/ansible-proxmox-ai/commit/7c2f64620ce202190bd3e07cd5e4c7b1fabf5c84))
+* **llm_router:** enable background health checks with swap-tier exclusion ([#542](https://github.com/dryvist/ansible-proxmox-ai/issues/542)) ([6cfd03c](https://github.com/dryvist/ansible-proxmox-ai/commit/6cfd03ccbae332efffeff323e9913bd578c3456c))
+* **llm_router:** optional PostgreSQL backing store ([#538](https://github.com/dryvist/ansible-proxmox-ai/issues/538)) ([3950876](https://github.com/dryvist/ansible-proxmox-ai/commit/3950876d4c50bbe0fdc0079f1d846b72c3b0a00c))
+* **openbao_secrets:** generate-if-absent seed for llm-router Redis password ([#543](https://github.com/dryvist/ansible-proxmox-ai/issues/543)) ([c5bc9ea](https://github.com/dryvist/ansible-proxmox-ai/commit/c5bc9ea5703ee89b44f3ddaa911ed6c5527e447a))
+
+
+### Bug Fixes
+
+* **hermes_agent:** correct the wired-trajectory sourcetype and open the gate ([#548](https://github.com/dryvist/ansible-proxmox-ai/issues/548)) ([5c86396](https://github.com/dryvist/ansible-proxmox-ai/commit/5c86396ea2e8808f6c65cb4ec3ea64e786d47d03))
+* **hermes_agent:** make cron remove idempotent and cron-tick task name static ([#545](https://github.com/dryvist/ansible-proxmox-ai/issues/545)) ([80baf81](https://github.com/dryvist/ansible-proxmox-ai/commit/80baf81d772522637f5b9c2234903ad03684454e))
+* **hermes_agent:** stop slack_sdk reconnect retries against a closed session ([#544](https://github.com/dryvist/ansible-proxmox-ai/issues/544)) ([f600106](https://github.com/dryvist/ansible-proxmox-ai/commit/f60010615bebcd6ac67f99ab97fb7d964a1a1cc7))
+
 ## [0.32.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.31.2...v0.32.0) (2026-08-22)
 
 
