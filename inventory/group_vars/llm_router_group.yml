@@ -70,3 +70,22 @@ llm_router_redis_host: >-
      if (_llm_router_spend_store_present | bool) else '' }}
 llm_router_openrouter_budget_limit: "{{ 1.0 if (_llm_router_spend_store_present | bool) else 0 }}"
 llm_router_openrouter_budget_period: 1d
+
+# Postgres for the Adaptive Router's learned quality estimates (see the role's
+# defaults/main/45-database.yml). Self-arming on the published inventory, the
+# same shape as the spend store above: absent guest -> empty host -> no
+# DATABASE_URL and no general_settings database block, rather than a connection
+# string pointing at nothing.
+#
+# Named EXPLICITLY, not derived from a group the way the Redis host is. The
+# cluster is a primary plus a hot standby, and a standby accepts no writes, so
+# taking element [0] of a member group would connect to whichever host the
+# inventory happened to order first and fail on the first write roughly half the
+# time. The write target is a specific host, so it is named as one. That means a
+# standby promotion needs an edit here — the same tradeoff hindsight_docker
+# already carries, and tracked as its own task.
+#
+# `.ip` is ALREADY the resolvable FQDN for a dhcp guest in the published
+# inventory (never a literal address), so no name is assembled by hand.
+llm_router_db_host: >-
+  {{ (tofu_data.containers | default({})).get('postgres-ai-1', {}).get('ip', '') }}

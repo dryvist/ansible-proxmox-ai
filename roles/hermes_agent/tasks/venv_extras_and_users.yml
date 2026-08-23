@@ -48,6 +48,72 @@
     or 'Uninstalled' in hermes_agent_slack_extra_install.stderr
   when: hermes_agent_slack_bot_token | length > 0 and hermes_agent_slack_app_token | length > 0
 
+# slack_sdk's ``SocketModeClient.connect()`` is a ``while True`` retry loop
+# that never checks the client's ``closed`` flag. Its base class spawns
+# ``run_message_listeners`` as a fire-and-forget ``ensure_future`` (tracked in
+# NO attribute), and on a Slack "disconnect" envelope that task calls
+# ``connect_to_new_endpoint(force=True)`` -> ``connect()``. The adapter's
+# teardown cancels only the client's three named task attributes and then
+# closes the shared aiohttp session, so a listener task caught mid-reconnect
+# survives and retries the closed session every ``ping_interval`` seconds,
+# forever — one such orphan logged "RuntimeError: Session is closed" every 10s
+# for two days straight. The guard is race-free: ``close()`` sets
+# ``self.closed = True`` before anything else, and only deliberate teardown
+# sets it, so no legitimate retry can be suppressed — after a close, the
+# replacement handler owns reconnection. Anchoring both lines keeps the
+# replace idempotent: once patched, ``except Exception as e:`` is no longer
+# adjacent to the logger line, so a second run matches nothing. See
+# slackapi/python-slack-sdk#1913.
+- name: Locate the installed slack_sdk Socket Mode client
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_venv_python }} -c
+      "import slack_sdk.socket_mode.aiohttp as m; print(m.__file__)"
+  register: hermes_agent_slack_sdk_socket_mode
+  changed_when: false
+  when: hermes_agent_slack_bot_token | length > 0 and hermes_agent_slack_app_token | length > 0
+
+- name: Patch slack_sdk Socket Mode connect retry to stop when the client is closed
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_slack_sdk_socket_mode.stdout | trim }}"
+    regexp: |-
+      ^([ \t]*)except Exception as e:$
+      \1    self\.logger\.exception\(f"Failed to connect \(error: \{e\}\); Retrying\.\.\."\)$
+    replace: |-
+      \1except Exception as e:
+      \1    if self.closed:
+      \1        self.logger.info("The Socket Mode client is closed; giving up reconnecting")
+      \1        break
+      \1    self.logger.exception(f"Failed to connect (error: {e}); Retrying...")
+  notify: Restart hermes-gateway
+  when: hermes_agent_slack_bot_token | length > 0 and hermes_agent_slack_app_token | length > 0
+
+- name: Read back the patched slack_sdk Socket Mode client
+  ansible.builtin.slurp:
+    src: "{{ hermes_agent_slack_sdk_socket_mode.stdout | trim }}"
+  register: hermes_agent_slack_sdk_socket_mode_source
+  when: hermes_agent_slack_bot_token | length > 0 and hermes_agent_slack_app_token | length > 0
+
+- name: Assert the slack_sdk closed-client reconnect guard is in place
+  vars:
+    hermes_agent_slack_sdk_source: >-
+      {{ hermes_agent_slack_sdk_socket_mode_source.content | b64decode }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_slack_sdk_source.count('if self.closed:') == 1
+      - >-
+        hermes_agent_slack_sdk_source.count(
+          'giving up reconnecting'
+        ) == 1
+    fail_msg: >-
+      The closed-client guard is missing from the installed slack_sdk Socket
+      Mode client — the replace matched nothing, which means the installed
+      slack-sdk version drifted from the 3.43.0 source the patch is anchored
+      to. Re-anchor the patch (and tests/hermes_agent/_pinned_sources.py)
+      against the installed version.
+  when: hermes_agent_slack_bot_token | length > 0 and hermes_agent_slack_app_token | length > 0
+
 # The `web` toolset (web_search/web_extract) resolves its backend through a
 # key/package cascade and, with nothing installed, lands on its hardcoded
 # firecrawl default with no API key — verified live 2026-07-31 by running the

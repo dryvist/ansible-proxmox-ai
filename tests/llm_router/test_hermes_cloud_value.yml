@@ -34,6 +34,20 @@
         llm_router_redis_host: redis.example.test
         llm_router_redis_password: test-only-not-a-real-password
 
+    # assert-endpoint-dns.yml (part of the render-time assertions below) does a
+    # real getent lookup on every advertised backend host. This fixture's
+    # llm_router_subdomain is the RFC 2606 reserved pve.example.test, which by
+    # design never resolves — point the base URLs at localhost so the guard
+    # checks its own logic against a host every runner actually resolves,
+    # rather than testing network reachability this suite never intended to
+    # exercise.
+    - name: Point advertised backend URLs at a host this runner can resolve
+      ansible.builtin.set_fact:
+        llm_router_llm_fast_base_url: "http://localhost:10434/v1"
+        llm_router_llm_light_base_url: "http://localhost:10434/v1"
+        llm_router_llm_large_base_url: "https://localhost:11434/v1"
+        llm_router_llm_vllm_base_url: "http://localhost:10434/v1"
+
     - name: Load the model registry through the role
       ansible.builtin.include_role:
         name: llm_router
@@ -68,14 +82,17 @@
         quiet: true
         that:
           - llm_router_hermes_cloud_fallback_groups
-            == ['hermes-cloud-alibaba', 'hermes-cloud-gemini', 'hermes-cloud-openrouter']
+            == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-alibaba',
+                'hermes-cloud-gemini', 'hermes-cloud-openrouter']
           - _fallback_chain
-            == ['hermes-cloud-alibaba', 'hermes-cloud-gemini', 'hermes-cloud-openrouter']
+            == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-alibaba',
+                'hermes-cloud-gemini', 'hermes-cloud-openrouter']
           - _config.router_settings.max_fallbacks | int == _fallback_chain | length
           - _config.router_settings.num_retries | int == 0
           - _config.router_settings.retry_policy.RateLimitErrorRetries | int == 8
           - llm_router_hermes_cloud_zero_retry_groups
-            == ['hermes-cloud-alibaba', 'hermes-cloud-gemini',
+            == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-alibaba',
+                'hermes-cloud-gemini',
                 'hermes-cloud-openrouter', 'hermes-cloud-alibaba-routine',
                 'hermes-cloud-alibaba-agentic', 'hermes-cloud-gemini-routine',
                 'hermes-cloud-gemini-agentic']
@@ -112,8 +129,9 @@
           cloud_count={{ _cloud_models | length }}, monthly={{ _monthly_total }},
           uncapped={{ _uncapped }}.
         success_msg: >-
-          Hermes has three ordered provider groups, real prices, zero ordinary
-          or rate-limit retries, bounded rate/concurrency controls, and $10/month
+          Hermes has one local, one free, and three paid ordered provider
+          groups, real prices, zero ordinary or rate-limit retries, bounded
+          rate/concurrency controls, and $10/month
           deployment ceilings while local 429 handling remains unchanged.
       vars:
         _fallback_chain: >-

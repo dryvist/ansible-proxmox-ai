@@ -1,0 +1,49 @@
+---
+# --- Self-audit: the agent audits its own operation -------------------------
+# A scheduled self-correction loop: the worker reads its OWN Slack output back
+# (Slack Web API via the terminal toolset + SLACK_BOT_TOKEN, delta-only against
+# its memory fingerprint), sweeps Splunk for its own error signatures under the
+# splunk-monitor query rails, and proves memory/Hindsight, the cron fleet,
+# kanban and both transport paths healthy with per-probe evidence. Findings
+# become kanban cards; a subsystem down 2 consecutive runs (or anything
+# security-shaped) escalates to Zammad. Clean run = [SILENT].
+#
+# Split of responsibilities is the house pattern: the PROCEDURES live in the
+# dryvist/self-audit skill shipped by the pinned nix-hermes bundle; the POSTURE
+# (recall self-audit-last / work the delta / save fingerprint / [SILENT]) lives
+# in the pinned ai-llm-prompts catalog (auto-ai-agent/hermes-self-audit.md);
+# this file only names and gates the job.
+#
+# Zammad creds are deliberately NOT in the gate: the skill degrades gracefully
+# when they are unset (Slack digest still fires, ticket filing skipped), the
+# same contract dryvist/zammad-incidents consumers already follow.
+hermes_agent_self_audit_enabled: true
+hermes_agent_self_audit_cron_name: self-audit
+# 03:29 / 15:29 UTC. Minute :29 is unused across every hour in the fleet; the
+# nearest agentic neighbours are 03:15 splunk-parsing (14 min) and 12:31
+# daily-operator-summary-v2 (hours away from both fires). Twice-daily so a
+# regression the agent caused itself gets a correction card within ~12h.
+hermes_agent_self_audit_cron_schedule: "29 3,15 * * *"
+hermes_agent_self_audit_cron_prompt_file: hermes-self-audit.md
+
+# The job entry, in its own list appended to hermes_agent_direct_cron_jobs
+# (see the concatenation at the end of 43-direct-cron-jobs-core.yml) — this
+# file is the single home for everything self-audit, and keeping it out of 43
+# is what keeps 43 under its per-file token budget. Item-level prompt_file
+# (not a pre-resolved prompt_var) — same shape as the legacy-v2 entries.
+hermes_agent_direct_cron_jobs_self_audit:
+  - name: "{{ hermes_agent_self_audit_cron_name }}"
+    schedule: "{{ hermes_agent_self_audit_cron_schedule }}"
+    prompt_file: "{{ hermes_agent_self_audit_cron_prompt_file }}"
+    skill: dryvist/self-audit
+    # Findings deliver straight to issues — this job's whole point is defects,
+    # so a healthy run replies [SILENT] and nothing posts at all.
+    deliver: "slack:{{ hermes_agent_slack_issues_channel }}"
+    enabled: >-
+      {{ hermes_agent_self_audit_enabled | bool
+         and hermes_agent_splunk_monitor_enabled | bool
+         and hermes_agent_splunk_mcp_url | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0
+         and hermes_agent_slack_issues_channel | length > 0 }}

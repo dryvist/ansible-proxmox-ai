@@ -9,8 +9,25 @@
 llm_router_openrouter_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'openrouter') | list }}
 
-# --- The OpenRouter egress ALLOWLIST is the list above, and nothing else -----
-# There is deliberately no `openrouter/*` passthrough var here any more.
+# --- REVERSED: the enumerated list above is no longer the sole allowlist ----
+# The history below (why the wildcard was removed) is kept because this is a
+# considered reversal, not an accident. The operator has since decided to add
+# a bounded `openrouter/*` wildcard back — see
+# llm_router_openrouter_wildcard_enabled and config.yaml.j2 — reachable ONLY
+# by a caller naming "openrouter/<real-id>" explicitly, ranked last (LiteLLM's
+# PatternMatchRouter picks the longer pattern string, so this always beats the
+# LARGE-tier bare "*"), and structurally excluded from every fallback chain
+# (a chain target resolves by exact model_name, which skips the wildcard
+# rewrite entirely). What makes this acceptable where the original wasn't:
+# the new deployment carries the same rate ceilings as the enumerated tier
+# PLUS a pinned `provider: {data_collection: deny, zdr: true, sort: price}`
+# forwarded to every wildcard call — a per-call guard the original wildcard
+# never had. What is still traded away, unchanged from the original removal's
+# own words below: the registry stops being provably "every model this fabric
+# can reach", and there is still no separate spend cap for wildcard traffic
+# distinct from the enumerated tier's Redis-backed budget.
+#
+# What it was, and why it was removed (original rationale, preserved):
 #
 # What it was: an `openrouter/*` model_list entry authenticated with one
 # already-seeded key, which exposed the ENTIRE live OpenRouter catalog. The
@@ -56,6 +73,11 @@ llm_router_openrouter_models: >-
 llm_router_openrouter_rpm: 60
 llm_router_openrouter_tpm: 200000
 llm_router_openrouter_max_parallel_requests: 4
+
+# Operator-approved wildcard passthrough (see the REVERSED note above). True
+# by default because the decision has been made; set false to revert without
+# touching config.yaml.j2. Renders nothing if OPENROUTER_API_KEY is unseeded.
+llm_router_openrouter_wildcard_enabled: true
 
 # --- Shared spend store, and the spend cap it makes real ---------------------
 # This block reverses a deliberate removal, so the reasoning for the removal
