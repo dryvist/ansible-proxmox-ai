@@ -52,6 +52,7 @@ All 18 pre-reframe cards, docs-sync included, are now direct-cron jobs — see
 | `app-seeding` | `53 7 * * *` | `#hermes-all` |
 | `fleet-health` | `3 10 * * 1` (weekly) | `#hermes-all` |
 | `docs-sync` | `13 8 * * 1` (weekly) | `#hermes-all` |
+| `self-audit` | `29 3,15 * * *` | `#hermes-issues` |
 
 Every job is additionally **capability-gated**: all require the Slack bot
 token, app token and home channel; the `splunk-*` jobs also require
