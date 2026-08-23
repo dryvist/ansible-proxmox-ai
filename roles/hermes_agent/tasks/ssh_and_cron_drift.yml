@@ -44,7 +44,15 @@
        | rejectattr('model_snapshot', 'none')
        | rejectattr('model_snapshot', 'equalto', hermes_agent_model)
        | map(attribute='name') | list }}
-  changed_when: true
+  register: hermes_agent_model_drift_remove
+  # `hermes cron remove` exits 1 on an already-absent job ("... not found"),
+  # but absent IS the desired state here — a list-guard race or a substring
+  # match in `cron list` output must not abort the play. Fail only on a real
+  # removal error; report changed only when something was actually removed.
+  changed_when: hermes_agent_model_drift_remove.rc == 0
+  failed_when: >-
+    hermes_agent_model_drift_remove.rc != 0
+    and 'not found' not in hermes_agent_model_drift_remove.stdout
 
 # One-time (but idempotent) migration cleanup: a guest converged before the
 # reframe still runs the OLD `<job>-enqueue` `--no-agent --script` crons in
@@ -66,7 +74,15 @@
        | default([])
        | map(attribute='name') | list
        | select('in', hermes_agent_superseded_kanban_enqueuer_cron_names) | list }}
-  changed_when: true
+  register: hermes_agent_superseded_cron_remove
+  # `hermes cron remove` exits 1 on an already-absent job ("... not found"),
+  # but absent IS the desired state here — a list-guard race or a substring
+  # match in `cron list` output must not abort the play. Fail only on a real
+  # removal error; report changed only when something was actually removed.
+  changed_when: hermes_agent_superseded_cron_remove.rc == 0
+  failed_when: >-
+    hermes_agent_superseded_cron_remove.rc != 0
+    and 'not found' not in hermes_agent_superseded_cron_remove.stdout
 
 # The recurring workloads (daily status, operator summary, Zammad review,
 # Splunk fleet, GitHub triage, nightly wiki, ...) are agentic direct-deliver
