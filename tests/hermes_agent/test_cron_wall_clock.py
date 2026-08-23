@@ -133,20 +133,20 @@ def test_wall_clock_boundary_does_not_reset_on_activity() -> None:
 def test_wall_clock_limit_parses_one_process_environment(monkeypatch) -> None:
     limit = _helper_namespace()["_hermes_cron_wall_timeout_limit"]
     monkeypatch.delenv("HERMES_CRON_WALL_TIMEOUT", raising=False)
-    assert limit() == 1800.0
+    assert limit() == 2300.0
     monkeypatch.setenv("HERMES_CRON_WALL_TIMEOUT", "1800")
     assert limit() == 1800.0
     monkeypatch.setenv("HERMES_CRON_WALL_TIMEOUT", "0")
     assert limit() is None
     monkeypatch.setenv("HERMES_CRON_WALL_TIMEOUT", "invalid")
-    assert limit() == 1800.0
+    assert limit() == 2300.0
 
 
 def test_native_inactivity_and_aggregate_deadlines_are_distinct() -> None:
     defaults = role_defaults(ROLE_ROOT)
     environment = (ROLE_ROOT / "templates" / "hermes-env.j2").read_text()
     assert defaults["hermes_agent_cron_inactivity_timeout_seconds"] == 1800
-    assert defaults["hermes_agent_cron_wall_timeout_seconds"] == 1800
+    assert defaults["hermes_agent_cron_wall_timeout_seconds"] == 2300
     assert (
         "HERMES_CRON_TIMEOUT={{ hermes_agent_cron_inactivity_timeout_seconds }}"
         in environment

@@ -97,7 +97,7 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert defaults["hermes_agent_context_compression_threshold"] == 0.75
     assert defaults["hermes_agent_stream_stale_timeout"] == 900
     assert defaults["hermes_agent_cron_inactivity_timeout_seconds"] == 1800
-    assert defaults["hermes_agent_cron_wall_timeout_seconds"] == 1800
+    assert defaults["hermes_agent_cron_wall_timeout_seconds"] == 2300
     assert (
         "HERMES_CRON_TIMEOUT={{ hermes_agent_cron_inactivity_timeout_seconds }}"
         in environment
