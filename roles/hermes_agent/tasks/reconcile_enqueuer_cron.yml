@@ -66,7 +66,15 @@
     HERMES_HOME: "{{ hermes_agent_hermes_home }}"
   become: true
   become_user: "{{ hermes_agent_user }}"
-  changed_when: true
+  register: hermes_agent_enqueuer_withdraw
+  # `hermes cron remove` exits 1 on an already-absent job ("... not found"),
+  # but absent IS the desired state here — a list-guard race or a substring
+  # match in `cron list` output must not abort the play. Fail only on a real
+  # removal error; report changed only when something was actually removed.
+  changed_when: hermes_agent_enqueuer_withdraw.rc == 0
+  failed_when: >-
+    hermes_agent_enqueuer_withdraw.rc != 0
+    and 'not found' not in hermes_agent_enqueuer_withdraw.stdout
   when:
     - not (hermes_agent_ops_workload_enabled | bool)
     - item.name in (hermes_agent_enqueuer_cron_list.stdout | default(''))
@@ -114,7 +122,15 @@
     HERMES_HOME: "{{ hermes_agent_hermes_home }}"
   become: true
   become_user: "{{ hermes_agent_user }}"
-  changed_when: true
+  register: hermes_agent_enqueuer_drift_remove
+  # `hermes cron remove` exits 1 on an already-absent job ("... not found"),
+  # but absent IS the desired state here — a list-guard race or a substring
+  # match in `cron list` output must not abort the play. Fail only on a real
+  # removal error; report changed only when something was actually removed.
+  changed_when: hermes_agent_enqueuer_drift_remove.rc == 0
+  failed_when: >-
+    hermes_agent_enqueuer_drift_remove.rc != 0
+    and 'not found' not in hermes_agent_enqueuer_drift_remove.stdout
   when:
     - hermes_agent_enqueuer_active | bool
     - hermes_agent_enqueuer_name in (hermes_agent_enqueuer_cron_list.stdout | default(''))
