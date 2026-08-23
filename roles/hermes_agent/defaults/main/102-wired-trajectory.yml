@@ -14,33 +14,40 @@
 # keeps them separable — do not change Hermes' existing ticket-opening
 # behavior for this job.
 #
-# THE HARD CONSTRAINT: index=mac_perf is CURRENTLY EMPTY. Its emitter
-# (macos-wired-memory sourcetype) is a new Cribl input that has not converged
-# yet. A triage/digest job here follows the same rule as every other job in
-# this file (see 101-splunk-digests.yml): IT MUST ONLY POINT AT AN INDEX THAT
-# CARRIES DATA. Pointing this at mac_perf today would silently return zero
-# rows every run forever — indistinguishable from "all clear" — which is
-# exactly the false-green class this whole project exists to close.
+# THE HARD CONSTRAINT: a triage/digest job here follows the same rule as every
+# other job in this file (see 101-splunk-digests.yml): IT MUST ONLY POINT AT AN
+# INDEX THAT CARRIES DATA. Pointing this at an empty index would silently
+# return zero rows every run forever — indistinguishable from "all clear" —
+# which is exactly the false-green class this whole project exists to close.
 #
-# So: the script is deployed (disable-don't-delete, one-flag-change posture,
-# same as every other job here), but the cron below stays OFF until this flag
-# is flipped BY HAND, and only after confirming mac_perf actually carries
-# macos-wired-memory events:
+# The flag below stays OFF until someone confirms BY HAND that mac_perf carries
+# the emitter's events:
 #
-#   splunk search 'eventcount summarize=false index=mac_perf sourcetype=macos-wired-memory'
+#   | tstats count where index=mac_perf sourcetype="macos:perf:wired_memory"
 #
-# (or the tstats equivalent: `| tstats count where index=mac_perf
-# sourcetype=macos-wired-memory`). A non-zero count is the ONLY condition that
-# justifies flipping this to true. Do not flip it to "unblock testing" or
-# because the emitter PR merged — merged is not the same as converged and
-# delivering.
-hermes_agent_wired_trajectory_mac_perf_confirmed: false
+# A non-zero count is the ONLY condition that justifies flipping it to true. Do
+# not flip it to "unblock testing" or because the emitter PR merged — merged is
+# not the same as converged and delivering.
+#
+# CONFIRMED 2026-08-23: that query returns 25. The emitter converged onto the
+# workstation and mac_perf, which had never held a single event, now receives
+# one wired-memory sample per minute.
+#
+# WATCH THE SOURCETYPE SPELLING. Until this change the default here read
+# `macos-wired-memory`, which does not exist. The emitter publishes
+# `macos:perf:wired_memory`. Measured the same day: the gate query with the old
+# spelling returned 0 while the index held 25 events, and with the correct
+# spelling returned 25. Flipping the flag without fixing the spelling would have
+# produced precisely the zero-rows-forever failure the paragraph above warns
+# about — and the documented verification command would have agreed, because it
+# carried the same wrong spelling.
+hermes_agent_wired_trajectory_mac_perf_confirmed: true
 
 hermes_agent_wired_trajectory_cron_name: wired-trajectory-watch
 hermes_agent_wired_trajectory_cron_schedule: "*/15 * * * *"
 hermes_agent_wired_trajectory_script_name: splunk-wired-trajectory.py
 hermes_agent_wired_trajectory_index: mac_perf
-hermes_agent_wired_trajectory_sourcetype: macos-wired-memory
+hermes_agent_wired_trajectory_sourcetype: "macos:perf:wired_memory"
 # Lookback for the regression: long enough to average out sampling noise,
 # short enough that a slope computed over it is still a useful "right now"
 # rate rather than a multi-day average that hides a fresh leak.
