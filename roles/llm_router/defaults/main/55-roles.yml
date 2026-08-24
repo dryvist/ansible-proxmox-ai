@@ -46,14 +46,18 @@ llm_router_registry_role_targets: >-
 # behind a million-token model is not a safety net, it is a dead rung that
 # turns into a hard failure exactly when the fallback was supposed to help.
 #
-# So the subagent role — the only million-token one — falls back only through
-# other million-token egress entries. It deliberately does NOT fall back to the
-# local tiers: those serve 32k-64k, and every local model is reachable under its
-# own role for work that fits. The plan of record named a `cluster` rung here;
-# no registry entry carries that serving role, so it is not seeded.
-llm_router_subagent_fallbacks:
-  - minimax/minimax-m3
-  - deepseek/deepseek-v4-flash
+# A subagent rung must ALSO be zero-cost. This role carries delegated bulk
+# labor, so a rung that quietly bills per token turns a backend outage into
+# spend nobody chose — the failure mode the free-first design exists to
+# prevent. Paid egress stays reachable by name; it is never something a role
+# falls into.
+#
+# Both constraints together leave nothing in the catalog: the one free egress
+# entry with a comparable window serves less than the subagent target, and
+# every larger-window entry is paid. So NO fallback record is seeded —
+# subagent fails honestly, and the UI owner adds a rung deliberately if they
+# want one. An empty list here is the decision, not an omission.
+llm_router_subagent_fallbacks: []
 
 llm_router_role_deployments:
   # The session/orchestrator tier: the largest accurate local model.
@@ -69,7 +73,8 @@ llm_router_role_deployments:
   - role: judge
     model: "{{ llm_router_routine_model }}"
     fallbacks: ["{{ llm_router_small_model }}"]
-  # Trivial background chores: titles, classification, compaction.
+  # Trivial background chores: titles, classification, compaction. Local, so
+  # zero-cost by construction, and no rung under the same rule as subagent.
   - role: cheap
     model: "{{ llm_router_small_model }}"
     fallbacks: []

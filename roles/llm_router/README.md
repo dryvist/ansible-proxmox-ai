@@ -180,10 +180,19 @@ Roles require the database (`llm_router_db_host`) and
 `llm_router_store_model_in_db`; with neither, config-rendered aliases still work
 and no role is seeded.
 
-Fallback order is one-way: **largest context first**. A shorter-context fallback
-does not degrade a caller, it truncates one, and `enable_pre_call_checks`
-rejects the over-long request rather than routing it — so a short rung behind a
-long-context model is a hard failure exactly when it was meant to help.
+Two rules bind a seeded fallback rung, and a rung must satisfy both:
+
+- **Largest context first.** A shorter-context fallback does not degrade a
+  caller, it truncates one, and `enable_pre_call_checks` rejects the over-long
+  request rather than routing it — so a short rung behind a long-context model
+  is a hard failure exactly when it was meant to help.
+- **Zero cost.** A role carrying delegated bulk work must not fall into
+  metered egress: an outage would become spend nobody chose. Paid models stay
+  reachable by name; they are never something a role falls into.
+
+Where no catalogued model satisfies both, the role is seeded with no fallback
+record at all. It then fails honestly rather than silently, and whoever owns
+the UI adds a rung deliberately.
 
 ### Swap a role
 
