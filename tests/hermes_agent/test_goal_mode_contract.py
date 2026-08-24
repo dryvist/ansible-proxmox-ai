@@ -110,10 +110,22 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # Physical aliases belong to the entries they point at. `hermes-default` is
     # intentionally not one of them: it is a native LiteLLM complexity-router
     # deployment, not duplicated configuration for a physical backend.
+    # Split the same way roles/llm_router splits them. An alias on a SERVABLE
+    # entry renders as a static model_group_alias and is bound by the role's
+    # two render-time asserts; an alias on any other entry is a ROLE seeded
+    # into the router database. Asserting the union would let a stray static
+    # alias hide behind a legitimate role name, which is the case this test
+    # exists to catch.
     aliases = {
         alias: entry["client_model_id"]
         for entry in registry
-        if entry.get("enabled")
+        if entry.get("enabled") and entry.get("servable")
+        for alias in entry.get("stable_aliases", [])
+    }
+    db_role_aliases = {
+        alias: entry["client_model_id"]
+        for entry in registry
+        if entry.get("enabled") and not entry.get("servable")
         for alias in entry.get("stable_aliases", [])
     }
     # Exact equality, deliberately: a subset check would stop catching the stray
@@ -134,6 +146,14 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         # human picks in the model list resolves to the vision entry.
         "Unlimited OCR": ocr_backend,
     }
+    # Exact equality here too: a role is a caller-facing name, so an
+    # accidental one is as costly as an accidental static alias.
+    subagent_backend = next(
+        entry["client_model_id"]
+        for entry in registry
+        if entry.get("enabled") and "subagent" in entry.get("stable_aliases", [])
+    )
+    assert db_role_aliases == {"subagent": subagent_backend}
     hermes_router = next(
         entry
         for entry in registry
