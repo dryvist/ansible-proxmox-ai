@@ -15,6 +15,23 @@
 # Each role names a registry entry by its client_model_id, so no model id is
 # re-typed and a role can only point at something the catalog actually
 # describes — the seed task asserts exactly that before it writes anything.
+#
+# TWO THINGS TO KNOW BEFORE RETARGETING A ROLE ON A RUNNING PROXY (measured
+# 2026-08-24, litellm 1.97.0):
+#
+# 1. Changing the target ACROSS a context-window difference means DELETING the
+#    deployment and creating it again, not updating it. `/model/update` writes
+#    the new litellm_params and answers 200, but leaves the advertised
+#    `max_input_tokens` at the old value — passing model_info in the same call
+#    does not change that. A role left advertising a window ten times the one
+#    its model really has is how a caller sends a context nothing can read;
+#    `enable_pre_call_checks` cannot save a caller that was told the wrong
+#    number. Delete plus create sets it correctly. Updating in place is fine
+#    when the window does not change.
+#
+# 2. The local serving tier admits one in-flight request per model. A role that
+#    takes bursty delegation must not name the model the always-on agent is
+#    using, or it answers 429 for as long as that agent is working.
 
 # The OCR entry, selected the same way as primary/routine/small in 50-servable.yml.
 llm_router_ocr_model: >-
