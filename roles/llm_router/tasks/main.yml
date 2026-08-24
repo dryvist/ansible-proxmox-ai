@@ -89,6 +89,39 @@
   when: llm_router_store_model_in_db | bool
   notify: Restart litellm
 
+# The generated client talks to tables `prisma db push` creates; on a fresh
+# database LiteLLM starts but every management endpoint 500s with
+# TableNotFoundError. Push is idempotent (in-sync push is a no-op) and needs
+# the same service-user environment as generation above.
+- name: Sync the proxy schema into the database
+  ansible.builtin.command:
+    argv:
+      - runuser
+      - -u
+      - "{{ llm_router_user }}"
+      - --
+      - env
+      - "HOME={{ llm_router_home }}"
+      - "XDG_CACHE_HOME={{ llm_router_home }}/.cache"
+      - "PATH={{ llm_router_venv }}/bin:/usr/bin:/bin"
+      - >-
+        DATABASE_URL=postgresql://{{ llm_router_db_user
+        }}:{{ llm_router_db_password | urlencode
+        }}@{{ llm_router_db_host }}:{{ llm_router_db_port
+        }}/{{ llm_router_db_name }}
+      - "{{ llm_router_venv }}/bin/prisma"
+      - db
+      - push
+      - --schema
+      - "{{ llm_router_venv }}/lib/python3.13/site-packages/litellm/proxy/schema.prisma"
+      - --skip-generate
+    chdir: /tmp
+  register: llm_router_schema_push
+  changed_when: "'already in sync' not in llm_router_schema_push.stdout"
+  when: llm_router_store_model_in_db | bool
+  no_log: true
+  notify: Restart litellm
+
 - name: Deploy the LiteLLM secrets env file
   ansible.builtin.template:
     src: litellm.env.j2
