@@ -64,12 +64,21 @@
 # deploy. Generation is idempotent and writes into the venv's site-packages;
 # creates: makes re-runs free.
 - name: Generate the prisma client the database-backed proxy starts against
+  # As the SERVICE USER, from a directory it can read: generation embeds the
+  # generating user's engine-cache path into the client, so a root-generated
+  # client points the service at binaries it cannot execute, and the proxy
+  # crash-loops with "Not connected to the query engine".
   ansible.builtin.command:
     cmd: >-
       {{ llm_router_venv }}/bin/prisma generate
       --schema {{ llm_router_venv }}/lib/python3.13/site-packages/litellm/proxy/schema.prisma
-    creates: "{{ llm_router_venv }}/lib/python3.13/site-packages/prisma/binaries"
+    chdir: /tmp
+    creates: "{{ llm_router_home }}/.cache/prisma-python/binaries"
+  become: true
+  become_user: "{{ llm_router_user }}"
   environment:
+    HOME: "{{ llm_router_home }}"
+    XDG_CACHE_HOME: "{{ llm_router_home }}/.cache"
     PATH: "{{ llm_router_venv }}/bin:/usr/bin:/bin"
   when: llm_router_store_model_in_db | bool
   notify: Restart litellm
