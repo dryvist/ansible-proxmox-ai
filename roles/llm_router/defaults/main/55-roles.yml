@@ -1,0 +1,137 @@
+---
+# --- ROLES: the stable names callers request ---------------------------------
+# A caller names a ROLE — `lead`, `subagent`, `judge`, `cheap`, `embed`, `ocr` —
+# never a physical model. Which model a role resolves to, and the order it falls
+# back through, is an operational decision that changes on the timescale of an
+# afternoon, so it lives in the router database and the Admin UI owns it
+# (45-database.yml has the catalog/roles split, and why that is safe).
+#
+# What is written here is only the FIRST SEED. tasks/seed-roles.yml creates a
+# role when the running proxy has none by that name and leaves every existing
+# one untouched, so a converge can never overwrite an edit made in the UI. To
+# change a role permanently, change it in the UI; changing it here affects only
+# a proxy that has never carried the role before.
+#
+# Each role names a registry entry by its client_model_id, so no model id is
+# re-typed and a role can only point at something the catalog actually
+# describes — the seed task asserts exactly that before it writes anything.
+
+# The OCR entry, selected the same way as primary/routine/small in 50-servable.yml.
+llm_router_ocr_model: >-
+  {{ llm_router_registry_enabled | selectattr('serving_role', 'defined')
+     | selectattr('serving_role', 'equalto', 'ocr')
+     | map(attribute='client_model_id') | first }}
+
+# Roles declared on registry entries OUTSIDE the servable set. Those entries
+# cannot become static model_group_aliases (see 50-servable.yml), so their
+# `stable_aliases` are read here instead — which is what keeps the subagent
+# role's target from being spelled out a second time.
+llm_router_registry_role_targets: >-
+  {%- set ns = namespace(pairs={}) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- if not (m.servable | default(false)) -%}
+  {%- for role in m.stable_aliases | default([]) -%}
+  {%- set _ = ns.pairs.update({role: m.client_model_id}) -%}
+  {%- endfor -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.pairs }}
+
+# FALLBACK ORDER IS ONE-WAY, LARGEST CONTEXT FIRST.
+#
+# A fallback that serves a smaller context than the model it replaces does not
+# degrade a caller, it poisons one: the request is silently truncated and the
+# answer is confidently wrong. router_settings.enable_pre_call_checks rejects
+# the over-long request rather than routing it, so a short-context fallback
+# behind a million-token model is not a safety net, it is a dead rung that
+# turns into a hard failure exactly when the fallback was supposed to help.
+#
+# So the subagent role — the only million-token one — falls back only through
+# other million-token egress entries. It deliberately does NOT fall back to the
+# local tiers: those serve 32k-64k, and every local model is reachable under its
+# own role for work that fits. The plan of record named a `cluster` rung here;
+# no registry entry carries that serving role, so it is not seeded.
+llm_router_subagent_fallbacks:
+  - minimax/minimax-m3
+  - deepseek/deepseek-v4-flash
+
+llm_router_role_deployments:
+  # The session/orchestrator tier: the largest accurate local model.
+  - role: lead
+    model: "{{ llm_router_primary_model }}"
+    fallbacks: ["{{ llm_router_routine_model }}", "{{ llm_router_small_model }}"]
+  # Delegated labor. Long context is the whole point of this role.
+  - role: subagent
+    model: "{{ llm_router_registry_role_targets.subagent }}"
+    fallbacks: "{{ llm_router_subagent_fallbacks }}"
+  # The judge, cross-family to the primary on purpose — the same model the
+  # `goal-judge` alias resolves to today.
+  - role: judge
+    model: "{{ llm_router_routine_model }}"
+    fallbacks: ["{{ llm_router_small_model }}"]
+  # Trivial background chores: titles, classification, compaction.
+  - role: cheap
+    model: "{{ llm_router_small_model }}"
+    fallbacks: []
+  - role: embed
+    model: embeddings
+    fallbacks: []
+  - role: ocr
+    model: "{{ llm_router_ocr_model }}"
+    fallbacks: []
+
+# Seeding talks to the proxy over loopback with the master key: the management
+# endpoints are authenticated, and the role has the key already. Bounded tightly
+# because the proxy is verified live before this runs.
+llm_router_seed_request_timeout: 30
+
+# Connection parameters for a role's target, keyed by client_model_id and built
+# from the SAME registry fields config.yaml.j2 renders — a role deployment is a
+# real deployment, so it carries the target's own upstream and credential rather
+# than an extra hop through this proxy. Only the three tiers a role can target
+# are projected; a role pointing anywhere else fails the assert in
+# tasks/seed-roles.yml rather than being seeded with half a configuration.
+# Values are secret REFERENCES (os.environ/), never secrets.
+_llm_router_role_params: >-
+  {%- set ns = namespace(params={}) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- set upstream = m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id) -%}
+  {%- if m.tier == 'large' -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'api_base': llm_router_llm_large_base_url,
+        'api_key': 'os.environ/LLM_LARGE_BEARER_TOKEN',
+        'use_chat_completions_api': true}}) -%}
+  {%- elif m.tier == 'light' -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'api_base': llm_router_llm_light_base_url,
+        'api_key': llm_router_light_api_key,
+        'use_chat_completions_api': true}}) -%}
+  {%- elif m.tier == 'openrouter' -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'api_key': 'os.environ/' ~ m.credential_env,
+        'use_chat_completions_api': true}}) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.params }}
+
+# The advertised window for each of those targets. An embedding target carries
+# mode instead: it has no chat context to advertise, and a null one there is
+# harmless where a null on a chat model is the compress-death trap.
+_llm_router_role_model_info: >-
+  {%- set ns = namespace(info={}) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- if m.embedding | default(false) -%}
+  {%- set _ = ns.info.update({m.client_model_id: {'mode': 'embedding'}}) -%}
+  {%- elif m.context_window is defined -%}
+  {%- set _ = ns.info.update({m.client_model_id: {
+        'mode': 'chat',
+        'max_input_tokens': m.context_window,
+        'max_tokens': m.max_output_tokens | default(m.context_window)}}) -%}
+  {%- else -%}
+  {%- set _ = ns.info.update({m.client_model_id: {'mode': 'chat'}}) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.info }}
