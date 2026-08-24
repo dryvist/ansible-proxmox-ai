@@ -58,6 +58,22 @@
     virtualenv: "{{ llm_router_venv }}"
     virtualenv_command: python3 -m venv
 
+# prisma is a pip package plus a GENERATED client: with a database configured,
+# LiteLLM's startup asks prisma for its generated binaries and exits when they
+# are absent, so the service crash-loops after the first database-enabled
+# deploy. Generation is idempotent and writes into the venv's site-packages;
+# creates: makes re-runs free.
+- name: Generate the prisma client the database-backed proxy starts against
+  ansible.builtin.command:
+    cmd: >-
+      {{ llm_router_venv }}/bin/prisma generate
+      --schema {{ llm_router_venv }}/lib/python3.13/site-packages/litellm/proxy/schema.prisma
+    creates: "{{ llm_router_venv }}/lib/python3.13/site-packages/prisma/binaries"
+  environment:
+    PATH: "{{ llm_router_venv }}/bin:/usr/bin:/bin"
+  when: llm_router_store_model_in_db | bool
+  notify: Restart litellm
+
 - name: Deploy the LiteLLM secrets env file
   ansible.builtin.template:
     src: litellm.env.j2
