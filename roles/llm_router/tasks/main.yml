@@ -63,6 +63,17 @@
 # are absent, so the service crash-loops after the first database-enabled
 # deploy. Generation is idempotent and writes into the venv's site-packages;
 # creates: makes re-runs free.
+# Generation WRITES the resolved schema and the generated modules back into the
+# prisma package directory, which pip installed root-owned: without this the
+# service user's generate fails with PermissionError on prisma/schema.prisma.
+- name: Let the service user write its generated client into the prisma package
+  ansible.builtin.file:
+    path: "{{ llm_router_venv }}/lib/python3.13/site-packages/prisma"
+    owner: "{{ llm_router_user }}"
+    group: "{{ llm_router_group }}"
+    recurse: true
+  when: llm_router_store_model_in_db | bool
+
 - name: Generate the prisma client the database-backed proxy starts against
   # As the SERVICE USER, from a directory it can read: generation embeds the
   # generating user's engine-cache path into the client, so a root-generated
@@ -85,7 +96,10 @@
       - --schema
       - "{{ llm_router_venv }}/lib/python3.13/site-packages/litellm/proxy/schema.prisma"
     chdir: /tmp
-    creates: "{{ llm_router_home }}/.cache/prisma-python/binaries"
+    # The generated schema, not the engine cache: the cache directory is
+    # populated before generation can fail, so guarding on it skips a host
+    # whose client was never actually generated.
+    creates: "{{ llm_router_venv }}/lib/python3.13/site-packages/prisma/schema.prisma"
   when: llm_router_store_model_in_db | bool
   notify: Restart litellm
 
