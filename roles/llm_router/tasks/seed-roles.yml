@@ -1,0 +1,110 @@
+---
+# FIRST SEED ONLY. Creates a role deployment when the running proxy has none by
+# that name, and does nothing at all to one that already exists. That asymmetry
+# is the whole contract: role targets and fallback order are edited in the Admin
+# UI, and a converge that re-asserted them would silently undo every such edit
+# the next time it ran — which is exactly the "no git change per swap" property
+# this design exists to provide (defaults/main/55-roles.yml).
+#
+# Runs LAST in the role, after the liveness probe: these are HTTP calls against
+# the proxy this play just started, so it must already be serving.
+
+- name: Assert every role targets a model the catalog describes
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_role_targets | difference(llm_router_registry_enabled_route_names) | length == 0
+    fail_msg: >-
+      Role target(s)
+      [{{ _llm_router_role_targets | difference(llm_router_registry_enabled_route_names) | join(', ') }}]
+      name no enabled entry in llm-models.yml. A role must resolve to a
+      catalogued model — seeding one that does not is how a caller ends up
+      naming a deployment the proxy cannot serve.
+    success_msg: >-
+      All {{ llm_router_role_deployments | length }} role targets are catalogued.
+  vars:
+    _llm_router_role_targets: >-
+      {{ llm_router_role_deployments | map(attribute='model') | unique | list }}
+
+- name: Read the role deployments the proxy already carries
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/model/info"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  register: llm_router_existing_models
+  no_log: true
+
+# Every model name the proxy currently serves — config-rendered and
+# database-stored alike. Serves two purposes: a ROLE in this list is already
+# carried and is left completely alone, and a FALLBACK rung must be in it or
+# the fallback endpoint rejects the whole request.
+- name: Note which model names the proxy already serves
+  ansible.builtin.set_fact:
+    _llm_router_live_models: >-
+      {{ llm_router_existing_models.json.data | default([])
+         | map(attribute='model_name') | unique | list }}
+
+- name: Create the role deployments that are absent
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/model/new"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      model_name: "{{ item.role }}"
+      litellm_params: "{{ _llm_router_role_params[item.model] }}"
+      # Carried explicitly for the same reason the rendered deployments carry
+      # it: a null max_input_tokens makes every caller compress its context to
+      # death instead of failing (tasks/assert.yml).
+      model_info: "{{ _llm_router_role_model_info[item.model] }}"
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  # Absent roles whose TARGET the proxy actually serves. A credential-gated
+  # egress entry renders no deployment until its key is seeded, and seeding a
+  # role onto one would advertise a name that answers with an auth error
+  # instead of not existing — the honest-empty contract the rest of this role
+  # follows. The role arms itself on the converge after the key lands.
+  loop: >-
+    {{ llm_router_role_deployments
+       | rejectattr('role', 'in', _llm_router_live_models)
+       | selectattr('model', 'in', _llm_router_live_models) | list }}
+  loop_control:
+    label: "{{ item.role }} -> {{ item.model }}"
+  register: llm_router_seeded
+  no_log: true
+
+- name: Seed the fallback order for the roles just created
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/fallback"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      model: "{{ item.role }}"
+      # Intersected with what the proxy actually serves, in the declared order.
+      # The endpoint rejects the WHOLE request with a 400 if any one rung is
+      # not a live model name, and an egress rung is only rendered when its
+      # provider key is seeded — so passing the list unfiltered would fail the
+      # converge on precisely the deployment where a credential is missing,
+      # which is the case this fabric is built to tolerate.
+      fallback_models: "{{ item.fallbacks | select('in', _llm_router_live_models) | list }}"
+      fallback_type: general
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  # Only roles created in THIS run, and only those left with an order to
+  # express after that intersection. An existing role's order belongs to
+  # whoever last set it in the UI.
+  loop: >-
+    {{ llm_router_role_deployments
+       | rejectattr('role', 'in', _llm_router_live_models)
+       | selectattr('model', 'in', _llm_router_live_models)
+       | selectattr('fallbacks') | list }}
+  loop_control:
+    label: "{{ item.role }} -> {{ item.fallbacks | select('in', _llm_router_live_models) | join(', ') }}"
+  # The endpoint also rejects an empty list, so a role whose every rung is
+  # unrendered gets no fallback record rather than a failed request.
+  when: item.fallbacks | select('in', _llm_router_live_models) | list | length > 0
+  no_log: true
