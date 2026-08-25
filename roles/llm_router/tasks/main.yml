@@ -62,7 +62,7 @@
 # LiteLLM's startup asks prisma for its generated binaries and exits when they
 # are absent, so the service crash-loops after the first database-enabled
 # deploy. Generation is idempotent and writes into the venv's site-packages;
-# creates: makes re-runs free.
+# the freshness test below makes re-runs free.
 # Generation WRITES the resolved schema and the generated modules back into the
 # prisma package directory, which pip installed root-owned: without this the
 # service user's generate fails with PermissionError on prisma/schema.prisma.
@@ -72,6 +72,25 @@
     owner: "{{ llm_router_user }}"
     group: "{{ llm_router_group }}"
     recurse: true
+  when: llm_router_store_model_in_db | bool
+
+# The generated client embeds the schema it was generated from. A package
+# upgrade replaces litellm's schema.prisma but leaves the client in the prisma
+# package untouched, so a `creates:` guard on the generated file skips
+# regeneration forever after the first install and the proxy starts against a
+# client that does not know the new columns. Regenerate whenever the installed
+# schema is newer than the generated one, or the generated one is absent
+# (`test -nt` is false for a missing first operand).
+- name: Check whether the generated prisma client is at least as new as the installed schema
+  ansible.builtin.command:
+    argv:
+      - test
+      - "{{ llm_router_venv }}/lib/python3.13/site-packages/prisma/schema.prisma"
+      - -nt
+      - "{{ llm_router_venv }}/lib/python3.13/site-packages/litellm/proxy/schema.prisma"
+  register: llm_router_prisma_client_fresh
+  changed_when: false
+  failed_when: false
   when: llm_router_store_model_in_db | bool
 
 - name: Generate the prisma client the database-backed proxy starts against
@@ -96,11 +115,12 @@
       - --schema
       - "{{ llm_router_venv }}/lib/python3.13/site-packages/litellm/proxy/schema.prisma"
     chdir: /tmp
-    # The generated schema, not the engine cache: the cache directory is
-    # populated before generation can fail, so guarding on it skips a host
-    # whose client was never actually generated.
-    creates: "{{ llm_router_venv }}/lib/python3.13/site-packages/prisma/schema.prisma"
-  when: llm_router_store_model_in_db | bool
+  # Guarded by the freshness test above rather than `creates:` on the engine
+  # cache (populated before generation can fail) or on the generated schema
+  # (never refreshed by a package upgrade). It runs only when regeneration is
+  # due, so every run is a change.
+  changed_when: true
+  when: llm_router_store_model_in_db | bool and llm_router_prisma_client_fresh.rc != 0
   notify: Restart litellm
 
 # The generated client talks to tables `prisma db push` creates; on a fresh
