@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.34.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.33.0...v0.34.0) (2026-08-27)
+
+
+### Features
+
+* **llm_router:** caller-facing roles in the router database with an admin UI ([#558](https://github.com/dryvist/ansible-proxmox-ai/issues/558)) ([c599083](https://github.com/dryvist/ansible-proxmox-ai/commit/c599083132b0e2da070cddc3a1b51b05fd12e11c))
+
+
+### Bug Fixes
+
+* **hermes_agent:** raise cron aggregate wall clock 1800s -&gt; 2300s ([#556](https://github.com/dryvist/ansible-proxmox-ai/issues/556)) ([554e47b](https://github.com/dryvist/ansible-proxmox-ai/commit/554e47bfd98f0fd21ec3220dbcaccf2cb89fc870))
+* **llm_router:** drop to the service user with runuser for prisma generation ([#566](https://github.com/dryvist/ansible-proxmox-ai/issues/566)) ([2473af0](https://github.com/dryvist/ansible-proxmox-ai/commit/2473af0836658eb138e7ae384c6824149d6322b7))
+* **llm_router:** generate the prisma client as the service user ([#565](https://github.com/dryvist/ansible-proxmox-ai/issues/565)) ([cdf92d8](https://github.com/dryvist/ansible-proxmox-ai/commit/cdf92d842f7f7f6edc991b0b0474be91d716d1ad))
+* **llm_router:** generate the prisma client before the database-backed proxy starts ([#564](https://github.com/dryvist/ansible-proxmox-ai/issues/564)) ([5d3c458](https://github.com/dryvist/ansible-proxmox-ai/commit/5d3c458c4a42d799148c68a6a0904de7267e36eb))
+* **llm_router:** generate the prisma client on every router, not just one ([#568](https://github.com/dryvist/ansible-proxmox-ai/issues/568)) ([cb18b9e](https://github.com/dryvist/ansible-proxmox-ai/commit/cb18b9ea9dec627b65c6c0c43614bc19f05e28df))
+* **llm_router:** sync the proxy schema into the database before first use ([#567](https://github.com/dryvist/ansible-proxmox-ai/issues/567)) ([706c699](https://github.com/dryvist/ansible-proxmox-ai/commit/706c69944404750ae603667d895b7484de993272))
+* **security:** enable SSH host key checking ([#557](https://github.com/dryvist/ansible-proxmox-ai/issues/557)) ([3a7115b](https://github.com/dryvist/ansible-proxmox-ai/commit/3a7115bf41514dca248b777c026e2fdbc53ef298))
+
 ## [0.33.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.32.0...v0.33.0) (2026-08-23)
 
 
