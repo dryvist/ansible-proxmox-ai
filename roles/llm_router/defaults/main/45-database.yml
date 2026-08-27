@@ -42,16 +42,50 @@ llm_router_db_password: >-
 # idle lifetime below any such timeout makes the client recycle first.
 llm_router_db_max_idle_connection_lifetime: 60
 
-# Model configuration stays in config.yaml — this must remain false.
+# Database-backed model storage, for ROLE DEPLOYMENTS ONLY.
 #
 # store_model_in_db is INDEPENDENT of adaptive routing. Adaptive routing needs
-# the database for quality estimates; enabling this additionally makes the
-# DATABASE the source of truth for the model list, which would fight the
-# registry-is-SSOT architecture this role is built on: the rendered config would
-# stop describing what the proxy actually serves, and a converge would no longer
-# be able to correct it. Declared explicitly rather than left to LiteLLM's
-# default so the decision is visible in a diff.
-llm_router_store_model_in_db: false
+# the database for quality estimates; this additionally lets the database hold
+# model entries alongside the ones config.yaml renders. LiteLLM keeps the two
+# sets separate: a config-file entry stays owned by the converge and is
+# read-only in the Admin UI, and a database entry is owned by whoever last
+# edited it there.
+#
+# That separation is what makes this safe for the registry-is-SSOT
+# architecture, and the split is deliberate:
+#   llm-models.yml is the CATALOG — which physical models exist, what they cost,
+#   what context each serves. It stays in git, renders into config.yaml, and the
+#   render-parity assert still proves the two agree.
+#   The database holds only ROLE DEPLOYMENTS — the stable names callers request
+#   (see 55-roles.yml) and the order each falls back through. Those change on
+#   the timescale of an afternoon, and a git round-trip per change is the cost
+#   this exists to remove.
+# tasks/seed-roles.yml writes a role once, when it is absent, and never again;
+# a converge cannot overwrite an edit made in the UI.
+#
+# Declared explicitly rather than left to LiteLLM's default so the decision is
+# visible in a diff. Gated on llm_router_db_host like everything else here: with
+# no database the roles are simply unseeded, not half-configured.
+llm_router_store_model_in_db: true
+
+# Admin UI sign-in. LiteLLM serves the UI at /ui and reads exactly these two
+# variables from the environment; without them the UI is unreachable and the
+# role deployments could only be edited by curl. bao-first with an env fallback,
+# the same shape as llm_router_db_password above, and emitted only alongside
+# DATABASE_URL — there is nothing to administer without a database.
+llm_router_ui_username: litellm-admin
+#
+# MANDATORY, like llm_router_master_key and unlike the optional-store variables
+# above. An empty password does not disable the UI, it renders a blank
+# credential on the one surface that can repoint every role — a converge that
+# succeeds while leaving that open is worse than one that stops. The whole
+# database block is already gated on llm_router_db_host, so a deployment with
+# no database never evaluates this.
+llm_router_ui_password: >-
+  {{ bao_apps_secrets.llm_router_ui_password
+     | default(lookup('env', 'LLM_ROUTER_UI_PASSWORD'), true)
+     | mandatory('llm_router_ui_password must be seeded (bao apps/llm-router) when a
+       router database is configured — it guards the admin UI that owns role routing') }}
 
 # Spend and error logs stay OUT of the database.
 #

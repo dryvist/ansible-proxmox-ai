@@ -1,0 +1,165 @@
+---
+# --- ROLES: the stable names callers request ---------------------------------
+# A caller names a ROLE — `lead`, `subagent`, `judge`, `cheap`, `embed`, `ocr` —
+# never a physical model. Which model a role resolves to, and the order it falls
+# back through, is an operational decision that changes on the timescale of an
+# afternoon, so it lives in the router database and the Admin UI owns it
+# (45-database.yml has the catalog/roles split, and why that is safe).
+#
+# What is written here is only the FIRST SEED. tasks/seed-roles.yml creates a
+# role when the running proxy has none by that name and leaves every existing
+# one untouched, so a converge can never overwrite an edit made in the UI. To
+# change a role permanently, change it in the UI; changing it here affects only
+# a proxy that has never carried the role before.
+#
+# Each role names a registry entry by its client_model_id, so no model id is
+# re-typed and a role can only point at something the catalog actually
+# describes — the seed task asserts exactly that before it writes anything.
+#
+# TWO THINGS TO KNOW BEFORE RETARGETING A ROLE ON A RUNNING PROXY (measured
+# 2026-08-24, litellm 1.97.0):
+#
+# 1. Changing the target ACROSS a context-window difference means DELETING the
+#    deployment and creating it again, not updating it. `/model/update` writes
+#    the new litellm_params and answers 200, but leaves the advertised
+#    `max_input_tokens` at the old value — passing model_info in the same call
+#    does not change that. A role left advertising a window ten times the one
+#    its model really has is how a caller sends a context nothing can read;
+#    `enable_pre_call_checks` cannot save a caller that was told the wrong
+#    number. Delete plus create sets it correctly. Updating in place is fine
+#    when the window does not change.
+#
+# 2. The local serving tier admits one in-flight request per model. A role that
+#    takes bursty delegation must not name the model the always-on agent is
+#    using, or it answers 429 for as long as that agent is working.
+
+# The OCR entry, selected the same way as primary/routine/small in 50-servable.yml.
+llm_router_ocr_model: >-
+  {{ llm_router_registry_enabled | selectattr('serving_role', 'defined')
+     | selectattr('serving_role', 'equalto', 'ocr')
+     | map(attribute='client_model_id') | first }}
+# The embedding entry. Selected by its `embedding` flag because that is the
+# field the template already keys the embedding render off, and because the
+# registry is the only place a model id is spelled.
+llm_router_embedding_model: >-
+  {{ llm_router_registry_enabled | selectattr('embedding', 'defined')
+     | selectattr('embedding') | map(attribute='client_model_id') | first }}
+
+# Roles declared on registry entries OUTSIDE the servable set. Those entries
+# cannot become static model_group_aliases (see 50-servable.yml), so their
+# `stable_aliases` are read here instead — which is what keeps the subagent
+# role's target from being spelled out a second time.
+llm_router_registry_role_targets: >-
+  {%- set ns = namespace(pairs={}) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- if not (m.servable | default(false)) -%}
+  {%- for role in m.stable_aliases | default([]) -%}
+  {%- set _ = ns.pairs.update({role: m.client_model_id}) -%}
+  {%- endfor -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.pairs }}
+
+# FALLBACK ORDER IS ONE-WAY, LARGEST CONTEXT FIRST.
+#
+# A fallback that serves a smaller context than the model it replaces does not
+# degrade a caller, it poisons one: the request is silently truncated and the
+# answer is confidently wrong. router_settings.enable_pre_call_checks rejects
+# the over-long request rather than routing it, so a short-context fallback
+# behind a million-token model is not a safety net, it is a dead rung that
+# turns into a hard failure exactly when the fallback was supposed to help.
+#
+# A subagent rung must ALSO be zero-cost. This role carries delegated bulk
+# labor, so a rung that quietly bills per token turns a backend outage into
+# spend nobody chose — the failure mode the free-first design exists to
+# prevent. Paid egress stays reachable by name; it is never something a role
+# falls into.
+#
+# Both constraints together leave nothing in the catalog: the one free egress
+# entry with a comparable window serves less than the subagent target, and
+# every larger-window entry is paid. So NO fallback record is seeded —
+# subagent fails honestly, and the UI owner adds a rung deliberately if they
+# want one. An empty list here is the decision, not an omission.
+llm_router_subagent_fallbacks: []
+
+llm_router_role_deployments:
+  # The session/orchestrator tier: the largest accurate local model.
+  - role: lead
+    model: "{{ llm_router_primary_model }}"
+    fallbacks: ["{{ llm_router_routine_model }}", "{{ llm_router_small_model }}"]
+  # Delegated labor. Long context is the whole point of this role.
+  - role: subagent
+    model: "{{ llm_router_registry_role_targets.subagent }}"
+    fallbacks: "{{ llm_router_subagent_fallbacks }}"
+  # The judge, cross-family to the primary on purpose — the same model the
+  # `goal-judge` alias resolves to today.
+  - role: judge
+    model: "{{ llm_router_routine_model }}"
+    fallbacks: ["{{ llm_router_small_model }}"]
+  # Trivial background chores: titles, classification, compaction. Local, so
+  # zero-cost by construction, and no rung under the same rule as subagent.
+  - role: cheap
+    model: "{{ llm_router_small_model }}"
+    fallbacks: []
+  - role: embed
+    model: "{{ llm_router_embedding_model }}"
+    fallbacks: []
+  - role: ocr
+    model: "{{ llm_router_ocr_model }}"
+    fallbacks: []
+
+# Seeding talks to the proxy over loopback with the master key: the management
+# endpoints are authenticated, and the role has the key already. Bounded tightly
+# because the proxy is verified live before this runs.
+llm_router_seed_request_timeout: 30
+
+# Connection parameters for a role's target, keyed by client_model_id and built
+# from the SAME registry fields config.yaml.j2 renders — a role deployment is a
+# real deployment, so it carries the target's own upstream and credential rather
+# than an extra hop through this proxy. Only the three tiers a role can target
+# are projected; a role pointing anywhere else fails the assert in
+# tasks/seed-roles.yml rather than being seeded with half a configuration.
+# Values are secret REFERENCES (os.environ/), never secrets.
+_llm_router_role_params: >-
+  {%- set ns = namespace(params={}) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- set upstream = m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id) -%}
+  {%- if m.tier == 'large' -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'api_base': llm_router_llm_large_base_url,
+        'api_key': 'os.environ/LLM_LARGE_BEARER_TOKEN',
+        'use_chat_completions_api': true}}) -%}
+  {%- elif m.tier == 'light' -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'api_base': llm_router_llm_light_base_url,
+        'api_key': llm_router_light_api_key,
+        'use_chat_completions_api': true}}) -%}
+  {%- elif m.tier == 'openrouter' -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'api_key': 'os.environ/' ~ m.credential_env,
+        'use_chat_completions_api': true}}) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.params }}
+
+# The advertised window for each of those targets. An embedding target carries
+# mode instead: it has no chat context to advertise, and a null one there is
+# harmless where a null on a chat model is the compress-death trap.
+_llm_router_role_model_info: >-
+  {%- set ns = namespace(info={}) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- if m.embedding | default(false) -%}
+  {%- set _ = ns.info.update({m.client_model_id: {'mode': 'embedding'}}) -%}
+  {%- elif m.context_window is defined -%}
+  {%- set _ = ns.info.update({m.client_model_id: {
+        'mode': 'chat',
+        'max_input_tokens': m.context_window,
+        'max_tokens': m.max_output_tokens | default(m.context_window)}}) -%}
+  {%- else -%}
+  {%- set _ = ns.info.update({m.client_model_id: {'mode': 'chat'}}) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.info }}

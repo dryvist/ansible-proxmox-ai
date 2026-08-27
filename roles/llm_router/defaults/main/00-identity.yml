@@ -38,19 +38,24 @@ llm_router_pip_packages:
   # against tag v1.97.0. In particular, timeout remains a per-deployment-attempt
   # guard in tagged source, not Hermes' aggregate wall clock; the external
   # 1800-second job ceiling remains independently load-bearing.
-  - "litellm[proxy]==1.97.0"
-  # LiteLLM's own v1.97.0 uv.lock pins this exact version. Its published proxy
+  # 1.98.0 keeps the same fastapi and prisma lock pins; its schema adds columns
+  # and one table (no destructive migration), which the freshness-guarded
+  # `prisma generate` + `db push` in tasks/main.yml apply on upgrade.
+  - "litellm[proxy]==1.98.0"
+  # LiteLLM's own uv.lock pins this exact version. Its published proxy
   # extra permits FastAPI <1, which currently resolves 0.141.1; that release
   # removed get_flat_dependant while LiteLLM still imports it, so a fresh venv
   # crashes before the proxy CLI can start. Keep the upstream-tested lock value
   # until LiteLLM removes that import or tightens its published constraint.
   - "fastapi==0.136.3"
-  # LiteLLM's auth-error handler unconditionally `import prisma`s to classify
-  # whether a failed request is a DB outage, but litellm[proxy] no longer pulls
-  # prisma. On this DB-less proxy the import raised ModuleNotFoundError, turning
-  # every rejected/absent key into a 500 instead of a 401 (masking real auth
-  # failures as opaque errors). We use no database; prisma is present only so the
-  # handler's isinstance checks resolve and it returns the correct 401.
+  # LiteLLM's database client, and the reason its auth-error handler can tell a
+  # DB outage from a bad key: that handler unconditionally `import prisma`s, but
+  # litellm[proxy] no longer pulls prisma, so a missing install turned every
+  # rejected/absent key into a 500 instead of a 401. It was added for that alone
+  # while this proxy was database-less. It now also carries real traffic — the
+  # role deployments and their fallback order live in Postgres (45-database.yml)
+  # — so it is a functional dependency, not only an import the handler needs to
+  # resolve.
   - prisma
   - opentelemetry-api
   - opentelemetry-sdk

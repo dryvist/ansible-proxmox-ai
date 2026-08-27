@@ -22,8 +22,6 @@ Split into focused pages, each covering one concern:
   cron jobs, the native-cron reframe, and the systemd units alongside them.
 - [Memory](hermes-ops/memory.md) — the Hindsight provider, persistence, and
   the shared-across-profiles scoping.
-- [Credentials](hermes-ops/credentials.md) — the OpenBao fields Hermes reads
-  and what each one enables.
 - [Serving self-heal](hermes-ops/serving-self-heal.md) — the zombie watchdog
   that recovers a wedged serving host.
 - [Repetition guard](hermes-ops/repetition-guard.md) — the tuned
