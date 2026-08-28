@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.35.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.35.0...v0.35.1) (2026-08-28)
+
+
+### Bug Fixes
+
+* **hermes:** install hermes-studio with bun, at npm-independent paths ([#583](https://github.com/dryvist/ansible-proxmox-ai/issues/583)) ([a4778be](https://github.com/dryvist/ansible-proxmox-ai/commit/a4778beebf6ac8097525fa4fc2f1cbc54d4c6ad4))
+* **hermes:** pin both companion UIs to versions that exist, at today's latest ([#581](https://github.com/dryvist/ansible-proxmox-ai/issues/581)) ([2738c79](https://github.com/dryvist/ansible-proxmox-ai/commit/2738c794bc625ab4b8715f1e1a3488e2e2f66d70))
+* **hermes:** run hermes-studio as a forking unit with the port as an argument ([#582](https://github.com/dryvist/ansible-proxmox-ai/issues/582)) ([ec4fbe3](https://github.com/dryvist/ansible-proxmox-ai/commit/ec4fbe331a4b3ec5293e9f4e2f1adb790bd68f15))
+
 ## [0.35.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.34.0...v0.35.0) (2026-08-28)
 
 
