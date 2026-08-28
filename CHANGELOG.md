@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.35.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.35.1...v0.35.2) (2026-08-28)
+
+
+### Bug Fixes
+
+* **hermes:** run hermes-studio on a pinned Node 24, not Debian's Node 20 ([#587](https://github.com/dryvist/ansible-proxmox-ai/issues/587)) ([a9afbf5](https://github.com/dryvist/ansible-proxmox-ai/commit/a9afbf537cd2f89ee070a63027ce455e47d0082c))
+* **hermes:** run hermes-webui from its real entrypoint, supervised ([#588](https://github.com/dryvist/ansible-proxmox-ai/issues/588)) ([2c007b2](https://github.com/dryvist/ansible-proxmox-ai/commit/2c007b24970b34d0980a8216f866e984c67be0c6))
+
 ## [0.35.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.35.0...v0.35.1) (2026-08-28)
 
 
