@@ -54,6 +54,33 @@
 - name: Install and run hermes-studio
   when: hermes_agent_studio_enabled | bool
   block:
+    - name: Fetch the pinned Node runtime for hermes-studio (checksum-verified)
+      ansible.builtin.get_url:
+        url: >-
+          https://nodejs.org/dist/{{ hermes_agent_studio_node_version
+          }}/node-{{ hermes_agent_studio_node_version }}-linux-x64.tar.xz
+        dest: /tmp/node-{{ hermes_agent_studio_node_version }}.tar.xz
+        checksum: "sha256:{{ hermes_agent_studio_node_sha256 }}"
+        mode: "0644"
+
+    - name: Create the Node prefix
+      ansible.builtin.file:
+        path: "{{ hermes_agent_studio_node_prefix }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    # Version-scoped prefix plus creates: a bump installs the new runtime, a
+    # re-run does nothing. Never `state: latest` on a runtime the app pins.
+    - name: Unpack the Node runtime
+      ansible.builtin.unarchive:
+        src: /tmp/node-{{ hermes_agent_studio_node_version }}.tar.xz
+        dest: "{{ hermes_agent_studio_node_prefix }}"
+        remote_src: true
+        extra_opts: ["--strip-components=1"]
+        creates: "{{ hermes_agent_studio_node_prefix }}/bin/node"
+
     - name: Install unzip for the bun release archive
       ansible.builtin.apt:
         name: unzip
