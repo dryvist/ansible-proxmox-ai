@@ -1,0 +1,94 @@
+---
+# Install and run the two co-located third-party Hermes UIs. See
+# defaults/main/52-companion-uis.yml for why they live on the agent guest.
+#
+# Each is gated on its own flag so a guest can carry one, both, or neither, and
+# so a broken upstream release can be switched off without editing the role.
+
+# --- hermes-webui -------------------------------------------------------------
+- name: Install and run hermes-webui
+  when: hermes_agent_webui_enabled | bool
+  block:
+    # Pinned to a release TAG and moved on every converge, exactly like the
+    # agent checkout. A `creates:`-guarded clone would bind the pin only on a
+    # guest's first install and let the app own its version afterwards, which is
+    # how the agent itself drifted two releases behind its pin.
+    - name: Pin the hermes-webui checkout to its release tag
+      ansible.builtin.git:
+        repo: "{{ hermes_agent_webui_repo_url }}"
+        dest: "{{ hermes_agent_webui_install_dir }}"
+        version: "{{ hermes_agent_webui_version_tag }}"
+        depth: 1
+        force: true
+      register: hermes_agent_webui_checkout
+
+    # bootstrap.py resolves its own Python deps — the expensive half — so it runs
+    # only when the checkout actually moved. Comparing the commit before/after is
+    # precise where `changed` is not: `force` above rewrites the working tree on
+    # every run, so the git task reports changed even when the pin has not moved.
+    # Same reasoning, and same expression, as the agent's own installer task.
+    - name: Bootstrap hermes-webui when the checkout moved
+      ansible.builtin.command:
+        cmd: "python3 bootstrap.py"
+        chdir: "{{ hermes_agent_webui_install_dir }}"
+      changed_when: true
+      when: hermes_agent_webui_checkout.before != hermes_agent_webui_checkout.after
+
+    - name: Install the hermes-webui unit
+      ansible.builtin.template:
+        src: hermes-webui.service.j2
+        dest: /etc/systemd/system/hermes-webui.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart hermes-webui
+
+    - name: Enable and start hermes-webui
+      ansible.builtin.systemd_service:
+        name: hermes-webui
+        enabled: true
+        state: started
+        daemon_reload: true
+
+# --- hermes-studio ------------------------------------------------------------
+- name: Install and run hermes-studio
+  when: hermes_agent_studio_enabled | bool
+  block:
+    - name: Install Node.js for hermes-studio
+      ansible.builtin.apt:
+        name: nodejs
+        state: present
+        update_cache: false
+
+    # Version pinned explicitly rather than `state: latest`, so a converge
+    # cannot silently move the UI out of step with the agent it is coupled to.
+    - name: Install the pinned hermes-studio package
+      community.general.npm:
+        name: "{{ hermes_agent_studio_npm_package }}"
+        version: "{{ hermes_agent_studio_version }}"
+        global: true
+        state: present
+
+    - name: Create the hermes-studio state directory
+      ansible.builtin.file:
+        path: "{{ hermes_agent_studio_home }}"
+        state: directory
+        owner: "{{ hermes_agent_user }}"
+        group: "{{ hermes_agent_user }}"
+        mode: "0750"
+
+    - name: Install the hermes-studio unit
+      ansible.builtin.template:
+        src: hermes-studio.service.j2
+        dest: /etc/systemd/system/hermes-studio.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart hermes-studio
+
+    - name: Enable and start hermes-studio
+      ansible.builtin.systemd_service:
+        name: hermes-studio
+        enabled: true
+        state: started
+        daemon_reload: true
