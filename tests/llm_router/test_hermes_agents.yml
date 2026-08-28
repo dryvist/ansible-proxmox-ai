@@ -1,0 +1,142 @@
+---
+# Pins the contract that makes ONE Open WebUI login cover EVERY Hermes agent:
+# each agent guest renders as its own router deployment, derived from the
+# tag-driven `hermes_agents` key tofu publishes.
+#
+# WHY this is a test and not just a render: the failure modes here are all
+# silent. A missing bearer would still render a deployment that 401s the moment
+# somebody picks it from the dropdown. An agent swept into a fallback chain
+# would answer as a different agent — the wrong identity, not an outage. Adding
+# an agent to the estate and having it NOT appear looks exactly like a healthy
+# render. None of those show up as a failed converge.
+#
+# Run (from the REPO ROOT — the registry load resolves the llm_router role
+# through ansible.cfg's cwd-relative roles_path):
+#   ansible-playbook tests/llm_router/test_hermes_agents.yml -i localhost, -c local
+- name: Verify every Hermes agent renders as its own router deployment
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+      # Two agents, shaped exactly as tofu's inventory_assembly publishes them.
+      hermes_agents:
+        hermes-agent:
+          api_url: "http://hermes-agent.pve.example.test:8642/v1"
+          model_name: hermes-agent
+        hermes-donna:
+          api_url: "http://hermes-donna.pve.example.test:8642/v1"
+          model_name: hermes-donna
+    bao_local_llm_secrets: {}
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    # The gate that keeps a dead model out of every consumer's dropdown.
+    # Runs BEFORE the bearer is seeded: with it seeded this could not fail.
+    - name: With no bearer, no agent deployment renders at all
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _unkeyed_agents | length == 0
+        fail_msg: >-
+          An agent rendered with no bearer resolved. It would appear in every
+          consumer's dropdown and 401 on selection — worse than being absent.
+        success_msg: "No credential, no advertised agent."
+      vars:
+        _unkeyed_agents: >-
+          {{ (lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml).model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'search', ':8642/v1$')
+             | list }}
+
+    # set_fact, not a play var: include_vars binds role defaults at a HIGHER
+    # precedence than a play var, so an override set there is silently dropped.
+    - name: Seed the shared agent bearer
+      ansible.builtin.set_fact:
+        llm_router_hermes_agent_bearer: test-hermes-server-key
+
+    - name: Render and parse the real config template
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Every published agent renders as its own deployment
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _agent_deployments | length == 2
+          - (_agent_deployments | map(attribute='model_name') | sort) == ['hermes-agent', 'hermes-donna']
+        fail_msg: >-
+          Expected one deployment per published agent; got
+          {{ _agent_deployments | map(attribute='model_name') | list }}. An
+          agent missing here is an agent nobody can reach from the shared UI.
+        success_msg: "Both agents render as their own model."
+      vars:
+        _agent_deployments: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'search', ':8642/v1$')
+             | list }}
+
+    - name: Each agent points at its OWN api_url and carries the bearer
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _by_name['hermes-agent'].litellm_params.api_base == tofu_data.hermes_agents['hermes-agent'].api_url
+          - _by_name['hermes-donna'].litellm_params.api_base == tofu_data.hermes_agents['hermes-donna'].api_url
+          - _by_name['hermes-agent'].litellm_params.api_key == 'os.environ/HERMES_AGENT_BEARER_TOKEN'
+        fail_msg: >-
+          An agent deployment points at the wrong endpoint or has no
+          credential. A crossed api_base answers as the WRONG agent, which is
+          worse than a failure; a missing key 401s on selection.
+        success_msg: "Each agent is bound to its own endpoint, with a credential."
+      vars:
+        _by_name: >-
+          {{ dict(_config.model_list | map(attribute='model_name')
+                  | zip(_config.model_list)) }}
+
+    # An agent is a single identity running real tools. Being reachable through
+    # an alias or a fallback means a request meant for one agent can be answered
+    # by another, or by a plain model wearing an agent's name.
+    - name: No agent is reachable through an alias or a fallback chain
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _agent_names | intersect(_alias_targets) | length == 0
+          - _agent_names | intersect(_fallback_targets) | length == 0
+        fail_msg: >-
+          Agent(s) {{ _agent_names | intersect(_alias_targets + _fallback_targets) }}
+          are reachable indirectly — a request would be silently answered by the
+          wrong identity instead of failing.
+        success_msg: "Agents are explicitly-chosen only."
+      vars:
+        _agent_names: "{{ tofu_data.hermes_agents | list }}"
+        _alias_targets: >-
+          {{ (_config.router_settings.model_group_alias | default({})).values() | list }}
+        _fallback_targets: >-
+          {{ _config.router_settings.fallbacks | default([])
+             | map('dict2items') | map('map', attribute='value') | map('flatten')
+             | flatten | list }}
