@@ -19,7 +19,23 @@ Environment=HERMES_HOME={{ hermes_agent_hermes_home }}
 Environment=HERMES_WEBUI_PORT={{ hermes_agent_webui_port }}
 Environment=HERMES_WEBUI_HOST={{ hermes_agent_webui_host }}
 EnvironmentFile=-{{ hermes_agent_hermes_home }}/.env
-ExecStart=/usr/bin/python3 {{ hermes_agent_webui_install_dir }}/app.py
+# bootstrap.py is upstream's ONLY entrypoint — it resolves dependencies and
+# then becomes the server. `--foreground` is the flag its own help text says to
+# use "under launchd / systemd / supervisord": it os.execv's server.py in this
+# process, so systemd supervises the real server rather than a launcher that
+# exits. Without it bootstrap.py spawns a DETACHED child, which systemd cannot
+# see, cannot stop, and which survives to answer requests after the unit has
+# failed — a dead service that still returns 200.
+#
+# There is no `app.py` in this repo and never was; the previous ExecStart named
+# one, so the unit crashlooped to its start limit on every guest.
+#
+# Port is positional. TimeoutStartSec is generous because a moved checkout
+# installs dependencies inside this same process before the server binds.
+ExecStart=/usr/bin/python3 {{ hermes_agent_webui_install_dir }}/bootstrap.py \
+  --no-browser --foreground \
+  --host {{ hermes_agent_webui_host }} {{ hermes_agent_webui_port | trim }}
+TimeoutStartSec=600
 Restart=always
 RestartSec=5s
 
