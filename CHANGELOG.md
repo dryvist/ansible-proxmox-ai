@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.35.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.34.0...v0.35.0) (2026-08-28)
+
+
+### Features
+
+* **hermes:** one login for every agent, plus the two popular third-party UIs ([#577](https://github.com/dryvist/ansible-proxmox-ai/issues/577)) ([f013049](https://github.com/dryvist/ansible-proxmox-ai/commit/f013049972e05986aed21d4e579318bea7031490))
+
 ## [0.34.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.33.0...v0.34.0) (2026-08-27)
 
 
