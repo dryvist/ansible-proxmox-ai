@@ -8,19 +8,32 @@ StartLimitBurst={{ hermes_agent_unit_restart_burst }}
 OnFailure=hermes-unit-alert@%n.service
 
 [Service]
-Type=simple
+# `hermes-web-ui start` ALWAYS detaches (spawn detached:true + unref), writes a
+# pid file, polls /health, then exits 0. There is no foreground flag. Under
+# Type=simple systemd saw that launcher exit and tore the daemon down with it,
+# which is why every start failed. Track the pid file instead.
+Type=forking
+PIDFile={{ hermes_agent_studio_home }}/server.pid
 User={{ hermes_agent_user }}
 Group={{ hermes_agent_user }}
 WorkingDirectory={{ hermes_agent_studio_home }}
 Environment=HERMES_HOME={{ hermes_agent_hermes_home }}
-Environment=PORT={{ hermes_agent_studio_port }}
+# The CLI derives PID_DIR/log/token from this, so it must point at the state
+# directory the role creates — not root's ~/.hermes-web-ui, where the pid file
+# would land outside PIDFile above.
+Environment=HERMES_WEB_UI_HOME={{ hermes_agent_studio_home }}
+# BIND_HOST is read by the server (defaults 0.0.0.0). The PORT env is NOT:
+# getPort() reads argv only and would silently serve the vendor default, so the
+# port is an argument on ExecStart below.
 Environment=BIND_HOST={{ hermes_agent_studio_host }}
 # Reach the agent through its own gateway on loopback rather than the Traefik
 # vhost: that route is SSO-gated and answers an HTML login page, which this
 # client cannot parse.
 Environment=GATEWAY_URL=http://127.0.0.1:{{ hermes_agent_api_server_port }}
 EnvironmentFile=-{{ hermes_agent_hermes_home }}/.env
-ExecStart=/usr/bin/hermes-web-ui start
+# --no-open or it tries to launch a browser on a headless guest.
+ExecStart=/usr/bin/hermes-web-ui start {{ hermes_agent_studio_port }} --no-open
+ExecStop=/usr/bin/hermes-web-ui stop
 Restart=always
 RestartSec=5s
 
