@@ -22,18 +22,17 @@
         force: true
       register: hermes_agent_webui_checkout
 
-    # bootstrap.py resolves its own Python deps — the expensive half — so it runs
-    # only when the checkout actually moved. Comparing the commit before/after is
-    # precise where `changed` is not: `force` above rewrites the working tree on
-    # every run, so the git task reports changed even when the pin has not moved.
-    # Same reasoning, and same expression, as the agent's own installer task.
-    - name: Bootstrap hermes-webui when the checkout moved
-      ansible.builtin.command:
-        cmd: "python3 bootstrap.py"
-        chdir: "{{ hermes_agent_webui_install_dir }}"
-      changed_when: true
-      when: hermes_agent_webui_checkout.before != hermes_agent_webui_checkout.after
-
+    # NO separate bootstrap step. bootstrap.py is not an installer that returns
+    # — it resolves dependencies and then BECOMES the server, spawning a
+    # detached child when it is not given `--foreground`. Running it here left a
+    # server outside every cgroup: it survived the converge, kept answering 200
+    # on the UI's port, and so made a unit that had crashlooped to its start
+    # limit look healthy from the outside. Nothing downstream could tell the
+    # difference.
+    #
+    # The unit runs bootstrap.py --foreground, so the dependency resolution the
+    # old task performed now happens inside the supervised process, where a
+    # failure is a failed unit instead of a silent one.
     - name: Install the hermes-webui unit
       ansible.builtin.template:
         src: hermes-webui.service.j2
@@ -49,6 +48,16 @@
         enabled: true
         state: started
         daemon_reload: true
+
+    # Restart on a MOVED pin, not on `changed`: `force: true` above rewrites the
+    # working tree every run, so the git task reports changed even when the pin
+    # has not moved. Comparing the commit is the precise test — the same
+    # expression the agent's own installer uses.
+    - name: Restart hermes-webui when the checkout moved
+      ansible.builtin.systemd_service:
+        name: hermes-webui
+        state: restarted
+      when: hermes_agent_webui_checkout.before != hermes_agent_webui_checkout.after
 
 # --- hermes-studio ------------------------------------------------------------
 - name: Install and run hermes-studio
