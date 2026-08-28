@@ -54,20 +54,49 @@
 - name: Install and run hermes-studio
   when: hermes_agent_studio_enabled | bool
   block:
-    - name: Install Node.js for hermes-studio
+    - name: Install unzip for the bun release archive
       ansible.builtin.apt:
-        name: nodejs
+        name: unzip
         state: present
         update_cache: false
 
-    # Version pinned explicitly rather than `state: latest`, so a converge
-    # cannot silently move the UI out of step with the agent it is coupled to.
-    - name: Install the pinned hermes-studio package
-      community.general.npm:
-        name: "{{ hermes_agent_studio_npm_package }}"
-        version: "{{ hermes_agent_studio_version }}"
-        global: true
-        state: present
+    - name: Fetch the pinned bun release (checksum-verified)
+      ansible.builtin.get_url:
+        url: >-
+          https://github.com/oven-sh/bun/releases/download/{{ hermes_agent_bun_version }}/bun-linux-x64.zip
+        dest: /tmp/bun-{{ hermes_agent_bun_version }}.zip
+        checksum: "sha256:{{ hermes_agent_bun_sha256 }}"
+        mode: "0644"
+
+    - name: Install the bun binary
+      ansible.builtin.unarchive:
+        src: /tmp/bun-{{ hermes_agent_bun_version }}.zip
+        dest: /tmp
+        remote_src: true
+        creates: /tmp/bun-linux-x64/bun
+
+    - name: Place bun on PATH
+      ansible.builtin.copy:
+        src: /tmp/bun-linux-x64/bun
+        dest: "{{ hermes_agent_bun_install_root }}/bin/bun"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+
+    # Version pinned explicitly rather than `latest`, so a converge cannot
+    # silently move the UI. --trust runs the package's postinstalls
+    # (agent-browser, protobufjs); bun blocks them by default and the CLI needs
+    # its native modules built.
+    - name: Install the pinned hermes-studio package with bun
+      ansible.builtin.command:
+        cmd: >-
+          {{ hermes_agent_bun_install_root }}/bin/bun add --global --trust
+          {{ hermes_agent_studio_package }}@{{ hermes_agent_studio_version }}
+      environment:
+        BUN_INSTALL: "{{ hermes_agent_bun_install_root }}"
+      register: hermes_agent_studio_install
+      changed_when: "'installed' in hermes_agent_studio_install.stdout"
 
     - name: Create the hermes-studio state directory
       ansible.builtin.file:
