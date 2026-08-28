@@ -1,0 +1,43 @@
+{# One router deployment per Hermes AGENT guest, from the tag-derived
+   `hermes_agents` key in the published tofu inventory (see
+   defaults/main/36-hermes-agents.yml for why the set is derived, not listed).
+
+   Included by model-list.yaml.j2 as its own file so that template stays inside
+   the repo's per-file token budget — the split the budget note asks for, not a
+   workaround of it.
+
+   Renders to nothing when the inventory carries no hermes_agents key or the
+   bearer did not resolve. Emitting a deployment with no credential would put a
+   model in every consumer's dropdown that answers 401 on selection, which is
+   worse than the agent simply not appearing. #}
+{% if llm_router_hermes_agent_bearer | trim | length > 0 %}
+
+  # --- Hermes agents: each running agent, callable as its own model ---
+  # These are agentic endpoints, not plain completions: a single request may
+  # shell tools and chain many upstream calls before answering, which is why
+  # the timeout below is its own knob rather than the shared request timeout.
+  #
+  # Deliberately NOT part of any fallback chain or model_group_alias. An agent
+  # must be chosen explicitly — silently degrading someone's request from an
+  # agent to a plain model, or from one agent's identity to another's, would be
+  # answering as the wrong thing rather than failing.
+{% for _name, _agent in (llm_router_hermes_agents | dictsort) %}
+  - model_name: {{ _name }}
+    litellm_params:
+      # The agent's API server speaks the OpenAI protocol and advertises itself
+      # under its own model name; api_base already carries the /v1 suffix the
+      # publisher guarantees.
+      model: openai/{{ _agent.model_name }}
+      api_base: {{ _agent.api_url }}
+      api_key: os.environ/HERMES_AGENT_BEARER_TOKEN
+      timeout: {{ llm_router_hermes_agent_timeout }}
+      stream_timeout: {{ llm_router_hermes_agent_timeout }}
+      # An agent is stateful and single-identity; retrying a half-run request
+      # can re-execute tools it already ran. Fail out to the caller instead.
+      num_retries: 0
+    model_info:
+      mode: chat
+      max_input_tokens: {{ llm_router_hermes_agent_context_window }}
+      max_tokens: {{ llm_router_hermes_agent_context_window }}
+{% endfor %}
+{% endif %}

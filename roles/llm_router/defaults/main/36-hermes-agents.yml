@@ -1,0 +1,42 @@
+---
+# Hermes AGENTS as router deployments — not to be confused with 35-hermes-cloud,
+# which is about the models a Hermes agent CALLS. This file is the reverse: it
+# publishes each running agent as something callable THROUGH the router.
+#
+# Why here rather than in llm-models.yml: that file is the hand-curated model
+# registry, deliberately pure data with no host or URL literals. The agent set
+# is not hand-curated — it is whatever guests carry the `hermes-agent` tag, and
+# tofu already derives and publishes exactly that as `hermes_agents`. Listing
+# agents by hand here would reintroduce the drift the tag-driven publisher was
+# built to remove: a second place to forget when an agent is added.
+#
+# What this buys: Open WebUI (and Dify, and LangFlow, and every other consumer
+# already pointed at the router) gains one selectable model per agent with no
+# change of its own. A Hermes agent's dashboard is machine-level and has no
+# fleet view, so before this the only way to reach a second agent was a second
+# hostname and a second login.
+
+# One entry per agent guest, straight from the published inventory. Absent or
+# empty when the inventory predates the hermes_agents key, which renders the
+# whole block away rather than failing — an older artifact must still converge.
+llm_router_hermes_agents: "{{ tofu_data.hermes_agents | default({}, true) }}"
+
+# Every agent's API server authenticates with the same bearer the hermes_agent
+# role writes as API_SERVER_KEY, so this is one credential rather than one per
+# agent. Sourced from OpenBao first, falling back to the environment, matching
+# how the other provider credentials in this role resolve.
+llm_router_hermes_agent_bearer: >-
+  {{ bao_local_llm_secrets['hermes_api_server_key']
+     | default(lookup('env', 'HERMES_API_SERVER_KEY'), true)
+     | default('', true) }}
+
+# An agent is an agentic loop that shells tools and can chain many calls before
+# it answers, so it needs a far longer ceiling than a plain completion. This is
+# deliberately its own knob and not the shared request timeout.
+llm_router_hermes_agent_timeout: 1800
+
+# Advertised context. The agent manages its own history and compaction, so this
+# only has to be large enough that the router's pre-call check does not reject
+# a normal request. Kept modest on purpose rather than claiming a window the
+# backing model may not have.
+llm_router_hermes_agent_context_window: 131072
