@@ -198,3 +198,64 @@
 
     - name: The guard passes anyway, because the exemption holds
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"
+
+- name: The guard stays quiet for tag-derived Hermes agents absent from the registry
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+      # Two agents, exactly the shape 36-hermes-agents.yml expects from the
+      # published inventory — never hand-listed in llm-models.yml.
+      hermes_agents:
+        hermes-agent:
+          model_name: hermes-agent
+          api_url: "https://hermes-agent.pve.example.test/v1"
+        hermes-donna:
+          model_name: hermes-donna
+          api_url: "https://hermes-donna.pve.example.test/v1"
+    bao_local_llm_secrets:
+      HERMES_API_SERVER_KEY: test-hermes-server-key
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Confirm the fixture really does render agents the registry does not own
+      # If this stops being true the exemption below is untested — the play
+      # would pass because there was nothing to exempt, not because the
+      # exemption works.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'hermes-agent' in _rendered"
+          - "'hermes-donna' in _rendered"
+          - "'hermes-agent' not in llm_router_registry_enabled_route_names"
+          - "'hermes-donna' not in llm_router_registry_enabled_route_names"
+        fail_msg: >-
+          Expected both agents to render while owning no registry entry, but
+          got rendered={{ _rendered }}
+          route_names={{ llm_router_registry_enabled_route_names }}.
+        success_msg: "Both agents render and neither owns a registry entry, as intended."
+      vars:
+        _rendered: >-
+          {{ (lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml).model_list
+             | default([]) | map(attribute='model_name') | unique | list }}
+
+    - name: The guard passes anyway, because the hermes-agent exemption holds
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"

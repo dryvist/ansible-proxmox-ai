@@ -73,11 +73,32 @@
              | selectattr('litellm_params.api_base', 'search', ':8642/v1$')
              | list }}
 
-    # set_fact, not a play var: include_vars binds role defaults at a HIGHER
-    # precedence than a play var, so an override set there is silently dropped.
-    - name: Seed the shared agent bearer
+    # Seed the SECRET STORE, then re-bind the defaults so the shipped
+    # expression resolves the bearer itself. Setting llm_router_hermes_agent_
+    # bearer directly would skip the very line that decides whether an agent
+    # renders — which is how a lowercase key name shipped and silently
+    # published nothing: the converge stayed green and the agents never
+    # appeared in any consumer's dropdown.
+    - name: Seed the shared agent bearer at its real field name
       ansible.builtin.set_fact:
-        llm_router_hermes_agent_bearer: test-hermes-server-key
+        bao_local_llm_secrets:
+          HERMES_API_SERVER_KEY: test-hermes-server-key
+
+    - name: Re-bind role defaults so the bearer resolves from the store
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: The bearer must resolve from the store, not from a test override
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_hermes_agent_bearer == 'test-hermes-server-key'
+        fail_msg: >-
+          The bearer did not resolve from bao_local_llm_secrets. The key must be
+          the LITERAL field name at secret/ai/hermes — openbao_secrets merges the
+          KV subtree verbatim and nothing case-folds, so a mis-cased key resolves
+          empty and renders every agent away with a green converge.
+        success_msg: "The bearer resolves from the secret store by its real field name."
 
     - name: Render and parse the real config template
       ansible.builtin.set_fact:
