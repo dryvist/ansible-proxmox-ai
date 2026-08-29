@@ -1,0 +1,121 @@
+# Auto-fix the installer sha256 pin on Renovate's own branch.
+#
+# Renovate proposes hermes_agent_version bumps via a `# renovate:` annotation
+# but cannot compute a checksum (see the comment above that annotation in
+# roles/hermes_agent/defaults/main/10-installer-and-bundles.yml), so every
+# bump lands beside a STALE hermes_agent_installer_sha256. That is the exact
+# gap that let PR #575 open with a failing "Installer checksums" CI gate and
+# needed a manual `--fix` + commit to merge. This workflow closes it: it runs
+# the same script that manual fix used, and pushes the result back onto the
+# SAME PR the moment Renovate opens or updates one.
+#
+# WHY A GITHUB APP TOKEN, NOT GITHUB_TOKEN. Two reasons, both load-bearing:
+#   1. required_signatures is enforced on every branch in this repo (verified
+#      2026-08-28: a plain unsigned `git commit` + push was rejected outright,
+#      independent of which credential authenticated the push). A commit made
+#      via the Contents API is signed by GitHub itself, regardless of which
+#      token authenticated the call; a `git commit` run in an unkeyed CI
+#      runner is not, however it is later pushed.
+#   2. A push authenticated with the workflow's own GITHUB_TOKEN deliberately
+#      does NOT trigger other workflows' `pull_request: synchronize` (GitHub's
+#      loop-prevention rule) — so ci-gate.yml's Installer checksums job would
+#      never re-run and the PR would look permanently red even after the fix
+#      landed. A separately minted App token is a distinct actor and does
+#      retrigger downstream workflows normally.
+#
+# Reuses the org's existing release-please App rather than provisioning a
+# second one (same reasoning as bot-pr-automerge-sweep.yml in dryvist/.github):
+# it is already installed org-wide with exactly the two permissions this
+# needs, contents + pull-requests write, minted here scoped to this repo only.
+#
+# SELF-LIMITING, NOT LOOP-GUARDED. The commit this workflow pushes retriggers
+# this same workflow once more via `synchronize`; on that second run the
+# script finds nothing left to fix (`git diff` is empty) and the job stops
+# after the check step. No PR-number tracking, no lock file — the idempotent
+# script itself is the termination condition.
+#
+# SCOPED TO RENOVATE ONLY, matching the script's own stated design ("used on
+# Renovate branches"). A human editing this file by hand should see their own
+# diff fail the check and fix it themselves — silently rewriting a human's PR
+# would be a surprise, not a convenience.
+name: Fix installer sha256 (Renovate PRs)
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    # Exact path, matching the PINS entry in check-installer-sha.sh — kept
+    # coupled deliberately. If that entry's file ever changes, update both.
+    paths:
+      - "roles/hermes_agent/defaults/main/10-installer-and-bundles.yml"
+
+concurrency:
+  # A newer push on the same PR makes an in-flight run's captured head sha
+  # stale before it can commit against it — cancel rather than let a stale
+  # fix land after a newer one.
+  group: fix-installer-sha-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fix:
+    name: Fix
+    if: github.event.pull_request.user.login == 'renovate[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout the PR branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Recompute the checksum
+        id: fix
+        run: |
+          .github/scripts/check-installer-sha.sh --fix
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already matches — nothing to fix."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff
+          fi
+
+      - name: Generate GitHub App token
+        if: steps.fix.outputs.changed == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ vars.GH_ACTION_RELEASE_PLEASE_APP_ID }}
+          private-key: ${{ secrets.GH_ACTION_RELEASE_PLEASE_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      # Pushed via the Contents API (never `git push`): the only way a commit
+      # from CI satisfies this repo's required_signatures rule — see the
+      # header. `sha` is the CURRENT blob sha at that path on the branch, not
+      # the pre-fix content we read locally, so a concurrent push between our
+      # checkout and this step fails the API call loudly (409) instead of
+      # silently overwriting it.
+      - name: Commit the fix onto the Renovate branch
+        if: steps.fix.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          FILE: roles/hermes_agent/defaults/main/10-installer-and-bundles.yml
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^hermes_agent_version: "\(.*\)"/\1/p' "$FILE")
+          msg="fix(hermes_agent): refresh installer sha for ${version}
+
+          Automated by fix-installer-sha.yml: hermes_agent_version moved and
+          Renovate cannot compute a checksum, so this recomputes and commits
+          the matching sha256."
+          current_sha=$(gh api "repos/${GITHUB_REPOSITORY}/contents/${FILE}?ref=${BRANCH}" --jq .sha)
+          gh api "repos/${GITHUB_REPOSITORY}/contents/${FILE}" -X PUT \
+            -f message="$msg" \
+            -f content="$(base64 -w0 "$FILE")" \
+            -f sha="$current_sha" \
+            -f branch="$BRANCH"
