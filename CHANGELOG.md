@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.35.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.35.2...v0.35.3) (2026-08-29)
+
+
+### Bug Fixes
+
+* exempt tag-derived Hermes agents from registry/render parity guard ([65ce145](https://github.com/dryvist/ansible-proxmox-ai/commit/65ce1455dfe71a775e2133b673d25aa12c761cb6))
+* exempt tag-derived Hermes agents from the registry/render parity guard ([a1e8b78](https://github.com/dryvist/ansible-proxmox-ai/commit/a1e8b789cd83bc98de214b9542013681b9f71ab0))
+* **llm_router:** read the agent bearer by its real field name ([0455cd6](https://github.com/dryvist/ansible-proxmox-ai/commit/0455cd6563ef45aab710ae10a93df74453b784ab))
+* **llm_router:** read the agent bearer by its real field name ([8c4395b](https://github.com/dryvist/ansible-proxmox-ai/commit/8c4395b3089644c4946d9982149673ed366aa576))
+
 ## [0.35.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.35.1...v0.35.2) (2026-08-28)
 
 
