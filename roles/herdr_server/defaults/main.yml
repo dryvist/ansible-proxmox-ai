@@ -1,0 +1,40 @@
+---
+# Thin by design. This role installs nothing: the herdr server, the agent CLIs
+# and the systemd unit all come from nix-ai's nixosModules.herdr, converged by
+# the shared nixos_deploy role. What is left is the handful of values NixOS
+# cannot know — per-guest secrets and endpoints — delivered the way every other
+# agent guest in this repo gets them: an EnvironmentFile at 0600, never the
+# Nix store, which is world-readable.
+
+herdr_server_flake_ref: "github:dryvist/nix-ai/main"
+herdr_server_host_attr: herdr
+
+herdr_server_user: herdr
+herdr_server_state_dir: /var/lib/herdr
+herdr_server_env_file: "{{ herdr_server_state_dir }}/.env"
+
+# Model access for the agent CLIs, through the estate's LiteLLM front door.
+# Same shape hermes_agent uses: a name, never an address.
+herdr_server_model_base_url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1"
+herdr_server_model_api_key: >-
+  {{ lookup('env', 'HERDR_MODEL_API_KEY')
+     | default(lookup('env', 'LLM_ROUTER_MASTER_KEY'), true) | default('', true) }}
+
+# Agent credentials. Empty-string defaults keep the guest inert rather than
+# half-configured: a CLI with no credential simply cannot start a session,
+# which is a clearer failure than one that starts and silently cannot call out.
+herdr_server_anthropic_api_key: >-
+  {{ lookup('env', 'HERDR_ANTHROPIC_API_KEY') | default('', true) }}
+herdr_server_openai_api_key: >-
+  {{ lookup('env', 'HERDR_OPENAI_API_KEY') | default('', true) }}
+
+# Extra KEY: value pairs written verbatim into the EnvironmentFile.
+herdr_server_extra_env: {}
+
+# Gate for environments where the guest is not a real NixOS host: the
+# controller-side nixos-rebuild and the systemd management below both assume
+# one. Molecule sets this false and exercises the render surface instead, which
+# is this repo's stated convention for network- and platform-dependent tasks.
+# A tag alone would not do: `include_role` still runs, and a skipped inner task
+# is easy to get wrong. An explicit variable is unambiguous.
+herdr_server_deploy_enabled: true

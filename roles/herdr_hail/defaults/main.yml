@@ -1,0 +1,53 @@
+---
+# herdr-hail — the two-way Slack bridge. Blocked-agent alerts out; replies and
+# button taps back into the pane that raised them.
+#
+# Thin, like herdr_server: the package and unit come from nix-ai; this role
+# supplies the Slack credentials and the runtime's address.
+
+herdr_hail_flake_ref: "github:dryvist/nix-ai/main"
+herdr_hail_host_attr: herdr-slack
+
+herdr_hail_user: herdr-hail
+herdr_hail_state_dir: /var/lib/herdr-hail
+herdr_hail_env_file: "{{ herdr_hail_state_dir }}/.env"
+
+# The runtime this bridge drives. herdr-hail talks to herdr's LOCAL control
+# socket, so the bridge container forwards that socket over SSH rather than
+# dialling a TCP port — which is why nix-ai's service pins the socket at
+# /run/herdr via RuntimeDirectory instead of a uid-derived $XDG_RUNTIME_DIR
+# path. A forwarded path has to be predictable.
+herdr_hail_runtime_host: >-
+  {{ hostvars[groups['herdr_group'][0]].ansible_host
+     if (groups['herdr_group'] | default([])) | length > 0
+     else '' }}
+herdr_hail_socket_path: /run/herdr/herdr.sock
+
+# Slack. Identity-prefixed, same convention as hermes_agent's SLACK_<ID>_*
+# lookups: herdr needs its OWN Slack app, because two Socket Mode connections
+# sharing one bot token get round-robin event delivery and each drops half.
+#
+# Empty-string defaults keep the bridge inert until the tokens exist, rather
+# than crash-looping a unit against a missing credential.
+herdr_hail_slack_bot_token: >-
+  {{ lookup('env', 'SLACK_HERDR_BOT_TOKEN') | default('', true) }}
+herdr_hail_slack_app_token: >-
+  {{ lookup('env', 'SLACK_HERDR_APP_TOKEN') | default('', true) }}
+herdr_hail_slack_channel: >-
+  {{ lookup('env', 'SLACK_HERDR_CHANNEL') | default('', true) }}
+
+# Who may reply into a pane. An allowlist, not a convenience: a reply is
+# executed in a live agent's terminal.
+herdr_hail_slack_allowed_users: >-
+  {{ lookup('env', 'SLACK_HERDR_MEMBER_ID')
+     | default(lookup('env', 'SLACK_MEMBER_ID'), true) | default('', true) }}
+
+herdr_hail_extra_env: {}
+
+# Gate for environments where the guest is not a real NixOS host: the
+# controller-side nixos-rebuild and the systemd management below both assume
+# one. Molecule sets this false and exercises the render surface instead, which
+# is this repo's stated convention for network- and platform-dependent tasks.
+# A tag alone would not do: `include_role` still runs, and a skipped inner task
+# is easy to get wrong. An explicit variable is unambiguous.
+herdr_hail_deploy_enabled: true

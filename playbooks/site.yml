@@ -24,7 +24,8 @@
 - name: Pre-fetch resource-domain secrets from OpenBao
   hosts: >-
     qdrant_group:hindsight_group:llamaindex_group:ollama_group:open_webui_group:
-    hermes_agent_group:hermes_ui_group:llm_fast_group:llm_vllm_group:llm_router_group:llm_redis_group:
+    hermes_agent_group:hermes_ui_group:herdr_group:herdr_slack_group:herdr_ui_group:
+    llm_fast_group:llm_vllm_group:llm_router_group:llm_redis_group:
     dify_group:langflow_group:langgraph_group:agent_exec_group:
     langfuse_group:agentgateway_group:ai_orchestration_group:ai_runner_group:
     ai_agent_pool_group
@@ -181,6 +182,59 @@
     - ai
   roles:
     - role: hermes_ui_docker
+
+# =============================================================================
+# Phase 3c: herdr — the agent multiplexer the coding CLIs run inside.
+#
+# Three NixOS guests, unlike everything else in this repo. The rule that nix
+# runs on the CONTROLLER and never on the guest still holds: these roles
+# install nothing, they call the shared nixos_deploy role, which runs
+# `nixos-rebuild --target-host` here and copies the closure over. Ansible stays
+# the orchestrator; nix-ai's flake stays the config.
+#
+# Ordering. herdr_group converges FIRST and in its own play: both clients drive
+# the runtime (the bridge forwards its control socket over SSH, the relay uses
+# HERDR_REMOTES) and both assert at converge time that a herdr_group host
+# exists. Converging them against a runtime that is not up yet would leave a
+# bridge connected to nothing, which reports as a quiet fleet rather than an
+# error — the failure mode those asserts exist to convert into a loud one.
+#
+# Single-node, so deliberately NO serial/max_fail_percentage/pool_member_gate:
+# per AGENTS.md the gate turns a down host into a silent skip, which is the
+# wrong trade for a one-member group. Adopt it in the same change that adds a
+# second runtime, alongside the ha_affinity_group in the tofu desired state.
+# =============================================================================
+
+- name: Configure the herdr runtime
+  hosts: herdr_group
+  become: true
+  gather_facts: true
+  tags:
+    - herdr_server
+    - herdr
+    - agent
+    - ai
+  roles:
+    - role: herdr_server
+
+- name: Configure the herdr Slack bridge and web dashboard
+  hosts: herdr_slack_group:herdr_ui_group
+  become: true
+  gather_facts: true
+  tags:
+    - herdr
+    - agent
+    - ai
+  roles:
+    - role: herdr_hail
+      when: inventory_hostname in (groups['herdr_slack_group'] | default([]))
+      tags:
+        - herdr_hail
+    - role: herdr_remote
+      when: inventory_hostname in (groups['herdr_ui_group'] | default([]))
+      tags:
+        - herdr_remote
+
 # LLM serving and routing (both GPU guests, spend store, router). Split out
 # to keep this file within its token budget and because those plays are
 # order-coupled with each other — see the playbook's own header.

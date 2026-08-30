@@ -1,0 +1,62 @@
+---
+# Re-enter the role through the same interface converge uses, rather than
+# hand-rolling include_vars on defaults/main.yml: a test that reconstructs the
+# variable precedence itself can pass while the converge is broken.
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    herdr_hail_deploy_enabled: false
+    herdr_hail_runtime_host: "herdr.molecule.invalid"
+
+  tasks:
+    - name: Read the rendered environment file
+      ansible.builtin.slurp:
+        src: /var/lib/herdr-hail/.env
+      register: herdr_hail_env_raw
+
+    - name: Stat the rendered environment file
+      ansible.builtin.stat:
+        path: /var/lib/herdr-hail/.env
+      register: herdr_hail_env_stat
+
+    - name: Split the environment file into non-comment lines
+      ansible.builtin.set_fact:
+        herdr_hail_env_lines: >-
+          {{ (herdr_hail_env_raw.content | b64decode).splitlines()
+             | map('trim') | reject('match', '^(#.*)?$') | list }}
+
+    - name: A Slack token file must not be readable beyond its owner
+      ansible.builtin.assert:
+        that:
+          - herdr_hail_env_stat.stat.mode == '0600'
+          - herdr_hail_env_stat.stat.pw_name == 'herdr-hail'
+        fail_msg: >-
+          The environment file holds a live Slack bot token. Anything looser
+          than 0600 owned by the service user hands workspace access to every
+          local account.
+        quiet: true
+
+    - name: Every configured value reaches the environment file
+      ansible.builtin.assert:
+        that:
+          - "'SLACK_BOT_TOKEN=xoxb-molecule-not-a-real-token' in herdr_hail_env_lines"
+          - "'SLACK_APP_TOKEN=xapp-molecule-not-a-real-token' in herdr_hail_env_lines"
+          - "'SLACK_CHANNEL=C0MOLECULE' in herdr_hail_env_lines"
+          - "'SLACK_ALLOWED_USERS=U0MOLECULE' in herdr_hail_env_lines"
+          - "'HERDR_HAIL_LOG_LEVEL=debug' in herdr_hail_env_lines"
+        fail_msg: "Rendered environment file does not match the converge inputs: {{ herdr_hail_env_lines }}"
+        quiet: true
+
+    - name: The socket path matches the one nix-ai's service pins
+      ansible.builtin.assert:
+        that:
+          - "'HERDR_SOCKET=/run/herdr/herdr.sock' in herdr_hail_env_lines"
+        fail_msg: >-
+          nix-ai's herdr.service pins the control socket under /run/herdr via
+          RuntimeDirectory precisely so this bridge can forward a predictable
+          path over SSH. A different path here means the forward lands nowhere
+          and the bridge reports a permanently quiet fleet.
+        quiet: true

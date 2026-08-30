@@ -1,0 +1,52 @@
+---
+# Order matters. The deploy runs FIRST because it is what creates the herdr
+# user, the state directory and the unit; writing the EnvironmentFile before
+# that would fail on a missing owner. herdr.service loads the file with a
+# leading `-`, so it starts inert on a first converge and picks the credentials
+# up on the handler restart below.
+
+- name: Converge the guest from the nix-ai flake
+  when: herdr_server_deploy_enabled | bool
+  ansible.builtin.include_role:
+    name: nixos_deploy
+  vars:
+    nixos_deploy_flake_ref: "{{ herdr_server_flake_ref }}"
+    nixos_deploy_host_attr: "{{ herdr_server_host_attr }}"
+
+- name: Deploy the herdr environment file
+  ansible.builtin.template:
+    src: herdr-env.j2
+    dest: "{{ herdr_server_env_file }}"
+    owner: "{{ herdr_server_user }}"
+    group: "{{ herdr_server_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart herdr
+
+- name: Ensure herdr is running
+  ansible.builtin.systemd_service:
+    name: herdr
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: herdr_server_deploy_enabled | bool
+  tags:
+    - molecule-notest
+
+- name: Apply any pending restart before verifying
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify the herdr server answers its own CLI
+  ansible.builtin.command: herdr status
+  become: true
+  become_user: "{{ herdr_server_user }}"
+  environment:
+    XDG_RUNTIME_DIR: /run/herdr
+  changed_when: false
+  register: herdr_server_status
+  retries: 5
+  delay: 3
+  until: herdr_server_status.rc == 0
+  when: herdr_server_deploy_enabled | bool
+  tags:
+    - molecule-notest

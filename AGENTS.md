@@ -43,6 +43,23 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
 
 ### Agents
 
+- `herdr_server` / `herdr_hail` / `herdr_remote` — herdr, the agent
+  multiplexer the coding CLIs run inside: the runtime, its Slack bridge
+  (`herdr-hail`), and its web/phone dashboard (`herdr-remote`), one guest each
+  so a bridge crash cannot touch the runtime holding live agent panes.
+  **These three guests are NixOS**, unlike everything else this repo
+  converges. The rule that nix runs on the CONTROLLER and never on the guest
+  still holds, and is what makes that workable: the roles install nothing.
+  They call the shared `nixos_deploy` role, which runs
+  `nixos-rebuild --target-host` on the controller and copies the closure over
+  SSH, reusing the certificate `scripts/run-ansible.sh` already mints. Ansible
+  stays the orchestrator; the config lives in
+  [`nix-ai`](https://github.com/dryvist/nix-ai)'s `nixosModules.herdr`. Each
+  role's own job is the handful of values NixOS cannot know — Slack tokens,
+  agent credentials, the router endpoint — delivered as an `EnvironmentFile`
+  at 0600, never the world-readable Nix store.
+- `nixos_deploy` — generic controller-side NixOS converge (flake ref + host
+  attribute). Reusable; nothing herdr-specific in it.
 - `hermes_agent` — the autonomous NousResearch agent gateway
 - `agent_exec` — sandboxed agent execution
 - `agentgateway_docker` — agent gateway (Docker)

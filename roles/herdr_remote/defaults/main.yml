@@ -1,0 +1,55 @@
+---
+# herdr-remote — the web/phone dashboard. Live agent timelines, one-tap
+# approvals, terminal interaction from a browser.
+#
+# Thin, like the other two: the relay and its unit come from nix-ai.
+
+herdr_remote_flake_ref: "github:dryvist/nix-ai/main"
+herdr_remote_host_attr: herdr-ui
+
+herdr_remote_user: herdr-remote
+herdr_remote_state_dir: /var/lib/herdr-remote
+herdr_remote_env_file: "{{ herdr_remote_state_dir }}/.env"
+
+# Bind loopback-only and let Traefik reach it? No — Traefik runs on another
+# guest, so the relay binds the guest's own interface and the container
+# firewall (tofu-proxmox modules/firewall/herdr_rules.tf) is what restricts
+# who may reach it.
+herdr_remote_bind_host: "0.0.0.0"
+herdr_remote_bind_port: 8375
+
+# Public URL, derived from the subdomain like every other fronted service in
+# this repo — never hardcoded. Matches the `herdr` ingress row in tofu-proxmox
+# modules/proxmox-stack/ingress.tf.
+herdr_remote_hostname: "herdr.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
+
+# The relay rejects a browser whose Origin is not listed, which is the only
+# thing standing between a cross-site request and an approve button.
+herdr_remote_trusted_origins: "https://{{ herdr_remote_hostname }}"
+
+# The relay's own bearer token. This is a SECOND gate, not the primary one:
+# Authelia's forwardAuth in front of the route is what actually authenticates a
+# human. Keep both — the token also covers anything reaching the guest
+# directly, past Traefik.
+herdr_remote_relay_token: >-
+  {{ lookup('env', 'HERDR_RELAY_TOKEN') | default('', true) }}
+
+# The runtimes this relay drives, over SSH. Upstream's HERDR_REMOTES format.
+herdr_remote_remotes: >-
+  {{ (groups['herdr_group'] | default([]))
+     | map('extract', hostvars, 'ansible_host') | select | join(',') }}
+
+# Upstream offers a free Cloudflare tunnel. Deliberately NOT used: it would
+# publish an approve-a-live-agent surface through a third party, when the
+# estate already has Traefik and Authelia in front of everything else.
+herdr_remote_tunnel_enabled: false
+
+herdr_remote_extra_env: {}
+
+# Gate for environments where the guest is not a real NixOS host: the
+# controller-side nixos-rebuild and the systemd management below both assume
+# one. Molecule sets this false and exercises the render surface instead, which
+# is this repo's stated convention for network- and platform-dependent tasks.
+# A tag alone would not do: `include_role` still runs, and a skipped inner task
+# is easy to get wrong. An explicit variable is unambiguous.
+herdr_remote_deploy_enabled: true

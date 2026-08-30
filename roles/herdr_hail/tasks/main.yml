@@ -1,0 +1,49 @@
+---
+- name: Assert the bridge knows which runtime to drive
+  ansible.builtin.assert:
+    that:
+      - herdr_hail_runtime_host | length > 0
+    fail_msg: >-
+      herdr_hail found no host in herdr_group. The bridge forwards the runtime's
+      control socket over SSH, so without that address it would start, connect
+      to nothing, and report no blocked agents — a silent failure, which is why
+      this is asserted rather than defaulted.
+    quiet: true
+
+- name: Converge the guest from the nix-ai flake
+  when: herdr_hail_deploy_enabled | bool
+  ansible.builtin.include_role:
+    name: nixos_deploy
+  vars:
+    nixos_deploy_flake_ref: "{{ herdr_hail_flake_ref }}"
+    nixos_deploy_host_attr: "{{ herdr_hail_host_attr }}"
+
+- name: Deploy the herdr-hail environment file
+  ansible.builtin.template:
+    src: herdr-hail-env.j2
+    dest: "{{ herdr_hail_env_file }}"
+    owner: "{{ herdr_hail_user }}"
+    group: "{{ herdr_hail_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart herdr-hail
+
+- name: Report that the bridge is inert without Slack tokens
+  ansible.builtin.debug:
+    msg: >-
+      SLACK_HERDR_BOT_TOKEN / SLACK_HERDR_APP_TOKEN are unset, so herdr-hail
+      will run without a Slack connection. Set them (herdr needs its OWN Slack
+      app — a shared bot token round-robins Socket Mode events) and re-converge.
+  when: >-
+    herdr_hail_slack_bot_token | length == 0
+    or herdr_hail_slack_app_token | length == 0
+
+- name: Ensure herdr-hail is running
+  ansible.builtin.systemd_service:
+    name: herdr-hail
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: herdr_hail_deploy_enabled | bool
+  tags:
+    - molecule-notest
