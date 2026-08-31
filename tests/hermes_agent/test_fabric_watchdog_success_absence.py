@@ -513,17 +513,20 @@ def test_repeated_pause_cycles_cannot_mask_a_job_that_has_stopped_succeeding() -
     dead the whole time still crosses its threshold on the wall clock the pauses
     do not cover — otherwise a cycling pause is a way to hide a dead fleet.
 
-    The last resume is deliberately recent: 20m after it, a guard that restarted
-    the clock on resume would read 20m and stay quiet, well inside the 45m
-    threshold. Only the banked total exposes the real 80m of silence.
+    Timed so the stall is still inside its 45m threshold at the last resume
+    (41m of banked-adjusted silence) and crosses it 20m later. A guard that
+    restarted the clock on resume would read 20m at that final tick and stay
+    quiet; only the banked total exposes the real 61m of silence.
     """
     jobs = [job("digest", cadence_min=15, last_ok_ago_min=1)]
     state = settle(jobs)
-    for start, end in ((10, 20), (70, 80)):
-        _, _, state, _ = run(jobs, state, now=NOW + start * MINUTE, paused=["default"])
-        _, _, state, _ = run(jobs, state, now=NOW + end * MINUTE)
-    stale, _, _, _ = run(jobs, state, now=NOW + 100 * MINUTE)
-    assert len(stale) == 1, "100m of silence with only 20m stopped is still a stall"
+    for start, end in ((10, 20), (50, 60)):
+        stale, _, state, _ = run(jobs, state, now=NOW + start * MINUTE, paused=["default"])
+        assert stale == [], f"stopped at {start}m must be quiet"
+        stale, _, state, _ = run(jobs, state, now=NOW + end * MINUTE)
+        assert stale == [], f"resumed at {end}m is still inside the threshold"
+    stale, _, _, _ = run(jobs, state, now=NOW + 80 * MINUTE)
+    assert len(stale) == 1, "61m of silence with only 20m stopped is still a stall"
 
 
 def test_a_store_left_stopped_indefinitely_raises_its_own_alert_once() -> None:
