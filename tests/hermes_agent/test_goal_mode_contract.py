@@ -96,6 +96,17 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert defaults["hermes_agent_model_max_tokens"] == 8192
     assert defaults["hermes_agent_context_compression_threshold"] == 0.75
     assert defaults["hermes_agent_stream_stale_timeout"] == 900
+    # The non-stream stale bound tracks the streaming one rather than carrying
+    # its own literal: both guard the same fabric against the same 90s remote
+    # default the FQDN router misclassification leaves in place.
+    assert (
+        defaults["hermes_agent_api_call_stale_timeout"]
+        == "{{ hermes_agent_stream_stale_timeout }}"
+    )
+    assert (
+        "HERMES_API_CALL_STALE_TIMEOUT={{ hermes_agent_api_call_stale_timeout }}"
+        in environment
+    )
     assert defaults["hermes_agent_cron_inactivity_timeout_seconds"] == 1800
     assert defaults["hermes_agent_cron_wall_timeout_seconds"] == 2300
     assert (
