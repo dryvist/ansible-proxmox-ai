@@ -1,7 +1,7 @@
 # LLM Model Registry — per-entry notes
 
 Incident history and selection rationale for individual entries in
-`llm-models.yml`, split out for the same reason
+`llm-models.d/`, split out for the same reason
 [LLM_MODELS_SCHEMA.md](./LLM_MODELS_SCHEMA.md) was: the registry is pure data
 under a per-file token budget, and changing one model's window should not mean
 reading five unrelated write-ups first. The schema doc says what a **field**

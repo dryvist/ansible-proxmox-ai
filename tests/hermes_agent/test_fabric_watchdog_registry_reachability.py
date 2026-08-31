@@ -1,6 +1,6 @@
 """fabric_watchdog registry-derived reachability contract.
 
-Probe every serving tier llm-models.yml advertises as `servable: true`, using
+Probe every serving tier llm-models.d/ advertises as `servable: true`, using
 the same debounced probe/alert mechanism fabric_watchdog already runs for the
 MCP fabric and LLM front door.
 

@@ -1,6 +1,6 @@
 # LLM Model Registry Schema
 
-Field reference for `llm-models.yml` (the fabric's single model-name
+Field reference for `llm-models.d/` (the fabric's single model-name
 source — see that file's own header for why it exists and what derives
 from it). Moved out of the yml to keep the data file under the repo's
 per-file token budget; this schema is documentation, not data.

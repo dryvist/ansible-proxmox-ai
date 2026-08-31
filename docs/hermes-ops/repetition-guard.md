@@ -1,7 +1,7 @@
 # Repetition guard
 
 The default brain (the real model id in `ai_default_model`) has its own tuned
-entry in the repo-root `llm-models.yml` registry carrying
+entry in the repo-root `llm-models.d/` registry carrying
 `repetition_penalty: 1.05` in `extra_body`; because the router serves that real
 id (no alias indirection),
 requests hit the tuned entry rather than falling through to the un-tuned `*`
