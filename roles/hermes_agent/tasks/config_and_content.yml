@@ -1,4 +1,30 @@
 ---
+# The .env below pins SSL_CERT_FILE to this bundle, and that pin is only an
+# improvement while the file is really there — pointing the runtime at a
+# missing bundle would break every outbound HTTPS call on the guest, which is
+# strictly worse than the virtualenv-local bundle it replaces. `ca-certificates`
+# is installed earlier in this role, so a miss here means the package was
+# removed or the distro moved the path, and the operator needs to know that
+# before the units are restarted onto it — not after.
+- name: Stat the distro CA bundle the runtime will be pinned to
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_ca_bundle_path }}"
+  register: hermes_agent_ca_bundle_stat
+
+- name: Gate — the distro CA bundle exists before it is pinned as SSL_CERT_FILE
+  ansible.builtin.assert:
+    that:
+      - hermes_agent_ca_bundle_stat.stat.exists
+      - hermes_agent_ca_bundle_stat.stat.isreg
+    fail_msg: >-
+      hermes_agent_ca_bundle_path ({{ hermes_agent_ca_bundle_path }}) is not a
+      regular file on this guest, so SSL_CERT_FILE cannot be pinned to it.
+      Confirm the ca-certificates package is installed, or override
+      hermes_agent_ca_bundle_path with this distro's bundle location.
+    success_msg: >-
+      Distro CA bundle present at {{ hermes_agent_ca_bundle_path }} — safe to
+      pin as SSL_CERT_FILE.
+
 - name: Deploy the Hermes secrets file (.env)
   ansible.builtin.template:
     src: hermes-env.j2

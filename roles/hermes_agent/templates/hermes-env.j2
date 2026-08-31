@@ -4,6 +4,28 @@
 # Brain API key = the LiteLLM router master key.
 HERMES_AGENT_MODEL_API_KEY={{ hermes_agent_model_api_key }}
 
+# Not a secret. Pin the CA bundle to the distro store so the runtime never
+# selects the one inside its own virtualenv.
+#
+# The runtime's startup CA autodetection (gateway/run.py `_ensure_ssl_certs`)
+# returns early when SSL_CERT_FILE already names an existing file. Left unset,
+# it walks its own ladder: OpenSSL's compiled-in path first, then certifi, then
+# the distro locations. The interpreter shipped with the pinned release is a
+# relocatable standalone build whose compiled-in path does not exist on this
+# guest, so the first rung always misses and it settles on certifi — a path
+# INSIDE the virtualenv — writing it into the process environment once, at
+# start, for the daemon's whole lifetime. The distro bundle further down that
+# same ladder is present and stable, and is never reached.
+#
+# That pin is the defect: reinstalling the virtualenv replaces certifi's
+# cacert.pem, and every agent run that builds an HTTP client while the file is
+# briefly absent dies on a CA bundle that "does not exist" — while the same
+# path is plainly there by the time anyone looks. Naming the distro bundle up
+# front short-circuits the ladder onto a path whose lifetime is the guest's,
+# not the virtualenv's. The `ca-certificates` package that provides it is
+# installed by this role (tasks/install_and_dashboard.yml).
+SSL_CERT_FILE={{ hermes_agent_ca_bundle_path }}
+
 {% if hermes_agent_memory_provider == 'hindsight' and hermes_agent_memory_mode == 'local_embedded' %}
 # Hindsight local-embedded daemon: its entity-extraction LLM is the same
 # router brain, so it authenticates with the same router master key.
