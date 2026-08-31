@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+{{ ansible_managed | comment }}
+"""Alert on the ABSENCE OF SUCCESS in the scheduled-job fleet.
+
+The endpoint probes in this role answer "is the fabric reachable". They say
+nothing about whether scheduled work is still COMPLETING. A fleet whose jobs
+all fail — or stop firing entirely — leaves every probe green, so the only
+signal was an error per run, which is indistinguishable from ordinary noise and
+identical in shape whether the fleet is dying or merely grumpy. Silence has to
+page as loudly as failure.
+
+The clock this watches is TIME SINCE THE LAST SUCCESSFUL RUN, per job. Never an
+error count, never an error rate: a job that has stopped running at all emits no
+errors, and a job erroring every tick emits them steadily forever.
+
+Source of truth is the cron job store, read-only. Each record carries
+`last_run_at`, `last_status` ("ok" on a clean run), `next_run_at` and the
+`schedule` — the scheduler's own bookkeeping, so nothing here re-derives a
+cron expression or needs a cron parser on the guest.
+
+`last_run_at` records a RUN, not a SUCCESS: it advances on a failed run too.
+So the success clock cannot be read straight off the store — a job failing every
+tick keeps `last_run_at` fresh forever. Instead this keeps its own per-job memory
+of the newest `last_run_at` it has ever OBSERVED carrying `last_status == "ok"`.
+That memory is the last-success timestamp, and it stops advancing the moment a
+job stops succeeding, however loudly it keeps failing.
+
+Runs as a child of fabric-watchdog.sh, inheriting the same Slack environment.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+
+# --- Ansible-rendered configuration ------------------------------------------
+JOBS_FILE = "{{ fabric_watchdog_cron_jobs_file }}"
+STATE_PATH = "{{ fabric_watchdog_success_state_path }}"
+# Multiple of a job's OWN cadence that may elapse with no success before it
+# pages. A global fixed threshold cannot work across a fleet that mixes
+# quarter-hourly and daily jobs: it either pages constantly on the daily ones or
+# never on the frequent ones.
+MISSED_CYCLES = {{ fabric_watchdog_success_missed_cycles }}
+# Floor and ceiling on the derived threshold. The floor keeps a 1-minute job
+# from paging over ordinary lateness; the ceiling keeps a daily job from being
+# allowed to sit silent for most of a week.
+FLOOR_MINUTES = {{ fabric_watchdog_success_floor_minutes }}
+CEILING_MINUTES = {{ fabric_watchdog_success_ceiling_minutes }}
+# Above this many jobs stale in one evaluation, post ONE fleet-wide message
+# instead of one per job — a total fleet death must not arrive as a flood.
+FLEET_ROLLUP_AT = {{ fabric_watchdog_success_fleet_rollup_at }}
+STATE_SCHEMA = 1
+
+SLACK_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
+SLACK_CHANNEL = (
+    os.environ.get("SLACK_ALERT_CHANNEL")
+    or os.environ.get("SLACK_ALLOWED_USERS", "").split(",")[0]
+).strip()
+
+
+def log(message: str) -> None:
+    """Every evaluation, not just every firing.
+
+    A prior watchdog in this estate exited 0 in silence for 28 consecutive ticks
+    and hid a real halt for 14 minutes. Silent success is the failure mode this
+    guard is designed against, so each job gets a decision line every tick and
+    stdout is journald.
+    """
+    print(f"cron-success-watchdog: {message}", flush=True)
+
+
+def slack_post(text: str) -> None:
+    if not (SLACK_TOKEN and SLACK_CHANNEL):
+        log(f"WOULD ALERT (no Slack token/channel configured): {text}")
+        return
+    body = json.dumps({"channel": SLACK_CHANNEL, "text": text}).encode()
+    request = urllib.request.Request(
+        "https://slack.com/api/chat.postMessage",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {SLACK_TOKEN}",
+            "Content-Type": "application/json; charset=utf-8",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            response.read()
+        log(f"alert posted: {text}")
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        # A watchdog that dies on its own notification path is worse than one
+        # that reports it could not speak. The state write still happens, so
+        # the episode is not re-announced on every subsequent tick either.
+        log(f"ALERT DELIVERY FAILED ({exc}): {text}")
+
+
+def parse_iso(value) -> float | None:
+    """ISO-8601 to an epoch. Naive stamps are read as UTC, never local."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.timestamp()
+
+
+def load_jobs() -> list:
+    """Enabled, unpaused jobs from the store. Never raises."""
+    try:
+        with open(JOBS_FILE, encoding="utf-8-sig") as handle:
+            store = json.load(handle)
+    except (OSError, ValueError) as exc:
+        log(f"cron store unreadable at {JOBS_FILE} ({exc}) — nothing evaluated")
+        return []
+    jobs = store.get("jobs") if isinstance(store, dict) else store
+    return jobs if isinstance(jobs, list) else []
+
+
+def cadence_seconds(job: dict) -> float | None:
+    """The job's OWN interval, in seconds, or None when underivable.
+
+    Preference order, both taken straight from the scheduler's bookkeeping:
+      1. an interval schedule's declared `minutes`;
+      2. `next_run_at - last_run_at`, which the scheduler computes from
+         `last_run_at` for cron-expression jobs too — so one cadence falls out
+         of the pair without parsing a cron expression here.
+
+    The gap is only trustworthy when it was measured off a COMPLETED run. A job
+    can be re-armed without running — `next_run_at` moves to a future time while
+    `last_run_at` stays stale — and the gap then reads as the whole length of the
+    outage rather than one cycle, inflating the threshold in the quiet direction
+    exactly while the job is broken. `evaluate` therefore remembers the cadence
+    it measured on a successful run and keeps using that; this live reading is
+    only the bootstrap, before any success has been observed.
+    """
+    schedule = job.get("schedule")
+    if isinstance(schedule, dict):
+        if schedule.get("kind") == "once":
+            return None  # a one-shot has no cadence and cannot be "overdue"
+        minutes = schedule.get("minutes")
+        if isinstance(minutes, (int, float)) and minutes > 0:
+            return float(minutes) * 60
+    last = parse_iso(job.get("last_run_at"))
+    nxt = parse_iso(job.get("next_run_at"))
+    if last is not None and nxt is not None and nxt > last:
+        return nxt - last
+    return None
+
+
+def threshold_seconds(cadence: float) -> float:
+    """Clamp MISSED_CYCLES of the job's own cadence into the sane band."""
+    return min(max(cadence * MISSED_CYCLES, FLOOR_MINUTES * 60), CEILING_MINUTES * 60)
+
+
+def load_state() -> dict:
+    try:
+        with open(STATE_PATH, encoding="utf-8") as handle:
+            state = json.load(handle)
+    except (OSError, ValueError):
+        return {"schema": STATE_SCHEMA, "jobs": {}}
+    if not isinstance(state, dict) or state.get("schema") != STATE_SCHEMA:
+        return {"schema": STATE_SCHEMA, "jobs": {}}
+    state.setdefault("jobs", {})
+    return state
+
+
+def save_state(state: dict) -> None:
+    tmp = f"{STATE_PATH}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(state, handle)
+        os.replace(tmp, STATE_PATH)
+    except OSError as exc:
+        log(f"state write FAILED ({exc}) — this episode may re-announce")
+
+
+def evaluate(jobs: list, state: dict, now: float) -> tuple[list, list]:
+    """Decide per job. Returns (newly stale, newly recovered) display names.
+
+    Mutates `state` in place: advances each job's remembered last-success and
+    flips its alerted latch. Every job gets a log line whatever is decided.
+    """
+    memory = state["jobs"]
+    stale, recovered = [], []
+    seen = set()
+
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        key = str(job.get("id") or job.get("name") or "")
+        if not key:
+            continue
+        seen.add(key)
+        name = str(job.get("name") or key)
+        record = memory.setdefault(key, {"last_ok": None, "alerted": False})
+
+        if not job.get("enabled", True) or job.get("state") == "paused":
+            # Deliberately off is not silence. Reset the latch so a resumed job
+            # is judged from its resumption, not from a stale pre-pause clock.
+            record["last_ok"] = None
+            record["alerted"] = False
+            log(f"{name}: SKIP (disabled or paused)")
+            continue
+
+        last_run = parse_iso(job.get("last_run_at"))
+        if job.get("last_status") == "ok" and last_run is not None:
+            remembered = record.get("last_ok")
+            if remembered is None or last_run > remembered:
+                record["last_ok"] = last_run
+            # Pin the cadence to a reading taken off a completed run. A re-arm
+            # without a run inflates the live gap, which would raise the
+            # threshold the longer the job stays broken.
+            measured = cadence_seconds(job)
+            if measured is not None:
+                record["cadence"] = measured
+
+        if record.get("last_ok") is None:
+            # No observed success yet: either a genuinely new job or one already
+            # broken when this watchdog first saw it. Seeding the clock at now
+            # gives it exactly one full threshold to prove itself, instead of
+            # paging for a silence that predates any observation.
+            record["last_ok"] = now
+            record["alerted"] = False
+            log(f"{name}: SEED (no observed success yet; clock starts now)")
+            continue
+
+        cadence = record.get("cadence") or cadence_seconds(job)
+        if cadence is None:
+            log(f"{name}: SKIP (no derivable cadence — one-shot or unscheduled)")
+            continue
+
+        limit = threshold_seconds(cadence)
+        silent = now - record["last_ok"]
+        overdue = silent > limit
+        detail = (
+            f"{silent / 60:.0f}m since last success, "
+            f"threshold {limit / 60:.0f}m ({MISSED_CYCLES}x its {cadence / 60:.0f}m cadence)"
+        )
+
+        if overdue and not record["alerted"]:
+            record["alerted"] = True
+            stale.append(f"{name} ({detail})")
+            log(f"{name}: STALE -> alerting; {detail}")
+        elif overdue:
+            log(f"{name}: STALE (already alerted, staying quiet); {detail}")
+        elif record["alerted"]:
+            record["alerted"] = False
+            recovered.append(name)
+            log(f"{name}: RECOVERED; {detail}")
+        else:
+            log(f"{name}: ok; {detail}")
+
+    for key in [k for k in memory if k not in seen]:
+        del memory[key]
+        log(f"{key}: FORGOTTEN (no longer in the job store)")
+
+    return stale, recovered
+
+
+def main() -> int:
+    now = time.time()
+    jobs = load_jobs()
+    state = load_state()
+    log(f"evaluating {len(jobs)} job(s) from {JOBS_FILE}")
+
+    stale, recovered = evaluate(jobs, state, now)
+    save_state(state)
+
+    if len(stale) >= FLEET_ROLLUP_AT:
+        slack_post(
+            f":rotating_light: scheduled-work watchdog: {len(stale)} jobs have STOPPED "
+            f"SUCCEEDING — no successful run within each job's own threshold. "
+            f"Affected: {', '.join(stale)}"
+        )
+    else:
+        for entry in stale:
+            slack_post(
+                f":rotating_light: scheduled-work watchdog: {entry} has produced no "
+                f"successful run. Errors alone would not surface this."
+            )
+    for name in recovered:
+        slack_post(f":white_check_mark: scheduled-work watchdog: {name} is succeeding again")
+
+    log(f"done: {len(stale)} newly stale, {len(recovered)} recovered")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
