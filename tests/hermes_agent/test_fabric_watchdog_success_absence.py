@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import tempfile
 import types
 from datetime import datetime, timezone
@@ -29,6 +30,12 @@ TEMPLATE_PATH = REPO_ROOT / "roles/fabric_watchdog/templates/cron-success-watchd
 DEFAULTS = (REPO_ROOT / "roles/fabric_watchdog/defaults/main.yml").read_text()
 
 TMP = Path(tempfile.mkdtemp(prefix="cron-success-watchdog-selfcheck-"))
+# The default scheduler root, laid out as the guest lays it out: the store sits
+# at <root>/cron/jobs.json and profile roots at <root>/profiles/<name>/cron/.
+# The script derives its profile glob from the store path, so a fixture that
+# flattened this would exercise a directory shape that does not exist.
+(TMP / "cron").mkdir()
+PROFILES_DIR = TMP / "profiles"
 NOW = 1785000000.0
 MINUTE = 60.0
 
@@ -36,7 +43,7 @@ MINUTE = 60.0
 # ones mirror the defaults; test_thresholds_match_the_shipped_defaults pins them
 # together so a defaults tweak cannot leave these fixtures testing fiction.
 FIXTURE_CONFIG = {
-    "JOBS_FILE": str(TMP / "jobs.json"),
+    "JOBS_FILE": str(TMP / "cron" / "jobs.json"),
     "STATE_PATH": str(TMP / "cron-success.json"),
     "MISSED_CYCLES": 3,
     "FLOOR_MINUTES": 30,
@@ -88,20 +95,31 @@ def job(name, *, cadence_min, last_ok_ago_min, status="ok", **extra):
     return record
 
 
-def run(jobs, state=None, now=NOW):
-    """Evaluate a synthetic store. Returns (stale, recovered, state, log lines)."""
+def run(jobs, state=None, now=NOW, profiles=None):
+    """Evaluate a synthetic fleet. Returns (stale, recovered, state, log lines).
+
+    `profiles` maps a profile name to its job list, or to None for a profile
+    root that exists but carries no job store — the shape a profile has before
+    anything is scheduled into it.
+    """
     Path(FIXTURE_CONFIG["JOBS_FILE"]).write_text(json.dumps({"jobs": jobs}))
+    shutil.rmtree(PROFILES_DIR, ignore_errors=True)
+    for name, profile_jobs in (profiles or {}).items():
+        cron_dir = PROFILES_DIR / name / "cron"
+        cron_dir.mkdir(parents=True)
+        if profile_jobs is not None:
+            (cron_dir / "jobs.json").write_text(json.dumps({"jobs": profile_jobs}))
     state = state if state is not None else {"schema": WD.STATE_SCHEMA, "jobs": {}}
     lines = []
     original, WD.log = WD.log, lines.append
     try:
-        stale, recovered = WD.evaluate(WD.load_jobs(), state, now)
+        stale, recovered = WD.evaluate(WD.load_stores(), state, now)
     finally:
         WD.log = original
     return stale, recovered, state, lines
 
 
-def settle(jobs, now=NOW):
+def settle(jobs, now=NOW, profiles=None):
     """Establish a healthy baseline: first tick learns each job's last success.
 
     Asserts that tick was itself silent. Without this, a watchdog that calls
@@ -109,7 +127,7 @@ def settle(jobs, now=NOW):
     every later tick — which is how a quiet-direction test passes against a
     guard that is screaming. (An always-stale mutation did exactly that.)
     """
-    stale, _, state, _ = run(jobs, now=now)
+    stale, _, state, _ = run(jobs, now=now, profiles=profiles)
     assert stale == [], f"baseline tick was not quiet: {stale}"
     return state
 
@@ -124,7 +142,7 @@ def test_a_job_that_stopped_running_fires() -> None:
     healthy = [job("digest", cadence_min=15, last_ok_ago_min=5)]
     state = settle(healthy)
     stale, _, _, _ = run(healthy, state, now=NOW + 175 * MINUTE)
-    assert len(stale) == 1 and stale[0].startswith("digest ")
+    assert len(stale) == 1 and stale[0].startswith("default/digest ")
 
 
 def test_a_job_failing_every_run_fires_even_though_last_run_at_stays_fresh() -> None:
@@ -223,7 +241,7 @@ def test_recovery_clears_the_latch_so_the_next_stall_can_page_again() -> None:
     run(jobs, state, now=NOW + 200 * MINUTE)
     healthy = [job("digest", cadence_min=15, last_ok_ago_min=-201)]
     _, recovered, state, _ = run(healthy, state, now=NOW + 205 * MINUTE)
-    assert recovered == ["digest"]
+    assert recovered == ["default/digest"]
     stale, _, _, _ = run(healthy, state, now=NOW + 500 * MINUTE)
     assert len(stale) == 1, "a latch that never clears silences every later stall"
 
@@ -237,7 +255,7 @@ def test_every_job_gets_a_decision_line_every_tick() -> None:
     state = settle(jobs)
     _, _, _, lines = run(jobs, state)
     for i in range(4):
-        assert any(line.startswith(f"j{i}: ") for line in lines), f"j{i} evaluated in silence"
+        assert any(line.startswith(f"default/j{i}: ") for line in lines), f"j{i} evaluated in silence"
 
 
 def test_the_threshold_derives_from_the_jobs_own_cadence() -> None:
@@ -320,3 +338,79 @@ def test_thresholds_match_the_shipped_defaults() -> None:
         "missed_cycles=1 pages on a single late run, which is the error-rate "
         "alerting this watchdog was built to replace"
     )
+
+
+# --- More than one scheduler root --------------------------------------------
+
+
+def test_a_stale_job_in_a_non_default_profile_fires() -> None:
+    """The regression this section exists for. Reading only the default root
+    leaves every profile-scoped job unwatched — and, worse, reports the fleet
+    healthy while doing it, which is a guard that lies rather than one that is
+    merely absent.
+    """
+    healthy = [job("audit", cadence_min=15, last_ok_ago_min=5)]
+    state = settle([], profiles={"homelab-admin": healthy})
+    stale, _, _, _ = run([], state, now=NOW + 175 * MINUTE, profiles={"homelab-admin": healthy})
+    assert len(stale) == 1 and stale[0].startswith("homelab-admin/audit "), (
+        "a stalled job outside the default root must page, and the message must "
+        "name its profile or nobody can act on it"
+    )
+
+
+def test_same_named_jobs_in_two_profiles_do_not_collide() -> None:
+    """Job names are unique only WITHIN a store. Keyed on the name alone, two
+    profiles sharing one share a single state record: the healthy job keeps
+    advancing the last-success clock, so the stalled one can never page.
+    """
+    both_healthy = {
+        "homelab-admin": [job("digest", cadence_min=15, last_ok_ago_min=1)],
+        "splunk-admin": [job("digest", cadence_min=15, last_ok_ago_min=1)],
+    }
+    state = settle([], profiles=both_healthy)
+    stale, _, _, _ = run(
+        [],
+        state,
+        now=NOW + 200 * MINUTE,
+        profiles={
+            # Still succeeding punctually, right up to the later tick.
+            "homelab-admin": [job("digest", cadence_min=15, last_ok_ago_min=-199)],
+            # Not since the baseline tick.
+            "splunk-admin": [job("digest", cadence_min=15, last_ok_ago_min=1)],
+        },
+    )
+    assert len(stale) == 1, f"exactly the stalled profile's job pages: {stale}"
+    assert stale[0].startswith("splunk-admin/digest "), f"the wrong profile paged: {stale}"
+
+
+def test_a_profile_without_a_job_store_is_skipped_silently() -> None:
+    """A profile root that carries no store yet is a normal state, not an error.
+    Reading one unconditionally would log a failure every tick forever — the
+    kind of standing noise that trains an operator to ignore this guard.
+    """
+    healthy = [job("audit", cadence_min=15, last_ok_ago_min=5)]
+    _, _, _, lines = run([], profiles={"github-maint": None, "homelab-admin": healthy})
+    assert not [line for line in lines if "unreadable" in line], (
+        f"a storeless profile must not produce an error line: {lines}"
+    )
+    assert not [line for line in lines if "github-maint" in line], (
+        f"a storeless profile must not be mentioned at all: {lines}"
+    )
+    assert any(line.startswith("homelab-admin/audit: ") for line in lines), (
+        "a storeless profile must not stop the stores that do exist from being read"
+    )
+
+
+def test_healthy_jobs_across_every_store_stay_quiet() -> None:
+    """The other direction across roots: reading more stores must not make the
+    guard page on jobs that are fine.
+    """
+    profiles = {
+        "homelab-admin": [job("audit", cadence_min=60, last_ok_ago_min=20)],
+        "splunk-admin": [job("sweep", cadence_min=1440, last_ok_ago_min=300)],
+        "github-maint": None,
+    }
+    default = [job("digest", cadence_min=15, last_ok_ago_min=5)]
+    state = settle(default, profiles=profiles)
+    stale, recovered, _, _ = run(default, state, profiles=profiles)
+    assert stale == [] and recovered == []

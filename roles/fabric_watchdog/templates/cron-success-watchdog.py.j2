@@ -18,6 +18,14 @@ Source of truth is the cron job store, read-only. Each record carries
 `schedule` — the scheduler's own bookkeeping, so nothing here re-derives a
 cron expression or needs a cron parser on the guest.
 
+There is more than ONE such store: the scheduler runs a separate root per
+profile, each with its own `cron/jobs.json`. Reading only the default root
+leaves the guard blind to every profile-scoped job — and reports the fleet
+healthy while doing it, which is worse than no guard at all. The roots are
+therefore discovered from the filesystem on every tick, so a profile added or
+removed needs no edit here. Job names are unique only WITHIN a store, so all
+state and every message is keyed and labelled by (profile, job).
+
 `last_run_at` records a RUN, not a SUCCESS: it advances on a failed run too.
 So the success clock cannot be read straight off the store — a job failing every
 tick keeps `last_run_at` fresh forever. Instead this keeps its own per-job memory
@@ -30,6 +38,7 @@ Runs as a child of fabric-watchdog.sh, inheriting the same Slack environment.
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import sys
@@ -40,6 +49,14 @@ from datetime import datetime, timezone
 
 # --- Ansible-rendered configuration ------------------------------------------
 JOBS_FILE = "{{ fabric_watchdog_cron_jobs_file }}"
+# Every OTHER scheduler root, discovered rather than listed. A store lives at
+# `<root>/cron/jobs.json`, so the profile roots sit beside the default one's.
+# A glob means a profile appearing or disappearing needs no edit here, and a
+# profile directory carrying no store yet simply does not match — that is a
+# normal state, not an error, and it costs no log line every tick.
+PROFILES_GLOB = os.path.join(
+    os.path.dirname(os.path.dirname(JOBS_FILE)), "profiles", "*", "cron", "jobs.json"
+)
 STATE_PATH = "{{ fabric_watchdog_success_state_path }}"
 # Multiple of a job's OWN cadence that may elapse with no success before it
 # pages. A global fixed threshold cannot work across a fleet that mixes
@@ -53,8 +70,14 @@ FLOOR_MINUTES = {{ fabric_watchdog_success_floor_minutes }}
 CEILING_MINUTES = {{ fabric_watchdog_success_ceiling_minutes }}
 # Above this many jobs stale in one evaluation, post ONE fleet-wide message
 # instead of one per job — a total fleet death must not arrive as a flood.
+# Counted across ALL stores, not per store: this is a cap on messages in a
+# channel, and a channel does not care which root a page came from. Per-store
+# counting would let three stores at four stale jobs each post twelve separate
+# pages while every store stayed under its own roll-up.
 FLEET_ROLLUP_AT = {{ fabric_watchdog_success_fleet_rollup_at }}
-STATE_SCHEMA = 1
+# 2: state keys became (profile, job). A schema-1 file is discarded rather than
+# migrated — its flat keys are ambiguous across profiles by construction.
+STATE_SCHEMA = 2
 
 SLACK_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 SLACK_CHANNEL = (
@@ -111,16 +134,30 @@ def parse_iso(value) -> float | None:
     return moment.timestamp()
 
 
-def load_jobs() -> list:
-    """Enabled, unpaused jobs from the store. Never raises."""
+def load_jobs(path: str) -> list:
+    """Job records from one store. Never raises."""
     try:
-        with open(JOBS_FILE, encoding="utf-8-sig") as handle:
+        with open(path, encoding="utf-8-sig") as handle:
             store = json.load(handle)
     except (OSError, ValueError) as exc:
-        log(f"cron store unreadable at {JOBS_FILE} ({exc}) — nothing evaluated")
+        log(f"cron store unreadable at {path} ({exc}) — nothing evaluated")
         return []
     jobs = store.get("jobs") if isinstance(store, dict) else store
     return jobs if isinstance(jobs, list) else []
+
+
+def load_stores() -> list:
+    """(profile, jobs) for every scheduler root that actually carries a store.
+
+    The default root is always read — a missing store there is a real defect and
+    must say so. Profile roots come from the glob, so one without a store yet is
+    absent from this list entirely and never produces an error or a log line.
+    """
+    found = [("default", JOBS_FILE)]
+    for path in sorted(glob.glob(PROFILES_GLOB)):
+        profile = os.path.basename(os.path.dirname(os.path.dirname(path)))
+        found.append((profile, path))
+    return [(profile, load_jobs(path)) for profile, path in found]
 
 
 def cadence_seconds(job: dict) -> float | None:
@@ -181,24 +218,33 @@ def save_state(state: dict) -> None:
         log(f"state write FAILED ({exc}) — this episode may re-announce")
 
 
-def evaluate(jobs: list, state: dict, now: float) -> tuple[list, list]:
-    """Decide per job. Returns (newly stale, newly recovered) display names.
+def evaluate(stores: list, state: dict, now: float) -> tuple[list, list]:
+    """Decide per job across every store. Returns (newly stale, newly
+    recovered) display names.
 
     Mutates `state` in place: advances each job's remembered last-success and
     flips its alerted latch. Every job gets a log line whatever is decided.
+
+    Both the state key and the display name carry the profile. A job name is
+    unique only within its own store, so keying on the name alone would let two
+    profiles that happen to share one share a single record — the healthy one
+    would keep advancing the last-success clock and the stalled one could never
+    page. The profile is a single path component, so `profile/job` is
+    unambiguous.
     """
     memory = state["jobs"]
     stale, recovered = [], []
     seen = set()
 
-    for job in jobs:
+    for profile, job in [(p, j) for p, jobs in stores for j in jobs]:
         if not isinstance(job, dict):
             continue
-        key = str(job.get("id") or job.get("name") or "")
-        if not key:
+        job_id = str(job.get("id") or job.get("name") or "")
+        if not job_id:
             continue
+        key = f"{profile}/{job_id}"
         seen.add(key)
-        name = str(job.get("name") or key)
+        name = f"{profile}/{job.get('name') or job_id}"
         record = memory.setdefault(key, {"last_ok": None, "alerted": False})
 
         if not job.get("enabled", True) or job.get("state") == "paused":
@@ -266,11 +312,12 @@ def evaluate(jobs: list, state: dict, now: float) -> tuple[list, list]:
 
 def main() -> int:
     now = time.time()
-    jobs = load_jobs()
+    stores = load_stores()
     state = load_state()
-    log(f"evaluating {len(jobs)} job(s) from {JOBS_FILE}")
+    for profile, jobs in stores:
+        log(f"evaluating {len(jobs)} job(s) from profile {profile}")
 
-    stale, recovered = evaluate(jobs, state, now)
+    stale, recovered = evaluate(stores, state, now)
     save_state(state)
 
     if len(stale) >= FLEET_ROLLUP_AT:
