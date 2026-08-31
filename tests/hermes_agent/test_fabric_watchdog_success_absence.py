@@ -96,7 +96,7 @@ def job(name, *, cadence_min, last_ok_ago_min, status="ok", **extra):
 
 
 def run(jobs, state=None, now=NOW, profiles=None):
-    """Evaluate a synthetic fleet. Returns (stale, recovered, state, log lines).
+    """Evaluate a synthetic fleet. Returns (stale, recovered, state).
 
     `profiles` maps a profile name to its job list, or to None for a profile
     root that exists but carries no job store — the shape a profile has before
@@ -110,13 +110,24 @@ def run(jobs, state=None, now=NOW, profiles=None):
         if profile_jobs is not None:
             (cron_dir / "jobs.json").write_text(json.dumps({"jobs": profile_jobs}))
     state = state if state is not None else {"schema": WD.STATE_SCHEMA, "jobs": {}}
-    lines = []
-    original, WD.log = WD.log, lines.append
-    try:
-        stale, recovered = WD.evaluate(WD.load_stores(), state, now)
-    finally:
-        WD.log = original
-    return stale, recovered, state, lines
+    stale, recovered = WD.evaluate(WD.load_stores(), state, now)
+    return stale, recovered, state
+
+
+def log_lines(capsys):
+    """What the script actually printed, with the prefix its `log()` adds stripped.
+
+    Read from real stdout rather than by substituting the module's `log`. The
+    logging requirement is that an operator sees a decision per job in journald,
+    and only the shipped print path proves that — a replaced function proves the
+    call happened, not that anything was emitted.
+    """
+    prefix = "cron-success-watchdog: "
+    return [
+        line[len(prefix) :]
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith(prefix)
+    ]
 
 
 def settle(jobs, now=NOW, profiles=None):
@@ -127,7 +138,7 @@ def settle(jobs, now=NOW, profiles=None):
     every later tick — which is how a quiet-direction test passes against a
     guard that is screaming. (An always-stale mutation did exactly that.)
     """
-    stale, _, state, _ = run(jobs, now=now, profiles=profiles)
+    stale, _, state = run(jobs, now=now, profiles=profiles)
     assert stale == [], f"baseline tick was not quiet: {stale}"
     return state
 
@@ -141,7 +152,7 @@ def test_a_job_that_stopped_running_fires() -> None:
     """
     healthy = [job("digest", cadence_min=15, last_ok_ago_min=5)]
     state = settle(healthy)
-    stale, _, _, _ = run(healthy, state, now=NOW + 175 * MINUTE)
+    stale, _, _ = run(healthy, state, now=NOW + 175 * MINUTE)
     assert len(stale) == 1 and stale[0].startswith("default/digest ")
 
 
@@ -154,14 +165,14 @@ def test_a_job_failing_every_run_fires_even_though_last_run_at_stays_fresh() -> 
     later = NOW + 200 * MINUTE
     # Still running punctually — and failing every time.
     failing = [job("triage", cadence_min=15, last_ok_ago_min=-199, status="error")]
-    stale, _, _, _ = run(failing, state, now=later)
+    stale, _, _ = run(failing, state, now=later)
     assert len(stale) == 1, "a job that runs but never succeeds must page"
 
 
 def test_a_mass_stall_arrives_as_one_message_not_one_per_job() -> None:
     healthy = [job(f"j{i}", cadence_min=15, last_ok_ago_min=1) for i in range(6)]
     state = settle(healthy)
-    stale, _, _, _ = run(healthy, state, now=NOW + 300 * MINUTE)
+    stale, _, _ = run(healthy, state, now=NOW + 300 * MINUTE)
     assert len(stale) >= FIXTURE_CONFIG["FLEET_ROLLUP_AT"], (
         "six simultaneously stale jobs must reach the roll-up threshold, or the "
         "fleet-death case posts six separate pages"
@@ -178,14 +189,14 @@ def test_a_healthy_fleet_says_nothing() -> None:
         job("daily", cadence_min=1440, last_ok_ago_min=300),
     ]
     state = settle(jobs)
-    stale, recovered, _, _ = run(jobs, state)
+    stale, recovered, _ = run(jobs, state)
     assert stale == [] and recovered == []
 
 
 def test_one_late_run_does_not_page() -> None:
     """MISSED_CYCLES > 1 exists so a single late run or one retry is absorbed."""
     state = settle([job("hourly", cadence_min=60, last_ok_ago_min=5)])
-    stale, _, _, _ = run(
+    stale, _, _ = run(
         [job("hourly", cadence_min=60, last_ok_ago_min=5)], state, now=NOW + 65 * MINUTE
     )
     assert stale == [], "a job one cycle late is late, not silent"
@@ -205,20 +216,18 @@ def test_a_daily_job_is_not_judged_by_a_frequent_jobs_clock() -> None:
 def test_a_disabled_job_is_not_silence() -> None:
     state = settle([job("seasonal", cadence_min=15, last_ok_ago_min=1)])
     off = [job("seasonal", cadence_min=15, last_ok_ago_min=1, enabled=False)]
-    stale, _, _, _ = run(off, state, now=NOW + 999 * MINUTE)
+    stale, _, _ = run(off, state, now=NOW + 999 * MINUTE)
     assert stale == [], "deliberately disabled is not a failure to succeed"
 
 
-def test_a_brand_new_job_gets_one_full_threshold_before_it_can_page() -> None:
+def test_a_brand_new_job_gets_one_full_threshold_before_it_can_page(capsys) -> None:
     """Seeding at `now` rather than paging immediately. Otherwise every deploy
     onto an already-broken fleet opens with an alert storm for silence that
     predates any observation this watchdog made.
     """
-    stale, _, _, lines = run(
-        [job("newborn", cadence_min=15, last_ok_ago_min=999, status="error")]
-    )
+    stale, _, _ = run([job("newborn", cadence_min=15, last_ok_ago_min=999, status="error")])
     assert stale == []
-    assert any("SEED" in line for line in lines)
+    assert any("SEED" in line for line in log_lines(capsys))
 
 
 # --- Re-alert suppression ----------------------------------------------------
@@ -228,10 +237,10 @@ def test_an_ongoing_stall_alerts_once_not_every_tick() -> None:
     """The alert must not become the noise it replaces."""
     jobs = [job("digest", cadence_min=15, last_ok_ago_min=1)]
     state = settle(jobs)
-    first, _, state, _ = run(jobs, state, now=NOW + 200 * MINUTE)
+    first, _, state = run(jobs, state, now=NOW + 200 * MINUTE)
     assert len(first) == 1
     for tick in range(1, 6):
-        again, _, state, _ = run(jobs, state, now=NOW + (200 + tick * 2) * MINUTE)
+        again, _, state = run(jobs, state, now=NOW + (200 + tick * 2) * MINUTE)
         assert again == [], f"tick {tick} re-announced an already-alerted stall"
 
 
@@ -240,20 +249,22 @@ def test_recovery_clears_the_latch_so_the_next_stall_can_page_again() -> None:
     state = settle(jobs)
     run(jobs, state, now=NOW + 200 * MINUTE)
     healthy = [job("digest", cadence_min=15, last_ok_ago_min=-201)]
-    _, recovered, state, _ = run(healthy, state, now=NOW + 205 * MINUTE)
+    _, recovered, state = run(healthy, state, now=NOW + 205 * MINUTE)
     assert recovered == ["default/digest"]
-    stale, _, _, _ = run(healthy, state, now=NOW + 500 * MINUTE)
+    stale, _, _ = run(healthy, state, now=NOW + 500 * MINUTE)
     assert len(stale) == 1, "a latch that never clears silences every later stall"
 
 
 # --- Logging and threshold contracts -----------------------------------------
 
 
-def test_every_job_gets_a_decision_line_every_tick() -> None:
+def test_every_job_gets_a_decision_line_every_tick(capsys) -> None:
     """A guard that exits silently hides the halt it exists to catch."""
     jobs = [job(f"j{i}", cadence_min=15, last_ok_ago_min=1) for i in range(4)]
     state = settle(jobs)
-    _, _, _, lines = run(jobs, state)
+    log_lines(capsys)  # discard the baseline tick, or IT could satisfy the assertion
+    run(jobs, state)
+    lines = log_lines(capsys)
     for i in range(4):
         assert any(line.startswith(f"default/j{i}: ") for line in lines), f"j{i} evaluated in silence"
 
@@ -304,7 +315,7 @@ def test_a_rearmed_job_cannot_raise_its_own_threshold_by_staying_broken() -> Non
     drifted = [cron_job("triage", cadence_min=360, last_ago_min=0, next_in_min=1560, status="error")]
     assert WD.cadence_seconds(drifted[0]) == 1560 * MINUTE, "premise: the live gap is inflated"
 
-    stale, _, _, _ = run(drifted, state, now=NOW + 20 * 60 * MINUTE)
+    stale, _, _ = run(drifted, state, now=NOW + 20 * 60 * MINUTE)
     assert len(stale) == 1, (
         "20h of silence must page a 6h job at its pinned 18h threshold, not be "
         "deferred to 24h by a gap the outage itself inflated"
@@ -318,7 +329,7 @@ def test_the_pinned_cadence_does_not_make_the_guard_trigger_happy() -> None:
     healthy = [cron_job("triage", cadence_min=360, last_ago_min=0, next_in_min=360)]
     state = settle(healthy)
     drifted = [cron_job("triage", cadence_min=360, last_ago_min=0, next_in_min=1500, status="error")]
-    stale, _, _, _ = run(drifted, state, now=NOW + 17 * 60 * MINUTE)
+    stale, _, _ = run(drifted, state, now=NOW + 17 * 60 * MINUTE)
     assert stale == []
 
 
@@ -351,7 +362,7 @@ def test_a_stale_job_in_a_non_default_profile_fires() -> None:
     """
     healthy = [job("audit", cadence_min=15, last_ok_ago_min=5)]
     state = settle([], profiles={"homelab-admin": healthy})
-    stale, _, _, _ = run([], state, now=NOW + 175 * MINUTE, profiles={"homelab-admin": healthy})
+    stale, _, _ = run([], state, now=NOW + 175 * MINUTE, profiles={"homelab-admin": healthy})
     assert len(stale) == 1 and stale[0].startswith("homelab-admin/audit "), (
         "a stalled job outside the default root must page, and the message must "
         "name its profile or nobody can act on it"
@@ -368,7 +379,7 @@ def test_same_named_jobs_in_two_profiles_do_not_collide() -> None:
         "splunk-admin": [job("digest", cadence_min=15, last_ok_ago_min=1)],
     }
     state = settle([], profiles=both_healthy)
-    stale, _, _, _ = run(
+    stale, _, _ = run(
         [],
         state,
         now=NOW + 200 * MINUTE,
@@ -383,13 +394,14 @@ def test_same_named_jobs_in_two_profiles_do_not_collide() -> None:
     assert stale[0].startswith("splunk-admin/digest "), f"the wrong profile paged: {stale}"
 
 
-def test_a_profile_without_a_job_store_is_skipped_silently() -> None:
+def test_a_profile_without_a_job_store_is_skipped_silently(capsys) -> None:
     """A profile root that carries no store yet is a normal state, not an error.
     Reading one unconditionally would log a failure every tick forever — the
     kind of standing noise that trains an operator to ignore this guard.
     """
     healthy = [job("audit", cadence_min=15, last_ok_ago_min=5)]
-    _, _, _, lines = run([], profiles={"github-maint": None, "homelab-admin": healthy})
+    run([], profiles={"github-maint": None, "homelab-admin": healthy})
+    lines = log_lines(capsys)
     assert not [line for line in lines if "unreadable" in line], (
         f"a storeless profile must not produce an error line: {lines}"
     )
@@ -412,5 +424,5 @@ def test_healthy_jobs_across_every_store_stay_quiet() -> None:
     }
     default = [job("digest", cadence_min=15, last_ok_ago_min=5)]
     state = settle(default, profiles=profiles)
-    stale, recovered, _, _ = run(default, state, profiles=profiles)
+    stale, recovered, _ = run(default, state, profiles=profiles)
     assert stale == [] and recovered == []
