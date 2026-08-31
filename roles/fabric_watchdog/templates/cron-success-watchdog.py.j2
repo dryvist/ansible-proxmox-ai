@@ -381,16 +381,44 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
             f"threshold {limit / 60:.0f}m ({MISSED_CYCLES}x its {cadence / 60:.0f}m cadence)"
         )
 
+        # Recovery is "a NEW success landed", never "the gap fell under the
+        # threshold". Those are not the same claim, because `limit` is derived
+        # from OBSERVED cadence and moves on its own: on 2026-08-31 this branch
+        # declared three jobs recovered while none had succeeded, because the
+        # measured cadence spiked (72m -> 192m, 82m -> 202m) and tripled the
+        # threshold above a silence that was still growing. The alert side was
+        # right the whole time and kept re-firing minutes later.
+        #
+        # So pin the success clock as it stood when we alerted and require it to
+        # have ADVANCED. A moving threshold can then no longer clear its own
+        # alert; only a run can. Migrate a pre-existing latch on sight, or an
+        # alerted job carried across this upgrade could never recover.
+        if record["alerted"] and "alerted_at_ok" not in record:
+            record["alerted_at_ok"] = record["last_ok"]
+        recovered_by_success = record["alerted"] and record["last_ok"] > record["alerted_at_ok"]
+
         if overdue and not record["alerted"]:
             record["alerted"] = True
+            record["alerted_at_ok"] = record["last_ok"]
             stale.append(f"{name} ({detail})")
             log(f"{name}: STALE -> alerting; {detail}")
+        elif recovered_by_success:
+            record["alerted"] = False
+            record.pop("alerted_at_ok", None)
+            # Carries `detail` for the same reason the stale message does. The
+            # all-clear used to post the bare name while the numbers behind it
+            # went only to the log, so a false recovery was indistinguishable in
+            # Slack from a true one — the asymmetry is what made the bug above
+            # cost a day to find instead of a minute.
+            recovered.append(f"{name} ({detail})")
+            log(f"{name}: RECOVERED; {detail}")
         elif overdue:
             log(f"{name}: STALE (already alerted, staying quiet); {detail}")
         elif record["alerted"]:
-            record["alerted"] = False
-            recovered.append(name)
-            log(f"{name}: RECOVERED; {detail}")
+            log(
+                f"{name}: STALE (gap under threshold but no new success since "
+                f"the alert — not recovering); {detail}"
+            )
         else:
             log(f"{name}: ok; {detail}")
 
