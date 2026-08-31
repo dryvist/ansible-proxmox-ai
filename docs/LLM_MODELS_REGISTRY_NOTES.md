@@ -1,13 +1,11 @@
 # LLM Model Registry — per-entry notes
 
 Incident history and selection rationale for individual entries in
-`llm-models.yml`. Split out of that file for the same reason
-[LLM_MODELS_SCHEMA.md](./LLM_MODELS_SCHEMA.md) was: the registry is pure data,
-it sits against a per-file token budget, and an agent changing one model's
-window should not have to read five unrelated incident write-ups to reach it.
-
-Different jobs, different files. The schema doc says what a **field** means;
-this one says why a particular **entry** looks the way it does. Add a note here
+`llm-models.yml`, split out for the same reason
+[LLM_MODELS_SCHEMA.md](./LLM_MODELS_SCHEMA.md) was: the registry is pure data
+under a per-file token budget, and changing one model's window should not mean
+reading five unrelated write-ups first. The schema doc says what a **field**
+means; this one says why an **entry** looks the way it does. Add the note here
 and leave a one-line pointer at the entry — never the reverse.
 
 ## The primary (`mlx-community/Qwen3.8-27B-4bit`)
@@ -41,15 +39,13 @@ model supports a native 262,144 and that production roles deliberately sit at
 131,072 so the remaining range stays available for separately managed 200K
 feasibility work.
 
-Both numbers are defensible and the gap is **direction-safe**, which is why
-nothing here changes yet. The failure this field guards against is
-over-advertising: an entry claiming more than the backend serves dies mid-stream
-instead of compacting. Under-advertising only truncates earlier than necessary,
-costing usable context rather than correctness.
+Both numbers are defensible and the gap is **direction-safe**, so nothing
+changes yet: this field guards against over-advertising, and under-advertising
+only truncates early, costing usable context rather than correctness.
 
-It is still a tension with this file's own rule that `context_window` is the
-catalog's real serving window, not a round number. `65536` was written when it
-was that figure; the catalog has since moved and the registry did not follow.
+It still conflicts with this file's rule that `context_window` is the catalog's
+real serving window, not a round number: `65536` was that figure when written,
+and the catalog has since moved without the registry following.
 
 Do not simply raise it. Widening what the router advertises changes live
 behavior, and the resident profile — not the entry's declared maximum — is what
@@ -181,9 +177,9 @@ routine and agentic work do not pay for the same cloud model:
   selects the eligible deployment with the lower configured token price.
 
 The value claim is scoped: cost-based routing compares real token prices only
-among models declared equivalent in the final OpenRouter tier. It does not
-pretend raw price measures quality. Direct providers remain deliberately ordered
-by verified price/capability and failure-domain independence.
+among models declared equivalent in the final OpenRouter tier, and is not a
+quality proxy. Direct providers stay ordered by verified price/capability and
+failure-domain independence.
 
 LiteLLM v1.97.0 loads all three provider prefixes and these exact ids with
 explicit pricing/metadata even where its bundled catalog lags — that proves
@@ -217,15 +213,13 @@ for whichever shape it did not need:
 | `minimax-m3` | 1,048,576 | $0.30 / $1.20 | the long-context one |
 
 `context_window` is the catalog's real serving window in both cases, not a round
-number: the servable-alias contract test exists because an inflated window is
-the compress-death failure, and an entry advertising more than the backend
-serves dies mid-stream instead of compacting. (DeepSeek's `1000000` is a
-pre-existing rounding of the same 1,048,576 window — left alone rather than
-widened in a change about something else.)
+number: an entry advertising more than the backend serves dies mid-stream
+instead of compacting, which is why the servable-alias contract test exists.
+(DeepSeek's `1000000` rounds that same 1,048,576 window — left alone rather than
+widened here.)
 
-Both are PAID — neither has a `:free` variant — so both fall under the rate
-ceilings the role applies to every egress deployment. Those are rate limits, not
-a spend cap.
+Both are PAID — neither has a `:free` variant — so both fall under the role's
+per-egress rate ceilings, which are rate limits, not a spend cap.
 
 ## The Hermes local GPU leg (`hermes-local-4080`)
 

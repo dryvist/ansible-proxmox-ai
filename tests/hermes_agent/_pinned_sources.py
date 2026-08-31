@@ -46,14 +46,30 @@ PINNED_PROTOCOL_VIOLATION_SOURCE = (
 PINNED_PROTOCOL_RETRY_SOURCE = (
     "                failure_limit=1 if is_systemic else None,\n"
 )
+# Both delivery call sites: the success path (inside the side-effect fence)
+# and the outer exception handler, which delivers its own failure summary.
 PINNED_CRON_DELIVERY_SOURCE = (
-    "            deliver_content = final_response if success else "
-    "_summarize_cron_failure_for_delivery(job, error)\n"
-    "                    delivery_error = _deliver_result(job, deliver_content, "
-    "adapters=adapters, loop=loop)\n"
+    '''\
+                deliver_content = final_response if success else (
+                    _summarize_cron_failure_for_delivery(job, error)
+                    + _failure_streak_nudge(job)
+                )
+                        delivery_error = _deliver_result(
+                            job,
+                            deliver_content,
+                            adapters=adapters,
+                            loop=loop,
+                        )
+                delivery_error = _deliver_result(
+                    job,
+                    _summarize_cron_failure_for_delivery(job, _err_text),
+                    adapters=adapters,
+                    loop=loop,
+                )
+'''
     # Upstream's line; the memory patch deliberately leaves it in place.
-    "            skip_memory=True,  # Cron system prompts would corrupt user "
-    "representations\n"
+    # Reversed upstream — cron now builds the built-in memory store itself.
+    "            skip_memory=False,\n"
 )
 # Verbatim from cron/scheduler.py — the single run_conversation submit that
 # opt-in cron goal mode wraps.
@@ -241,7 +257,7 @@ def build_worker_argv(task, prompt):
 # PINNED_*_SOURCE fixtures above.
 PINNED_HINDSIGHT_PREFETCH_SOURCE = (
     "            except Exception as e:\n"
-    '                logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)\n'
+    '                logger.debug("Hindsight recall failed: %s", e, exc_info=True)\n'
 )
 # Verbatim upstream shape of run_agent.py's _sync_external_memory_for_turn —
 # indentation included, same drift protection as the other PINNED_*_SOURCE

@@ -129,12 +129,15 @@ PATCHED_CRON_DELIVERY_SOURCE = (
     # than NameError-ing the guard above at runtime.
     + '\ndef _is_cron_silence_response(text: str) -> bool:\n'
     + _apply_runtime_patch(
-        "Route failed cron deliveries to the issues channel",
+        "Route failed cron deliveries from the exception path to the issues channel",
         _apply_runtime_patch(
-            "Route cron delivery content through the output-validity guard",
+            "Route failed cron deliveries to the issues channel",
             _apply_runtime_patch(
-                "Route cron delivery content through the markup guard",
-                PINNED_CRON_DELIVERY_SOURCE,
+                "Route cron delivery content through the output-validity guard",
+                _apply_runtime_patch(
+                    "Route cron delivery content through the markup guard",
+                    PINNED_CRON_DELIVERY_SOURCE,
+                ),
             ),
         ),
     )
