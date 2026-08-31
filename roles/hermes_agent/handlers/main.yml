@@ -9,6 +9,20 @@
 - name: Restart hermes-gateway
   ansible.builtin.command: "{{ hermes_agent_cron_drain_restart_script }}"
   changed_when: true
+  register: hermes_agent_drain_restart
+
+# ansible.builtin.command captures stdout instead of printing it, so at default
+# verbosity the wrapper's per-store pause decisions, its drain wait and its
+# release count were written and then thrown away — the converge showed only
+# "changed". A guard whose decisions nobody can see is the failure mode this
+# whole change exists to prevent, so echo them. `listen` rather than a second
+# notify: the topic fires from the same notifications the restart already
+# carries, so no caller has to know this exists.
+- name: Report the drain-before-restart decisions
+  listen: Restart hermes-gateway
+  ansible.builtin.debug:
+    var: hermes_agent_drain_restart.stdout_lines
+  when: hermes_agent_drain_restart.stdout_lines | default([]) | length > 0
 
 - name: Restart hermes-dashboard
   ansible.builtin.systemd:

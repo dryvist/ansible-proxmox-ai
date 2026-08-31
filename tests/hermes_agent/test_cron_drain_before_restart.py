@@ -350,6 +350,25 @@ def test_the_handler_runs_the_wrapper_rather_than_restarting_the_unit() -> None:
     )
 
 
+def test_the_drain_decisions_reach_the_converge_output() -> None:
+    """`command` captures stdout, so without this the decisions are discarded.
+
+    The wrapper logs a pause decision per store, its wait, and its release
+    count — and at default verbosity a converge showed only "changed". A guard
+    nobody can see deciding is the failure this whole change exists to prevent.
+    """
+    handlers = yaml.safe_load((ROLE / "handlers" / "main.yml").read_text())
+    gateway = next(h for h in handlers if h["name"] == "Restart hermes-gateway")
+    registered = gateway["register"]
+
+    echo = next(
+        h for h in handlers
+        if h.get("listen") == "Restart hermes-gateway"
+        and "ansible.builtin.debug" in h
+    )
+    assert registered in echo["ansible.builtin.debug"]["var"]
+
+
 def test_the_drain_bound_tracks_the_per_run_wall_clock_ceiling() -> None:
     """A bound shorter than a permitted run would cut short legitimate work."""
     assert DEFAULTS["hermes_agent_cron_drain_timeout_seconds"] == (
