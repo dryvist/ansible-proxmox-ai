@@ -1,0 +1,27 @@
+---
+# Drain-before-restart for the gateway unit (templates/hermes-cron-drain-restart.py.j2).
+#
+# The gateway ticks the default cron store in-process, so a plain
+# `state: restarted` terminates whatever is mid-run there. The wrapper pauses
+# every cron store, waits for in-flight runs to finish, restarts, and lifts
+# only the pauses it took.
+
+# Root-owned and outside HERMES_HOME on purpose: the script runs as root, and
+# HERMES_HOME is writable by the runtime user.
+hermes_agent_cron_drain_restart_script: /usr/local/sbin/hermes-cron-drain-restart
+
+# Upstream's claim_job_for_fire() lease (its `claim_ttl_seconds` default). The
+# runner heartbeats its claim for the whole execution, so a claim younger than
+# this is a live run and one older than it is a runner that died without
+# clearing the record. Change only to track an upstream change.
+hermes_agent_cron_fire_claim_ttl_seconds: 300
+
+# How long the drain waits before restarting anyway. The per-run wall-clock
+# ceiling is the deliberate choice: a run still claimed after it has already
+# outlived the runtime the fleet grants it, so the restart is interrupting work
+# that the wall-clock reaper was about to end regardless. A shorter bound would
+# cut short runs that are still within their contract; an unbounded wait would
+# hand a single wedged job the power to block every converge.
+hermes_agent_cron_drain_timeout_seconds: "{{ hermes_agent_cron_wall_timeout_seconds }}"
+
+hermes_agent_cron_drain_poll_seconds: 5

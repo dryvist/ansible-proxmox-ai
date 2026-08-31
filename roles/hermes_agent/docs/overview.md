@@ -51,6 +51,37 @@ page continues with the variable surface.
 Targets `hermes_agent_group`, derived from the `hermes-agent` tag in `load_tofu.yml`.
 Run via `site.yml` (`--tags hermes_agent`).
 
+## A converge that looks wedged restarting the gateway
+
+`Restart hermes-gateway` runs `hermes-cron-drain-restart`, which pauses every
+cron store, waits for in-flight runs to finish, restarts, and lifts only the
+pauses it took. A converge sitting on `waiting on N in-flight run(s)` is that
+wait working — it is bounded by `hermes_agent_cron_drain_timeout_seconds` and
+may legitimately run that long. Stop it for a *stall* (the same job names, the
+count not dropping), never for a duration.
+
+To get out early, in this order:
+
+1. `SIGTERM` the wrapper, or Ctrl-C the play. Its own release path runs and
+   lifts every pause it owns.
+2. Only if the process is already gone, remove the sentinels by hand
+   (`$HERMES_HOME/ESTOP`, and the same under each `profiles/*/`).
+3. Do neither and the next converge clears them once they age past the drain
+   bound. That is a backstop, not a plan.
+
+**Do not remove a sentinel while the wrapper is still running.** It will not
+crash — the release tolerates a file that is already gone — but it un-pauses
+the fleet *before* the restart lands, which is the exact damage the drain
+exists to prevent, and the wrapper will still report `released N pause(s)`
+because that count is what it owned, not what it removed. By-hand clearing
+leaves no trace in the wrapper's output.
+
+A pause that outlives a converge is not fatal on its own: the sentinel carries
+an owner marker and a timestamp, so the next converge clears its own orphan and
+says how stale it was. Anything it cannot prove is its own — an operator's
+pause, an empty file from `touch`, an unparseable one — is left alone and
+logged. `hermes resume` still lifts any of them by hand.
+
 ## Not yet live-validated
 
 Verify on the first converge: (a) `install.sh` runs clean non-interactively as root
