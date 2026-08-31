@@ -142,15 +142,13 @@ llm_router_model_registry:
   # Tier key stays `vllm` (names the ROUTER TIER/URL, not the engine) — this
   # guest serves via llama.cpp on Vulkan (roles/vllm/defaults has why). Must
   # match llama-swap's name in inventory/group_vars/llm_vllm_group.yml.
-  # THE context window for this backend, written once: the rung below and the
-  # serving guest (inventory/group_vars/llm_vllm_group.yml) both derive from
-  # this anchor, so served and advertised cannot drift. VRAM budget lives there.
+  # Window/timeout anchors; guest derives too. Why: llm_vllm_group.yml.
   - client_model_id: qwen3.8-27b
     upstream_model_id: qwen3.8-27b
     provider: openai
     tier: vllm
     enabled: true
-    context_window: &qwen38_27b_context_window 32768
+    context_window: &ctx4080 32768
 
   # Local backup rung in the Hermes chain, same backend as the vllm entry.
   # tier: hermes-local, NOT vllm — load-bearing: the cloud projection drops
@@ -162,16 +160,10 @@ llm_router_model_registry:
     route_group: hermes-local-4080
     fallback_group: hermes-local-4080
     enabled: true
-    # Same backend as the vllm entry above, so the same window by construction.
-    context_window: *qwen38_27b_context_window
+    context_window: *ctx4080
     num_retries: 0
-    # One value, both keys, so a streaming and a non-streaming call to the same
-    # backend cannot drift apart. Was 20/10, which at this backend's measured
-    # 36-42 tok/s could not finish a 1200-token answer (28.4s) or a cold 22k
-    # prefill (20.0s). Still 8x inside the global ceiling, so a hung backend
-    # stays bounded and the chain can escape.
-    request_timeout: &hermes_local_4080_timeout 300
-    stream_timeout: *hermes_local_4080_timeout
+    request_timeout: &to4080 300
+    stream_timeout: *to4080
     allowed_fails: 50
     # 0 is the intent, not the observed behaviour: the proxy still parks this
     # deployment 30s after repeated timeouts, self-clearing. Do not widen
