@@ -142,11 +142,9 @@ llm_router_model_registry:
   # Tier key stays `vllm` (names the ROUTER TIER/URL, not the engine) — this
   # guest serves via llama.cpp on Vulkan (roles/vllm/defaults has why). Must
   # match llama-swap's name in inventory/group_vars/llm_vllm_group.yml.
-  # THE context window for this backend, written once. The anchor is consumed by
-  # the hermes-local rung below (same backend) and by the serving guest itself —
-  # inventory/group_vars/llm_vllm_group.yml derives llama_cpp_ctx_size from this
-  # entry rather than repeating the number. Raising it here raises what the
-  # backend serves and what the router advertises together; they cannot drift.
+  # THE context window for this backend, written once: the rung below and the
+  # serving guest (inventory/group_vars/llm_vllm_group.yml) both derive from
+  # this anchor, so served and advertised cannot drift. VRAM budget lives there.
   - client_model_id: qwen3.8-27b
     upstream_model_id: qwen3.8-27b
     provider: openai
@@ -167,20 +165,11 @@ llm_router_model_registry:
     # Same backend as the vllm entry above, so the same window by construction.
     context_window: *qwen38_27b_context_window
     num_retries: 0
-    # One value, both keys — a streaming and a non-streaming call to the same
-    # backend have the same deadline. request_timeout renders as LiteLLM's
-    # `timeout`; see roles/llm_router/templates/model-list.yaml.j2.
-    #
-    # Was 20/10, which could not complete an ordinary generation. Measured on
-    # this backend at 36-42 tok/s: a 1200-token answer takes 28.4s, and a 22k
-    # prompt costs 20.0s in cold prefill alone, so 20s truncated anything past
-    # roughly 800 output tokens and everything with a cold cache. With
-    # num_retries 0 there was no second attempt either.
-    #
-    # 300 covers a full-window cold prefill plus ~4000 output tokens at the
-    # measured rate with room to spare, and stays 8x tighter than the global
-    # 2400 so a genuinely hung backend is still bounded and the chain can still
-    # escape to the next rung.
+    # One value, both keys, so a streaming and a non-streaming call to the same
+    # backend cannot drift apart. Was 20/10, which at this backend's measured
+    # 36-42 tok/s could not finish a 1200-token answer (28.4s) or a cold 22k
+    # prefill (20.0s). Still 8x inside the global ceiling, so a hung backend
+    # stays bounded and the chain can escape.
     request_timeout: &hermes_local_4080_timeout 300
     stream_timeout: *hermes_local_4080_timeout
     allowed_fails: 50
