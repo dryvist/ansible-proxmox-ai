@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the published alias contract from the model registry.
 
-The registry (repo-root llm-models.yml) is the single place any model name,
+The registry (repo-root llm-models.d/) is the single place any model name,
 alias, tier or enabled state is written. Consumers outside this repo — the
 Hermes bundle's model manifest check, the workstation nix-ai module, the
 delegation skills — need that inventory without cloning an Ansible role and
@@ -43,17 +43,21 @@ import yaml
 SCHEMA_VERSION = 1
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-REGISTRY_FILE = REPO_ROOT / "llm-models.yml"
+REGISTRY_DIR = REPO_ROOT / "llm-models.d"
 
 
 def load_registry(path: pathlib.Path) -> list[dict]:
-    with path.open(encoding="utf-8") as handle:
-        data = yaml.safe_load(handle)
-    entries = (data or {}).get("llm_router_model_registry")
+    """Concatenate the per-tier registry slices, in filename order."""
+    entries: list[dict] = []
+    for slice_file in sorted(path.glob("*.yml")):
+        with slice_file.open(encoding="utf-8") as handle:
+            data = yaml.safe_load(handle)
+        for value in (data or {}).values():
+            entries.extend(value)
     if not entries:
         raise SystemExit(
-            f"{path} defined no llm_router_model_registry entries. "
-            "Every published name derives from that key, so an empty or "
+            f"{path} defined no registry entries. "
+            "Every published name derives from it, so an empty or "
             "renamed one would publish an empty contract rather than fail."
         )
     return entries
@@ -90,7 +94,7 @@ def build_contract(entries: list[dict]) -> dict:
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "source": "llm-models.yml",
+        "source": "llm-models.d/",
         "aliases": dict(sorted(aliases.items())),
         "models": models,
         # The paid-egress allowlist, published explicitly rather than left for
@@ -122,7 +126,7 @@ def main() -> int:
         help="compare an existing file against freshly generated output and "
         "exit non-zero if they differ",
     )
-    parser.add_argument("--registry", type=pathlib.Path, default=REGISTRY_FILE)
+    parser.add_argument("--registry", type=pathlib.Path, default=REGISTRY_DIR)
     parser.add_argument(
         "--print-sha256",
         action="store_true",
