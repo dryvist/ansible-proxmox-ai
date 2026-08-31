@@ -1,4 +1,4 @@
-"""fabric_watchdog absence-of-success contract.
+"""fabric_watchdog absence-of-success contract, within a single job store.
 
 The role's endpoint probes answer "is the fabric reachable" and stay green while
 every scheduled job fails or stops firing altogether. A fleet in that state
@@ -11,107 +11,33 @@ asserting on its text, and pin BOTH directions: it fires on a stalled job and
 stays silent on a healthy one. A guard only ever observed staying quiet is not
 evidence of anything.
 
+Behaviour spanning MORE than one store — profile-scoped roots, and stores
+deliberately stopped — lives in test_fabric_watchdog_success_stores.py.
+
 Lives under tests/hermes_agent/ because fabric_watchdog runs on the Hermes guest
 and reads that role's cron job store (see test_fabric_watchdog_debounce.py).
 """
 
 from __future__ import annotations
 
-import json
 import re
-import tempfile
-import types
 from datetime import datetime, timezone
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-TEMPLATE_PATH = REPO_ROOT / "roles/fabric_watchdog/templates/cron-success-watchdog.py.j2"
-DEFAULTS = (REPO_ROOT / "roles/fabric_watchdog/defaults/main.yml").read_text()
-
-TMP = Path(tempfile.mkdtemp(prefix="cron-success-watchdog-selfcheck-"))
-NOW = 1785000000.0
-MINUTE = 60.0
-
-# Stand-ins for the values Ansible renders from defaults/main.yml. The numeric
-# ones mirror the defaults; test_thresholds_match_the_shipped_defaults pins them
-# together so a defaults tweak cannot leave these fixtures testing fiction.
-FIXTURE_CONFIG = {
-    "JOBS_FILE": str(TMP / "jobs.json"),
-    "STATE_PATH": str(TMP / "cron-success.json"),
-    "MISSED_CYCLES": 3,
-    "FLOOR_MINUTES": 30,
-    "CEILING_MINUTES": 1440,
-    "FLEET_ROLLUP_AT": 5,
-}
-
-
-def load_module():
-    """Render the template's config lines to fixtures and import it as a module."""
-    out = []
-    for line in TEMPLATE_PATH.read_text().splitlines():
-        if "ansible_managed" in line:
-            continue
-        match = re.match(r"^(\w+) = .*\{\{", line)
-        if match:
-            name = match.group(1)
-            assert name in FIXTURE_CONFIG, f"template config {name} has no self-check fixture"
-            out.append(f"{name} = {FIXTURE_CONFIG[name]!r}")
-            continue
-        out.append(line)
-    rendered = "\n".join(out)
-    assert "{{" not in rendered, "self-check left an unrendered Jinja expression"
-    mod = types.ModuleType("cron_success_watchdog")
-    exec(compile(rendered, str(TEMPLATE_PATH), "exec"), mod.__dict__)  # noqa: S102
-    return mod
-
-
-WD = load_module()
+from _fabric_watchdog_shared import (
+    DEFAULTS,
+    FIXTURE_CONFIG,
+    MINUTE,
+    NOW,
+    WD,
+    job,
+    log_lines,
+    run,
+    settle,
+)
 
 
 def _iso(epoch):
     return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
-
-
-def job(name, *, cadence_min, last_ok_ago_min, status="ok", **extra):
-    """One store record, shaped as the scheduler writes it."""
-    last = NOW - last_ok_ago_min * MINUTE
-    record = {
-        "id": name,
-        "name": name,
-        "enabled": True,
-        "schedule": {"kind": "interval", "minutes": cadence_min},
-        "last_run_at": _iso(last),
-        "next_run_at": _iso(last + cadence_min * MINUTE),
-        "last_status": status,
-    }
-    record.update(extra)
-    return record
-
-
-def run(jobs, state=None, now=NOW):
-    """Evaluate a synthetic store. Returns (stale, recovered, state, log lines)."""
-    Path(FIXTURE_CONFIG["JOBS_FILE"]).write_text(json.dumps({"jobs": jobs}))
-    state = state if state is not None else {"schema": WD.STATE_SCHEMA, "jobs": {}}
-    lines = []
-    original, WD.log = WD.log, lines.append
-    try:
-        stale, recovered = WD.evaluate(WD.load_jobs(), state, now)
-    finally:
-        WD.log = original
-    return stale, recovered, state, lines
-
-
-def settle(jobs, now=NOW):
-    """Establish a healthy baseline: first tick learns each job's last success.
-
-    Asserts that tick was itself silent. Without this, a watchdog that calls
-    EVERYTHING stale would fire here, latch, and then look correctly quiet on
-    every later tick — which is how a quiet-direction test passes against a
-    guard that is screaming. (An always-stale mutation did exactly that.)
-    """
-    stale, _, state, _ = run(jobs, now=now)
-    assert stale == [], f"baseline tick was not quiet: {stale}"
-    return state
 
 
 # --- Fires when it should ----------------------------------------------------
@@ -124,7 +50,7 @@ def test_a_job_that_stopped_running_fires() -> None:
     healthy = [job("digest", cadence_min=15, last_ok_ago_min=5)]
     state = settle(healthy)
     stale, _, _, _ = run(healthy, state, now=NOW + 175 * MINUTE)
-    assert len(stale) == 1 and stale[0].startswith("digest ")
+    assert len(stale) == 1 and stale[0].startswith("default/digest ")
 
 
 def test_a_job_failing_every_run_fires_even_though_last_run_at_stays_fresh() -> None:
@@ -191,16 +117,14 @@ def test_a_disabled_job_is_not_silence() -> None:
     assert stale == [], "deliberately disabled is not a failure to succeed"
 
 
-def test_a_brand_new_job_gets_one_full_threshold_before_it_can_page() -> None:
+def test_a_brand_new_job_gets_one_full_threshold_before_it_can_page(capsys) -> None:
     """Seeding at `now` rather than paging immediately. Otherwise every deploy
     onto an already-broken fleet opens with an alert storm for silence that
     predates any observation this watchdog made.
     """
-    stale, _, _, lines = run(
-        [job("newborn", cadence_min=15, last_ok_ago_min=999, status="error")]
-    )
+    stale, _, _, _ = run([job("newborn", cadence_min=15, last_ok_ago_min=999, status="error")])
     assert stale == []
-    assert any("SEED" in line for line in lines)
+    assert any("SEED" in line for line in log_lines(capsys))
 
 
 # --- Re-alert suppression ----------------------------------------------------
@@ -223,7 +147,7 @@ def test_recovery_clears_the_latch_so_the_next_stall_can_page_again() -> None:
     run(jobs, state, now=NOW + 200 * MINUTE)
     healthy = [job("digest", cadence_min=15, last_ok_ago_min=-201)]
     _, recovered, state, _ = run(healthy, state, now=NOW + 205 * MINUTE)
-    assert recovered == ["digest"]
+    assert recovered == ["default/digest"]
     stale, _, _, _ = run(healthy, state, now=NOW + 500 * MINUTE)
     assert len(stale) == 1, "a latch that never clears silences every later stall"
 
@@ -231,13 +155,15 @@ def test_recovery_clears_the_latch_so_the_next_stall_can_page_again() -> None:
 # --- Logging and threshold contracts -----------------------------------------
 
 
-def test_every_job_gets_a_decision_line_every_tick() -> None:
+def test_every_job_gets_a_decision_line_every_tick(capsys) -> None:
     """A guard that exits silently hides the halt it exists to catch."""
     jobs = [job(f"j{i}", cadence_min=15, last_ok_ago_min=1) for i in range(4)]
     state = settle(jobs)
-    _, _, _, lines = run(jobs, state)
+    log_lines(capsys)  # discard the baseline tick, or IT could satisfy the assertion
+    run(jobs, state)
+    lines = log_lines(capsys)
     for i in range(4):
-        assert any(line.startswith(f"j{i}: ") for line in lines), f"j{i} evaluated in silence"
+        assert any(line.startswith(f"default/j{i}: ") for line in lines), f"j{i} evaluated in silence"
 
 
 def test_the_threshold_derives_from_the_jobs_own_cadence() -> None:
@@ -320,3 +246,4 @@ def test_thresholds_match_the_shipped_defaults() -> None:
         "missed_cycles=1 pages on a single late run, which is the error-rate "
         "alerting this watchdog was built to replace"
     )
+
