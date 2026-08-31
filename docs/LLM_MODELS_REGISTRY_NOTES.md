@@ -32,6 +32,31 @@ covers minutes-long answers (`ai_router_request_timeout_seconds` 2400,
 `ai_stream_read_timeout_seconds` 1800). Do not shorten either one to make this
 tier look faster.
 
+### The `65536` window trails the catalog's `131072` (open, not urgent)
+
+Noted 2026-08-30, unresolved on purpose. The registry advertises
+`context_window: 65536` for this entry. nix-ai's catalog entry for the same
+physical id declares `contextWindowTokens = 131072`, with its own note that the
+model supports a native 262,144 and that production roles deliberately sit at
+131,072 so the remaining range stays available for separately managed 200K
+feasibility work.
+
+Both numbers are defensible and the gap is **direction-safe**, which is why
+nothing here changes yet. The failure this field guards against is
+over-advertising: an entry claiming more than the backend serves dies mid-stream
+instead of compacting. Under-advertising only truncates earlier than necessary,
+costing usable context rather than correctness.
+
+It is still a tension with this file's own rule that `context_window` is the
+catalog's real serving window, not a round number. `65536` was written when it
+was that figure; the catalog has since moved and the registry did not follow.
+
+Do not simply raise it. Widening what the router advertises changes live
+behavior, and the resident profile — not the entry's declared maximum — is what
+the worker actually admits. Before changing it, confirm from the worker's own
+command line what window the running process was started with, then set this to
+that number. If they now agree at 131,072, this note goes away with the edit.
+
 ## The routine tier (`mlx-community/Qwen3.6-35B-A3B-4bit`)
 
 The second warm model, resident beside the primary rather than swapping
