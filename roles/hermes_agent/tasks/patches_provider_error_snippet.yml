@@ -1,0 +1,48 @@
+---
+# The provider-error formatter truncates its message snippet to 300 characters
+# before the agent hands the error back, so a cron failure is stored already
+# clipped — `mark_job_run` records verbatim what it is given, and nothing in
+# this role truncates. Total stored length is 324: "RuntimeError: " (14) plus
+# "HTTP <code>: " (10) plus the 300.
+#
+# That cut lands at a content-dependent position, so the diagnosis survives or
+# dies depending on how long the FIRST line happened to be. Measured across the
+# eight chain-exhaustion records on the guest, five of eight lost it outright:
+#
+#   No deployments available - crossed budget: Exceeded budget   (survived)
+#   No deployments available - c                                 (destroyed)
+#   litellm.ContextWindowExceede                                 (clipped)
+#
+# The second is the majority failure class and reads as no cause at all.
+#
+# 500 is not a number invented here: it is what upstream's own fallback branch
+# in the same function uses, three lines below these, under the comment
+# "truncate the raw string but give more room than 200 chars". So the wider
+# bound is already upstream's judgement for the same kind of text; only the
+# JSON-payload branches were left at 300.
+- name: Widen the provider-error snippet so a fallback cause is not cut in half
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/run_agent.py"
+    regexp: '\[:300\]'
+    replace: '[:500]'
+  notify: Restart hermes-gateway
+
+# `replace` reports ok when its pattern does not match, so the patch needs its
+# own read-back. Assert the old bound is GONE rather than that the new one is
+# present: a partially applied replace would leave both, and the branch that
+# still carried 300 would be the one that clipped the next diagnosis.
+- name: Read back the widened provider-error snippet
+  ansible.builtin.slurp:
+    src: "{{ hermes_agent_install_dir }}/run_agent.py"
+  register: hermes_agent_run_agent_source
+  changed_when: false
+
+- name: Assert the provider-error snippet bound was widened everywhere
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "'[:300]' not in (hermes_agent_run_agent_source.content | b64decode)"
+      - "'[:500]' in (hermes_agent_run_agent_source.content | b64decode)"
+    fail_msg: >-
+      run_agent.py still carries a 300-character provider-error snippet bound.
+      A cron failure delivered from a clipped snippet names no cause.
