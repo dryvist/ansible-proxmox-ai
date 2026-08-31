@@ -44,20 +44,37 @@ llama_cpp_gpu_backend: vulkan
 # a separate, group-scoped guard on different silicon and is untouched by this.
 llama_cpp_max_param_billions: 28
 
-# Context. Set EXPLICITLY rather than inherited: the role's GPU default is 8192,
-# and the vLLM setup this replaces served 16384. Inheriting the default would
-# have quietly halved the context as a side effect of changing engine — a
-# reduction has to be a measured decision, not a default.
+# Context. DERIVED, never typed here: what this backend serves and what the
+# router advertises (model_info.max_input_tokens) must be one number. When they
+# were two literals they drifted in the worse direction — the router advertised
+# a window, callers sized requests to it, and the backend refused them.
 #
-# VRAM budget at this context, to be checked against measurement rather than
-# trusted: weights 11.91 GB, KV ~1 GB (only 16 of 64 layers use full attention,
-# 4 KV heads at head_dim 256 = 64 KiB/token), plus activations and graphs,
-# against 16376 MiB total. It fits, but not by a wide margin.
+# The registry entry is the source; the play that runs this role loads it (see
+# playbooks/llm-serving.yml). Change the window in llm-models.yml, not here.
+#
+# VRAM budget, MEASURED on the card at the previous 16384 rather than modelled:
+# 16376 MiB total, 12674 MiB used, 3297 MiB free, with the weights accounting
+# for 11362 MiB. That puts every non-weight allocation — KV plus compute and
+# graph buffers — at 1312 MiB. Doubling the window doubles only the KV part, so
+# even charging the whole 1312 MiB to KV (an overestimate: compute buffers do
+# not scale with context) bounds the increase at 1312 MiB, landing at 13986 MiB
+# used with 2390 MiB still free.
+#
+# 65536 is NOT affordable on this card and was rejected on these numbers: the
+# same bound puts it at 16610 MiB against a 16376 MiB card, and even the
+# favourable estimate leaves only ~630 MiB. Raise the window past 32768 only
+# behind a fresh measurement, or behind KV-cache quantization (--cache-type-k /
+# --cache-type-v), which was deliberately NOT used here — it was not needed to
+# reach the target, and it costs quality on a rung whose weights are already
+# 3-bit.
 #
 # IF IT DOES NOT FIT: step the QUANT down to UD-Q2_K_XL (10.68 GB) and record
 # the measurement that forced it. Do NOT cut this context to hide an OOM — that
 # turns a capability loss into an invisible one.
-llama_cpp_ctx_size: 16384
+llama_cpp_ctx_size: >-
+  {{ (llm_router_model_registry
+      | selectattr('client_model_id', 'equalto', 'qwen3.8-27b')
+      | first).context_window }}
 
 llama_cpp_models:
   - name: qwen3.8-27b

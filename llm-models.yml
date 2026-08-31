@@ -142,12 +142,17 @@ llm_router_model_registry:
   # Tier key stays `vllm` (names the ROUTER TIER/URL, not the engine) — this
   # guest serves via llama.cpp on Vulkan (roles/vllm/defaults has why). Must
   # match llama-swap's name in inventory/group_vars/llm_vllm_group.yml.
+  # THE context window for this backend, written once. The anchor is consumed by
+  # the hermes-local rung below (same backend) and by the serving guest itself —
+  # inventory/group_vars/llm_vllm_group.yml derives llama_cpp_ctx_size from this
+  # entry rather than repeating the number. Raising it here raises what the
+  # backend serves and what the router advertises together; they cannot drift.
   - client_model_id: qwen3.8-27b
     upstream_model_id: qwen3.8-27b
     provider: openai
     tier: vllm
     enabled: true
-    context_window: 16384
+    context_window: &qwen38_27b_context_window 32768
 
   # Local backup rung in the Hermes chain, same backend as the vllm entry.
   # tier: hermes-local, NOT vllm — load-bearing: the cloud projection drops
@@ -159,7 +164,8 @@ llm_router_model_registry:
     route_group: hermes-local-4080
     fallback_group: hermes-local-4080
     enabled: true
-    context_window: 16384
+    # Same backend as the vllm entry above, so the same window by construction.
+    context_window: *qwen38_27b_context_window
     num_retries: 0
     request_timeout: 20
     stream_timeout: 10
