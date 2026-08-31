@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+# {{ ansible_managed }}
+#
+# Drain-before-restart wrapper for the hermes-gateway unit.
+#
+# The gateway ticks the DEFAULT cron store in-process, so restarting it
+# terminates whatever cron jobs are mid-run in that store. Restarting on a
+# quiet moment is not a usable mitigation: the fleet spans several
+# profile-scoped stores, each ticked on a 5-minute cycle, and a single run may
+# legitimately occupy most of an hour — so "wait for a gap" has no gap to find
+# and "wait until nothing is running" never terminates while ticks keep firing.
+#
+# The sequence that does terminate is quiesce -> wait -> restart -> un-quiesce:
+#
+#   1. Engage Hermes' own ESTOP sentinel ($HERMES_HOME/ESTOP) in every cron
+#      store. Upstream documents the sentinel as the interface — cron dispatch,
+#      kanban dispatch and new gateway turns all skip while it exists, and
+#      in-flight work is never killed. A store an operator had already paused
+#      is left alone and stays paused afterwards.
+#   2. Poll every store's job records until no job holds a live fire claim,
+#      bounded by DRAIN_TIMEOUT_SECONDS.
+#   3. Restart the unit.
+#   4. Release only the sentinels this run engaged.
+#
+# Step 4 runs from a `finally` (with SIGTERM/SIGINT mapped onto it), so an
+# abort at any point still lifts the pause. Quiesce and un-quiesce live in ONE
+# process for exactly that reason: a play that dies before its handler flush
+# never reaches this script at all, so it cannot leave the fleet paused.
+#
+# Exit status is the restart's, so a failed restart still fails the converge.
+
+from __future__ import annotations
+
+import json
+import os
+import pwd
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+# --- Rendered config ---------------------------------------------------------
+HERMES_HOME = Path("{{ hermes_agent_hermes_home }}")
+HERMES_USER = "{{ hermes_agent_user }}"
+UNIT = "hermes-gateway"
+# Upstream's claim_job_for_fire() default lease, refreshed by the runner's
+# heartbeat for the whole execution: a claim younger than this means a live
+# runner, and one older than this means a runner that died without clearing it.
+CLAIM_TTL_SECONDS = {{ hermes_agent_cron_fire_claim_ttl_seconds }}
+# How long to wait for in-flight runs before restarting anyway. Defaults to the
+# per-run wall-clock ceiling, so a job still claimed at expiry has already
+# outlived the runtime the fleet grants it and would be reaped regardless.
+DRAIN_TIMEOUT_SECONDS = {{ hermes_agent_cron_drain_timeout_seconds }}
+POLL_SECONDS = {{ hermes_agent_cron_drain_poll_seconds }}
+
+SENTINEL_NAME = "ESTOP"
+
+
+def log(message: str) -> None:
+    print(f"drain-before-restart: {message}", flush=True)
+
+
+def store_homes(hermes_home: Path) -> list[Path]:
+    """Every cron store on the guest: the default one plus each profile.
+
+    Discovered rather than templated, so a profile added or removed between
+    converges is covered without redeploying this script. A profile that has
+    registered no jobs yet has no cron/jobs.json; it is still quiesced, because
+    the next converge may be the one that gives it jobs.
+    """
+    homes = [hermes_home]
+    profiles = hermes_home / "profiles"
+    if profiles.is_dir():
+        homes.extend(sorted(p for p in profiles.iterdir() if p.is_dir()))
+    return homes
+
+
+def claimed_jobs(home: Path, now: datetime, ttl_seconds: float) -> list[str]:
+    """Jobs in one store that a live runner currently holds.
+
+    The freshness test is upstream's, bounded on both sides: a claim stamped in
+    the future is treated as stale, not as fresh forever, so clock skew cannot
+    wedge the drain. A claim older than the lease is likewise stale — the
+    runner is gone and only the record survives it.
+
+    Names are qualified by store: a job name is unique only within its own
+    store, so bare names would collide across profiles.
+    """
+    path = home / "cron" / "jobs.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    jobs = raw if isinstance(raw, list) else raw.get("jobs", [])
+    live = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        claim = job.get("fire_claim")
+        if not isinstance(claim, dict):
+            continue
+        try:
+            at = datetime.fromisoformat(str(claim.get("at")))
+        except (TypeError, ValueError):
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        age = (now - at).total_seconds()
+        if 0 <= age < ttl_seconds:
+            live.append(f"{home.name}/{job.get('name') or job.get('id')}")
+    return live
+
+
+def engage(home: Path) -> bool:
+    """Write the ESTOP sentinel. False when the store was already paused.
+
+    Ownership matters: the file is left to the runtime user so `hermes resume`
+    can lift a pause this root-run script left behind.
+    """
+    sentinel = home / SENTINEL_NAME
+    if sentinel.exists():
+        return False
+    payload = {
+        "engaged_at": datetime.now(timezone.utc).isoformat(),
+        "reason": f"draining {UNIT} for restart",
+    }
+    sentinel.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    try:
+        entry = pwd.getpwnam(HERMES_USER)
+        os.chown(sentinel, entry.pw_uid, entry.pw_gid)
+    except (KeyError, OSError):
+        pass
+    return True
+
+
+def disengage(home: Path) -> None:
+    try:
+        (home / SENTINEL_NAME).unlink()
+    except OSError:
+        pass
+
+
+def wait_for_drain(
+    homes: list[Path],
+    *,
+    ttl_seconds: float = CLAIM_TTL_SECONDS,
+    timeout_seconds: float = DRAIN_TIMEOUT_SECONDS,
+    poll_seconds: float = POLL_SECONDS,
+) -> list[str]:
+    """Block until no store holds a live claim. Returns what was still live.
+
+    An empty list means the fleet drained; a non-empty one means the bound
+    expired first and names what the restart is about to interrupt.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        now = datetime.now(timezone.utc)
+        live = [job for home in homes for job in claimed_jobs(home, now, ttl_seconds)]
+        if not live:
+            return []
+        if time.monotonic() >= deadline:
+            return live
+        log(f"waiting on {len(live)} in-flight run(s): {', '.join(sorted(live))}")
+        time.sleep(min(poll_seconds, max(deadline - time.monotonic(), 0)))
+
+
+def restart() -> int:
+    subprocess.run(["systemctl", "daemon-reload"], check=True)
+    return subprocess.run(["systemctl", "restart", UNIT]).returncode
+
+
+def _raise_on_signal(signum, _frame):
+    raise SystemExit(128 + signum)
+
+
+def main() -> int:
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, _raise_on_signal)
+
+    homes = store_homes(HERMES_HOME)
+    ours: list[Path] = []
+    try:
+        for home in homes:
+            if engage(home):
+                ours.append(home)
+            else:
+                log(f"{home.name} was already paused — leaving it that way")
+        log(f"quiesced {len(ours)} store(s); draining up to {DRAIN_TIMEOUT_SECONDS}s")
+
+        stranded = wait_for_drain(homes)
+        if stranded:
+            log(
+                f"drain bound of {DRAIN_TIMEOUT_SECONDS}s expired with "
+                f"{len(stranded)} run(s) still claimed past their own wall-clock "
+                f"ceiling; restarting anyway: {', '.join(sorted(stranded))}"
+            )
+        else:
+            log("no in-flight runs; restarting")
+        return restart()
+    finally:
+        for home in ours:
+            disengage(home)
+        if ours:
+            log(f"released {len(ours)} pause(s)")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
