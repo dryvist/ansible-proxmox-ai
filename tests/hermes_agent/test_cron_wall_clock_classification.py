@@ -50,7 +50,7 @@ WALL_CLOCK_ERROR = (
     "Cron job 'splunk-triage' exceeded aggregate wall clock 2301s (limit 2300s)"
 )
 
-TASK_NAME = "Classify the aggregate cron wall-clock timeout in delivered failures"
+TASK_NAME = "Classify local stops and fallback exhaustion in delivered failures"
 PROVIDER_BRANCHES = ('re.search(r"\\b429\\b", text)', 'if provider_reachable and "timed out" in lower:')
 
 
@@ -114,6 +114,49 @@ def test_the_anchor_is_re_emitted_so_no_branch_is_dropped() -> None:
     assert patched.count('if lower.startswith("script timed out"):') == 1
     for branch in PROVIDER_BRANCHES:
         assert branch in patched
+
+
+# Verbatim from the job store, including the 324-char cap upstream applies
+# before the record is written. The cause survives that cap; what the operator
+# never saw was the classifier discarding it, not the truncation.
+FALLBACK_ERROR = (
+    "RuntimeError: HTTP 429: litellm.BadGatewayError: BadGatewayError: "
+    "OpenAIException - Error code: 502. Received Model Group=hermes-default\n"
+    "Available Model Group Fallbacks=['hermes-local-4080', 'hermes-cloud-free', "
+    "'hermes-cloud-openrouter']\n"
+    "Error doing the fallback: No deployments available - crossed budget: "
+    "Exceeded budget "
+)
+
+
+def test_the_fallback_cause_reaches_the_delivered_message() -> None:
+    """The third line is the diagnosis; it was never delivered.
+
+    Every alarm said "provider rate limit" and every reader concluded capacity,
+    which is why the fallback defect survived days of investigation.
+    """
+    block = _task(TASK_NAME)["vars"]["_hermes_cron_wall_clock_classifier"]
+    pattern = re.search(r'r"(Error doing the fallback:[^"]*)"', block)
+
+    assert pattern is not None, "no fallback-cause extraction found"
+    found = re.search(pattern.group(1), FALLBACK_ERROR)
+    assert found is not None, "the pattern does not match a real stored error"
+    assert "crossed budget" in found.group(1)
+
+
+def test_the_fallback_branch_wins_over_the_rate_limit_branch() -> None:
+    """These errors carry a 429, so the provider branch would claim them."""
+    patched = _patched()
+    ours = patched.index("Error doing the fallback")
+
+    for branch in PROVIDER_BRANCHES:
+        assert ours < patched.index(branch), f"provider branch wins: {branch}"
+
+
+def test_the_unpatched_classifier_calls_this_a_rate_limit() -> None:
+    """Proof the excerpt reproduces the misattribution, not just asserts it."""
+    assert re.search(r"\b429\b", FALLBACK_ERROR), "the 429 is what misroutes it"
+    assert not FALLBACK_ERROR.lower().startswith("script timed out")
 
 
 def test_the_patch_notifies_the_gateway_restart() -> None:
