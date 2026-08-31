@@ -96,6 +96,16 @@ def store_homes(hermes_home: Path) -> list[Path]:
     return homes
 
 
+def load_jobs(home: Path) -> list[dict]:
+    """Job records in one store, or none when it has no readable store."""
+    try:
+        raw = json.loads((home / "cron" / "jobs.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    jobs = raw if isinstance(raw, list) else raw.get("jobs", [])
+    return [job for job in jobs if isinstance(job, dict)]
+
+
 def claimed_jobs(home: Path, now: datetime, ttl_seconds: float) -> list[str]:
     """Jobs in one store that a live runner currently holds.
 
@@ -107,14 +117,8 @@ def claimed_jobs(home: Path, now: datetime, ttl_seconds: float) -> list[str]:
     Names are qualified by store: a job name is unique only within its own
     store, so bare names would collide across profiles.
     """
-    path = home / "cron" / "jobs.json"
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    jobs = raw if isinstance(raw, list) else raw.get("jobs", [])
     live = []
-    for job in jobs:
+    for job in load_jobs(home):
         if not isinstance(job, dict):
             continue
         claim = job.get("fire_claim")
@@ -254,7 +258,16 @@ def main() -> int:
                 f"ceiling; restarting anyway: {', '.join(sorted(stranded))}"
             )
         else:
-            log("no in-flight runs; restarting")
+            # The denominator, not just the verdict: "no in-flight runs" reads
+            # identically whether this scanned every job in the fleet or found
+            # no stores at all. A drain that is looking at nothing reports the
+            # same clean line as a drain that looked and found nothing, and a
+            # guard nobody can distinguish from a broken one is not a guard.
+            scanned = sum(len(load_jobs(home)) for home in homes)
+            log(
+                f"no in-flight runs across {len(homes)} store(s) holding "
+                f"{scanned} job(s); restarting"
+            )
         return restart()
     finally:
         for home in ours:
