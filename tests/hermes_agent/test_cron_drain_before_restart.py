@@ -339,6 +339,38 @@ def test_an_operator_clearing_sentinels_by_hand_mid_run_does_not_break_the_relea
     assert not list(fleet.rglob("ESTOP"))
 
 
+def test_a_clean_drain_reports_what_it_actually_scanned(
+    tmp_path, fleet, systemctl, capsys
+) -> None:
+    """"No in-flight runs" must not read the same as "looked at nothing".
+
+    A drain scanning zero stores and a drain scanning the whole fleet produced
+    the identical clean line, so a blind guard was indistinguishable from a
+    working one.
+    """
+    _store(fleet / "profiles" / "homelab-admin", claim_age_seconds=None)
+    module = _load(tmp_path, fleet)
+
+    assert module.main() == 0
+
+    clean = [ln for ln in capsys.readouterr().out.splitlines() if "no in-flight" in ln]
+    assert len(clean) == 1
+    assert "4 store(s)" in clean[0]
+    assert "3 job(s)" in clean[0], "github-maint has no store; the other three hold one"
+
+
+def test_a_fleet_with_no_readable_stores_says_zero_rather_than_nothing(
+    tmp_path, systemctl, capsys
+) -> None:
+    """The blind case must be visible, not silently identical to a clean one."""
+    blind = tmp_path / "blind"
+    blind.mkdir()
+    module = _load(tmp_path, blind)
+
+    assert module.main() == 0
+    assert "0 job(s)" in capsys.readouterr().out
+
+
 def test_the_handler_runs_the_wrapper_rather_than_restarting_the_unit() -> None:
     """The whole fix is worthless if a handler still restarts the unit raw."""
     handlers = yaml.safe_load((ROLE / "handlers" / "main.yml").read_text())
