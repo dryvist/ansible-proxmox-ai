@@ -132,23 +132,25 @@ def claimed_jobs(home: Path, now: datetime, ttl_seconds: float) -> list[str]:
     return live
 
 
-def is_orphan(sentinel: Path, now: datetime) -> bool:
-    """Is this sentinel a dead converge's leftover rather than a live pause?
+def orphan_age(sentinel: Path, now: datetime) -> float | None:
+    """Age in seconds of a dead converge's leftover, or None if not one.
 
-    True only for a sentinel this wrapper positively wrote and that is older
-    than any live drain could be. Anything else — an operator's pause, a body
-    that will not parse, one without the owner marker, a sibling converge still
-    draining — is somebody else's and is left alone.
+    A number only for a sentinel this wrapper positively wrote and that is
+    older than any live drain could be. Anything else — an operator's pause, an
+    empty file from a bare `touch`, a body that will not parse, one without the
+    owner marker however old, a sibling converge still draining — is somebody
+    else's and is left alone. The age is returned rather than a bool so the
+    clear can say how stale the thing it removed was.
     """
     try:
         state = json.loads(sentinel.read_text(encoding="utf-8"))
         if not isinstance(state, dict) or state.get("owner") != SENTINEL_OWNER:
-            return False
+            return None
         engaged_at = datetime.fromisoformat(str(state["engaged_at"]))
         age = (now - engaged_at).total_seconds()
     except (OSError, ValueError, TypeError, KeyError):
-        return False
-    return age > ORPHAN_AFTER_SECONDS
+        return None
+    return age if age > ORPHAN_AFTER_SECONDS else None
 
 
 def engage(home: Path) -> str:
@@ -165,8 +167,15 @@ def engage(home: Path) -> str:
     now = datetime.now(timezone.utc)
     outcome = "engaged"
     if sentinel.exists():
-        if not is_orphan(sentinel, now):
+        age = orphan_age(sentinel, now)
+        if age is None:
             return "held"
+        log(
+            f"{home.name}: clearing a pause this wrapper wrote {age:.0f}s ago and "
+            f"never released — a converge died before its release could run (a live "
+            f"drain cannot hold one past {ORPHAN_AFTER_SECONDS}s). It is owned by "
+            "this run and goes out with it."
+        )
         outcome = "reclaimed"
     payload = {
         "owner": SENTINEL_OWNER,
@@ -234,12 +243,6 @@ def main() -> int:
             if outcome == "held":
                 log(f"{home.name} is paused by someone else — leaving it that way")
                 continue
-            if outcome == "reclaimed":
-                log(
-                    f"{home.name} carried a pause left behind by a converge that "
-                    f"died before releasing it (older than {ORPHAN_AFTER_SECONDS}s) "
-                    "— reclaiming and releasing it with this run"
-                )
             ours.append(home)
         log(f"quiesced {len(ours)} store(s); draining up to {DRAIN_TIMEOUT_SECONDS}s")
 

@@ -231,6 +231,15 @@ def _converge_sentinel(module, home: Path, *, age_seconds: float) -> Path:
     return sentinel
 
 
+def test_a_bare_touch_pause_survives(tmp_path, fleet, systemctl) -> None:
+    """`touch $HERMES_HOME/ESTOP` is the documented manual pause: zero bytes."""
+    module = _load(tmp_path, fleet)
+    (fleet / "profiles" / "splunk-admin" / "ESTOP").touch()
+
+    assert module.main() == 0
+    assert [p.parent.name for p in fleet.rglob("ESTOP")] == ["splunk-admin"]
+
+
 def test_a_pause_orphaned_by_a_hard_kill_is_reclaimed_and_released(
     tmp_path, fleet, systemctl
 ) -> None:
@@ -243,12 +252,28 @@ def test_a_pause_orphaned_by_a_hard_kill_is_reclaimed_and_released(
     module = _load(tmp_path, fleet)
     _converge_sentinel(
         module, fleet / "profiles" / "splunk-admin",
-        age_seconds=module.ORPHAN_AFTER_SECONDS + 1,
+        age_seconds=module.ORPHAN_AFTER_SECONDS + 4242,
     )
 
     assert module.main() == 0
     assert systemctl.restarted == "restart hermes-gateway"
     assert not list(fleet.rglob("ESTOP"))
+
+
+def test_clearing_an_orphan_says_so_with_its_age(tmp_path, fleet, systemctl, capsys) -> None:
+    """A guard that acts silently is how damage goes unnoticed."""
+    module = _load(tmp_path, fleet)
+    age = module.ORPHAN_AFTER_SECONDS + 4242
+    _converge_sentinel(module, fleet / "profiles" / "splunk-admin", age_seconds=age)
+
+    assert module.main() == 0
+
+    cleared = [
+        line for line in capsys.readouterr().out.splitlines()
+        if "splunk-admin" in line and "clearing" in line
+    ]
+    assert len(cleared) == 1, "clearing a pause must be announced exactly once"
+    assert f"{age:.0f}s ago" in cleared[0], "the age of what was cleared must be stated"
 
 
 def test_a_sibling_converge_still_draining_is_not_robbed(tmp_path, fleet, systemctl) -> None:
