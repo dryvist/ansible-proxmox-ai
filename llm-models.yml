@@ -167,8 +167,22 @@ llm_router_model_registry:
     # Same backend as the vllm entry above, so the same window by construction.
     context_window: *qwen38_27b_context_window
     num_retries: 0
-    request_timeout: 20
-    stream_timeout: 10
+    # One value, both keys — a streaming and a non-streaming call to the same
+    # backend have the same deadline. request_timeout renders as LiteLLM's
+    # `timeout`; see roles/llm_router/templates/model-list.yaml.j2.
+    #
+    # Was 20/10, which could not complete an ordinary generation. Measured on
+    # this backend at 36-42 tok/s: a 1200-token answer takes 28.4s, and a 22k
+    # prompt costs 20.0s in cold prefill alone, so 20s truncated anything past
+    # roughly 800 output tokens and everything with a cold cache. With
+    # num_retries 0 there was no second attempt either.
+    #
+    # 300 covers a full-window cold prefill plus ~4000 output tokens at the
+    # measured rate with room to spare, and stays 8x tighter than the global
+    # 2400 so a genuinely hung backend is still bounded and the chain can still
+    # escape to the next rung.
+    request_timeout: &hermes_local_4080_timeout 300
+    stream_timeout: *hermes_local_4080_timeout
     allowed_fails: 50
     # 0 is the intent, not the observed behaviour: the proxy still parks this
     # deployment 30s after repeated timeouts, self-clearing. Do not widen
