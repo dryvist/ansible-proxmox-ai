@@ -31,18 +31,23 @@
 # own read-back. Assert the old bound is GONE rather than that the new one is
 # present: a partially applied replace would leave both, and the branch that
 # still carried 300 would be the one that clipped the next diagnosis.
+# NOT hermes_agent_run_agent_source: patches_verify_cron.yml already defines
+# that name as a task var holding the DECODED source, and a register here shadows
+# it with a slurp result dict. `'text' in <dict>` then tests dict keys and is
+# silently False, so a sibling assertion fails claiming the pinned source drifted.
+# A read-back's own variable is namespaced to the patch it verifies.
 - name: Read back the widened provider-error snippet
   ansible.builtin.slurp:
     src: "{{ hermes_agent_install_dir }}/run_agent.py"
-  register: hermes_agent_run_agent_source
+  register: hermes_agent_error_snippet_readback
   changed_when: false
 
 - name: Assert the provider-error snippet bound was widened everywhere
   ansible.builtin.assert:
     quiet: true
     that:
-      - "'[:300]' not in (hermes_agent_run_agent_source.content | b64decode)"
-      - "'[:500]' in (hermes_agent_run_agent_source.content | b64decode)"
+      - "'[:300]' not in (hermes_agent_error_snippet_readback.content | b64decode)"
+      - "'[:500]' in (hermes_agent_error_snippet_readback.content | b64decode)"
     fail_msg: >-
       run_agent.py still carries a 300-character provider-error snippet bound.
       A cron failure delivered from a clipped snippet names no cause.
