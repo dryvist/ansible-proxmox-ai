@@ -55,15 +55,18 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         REPO_ROOT / "roles/hindsight_docker/templates/docker-compose.yml.j2"
     ).read_text()
     router_defaults = role_defaults(REPO_ROOT / "roles" / "llm_router")
-    registry = yaml.safe_load((REPO_ROOT / "llm-models.yml").read_text())[
-        "llm_router_model_registry"
+    registry = [
+        entry
+        for slice_file in sorted((REPO_ROOT / "llm-models.d").glob("*.yml"))
+        for entries in yaml.safe_load(slice_file.read_text()).values()
+        for entry in entries
     ]
     router_config = (REPO_ROOT / "roles/llm_router/templates/config.yaml.j2").read_text()
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
     environment = template_text(ROLE_ROOT, "hermes-env.j2")
 
     hermes_alias = "hermes-default"
-    # Physical ids live in ONE file — the repo-root llm-models.yml registry —
+    # Physical ids live in ONE place — the repo-root llm-models.d/ registry —
     # and the router's selector vars are projections of it. Pinning literals
     # here is what let all four aliases drift to unroutable models at once
     # (2026-07-28, every one a live 404), so follow the indirection to its
@@ -217,7 +220,7 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
             if field in entry:
                 assert entry[field] not in router_defaults_values, (
                     f"{entry[field]} is re-typed in roles/llm_router/defaults/main.yml; "
-                    "derive it from llm-models.yml instead"
+                    "derive it from llm-models.d/ instead"
                 )
     assert router_defaults["llm_router_num_retries"] == 0
     # 429 = "the slot is busy", never "the work is impossible", so the router
