@@ -132,8 +132,13 @@ def cadence_seconds(job: dict) -> float | None:
          `last_run_at` for cron-expression jobs too — so one cadence falls out
          of the pair without parsing a cron expression here.
 
-    A stalled job keeps a usable pair: neither field advances while it is not
-    running, so the frozen gap is still exactly one cadence.
+    The gap is only trustworthy when it was measured off a COMPLETED run. A job
+    can be re-armed without running — `next_run_at` moves to a future time while
+    `last_run_at` stays stale — and the gap then reads as the whole length of the
+    outage rather than one cycle, inflating the threshold in the quiet direction
+    exactly while the job is broken. `evaluate` therefore remembers the cadence
+    it measured on a successful run and keeps using that; this live reading is
+    only the bootstrap, before any success has been observed.
     """
     schedule = job.get("schedule")
     if isinstance(schedule, dict):
@@ -209,6 +214,12 @@ def evaluate(jobs: list, state: dict, now: float) -> tuple[list, list]:
             remembered = record.get("last_ok")
             if remembered is None or last_run > remembered:
                 record["last_ok"] = last_run
+            # Pin the cadence to a reading taken off a completed run. A re-arm
+            # without a run inflates the live gap, which would raise the
+            # threshold the longer the job stays broken.
+            measured = cadence_seconds(job)
+            if measured is not None:
+                record["cadence"] = measured
 
         if record.get("last_ok") is None:
             # No observed success yet: either a genuinely new job or one already
@@ -220,7 +231,7 @@ def evaluate(jobs: list, state: dict, now: float) -> tuple[list, list]:
             log(f"{name}: SEED (no observed success yet; clock starts now)")
             continue
 
-        cadence = cadence_seconds(job)
+        cadence = record.get("cadence") or cadence_seconds(job)
         if cadence is None:
             log(f"{name}: SKIP (no derivable cadence — one-shot or unscheduled)")
             continue

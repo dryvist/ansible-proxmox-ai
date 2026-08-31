@@ -247,17 +247,61 @@ def test_the_threshold_derives_from_the_jobs_own_cadence() -> None:
     assert hourly == 60 * MINUTE * FIXTURE_CONFIG["MISSED_CYCLES"]
 
 
+def cron_job(name, *, cadence_min, last_ago_min, next_in_min, status="ok"):
+    """A cron-kind record, whose schedule carries an expression and no `minutes`.
+
+    last_run_at and next_run_at are set independently so the re-armed case —
+    a stale last run with an advancing next run — can be built.
+    """
+    return {
+        "id": name, "name": name, "enabled": True,
+        "schedule": {"kind": "cron", "expr": f"26 */{cadence_min // 60} * * *"},
+        "last_run_at": _iso(NOW - last_ago_min * MINUTE),
+        "next_run_at": _iso(NOW + next_in_min * MINUTE),
+        "last_status": status,
+    }
+
+
 def test_a_cron_expression_job_derives_its_cadence_without_a_cron_parser() -> None:
     """Cron-kind jobs carry no `minutes`, so the cadence comes from the gap the
     scheduler already computed between last_run_at and next_run_at.
     """
-    cron_job = {
-        "id": "nightly", "name": "nightly", "enabled": True,
-        "schedule": {"kind": "cron", "expression": "0 3 * * *"},
-        "last_run_at": _iso(NOW), "next_run_at": _iso(NOW + 1440 * MINUTE),
-        "last_status": "ok",
-    }
-    assert WD.cadence_seconds(cron_job) == 1440 * MINUTE
+    every_6h = cron_job("triage", cadence_min=360, last_ago_min=0, next_in_min=360)
+    assert WD.cadence_seconds(every_6h) == 360 * MINUTE
+    assert WD.threshold_seconds(WD.cadence_seconds(every_6h)) == 18 * 60 * MINUTE
+
+
+def test_a_rearmed_job_cannot_raise_its_own_threshold_by_staying_broken() -> None:
+    """The gap is only one cadence when measured off a COMPLETED run. A job
+    re-armed without running leaves last_run_at stale while next_run_at advances,
+    so the live gap reads as the whole outage. Deriving the threshold from that
+    would make the guard QUIETER the longer the job stayed broken — an anti-guard.
+    The cadence pinned on the last success is what must be used instead.
+    """
+    healthy = [cron_job("triage", cadence_min=360, last_ago_min=0, next_in_min=360)]
+    state = settle(healthy)
+
+    # 20h later: never ran again, but re-armed repeatedly. The live gap is now
+    # ~26h, which alone would clamp the threshold to the 24h ceiling.
+    drifted = [cron_job("triage", cadence_min=360, last_ago_min=0, next_in_min=1560, status="error")]
+    assert WD.cadence_seconds(drifted[0]) == 1560 * MINUTE, "premise: the live gap is inflated"
+
+    stale, _, _, _ = run(drifted, state, now=NOW + 20 * 60 * MINUTE)
+    assert len(stale) == 1, (
+        "20h of silence must page a 6h job at its pinned 18h threshold, not be "
+        "deferred to 24h by a gap the outage itself inflated"
+    )
+
+
+def test_the_pinned_cadence_does_not_make_the_guard_trigger_happy() -> None:
+    """The other direction: pinning must not shrink the threshold either. The
+    same job at 17h of silence is still inside its 18h window.
+    """
+    healthy = [cron_job("triage", cadence_min=360, last_ago_min=0, next_in_min=360)]
+    state = settle(healthy)
+    drifted = [cron_job("triage", cadence_min=360, last_ago_min=0, next_in_min=1500, status="error")]
+    stale, _, _, _ = run(drifted, state, now=NOW + 17 * 60 * MINUTE)
+    assert stale == []
 
 
 def test_thresholds_match_the_shipped_defaults() -> None:
