@@ -510,12 +510,16 @@ def test_a_healthy_job_is_not_charged_for_the_time_the_store_was_stopped() -> No
 
 def test_repeated_pause_cycles_cannot_mask_a_job_that_has_stopped_succeeding() -> None:
     """Only real stopped time is discounted, and it accumulates honestly. A job
-    dead the whole time still crosses its threshold on wall clock the pauses do
-    not cover — otherwise a cycling pause is a way to hide a dead fleet.
+    dead the whole time still crosses its threshold on the wall clock the pauses
+    do not cover — otherwise a cycling pause is a way to hide a dead fleet.
+
+    The last resume is deliberately recent: 20m after it, a guard that restarted
+    the clock on resume would read 20m and stay quiet, well inside the 45m
+    threshold. Only the banked total exposes the real 80m of silence.
     """
     jobs = [job("digest", cadence_min=15, last_ok_ago_min=1)]
     state = settle(jobs)
-    for start, end in ((10, 20), (30, 40)):
+    for start, end in ((10, 20), (70, 80)):
         _, _, state, _ = run(jobs, state, now=NOW + start * MINUTE, paused=["default"])
         _, _, state, _ = run(jobs, state, now=NOW + end * MINUTE)
     stale, _, _, _ = run(jobs, state, now=NOW + 100 * MINUTE)
