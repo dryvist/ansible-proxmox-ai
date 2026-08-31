@@ -88,6 +88,28 @@ def test_the_patch_asserts_the_old_bound_is_gone_not_merely_that_ours_is_present
     assert "notify" in _task(TASK_NAME), "a source patch must restart the gateway"
 
 
+def test_the_readback_does_not_shadow_another_tasks_variable() -> None:
+    """A register shadows a sibling task's var of the same name.
+
+    `patches_verify_cron.yml` defines `hermes_agent_run_agent_source` as the
+    DECODED source; registering a slurp result under it makes `'text' in var`
+    test dict keys instead, silently False — and the sibling assertion then
+    fails claiming the pinned source drifted. This converge failed exactly so.
+    """
+    tasks = yaml.safe_load(
+        (ROLE_ROOT / "tasks" / "patches_provider_error_snippet.yml").read_text()
+    )
+    registered = {t["register"] for t in tasks if "register" in t}
+
+    others = set()
+    for path in (ROLE_ROOT / "tasks").glob("*.yml"):
+        if path.name == "patches_provider_error_snippet.yml":
+            continue
+        others.update(re.findall(r"^\s{4}(\w+):\s*>-", path.read_text(), re.M))
+
+    assert not (registered & others), f"shadows a sibling task var: {registered & others}"
+
+
 def test_the_patch_is_included_in_the_role() -> None:
     """A patch file nothing includes is a file that never runs."""
     assert "patches_provider_error_snippet.yml" in (
