@@ -32,6 +32,31 @@ covers minutes-long answers (`ai_router_request_timeout_seconds` 2400,
 `ai_stream_read_timeout_seconds` 1800). Do not shorten either one to make this
 tier look faster.
 
+### The `65536` window trails the catalog's `131072` (open, not urgent)
+
+Noted 2026-08-30, unresolved on purpose. The registry advertises
+`context_window: 65536` for this entry. nix-ai's catalog entry for the same
+physical id declares `contextWindowTokens = 131072`, with its own note that the
+model supports a native 262,144 and that production roles deliberately sit at
+131,072 so the remaining range stays available for separately managed 200K
+feasibility work.
+
+Both numbers are defensible and the gap is **direction-safe**, which is why
+nothing here changes yet. The failure this field guards against is
+over-advertising: an entry claiming more than the backend serves dies mid-stream
+instead of compacting. Under-advertising only truncates earlier than necessary,
+costing usable context rather than correctness.
+
+It is still a tension with this file's own rule that `context_window` is the
+catalog's real serving window, not a round number. `65536` was written when it
+was that figure; the catalog has since moved and the registry did not follow.
+
+Do not simply raise it. Widening what the router advertises changes live
+behavior, and the resident profile — not the entry's declared maximum — is what
+the worker actually admits. Before changing it, confirm from the worker's own
+command line what window the running process was started with, then set this to
+that number. If they now agree at 131,072, this note goes away with the edit.
+
 ## The routine tier (`mlx-community/Qwen3.6-35B-A3B-4bit`)
 
 The second warm model, resident beside the primary rather than swapping
@@ -91,17 +116,13 @@ consumers fall back to a near-zero context guess and compress every request to
 death.
 
 **`extra_body.repetition_penalty` is the anti-repetition-loop fix.** In long
-agentic sessions this brain emitted ~37 IDENTICAL tool calls per turn (the
-agent dedups and executes once, the model re-emits next turn, the task never
-advances). The 20/20-clean agentic bench and the looping production sessions
-differ only in sampling. A gentle 1.05 repetition penalty directly taxes
-verbatim re-emission while staying mild enough to preserve tool-call JSON
-validity. `extra_body` carries it through the router to the MLX model server.
-
-`temperature` is deliberately NOT pinned: 0.7 would merely restate the engine
-fallback the loop already runs under. If 1.05 proves insufficient, the next
-lever is to match the clean bench's sampling — temperature ~1.0 /
-`presence_penalty` 0.0 — added to that same `extra_body`.
+agentic sessions this brain re-emitted the same tool call dozens of times per
+turn; the clean agentic bench and the looping sessions differ only in
+sampling. A gentle 1.05 penalty taxes verbatim re-emission while preserving
+tool-call JSON validity; `extra_body` carries it through to the model server.
+`temperature` is deliberately NOT pinned (0.7 restates the engine fallback);
+if 1.05 proves insufficient, next match the clean bench's sampling
+(temperature ~1.0, `presence_penalty` 0.0) in that same `extra_body`.
 
 **`standby`**: OptiQ is the agent brain and the only brain that stays resident
 beside the shard, so it is the entry that gets a same-id failover sibling when
@@ -164,27 +185,23 @@ among models declared equivalent in the final OpenRouter tier. It does not
 pretend raw price measures quality. Direct providers remain deliberately ordered
 by verified price/capability and failure-domain independence.
 
-LiteLLM v1.97.0 recognizes all three provider prefixes and loads these exact
-ids with explicit pricing and model metadata, even where the release's bundled
-catalog does not yet list the new model remainder. That proves configuration
-compatibility, not upstream availability: activation still requires a real
-health request against every exact id. `mode: chat`, context/output metadata,
-per-attempt timeout, and zero deployment retries are explicit for every route.
-LiteLLM's model-group retry policy also pins every cloud alias and physical
-group to zero 429 retries. The global eight-retry policy therefore remains a
-local-serving congestion control and cannot delay or multiply paid-provider
-fallback attempts.
+LiteLLM v1.97.0 loads all three provider prefixes and these exact ids with
+explicit pricing/metadata even where its bundled catalog lags — that proves
+configuration compatibility, not upstream availability; activation still
+requires a real health request per id. Every route declares `mode: chat`,
+context/output metadata, per-attempt timeout, and zero deployment retries,
+and the model-group retry policy pins every cloud alias and physical group to
+zero 429 retries — so the global eight-retry policy stays a local-serving
+congestion control and cannot delay or multiply paid-provider fallbacks.
 
-Cloud entries render only when their single provider credential exists and the
-shared budget store is configured. Each physical deployment declares a
-131,072-token input limit, an 8,192-token generation default/model limit, 12
-RPM, 500,000 TPM, two concurrent requests, a 2,400-second attempt timeout, and
-zero deployment or rate-limit retries. The six deployment-level monthly
-ceilings total $10.00: $3.33 Alibaba, $3.33 Gemini, and $3.34 OpenRouter. The existing
-account-wide OpenRouter budget remains separately owned
-by `llm_router_openrouter_budget_limit`; no additional daily-provider ceiling
-is implied here. Re-verify OpenRouter live prices and Gemini promotional
-pricing before activation and before 2027-01-01.
+Cloud entries render only when their provider credential exists and the
+shared budget store is configured. Each physical deployment declares 131,072
+input / 8,192 generation token limits, 12 RPM, 500,000 TPM, two concurrent
+requests, a 2,400s attempt timeout, and zero retries of any kind. The six
+deployment-level monthly ceilings total $10.00 ($3.33 Alibaba, $3.33 Gemini,
+$3.34 OpenRouter); the account-wide OpenRouter budget stays separately owned
+by `llm_router_openrouter_budget_limit`. Re-verify OpenRouter live prices and
+Gemini promotional pricing before activation and before 2027-01-01.
 
 ### Why MiniMax is two entries
 
