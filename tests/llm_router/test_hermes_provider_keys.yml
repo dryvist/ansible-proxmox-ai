@@ -98,6 +98,13 @@
             llm_router_hermes_default_fallback_chain
             == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-openrouter']
           - "_fallback_chain == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-openrouter']"
+          # The narrow local leg escapes to the wider cloud rungs. Without this
+          # LiteLLM aborts the entire chain at that rung on an over-long
+          # request instead of advancing past it, so the rungs listed above are
+          # never tried -- the chain reads correct and serves nothing.
+          - >-
+            _config.router_settings.context_window_fallbacks | default(none)
+            == [{'hermes-local-4080': ['hermes-cloud-free', 'hermes-cloud-openrouter']}]
           - _cloud_models | length == 2
           - _environment | regex_findall('(?m)^OPENROUTER_API_KEY=') | length == 1
           - _environment | regex_findall('(?m)^GEMINI_API_KEY=') | length == 0
@@ -174,6 +181,11 @@
         that:
           - llm_router_hermes_default_fallback_chain == ['hermes-local-4080']
           - "_config.router_settings.fallbacks == [{'hermes-default': ['hermes-local-4080']}]"
+          # No cloud rung means nowhere wider to escape to, so the key is
+          # omitted entirely. An empty map would not be "no map" to LiteLLM --
+          # it would take the escape branch and fall back to nothing, hiding
+          # the real error.
+          - "'context_window_fallbacks' not in _config.router_settings"
           - _cloud_models | length == 0
           - _openrouter_egress | length == 0
           - _environment | regex_findall('(?m)^(OPENROUTER|GEMINI|DASHSCOPE)_API_KEY=') | length == 0

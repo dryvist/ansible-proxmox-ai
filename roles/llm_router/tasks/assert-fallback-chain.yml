@@ -40,6 +40,13 @@
       # PROVIDER COUNT (a reviewed onboarding decision each time it grows),
       # not a summed worst-case timeout.
       - "llm_router_hermes_default_fallback_chain | length <= 5"
+      # Every rung narrower than the primary carries a context_window_fallbacks
+      # escape hatch. A narrow rung without one does not merely reject the
+      # requests it cannot fit — LiteLLM aborts the ENTIRE chain at that rung
+      # (see 35-hermes-cloud.yml), so the wider rungs behind it go untried. The
+      # composition checks above pass happily on exactly that chain, which is
+      # how it reached production.
+      - "_llm_router_unescaped_narrow_groups | length == 0"
     fail_msg: >-
       Hermes fallback chain is unsound (roles/llm_router/tasks/assert-fallback-chain.yml):
       got {{ llm_router_hermes_default_fallback_chain }}, expected
@@ -49,13 +56,46 @@
       the chain: {{ _llm_router_unsafe_providers }} (chain providers:
       {{ _llm_router_chain_providers }}). Depth is capped at 5 (1 local + free
       + 3 paid providers) — see the arithmetic comment above the assert before
-      raising it.
+      raising it. Rung(s) narrower than the primary with no
+      context_window_fallbacks escape hatch (these abort the whole chain on an
+      over-long request): {{ _llm_router_unescaped_narrow_groups }}.
     success_msg: >-
       Hermes fallback chain is ordered
       ({{ llm_router_hermes_default_fallback_chain | join(' -> ') }}), every
       rung is a real registry entry, no single provider's outage empties it,
       and depth stays within the 5-rung cap.
   vars:
+    # Context the primary itself advertises; every rung is measured against it.
+    _llm_router_primary_context: >-
+      {{ (llm_router_registry_enabled
+          | selectattr('client_model_id', 'equalto', 'hermes-default')
+          | map(attribute='context_window') | list | first) | default(0) }}
+    # Chain rungs that advertise LESS context than the primary and have no
+    # context_window_fallbacks entry. A rung with no declared context_window is
+    # not assumed narrow — only a stated, smaller number counts.
+    #
+    # Scoped to chains that HAVE a wider rung to escape to: with cloud rungs
+    # absent (no credentials seeded) the narrow local leg is the whole chain,
+    # and there is nowhere better to send an over-long request. Failing the
+    # converge over that would block a legitimately local-only deployment. The
+    # same condition builds the map itself, so the two cannot disagree.
+    _llm_router_unescaped_narrow_groups: >-
+      {%- set ns = namespace(bad=[], escaped=[]) -%}
+      {%- for entry in llm_router_context_window_fallbacks -%}
+      {%- set ns.escaped = ns.escaped + (entry.keys() | list) -%}
+      {%- endfor -%}
+      {%- for m in (llm_router_registry_enabled
+                    if llm_router_hermes_cloud_only_fallback_groups | length > 0
+                    else []) -%}
+      {%- set group = m.fallback_group | default(m.route_group, true) | default(none) -%}
+      {%- if group and group in llm_router_hermes_default_fallback_chain
+             and group not in ns.escaped and group not in ns.bad
+             and m.context_window is defined
+             and m.context_window | int < _llm_router_primary_context | int -%}
+      {%- set ns.bad = ns.bad + [group] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.bad }}
     _llm_router_declared_groups: >-
       {{ (llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups)
          | unique | list }}
