@@ -74,6 +74,18 @@ llama_cpp_max_param_billions: 28
 # IF IT DOES NOT FIT: step the QUANT down to UD-Q2_K_XL (10.68 GB) and record
 # the measurement that forced it. Do NOT cut this context to hide an OOM — that
 # turns a capability loss into an invisible one.
+# THE SERIAL LANE. One slot, deliberately: this card cannot batch, so serial is
+# the permanent design here and batched throughput is the other lane's job.
+#
+# Mechanically it is also the only setting that works. The KV cache is one
+# unified buffer of ctx_size shared across every slot, so the auto-chosen 4
+# slots did not buy concurrency — three concurrent ~24k requests need ~72k
+# against a 32768 buffer and ALL THREE failed with "Context size has been
+# exceeded" (measured; the same request serially returns 200). Two slots would
+# only move that cliff, not remove it. At one slot a second request queues
+# instead of failing, which is what a fallback rung owes its callers.
+llama_cpp_parallel: 1
+
 llama_cpp_ctx_size: >-
   {{ (llm_router_model_registry
       | selectattr('client_model_id', 'equalto', 'qwen3.8-27b')
