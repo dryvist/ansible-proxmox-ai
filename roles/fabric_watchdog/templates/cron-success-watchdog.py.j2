@@ -241,6 +241,12 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
 
     Mutates `state` in place: advances each job's remembered last-success and
     flips its alerted latch. Every job gets a log line whatever is decided.
+    Also stashes this tick's newly-triggered pool-wait alerts into
+    `state["waited"]` (see the per-job loop below) rather than a fourth
+    return value — every existing caller of evaluate()/run() already
+    destructures a fixed-size tuple, and state is the channel this file
+    already uses for anything that isn't itself part of the alerting
+    contract those callers were written against.
 
     Both the state key and the display name carry the profile. A job name is
     unique only within its own store, so keying on the name alone would let two
@@ -259,7 +265,7 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
     """
     memory = state["jobs"]
     store_memory = state["stores"]
-    stale, recovered, paused_long = [], [], []
+    stale, recovered, paused_long, waited = [], [], [], []
     seen = set()
 
     # Read each store's previous pause state BEFORE the job loop; the loop banks
@@ -329,6 +335,44 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
             log(f"{name}: SKIP (no derivable cadence — one-shot or unscheduled)")
             continue
 
+        # --- Pool-wait gauge --------------------------------------------
+        # A different clock from the absence-of-success one below: this
+        # watches time from a job's SCHEDULED slot to its run actually
+        # starting, not time since a success — the signal that was missing
+        # when a job held its store's single-threaded cron pool long enough
+        # to starve its store-mates (they alerted nothing: no error, and
+        # MISSED_CYCLES x their own cadence hadn't elapsed yet either).
+        #
+        # next_run_at can legitimately sit in the past while a job hasn't
+        # fired yet for it — cadence_seconds()'s "re-armed without running"
+        # case above documents the exact same fact — so that gap IS the
+        # wait. Threshold is the job's OWN cadence: waiting at least one
+        # full cycle is unambiguously notable on its own terms. Deriving a
+        # job's tolerance from a DIFFERENT job's schedule (what an earlier
+        # draft of this fix did, to derive a runtime ceiling instead of
+        # measuring reality) is the category error this avoids by
+        # construction — every input here belongs to the job being judged.
+        next_run = parse_iso(job.get("next_run_at"))
+        pending = (
+            next_run is not None
+            and next_run < now
+            and (last_run is None or last_run <= next_run)
+        )
+        if pending:
+            wait = now - next_run
+            log(
+                f"{name}: WAITING {wait / 60:.0f}m past its scheduled slot "
+                f"(own cadence {cadence / 60:.0f}m)"
+            )
+            if wait > cadence and not record.get("wait_alerted"):
+                record["wait_alerted"] = True
+                waited.append(
+                    f"{name} ({wait / 60:.0f}m past its scheduled slot, "
+                    f"own cadence {cadence / 60:.0f}m)"
+                )
+        elif record.get("wait_alerted"):
+            record["wait_alerted"] = False
+
         limit = threshold_seconds(cadence)
         silent = max(now - record["last_ok"] - record.get("paused", 0.0), 0.0)
         overdue = silent > limit
@@ -369,6 +413,7 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
         else:
             log(f"store {profile}: paused {stopped / 60:.0f}m")
 
+    state["waited"] = waited
     return stale, recovered, paused_long
 
 
@@ -380,6 +425,7 @@ def main() -> int:
         log(f"evaluating {len(jobs)} job(s) from profile {profile}{' (PAUSED)' if paused else ''}")
 
     stale, recovered, paused_long = evaluate(stores, state, now)
+    waited = state.get("waited", [])
     save_state(state)
 
     if len(stale) >= FLEET_ROLLUP_AT:
@@ -402,10 +448,17 @@ def main() -> int:
             f"long. Absence alerts there are suppressed, so nothing in it is being "
             f"watched — resume it or confirm the pause is intended."
         )
+    for entry in waited:
+        slack_post(
+            f":hourglass_flowing_sand: scheduled-work watchdog: {entry} waited "
+            f"longer than its own scheduling period before starting. Not "
+            f"necessarily a failure yet — if it recurs, something is holding "
+            f"the store's single-threaded cron pool."
+        )
 
     log(
         f"done: {len(stale)} newly stale, {len(recovered)} recovered, "
-        f"{len(paused_long)} paused too long"
+        f"{len(paused_long)} paused too long, {len(waited)} newly waited"
     )
     return 0
 
