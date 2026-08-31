@@ -27,6 +27,14 @@
 # process for exactly that reason: a play that dies before its handler flush
 # never reaches this script at all, so it cannot leave the fleet paused.
 #
+# A hard kill (SIGKILL, OOM, control-node power loss) reaches no handler at all,
+# so step 1 stamps an owner marker and a timestamp into the sentinel, and step 1
+# of the NEXT run reclaims one it can positively identify as its own and older
+# than any live drain. Without that an orphan is indistinguishable from an
+# operator's pause, the next converge dutifully preserves it, and the fleet
+# stays stopped forever — with no failure, no alarm and no error log, because a
+# paused fleet looks exactly like a quiet one.
+#
 # Exit status is the restart's, so a failed restart still fails the converge.
 
 from __future__ import annotations
@@ -56,6 +64,17 @@ DRAIN_TIMEOUT_SECONDS = {{ hermes_agent_cron_drain_timeout_seconds }}
 POLL_SECONDS = {{ hermes_agent_cron_drain_poll_seconds }}
 
 SENTINEL_NAME = "ESTOP"
+# Stamped into every sentinel this wrapper writes. Without it a sentinel
+# orphaned by a hard kill (SIGKILL, OOM, control-node power loss) is
+# indistinguishable from an operator's pause, so the next converge preserves it
+# and the fleet stays stopped forever — silently, since a paused fleet raises
+# nothing. Upstream counts any file as engaged regardless of body, so the extra
+# field changes no upstream behaviour.
+SENTINEL_OWNER = "ansible:hermes_agent:drain-before-restart"
+# An orphan is reclaimable once it is older than any live drain could be: the
+# drain bound plus room for the restart itself. Below that, an owned sentinel
+# belongs to a converge still running and must not be stolen.
+ORPHAN_AFTER_SECONDS = DRAIN_TIMEOUT_SECONDS + CLAIM_TTL_SECONDS
 
 
 def log(message: str) -> None:
@@ -113,17 +132,45 @@ def claimed_jobs(home: Path, now: datetime, ttl_seconds: float) -> list[str]:
     return live
 
 
-def engage(home: Path) -> bool:
-    """Write the ESTOP sentinel. False when the store was already paused.
+def is_orphan(sentinel: Path, now: datetime) -> bool:
+    """Is this sentinel a dead converge's leftover rather than a live pause?
+
+    True only for a sentinel this wrapper positively wrote and that is older
+    than any live drain could be. Anything else — an operator's pause, a body
+    that will not parse, one without the owner marker, a sibling converge still
+    draining — is somebody else's and is left alone.
+    """
+    try:
+        state = json.loads(sentinel.read_text(encoding="utf-8"))
+        if not isinstance(state, dict) or state.get("owner") != SENTINEL_OWNER:
+            return False
+        engaged_at = datetime.fromisoformat(str(state["engaged_at"]))
+        age = (now - engaged_at).total_seconds()
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    return age > ORPHAN_AFTER_SECONDS
+
+
+def engage(home: Path) -> str:
+    """Take the ESTOP sentinel for this run.
+
+    Returns "engaged" when the store was running, "reclaimed" when a dead
+    converge's orphan was taken over (this run owns it and will release it), or
+    "held" when the pause belongs to someone else and must survive.
 
     Ownership matters: the file is left to the runtime user so `hermes resume`
     can lift a pause this root-run script left behind.
     """
     sentinel = home / SENTINEL_NAME
+    now = datetime.now(timezone.utc)
+    outcome = "engaged"
     if sentinel.exists():
-        return False
+        if not is_orphan(sentinel, now):
+            return "held"
+        outcome = "reclaimed"
     payload = {
-        "engaged_at": datetime.now(timezone.utc).isoformat(),
+        "owner": SENTINEL_OWNER,
+        "engaged_at": now.isoformat(),
         "reason": f"draining {UNIT} for restart",
     }
     sentinel.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -132,7 +179,7 @@ def engage(home: Path) -> bool:
         os.chown(sentinel, entry.pw_uid, entry.pw_gid)
     except (KeyError, OSError):
         pass
-    return True
+    return outcome
 
 
 def disengage(home: Path) -> None:
@@ -183,10 +230,17 @@ def main() -> int:
     ours: list[Path] = []
     try:
         for home in homes:
-            if engage(home):
-                ours.append(home)
-            else:
-                log(f"{home.name} was already paused — leaving it that way")
+            outcome = engage(home)
+            if outcome == "held":
+                log(f"{home.name} is paused by someone else — leaving it that way")
+                continue
+            if outcome == "reclaimed":
+                log(
+                    f"{home.name} carried a pause left behind by a converge that "
+                    f"died before releasing it (older than {ORPHAN_AFTER_SECONDS}s) "
+                    "— reclaiming and releasing it with this run"
+                )
+            ours.append(home)
         log(f"quiesced {len(ours)} store(s); draining up to {DRAIN_TIMEOUT_SECONDS}s")
 
         stranded = wait_for_drain(homes)

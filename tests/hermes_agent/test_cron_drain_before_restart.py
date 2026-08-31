@@ -218,6 +218,71 @@ def test_a_store_paused_by_an_operator_stays_paused(tmp_path, fleet, systemctl) 
     assert [p.parent.name for p in fleet.rglob("ESTOP")] == ["splunk-admin"]
 
 
+def _converge_sentinel(module, home: Path, *, age_seconds: float) -> Path:
+    """A sentinel of the shape this wrapper writes, stamped `age_seconds` ago."""
+    sentinel = home / "ESTOP"
+    sentinel.write_text(json.dumps({
+        "owner": module.SENTINEL_OWNER,
+        "engaged_at": (
+            datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+        ).isoformat(),
+        "reason": "draining hermes-gateway for restart",
+    }))
+    return sentinel
+
+
+def test_a_pause_orphaned_by_a_hard_kill_is_reclaimed_and_released(
+    tmp_path, fleet, systemctl
+) -> None:
+    """A converge killed with SIGKILL reaches no `finally` and leaves a sentinel.
+
+    Left alone it is indistinguishable from an operator pause, so the next
+    converge would preserve it and the fleet would stay stopped forever —
+    silently, since a paused fleet raises nothing.
+    """
+    module = _load(tmp_path, fleet)
+    _converge_sentinel(
+        module, fleet / "profiles" / "splunk-admin",
+        age_seconds=module.ORPHAN_AFTER_SECONDS + 1,
+    )
+
+    assert module.main() == 0
+    assert systemctl.restarted == "restart hermes-gateway"
+    assert not list(fleet.rglob("ESTOP"))
+
+
+def test_a_sibling_converge_still_draining_is_not_robbed(tmp_path, fleet, systemctl) -> None:
+    """Owned but young means a converge is mid-drain, not that it died."""
+    module = _load(tmp_path, fleet)
+    _converge_sentinel(module, fleet / "profiles" / "splunk-admin", age_seconds=5)
+
+    assert module.main() == 0
+    assert [p.parent.name for p in fleet.rglob("ESTOP")] == ["splunk-admin"]
+
+
+def test_an_unreadable_sentinel_is_treated_as_someone_elses(tmp_path, fleet, systemctl) -> None:
+    """Reclaim only what is positively ours — when in doubt, leave the pause."""
+    module = _load(tmp_path, fleet)
+    (fleet / "profiles" / "splunk-admin" / "ESTOP").write_text("not json {")
+
+    assert module.main() == 0
+    assert [p.parent.name for p in fleet.rglob("ESTOP")] == ["splunk-admin"]
+
+
+def test_an_old_pause_without_the_owner_marker_is_never_reclaimed(
+    tmp_path, fleet, systemctl
+) -> None:
+    """Age alone is not ownership: an operator pause may be arbitrarily old."""
+    module = _load(tmp_path, fleet)
+    old = datetime.now(timezone.utc) - timedelta(days=30)
+    (fleet / "profiles" / "splunk-admin" / "ESTOP").write_text(
+        json.dumps({"engaged_at": old.isoformat(), "reason": "operator"})
+    )
+
+    assert module.main() == 0
+    assert [p.parent.name for p in fleet.rglob("ESTOP")] == ["splunk-admin"]
+
+
 def test_every_store_is_quiesced_before_the_restart(tmp_path, fleet, systemctl) -> None:
     """The restart must not run against a store still admitting new fires."""
     module = _load(tmp_path, fleet)
