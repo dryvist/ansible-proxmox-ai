@@ -18,16 +18,15 @@ from __future__ import annotations
 import re
 
 from conftest import ROLE_ROOT
-from _role_files import role_defaults, role_tasks
+from _role_files import role_defaults, role_tasks, template_text
 
-ENV_TEMPLATE = ROLE_ROOT / "templates" / "hermes-env.j2"
 GATE_TASK = "Gate — the distro CA bundle exists before it is pinned as SSL_CERT_FILE"
 ENV_TASK = "Deploy the Hermes secrets file (.env)"
 
 
 def test_env_template_pins_ssl_cert_file_to_the_role_variable() -> None:
     """The pin exists and is sourced from the role variable, not a literal."""
-    text = ENV_TEMPLATE.read_text()
+    text = template_text(ROLE_ROOT, "hermes-env.j2")
     assert re.search(
         r"^SSL_CERT_FILE=\{\{\s*hermes_agent_ca_bundle_path\s*\}\}\s*$",
         text,
