@@ -44,6 +44,11 @@ SYSTEMCTL_SHIM = """#!/bin/sh
 if [ "$1" = "$DRAIN_TEST_FAIL_ON" ]; then exit 1; fi
 if [ "$1" = "restart" ]; then
   { echo "$*"; find "$DRAIN_TEST_FLEET" -name ESTOP; } > "$DRAIN_TEST_LOG"
+  # Stands in for an operator clearing sentinels by hand mid-run: this is the
+  # one moment the wrapper is between engaging and releasing them.
+  if [ -n "$DRAIN_TEST_RM_SENTINELS" ]; then
+    find "$DRAIN_TEST_FLEET" -name ESTOP -exec rm {} +
+  fi
 fi
 exit 0
 """
@@ -314,6 +319,24 @@ def test_every_store_is_quiesced_before_the_restart(tmp_path, fleet, systemctl) 
 
     assert module.main() == 0
     assert systemctl.paused_stores == ["github-maint", "hermes", "splunk-admin"]
+
+
+def test_an_operator_clearing_sentinels_by_hand_mid_run_does_not_break_the_release(
+    tmp_path, fleet, systemctl, monkeypatch
+) -> None:
+    """The panicking-human case: sentinels vanish before the release runs.
+
+    `unlink` on a file someone already removed raises FileNotFoundError, an
+    OSError — which the release swallows — so the wrapper still exits cleanly
+    and reports the restart. Clearing by hand does not crash the wrapper; it
+    just un-pauses the fleet earlier than the design intends.
+    """
+    monkeypatch.setenv("DRAIN_TEST_RM_SENTINELS", "1")
+    module = _load(tmp_path, fleet)
+
+    assert module.main() == 0
+    assert systemctl.restarted == "restart hermes-gateway"
+    assert not list(fleet.rglob("ESTOP"))
 
 
 def test_the_handler_runs_the_wrapper_rather_than_restarting_the_unit() -> None:
