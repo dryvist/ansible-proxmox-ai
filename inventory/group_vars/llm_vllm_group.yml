@@ -52,17 +52,20 @@ llama_cpp_max_param_billions: 28
 # The registry entry is the source; the play that runs this role loads it (see
 # playbooks/llm-serving.yml). Change the window in llm-models.yml, not here.
 #
-# VRAM budget, MEASURED on the card at the previous 16384 rather than modelled:
-# 16376 MiB total, 12674 MiB used, 3297 MiB free, with the weights accounting
-# for 11362 MiB. That puts every non-weight allocation — KV plus compute and
-# graph buffers — at 1312 MiB. Doubling the window doubles only the KV part, so
-# even charging the whole 1312 MiB to KV (an overestimate: compute buffers do
-# not scale with context) bounds the increase at 1312 MiB, landing at 13986 MiB
-# used with 2390 MiB still free.
+# VRAM, MEASURED on the card before and after rather than modelled. The card is
+# 16376 MiB and the weights account for 11362 MiB of it.
 #
-# 65536 is NOT affordable on this card and was rejected on these numbers: the
-# same bound puts it at 16610 MiB against a 16376 MiB card, and even the
-# favourable estimate leaves only ~630 MiB. Raise the window past 32768 only
+#   at 16384: 12674 MiB used, 3297 MiB free
+#   at 32768: 13665 MiB used, 2307 MiB free
+#
+# Doubling the window cost 991 MiB, which is the KV cache growing by one window
+# (16384 tokens x 64 KiB/token = 1024 MiB) and nothing else — compute and graph
+# buffers do not scale with context. That measurement is what licenses the
+# extrapolation below; it is not a model.
+#
+# 65536 is NOT affordable here and was rejected on these numbers: two more
+# doublings of the KV cache put it near 15.6 GiB against a 16376 MiB card,
+# leaving under 1 GiB for everything else. Raise the window past 32768 only
 # behind a fresh measurement, or behind KV-cache quantization (--cache-type-k /
 # --cache-type-v), which was deliberately NOT used here — it was not needed to
 # reach the target, and it costs quality on a rung whose weights are already
