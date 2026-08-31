@@ -75,9 +75,10 @@ def test_the_branch_predicate_matches_the_error_we_actually_raise() -> None:
     costume, so this pins the two halves to each other.
     """
     block = _task(TASK_NAME)["vars"]["_hermes_cron_wall_clock_classifier"]
-    needle = re.search(r'if "([^"]+)" in lower:', block).group(1)
+    match = re.search(r'if "([^"]+)" in lower:', block)
 
-    assert needle in WALL_CLOCK_ERROR.lower()
+    assert match is not None, "no substring branch found — was the branch rewritten?"
+    assert match.group(1) in WALL_CLOCK_ERROR.lower()
 
 
 def test_the_wall_clock_branch_wins_over_every_provider_branch() -> None:
