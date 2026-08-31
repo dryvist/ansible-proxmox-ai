@@ -75,9 +75,14 @@ CEILING_MINUTES = {{ fabric_watchdog_success_ceiling_minutes }}
 # counting would let three stores at four stale jobs each post twelve separate
 # pages while every store stayed under its own roll-up.
 FLEET_ROLLUP_AT = {{ fabric_watchdog_success_fleet_rollup_at }}
-# 2: state keys became (profile, job). A schema-1 file is discarded rather than
-# migrated — its flat keys are ambiguous across profiles by construction.
-STATE_SCHEMA = 2
+# A paused store explains its own silence, so absence alerts are suppressed
+# there. Past this long, the pause itself is the thing to report: an
+# indefinitely stopped store is once again silence nobody has accounted for.
+PAUSE_ALERT_MINUTES = {{ fabric_watchdog_success_pause_alert_minutes }}
+# 2: state keys became (profile, job) — a schema-1 file's flat keys are
+# ambiguous across profiles by construction. 3: added per-store pause records.
+# Either way an older file is discarded rather than migrated.
+STATE_SCHEMA = 3
 
 SLACK_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 SLACK_CHANNEL = (
@@ -147,17 +152,28 @@ def load_jobs(path: str) -> list:
 
 
 def load_stores() -> list:
-    """(profile, jobs) for every scheduler root that actually carries a store.
+    """(profile, paused, jobs) for every scheduler root that carries a store.
 
     The default root is always read — a missing store there is a real defect and
     must say so. Profile roots come from the glob, so one without a store yet is
     absent from this list entirely and never produces an error or a log line.
+
+    `paused` is the presence of the stop sentinel beside the store, nothing
+    more. Anything that writes one — a converge draining in-flight work before a
+    restart, or an operator by hand — means the same thing here: this store's
+    silence is deliberate. The file's CONTENTS are never parsed. Whoever writes
+    it may put an owner or timestamp inside for their own bookkeeping, and an
+    empty or truncated one still means stopped; deciding engagement from a body
+    this guard does not own would fail open exactly when a writer is interrupted.
     """
     found = [("default", JOBS_FILE)]
     for path in sorted(glob.glob(PROFILES_GLOB)):
         profile = os.path.basename(os.path.dirname(os.path.dirname(path)))
         found.append((profile, path))
-    return [(profile, load_jobs(path)) for profile, path in found]
+    return [
+        (profile, os.path.exists(os.path.join(os.path.dirname(os.path.dirname(path)), "ESTOP")), load_jobs(path))
+        for profile, path in found
+    ]
 
 
 def cadence_seconds(job: dict) -> float | None:
@@ -201,10 +217,11 @@ def load_state() -> dict:
         with open(STATE_PATH, encoding="utf-8") as handle:
             state = json.load(handle)
     except (OSError, ValueError):
-        return {"schema": STATE_SCHEMA, "jobs": {}}
+        return {"schema": STATE_SCHEMA, "jobs": {}, "stores": {}}
     if not isinstance(state, dict) or state.get("schema") != STATE_SCHEMA:
-        return {"schema": STATE_SCHEMA, "jobs": {}}
+        return {"schema": STATE_SCHEMA, "jobs": {}, "stores": {}}
     state.setdefault("jobs", {})
+    state.setdefault("stores", {})
     return state
 
 
@@ -218,9 +235,9 @@ def save_state(state: dict) -> None:
         log(f"state write FAILED ({exc}) — this episode may re-announce")
 
 
-def evaluate(stores: list, state: dict, now: float) -> tuple[list, list]:
+def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
     """Decide per job across every store. Returns (newly stale, newly
-    recovered) display names.
+    recovered, stores newly paused too long) display names.
 
     Mutates `state` in place: advances each job's remembered last-success and
     flips its alerted latch. Every job gets a log line whatever is decided.
@@ -231,12 +248,27 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list]:
     would keep advancing the last-success clock and the stalled one could never
     page. The profile is a single path component, so `profile/job` is
     unambiguous.
+
+    A paused store's jobs are reported as paused rather than stale. The pause
+    does NOT reset the silence clock: the time a store spent stopped is banked
+    per job and subtracted from its silence, so a job already stale going in is
+    still stale coming out, while a healthy one is not charged for a maintenance
+    window it could not have run in. Banking the interval rather than freezing
+    the clock is what stops a repeated pause cycle from masking a job that has
+    genuinely stopped succeeding.
     """
     memory = state["jobs"]
-    stale, recovered = [], []
+    store_memory = state["stores"]
+    stale, recovered, paused_long = [], [], []
     seen = set()
 
-    for profile, job in [(p, j) for p, jobs in stores for j in jobs]:
+    # Read each store's previous pause state BEFORE the job loop; the loop banks
+    # a closed interval per job, and the store records are rewritten after it.
+    was_paused_since = {
+        profile: store_memory.get(profile, {}).get("paused_since") for profile, _, _ in stores
+    }
+
+    for profile, paused, job in [(p, pa, j) for p, pa, jobs in stores for j in jobs]:
         if not isinstance(job, dict):
             continue
         job_id = str(job.get("id") or job.get("name") or "")
@@ -255,11 +287,26 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list]:
             log(f"{name}: SKIP (disabled or paused)")
             continue
 
+        if paused:
+            log(f"{name}: PAUSED (store stopped; absence alerts suppressed)")
+            continue
+        stopped_since = was_paused_since.get(profile)
+        if stopped_since is not None:
+            # First tick after a resume: bank what this store spent stopped, so
+            # the interval is discounted from silence exactly once per job.
+            banked = max(now - stopped_since, 0.0)
+            record["paused"] = record.get("paused", 0.0) + banked
+            log(f"{name}: RESUMED after {banked / 60:.0f}m stopped")
+
         last_run = parse_iso(job.get("last_run_at"))
         if job.get("last_status") == "ok" and last_run is not None:
             remembered = record.get("last_ok")
             if remembered is None or last_run > remembered:
                 record["last_ok"] = last_run
+                # A fresh success restarts the clock from that success, so any
+                # pause banked before it is no longer being subtracted from
+                # anything — drop it rather than let it accumulate forever.
+                record["paused"] = 0.0
             # Pin the cadence to a reading taken off a completed run. A re-arm
             # without a run inflates the live gap, which would raise the
             # threshold the longer the job stays broken.
@@ -283,7 +330,7 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list]:
             continue
 
         limit = threshold_seconds(cadence)
-        silent = now - record["last_ok"]
+        silent = max(now - record["last_ok"] - record.get("paused", 0.0), 0.0)
         overdue = silent > limit
         detail = (
             f"{silent / 60:.0f}m since last success, "
@@ -307,17 +354,32 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list]:
         del memory[key]
         log(f"{key}: FORGOTTEN (no longer in the job store)")
 
-    return stale, recovered
+    for profile, is_paused, _ in stores:
+        if not is_paused:
+            store_memory.pop(profile, None)
+            continue
+        record = store_memory.setdefault(profile, {"paused_since": now, "alerted": False})
+        stopped = now - record["paused_since"]
+        if stopped > PAUSE_ALERT_MINUTES * 60 and not record["alerted"]:
+            # Suppression cannot be unbounded. Past this long the pause has
+            # stopped explaining the silence and has become the thing to report.
+            record["alerted"] = True
+            paused_long.append(f"{profile} ({stopped / 3600:.0f}h)")
+            log(f"store {profile}: PAUSED TOO LONG -> alerting; stopped {stopped / 60:.0f}m")
+        else:
+            log(f"store {profile}: paused {stopped / 60:.0f}m")
+
+    return stale, recovered, paused_long
 
 
 def main() -> int:
     now = time.time()
     stores = load_stores()
     state = load_state()
-    for profile, jobs in stores:
-        log(f"evaluating {len(jobs)} job(s) from profile {profile}")
+    for profile, paused, jobs in stores:
+        log(f"evaluating {len(jobs)} job(s) from profile {profile}{' (PAUSED)' if paused else ''}")
 
-    stale, recovered = evaluate(stores, state, now)
+    stale, recovered, paused_long = evaluate(stores, state, now)
     save_state(state)
 
     if len(stale) >= FLEET_ROLLUP_AT:
@@ -334,8 +396,17 @@ def main() -> int:
             )
     for name in recovered:
         slack_post(f":white_check_mark: scheduled-work watchdog: {name} is succeeding again")
+    for entry in paused_long:
+        slack_post(
+            f":warning: scheduled-work watchdog: store {entry} has been paused this "
+            f"long. Absence alerts there are suppressed, so nothing in it is being "
+            f"watched — resume it or confirm the pause is intended."
+        )
 
-    log(f"done: {len(stale)} newly stale, {len(recovered)} recovered")
+    log(
+        f"done: {len(stale)} newly stale, {len(recovered)} recovered, "
+        f"{len(paused_long)} paused too long"
+    )
     return 0
 
 
