@@ -16,6 +16,7 @@ from conftest import (
     _task,
     role_defaults,
 )
+from _role_files import template_text
 
 
 def _helper_namespace() -> dict:
@@ -144,7 +145,7 @@ def test_wall_clock_limit_parses_one_process_environment(monkeypatch) -> None:
 
 def test_native_inactivity_and_aggregate_deadlines_are_distinct() -> None:
     defaults = role_defaults(ROLE_ROOT)
-    environment = (ROLE_ROOT / "templates" / "hermes-env.j2").read_text()
+    environment = template_text(ROLE_ROOT, "hermes-env.j2")
     assert defaults["hermes_agent_cron_inactivity_timeout_seconds"] == 1800
     assert defaults["hermes_agent_cron_wall_timeout_seconds"] == 2300
     assert (

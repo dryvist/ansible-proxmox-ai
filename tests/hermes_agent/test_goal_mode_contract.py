@@ -3,6 +3,7 @@ from __future__ import annotations
 import yaml
 
 from conftest import REPO_ROOT, ROLE_ROOT, _task, role_defaults
+from _role_files import template_text
 
 
 # test_enqueuer_goal_flags_follow_the_role_toggle DELETED (native-cron
@@ -59,7 +60,7 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     ]
     router_config = (REPO_ROOT / "roles/llm_router/templates/config.yaml.j2").read_text()
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
-    environment = (ROLE_ROOT / "templates" / "hermes-env.j2").read_text()
+    environment = template_text(ROLE_ROOT, "hermes-env.j2")
 
     hermes_alias = "hermes-default"
     # Physical ids live in ONE file — the repo-root llm-models.yml registry —

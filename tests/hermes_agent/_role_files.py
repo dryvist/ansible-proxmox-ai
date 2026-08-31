@@ -58,6 +58,22 @@ def role_defaults_text(role_root: Path) -> str:
     )
 
 
+_JINJA_INCLUDE_RE = re.compile(r"^[ \t]*\{%-?\s*include\s+'([^']+)'\s*-?%\}[ \t]*$", re.MULTILINE)
+
+
+def template_text(role_root: Path, name: str) -> str:
+    """Read templates/<name> with every `{% include 'x' %}` spliced in.
+
+    Same motive as role_tasks_text below: a template split into a shared
+    partial (hermes-env.j2 + hermes-env-operational.j2) still renders as one
+    file, so a test that pins a line of it has to see the whole thing. Reading
+    the caller alone would silently stop covering whatever moved into the
+    partial — passing for the wrong reason.
+    """
+    text = (role_root / "templates" / name).read_text()
+    return _JINJA_INCLUDE_RE.sub(lambda m: template_text(role_root, m.group(1)), text)
+
+
 _INCLUDE_KEYS = ("ansible.builtin.include_tasks", "ansible.builtin.import_tasks")
 
 
