@@ -25,6 +25,17 @@ router_settings:
   fallbacks:
     - hermes-default: {{ llm_router_hermes_default_fallback_chain | to_json }}
 {% endif %}
+{% if llm_router_context_window_fallbacks | length > 0 %}
+  # Escape hatch for the local legs, which serve a smaller context than the
+  # primary. Without it an over-long request does not merely skip that rung —
+  # it aborts the whole chain there (see 35-hermes-cloud.yml for the mechanism).
+  context_window_fallbacks:
+{% for entry in llm_router_context_window_fallbacks %}
+{% for group, targets in entry.items() %}
+    - {{ group }}: {{ targets | to_json }}
+{% endfor %}
+{% endfor %}
+{% endif %}
   # Derived from the chain length (35-hermes-cloud.yml), not a fixed 1: this is
   # a 5-leg chain now, and a hardcoded max_fallbacks here would silently cap
   # every attempt after the first, truncating the whole fallback design while
@@ -33,8 +44,9 @@ router_settings:
   # No CROSS-TIER fallbacks for the default brain, on purpose: a fallback
   # serving a smaller context than the primary poisons callers instead of
   # degrading them (incident history: Zammad, AI/LLM Serving). Fail loud; the
-  # watchdog pauses. (The same-tier chain above is a same-context failover,
-  # not an exception to this.)
+  # watchdog pauses. (The chain above is NOT a same-context failover — the
+  # local leg is smaller than the primary, which is why it needs the
+  # context_window_fallbacks escape hatch rather than silently truncating.)
   # Pre-call context-window checks so an over-long request is not routed to a model
   # that cannot serve it (no cross-tier fallback masks the error).
   enable_pre_call_checks: true
