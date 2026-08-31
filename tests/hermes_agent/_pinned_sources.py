@@ -68,8 +68,8 @@ PINNED_CRON_DELIVERY_SOURCE = (
                 )
 '''
     # Upstream's line; the memory patch deliberately leaves it in place.
-    "            skip_memory=True,  # Cron system prompts would corrupt user "
-    "representations\n"
+    # Reversed upstream — cron now builds the built-in memory store itself.
+    "            skip_memory=False,\n"
 )
 # Verbatim from cron/scheduler.py — the single run_conversation submit that
 # opt-in cron goal mode wraps.
