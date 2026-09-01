@@ -101,3 +101,30 @@ fabric_watchdog_targets:
   - name: hindsight
     url: "https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/health"
     ok_codes: "200"
+  # The target above watches the memory SERVICE. This one watches whether the
+  # agent will actually USE it — a different question, and the one no URL can
+  # answer. A service that is up and a client that is installed and importable
+  # still yield a dead feature when the dependency gate declines the client's
+  # version, and every other probe here reports health in that state.
+  #
+  # `cmd` makes this a command target — exit status in place of an HTTP code —
+  # because no URL exists for "would the gate accept what is installed". See
+  # hindsight-dep-gate.py.j2 for why the three probes that were already in place
+  # each stood on the wrong side of that boundary. ok_codes is "0": exit 1 is a
+  # live rejection, exit 2 is the probe unable to tell, and both must alarm.
+  - name: hindsight-dep-gate
+    cmd: "{{ fabric_watchdog_hermes_venv_python }} /usr/local/bin/hindsight-dep-gate.py"
+    ok_codes: "0"
+
+# Inputs for the dep-gate probe. The interpreter must be the venv Hermes itself
+# runs, not the system python: the question is what THAT environment has
+# installed, and a system interpreter would confidently answer about the wrong
+# one.
+fabric_watchdog_hermes_venv_python: >-
+  {{ hermes_agent_venv_python
+     | default('/usr/local/lib/hermes-agent/venv/bin/python', true) }}
+fabric_watchdog_lazy_deps_path: >-
+  {{ hermes_agent_install_dir
+     | default('/usr/local/lib/hermes-agent', true) }}/tools/lazy_deps.py
+fabric_watchdog_hindsight_feature_key: memory.hindsight
+fabric_watchdog_hindsight_distribution: hindsight-client
