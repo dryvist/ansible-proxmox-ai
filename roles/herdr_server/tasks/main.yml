@@ -1,0 +1,78 @@
+---
+# Order matters. The deploy runs FIRST because it is what creates the herdr
+# user, the state directory and the unit; writing the EnvironmentFile before
+# that would fail on a missing owner. herdr.service loads the file with a
+# leading `-`, so it starts inert on a first converge and picks the credentials
+# up on the handler restart below.
+
+- name: Converge the guest from the nix-ai flake
+  when: herdr_server_deploy_enabled | bool
+  ansible.builtin.include_role:
+    name: nixos_deploy
+  vars:
+    nixos_deploy_flake_ref: "{{ herdr_server_flake_ref }}"
+    nixos_deploy_host_attr: "{{ herdr_server_host_attr }}"
+
+- name: Deploy the herdr environment file
+  ansible.builtin.template:
+    src: herdr-env.j2
+    dest: "{{ herdr_server_env_file }}"
+    owner: "{{ herdr_server_user }}"
+    group: "{{ herdr_server_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart herdr
+
+- name: Deploy the herdr-hail environment file
+  ansible.builtin.template:
+    src: herdr-hail-env.j2
+    dest: "{{ herdr_server_hail_env_file }}"
+    owner: "{{ herdr_server_user }}"
+    group: "{{ herdr_server_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart herdr-hail
+
+- name: Report that the bridge is inert without Slack tokens
+  ansible.builtin.debug:
+    msg: >-
+      SLACK_HERDR_BOT_TOKEN / SLACK_HERDR_APP_TOKEN are unset, so herdr-hail
+      will run without a Slack connection. Set them (herdr needs its OWN Slack
+      app — a shared bot token round-robins Socket Mode events) and re-converge.
+  when: >-
+    herdr_server_hail_slack_bot_token | length == 0
+    or herdr_server_hail_slack_app_token | length == 0
+
+- name: Ensure herdr is running
+  ansible.builtin.systemd_service:
+    name: herdr
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: herdr_server_deploy_enabled | bool
+  tags:
+    - molecule-notest
+
+- name: Apply any pending restart before verifying
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify the herdr server answers its own CLI
+  ansible.builtin.command: herdr status
+  become: true
+  become_user: "{{ herdr_server_user }}"
+  environment:
+    # HERDR_SOCKET_PATH, not XDG_RUNTIME_DIR. nix-ai's unit pins the socket with
+    # the former and its own comments record why: herdr derives the socket from
+    # its CONFIG directory, and XDG_RUNTIME_DIR appears in the binary only in
+    # unrelated pane-graphics path validation. This probe is a fresh process
+    # that inherits neither, so pointing it at the runtime directory left it
+    # looking under $HOME/.config and retrying five times before failing.
+    HERDR_SOCKET_PATH: "{{ herdr_server_socket_path }}"
+  changed_when: false
+  register: herdr_server_status
+  retries: 5
+  delay: 3
+  until: herdr_server_status.rc == 0
+  when: herdr_server_deploy_enabled | bool
+  tags:
+    - molecule-notest

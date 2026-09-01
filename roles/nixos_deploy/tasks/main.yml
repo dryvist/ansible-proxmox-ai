@@ -1,0 +1,54 @@
+---
+# Converge a NixOS guest from the CONTROLLER.
+#
+# This repo's rule is that nix runs on the controller and never on the guest
+# (roles/hermes_agent/tasks/config_and_content.yml, roles/agent_guest/tasks/
+# policy.yml). A NixOS guest honours that rule as long as Ansible stays the
+# orchestrator and Nix stays the config: nixos-rebuild evaluates and builds
+# here, then copies the closure over SSH and activates it there. The guest
+# never needs a nix installation of its own, and no second config-management
+# system is introduced — Ansible still decides when a guest converges.
+#
+# It reuses the SSH certificate scripts/run-ansible.sh already mints from the
+# OpenBao CA, so there is no new credential path.
+
+- name: Assert the deploy target is fully specified
+  ansible.builtin.assert:
+    that:
+      - nixos_deploy_flake_ref | length > 0
+      - nixos_deploy_host_attr | length > 0
+      - nixos_deploy_target | length > 0
+    fail_msg: >-
+      nixos_deploy needs flake_ref, host_attr and target. A partially specified
+      deploy would either build the wrong configuration or push it at the wrong
+      guest, and both fail late and confusingly.
+    quiet: true
+
+- name: Converge the NixOS guest from the controller
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ['nixos-rebuild', nixos_deploy_action,
+         '--flake', nixos_deploy_flake_ref ~ '#' ~ nixos_deploy_host_attr,
+         '--target-host', nixos_deploy_target]
+        + nixos_deploy_extra_args
+      }}
+  delegate_to: localhost
+  become: false
+  # The connection variable outranks the `become` keyword; both are needed or
+  # the delegated task still tries to escalate on the controller. Same shape as
+  # the nix build in roles/hermes_agent/tasks/config_and_content.yml.
+  vars:
+    ansible_become: false
+  run_once: false
+  timeout: "{{ nixos_deploy_timeout }}"
+  register: nixos_deploy_result
+  # nixos-rebuild prints the activation script's diff on stderr when something
+  # actually changed, and is silent when the closure already matched. Keying on
+  # that is honest; `changed_when: true` would report every converge as a change
+  # and make idempotence unverifiable.
+  changed_when: >-
+    'activating the configuration' in (nixos_deploy_result.stderr | default(''))
+    or 'switching to system configuration' in (nixos_deploy_result.stderr | default(''))
+  tags:
+    - molecule-notest

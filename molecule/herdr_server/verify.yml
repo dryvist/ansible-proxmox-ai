@@ -1,0 +1,88 @@
+---
+# Re-enter the role through the same interface converge uses, rather than
+# hand-rolling include_vars on defaults/main.yml: a test that reconstructs the
+# variable precedence itself can pass while the converge is broken.
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    herdr_server_deploy_enabled: false
+
+  tasks:
+    - name: Read both rendered environment files
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - /var/lib/herdr/.env
+        - /var/lib/herdr/hail.env
+      register: herdr_server_env_raw
+
+    - name: Stat both rendered environment files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /var/lib/herdr/.env
+        - /var/lib/herdr/hail.env
+      register: herdr_server_env_stat
+
+    - name: Split each environment file into non-comment lines
+      ansible.builtin.set_fact:
+        herdr_server_env_lines: >-
+          {{ (herdr_server_env_raw.results[0].content | b64decode).splitlines()
+             | map('trim') | reject('match', '^(#.*)?$') | list }}
+        herdr_server_hail_lines: >-
+          {{ (herdr_server_env_raw.results[1].content | b64decode).splitlines()
+             | map('trim') | reject('match', '^(#.*)?$') | list }}
+
+    - name: Neither credential file may be readable beyond its owner
+      ansible.builtin.assert:
+        that:
+          - item.stat.mode == '0600'
+          - item.stat.pw_name == 'herdr'
+        fail_msg: >-
+          {{ item.item }} holds live API and Slack credentials. Anything looser
+          than 0600 owned by the service user hands them to every local account.
+        quiet: true
+      loop: "{{ herdr_server_env_stat.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Every configured server value reaches the server environment file
+      ansible.builtin.assert:
+        that:
+          - "'OPENAI_BASE_URL=https://llm.molecule.invalid/v1' in herdr_server_env_lines"
+          - "'OPENAI_API_KEY=sk-molecule-not-a-real-key' in herdr_server_env_lines"
+          - "'ANTHROPIC_API_KEY=sk-ant-molecule-not-a-real-key' in herdr_server_env_lines"
+          - "'OPENAI_API_KEY_DIRECT=sk-molecule-not-a-real-direct-key' in herdr_server_env_lines"
+          - "'HERDR_LOG_LEVEL=debug' in herdr_server_env_lines"
+        fail_msg: "Rendered server environment file does not match the converge inputs: {{ herdr_server_env_lines }}"
+        quiet: true
+
+    - name: Every configured Slack value reaches the bridge environment file
+      ansible.builtin.assert:
+        that:
+          - "'SLACK_BOT_TOKEN=xoxb-molecule-not-a-real-token' in herdr_server_hail_lines"
+          - "'SLACK_APP_TOKEN=xapp-molecule-not-a-real-token' in herdr_server_hail_lines"
+          - "'SLACK_CHANNEL=C0MOLECULE' in herdr_server_hail_lines"
+          - "'SLACK_ALLOWED_USERS=U0MOLECULE' in herdr_server_hail_lines"
+          - "'HERDR_HAIL_LOG_LEVEL=debug' in herdr_server_hail_lines"
+        fail_msg: "Rendered bridge environment file does not match the converge inputs: {{ herdr_server_hail_lines }}"
+        quiet: true
+
+    # A negative control, not decoration. The bridge previously lived on its own
+    # guest and was handed the socket in a variable named HERDR_SOCKET, which
+    # upstream reads nowhere: herdr's own contract is HERDR_SOCKET_PATH, and
+    # nix-ai's unit sets it. A file that reintroduces the name would look
+    # configured and deliver nothing.
+    - name: The bridge file carries no socket variable of its own
+      ansible.builtin.assert:
+        that:
+          - herdr_server_hail_lines | select('match', '^HERDR_SOCKET') | list | length == 0
+        fail_msg: >-
+          The bridge runs beside the server and nix-ai's unit sets
+          HERDR_SOCKET_PATH for it. A socket variable written here is either
+          ignored (HERDR_SOCKET, which nothing reads) or a second source of
+          truth for a path that must have exactly one.
+        quiet: true
