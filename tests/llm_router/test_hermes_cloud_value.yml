@@ -81,21 +81,29 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_hermes_cloud_fallback_groups
-            == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-alibaba',
-                'hermes-cloud-gemini', 'hermes-cloud-openrouter']
-          - _fallback_chain
-            == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-alibaba',
-                'hermes-cloud-gemini', 'hermes-cloud-openrouter']
+          # Order is policy-dependent (llm_router_hermes_narrow_legs_last, see
+          # roles/llm_router/defaults/main/35-hermes-cloud.yml). Both policies
+          # are pinned literally rather than derived, because the point of this
+          # task is to be a tripwire: flipping the toggle must show up here as a
+          # deliberate, reviewed edit and not silently satisfy a formula.
+          #
+          # The 4080 leg is narrower than the primary, so under the default
+          # policy it sits LAST -- ahead of the cloud rungs it would abort the
+          # whole chain on an over-long request.
+          - llm_router_hermes_cloud_fallback_groups == _expected_chain
+          - _fallback_chain == _expected_chain
           - _config.router_settings.max_fallbacks | int == _fallback_chain | length
           - _config.router_settings.num_retries | int == 0
           - _config.router_settings.retry_policy.RateLimitErrorRetries | int == 8
+          # The zero-retry set is the chain plus the virtual provider-router
+          # groups. Its leading rungs therefore inherit the chain's order; only
+          # the trailing four are stated literally, so a chain reorder does not
+          # have to be restated twice.
           - llm_router_hermes_cloud_zero_retry_groups
-            == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-alibaba',
-                'hermes-cloud-gemini',
-                'hermes-cloud-openrouter', 'hermes-cloud-alibaba-routine',
-                'hermes-cloud-alibaba-agentic', 'hermes-cloud-gemini-routine',
-                'hermes-cloud-gemini-agentic']
+            == _expected_chain + ['hermes-cloud-alibaba-routine',
+                                  'hermes-cloud-alibaba-agentic',
+                                  'hermes-cloud-gemini-routine',
+                                  'hermes-cloud-gemini-agentic']
           - _cloud_retry_groups
             == llm_router_hermes_cloud_zero_retry_groups | sort
           - _nonzero_cloud_retry_groups | length == 0
@@ -134,6 +142,14 @@
           rate/concurrency controls, and $10/month
           deployment ceilings while local 429 handling remains unchanged.
       vars:
+        # Order is policy-dependent; see the assertion comment above.
+        _expected_chain: >-
+          {{ ['hermes-cloud-free', 'hermes-cloud-alibaba', 'hermes-cloud-gemini',
+              'hermes-cloud-openrouter', 'hermes-local-4080']
+             if llm_router_hermes_narrow_legs_last | bool
+             else ['hermes-local-4080', 'hermes-cloud-free',
+                   'hermes-cloud-alibaba', 'hermes-cloud-gemini',
+                   'hermes-cloud-openrouter'] }}
         _fallback_chain: >-
           {{ _config.router_settings.fallbacks
              | selectattr('hermes-default', 'defined')

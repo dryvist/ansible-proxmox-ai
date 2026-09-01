@@ -17,7 +17,7 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
 - `llm_router` — LiteLLM proxy, the single OpenAI-compatible front door for
   the large/light serving tiers.
   **Registry rule (hard): every model name, alias, tier and enabled/servable
-  state is written ONCE, in the repo-root `llm-models.yml` registry. The role's
+  state is written ONCE, in the repo-root `llm-models.d/` registry. The role's
   defaults and templates are projections of it — never add a model id, alias or
   OpenBao key field to `roles/llm_router/` (or anywhere else); add or edit a
   registry entry. A test fails the build when a registry value is re-typed in

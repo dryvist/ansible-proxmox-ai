@@ -15,11 +15,17 @@
       - >-
         '_cron_inactivity_limit is None and _cron_wall_timeout_limit is None'
         in hermes_agent_cron_scheduler_source
+      # The patch writes the clock-start pair as one contiguous insertion; the
+      # submit only needs to come AFTER it (upstream may add lines between —
+      # v2026.8.19 inserted usage-audit lines there, which changes nothing
+      # about the guarantee that the wall clock starts before the submit).
       - >-
         ('_cron_started_monotonic = time.monotonic()\n        '
-         ~ '_cron_context = contextvars.copy_context()  # wall clock starts before submit\n        '
-         ~ '_cron_future = _cron_pool.submit(')
+         ~ '_cron_context = contextvars.copy_context()  # wall clock starts before submit')
         in hermes_agent_cron_scheduler_source
+      - >-
+        hermes_agent_cron_scheduler_source.index('_cron_started_monotonic = time.monotonic()')
+        < hermes_agent_cron_scheduler_source.index('_cron_future = _cron_pool.submit(')
       - >-
         '_hermes_cron_wall_clock_expired('
         in hermes_agent_cron_scheduler_source
@@ -31,6 +37,38 @@
         in hermes_agent_cron_scheduler_source
       - >-
         'request_hard_interrupt(agent, "Cron job exceeded hard wall clock")'
+        in hermes_agent_cron_scheduler_source
+      # `replace` reports ok when its pattern does not match, so the classifier
+      # branch needs its own read-back — and position is the guarantee, not
+      # presence: these are `if ...: return` guard clauses, so a branch below
+      # the provider ones never runs and the delivery keeps blaming a provider
+      # for a stop we performed ourselves.
+      - >-
+        'if "exceeded aggregate wall clock" in lower:'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        hermes_agent_cron_scheduler_source.index('if "exceeded aggregate wall clock" in lower:')
+        < hermes_agent_cron_scheduler_source.index('if lower.startswith("script timed out"):')
+      # The fallback cause must reach delivery, and must be matched BEFORE the
+      # provider branches — these errors carry a 429, so the rate-limit branch
+      # would otherwise claim them and report capacity, which is exactly how
+      # this defect stayed invisible.
+      - >-
+        'Error doing the fallback:'
+        in hermes_agent_cron_scheduler_source
+      - >-
+        hermes_agent_cron_scheduler_source.index('_fallback_cause = re.search')
+        < hermes_agent_cron_scheduler_source.index('if lower.startswith("script timed out"):')
+      # Both remediation overrides: the assertion is that upstream's advice is
+      # GONE, not merely that ours is present — a half-applied replace would
+      # leave both and deliver two contradictory instructions.
+      - "'hermes fallback add' not in hermes_agent_cron_scheduler_source"
+      - >-
+        'Fallbacks are handled by the router in front of this agent'
+        in hermes_agent_cron_scheduler_source
+      - "'hermes cron pause {job_ref}' not in hermes_agent_cron_scheduler_source"
+      - >-
+        'Pausing hides the failures without fixing'
         in hermes_agent_cron_scheduler_source
       - >-
         'if _cron_inactivity_limit is not None and _idle_secs >= _cron_inactivity_limit:'

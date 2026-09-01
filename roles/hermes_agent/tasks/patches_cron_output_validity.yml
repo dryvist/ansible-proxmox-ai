@@ -46,6 +46,22 @@
           re.IGNORECASE,
       )
 
+      # The prompt catalog REQUIRES every report to close with a model
+      # attribution line ("— model: <id>"), which ends in a bare identifier
+      # and so carries no terminal punctuation. That footer is metadata, not
+      # the report's concluding sentence, so the terminal-mark search below
+      # must look PAST it — otherwise every compliant report that also opens
+      # with a narration lead-in trips the heuristic and is failed.
+      #
+      # Not hypothetical: two finished reports were suppressed this way, one
+      # of them carrying a hardware-error finding. The lead-in half is at the
+      # model's discretion, so any job whose model narrates before reporting
+      # was exposed on every run.
+      _CRON_ATTRIBUTION_RE = re.compile(
+          r"(?:\A|\n)[ \t]*[—–-]{1,2}[ \t]*model:[ \t]*\S[^\n]*[ \t]*\Z",
+          re.IGNORECASE,
+      )
+
 
       def _cron_output_looks_truncated(text):
           """True if text reads like an interrupted thought, not a finished report.
@@ -60,10 +76,19 @@
           A bare short result ("Interesting") matches neither signal — it is
           instead caught by the length floor below, which is the check meant
           for that shape.
+
+          Both signals are evaluated against the report BODY, with the
+          mandated attribution footer removed. Judging the raw text instead
+          made the second signal fire on every compliant report that opened
+          with a lead-in, because the footer is the last line and carries no
+          terminal punctuation. Stripping it also keeps the ellipsis signal
+          honest: a run that trailed off and still emitted a footer is still
+          caught, which the raw-text form would have missed.
           """
-          if text.endswith("...") or text.endswith("…"):
+          body = _CRON_ATTRIBUTION_RE.sub("", text).rstrip()
+          if body.endswith("...") or body.endswith("…"):
               return True
-          if _CRON_LEADIN_RE.match(text) and not re.search(r'[.!?"\'`)\]]\s*$', text):
+          if _CRON_LEADIN_RE.match(body) and not re.search(r'[.!?"\'`)\]]\s*$', body):
               return True
           return False
 
@@ -120,12 +145,13 @@
   # "_cron_markup_guard(job, output_file," once wrapped.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    regexp: >-
-      ^([ \t]*)deliver_content = _cron_markup_guard\(job, output_file,
-      final_response if success else
-      _summarize_cron_failure_for_delivery\(job, error\)\)$
-    replace: >-
-      \g<1>deliver_content = _cron_output_validity_guard(job, output_file,
-      _cron_markup_guard(job, output_file, final_response if success else
-      _summarize_cron_failure_for_delivery(job, error)), success)
+    regexp: |-
+      ^([ \t]*)deliver_content = _cron_markup_guard\(job, output_file, final_response if success else \(
+      ([ \t]*_summarize_cron_failure_for_delivery\(job, error\)
+      [ \t]*\+ _failure_streak_nudge\(job\)
+      [ \t]*\)\))$
+    replace: |-
+      \g<1>deliver_content = _cron_output_validity_guard(
+      \g<1>    job, output_file, _cron_markup_guard(job, output_file, final_response if success else (
+      \g<2>, success)
   notify: Restart hermes-gateway

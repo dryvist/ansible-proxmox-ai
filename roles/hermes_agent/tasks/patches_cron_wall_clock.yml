@@ -1,4 +1,10 @@
 ---
+# A `replace` REPLACEMENT is not a regex — it is a re.sub template. Escapes
+# that are valid in the pattern are errors there: `\s` in a replacement raises
+# "bad escape \s" at converge time, failing the play on a live guest. Write the
+# inserted Python without backslashes (`(.+)` not `\s*(.+)`), and remember that
+# `\1` and `\g<n>` ARE meaningful there and will be substituted.
+#
 # Upstream v2026.8.3 documents HERMES_CRON_TIMEOUT as an inactivity timeout:
 # tool calls, API calls, and streamed tokens reset it, so an active retry/tool
 # loop can run forever. Keep that useful native stall detector and add the
@@ -147,6 +153,14 @@
     regexp: '^        if _inactivity_timeout:$'
     replace: "{{ _hermes_cron_hard_timeout_block | indent(8, true) }}"
   vars:
+    # RULE FOR THE NEXT PATCH THAT RAISES SOMETHING NEW: extend
+    # _summarize_cron_failure_for_delivery in the SAME change. That classifier
+    # matches on substrings, so an error type upstream has never seen does not
+    # go unclassified — it silently inherits whichever existing branch its
+    # prose happens to match. The TimeoutError below went unclassified for
+    # exactly that reason and was delivered for months as a provider timeout
+    # with an exhausted fallback chain, sending every reader to the wrong
+    # subsystem. A wrong answer that reads as a confident right one.
     _hermes_cron_hard_timeout_block: |-
       if _hard_timeout:
           elapsed = time.monotonic() - _cron_started_monotonic
@@ -161,4 +175,82 @@
           )
 
       if _inactivity_timeout is True:
+  notify: Restart hermes-gateway
+
+# The block above invents an error type upstream has never seen, so upstream's
+# delivery classifier cannot recognise it: `_summarize_cron_failure_for_delivery`
+# matches on substrings, our TimeoutError says "exceeded aggregate wall clock",
+# and nothing in it matches the wall-clock case — so it fell through to the
+# provider branches and told the operator a provider timed out and a fallback
+# chain was exhausted. No provider was slow and no fallback was attempted: the
+# job hit OUR ceiling and we killed it. That sends the reader to the wrong
+# subsystem, which upstream's own comment here calls worse than saying nothing.
+#
+# Anchored on the script-timeout branch and inserted ABOVE it, so this runs
+# before any provider matching, exactly as that branch does for the same reason.
+- name: Classify local stops and fallback exhaustion in delivered failures
+  vars:
+    _hermes_cron_wall_clock_classifier: |-
+      if "exceeded aggregate wall clock" in lower:
+          return (
+              f"⚠️ Cron '{job_name}' failed: exceeded its aggregate wall-clock "
+              "limit and was stopped. The provider was not at fault and no "
+              "fallback was attempted. Full details saved in cron output."
+          )
+
+      _fallback_cause = re.search(r"Error doing the fallback:(.+)", text)
+      if _fallback_cause:
+          return (
+              f"⚠️ Cron '{job_name}' failed: every fallback rung refused the "
+              f"request. Cause: {_fallback_cause.group(1).strip()}"
+          )
+
+      if lower.startswith("script timed out"):
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: '^    if lower\.startswith\("script timed out"\):$'
+    replace: "{{ _hermes_cron_wall_clock_classifier | indent(4, true) }}"
+  notify: Restart hermes-gateway
+
+# Upstream's advice is correct for a stock deployment and wrong for this one:
+# it reads the agent's own config, finds no fallback chain, and tells the
+# operator to add one. Our fallbacks live in the router in front of the agent,
+# so the agent cannot see them and never will — following this advice would add
+# a second, competing chain. Only the no-chain branch is rewritten; when a chain
+# IS configured upstream's "exhausted or unavailable" is still exactly right.
+- name: Correct the fallback-chain advice for router-fronted deployments
+  vars:
+    _hermes_cron_fallback_advice: |-
+      return (
+          "Fallbacks are handled by the router in front of this agent, not in "
+          "its own config — check the router's health before adding one here."
+      )
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: |-
+      ^    return \(
+              "No fallback chain configured — add one with `hermes fallback add`, "
+              "or set a cron fleet default via `cron\.model` \+ `cron\.model_provider` "
+              "in config\.yaml\."
+          \)$
+    replace: "{{ _hermes_cron_fallback_advice | indent(4, true) }}"
+  notify: Restart hermes-gateway
+
+# The nudge's diagnosis is useful ("failed N runs in a row"); its remedy is
+# not. Pausing is offered first-class alongside fixing, and a paused job is
+# invisible — no failures, no alerts, nothing to notice — so the cheapest
+# response to a noisy job is the one that hides it permanently. Keep the
+# streak, drop the pause instruction. `cron.failure_nudge_threshold: 0` would
+# have removed the streak signal too, which is the half worth keeping.
+- name: Drop the pause suggestion from the repeated-failure nudge
+  vars:
+    _hermes_cron_nudge_remedy: |-
+      "Fix its prompt or config. Pausing hides the failures without fixing "
+      "them, so prefer a fix or a deliberate removal."
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: |-
+      ^        f"Fix its prompt/config, or pause it with `hermes cron pause \{job_ref\}` "
+              "\(resume/remove also available\) to stop the noise\."$
+    replace: "{{ _hermes_cron_nudge_remedy | indent(8, true) }}"
   notify: Restart hermes-gateway

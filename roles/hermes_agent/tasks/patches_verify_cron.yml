@@ -36,11 +36,21 @@
       # output-validity guard below now wraps this call rather than sitting
       # beside it, so the markup guard call is nested one level in. The
       # substring alone still proves it is wired into the delivery path.
+      # Carries `final_response` deliberately: the shorter substring is also a
+      # prefix of the helper's own `def` line, so it stayed true while the call
+      # site matched nothing — this assertion could not fail even with the
+      # patch completely dead. Only the call site names final_response.
       - >-
-        '_cron_markup_guard(job, output_file,'
+        '_cron_markup_guard(job, output_file, final_response'
         in hermes_agent_cron_scheduler_source
       - >-
         '_deliver_result(_routed_job, deliver_content,'
+        in hermes_agent_cron_scheduler_source
+      # The exception path's own delivery call, routed the same way. Asserted
+      # separately because it carries its own failure summary rather than
+      # `deliver_content`, so the assertion above cannot cover it.
+      - >-
+        '_deliver_result(_routed_job, _routed_content,'
         in hermes_agent_cron_scheduler_source
       # Output-validity guard: the helper landed AND the delivery call was
       # rewritten to route through it. Either alone is a silent no-op in a
@@ -50,8 +60,14 @@
       - >-
         'def _cron_output_validity_guard(job, output_file, content, success):'
         in hermes_agent_cron_scheduler_source
+      # The call site wraps across lines, so pin the opening call and the
+      # nesting separately rather than one long literal whose only failure
+      # mode would be upstream re-indenting it.
       - >-
-        'deliver_content = _cron_output_validity_guard(job, output_file,'
+        'deliver_content = _cron_output_validity_guard('
+        in hermes_agent_cron_scheduler_source
+      - >-
+        'job, output_file, _cron_markup_guard(job, output_file, final_response'
         in hermes_agent_cron_scheduler_source
       # A legitimate [SILENT] run must defer to upstream's own silence
       # matcher, never get rewritten into a false "too short" failure before
@@ -95,12 +111,13 @@
       - >-
         'agent._memory_enabled = _mem_cfg.get("memory_enabled", False)'
         in hermes_agent_cron_scheduler_source
-      # The flag this patch deliberately does NOT remove. If a future upstream
-      # bump drops it, the external provider is silently back in cron's path
-      # and starts building user representations from machine-authored
-      # prompts — the exact corruption its own comment warns about.
+      # Upstream reversed this flag: cron agents now build the built-in
+      # MEMORY.md/USER.md store natively instead of being handed a null one.
+      # Pinned in its new direction so a flip back to skip_memory=True — which
+      # is what produced cron jobs reporting "Memory is unavailable in this
+      # environment" — fails the converge loudly instead of silently.
       - >-
-        'skip_memory=True,  # Cron system prompts would corrupt user representations'
+        'skip_memory=False,'
         in hermes_agent_cron_scheduler_source
       # Creation-time assignee validation. Both creation paths carry the same
       # anchor line, so the count is what proves the second one landed.
@@ -111,12 +128,16 @@
       # The second assertion on the retired message patch is gone with it: it
       # pinned wording that patch produced, which exists in no upstream release,
       # so it could only ever fail. The message itself is asserted above.
-      # Absence, not presence: upstream dropped this log line outright after
-      # the pinned release, so the role's debug-to-warning patch applies on one
-      # version and is a no-op on the other. Either way the defect — a prefetch
-      # failure hidden at debug level — must not be present.
+      # Absence, not presence: upstream has renamed this line ("prefetch
+      # failed" -> "recall failed") and may rename it again, so the role's
+      # debug-to-warning patch applies on one version and is a no-op on the
+      # other. Either way the defect — a prefetch-path failure hidden at debug
+      # level — must not be present under any name upstream has used.
       - >-
         'logger.debug("Hindsight prefetch failed:'
+        not in hermes_agent_hindsight_plugin_source
+      - >-
+        'logger.debug("Hindsight recall failed:'
         not in hermes_agent_hindsight_plugin_source
       # The kanban goal loop's judge-error guard: both halves of the patch
       # (counter init + guard reset = exactly 2 occurrences), the bounded

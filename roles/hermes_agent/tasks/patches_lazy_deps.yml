@@ -1,0 +1,72 @@
+---
+# Make the memory feature's dependency gate accept the client we install.
+#
+# WHY THIS EXISTS. Upstream declares the same dependency twice, with different
+# operators, and the two disagree:
+#
+#   tools/lazy_deps.py       "memory.hindsight": ("hindsight-client==0.6.1",)
+#   plugins/memory/hindsight  f"hindsight-client>={_MIN_CLIENT_VERSION}"
+#
+# The plugin actively wants a NEWER client — it reads the installed version,
+# logs "outdated (need >=...), attempting upgrade", and tries to install one.
+# The lazy-dep gate then refuses anything that is not the exact pin. So a
+# current client satisfies upstream's own upgrade logic and fails upstream's
+# own gate, and the feature is declared unavailable while a perfectly good
+# client sits importable in the venv.
+#
+# Observed consequence: the gate rejects the installed client, falls through to
+# its install path, and that path cannot run because this uv venv has no pip or
+# ensurepip. Memory then fails on every call — roughly 190 times an hour, all
+# day, with no alarm, because each individual failure is only a WARNING.
+#
+# WHY NOT JUST INSTALL THE PINNED VERSION. Because that re-arms the other half:
+# with the exact pin installed, the plugin's own "outdated" check fires and
+# tries to upgrade on every call, failing for the same no-pip reason. It swaps
+# one permanent failure for another, and it freezes a Renovate-managed pin that
+# will be bumped again.
+#
+# WHAT THIS CHANGES. One operator: the gate becomes a minimum, matching what
+# the plugin itself asks for. The installed client then satisfies both halves,
+# the import short-circuits before any install is attempted, and a future
+# Renovate bump cannot re-break it.
+#
+# The version is NOT hardcoded here. The pattern captures whatever version
+# upstream ships and rewrites only the operator, so a version bump upstream
+# still patches cleanly instead of silently matching nothing.
+
+- name: Patch the Hindsight lazy-dep gate from an exact pin to a minimum
+  # Idempotent: once rewritten the line carries `>=` and no longer matches.
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/tools/lazy_deps.py"
+    regexp: >-
+      ^([ \t]*"memory\.hindsight":\s*\("hindsight-client)==([^"]+)("\,\),)$
+    replace: '\g<1>>=\g<2>\g<3>'
+  notify: Restart hermes-gateway
+
+- name: Read back the patched lazy-dep table
+  ansible.builtin.slurp:
+    src: "{{ hermes_agent_install_dir }}/tools/lazy_deps.py"
+  register: hermes_agent_lazy_deps_source
+  changed_when: false
+
+- name: Assert the Hindsight lazy-dep gate accepts a range
+  vars:
+    _lazy_deps: "{{ hermes_agent_lazy_deps_source.content | b64decode }}"
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # The OLD text must be GONE, not merely shadowed. ansible.builtin.replace
+      # reports `ok` when its pattern does not match, so asserting only that the
+      # new form is present would pass on a patch that never applied.
+      - '''"memory.hindsight": ("hindsight-client=='' not in _lazy_deps'
+      - '''"memory.hindsight": ("hindsight-client>='' in _lazy_deps'
+    fail_msg: >-
+      The Hindsight lazy-dep gate is not a range. While it carries an exact
+      pin, any client version other than that exact one is rejected and the
+      feature falls through to an install path this venv cannot run — memory
+      fails silently on every call. Check whether upstream restructured
+      tools/lazy_deps.py; the patch matches a line of the form
+      '"memory.hindsight": ("hindsight-client==<version>",),'.
+    success_msg: >-
+      Hindsight lazy-dep gate accepts a minimum version, so the installed
+      client satisfies it without an install attempt.

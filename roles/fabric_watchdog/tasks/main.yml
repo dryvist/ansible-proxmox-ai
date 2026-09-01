@@ -26,7 +26,7 @@
          | map(attribute='tier') | unique | list }}
 
 # Maps each tier to its base URL. Deliberately a small, explicit table, not
-# itself derived: llm-models.yml is pure data with NO host/port/URL literals
+# itself derived: llm-models.d/ is pure data with NO host/port/URL literals
 # by design (its own header comment) — those live in the role, selected
 # symbolically by tier. A tier missing from this table fails the assert below
 # rather than being silently skipped, so a newly advertised
@@ -44,7 +44,7 @@
         fabric_watchdog_registry_tiers
         | difference(fabric_watchdog_known_tier_urls.keys() | list) | length == 0
     fail_msg: >-
-      llm-models.yml advertises serving tier(s)
+      llm-models.d/ advertises serving tier(s)
       {{ fabric_watchdog_registry_tiers
          | difference(fabric_watchdog_known_tier_urls.keys() | list) | join(', ') }}
       with no probe URL registered in fabric_watchdog_known_tier_urls
@@ -76,6 +76,28 @@
   ansible.builtin.template:
     src: fabric-watchdog.sh.j2
     dest: /usr/local/bin/fabric-watchdog.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+# Invoked by the probe script above, so it inherits that unit's
+# EnvironmentFile (the Slack secrets) and its timer cadence without a second
+# unit pair to keep in step. Reading one JSON file costs nothing at 2min.
+- name: Render the absence-of-success watchdog
+  ansible.builtin.template:
+    src: cron-success-watchdog.py.j2
+    dest: /usr/local/bin/cron-success-watchdog.py
+    owner: root
+    group: root
+    mode: "0755"
+
+# Also invoked by the probe script, as a command target rather than a URL one.
+# Runs under the Hermes venv interpreter (see fabric_watchdog_hermes_venv_python)
+# because it reports on what THAT environment has installed.
+- name: Render the Hindsight dependency-gate probe
+  ansible.builtin.template:
+    src: hindsight-dep-gate.py.j2
+    dest: /usr/local/bin/hindsight-dep-gate.py
     owner: root
     group: root
     mode: "0755"

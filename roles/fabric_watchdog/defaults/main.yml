@@ -22,6 +22,41 @@ fabric_watchdog_probe_timeout: 8
 fabric_watchdog_down_after: 3
 fabric_watchdog_up_after: 2
 fabric_watchdog_state_dir: /var/lib/fabric-watchdog
+
+# --- Absence-of-success watchdog ---------------------------------------------
+# The probes above answer "is the fabric reachable". A fleet whose scheduled
+# jobs have all stopped COMPLETING leaves every probe green, and posts an error
+# per run that looks exactly like ordinary noise — so a dead fleet and a quiet
+# one are indistinguishable. This second half watches the other signal: time
+# since each job's last SUCCESSFUL run, which keeps climbing whether the job is
+# failing loudly or has stopped firing altogether.
+#
+# The store the scheduler already maintains; read-only, never written here.
+fabric_watchdog_cron_jobs_file: >-
+  {{ hermes_agent_hermes_home | default('/var/lib/hermes/.hermes') }}/cron/jobs.json
+fabric_watchdog_success_state_path: "{{ fabric_watchdog_state_dir }}/cron-success.json"
+
+# Threshold = this many of the job's OWN cadence with no success. A single
+# global threshold cannot serve a fleet mixing quarter-hourly and daily jobs: it
+# either pages constantly on the daily ones or never on the frequent ones. 3
+# means two whole cycles may be missed before the third is called silence, which
+# absorbs one late run and one retry without absorbing a stall.
+fabric_watchdog_success_missed_cycles: 3
+# Floor: a 1-minute job must not page over ordinary lateness. Ceiling: a daily
+# job must not be allowed to sit silent for most of a week (3 x daily = 3 days).
+fabric_watchdog_success_floor_minutes: 30
+fabric_watchdog_success_ceiling_minutes: 1440
+# A total fleet death must arrive as one message, not one per job.
+fabric_watchdog_success_fleet_rollup_at: 5
+# A store carrying the stop sentinel has deliberately stopped running work, so
+# its silence is explained and absence alerts there are suppressed — a guard
+# that pages during planned maintenance is one operators learn to dismiss.
+# Suppression cannot be unbounded, though, or a pause becomes a way to hide a
+# dead fleet: past this long the pause itself is reported instead. Four hours
+# sits well clear of an automated drain (bounded far below an hour) while still
+# surfacing a forgotten manual pause within the same working day.
+fabric_watchdog_success_pause_alert_minutes: 240
+
 fabric_watchdog_user: hermes
 fabric_watchdog_group: hermes
 # Same .env the hermes gateway + brain-watchdog load (SLACK_* secrets).
@@ -66,3 +101,30 @@ fabric_watchdog_targets:
   - name: hindsight
     url: "https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/health"
     ok_codes: "200"
+  # The target above watches the memory SERVICE. This one watches whether the
+  # agent will actually USE it — a different question, and the one no URL can
+  # answer. A service that is up and a client that is installed and importable
+  # still yield a dead feature when the dependency gate declines the client's
+  # version, and every other probe here reports health in that state.
+  #
+  # `cmd` makes this a command target — exit status in place of an HTTP code —
+  # because no URL exists for "would the gate accept what is installed". See
+  # hindsight-dep-gate.py.j2 for why the three probes that were already in place
+  # each stood on the wrong side of that boundary. ok_codes is "0": exit 1 is a
+  # live rejection, exit 2 is the probe unable to tell, and both must alarm.
+  - name: hindsight-dep-gate
+    cmd: "{{ fabric_watchdog_hermes_venv_python }} /usr/local/bin/hindsight-dep-gate.py"
+    ok_codes: "0"
+
+# Inputs for the dep-gate probe. The interpreter must be the venv Hermes itself
+# runs, not the system python: the question is what THAT environment has
+# installed, and a system interpreter would confidently answer about the wrong
+# one.
+fabric_watchdog_hermes_venv_python: >-
+  {{ hermes_agent_venv_python
+     | default('/usr/local/lib/hermes-agent/venv/bin/python', true) }}
+fabric_watchdog_lazy_deps_path: >-
+  {{ hermes_agent_install_dir
+     | default('/usr/local/lib/hermes-agent', true) }}/tools/lazy_deps.py
+fabric_watchdog_hindsight_feature_key: memory.hindsight
+fabric_watchdog_hindsight_distribution: hindsight-client

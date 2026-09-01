@@ -44,20 +44,52 @@ llama_cpp_gpu_backend: vulkan
 # a separate, group-scoped guard on different silicon and is untouched by this.
 llama_cpp_max_param_billions: 28
 
-# Context. Set EXPLICITLY rather than inherited: the role's GPU default is 8192,
-# and the vLLM setup this replaces served 16384. Inheriting the default would
-# have quietly halved the context as a side effect of changing engine — a
-# reduction has to be a measured decision, not a default.
+# Context. DERIVED, never typed here: what this backend serves and what the
+# router advertises (model_info.max_input_tokens) must be one number. When they
+# were two literals they drifted in the worse direction — the router advertised
+# a window, callers sized requests to it, and the backend refused them.
 #
-# VRAM budget at this context, to be checked against measurement rather than
-# trusted: weights 11.91 GB, KV ~1 GB (only 16 of 64 layers use full attention,
-# 4 KV heads at head_dim 256 = 64 KiB/token), plus activations and graphs,
-# against 16376 MiB total. It fits, but not by a wide margin.
+# The registry entry is the source; the play that runs this role loads it (see
+# playbooks/llm-serving.yml). Change the window in llm-models.d/, not here.
+#
+# VRAM, MEASURED on the card before and after rather than modelled. The card is
+# 16376 MiB and the weights account for 11362 MiB of it.
+#
+#   at 16384: 12674 MiB used, 3297 MiB free
+#   at 32768: 13665 MiB used, 2307 MiB free
+#
+# Doubling the window cost 991 MiB, which is the KV cache growing by one window
+# (16384 tokens x 64 KiB/token = 1024 MiB) and nothing else — compute and graph
+# buffers do not scale with context. That measurement is what licenses the
+# extrapolation below; it is not a model.
+#
+# 65536 is NOT affordable here and was rejected on these numbers: two more
+# doublings of the KV cache put it near 15.6 GiB against a 16376 MiB card,
+# leaving under 1 GiB for everything else. Raise the window past 32768 only
+# behind a fresh measurement, or behind KV-cache quantization (--cache-type-k /
+# --cache-type-v), which was deliberately NOT used here — it was not needed to
+# reach the target, and it costs quality on a rung whose weights are already
+# 3-bit.
 #
 # IF IT DOES NOT FIT: step the QUANT down to UD-Q2_K_XL (10.68 GB) and record
 # the measurement that forced it. Do NOT cut this context to hide an OOM — that
 # turns a capability loss into an invisible one.
-llama_cpp_ctx_size: 16384
+# THE SERIAL LANE. One slot, deliberately: this card cannot batch, so serial is
+# the permanent design here and batched throughput is the other lane's job.
+#
+# Mechanically it is also the only setting that works. The KV cache is one
+# unified buffer of ctx_size shared across every slot, so the auto-chosen 4
+# slots did not buy concurrency — three concurrent ~24k requests need ~72k
+# against a 32768 buffer and ALL THREE failed with "Context size has been
+# exceeded" (measured; the same request serially returns 200). Two slots would
+# only move that cliff, not remove it. At one slot a second request queues
+# instead of failing, which is what a fallback rung owes its callers.
+llama_cpp_parallel: 1
+
+llama_cpp_ctx_size: >-
+  {{ (llm_router_model_registry
+      | selectattr('client_model_id', 'equalto', 'qwen3.8-27b')
+      | first).context_window }}
 
 llama_cpp_models:
   - name: qwen3.8-27b
