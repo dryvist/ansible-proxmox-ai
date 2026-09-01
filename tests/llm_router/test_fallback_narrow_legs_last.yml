@@ -1,0 +1,113 @@
+---
+# A fallback rung narrower than the primary cannot rescue a request the primary
+# refused for a NON-size reason, and litellm treats a context error raised
+# inside a fallback attempt as terminal. So a narrow leg placed ahead of the
+# wider rungs does not merely fail itself -- it kills the whole chain, with the
+# rungs behind it listed and never reached.
+#
+# Observed 2026-09-01 on the live fleet: overflows of 35,643-44,740 tokens
+# against a 32768 leg, chain aborted, free cloud rungs never tried. Deploying
+# context_window_fallbacks entries for that leg did NOT fix it (verified present
+# in the deployed config while the abort continued), because the map is not
+# consulted for an error raised by a fallback leg.
+#
+# This test pins the ordering rule and BOTH policies, so a future edit cannot
+# silently reintroduce the abort.
+- name: Verify narrow local fallback legs are ordered behind the wider rungs
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    # Credentials present ON PURPOSE. With none, the cloud rungs are filtered
+    # out, the chain collapses to the single local leg, and the ordering
+    # assertion below passes trivially -- proving nothing about ordering. The
+    # bug this test pins only exists when there ARE rungs behind the narrow leg.
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: sk-test-openrouter
+      GEMINI_API_KEY: sk-test-gemini
+      DASHSCOPE_API_KEY: sk-test-dashscope
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    # The model registry lives OUTSIDE the role, in llm-models.d/. Loading only
+    # the role defaults leaves llm_router_registry_enabled unresolvable, and the
+    # window derivation's `| default(0)` then silently yields 0 -- which
+    # classifies every leg as wide and turns the whole split into a no-op. The
+    # first assertion below exists to catch exactly that.
+    - name: Load the model registry
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/../../llm-models.d"
+
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: The primary must advertise a window, or the split is meaningless
+      ansible.builtin.assert:
+        that:
+          - (llm_router_hermes_primary_context_window | int) > 0
+        fail_msg: >-
+          llm_router_hermes_primary_context_window resolved to 0, so every leg
+          compares as wide and the narrow/wide split silently does nothing.
+
+    - name: Every narrow leg really is narrower than the primary
+      ansible.builtin.assert:
+        that:
+          - >-
+            llm_router_hermes_local_models
+            | selectattr('fallback_group', 'defined')
+            | selectattr('fallback_group', 'in', llm_router_hermes_local_narrow_groups)
+            | rejectattr('context_window', 'defined')
+            | list | length == 0
+        fail_msg: >-
+          A leg was classified narrow without declaring context_window. An
+          undeclared window defaults to 0 and would classify a WIDE leg as
+          narrow, demoting a perfectly good local rung behind cloud egress.
+
+    - name: Narrow legs are ordered behind every cloud rung under the default policy
+      vars:
+        _chain: "{{ llm_router_hermes_default_fallback_chain }}"
+      ansible.builtin.assert:
+        that:
+          - llm_router_hermes_narrow_legs_last | bool
+          # There must BE cloud rungs, or the ordering claim is vacuous.
+          - llm_router_hermes_cloud_only_fallback_groups | length > 0
+          - llm_router_hermes_local_narrow_groups | length > 0
+          - >-
+            _chain.index(llm_router_hermes_local_narrow_groups | first)
+            > _chain.index(llm_router_hermes_cloud_only_fallback_groups | last)
+        fail_msg: >-
+          A narrow local leg precedes a cloud rung in the chain. That is the
+          exact ordering that aborts the whole chain on a context error, with
+          the wider rungs listed and never reached. Chain was: {{ _chain }}
+
+    - name: The chain still contains every group it did before the reorder
+      ansible.builtin.assert:
+        that:
+          - >-
+            (llm_router_hermes_default_fallback_chain | sort)
+            == ((llm_router_local_fallback_groups
+                 + llm_router_hermes_cloud_only_fallback_groups) | sort)
+        fail_msg: >-
+          The reorder changed WHICH groups are in the chain, not just their
+          order. Reordering must never drop or add a rung.
+
+    - name: Record the resulting order
+      ansible.builtin.debug:
+        msg: "chain: {{ llm_router_hermes_default_fallback_chain }}"
