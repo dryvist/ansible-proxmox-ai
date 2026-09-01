@@ -41,9 +41,28 @@ mkdir -p "${STATE_DIR}"
 
 {% for t in fabric_watchdog_targets %}
 # --- {{ t.name }} ------------------------------------------------------------
+{% if t.cmd is defined %}
+# Command target. A URL probe can only ever answer "is that endpoint
+# reachable", which is the wrong question whenever the fault is on this side of
+# the boundary — a healthy service the agent has decided not to use looks
+# identical to a healthy service it is using. For these targets the probe's
+# EXIT STATUS is the code and ok_codes lists the statuses that count as UP.
+#
+# The probe's own output is carried into the alert, sanitised to one JSON-safe
+# line, so the message states the verdict rather than merely that one occurred.
+detail="$({{ t.cmd }} 2>&1)"; code=$?
+# One JSON-safe line: octal \042 and \134 are the double quote and backslash,
+# written that way because '"\\' reads ambiguously to both humans and linters.
+detail="$(printf '%s' "${detail}" | tr '\n' ' ' | tr -d '\042\134' | cut -c1-200)"
+{% else %}
 code="$(curl -sS -o /dev/null --max-time "${TIMEOUT}" -w '%{http_code}' '{{ t.url }}' 2>/dev/null || echo 000)"
+detail=""
+{% endif %}
 state="down"
-case " {{ t.ok_codes }} " in *" ${code} "*) state="up" ;; esac
+# Substring membership: the padded ok_codes list is searched for the padded
+# reading. Held in a variable so the matched word is not a constant.
+ok_codes=" {{ t.ok_codes }} "
+case "${ok_codes}" in *" ${code} "*) state="up" ;; esac
 prev="$(cat "${STATE_DIR}/{{ t.name }}.state" 2>/dev/null || echo up)"
 # Consecutive observations matching the CURRENT reading. Reset whenever the
 # reading flips, so a flapping endpoint never accumulates its way to an edge.
@@ -58,9 +77,17 @@ if [[ "${state}" != "${prev}" ]]; then
   if [[ "${state}" == "down" ]]; then needed="${DOWN_AFTER}"; else needed="${UP_AFTER}"; fi
   if (( streak >= needed )); then
     if [[ "${state}" == "down" ]]; then
+{% if t.cmd is defined %}
+      slack_post ":rotating_light: fabric watchdog: {{ t.name }} DOWN — probe exited ${code} (expected one of: {{ t.ok_codes }}) — ${detail}"
+{% else %}
       slack_post ":rotating_light: fabric watchdog: {{ t.name }} DOWN — {{ t.url }} returned HTTP ${code} (expected one of: {{ t.ok_codes }})"
+{% endif %}
     else
+{% if t.cmd is defined %}
+      slack_post ":white_check_mark: fabric watchdog: {{ t.name }} recovered — probe exited ${code} — ${detail}"
+{% else %}
       slack_post ":white_check_mark: fabric watchdog: {{ t.name }} recovered — {{ t.url }} returned HTTP ${code}"
+{% endif %}
     fi
     printf '%s\n' "${state}" > "${STATE_DIR}/{{ t.name }}.state"
   fi
