@@ -381,15 +381,25 @@ def _goal_runner_namespace() -> dict[str, Any]:
 
 
 class _StubAgent:
-    """Records every turn and the history it was handed."""
+    """Records every turn, the history it was handed, and the task id.
+
+    The signature mirrors the real ``AIAgent.run_conversation``, which was
+    confirmed by introspecting the installed class to accept ``task_id``
+    (defaulting to ``str(uuid.uuid4())`` when omitted). Keeping the stub
+    narrower than the real method would let a caller that stopped passing
+    ``task_id`` still pass its tests — the identifier would silently revert
+    to an opaque uuid on the guest and nothing here would notice.
+    """
 
     def __init__(self) -> None:
         self.turns = 0
         self.histories: list[Any] = []
+        self.task_ids: list[Any] = []
 
-    def run_conversation(self, message, conversation_history=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None):
         self.turns += 1
         self.histories.append(conversation_history)
+        self.task_ids.append(task_id)
         return {
             "final_response": f"resp{self.turns}",
             "messages": [f"m{self.turns}"],
