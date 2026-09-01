@@ -81,6 +81,46 @@ def test_a_mid_reasoning_fragment_is_rejected() -> None:
     assert "interrupted" in content
 
 
+def test_a_complete_report_closing_with_the_mandated_attribution_is_delivered() -> None:
+    """The prompt catalog REQUIRES every report to close with an attribution
+    line ("— model: <id>"), which ends in a bare identifier carrying no
+    terminal punctuation. A report that ALSO opens with a narration lead-in
+    therefore satisfied both halves of the truncation heuristic and was
+    failed — while being a finished report that complied with the prompt.
+
+    Observed twice in production on splunk-triage, both on complete reports;
+    one of them carried the hardware-error finding that opened a separate
+    ticket. The failure is not rare: the lead-in half is entirely at the
+    model's discretion, so any job whose model narrates before reporting is
+    exposed on every run.
+
+    Both texts below are the real openings and closings from those runs.
+    """
+    mod = _load_guard()
+    for text in (
+        "Now let me compile the full report:\n\n"
+        "**Conclusion:** All systems stable. Key improvements: openbao_audit "
+        "normalizing, sendmodalert halved, homepage crash loop down 63%. "
+        "No new anomalies.\n\n"
+        "— model: hermes-default",
+        "Now let me update the memory with this run's findings and compare "
+        "against the previous baseline.\n\n"
+        "Clean: Splunk internal ERRs 0, auth failures 4, all indexes fresh.\n\n"
+        "— model: hermes-default",
+    ):
+        assert mod._cron_output_validity_guard(JOB, "/var/log/x.json", text, True) == text
+
+
+def test_a_fragment_is_still_rejected_when_it_carries_an_attribution() -> None:
+    """Looking past the footer must not blind the ellipsis signal: a run that
+    trailed off and still emitted the footer stays rejected."""
+    mod = _load_guard()
+    text = "Now let me check the remaining hosts...\n\n— model: hermes-default"
+    content = mod._cron_output_validity_guard(JOB, "/var/log/x.json", text, True)
+    assert content.startswith(f"{_MARKER} :warning: Cron 'anomaly-hunt' failed:")
+    assert "interrupted" in content
+
+
 def test_a_genuine_short_result_is_delivered_unchanged() -> None:
     mod = _load_guard()
     text = "No new tickets since last run."
