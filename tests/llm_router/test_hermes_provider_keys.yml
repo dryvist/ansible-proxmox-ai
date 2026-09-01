@@ -94,10 +94,8 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - >-
-            llm_router_hermes_default_fallback_chain
-            == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-openrouter']
-          - "_fallback_chain == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-openrouter']"
+          - llm_router_hermes_default_fallback_chain == _expected_chain
+          - _fallback_chain == _expected_chain
           # EVERY group that can raise ContextWindowExceeded escapes to the
           # wider cloud rungs -- not just the narrow local leg. Without this
           # LiteLLM aborts the entire chain at the failing rung on an over-long
@@ -134,6 +132,18 @@
           got chain={{ _fallback_chain }} and
           cloud={{ _cloud_models | map(attribute='litellm_params.model') | list }}.
       vars:
+        # Order is policy-dependent (llm_router_hermes_narrow_legs_last, in
+        # roles/llm_router/defaults/main/35-hermes-cloud.yml). The 4080 leg is
+        # narrower than the primary, so under the default policy it goes LAST:
+        # ahead of a cloud rung it aborts the whole chain on an over-long
+        # request. Membership is what this task is really about -- one
+        # credential enables one provider group -- but the order is stated for
+        # both policies so a toggle flip surfaces here as a reviewed edit.
+        _expected_chain: >-
+          {{ ['hermes-cloud-free', 'hermes-cloud-openrouter', 'hermes-local-4080']
+             if llm_router_hermes_narrow_legs_last | bool
+             else ['hermes-local-4080', 'hermes-cloud-free',
+                   'hermes-cloud-openrouter'] }}
         _cwf_keys: >-
           {{ _config.router_settings.context_window_fallbacks | default([])
              | map('dict2items') | flatten | map(attribute='key') | list }}

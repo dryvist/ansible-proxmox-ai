@@ -9,14 +9,39 @@
   ansible.builtin.assert:
     quiet: true
     that:
-      # Ordered composition against the REAL atomic vars (35-hermes-cloud.yml):
-      # local legs (free, fail-fast) precede every credentialed cloud group,
-      # each half in its own registry order. A set comparison would pass on a
-      # scrambled chain; LiteLLM tries the chain top to bottom, so order IS
-      # the contract.
+      # MEMBERSHIP against the REAL atomic vars (35-hermes-cloud.yml): the
+      # chain holds exactly the declared local and cloud groups, no rung
+      # dropped, added, or duplicated. Ordering is asserted separately below --
+      # restating the concatenation here would duplicate the ordering policy
+      # that 35-hermes-cloud.yml already owns, and a limit that exists twice
+      # will disagree (it did: this clause hard-coded local-first and outlived
+      # the policy that made local-first conditional).
       - >-
-        llm_router_hermes_default_fallback_chain
-        == (llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups)
+        llm_router_hermes_default_fallback_chain | sort
+        == (llm_router_local_fallback_groups
+            + llm_router_hermes_cloud_only_fallback_groups) | sort
+      - >-
+        llm_router_hermes_default_fallback_chain | unique | length
+        == llm_router_hermes_default_fallback_chain | length
+      # ORDERING, as the property rather than the formula. LiteLLM tries the
+      # chain top to bottom, so order IS the contract -- but the contract that
+      # matters is not "local first", it is "no rung that cannot serve the
+      # request stands in front of one that can". A leg narrower than the
+      # primary raises ContextWindowExceededError, and LiteLLM treats a context
+      # error raised INSIDE a fallback attempt as terminal, so such a leg does
+      # not merely fail itself: it aborts the whole chain with the wider rungs
+      # listed and never tried.
+      #
+      # Asserting the property instead of the concatenation makes this check
+      # STRONGER than the one it replaces, which passed happily on exactly the
+      # chain that aborted in production.
+      #
+      # Guarded by the policy variable because narrow_legs_last=false selects
+      # registry order deliberately, accepting that abort in exchange for
+      # keeping fallbacks on-network for as long as possible.
+      - >-
+        not (llm_router_hermes_narrow_legs_last | bool)
+        or _llm_router_misordered_narrow_groups | length == 0
       # Every rung is a fallback_group an enabled registry entry actually
       # declares — never a stale or hand-typed name.
       - "llm_router_hermes_default_fallback_chain | difference(_llm_router_declared_groups) | length == 0"
@@ -49,9 +74,11 @@
       - "_llm_router_unescaped_narrow_groups | length == 0"
     fail_msg: >-
       Hermes fallback chain is unsound (roles/llm_router/tasks/assert-fallback-chain.yml):
-      got {{ llm_router_hermes_default_fallback_chain }}, expected
-      {{ llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups }}
-      (local legs then cloud groups, registry order). Declared groups:
+      got {{ llm_router_hermes_default_fallback_chain }}, which must hold
+      exactly {{ llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups }}
+      (in any order) with no duplicates. Narrow leg(s) standing in front of a
+      cloud rung that could serve the request, which aborts the whole chain:
+      {{ _llm_router_misordered_narrow_groups }}. Declared groups:
       {{ _llm_router_declared_groups }}. Provider(s) whose outage would empty
       the chain: {{ _llm_router_unsafe_providers }} (chain providers:
       {{ _llm_router_chain_providers }}). Depth is capped at 5 (1 local + free
@@ -65,6 +92,22 @@
       rung is a real registry entry, no single provider's outage empties it,
       and depth stays within the 5-rung cap.
   vars:
+    # Narrow local legs that precede a cloud rung in the chain. Each one is a
+    # place the chain can die with serviceable rungs behind it. Derived from
+    # the same narrow/wide split 35-hermes-cloud.yml uses to BUILD the order,
+    # so the check and the construction cannot disagree.
+    _llm_router_misordered_narrow_groups: >-
+      {%- set ns = namespace(bad=[]) -%}
+      {%- set chain = llm_router_hermes_default_fallback_chain -%}
+      {%- for g in llm_router_hermes_local_narrow_groups -%}
+      {%- for c in llm_router_hermes_cloud_only_fallback_groups -%}
+      {%- if g in chain and c in chain
+             and chain.index(g) < chain.index(c) and g not in ns.bad -%}
+      {%- set ns.bad = ns.bad + [g] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.bad }}
     # Context the primary itself advertises; every rung is measured against it.
     _llm_router_primary_context: >-
       {{ (llm_router_registry_enabled
