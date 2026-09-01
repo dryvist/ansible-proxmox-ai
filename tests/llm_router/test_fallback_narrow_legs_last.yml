@@ -111,3 +111,33 @@
     - name: Record the resulting order
       ansible.builtin.debug:
         msg: "chain: {{ llm_router_hermes_default_fallback_chain }}"
+
+    # The converge-time guard itself, not just the vars it reads. assert-
+    # fallback-chain.yml exists as its own file specifically so a test can
+    # import it and prove each failure mode; until now nothing did, so its
+    # ordering clause had never been shown to fire. Feed it the exact chain
+    # that aborted in production and require it to reject.
+    - name: The converge-time assert rejects a narrow leg placed ahead of a cloud rung
+      block:
+        - name: Import the assert with a misordered chain
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-fallback-chain.yml"
+          vars:
+            llm_router_hermes_default_fallback_chain: >-
+              {{ llm_router_hermes_local_narrow_groups
+                 + llm_router_hermes_cloud_only_fallback_groups
+                 + llm_router_hermes_local_wide_groups }}
+        - name: Reaching here means the guard did not fire
+          ansible.builtin.fail:
+            msg: >-
+              assert-fallback-chain.yml ACCEPTED a chain with a narrow local
+              leg ahead of the cloud rungs. That is the ordering that aborts
+              the whole chain on an over-long request, so the guard is inert.
+      rescue:
+        - name: Confirm it failed for the ordering reason, not an unrelated one
+          ansible.builtin.assert:
+            that:
+              - "'standing in front of a cloud rung' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              The assert failed, but not on the ordering clause. Actual:
+              {{ ansible_failed_result.msg | default('(no msg)') }}
+            success_msg: Converge-time ordering guard fires as designed.
