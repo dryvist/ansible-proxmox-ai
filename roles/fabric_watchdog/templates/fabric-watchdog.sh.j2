@@ -55,7 +55,12 @@ detail="$({{ t.cmd }} 2>&1)"; code=$?
 # written that way because '"\\' reads ambiguously to both humans and linters.
 detail="$(printf '%s' "${detail}" | tr '\n' ' ' | tr -d '\042\134' | cut -c1-200)"
 {% else %}
-code="$(curl -sS -o /dev/null --max-time "${TIMEOUT}" -w '%{http_code}' '{{ t.url }}' 2>/dev/null || echo 000)"
+# `|| echo 000` would DOUBLE the sentinel: curl prints %{http_code} as 000 on a
+# connection failure AND exits non-zero, so the fallback appended a second 000
+# and alerts read "returned HTTP 000000". Verified by reproduction. curl already
+# supplies the sentinel; only a curl that produced no output at all needs one.
+code="$(curl -sS -o /dev/null --max-time "${TIMEOUT}" -w '%{http_code}' '{{ t.url }}' 2>/dev/null)"
+[[ -n "${code}" ]] || code=000
 detail=""
 {% endif %}
 state="down"

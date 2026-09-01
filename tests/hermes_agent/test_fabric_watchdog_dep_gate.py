@@ -180,6 +180,25 @@ def test_a_command_target_runs_its_command_and_never_curls() -> None:
     assert "curl -sS -o /dev/null" not in rendered
 
 
+def test_a_connection_failure_reports_one_sentinel_not_two() -> None:
+    """`curl ... || echo 000` doubles the sentinel.
+
+    curl prints %{http_code} as 000 when no response was received AND exits
+    non-zero, so the fallback appended a second 000 and alerts read
+    "returned HTTP 000000" — a code that does not exist, sending the reader
+    after a phantom status instead of a connection failure. Observed live.
+    """
+    rendered = _render_shell([{"name": "svc", "url": "https://x/health", "ok_codes": "200"}])
+    # Comments are excluded: the fix's own comment quotes the broken form to
+    # explain it, and a naive substring check would trip on that prose rather
+    # than on what the shell actually executes.
+    code_lines = [
+        line for line in rendered.splitlines() if not line.lstrip().startswith("#")
+    ]
+    assert not any("|| echo 000" in line for line in code_lines)
+    assert any('[[ -n "${code}" ]] || code=000' in line for line in code_lines)
+
+
 def test_a_url_target_is_unchanged_by_the_command_branch() -> None:
     """The existing three targets must keep probing exactly as before."""
     rendered = _render_shell([{"name": "svc", "url": "https://x/health", "ok_codes": "200"}])
