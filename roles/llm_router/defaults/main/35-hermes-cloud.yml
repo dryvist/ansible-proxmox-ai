@@ -118,28 +118,61 @@ llm_router_hermes_default_fallback_chain: >-
 # bound, not a retry budget; ordinary same-provider retries remain zero.
 llm_router_max_fallbacks: "{{ llm_router_hermes_default_fallback_chain | length }}"
 
-# A local leg serves a SMALLER context than the primary (the 4080 leg advertises
-# 16384 against hermes-default's 65536), so a normal agent request overflows it.
-# Without this map that is fatal to the WHOLE chain, not just to that rung:
-# LiteLLM re-enters its fallback machinery for the failing leg, and on
-# ContextWindowExceededError with no context_window_fallbacks it looks the
-# ordinary `fallbacks` map up under the LEG's name rather than the original
-# request's, finds no entry, and re-raises instead of advancing
-# (router.py::async_function_with_fallbacks, litellm 1.98.0). Every cloud rung
-# below is then never tried. So each local leg gets an explicit escape hatch to
-# the cloud rungs, which serve a larger context.
+# A rung that serves a SMALLER context than the request needs is fatal to the
+# WHOLE chain, not just to that rung: LiteLLM re-enters its fallback machinery
+# for the failing leg, and on ContextWindowExceededError with no
+# context_window_fallbacks it looks the ordinary `fallbacks` map up under the
+# LEG's name rather than the original request's, finds no entry, and re-raises
+# instead of advancing (router.py::async_function_with_fallbacks, litellm
+# 1.98.0). Every cloud rung below is then never tried. So every group that can
+# raise that error needs an explicit escape hatch to the cloud rungs, which
+# serve a larger context.
 #
-# Keyed per local leg rather than on hermes-default: hermes-default's own
-# overflow already resolves through the ordinary chain, and adding it here would
-# skip the local legs for requests they can serve perfectly well.
+# WHY THE PRIMARY IS KEYED TOO — this reverses an earlier decision.
 #
+# This map used to cover only the local legs, on the reasoning that
+# "hermes-default's own overflow already resolves through the ordinary chain,
+# and adding it here would skip the local legs for requests they can serve
+# perfectly well." Both halves of that turned out to be wrong.
+#
+# The first half is contradicted by production: five distinct cron jobs failed
+# with ContextWindowExceededError and "every fallback rung refused the request",
+# one of them exceeding the served window by 482 tokens. hermes-default's
+# overflow does NOT resolve through the ordinary chain; it aborts it.
+#
+# The second half misreads what the skip costs. context_window_fallbacks fires
+# ONLY on a context-window error, so keying the primary cannot divert an
+# ordinary request. It diverts exactly one class: a request already too large
+# for the primary. Every local leg advertises a window no larger than the
+# primary's, so a leg could never serve what the primary just refused —
+# "requests they can serve perfectly well" is an empty set here. Skipping them
+# for this one class costs nothing and is what makes the escape work at all.
+#
+# The keys are derived, never listed: local legs, the auto-router groups
+# themselves, and every deployment those routers can select. A hand-maintained
+# list would silently stop covering a tier the moment one was added.
+llm_router_context_window_escape_groups: >-
+  {%- set ns = namespace(groups=llm_router_local_fallback_groups | list) -%}
+  {%- for m in llm_router_hermes_virtual_models -%}
+  {%- set group = m.route_group | default(m.client_model_id) -%}
+  {%- if group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- for target in [llm_router_routine_model, llm_router_primary_model] -%}
+  {%- if target and target not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [target] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups }}
+
 # Renders nothing when no cloud rung is credentialed — an empty target list is
 # not "no map", and LiteLLM would take the empty branch and fall back to
 # nowhere instead of surfacing the real error.
 llm_router_context_window_fallbacks: >-
   {%- set ns = namespace(pairs=[]) -%}
   {%- if llm_router_hermes_cloud_only_fallback_groups | length > 0 -%}
-  {%- for group in llm_router_local_fallback_groups -%}
+  {%- for group in llm_router_context_window_escape_groups -%}
   {%- set ns.pairs = ns.pairs + [{group: llm_router_hermes_cloud_only_fallback_groups}] -%}
   {%- endfor -%}
   {%- endif -%}

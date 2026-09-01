@@ -98,13 +98,33 @@
             llm_router_hermes_default_fallback_chain
             == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-openrouter']
           - "_fallback_chain == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-openrouter']"
-          # The narrow local leg escapes to the wider cloud rungs. Without this
-          # LiteLLM aborts the entire chain at that rung on an over-long
+          # EVERY group that can raise ContextWindowExceeded escapes to the
+          # wider cloud rungs -- not just the narrow local leg. Without this
+          # LiteLLM aborts the entire chain at the failing rung on an over-long
           # request instead of advancing past it, so the rungs listed above are
           # never tried -- the chain reads correct and serves nothing.
+          #
+          # Asserted as a SET of keys plus a uniform value, rather than as a
+          # frozen list literal. The previous form pinned the exact one-entry
+          # list, which is what let the primary and the auto-router's own tier
+          # targets stay uncovered while this test stayed green: the literal
+          # described what the map WAS, so it could never notice what the map
+          # was MISSING.
           - >-
-            _config.router_settings.context_window_fallbacks | default(none)
-            == [{'hermes-local-4080': ['hermes-cloud-free', 'hermes-cloud-openrouter']}]
+            _cwf_keys | sort == [
+              'hermes-default', 'hermes-local-4080',
+              'mlx-community/Qwen3.6-35B-A3B-4bit',
+              'mlx-community/Qwen3.8-27B-4bit'
+            ] | sort
+          # The primary itself must be keyed. Five cron jobs died of exactly its
+          # absence, one exceeding the served window by 482 tokens.
+          - "'hermes-default' in _cwf_keys"
+          # Every escape target is this provider's groups and nothing else --
+          # the original intent of this test, preserved.
+          - >-
+            _config.router_settings.context_window_fallbacks
+            | map('dict2items') | flatten | map(attribute='value') | unique
+            == [['hermes-cloud-free', 'hermes-cloud-openrouter']]
           - _cloud_models | length == 2
           - _environment | regex_findall('(?m)^OPENROUTER_API_KEY=') | length == 1
           - _environment | regex_findall('(?m)^GEMINI_API_KEY=') | length == 0
@@ -114,6 +134,9 @@
           got chain={{ _fallback_chain }} and
           cloud={{ _cloud_models | map(attribute='litellm_params.model') | list }}.
       vars:
+        _cwf_keys: >-
+          {{ _config.router_settings.context_window_fallbacks | default([])
+             | map('dict2items') | flatten | map(attribute='key') | list }}
         _fallback_chain: >-
           {{ _config.router_settings.fallbacks
              | selectattr('hermes-default', 'defined')
