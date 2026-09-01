@@ -23,6 +23,26 @@
   no_log: true
   notify: Restart herdr
 
+- name: Deploy the herdr-hail environment file
+  ansible.builtin.template:
+    src: herdr-hail-env.j2
+    dest: "{{ herdr_server_hail_env_file }}"
+    owner: "{{ herdr_server_user }}"
+    group: "{{ herdr_server_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart herdr-hail
+
+- name: Report that the bridge is inert without Slack tokens
+  ansible.builtin.debug:
+    msg: >-
+      SLACK_HERDR_BOT_TOKEN / SLACK_HERDR_APP_TOKEN are unset, so herdr-hail
+      will run without a Slack connection. Set them (herdr needs its OWN Slack
+      app — a shared bot token round-robins Socket Mode events) and re-converge.
+  when: >-
+    herdr_server_hail_slack_bot_token | length == 0
+    or herdr_server_hail_slack_app_token | length == 0
+
 - name: Ensure herdr is running
   ansible.builtin.systemd_service:
     name: herdr
@@ -41,7 +61,13 @@
   become: true
   become_user: "{{ herdr_server_user }}"
   environment:
-    XDG_RUNTIME_DIR: /run/herdr
+    # HERDR_SOCKET_PATH, not XDG_RUNTIME_DIR. nix-ai's unit pins the socket with
+    # the former and its own comments record why: herdr derives the socket from
+    # its CONFIG directory, and XDG_RUNTIME_DIR appears in the binary only in
+    # unrelated pane-graphics path validation. This probe is a fresh process
+    # that inherits neither, so pointing it at the runtime directory left it
+    # looking under $HOME/.config and retrying five times before failing.
+    HERDR_SOCKET_PATH: "{{ herdr_server_socket_path }}"
   changed_when: false
   register: herdr_server_status
   retries: 5

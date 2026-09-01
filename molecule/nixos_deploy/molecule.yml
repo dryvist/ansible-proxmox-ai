@@ -1,12 +1,14 @@
 ---
-# herdr_hail is a THIN role: the package and the systemd unit come from
-# nix-ai's flake, converged by nixos_deploy on the controller. There is no
-# NixOS host here and no nix on the runner, so herdr_hail_deploy_enabled is
-# false in converge.yml and this scenario exercises the part this role
-# actually owns — the rendered EnvironmentFile and its permissions.
+# nixos_deploy runs `nixos-rebuild --target-host` on the CONTROLLER, which
+# needs nix and a real NixOS guest — neither exists on a CI runner, and that
+# task carries molecule-notest accordingly. What is left, and what this
+# scenario covers, is the guard in front of it: a partially specified deploy
+# either builds the wrong configuration or pushes it at the wrong guest, and
+# both fail late and confusingly.
 #
-# That is the repo's stated convention: test the render surface, tag the
-# network- and platform-dependent tasks out.
+# The guard is the entire untagged surface of the role, so a scenario that only
+# fed it valid input would assert nothing at all. verify.yml drives each
+# required field into its empty state and requires the refusal.
 
 dependency:
   name: galaxy
@@ -17,7 +19,7 @@ driver:
   name: docker
 
 platforms:
-  - name: herdr-slack-test
+  - name: nixos-deploy-test
     # No stable version tags available; geerlingguy only publishes :latest
     image: geerlingguy/docker-debian12-ansible:latest
     privileged: true
@@ -31,7 +33,7 @@ platforms:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     cgroupns_mode: host
     groups:
-      - herdr_slack_group
+      - herdr_group
       - lxc_containers
 
 provisioner:
@@ -45,7 +47,7 @@ verifier:
   name: ansible
 
 scenario:
-  name: herdr_hail
+  name: nixos_deploy
   test_sequence:
     - dependency
     - cleanup

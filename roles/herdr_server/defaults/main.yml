@@ -38,3 +38,39 @@ herdr_server_extra_env: {}
 # A tag alone would not do: `include_role` still runs, and a skipped inner task
 # is easy to get wrong. An explicit variable is unambiguous.
 herdr_server_deploy_enabled: true
+
+# ---------------------------------------------------------------------------
+# herdr-hail — the two-way Slack bridge.
+#
+# It runs HERE, on the runtime guest, not on one of its own. Upstream ships it
+# as a herdr PLUGIN: it reads herdr's control socket directly and advertises
+# "no tunnel, no relay server" as its advantage over the web dashboard, which
+# is only true when it is local to the server it watches. nix-ai's
+# services.herdr.hail runs it as a companion unit next to herdr.service; this
+# role supplies the half NixOS cannot know.
+#
+# Identity-prefixed lookups, same convention as hermes_agent's SLACK_<ID>_*:
+# herdr needs its OWN Slack app, because two Socket Mode connections sharing a
+# bot token get round-robin event delivery and each drops half.
+herdr_server_hail_env_file: "{{ herdr_server_state_dir }}/hail.env"
+
+# Empty-string defaults keep the bridge inert until the tokens exist, rather
+# than crash-looping a unit against a missing credential.
+herdr_server_hail_slack_bot_token: >-
+  {{ lookup('env', 'SLACK_HERDR_BOT_TOKEN') | default('', true) }}
+herdr_server_hail_slack_app_token: >-
+  {{ lookup('env', 'SLACK_HERDR_APP_TOKEN') | default('', true) }}
+herdr_server_hail_slack_channel: >-
+  {{ lookup('env', 'SLACK_HERDR_CHANNEL') | default('', true) }}
+
+# Who may reply into a pane. An allowlist, not a convenience: a reply is
+# executed in a live agent's terminal.
+herdr_server_hail_slack_allowed_users: >-
+  {{ lookup('env', 'SLACK_HERDR_MEMBER_ID')
+     | default(lookup('env', 'SLACK_MEMBER_ID'), true) | default('', true) }}
+
+herdr_server_hail_extra_env: {}
+
+# Where nix-ai's unit pins the control socket. Restated here only so the verify
+# probe below can point at it; changing it here changes nothing on the guest.
+herdr_server_socket_path: /run/herdr/herdr.sock

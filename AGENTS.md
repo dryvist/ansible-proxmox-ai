@@ -43,11 +43,13 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
 
 ### Agents
 
-- `herdr_server` / `herdr_hail` / `herdr_remote` — herdr, the agent
-  multiplexer the coding CLIs run inside: the runtime, its Slack bridge
-  (`herdr-hail`), and its web/phone dashboard (`herdr-remote`), one guest each
-  so a bridge crash cannot touch the runtime holding live agent panes.
-  **These three guests are NixOS**, unlike everything else this repo
+- `herdr_server` / `herdr_remote` — herdr, the agent multiplexer the coding
+  CLIs run inside: the runtime and its web/phone dashboard
+  (`herdr-remote`), one guest each. The Slack bridge (`herdr-hail`) gets no
+  guest of its own: it is a herdr PLUGIN that reads the runtime's control
+  socket, so it runs as a companion unit beside it and `herdr_server` supplies
+  its tokens.
+  **Both guests are NixOS**, unlike everything else this repo
   converges. The rule that nix runs on the CONTROLLER and never on the guest
   still holds, and is what makes that workable: the roles install nothing.
   They call the shared `nixos_deploy` role, which runs

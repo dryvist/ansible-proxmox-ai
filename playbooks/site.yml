@@ -24,7 +24,7 @@
 - name: Pre-fetch resource-domain secrets from OpenBao
   hosts: >-
     qdrant_group:hindsight_group:llamaindex_group:ollama_group:open_webui_group:
-    hermes_agent_group:hermes_ui_group:herdr_group:herdr_slack_group:herdr_ui_group:
+    hermes_agent_group:hermes_ui_group:herdr_group:herdr_ui_group:
     llm_fast_group:llm_vllm_group:llm_router_group:llm_redis_group:
     dify_group:langflow_group:langgraph_group:agent_exec_group:
     langfuse_group:agentgateway_group:ai_orchestration_group:ai_runner_group:
@@ -186,18 +186,24 @@
 # =============================================================================
 # Phase 3c: herdr — the agent multiplexer the coding CLIs run inside.
 #
-# Three NixOS guests, unlike everything else in this repo. The rule that nix
+# Two NixOS guests, unlike everything else in this repo. The rule that nix
 # runs on the CONTROLLER and never on the guest still holds: these roles
 # install nothing, they call the shared nixos_deploy role, which runs
 # `nixos-rebuild --target-host` here and copies the closure over. Ansible stays
 # the orchestrator; nix-ai's flake stays the config.
 #
-# Ordering. herdr_group converges FIRST and in its own play: both clients drive
-# the runtime (the bridge forwards its control socket over SSH, the relay uses
-# HERDR_REMOTES) and both assert at converge time that a herdr_group host
-# exists. Converging them against a runtime that is not up yet would leave a
-# bridge connected to nothing, which reports as a quiet fleet rather than an
-# error — the failure mode those asserts exist to convert into a loud one.
+# Two, not three: the Slack bridge is a herdr PLUGIN. It reads the runtime's
+# control socket directly, and its advantage over the dashboard is "no tunnel,
+# no relay" — true only while it is local to the server it watches. So it runs
+# as a companion unit on the runtime guest, wired by nix-ai's
+# services.herdr.hail and fed by herdr_server. Giving it a guest of its own is
+# what made a socket forward look necessary.
+#
+# Ordering. herdr_group converges FIRST and in its own play: the relay drives
+# the runtime over HERDR_REMOTES and asserts at converge time that a
+# herdr_group host exists. Converging it against a runtime that is not up yet
+# leaves a dashboard connected to nothing, which reports as a quiet fleet
+# rather than an error — the failure mode that assert exists to make loud.
 #
 # Single-node, so deliberately NO serial/max_fail_percentage/pool_member_gate:
 # per AGENTS.md the gate turns a down host into a silent skip, which is the
@@ -217,23 +223,17 @@
   roles:
     - role: herdr_server
 
-- name: Configure the herdr Slack bridge and web dashboard
-  hosts: herdr_slack_group:herdr_ui_group
+- name: Configure the herdr web dashboard
+  hosts: herdr_ui_group
   become: true
   gather_facts: true
   tags:
+    - herdr_remote
     - herdr
     - agent
     - ai
   roles:
-    - role: herdr_hail
-      when: inventory_hostname in (groups['herdr_slack_group'] | default([]))
-      tags:
-        - herdr_hail
     - role: herdr_remote
-      when: inventory_hostname in (groups['herdr_ui_group'] | default([]))
-      tags:
-        - herdr_remote
 
 # LLM serving and routing (both GPU guests, spend store, router). Split out
 # to keep this file within its token budget and because those plays are
