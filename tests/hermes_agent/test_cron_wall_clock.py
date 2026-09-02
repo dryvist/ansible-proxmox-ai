@@ -16,6 +16,7 @@ from conftest import (
     _task,
     role_defaults,
 )
+from _cron_pool_ceiling_shared import wall_timeout_seconds
 from _role_files import template_text
 
 
@@ -23,11 +24,11 @@ def _helper_namespace() -> dict:
     block = _task("Add aggregate cron wall-clock helpers")[
         "ansible.builtin.blockinfile"
     ]["block"]
-    defaults = role_defaults(ROLE_ROOT)
+    # hermes_agent_cron_wall_timeout_seconds is a derived Jinja formula now,
+    # not a literal (defaults/main/20-brain-and-slack.yml) — render it for
+    # real rather than reading the raw template string out of role_defaults().
     block = Environment(autoescape=False).from_string(block).render(
-        hermes_agent_cron_wall_timeout_seconds=defaults[
-            "hermes_agent_cron_wall_timeout_seconds"
-        ]
+        hermes_agent_cron_wall_timeout_seconds=wall_timeout_seconds()
     )
     namespace = {"logger": logging.getLogger(__name__), "os": os, "time": time}
     exec(block, namespace)  # noqa: S102 - executes the role's exact managed Python
@@ -132,22 +133,32 @@ def test_wall_clock_boundary_does_not_reset_on_activity() -> None:
 
 
 def test_wall_clock_limit_parses_one_process_environment(monkeypatch) -> None:
+    managed = float(wall_timeout_seconds())
     limit = _helper_namespace()["_hermes_cron_wall_timeout_limit"]
     monkeypatch.delenv("HERMES_CRON_WALL_TIMEOUT", raising=False)
-    assert limit() == 2300.0
+    assert limit() == managed
     monkeypatch.setenv("HERMES_CRON_WALL_TIMEOUT", "1800")
     assert limit() == 1800.0
     monkeypatch.setenv("HERMES_CRON_WALL_TIMEOUT", "0")
     assert limit() is None
     monkeypatch.setenv("HERMES_CRON_WALL_TIMEOUT", "invalid")
-    assert limit() == 2300.0
+    assert limit() == managed
 
 
 def test_native_inactivity_and_aggregate_deadlines_are_distinct() -> None:
     defaults = role_defaults(ROLE_ROOT)
     environment = template_text(ROLE_ROOT, "hermes-env.j2")
     assert defaults["hermes_agent_cron_inactivity_timeout_seconds"] == 1800
-    assert defaults["hermes_agent_cron_wall_timeout_seconds"] == 2300
+    # hermes_agent_cron_wall_timeout_seconds is now a derived formula
+    # (test_cron_pool_ceiling.py covers it), not a literal — check here only
+    # that it stays a genuinely independent knob: its own template text
+    # never references the inactivity timeout, so neither can silently
+    # collapse into the other.
+    assert wall_timeout_seconds() > 0
+    assert (
+        "hermes_agent_cron_inactivity_timeout_seconds"
+        not in defaults["hermes_agent_cron_wall_timeout_seconds"]
+    )
     assert (
         "HERMES_CRON_TIMEOUT={{ hermes_agent_cron_inactivity_timeout_seconds }}"
         in environment
