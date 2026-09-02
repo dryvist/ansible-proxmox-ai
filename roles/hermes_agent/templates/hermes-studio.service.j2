@@ -34,6 +34,16 @@ Environment=PATH={{ hermes_agent_studio_node_prefix }}/bin:{{ hermes_agent_bun_i
 # vhost: that route is SSO-gated and answers an HTML login page, which this
 # client cannot parse.
 Environment=GATEWAY_URL=http://127.0.0.1:{{ hermes_agent_api_server_port }}
+# Studio must never run a gateway of its own. Left to its defaults it spawns
+# `hermes gateway run --replace` as a child of its node server whenever it
+# cannot see one, and that child's --replace handoff SIGTERMs the systemd
+# gateway within a minute of every start. After a reboot the two raced until
+# hermes-gateway.service hit its start limit and the fleet ran on the Studio's
+# unmanaged child — no Restart=, no OnFailure page, none of the unit's
+# environment. hermes-gateway.service is the only gateway; Studio reaches it
+# over GATEWAY_URL above.
+Environment=HERMES_WEB_UI_DISABLE_GATEWAY_AUTOSTART=1
+Environment=HERMES_WEB_UI_DISABLE_GATEWAY_STARTUP_RECOVERY=1
 EnvironmentFile=-{{ hermes_agent_hermes_home }}/.env
 # --no-open or it tries to launch a browser on a headless guest.
 ExecStart={{ hermes_agent_studio_bin }} start {{ hermes_agent_studio_port }} --no-open
