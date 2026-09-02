@@ -109,6 +109,20 @@ names plus `kanban-enqueue-safety-net`) and *pauses* (not deletes) the three
 (`zammad-incident-review-v2`, `github-org-triage-v2`, `daily-operator-summary-v2`),
 so a guest converged mid-migration does not double-fire.
 
+## What a failed run posts (and when)
+
+Upstream wraps every delivered run in a `Cronjob Response:` header and a
+"To stop or manage this job" footer; the role turns that off
+(`cron.wrap_response: false` in `config.yaml`). A failed run is routed to the
+issues channel by `_cron_route` (`tasks/patches_retry_and_markup.yml`), and
+repeated failures follow an escalate-then-quiet ladder there: the 1st, 3rd
+and 10th failure in a row post, then every 50th. Every failure is still
+recorded in the job store (`failure_streak`, `last_status`); only the Slack
+post is gated, and a success resets the streak so the next failure posts
+again. A script-fed cron that declares its own failure with the
+`[ISSUES]` marker is never gated — its runner streak is zero because the
+script exited 0 — so those scripts own their own once-per-transition logic.
+
 ## Script crons (`--no-agent --script`)
 
 These carry no LLM in their fact path, which is why the digests among them

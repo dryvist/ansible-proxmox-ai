@@ -215,6 +215,27 @@
       # match on the text: a successful job REPORTING an error it observed is a
       # finding and must stay on the work surface.
       _CRON_ISSUES_MARKER = "{{ hermes_agent_cron_issues_marker }}"
+      # Escalate-then-quiet ladder for a job that keeps failing (Vikunja 1858,
+      # 1853). A run's failure is recorded by mark_job_run whether or not it is
+      # delivered; only the Slack post is gated. The streak is the persisted
+      # `failure_streak` plus this run, the same arithmetic upstream's nudge
+      # uses because delivery happens before the run is recorded. Post at the
+      # first failure, the third and the tenth, then every fiftieth; a
+      # success resets the streak upstream, so the next failure posts again.
+      # One job failing every 15 minutes for a day is 4 posts instead of 96.
+      _CRON_FAILURE_LADDER = (1, 3, 10)
+      _CRON_FAILURE_REPEAT_EVERY = 50
+
+
+      def _cron_failure_streak(job):
+          try:
+              return int(job.get("failure_streak") or 0) + 1
+          except (TypeError, ValueError):
+              return 1
+
+
+      def _cron_failure_on_ladder(streak):
+          return streak in _CRON_FAILURE_LADDER or streak % _CRON_FAILURE_REPEAT_EVERY == 0
 
 
       def _cron_route(job, success, content):
@@ -223,15 +244,25 @@
           Routes when the runner reports failure, or when a script-fed job
           declared its own failure with the marker prefix. The marker is
           stripped so it never reaches Slack. Never mutates the caller's job.
+          A runner failure off the ladder is delivered nowhere (`local`), so
+          the run is still recorded as failed without another Slack post.
           """
           declared = content.lstrip().startswith(_CRON_ISSUES_MARKER)
           if declared:
               content = content.lstrip()[len(_CRON_ISSUES_MARKER):].lstrip()
           if (success and not declared) or not _CRON_ISSUES_TARGET:
               return job, content
+          name = job.get("name", job.get("id", "?"))
+          if not success:
+              streak = _cron_failure_streak(job)
+              if not _cron_failure_on_ladder(streak):
+                  logger.info(
+                      "Job '%s': failure %d in a row — off the ladder, "
+                      "recorded but not posted", name, streak,
+                  )
+                  return {**job, "deliver": "local"}, content
           logger.info(
-              "Job '%s': run failed — routing delivery to the issues channel",
-              job.get("name", job.get("id", "?")),
+              "Job '%s': run failed — routing delivery to the issues channel", name,
           )
           return {**job, "deliver": _CRON_ISSUES_TARGET}, content
   notify: Restart hermes-gateway
