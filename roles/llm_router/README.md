@@ -140,9 +140,13 @@ EnvironmentFile bought nothing.
 
 Deliberately absent: `fail_closed_budget_enforcement`. It governs LiteLLM's
 Postgres-backed virtual-key budgets, not the provider budget above, and 503s
-when spend can't be verified against Redis or a database — this proxy issues
-no virtual keys and has no database, so it would be inert at best and a 503
-generator on the fabric's only front door at worst.
+when spend can't be verified against Redis or a database.
+
+The proxy now **has** a database (see `defaults/main/45-database.yml`), so that
+is no longer the reason. The reason is the other one, and it still stands: this
+proxy **issues no virtual keys**, so there are no key budgets to enforce and the
+setting would be inert at best, a 503 generator on the fabric's only front door
+at worst. Reconsider it when virtual keys are issued, not before.
 
 ## Model role aliases
 
