@@ -98,6 +98,37 @@
       - langfuse_docker_init_public_key
       - langfuse_docker_init_secret_key
 
+# =============================================================================
+# ClickHouse step upgrade
+# =============================================================================
+# ClickHouse must cross one minor line at a time; the deployed LTS cannot jump
+# straight to the pinned tag. Walk the path first so the pinned tag is only ever
+# reached from its immediate predecessor. Skipped entirely on a fresh install
+# (nothing running yet) and on an already-converged host (no pending hops).
+
+- name: Read the running ClickHouse image tag
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      cid=$(docker compose -f {{ langfuse_docker_data_dir }}/docker-compose.yml
+      ps -q {{ langfuse_docker_clickhouse_service }});
+      [ -n "$cid" ] || exit 0;
+      docker inspect -f '{{ '{{' }} .Config.Image {{ '}}' }}' "$cid" | awk -F: '{print $NF}'
+  register: langfuse_docker_clickhouse_running
+  changed_when: false
+  failed_when: false
+
+- name: Upgrade ClickHouse one minor line at a time
+  ansible.builtin.include_tasks: clickhouse_upgrade.yml
+  vars:
+    langfuse_docker_clickhouse_hop: "{{ item }}"
+  loop: >-
+    {{ langfuse_docker_clickhouse_upgrade_path
+       | select('version', langfuse_docker_clickhouse_running.stdout | trim,
+                '>')
+       | list }}
+  when: (langfuse_docker_clickhouse_running.stdout | default('') | trim) | length > 0
+
 - name: Deploy Langfuse docker-compose template
   ansible.builtin.template:
     src: docker-compose.yml.j2
@@ -107,10 +138,6 @@
     mode: "0600"  # contains datastore passwords + app secrets
   no_log: true
   notify: Restart langfuse
-
-# =============================================================================
-# Compose Deployment (continued)
-# =============================================================================
 
 - name: Deploy Langfuse via docker compose
   community.docker.docker_compose_v2:
@@ -137,7 +164,9 @@
 
 - name: Verify Langfuse health endpoint responds
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ langfuse_docker_web_port }}/api/health"
+    # The web container serves its health route under /api/public/health;
+    # /api/health is the worker's route and 404s here on both 3.x and 4.x.
+    url: "http://127.0.0.1:{{ langfuse_docker_web_port }}/api/public/health"
     method: GET
     status_code: 200
   register: langfuse_docker_health

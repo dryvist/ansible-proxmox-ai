@@ -1,0 +1,45 @@
+---
+# One ClickHouse upgrade hop. Included in list order from
+# `langfuse_docker_clickhouse_upgrade_path` for every hop newer than the tag
+# currently running, so the server crosses one minor line at a time instead of
+# jumping straight to the pinned tag. `langfuse_docker_clickhouse_hop` is the
+# tag for this hop.
+
+- name: Render the Langfuse compose file at ClickHouse {{ langfuse_docker_clickhouse_hop }}
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ langfuse_docker_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    langfuse_docker_clickhouse_version: "{{ langfuse_docker_clickhouse_hop }}"
+  no_log: true
+
+- name: Start ClickHouse {{ langfuse_docker_clickhouse_hop }}
+  community.docker.docker_compose_v2:
+    project_src: "{{ langfuse_docker_data_dir }}"
+    services:
+      - "{{ langfuse_docker_clickhouse_service }}"
+    state: present
+    wait: true
+    wait_timeout: 600
+  no_log: true
+
+- name: Confirm ClickHouse reports {{ langfuse_docker_clickhouse_hop }}
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -f {{ langfuse_docker_data_dir }}/docker-compose.yml
+      exec -T {{ langfuse_docker_clickhouse_service }}
+      clickhouse-client --user {{ langfuse_docker_clickhouse_user }}
+      --password {{ langfuse_docker_clickhouse_password }}
+      --query "SELECT version()"
+  register: langfuse_docker_clickhouse_hop_version
+  changed_when: false
+  retries: 30
+  delay: 10
+  until: >-
+    langfuse_docker_clickhouse_hop_version.rc == 0
+    and langfuse_docker_clickhouse_hop_version.stdout
+        is version(langfuse_docker_clickhouse_hop, '>=')
+  no_log: true

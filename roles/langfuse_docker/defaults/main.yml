@@ -13,12 +13,37 @@
 # underlying dependency updates visible for review.
 # web and worker MUST share the same Langfuse version.
 # =============================================================================
-langfuse_docker_web_image: "docker.langfuse.com/langfuse/langfuse:4"
-langfuse_docker_worker_image: "docker.langfuse.com/langfuse/langfuse-worker:4"
+# Exact tags, never a floating major: a floating `:4` silently performs the
+# one-way v4 data migration on whatever release happens to be current at
+# converge time.
+langfuse_docker_web_image: "docker.langfuse.com/langfuse/langfuse:4.27.0"
+langfuse_docker_worker_image: "docker.langfuse.com/langfuse/langfuse-worker:4.27.0"
 langfuse_docker_postgres_image: "postgres:17"
-# ClickHouse 24.8 is an upstream LTS line and satisfies Langfuse v3's minimum.
-langfuse_docker_clickhouse_image: "clickhouse/clickhouse-server:26.6"
+# ClickHouse stops at 25.12. 26.x is excluded — upstream reports CORRUPTED_DATA
+# on a 25 -> 26 upgrade. ClickHouse only supports one-minor-line-at-a-time
+# upgrades across these boundaries, so the deployed 24.8 LTS reaches 25.12 by
+# way of 25.8: each hop in `langfuse_docker_clickhouse_upgrade_path` is started
+# and brought healthy in list order before the pinned tag is applied
+# (tasks/clickhouse_upgrade.yml). Hops at or below the running tag are skipped,
+# so a converged host is a no-op.
+langfuse_docker_clickhouse_image_repo: "clickhouse/clickhouse-server"
+langfuse_docker_clickhouse_version: "25.12"
+langfuse_docker_clickhouse_upgrade_path:
+  - "25.8"
+  - "25.12"
+langfuse_docker_clickhouse_image: >-
+  {{ langfuse_docker_clickhouse_image_repo }}:{{ langfuse_docker_clickhouse_version }}
 langfuse_docker_redis_image: "redis:8-alpine"
+
+# =============================================================================
+# v4 migration mode
+# =============================================================================
+# `dual` keeps the v3 read/write paths alive alongside the v4 event tables, so
+# the v2 public APIs and existing trace history stay queryable while v4 writes
+# accumulate. Historic backfill stays off — it triples ClickHouse disk.
+langfuse_docker_migration_v4_write_mode: dual
+langfuse_docker_migration_v4_native_otel_behaviour: dual_write
+langfuse_docker_migration_v4_historic_backfill: "false"
 
 langfuse_docker_container_name: langfuse-web
 langfuse_docker_worker_container_name: langfuse-worker
