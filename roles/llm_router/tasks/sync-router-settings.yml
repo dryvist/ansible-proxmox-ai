@@ -1,0 +1,43 @@
+---
+# Make the rendered file authoritative for router_settings.
+#
+# store_model_in_db gates config reconciliation for EVERY config section, not
+# just models (litellm/repositories/config_repository.py, reconcile_config:
+# "DB values override YAML values"). We need it true for role deployments, so
+# the persisted router_settings row silently shadows this file on every start —
+# a stale routing_groups entry survived its removal here and kept registering a
+# handler that raised on every success event.
+#
+# /config/update merges per key and the request wins
+# (proxy_server.py: "router_settings: merge existing + request, request wins"),
+# so this sets only what the file owns and leaves every other key in the row
+# alone — including redis_password, which is stored there in cleartext and is
+# deliberately NOT sent through this surface.
+#
+# routing_groups is sent as an explicit empty list rather than omitted: an
+# omitted key keeps whatever the row already holds, which is the shadowing.
+#
+# ponytail: payload is derived from the rendered file rather than a hand-listed
+# key set, so a new router_settings key cannot drift out of sync.
+
+- name: Read the rendered proxy config back for its router_settings
+  ansible.builtin.slurp:
+    src: "{{ llm_router_config_file }}"
+  register: llm_router_rendered_config
+
+- name: Push the file's router_settings so the database cannot shadow it
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/config/update"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      router_settings: >-
+        {{ (llm_router_rendered_config.content | b64decode | from_yaml).router_settings
+           | default({}, true)
+           | dict2items | rejectattr('key', 'equalto', 'redis_password') | items2dict
+           | combine({'routing_groups': []}) }}
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  no_log: true
