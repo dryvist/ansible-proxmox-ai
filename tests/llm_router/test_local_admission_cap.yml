@@ -68,20 +68,41 @@
       ansible.builtin.set_fact:
         _config: "{{ _rendered_config | from_yaml }}"
 
-    # Local = anything pointed at the large-tier backends. Two exclusions:
-    # the OpenRouter tier carries its own ceilings (tuned for paid egress rate,
-    # not backend in-flight capacity), and the "*" passthrough shares the same
-    # api_base but has its OWN knob and is asserted separately below. Leaving
-    # the wildcard in here made the value assertion fail with [1, 2] on first
-    # run — the test finding its own selector bug rather than a code defect.
-    - name: Select the local (large-tier) deployments
+    # Local = anything pointed at a backend THIS FABRIC runs, matched against
+    # the role's own base-URL variables rather than a substring.
+    #
+    # It was `search('llm-large')` until 2026-09-02, and that is why the light
+    # and vLLM tiers shipped with no admission cap at all while this test
+    # reported "all local deployments carry an admission cap". Their api_base
+    # names a different host, so the selector silently dropped them and the
+    # assertion passed over a two-thirds-empty set — a false green, not a gap
+    # in coverage anyone could see from the result.
+    #
+    # Deriving the set from the variables that RENDER the deployments means a
+    # new local backend is in scope the moment it is added, instead of being
+    # invisible until someone remembers to widen a regex.
+    #
+    # Two exclusions remain: the OpenRouter/cloud tiers carry their own ceilings
+    # (tuned for paid egress rate, not backend in-flight capacity), and the "*"
+    # passthrough shares an api_base but has its OWN knob, asserted separately
+    # below. Leaving the wildcard in made the value assertion fail with [1, 2]
+    # on first run — the test finding its own selector bug.
+    - name: Select every deployment pointed at a local backend
       ansible.builtin.set_fact:
         _local: >-
           {{ _config.model_list
              | selectattr('litellm_params.api_base', 'defined')
-             | selectattr('litellm_params.api_base', 'search', 'llm-large')
+             | selectattr('litellm_params.api_base', 'in', _local_base_urls)
              | rejectattr('model_name', 'equalto', '*')
              | list }}
+      vars:
+        _local_base_urls: >-
+          {{ [llm_router_llm_large_base_url,
+              llm_router_llm_fast_base_url,
+              llm_router_llm_light_base_url,
+              llm_router_llm_vllm_base_url]
+             + ([llm_router_llm_large_standby_base_url]
+                if llm_router_llm_large_standby_base_url | length > 0 else []) }}
 
     - name: The test is not vacuous — local deployments actually rendered
       # Without this an empty selection would satisfy every assertion below and
@@ -104,9 +125,9 @@
         fail_msg: >-
           {{ _uncapped | length }} local deployment(s) render with no
           max_parallel_requests ({{ _uncapped | join(', ') }}). LiteLLM will
-          admit unbounded concurrency and forward it to a backend that accepts
-          2 in-flight, which refuses the excess INSTANTLY rather than queueing.
-          That is the 2026-08-07 agent-cron outage.
+          admit unbounded concurrency and forward it to a backend that serves
+          one request at a time, which refuses the excess INSTANTLY rather than
+          queueing. That is the 2026-08-07 agent-cron outage.
         success_msg: "all {{ _local | length }} local deployment(s) carry an admission cap"
       vars:
         _uncapped: >-
