@@ -3,17 +3,63 @@
 # OpenBao, once per resource-domain identity, and reads that domain's KV
 # subtree into a per-domain fact (`bao_<domain>_secrets`, hyphens become
 # underscores — e.g. `local-cloud` -> `bao_local_cloud_secrets`). Consumer
-# roles then read bao-first with an env fallback:
-#   X: "{{ bao_<domain>_secrets.X | default(lookup('env','X'), true) }}"
+# roles then read bao-first, and a SECRET-valued one carries no fallback:
+#   X: "{{ bao_<domain>_secrets.X | mandatory('X missing from OpenBao') }}"
+# Only non-secret values (URLs, ports, hostnames, model names, channel ids,
+# feature flags) may keep an env/default fallback.
 #
 # Each domain authenticates with its OWN least-privilege AppRole (see
 # terraform-proxmox docs/SECRETS_HIERARCHY.md) rather than one broad shared
 # identity — a domain's credentials only ever unlock that domain's KV subtree.
 #
-# SKIPS CLEANLY at two levels: the whole role no-ops when BAO_ADDR is unset
-# (no OpenBao configured at all), and each domain independently no-ops when
-# its own role_id/secret_id envs are unset (lets an operator migrate one
-# domain at a time onto OpenBao while the rest still fall back to env/SOPS).
+# FAIL-LOUD CONTRACT
+# -----------------
+# An empty secret is never a safe outcome: consumers render these values into
+# live configuration, and a converge that writes an empty password over a
+# working one is silent, immediate damage. So the role fails rather than
+# degrading, with exactly two deliberate exceptions:
+#
+#   1. BAO_ADDR unset AND no openbao-tagged node in the tofu inventory — the
+#      whole role no-ops. This is "OpenBao is not part of this converge at
+#      all", an explicit operator choice, not a failure to reach it.
+#   2. A domain named in `openbao_secrets_optional_domains` — an explicit,
+#      reviewable declaration that this domain's AppRole is not provisioned
+#      yet and its consumers tolerate absent values.
+#
+# Everything else is a hard failure:
+#   - OpenBao is configured but NO candidate endpoint answers /v1/sys/health
+#     unsealed (single endpoints being down is still tolerated — the probe
+#     fails over across the candidate list).
+#   - A required domain's role_id/secret_id envs are not both set.
+#   - Any KV read errors (403, 404, connection). Reads are no longer
+#     `failed_when: false`.
+#
+# Under --check the login and KV reads run FOR REAL (check_mode: false — they
+# change no state), so a check run resolves genuine values and the templates
+# diff correctly instead of against blanks. The seed/publish tasks write and
+# still honor check mode.
+#
+# Consumers must match this contract: a secret-valued variable uses
+# `| mandatory('...')`, never `| default(lookup('env', ...), true)`, and any
+# role that renders a password/key/token into a file includes
+# `openbao_secrets/tasks/assert_nonempty.yml` over the variable names it is
+# about to write.
+
+# Domains allowed to resolve empty instead of failing the play. The contract
+# default is an empty list; each entry below is a TODO to DELETE as soon as
+# that domain's AppRole + policy land (see the per-domain notes further down),
+# not a permanent exemption.
+# A single PATH may also be declared optional, independently of its domain, by
+# giving its mapping form `optional: true` (see ai-runner's vendor keys below).
+# A 404 on such a path is skipped with a visible warning naming the path; a 403
+# — which means the credential is wrong, not the secret absent — and every other
+# error still fail. Only the mapping path form supports the flag; a bare string
+# path is always required.
+openbao_secrets_optional_domains:
+  - ai-public   # AppRole/policy on secret/data/ai/public/* not provisioned yet
+  - ai-runner   # CIDR-bound runner AppRole not provisioned yet
+  - hermes      # HERMES_VAULT_ROLE_ID/SECRET_ID not in Doppler yet
+  - donna       # second agent identity, features presence-gated off until seeded
 
 # Shared connection inputs.
 openbao_secrets_bao_addr: "{{ lookup('env', 'BAO_ADDR') | default('', true) }}"
@@ -125,10 +171,16 @@ openbao_secrets_domains:
     secret_id_env: AI_RUNNER_VAULT_SECRET_ID
     paths:
       - ai/vikunja          # VIKUNJA_API_TOKEN — the dispatch-queue credential
+      # optional: these two vendor keys are seeded only when the paid-provider
+      # feature is enabled, so the path legitimately does not exist yet. A 404
+      # is skipped with a visible warning; a 403 or any other error still
+      # fails. Verified 404 against the live store 2026-09-02.
       - mount: "{{ openbao_secrets_ai_api_key_mount }}"
         path: "{{ openbao_secrets_ai_api_key_path_prefix }}/anthropic"  # ANTHROPIC_API_KEY
+        optional: true
       - mount: "{{ openbao_secrets_ai_api_key_mount }}"
         path: "{{ openbao_secrets_ai_api_key_path_prefix }}/openai"     # OPENAI_API_KEY
+        optional: true
   # Hermes' own least-privilege AppRole (policy `hermes`, path-exact on
   # ai/hermes — NOT local-llm's broader ai/* grant), already provisioned
   # server-side. NOT YET CONSUMED: every ai/hermes field
