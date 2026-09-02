@@ -130,8 +130,25 @@
                 'MEDIUM': 'hermes-cloud-gemini-routine',
                 'COMPLEX': 'hermes-cloud-gemini-agentic',
                 'REASONING': 'hermes-cloud-gemini-agentic'}
-          - _config.router_settings.routing_groups[0].models == ['hermes-cloud-openrouter']
-          - _config.router_settings.routing_groups[0].routing_strategy == 'cost-based-routing'
+          # REVIEWED EDIT 2026-09-02. This pair used to assert that a
+          # routing_group declared cost-based-routing over the final-resort
+          # group. That mechanism is PROHIBITED now: declaring it for one group
+          # registers LiteLLM's lowest-cost logging handler process-wide, and
+          # that handler raises on every success event from any deployment it
+          # does not manage, leaving the request's span half-closed.
+          #
+          # The policy the tripwire guards is unchanged — real prices, cheaper
+          # final-resort model first. It is now asserted directly: the key must
+          # be ABSENT (so reintroducing the mechanism trips this), and the two
+          # final-resort deployments must appear in ascending input price, read
+          # from their own litellm_params rather than restated as literals.
+          - "'routing_groups' not in _config.router_settings"
+          - _final_resort | length == 2
+          - >-
+            _final_resort | map(attribute='litellm_params.input_cost_per_token')
+            | map('float') | list | sort
+            == _final_resort | map(attribute='litellm_params.input_cost_per_token')
+               | map('float') | list
         fail_msg: >-
           Hermes cloud policy drifted: chain={{ _fallback_chain }},
           cloud_count={{ _cloud_models | length }}, monthly={{ _monthly_total }},
@@ -154,6 +171,11 @@
           {{ _config.router_settings.fallbacks
              | selectattr('hermes-default', 'defined')
              | map(attribute='hermes-default') | flatten }}
+        _final_resort: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.input_cost_per_token', 'defined')
+             | selectattr('model_name', 'equalto', 'hermes-cloud-openrouter')
+             | list }}
         _cloud_models: >-
           {{ _config.model_list
              | selectattr('model_name', 'match', '^hermes-cloud-')
