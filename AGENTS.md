@@ -1,3 +1,6 @@
+---
+skill-groups: [core, homelab]
+---
 # Ansible Proxmox AI — AI Agent Documentation
 
 Configure the homelab's AI/LLM applications on Proxmox VMs and LXC containers.
