@@ -118,7 +118,7 @@ stdout is delivered verbatim.
 | Cron | Schedule (UTC) | Script | Delivery |
 | --- | --- | --- | --- |
 | `splunk-status-digest` | `52 7-23 * * *` | `splunk-digest.py` | `slack:<hermes-all>` |
-| `kanban-digest` | `*/15 * * * *` | `kanban-digest.py` | `slack:<digest>` |
+| `kanban-digest` | `9 * * * *` | `kanban-digest.py` | `slack:<digest>` |
 | `splunk-error-digest` | `37 * * * *` | `splunk-error-digest.py` | `slack:<digest>` |
 | `splunk-security-digest` | `22 */6 * * *` | `splunk-security-digest.py` | `slack:<digest>` |
 | `zammad-auto-close` | `17 5 * * *` | `zammad-auto-close.py` | `slack:<hermes-all>` — **off by default** |
@@ -132,11 +132,17 @@ The older "hourly heartbeat, never `[SILENT]`" law is **superseded** — see the
 `kanban-digest` is the master board report: it reads `kanban.db` read-only and
 says what every card did since its own previous run. It is deliberately
 excluded from `hermes_agent_seeded_cron_names` because it is what tells you the
-board is wedged. A run with **nothing** to
-report (no completion, failure, retry or overrun) goes `[SILENT]` until
-`hermes_agent_kanban_digest_heartbeat_hours` (default 6) has elapsed since the
-last delivered post — the same gate `splunk-status-digest` carries. Real board
-activity is never gated by it.
+board is wedged. It ticks hourly (`hermes_agent_kanban_digest_interval_minutes`,
+60). A run with **nothing** to report (no completion, failure, retry or
+overrun) goes `[SILENT]` until `hermes_agent_kanban_digest_heartbeat_hours`
+(default 24) has elapsed since the last delivered post — the same gate
+`splunk-status-digest` carries. Real board activity is never gated by it.
+Every delivered post carries a stuck line — cards unsettled for more than 48
+hours, by status, with the age of the oldest — so a blocked pile is read as
+"44 blocked, oldest 9d" rather than a count that never changes. The
+stalled-board alarm follows an escalate-then-quiet ladder: it posts when the
+streak reaches its threshold, at three times it, then once a day, and posts
+one all-clear when the board drains again.
 
 `splunk-error-digest` and `splunk-security-digest` cluster events by **error
 signature** — the raw line with timestamps, pids, IPs, hex ids and numbers

@@ -18,14 +18,27 @@ would tell the operator to reboot for a load that was about to finish on its
 own, or to wait out something that never releases.
 
 Same no-LLM-in-the-fact-path contract as splunk-triage.py.j2 (stdout
-delivered verbatim to Slack via `--no-agent --deliver slack:<ch>`); no
-per-run state file, because the regression is computed fresh from the
-window's own samples each run — nothing to baseline against a previous run.
+delivered verbatim to Slack via `--no-agent --deliver slack:<ch>`). The
+regression is computed fresh from the window's own samples each run; the
+only state kept is the previous run's VERDICT, so a verdict is posted when it
+changes and not on every run (Vikunja 1859: 88 verdict posts a day, all
+benign).
+
+What posts, and what stays silent:
+  - SLOW CLIMB whose projected time to the critical band is within
+    HORIZON_HOURS: posts (the approach warning this job exists for).
+  - STEP CHANGE (a rank/model load), Falling, Stable, a climb too slow to
+    matter inside the horizon: silent — the verdict is still computed and
+    kept, and a climb that stops posts one all-clear.
+  - Zero rows or a failed query: the observation path is broken, so it is
+    posted to the issues channel via the [ISSUES] marker — once, on the
+    transition, then once more when rows come back.
 
 Pure stdlib + the `mcp` client (present in the hermes-agent venv).
 """
 import asyncio
 import json
+import os
 import sys
 
 # --- config (rendered from defaults/main/102-wired-trajectory.yml) -----------
@@ -36,7 +49,10 @@ SOURCETYPE = "{{ hermes_agent_wired_trajectory_sourcetype }}"
 EARLIEST = "{{ hermes_agent_wired_trajectory_window }}"
 WINDOW = EARLIEST.lstrip("-")
 CRITICAL_RATIO = {{ hermes_agent_wired_trajectory_critical_ratio }}
+HORIZON_HOURS = {{ hermes_agent_wired_trajectory_horizon_hours }}
 ISSUES_MARKER = "{{ hermes_agent_cron_issues_marker }}"
+SILENT = "[SILENT]"
+STATE_PATH = "{{ hermes_agent_hermes_home }}/state/wired-trajectory.json"
 
 # A step is judged by the RATE a single jump implies (delta / time-between-
 # samples), not by the raw delta — the same 0.05 jump means "rank load" at a
@@ -150,6 +166,8 @@ def gib(n):
 
 
 def build_report(samples):
+    """Return (text, verdict). The verdict is what decides whether text is
+    delivered; see should_post()."""
     if not samples:
         # Zero rows is a fact, not an all-clear — identical either to a
         # genuinely idle window or to the mac_perf pipeline having stopped.
@@ -157,7 +175,7 @@ def build_report(samples):
             f"*{TITLE}*\n"
             f"Zero rows for sourcetype={SOURCETYPE} in index={INDEX} over the "
             f"{WINDOW} window — cannot tell a quiet window from a dead pipeline."
-        )
+        ), "NO_DATA"
 
     current = samples[-1]
     current_ratio, current_wired, current_ceiling = current[1], current[2], current[3]
@@ -167,7 +185,9 @@ def build_report(samples):
     lines = [f"*{TITLE}*", f"Current: {current_ratio:.3f} ({gib(current_wired)} of "
              f"{gib(current_ceiling)}), {len(samples)} sample(s) over the {WINDOW} window."]
 
+    verdict = "STABLE"
     if step_rate >= STEP_IMPLIED_RATE_PER_HOUR:
+        verdict = "STEP"
         lines.append(
             f":zap: STEP CHANGE detected — one jump implied a "
             f"{step_rate:.2f} ratio/hr rate, far above any sustained climb. "
@@ -176,6 +196,7 @@ def build_report(samples):
         )
     elif slope is not None and slope >= CLIMB_MIN_SLOPE_PER_HOUR:
         eta = ((CRITICAL_RATIO - current_ratio) / slope) if current_ratio < CRITICAL_RATIO else 0.0
+        verdict = "CLIMB" if eta <= HORIZON_HOURS else "CLIMB_DISTANT"
         eta_text = (f"~{eta:.1f}h to the {CRITICAL_RATIO:.2f} critical band at this rate"
                     if eta > 0 else "already at or past the critical band")
         lines.append(
@@ -185,11 +206,60 @@ def build_report(samples):
             f"reclaimable by reboot, unlike the step-change case above."
         )
     elif slope is not None and slope <= -CLIMB_MIN_SLOPE_PER_HOUR:
+        verdict = "FALLING"
         lines.append(f"Falling — {slope:+.3f} ratio/hr over the window.")
     else:
         lines.append("Stable — no meaningful step or sustained slope this window.")
 
-    return "\n".join(lines)
+    return "\n".join(lines), verdict
+
+
+def load_previous_verdict():
+    try:
+        with open(STATE_PATH, encoding="utf-8") as handle:
+            return json.load(handle).get("verdict")
+    except (OSError, ValueError):
+        return None
+
+
+def save_verdict(verdict):
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump({"verdict": verdict}, handle)
+    os.replace(tmp, STATE_PATH)
+
+
+def should_post(verdict, previous):
+    """(post, all_clear) for this run's verdict against the previous one.
+
+    Posts only a CLIMB inside the horizon (every run while it holds — an
+    approach warning is not stale news), and one all-clear the run a held
+    CLIMB or NO_DATA stops. Everything else is silent.
+    """
+    if verdict in ("CLIMB", "NO_DATA"):
+        return True, False
+    if previous in ("CLIMB", "NO_DATA"):
+        return True, True
+    return False, False
+
+
+def render(text, verdict, previous):
+    """What this run prints, given the verdict gate."""
+    post, all_clear = should_post(verdict, previous)
+    if not post:
+        return SILENT
+    if verdict == "NO_DATA":
+        # The observation path is broken; the run itself succeeded. The
+        # marker routes it to the issues channel, and the state file keeps
+        # it to one post per transition instead of one per run.
+        if previous == "NO_DATA":
+            return SILENT
+        return f"{ISSUES_MARKER} {text}"
+    if all_clear:
+        what = "climb stopped" if previous == "CLIMB" else "samples flowing again"
+        return f":white_check_mark: {TITLE} — {what}.\n{text}"
+    return text
 
 
 def main():
@@ -208,10 +278,19 @@ def main():
             if not sub:
                 break
             root = sub[0]
+        previous = load_previous_verdict()
+        save_verdict("NO_DATA")
+        if previous == "NO_DATA":
+            # Still broken, already reported; the run is recorded either way.
+            print(SILENT)
+            return 0
         print(f"{ISSUES_MARKER} :warning: {TITLE} FAILED: {type(root).__name__}: {str(root)[:200]}")
         return 0
 
-    print(build_report(parse_samples(results)))
+    text, verdict = build_report(parse_samples(results))
+    previous = load_previous_verdict()
+    save_verdict(verdict)
+    print(render(text, verdict, previous))
     return 0
 
 
