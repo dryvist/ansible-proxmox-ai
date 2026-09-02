@@ -110,28 +110,13 @@
   when: openbao_secrets_active
 
 # community.hashi_vault.vault_login declares supports_check_mode but SHORT-
-# CIRCUITS under --check: it returns {'auth': {'client_token': None}} instead
-# of actually authenticating. That null token flows into vault_kv2_get in
-# fetch_domain.yml, every read fails (swallowed by failed_when: false and
-# no_log: true), every domain merges empty, and every downstream presence
-# assertion trips — indistinguishable from a genuinely missing credential.
-# Warn loudly here so a --check run is never misread as "credentials are
-# missing" when the real cause is check mode itself.
-- name: WARNING — OpenBao fetch is inert under --check (every bao value will be empty)
-  ansible.builtin.debug:
-    msg: >-
-      --check mode: community.hashi_vault.vault_login cannot actually
-      authenticate under check mode (it returns a null client_token), so
-      every OpenBao read in this role fails and every bao_<domain>_secrets
-      fact merges empty. Any downstream assertion about a missing OpenBao-
-      sourced value (e.g. "no Vikunja write token is set") is expected in
-      --check and does NOT mean the credential is actually missing. Run
-      without --check to validate OpenBao-sourced values for real.
-  run_once: true
-  when:
-    - openbao_secrets_active
-    - ansible_check_mode
-
+# CIRCUITS under --check, returning {'auth': {'client_token': None}} instead of
+# authenticating. That null token used to flow into every vault_kv2_get, so a
+# --check run produced empty domains and looked identical to a missing
+# credential. Both the login and the KV reads now carry check_mode: false
+# (fetch_domain.yml) — they change no state, so running them for real under
+# --check is safe and gives the templates real values to diff against. The
+# seed/publish tasks below WRITE and still honor check mode.
 - name: Fetch each domain's secrets from OpenBao (delegated to the controller)
   when: openbao_secrets_active
   delegate_to: localhost

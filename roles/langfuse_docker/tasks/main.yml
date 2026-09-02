@@ -180,7 +180,14 @@
           mandatory('LLM_ROUTER_MASTER_KEY missing: the OpenBao fetch did not
                      supply the router master key for the Langfuse connection')
         }}
-    status_code: 200
+    # PUT on this endpoint is an upsert: 200 when it updates an existing
+    # connection, 201 when it creates one. Anything else — 401 on a bad init
+    # key, 400 on a malformed body, 5xx from a half-started web container — is
+    # a real failure. It used to be swallowed by `failed_when: false`, so a
+    # Langfuse that never got its router connection still reported success.
+    status_code: [200, 201]
+  register: langfuse_docker_llm_connection
   changed_when: false
+  # The request body carries the router master key.
   no_log: true
-  failed_when: false
+  failed_when: langfuse_docker_llm_connection.status not in [200, 201]

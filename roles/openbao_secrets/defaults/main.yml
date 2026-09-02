@@ -34,6 +34,11 @@
 #   - Any KV read errors (403, 404, connection). Reads are no longer
 #     `failed_when: false`.
 #
+# Under --check the login and KV reads run FOR REAL (check_mode: false — they
+# change no state), so a check run resolves genuine values and the templates
+# diff correctly instead of against blanks. The seed/publish tasks write and
+# still honor check mode.
+#
 # Consumers must match this contract: a secret-valued variable uses
 # `| mandatory('...')`, never `| default(lookup('env', ...), true)`, and any
 # role that renders a password/key/token into a file includes
@@ -44,6 +49,12 @@
 # default is an empty list; each entry below is a TODO to DELETE as soon as
 # that domain's AppRole + policy land (see the per-domain notes further down),
 # not a permanent exemption.
+# A single PATH may also be declared optional, independently of its domain, by
+# giving its mapping form `optional: true` (see ai-runner's vendor keys below).
+# A 404 on such a path is skipped with a visible warning naming the path; a 403
+# — which means the credential is wrong, not the secret absent — and every other
+# error still fail. Only the mapping path form supports the flag; a bare string
+# path is always required.
 openbao_secrets_optional_domains:
   - ai-public   # AppRole/policy on secret/data/ai/public/* not provisioned yet
   - ai-runner   # CIDR-bound runner AppRole not provisioned yet
@@ -160,10 +171,16 @@ openbao_secrets_domains:
     secret_id_env: AI_RUNNER_VAULT_SECRET_ID
     paths:
       - ai/vikunja          # VIKUNJA_API_TOKEN — the dispatch-queue credential
+      # optional: these two vendor keys are seeded only when the paid-provider
+      # feature is enabled, so the path legitimately does not exist yet. A 404
+      # is skipped with a visible warning; a 403 or any other error still
+      # fails. Verified 404 against the live store 2026-09-02.
       - mount: "{{ openbao_secrets_ai_api_key_mount }}"
         path: "{{ openbao_secrets_ai_api_key_path_prefix }}/anthropic"  # ANTHROPIC_API_KEY
+        optional: true
       - mount: "{{ openbao_secrets_ai_api_key_mount }}"
         path: "{{ openbao_secrets_ai_api_key_path_prefix }}/openai"     # OPENAI_API_KEY
+        optional: true
   # Hermes' own least-privilege AppRole (policy `hermes`, path-exact on
   # ai/hermes — NOT local-llm's broader ai/* grant), already provisioned
   # server-side. NOT YET CONSUMED: every ai/hermes field

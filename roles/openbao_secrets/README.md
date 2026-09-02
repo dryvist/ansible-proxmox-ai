@@ -248,18 +248,17 @@ Two `ansible-playbook` flags that look like safe pre-flight checks give
 misleading results against this role and this repo's dynamic inventory.
 Neither is a bug to work around — know what each one actually tells you.
 
-- **`--check` is a guaranteed false negative on every OpenBao-gated
-  assertion.** `community.hashi_vault.vault_login` declares
-  `supports_check_mode: true` but short-circuits under check mode, returning
-  a null `client_token` instead of authenticating. That null token flows into
-  every `vault_kv2_get` call in `fetch_domain.yml`. Those reads are no longer
-  swallowed (`failed_when: false` was removed), so a `--check` run now fails
-  outright on the first read rather than merging empty — loud, but for a
-  reason that has nothing to do with the credential actually being missing. The role now emits a loud warning naming this exact cause
-  whenever OpenBao is otherwise reachable and configured but the run is
-  `--check`. Treat a `--check` failure on a bao-sourced assertion as
-  uninformative; run the real converge (or at minimum this role without
-  `--check`) to know whether the credential is actually missing.
+- **`--check` fetches secrets for real, on purpose.**
+  `community.hashi_vault.vault_login` declares `supports_check_mode: true` but
+  short-circuits under check mode, returning a null `client_token` instead of
+  authenticating. That null token used to flow into every `vault_kv2_get` call
+  in `fetch_domain.yml`, so a `--check` run merged every domain empty and every
+  bao-gated assertion tripped — indistinguishable from a genuinely missing
+  credential. The login and the KV read loop now carry `check_mode: false`.
+  They change no state, so running them for real under `--check` is safe, and
+  it is what lets a `--check` diff show the real rendered config instead of
+  blanks. The seed/publish tasks WRITE and still honor check mode, so a
+  `--check` run never seeds or rotates anything.
 - **`--list-hosts` reports 0 hosts.** This repo's inventory groups
   (`hermes_agent_group`, `ai_runner`, ...) are not static — they are built at
   runtime by `add_host` in `inventory/load_tofu.yml`, which itself is a play
