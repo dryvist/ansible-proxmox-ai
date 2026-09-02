@@ -1,0 +1,35 @@
+---
+# Reusable guard for any role that renders a password, API key, or token into a
+# file. Include it immediately before the template/copy task, naming the
+# variables about to be written:
+#
+#   - name: Assert the DB credentials are present before templating
+#     ansible.builtin.include_tasks: >-
+#       {{ role_path }}/../openbao_secrets/tasks/assert_nonempty.yml
+#     vars:
+#       openbao_secrets_assert_names:
+#         - langfuse_docker_postgres_password
+#       openbao_secrets_assert_context: langfuse .env
+#
+# Undefined, null, empty and whitespace-only all fail. Ansible's
+# `default(x, true)` treats '' as missing but happily passes '   ', and a
+# whitespace-only password is just as broken as an empty one.
+
+- name: Assert every named secret variable is defined and non-empty
+  ansible.builtin.assert:
+    that:
+      - >-
+        lookup('ansible.builtin.vars', item, default='')
+        | string | trim | length > 0
+    fail_msg: >-
+      {{ item }} is empty or undefined, so
+      {{ openbao_secrets_assert_context | default('this role') }} would be
+      written with a blank secret. Refusing: a converge that renders an empty
+      credential overwrites the working one. The OpenBao fetch did not supply
+      this value — check the domain's AppRole envs and the KV path it reads.
+    success_msg: "{{ item }} is present"
+    quiet: true
+  loop: "{{ openbao_secrets_assert_names }}"
+  loop_control:
+    label: "{{ item }}"
+  no_log: true

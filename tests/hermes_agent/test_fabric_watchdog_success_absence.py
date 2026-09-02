@@ -147,9 +147,67 @@ def test_recovery_clears_the_latch_so_the_next_stall_can_page_again() -> None:
     run(jobs, state, now=NOW + 200 * MINUTE)
     healthy = [job("digest", cadence_min=15, last_ok_ago_min=-201)]
     _, recovered, state, _ = run(healthy, state, now=NOW + 205 * MINUTE)
-    assert recovered == ["default/digest"]
+    assert len(recovered) == 1 and recovered[0].startswith("default/digest ")
     stale, _, _, _ = run(healthy, state, now=NOW + 500 * MINUTE)
     assert len(stale) == 1, "a latch that never clears silences every later stall"
+
+
+def test_a_risen_threshold_cannot_declare_recovery_without_a_new_success() -> None:
+    """The defect this branch was rewritten for, reproduced from production.
+
+    `limit` is MISSED_CYCLES x an OBSERVED cadence, so it moves on its own. The
+    rejected design recovered whenever `silent` fell under `limit`. On
+    2026-08-31 a job's measured cadence spiked (72m -> 192m), tripling its
+    threshold above a silence that was still growing, and the watchdog posted
+    ":white_check_mark: is succeeding again" for a job that had not run in six
+    hours. It did that three times, re-alerting minutes later each time.
+
+    Here the job's last success never moves — only its reported cadence grows.
+    Under the rejected design this recovers; under the shipped one it cannot.
+    """
+    stalled = [job("digest", cadence_min=15, last_ok_ago_min=1)]
+    state = settle(stalled)
+
+    alerted, _, state, _ = run(stalled, state, now=NOW + 200 * MINUTE)
+    assert len(alerted) == 1, "fixture must alert first, or it proves nothing about recovery"
+
+    # Same frozen success, a cadence wide enough that 3x it now exceeds the gap.
+    # 200m silent against 3 x 90m = 270m: not overdue, and still no new run.
+    spiked = [job("digest", cadence_min=90, last_ok_ago_min=201)]
+    stale, recovered, state, _ = run(spiked, state, now=NOW + 201 * MINUTE)
+
+    assert recovered == [], (
+        "declared recovery with no new success — a threshold derived from "
+        "observed cadence cleared its own alert"
+    )
+    assert stale == [], "must not re-alert either; the latch is still held"
+
+    # And the latch must still be live: a real success afterwards still recovers,
+    # so this is a correctness gate rather than a latch that never clears.
+    healthy = [job("digest", cadence_min=90, last_ok_ago_min=-202)]
+    _, recovered, state, _ = run(healthy, state, now=NOW + 205 * MINUTE)
+    assert len(recovered) == 1 and recovered[0].startswith("default/digest ")
+
+
+def test_the_all_clear_carries_the_numbers_behind_it() -> None:
+    """A bare "is succeeding again" is indistinguishable true from false.
+
+    The alert side has always posted silence and threshold; the all-clear posted
+    only a name. That asymmetry is why the recovery defect above survived a full
+    day of investigation — three people read the channel, and the one number
+    that would have exposed it went to the log and nowhere else.
+    """
+    jobs = [job("digest", cadence_min=15, last_ok_ago_min=1)]
+    state = settle(jobs)
+    run(jobs, state, now=NOW + 200 * MINUTE)
+    healthy = [job("digest", cadence_min=15, last_ok_ago_min=-201)]
+    _, recovered, _, _ = run(healthy, state, now=NOW + 205 * MINUTE)
+
+    assert len(recovered) == 1
+    entry = recovered[0]
+    assert "since last success" in entry, "all-clear must state how stale the job was"
+    assert "threshold" in entry, "all-clear must state the threshold it was judged against"
+    assert "cadence" in entry, "all-clear must state the cadence the threshold came from"
 
 
 # --- Logging and threshold contracts -----------------------------------------

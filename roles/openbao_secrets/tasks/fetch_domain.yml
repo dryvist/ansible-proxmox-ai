@@ -2,10 +2,12 @@
 # Fetches ONE domain's KV subtree from OpenBao, invoked once per entry in
 # openbao_secrets_domains (the loop var is `openbao_domain`; delegation and
 # run_once are set by the caller's enclosing block in main.yml, so every task
-# here inherits them). SKIPS CLEANLY when this specific domain's role_id/
-# secret_id envs are unset — an operator can migrate one domain at a time
-# onto OpenBao while the rest still fall back to env/SOPS via the
-# group_vars/all.yml `{}` defaults.
+# here inherits them). FAIL-LOUD: a domain whose role_id/secret_id envs are
+# unset, or whose KV reads error, aborts the play. The ONLY way a domain may
+# resolve empty is by naming it in `openbao_secrets_optional_domains` — an
+# explicit, reviewable opt-out for a domain whose AppRole is not provisioned
+# yet. A silently empty domain used to flow straight into consumer templates
+# and overwrite live credentials with blanks.
 
 - name: Resolve role_id/secret_id from env for {{ openbao_domain.name }}
   ansible.builtin.set_fact:
@@ -13,15 +15,34 @@
     openbao_secrets_domain_secret_id: "{{ lookup('env', openbao_domain.secret_id_env) | default('', true) }}"
   no_log: true
 
-- name: Report missing credentials (env/SOPS fallback) for {{ openbao_domain.name }}
+- name: Fail on missing credentials for the required domain {{ openbao_domain.name }}
+  ansible.builtin.fail:
+    msg: >-
+      {{ openbao_domain.role_id_env }} / {{ openbao_domain.secret_id_env }}
+      are not both set, so the {{ openbao_domain.name }} domain would resolve
+      EMPTY. Refusing to continue: consumers render these values into live
+      config, and an empty value overwrites a working credential. Supply both
+      envs, or add '{{ openbao_domain.name }}' to
+      openbao_secrets_optional_domains to declare this domain deliberately
+      unprovisioned.
+  when:
+    - openbao_domain.name not in openbao_secrets_optional_domains
+    - >-
+      openbao_secrets_domain_role_id | length == 0
+      or openbao_secrets_domain_secret_id | length == 0
+
+- name: Report a deliberately optional, unprovisioned domain {{ openbao_domain.name }}
   ansible.builtin.debug:
     msg: >-
       {{ openbao_domain.role_id_env }} / {{ openbao_domain.secret_id_env }}
-      not both set — skipping the {{ openbao_domain.name }} domain; its
-      consumer roles fall back to env/SOPS secrets.
-  when: >-
-    openbao_secrets_domain_role_id | length == 0
-    or openbao_secrets_domain_secret_id | length == 0
+      not both set, and {{ openbao_domain.name }} is listed in
+      openbao_secrets_optional_domains — skipping this domain by explicit
+      declaration. Its consumers must tolerate absent values.
+  when:
+    - openbao_domain.name in openbao_secrets_optional_domains
+    - >-
+      openbao_secrets_domain_role_id | length == 0
+      or openbao_secrets_domain_secret_id | length == 0
 
 - name: Fetch and merge secrets for {{ openbao_domain.name }}
   when:
@@ -44,8 +65,24 @@
         secret_id: "{{ openbao_secrets_domain_secret_id }}"
         validate_certs: "{{ openbao_secrets_validate_certs }}"
       register: openbao_secrets_domain_login
+      # Reads only. vault_login declares check-mode support but short-circuits
+      # to a null client_token, which used to make every downstream read fail
+      # and every domain merge empty — a --check run then looked exactly like a
+      # missing credential. Running it for real under --check costs nothing
+      # (no state changes) and lets the templates diff against real values.
+      check_mode: false
 
-    - name: Read each KV path, tolerating not-yet-seeded ones, for {{ openbao_domain.name }}
+    # `failed_when: false` here no longer SWALLOWS anything — every error is
+    # re-raised by the explicit gate immediately below, which is what lets one
+    # bad path be classified instead of aborting the whole loop at the first
+    # one. Do NOT read it as the old tolerate-everything behaviour.
+    #
+    # It has to be done this way: a bare `msg` is NOT injected as a variable
+    # into `failed_when` on ansible-core 2.21 (verified — a `failed_when:
+    # msg is defined` on a task that really did fail evaluates FALSE and the
+    # task reports ok), so the per-item classification is only reliable
+    # against the REGISTERED results.
+    - name: Read each KV path for {{ openbao_domain.name }}
       community.hashi_vault.vault_kv2_get:
         url: "{{ hostvars['localhost'].openbao_secrets_active_addr | default(openbao_secrets_bao_addr, true) }}"
         auth_method: token
@@ -56,7 +93,57 @@
         validate_certs: "{{ openbao_secrets_validate_certs }}"
       loop: "{{ openbao_domain.paths }}"
       register: openbao_secrets_domain_reads
+      # Reads only — see the vault_login note above. The seed/publish tasks in
+      # this role WRITE and deliberately keep honoring check mode.
+      check_mode: false
       failed_when: false
+
+    # The gate. A 403, a connection error, or a 404 on a REQUIRED path aborts
+    # the play — swallowing those produced an empty domain dict that consumers
+    # rendered over live credentials. The ONE tolerated case is a 404 on a path
+    # declared `optional: true` (see defaults/main.yml): a vendor key seeded
+    # only when its feature is turned on. vault_kv2_get's own messages
+    # discriminate exactly — a missing path fails with "Invalid or missing
+    # path [...]" and a permission failure with "Forbidden: ..." — so a wrong
+    # credential can never be mistaken for an absent secret. A successful read
+    # carries no `msg` at all.
+    - name: Fail on any unreadable required KV path for {{ openbao_domain.name }}
+      ansible.builtin.fail:
+        msg: >-
+          OpenBao read failed for
+          '{{ item.item.mount | default(openbao_secrets_kv_mount) }}/{{ item.item.path | default(item.item) }}'
+          in the {{ openbao_domain.name }} domain: {{ item.msg }}
+          Refusing to continue with a partial secret set — consumers render
+          these values into live config. If this path is a vendor key that is
+          only seeded when its feature is enabled, declare it `optional: true`
+          in openbao_secrets_domains; do NOT widen this to tolerate a 403.
+      loop: "{{ openbao_secrets_domain_reads.results }}"
+      loop_control:
+        label: "{{ item.item.path | default(item.item) }}"
+      when:
+        - item.msg is defined
+        - not (item.item is mapping
+               and (item.item.optional | default(false) | bool)
+               and item.msg is search('^Invalid or missing path'))
+      no_log: false
+
+    # Loud, not silent: an optional path that was skipped is named here, so a
+    # consumer resolving empty is traceable to the exact unseeded path.
+    - name: Warn about optional paths that are not seeded for {{ openbao_domain.name }}
+      ansible.builtin.debug:
+        msg: >-
+          OpenBao path
+          '{{ item.item.mount | default(openbao_secrets_kv_mount) }}/{{ item.item.path }}'
+          is declared optional and returned 404 (not seeded). Skipping it — any
+          consumer of a field from this path will resolve empty.
+      loop: "{{ openbao_secrets_domain_reads.results }}"
+      loop_control:
+        label: "{{ item.item.path | default(item.item) }}"
+      when:
+        - item.msg is defined
+        - item.item is mapping
+        - item.item.optional | default(false) | bool
+      no_log: false
 
     - name: Merge readable paths into one dict for {{ openbao_domain.name }}
       ansible.builtin.set_fact:

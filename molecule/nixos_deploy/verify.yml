@@ -1,0 +1,29 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    # The guard is the role's entire untagged surface, so a scenario that only
+    # fed it valid input would assert nothing. Empty each required field in
+    # turn and require the refusal.
+    - name: Every required field is individually load-bearing
+      ansible.builtin.include_tasks: tasks/refuse_empty_field.yml
+      loop:
+        - flake_ref
+        - host_attr
+        - target
+      loop_control:
+        loop_var: field
+
+    # A positive control does not validate the question on its own, but without
+    # it the loop above would pass for the wrong reason: an always-failing role
+    # satisfies every negative case.
+    - name: A fully specified deploy must pass the guard
+      ansible.builtin.include_role:
+        name: nixos_deploy
+      vars:
+        nixos_deploy_flake_ref: "github:dryvist/nix-ai/molecule-not-a-real-ref"
+        nixos_deploy_host_attr: herdr
+        nixos_deploy_target: "root@herdr.molecule.invalid"

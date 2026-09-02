@@ -1,0 +1,94 @@
+---
+# Re-enter the role through the same interface converge uses, rather than
+# hand-rolling include_vars on defaults/main.yml: a test that reconstructs the
+# variable precedence itself can pass while the converge is broken.
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    herdr_remote_deploy_enabled: false
+    herdr_remote_remotes: "herdr.molecule.invalid"
+
+  tasks:
+    - name: Read the rendered environment file
+      ansible.builtin.slurp:
+        src: /var/lib/herdr-remote/.env
+      register: herdr_remote_env_raw
+
+    - name: Stat the rendered environment file
+      ansible.builtin.stat:
+        path: /var/lib/herdr-remote/.env
+      register: herdr_remote_env_stat
+
+    - name: Split the environment file into non-comment lines
+      ansible.builtin.set_fact:
+        herdr_remote_env_lines: >-
+          {{ (herdr_remote_env_raw.content | b64decode).splitlines()
+             | map('trim') | reject('match', '^(#.*)?$') | list }}
+
+    - name: A relay token file must not be readable beyond its owner
+      ansible.builtin.assert:
+        that:
+          - herdr_remote_env_stat.stat.mode == '0600'
+          - herdr_remote_env_stat.stat.pw_name == 'herdr-remote'
+        fail_msg: >-
+          The environment file holds the bearer token that gates agent
+          approvals. Anything looser than 0600 owned by the service user hands
+          it to every local account.
+        quiet: true
+
+    - name: Every configured value reaches the environment file
+      ansible.builtin.assert:
+        that:
+          - "'HERDR_RELAY_HOST=0.0.0.0' in herdr_remote_env_lines"
+          - "'HERDR_RELAY_PORT=8375' in herdr_remote_env_lines"
+          - "'HERDR_TRUSTED_ORIGINS=https://herdr.molecule.invalid' in herdr_remote_env_lines"
+          - "'HERDR_RELAY_TOKEN=molecule-not-a-real-relay-token' in herdr_remote_env_lines"
+          - "'HERDR_REMOTES=herdr.molecule.invalid' in herdr_remote_env_lines"
+          - "'HERDR_REMOTE_LOG_LEVEL=debug' in herdr_remote_env_lines"
+        fail_msg: "Rendered environment file does not match the converge inputs: {{ herdr_remote_env_lines }}"
+        quiet: true
+
+    # The two asserts in the role are the point of this scenario, and a scenario
+    # that only ever feeds them valid input cannot tell whether they fire. Drive
+    # each into its failing state and require the failure.
+    - name: An unauthenticated non-loopback bind must be refused
+      block:
+        - name: Re-enter the role with no relay token on a reachable bind
+          ansible.builtin.include_role:
+            name: herdr_remote
+          vars:
+            herdr_remote_relay_token: ""
+            herdr_remote_bind_host: "0.0.0.0"
+
+        - name: The guard did not fire
+          ansible.builtin.fail:
+            msg: >-
+              herdr_remote rendered a config binding 0.0.0.0 with no
+              HERDR_RELAY_TOKEN. That publishes an approve-a-live-agent surface
+              to anything reaching the guest past Traefik.
+      rescue:
+        - name: Expected refusal
+          ansible.builtin.debug:
+            msg: "The unauthenticated-bind guard fired, as it must."
+
+    - name: A relay with no runtime to drive must be refused
+      block:
+        - name: Re-enter the role with an empty HERDR_REMOTES
+          ansible.builtin.include_role:
+            name: herdr_remote
+          vars:
+            herdr_remote_remotes: ""
+
+        - name: The guard did not fire
+          ansible.builtin.fail:
+            msg: >-
+              herdr_remote rendered a config with no remotes. The dashboard
+              would render an empty fleet rather than erroring, which is the
+              silent failure the assert exists to convert into a loud one.
+      rescue:
+        - name: Expected refusal
+          ansible.builtin.debug:
+            msg: "The empty-remotes guard fired, as it must."

@@ -26,8 +26,9 @@
 # and pin the first that is reachable + unsealed (health 200, standbyok — a
 # standby forwards to the active peer). This is what removes the single-node
 # dependency: openbao-01 down -> openbao-02 answers, ingress down -> a per-node
-# endpoint answers. If NONE answers, active_addr stays empty and the role skips
-# to env/SOPS (a total-OpenBao outage must not hard-fail every converge).
+# endpoint answers. Individual endpoints being down is tolerated (failed_when: false
+# on the per-endpoint probe below); NO endpoint answering is a hard failure —
+# see the fail task after the pin, and the contract in defaults/main.yml.
 # ansible_become: false on the delegated tasks below is REQUIRED — Ansible
 # inherits the play's become: true on delegated tasks regardless of
 # task-level become, which fails with "sudo: a password is required" on the
@@ -76,13 +77,16 @@
   ansible.builtin.set_fact:
     openbao_secrets_active: "{{ (hostvars['localhost'].openbao_secrets_active_addr | default('', true)) | length > 0 }}"
 
-- name: Report no OpenBao endpoint answered (env/SOPS fallback in effect)
-  ansible.builtin.debug:
+- name: Fail because no OpenBao endpoint answered (fail-loud contract)
+  ansible.builtin.fail:
     msg: >-
-      OpenBao is configured but none of {{ openbao_secrets_bao_addr_candidates }}
-      answered /v1/sys/health unsealed — skipping OpenBao for this run; every
-      domain falls back to env/SOPS secrets. This is the DR degrade path, not a
-      hard failure.
+      OpenBao is configured but NONE of
+      {{ openbao_secrets_bao_addr_candidates }} answered
+      /v1/sys/health unsealed. Refusing to continue: silently falling back to
+      env/SOPS here renders every OpenBao-sourced secret empty, and a converge
+      with empty secrets overwrites live credentials. Restore an OpenBao
+      endpoint (or unset BAO_ADDR to run a deliberately OpenBao-free converge)
+      and retry.
   run_once: true
   when:
     - openbao_secrets_configured
@@ -106,28 +110,13 @@
   when: openbao_secrets_active
 
 # community.hashi_vault.vault_login declares supports_check_mode but SHORT-
-# CIRCUITS under --check: it returns {'auth': {'client_token': None}} instead
-# of actually authenticating. That null token flows into vault_kv2_get in
-# fetch_domain.yml, every read fails (swallowed by failed_when: false and
-# no_log: true), every domain merges empty, and every downstream presence
-# assertion trips — indistinguishable from a genuinely missing credential.
-# Warn loudly here so a --check run is never misread as "credentials are
-# missing" when the real cause is check mode itself.
-- name: WARNING — OpenBao fetch is inert under --check (every bao value will be empty)
-  ansible.builtin.debug:
-    msg: >-
-      --check mode: community.hashi_vault.vault_login cannot actually
-      authenticate under check mode (it returns a null client_token), so
-      every OpenBao read in this role fails and every bao_<domain>_secrets
-      fact merges empty. Any downstream assertion about a missing OpenBao-
-      sourced value (e.g. "no Vikunja write token is set") is expected in
-      --check and does NOT mean the credential is actually missing. Run
-      without --check to validate OpenBao-sourced values for real.
-  run_once: true
-  when:
-    - openbao_secrets_active
-    - ansible_check_mode
-
+# CIRCUITS under --check, returning {'auth': {'client_token': None}} instead of
+# authenticating. That null token used to flow into every vault_kv2_get, so a
+# --check run produced empty domains and looked identical to a missing
+# credential. Both the login and the KV reads now carry check_mode: false
+# (fetch_domain.yml) — they change no state, so running them for real under
+# --check is safe and gives the templates real values to diff against. The
+# seed/publish tasks below WRITE and still honor check mode.
 - name: Fetch each domain's secrets from OpenBao (delegated to the controller)
   when: openbao_secrets_active
   delegate_to: localhost

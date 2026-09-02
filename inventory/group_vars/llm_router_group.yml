@@ -89,3 +89,20 @@ llm_router_openrouter_budget_period: 1d
 # inventory (never a literal address), so no name is assembled by hand.
 llm_router_db_host: >-
   {{ (tofu_data.containers | default({})).get('postgres-ai-1', {}).get('ip', '') }}
+
+# Large-tier passthrough OFF: the "*" deployment matches every model name the
+# router does not carry an exact entry for and forwards it to the serving gate,
+# which answers 404. Its purpose was that adding a model to the fleet needs no
+# router edit — but the gate advertises only models the registry already renders
+# exact entries for, so the wildcard currently matches nothing legitimate.
+#
+# What it does match is client typos and models from other providers' defaults.
+# Measured 2026-09-02 in the router log: gpt-5-nano, gpt-5-nano-2025-08-07 and
+# openai/container each produced a "Fallback attempt failed ... no router for
+# requested model" against llama-swap. The wildcard makes an unknown name look
+# resolvable, so LiteLLM accepts it and spends a fallback round-trip per rung on
+# the gate instead of returning model-not-found immediately.
+#
+# Turn back on only alongside a serving host that advertises models the registry
+# does not, and expect unknown names to cost gate round-trips again.
+llm_router_large_passthrough_enabled: false

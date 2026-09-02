@@ -39,6 +39,18 @@
               return None
 
 
+      def _cron_task_id(job_name):
+          """The id every log line of this run carries, derived once.
+
+          Mirrors the API server's own scheme (``api-<digest>``) so the two
+          origins are distinguishable at a glance, and uses the job NAME rather
+          than its opaque id so a reader can grep for what they already know.
+          The goal loop below builds the identical string for its own
+          bookkeeping; deriving it here means the two cannot drift apart.
+          """
+          return "cron:" + str(job_name)
+
+
       def _hermes_cron_goal_run(agent, prompt, job_name):
           """Run a cron job's conversation, optionally under the goal judge.
 
@@ -48,8 +60,18 @@
           saw before this patch existed. The goal loop's own decision dict is
           logged, never returned; returning it would sail through the dict
           guard and then be misread as a failed run.
+
+          Both calls below pass ``task_id``. Omitting it is not neutral:
+          ``AIAgent.run_conversation`` does ``effective_task_id = task_id or
+          str(uuid.uuid4())`` and stamps that id onto every log line the run
+          emits. Unnamed, a cron run's lines are indistinguishable from the
+          API server's (which supplies ``api-<digest>``), so a failed job
+          cannot be traced through the agent log at all — measured: 6,072
+          id-tagged lines in one day, every one ``api-``, none joinable to a
+          cron job. Diagnosing one wall-clock failure then costs an evening
+          of eliminating causes against unrelated instruments.
           """
-          result = agent.run_conversation(prompt)
+          result = agent.run_conversation(prompt, task_id=_cron_task_id(job_name))
           if job_name not in _cron_goal_jobs() or not isinstance(result, dict):
               return result
           try:
@@ -88,7 +110,9 @@
                   state["judged_done"] = True
                   return ""
               prior = state["result"].get("messages")
-              nxt = agent.run_conversation(text, conversation_history=prior)
+              nxt = agent.run_conversation(
+                  text, conversation_history=prior, task_id=_cron_task_id(job_name)
+              )
               state["worker_turns"] += 1
               if isinstance(nxt, dict):
                   state["result"] = nxt
@@ -108,7 +132,7 @@
 
           _budget = _cron_goal_max_turns()
           decision = run_kanban_goal_loop(
-              task_id="cron:" + str(job_name),
+              task_id=_cron_task_id(job_name),
               goal_text=prompt,
               run_turn=_run_turn,
               task_status_fn=lambda: "done" if state["judged_done"] else "running",

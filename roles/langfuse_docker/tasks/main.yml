@@ -87,6 +87,48 @@
 # Compose Deployment
 # =============================================================================
 
+- name: Assert every secret rendered into the Langfuse compose file is present
+  ansible.builtin.include_tasks: >-
+    {{ role_path }}/../openbao_secrets/tasks/assert_nonempty.yml
+  vars:
+    openbao_secrets_assert_context: the Langfuse compose file
+    openbao_secrets_assert_names:
+      - langfuse_docker_postgres_password
+      - langfuse_docker_clickhouse_password
+      - langfuse_docker_init_public_key
+      - langfuse_docker_init_secret_key
+
+# =============================================================================
+# ClickHouse step upgrade
+# =============================================================================
+# ClickHouse must cross one minor line at a time; the deployed LTS cannot jump
+# straight to the pinned tag. Walk the path first so the pinned tag is only ever
+# reached from its immediate predecessor. Skipped entirely on a fresh install
+# (nothing running yet) and on an already-converged host (no pending hops).
+
+- name: Read the running ClickHouse image tag
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      cid=$(docker compose -f {{ langfuse_docker_data_dir }}/docker-compose.yml
+      ps -q {{ langfuse_docker_clickhouse_service }});
+      [ -n "$cid" ] || exit 0;
+      docker inspect -f '{{ '{{' }} .Config.Image {{ '}}' }}' "$cid" | awk -F: '{print $NF}'
+  register: langfuse_docker_clickhouse_running
+  changed_when: false
+  failed_when: false
+
+- name: Upgrade ClickHouse one minor line at a time
+  ansible.builtin.include_tasks: clickhouse_upgrade.yml
+  vars:
+    langfuse_docker_clickhouse_hop: "{{ item }}"
+  loop: >-
+    {{ langfuse_docker_clickhouse_upgrade_path
+       | select('version', langfuse_docker_clickhouse_running.stdout | trim,
+                '>')
+       | list }}
+  when: (langfuse_docker_clickhouse_running.stdout | default('') | trim) | length > 0
+
 - name: Deploy Langfuse docker-compose template
   ansible.builtin.template:
     src: docker-compose.yml.j2
@@ -96,10 +138,6 @@
     mode: "0600"  # contains datastore passwords + app secrets
   no_log: true
   notify: Restart langfuse
-
-# =============================================================================
-# Compose Deployment (continued)
-# =============================================================================
 
 - name: Deploy Langfuse via docker compose
   community.docker.docker_compose_v2:
@@ -126,7 +164,9 @@
 
 - name: Verify Langfuse health endpoint responds
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ langfuse_docker_web_port }}/api/health"
+    # The web container serves its health route under /api/public/health;
+    # /api/health is the worker's route and 404s here on both 3.x and 4.x.
+    url: "http://127.0.0.1:{{ langfuse_docker_web_port }}/api/public/health"
     method: GET
     status_code: 200
   register: langfuse_docker_health
@@ -161,14 +201,22 @@
     body:
       provider: "litellm-router"
       adapter: "openai"
-      baseURL: "{{ ai_orchestration_ollama_base_url }}"
+      baseURL: "{{ langfuse_docker_router_base_url }}"
       secretKey: >-
         {{
           ai_orchestration_model_api_key |
           default(bao_local_llm_secrets.LLM_ROUTER_MASTER_KEY, true) |
-          default(lookup('env', 'LLM_ROUTER_MASTER_KEY'), true)
+          mandatory('LLM_ROUTER_MASTER_KEY missing: the OpenBao fetch did not
+                     supply the router master key for the Langfuse connection')
         }}
-    status_code: 200
+    # PUT on this endpoint is an upsert: 200 when it updates an existing
+    # connection, 201 when it creates one. Anything else — 401 on a bad init
+    # key, 400 on a malformed body, 5xx from a half-started web container — is
+    # a real failure. It used to be swallowed by `failed_when: false`, so a
+    # Langfuse that never got its router connection still reported success.
+    status_code: [200, 201]
+  register: langfuse_docker_llm_connection
   changed_when: false
+  # The request body carries the router master key.
   no_log: true
-  failed_when: false
+  failed_when: langfuse_docker_llm_connection.status not in [200, 201]

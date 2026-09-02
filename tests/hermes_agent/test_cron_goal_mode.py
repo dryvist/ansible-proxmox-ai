@@ -110,6 +110,75 @@ def test_env_unset_leaves_cron_behaviour_untouched(
     }
 
 
+def test_every_cron_conversation_is_tagged_with_its_job_name(
+    monkeypatch: pytest.MonkeyPatch, stub_goals: dict[str, Any]
+) -> None:
+    """Without this, a failed cron run cannot be found in the agent log at all.
+
+    ``AIAgent.run_conversation`` does ``effective_task_id = task_id or
+    str(uuid.uuid4())`` and stamps the result on every log line the run emits.
+    Omit it and a cron run is indistinguishable from an API session — measured
+    on the guest: 6,072 id-tagged lines in one day, every one ``api-`` prefixed,
+    none joinable to a cron job. Three separate causes were proposed and
+    eliminated for two dead jobs before anyone noticed the join key was missing.
+
+    This asserts the UNCONDITIONAL path — the call above the goal-mode check,
+    which every cron job takes whether or not it is goal-judged.
+    """
+    monkeypatch.delenv("HERMES_CRON_GOAL_JOBS", raising=False)
+    run = _goal_runner_namespace()["_hermes_cron_goal_run"]
+    agent = _StubAgent()
+    run(agent, "do the thing", "zammad-review")
+    assert agent.task_ids == ["cron:zammad-review"], (
+        "the cron conversation was not tagged with its job name; its log lines "
+        "will carry an opaque uuid and be unattributable"
+    )
+
+
+def test_the_task_id_is_derived_from_the_job_not_a_constant(
+    monkeypatch: pytest.MonkeyPatch, stub_goals: dict[str, Any]
+) -> None:
+    """A fixed string would tag every job identically and defeat the purpose.
+
+    Distinguishes the shipped design from one that hardcodes a single marker:
+    two different jobs must produce two different ids.
+    """
+    monkeypatch.delenv("HERMES_CRON_GOAL_JOBS", raising=False)
+    run = _goal_runner_namespace()["_hermes_cron_goal_run"]
+    first, second = _StubAgent(), _StubAgent()
+    run(first, "p", "splunk-security")
+    run(second, "p", "github-triage")
+    assert first.task_ids == ["cron:splunk-security"]
+    assert second.task_ids == ["cron:github-triage"]
+    assert first.task_ids != second.task_ids
+
+
+def test_the_task_id_literal_is_derived_in_exactly_one_place() -> None:
+    """DRY: the goal loop and the conversation calls must not drift apart.
+
+    The prefix previously existed as a bare literal at the goal-loop call. With
+    three consumers, a limit that exists twice will disagree — so the string is
+    built by one helper and every caller routes through it.
+    """
+    source = (
+        ROLE_ROOT / "tasks" / "patches_cron_goal_mode.yml"
+    ).read_text()
+    body = "\n".join(
+        ln for ln in source.splitlines() if not ln.lstrip().startswith("#")
+    )
+    assert body.count('"cron:"') == 1, (
+        'the "cron:" prefix must be built in exactly one place '
+        "(_cron_task_id); found it repeated"
+    )
+    # The kwarg form, which appears at call sites and not at the definition —
+    # counting the bare name would also match `def _cron_task_id(job_name):`.
+    assert body.count("task_id=_cron_task_id(job_name)") == 3, (
+        "expected all three call sites (two conversations + the goal loop) "
+        "to route through the helper"
+    )
+    assert body.count("def _cron_task_id(") == 1
+
+
 def test_job_outside_the_allowlist_is_untouched(
     monkeypatch: pytest.MonkeyPatch, stub_goals: dict[str, Any]
 ) -> None:

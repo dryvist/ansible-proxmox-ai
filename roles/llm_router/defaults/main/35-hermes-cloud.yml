@@ -80,11 +80,90 @@ llm_router_hermes_cloud_only_fallback_groups: >-
 # repo's existing "vllm" tier-name precedent (a rename here would churn the
 # tests for no functional gain).
 #
-# Local legs go FIRST, ahead of every paid group: they are free, on-network
-# attempts. Order here is the concatenation itself, not a re-sort — a plain
-# `+` preserves each side's own registry order.
+# Local legs are free, on-network attempts, so they go as early as they can
+# usefully be tried. That is NOT unconditionally first: a leg narrower than the
+# primary cannot serve what the primary just refused, and placing one ahead of
+# a rung that can aborts the whole chain. Under the default policy below, only
+# WIDE local legs lead; narrow ones go last. If every local leg is narrow, no
+# local leg is first.
+#
+# Order is composed by concatenation, never a re-sort — a plain `+` preserves
+# each side's own registry order within its half.
+# Window of the primary. A fallback rung narrower than this cannot rescue a
+# request the primary refused for any reason OTHER than size -- the request was
+# always going to be too big for it.
+llm_router_hermes_primary_context_window: >-
+  {{ (llm_router_registry_enabled
+      | selectattr('client_model_id', 'equalto', llm_router_primary_model)
+      | map(attribute='context_window') | list | first) | default(0) }}
+
+# Local fallback groups split by whether they can serve what the primary was
+# handling. A NARROW leg (smaller window than the primary) is the failure this
+# split exists to prevent:
+#
+#   primary 429s (a RATE error, not a size error) -> the ordinary `fallbacks`
+#   chain engages -> the next rung is a narrow leg -> the request is oversized
+#   for THAT leg -> pre-call checks raise ContextWindowExceededError -> litellm
+#   treats a context error raised INSIDE a fallback attempt as terminal and
+#   re-raises instead of advancing to the wider rungs behind it.
+#
+# Observed 2026-09-01: every overflow measured 35,643-44,740 tokens against a
+# 32768 leg, and the whole chain died there with free cloud rungs listed but
+# never reached. context_window_fallbacks does NOT rescue this -- the entries
+# are deployed and verified present, and the abort still happens, because the
+# map is not consulted for an error raised by a fallback leg.
+llm_router_hermes_local_narrow_groups: >-
+  {%- set ns = namespace(groups=[]) -%}
+  {%- for m in llm_router_hermes_local_models -%}
+  {%- set group = m.fallback_group | default(m.route_group) -%}
+  {%- if (m.context_window | default(0) | int)
+         < (llm_router_hermes_primary_context_window | int)
+     and group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups }}
+
+llm_router_hermes_local_wide_groups: >-
+  {%- set ns = namespace(groups=[]) -%}
+  {%- for group in llm_router_local_fallback_groups -%}
+  {%- if group not in llm_router_hermes_local_narrow_groups
+     and group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups }}
+
+# WHICH POLICY: there is a genuine tradeoff and litellm cannot resolve it per
+# request, because a fallback chain is a static ordering while "does this rung
+# fit" depends on the request.
+#
+#   true  (default) -- narrow local legs go LAST, behind the cloud rungs. The
+#     chain then always reaches something that can serve the request. Cost: a
+#     SMALL fallback request that a narrow local leg could have served now
+#     tries a cloud rung first, so some traffic leaves the network that did
+#     not before. The first cloud rung is the free one, so this is not a
+#     spend change, it is an egress change.
+#
+#   false -- registry order, narrow legs first. Keeps every fallback local for
+#     as long as possible. Cost: a request larger than a narrow leg's window
+#     kills the whole chain, which is the live defect this variable exists to
+#     address.
+#
+# Defaulted to true because the goal this router serves states the chain "must
+# actually fall back, with one always-alive cheap rung" -- a chain that aborts
+# on its second rung is not falling back. Flip it if local-only egress
+# outranks chain completion for this estate.
+llm_router_hermes_narrow_legs_last: true
+
 llm_router_hermes_cloud_fallback_groups: >-
+  {%- if llm_router_hermes_narrow_legs_last | bool -%}
+  {{ llm_router_hermes_local_wide_groups
+     + llm_router_hermes_cloud_only_fallback_groups
+     + llm_router_hermes_local_narrow_groups }}
+  {%- else -%}
   {{ llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups }}
+  {%- endif -%}
 
 # LiteLLM's global 429 retry policy exists for the local serving tier. Tagged
 # v1.97.0 source gives a matching model-group policy precedence over that
@@ -118,28 +197,61 @@ llm_router_hermes_default_fallback_chain: >-
 # bound, not a retry budget; ordinary same-provider retries remain zero.
 llm_router_max_fallbacks: "{{ llm_router_hermes_default_fallback_chain | length }}"
 
-# A local leg serves a SMALLER context than the primary (the 4080 leg advertises
-# 16384 against hermes-default's 65536), so a normal agent request overflows it.
-# Without this map that is fatal to the WHOLE chain, not just to that rung:
-# LiteLLM re-enters its fallback machinery for the failing leg, and on
-# ContextWindowExceededError with no context_window_fallbacks it looks the
-# ordinary `fallbacks` map up under the LEG's name rather than the original
-# request's, finds no entry, and re-raises instead of advancing
-# (router.py::async_function_with_fallbacks, litellm 1.98.0). Every cloud rung
-# below is then never tried. So each local leg gets an explicit escape hatch to
-# the cloud rungs, which serve a larger context.
+# A rung that serves a SMALLER context than the request needs is fatal to the
+# WHOLE chain, not just to that rung: LiteLLM re-enters its fallback machinery
+# for the failing leg, and on ContextWindowExceededError with no
+# context_window_fallbacks it looks the ordinary `fallbacks` map up under the
+# LEG's name rather than the original request's, finds no entry, and re-raises
+# instead of advancing (router.py::async_function_with_fallbacks, litellm
+# 1.98.0). Every cloud rung below is then never tried. So every group that can
+# raise that error needs an explicit escape hatch to the cloud rungs, which
+# serve a larger context.
 #
-# Keyed per local leg rather than on hermes-default: hermes-default's own
-# overflow already resolves through the ordinary chain, and adding it here would
-# skip the local legs for requests they can serve perfectly well.
+# WHY THE PRIMARY IS KEYED TOO — this reverses an earlier decision.
 #
+# This map used to cover only the local legs, on the reasoning that
+# "hermes-default's own overflow already resolves through the ordinary chain,
+# and adding it here would skip the local legs for requests they can serve
+# perfectly well." Both halves of that turned out to be wrong.
+#
+# The first half is contradicted by production: five distinct cron jobs failed
+# with ContextWindowExceededError and "every fallback rung refused the request",
+# one of them exceeding the served window by 482 tokens. hermes-default's
+# overflow does NOT resolve through the ordinary chain; it aborts it.
+#
+# The second half misreads what the skip costs. context_window_fallbacks fires
+# ONLY on a context-window error, so keying the primary cannot divert an
+# ordinary request. It diverts exactly one class: a request already too large
+# for the primary. Every local leg advertises a window no larger than the
+# primary's, so a leg could never serve what the primary just refused —
+# "requests they can serve perfectly well" is an empty set here. Skipping them
+# for this one class costs nothing and is what makes the escape work at all.
+#
+# The keys are derived, never listed: local legs, the auto-router groups
+# themselves, and every deployment those routers can select. A hand-maintained
+# list would silently stop covering a tier the moment one was added.
+llm_router_context_window_escape_groups: >-
+  {%- set ns = namespace(groups=llm_router_local_fallback_groups | list) -%}
+  {%- for m in llm_router_hermes_virtual_models -%}
+  {%- set group = m.route_group | default(m.client_model_id) -%}
+  {%- if group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- for target in [llm_router_routine_model, llm_router_primary_model] -%}
+  {%- if target and target not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [target] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups }}
+
 # Renders nothing when no cloud rung is credentialed — an empty target list is
 # not "no map", and LiteLLM would take the empty branch and fall back to
 # nowhere instead of surfacing the real error.
 llm_router_context_window_fallbacks: >-
   {%- set ns = namespace(pairs=[]) -%}
   {%- if llm_router_hermes_cloud_only_fallback_groups | length > 0 -%}
-  {%- for group in llm_router_local_fallback_groups -%}
+  {%- for group in llm_router_context_window_escape_groups -%}
   {%- set ns.pairs = ns.pairs + [{group: llm_router_hermes_cloud_only_fallback_groups}] -%}
   {%- endfor -%}
   {%- endif -%}
