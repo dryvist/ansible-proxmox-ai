@@ -1,0 +1,64 @@
+---
+# Every `optional: true` KV path is a promise that its consumer works with the
+# secret absent. This asserts the promise: an optional path whose consumer is
+# not presence-gated fails here rather than at converge time on a live guest.
+- name: Verify every optional KV path has a presence-gated consumer
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _secrets_role_dir: "{{ playbook_dir }}/../../roles/openbao_secrets"
+    _gateway_role_dir: "{{ playbook_dir }}/../../roles/agentgateway_docker"
+    # Each optional path, and where its absence is tolerated. Adding an
+    # optional path without adding it here fails the completeness assert below.
+    _gated_optional_paths:
+      # Dropped from llm_router_hermes_cloud_models_credentialed, so no model
+      # and no env line renders. Covered end to end by
+      # tests/llm_router/test_hermes_provider_keys.yml.
+      "ai/saas/anthropic": llm_router cloud-model credential gate
+      "ai/saas/openai": llm_router cloud-model credential gate
+      "ai/saas/gemini": llm_router cloud-model credential gate
+      "ai/saas/alibaba": llm_router cloud-model credential gate
+      # An empty token omits the sidecar service and the /nautobot route.
+      "ai/mcp/nautobot": agentgateway_docker_nautobot_read_token gate
+  tasks:
+    - name: Load the declared domains
+      ansible.builtin.include_vars:
+        file: "{{ _secrets_role_dir }}/defaults/main.yml"
+
+    - name: Collect every optional path
+      ansible.builtin.set_fact:
+        _optional_paths: >-
+          {{ openbao_secrets_domains
+             | map(attribute='paths') | flatten
+             | selectattr('optional', 'defined')
+             | selectattr('optional')
+             | map(attribute='path') | list }}
+
+    - name: Assert every optional path names its gate
+      ansible.builtin.assert:
+        that: _optional_paths | reject('in', _gated_optional_paths) | list | length == 0
+        fail_msg: >-
+          Optional KV paths with no declared consumer gate:
+          {{ _optional_paths | reject('in', _gated_optional_paths) | list }}.
+          An optional path is only safe when its consumer renders nothing with
+          the secret absent — add the gate, then record it here.
+
+    - name: Load the gateway defaults with no secrets available
+      ansible.builtin.include_vars:
+        file: "{{ _gateway_role_dir }}/defaults/main.yml"
+      vars:
+        bao_local_llm_secrets: {}
+
+    - name: Assert the Nautobot route is inert without its token
+      ansible.builtin.assert:
+        that:
+          - agentgateway_docker_nautobot_read_token | trim | length == 0
+          - _compose is search('nautobot_read_token \| length > 0')
+          - _config is search('nautobot_read_token \| length > 0')
+        fail_msg: >-
+          ai/mcp/nautobot is optional, so an absent token must omit both the
+          sidecar service and the /nautobot route.
+      vars:
+        bao_local_llm_secrets: {}
+        _compose: "{{ lookup('file', _gateway_role_dir ~ '/templates/docker-compose.yml.j2') }}"
+        _config: "{{ lookup('file', _gateway_role_dir ~ '/templates/config.yaml.j2') }}"
