@@ -4,26 +4,38 @@
 # store_model_in_db gates config reconciliation for EVERY config section, not
 # just models (litellm/repositories/config_repository.py, reconcile_config:
 # "DB values override YAML values"). We need it true for role deployments, so
-# the persisted router_settings row silently shadows this file on every start —
-# a stale routing_groups entry survived its removal here and kept registering a
-# handler that raised on every success event.
+# a persisted router_settings row silently shadows this file on every start —
+# a stale routing_groups entry survived its removal from the template and kept
+# registering a handler that raised on every success event.
+#
+# Runs BEFORE the handler flush, against the still-running proxy, so the
+# restart that follows boots from the corrected row.
 #
 # /config/update merges per key and the request wins
 # (proxy_server.py: "router_settings: merge existing + request, request wins"),
-# so this sets only what the file owns and leaves every other key in the row
-# alone — including redis_password, which is stored there in cleartext and is
-# deliberately NOT sent through this surface.
+# so this sets only what the file owns and leaves the rest of the row alone —
+# including the credential stored there, which is never sent through this
+# surface. routing_groups is sent as an explicit empty list because an omitted
+# key keeps whatever the row holds, which is the shadowing itself.
 #
-# routing_groups is sent as an explicit empty list rather than omitted: an
-# omitted key keeps whatever the row already holds, which is the shadowing.
-#
-# ponytail: payload is derived from the rendered file rather than a hand-listed
-# key set, so a new router_settings key cannot drift out of sync.
+# ponytail: change detection is a content-addressed marker file, because the
+# proxy exposes no read endpoint for this section (/config/list accepts only
+# general_settings). It will not notice a row edited out of band; delete the
+# marker or change the config to force a re-push.
 
 - name: Read the rendered proxy config back for its router_settings
   ansible.builtin.slurp:
     src: "{{ llm_router_config_file }}"
   register: llm_router_rendered_config
+
+- name: Record the router_settings payload the database should hold
+  ansible.builtin.copy:
+    content: "{{ _llm_router_settings_payload | to_nice_json }}\n"
+    dest: "{{ llm_router_config_dir }}/.router-settings-synced.json"
+    owner: root
+    group: root
+    mode: "0644"
+  register: llm_router_settings_marker
 
 - name: Push the file's router_settings so the database cannot shadow it
   ansible.builtin.uri:
@@ -33,11 +45,9 @@
       Authorization: "Bearer {{ llm_router_master_key }}"
     body_format: json
     body:
-      router_settings: >-
-        {{ (llm_router_rendered_config.content | b64decode | from_yaml).router_settings
-           | default({}, true)
-           | dict2items | rejectattr('key', 'equalto', 'redis_password') | items2dict
-           | combine({'routing_groups': []}) }}
+      router_settings: "{{ _llm_router_settings_payload }}"
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
+  when: llm_router_settings_marker.changed
+  notify: Restart litellm
   no_log: true
