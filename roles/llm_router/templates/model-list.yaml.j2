@@ -173,6 +173,8 @@ model_list:
       max_parallel_requests: {{ llm_router_hermes_cloud_max_parallel_requests }}
       timeout: {{ llm_router_request_timeout_seconds }}
       num_retries: 0
+      # Preferred while in budget; the local survivor below carries order 2.
+      order: 1
 {% if m.monthly_budget is defined %}
       # Absent on hermes-cloud-free: nothing to bound, and a rendered ceiling
       # with no spend behind it would be dishonest. See assert-budget-backing.yml.
@@ -198,6 +200,33 @@ model_list:
       max_input_tokens: {{ m.context_window }}
       max_output_tokens: {{ m.max_output_tokens }}
       max_tokens: {{ m.max_output_tokens }}
+{% endfor %}
+{% for _group in llm_router_hermes_cloud_budgeted_groups %}
+  # LOCAL SURVIVOR for {{ _group }}. Budgets FILTER a model group rather than
+  # failing it: an over-budget deployment is dropped from the healthy set and
+  # the router only raises when that set is left EMPTY
+  # (router_strategy/budget_limiter.py). Order filtering runs AFTER that and
+  # keeps the lowest order still present (litellm/utils.py,
+  # _get_order_filtered_deployments).
+  #
+  # So this member is never chosen while the paid one is in budget, and is all
+  # that remains once the paid one is dropped — which is what turns budget
+  # exhaustion into a local answer instead of a refusal.
+  #
+  # It is the only native route. A fallbacks entry cannot work: the raise
+  # happens during deployment selection, before an attempt exists to fail.
+  # Per-key model_max_budget with budget_fallbacks is ENTERPRISE-LICENSED and
+  # is rejected on this deployment — do not retry that route.
+  - model_name: {{ _group }}
+    litellm_params:
+      model: openai/{{ llm_router_primary_model }}
+      api_base: {{ llm_router_llm_large_base_url }}
+      api_key: os.environ/LLM_LARGE_BEARER_TOKEN
+      use_chat_completions_api: true
+      max_parallel_requests: {{ llm_router_local_max_parallel_requests }}
+      order: 2
+    model_info:
+      disable_background_health_check: true
 {% endfor %}
 {% if llm_router_openrouter_wildcard_enabled | bool %}
 {% set _wc_key = bao_local_llm_secrets.OPENROUTER_API_KEY | default(lookup('env', 'OPENROUTER_API_KEY'), true) %}
