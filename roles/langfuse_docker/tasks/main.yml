@@ -87,6 +87,17 @@
 # Compose Deployment
 # =============================================================================
 
+- name: Assert every secret rendered into the Langfuse compose file is present
+  ansible.builtin.include_tasks: >-
+    {{ role_path }}/../openbao_secrets/tasks/assert_nonempty.yml
+  vars:
+    openbao_secrets_assert_context: the Langfuse compose file
+    openbao_secrets_assert_names:
+      - langfuse_docker_postgres_password
+      - langfuse_docker_clickhouse_password
+      - langfuse_docker_init_public_key
+      - langfuse_docker_init_secret_key
+
 - name: Deploy Langfuse docker-compose template
   ansible.builtin.template:
     src: docker-compose.yml.j2
@@ -166,7 +177,8 @@
         {{
           ai_orchestration_model_api_key |
           default(bao_local_llm_secrets.LLM_ROUTER_MASTER_KEY, true) |
-          default(lookup('env', 'LLM_ROUTER_MASTER_KEY'), true)
+          mandatory('LLM_ROUTER_MASTER_KEY missing: the OpenBao fetch did not
+                     supply the router master key for the Langfuse connection')
         }}
     status_code: 200
   changed_when: false

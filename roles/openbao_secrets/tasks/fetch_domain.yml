@@ -2,10 +2,12 @@
 # Fetches ONE domain's KV subtree from OpenBao, invoked once per entry in
 # openbao_secrets_domains (the loop var is `openbao_domain`; delegation and
 # run_once are set by the caller's enclosing block in main.yml, so every task
-# here inherits them). SKIPS CLEANLY when this specific domain's role_id/
-# secret_id envs are unset — an operator can migrate one domain at a time
-# onto OpenBao while the rest still fall back to env/SOPS via the
-# group_vars/all.yml `{}` defaults.
+# here inherits them). FAIL-LOUD: a domain whose role_id/secret_id envs are
+# unset, or whose KV reads error, aborts the play. The ONLY way a domain may
+# resolve empty is by naming it in `openbao_secrets_optional_domains` — an
+# explicit, reviewable opt-out for a domain whose AppRole is not provisioned
+# yet. A silently empty domain used to flow straight into consumer templates
+# and overwrite live credentials with blanks.
 
 - name: Resolve role_id/secret_id from env for {{ openbao_domain.name }}
   ansible.builtin.set_fact:
@@ -13,15 +15,34 @@
     openbao_secrets_domain_secret_id: "{{ lookup('env', openbao_domain.secret_id_env) | default('', true) }}"
   no_log: true
 
-- name: Report missing credentials (env/SOPS fallback) for {{ openbao_domain.name }}
+- name: Fail on missing credentials for the required domain {{ openbao_domain.name }}
+  ansible.builtin.fail:
+    msg: >-
+      {{ openbao_domain.role_id_env }} / {{ openbao_domain.secret_id_env }}
+      are not both set, so the {{ openbao_domain.name }} domain would resolve
+      EMPTY. Refusing to continue: consumers render these values into live
+      config, and an empty value overwrites a working credential. Supply both
+      envs, or add '{{ openbao_domain.name }}' to
+      openbao_secrets_optional_domains to declare this domain deliberately
+      unprovisioned.
+  when:
+    - openbao_domain.name not in openbao_secrets_optional_domains
+    - >-
+      openbao_secrets_domain_role_id | length == 0
+      or openbao_secrets_domain_secret_id | length == 0
+
+- name: Report a deliberately optional, unprovisioned domain {{ openbao_domain.name }}
   ansible.builtin.debug:
     msg: >-
       {{ openbao_domain.role_id_env }} / {{ openbao_domain.secret_id_env }}
-      not both set — skipping the {{ openbao_domain.name }} domain; its
-      consumer roles fall back to env/SOPS secrets.
-  when: >-
-    openbao_secrets_domain_role_id | length == 0
-    or openbao_secrets_domain_secret_id | length == 0
+      not both set, and {{ openbao_domain.name }} is listed in
+      openbao_secrets_optional_domains — skipping this domain by explicit
+      declaration. Its consumers must tolerate absent values.
+  when:
+    - openbao_domain.name in openbao_secrets_optional_domains
+    - >-
+      openbao_secrets_domain_role_id | length == 0
+      or openbao_secrets_domain_secret_id | length == 0
 
 - name: Fetch and merge secrets for {{ openbao_domain.name }}
   when:
@@ -45,7 +66,10 @@
         validate_certs: "{{ openbao_secrets_validate_certs }}"
       register: openbao_secrets_domain_login
 
-    - name: Read each KV path, tolerating not-yet-seeded ones, for {{ openbao_domain.name }}
+    # No failed_when override: a 403/404/connection error here is a real
+    # failure and must abort the play. Swallowing it produced an empty domain
+    # dict that consumers rendered over live credentials.
+    - name: Read each KV path for {{ openbao_domain.name }}
       community.hashi_vault.vault_kv2_get:
         url: "{{ hostvars['localhost'].openbao_secrets_active_addr | default(openbao_secrets_bao_addr, true) }}"
         auth_method: token
@@ -56,7 +80,6 @@
         validate_certs: "{{ openbao_secrets_validate_certs }}"
       loop: "{{ openbao_domain.paths }}"
       register: openbao_secrets_domain_reads
-      failed_when: false
 
     - name: Merge readable paths into one dict for {{ openbao_domain.name }}
       ansible.builtin.set_fact:

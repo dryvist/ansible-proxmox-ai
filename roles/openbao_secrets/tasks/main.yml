@@ -26,8 +26,9 @@
 # and pin the first that is reachable + unsealed (health 200, standbyok — a
 # standby forwards to the active peer). This is what removes the single-node
 # dependency: openbao-01 down -> openbao-02 answers, ingress down -> a per-node
-# endpoint answers. If NONE answers, active_addr stays empty and the role skips
-# to env/SOPS (a total-OpenBao outage must not hard-fail every converge).
+# endpoint answers. Individual endpoints being down is tolerated (failed_when: false
+# on the per-endpoint probe below); NO endpoint answering is a hard failure —
+# see the fail task after the pin, and the contract in defaults/main.yml.
 # ansible_become: false on the delegated tasks below is REQUIRED — Ansible
 # inherits the play's become: true on delegated tasks regardless of
 # task-level become, which fails with "sudo: a password is required" on the
@@ -76,13 +77,16 @@
   ansible.builtin.set_fact:
     openbao_secrets_active: "{{ (hostvars['localhost'].openbao_secrets_active_addr | default('', true)) | length > 0 }}"
 
-- name: Report no OpenBao endpoint answered (env/SOPS fallback in effect)
-  ansible.builtin.debug:
+- name: Fail because no OpenBao endpoint answered (fail-loud contract)
+  ansible.builtin.fail:
     msg: >-
-      OpenBao is configured but none of {{ openbao_secrets_bao_addr_candidates }}
-      answered /v1/sys/health unsealed — skipping OpenBao for this run; every
-      domain falls back to env/SOPS secrets. This is the DR degrade path, not a
-      hard failure.
+      OpenBao is configured but NONE of
+      {{ openbao_secrets_bao_addr_candidates }} answered
+      /v1/sys/health unsealed. Refusing to continue: silently falling back to
+      env/SOPS here renders every OpenBao-sourced secret empty, and a converge
+      with empty secrets overwrites live credentials. Restore an OpenBao
+      endpoint (or unset BAO_ADDR to run a deliberately OpenBao-free converge)
+      and retry.
   run_once: true
   when:
     - openbao_secrets_configured

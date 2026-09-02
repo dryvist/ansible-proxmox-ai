@@ -5,11 +5,19 @@ resource-domain identity** (each with its own least-privilege AppRole) and
 reads that domain's KV subtree into a per-domain fact,
 `bao_<domain>_secrets` (hyphens become underscores, e.g. `local-cloud` ->
 `bao_local_cloud_secrets`). Consumer roles then resolve their secrets
-**bao-first with an env fallback**:
+**bao-first**. A **secret**-valued variable carries no fallback — an empty
+secret is rendered into live config and overwrites the working credential, so
+absence must stop the converge:
 
 ```yaml
-some_secret: "{{ bao_local_llm_secrets.SOME_SECRET | default(lookup('env', 'SOME_SECRET'), true) }}"
+some_secret: "{{ bao_local_llm_secrets.SOME_SECRET | mandatory('SOME_SECRET missing from OpenBao') }}"
 ```
+
+Only **non-secret** values (URLs, ports, hostnames, model names, channel ids,
+feature flags) may keep `| default(lookup('env', 'X'), true)`. See the
+fail-loud contract at the top of `defaults/main.yml`, and
+`tasks/assert_nonempty.yml` for the guard every role that writes a
+password/key/token into a file includes before templating.
 
 This is a copy of the same-named role in `ansible-proxmox-apps`, trimmed to
 the domains this repo consumes. The generic machinery (failover probe,
@@ -244,11 +252,10 @@ Neither is a bug to work around — know what each one actually tells you.
   assertion.** `community.hashi_vault.vault_login` declares
   `supports_check_mode: true` but short-circuits under check mode, returning
   a null `client_token` instead of authenticating. That null token flows into
-  every `vault_kv2_get` call in `fetch_domain.yml`; each read fails (silently
-  — `failed_when: false` + `no_log: true`), every domain merges empty, and
-  any downstream presence-gated assertion (e.g. "no Vikunja write token is
-  set") trips. This is indistinguishable from a genuinely missing credential
-  by output alone. The role now emits a loud warning naming this exact cause
+  every `vault_kv2_get` call in `fetch_domain.yml`. Those reads are no longer
+  swallowed (`failed_when: false` was removed), so a `--check` run now fails
+  outright on the first read rather than merging empty — loud, but for a
+  reason that has nothing to do with the credential actually being missing. The role now emits a loud warning naming this exact cause
   whenever OpenBao is otherwise reachable and configured but the run is
   `--check`. Treat a `--check` failure on a bao-sourced assertion as
   uninformative; run the real converge (or at minimum this role without
