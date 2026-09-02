@@ -4,14 +4,17 @@
 {% include 'model-list.yaml.j2' %}
 router_settings:
   routing_strategy: {{ llm_router_routing_strategy }}
-{% if 'hermes-cloud-openrouter' in llm_router_hermes_cloud_fallback_groups %}
-  # Kimi and GLM are treated as equivalent final-resort agentic deployments;
-  # use their real token prices rather than falsifying costs to encode quality.
-  routing_groups:
-    - group_name: hermes-openrouter-value
-      models: [hermes-cloud-openrouter]
-      routing_strategy: cost-based-routing
-{% endif %}
+  # NO routing_groups / cost-based-routing. Declaring it for one group
+  # registers LiteLLM's lowest-cost logging handler GLOBALLY (router.py
+  # _build_strategy_selector -> logging_callback_manager.add_litellm_callback),
+  # and that handler reads litellm_params.model_info on every success event in
+  # the process — including deployments the group does not manage, where
+  # litellm_params is None. It raises on each one, non-blocking, which is the
+  # continuous "ended span" noise in the router log.
+  #
+  # It bought cost-ordering between two final-resort deployments already
+  # ordered by their real token prices, so it loses nothing.
+  # tests/llm_router/test_hermes_cloud_value.yml asserts the key stays absent.
   allowed_fails: {{ llm_router_allowed_fails }}
   cooldown_time: {{ llm_router_cooldown_time }}
   model_group_alias:
