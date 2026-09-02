@@ -28,26 +28,13 @@
     src: "{{ llm_router_config_file }}"
   register: llm_router_rendered_config
 
-- name: Record the router_settings payload the database should hold
+- name: Record the router_settings the database should hold
   ansible.builtin.copy:
     content: "{{ _llm_router_settings_payload | to_nice_json }}\n"
     dest: "{{ llm_router_config_dir }}/.router-settings-synced.json"
     owner: root
     group: root
     mode: "0644"
-  register: llm_router_settings_marker
-
-- name: Push the file's router_settings so the database cannot shadow it
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ llm_router_api_port }}/config/update"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ llm_router_master_key }}"
-    body_format: json
-    body:
-      router_settings: "{{ _llm_router_settings_payload }}"
-    status_code: [200, 201]
-    timeout: "{{ llm_router_seed_request_timeout }}"
-  when: llm_router_settings_marker.changed
-  notify: Restart litellm
-  no_log: true
+  notify:
+    - Sync router settings into the database
+    - Restart litellm
