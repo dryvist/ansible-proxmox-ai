@@ -159,18 +159,23 @@ response straight to Slack — with prompt bodies pulled from the pinned
 it comes from `HERMES_SLACK_DIGEST_CHANNEL`, and the whole reconcile loop is
 skipped (with a loud warning) when that is unset.
 
-**Three of the nine are enabled** (was four; `splunk-parsing-quality-v2`
-retired 2026-08-01). The rest are retired or superseded, and are explicitly
-`cron pause`d by `tasks/main.yml` — declaring `enabled: false` alone does
-*not* stop a job already running on the guest (see
+**All nine are retired** (`enabled: false`). Each was either superseded by a
+script-fed digest — whose stdout is delivered verbatim, so it cannot fabricate —
+or replaced 1-for-1 by a bare-named entry the native-cron reframe added to
+`43-direct-cron-jobs-core.yml`. Running both halves of a pair would double-post
+the same topic and spend the single-slot serving tier twice for one report.
+
+Every one of the nine is also explicitly `cron pause`d by
+`tasks/cron_reconcile.yml` — declaring `enabled: false` alone does *not* stop a
+job already running on the guest (see
 `tests/hermes_agent/test_retired_direct_crons.py`, which makes that pairing
 mandatory rather than remembered).
 
 | Job | Schedule (UTC) | Enabled | Note |
 | --- | --- | --- | --- |
-| `zammad-incident-review-v2` | `9 13 * * *` | yes | |
-| `github-org-triage-v2` | `26 8 * * *` | yes | |
-| `daily-operator-summary-v2` | `31 12 * * *` | yes | |
+| `zammad-incident-review-v2` | `9 13 * * *` | no | replaced 1-for-1 by the bare-named `zammad-review` entry |
+| `github-org-triage-v2` | `26 8 * * *` | no | replaced 1-for-1 by the bare-named `github-monitor` entry |
+| `daily-operator-summary-v2` | `31 12 * * *` | no | replaced 1-for-1 by the bare-named `daily-summary` entry |
 | `splunk-parsing-quality-v2` | `17 3 * * *` | no | 2026-08-01: replaced by `splunk-parsing` card (stale `index=network`, no dedup) |
 | `splunk-security-lens-v2` | `22 */6 * * *` | no | superseded by `splunk-security-digest` |
 | `splunk-error-triage-v2` | `37 * * * *` | no | superseded by `splunk-error-digest` |
@@ -178,13 +183,17 @@ mandatory rather than remembered).
 | `homelab-ai-fabric-status-v2` | `3 */6 * * *` | no | replaced by the card of the same name |
 | `splunk-hourly-digest-v3` | `52 * * * *` | no | superseded by `splunk-status-digest` |
 
-`zammad-incident-review-v2` and `github-org-triage-v2` are intentionally kept
-as crude-but-honest daily interim coverage: their kanban twins
-(`zammad-review` every 2h, `github-triage` every 6h) are richer but paused
-under the throttle, and unpausing either would multiply that topic's enqueue
-rate 4-12x — a throughput increase, not the 1-for-1 swap `splunk-parsing` got.
-Retire these two in favour of their kanban twins in the SAME change that
-unpauses them, not before, so the topic is never dropped in between.
+The last three were held open for a while as crude-but-honest interim coverage
+while their replacements were still Kanban cards under the enqueue throttle.
+That reason is spent: the native-cron reframe gave each of them a bare-named
+direct-cron entry on the same topic and cadence, so the swap is 1-for-1 and no
+topic is dropped by the retirement.
+
+Two enabled GitHub cards, `bot-pr-triage` and `github-maint-review`, have never
+been observed firing — their enable-gates require GitHub tokens that are unset,
+so they are declared but inert. That credential gap is tracked as Vikunja 1970;
+the gates themselves are deliberately left as they are, because the fix is to
+supply the tokens, not to loosen the gate.
 
 ## Systemd units (not crons)
 
