@@ -411,3 +411,29 @@ PINNED_SLACK_CONNECT_SOURCE = '''\
                 self.logger.exception(f"Failed to connect (error: {e}); Retrying...")
                 await asyncio.sleep(self.ping_interval)
 '''
+
+# Verbatim from gateway/kanban_watchers.py — the dispatcher's per-tick result
+# loop and the stuck-streak counter the tick log patches rewrite.
+PINNED_DISPATCH_TICK_SOURCE = (
+    '''\
+                    for slug, res in (results or []):
+                        if res is not None and getattr(res, "spawned", None):
+                            any_spawned = True
+                            logger.info(
+                                "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
+                                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                                slug,
+                                len(res.spawned),
+                                res.reclaimed,
+                                len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
+                                len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
+                                res.promoted,
+                                len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            )
+                    ready_pending = await _to_thread_process_service(_ready_nonempty)
+                    if ready_pending and not any_spawned:
+                        bad_ticks += 1
+                    else:
+                        bad_ticks = 0
+'''
+)
