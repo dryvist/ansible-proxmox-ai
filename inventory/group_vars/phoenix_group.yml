@@ -1,0 +1,30 @@
+---
+# Arize Phoenix LLM-observability config (phoenix_group).
+#
+# Secrets are bao-first (ai/phoenix, local-llm domain) with an env fallback —
+# the dify_group.yml shape. bao_local_llm_secrets defaults to {} in all.yml, so
+# a run without the domain fetched falls through to the env var, and the
+# role's assert_nonempty include refuses to render an empty credential.
+phoenix_docker_postgres_password: >-
+  {{ bao_local_llm_secrets.PHOENIX_POSTGRES_PASSWORD
+     | default(lookup('env', 'PHOENIX_POSTGRES_PASSWORD'), true) }}
+phoenix_docker_admin_secret: >-
+  {{ bao_local_llm_secrets.PHOENIX_ADMIN_SECRET
+     | default(lookup('env', 'PHOENIX_ADMIN_SECRET'), true) }}
+phoenix_docker_default_admin_initial_password: >-
+  {{ bao_local_llm_secrets.PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD
+     | default(lookup('env', 'PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD'), true) }}
+
+# OIDC client secret shared with Authelia. Its home is secret/apps/authelia
+# (generated there, hashed into Authelia's config by ansible-proxmox-apps
+# roles/authelia) and it reaches this host through the `apps` domain fetch in
+# the Phase 0 pre-play. Deliberately NOT mandatory: an empty value means SSO
+# login is not offered yet (phoenix_docker_oidc_enabled derives from it), so
+# the stack can converge before the Authelia side has.
+phoenix_docker_oidc_client_secret: >-
+  {{ bao_apps_secrets.authelia_oidc_phoenix_client_secret
+     | default(lookup('env', 'PHOENIX_OIDC_CLIENT_SECRET'), true) }}
+
+# Restart the Docker stack on failure (Phase 9 systemd restart policy).
+systemd_restart_policy_services:
+  - docker

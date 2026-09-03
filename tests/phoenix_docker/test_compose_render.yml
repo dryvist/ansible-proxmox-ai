@@ -1,0 +1,94 @@
+---
+# Pins the phoenix_docker render contract.
+#
+# Two things the compose template must hold at render time, offline:
+#   1. The Authelia OIDC env block appears iff a client secret is present.
+#      phoenix_docker_oidc_enabled DERIVES from the secret, so an empty secret
+#      (Authelia not converged yet) must produce a stack with local login only,
+#      never a half-configured OIDC provider that fails every SSO attempt.
+#   2. Every published port comes from tofu constants. A literal that slipped
+#      into the template would render fine and diverge from Traefik silently.
+#
+# Run (from the REPO ROOT — roles_path is cwd-relative in ansible.cfg):
+#   ansible-playbook tests/phoenix_docker/test_compose_render.yml -i localhost, -c local
+- name: Verify the phoenix_docker compose render contract
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_become: false
+    _template: "{{ playbook_dir }}/../../roles/phoenix_docker/templates/docker-compose.yml.j2"
+    _render_dir: "{{ lookup('env', 'RUNNER_TEMP') | default('/tmp', true) }}/phoenix_docker_render"
+  tasks:
+    # include_vars stores the Jinja expressions lazily, so the defaults'
+    # mandatory()/env lookups never evaluate here; the set_fact below (higher
+    # precedence) replaces every value the render would otherwise resolve
+    # from tofu_data or the environment.
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../roles/phoenix_docker/defaults/main.yml"
+
+    # Fixture values, never real ones. Ports are deliberately unusual so a
+    # literal 6006/4317/9090 in the template is caught by the assert below.
+    - name: Override the environment-derived values with fixtures
+      ansible.builtin.set_fact:
+        ai_subdomain: example.invalid
+        phoenix_docker_web_port: "36006"
+        phoenix_docker_grpc_port: "34317"
+        phoenix_docker_metrics_port: "39090"
+        phoenix_docker_postgres_password: fixture-postgres
+        phoenix_docker_admin_secret: fixture-admin-secret
+        phoenix_docker_default_admin_initial_password: fixture-admin-password
+        phoenix_docker_secrets:
+          phoenix_secret: fixture-phoenix-secret-0123456789abcdef0123456789
+
+    - name: Render the compose template with and without an OIDC client secret
+      ansible.builtin.include_tasks: tasks/render.yml
+      vars:
+        _render_name: "{{ item.name }}"
+        _render_secret: "{{ item.secret }}"
+      loop:
+        - { name: with_oidc, secret: fixture-oidc-client-secret }
+        - { name: without_oidc, secret: "" }
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Read both renders
+      ansible.builtin.slurp:
+        src: "{{ _render_dir }}/{{ item }}.yml"
+      loop: [with_oidc, without_oidc]
+      register: _renders
+
+    - name: Decode both renders
+      ansible.builtin.set_fact:
+        _with_oidc: "{{ _renders.results[0].content | b64decode }}"
+        _without_oidc: "{{ _renders.results[1].content | b64decode }}"
+
+    - name: The OIDC block renders iff a client secret is present
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'PHOENIX_OAUTH2_AUTHELIA_CLIENT_ID' in _with_oidc"
+          - "'/oauth2/authelia/callback' in _with_oidc"
+          - "'PHOENIX_OAUTH2_' not in _without_oidc"
+          - "'PHOENIX_ENABLE_AUTH: \"true\"' in _without_oidc"
+        fail_msg: >-
+          phoenix_docker_oidc_enabled no longer tracks the client secret: an
+          empty secret must render local login only, a present one must render
+          the full PHOENIX_OAUTH2_AUTHELIA_* set.
+
+    - name: Every published port is the tofu value, never a literal
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'\"36006:6006\"' in _with_oidc"
+          - "'\"34317:4317\"' in _with_oidc"
+          - "'\"39090:9090\"' in _with_oidc"
+          - _with_oidc | regex_findall('^\\s+- \"\\d+:\\d+\"', multiline=true) | length == 3
+        fail_msg: >-
+          A published port in docker-compose.yml.j2 is not sourced from
+          tofu_data.constants.service_ports.phoenix_* (ip-addressing rule).
+
+    - name: Remove the render directory
+      ansible.builtin.file:
+        path: "{{ _render_dir }}"
+        state: absent

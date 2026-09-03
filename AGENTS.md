@@ -76,6 +76,10 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
 - `langflow_docker` — LangFlow visual LLM workflow builder
 - `langgraph_docker` — LangGraph agent orchestration runtime
 - `langfuse_docker` — Langfuse LLM observability/tracing
+- `phoenix_docker` — Arize Phoenix LLM tracing/evals/experiments. An OTLP
+  sink fed by Cribl Stream, peer of Langfuse: producers never point at it
+  directly (see `ai_orchestration_otel_endpoint` in `group_vars/all.yml`).
+  Elastic License 2.0 — unlimited for internal use, no license key.
 
 ### Ops
 

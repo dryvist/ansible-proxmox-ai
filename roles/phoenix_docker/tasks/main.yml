@@ -1,0 +1,150 @@
+---
+# Arize Phoenix Docker deployment.
+#
+# Generates (and persists) the session-signing secret on first run, then
+# deploys phoenix + postgres via Docker Compose with the database bind-mounted
+# under /opt/phoenix. Docker itself is installed by the docker_engine meta
+# dependency (meta/main.yml). No venv: docker_compose_v2 drives the compose
+# CLI, not the docker SDK.
+#
+# Ingest is NOT configured here. Cribl Stream (ansible-proxmox-apps) forks the
+# fabric's OTLP traces to this guest's /v1/traces with the ingest API key; the
+# key is minted in the Phoenix UI after first boot and seeded into OpenBao
+# (ai/phoenix, PHOENIX_INGEST_API_KEY), where the Cribl role reads it.
+
+# =============================================================================
+# Data directories
+# =============================================================================
+
+- name: Create Phoenix data directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "0755"
+  loop: "{{ phoenix_docker_directories }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+# =============================================================================
+# Application secrets (generate-once, persist on disk)
+# =============================================================================
+# PHOENIX_SECRET must be stable across runs (it signs every session and
+# access token); persist it in a root-only file the first time the role runs
+# and reuse it thereafter. Same loop shape as langfuse_docker.
+
+- name: Check for existing generated Phoenix secrets
+  ansible.builtin.stat:
+    path: "{{ phoenix_docker_data_dir }}/{{ item.file }}"
+  loop: "{{ phoenix_docker_generated_secrets }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: phoenix_docker_secret_stats
+
+- name: Generate Phoenix secrets (first run only)
+  ansible.builtin.copy:
+    dest: "{{ phoenix_docker_data_dir }}/{{ item.item.file }}"
+    content: >-
+      {{ (lookup('community.general.random_string', length=item.item.length,
+                 upper=true, lower=true, numbers=true, special=false) | hash('sha256'))
+         if item.item.hex
+         else lookup('community.general.random_string', length=item.item.length,
+                     upper=true, lower=true, numbers=true, special=false) }}
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ phoenix_docker_secret_stats.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: not item.stat.exists
+  no_log: true
+
+- name: Read generated Phoenix secrets into memory
+  ansible.builtin.slurp:
+    src: "{{ phoenix_docker_data_dir }}/{{ item.file }}"
+  loop: "{{ phoenix_docker_generated_secrets }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: phoenix_docker_secret_slurps
+  no_log: true
+
+- name: Resolve generated Phoenix secrets into a fact
+  ansible.builtin.set_fact:
+    phoenix_docker_secrets: "{{ dict(_phoenix_docker_secret_names | zip(_phoenix_docker_secret_values)) }}"
+  vars:
+    _phoenix_docker_secret_names: "{{ phoenix_docker_generated_secrets | map(attribute='name') | list }}"
+    _phoenix_docker_secret_values: >-
+      {{ phoenix_docker_secret_slurps.results
+         | map(attribute='content') | map('b64decode') | map('trim') | list }}
+  no_log: true
+
+# =============================================================================
+# Compose deployment
+# =============================================================================
+
+- name: Assert every secret rendered into the Phoenix compose file is present
+  ansible.builtin.include_tasks: >-
+    {{ role_path }}/../openbao_secrets/tasks/assert_nonempty.yml
+  vars:
+    openbao_secrets_assert_context: the Phoenix compose file
+    openbao_secrets_assert_names:
+      - phoenix_docker_postgres_password
+      - phoenix_docker_admin_secret
+      - phoenix_docker_default_admin_initial_password
+
+- name: Deploy Phoenix docker-compose template
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ phoenix_docker_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0600"  # contains the datastore password + app secrets
+  no_log: true
+  notify: Restart phoenix
+
+- name: Deploy Phoenix via docker compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ phoenix_docker_data_dir }}"
+    state: present
+  register: phoenix_docker_compose_result
+  changed_when: >-
+    (phoenix_docker_compose_result.actions | default([]))
+    | selectattr('status', 'in', ['Creating', 'Recreating', 'Pulling', 'Building'])
+    | list | length > 0
+  no_log: true
+
+# =============================================================================
+# Health check
+# =============================================================================
+# First boot runs the Postgres migrations before the server listens, so the
+# port wait and the health poll are both generous.
+
+- name: Wait for Phoenix web port to be ready
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ phoenix_docker_web_port }}"
+    timeout: 180
+
+- name: Verify Phoenix health endpoint responds
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ phoenix_docker_web_port }}/healthz"
+    method: GET
+    status_code: 200
+  register: phoenix_docker_health
+  retries: 30
+  delay: 10
+  until: phoenix_docker_health.status == 200
+  changed_when: false
+
+- name: Verify Phoenix Prometheus metrics endpoint responds
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ phoenix_docker_metrics_port }}/metrics"
+    method: GET
+    status_code: 200
+  register: phoenix_docker_metrics_health
+  retries: 6
+  delay: 5
+  until: phoenix_docker_metrics_health.status == 200
+  changed_when: false
+  when: phoenix_docker_enable_prometheus | bool
