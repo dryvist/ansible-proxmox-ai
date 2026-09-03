@@ -41,6 +41,12 @@
         phoenix_docker_secrets:
           phoenix_secret: fixture-phoenix-secret-0123456789abcdef0123456789
 
+    - name: Create the render directory
+      ansible.builtin.file:
+        path: "{{ _render_dir }}"
+        state: directory
+        mode: "0700"
+
     - name: Render the compose template with and without an OIDC client secret
       ansible.builtin.include_tasks: tasks/render.yml
       vars:
@@ -64,11 +70,16 @@
         _without_oidc: "{{ _renders.results[1].content | b64decode }}"
 
     - name: The OIDC block renders iff a client secret is present
+      vars:
+        # A rendered env var, not the template comment that names the callback.
+        _oidc_config_line: >-
+          PHOENIX_OAUTH2_AUTHELIA_OIDC_CONFIG_URL:
+          "https://authelia.example.invalid/.well-known/openid-configuration"
       ansible.builtin.assert:
         quiet: true
         that:
           - "'PHOENIX_OAUTH2_AUTHELIA_CLIENT_ID' in _with_oidc"
-          - "'/oauth2/authelia/callback' in _with_oidc"
+          - _oidc_config_line in _with_oidc
           - "'PHOENIX_OAUTH2_' not in _without_oidc"
           - "'PHOENIX_ENABLE_AUTH: \"true\"' in _without_oidc"
         fail_msg: >-
