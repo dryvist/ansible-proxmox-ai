@@ -108,3 +108,74 @@
   # unrendered gets no fallback record rather than a failed request.
   when: item.fallbacks | select('in', _llm_router_live_models) | list | length > 0
   no_log: true
+
+# RECONCILE an existing role whose target has moved in the registry. Seeding
+# only ever creates, so a role pointed at a model that was later repointed or
+# retired keeps answering from the stale target forever — the subagent role sat
+# on a withdrawn stealth model this way, 404ing on every call while the registry
+# had already been corrected.
+#
+# Delete-then-create rather than /model/update, deliberately. 55-roles.yml
+# records the measured trap: /model/update writes the new litellm_params and
+# answers 200 but leaves the advertised max_input_tokens at the OLD value, so a
+# caller is told a window the new model does not have. Recreating is the one
+# path that is correct whether or not the window changed, so there is no
+# same-window special case to get wrong.
+#
+# Idempotent by construction: the loop is empty unless a live role's model
+# string actually differs from the registry's, so a steady-state converge
+# changes nothing.
+
+- name: Note which role deployments point somewhere the registry no longer does
+  ansible.builtin.set_fact:
+    _llm_router_stale_roles: >-
+      {{ llm_router_role_deployments
+         | selectattr('role', 'in', _llm_router_live_models)
+         | selectattr('model', 'in', _llm_router_live_models)
+         | rejectattr('role', 'in', _llm_router_roles_on_target) | list }}
+  vars:
+    _llm_router_roles_on_target: >-
+      {{ llm_router_existing_models.json.data | default([])
+         | selectattr('litellm_params.model', 'defined')
+         | selectattr('litellm_params.model', 'in',
+                      llm_router_role_deployments | map(attribute='model')
+                      | map('extract', _llm_router_role_params)
+                      | map(attribute='model') | list)
+         | map(attribute='model_name') | list }}
+
+- name: Retire the stale role deployment
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/model/delete"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      id: >-
+        {{ llm_router_existing_models.json.data
+           | selectattr('model_name', 'equalto', item.role)
+           | map(attribute='model_info.id') | first }}
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: "{{ _llm_router_stale_roles }}"
+  loop_control:
+    label: "{{ item.role }}"
+  no_log: true
+
+- name: Recreate it on the target the registry now declares
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/model/new"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      model_name: "{{ item.role }}"
+      litellm_params: "{{ _llm_router_role_params[item.model] }}"
+      model_info: "{{ _llm_router_role_model_info[item.model] }}"
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: "{{ _llm_router_stale_roles }}"
+  loop_control:
+    label: "{{ item.role }} -> {{ item.model }}"
+  no_log: true
