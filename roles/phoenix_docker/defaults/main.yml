@@ -1,0 +1,152 @@
+---
+# Arize Phoenix — LLM tracing, evals, datasets/experiments and prompt
+# playground, deployed as a Docker-Compose-in-LXC stack (phoenix + postgres).
+#
+# Phoenix is an OTLP SINK, a peer of Langfuse on the same Cribl fan-out: Cribl
+# Stream's `in_otel` input forks every trace to both (ansible-proxmox-apps
+# roles/cribl_stream, `otel_traces_phoenix` pipeline). No producer in this repo
+# points at Phoenix directly — the single-collector rule in
+# inventory/group_vars/all.yml (ai_orchestration_otel_endpoint) is unchanged.
+#
+# License: Elastic License 2.0. The only restriction that matters is "do not
+# offer it to third parties as a managed service"; internal use is unlimited,
+# there is no license key and nothing is feature-gated. Arize AX (the cloud
+# product) is NOT self-hostable — this role is the open Phoenix server only.
+#
+# All literals live here; the template references vars only (DRY).
+
+# =============================================================================
+# Container images — exact tags, never a floating major. Phoenix publishes
+# `version-<semver>` tags for every release; Renovate surfaces the bumps.
+# =============================================================================
+phoenix_docker_image: "arizephoenix/phoenix:version-20.5.0"
+phoenix_docker_postgres_image: "postgres:17"
+
+phoenix_docker_container_name: phoenix
+
+# Restart policy applied to every service in the stack.
+phoenix_docker_restart_policy: unless-stopped
+
+# =============================================================================
+# Persistent state (bind-mounted to /opt/phoenix — durable, snapshotted).
+# Phoenix itself keeps every trace, dataset and prompt in Postgres, so the
+# only data dir is the database's; the app container is stateless.
+# =============================================================================
+phoenix_docker_data_dir: /opt/phoenix
+phoenix_docker_postgres_data_dir: "{{ phoenix_docker_data_dir }}/postgres"
+
+# Postgres chowns its bind mount via the root entrypoint, so the dirs stay
+# root-owned (same as the langfuse_docker postgres dir).
+phoenix_docker_directories:
+  - path: "{{ phoenix_docker_data_dir }}"
+    owner: root
+    group: root
+  - path: "{{ phoenix_docker_postgres_data_dir }}"
+    owner: root
+    group: root
+
+# Compose service names — also the Docker DNS hostnames used in the URLs below.
+phoenix_docker_postgres_service: postgres
+
+# Container-internal wire ports (image contracts, NOT the externally-published
+# tofu service_ports). Phoenix serves HTTP (UI + OTLP/HTTP /v1/traces) on 6006,
+# OTLP/gRPC on 4317 and Prometheus /metrics on 9090.
+phoenix_docker_postgres_internal_port: 5432
+phoenix_docker_http_internal_port: 6006
+phoenix_docker_grpc_internal_port: 4317
+phoenix_docker_metrics_internal_port: 9090
+
+# Externally-published ports — pulled from the OpenTofu pipeline_constants
+# (DRY: no port literal here).
+#   web     = UI + OTLP/HTTP ingest (Traefik-fronted as https://phoenix.<domain>;
+#             /v1/traces is bearer-keyed and must stay outside the Authelia gate)
+#   grpc    = OTLP/gRPC ingest (internal-only; Cribl uses the HTTP path today)
+#   metrics = Prometheus /metrics (scraped directly, internal-only)
+_phoenix_docker_port_err: >-
+  tofu_data.constants.service_ports.phoenix_* missing —
+  add phoenix_web / phoenix_grpc / phoenix_metrics to tofu-proxmox
+  pipeline_constants and re-run the workspace so the inventory republishes.
+phoenix_docker_web_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['phoenix_web']
+     | mandatory(_phoenix_docker_port_err) }}
+phoenix_docker_grpc_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['phoenix_grpc']
+     | mandatory(_phoenix_docker_port_err) }}
+phoenix_docker_metrics_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['phoenix_metrics']
+     | mandatory(_phoenix_docker_port_err) }}
+
+# Public URL via Traefik — derived from the shared ai_subdomain, never
+# hardcoded. Matches the `phoenix` ingress entry in tofu-proxmox.
+phoenix_docker_hostname: "phoenix.{{ ai_subdomain }}"
+phoenix_docker_public_url: "https://{{ phoenix_docker_hostname }}"
+
+# =============================================================================
+# Authentication. PHOENIX_ENABLE_AUTH turns on local accounts + API keys; the
+# bootstrap admin gets the initial password below on FIRST boot only (Phoenix
+# ignores it once the admin row exists). PHOENIX_ADMIN_SECRET is a bearer
+# token for a system user — used to mint the ingest API key headlessly.
+# PHOENIX_SECRET signs sessions/JWTs: generated once on the guest and reused,
+# because regenerating it per run logs every user out.
+# =============================================================================
+phoenix_docker_admin_secret: >-
+  {{ lookup('env', 'PHOENIX_ADMIN_SECRET')
+     | mandatory('PHOENIX_ADMIN_SECRET unset') }}
+phoenix_docker_default_admin_initial_password: >-
+  {{ lookup('env', 'PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD')
+     | mandatory('PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD unset') }}
+
+# Phoenix requires the signing secret to be >= 32 chars and to contain both a
+# digit and a lowercase letter; a 48-char mixed alnum string satisfies that.
+phoenix_docker_generated_secrets:
+  - { name: phoenix_secret, file: .phoenix_secret, length: 48, hex: false }
+
+# =============================================================================
+# SSO via Authelia (generic OIDC). Phoenix reads one PHOENIX_OAUTH2_<IDP>_* set
+# per identity provider; the <IDP> token (lower-cased) is also the callback
+# path: https://phoenix.<domain>/oauth2/authelia/callback. client_id is the
+# fixed, non-secret identifier Authelia registers for this app
+# (ansible-proxmox-apps roles/authelia); the client_secret is the one shared
+# value both sides need, generated in OpenBao (secret/apps/authelia) and hashed
+# into Authelia's own config. Empty secret = OIDC login not offered yet (the
+# Homarr `oidc_enabled: false` shape) rather than a failed converge, so the
+# stack can come up before the Authelia side has been converged.
+# =============================================================================
+phoenix_docker_oidc_idp: authelia
+phoenix_docker_oidc_display_name: Authelia
+phoenix_docker_oidc_client_id: phoenix
+phoenix_docker_oidc_config_url: >-
+  https://authelia.{{ ai_subdomain }}/.well-known/openid-configuration
+phoenix_docker_oidc_client_secret: >-
+  {{ lookup('env', 'PHOENIX_OIDC_CLIENT_SECRET') }}
+phoenix_docker_oidc_enabled: >-
+  {{ phoenix_docker_oidc_client_secret | string | trim | length > 0 }}
+# Auto-create a Phoenix user on first SSO login: Authelia already gates who
+# may reach the app, so a second allow-list here would only drift.
+phoenix_docker_oidc_allow_sign_up: "true"
+
+# =============================================================================
+# Database identity + connection URL (composed here; template stays literal).
+# =============================================================================
+phoenix_docker_postgres_user: phoenix
+phoenix_docker_postgres_db: phoenix
+phoenix_docker_postgres_password: >-
+  {{ lookup('env', 'PHOENIX_POSTGRES_PASSWORD')
+     | mandatory('PHOENIX_POSTGRES_PASSWORD unset') }}
+phoenix_docker_sql_database_url: >-
+  postgresql://{{ phoenix_docker_postgres_user }}:{{ phoenix_docker_postgres_password }}@{{
+  phoenix_docker_postgres_service }}:{{ phoenix_docker_postgres_internal_port }}/{{
+  phoenix_docker_postgres_db }}
+
+# =============================================================================
+# Operational knobs.
+# =============================================================================
+# Prometheus /metrics on the metrics port (agentgateway_docker precedent:
+# scraped directly by the observability node, never Traefik-fronted).
+phoenix_docker_enable_prometheus: "true"
+# Phoenix rejects cross-origin browser requests unless the public origin is
+# trusted; Traefik terminates TLS so the app only ever sees this one origin.
+phoenix_docker_csrf_trusted_origins: "{{ phoenix_docker_public_url }}"
