@@ -72,6 +72,12 @@
       # composition checks above pass happily on exactly that chain, which is
       # how it reached production.
       - "_llm_router_unescaped_narrow_groups | length == 0"
+      # ANTI-VACUITY. Narrowness is "context_window < primary's", and the
+      # primary lookup defaults to 0 when it resolves nothing. At 0 no leg is
+      # ever narrow, so the ordering and escape-hatch checks above pass over an
+      # EMPTY set and report success on a chain they never examined. A primary
+      # that does not resolve is a broken registry, not a wide fleet.
+      - "llm_router_hermes_primary_context_window | int > 0"
     fail_msg: >-
       Hermes fallback chain is unsound (roles/llm_router/tasks/assert-fallback-chain.yml):
       got {{ llm_router_hermes_default_fallback_chain }}, which must hold
@@ -86,6 +92,13 @@
       raising it. Rung(s) narrower than the primary with no
       context_window_fallbacks escape hatch (these abort the whole chain on an
       over-long request): {{ _llm_router_unescaped_narrow_groups }}.
+      The four inputs every ordering failure turns on, because they differ
+      between environments and are otherwise invisible here — primary model:
+      {{ llm_router_primary_model | default('UNRESOLVED') }}; primary context
+      window: {{ llm_router_hermes_primary_context_window }} (0 means the
+      primary did not resolve and nothing was classed narrow);
+      narrow groups: {{ llm_router_hermes_local_narrow_groups }};
+      narrow_legs_last: {{ llm_router_hermes_narrow_legs_last }}.
     success_msg: >-
       Hermes fallback chain is ordered
       ({{ llm_router_hermes_default_fallback_chain | join(' -> ') }}), every
