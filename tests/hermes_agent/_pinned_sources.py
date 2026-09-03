@@ -421,7 +421,6 @@ PINNED_CRON_FAILURE_ARTIFACT_SOURCE = (
     "\n"
     "## Error\n"
 )
-||||||| 9e86c59f
 
 # Verbatim from gateway/kanban_watchers.py — the dispatcher's per-tick result
 # loop and the stuck-streak counter the tick log patches rewrite.
