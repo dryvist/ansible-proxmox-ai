@@ -23,6 +23,11 @@
   gather_facts: false
   vars:
     _defaults_dir: "{{ playbook_dir }}/../../roles/llm_router/defaults/main"
+    # The virtual-key scopes read the apps-domain secret map for their VALUES.
+    # Only the model lists are under test, but Jinja renders the whole entry,
+    # so the map has to exist. Empty is also the honest render of an unseeded
+    # consumer, which is the state this contract has to hold in.
+    bao_apps_secrets: {}
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
@@ -104,3 +109,36 @@
           - llm_router_model_group_aliases['goal-judge'] != llm_router_primary_model
         fail_msg: "goal-judge must not resolve to the same model as hermes-default"
         success_msg: "judge is cross-family to the worker"
+
+    - name: Every per-caller virtual key scopes only names the router advertises
+      # WHY THIS EXISTS. A key's `models` list is an allowlist enforced by the
+      # proxy: a name in it that the router does not advertise is not an error
+      # anywhere — the key simply cannot reach anything under that name, and the
+      # consumer gets a 400 it will read as its own bug. Deriving the scopes
+      # from the registry (defaults/main/56-virtual-keys.yml) is what keeps a
+      # RETIRED alias from lingering in one, and this assert is what proves the
+      # derivation still lands inside the advertised set after a rename.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_virtual_keys | length > 0
+          - _key_scope_models | difference(_advertised) | length == 0
+        fail_msg: >-
+          Virtual-key scope(s)
+          [{{ _key_scope_models | difference(_advertised) | join(', ') }}]
+          name nothing the router advertises. A key may only list a servable
+          model, a group alias, a role deployment, or a Hermes agent.
+        success_msg: >-
+          all {{ llm_router_virtual_keys | length }} virtual keys scope
+          {{ _key_scope_models | length }} advertised names
+      vars:
+        # Everything a caller can legitimately address on this proxy.
+        _advertised: >-
+          {{ (llm_router_servable_models
+              + (llm_router_model_group_aliases | list)
+              + (llm_router_hermes_agents | list)
+              + (llm_router_role_deployments | map(attribute='role') | list))
+             | unique | list }}
+        _key_scope_models: >-
+          {{ llm_router_virtual_keys | map(attribute='models') | flatten
+             | unique | list }}

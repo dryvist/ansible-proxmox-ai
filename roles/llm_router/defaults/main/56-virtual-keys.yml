@@ -1,0 +1,38 @@
+---
+# --- PER-CALLER VIRTUAL KEYS -------------------------------------------------
+# One key per caller class instead of every consumer sharing the master key.
+# Buys per-caller attribution in the spend logs and revocation of one tool
+# without rotating everything. It does NOT buy per-key budgets: model_max_budget
+# is enterprise-licensed and the API rejects it here, which also rules out
+# budget_fallbacks. Budget-exhaustion recovery is the local survivor member in
+# each budgeted group instead (model-list.yaml.j2).
+#
+# Values are generated at the consumer's own tier and read here, never minted by
+# this role — see tasks/seed-keys.yml. An unseeded consumer renders an empty
+# value and is skipped, so this list is safe to carry before the generating
+# half exists.
+#
+# Workstation clients (claude-code, codex, cursor, opencode) are deliberately
+# absent: they have no converge-delivered secret path, so they stay on the
+# master key until that is decided separately. The Hermes cron fleet is
+# absent for a different reason — its credential lives in the local-llm
+# domain, not apps, so it is a separate pass rather than a second entry here.
+#
+# Scopes are DERIVED from the registry rather than hand-listed. A retired
+# alias cannot linger in a key's allowlist because it stops being derived.
+
+# Everything a human chat UI may select: every servable model, every stable
+# alias, and every running agent.
+_llm_router_key_scope_all: >-
+  {{ (llm_router_servable_models
+      + (llm_router_model_group_aliases | list)
+      + (llm_router_hermes_agents | list)) | unique | list }}
+
+llm_router_virtual_keys:
+  - alias: open-webui
+    value: "{{ bao_apps_secrets.open_webui_llm_router_key | default('', true) }}"
+    models: "{{ _llm_router_key_scope_all }}"
+  # Graph workers do trivial classification and embedding only — no lead tier.
+  - alias: langgraph
+    value: "{{ bao_apps_secrets.langgraph_llm_router_key | default('', true) }}"
+    models: "{{ ['cheap', 'embed'] }}"

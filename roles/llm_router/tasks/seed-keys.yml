@@ -1,0 +1,49 @@
+---
+# FIRST SEED ONLY, same contract as seed-roles.yml: creates a virtual key when
+# the proxy has none by that alias, and never touches one that exists.
+#
+# The router does not MINT these. /key/generate accepts a caller-supplied value,
+# so each key is registered with a value generated at the consumer's own tier
+# (openbao_generated_app_secrets in ansible-proxmox-apps) and merely READ here —
+# reads are pre-authorized, so this needs no write unlock in this repo.
+#
+# A consumer whose key is not seeded yet renders no entry and is skipped, so
+# this is a no-op until the generating half lands and the two can merge
+# independently.
+#
+# Model scope is derived from the registry, never hand-listed: a retired alias
+# cannot linger in a key's allowlist because it stops being derived.
+
+- name: Read the virtual keys the proxy already carries
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/list?page=1&size=100"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  register: llm_router_existing_keys
+  no_log: true
+
+- name: Create the caller keys that are absent and have a seeded value
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/generate"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      key: "{{ item.value }}"
+      key_alias: "{{ item.alias }}"
+      models: "{{ item.models }}"
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: >-
+    {{ llm_router_virtual_keys
+       | rejectattr('value', 'equalto', '')
+       | rejectattr('alias', 'in', _llm_router_live_key_aliases) | list }}
+  loop_control:
+    label: "{{ item.alias }}"
+  vars:
+    _llm_router_live_key_aliases: >-
+      {{ llm_router_existing_keys.json.keys | default([])
+         | map(attribute='key_alias') | select('string') | list }}
+  no_log: true
