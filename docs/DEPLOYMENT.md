@@ -37,7 +37,10 @@ Always deploy the fabric in this order. Each stage gates the next.
    - the timeout chain is ordered `hermes read < router attempt` (the outermost
      link, the nix-darwin server guard, is out of this repo's reach).
 
-2. **Converge.** Apply the roles normally:
+2. **Deploy.** Converge the config changes.
+
+   > **Primary Execution Plane: Semaphore**
+   > Routine execution of `site.yml` and its tagged runs (like `ai-site` and `ai-llm-serving`) is handled centrally by **Semaphore**. The CLI commands below are for local development, testing, or break-glass execution only. To deploy in production, trigger the appropriate Semaphore job.
 
    ```bash
    doppler run -- ansible-playbook \

@@ -1,5 +1,72 @@
 # Changelog
 
+## [0.36.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.35.3...v0.36.0) (2026-09-03)
+
+
+### Features
+
+* **ci:** auto-fix the Hermes installer sha256 on Renovate branches ([92edbbe](https://github.com/dryvist/ansible-proxmox-ai/commit/92edbbe0f4a72af894c0ebbda2d4141792ae75c9))
+* **ci:** auto-fix the Hermes installer sha256 on Renovate branches ([fef5e2d](https://github.com/dryvist/ansible-proxmox-ai/commit/fef5e2d8ac06beb84b06bc81774d24508b704b89))
+* **fabric_watchdog:** add a pool-wait gauge for cron slot starvation ([#621](https://github.com/dryvist/ansible-proxmox-ai/issues/621)) ([177d7e0](https://github.com/dryvist/ansible-proxmox-ai/commit/177d7e0db81535b86fc4d5b683d3d4b10272c632))
+* **fabric_watchdog:** alert on the absence of successful scheduled runs ([#611](https://github.com/dryvist/ansible-proxmox-ai/issues/611)) ([3d01284](https://github.com/dryvist/ansible-proxmox-ai/commit/3d01284f82afc692abb65567cd00c40e2ba8b9bc))
+* **fabric_watchdog:** probe whether the memory dependency gate accepts the installed client ([#628](https://github.com/dryvist/ansible-proxmox-ai/issues/628)) ([01f6ca3](https://github.com/dryvist/ansible-proxmox-ai/commit/01f6ca3d023eed59bde520e8becd093806987e72))
+* **herdr:** converge the herdr guests from the nix-ai flake ([#599](https://github.com/dryvist/ansible-proxmox-ai/issues/599)) ([87858f8](https://github.com/dryvist/ansible-proxmox-ai/commit/87858f872e9f800d659d0514bded4573cc5ff0ae))
+* **hermes_agent:** hourly cause-grouped rollup of failing cron jobs ([#645](https://github.com/dryvist/ansible-proxmox-ai/issues/645)) ([9e86c59](https://github.com/dryvist/ansible-proxmox-ai/commit/9e86c59f12808a7341c384b73f091417d753ed6c))
+* **hermes_agent:** log every kanban dispatch tick outcome, not only spawns ([#648](https://github.com/dryvist/ansible-proxmox-ai/issues/648)) ([bf594cc](https://github.com/dryvist/ansible-proxmox-ai/commit/bf594ccea9cc5b92a5ad6aa48fa762babd10e56f))
+* **hermes_agent:** surface a tripped memory breaker and date recalled baselines ([#651](https://github.com/dryvist/ansible-proxmox-ai/issues/651)) ([e953581](https://github.com/dryvist/ansible-proxmox-ai/commit/e953581b7fdb381c9c02fed7cf9833102b23e056))
+* **langfuse_docker:** step ClickHouse and pin the v4 dual write mode ([#634](https://github.com/dryvist/ansible-proxmox-ai/issues/634)) ([0ff8287](https://github.com/dryvist/ansible-proxmox-ai/commit/0ff8287a7d9a521d07a839c8fb34d5f18478812d))
+* **llm_router:** reconcile a role deployment whose registry target moved ([#652](https://github.com/dryvist/ansible-proxmox-ai/issues/652)) ([455e947](https://github.com/dryvist/ansible-proxmox-ai/commit/455e947b9c62ca35b6598e96f594f38f060d148a))
+* **llm_router:** register a per-caller virtual key instead of sharing the master key ([#654](https://github.com/dryvist/ansible-proxmox-ai/issues/654)) ([89e3550](https://github.com/dryvist/ansible-proxmox-ai/commit/89e35506b98de8d8af6c75b925af4ee42a765e74))
+* **phoenix:** add Arize Phoenix as a second OTLP trace sink ([1f4947e](https://github.com/dryvist/ansible-proxmox-ai/commit/1f4947eddbad5e89f7a6cbdc055bc1c3bf027355))
+* **phoenix:** add Arize Phoenix as a second OTLP trace sink ([9e5e6eb](https://github.com/dryvist/ansible-proxmox-ai/commit/9e5e6ebe3768898a8726b10d68770c10984c31ba))
+
+
+### Bug Fixes
+
+* **ci:** add missing YAML document-start marker ([9d48fa8](https://github.com/dryvist/ansible-proxmox-ai/commit/9d48fa8a45382518743de7ac6373675b2c4ecb67))
+* **fabric_watchdog:** evaluate every scheduler root, keyed by (profile, job) ([#613](https://github.com/dryvist/ansible-proxmox-ai/issues/613)) ([d66bfd7](https://github.com/dryvist/ansible-proxmox-ai/commit/d66bfd7872b240617b281bc2d52aaf45e2a09651))
+* **fabric_watchdog:** require a new success to clear an absence alert ([#624](https://github.com/dryvist/ansible-proxmox-ai/issues/624)) ([1844743](https://github.com/dryvist/ansible-proxmox-ai/commit/18447437f38019f73db0c79ee705cd502db027b5))
+* **hermes_agent:** bound the non-streaming stale timeout like the streaming one ([#605](https://github.com/dryvist/ansible-proxmox-ai/issues/605)) ([ffd2230](https://github.com/dryvist/ansible-proxmox-ai/commit/ffd223007a5b994ca6959ee423a5d43f8d252bcf))
+* **hermes_agent:** derive the cron pool hold ceiling from job cadence ([#620](https://github.com/dryvist/ansible-proxmox-ai/issues/620)) ([c7acbc1](https://github.com/dryvist/ansible-proxmox-ai/commit/c7acbc1f45fdb539c94909eac7c5bc9023453f75))
+* **hermes_agent:** drain in-flight cron runs before restarting the gateway ([#614](https://github.com/dryvist/ansible-proxmox-ai/issues/614)) ([48b563c](https://github.com/dryvist/ansible-proxmox-ai/commit/48b563c3e379489447d444c59e9ebaa368a2b559))
+* **hermes_agent:** drop the cron delivery wrapper and ladder repeated failures ([#643](https://github.com/dryvist/ansible-proxmox-ai/issues/643)) ([3793b22](https://github.com/dryvist/ansible-proxmox-ai/commit/3793b222ca05441df524d8be28c643d7751011eb))
+* **hermes_agent:** hourly board digest with a stall ladder; gate the wired-trajectory verdict ([#644](https://github.com/dryvist/ansible-proxmox-ai/issues/644)) ([ec6863f](https://github.com/dryvist/ansible-proxmox-ai/commit/ec6863f6a2ba4c6f752ff80f6f3bbc581574f5d7))
+* **hermes_agent:** judge the report body, not the mandated attribution footer ([#630](https://github.com/dryvist/ansible-proxmox-ai/issues/630)) ([ead3a8a](https://github.com/dryvist/ansible-proxmox-ai/commit/ead3a8a3544e71c9f8c8c9e6e3de7c6ecffca7cb))
+* **hermes_agent:** keep the evidence when a cron run fails ([#649](https://github.com/dryvist/ansible-proxmox-ai/issues/649)) ([b6ac893](https://github.com/dryvist/ansible-proxmox-ai/commit/b6ac8937a566c1de4b021f96fa7c3002d055f855))
+* **hermes_agent:** log what the drain scanned, not just that it found nothing ([#619](https://github.com/dryvist/ansible-proxmox-ai/issues/619)) ([8f3e92e](https://github.com/dryvist/ansible-proxmox-ai/commit/8f3e92e6935af63bbbb4355e25b4d580f2634067))
+* **hermes_agent:** make the Hindsight lazy-dep gate accept the installed client ([#627](https://github.com/dryvist/ansible-proxmox-ai/issues/627)) ([fc922d4](https://github.com/dryvist/ansible-proxmox-ai/commit/fc922d48455669729120cbc0701739febc4e8774))
+* **hermes_agent:** match the gateway process by its script path in the one-gateway gate ([e9b5717](https://github.com/dryvist/ansible-proxmox-ai/commit/e9b571737bdf0005525cd50e11e0ab8c49d41d24))
+* **hermes_agent:** match the gateway process by its script path in the one-gateway gate ([d7040a2](https://github.com/dryvist/ansible-proxmox-ai/commit/d7040a2f70e743a49bbe1423161a3991d6cfc0a5))
+* **hermes_agent:** move the prompt catalog pin to the triage query fix ([#629](https://github.com/dryvist/ansible-proxmox-ai/issues/629)) ([5788f5f](https://github.com/dryvist/ansible-proxmox-ai/commit/5788f5fb5f4807879844b656f9cc690fc759ff1e))
+* **hermes_agent:** namespace the read-back so it stops shadowing a sibling ([#623](https://github.com/dryvist/ansible-proxmox-ai/issues/623)) ([7e7be4a](https://github.com/dryvist/ansible-proxmox-ai/commit/7e7be4a82807a0703315ca3b20d380d807e3a476))
+* **hermes_agent:** pin SSL_CERT_FILE to the distro CA bundle ([#609](https://github.com/dryvist/ansible-proxmox-ai/issues/609)) ([b4addad](https://github.com/dryvist/ansible-proxmox-ai/commit/b4addadff8346f4f91f781d61684cc2030af2c32))
+* **hermes_agent:** re-anchor four cron delivery patches on the 2026.8.27 source ([#647](https://github.com/dryvist/ansible-proxmox-ai/issues/647)) ([b95ca49](https://github.com/dryvist/ansible-proxmox-ai/commit/b95ca4925da3706e4876dad1ee710cd54b2b859f))
+* **hermes_agent:** render operational .env settings into every profile store ([#615](https://github.com/dryvist/ansible-proxmox-ai/issues/615)) ([1f476dd](https://github.com/dryvist/ansible-proxmox-ai/commit/1f476dd178bac100f954ab11696db132610b74c6))
+* **hermes_agent:** stop delivering misleading remediation on cron failures ([#618](https://github.com/dryvist/ansible-proxmox-ai/issues/618)) ([eb7a921](https://github.com/dryvist/ansible-proxmox-ai/commit/eb7a9214bd074c4e6c32dd3f50421c5affd9fdca))
+* **hermes_agent:** Studio never spawns a gateway; the converge asserts exactly one ([#642](https://github.com/dryvist/ansible-proxmox-ai/issues/642)) ([ea2fa75](https://github.com/dryvist/ansible-proxmox-ai/commit/ea2fa75ab4f40547144a3b729c5779a471a661f3))
+* **hermes_agent:** surface the drain decisions in the converge output ([#617](https://github.com/dryvist/ansible-proxmox-ai/issues/617)) ([eaba387](https://github.com/dryvist/ansible-proxmox-ai/commit/eaba3870271e85bb5e48a64734bff2a5b1ccc466))
+* **hermes_agent:** tag every cron conversation with its job name ([#625](https://github.com/dryvist/ansible-proxmox-ai/issues/625)) ([f9d4d86](https://github.com/dryvist/ansible-proxmox-ai/commit/f9d4d86e0893db4b3f00eadf564efb18200e42a3))
+* **hermes_agent:** verify wall-clock patch by ordering, not contiguity ([#603](https://github.com/dryvist/ansible-proxmox-ai/issues/603)) ([9ae4525](https://github.com/dryvist/ansible-proxmox-ai/commit/9ae452506c4203d5509a8c859cf9286dfe4dd72c))
+* **hermes_agent:** widen the provider-error snippet so a cause is not cut in half ([#622](https://github.com/dryvist/ansible-proxmox-ai/issues/622)) ([dbb30e2](https://github.com/dryvist/ansible-proxmox-ai/commit/dbb30e2bbce0624a37d6e7cf5da638980f7667ec))
+* **inventory:** converge the langfuse guest over direct ssh ([#638](https://github.com/dryvist/ansible-proxmox-ai/issues/638)) ([98cc7a5](https://github.com/dryvist/ansible-proxmox-ai/commit/98cc7a573b719f7a1bc7d38f3a1322771c1c453b))
+* **inventory:** define the router master key fallback for every host ([#650](https://github.com/dryvist/ansible-proxmox-ai/issues/650)) ([be34a8a](https://github.com/dryvist/ansible-proxmox-ai/commit/be34a8ad639a1739893562977ae5321016bbc93b))
+* **inventory:** move the light serving tier to direct-ssh converge ([#601](https://github.com/dryvist/ansible-proxmox-ai/issues/601)) ([03223ed](https://github.com/dryvist/ansible-proxmox-ai/commit/03223ed07eac6c68f6b2e63789ada7192545694d))
+* **langfuse_docker:** derive the router endpoint for this guest ([#640](https://github.com/dryvist/ansible-proxmox-ai/issues/640)) ([ea8f1cb](https://github.com/dryvist/ansible-proxmox-ai/commit/ea8f1cb69446025d12af091e73b32ffcff62abcd))
+* **langfuse_docker:** name the router host in the outbound allowlist ([#641](https://github.com/dryvist/ansible-proxmox-ai/issues/641)) ([597d344](https://github.com/dryvist/ansible-proxmox-ai/commit/597d34488291b65fd5d26d53bd54fd02fae95e36))
+* **langfuse_docker:** probe the worker health route over IPv4 ([#639](https://github.com/dryvist/ansible-proxmox-ai/issues/639)) ([93fa4f3](https://github.com/dryvist/ansible-proxmox-ai/commit/93fa4f3b7309a12b0e9266fba2940b2d5745f5e0))
+* **llm_router:** cap admission on every local tier, not just the large one ([#635](https://github.com/dryvist/ansible-proxmox-ai/issues/635)) ([5366e7e](https://github.com/dryvist/ansible-proxmox-ai/commit/5366e7ea066ce6ccbb9e337755605f92718ddb32))
+* **llm_router:** key the context-window escape hatch on every group that can raise ([#626](https://github.com/dryvist/ansible-proxmox-ai/issues/626)) ([75f3498](https://github.com/dryvist/ansible-proxmox-ai/commit/75f349874fc0eeefcbe7a75e6ff4639a8273c76c))
+* **llm_router:** let an over-long request skip the narrow local fallback rung ([#610](https://github.com/dryvist/ansible-proxmox-ai/issues/610)) ([5d647a2](https://github.com/dryvist/ansible-proxmox-ai/commit/5d647a2223ed6b931d73a97b7c7cb6a82df78c83))
+* **llm_router:** order narrow fallback legs behind the rungs that can serve ([#631](https://github.com/dryvist/ansible-proxmox-ai/issues/631)) ([5dfcfef](https://github.com/dryvist/ansible-proxmox-ai/commit/5dfcfefce356b8043ca93c946f03386a03f0dbf4))
+* **llm_router:** stop the global cost handler crash, repoint dead aliases, fall back cloud-to-local ([#637](https://github.com/dryvist/ansible-proxmox-ai/issues/637)) ([1e9c592](https://github.com/dryvist/ansible-proxmox-ai/commit/1e9c5928f7c3d7f5b2b74ea152f66e6059c36a68))
+* **llm-router:** serve and advertise one context window on the local fallback rung ([#612](https://github.com/dryvist/ansible-proxmox-ai/issues/612)) ([84a4671](https://github.com/dryvist/ansible-proxmox-ai/commit/84a46717ebbdc6a8c5b39afbd1215901fc29aacf))
+* **openbao_secrets:** declare the feature-gated KV paths optional ([#636](https://github.com/dryvist/ansible-proxmox-ai/issues/636)) ([c64a6a3](https://github.com/dryvist/ansible-proxmox-ai/commit/c64a6a3d254bfd930385c0a92c50228ad7b3d336))
+* **openbao_secrets:** fail loud on missing or unreadable secrets ([#633](https://github.com/dryvist/ansible-proxmox-ai/issues/633)) ([4723b9e](https://github.com/dryvist/ansible-proxmox-ai/commit/4723b9edb764750b122b110150a6fcf9fc59df42))
+* **openbao_secrets:** stop reading the router key paths before their grant exists ([a66e498](https://github.com/dryvist/ansible-proxmox-ai/commit/a66e498d76bbe0e97c09abc8281fa7c3b89ec396))
+* **openbao_secrets:** stop reading the router key paths before their grant exists ([d9d7308](https://github.com/dryvist/ansible-proxmox-ai/commit/d9d7308ec6ea59ebaff8268d40f723451c825b54))
+* **phoenix:** keep site.yml and the OpenBao defaults under their token budgets ([cd84958](https://github.com/dryvist/ansible-proxmox-ai/commit/cd84958ed70a20420fabd8eade3b6192bc0ed5ff))
+* **playbooks:** tag the Hermes fleet plays llm ([#602](https://github.com/dryvist/ansible-proxmox-ai/issues/602)) ([7ccbd75](https://github.com/dryvist/ansible-proxmox-ai/commit/7ccbd75915573307d4dbf086828386129b4cf755))
+
 ## [0.35.3](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.35.2...v0.35.3) (2026-08-29)
 
 
