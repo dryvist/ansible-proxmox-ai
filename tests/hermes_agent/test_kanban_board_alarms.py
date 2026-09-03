@@ -105,13 +105,6 @@ def test_stall_alarm_fires_once_the_streak_reaches_the_threshold():
     assert "2 ready card(s)" in line
 
 
-def test_stall_alarm_repeats_every_tick_once_it_holds():
-    """Like overrun_lines(), a stalled board is not stale news."""
-    board = {"ready": 5, "running": 0}
-    ticks, line = DIGEST.stall_alarm(board, NO_RUNS, NO_RUNNING, NOW, 6, threshold=3, max_in_progress=1)
-    assert ticks == 7 and line is not None
-
-
 def test_stall_alarm_fires_on_a_run_wedged_at_the_cap_even_though_something_is_running():
     """The bug this alarm exists to fix: at max_in_progress=1, a single wedged
     run shows running=1 forever, so "running == 0" would never trigger. The
@@ -124,14 +117,20 @@ def test_stall_alarm_fires_on_a_run_wedged_at_the_cap_even_though_something_is_r
 
 def test_stall_alarm_resets_when_any_run_finishes_even_with_ready_work_left():
     board = {"ready": 5, "running": 1}
-    assert DIGEST.stall_alarm(board, A_FINISHED_RUN, NO_RUNNING, NOW, 9, threshold=3,
+    ticks, line = DIGEST.stall_alarm(board, A_FINISHED_RUN, NO_RUNNING, NOW, 9, threshold=3,
+                                     max_in_progress=1)
+    assert ticks == 0
+    assert line.startswith(":white_check_mark:") and "after 9 stalled" in line
+    # A reset from below the threshold was never an alarm, so there is no all-clear.
+    assert DIGEST.stall_alarm(board, A_FINISHED_RUN, NO_RUNNING, NOW, 2, threshold=3,
                               max_in_progress=1) == (0, None)
 
 
 def test_stall_alarm_resets_when_the_ready_queue_is_empty():
     board = {"ready": 0, "running": 0}
-    assert DIGEST.stall_alarm(board, NO_RUNS, NO_RUNNING, NOW, 9, threshold=3,
-                              max_in_progress=1) == (0, None)
+    ticks, line = DIGEST.stall_alarm(board, NO_RUNS, NO_RUNNING, NOW, 9, threshold=3,
+                                     max_in_progress=1)
+    assert ticks == 0 and line.startswith(":white_check_mark:")
 
 
 def test_stall_alarm_with_a_readable_cap_states_the_fact_not_a_spawn_failure():
