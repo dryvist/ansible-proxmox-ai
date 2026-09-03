@@ -140,18 +140,13 @@
   notify: Restart hermes-gateway
 
 - name: Route cron delivery content through the output-validity guard
-  # Idempotent: the rewritten line no longer matches its own regexp, because
-  # "deliver_content = " is no longer immediately followed by
-  # "_cron_markup_guard(job, output_file," once wrapped.
+  # Anchors on the markup guard's rewritten success line, so it must run after
+  # that patch. Idempotent: once wrapped, "deliver_content = " is followed by
+  # the validity guard, not the markup guard.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    regexp: |-
-      ^([ \t]*)deliver_content = _cron_markup_guard\(job, output_file, final_response if success else \(
-      ([ \t]*_summarize_cron_failure_for_delivery\(job, error\)
-      [ \t]*\+ _failure_streak_nudge\(job\)
-      [ \t]*\)\))$
-    replace: |-
-      \g<1>deliver_content = _cron_output_validity_guard(
-      \g<1>    job, output_file, _cron_markup_guard(job, output_file, final_response if success else (
-      \g<2>, success)
+    regexp: '^([ \t]*)deliver_content = _cron_markup_guard\(job, output_file, final_response\)$'
+    replace: >-
+      \g<1>deliver_content = _cron_output_validity_guard(job, output_file,
+      _cron_markup_guard(job, output_file, final_response), success)
   notify: Restart hermes-gateway
