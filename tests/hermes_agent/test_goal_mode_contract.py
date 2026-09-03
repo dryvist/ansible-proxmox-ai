@@ -4,6 +4,10 @@ import yaml
 
 from conftest import REPO_ROOT, ROLE_ROOT, _task, role_defaults
 from _role_files import template_text
+from _cron_pool_ceiling_shared import (
+    router_request_timeout_seconds,
+    wall_timeout_seconds,
+)
 
 
 # test_enqueuer_goal_flags_follow_the_role_toggle DELETED (native-cron
@@ -112,7 +116,10 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         in environment
     )
     assert defaults["hermes_agent_cron_inactivity_timeout_seconds"] == 1800
-    assert defaults["hermes_agent_cron_wall_timeout_seconds"] == 2300
+    # hermes_agent_cron_wall_timeout_seconds is now derived from the store's
+    # own schedules (defaults/main/20-brain-and-slack.yml) rather than a
+    # literal — see test_cron_pool_ceiling.py for the formula's own coverage.
+    assert wall_timeout_seconds() < router_request_timeout_seconds()
     assert (
         "HERMES_CRON_TIMEOUT={{ hermes_agent_cron_inactivity_timeout_seconds }}"
         in environment

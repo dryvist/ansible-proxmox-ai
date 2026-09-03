@@ -258,19 +258,12 @@
 - name: Route cron delivery content through the markup guard
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    # Upstream split this assignment across four lines and appended the
-    # failure-streak nudge, so the old single-line anchor matched nothing.
-    # The wrap is unchanged: guard the whole conditional, nudge included.
-    regexp: |-
-      ^([ \t]*)deliver_content = final_response if success else \(
-      [ \t]*_summarize_cron_failure_for_delivery\(job, error\)
-      [ \t]*\+ _failure_streak_nudge\(job\)
-      [ \t]*\)$
-    replace: |-
-      \g<1>deliver_content = _cron_markup_guard(job, output_file, final_response if success else (
-      \g<1>    _summarize_cron_failure_for_delivery(job, error)
-      \g<1>    + _failure_streak_nudge(job)
-      \g<1>))
+    # Upstream split the success and failure branches apart (the failure
+    # branch is now gated on an incident ack). Only the success branch
+    # carries model output, so only it is guarded. Idempotent: the rewritten
+    # line no longer ends in a bare final_response.
+    regexp: '^([ \t]*)deliver_content = final_response$'
+    replace: '\g<1>deliver_content = _cron_markup_guard(job, output_file, final_response)'
   notify: Restart hermes-gateway
 
 - name: Patch Hermes auxiliary retry delay for the local serial backend

@@ -50,22 +50,23 @@ PINNED_PROTOCOL_RETRY_SOURCE = (
 # and the outer exception handler, which delivers its own failure summary.
 PINNED_CRON_DELIVERY_SOURCE = (
     '''\
-                deliver_content = final_response if success else (
-                    _summarize_cron_failure_for_delivery(job, error)
-                    + _failure_streak_nudge(job)
-                )
+                if success:
+                    deliver_content = final_response
                         delivery_error = _deliver_result(
                             job,
                             deliver_content,
                             adapters=adapters,
                             loop=loop,
                         )
-                delivery_error = _deliver_result(
-                    job,
-                    _summarize_cron_failure_for_delivery(job, _err_text),
-                    adapters=adapters,
-                    loop=loop,
-                )
+                    delivery_error = _deliver_result(
+                        job,
+                        # Composed exactly like the normal failure delivery above.
+                        # mark_job_run below records THIS run in failure_streak
+                        _summarize_cron_failure_for_delivery(job, _err_text)
+                        + _failure_streak_nudge(job),
+                        adapters=adapters,
+                        loop=loop,
+                    )
 '''
     # Upstream's line; the memory patch deliberately leaves it in place.
     # Reversed upstream — cron now builds the built-in memory store itself.
