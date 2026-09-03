@@ -1,0 +1,103 @@
+---
+# Per-tick dispatch decision log. Upstream's in-gateway dispatcher logs a
+# board only when it spawned something, so a tick that reclaimed, capped,
+# guarded or skipped work leaves no trace, and "ready work, nothing spawned"
+# surfaces only as the six-tick stuck warning. One INFO line per board per
+# tick names every non-zero outcome the DispatchResult already carries.
+- name: Add the dispatch tick line helper
+  ansible.builtin.blockinfile:
+    path: "{{ hermes_agent_install_dir }}/gateway/kanban_watchers.py"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK dispatch tick line"
+    insertbefore: '^class GatewayKanbanWatchersMixin:'
+    block: |
+      def _dispatch_tick_line(slug, res):
+          """One line naming what a dispatch tick did on a board and why it
+          declined; empty when the tick was a no-op so an idle board stays quiet."""
+          def _n(name):
+              value = getattr(res, name, None)
+              if value is None or value is False:
+                  return 0
+              if isinstance(value, (int, bool)):
+                  return int(value)
+              try:
+                  return len(value)
+              except TypeError:
+                  return 0
+          fields = ("spawned", "reclaimed", "promoted", "crashed", "timed_out", "stale",
+                    "auto_blocked", "rate_limited", "skipped_unassigned",
+                    "skipped_nonspawnable", "skipped_per_profile_capped",
+                    "respawn_guarded", "reconciled_orphans", "skipped_locked")
+          counts = {name: _n(name) for name in fields}
+          pressure = getattr(res, "memory_pressure", None)
+          if not any(counts.values()) and not pressure:
+              return ""
+          parts = [f"{name}={count}" for name, count in counts.items() if count]
+          if pressure:
+              parts.append(f"memory_pressure={pressure}")
+          reasons = sorted({r for _, r in (getattr(res, "respawn_guarded", None) or ()) if r})
+          if reasons:
+              parts.append("respawn_reasons=" + ",".join(reasons))
+          return f"kanban dispatcher tick [{slug}]: " + " ".join(parts)
+  notify: Restart hermes-gateway
+
+- name: Log every dispatch tick outcome, not only spawns
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/gateway/kanban_watchers.py"
+    regexp: |-
+      ^([ \t]*)for slug, res in \(results or \[\]\):
+      [ \t]*if res is not None and getattr\(res, "spawned", None\):
+      [\s\S]*?len\(res\.auto_blocked\) if hasattr\(res\.auto_blocked, "__len__"\) else 0,
+      [ \t]*\)$
+    replace: |-
+      \g<1>for slug, res in (results or []):
+      \g<1>    if res is None:
+      \g<1>        continue
+      \g<1>    if getattr(res, "spawned", None):
+      \g<1>        any_spawned = True
+      \g<1>    _tick_line = _dispatch_tick_line(slug, res)
+      \g<1>    if _tick_line:
+      \g<1>        logger.info("%s", _tick_line)
+  notify: Restart hermes-gateway
+
+# The global max_in_progress hold leaves no field on the result, so the
+# "ready work, nothing spawned" case is logged from the streak counter: on
+# the first idle tick and every tenth after (one line per ~10 min at the
+# default 60 s interval).
+- name: Log ready work that nothing was spawned for
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/gateway/kanban_watchers.py"
+    regexp: |-
+      ^([ \t]*)if ready_pending and not any_spawned:
+      [ \t]*bad_ticks \+= 1
+      [ \t]*else:$
+    replace: |-
+      \g<1>if ready_pending and not any_spawned:
+      \g<1>    bad_ticks += 1
+      \g<1>    if bad_ticks == 1 or bad_ticks % 10 == 0:
+      \g<1>        logger.info(
+      \g<1>            "kanban dispatcher tick: spawnable work ready, nothing spawned "
+      \g<1>            "for %d tick(s) (max_in_progress=%s)", bad_ticks, max_in_progress,
+      \g<1>        )
+      \g<1>else:
+  notify: Restart hermes-gateway
+
+- name: Read back the dispatcher source
+  ansible.builtin.slurp:
+    src: "{{ hermes_agent_install_dir }}/gateway/kanban_watchers.py"
+  register: hermes_agent_dispatch_tick_readback
+  changed_when: false
+
+# Keyed on the patched result, not the anchors: a regexp that matches nothing
+# reports ok and leaves the source unpatched.
+- name: Assert the dispatch tick log is wired in
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "'def _dispatch_tick_line(slug, res):' in hermes_agent_dispatch_tick_source"
+      - "'_tick_line = _dispatch_tick_line(slug, res)' in hermes_agent_dispatch_tick_source"
+      - "'nothing spawned \"' in hermes_agent_dispatch_tick_source"
+    fail_msg: >-
+      The pinned Hermes source changed and the dispatch tick log patches did
+      not apply; re-anchor them before converging.
+  vars:
+    hermes_agent_dispatch_tick_source: "{{ hermes_agent_dispatch_tick_readback.content | b64decode }}"
