@@ -122,12 +122,19 @@ stdout is delivered verbatim.
 | `splunk-error-digest` | `37 * * * *` | `splunk-error-digest.py` | `slack:<digest>` |
 | `splunk-security-digest` | `22 */6 * * *` | `splunk-security-digest.py` | `slack:<digest>` |
 | `zammad-auto-close` | `17 5 * * *` | `zammad-auto-close.py` | `slack:<hermes-all>` — **off by default** |
+| `cron-failure-rollup` | `7 * * * *` | `cron-failure-rollup.py` | `slack:<issues>` |
 
 `splunk-status-digest` runs on waking hours only, and a fully quiet run goes
 `[SILENT]` unless `HEARTBEAT_HOURS` (module constant, currently 6) has elapsed
 since the last real post. A CRITICAL finding is exempt and posts every run.
 The older "hourly heartbeat, never `[SILENT]`" law is **superseded** — see the
 `hermes_agent` role README for both decisions.
+
+`cron-failure-rollup` reads every store's `jobs.json` and posts one message
+naming each job whose last run failed, grouped by cause (wall-clock, budget,
+auth, upstream-5xx, ...). It reposts only when the failing set changes or
+`hermes_agent_cron_failure_rollup_heartbeat_hours` (default 6) has elapsed,
+and posts one all-clear when the set empties.
 
 `kanban-digest` is the master board report: it reads `kanban.db` read-only and
 says what every card did since its own previous run. It is deliberately
