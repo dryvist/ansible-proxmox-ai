@@ -48,14 +48,20 @@ llm_router_llm_fast_enabled: true
 # registrations win over the wildcard).
 llm_router_large_passthrough_enabled: true
 
-# Admission cap on the LOCAL large tier, so the router QUEUES excess work
+# Admission cap on EVERY LOCAL tier (large, large-standby, light, vLLM and the
+# Hermes local leg), so the router QUEUES excess work
 # instead of firing it at a backend that will refuse it.
 #
 # Without this the local deployments carry no rpm/tpm/max_parallel_requests at
 # all (only the OpenRouter egress tier did), so LiteLLM admitted every inbound
-# request immediately and forwarded it to an mlx-lm-server running
-# `--decode-concurrency 2 --prompt-concurrency 2`. That backend accepts 2
-# in-flight and 429s the rest INSTANTLY. Measured 2026-08-15 over 6h:
+# request immediately and forwarded it to an mlx-lm-server that accepts a
+# bounded number of in-flight requests and 429s the rest INSTANTLY.
+#
+# THE BACKEND SERVES ONE AT A TIME. Read from the serving gate's /running on
+# 2026-09-02, every resident large-tier worker is launched with
+# `--decode-concurrency 1 --prompt-concurrency 1` — not the 2 this comment
+# previously recorded from the 2026-08-15 measurement. Do not re-derive the
+# overcommit arithmetic below from the older number. Measured 2026-08-15 over 6h:
 # 12,201.6 s of model time against 43,200 slot-seconds = ~28% utilisation,
 # while 51-234 requests per hour were rejected. The tier was never busy; it was
 # UNBUFFERED, and bursty arrivals lost. Every agent-mode Hermes cron had been
@@ -78,11 +84,15 @@ llm_router_large_passthrough_enabled: true
 #
 # Consequence, stated rather than discovered: llm_router_group is a three-member
 # pool, so the estate-wide in-flight ceiling is 3x this number. At 1 that is 3
-# against a backend admitting 2 — a deliberate 1-over overcommit, because no
-# integer makes three independent semaphores sum to 2. Each member still queues
-# its own excess, which converts the great majority of instant rejections into
-# waits. RAISING THIS IS NOT A CAPACITY IMPROVEMENT: at 2 the pool admits 6 at a
-# 2-slot backend, which is the original defect with extra steps.
+# against a backend admitting ONE — a 2-over overcommit, not the 1-over this
+# comment claimed while it assumed a 2-slot backend. 1 is still the right value
+# because it is the smallest integer available; the residual overcommit is a
+# property of the pool size, and closing it needs a pool-wide gate that QUEUES,
+# which LiteLLM does not offer (see the per-instance note above). Each member
+# still queues its own excess, which converts the great majority of instant
+# rejections into waits. RAISING THIS IS NOT A CAPACITY IMPROVEMENT: at 2 the
+# pool admits 6 at a 1-slot backend, which is the original defect with extra
+# steps.
 #
 # Trading latency for completion is the intended direction on this tier: its
 # stated objective is accuracy over throughput, and a queued request waits while

@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+{{ ansible_managed | comment }}
+"""Hourly rollup of every cron job whose last run failed, grouped by cause.
+
+Run as a `--no-agent --script` cron delivered to the issues channel: stdout is
+posted verbatim, empty stdout posts nothing. Reads the default cron store and
+every profile store, keeps the jobs whose last_status is "error", groups them
+by a cause class taken from last_error, and prints one message. It reposts
+only when the failing set changes or HEARTBEAT_HOURS has elapsed; an all-clear
+posts once when the set empties. Pure stdlib, no LLM, no network.
+"""
+import json
+import re
+import sys
+import time
+from pathlib import Path
+
+HERMES_HOME = Path("{{ hermes_agent_hermes_home }}")
+STATE_PATH = HERMES_HOME / "state" / "{{ hermes_agent_cron_failure_rollup_state_name }}"
+HEARTBEAT_HOURS = {{ hermes_agent_cron_failure_rollup_heartbeat_hours }}
+ISSUES_MARKER = "{{ hermes_agent_cron_issues_marker }}"
+
+# First match wins; the fallback is the error's own first words.
+CAUSE_RULES = (
+    ("wall-clock", re.compile(r"wall.?clock|TimeoutError|timed out", re.I)),
+    ("budget", re.compile(r"budget|insufficient.?(credit|fund)|\b402\b", re.I)),
+    ("rate-limit", re.compile(r"RateLimit|\b429\b", re.I)),
+    ("auth", re.compile(r"\b40[13]\b|Unauthorized|Forbidden|authentication", re.I)),
+    ("upstream-5xx", re.compile(r"\b50[0-9]\b|BadGateway|ServiceUnavailable", re.I)),
+    ("no-terminal-kanban-call", re.compile(r"terminal kanban|kanban_update", re.I)),
+    ("output-rejected", re.compile(r"output (validity|guard)|unparsed tool-call|truncat", re.I)),
+)
+
+
+def stores():
+    yield "default", HERMES_HOME
+    profiles = HERMES_HOME / "profiles"
+    if profiles.is_dir():
+        for p in sorted(profiles.iterdir()):
+            if p.is_dir():
+                yield p.name, p
+
+
+def load_jobs(home):
+    try:
+        raw = json.loads((home / "cron" / "jobs.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    jobs = raw if isinstance(raw, list) else raw.get("jobs", [])
+    return [j for j in jobs if isinstance(j, dict)]
+
+
+def cause_of(error):
+    text = (error or "").strip()
+    for label, rx in CAUSE_RULES:
+        if rx.search(text):
+            return label
+    words = re.sub(r"\s+", " ", text)[:48]
+    return words or "unknown"
+
+
+def failing_jobs(store_jobs):
+    """[(store, name, streak, cause)] for every enabled job whose last run failed."""
+    out = []
+    for store, jobs in store_jobs:
+        for j in jobs:
+            if not j.get("enabled", True) or j.get("last_status") != "error":
+                continue
+            try:
+                streak = int(j.get("failure_streak") or 0)
+            except (TypeError, ValueError):
+                streak = 0
+            out.append((store, j.get("name") or j.get("id") or "?", streak, cause_of(j.get("last_error"))))
+    return sorted(out)
+
+
+MEMORY_BLOCKED_RE = re.compile(r"Memory is blocked after \d+ failures", re.I)
+MEMORY_SCAN_WINDOW_SECONDS = 24 * 3600
+
+
+def memory_blocked_jobs(now):
+    """Job ids whose newest cron output inside the window narrates the memory
+    breaker. The breaker leaves no alarm of its own (Vikunja 1915); a job that
+    degraded gracefully says so in its report, and that is the only trace."""
+    hits = []
+    for store, home in stores():
+        outputs = home / "cron" / "output"
+        if not outputs.is_dir():
+            continue
+        for job_dir in sorted(outputs.iterdir()):
+            try:
+                newest = max(job_dir.glob("*.md"), key=lambda f: f.stat().st_mtime)
+            except (ValueError, OSError):
+                continue
+            try:
+                if now - newest.stat().st_mtime > MEMORY_SCAN_WINDOW_SECONDS:
+                    continue
+                if MEMORY_BLOCKED_RE.search(newest.read_text(encoding="utf-8", errors="replace")):
+                    hits.append(job_dir.name if store == "default" else f"{store}/{job_dir.name}")
+            except OSError:
+                continue
+    return hits
+
+
+def build_message(failing, memory_blocked=()):
+    by_cause = {}
+    for store, name, streak, cause in failing:
+        label = name if store == "default" else f"{store}/{name}"
+        by_cause.setdefault(cause, []).append(f"{label} ×{streak}" if streak > 1 else label)
+    lines = []
+    if failing:
+        lines.append(f":rotating_light: {len(failing)} cron job(s) failing")
+        for cause, names in sorted(by_cause.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+            lines.append(f"• {cause} ({len(names)}): " + ", ".join(names))
+    if memory_blocked:
+        lines.append(f":brain: memory breaker tripped in the newest run of {len(memory_blocked)} "
+                     f"job(s), their baselines may be stale: " + ", ".join(memory_blocked))
+    return "\n".join(lines)
+
+
+def signature(failing, memory_blocked=()):
+    return [f"{s}/{n}:{c}" for s, n, _, c in failing] + [f"memory:{j}" for j in memory_blocked]
+
+
+def load_state():
+    try:
+        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(state):
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATE_PATH.write_text(json.dumps(state), encoding="utf-8")
+
+
+def decide(failing, state, now, memory_blocked=()):
+    """(text_or_None, new_state)."""
+    sig = signature(failing, memory_blocked)
+    prev_sig = state.get("signature", [])
+    age = now - float(state.get("posted_at") or 0)
+    if not sig:
+        if prev_sig:
+            return (":white_check_mark: Every cron job's last run succeeded and memory is unblocked.",
+                    {"signature": [], "posted_at": now})
+        return None, state
+    if sig != prev_sig or age >= HEARTBEAT_HOURS * 3600:
+        return build_message(failing, memory_blocked), {"signature": sig, "posted_at": now}
+    return None, state
+
+
+def main():
+    try:
+        now = time.time()
+        failing = failing_jobs((name, load_jobs(home)) for name, home in stores())
+        text, state = decide(failing, load_state(), now, memory_blocked_jobs(now))
+        save_state(state)
+    except Exception as exc:  # noqa: BLE001 - a broken rollup is itself a finding
+        print(f"{ISSUES_MARKER} :warning: cron-failure-rollup FAILED: {type(exc).__name__}: {exc}")
+        return 0
+    if text:
+        print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

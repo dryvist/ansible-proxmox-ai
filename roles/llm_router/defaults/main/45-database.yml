@@ -34,7 +34,9 @@ llm_router_db_user: litellm
 # converge creates cannot drift apart.
 llm_router_db_password: >-
   {{ bao_apps_secrets.llm_router_db_password
-     | default(lookup('env', 'LLM_ROUTER_DB_PASSWORD'), true) }}
+     | mandatory('llm_router_db_password missing: the OpenBao fetch (apps/llm-router)
+                  did not supply it. An empty DB password would be rendered over the
+                  working login') }}
 
 # LiteLLM sets NO default idle-connection lifetime, so a pooled connection can
 # sit idle until the server or a stateful firewall drops it, and the next
@@ -53,7 +55,7 @@ llm_router_db_max_idle_connection_lifetime: 60
 #
 # That separation is what makes this safe for the registry-is-SSOT
 # architecture, and the split is deliberate:
-#   llm-models.yml is the CATALOG — which physical models exist, what they cost,
+#   llm-models.d/ is the CATALOG — which physical models exist, what they cost,
 #   what context each serves. It stays in git, renders into config.yaml, and the
 #   render-parity assert still proves the two agree.
 #   The database holds only ROLE DEPLOYMENTS — the stable names callers request
@@ -97,3 +99,13 @@ llm_router_ui_password: >-
 # retention plan.
 llm_router_disable_spend_logs: true
 llm_router_disable_error_logs: true
+
+# The router_settings the converge pushes back into the database so the
+# persisted row cannot shadow the rendered file. Derived from the rendered
+# config rather than a hand-listed key set, minus the credential (never sent
+# through the update endpoint) and with the retired routing group forced empty.
+_llm_router_settings_payload: >-
+  {{ (llm_router_rendered_config.content | b64decode | from_yaml).router_settings
+     | default({}, true)
+     | dict2items | rejectattr('key', 'equalto', 'redis_password') | items2dict
+     | combine({'routing_groups': []}) }}

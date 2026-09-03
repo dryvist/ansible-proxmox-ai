@@ -1,0 +1,36 @@
+---
+# A failed cron run's artifact repeats the whole prompt (constant, ~15 KB,
+# reconstructable from the job definition) and keeps nothing of the run. The
+# prompt section becomes a hash and a length; the success artifact's prompt
+# section is untouched (its anchor ends in "## Response").
+- name: Hash the prompt in a failed cron run's artifact
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: '^## Prompt\n\n\{prompt\}\n\n## Error$'
+    replace: |-
+      ## Prompt
+
+      sha256:{__import__("hashlib").sha256(str(prompt).encode("utf-8")).hexdigest()}
+      ({len(str(prompt))} chars; the job definition carries the text)
+
+      ## Error
+  notify: Restart hermes-gateway
+
+- name: Read back the failure artifact writer
+  ansible.builtin.slurp:
+    src: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+  register: hermes_agent_failure_artifact_readback
+  changed_when: false
+
+- name: Assert the failed-run artifact hashes its prompt
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "'sha256:{__import__(\"hashlib\").sha256(str(prompt)' in hermes_agent_failure_artifact_source"
+      - "'## Prompt\n\n{prompt}\n\n## Response' in hermes_agent_failure_artifact_source"
+    fail_msg: >-
+      The pinned Hermes source changed and the failure-artifact prompt hash
+      patch did not apply (or the success artifact lost its prompt section);
+      re-anchor before converging.
+  vars:
+    hermes_agent_failure_artifact_source: "{{ hermes_agent_failure_artifact_readback.content | b64decode }}"

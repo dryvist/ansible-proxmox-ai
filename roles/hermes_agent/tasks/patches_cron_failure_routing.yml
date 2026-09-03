@@ -1,0 +1,45 @@
+---
+- name: Route failed cron deliveries to the issues channel
+  # The `success` flag is already in scope at the delivery call, so routing on
+  # it needs no new signal and cannot misclassify a healthy job that happens to
+  # report an error. Rewrites the call, not the content, so the markup guard
+  # above is untouched. Idempotent: the rewritten line no longer matches.
+  # Upstream moved this call inside a side-effect fence and split it across
+  # six lines; the rewrite collapses it back to one so the anchor stays a
+  # single line and idempotency stays trivially checkable.
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: |-
+      ^([ \t]*)delivery_error = _deliver_result\(
+      [ \t]*job,
+      [ \t]*deliver_content,
+      [ \t]*adapters=adapters,
+      [ \t]*loop=loop,
+      [ \t]*\)$
+    replace: |-
+      \g<1>_routed_job, deliver_content = _cron_route(job, success, deliver_content)
+      \g<1>delivery_error = _deliver_result(_routed_job, deliver_content, adapters=adapters, loop=loop)
+  notify: Restart hermes-gateway
+
+- name: Route failed cron deliveries from the exception path to the issues channel
+  # Upstream grew a second delivery call: the outer exception handler, which
+  # only ever delivers a failure summary. Left unrouted it puts crashed-job
+  # alerts back on the work surface — the exact split this patch set exists to
+  # make. `success` is not in scope here and cannot be anything but False.
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: |-
+      ^([ \t]*)delivery_error = _deliver_result\(
+      [ \t]*job,
+      (?:[ \t]*#.*\n)*[ \t]*_summarize_cron_failure_for_delivery\(job, _err_text\)
+      [ \t]*\+ _failure_streak_nudge\(job\),
+      [ \t]*adapters=adapters,
+      [ \t]*loop=loop,
+      [ \t]*\)$
+    replace: |-
+      \g<1>_routed_job, _routed_content = _cron_route(
+      \g<1>    job, False,
+      \g<1>    _summarize_cron_failure_for_delivery(job, _err_text) + _failure_streak_nudge(job),
+      \g<1>)
+      \g<1>delivery_error = _deliver_result(_routed_job, _routed_content, adapters=adapters, loop=loop)
+  notify: Restart hermes-gateway

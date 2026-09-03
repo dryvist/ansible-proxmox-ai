@@ -1,0 +1,64 @@
+---
+# FIRST SEED ONLY, same contract as seed-roles.yml: creates a virtual key when
+# the proxy has none by that alias, and never touches one that exists.
+#
+# The router does not MINT these. /key/generate accepts a caller-supplied value,
+# so each key is registered with a value generated at the consumer's own tier
+# (openbao_generated_app_secrets in ansible-proxmox-apps) and merely READ here —
+# reads are pre-authorized, so this needs no write unlock in this repo.
+#
+# A consumer whose key is not seeded yet renders no entry and is skipped, so
+# this is a no-op until the generating half lands and the two can merge
+# independently.
+#
+# ORDERING, measured the hard way. The apps-domain paths that carry these values
+# are deliberately NOT yet listed in roles/openbao_secrets/defaults/main.yml.
+# The apps read policy is rendered from the generating repo's seeding map, so
+# until THAT role converges the paths are not merely empty, they are ungranted:
+# the fetch 403s and fails the whole converge closed, on every router, before
+# this role runs. `optional: true` does not cover it either — that flag forgives
+# a 404 (absent secret) and still fails a 403 (missing grant), correctly.
+# Add the two paths in the same change that converges the generating half.
+#
+# Model scope is derived from the registry, never hand-listed: a retired alias
+# cannot linger in a key's allowlist because it stops being derived.
+
+- name: Read the virtual keys the proxy already carries
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/list?page=1&size=100"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  register: llm_router_existing_keys
+  no_log: true
+
+- name: Create the caller keys that are absent and have a seeded value
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/generate"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      key: "{{ item.value }}"
+      key_alias: "{{ item.alias }}"
+      models: "{{ item.models }}"
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: >-
+    {{ llm_router_virtual_keys
+       | rejectattr('value', 'equalto', '')
+       | rejectattr('alias', 'in', _llm_router_live_key_aliases) | list }}
+  loop_control:
+    label: "{{ item.alias }}"
+  vars:
+    # BRACKET access, never `.keys`. The response field is literally named
+    # "keys", and Jinja resolves `.keys` on a dict to the built-in METHOD
+    # instead — measured against the live proxy, which fails the whole task
+    # with "'builtin_function_or_method' object is not iterable". An entry
+    # with no alias is skipped rather than compared as None.
+    _llm_router_live_key_aliases: >-
+      {{ llm_router_existing_keys.json['keys'] | default([])
+         | selectattr('key_alias', 'defined')
+         | map(attribute='key_alias') | select('string') | list }}
+  no_log: true

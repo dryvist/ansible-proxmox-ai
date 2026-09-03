@@ -4,14 +4,17 @@
 {% include 'model-list.yaml.j2' %}
 router_settings:
   routing_strategy: {{ llm_router_routing_strategy }}
-{% if 'hermes-cloud-openrouter' in llm_router_hermes_cloud_fallback_groups %}
-  # Kimi and GLM are treated as equivalent final-resort agentic deployments;
-  # use their real token prices rather than falsifying costs to encode quality.
-  routing_groups:
-    - group_name: hermes-openrouter-value
-      models: [hermes-cloud-openrouter]
-      routing_strategy: cost-based-routing
-{% endif %}
+  # NO routing_groups / cost-based-routing. Declaring it for one group
+  # registers LiteLLM's lowest-cost logging handler GLOBALLY (router.py
+  # _build_strategy_selector -> logging_callback_manager.add_litellm_callback),
+  # and that handler reads litellm_params.model_info on every success event in
+  # the process — including deployments the group does not manage, where
+  # litellm_params is None. It raises on each one, non-blocking, which is the
+  # continuous "ended span" noise in the router log.
+  #
+  # It bought cost-ordering between two final-resort deployments already
+  # ordered by their real token prices, so it loses nothing.
+  # tests/llm_router/test_hermes_cloud_value.yml asserts the key stays absent.
   allowed_fails: {{ llm_router_allowed_fails }}
   cooldown_time: {{ llm_router_cooldown_time }}
   model_group_alias:
@@ -24,17 +27,46 @@ router_settings:
   # render here, so no dead route or duplicate local attempt is advertised.
   fallbacks:
     - hermes-default: {{ llm_router_hermes_default_fallback_chain | to_json }}
+{% for _group in llm_router_hermes_default_fallback_chain if not _group.startswith('hermes-local') %}
+    - {{ _group }}: {{ [llm_router_primary_model] | to_json }}
+{% endfor %}
+{% endif %}
+{% if llm_router_context_window_fallbacks | length > 0 %}
+  # Escape hatch for the local legs, which serve a smaller context than the
+  # primary. Without it an over-long request does not merely skip that rung —
+  # it aborts the whole chain there (see 35-hermes-cloud.yml for the mechanism).
+  context_window_fallbacks:
+{% for entry in llm_router_context_window_fallbacks %}
+{% for group, targets in entry.items() %}
+    - {{ group }}: {{ targets | to_json }}
+{% endfor %}
+{% endfor %}
 {% endif %}
   # Derived from the chain length (35-hermes-cloud.yml), not a fixed 1: this is
   # a 5-leg chain now, and a hardcoded max_fallbacks here would silently cap
   # every attempt after the first, truncating the whole fallback design while
   # still rendering and passing every test that doesn't count fallback depth.
   max_fallbacks: {{ llm_router_max_fallbacks }}
-  # No CROSS-TIER fallbacks for the default brain, on purpose: a fallback
+  # ESCALATION RECOVERS TO LOCAL. A caller escalates by naming a cloud group
+  # directly; there is no separate "escalate" alias. Without the per-group
+  # entries above, an escalated call whose deployment is over budget or whose
+  # provider errors got a terminal refusal, because only hermes-default carried
+  # a chain. Each cloud group now falls back to the local primary, so budget
+  # exhaustion degrades to local instead of surfacing.
+  #
+  # This IS a cross-tier fallback and it is safe only because of the
+  # context-window machinery below: enable_pre_call_checks plus
+  # context_window_fallbacks skip a rung that cannot serve the request rather
+  # than truncating into it. Do not remove either while these entries stand.
+  # ponytail: falls back to the primary rather than re-entering hermes-default,
+  # which would risk a cycle back through the same cloud rungs.
+  #
+  # No cross-tier fallback for the default brain itself, on purpose: a fallback
   # serving a smaller context than the primary poisons callers instead of
   # degrading them (incident history: Zammad, AI/LLM Serving). Fail loud; the
-  # watchdog pauses. (The same-tier chain above is a same-context failover,
-  # not an exception to this.)
+  # watchdog pauses. (The chain above is NOT a same-context failover — the
+  # local leg is smaller than the primary, which is why it needs the
+  # context_window_fallbacks escape hatch rather than silently truncating.)
   # Pre-call context-window checks so an over-long request is not routed to a model
   # that cannot serve it (no cross-tier fallback masks the error).
   enable_pre_call_checks: true
@@ -79,8 +111,9 @@ router_settings:
 {% endif %}
   # Deliberately no `fail_closed_budget_enforcement`: it governs LiteLLM's
   # virtual-key budgets, not the provider budget above, and 503s when spend
-  # cannot be verified. Attaching a database does NOT make it appropriate —
-  # this proxy issues no virtual keys. See README "Spend tracking".
+  # cannot be verified. A database IS now attached and that does NOT make it
+  # appropriate — this proxy still issues no virtual keys, so there is nothing
+  # for it to enforce. See README "Spend tracking".
 
 general_settings:
   master_key: os.environ/LLM_ROUTER_MASTER_KEY

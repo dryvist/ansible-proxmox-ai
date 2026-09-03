@@ -1,0 +1,48 @@
+# Operational settings — non-credential runtime behaviour that has to hold in
+# EVERY Hermes store: the default one and each named profile alike. Included by
+# both hermes-env.j2 and hermes-env-profile.j2 so the two can never drift.
+#
+# Why an include rather than a copy in each: a profile's scheduled work runs as
+# `hermes cron tick` under that profile's HERMES_HOME, and the CLI loads only
+# the .env belonging to that home (dotenv, override=True) before any agent code
+# runs. A setting written to the default store alone therefore does not exist
+# for a profile's jobs at all — it is not merely overridden, it is absent.
+#
+# Nothing here grants access to anything, so none of it is gated on a profile's
+# `env` list. Add a new operational setting to THIS file, never to one of the
+# two callers: tests/hermes_agent/test_profile_env_parity.py fails any key that
+# reaches the default store without also reaching every profile store.
+
+# Not a secret. Pin the CA bundle to the distro store so the runtime never
+# selects the one inside its own virtualenv.
+#
+# The runtime's startup CA autodetection (gateway/run.py `_ensure_ssl_certs`)
+# returns early when SSL_CERT_FILE already names an existing file. Left unset,
+# it walks its own ladder: OpenSSL's compiled-in path first, then certifi, then
+# the distro locations. The interpreter shipped with the pinned release is a
+# relocatable standalone build whose compiled-in path does not exist on this
+# guest, so the first rung always misses and it settles on certifi — a path
+# INSIDE the virtualenv — writing it into the process environment once, at
+# start, for the daemon's whole lifetime. The distro bundle further down that
+# same ladder is present and stable, and is never reached.
+#
+# That pin is the defect: reinstalling the virtualenv replaces certifi's
+# cacert.pem, and every agent run that builds an HTTP client while the file is
+# briefly absent dies on a CA bundle that "does not exist" — while the same
+# path is plainly there by the time anyone looks. Naming the distro bundle up
+# front short-circuits the ladder onto a path whose lifetime is the guest's,
+# not the virtualenv's. The `ca-certificates` package that provides it is
+# installed by this role (tasks/install_and_dashboard.yml).
+SSL_CERT_FILE={{ hermes_agent_ca_bundle_path }}
+
+# Local-grade streaming timeouts. The FQDN router base_url defeats Hermes'
+# local-endpoint auto-detection (hostname-string check, no DNS resolution),
+# leaving remote defaults (120s read / 180s stale) that kill slow local
+# thinking-mode streams mid-tool-call. See defaults/main.yml.
+HERMES_STREAM_READ_TIMEOUT={{ hermes_agent_stream_read_timeout }}
+HERMES_STREAM_STALE_TIMEOUT={{ hermes_agent_stream_stale_timeout }}
+HERMES_API_CALL_STALE_TIMEOUT={{ hermes_agent_api_call_stale_timeout }}
+
+# Native cron inactivity reset and the role-enforced aggregate wall clock.
+HERMES_CRON_TIMEOUT={{ hermes_agent_cron_inactivity_timeout_seconds }}
+HERMES_CRON_WALL_TIMEOUT={{ hermes_agent_cron_wall_timeout_seconds }}

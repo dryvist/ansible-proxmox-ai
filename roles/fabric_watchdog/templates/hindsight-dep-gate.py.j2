@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+{{ ansible_managed | comment }}
+"""Does the memory dependency gate accept the client that is installed?
+
+WHY THIS EXISTS, AND WHY THE OTHER MEMORY PROBES CANNOT COVER IT.
+
+tools/lazy_deps.py gates the memory feature on a version requirement. When the
+installed client does not satisfy that requirement, the agent declines to use a
+client that is present and functional, and falls through to an install path a
+uv venv cannot run at all (no pip, no ensurepip). The resulting state is
+service healthy, client healthy, feature dead — and every other probe in this
+role reports health, because each sits on the far side of that boundary:
+
+  fabric_watchdog `hindsight` target  probes the memory SERVICE
+  `hermes memory status`              upstream is_available() returns true in
+                                      local_external mode without contacting
+                                      anything (see hermes_agent/verify.yml)
+  the read-only arecall gate          exercises a client that is importable
+
+None of the three can observe the gate's own decision, which is the thing that
+determines whether memory works. This probe asks the gate that question
+directly.
+
+WHAT IT DOES NOT COVER, stated so the next reader does not over-trust it.
+It reads the gate's declared requirement and the installed distribution
+version. It does not exercise a recall, does not contact the service, and
+cannot see a memory failure whose cause is anything other than this gate. It is
+a companion to the `hindsight` service target, never a replacement for it.
+
+EXIT CODES are the watchdog's up/down signal (ok_codes "0"):
+  0  the gate accepts the installed client
+  1  the gate REJECTS it — memory is dead until the two are reconciled
+  2  cannot determine (gate unreadable, or its shape changed upstream)
+
+2 alarms deliberately. A control that cannot see must say so rather than
+report the silence as health.
+"""
+
+from __future__ import annotations
+
+import importlib.metadata as importlib_metadata
+import re
+import sys
+
+LAZY_DEPS_PATH = "{{ fabric_watchdog_lazy_deps_path }}"
+FEATURE_KEY = "{{ fabric_watchdog_hindsight_feature_key }}"
+DISTRIBUTION = "{{ fabric_watchdog_hindsight_distribution }}"
+
+# Matches the upstream table entry, capturing the operator and the version
+# separately so this probe never hardcodes a version of its own:
+#     "memory.hindsight": ("hindsight-client>=0.6.1",),
+REQUIREMENT = re.compile(
+    r'"' + re.escape(FEATURE_KEY) + r'"\s*:\s*\(\s*"'
+    + re.escape(DISTRIBUTION) + r'\s*(==|>=)\s*([^"]+)"'
+)
+
+
+def version_key(version: str) -> tuple[int, ...]:
+    """Order-comparable form of a dotted version.
+
+    Non-numeric components sort below any release number, so a prerelease
+    ("1.0.0rc1") never satisfies a minimum it has not actually reached.
+    """
+    parts = []
+    for component in version.split("."):
+        parts.append(int(component) if component.isdigit() else -1)
+    return tuple(parts)
+
+
+def satisfied(operator: str, wanted: str, installed: str) -> bool:
+    if operator == "==":
+        return installed == wanted
+    return version_key(installed) >= version_key(wanted)
+
+
+def main() -> int:
+    try:
+        with open(LAZY_DEPS_PATH, encoding="utf-8") as handle:
+            source = handle.read()
+    except OSError as exc:
+        print(f"UNKNOWN: cannot read the dependency gate at {LAZY_DEPS_PATH}: {exc}")
+        return 2
+
+    match = REQUIREMENT.search(source)
+    if match is None:
+        print(
+            f"UNKNOWN: no {FEATURE_KEY} entry for {DISTRIBUTION} matched in "
+            f"{LAZY_DEPS_PATH} — upstream may have restructured the table"
+        )
+        return 2
+
+    operator, wanted = match.group(1), match.group(2).strip()
+
+    try:
+        installed = importlib_metadata.version(DISTRIBUTION)
+    except importlib_metadata.PackageNotFoundError:
+        print(
+            f"REJECT: {DISTRIBUTION} is not installed in this interpreter; "
+            f"the gate requires {operator}{wanted}"
+        )
+        return 1
+
+    if satisfied(operator, wanted, installed):
+        print(f"OK: gate requires {operator}{wanted}, installed {installed}")
+        return 0
+
+    print(
+        f"REJECT: gate requires {operator}{wanted} but {installed} is installed "
+        f"— memory will fail on every call and the install fallback cannot run"
+    )
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -5,11 +5,19 @@ resource-domain identity** (each with its own least-privilege AppRole) and
 reads that domain's KV subtree into a per-domain fact,
 `bao_<domain>_secrets` (hyphens become underscores, e.g. `local-cloud` ->
 `bao_local_cloud_secrets`). Consumer roles then resolve their secrets
-**bao-first with an env fallback**:
+**bao-first**. A **secret**-valued variable carries no fallback — an empty
+secret is rendered into live config and overwrites the working credential, so
+absence must stop the converge:
 
 ```yaml
-some_secret: "{{ bao_local_llm_secrets.SOME_SECRET | default(lookup('env', 'SOME_SECRET'), true) }}"
+some_secret: "{{ bao_local_llm_secrets.SOME_SECRET | mandatory('SOME_SECRET missing from OpenBao') }}"
 ```
+
+Only **non-secret** values (URLs, ports, hostnames, model names, channel ids,
+feature flags) may keep `| default(lookup('env', 'X'), true)`. See the
+fail-loud contract at the top of `defaults/main.yml`, and
+`tasks/assert_nonempty.yml` for the guard every role that writes a
+password/key/token into a file includes before templating.
 
 This is a copy of the same-named role in `ansible-proxmox-apps`, trimmed to
 the domains this repo consumes. The generic machinery (failover probe,
@@ -240,19 +248,17 @@ Two `ansible-playbook` flags that look like safe pre-flight checks give
 misleading results against this role and this repo's dynamic inventory.
 Neither is a bug to work around — know what each one actually tells you.
 
-- **`--check` is a guaranteed false negative on every OpenBao-gated
-  assertion.** `community.hashi_vault.vault_login` declares
-  `supports_check_mode: true` but short-circuits under check mode, returning
-  a null `client_token` instead of authenticating. That null token flows into
-  every `vault_kv2_get` call in `fetch_domain.yml`; each read fails (silently
-  — `failed_when: false` + `no_log: true`), every domain merges empty, and
-  any downstream presence-gated assertion (e.g. "no Vikunja write token is
-  set") trips. This is indistinguishable from a genuinely missing credential
-  by output alone. The role now emits a loud warning naming this exact cause
-  whenever OpenBao is otherwise reachable and configured but the run is
-  `--check`. Treat a `--check` failure on a bao-sourced assertion as
-  uninformative; run the real converge (or at minimum this role without
-  `--check`) to know whether the credential is actually missing.
+- **`--check` fetches secrets for real, on purpose.**
+  `community.hashi_vault.vault_login` declares `supports_check_mode: true` but
+  short-circuits under check mode, returning a null `client_token` instead of
+  authenticating. That null token used to flow into every `vault_kv2_get` call
+  in `fetch_domain.yml`, so a `--check` run merged every domain empty and every
+  bao-gated assertion tripped — indistinguishable from a genuinely missing
+  credential. The login and the KV read loop now carry `check_mode: false`.
+  They change no state, so running them for real under `--check` is safe, and
+  it is what lets a `--check` diff show the real rendered config instead of
+  blanks. The seed/publish tasks WRITE and still honor check mode, so a
+  `--check` run never seeds or rotates anything.
 - **`--list-hosts` reports 0 hosts.** This repo's inventory groups
   (`hermes_agent_group`, `ai_runner`, ...) are not static — they are built at
   runtime by `add_host` in `inventory/load_tofu.yml`, which itself is a play

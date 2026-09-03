@@ -21,8 +21,9 @@ FIXTURE_CONFIG = {
     "SOURCETYPE": "macos-wired-memory",
     "EARLIEST": "-6h",
     "ISSUES_MARKER": "[ISSUES]",
+    "STATE_PATH": "/tmp/wired-trajectory-selfcheck/state.json",
 }
-FIXTURE_RATIO = {"CRITICAL_RATIO": 0.90}
+FIXTURE_RATIO = {"CRITICAL_RATIO": 0.90, "HORIZON_HOURS": 6}
 
 
 def load_module():
@@ -59,7 +60,7 @@ def samples(ratios, spacing=15 * 60, start=0):
 
 
 def test_zero_rows_is_stated_not_silent():
-    report = MOD.build_report([])
+    report, _ = MOD.build_report([])
     assert "Zero rows" in report
     assert "mac_perf" in report
 
@@ -68,7 +69,7 @@ def test_step_change_beats_slow_climb_when_both_present():
     # A rank load: one big jump (0.10 -> 0.30 within one 15-min sample,
     # implying 0.8 ratio/hr) then flat — must read as STEP, not CLIMB.
     s = samples([0.10, 0.10, 0.10, 0.30, 0.30, 0.30])
-    report = MOD.build_report(s)
+    report, _ = MOD.build_report(s)
     assert "STEP CHANGE" in report
     assert "SLOW CLIMB" not in report
 
@@ -78,7 +79,7 @@ def test_slow_sustained_climb_reads_as_leak_with_an_eta():
     # sample-to-sample step only 0.0125 — nowhere near step-change territory.
     ratios = [0.10 + 0.0125 * i for i in range(25)]
     s = samples(ratios, spacing=15 * 60)
-    report = MOD.build_report(s)
+    report, _ = MOD.build_report(s)
     assert "SLOW CLIMB" in report
     assert "STEP CHANGE" not in report
     assert "leak" in report.lower()
@@ -87,7 +88,7 @@ def test_slow_sustained_climb_reads_as_leak_with_an_eta():
 
 def test_flat_series_is_stable_not_climbing():
     s = samples([0.10] * 6, spacing=15 * 60)
-    report = MOD.build_report(s)
+    report, _ = MOD.build_report(s)
     assert "Stable" in report
     assert "STEP CHANGE" not in report and "SLOW CLIMB" not in report
 
@@ -95,7 +96,7 @@ def test_flat_series_is_stable_not_climbing():
 def test_falling_series_reported_as_falling():
     ratios = [0.40 - 0.0125 * i for i in range(25)]
     s = samples(ratios, spacing=15 * 60)
-    report = MOD.build_report(s)
+    report, _ = MOD.build_report(s)
     assert "Falling" in report
 
 
@@ -119,6 +120,65 @@ def test_step_rate_is_cadence_normalized():
     slow = samples([0.10, 0.30], spacing=6 * HOUR)
     assert MOD.max_step_rate(fast) > MOD.STEP_IMPLIED_RATE_PER_HOUR
     assert MOD.max_step_rate(slow) < MOD.STEP_IMPLIED_RATE_PER_HOUR
+
+
+# --- verdict gate (Vikunja 1859): post only a climb inside the horizon -------
+
+
+def test_verdicts_are_named_for_every_shape():
+    _, v = MOD.build_report([])
+    assert v == "NO_DATA"
+    _, v = MOD.build_report(samples([0.10, 0.10, 0.10, 0.30, 0.30, 0.30]))
+    assert v == "STEP"
+    # 0.10 -> 0.40 over 6h at 0.05/hr: 10h from 0.90, outside a 6h horizon.
+    _, v = MOD.build_report(samples([0.10 + 0.0125 * i for i in range(25)]))
+    assert v == "CLIMB_DISTANT"
+    _, v = MOD.build_report(samples([0.30] * 6))
+    assert v == "STABLE"
+    _, v = MOD.build_report(samples([0.50 - 0.02 * i for i in range(6)]))
+    assert v == "FALLING"
+
+
+def test_a_climb_is_only_a_climb_inside_the_horizon():
+    # 0.70 -> 0.85 over 6h = 0.025/hr: 2h from 0.90 -> inside a 6h horizon.
+    _, near = MOD.build_report(samples([0.70 + 0.00625 * i for i in range(25)]))
+    assert near == "CLIMB"
+    # 0.10 -> 0.25 over 6h = 0.025/hr: 26h from 0.90 -> a trend, not a warning.
+    _, far = MOD.build_report(samples([0.10 + 0.00625 * i for i in range(25)]))
+    assert far == "CLIMB_DISTANT"
+
+
+def test_only_a_near_climb_or_a_broken_path_posts_and_all_clears_post_once():
+    assert MOD.should_post("CLIMB", None) == (True, False)
+    assert MOD.should_post("CLIMB", "CLIMB") == (True, False), "an approach warning repeats while it holds"
+    assert MOD.should_post("NO_DATA", None) == (True, False)
+    for quiet in ("STEP", "FALLING", "STABLE", "CLIMB_DISTANT"):
+        assert MOD.should_post(quiet, None) == (False, False), quiet
+        assert MOD.should_post(quiet, "STABLE") == (False, False), quiet
+        assert MOD.should_post(quiet, "CLIMB") == (True, True), f"{quiet} after a climb is the all-clear"
+
+
+def test_render_routes_no_data_to_issues_once_and_stays_silent_after():
+    text, v = MOD.build_report([])
+    first = MOD.render(text, v, None)
+    assert first.startswith("[ISSUES]") and "Zero rows" in first
+    assert MOD.render(text, v, "NO_DATA") == "[SILENT]"
+    # Rows came back: one all-clear, then silence.
+    stable_text, stable = MOD.build_report(samples([0.30] * 6))
+    again = MOD.render(stable_text, stable, "NO_DATA")
+    assert again.startswith(":white_check_mark:") and "samples flowing again" in again
+    assert MOD.render(stable_text, stable, "STABLE") == "[SILENT]"
+
+
+def test_verdict_state_round_trips_through_the_state_file():
+    import pathlib
+    import tempfile
+
+    state_dir = pathlib.Path(tempfile.mkdtemp(prefix="wired-trajectory-selfcheck-"))
+    MOD.__dict__["STATE_PATH"] = str(state_dir / "state.json")
+    assert MOD.load_previous_verdict() is None
+    MOD.save_verdict("CLIMB")
+    assert MOD.load_previous_verdict() == "CLIMB"
 
 
 if __name__ == "__main__":

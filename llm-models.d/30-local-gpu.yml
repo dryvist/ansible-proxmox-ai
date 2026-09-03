@@ -1,0 +1,47 @@
+---
+# The NVIDIA guest, and the Hermes fallback rung over the same backend.
+# One slice of the model registry; see llm-models.d/README.md.
+_llm_registry_local_gpu:
+  # ── NVIDIA GPU tier ─────────────────────────────────────────────────────────
+  # Tier key stays `vllm` (names the ROUTER TIER/URL, not the engine) — this
+  # guest serves via llama.cpp on Vulkan (roles/vllm/defaults has why). Must
+  # match llama-swap's name in inventory/group_vars/llm_vllm_group.yml.
+  # Window/timeout anchors; guest derives too. Why: llm_vllm_group.yml.
+  - client_model_id: qwen3.8-27b
+    upstream_model_id: qwen3.8-27b
+    provider: openai
+    tier: vllm
+    enabled: true
+    context_window: &ctx4080 32768
+
+  # Local backup rung in the Hermes chain, same backend as the vllm entry.
+  # tier: hermes-local, NOT vllm — load-bearing: the cloud projection drops
+  # entries with no credential, and a local leg has none. Details: docs/LLM_MODELS_REGISTRY_NOTES.md.
+  # NO fallback chain of its own, deliberately. This is a RUNG inside
+  # hermes-default's chain, not an entry point: when it fails, the chain that
+  # named it moves to the next rung, and giving it one here would nest a second
+  # chain inside the first. The router logs "No fallback model group found for
+  # original model_group=hermes-local-4080" on each failure — that line is the
+  # design working, not a gap. Give it a chain only if something starts calling
+  # it directly.
+  #
+  # This rung is SLOW, not hung. One measured completion came back in ~190 s,
+  # and the request/stream timeouts below bound it at 300 s, after which the
+  # chain moves on. A caller that gives up sooner than that will see no answer
+  # from this rung and should not read that as a hang.
+  - client_model_id: hermes-local-4080
+    upstream_model_id: qwen3.8-27b
+    provider: openai
+    tier: hermes-local
+    route_group: hermes-local-4080
+    fallback_group: hermes-local-4080
+    enabled: true
+    context_window: *ctx4080
+    num_retries: 0
+    request_timeout: &to4080 300
+    stream_timeout: *to4080
+    allowed_fails: 50
+    # 0 is the intent, not the observed behaviour: the proxy still parks this
+    # deployment 30s after repeated timeouts, self-clearing. Do not widen
+    # allowed_fails instead — it was never the binding constraint.
+    cooldown_time: 0

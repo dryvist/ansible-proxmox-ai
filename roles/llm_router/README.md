@@ -12,10 +12,10 @@ Ships with the `ansible-proxmox-apps` repo; no external install. Wired into
 `playbooks/site.yml` against `llm_router_group` (guests tagged `llm-router` in the
 tofu inventory). Tools come from the repo's Nix dev shell (`direnv allow`).
 
-## The model registry (`llm-models.yml`, repo root)
+## The model registry (`llm-models.d/`, repo root)
 
 **Every model name, alias, tier and enabled/servable state is written once — in
-the repo-root `llm-models.yml` registry — and this role is a projection of it.**
+the repo-root `llm-models.d/` registry — and this role is a projection of it.**
 `defaults/main.yml` derives its tier views (`llm_router_large_models`,
 `llm_router_light_models`, `llm_router_openrouter_models`), its selector vars
 (`llm_router_primary_model` / `_small_model` / `_routine_model`), the servable
@@ -140,9 +140,13 @@ EnvironmentFile bought nothing.
 
 Deliberately absent: `fail_closed_budget_enforcement`. It governs LiteLLM's
 Postgres-backed virtual-key budgets, not the provider budget above, and 503s
-when spend can't be verified against Redis or a database — this proxy issues
-no virtual keys and has no database, so it would be inert at best and a 503
-generator on the fabric's only front door at worst.
+when spend can't be verified against Redis or a database.
+
+The proxy now **has** a database (see `defaults/main/45-database.yml`), so that
+is no longer the reason. The reason is the other one, and it still stands: this
+proxy **issues no virtual keys**, so there are no key budgets to enforce and the
+setting would be inert at best, a 503 generator on the fabric's only front door
+at worst. Reconsider it when virtual keys are issued, not before.
 
 ## Model role aliases
 
@@ -165,7 +169,7 @@ Authority is split, and the split follows how often each half changes.
 
 | | Lives in | Owned by | Changes |
 | --- | --- | --- | --- |
-| **Catalog** — which models exist, their cost, context, credentials | `llm-models.yml` → `config.yaml` | this role, per converge | rarely |
+| **Catalog** — which models exist, their cost, context, credentials | `llm-models.d/` → `config.yaml` | this role, per converge | rarely |
 | **Roles** — which model a caller-facing name resolves to, and its fallback order | the router database | the Admin UI | often |
 
 Callers name a role — `lead`, `subagent`, `judge`, `cheap`, `embed`, `ocr` —
@@ -223,7 +227,7 @@ Traefik health checks need no credential.
 
 | Var | Default | Purpose |
 | --- | --- | --- |
-| `llm_router_registry_file` | repo-root `llm-models.yml` | the model registry every model var projects from |
+| `llm_router_registry_dir` | repo-root `llm-models.d/` | the model registry every model var projects from |
 | `llm_router_api_port` | `service_ports.llm_router_api` | proxy listen port (no hardcode) |
 | `llm_router_light_port` | `service_ports.llm_fast_api` | llm-fast / llm-light backend port |
 | `llm_router_large_port` | `service_ports.ollama_api` | llm-large backend port |

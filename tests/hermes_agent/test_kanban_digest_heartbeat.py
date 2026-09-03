@@ -113,7 +113,7 @@ def test_a_suppressed_run_advances_the_window_but_not_the_last_post():
 
 def test_the_heartbeat_ceiling_is_configurable_not_a_literal():
     defaults = role_defaults(DEFAULTS_PATH)
-    assert defaults["hermes_agent_kanban_digest_heartbeat_hours"] == 6
+    assert defaults["hermes_agent_kanban_digest_heartbeat_hours"] == 24
     source = TEMPLATE_PATH.read_text()
     assert "HEARTBEAT_HOURS = {{ hermes_agent_kanban_digest_heartbeat_hours }}" in source
     assert re.search(r"^\s*HEARTBEAT_HOURS\s*=\s*\d", source, re.M) is None
@@ -159,7 +159,7 @@ def test_a_long_summary_is_clipped_with_a_visible_marker():
 def test_schedule_and_fallback_window_come_from_the_one_interval_variable():
     defaults = role_defaults(DEFAULTS_PATH)
     interval = defaults["hermes_agent_kanban_digest_interval_minutes"]
-    assert interval == 15, "soak cadence; steady state is hourly (60)"
+    assert interval == 60, "steady-state cadence is hourly; the soak cadence (15) is over"
     schedule = defaults["hermes_agent_kanban_digest_cron_schedule"]
     assert "hermes_agent_kanban_digest_interval_minutes" in schedule, \
         "the schedule must be derived from the interval variable, not hand-written"

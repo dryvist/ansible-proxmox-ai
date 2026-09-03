@@ -46,14 +46,31 @@ PINNED_PROTOCOL_VIOLATION_SOURCE = (
 PINNED_PROTOCOL_RETRY_SOURCE = (
     "                failure_limit=1 if is_systemic else None,\n"
 )
+# Both delivery call sites: the success path (inside the side-effect fence)
+# and the outer exception handler, which delivers its own failure summary.
 PINNED_CRON_DELIVERY_SOURCE = (
-    "            deliver_content = final_response if success else "
-    "_summarize_cron_failure_for_delivery(job, error)\n"
-    "                    delivery_error = _deliver_result(job, deliver_content, "
-    "adapters=adapters, loop=loop)\n"
+    '''\
+                if success:
+                    deliver_content = final_response
+                        delivery_error = _deliver_result(
+                            job,
+                            deliver_content,
+                            adapters=adapters,
+                            loop=loop,
+                        )
+                    delivery_error = _deliver_result(
+                        job,
+                        # Composed exactly like the normal failure delivery above.
+                        # mark_job_run below records THIS run in failure_streak
+                        _summarize_cron_failure_for_delivery(job, _err_text)
+                        + _failure_streak_nudge(job),
+                        adapters=adapters,
+                        loop=loop,
+                    )
+'''
     # Upstream's line; the memory patch deliberately leaves it in place.
-    "            skip_memory=True,  # Cron system prompts would corrupt user "
-    "representations\n"
+    # Reversed upstream — cron now builds the built-in memory store itself.
+    "            skip_memory=False,\n"
 )
 # Verbatim from cron/scheduler.py — the single run_conversation submit that
 # opt-in cron goal mode wraps.
@@ -241,7 +258,7 @@ def build_worker_argv(task, prompt):
 # PINNED_*_SOURCE fixtures above.
 PINNED_HINDSIGHT_PREFETCH_SOURCE = (
     "            except Exception as e:\n"
-    '                logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)\n'
+    '                logger.debug("Hindsight recall failed: %s", e, exc_info=True)\n'
 )
 # Verbatim upstream shape of run_agent.py's _sync_external_memory_for_turn —
 # indentation included, same drift protection as the other PINNED_*_SOURCE
@@ -394,3 +411,30 @@ PINNED_SLACK_CONNECT_SOURCE = '''\
                 self.logger.exception(f"Failed to connect (error: {e}); Retrying...")
                 await asyncio.sleep(self.ping_interval)
 '''
+
+
+# Verbatim from gateway/kanban_watchers.py — the dispatcher's per-tick result
+# loop and the stuck-streak counter the tick log patches rewrite.
+PINNED_DISPATCH_TICK_SOURCE = (
+    '''\
+                    for slug, res in (results or []):
+                        if res is not None and getattr(res, "spawned", None):
+                            any_spawned = True
+                            logger.info(
+                                "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
+                                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                                slug,
+                                len(res.spawned),
+                                res.reclaimed,
+                                len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
+                                len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
+                                res.promoted,
+                                len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            )
+                    ready_pending = await _to_thread_process_service(_ready_nonempty)
+                    if ready_pending and not any_spawned:
+                        bad_ticks += 1
+                    else:
+                        bad_ticks = 0
+'''
+)

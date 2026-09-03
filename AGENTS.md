@@ -1,3 +1,6 @@
+---
+skill-groups: [core, homelab]
+---
 # Ansible Proxmox AI — AI Agent Documentation
 
 Configure the homelab's AI/LLM applications on Proxmox VMs and LXC containers.
@@ -17,7 +20,7 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
 - `llm_router` — LiteLLM proxy, the single OpenAI-compatible front door for
   the large/light serving tiers.
   **Registry rule (hard): every model name, alias, tier and enabled/servable
-  state is written ONCE, in the repo-root `llm-models.yml` registry. The role's
+  state is written ONCE, in the repo-root `llm-models.d/` registry. The role's
   defaults and templates are projections of it — never add a model id, alias or
   OpenBao key field to `roles/llm_router/` (or anywhere else); add or edit a
   registry entry. A test fails the build when a registry value is re-typed in
@@ -43,6 +46,25 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
 
 ### Agents
 
+- `herdr_server` / `herdr_remote` — herdr, the agent multiplexer the coding
+  CLIs run inside: the runtime and its web/phone dashboard
+  (`herdr-remote`), one guest each. The Slack bridge (`herdr-hail`) gets no
+  guest of its own: it is a herdr PLUGIN that reads the runtime's control
+  socket, so it runs as a companion unit beside it and `herdr_server` supplies
+  its tokens.
+  **Both guests are NixOS**, unlike everything else this repo
+  converges. The rule that nix runs on the CONTROLLER and never on the guest
+  still holds, and is what makes that workable: the roles install nothing.
+  They call the shared `nixos_deploy` role, which runs
+  `nixos-rebuild --target-host` on the controller and copies the closure over
+  SSH, reusing the certificate `scripts/run-ansible.sh` already mints. Ansible
+  stays the orchestrator; the config lives in
+  [`nix-ai`](https://github.com/dryvist/nix-ai)'s `nixosModules.herdr`. Each
+  role's own job is the handful of values NixOS cannot know — Slack tokens,
+  agent credentials, the router endpoint — delivered as an `EnvironmentFile`
+  at 0600, never the world-readable Nix store.
+- `nixos_deploy` — generic controller-side NixOS converge (flake ref + host
+  attribute). Reusable; nothing herdr-specific in it.
 - `hermes_agent` — the autonomous NousResearch agent gateway
 - `agent_exec` — sandboxed agent execution
 - `agentgateway_docker` — agent gateway (Docker)
@@ -54,6 +76,10 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
 - `langflow_docker` — LangFlow visual LLM workflow builder
 - `langgraph_docker` — LangGraph agent orchestration runtime
 - `langfuse_docker` — Langfuse LLM observability/tracing
+- `phoenix_docker` — Arize Phoenix LLM tracing/evals/experiments. An OTLP
+  sink fed by Cribl Stream, peer of Langfuse: producers never point at it
+  directly (see `ai_orchestration_otel_endpoint` in `inventory/group_vars/all.yml`).
+  Elastic License 2.0 — unlimited for internal use, no license key.
 
 ### Ops
 

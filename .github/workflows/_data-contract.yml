@@ -56,6 +56,11 @@ jobs:
         env:
           ANSIBLE_HOST_KEY_CHECKING: 'false'
 
+      - name: Verify every optional KV path has a presence-gated consumer
+        run: >-
+          ansible-playbook tests/openbao_secrets/test_optional_paths_are_gated.yml
+          -i inventory/hosts.yml -c local
+
       - name: Verify Hermes API key seed contract
         run: >-
           ansible-playbook tests/openbao_secrets/verify_hermes_api_key_seed.yml
@@ -85,6 +90,16 @@ jobs:
       - name: Verify llm_router hermes-default failover contract
         run: >-
           ansible-playbook tests/llm_router/test_hermes_default_failover.yml
+          -i localhost, -c local
+
+      # The credentialed half of the same contract: with cloud rungs present,
+      # a fallback leg narrower than the primary must not stand in front of
+      # them. A narrow leg raises ContextWindowExceededError, and LiteLLM
+      # treats a context error raised inside a fallback attempt as terminal --
+      # so a misordered chain aborts with its serviceable rungs never tried.
+      - name: Verify llm_router narrow-fallback ordering contract
+        run: >-
+          ansible-playbook tests/llm_router/test_fallback_narrow_legs_last.yml
           -i localhost, -c local
 
       - name: Verify llm_router Hermes cloud value contract
@@ -189,6 +204,15 @@ jobs:
       # change removes — so the installer is the honest cost of the test.
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
+
+      # phoenix_docker renders Authelia SSO env only when a client secret is
+      # present, and takes every port from tofu constants. Renders the compose
+      # template both ways and asserts the gate flips and no literal port
+      # leaked in.
+      - name: Verify phoenix_docker compose render contract
+        run: >-
+          ansible-playbook tests/phoenix_docker/test_compose_render.yml
+          -i localhost, -c local
 
       - name: Verify agent_guest residual deny contract
         run: >-

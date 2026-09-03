@@ -86,7 +86,11 @@ def test_installed_source_postconditions_fail_closed() -> None:
     # Output-validity guard: wraps the markup guard's call, so it must be
     # present and wired to the actual delivery-content assignment.
     assert "def _cron_output_validity_guard(job, output_file, content, success):" in conditions
-    assert "deliver_content = _cron_output_validity_guard(job, output_file," in conditions
+    assert "deliver_content = _cron_output_validity_guard(" in conditions
+    assert (
+        "job, output_file, _cron_markup_guard(job, output_file, final_response"
+        in conditions
+    )
     assert "if _is_cron_silence_response(text):" in conditions
     assert "def _is_cron_silence_response(text: str) -> bool:" in conditions
     # The message and the retry rule are asserted as a pair: the message tells

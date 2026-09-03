@@ -3,6 +3,11 @@ from __future__ import annotations
 import yaml
 
 from conftest import REPO_ROOT, ROLE_ROOT, _task, role_defaults
+from _role_files import template_text
+from _cron_pool_ceiling_shared import (
+    router_request_timeout_seconds,
+    wall_timeout_seconds,
+)
 
 
 # test_enqueuer_goal_flags_follow_the_role_toggle DELETED (native-cron
@@ -54,15 +59,18 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         REPO_ROOT / "roles/hindsight_docker/templates/docker-compose.yml.j2"
     ).read_text()
     router_defaults = role_defaults(REPO_ROOT / "roles" / "llm_router")
-    registry = yaml.safe_load((REPO_ROOT / "llm-models.yml").read_text())[
-        "llm_router_model_registry"
+    registry = [
+        entry
+        for slice_file in sorted((REPO_ROOT / "llm-models.d").glob("*.yml"))
+        for entries in yaml.safe_load(slice_file.read_text()).values()
+        for entry in entries
     ]
     router_config = (REPO_ROOT / "roles/llm_router/templates/config.yaml.j2").read_text()
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
-    environment = (ROLE_ROOT / "templates" / "hermes-env.j2").read_text()
+    environment = template_text(ROLE_ROOT, "hermes-env.j2")
 
     hermes_alias = "hermes-default"
-    # Physical ids live in ONE file — the repo-root llm-models.yml registry —
+    # Physical ids live in ONE place — the repo-root llm-models.d/ registry —
     # and the router's selector vars are projections of it. Pinning literals
     # here is what let all four aliases drift to unroutable models at once
     # (2026-07-28, every one a live 404), so follow the indirection to its
@@ -96,8 +104,22 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert defaults["hermes_agent_model_max_tokens"] == 8192
     assert defaults["hermes_agent_context_compression_threshold"] == 0.75
     assert defaults["hermes_agent_stream_stale_timeout"] == 900
+    # The non-stream stale bound tracks the streaming one rather than carrying
+    # its own literal: both guard the same fabric against the same 90s remote
+    # default the FQDN router misclassification leaves in place.
+    assert (
+        defaults["hermes_agent_api_call_stale_timeout"]
+        == "{{ hermes_agent_stream_stale_timeout }}"
+    )
+    assert (
+        "HERMES_API_CALL_STALE_TIMEOUT={{ hermes_agent_api_call_stale_timeout }}"
+        in environment
+    )
     assert defaults["hermes_agent_cron_inactivity_timeout_seconds"] == 1800
-    assert defaults["hermes_agent_cron_wall_timeout_seconds"] == 2300
+    # hermes_agent_cron_wall_timeout_seconds is now derived from the store's
+    # own schedules (defaults/main/20-brain-and-slack.yml) rather than a
+    # literal — see test_cron_pool_ceiling.py for the formula's own coverage.
+    assert wall_timeout_seconds() < router_request_timeout_seconds()
     assert (
         "HERMES_CRON_TIMEOUT={{ hermes_agent_cron_inactivity_timeout_seconds }}"
         in environment
@@ -205,7 +227,7 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
             if field in entry:
                 assert entry[field] not in router_defaults_values, (
                     f"{entry[field]} is re-typed in roles/llm_router/defaults/main.yml; "
-                    "derive it from llm-models.yml instead"
+                    "derive it from llm-models.d/ instead"
                 )
     assert router_defaults["llm_router_num_retries"] == 0
     # 429 = "the slot is busy", never "the work is impossible", so the router

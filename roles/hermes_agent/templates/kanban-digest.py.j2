@@ -80,6 +80,13 @@ HEARTBEAT_HOURS = {{ hermes_agent_kanban_digest_heartbeat_hours }}
 # span longer than one window, so one quiet tick must never page — only a
 # streak of them, long enough that a normal run would have finished by then.
 STALL_TICKS_THRESHOLD = {{ hermes_agent_kanban_digest_stall_ticks_threshold }}
+# Escalate-then-quiet for alarm (a) once it holds (Vikunja 1853: the same
+# stalled-board line 427 ticks in a row). It posts when the streak reaches
+# the threshold, again at three times it, then once every STALL_REPEAT_TICKS
+# ticks — one reminder a day at the hourly cadence — and posts a loud
+# all-clear the first tick the board drains again. Detection is unchanged;
+# only the posting cadence is.
+STALL_REPEAT_TICKS = 24
 # Count of task_runs.outcome == 'timed_out' within one digest window (alarm b).
 TIMEOUT_RATE_THRESHOLD = {{ hermes_agent_kanban_digest_timeout_threshold }}
 # Rise in the blocked-card count since the previous tick (alarm c) — a delta,
@@ -139,6 +146,23 @@ SELECT t.id, t.title, t.max_runtime_seconds, t.last_heartbeat_at,
  WHERE t.status = 'running'
 """
 BOARD_SQL = "SELECT status, COUNT(*) FROM tasks GROUP BY status"
+# Cards that have sat unsettled longer than STUCK_HOURS, by status, with the
+# age of the oldest. "Touched" is the newest of the worker heartbeat, the
+# start and the creation — the table has no updated_at — so a card nothing
+# ever ran ages from its creation. A raw blocked count never changes and so
+# never tells anyone anything; "44 blocked, oldest 9d" does.
+STUCK_HOURS = 48
+STUCK_SQL = """
+SELECT status, COUNT(*) AS n,
+       MIN(COALESCE(NULLIF(last_heartbeat_at, 0), NULLIF(started_at, 0),
+                    NULLIF(created_at, 0))) AS oldest
+  FROM tasks
+ WHERE status IN ('todo', 'ready', 'blocked', 'in_progress', 'running')
+   AND COALESCE(NULLIF(last_heartbeat_at, 0), NULLIF(started_at, 0),
+                NULLIF(created_at, 0)) < ?
+ GROUP BY status
+ ORDER BY status
+"""
 # Who the ready cards wait on. An assignee that isn't a real profile is bucketed
 # `skipped_nonspawnable` silently, every tick — 238 of them in the 2026-08-11 P1,
 # while the alarm reported only a concurrency number.
@@ -427,9 +451,16 @@ def stall_alarm(board, run_rows, running_rows, now_epoch, prior_ticks, threshold
     """
     ready, running = board.get("ready", 0), board.get("running", 0)
     if not (ready > 0 and not run_rows):
+        if prior_ticks >= threshold:
+            # The alarm was live and the board moved: say so once, loudly.
+            return 0, (f":white_check_mark: Board draining again after {prior_ticks} "
+                       f"stalled digest tick(s) — {ready} ready, {running} running, "
+                       f"{len(run_rows)} run(s) finished this window.")
         return 0, None
     streak = prior_ticks + 1
     if streak < threshold:
+        return streak, None
+    if streak != threshold and streak != 3 * threshold and streak % STALL_REPEAT_TICKS:
         return streak, None
     if max_in_progress is None:
         cause = ("cause undetermined: could be the configured max_in_progress "
@@ -525,8 +556,24 @@ def section(lines, heading):
     return out
 
 
+def stuck_line(stuck_rows, now_epoch):
+    """One line naming what has sat unsettled past STUCK_HOURS, or None."""
+    parts = []
+    for row in stuck_rows:
+        status, n, oldest = row[0], row[1], row[2]
+        if oldest:
+            age_s = now_epoch - float(oldest)
+            age = f", oldest {age_s / 86400:.0f}d" if age_s >= 2 * 86400 else f", oldest {fmt_dur(age_s)}"
+        else:
+            age = ""
+        parts.append(f"{n} {status}{age}")
+    if not parts:
+        return None
+    return f":hourglass: Stuck >{STUCK_HOURS}h: " + "; ".join(parts) + "."
+
+
 def build_digest(run_rows, running_rows, board, now, since, note, due=True,
-                 split_failures=False, extra_issue_lines=()):
+                 split_failures=False, extra_issue_lines=(), stuck_rows=()):
     """Return (slack_text, issues_text, heartbeat_text).
 
     slack_text is SILENT when a quiet run is heartbeat-suppressed, and also
@@ -598,11 +645,17 @@ def build_digest(run_rows, running_rows, board, now, since, note, due=True,
             f"failed, was retried or exceeded its max_runtime. Board holds: "
             f"{board_text}. (heartbeat — quiet runs stay silent for the next "
             f"{HEARTBEAT_HOURS}h unless the board does something)")
+        stuck = stuck_line(stuck_rows, now_epoch)
+        if stuck:
+            heartbeat_lines.append(stuck)
         return SILENT, issues_text, "\n".join(heartbeat_lines)
 
     lines = [header]
     if note:
         lines.append(f":information_source: {note}.")
+    stuck = stuck_line(stuck_rows, now_epoch)
+    if stuck:
+        lines.append(stuck)
 
     lines += section(overrun, "Overrunning — repeats every run while it holds")
     lines += section(failed, "Failed / retried / left open")
@@ -628,6 +681,7 @@ def main():
             running_rows = list(conn.execute(RUNNING_SQL))
             board = {row[0]: row[1] for row in conn.execute(BOARD_SQL)}
             ready_assignee_rows = list(conn.execute(READY_ASSIGNEE_SQL))
+            stuck_rows = list(conn.execute(STUCK_SQL, (now_epoch - STUCK_HOURS * 3600,)))
         finally:
             conn.close()
 
@@ -644,7 +698,7 @@ def main():
             run_rows, running_rows, board, now, since, note,
             heartbeat_due(now_epoch, last_post),
             split_failures=bool(ISSUES_CHANNEL),
-            extra_issue_lines=alarms)
+            extra_issue_lines=alarms, stuck_rows=stuck_rows)
     except Exception as e:  # noqa: BLE001 - deliberately broad; failure must be delivered
         print(f"{ISSUES_MARKER} :warning: {TITLE} FAILED: {type(e).__name__}: {str(e)[:200]}")
         return 0

@@ -81,21 +81,29 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_hermes_cloud_fallback_groups
-            == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-alibaba',
-                'hermes-cloud-gemini', 'hermes-cloud-openrouter']
-          - _fallback_chain
-            == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-alibaba',
-                'hermes-cloud-gemini', 'hermes-cloud-openrouter']
+          # Order is policy-dependent (llm_router_hermes_narrow_legs_last, see
+          # roles/llm_router/defaults/main/35-hermes-cloud.yml). Both policies
+          # are pinned literally rather than derived, because the point of this
+          # task is to be a tripwire: flipping the toggle must show up here as a
+          # deliberate, reviewed edit and not silently satisfy a formula.
+          #
+          # The 4080 leg is narrower than the primary, so under the default
+          # policy it sits LAST -- ahead of the cloud rungs it would abort the
+          # whole chain on an over-long request.
+          - llm_router_hermes_cloud_fallback_groups == _expected_chain
+          - _fallback_chain == _expected_chain
           - _config.router_settings.max_fallbacks | int == _fallback_chain | length
           - _config.router_settings.num_retries | int == 0
           - _config.router_settings.retry_policy.RateLimitErrorRetries | int == 8
+          # The zero-retry set is the chain plus the virtual provider-router
+          # groups. Its leading rungs therefore inherit the chain's order; only
+          # the trailing four are stated literally, so a chain reorder does not
+          # have to be restated twice.
           - llm_router_hermes_cloud_zero_retry_groups
-            == ['hermes-local-4080', 'hermes-cloud-free', 'hermes-cloud-alibaba',
-                'hermes-cloud-gemini',
-                'hermes-cloud-openrouter', 'hermes-cloud-alibaba-routine',
-                'hermes-cloud-alibaba-agentic', 'hermes-cloud-gemini-routine',
-                'hermes-cloud-gemini-agentic']
+            == _expected_chain + ['hermes-cloud-alibaba-routine',
+                                  'hermes-cloud-alibaba-agentic',
+                                  'hermes-cloud-gemini-routine',
+                                  'hermes-cloud-gemini-agentic']
           - _cloud_retry_groups
             == llm_router_hermes_cloud_zero_retry_groups | sort
           - _nonzero_cloud_retry_groups | length == 0
@@ -122,8 +130,25 @@
                 'MEDIUM': 'hermes-cloud-gemini-routine',
                 'COMPLEX': 'hermes-cloud-gemini-agentic',
                 'REASONING': 'hermes-cloud-gemini-agentic'}
-          - _config.router_settings.routing_groups[0].models == ['hermes-cloud-openrouter']
-          - _config.router_settings.routing_groups[0].routing_strategy == 'cost-based-routing'
+          # REVIEWED EDIT 2026-09-02. This pair used to assert that a
+          # routing_group declared cost-based-routing over the final-resort
+          # group. That mechanism is PROHIBITED now: declaring it for one group
+          # registers LiteLLM's lowest-cost logging handler process-wide, and
+          # that handler raises on every success event from any deployment it
+          # does not manage, leaving the request's span half-closed.
+          #
+          # The policy the tripwire guards is unchanged — real prices, cheaper
+          # final-resort model first. It is now asserted directly: the key must
+          # be ABSENT (so reintroducing the mechanism trips this), and the two
+          # final-resort deployments must appear in ascending input price, read
+          # from their own litellm_params rather than restated as literals.
+          - "'routing_groups' not in _config.router_settings"
+          - _final_resort | length == 2
+          - >-
+            _final_resort | map(attribute='litellm_params.input_cost_per_token')
+            | map('float') | list | sort
+            == _final_resort | map(attribute='litellm_params.input_cost_per_token')
+               | map('float') | list
         fail_msg: >-
           Hermes cloud policy drifted: chain={{ _fallback_chain }},
           cloud_count={{ _cloud_models | length }}, monthly={{ _monthly_total }},
@@ -134,10 +159,23 @@
           rate/concurrency controls, and $10/month
           deployment ceilings while local 429 handling remains unchanged.
       vars:
+        # Order is policy-dependent; see the assertion comment above.
+        _expected_chain: >-
+          {{ ['hermes-cloud-free', 'hermes-cloud-alibaba', 'hermes-cloud-gemini',
+              'hermes-cloud-openrouter', 'hermes-local-4080']
+             if llm_router_hermes_narrow_legs_last | bool
+             else ['hermes-local-4080', 'hermes-cloud-free',
+                   'hermes-cloud-alibaba', 'hermes-cloud-gemini',
+                   'hermes-cloud-openrouter'] }}
         _fallback_chain: >-
           {{ _config.router_settings.fallbacks
              | selectattr('hermes-default', 'defined')
              | map(attribute='hermes-default') | flatten }}
+        _final_resort: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.input_cost_per_token', 'defined')
+             | selectattr('model_name', 'equalto', 'hermes-cloud-openrouter')
+             | list }}
         _cloud_models: >-
           {{ _config.model_list
              | selectattr('model_name', 'match', '^hermes-cloud-')
@@ -233,9 +271,17 @@
           - OPENROUTER_API_KEY
           - GEMINI_API_KEY
           - DASHSCOPE_API_KEY
+        # OpenRouter deployments IN that group, not every member of it. The
+        # group also carries a local survivor member (no budget, higher order)
+        # so budget exhaustion filters down to local instead of emptying the
+        # group — see the LOCAL SURVIVOR block in model-list.yaml.j2. That
+        # member is not an OpenRouter model, so the endpoint-policy and
+        # credential assertions below must not select it; matching on
+        # model_name alone did, and counted it toward the per-provider total.
         _openrouter_models: >-
           {{ _config.model_list
-             | selectattr('model_name', 'equalto', 'hermes-cloud-openrouter') | list }}
+             | selectattr('model_name', 'equalto', 'hermes-cloud-openrouter')
+             | selectattr('litellm_params.model', 'match', '^openrouter/') | list }}
         _bad_openrouter_policy: >-
           {{ _openrouter_models
              | rejectattr('litellm_params.extra_body.provider.sort', 'equalto', 'price')

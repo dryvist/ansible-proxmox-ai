@@ -37,6 +37,16 @@ hermes_agent_model_max_tokens: 8192
 # assert checks against the router's per-attempt timeout — resolves to 1800.
 hermes_agent_stream_read_timeout: "{{ ai_stream_read_timeout_seconds }}"
 hermes_agent_stream_stale_timeout: 900
+# Non-streaming counterpart of the stale bound above. Same misclassification,
+# same consequence: run_agent._resolved_api_call_stale_timeout_base only
+# returns infinity for an endpoint is_local_endpoint recognizes, so an FQDN
+# router falls through to the implicit 90s remote default. Under router
+# contention a large agent prompt legitimately exceeds it and the call dies
+# with "Non-streaming API call timed out after 90s". Setting the upstream
+# HERMES_API_CALL_STALE_TIMEOUT escape hatch to the streaming stale value
+# keeps both paths on one number and, being explicit, also exempts it from
+# the implicit-only wall-clock run-budget cap.
+hermes_agent_api_call_stale_timeout: "{{ hermes_agent_stream_stale_timeout }}"
 # Upstream HERMES_CRON_TIMEOUT is an inactivity reset, not an aggregate job
 # deadline: every API/tool/stream activity refreshes it. Keep that native guard
 # below the independent wall clock so a genuinely stalled run is interrupted
@@ -46,12 +56,73 @@ hermes_agent_cron_inactivity_timeout_seconds: 1800
 # patch enforces this monotonic wall clock around the complete agent run,
 # independently of retries and activity. It must remain below the router's
 # per-attempt timeout so Hermes owns the outer job deadline.
-# 2300, not 1800 (2026-08-23): the first self-audit run was killed at exactly
-# 1800s mid-investigation — its scope (Slack read-back + Splunk sweep + five
-# subsystem probes on the free preset rung) legitimately needs more than an
-# hour when upstream search calls stall. Still below ai_router_request_timeout_seconds
-# (2400), so the Layer-1 assert holds and Hermes keeps owning the outer deadline.
-hermes_agent_cron_wall_timeout_seconds: 2300
+#
+# `hermes cron`'s ticker is a SINGLE-THREADED SEQUENTIAL POOL per profile
+# (installed cron/scheduler.py's _get_sequential_pool: one thread, so
+# concurrent jobs can't corrupt each other's os.environ). One job can hold
+# that thread for up to this ceiling, so every other job sharing the SAME
+# profile's HERMES_HOME goes unserviced for as long as the hold lasts — with
+# no error, since the slot is simply never claimed. A flat constant here is a
+# guess about how tight the fastest store-mate's cadence is; get that guess
+# wrong (as 2300 did against a 15-minute job) and starvation is guaranteed by
+# construction, not bad luck: hermes_agent_cron_wall_timeout_seconds MUST stay
+# below every job's schedule interval in every profile this value reaches
+# (hermes-env-operational.j2 renders it into EVERY profile's .env — Cron is
+# per-profile by design, but this scalar is shared across all of them, so it
+# has to be safe for whichever profile is currently tightest).
+#
+# hermes_agent_direct_cron_jobs is the one place that set of schedules is
+# centrally listed (defaults/main/43-direct-cron-jobs-core.yml). It does NOT
+# cover the separate script-fed enqueuer crons reconciled ad hoc in
+# tasks/cron_reconcile.yml (splunk-status-digest, kanban-digest, the
+# splunk-error/security digests in hermes_agent_triage_jobs,
+# wired-trajectory, zammad-autoclose) — those schedules live in scattered
+# per-job vars, not one list, so they are NOT inputs to this formula. The
+# tightest of them found while writing this (hermes_agent_wired_trajectory_
+# cron_schedule, */15 min) is currently gated off by default; if it or
+# another sub-hourly script job is ever enabled, the same starvation risk
+# this PR fixes for the agentic list can reappear for it, undetected by this
+# formula. Folding the enqueuer schedules in is real follow-up work, not
+# something to fake with a stand-in number here.
+#
+# hermes_agent_cron_min_job_interval_seconds ignores each job's `enabled`
+# gate deliberately: gating by it would make the ceiling swing with which
+# credentials happen to be configured at converge time, so a job that's only
+# capability-gated off today could flip on tomorrow and silently loosen a
+# ceiling that's already governing a run in flight. Considering every listed
+# schedule, enabled or not, removes that runtime dependency and keeps the
+# value computable from static role data alone — conservative (a permanently
+# disabled fast job keeps the ceiling tighter than strictly necessary), never
+# unsafe.
+hermes_agent_cron_min_job_interval_seconds: >-
+  {{ (hermes_agent_direct_cron_jobs
+      | map(attribute='schedule')
+      | map('cron_min_gap_minutes')
+      | list | min) * 60 }}
+# The operator's core relationship (Vikunja 1906): ceiling MUST be strictly
+# below the tightest store-mate cadence, or that job's slot is skipped on
+# every hang, guaranteed. Any factor below 1.0 satisfies that on its own —
+# once the held job is killed at `ceiling` seconds, the pool is free again
+# before the tight job's SECOND upcoming slot, so at most one slot is ever
+# lost per hang instead of the unbounded run the old flat constant allowed.
+# 0.5, not something closer to 1.0, is a deliberate margin on top of that
+# floor, not a measured figure: the wall-clock check itself only runs once
+# per poll (_POLL_INTERVAL granularity) and the kill path (raise, unwind,
+# executor shutdown) is not instant, and a half-cadence margin absorbs both
+# without needing to measure either — while still leaving legitimately more
+# run time (30 min at today's schedules) than 2300s ever needed to justify.
+hermes_agent_cron_pool_safety_factor: 0.5
+# Capped 1s under the router's per-attempt timeout so the Layer-1 assert
+# below (`< ai_router_request_timeout_seconds`) holds by construction, not by
+# coincidence, however the two independent numbers above happen to compute:
+# 1s is the minimum integer margin a strict `<` on whole seconds needs, not a
+# tuned value.
+hermes_agent_cron_wall_timeout_seconds: >-
+  {{ [
+       (hermes_agent_cron_min_job_interval_seconds | float
+        * hermes_agent_cron_pool_safety_factor) | round(0, 'floor') | int,
+       (ai_router_request_timeout_seconds | int) - 1
+     ] | min }}
 # Per-call MCP tool timeout (config_servers.<srv>.timeout). The hermes-agent
 # runtime already ENFORCES this bound (tools/mcp_tool._run_on_mcp_loop raises
 # TimeoutError at the deadline and returns a clean tool error), but the per-server
@@ -68,7 +139,9 @@ hermes_agent_mcp_tool_timeout_seconds: 180
 # is needed. HERMES_AGENT_MODEL_API_KEY still overrides if explicitly set.
 hermes_agent_model_api_key: >-
   {{ lookup('env', 'HERMES_AGENT_MODEL_API_KEY')
-     | default(lookup('env', 'LLM_ROUTER_MASTER_KEY'), true) }}
+     | default(ai_orchestration_model_api_key, true)
+     | mandatory('Hermes router key missing: neither HERMES_AGENT_MODEL_API_KEY nor
+                  the OpenBao-sourced router master key supplied a value') }}
 
 # --- Slack gateway (Socket Mode) ---
 # Sourced the same way as the model key: plain env lookup, fed by Doppler at

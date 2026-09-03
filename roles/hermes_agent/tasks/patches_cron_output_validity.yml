@@ -46,9 +46,26 @@
           re.IGNORECASE,
       )
 
+      # The prompt catalog REQUIRES every report to close with a model
+      # attribution line ("— model: <id>"), which ends in a bare identifier
+      # and so carries no terminal punctuation. That footer is metadata, not
+      # the report's concluding sentence, so the terminal-mark search below
+      # must look PAST it — otherwise every compliant report that also opens
+      # with a narration lead-in trips the heuristic and is failed.
+      #
+      # Not hypothetical: two finished reports were suppressed this way, one
+      # of them carrying a hardware-error finding. The lead-in half is at the
+      # model's discretion, so any job whose model narrates before reporting
+      # was exposed on every run.
+      _CRON_ATTRIBUTION_RE = re.compile(
+          r"(?:\A|\n)[ \t]*[—–-]{1,2}[ \t]*model:[ \t]*\S[^\n]*[ \t]*\Z",
+          re.IGNORECASE,
+      )
+
 
       def _cron_output_looks_truncated(text):
-          """True if text reads like an interrupted thought, not a finished report.
+          """The signal (quoting the judged text) if text reads like an
+          interrupted thought, not a finished report; empty string otherwise.
 
           Two independent signals, either is sufficient:
             - it trails off with an ellipsis ("...", or the single "…" glyph)
@@ -60,12 +77,22 @@
           A bare short result ("Interesting") matches neither signal — it is
           instead caught by the length floor below, which is the check meant
           for that shape.
+
+          Both signals are evaluated against the report BODY, with the
+          mandated attribution footer removed. Judging the raw text instead
+          made the second signal fire on every compliant report that opened
+          with a lead-in, because the footer is the last line and carries no
+          terminal punctuation. Stripping it also keeps the ellipsis signal
+          honest: a run that trailed off and still emitted a footer is still
+          caught, which the raw-text form would have missed.
           """
-          if text.endswith("...") or text.endswith("…"):
-              return True
-          if _CRON_LEADIN_RE.match(text) and not re.search(r'[.!?"\'`)\]]\s*$', text):
-              return True
-          return False
+          body = _CRON_ATTRIBUTION_RE.sub("", text).rstrip()
+          if body.endswith("...") or body.endswith("…"):
+              return f"trails off with an ellipsis: ...{body[-80:]!r}"
+          if _CRON_LEADIN_RE.match(body) and not re.search(r'[.!?"\'`)\]]\s*$', body):
+              return (f"opens with a narration lead-in {body[:40]!r} and never reaches "
+                      f"a terminal mark; ends ...{body[-80:]!r}")
+          return ""
 
 
       def _cron_output_validity_guard(job, output_file, content, success):
@@ -101,8 +128,9 @@
               return content
           if len(text) < floor:
               reason = f"output too short ({len(text)} < {floor} chars) to be a real result"
-          elif _cron_output_looks_truncated(text):
-              reason = "output reads like an interrupted mid-reasoning fragment, not a finished report"
+          elif (_why := _cron_output_looks_truncated(text)):
+              reason = ("output reads like an interrupted mid-reasoning fragment, "
+                        f"not a finished report — it {_why}")
           else:
               return content
           logger.error(
@@ -115,17 +143,13 @@
   notify: Restart hermes-gateway
 
 - name: Route cron delivery content through the output-validity guard
-  # Idempotent: the rewritten line no longer matches its own regexp, because
-  # "deliver_content = " is no longer immediately followed by
-  # "_cron_markup_guard(job, output_file," once wrapped.
+  # Anchors on the markup guard's rewritten success line, so it must run after
+  # that patch. Idempotent: once wrapped, "deliver_content = " is followed by
+  # the validity guard, not the markup guard.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    regexp: >-
-      ^([ \t]*)deliver_content = _cron_markup_guard\(job, output_file,
-      final_response if success else
-      _summarize_cron_failure_for_delivery\(job, error\)\)$
+    regexp: '^([ \t]*)deliver_content = _cron_markup_guard\(job, output_file, final_response\)$'
     replace: >-
       \g<1>deliver_content = _cron_output_validity_guard(job, output_file,
-      _cron_markup_guard(job, output_file, final_response if success else
-      _summarize_cron_failure_for_delivery(job, error)), success)
+      _cron_markup_guard(job, output_file, final_response), success)
   notify: Restart hermes-gateway

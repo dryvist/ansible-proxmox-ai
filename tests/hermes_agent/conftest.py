@@ -129,12 +129,15 @@ PATCHED_CRON_DELIVERY_SOURCE = (
     # than NameError-ing the guard above at runtime.
     + '\ndef _is_cron_silence_response(text: str) -> bool:\n'
     + _apply_runtime_patch(
-        "Route failed cron deliveries to the issues channel",
+        "Route failed cron deliveries from the exception path to the issues channel",
         _apply_runtime_patch(
-            "Route cron delivery content through the output-validity guard",
+            "Route failed cron deliveries to the issues channel",
             _apply_runtime_patch(
-                "Route cron delivery content through the markup guard",
-                PINNED_CRON_DELIVERY_SOURCE,
+                "Route cron delivery content through the output-validity guard",
+                _apply_runtime_patch(
+                    "Route cron delivery content through the markup guard",
+                    PINNED_CRON_DELIVERY_SOURCE,
+                ),
             ),
         ),
     )
@@ -378,15 +381,25 @@ def _goal_runner_namespace() -> dict[str, Any]:
 
 
 class _StubAgent:
-    """Records every turn and the history it was handed."""
+    """Records every turn, the history it was handed, and the task id.
+
+    The signature mirrors the real ``AIAgent.run_conversation``, which was
+    confirmed by introspecting the installed class to accept ``task_id``
+    (defaulting to ``str(uuid.uuid4())`` when omitted). Keeping the stub
+    narrower than the real method would let a caller that stopped passing
+    ``task_id`` still pass its tests — the identifier would silently revert
+    to an opaque uuid on the guest and nothing here would notice.
+    """
 
     def __init__(self) -> None:
         self.turns = 0
         self.histories: list[Any] = []
+        self.task_ids: list[Any] = []
 
-    def run_conversation(self, message, conversation_history=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None):
         self.turns += 1
         self.histories.append(conversation_history)
+        self.task_ids.append(task_id)
         return {
             "final_response": f"resp{self.turns}",
             "messages": [f"m{self.turns}"],

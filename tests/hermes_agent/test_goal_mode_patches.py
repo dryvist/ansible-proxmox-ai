@@ -82,7 +82,7 @@ def test_hindsight_prefetch_patch_logs_at_warning() -> None:
         "Patch Hermes auto-recall prefetch failure to log at warning, not debug",
         PINNED_HINDSIGHT_PREFETCH_SOURCE,
     )
-    assert 'logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)' in patched
+    assert 'logger.warning("Hindsight recall failed: %s", e, exc_info=True)' in patched
     assert "logger.debug" not in patched
 
 

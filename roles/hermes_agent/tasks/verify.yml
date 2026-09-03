@@ -26,6 +26,22 @@
       retries: 5
       delay: 2
 
+    # A second `hermes gateway run` — Studio's auto-spawned child was the
+    # 2026-09-02 case — takes the runtime lock and the Slack app token from the
+    # unit and SIGTERMs it, so "active" above can be true of the wrong process.
+    # Exactly one gateway, and systemd (pid 1) is its parent.
+    - name: Gate — exactly one gateway process, owned by systemd
+      ansible.builtin.shell: |
+        set -o pipefail
+        ps -eo pid=,ppid=,args= | awk '$3 ~ /python/ && /\/hermes gateway run/ {print $1, $2}'
+      args:
+        executable: /bin/bash
+      register: hermes_agent_gateway_procs
+      changed_when: false
+      failed_when: >-
+        hermes_agent_gateway_procs.stdout_lines | length != 1
+        or (hermes_agent_gateway_procs.stdout_lines[0] | split)[1] != '1'
+
     - name: Gate — Browser Use Chromium CDP service is active
       ansible.builtin.systemd:
         name: hermes-browser-use-chromium

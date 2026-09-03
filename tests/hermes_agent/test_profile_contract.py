@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from jinja2 import Environment
-from _role_files import role_defaults, role_tasks_text
+from jinja2 import Environment, FileSystemLoader
+from _role_files import role_defaults, role_tasks_text, template_text
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -48,7 +48,9 @@ _RENDER_CONTEXT: dict[str, Any] = {
 
 
 def _jinja_env() -> Environment:
-    env = Environment(autoescape=False)
+    # A loader, so `{% include %}` in an env template resolves out of the
+    # role's templates/ dir the way Ansible's own template action resolves it.
+    env = Environment(autoescape=False, loader=FileSystemLoader(ROLE_ROOT / "templates"))
     env.filters["to_json"] = json.dumps
     env.filters["bool"] = bool
     env.filters["comment"] = lambda v: f"# {v}"
@@ -231,7 +233,7 @@ def test_github_maint_cron_runs_in_its_own_profile_behind_the_read_token() -> No
 
     # Least-shared tier: the read token belongs in one profile's .env, not in
     # the default profile's, which already holds the broader write PAT.
-    default_env = (ROLE_ROOT / "templates" / "hermes-env.j2").read_text()
+    default_env = template_text(ROLE_ROOT, "hermes-env.j2")
     assert "hermes_agent_github_read_token" not in default_env
 
 

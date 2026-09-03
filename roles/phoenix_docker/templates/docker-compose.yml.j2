@@ -1,0 +1,79 @@
+---
+# Arize Phoenix (LLM tracing + evals) via Docker Compose in an LXC.
+# Rendered by ansible-proxmox-ai/roles/phoenix_docker — do not edit by hand.
+#
+# Postgres bind-mounts its data under {{ phoenix_docker_data_dir }} (durable,
+# snapshotted); the phoenix container is stateless. OTLP ingest is served by
+# phoenix itself: HTTP at :{{ phoenix_docker_http_internal_port }}/v1/traces
+# (the path Cribl Stream POSTs to) and gRPC at :{{ phoenix_docker_grpc_internal_port }}.
+#
+# Ship stdout/stderr to journald with tag `phoenix` instead of the default
+# json-file driver, which stays on local disk and never reaches the SIEM.
+# Tag is a bare identifier (no ':' or whitespace) so rsyslog's syslog-header
+# regex extracts it as $programname. The host's rsyslog forwarder
+# (ansible-proxmox-apps, inventory/host_vars/phoenix.yml) matches on that tag
+# and forwards it, on this stack's own port (tofu-proxmox constants), to this
+# stack's own dedicated Splunk index. One tag, one index, for the whole stack.
+x-logging: &phoenix_docker_logging
+  driver: journald
+  options:
+    tag: phoenix
+
+services:
+  {{ phoenix_docker_postgres_service }}:
+    image: {{ phoenix_docker_postgres_image }}
+    restart: {{ phoenix_docker_restart_policy }}
+    logging: *phoenix_docker_logging
+    environment:
+      POSTGRES_USER: {{ phoenix_docker_postgres_user }}
+      POSTGRES_PASSWORD: "{{ phoenix_docker_postgres_password }}"
+      POSTGRES_DB: {{ phoenix_docker_postgres_db }}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - {{ phoenix_docker_postgres_data_dir }}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ phoenix_docker_postgres_user }}"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  phoenix:
+    image: {{ phoenix_docker_image }}
+    container_name: {{ phoenix_docker_container_name }}
+    restart: {{ phoenix_docker_restart_policy }}
+    logging: *phoenix_docker_logging
+    depends_on:
+      {{ phoenix_docker_postgres_service }}:
+        condition: service_healthy
+    ports:
+      - "{{ phoenix_docker_web_port }}:{{ phoenix_docker_http_internal_port }}"
+      - "{{ phoenix_docker_grpc_port }}:{{ phoenix_docker_grpc_internal_port }}"
+      - "{{ phoenix_docker_metrics_port }}:{{ phoenix_docker_metrics_internal_port }}"
+    environment:
+      PHOENIX_SQL_DATABASE_URL: "{{ phoenix_docker_sql_database_url }}"
+      PHOENIX_PORT: "{{ phoenix_docker_http_internal_port }}"
+      PHOENIX_GRPC_PORT: "{{ phoenix_docker_grpc_internal_port }}"
+      PHOENIX_ENABLE_PROMETHEUS: "{{ phoenix_docker_enable_prometheus }}"
+      PHOENIX_CSRF_TRUSTED_ORIGINS: "{{ phoenix_docker_csrf_trusted_origins }}"
+      # Auth: local accounts + API keys on; the bootstrap admin password is
+      # honoured on first boot only.
+      PHOENIX_ENABLE_AUTH: "true"
+      PHOENIX_SECRET: "{{ phoenix_docker_secrets.phoenix_secret }}"
+      PHOENIX_ADMIN_SECRET: "{{ phoenix_docker_admin_secret }}"
+      PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD: "{{ phoenix_docker_default_admin_initial_password }}"
+{% if phoenix_docker_oidc_enabled | bool %}
+      # SSO via Authelia (generic OIDC). The <IDP> token in the variable name
+      # is also the callback path segment: /oauth2/{{ phoenix_docker_oidc_idp }}/callback.
+      PHOENIX_OAUTH2_{{ phoenix_docker_oidc_idp | upper }}_DISPLAY_NAME: "{{ phoenix_docker_oidc_display_name }}"
+      PHOENIX_OAUTH2_{{ phoenix_docker_oidc_idp | upper }}_CLIENT_ID: "{{ phoenix_docker_oidc_client_id }}"
+      PHOENIX_OAUTH2_{{ phoenix_docker_oidc_idp | upper }}_CLIENT_SECRET: "{{ phoenix_docker_oidc_client_secret }}"
+      PHOENIX_OAUTH2_{{ phoenix_docker_oidc_idp | upper }}_OIDC_CONFIG_URL: "{{ phoenix_docker_oidc_config_url }}"
+      PHOENIX_OAUTH2_{{ phoenix_docker_oidc_idp | upper }}_ALLOW_SIGN_UP: "{{ phoenix_docker_oidc_allow_sign_up }}"
+{% endif %}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:{{ phoenix_docker_http_internal_port }}/healthz').status == 200 else 1)\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
