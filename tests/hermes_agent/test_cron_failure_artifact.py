@@ -5,8 +5,18 @@ import runpy
 import tempfile
 from pathlib import Path
 
-from _pinned_sources import PINNED_CRON_FAILURE_ARTIFACT_SOURCE
 from conftest import _apply_runtime_patch
+
+# Verbatim from cron/scheduler.py — the failure artifact's prompt section,
+# distinguished from the success artifact by the "## Error" heading. Kept
+# here rather than in _pinned_sources.py to stay under that file's token budget.
+PINNED_CRON_FAILURE_ARTIFACT_SOURCE = (
+    "## Prompt\n"
+    "\n"
+    "{prompt}\n"
+    "\n"
+    "## Error\n"
+)
 
 NAME = "Hash the prompt in a failed cron run's artifact"
 SUCCESS_ARTIFACT = "## Prompt\n\n{prompt}\n\n## Response\n"

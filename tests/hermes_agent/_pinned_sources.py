@@ -412,15 +412,6 @@ PINNED_SLACK_CONNECT_SOURCE = '''\
                 await asyncio.sleep(self.ping_interval)
 '''
 
-# Verbatim from cron/scheduler.py — the failure artifact's prompt section,
-# distinguished from the success artifact by the "## Error" heading.
-PINNED_CRON_FAILURE_ARTIFACT_SOURCE = (
-    "## Prompt\n"
-    "\n"
-    "{prompt}\n"
-    "\n"
-    "## Error\n"
-)
 
 # Verbatim from gateway/kanban_watchers.py — the dispatcher's per-tick result
 # loop and the stuck-streak counter the tick log patches rewrite.
