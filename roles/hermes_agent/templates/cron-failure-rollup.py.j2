@@ -74,19 +74,52 @@ def failing_jobs(store_jobs):
     return sorted(out)
 
 
-def build_message(failing):
+MEMORY_BLOCKED_RE = re.compile(r"Memory is blocked after \d+ failures", re.I)
+MEMORY_SCAN_WINDOW_SECONDS = 24 * 3600
+
+
+def memory_blocked_jobs(now):
+    """Job ids whose newest cron output inside the window narrates the memory
+    breaker. The breaker leaves no alarm of its own (Vikunja 1915); a job that
+    degraded gracefully says so in its report, and that is the only trace."""
+    hits = []
+    for store, home in stores():
+        outputs = home / "cron" / "output"
+        if not outputs.is_dir():
+            continue
+        for job_dir in sorted(outputs.iterdir()):
+            try:
+                newest = max(job_dir.glob("*.md"), key=lambda f: f.stat().st_mtime)
+            except (ValueError, OSError):
+                continue
+            try:
+                if now - newest.stat().st_mtime > MEMORY_SCAN_WINDOW_SECONDS:
+                    continue
+                if MEMORY_BLOCKED_RE.search(newest.read_text(encoding="utf-8", errors="replace")):
+                    hits.append(job_dir.name if store == "default" else f"{store}/{job_dir.name}")
+            except OSError:
+                continue
+    return hits
+
+
+def build_message(failing, memory_blocked=()):
     by_cause = {}
     for store, name, streak, cause in failing:
         label = name if store == "default" else f"{store}/{name}"
         by_cause.setdefault(cause, []).append(f"{label} ×{streak}" if streak > 1 else label)
-    lines = [f":rotating_light: {len(failing)} cron job(s) failing"]
-    for cause, names in sorted(by_cause.items(), key=lambda kv: (-len(kv[1]), kv[0])):
-        lines.append(f"• {cause} ({len(names)}): " + ", ".join(names))
+    lines = []
+    if failing:
+        lines.append(f":rotating_light: {len(failing)} cron job(s) failing")
+        for cause, names in sorted(by_cause.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+            lines.append(f"• {cause} ({len(names)}): " + ", ".join(names))
+    if memory_blocked:
+        lines.append(f":brain: memory breaker tripped in the newest run of {len(memory_blocked)} "
+                     f"job(s), their baselines may be stale: " + ", ".join(memory_blocked))
     return "\n".join(lines)
 
 
-def signature(failing):
-    return [f"{s}/{n}:{c}" for s, n, _, c in failing]
+def signature(failing, memory_blocked=()):
+    return [f"{s}/{n}:{c}" for s, n, _, c in failing] + [f"memory:{j}" for j in memory_blocked]
 
 
 def load_state():
@@ -101,24 +134,26 @@ def save_state(state):
     STATE_PATH.write_text(json.dumps(state), encoding="utf-8")
 
 
-def decide(failing, state, now):
+def decide(failing, state, now, memory_blocked=()):
     """(text_or_None, new_state)."""
-    sig = signature(failing)
+    sig = signature(failing, memory_blocked)
     prev_sig = state.get("signature", [])
     age = now - float(state.get("posted_at") or 0)
-    if not failing:
+    if not sig:
         if prev_sig:
-            return ":white_check_mark: Every cron job's last run succeeded.", {"signature": [], "posted_at": now}
+            return (":white_check_mark: Every cron job's last run succeeded and memory is unblocked.",
+                    {"signature": [], "posted_at": now})
         return None, state
     if sig != prev_sig or age >= HEARTBEAT_HOURS * 3600:
-        return build_message(failing), {"signature": sig, "posted_at": now}
+        return build_message(failing, memory_blocked), {"signature": sig, "posted_at": now}
     return None, state
 
 
 def main():
     try:
+        now = time.time()
         failing = failing_jobs((name, load_jobs(home)) for name, home in stores())
-        text, state = decide(failing, load_state(), time.time())
+        text, state = decide(failing, load_state(), now, memory_blocked_jobs(now))
         save_state(state)
     except Exception as exc:  # noqa: BLE001 - a broken rollup is itself a finding
         print(f"{ISSUES_MARKER} :warning: cron-failure-rollup FAILED: {type(exc).__name__}: {exc}")

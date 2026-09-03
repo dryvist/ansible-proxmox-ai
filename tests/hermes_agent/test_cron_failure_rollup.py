@@ -100,6 +100,29 @@ def test_the_all_clear_posts_once_when_the_set_empties():
     assert MOD.decide([], state, NOW + 7200) == (None, state)
 
 
+def test_the_memory_breaker_is_read_from_the_newest_output_and_posted_with_its_own_signature():
+    outputs = TMP / "profiles" / "splunk-admin" / "cron" / "output" / "abc123"
+    outputs.mkdir(parents=True, exist_ok=True)
+    (outputs / "old.md").write_text("## Response\nMemory is blocked after 4 failures. I'll proceed.")
+    (outputs / "new.md").write_text("## Response\nAll good, memory saved.")
+    import os
+    os.utime(outputs / "old.md", (NOW - 7200, NOW - 7200))
+    os.utime(outputs / "new.md", (NOW - 60, NOW - 60))
+    assert MOD.memory_blocked_jobs(NOW) == []
+    (outputs / "new.md").write_text("## Response\nMemory is blocked after 4 failures. Baseline may be stale.")
+    os.utime(outputs / "new.md", (NOW - 60, NOW - 60))
+    assert MOD.memory_blocked_jobs(NOW) == ["splunk-admin/abc123"]
+    # A day-old hit is not current.
+    os.utime(outputs / "new.md", (NOW - 30 * 3600, NOW - 30 * 3600))
+    os.utime(outputs / "old.md", (NOW - 31 * 3600, NOW - 31 * 3600))
+    assert MOD.memory_blocked_jobs(NOW) == []
+    text, state = MOD.decide([], {}, NOW, ["splunk-admin/abc123"])
+    assert text.startswith(":brain: memory breaker tripped") and "abc123" in text
+    assert state["signature"] == ["memory:splunk-admin/abc123"]
+    assert MOD.decide([], state, NOW + 3600, ["splunk-admin/abc123"])[0] is None
+    assert MOD.decide([], state, NOW + 3600, [])[0].startswith(":white_check_mark:")
+
+
 def test_the_cron_is_registered_deployed_and_documented():
     defaults = role_defaults(ROLE)
     assert defaults["hermes_agent_cron_failure_rollup_schedule"] == "7 * * * *"
