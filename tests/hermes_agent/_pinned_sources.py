@@ -410,3 +410,13 @@ PINNED_SLACK_CONNECT_SOURCE = '''\
                 self.logger.exception(f"Failed to connect (error: {e}); Retrying...")
                 await asyncio.sleep(self.ping_interval)
 '''
+
+# Verbatim from cron/scheduler.py — the failure artifact's prompt section,
+# distinguished from the success artifact by the "## Error" heading.
+PINNED_CRON_FAILURE_ARTIFACT_SOURCE = (
+    "## Prompt\n"
+    "\n"
+    "{prompt}\n"
+    "\n"
+    "## Error\n"
+)

@@ -169,9 +169,22 @@
               job_name, elapsed, _cron_wall_timeout_limit,
           )
           request_hard_interrupt(agent, "Cron job exceeded hard wall clock")
+          # Evidence, not just the verdict: how many model calls the run
+          # made, what it was doing when killed, and the session that holds
+          # the transcript (the failure artifact keeps no response).
+          try:
+              _act = agent.get_activity_summary() or {}
+          except Exception:
+              _act = {}
+          _calls = int(_act.get("api_call_count", 0) or 0)
+          _since = _act.get("seconds_since_activity")
+          _idle = f"{int(_since)}s" if _since is not None else "unknown"
+          _doing = str(_act.get("last_activity_desc") or "")[:120]
           raise TimeoutError(
               f"Cron job '{job_name}' exceeded aggregate wall clock "
-              f"{int(elapsed)}s (limit {int(_cron_wall_timeout_limit)}s)"
+              f"{int(elapsed)}s (limit {int(_cron_wall_timeout_limit)}s) "
+              f"after {_calls} API call(s); last activity {_idle} before the kill"
+              f"{': ' + _doing if _doing else ''}; session {_cron_session_id}"
           )
 
       if _inactivity_timeout is True:

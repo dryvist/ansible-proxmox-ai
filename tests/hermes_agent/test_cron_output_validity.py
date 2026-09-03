@@ -111,6 +111,20 @@ def test_a_complete_report_closing_with_the_mandated_attribution_is_delivered() 
         assert mod._cron_output_validity_guard(JOB, "/var/log/x.json", text, True) == text
 
 
+def test_a_rejection_quotes_the_text_it_judged() -> None:
+    """Vikunja 1935: a verdict of "interrupted" must carry the evidence so it
+    can be audited from the channel without opening the artifact."""
+    mod = _load_guard()
+    content = mod._cron_output_validity_guard(
+        JOB, "/var/log/x.json", "Now let me check for new tickets since last run...", True)
+    assert "trails off with an ellipsis" in content
+    assert "tickets since last run..." in content
+    content = mod._cron_output_validity_guard(
+        JOB, "/var/log/x.json", "Let me look at the remaining hosts and then", True)
+    assert "narration lead-in 'Let me look" in content
+    assert "never reaches a terminal mark" in content
+
+
 def test_a_fragment_is_still_rejected_when_it_carries_an_attribution() -> None:
     """Looking past the footer must not blind the ellipsis signal: a run that
     trailed off and still emitted the footer stays rejected."""
