@@ -412,6 +412,7 @@ PINNED_SLACK_CONNECT_SOURCE = '''\
                 await asyncio.sleep(self.ping_interval)
 '''
 
+
 # Verbatim from gateway/kanban_watchers.py — the dispatcher's per-tick result
 # loop and the stuck-streak counter the tick log patches rewrite.
 PINNED_DISPATCH_TICK_SOURCE = (

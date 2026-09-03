@@ -109,6 +109,8 @@ def _compiled_monitor(clock: _Clock, future: _Future, interrupts: list[str]):
             "_hermes_cron_goal_run": lambda *_args, **_kwargs: None,
             "request_hard_interrupt": lambda _agent, reason: interrupts.append(reason),
             "_RUN_CLAIM_HEARTBEAT_SECONDS": 30.0,
+            # A local of the enclosing scheduler function on the guest.
+            "_cron_session_id": "cron_test_session",
         }
     )
     source = (
@@ -192,11 +194,16 @@ def test_active_run_executes_the_integrated_hard_wall(monkeypatch) -> None:
     interrupts: list[str] = []
     monitor = _compiled_monitor(clock, future, interrupts)
 
-    with pytest.raises(TimeoutError, match="aggregate wall clock 3s"):
+    with pytest.raises(TimeoutError, match="aggregate wall clock 3s") as raised:
         monitor(_Agent(clock, active=True), "prompt", {}, "job-id", "job", 2.0)
 
     assert clock.now == 3.0
     assert interrupts == ["Cron job exceeded hard wall clock"]
+    # Vikunja 1923: the kill records what the run did, not only that it died.
+    message = str(raised.value)
+    assert "after 1 API call(s)" in message
+    assert "last activity 0s before the kill: synthetic activity" in message
+    assert "session cron_test_session" in message
 
 
 def test_inactivity_executes_before_the_integrated_hard_wall(monkeypatch) -> None:
