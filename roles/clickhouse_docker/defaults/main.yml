@@ -1,0 +1,155 @@
+---
+# Dedicated ClickHouse server — Docker Compose in its own LXC. Replaces the
+# ClickHouse container that used to live inside the Langfuse compose stack
+# (roles/langfuse_docker): this role runs ClickHouse standalone so Langfuse
+# and every read-only downstream consumer (Grafana, HyperDX, Splunk) talk to
+# one shared server instead of each getting its own copy. All literals live
+# here; the template references vars only (DRY).
+#
+# The OpenTelemetry collector and its OTEL tables are a deliberate follow-up
+# — this role deploys the ClickHouse server only.
+
+# =============================================================================
+# Container image — pinned exact tag, never a floating minor/major.
+# =============================================================================
+# ClickHouse stops at 25.12. 26.x is excluded outright — upstream reports
+# CORRUPTED_DATA on a 25 -> 26 upgrade. ClickHouse only supports
+# one-release-line-at-a-time upgrades across these boundaries, so an older
+# deployed line reaches 25.12 by way of 25.8: each hop in
+# `clickhouse_docker_upgrade_path` is started and brought healthy in list
+# order before the pinned tag is applied (tasks/clickhouse_upgrade.yml). Hops
+# at or below the running tag are skipped, so a converged host — or a fresh
+# install with nothing running yet — is a no-op.
+clickhouse_docker_image_repo: "clickhouse/clickhouse-server"
+clickhouse_docker_version: "25.12"
+clickhouse_docker_upgrade_path:
+  - "25.8"
+  - "25.12"
+clickhouse_docker_image: >-
+  {{ clickhouse_docker_image_repo }}:{{ clickhouse_docker_version }}
+
+clickhouse_docker_container_name: clickhouse
+clickhouse_docker_service: clickhouse
+
+# Restart policy applied to the service.
+clickhouse_docker_restart_policy: unless-stopped
+
+# =============================================================================
+# Persistent state (bind-mounted to /opt/clickhouse — durable, snapshotted).
+# =============================================================================
+clickhouse_docker_data_dir: /opt/clickhouse
+clickhouse_docker_ch_data_dir: "{{ clickhouse_docker_data_dir }}/data"
+clickhouse_docker_ch_logs_dir: "{{ clickhouse_docker_data_dir }}/logs"
+clickhouse_docker_users_d_dir: "{{ clickhouse_docker_data_dir }}/users.d"
+
+# ClickHouse runs as uid/gid 101 (the image's `clickhouse` user). Because the
+# service pins `user: 101:101`, the bind-mounted host dirs must be pre-owned
+# by 101 — the root entrypoint chown is bypassed, and an unprivileged LXC
+# cannot chown after the fact.
+clickhouse_docker_uid: "101"
+
+clickhouse_docker_directories:
+  - path: "{{ clickhouse_docker_data_dir }}"
+    owner: root
+    group: root
+  - path: "{{ clickhouse_docker_ch_data_dir }}"
+    owner: "{{ clickhouse_docker_uid }}"
+    group: "{{ clickhouse_docker_uid }}"
+  - path: "{{ clickhouse_docker_ch_logs_dir }}"
+    owner: "{{ clickhouse_docker_uid }}"
+    group: "{{ clickhouse_docker_uid }}"
+  - path: "{{ clickhouse_docker_users_d_dir }}"
+    owner: root
+    group: root
+
+# =============================================================================
+# Network — container-internal wire ports (image contracts) and the
+# externally-published host ports, pulled from the OpenTofu pipeline_constants
+# (DRY: no port literal here). This is a dedicated datastore guest reachable
+# from every internal VLAN (matching the pattern used by the other datastore
+# guests), so both ports publish on the host rather than staying loopback-only.
+# =============================================================================
+clickhouse_docker_http_internal_port: 8123
+clickhouse_docker_native_internal_port: 9000
+
+_clickhouse_docker_http_port_err: >-
+  tofu_data.constants.service_ports.clickhouse_http missing —
+  regenerate tofu_inventory.json via
+  `tofu output -json ansible_inventory`.
+clickhouse_docker_http_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['clickhouse_http']
+     | mandatory(_clickhouse_docker_http_port_err) }}
+
+_clickhouse_docker_native_port_err: >-
+  tofu_data.constants.service_ports.clickhouse_native missing —
+  regenerate tofu_inventory.json via
+  `tofu output -json ansible_inventory`.
+clickhouse_docker_native_port: >-
+  {{ hostvars['localhost']['tofu_data']
+     ['constants']['service_ports']['clickhouse_native']
+     | mandatory(_clickhouse_docker_native_port_err) }}
+
+# The guest's own FQDN, read from the published inventory rather than built
+# from parts. `container_ip` is the tofu contract's field for it: DHCP-first
+# guests (this one is) carry their resolvable FQDN there (see
+# inventory/load_tofu.yml — "DHCP-first guests (tofu contract): `ip` carries
+# the FQDN"), so this host's own `container_ip` IS its address, no
+# concatenation needed. `ansible_host` is the wrong variable here — it holds
+# the NODE's FQDN for guests still on the pct-exec path, not the guest's own.
+# Every URL in this role (compose healthcheck, the default-user lockdown
+# proof) is built from this variable plus the port variables above — never a
+# bare compose service name and never a loopback address; both have been
+# found refused for ClickHouse in this estate.
+clickhouse_docker_host: >-
+  {{ container_ip
+     | mandatory('container_ip is empty: the guest is not DHCP-first in the
+                  published inventory, so its FQDN cannot be derived') }}
+clickhouse_docker_http_endpoint: "http://{{ clickhouse_docker_host }}:{{ clickhouse_docker_http_port }}"
+
+# =============================================================================
+# Databases and users
+# =============================================================================
+# A dedicated database for Langfuse — never `default` (see the lockdown note
+# below: the `default` user is disabled, and `default` the database is not
+# used by anyone). Three read-only users cover the downstream consumers.
+clickhouse_docker_database: langfuse
+clickhouse_docker_app_user: langfuse
+clickhouse_docker_readonly_users:
+  - grafana
+  - hyperdx
+  - splunk
+
+# =============================================================================
+# Credentials — bao-first, no env fallback. Every value here is secret-valued,
+# so it is read ONLY from OpenBao (domain `clickhouse`, KV path ai/clickhouse
+# on the secret/ mount — an internal datastore credential, not the
+# secrets-external/ mount reserved for internet-reachable services) and never
+# falls back to `lookup('env', ...)`.
+#
+# The `clickhouse` domain's AppRole/policy do not exist yet — they are
+# provisioned in ansible-proxmox-apps' roles/openbao, a separate repo, and
+# are blocked on an unrelated fix there. Until that lands, `bao_clickhouse_secrets`
+# resolves to an empty dict and every mandatory() below fails the play. That
+# is intended: a converge that rendered an empty ClickHouse credential would
+# overwrite a working one, so failing closed here is correct, not a defect.
+clickhouse_docker_app_password: >-
+  {{ (bao_clickhouse_secrets | default({})).APP_PASSWORD
+     | mandatory('APP_PASSWORD missing from OpenBao (secret/ai/clickhouse)') }}
+clickhouse_docker_grafana_password: >-
+  {{ (bao_clickhouse_secrets | default({})).GRAFANA_PASSWORD
+     | mandatory('GRAFANA_PASSWORD missing from OpenBao (secret/ai/clickhouse)') }}
+clickhouse_docker_hyperdx_password: >-
+  {{ (bao_clickhouse_secrets | default({})).HYPERDX_PASSWORD
+     | mandatory('HYPERDX_PASSWORD missing from OpenBao (secret/ai/clickhouse)') }}
+clickhouse_docker_splunk_password: >-
+  {{ (bao_clickhouse_secrets | default({})).SPLUNK_PASSWORD
+     | mandatory('SPLUNK_PASSWORD missing from OpenBao (secret/ai/clickhouse)') }}
+
+# Read-only user -> password lookup, built from the two lists above so the
+# provisioning task loops a single structure instead of three near-duplicate
+# tasks.
+clickhouse_docker_readonly_credentials:
+  grafana: "{{ clickhouse_docker_grafana_password }}"
+  hyperdx: "{{ clickhouse_docker_hyperdx_password }}"
+  splunk: "{{ clickhouse_docker_splunk_password }}"

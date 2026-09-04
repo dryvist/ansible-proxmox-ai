@@ -1,0 +1,64 @@
+---
+# Dedicated ClickHouse server via Docker Compose in an LXC.
+# Rendered by ansible-proxmox-ai/roles/clickhouse_docker — do not edit by hand.
+#
+# Serves a Langfuse application database plus read-only access for downstream
+# consumers (Grafana, HyperDX, Splunk). Data is bind-mounted under
+# {{ clickhouse_docker_data_dir }} (durable, snapshotted). The `default` user
+# is disabled by a users.d/ config drop-in (templates/users.d/default-disabled.xml.j2);
+# every real client authenticates as one of the users tasks/main.yml
+# provisions.
+#
+# Ship stdout/stderr to journald with tag `clickhouse` instead of the default
+# json-file driver, which stays on local disk and never reaches the SIEM.
+# Tag is a bare identifier (no ':' or whitespace) so rsyslog's syslog-header
+# regex extracts it as $programname. The host's rsyslog forwarder
+# (ansible-proxmox-apps) matches on that tag and forwards it, on this
+# service's own port (tofu-proxmox constants), to this service's own
+# dedicated Splunk index — one index per service, not a shared one.
+x-logging: &clickhouse_docker_logging
+  driver: journald
+  options:
+    tag: clickhouse
+
+services:
+  {{ clickhouse_docker_service }}:
+    image: {{ clickhouse_docker_image }}
+    container_name: {{ clickhouse_docker_container_name }}
+    restart: {{ clickhouse_docker_restart_policy }}
+    logging: *clickhouse_docker_logging
+    user: "{{ clickhouse_docker_uid }}:{{ clickhouse_docker_uid }}"
+    environment:
+      TZ: UTC
+      # Bootstraps the dedicated database and the app user on first init (the
+      # image's own supported mechanism — writes users.d/default-user.xml,
+      # which also removes the `default` user; the users.d/ drop-in this role
+      # ships is redundant with that but stays as an explicit, reviewable
+      # lockdown that does not depend on these three vars staying set).
+      # CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 lets this user issue the
+      # CREATE USER / GRANT statements tasks/main.yml runs for the read-only
+      # consumer users.
+      CLICKHOUSE_DB: "{{ clickhouse_docker_database }}"
+      CLICKHOUSE_USER: "{{ clickhouse_docker_app_user }}"
+      CLICKHOUSE_PASSWORD: "{{ clickhouse_docker_app_password }}"
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "{{ clickhouse_docker_http_port }}:{{ clickhouse_docker_http_internal_port }}"
+      - "{{ clickhouse_docker_native_port }}:{{ clickhouse_docker_native_internal_port }}"
+    volumes:
+      - {{ clickhouse_docker_ch_data_dir }}:/var/lib/clickhouse
+      - {{ clickhouse_docker_ch_logs_dir }}:/var/log/clickhouse-server
+      - {{ clickhouse_docker_users_d_dir }}:/etc/clickhouse-server/users.d:ro
+    healthcheck:
+      # Both loopback families (127.0.0.1 and ::1) have been found refused for
+      # ClickHouse in this estate, so the probe dials the guest's own FQDN
+      # (container_ip from the published inventory — never a bare compose
+      # service name or a loopback address) on the externally-published port.
+      test: >-
+        wget --no-verbose --tries=1 --spider
+        {{ clickhouse_docker_http_endpoint }}/ping
+        || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
