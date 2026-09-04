@@ -1,0 +1,45 @@
+---
+# One ClickHouse upgrade hop. Included in list order from
+# `clickhouse_docker_pending_hops` for every hop newer than the tag currently
+# running, so the server crosses one release line at a time instead of
+# jumping straight to the pinned tag. `clickhouse_docker_hop` is the tag for
+# this hop.
+
+- name: Render the ClickHouse compose file at {{ clickhouse_docker_hop }}
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ clickhouse_docker_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    clickhouse_docker_version: "{{ clickhouse_docker_hop }}"
+  no_log: true
+
+- name: Start ClickHouse {{ clickhouse_docker_hop }}
+  community.docker.docker_compose_v2:
+    project_src: "{{ clickhouse_docker_data_dir }}"
+    services:
+      - "{{ clickhouse_docker_service }}"
+    state: present
+    wait: true
+    wait_timeout: 600
+  no_log: true
+
+- name: Confirm ClickHouse reports {{ clickhouse_docker_hop }}
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -f {{ clickhouse_docker_data_dir }}/docker-compose.yml
+      exec -T {{ clickhouse_docker_service }}
+      clickhouse-client --user {{ clickhouse_docker_app_user }}
+      --password {{ clickhouse_docker_app_password }}
+      --query "SELECT version()"
+  register: clickhouse_docker_hop_version
+  changed_when: false
+  retries: 30
+  delay: 10
+  until: >-
+    clickhouse_docker_hop_version.rc == 0
+    and clickhouse_docker_hop_version.stdout
+        is version(clickhouse_docker_hop, '>=')
+  no_log: true
