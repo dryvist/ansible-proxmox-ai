@@ -1,49 +1,8 @@
 ---
-# openbao_secrets role defaults — a controller-side pre-play that logs in to
-# OpenBao, once per resource-domain identity, and reads that domain's KV
-# subtree into a per-domain fact (`bao_<domain>_secrets`, hyphens become
-# underscores — e.g. `local-cloud` -> `bao_local_cloud_secrets`). Consumer
-# roles then read bao-first, and a SECRET-valued one carries no fallback:
-#   X: "{{ bao_<domain>_secrets.X | mandatory('X missing from OpenBao') }}"
-# Only non-secret values (URLs, ports, hostnames, model names, channel ids,
-# feature flags) may keep an env/default fallback.
-#
-# Each domain authenticates with its OWN least-privilege AppRole (see
-# terraform-proxmox docs/SECRETS_HIERARCHY.md) rather than one broad shared
-# identity — a domain's credentials only ever unlock that domain's KV subtree.
-#
-# FAIL-LOUD CONTRACT
-# -----------------
-# An empty secret is never a safe outcome: consumers render these values into
-# live configuration, and a converge that writes an empty password over a
-# working one is silent, immediate damage. So the role fails rather than
-# degrading, with exactly two deliberate exceptions:
-#
-#   1. BAO_ADDR unset AND no openbao-tagged node in the tofu inventory — the
-#      whole role no-ops. This is "OpenBao is not part of this converge at
-#      all", an explicit operator choice, not a failure to reach it.
-#   2. A domain named in `openbao_secrets_optional_domains` — an explicit,
-#      reviewable declaration that this domain's AppRole is not provisioned
-#      yet and its consumers tolerate absent values.
-#
-# Everything else is a hard failure:
-#   - OpenBao is configured but NO candidate endpoint answers /v1/sys/health
-#     unsealed (single endpoints being down is still tolerated — the probe
-#     fails over across the candidate list).
-#   - A required domain's role_id/secret_id envs are not both set.
-#   - Any KV read errors (403, 404, connection). Reads are no longer
-#     `failed_when: false`.
-#
-# Under --check the login and KV reads run FOR REAL (check_mode: false — they
-# change no state), so a check run resolves genuine values and the templates
-# diff correctly instead of against blanks. The seed/publish tasks write and
-# still honor check mode.
-#
-# Consumers must match this contract: a secret-valued variable uses
-# `| mandatory('...')`, never `| default(lookup('env', ...), true)`, and any
-# role that renders a password/key/token into a file includes
-# `openbao_secrets/tasks/assert_nonempty.yml` over the variable names it is
-# about to write.
+# openbao_secrets role defaults. Full pattern (bao-first resolution, the
+# FAIL-LOUD contract, its two deliberate no-op exceptions, and what every
+# consumer role must match) lives in README.md — this file is config, not
+# the essay.
 
 # Domains allowed to resolve empty instead of failing the play. The contract
 # default is an empty list; each entry below is a TODO to DELETE as soon as
