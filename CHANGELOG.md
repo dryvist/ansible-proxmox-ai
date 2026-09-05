@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.38.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.37.0...v0.38.0) (2026-09-05)
+
+
+### Features
+
+* **hermes_agent:** disable the retired docs-sync cron ([#667](https://github.com/dryvist/ansible-proxmox-ai/issues/667)) ([69c6f1b](https://github.com/dryvist/ansible-proxmox-ai/commit/69c6f1b5a2f803e3a11d2d79d549df9066af3cde))
+
 ## [0.37.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.36.0...v0.37.0) (2026-09-05)
 
 
