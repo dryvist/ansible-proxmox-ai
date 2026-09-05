@@ -40,7 +40,10 @@ Always deploy the fabric in this order. Each stage gates the next.
 2. **Deploy.** Converge the config changes.
 
    > **Primary Execution Plane: Semaphore**
-   > Routine execution of `site.yml` and its tagged runs (like `ai-site` and `ai-llm-serving`) is handled centrally by **Semaphore**. The CLI commands below are for local development, testing, or break-glass execution only. To deploy in production, trigger the appropriate Semaphore job.
+   > Routine execution of `site.yml` and its tagged runs (like `ai-site` and
+   > `ai-llm-serving`) is handled centrally by **Semaphore**. The CLI commands
+   > below are for local development, testing, or break-glass execution only.
+   > To deploy in production, trigger the appropriate Semaphore job.
 
    ```bash
    doppler run -- ansible-playbook \

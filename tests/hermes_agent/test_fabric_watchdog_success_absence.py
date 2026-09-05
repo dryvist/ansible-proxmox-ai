@@ -304,4 +304,3 @@ def test_thresholds_match_the_shipped_defaults() -> None:
         "missed_cycles=1 pages on a single late run, which is the error-rate "
         "alerting this watchdog was built to replace"
     )
-
