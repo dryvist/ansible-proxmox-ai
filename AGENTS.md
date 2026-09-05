@@ -1,4 +1,5 @@
 ---
+skill-groups: [core, git, homelab]
 skill-groups: [core, homelab]
 ---
 # Ansible Proxmox AI — AI Agent Documentation
