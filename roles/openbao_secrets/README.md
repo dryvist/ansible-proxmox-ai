@@ -15,9 +15,8 @@ some_secret: "{{ bao_local_llm_secrets.SOME_SECRET | mandatory('SOME_SECRET miss
 
 Only **non-secret** values (URLs, ports, hostnames, model names, channel ids,
 feature flags) may keep `| default(lookup('env', 'X'), true)`. See the
-fail-loud contract at the top of `defaults/main.yml`, and
-`tasks/assert_nonempty.yml` for the guard every role that writes a
-password/key/token into a file includes before templating.
+fail-loud contract below, and `tasks/assert_nonempty.yml` for the guard every
+role that writes a password/key/token into a file includes before templating.
 
 This is a copy of the same-named role in `ansible-proxmox-apps`, trimmed to
 the domains this repo consumes. The generic machinery (failover probe,
@@ -33,6 +32,45 @@ role-prefixed). Each domain **skips cleanly** when its own role_id/secret_id
 envs are unset, so an operator can migrate one domain at a time onto OpenBao
 while the rest keep resolving from env/SOPS (the `group_vars/all.yml` `{}`
 defaults guarantee the fallback resolves for every domain).
+
+## Fail-loud contract
+
+An empty secret is never a safe outcome: consumers render these values into
+live configuration, and a converge that writes an empty password over a
+working one is silent, immediate damage. So the role fails rather than
+degrading, with exactly two deliberate exceptions:
+
+1. `BAO_ADDR` unset **and** no openbao-tagged node in the tofu inventory —
+   the whole role no-ops. This is "OpenBao is not part of this converge at
+   all", an explicit operator choice, not a failure to reach it.
+2. A domain named in `openbao_secrets_optional_domains` — an explicit,
+   reviewable declaration that this domain's AppRole is not provisioned yet
+   and its consumers tolerate absent values.
+
+Everything else is a hard failure:
+
+- OpenBao is configured but **no** candidate endpoint answers
+  `/v1/sys/health` unsealed (a single endpoint being down is still
+  tolerated — the probe fails over across the candidate list).
+- A required domain's `role_id`/`secret_id` envs are not both set.
+- Any KV read errors (403, 404, connection). Reads are no longer
+  `failed_when: false`.
+
+Under `--check` the login and KV reads run for real (`check_mode: false` —
+they change no state), so a check run resolves genuine values and the
+templates diff correctly instead of against blanks. The seed/publish tasks
+write and still honor check mode.
+
+Consumers must match this contract: a secret-valued variable uses
+`| mandatory('...')`, never `| default(lookup('env', ...), true)`, and any
+role that renders a password/key/token into a file includes
+`openbao_secrets/tasks/assert_nonempty.yml` over the variable names it is
+about to write.
+
+Each domain authenticates with its **own** least-privilege AppRole (see
+`tofu-proxmox` `docs/SECRETS_HIERARCHY.md`) rather than one broad shared
+identity — a domain's credentials only ever unlock that domain's own KV
+subtree.
 
 ## Alignment with `roles/openbao` (RBAC)
 

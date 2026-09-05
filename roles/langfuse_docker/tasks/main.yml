@@ -106,28 +106,120 @@
 # reached from its immediate predecessor. Skipped entirely on a fresh install
 # (nothing running yet) and on an already-converged host (no pending hops).
 
+# The running tag decides which hops still have to be crossed, so this read is
+# load-bearing. It used to carry `failed_when: false`: a failed read yielded an
+# empty string, the hop walk was skipped entirely, and the pinned tag was
+# templated in directly — bypassing the one-line-at-a-time protection this
+# mechanism exists to provide, precisely when something had already gone wrong.
+# It now fails closed. "Nothing is running" is a legitimate state on a fresh
+# install and is reported explicitly as __none__, so it can no longer be
+# confused with a read that failed.
 - name: Read the running ClickHouse image tag
   ansible.builtin.shell:
     cmd: >-
       set -o pipefail;
-      cid=$(docker compose -f {{ langfuse_docker_data_dir }}/docker-compose.yml
-      ps -q {{ langfuse_docker_clickhouse_service }});
-      [ -n "$cid" ] || exit 0;
+      compose={{ langfuse_docker_data_dir }}/docker-compose.yml;
+      [ -f "$compose" ] || { echo __none__; exit 0; };
+      cid=$(docker compose -f "$compose" ps -q {{ langfuse_docker_clickhouse_service }}) || exit 1;
+      [ -n "$cid" ] || { echo __none__; exit 0; };
       docker inspect -f '{{ '{{' }} .Config.Image {{ '}}' }}' "$cid" | awk -F: '{print $NF}'
   register: langfuse_docker_clickhouse_running
   changed_when: false
-  failed_when: false
 
-- name: Upgrade ClickHouse one minor line at a time
+- name: Resolve the pending ClickHouse upgrade hops
+  ansible.builtin.set_fact:
+    langfuse_docker_clickhouse_pending_hops: >-
+      {{ []
+         if (langfuse_docker_clickhouse_running.stdout | trim) in ['', '__none__']
+         else (langfuse_docker_clickhouse_upgrade_path
+               | select('version', langfuse_docker_clickhouse_running.stdout | trim, '>')
+               | list) }}
+
+# Refuse a path the mechanism cannot walk safely, rather than walking it
+# obediently. These check the mis-edits that are actually plausible: a pin
+# bumped without extending the path, a hop added past the 26 boundary, or a
+# host already running something newer than the pin.
+- name: Refuse an unsafe ClickHouse upgrade path
+  ansible.builtin.assert:
+    that:
+      - langfuse_docker_clickhouse_upgrade_path | reject('version', '26', '<') | list | length == 0
+      - langfuse_docker_clickhouse_upgrade_path | last == langfuse_docker_clickhouse_version
+      - >-
+        (langfuse_docker_clickhouse_running.stdout | trim) in ['', '__none__']
+        or (langfuse_docker_clickhouse_running.stdout | trim)
+           is version(langfuse_docker_clickhouse_version, '<=')
+    fail_msg: >-
+      The declared ClickHouse upgrade path is not safe to walk. Every hop must
+      be below 26 (upstream reports CORRUPTED_DATA on a 25 -> 26 upgrade), the
+      path must terminate at the pinned version
+      ({{ langfuse_docker_clickhouse_version }}), and the running server
+      ({{ langfuse_docker_clickhouse_running.stdout | default('unknown') | trim }})
+      must not already be newer than the pin — a downgrade is never safe.
+    success_msg: >-
+      ClickHouse upgrade path accepted:
+      {{ langfuse_docker_clickhouse_upgrade_path | join(' -> ') }}
+      (pending: {{ langfuse_docker_clickhouse_pending_hops | join(', ') | default('none', true) }})
+
+# A restore point before the first hop. The archive is taken with the service
+# stopped: a copy of a running ClickHouse is crash-consistent, which is fine
+# for guest loss but is not a valid rollback point for a version upgrade. The
+# hop loop starts the service again, so stopping here costs nothing extra.
+#
+# It lands on the same mount as the data it copies. That is deliberate and
+# sufficient for its purpose — undoing a bad upgrade — and is explicitly not a
+# substitute for the guest-level backup, which protects against losing the
+# mount itself.
+- name: Stop ClickHouse before taking the pre-upgrade archive
+  community.docker.docker_compose_v2:
+    project_src: "{{ langfuse_docker_data_dir }}"
+    services:
+      - "{{ langfuse_docker_clickhouse_service }}"
+    state: stopped
+  when: langfuse_docker_clickhouse_pending_hops | length > 0
+
+- name: Measure the ClickHouse data directory and its free space
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      du -sk {{ langfuse_docker_clickhouse_data_dir }} | awk '{print $1}';
+      df -Pk {{ langfuse_docker_data_dir }} | awk 'NR==2 {print $4}'
+  register: langfuse_docker_clickhouse_space
+  changed_when: false
+  when: langfuse_docker_clickhouse_pending_hops | length > 0
+
+- name: Require room for the pre-upgrade archive before touching the data
+  ansible.builtin.assert:
+    that:
+      - (langfuse_docker_clickhouse_space.stdout_lines[1] | int)
+        > (langfuse_docker_clickhouse_space.stdout_lines[0] | int)
+    fail_msg: >-
+      Not enough free space for the pre-upgrade ClickHouse archive:
+      the data directory is
+      {{ langfuse_docker_clickhouse_space.stdout_lines[0] | default(0) | int // 1024 }} MiB
+      and only
+      {{ langfuse_docker_clickhouse_space.stdout_lines[1] | default(0) | int // 1024 }} MiB
+      are free. Free space or take the archive elsewhere; the upgrade is not
+      started without a restore point.
+  when: langfuse_docker_clickhouse_pending_hops | length > 0
+
+- name: Archive the stopped ClickHouse data directory
+  community.general.archive:
+    path: "{{ langfuse_docker_clickhouse_data_dir }}"
+    dest: >-
+      {{ langfuse_docker_data_dir }}/clickhouse-preupgrade-{{
+      langfuse_docker_clickhouse_running.stdout | trim }}.tar.gz
+    format: gz
+    owner: root
+    group: root
+    mode: "0600"
+    force_archive: true
+  when: langfuse_docker_clickhouse_pending_hops | length > 0
+
+- name: Upgrade ClickHouse one release line at a time
   ansible.builtin.include_tasks: clickhouse_upgrade.yml
   vars:
     langfuse_docker_clickhouse_hop: "{{ item }}"
-  loop: >-
-    {{ langfuse_docker_clickhouse_upgrade_path
-       | select('version', langfuse_docker_clickhouse_running.stdout | trim,
-                '>')
-       | list }}
-  when: (langfuse_docker_clickhouse_running.stdout | default('') | trim) | length > 0
+  loop: "{{ langfuse_docker_clickhouse_pending_hops }}"
 
 - name: Deploy Langfuse docker-compose template
   ansible.builtin.template:
