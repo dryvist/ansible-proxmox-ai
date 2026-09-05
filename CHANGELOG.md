@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.38.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.38.0...v0.38.1) (2026-09-05)
+
+
+### Bug Fixes
+
+* **lint:** clear three latent lint failures ([#672](https://github.com/dryvist/ansible-proxmox-ai/issues/672)) ([3873d83](https://github.com/dryvist/ansible-proxmox-ai/commit/3873d8391edc3ce55588274319f281d91faa0604))
+
 ## [0.38.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.37.0...v0.38.0) (2026-09-05)
 
 
