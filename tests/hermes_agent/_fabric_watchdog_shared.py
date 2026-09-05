@@ -144,4 +144,3 @@ def settle(jobs, now=NOW, profiles=None, paused=None):
     stale, _, state, _ = run(jobs, now=now, profiles=profiles, paused=paused)
     assert stale == [], f"baseline tick was not quiet: {stale}"
     return state
-
