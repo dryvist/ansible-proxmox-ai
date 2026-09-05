@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.37.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.36.0...v0.37.0) (2026-09-05)
+
+
+### Features
+
+* **clickhouse-docker:** add dedicated ClickHouse server role ([0c4ea8d](https://github.com/dryvist/ansible-proxmox-ai/commit/0c4ea8d7216139b96718d97a198479406b253786))
+* **clickhouse-docker:** add dedicated ClickHouse server role ([987ac3e](https://github.com/dryvist/ansible-proxmox-ai/commit/987ac3e7a7485281e8dc6f2e9c6ee9c7651a0318))
+
+
+### Bug Fixes
+
+* **langfuse-docker:** harden the ClickHouse upgrade path ([#660](https://github.com/dryvist/ansible-proxmox-ai/issues/660)) ([256b0db](https://github.com/dryvist/ansible-proxmox-ai/commit/256b0db9bebdf8bb0990f58d775b724f81d02cee))
+* **openbao_secrets:** make the unseeded ai/phoenix path optional ([#662](https://github.com/dryvist/ansible-proxmox-ai/issues/662)) ([759a344](https://github.com/dryvist/ansible-proxmox-ai/commit/759a3442afa56d4a86c1e4b971cfaa0ea001a9e0))
+* **openbao_secrets:** move fail-loud contract out of defaults/main.yml ([98cec37](https://github.com/dryvist/ansible-proxmox-ai/commit/98cec37d0379db3f6a704ba31f807c9e00134def))
+
 ## [0.36.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.35.3...v0.36.0) (2026-09-03)
 
 
