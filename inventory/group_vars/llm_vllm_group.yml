@@ -42,7 +42,11 @@ llama_cpp_gpu_backend: vulkan
 # this model's 27.78B on a 16 GB card. This is the ceiling mechanism working as
 # designed, not a check being weakened: the absolute >=14B rule for llm-fast is
 # a separate, group-scoped guard on different silicon and is untouched by this.
-llama_cpp_max_param_billions: 28
+# 31 covers the 30.53B coding rung added below. The ceiling exists to stop a
+# model too large for the card being configured by accident; it is a parameter
+# count, so it is a proxy for VRAM rather than a measure of it, and the real
+# guard is the measured per-model arithmetic in each entry's comment.
+llama_cpp_max_param_billions: 31
 
 # Context. DERIVED, never typed here: what this backend serves and what the
 # router advertises (model_info.max_input_tokens) must be one number. When they
@@ -100,6 +104,23 @@ llama_cpp_models:
     gguf: Qwen3.8-27B-UD-IQ3_XXS.gguf
     param_billions: 27.78
     embeddings: false
+
+  # The coding rung. Weights 11.97 GiB (UD-IQ3_XXS, Unsloth Dynamic v3,
+  # filename verified against the repo listing) against the dense entry's
+  # 11.09, and a 16384 window rather than 32768 — the registry entry carries
+  # the arithmetic behind both. Its window is read from the registry for the
+  # same reason the group default is: the number the backend serves and the
+  # number the router advertises must be one number, not two that drift.
+  - name: qwen3-coder-30b
+    aliases: []
+    hf_repo: unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
+    gguf: Qwen3-Coder-30B-A3B-Instruct-UD-IQ3_XXS.gguf
+    param_billions: 30.53
+    embeddings: false
+    ctx_size: >-
+      {{ (llm_router_model_registry
+          | selectattr('client_model_id', 'equalto', 'qwen3-coder-30b')
+          | first).context_window }}
 
 # Restart llama-swap on failure (shared systemd restart policy role).
 systemd_restart_policy_services:
