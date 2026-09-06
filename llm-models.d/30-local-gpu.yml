@@ -20,6 +20,35 @@ _llm_registry_local_gpu:
       # Serial lane on one card: no batching, one measured completion ~190 s.
       caveats: [serial-lane]
 
+  # THE CODING RUNG on the same card, added BESIDE the general model rather
+  # than replacing it: the entry above is the Hermes chain's local rung and
+  # answers general work, and swapping a coder in there would have degraded
+  # every non-coding fallback to buy coding throughput. The card serves one
+  # model at a time and llama-swap swaps between them.
+  #
+  # 16384, not the 32768 above, and that is arithmetic rather than caution.
+  # This model bears KV on all 48 layers at 96 KiB/token against the dense
+  # entry's 64 KiB, so the same window would cost a gigabyte more KV on top of
+  # ~900 MiB more weights — against a card with 2307 MiB free at the measured
+  # 32768 cell. Half the window keeps it inside the envelope that was actually
+  # measured. RAISE IT ONLY BEHIND A FRESH MEASUREMENT on the card, and if it
+  # does not fit at all, step the quant to UD-Q2_K_XL and record the number
+  # that forced it — never cut the window to hide an OOM.
+  - client_model_id: qwen3-coder-30b
+    upstream_model_id: qwen3-coder-30b
+    provider: openai
+    tier: vllm
+    enabled: true
+    context_window: 16384
+    hints:
+      speed: medium
+      quality: strong
+      best_for: [code-edit, refactor, boilerplate]
+      # Serial lane on one card (no batching), and this model's tool calls
+      # degrade beyond a single stream. Both point the same way: one request
+      # at a time.
+      caveats: [serial-lane, tool-calls-degrade-above-one-stream]
+
   # Local backup rung in the Hermes chain, same backend as the vllm entry.
   # tier: hermes-local, NOT vllm — load-bearing: the cloud projection drops
   # entries with no credential, and a local leg has none. Details: docs/LLM_MODELS_REGISTRY_NOTES.md.
