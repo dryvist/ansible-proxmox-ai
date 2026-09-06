@@ -118,3 +118,77 @@
              | intersect(_rendered_names) }}
         _missing: >-
           {{ _expected | difference(_rendered_hinted) }}
+
+- name: The projection survives on the key-gated cloud tiers too
+  # The play above seeds no provider key, so the cloud tiers render nothing and
+  # it cannot see them. That gap shipped a real defect once: the macro's leading
+  # newline was consumed by trim_blocks, which is invisible where the call sits
+  # after a block tag and glues `hints:` onto the previous line where it sits
+  # after a rendered field — exactly the cloud tiers. Rendering with keys is
+  # what makes this test cover the template rather than one half of it.
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+    # Fixture values, not credentials: the template only checks that a key is
+    # non-empty before rendering the tier it gates.
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: "fixture-not-a-credential"
+      GEMINI_API_KEY: "fixture-not-a-credential"
+      DASHSCOPE_API_KEY: "fixture-not-a-credential"
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+    llm_router_llm_vllm_enabled: true
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Render the config with every tier rendering
+      ansible.builtin.set_fact:
+        _keyed_config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+
+    - name: Assert the cloud and GPU tiers carry hints as well
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _cloud_hinted | length > 0
+          - _gpu_hinted | length > 0
+        fail_msg: >-
+          A tier that only renders with a provider key present lost its hints.
+          cloud={{ _cloud_hinted }} gpu={{ _gpu_hinted }} — a caller reading the
+          live router sees these entries without speed or quality and silently
+          chooses on price alone.
+        success_msg: >-
+          Hints render on the key-gated tiers as well
+          ({{ _cloud_hinted | length }} cloud, {{ _gpu_hinted | length }} GPU).
+      vars:
+        _hinted_names: >-
+          {{ _keyed_config.model_list | default([])
+             | selectattr('model_info.hints', 'defined')
+             | map(attribute='model_name') | unique | list }}
+        _cloud_names: >-
+          {{ llm_router_registry_enabled
+             | selectattr('tier', 'in', ['openrouter', 'hermes-cloud'])
+             | map(attribute='client_model_id') | unique | list }}
+        _gpu_names: >-
+          {{ llm_router_registry_enabled
+             | selectattr('tier', 'in', ['vllm', 'hermes-local'])
+             | map(attribute='client_model_id') | unique | list }}
+        _cloud_hinted: "{{ _cloud_names | intersect(_hinted_names) }}"
+        _gpu_hinted: "{{ _gpu_names | intersect(_hinted_names) }}"
