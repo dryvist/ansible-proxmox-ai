@@ -43,6 +43,30 @@
       register: _dead_guards
       changed_when: false
 
+    - name: The scan still matches a guard that IS dead
+      # Known-positive control. "Zero matches in the tree" also passes when the
+      # scan itself is broken — a wrong regex, a moved directory, a grep that
+      # lost -P. A check that cannot fire is indistinguishable from a check that
+      # found nothing, which is the same defect this test exists to catch, one
+      # level up.
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          grep -cPzo "lookup\(\s*'env'[^)]*\)\s*\n?\s*\|\s*mandatory" \
+            tests/repo_guards/fixtures/dead_guard_example.yml || true
+        chdir: "{{ _repo_root }}"
+        executable: /bin/bash
+      register: _control
+      changed_when: false
+
+    - name: The control fixture is still detected
+      ansible.builtin.assert:
+        that: (_control.stdout | trim | int) > 0
+        fail_msg: >-
+          The scan found nothing in the deliberately-broken fixture, so it is not
+          scanning. A clean result from it proves nothing.
+        success_msg: Scan verified against a known-dead guard.
+
     - name: Fail loudly, naming every file that still carries a guard that cannot fire
       ansible.builtin.assert:
         that: _dead_guards.stdout | trim | length == 0
