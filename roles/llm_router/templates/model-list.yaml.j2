@@ -260,56 +260,7 @@ model_list:
           zdr: true
 {% endif %}
 {% endif %}
-  # --- light tier --- (README "Tiers" — CPU always renders, GPU only when
-  # llm_router_llm_fast_enabled, sharing model_name so LiteLLM load-balances)
-{% for m in llm_router_light_models %}
-{% if llm_router_llm_fast_enabled %}
-  - model_name: {{ m.client_model_id }}
-    litellm_params:
-      model: {{ litellm_model(m) }}
-      api_base: {{ llm_router_llm_fast_base_url }}
-      api_key: {{ llm_router_light_api_key }}
-      # /v1/responses -> /chat/completions bridge. None of these backends serve
-      # a Responses endpoint, and without this a Responses-only client (Codex
-      # and anything else speaking that wire protocol) reaches a 404 on an
-      # otherwise healthy deployment. LiteLLM treats this as an internal control
-      # flag and never forwards it in the upstream request body.
-      use_chat_completions_api: true
-      # Queue excess work at the router instead of flooding the backend. The
-      # light backends run llama.cpp with no `--parallel`, so each serves ONE
-      # request at a time; without this the deployment was uncapped and a burst
-      # went straight through as instant refusals.
-      max_parallel_requests: {{ llm_router_local_max_parallel_requests }}
-    model_info:
-      disable_background_health_check: true
-{% if m.embedding | default(false) %}
-      mode: embedding
-{% endif %}
-{{- delegation_hints(m) }}
-{% endif %}
-  - model_name: {{ m.client_model_id }}
-    litellm_params:
-      model: {{ litellm_model(m) }}
-      api_base: {{ llm_router_llm_light_base_url }}
-      api_key: {{ llm_router_light_api_key }}
-      # /v1/responses -> /chat/completions bridge. None of these backends serve
-      # a Responses endpoint, and without this a Responses-only client (Codex
-      # and anything else speaking that wire protocol) reaches a 404 on an
-      # otherwise healthy deployment. LiteLLM treats this as an internal control
-      # flag and never forwards it in the upstream request body.
-      use_chat_completions_api: true
-      # Queue excess work at the router instead of flooding the backend. The
-      # light backends run llama.cpp with no `--parallel`, so each serves ONE
-      # request at a time; without this the deployment was uncapped and a burst
-      # went straight through as instant refusals.
-      max_parallel_requests: {{ llm_router_local_max_parallel_requests }}
-    model_info:
-      disable_background_health_check: true
-{% if m.embedding | default(false) %}
-      mode: embedding
-{% endif %}
-{{- delegation_hints(m) }}
-{% endfor %}
+{% include 'model-list-light.yaml.j2' %}
 
   # vLLM tier + hermes-local entries — see README "The vLLM tier and the
   # Hermes local GPU leg".
