@@ -1,0 +1,86 @@
+---
+# Pins that a required-environment-variable guard actually fails when the
+# variable is missing.
+#
+# WHY THIS TEST EXISTS. `lookup('env', 'NAME')` returns an EMPTY STRING when
+# the variable is unset — never Undefined. `mandatory` only fires on Undefined,
+# so `lookup('env', 'NAME') | mandatory('...')` is a guard that can never fire:
+# it renders the empty string into the value and the play continues. Measured
+# on ansible-core 2.21.3 — the expression returns '', `is defined` is true, and
+# the play reports ok.
+#
+# The failure direction is the dangerous one. A missing provider key does not
+# stop the converge; it renders the tier as though it were deliberately
+# unkeyed, so the run is green and the service is wrong. 54 such guards existed
+# across 20 roles, most of them on secrets.
+#
+# `or undef('message')` is the form that works: falsy (unset or empty) yields an
+# Undefined carrying the message, which raises the moment the value is used.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/repo_guards/test_env_guards_actually_fire.yml -i localhost, -c local
+
+- name: A required-env guard fails on an unset variable and passes on a set one
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _repo_root: "{{ playbook_dir }}/../.."
+  tasks:
+    - name: The dead form is gone from the tree
+      # Anti-regression. Matches the pattern across a line break, which is how
+      # most of the original sites were written and why a single-line grep
+      # missed them. Scoped to the trees that carry real guards — this file
+      # quotes the dead pattern in its own message and would otherwise flag
+      # itself.
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          grep -rlPzo "lookup\(\s*'env'[^)]*\)\s*\n?\s*\|\s*mandatory" \
+            --include='*.yml' --include='*.yaml' --include='*.j2' \
+            roles inventory playbooks || true
+        chdir: "{{ _repo_root }}"
+        executable: /bin/bash
+      register: _dead_guards
+      changed_when: false
+
+    - name: Fail loudly, naming every file that still carries a guard that cannot fire
+      ansible.builtin.assert:
+        that: _dead_guards.stdout | trim | length == 0
+        fail_msg: >-
+          `lookup('env', ...) | mandatory(...)` never fires — the lookup returns
+          '' rather than Undefined. Use `or undef('NAME must be set')`.
+          Offending files: {{ _dead_guards.stdout | trim }}
+        success_msg: No unfireable environment guards in the tree.
+
+    - name: A set variable passes through the guard unchanged
+      # HOME rather than a task-scoped variable on purpose: `lookup('env', ...)`
+      # reads the CONTROLLER's environment at template time, so a task-level
+      # `environment:` never reaches it. That is the same evaluation order the
+      # guards themselves run under.
+      ansible.builtin.assert:
+        that:
+          - (lookup('env', 'HOME') or undef('HOME must be set')) == lookup('env', 'HOME')
+          - (lookup('env', 'HOME') | length) > 0
+        fail_msg: The guard altered a value that was set.
+        success_msg: A set variable passes through untouched.
+
+    - name: An unset variable makes the guard raise, and the message names the variable
+      # Anti-vacuity: proves the guard fires, not merely that it is spelled
+      # correctly. Without this the test above passes against a guard that
+      # never triggers — which is the exact bug being fixed.
+      ansible.builtin.debug:
+        msg: >-
+          {{ lookup('env', 'ANSIBLE_ENV_GUARD_DEFINITELY_UNSET')
+             or undef('ANSIBLE_ENV_GUARD_DEFINITELY_UNSET must be set') }}
+      register: _guard_raise
+      ignore_errors: true
+
+    - name: The raise happened and carried the variable's name
+      ansible.builtin.assert:
+        that:
+          - _guard_raise is failed
+          - "'ANSIBLE_ENV_GUARD_DEFINITELY_UNSET must be set' in (_guard_raise.msg | string)"
+        fail_msg: >-
+          The guard did not fail on an unset variable, so it is not a guard.
+          Got: {{ _guard_raise }}
+        success_msg: The guard fires on an unset variable and names it.
