@@ -1,6 +1,13 @@
 {# Deployment list for the managed LiteLLM proxy config; included by
    config.yaml.j2, which owns the surrounding settings blocks. Split out so
    each file stays inside the repo's per-file token budget. #}
+{# Delegation hints — projected VERBATIM from the registry entry so a consumer
+   choosing a tier reads speed/quality/best_for from /model/info rather than
+   from a model name written into a skill. Flow style on one line: the shape is
+   the registry's, and this template does not get an opinion about it. #}
+{% macro delegation_hints(m) %}{% if m.hints is defined %}
+      hints: {{ m.hints | to_json }}
+{%- endif %}{% endmacro %}
 {% macro litellm_model(m) %}{{ m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id) }}{% endmacro %}
 model_list:
 {% include 'model-list-hermes-agents.yaml.j2' %}
@@ -20,7 +27,7 @@ model_list:
     model_info:
       mode: chat
       max_input_tokens: {{ m.context_window }}
-      max_tokens: {{ m.max_output_tokens }}
+      max_tokens: {{ m.max_output_tokens }}{{ delegation_hints(m) }}
 {% endfor %}
 
   # Provider-specific cloud value routers reclassify without an API call.
@@ -40,7 +47,7 @@ model_list:
       mode: chat
       max_input_tokens: {{ m.context_window }}
       max_output_tokens: {{ m.max_output_tokens }}
-      max_tokens: {{ m.max_output_tokens }}
+      max_tokens: {{ m.max_output_tokens }}{{ delegation_hints(m) }}
 {% endfor %}
 
   # --- large tier: one deployment each, bearer-authed to llm-large ---
@@ -77,6 +84,7 @@ model_list:
       max_input_tokens: {{ m.context_window }}
       max_tokens: {{ m.context_window }}
 {% endif %}
+{{- delegation_hints(m) }}
 {% if m.standby | default(false) and llm_router_llm_large_standby_base_url %}
   # Same-model, same-context standby; emitted only when configured.
   - model_name: {{ m.client_model_id }}
@@ -104,6 +112,7 @@ model_list:
       max_input_tokens: {{ m.context_window }}
       max_tokens: {{ m.context_window }}
 {% endif %}
+{{- delegation_hints(m) }}
 {% endif %}
 {% endfor %}
 {% if llm_router_large_passthrough_enabled | bool %}
@@ -149,6 +158,7 @@ model_list:
 {% else %}
       max_tokens: {{ m.context_window }}
 {% endif %}
+{{- delegation_hints(m) }}
 {% endif %}
 {% endfor %}
   # --- Hermes-only paid provider fallbacks ---
@@ -199,7 +209,7 @@ model_list:
       mode: chat
       max_input_tokens: {{ m.context_window }}
       max_output_tokens: {{ m.max_output_tokens }}
-      max_tokens: {{ m.max_output_tokens }}
+      max_tokens: {{ m.max_output_tokens }}{{ delegation_hints(m) }}
 {% endfor %}
 {% for _group in llm_router_hermes_cloud_budgeted_groups %}
   # LOCAL SURVIVOR for {{ _group }}. Budgets FILTER a model group rather than
@@ -275,6 +285,7 @@ model_list:
 {% if m.embedding | default(false) %}
       mode: embedding
 {% endif %}
+{{- delegation_hints(m) }}
 {% endif %}
   - model_name: {{ m.client_model_id }}
     litellm_params:
@@ -297,6 +308,7 @@ model_list:
 {% if m.embedding | default(false) %}
       mode: embedding
 {% endif %}
+{{- delegation_hints(m) }}
 {% endfor %}
 
   # vLLM tier + hermes-local entries — see README "The vLLM tier and the
@@ -327,7 +339,7 @@ model_list:
 {% if m.stream_timeout is defined %}
       stream_timeout: {{ m.stream_timeout }}
 {% endif %}
-{% if m.embedding | default(false) or m.context_window is defined or m.allowed_fails is defined or m.cooldown_time is defined %}
+{% if m.embedding | default(false) or m.context_window is defined or m.allowed_fails is defined or m.cooldown_time is defined or m.hints is defined %}
     model_info:
 {% if m.embedding | default(false) %}
       mode: embedding
@@ -342,6 +354,7 @@ model_list:
 {% if m.cooldown_time is defined %}
       cooldown_time: {{ m.cooldown_time }}
 {% endif %}
+{{- delegation_hints(m) }}
 {% endif %}
 {% endif %}
 {% endfor %}

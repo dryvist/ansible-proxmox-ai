@@ -111,4 +111,29 @@ Optional:
                       Alibaba's International endpoint rather than an implicit
                       region default.
   monthly_budget      Deployment-level monthly USD ceiling, backed by Redis.
+  hints               How a DELEGATING AGENT should choose this entry, projected
+                      verbatim into `model_info.hints` and read from the live
+                      router (`GET /model/info`) — never from this file. It
+                      exists so a skill can pick a tier without writing a model
+                      id into prose, which is the duplication this registry
+                      removes. Optional; an entry without it is chosen on price
+                      and context alone. Vocabulary is CLOSED, because consumers
+                      match on the value and an undocumented one silently
+                      matches nothing (pinned by
+                      tests/llm_router/test_registry_hints_projection.yml):
+                        speed     `fast` | `medium` | `slow` — decode class AS
+                                  SERVED HERE, not the model's reputation.
+                        quality   `routine` | `strong` | `frontier`.
+                        best_for  Free-form subtask labels a caller matches
+                                  against, e.g. summarize, extract, classify,
+                                  judge, code-edit, review, reasoning, ocr,
+                                  long-context.
+                        caveats   Measured failure modes, not warnings in
+                                  general: a model that only tool-calls
+                                  reliably in one stream, one that needs
+                                  specific sampling, a free tier that retains
+                                  prompts, a serial backend.
+                        measured  `{ tok_s, date, source }` — the evidence
+                                  behind `speed`, dated so a reader can see how
+                                  old it is. Directional, never a promise.
 ```
