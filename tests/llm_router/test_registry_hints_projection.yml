@@ -1,0 +1,120 @@
+---
+# Pins the delegation-hints projection: registry `hints` -> rendered
+# `model_info.hints`.
+#
+# WHY THIS TEST EXISTS. The hints are the only thing that lets a consumer pick
+# a tier without writing a model id into a skill, and they are read from the
+# LIVE router, not from the registry file. A projection that silently drops
+# them therefore fails open: every consumer keeps working, keeps choosing, and
+# quietly chooses on price and context alone. Nothing else in the role would
+# notice — the render-parity guard compares model NAMES, so it passes whether
+# or not a single hint reached the config.
+#
+# It also pins the vocabulary. `speed: quick` instead of `fast` renders
+# perfectly and silently fails every consumer filter, because the consumer
+# matches on the value.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_registry_hints_projection.yml -i localhost, -c local
+
+- name: Registry hints reach the rendered model_info, with a known vocabulary
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+    # Unseeded, same as the parity fixture: the key-gated tiers render nothing,
+    # so this test covers the tiers that always render.
+    bao_local_llm_secrets: {}
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+    _hint_keys: [speed, quality, best_for, caveats, measured]
+    _hint_speeds: [fast, medium, slow]
+    _hint_qualities: [routine, strong, frontier]
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Render the real proxy config
+      ansible.builtin.set_fact:
+        _hints_config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+
+    - name: Assert the vocabulary is the one consumers filter on
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _bad_keys | length == 0
+          - _bad_speed | length == 0
+          - _bad_quality | length == 0
+        fail_msg: >-
+          Registry hints use values no consumer matches.
+          {% if _bad_keys | length > 0 %}UNKNOWN KEYS: {{ _bad_keys | join(', ') }}.{% endif %}
+          {% if _bad_speed | length > 0 %}UNKNOWN speed: {{ _bad_speed | join(', ') }}.{% endif %}
+          {% if _bad_quality | length > 0 %}UNKNOWN quality: {{ _bad_quality | join(', ') }}.{% endif %}
+          Extend the vocabulary in docs/LLM_MODELS_SCHEMA.md and here together,
+          or fix the entry — never only one of the two.
+        success_msg: "All registry hints use the documented vocabulary."
+      vars:
+        _hinted: >-
+          {{ llm_router_model_registry | selectattr('hints', 'defined') | list }}
+        _bad_keys: >-
+          {{ _hinted | map(attribute='hints') | map('list') | flatten | unique
+             | difference(_hint_keys) }}
+        _bad_speed: >-
+          {{ _hinted | map(attribute='hints.speed') | select('defined') | list
+             | unique | difference(_hint_speeds) }}
+        _bad_quality: >-
+          {{ _hinted | map(attribute='hints.quality') | select('defined') | list
+             | unique | difference(_hint_qualities) }}
+
+    - name: Assert every enabled hinted entry carries its hints into model_info
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _expected | length > 0
+          - _missing | length == 0
+        fail_msg: >-
+          {% if _expected | length == 0 %}
+          Fixture is degenerate: no enabled entry declares hints, so this test
+          proves nothing. Add hints to a registry entry or delete this test.
+          {% else %}
+          HINTS DROPPED IN PROJECTION: {{ _missing | join(', ') }} — these
+          entries declare hints the rendered model_info does not carry, so a
+          consumer reading the live router chooses without them and never knows.
+          {% endif %}
+        success_msg: >-
+          {{ _expected | length }} enabled entries declare hints and all of them
+          reach model_info.
+      vars:
+        # Rendered names that carry hints, deduplicated: the light tier renders
+        # two deployments under one name.
+        _rendered_hinted: >-
+          {{ _hints_config.model_list | default([])
+             | selectattr('model_info.hints', 'defined')
+             | map(attribute='model_name') | unique | list }}
+        _rendered_names: >-
+          {{ _hints_config.model_list | default([])
+             | map(attribute='model_name') | unique | list }}
+        # Only entries that actually render here can be checked: the key-gated
+        # cloud tiers render nothing without a seeded key, by design.
+        _expected: >-
+          {{ llm_router_registry_enabled | selectattr('hints', 'defined')
+             | map(attribute='client_model_id') | unique
+             | intersect(_rendered_names) }}
+        _missing: >-
+          {{ _expected | difference(_rendered_hinted) }}
