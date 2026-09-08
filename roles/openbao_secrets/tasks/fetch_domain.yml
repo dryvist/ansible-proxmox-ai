@@ -65,12 +65,54 @@
         secret_id: "{{ openbao_secrets_domain_secret_id }}"
         validate_certs: "{{ openbao_secrets_validate_certs }}"
       register: openbao_secrets_domain_login
+      # Classified immediately below. A source-address refusal is the one
+      # tolerated failure: it means this identity is not permitted to redeem
+      # this domain FROM HERE, which is a statement about scope, not a broken
+      # credential. Every other login failure is still fatal.
+      failed_when: false
       # Reads only. vault_login declares check-mode support but short-circuits
       # to a null client_token, which used to make every downstream read fail
       # and every domain merge empty — a --check run then looked exactly like a
       # missing credential. Running it for real under --check costs nothing
       # (no state changes) and lets the templates diff against real values.
       check_mode: false
+
+    # A domain bound to a CIDR this host is outside of is out of scope for this
+    # run, not misconfigured. A scoped converge (say --tags for one service)
+    # loads every declared domain, so without this one machine-class domain
+    # aborts a run that never needed it.
+    #
+    # Tolerating it is only safe because consumers fail loud by name on a
+    # missing value. Skipping the fetch WITHOUT that guarantee would render
+    # empty credentials into live config, which is the failure this role exists
+    # to prevent. Do not widen this match.
+    - name: Classify a source-address refusal for {{ openbao_domain.name }}
+      ansible.builtin.set_fact:
+        openbao_secrets_domain_out_of_scope: >-
+          {{ openbao_secrets_domain_login.failed | default(false)
+             and 'CIDR restrictions' in (openbao_secrets_domain_login.msg | default('')) }}
+
+    - name: Report a domain this host may not redeem — {{ openbao_domain.name }}
+      ansible.builtin.debug:
+        msg: >-
+          The {{ openbao_domain.name }} AppRole refused this host on source-address
+          grounds, so the domain is SKIPPED for this run and its values will be
+          absent. That is the CIDR binding working, not a broken credential —
+          do not add a CIDR to get past it. Any consumer that needs a value from
+          this domain will fail by name.
+      no_log: false
+      when: openbao_secrets_domain_out_of_scope | bool
+
+    - name: Fail on any other login failure for {{ openbao_domain.name }}
+      ansible.builtin.fail:
+        msg: >-
+          AppRole login failed for the {{ openbao_domain.name }} domain:
+          {{ openbao_secrets_domain_login.msg | default('no message') }}
+          Refusing to continue — consumers render this domain's values into
+          live config and an empty domain overwrites working credentials.
+      when:
+        - openbao_secrets_domain_login.failed | default(false)
+        - not (openbao_secrets_domain_out_of_scope | bool)
 
     # `failed_when: false` here no longer SWALLOWS anything — every error is
     # re-raised by the explicit gate immediately below, which is what lets one
@@ -107,6 +149,7 @@
     # path [...]" and a permission failure with "Forbidden: ..." — so a wrong
     # credential can never be mistaken for an absent secret. A successful read
     # carries no `msg` at all.
+      when: not (openbao_secrets_domain_out_of_scope | bool)
     - name: Fail on any unreadable required KV path for {{ openbao_domain.name }}
       ansible.builtin.fail:
         msg: >-
@@ -121,6 +164,7 @@
       loop_control:
         label: "{{ item.item.path | default(item.item) }}"
       when:
+        - not (openbao_secrets_domain_out_of_scope | bool)
         - item.msg is defined
         - not (item.item is mapping
                and (item.item.optional | default(false) | bool)
@@ -140,6 +184,7 @@
       loop_control:
         label: "{{ item.item.path | default(item.item) }}"
       when:
+        - not (openbao_secrets_domain_out_of_scope | bool)
         - item.msg is defined
         - item.item is mapping
         - item.item.optional | default(false) | bool
@@ -151,7 +196,9 @@
       loop: "{{ openbao_secrets_domain_reads.results }}"
       loop_control:
         label: "{{ item.item }}"
-      when: item.secret is defined and item.secret is mapping
+      when:
+        - item.secret is defined and item.secret is mapping
+        - not (openbao_secrets_domain_out_of_scope | bool)
 
     # delegate_facts + reading hostvars['localhost'] keep the single accumulator
     # on localhost (see the note on the init task in main.yml). Reading the bare
@@ -162,3 +209,4 @@
           {{ hostvars['localhost'].openbao_secrets_by_domain
              | combine({ openbao_domain.name: openbao_secrets_domain_merged }) }}
       delegate_facts: true
+      when: not (openbao_secrets_domain_out_of_scope | bool)
