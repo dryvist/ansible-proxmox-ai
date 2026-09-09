@@ -39,11 +39,15 @@ Always deploy the fabric in this order. Each stage gates the next.
 
 2. **Deploy.** Converge the config changes.
 
-   > **Primary Execution Plane: Semaphore**
-   > Routine execution of `site.yml` and its tagged runs (like `ai-site` and
-   > `ai-llm-serving`) is handled centrally by **Semaphore**. The CLI commands
-   > below are for local development, testing, or break-glass execution only.
-   > To deploy in production, trigger the appropriate Semaphore job.
+   Converges run through Semaphore, the execution plane. Its template wrapper
+   loads the run environment from OpenBao before the playbook starts. Playbooks
+   read plain environment variables and are independent of the secrets manager:
+   `.env`, Doppler, OpenBao or any other injector behaves identically.
+   `scripts/run-ansible.sh` remains the runner the wrapper calls and the
+   break-glass path from a workstation.
+
+   The commands below are that break-glass path, plus local development and
+   testing.
 
    ```bash
    doppler run -- ansible-playbook \

@@ -51,15 +51,21 @@ models:
     cmd: |
       ${server-base}
       --model {{ llama_cpp_models_dir }}/{{ m.gguf }}
-      --ctx-size {{ llama_cpp_ctx_size }}
+      {# Per-model window, falling back to the group default. A second model on
+         one card does not get to share one number: KV cost per token is a
+         property of the model's attention shape, so two models at the same
+         window can differ by a gigabyte of VRAM. The entry's own value must
+         match what the registry advertises for that model — see the group_vars
+         comment on llama_cpp_ctx_size for why those are one number. #}
+      --ctx-size {{ m.ctx_size | default(llama_cpp_ctx_size) }}
 {% if m.embeddings %}
       --embeddings
       --pooling mean
       {# Non-causal embedding inputs must fit in ONE physical batch; the
          llama-server default (512) silently caps inputs far below ctx-size
          and 500s anything larger. Match the batch to the context window. #}
-      --batch-size {{ llama_cpp_ctx_size }}
-      --ubatch-size {{ llama_cpp_ctx_size }}
+      --batch-size {{ m.ctx_size | default(llama_cpp_ctx_size) }}
+      --ubatch-size {{ m.ctx_size | default(llama_cpp_ctx_size) }}
 {% else %}
       --flash-attn on
       --jinja

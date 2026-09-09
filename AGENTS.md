@@ -141,9 +141,17 @@ playbook — the same signing token also satisfies `inventory_resolve`'s
 to the static `PROXMOX_SSH_KEY_PATH` flow when that env is absent. See
 [SSH certificate access](https://docs.jacobpevans.com/d/runbooks/ssh-certificate-access).
 
+Converges run through Semaphore, the execution plane. Its template wrapper
+loads the run environment from OpenBao before the playbook starts. Playbooks
+read plain environment variables and are independent of the secrets manager:
+`.env`, Doppler, OpenBao or any other injector behaves identically.
+`scripts/run-ansible.sh` remains the runner the wrapper calls and the
+break-glass path from a workstation.
+
 ```bash
-# Converge everything (Doppler injects BAO_ADDR + the ansible-converge and
-# local-llm AppRole creds, PROXMOX_SUBDOMAIN, PROXMOX_SSH_KEY_PATH, ...)
+# Converge everything from a workstation (the injector supplies BAO_ADDR +
+# the ansible-converge and local-llm AppRole creds, PROXMOX_SUBDOMAIN,
+# PROXMOX_SSH_KEY_PATH, ...)
 doppler run -- scripts/run-ansible.sh playbooks/site.yml -i inventory/hosts.yml --forks 25
 
 # Scoped converge — --limit MUST include localhost (the inventory loader runs

@@ -71,8 +71,14 @@ services:
       PHOENIX_OAUTH2_{{ phoenix_docker_oidc_idp | upper }}_OIDC_CONFIG_URL: "{{ phoenix_docker_oidc_config_url }}"
       PHOENIX_OAUTH2_{{ phoenix_docker_oidc_idp | upper }}_ALLOW_SIGN_UP: "{{ phoenix_docker_oidc_allow_sign_up }}"
 {% endif %}
+    # CMD, not CMD-SHELL. The Phoenix image ships no shell, so a CMD-SHELL probe
+    # cannot run at all: every attempt exits -1 with `exec: "/bin/sh": no such
+    # file or directory` and the container reports unhealthy forever while the
+    # application serves normally. The exec form invokes the interpreter
+    # directly. Trailing `|| exit 1` is dropped with the shell -- a non-zero
+    # exit from the interpreter is already a failed probe.
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:{{ phoenix_docker_http_internal_port }}/healthz').status == 200 else 1)\" || exit 1"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:{{ phoenix_docker_http_internal_port }}/healthz').status == 200 else 1)"]
       interval: 10s
       timeout: 5s
       retries: 12
