@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.39.0...v0.39.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* **openbao_secrets:** keep the login failure reason so its guards can fire ([#686](https://github.com/dryvist/ansible-proxmox-ai/issues/686)) ([169cff1](https://github.com/dryvist/ansible-proxmox-ai/commit/169cff18e36325e6bb954ff438e7122021b0b295))
+
 ## [0.39.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.38.1...v0.39.0) (2026-09-09)
 
 
