@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.39.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.38.1...v0.39.0) (2026-09-09)
+
+
+### Features
+
+* **llama_cpp:** add a coding rung on the GPU guest beside the general one ([#678](https://github.com/dryvist/ansible-proxmox-ai/issues/678)) ([ae5ccdf](https://github.com/dryvist/ansible-proxmox-ai/commit/ae5ccdf3c628197e117f73ff144c986f7ea07d7a))
+* **llm_router:** publish delegation hints on the model contract ([#677](https://github.com/dryvist/ansible-proxmox-ai/issues/677)) ([9dbc1ad](https://github.com/dryvist/ansible-proxmox-ai/commit/9dbc1adc62d0d18567433216de1b21dd461b6069))
+
+
+### Bug Fixes
+
+* make required-environment guards able to fail ([#680](https://github.com/dryvist/ansible-proxmox-ai/issues/680)) ([2896847](https://github.com/dryvist/ansible-proxmox-ai/commit/2896847802b8f2c96a71d6e5fd4461079e927b27))
+* **openbao_secrets:** skip a domain this host may not redeem, keep every other failure fatal ([#683](https://github.com/dryvist/ansible-proxmox-ai/issues/683)) ([8e7e399](https://github.com/dryvist/ansible-proxmox-ai/commit/8e7e399f29485644f52e121ff0ce6cb28a47995b))
+* **phoenix_docker:** make the healthcheck runnable in a shell-less image ([#668](https://github.com/dryvist/ansible-proxmox-ai/issues/668)) ([8a77ae0](https://github.com/dryvist/ansible-proxmox-ai/commit/8a77ae055e5b797dedd2f69cfb7fb15e8141f63b))
+* **roles:** state that a variable must be set, not where to store it ([#682](https://github.com/dryvist/ansible-proxmox-ai/issues/682)) ([c43c8a7](https://github.com/dryvist/ansible-proxmox-ai/commit/c43c8a7e479787255fe5d0fd492bf0cc21bcc09e))
+
 ## [0.38.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.38.0...v0.38.1) (2026-09-05)
 
 
