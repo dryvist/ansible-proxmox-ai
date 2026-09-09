@@ -69,7 +69,15 @@
       # tolerated failure: it means this identity is not permitted to redeem
       # this domain FROM HERE, which is a statement about scope, not a broken
       # credential. Every other login failure is still fatal.
-      failed_when: false
+      #
+      # ignore_errors, NOT `failed_when: false`. Measured on ansible-core
+      # 2.21 against this module: `failed_when: false` leaves the registered
+      # result with failed=False, no `msg` and no usable exception -- the
+      # reason is destroyed, so neither the classification below nor the
+      # catch-all after it can ever fire. ignore_errors keeps failed=True and
+      # the module's own message ("invalid role or secret ID, on post ...")
+      # while still letting the loop continue. Do not swap it back.
+      ignore_errors: true
       # Reads only. vault_login declares check-mode support but short-circuits
       # to a null client_token, which used to make every downstream read fail
       # and every domain merge empty — a --check run then looked exactly like a
@@ -89,7 +97,7 @@
     - name: Classify a source-address refusal for {{ openbao_domain.name }}
       ansible.builtin.set_fact:
         openbao_secrets_domain_out_of_scope: >-
-          {{ openbao_secrets_domain_login.failed | default(false)
+          {{ openbao_secrets_domain_login.login is not defined
              and 'CIDR restrictions' in (openbao_secrets_domain_login.msg | default('')) }}
 
     - name: Report a domain this host may not redeem — {{ openbao_domain.name }}
@@ -110,8 +118,14 @@
           {{ openbao_secrets_domain_login.msg | default('no message') }}
           Refusing to continue — consumers render this domain's values into
           live config and an empty domain overwrites working credentials.
+      # `login is not defined` rather than `.failed`. The module returns `login`
+      # only on success, and the very next task dereferences
+      # `.login.auth.client_token` -- so this gate tests exactly the
+      # precondition its consumer requires, and stays true whichever failure
+      # primitive the task above uses. Keying it off `.failed` made the gate a
+      # property of the task's error handling rather than of the login.
       when:
-        - openbao_secrets_domain_login.failed | default(false)
+        - openbao_secrets_domain_login.login is not defined
         - not (openbao_secrets_domain_out_of_scope | bool)
 
     # `failed_when: false` here no longer SWALLOWS anything — every error is
