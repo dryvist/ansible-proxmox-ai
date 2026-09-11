@@ -1,0 +1,92 @@
+---
+# --- Verifying what the registry CLAIMS is served (projection, no new ids) ----
+# `servable: true` and every registered remote model id are TYPED values.
+# Nothing proved either against the endpoint that has to answer for them, and
+# both have already shipped wrong: four large-tier ids returned 404 at once
+# (2026-07-28, see 50-servable.yml), and a subscription tier's ids could only
+# be taken from third-party documentation because the authoritative check —
+# the endpoint's own model listing — needs a credential a workstation does not
+# hold. At converge time that credential exists, which is the whole reason
+# tasks/verify-servable.yml can close the gap automatically.
+#
+# Everything below is a PROJECTION of llm-models.d/. No model id, alias or
+# tier name is written here; the ids probed are read from the registry like
+# every other view in this defaults tree.
+
+# Bounded so an unreachable endpoint costs seconds rather than a converge.
+# Short deliberately: this probe must never be why a rolling converge stalls.
+llm_router_probe_timeout: 10
+
+# Model-listing endpoints for tiers whose entry does not name its own upstream.
+# An entry carrying `api_base` needs no line here — that IS the endpoint.
+# Looked up by provider first, then tier, so one map serves both a provider
+# that spans several tiers and a tier that shares one provider with others.
+#
+# A provider whose listing is not OpenAI-shaped — a different response
+# envelope, or an id form that is not the id the registry registers — is
+# deliberately ABSENT rather than given a URL that would be parsed wrong. Every
+# such tier is reported as unprobed on each converge, which is visible pressure
+# to add support rather than a silent gap.
+llm_router_probe_model_list_urls:
+  openrouter: https://openrouter.ai/api/v1/models
+  opencode: "{{ llm_router_opencode_base_url }}/models"
+
+# Enabled entries that name a real upstream model sitting behind a credential.
+# Two exclusions, both because the id is not a catalog id any listing can
+# return: a virtual complexity router holds no upstream model of its own, and a
+# `@preset/` id is resolved server-side in the provider's dashboard.
+_llm_router_probe_candidates: >-
+  {{ llm_router_registry_enabled
+     | rejectattr('provider', 'equalto', 'auto_router')
+     | rejectattr('upstream_model_id', 'search', '^@preset/')
+     | list }}
+
+# One row per registered upstream id: where its listing lives, which credential
+# answers for it, and whether that credential resolves right now. Credential
+# VALUES never appear — only names and a boolean — so this is not secret.
+# An empty `endpoint` means no listing URL is known for that tier; those rows
+# become llm_router_probe_unsupported_tiers below rather than a silent drop.
+_llm_router_probe_targets: >-
+  {%- set ns = namespace(out=[]) -%}
+  {%- for m in _llm_router_probe_candidates -%}
+  {%- set cred = m.credential_env
+       | default(llm_router_opencode_credential_env if m.tier == 'opencode' else '', true) -%}
+  {%- set url = (m.api_base ~ '/models') if m.api_base is defined
+       else llm_router_probe_model_list_urls.get(m.provider,
+            llm_router_probe_model_list_urls.get(m.tier, '')) -%}
+  {%- if cred | length > 0 -%}
+  {%- set field = m.key_field | default(cred, true) -%}
+  {%- set ns.out = ns.out + [{
+        'endpoint': url,
+        'label': m.tier ~ '/' ~ m.provider,
+        'credential_env': cred,
+        'key_field': field,
+        'has_credential': (bao_local_llm_secrets | default({}, true))[field]
+          | default(lookup('env', cred), true) | trim | length > 0,
+        'model': m.upstream_model_id}] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.out }}
+
+# The probe plan: one query per endpoint, carrying every id registered against
+# it. Grouped so a tier with six models costs one round trip, not six.
+llm_router_remote_probes: >-
+  {%- set ns = namespace(out=[]) -%}
+  {%- set rows = _llm_router_probe_targets | rejectattr('endpoint', 'equalto', '') | list -%}
+  {%- for url in rows | map(attribute='endpoint') | unique -%}
+  {%- set g = rows | selectattr('endpoint', 'equalto', url) | list -%}
+  {%- set ns.out = ns.out + [{
+        'endpoint': url,
+        'credential_env': g[0].credential_env,
+        'key_field': g[0].key_field,
+        'has_credential': g[0].has_credential,
+        'labels': g | map(attribute='label') | unique | list,
+        'models': g | map(attribute='model') | unique | list}] -%}
+  {%- endfor -%}
+  {{ ns.out }}
+
+# Tiers carrying a credential but no listing endpoint this role can parse.
+# Reported on every converge so "unprobed" can never be mistaken for "clean".
+llm_router_probe_unsupported_tiers: >-
+  {{ _llm_router_probe_targets | selectattr('endpoint', 'equalto', '')
+     | map(attribute='label') | unique | list }}

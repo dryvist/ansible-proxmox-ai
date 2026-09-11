@@ -1,0 +1,282 @@
+---
+# Pins the servable probe (roles/llm_router/tasks/verify-servable.yml and its
+# judge, assert-servable-parity.yml).
+#
+# WHY THIS TEST EXISTS. `servable: true` and every registered remote model id
+# are typed claims, and both have shipped wrong: four large-tier ids returned
+# 404 at once (2026-07-28), and a subscription tier's ids could only be taken
+# from third-party documentation because the authoritative listing needs a
+# credential no workstation holds. The probe closes that at converge time.
+#
+# But a probe is only worth having if it can FAIL, and every reason it may
+# legitimately decline to check — an asleep serving host, an unseeded optional
+# tier, a rotated key — looks from the outside exactly like a pass. So this
+# file proves both halves: the mismatch cases are fatal, and each decline is
+# recorded as a decline rather than quietly counted as a success. The plays
+# below drive the judge directly with fixtures, which is why it is a separate
+# file from the probes that need a network.
+#
+# Fixture model ids are deliberately fake. A real registry id here would both
+# re-type a value the registry owns and rot the moment the registry changes.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_servable_probe.yml -i localhost, -c local
+#
+# This file drives the JUDGE only. The plan it adjudicates — which endpoints are
+# probed at all, and with which registered ids — is proven separately in
+# test_servable_probe_plan.yml, which has to load the real defaults and registry
+# and would shadow every fixture below if it shared a file with them.
+
+- name: A serving gate that omits a claimed-servable model fails the converge
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_servable_models: [fixture-model-a, fixture-model-b]
+    llm_router_registry_enabled:
+      - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
+      - {client_model_id: fixture-model-b, upstream_model_id: fixture-model-b}
+    llm_router_remote_probes: []
+    llm_router_probe_unsupported_tiers: []
+    _llm_router_remote_models: {results: []}
+    _llm_router_gate_models:
+      status: 200
+      json:
+        data:
+          - {id: fixture-model-a}
+  tasks:
+    - name: Prove a model the gate does not serve is fatal
+      block:
+        - name: Adjudicate a gate listing missing one servable entry
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
+
+        - name: Fail because the judge admitted an unserved servable claim
+          ansible.builtin.fail:
+            msg: >-
+              assert-servable-parity.yml PASSED with fixture-model-b claimed
+              servable and absent from the gate's listing. That is the
+              2026-07-28 state exactly, and this check is the only thing that
+              sees it before a caller does.
+      rescue:
+        - name: Confirm the judge failed for the unserved model specifically
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'Claimed servable but NOT served' in (ansible_failed_result.msg | default(''))"
+              - "'fixture-model-b' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              The judge failed, but not for the unserved model — got
+              {{ ansible_failed_result.msg | default('(none)') }}. A failure from
+              an unrelated task would make this test pass for the wrong reason.
+            success_msg: An unserved servable claim is fatal, naming the model.
+
+- name: A gate serving an id the registry does not carry fails the converge
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_servable_models: [fixture-model-a]
+    llm_router_registry_enabled:
+      - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
+    llm_router_remote_probes: []
+    llm_router_probe_unsupported_tiers: []
+    _llm_router_remote_models: {results: []}
+    _llm_router_gate_models:
+      status: 200
+      json:
+        data:
+          - {id: fixture-model-a}
+          - {id: fixture-model-undeclared}
+  tasks:
+    - name: Prove a served-but-unregistered model is fatal
+      block:
+        - name: Adjudicate a gate listing carrying an unregistered id
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
+
+        - name: Fail because the judge admitted an unregistered served model
+          ansible.builtin.fail:
+            msg: >-
+              assert-servable-parity.yml PASSED with the gate serving
+              fixture-model-undeclared, which no registry entry carries. The
+              registry is meant to be the complete statement of what this fabric
+              serves; drift in this direction is what makes that claim false.
+      rescue:
+        - name: Confirm the judge failed for the unregistered model specifically
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'Served but absent from the enabled registry' in (ansible_failed_result.msg | default(''))"
+              - "'fixture-model-undeclared' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              The judge failed, but not for the unregistered model — got
+              {{ ansible_failed_result.msg | default('(none)') }}.
+            success_msg: A served-but-unregistered model is fatal, naming the model.
+
+- name: An unreachable gate is recorded as unchecked, never as a pass
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    # The SAME mismatch the play above proved fatal. The only difference is
+    # that the gate never answered — which must turn the verdict into "cannot
+    # check", not into silence that reads like success.
+    llm_router_servable_models: [fixture-model-a, fixture-model-b]
+    llm_router_registry_enabled:
+      - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
+      - {client_model_id: fixture-model-b, upstream_model_id: fixture-model-b}
+    llm_router_remote_probes: []
+    llm_router_probe_unsupported_tiers: []
+    _llm_router_remote_models: {results: []}
+    _llm_router_gate_models: {status: -1, msg: "Connection refused"}
+  tasks:
+    - name: Adjudicate with the gate unreachable
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
+
+    - name: Confirm the unreachable gate is reported as unchecked
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_probe_report.gate == 'unreachable'
+          - _llm_router_probe_report.gate_ids | length == 0
+        fail_msg: >-
+          An unreachable gate was recorded as
+          "{{ _llm_router_probe_report.gate }}". A converge must not be blocked
+          by a serving host that is asleep or rebooting, but the skip has to be
+          visible — a skip indistinguishable from a pass is how this check stops
+          running without anyone noticing.
+        success_msg: An unreachable gate is reported as unchecked and blocks nothing.
+
+- name: A gate that refuses the credential is reported apart from an outage
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_servable_models: [fixture-model-a]
+    llm_router_registry_enabled:
+      - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
+    llm_router_remote_probes: []
+    llm_router_probe_unsupported_tiers: []
+    _llm_router_remote_models: {results: []}
+    _llm_router_gate_models: {status: 401}
+  tasks:
+    - name: Adjudicate with the gate refusing the bearer
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
+
+    - name: Confirm a refused credential is its own verdict
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_probe_report.gate == 'rejected'
+        fail_msg: >-
+          A 401 was recorded as "{{ _llm_router_probe_report.gate }}". A rotated
+          or expired credential is neither an outage nor an absent key, and
+          folding it into either hides a tier that has quietly stopped working.
+        success_msg: A refused credential is reported as refused, and blocks nothing.
+
+- name: A provider listing missing a registered id fails the converge
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_servable_models: []
+    llm_router_registry_enabled: []
+    llm_router_probe_unsupported_tiers: []
+    _llm_router_gate_models: {status: -1}
+    llm_router_remote_probes:
+      - endpoint: https://fixture.invalid/v1/models
+        credential_env: FIXTURE_API_KEY
+        key_field: FIXTURE_API_KEY
+        has_credential: true
+        labels: [fixture-tier/fixture-provider]
+        models: [fixture-remote-a, fixture-remote-b]
+    _llm_router_remote_models:
+      results:
+        - status: 200
+          json:
+            data:
+              - {id: fixture-remote-a}
+          item:
+            endpoint: https://fixture.invalid/v1/models
+            labels: [fixture-tier/fixture-provider]
+            models: [fixture-remote-a, fixture-remote-b]
+  tasks:
+    - name: Prove an id the provider does not offer is fatal
+      block:
+        - name: Adjudicate a provider listing missing one registered id
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
+
+        - name: Fail because the judge admitted an unofferred registered id
+          ansible.builtin.fail:
+            msg: >-
+              assert-servable-parity.yml PASSED with fixture-remote-b registered
+              against an endpoint whose listing does not offer it. Every request
+              naming it would fail at the provider — this check is the only place
+              a typed id is compared with the endpoint that answers for it.
+      rescue:
+        - name: Confirm the judge failed for the absent remote id specifically
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'absent from the provider' in (ansible_failed_result.msg | default(''))"
+              - "'fixture-remote-b' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              The judge failed, but not for the absent remote id — got
+              {{ ansible_failed_result.msg | default('(none)') }}.
+            success_msg: A registered id the provider does not offer is fatal, naming it.
+
+- name: An unreachable or uncredentialed remote tier is reported, not counted as verified
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_servable_models: []
+    llm_router_registry_enabled: []
+    llm_router_probe_unsupported_tiers: [fixture-tier/unparseable-provider]
+    _llm_router_gate_models: {status: -1}
+    llm_router_remote_probes:
+      # Queried, and the endpoint never answered — carrying the SAME mismatch
+      # the play above proved fatal.
+      - endpoint: https://fixture-down.invalid/v1/models
+        credential_env: FIXTURE_API_KEY
+        key_field: FIXTURE_API_KEY
+        has_credential: true
+        labels: [fixture-tier/down]
+        models: [fixture-remote-a, fixture-remote-b]
+      # Never queried at all: no credential resolved, which is the normal state
+      # of a tier nobody has subscribed to.
+      - endpoint: https://fixture-unseeded.invalid/v1/models
+        credential_env: FIXTURE_UNSEEDED_KEY
+        key_field: FIXTURE_UNSEEDED_KEY
+        has_credential: false
+        labels: [fixture-tier/unseeded]
+        models: [fixture-remote-c]
+    _llm_router_remote_models:
+      results:
+        - status: 0
+          item:
+            endpoint: https://fixture-down.invalid/v1/models
+            labels: [fixture-tier/down]
+            models: [fixture-remote-a, fixture-remote-b]
+  tasks:
+    - name: Adjudicate with one endpoint down and one uncredentialed
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
+
+    - name: Confirm each decline is reported as its own kind of decline
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_probe_report.verified | length == 0
+          - _llm_router_probe_report.unreachable == ['https://fixture-down.invalid/v1/models']
+          - _llm_router_probe_report.no_credential == ['https://fixture-unseeded.invalid/v1/models']
+          - _llm_router_probe_report.unsupported == ['fixture-tier/unparseable-provider']
+        fail_msg: >-
+          Declines were not reported distinctly: verified=
+          {{ _llm_router_probe_report.verified }}, unreachable=
+          {{ _llm_router_probe_report.unreachable }}, no_credential=
+          {{ _llm_router_probe_report.no_credential }}, unsupported=
+          {{ _llm_router_probe_report.unsupported }}. A green converge in which
+          every probe silently declined is the failure mode this reporting
+          exists to prevent.
+        success_msg: >-
+          Unreachable, uncredentialed and unparseable tiers are each reported as
+          unchecked, and none is counted as verified.
