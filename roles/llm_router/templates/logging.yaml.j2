@@ -1,0 +1,62 @@
+{{ ansible_managed | comment }}
+# Python dictConfig handed to the proxy's HTTP server via --log_config, for ONE
+# reason: to raise the router's own logger to a level where routing decisions
+# are visible. Rationale for the level itself: defaults/main/60-ops.yml.
+#
+# THREE WAYS THIS FILE CAN SILENTLY BREAK LOGGING, all guarded below.
+#
+# 1. disable_existing_loggers defaults to TRUE in dictConfig. Left at its
+#    default, applying this file would DISABLE every logger not named here —
+#    including the LiteLLM loggers this file exists to make louder, and every
+#    library logger the estate's error stream comes from. It is set false.
+# 2. Passing --log_config REPLACES the server's built-in logging config rather
+#    than merging with it, so the uvicorn loggers, handlers and formatters have
+#    to be reproduced here or the access and error streams vanish. They are, and
+#    they use the server's own formatter classes so the line format does not
+#    change.
+# 3. The root logger is deliberately NOT given a level here. Raising root would
+#    turn on INFO for every library in the process (httpx, apscheduler, boto)
+#    on a proxy that serves prompts. Only the named router logger is raised.
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  default:
+    (): uvicorn.logging.DefaultFormatter
+    fmt: '%(levelprefix)s %(message)s'
+    use_colors: false
+  access:
+    (): uvicorn.logging.AccessFormatter
+    fmt: '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s'
+    use_colors: false
+
+handlers:
+  default:
+    formatter: default
+    class: logging.StreamHandler
+    stream: ext://sys.stderr
+  access:
+    formatter: access
+    class: logging.StreamHandler
+    stream: ext://sys.stdout
+
+loggers:
+  uvicorn:
+    handlers: [default]
+    level: INFO
+    propagate: false
+  uvicorn.error:
+    level: INFO
+  uvicorn.access:
+    handlers: [access]
+    level: INFO
+    propagate: false
+  # The point of the file. This logger carries the fallback and deployment
+  # selection records; every other LiteLLM logger is left alone, so the proxy
+  # and package loggers keep inheriting the root level exactly as before.
+  #
+  # No `handlers` key: LiteLLM attaches its own handler to this logger at
+  # import, and naming a handler here would give it a second one and duplicate
+  # every line. Level only, propagation untouched.
+  "LiteLLM Router":
+    level: {{ llm_router_router_log_level | upper | to_json }}

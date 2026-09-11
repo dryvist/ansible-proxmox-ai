@@ -125,6 +125,23 @@ general_settings:
   store_model_in_db: {{ llm_router_store_model_in_db | to_json }}
   disable_spend_logs: {{ llm_router_disable_spend_logs | to_json }}
   disable_error_logs: {{ llm_router_disable_error_logs | to_json }}
+{% if not llm_router_disable_spend_logs | bool %}
+  # Retention renders with the logs and only with them, so the table cannot be
+  # switched on without the job that bounds it. An empty value here does not
+  # misconfigure the cleanup job, it silently never schedules one
+  # (proxy_server.py gates the scheduler on this key being present at all),
+  # which is indistinguishable from a working config until the disk fills.
+  #
+  # `or undef(...)`, not `| mandatory(...)`: mandatory only fires on an
+  # UNDEFINED value and passes an empty string straight through, so it would
+  # render `maximum_spend_logs_retention_period: ""` and schedule nothing. The
+  # blank is the likely way to get this wrong — a default is never undefined.
+  maximum_spend_logs_retention_period: {{ ((llm_router_spend_logs_retention_period | trim)
+     or undef('llm_router_spend_logs_retention_period must be set whenever spend logs are enabled — see defaults/main/45-database.yml')) | to_json }}
+  maximum_spend_logs_retention_interval: {{ llm_router_spend_logs_retention_interval | to_json }}
+  # Redaction is the other half of the retention arithmetic; see 45-database.yml.
+  store_prompts_in_spend_logs: {{ llm_router_store_prompts_in_spend_logs | to_json }}
+{% endif %}
 {% endif %}
   # health_check_interval is general_settings-only (LiteLLM rejects it under
   # router_settings).
@@ -138,7 +155,12 @@ litellm_settings:
   # OTLP traces to the Cribl Edge collector (endpoint from the EnvironmentFile);
   # Cribl fans out to Langfuse + Splunk. No direct "langfuse" callback — it
   # requires the v2 SDK and errors on init with the v3 pip resolves.
-  callbacks: ["otel"]
+  #
+  # "prometheus" is NOT a second tracing sink. It is the only shipped consumer
+  # of the router's fallback events, and the only thing in this proxy that
+  # records the model group originally ASKED FOR next to the one that served.
+  # Rationale and the trap it replaces: defaults/main/60-ops.yml.
+  callbacks: {{ (['otel'] + (['prometheus'] if llm_router_prometheus_enabled | bool else [])) | to_json }}
   drop_params: true
 {% if llm_router_large_passthrough_enabled | bool %}
   # Resolve the wildcard against the gate's live /v1/models so this proxy's

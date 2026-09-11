@@ -1,0 +1,28 @@
+---
+# Renders the dictConfig the proxy reads at startup, which is the only thing
+# that raises the router's own logger to a level where routing decisions are
+# visible. Why a file rather than an environment variable, and why not global
+# debug: defaults/main/60-ops.yml. What the file's three silent failure modes
+# are, and how each is guarded: templates/logging.yaml.j2.
+#
+# Its own task file rather than another block in main.yml because main.yml sits
+# against its per-file token budget, and the budget's remedy is to split rather
+# than to shrink a comment until the reasoning is gone.
+#
+# ORDER IS LOAD-BEARING and is why this is imported where it is: the unit
+# template that references this path is deployed AFTER, so a converge rendering
+# the new ExecStart can never start a proxy pointing at a logging config that is
+# not yet on disk. The process exits immediately on a missing one, which would
+# take the member down inside its own rolling window — the failure the pooled
+# converge exists to prevent.
+- name: Deploy the LiteLLM logging config
+  ansible.builtin.template:
+    src: logging.yaml.j2
+    dest: "{{ llm_router_log_config_file }}"
+    owner: root
+    # Wider than the proxy config beside it, deliberately: this file carries no
+    # credential, only logger levels, and the service user must be able to read
+    # it before the process has dropped into any particular group.
+    group: "{{ llm_router_group }}"
+    mode: "0644"
+  notify: Restart litellm
