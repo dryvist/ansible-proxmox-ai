@@ -2,13 +2,30 @@
 # Credential-gated cloud rungs in the Hermes fallback chain.
 # One slice of the model registry; see llm-models.d/README.md.
 _llm_registry_hermes_cloud:
-  # `@preset/best-free` is server-side (OpenRouter dashboard) — never write a
-  # concrete id here. Naming/alias rationale: docs/LLM_MODELS_REGISTRY_NOTES.md.
-  # context_window is the EFFECTIVE SERVING window advertised to callers, not
-  # the preset's real (larger) one.
+  # The free rung of the Hermes chain, and a CONCRETE id rather than the
+  # server-side preset this used to name. The preset resolved to a single
+  # upstream that the provider's data policy excluded, so the rung could not be
+  # served at all and no retry or cooldown could clear it. A concrete id is
+  # checkable from this repo; a dashboard-side preset is not, which is why the
+  # breakage was invisible here. context_window is the EFFECTIVE SERVING window
+  # advertised to callers, not the upstream's real (larger) one.
+  #
+  # NO zero_data_retention OVERRIDE, deliberately: this upstream satisfies the
+  # strict default the role renders for every other entry. Verified 2026-09-11
+  # by calling it under that exact policy — provider training denied AND zero
+  # retention required — with 10 of 10 attempts served. The old entry's
+  # free-tier-retains-prompts caveat is gone for the same reason: it described
+  # the previous upstream and would now overstate the exposure, and a caveat
+  # that overstates is still a wrong caveat.
+  #
+  # Every zero-priced upstream that satisfies that strict policy resolved to
+  # the SAME provider on 2026-09-11. So a second free rung would add retry
+  # depth but not provider independence — they would fail together. Worth
+  # knowing before one is added; it is not a failure mode of this entry, which
+  # measured clean, so it is recorded here rather than as a caveat.
   - client_model_id: hermes-cloud-free
-    upstream_model_id: '@preset/best-free'
-    litellm_model_name: openrouter/@preset/best-free
+    upstream_model_id: inclusionai/ling-3.0-flash-vl:free
+    litellm_model_name: openrouter/inclusionai/ling-3.0-flash-vl:free
     provider: openrouter
     tier: hermes-cloud
     route_group: hermes-cloud-free
@@ -18,16 +35,20 @@ _llm_registry_hermes_cloud:
     max_output_tokens: 8192
     credential_env: OPENROUTER_API_KEY
     key_field: OPENROUTER_API_KEY
-    # False here (true elsewhere) — operator decision: ZDR would exclude the
-    # very upstream this free rung exists to reach. NOT the cause of the
-    # intermittent upstream 429s (measured separately per provider). Details:
-    # docs/LLM_MODELS_REGISTRY_NOTES.md.
-    zero_data_retention: false
+    # Sized from a MEASURED full-length generation: 8192 output tokens in 58 s
+    # on 2026-09-11. This BOUNDS THE ATTEMPT; it does not promise the
+    # generation — a slower draw from the same upstream is meant to fail over
+    # here rather than hold the chain, so a timeout seen in the logs is this
+    # working, not a value to raise. Still ~20x tighter than the tier default,
+    # which is sized for long LOCAL generations. Paired so the streaming path —
+    # the one this chain's callers actually use — is bounded too.
+    request_timeout: &free_timeout 120
+    stream_timeout: *free_timeout
     hints:
-      speed: medium
+      speed: fast
       quality: strong
       best_for: [summarize, reasoning]
-      caveats: [free-tier-retains-prompts]
+      measured: { tok_s: 140, date: 2026-09-11, source: openrouter-probe }
 
   # Hermes value fallbacks; one credential per provider.
   - client_model_id: hermes-cloud-alibaba

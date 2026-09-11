@@ -183,7 +183,19 @@ model_list:
       rpm: {{ llm_router_hermes_cloud_rpm }}
       tpm: {{ llm_router_hermes_cloud_tpm }}
       max_parallel_requests: {{ llm_router_hermes_cloud_max_parallel_requests }}
-      timeout: {{ llm_router_request_timeout_seconds }}
+      # Per-entry bound, else the tier default — which is sized for long LOCAL
+      # generations and is far too generous for a cloud rung. num_retries is 0,
+      # so failover needs an ERROR, and a stall is not an error until the
+      # timeout fires: an unbounded rung holds the whole chain rather than
+      # handing over. Size it from a MEASURED healthy completion, never a guess.
+      timeout: {{ m.request_timeout | default(llm_router_request_timeout_seconds) }}
+{% if m.stream_timeout is defined %}
+      # Paired with the bound above, never set alone: the callers on this chain
+      # stream, so a bound covering only the non-streaming path would leave the
+      # stalling case it exists to catch unbounded. Every other per-entry bound
+      # in this role sets both from one value.
+      stream_timeout: {{ m.stream_timeout }}
+{% endif %}
       num_retries: 0
       # Preferred while in budget; the local survivor below carries order 2.
       order: 1
