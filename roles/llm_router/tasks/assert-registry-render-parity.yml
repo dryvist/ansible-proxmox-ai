@@ -182,6 +182,15 @@
     # null-window failure in docs/LLM_MODELS_SCHEMA.md, not an exemption. A
     # deployment with no `order` carries no preference, so it sorts behind
     # every explicit one.
+    #
+    # The order comparison is <=, not <. Two same-named deployments at the SAME
+    # order and different windows are not ranked against each other at all --
+    # LiteLLM load-balances across both, so the narrow one takes a share of the
+    # traffic and refuses whatever exceeds it. A strict comparison would let
+    # that through, and `order` is a registry-settable field, so an entry given
+    # a sibling tier's order value reaches it. A deployment never compares
+    # against itself here: it would need a window strictly smaller than its
+    # own.
     _llm_router_narrow_preferred: >-
       {%- set ns = namespace(bad=[]) -%}
       {%- set _ml = _llm_router_parity_config.model_list | default([]) -%}
@@ -192,7 +201,7 @@
       {%- if (_a.model_info | default({})).get('max_input_tokens', 0) | int
              < (_b.model_info | default({})).get('max_input_tokens', 0) | int
          and (_a.litellm_params | default({})).get('order', 999999) | int
-             < (_b.litellm_params | default({})).get('order', 999999) | int -%}
+             <= (_b.litellm_params | default({})).get('order', 999999) | int -%}
       {%- set ns.bad = ns.bad + [_name] -%}
       {%- endif -%}
       {%- endfor -%}
