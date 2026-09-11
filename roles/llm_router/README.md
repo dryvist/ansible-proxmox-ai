@@ -213,6 +213,29 @@ curl -X POST "$ROUTER/fallback" \
   -d '{"model": "subagent", "fallback_models": ["<first>", "<second>"], "fallback_type": "general"}'
 ```
 
+## Admin UI SSO (Authelia generic OIDC)
+
+The admin UI at `/ui` signs in through Authelia using LiteLLM's generic-OIDC
+environment. The block renders only when the client secret resolves
+(`defaults/main/65-oidc.yml`): `GENERIC_CLIENT_ID=litellm`, the secret, the
+three `/api/oidc/*` endpoint URLs, `PROXY_BASE_URL=https://llm.<subdomain>`,
+`GENERIC_USER_ID_ATTRIBUTE=email`, `GENERIC_SCOPE`, and `PROXY_ADMIN_ID`. The
+redirect LiteLLM hands Authelia is `<PROXY_BASE_URL>/sso/callback`.
+
+`PROXY_ADMIN_ID` is the operator email — the same expression the APPS authelia
+role uses for `authelia_admin_email` (`DEFAULT_USERNAME` or `jevans`, at
+`tofu_data.domain`) — so the Authelia `email` claim and LiteLLM's admin
+identity cannot drift.
+
+The secret is bao-first (`secret/apps/authelia`) with a
+`LITELLM_OIDC_CLIENT_SECRET` env fallback, and deliberately non-mandatory:
+until the Authelia side seeds it, the block stays absent and the converge stays
+green with SSO off rather than half-configured. `UI_USERNAME`/`UI_PASSWORD`
+remain the `/fallback/login` break-glass.
+
+The estate boards link the router at `/ui` via the ingress `url_path` (the tofu
+`llm` pool row), not the API root.
+
 ## Observability
 
 `litellm_settings.callbacks: ["otel"]`:
