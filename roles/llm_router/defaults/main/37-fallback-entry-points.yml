@@ -1,0 +1,132 @@
+---
+# Entry points, depth bound, and the context-window escape.
+#
+# Split out of 35-hermes-cloud.yml, which owns WHICH cloud tiers are
+# credentialed and HOW the fallback chain is ordered. This file owns a
+# different question: what names a caller can put in a request, how far a
+# fallback walk may travel, and where an oversize request escapes to. An agent
+# changing one need not read the other.
+#
+# Everything here is a lazy projection over the chain vars in 35-, so load
+# order between the two files does not matter.
+#
+# THESE KEYS REACH THE RUNTIME; the rendered file is authoritative for them.
+# Worth stating because 00-identity.yml notes that role deployments and their
+# fallback order live in the database, which reads as though anything rendered
+# here is inert. Two different things:
+#
+#   * ROLE routing (the seeded consumer roles, tasks/seed-roles.yml) is owned by
+#     the database and the Admin UI after seeding.
+#   * `router_settings` — including `fallbacks`, `context_window_fallbacks` and
+#     `max_fallbacks` below — is read back out of the rendered config by
+#     tasks/sync-router-settings.yml and pushed into the database on every
+#     converge, precisely so a persisted row cannot shadow this file.
+#
+# So editing these vars changes live behaviour after a converge. Verifying a
+# change means reading the rendered config (or the row the converge pushed),
+# not assuming either one wins by default.
+
+# Every name a caller can type that reaches the primary: its own
+# client_model_id plus each rendered alias resolving to it. These are ENTRY
+# POINTS, named directly by a caller, not rungs reached from a chain.
+#
+# Projected from the rendered alias map rather than the entry's raw
+# `stable_aliases`, so it can only name something the proxy advertises — an
+# alias on a non-servable entry is a seeded ROLE (see 50-servable.yml).
+llm_router_primary_entry_points: >-
+  {{ [llm_router_primary_model]
+     + (llm_router_model_group_aliases | dict2items
+        | selectattr('value', 'equalto', llm_router_primary_model)
+        | map(attribute='key') | list) }}
+
+# Depth bound for the WHOLE walk, not for one chain.
+#
+# `fallback_depth` counts rung ATTEMPTS along the current path, NOT nesting:
+# run_async_fallback increments once per attempted target and carries the
+# running total into the nested call, whose base case
+# (`fallback_depth >= max_fallbacks`) then refuses to descend. Several chains
+# render here — the main one, a per-cloud-group return to the primary, and the
+# entry-point chains above — so a bound taken from one chain's length caps the
+# others silently.
+#
+# The bound is the count of DISTINCT names used as a fallback target anywhere
+# in the map: an already-attempted target is skipped BEFORE the increment
+# (`attempted_targets`, shared by reference for the request), so no path can
+# outlast that count. Today that set is the chain plus the primary, which only
+# the per-cloud-group entries introduce and which need a credentialed rung.
+#
+# Still a fallback bound, not a retry budget; same-provider retries stay zero.
+llm_router_max_fallbacks: >-
+  {{ (llm_router_hermes_default_fallback_chain
+      + ([llm_router_primary_model]
+         if llm_router_hermes_cloud_only_fallback_groups | length > 0 else []))
+     | unique | length }}
+
+# A rung narrower than the request loses that rung, and THIS map — not the
+# ordinary one — decides what happens next. LiteLLM re-enters its fallback
+# machinery for the failing leg under the LEG's own name and consults this map
+# first (router.py::async_function_with_fallbacks, litellm 1.98.0): with the
+# map rendered but no entry for that name it re-raises WITHOUT ever reading
+# the ordinary `fallbacks` map, whereas with no map at all control falls
+# through to it. A PARTIALLY POPULATED MAP IS THEREFORE WORSE THAN NO MAP,
+# which is why these keys are derived rather than listed.
+#
+# That re-raise does NOT kill the chain that named the leg — it is caught and
+# the walk advances. (An earlier version of this comment claimed every cloud
+# rung below is then never tried; that is false. Only the shared max_fallbacks
+# budget truncates a walk.)
+#
+# WHY THE PRIMARY IS KEYED TOO — this reverses an earlier decision.
+#
+# This map used to cover only the local legs, on the reasoning that
+# "hermes-default's own overflow already resolves through the ordinary chain,
+# and adding it here would skip the local legs for requests they can serve
+# perfectly well." Both halves of that turned out to be wrong.
+#
+# The first half: an overflow on hermes-default does NOT resolve through the
+# ordinary chain, because unkeyed it never reaches that chain at all (the
+# asymmetry above). Observed as cron jobs failing with
+# ContextWindowExceededError and every rung refusing the request.
+#
+# The second half misreads what the skip costs. This map fires ONLY on a
+# context-window error, so keying the primary cannot divert an ordinary
+# request. It diverts exactly one class: a request already too large for the
+# primary. Every local leg advertises a window no larger than the primary's, so
+# a leg could never serve what the primary just refused — "requests they can
+# serve perfectly well" is an empty set here.
+#
+# The keys are derived, never listed: local legs, the auto-router groups
+# themselves, every deployment those routers can select, and every alias a
+# caller can type for the primary. A hand-maintained list would silently stop
+# covering a tier the moment one was added.
+#
+# THE ALIASES ARE NOT REDUNDANT WITH THE ID. Both maps are looked up under the
+# name AS TYPED, and model_group_alias resolves below the fallback handler, so
+# an alias and its target are separate keys inheriting nothing from each other.
+# Keying the id alone leaves alias callers on the partial-map path above.
+llm_router_context_window_escape_groups: >-
+  {%- set ns = namespace(groups=llm_router_local_fallback_groups | list) -%}
+  {%- for m in llm_router_hermes_virtual_models -%}
+  {%- set group = m.route_group | default(m.client_model_id) -%}
+  {%- if group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- for target in [llm_router_routine_model] + llm_router_primary_entry_points -%}
+  {%- if target and target not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [target] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups }}
+
+# Renders nothing when no cloud rung is credentialed — an empty target list is
+# not "no map", and LiteLLM would take the empty branch and fall back to
+# nowhere instead of surfacing the real error.
+llm_router_context_window_fallbacks: >-
+  {%- set ns = namespace(pairs=[]) -%}
+  {%- if llm_router_hermes_cloud_only_fallback_groups | length > 0 -%}
+  {%- for group in llm_router_context_window_escape_groups -%}
+  {%- set ns.pairs = ns.pairs + [{group: llm_router_hermes_cloud_only_fallback_groups}] -%}
+  {%- endfor -%}
+  {%- endif -%}
+  {{ ns.pairs }}

@@ -123,12 +123,23 @@ jobs:
 
       # The credentialed half of the same contract: with cloud rungs present,
       # a fallback leg narrower than the primary must not stand in front of
-      # them. A narrow leg raises ContextWindowExceededError, and LiteLLM
-      # treats a context error raised inside a fallback attempt as terminal --
-      # so a misordered chain aborts with its serviceable rungs never tried.
+      # them. A narrow leg raises ContextWindowExceededError before doing any
+      # work, so every one standing in front spends an attempt -- and a unit of
+      # the shared max_fallbacks budget -- on a rung that could not have served
+      # the request. (It does not abort the chain; the walk advances. See
+      # roles/llm_router/tasks/assert-fallback-chain.yml.)
       - name: Verify llm_router narrow-fallback ordering contract
         run: >-
           ansible-playbook tests/llm_router/test_fallback_narrow_legs_last.yml
+          -i localhost, -c local
+
+      # Both fallback maps are looked up under the model name AS TYPED, with no
+      # alias resolution first -- so every name a caller can use for the primary
+      # needs its own key in each. A name in one map but not the other is a
+      # regression either way round.
+      - name: Verify llm_router fallback entry-point contract
+        run: >-
+          ansible-playbook tests/llm_router/test_fallback_entry_points.yml
           -i localhost, -c local
 
       - name: Verify llm_router Hermes cloud value contract

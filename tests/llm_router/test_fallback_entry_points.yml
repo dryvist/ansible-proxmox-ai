@@ -1,0 +1,296 @@
+---
+# Every name a caller can type for the primary must carry a fallback chain AND
+# a context-window escape, and the depth budget must cover the whole rendered
+# map rather than one chain of it.
+#
+# WHY BOTH MAPS, ALWAYS TOGETHER. LiteLLM looks both maps up under the model
+# name AS TYPED, with a plain string match and no alias resolution first
+# (model_group_alias resolves below the fallback handler). So an alias inherits
+# nothing from the id it points at. And the two maps fail in opposite
+# directions: a missing `fallbacks` key just means no chain, but a key missing
+# from a `context_window_fallbacks` map that EXISTS makes an oversize request
+# terminal there, with no fall-through to the ordinary map — whereas no map at
+# all would fall through. Adding a name to one map and not the other therefore
+# buys a fallback chain and pays for it with a new terminal failure.
+- name: Verify every primary entry-point name is keyed in both fallback maps
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Configure the shared budget store
+      ansible.builtin.set_fact:
+        llm_router_redis_host: redis.example.test
+        llm_router_redis_password: test-only-not-a-real-password
+
+    # assert-endpoint-dns.yml resolves every advertised backend host for real;
+    # this fixture's subdomain is the reserved pve.example.test, which by design
+    # never resolves. Same treatment as the sibling fallback tests.
+    - name: Point advertised backend URLs at a host this runner can resolve
+      ansible.builtin.set_fact:
+        llm_router_llm_fast_base_url: "http://localhost:10434/v1"
+        llm_router_llm_light_base_url: "http://localhost:10434/v1"
+        llm_router_llm_large_base_url: "https://localhost:11434/v1"
+        llm_router_llm_vllm_base_url: "http://localhost:10434/v1"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    # Entry-point keys render only alongside a credentialed cloud rung — with
+    # nowhere wider to escape to, a chain would point at nothing.
+    - name: Seed exactly one credential per API provider
+      ansible.builtin.set_fact:
+        bao_local_llm_secrets:
+          OPENROUTER_API_KEY: test-openrouter-provider-key
+          GEMINI_API_KEY: test-gemini-provider-key
+          DASHSCOPE_API_KEY: test-dashscope-provider-key
+
+    - name: Re-evaluate the Hermes cloud projections with provider credentials
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
+
+    - name: Run the role's render-time assertions
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert.yml"
+
+    - name: Render and parse the real proxy config
+      ansible.builtin.set_fact:
+        _config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+
+    - name: Every typeable name for the primary is keyed in both maps
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # ANTI-VACUITY FIRST. Every check below is a subset test, and a
+          # derivation that resolves empty passes all of them over nothing.
+          # The primary carries aliases, so "> 1" is the real floor: at 1 the
+          # list is the bare id and the alias half of this test is untested.
+          - _entry_points | length > 1
+          - llm_router_primary_model in _entry_points
+          - _fallback_keys | length > 0
+          - _cwf_keys | length > 0
+          # THE CONTRACT.
+          - _entry_points | difference(_fallback_keys) | length == 0
+          - _entry_points | difference(_cwf_keys) | length == 0
+          # Entry-point chains target the cloud-only groups and never
+          # hermes-default: an escalated call must not re-enter the chain that
+          # named it. (Cycle safety itself rests on attempted_targets, not on
+          # this — but re-entry would burn the shared depth budget for nothing.)
+          - _entry_point_targets | length > 0
+          - "'hermes-default' not in _entry_point_targets"
+          - >-
+            _entry_point_targets
+            | difference(llm_router_hermes_cloud_only_fallback_groups)
+            | length == 0
+        fail_msg: >-
+          Every name a caller can type for the primary must appear as a key in
+          BOTH router_settings.fallbacks and context_window_fallbacks, because
+          neither map resolves an alias before looking the name up. Entry
+          points: {{ _entry_points }}. Missing a fallback chain:
+          {{ _entry_points | difference(_fallback_keys) }}. Missing a
+          context-window escape (these make an oversize request terminal rather
+          than falling through): {{ _entry_points | difference(_cwf_keys) }}.
+          Entry-point targets: {{ _entry_point_targets }}.
+        success_msg: >-
+          All {{ _entry_points | length }} typeable names for the primary
+          ({{ _entry_points | join(', ') }}) carry a fallback chain and a
+          context-window escape to the cloud-only groups.
+      vars:
+        _entry_points: "{{ llm_router_primary_entry_points }}"
+        _fallback_keys: >-
+          {{ _config.router_settings.fallbacks
+             | map('dict2items') | flatten | map(attribute='key') | list }}
+        _cwf_keys: >-
+          {{ _config.router_settings.context_window_fallbacks | default([])
+             | map('dict2items') | flatten | map(attribute='key') | list }}
+        _entry_point_targets: >-
+          {{ _config.router_settings.fallbacks
+             | map('dict2items') | flatten
+             | selectattr('key', 'in', llm_router_primary_entry_points)
+             | map(attribute='value') | flatten | unique | list }}
+
+    # THE STRUCTURAL INVARIANT, stated over the two rendered maps rather than
+    # over the expressions that build them, so it cannot go tautological. This
+    # is the guard for a rung added later by someone who has not read any of
+    # the reasoning above: it does not care WHICH rungs exist, only that none
+    # of them silently lost its escape hatch.
+    #
+    # NOT "every fallbacks key must be a context_window_fallbacks key". That
+    # stronger form is FALSE here by design and would fail on a correct config:
+    # each cloud group is a fallbacks key whose only target is the primary,
+    # which is NARROWER than it is. An oversize request the cloud rung refused
+    # could never have been served by the primary either, so that escape would
+    # be worthless and its absence costs nothing.
+    #
+    # The real rule is width-aware: a key needs an entry only when its chain
+    # contains a target that could actually serve what the key just refused —
+    # i.e. a WIDER one. Then, and only then, a missing entry is a live defect,
+    # because the re-raise never consults the ordinary fallbacks map and that
+    # wider target is unreachable for the one class of request it existed for.
+    - name: No fallback key with a wider escape is missing from the context map
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # ANTI-VACUITY: the window lookup must be populated, and every name
+          # used as a fallback key or target must resolve in it. An unresolved
+          # name would compare as window 0 and quietly never be "wider", which
+          # is exactly how this check would rot when a new tier is added.
+          - _window_by_name | length > 0
+          - _names_without_window | length == 0
+          - _fallback_keys | length > 0
+          # THE INVARIANT.
+          - _keys_missing_a_reachable_escape | length == 0
+        fail_msg: >-
+          Fallback key(s) {{ _keys_missing_a_reachable_escape }} list a target
+          that serves a LARGER context than they do, but have no
+          context_window_fallbacks entry. An oversize request to such a key
+          re-raises there and never consults the ordinary fallbacks map, so
+          that wider target is unreachable for precisely the requests it was
+          added to catch — a partial map is worse than none. Add the group to
+          llm_router_context_window_escape_groups
+          (roles/llm_router/defaults/main/37-fallback-entry-points.yml).
+          Detail: {{ _wider_target_report }}. Names whose context window could
+          not be resolved from the registry (these would silently never be
+          flagged): {{ _names_without_window }}.
+        success_msg: >-
+          Every fallback key that lists a wider target also carries a
+          context-window escape ({{ _fallback_keys | length }} keys checked
+          against {{ _cwf_keys | length }} context keys).
+      vars:
+        # name -> advertised context window, from the registry only. Covers a
+        # deployment's own id and either grouping name it may be reached by,
+        # plus every alias, which inherits its target's window.
+        _window_by_name: >-
+          {%- set ns = namespace(pairs=[]) -%}
+          {%- for m in llm_router_registry_enabled -%}
+          {%- for name in [m.client_model_id, m.route_group | default(none),
+                           m.fallback_group | default(none)] -%}
+          {%- if name and (ns.pairs | selectattr('n', 'equalto', name) | list | length == 0) -%}
+          {%- set ns.pairs = ns.pairs + [{'n': name, 'w': m.context_window | default(0) | int}] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {%- for alias, target in llm_router_model_group_aliases.items() -%}
+          {%- if ns.pairs | selectattr('n', 'equalto', alias) | list | length == 0 -%}
+          {%- set tw = (ns.pairs | selectattr('n', 'equalto', target)
+                        | map(attribute='w') | list | first) | default(0) -%}
+          {%- set ns.pairs = ns.pairs + [{'n': alias, 'w': tw}] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ dict(ns.pairs | map(attribute='n') | zip(ns.pairs | map(attribute='w'))) }}
+        _names_without_window: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for name in (_fallback_keys + _all_fallback_targets) | unique -%}
+          {%- if name not in _window_by_name and name not in ns.bad -%}
+          {%- set ns.bad = ns.bad + [name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
+        _keys_missing_a_reachable_escape: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for entry in _config.router_settings.fallbacks -%}
+          {%- for key, targets in entry.items() -%}
+          {%- if key not in _cwf_keys -%}
+          {%- for t in targets -%}
+          {%- if (_window_by_name[t] | default(0) | int)
+                 > (_window_by_name[key] | default(0) | int)
+             and key not in ns.bad -%}
+          {%- set ns.bad = ns.bad + [key] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ ns.bad }}
+        _wider_target_report: >-
+          {%- set ns = namespace(lines=[]) -%}
+          {%- for entry in _config.router_settings.fallbacks -%}
+          {%- for key, targets in entry.items() -%}
+          {%- if key in _keys_missing_a_reachable_escape -%}
+          {%- for t in targets -%}
+          {%- if (_window_by_name[t] | default(0) | int)
+                 > (_window_by_name[key] | default(0) | int) -%}
+          {%- set ns.lines = ns.lines + [key ~ ' (' ~ _window_by_name[key] | default(0)
+                                         ~ ') -> ' ~ t ~ ' ('
+                                         ~ _window_by_name[t] | default(0) ~ ')'] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ ns.lines }}
+        _fallback_keys: >-
+          {{ _config.router_settings.fallbacks
+             | map('dict2items') | flatten | map(attribute='key') | list }}
+        _all_fallback_targets: >-
+          {{ _config.router_settings.fallbacks
+             | map('dict2items') | flatten | map(attribute='value')
+             | flatten | unique | list }}
+        _cwf_keys: >-
+          {{ _config.router_settings.context_window_fallbacks | default([])
+             | map('dict2items') | flatten | map(attribute='key') | list }}
+
+    - name: The depth budget covers the longest path the map can produce
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _all_targets | length > 0
+          - _longest_chain | int > 0
+          # max_fallbacks bounds rung ATTEMPTS along a path, not nesting depth:
+          # run_async_fallback increments once per attempted target and carries
+          # the running total into the nested call. A path therefore spans
+          # several chains, and the ceiling on its length is the number of
+          # DISTINCT target names in the whole map — a name already attempted is
+          # skipped before the increment. Computed from the rendered map here
+          # rather than from the defaults' expression, so this tests the
+          # property and not the formula.
+          - _config.router_settings.max_fallbacks | int >= _all_targets | length
+          # Implied by the above, asserted separately so a regression that
+          # truncates the main chain names itself.
+          - _config.router_settings.max_fallbacks | int >= _longest_chain | int
+        fail_msg: >-
+          max_fallbacks={{ _config.router_settings.max_fallbacks }} does not
+          cover the rendered map. Distinct fallback targets (the ceiling on
+          attempts along one path): {{ _all_targets | length }}
+          {{ _all_targets }}. Longest single chain: {{ _longest_chain }}. A
+          bound derived from one chain's length truncates every path that walks
+          through more than that chain, and the truncation is silent.
+        success_msg: >-
+          max_fallbacks={{ _config.router_settings.max_fallbacks }} covers both
+          the longest single chain ({{ _longest_chain }}) and the
+          {{ _all_targets | length }} distinct targets the whole map can reach.
+      vars:
+        _all_targets: >-
+          {{ _config.router_settings.fallbacks
+             | map('dict2items') | flatten | map(attribute='value')
+             | flatten | unique | list }}
+        _longest_chain: >-
+          {{ _config.router_settings.fallbacks
+             | map('dict2items') | flatten | map(attribute='value')
+             | map('length') | list | max }}
