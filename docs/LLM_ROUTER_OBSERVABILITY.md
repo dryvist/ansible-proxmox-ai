@@ -189,6 +189,34 @@ That file has three ways to fail silently — disabling every logger it does not
 name, dropping the server's own access and error streams, and duplicating every
 line — each guarded and commented in the template.
 
+### What the pair makes decidable, which is the point of both
+
+This is the result, more than the serving-share number the document opens with.
+
+A request that ends in a refusal looks identical whether it was refused on the
+first attempt or after a chain ran and exhausted every rung. The line that would
+tell them apart is emitted at more than one chain depth and carries no depth
+marker, and the records that would have disambiguated it sit below the level the
+loggers were running at — so nothing in this estate could separate the two, in
+either direction.
+
+That distinction is not academic: it decides whether the remedy is more capacity
+at the first rung, or whether adding capacity there merely moves the same
+failure further down the chain. Choosing wrong means doing work that changes
+nothing and reporting it as a fix.
+
+Neither instrument settles it alone, and that is why both are configured:
+
+- The **counters** answer it in the form the question actually takes — a ratio
+  of how often a chain starts against how often a request ends terminally. No
+  join, and no per-request record, is needed to compute that.
+- The **scoped router log** makes an individual decision readable when someone
+  needs to look at one rather than count them.
+
+A per-request record in the database joining to the spend log would be strictly
+more information that does not change this decision, at the cost of running
+custom logging code on the guest. It is deliberately not built.
+
 ## Known limits of the measurement
 
 - **Caller attribution is partial, and the share does not depend on it.**
