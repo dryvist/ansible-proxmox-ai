@@ -127,33 +127,7 @@ model_list:
       max_parallel_requests: {{ llm_router_passthrough_max_parallel_requests }}
 {% endif %}
 {% endif %}
-  # --- Subscription tier ---
-  # Each entry renders exactly one deployment, under its own registry id. See
-  # defaults/main/32-opencode.yml for what `order` does here, which today is
-  # nothing: it ranks deployments within one model_name group, and no entry in
-  # this tier shares a name with another tier's.
-{% for m in llm_router_opencode_models %}
-{% set _oc_env = m.credential_env | default(llm_router_opencode_credential_env) %}
-{% set _oc_key_field = m.key_field | default(_oc_env) %}
-{% set _oc_key = bao_local_llm_secrets[_oc_key_field] | default(lookup('env', _oc_env), true) %}
-{% if _oc_key | trim | length > 0 %}
-  - model_name: {{ m.client_model_id }}
-    litellm_params:
-      model: {{ litellm_model(m) }}
-      api_base: {{ m.api_base | default(llm_router_opencode_base_url) }}
-      api_key: os.environ/{{ _oc_env }}
-      use_chat_completions_api: true
-      order: {{ m.order | default(llm_router_opencode_default_order) }}
-      rpm: {{ m.rpm | default(llm_router_opencode_rpm) }}
-      tpm: {{ m.tpm | default(llm_router_opencode_tpm) }}
-      max_parallel_requests: {{ m.max_parallel_requests | default(llm_router_opencode_max_parallel_requests) }}
-    model_info:
-      max_input_tokens: {{ m.context_window }}
-      max_output_tokens: {{ m.max_output_tokens }}
-      max_tokens: {{ m.max_output_tokens }}
-{{- delegation_hints(m) }}
-{% endif %}
-{% endfor %}
+{% include 'model-list-opencode.yaml.j2' %}
   # --- OpenRouter egress tier: explicit ids, one provider key ---
   # Never chained into fallbacks; an unseeded model renders no entry.
 {% for m in llm_router_openrouter_models %}
