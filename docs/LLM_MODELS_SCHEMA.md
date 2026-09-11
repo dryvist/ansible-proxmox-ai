@@ -33,10 +33,10 @@ Required on every entry:
   tier              `large` | `light` | `vllm` | `opencode` | `hermes-router` |
                     `hermes-cloud` | `openrouter`. Selects the deployment
                     shape; light entries become two same-name deployments.
-                    `opencode` is a flat-rate subscription tier: it advertises
-                    no per-token price (see input_cost_per_token below) and its
-                    ordering against the metered tiers is a role default, never
-                    a registry field.
+                    `opencode` is a subscription tier: it advertises no
+                    per-token price (see input_cost_per_token below) and its
+                    deployment order comes from a role default, never a
+                    registry field.
   enabled           false removes the entry from the rendered config entirely.
 
 Optional:
