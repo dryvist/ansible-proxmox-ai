@@ -55,10 +55,25 @@ _llm_registry_local_gpu:
   # NO fallback chain of its own, deliberately. This is a RUNG inside
   # hermes-default's chain, not an entry point: when it fails, the chain that
   # named it moves to the next rung, and giving it one here would nest a second
-  # chain inside the first. The router logs "No fallback model group found for
-  # original model_group=hermes-local-4080" on each failure — that line is the
-  # design working, not a gap. Give it a chain only if something starts calling
-  # it directly.
+  # chain inside the first, drawing on the same shared max_fallbacks budget.
+  #
+  # The router logs "No fallback model group found for original
+  # model_group=hermes-local-4080" on each failure. THAT LINE MEANS TWO
+  # DIFFERENT THINGS AND CANNOT TELL YOU WHICH. It is emitted at every fallback
+  # depth, and it records none:
+  #
+  #   * at depth > 0 (reached as a rung) the raise that follows is caught by
+  #     the enclosing walk, which advances — the design working, not a gap;
+  #   * at depth 0 (something called this id DIRECTLY) the same raise is
+  #     terminal and the caller gets the error.
+  #
+  # So the line's presence is not evidence either way, and "give it a chain only
+  # if something starts calling it directly" is a condition this log cannot
+  # reveal. To separate them, count the "Falling back to model_group =
+  # hermes-local-4080" line that precedes every rung attempt and never precedes
+  # a direct call, or read the x-litellm-attempted-fallbacks response header.
+  # Both are INFO-level, so confirm the proxy's log level admits INFO before
+  # reading a zero count as an answer.
   #
   # This rung is SLOW, not hung. One measured completion came back in ~190 s,
   # and the request/stream timeouts below bound it at 300 s, after which the
