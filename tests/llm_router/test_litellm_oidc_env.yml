@@ -1,0 +1,149 @@
+---
+# Pins the generic-OIDC block of litellm.env.j2 end to end: with the Authelia
+# client secret resolved, the exact env lines LiteLLM's generic-OIDC support
+# reads must render (client id/secret, the three /api/oidc/* endpoints, the
+# proxy base URL the /sso/callback redirect hangs off, the email claim
+# attribute, the scope, and the admin identity); with no secret anywhere, the
+# whole block must be honestly absent rather than half-configured.
+#
+# Both plays also pin the bao-first SHAPE of the secret default itself: the
+# value must come from bao_apps_secrets with an env fallback, never a literal
+# baked into the defaults.
+#
+# Run (from the REPO ROOT, with PROXMOX_SUBDOMAIN exported):
+#   PROXMOX_SUBDOMAIN=pve.example.test \
+#   ansible-playbook tests/llm_router/test_litellm_oidc_env.yml -i localhost, -c local
+
+- name: Verify the OIDC env block renders when the client secret resolves
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry the defaults project from
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/../../llm-models.d"
+
+    - name: Load the real router group_vars
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/llm_router_group.yml"
+
+    - name: Load the estate group_vars the role defaults derive from
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/all.yml"
+
+    # set_fact (precedence 19) outranks include_vars (18), so these stubs win
+    # over anything the defaults/group_vars derive from the same names.
+    - name: Stub the tofu inventory data and the bao secret maps
+      ansible.builtin.set_fact:
+        tofu_data:
+          domain: example.com
+          constants:
+            service_ports: { otel_traces_http: 4318 }
+        bao_local_llm_secrets: {}
+        bao_apps_secrets:
+          authelia_oidc_litellm_client_secret: dummy-render-check
+
+    - name: Render the real env file
+      ansible.builtin.set_fact:
+        _env: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+
+    - name: The generic-OIDC block renders exactly the lines LiteLLM reads
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _env is search('(?m)^GENERIC_CLIENT_ID=litellm$')
+          - _env is search('(?m)^GENERIC_CLIENT_SECRET=dummy-render-check$')
+          - _env is search('(?m)^GENERIC_AUTHORIZATION_ENDPOINT=https://authelia\.pve\.example\.test/api/oidc/authorization$')
+          - _env is search('(?m)^GENERIC_TOKEN_ENDPOINT=https://authelia\.pve\.example\.test/api/oidc/token$')
+          - _env is search('(?m)^GENERIC_USERINFO_ENDPOINT=https://authelia\.pve\.example\.test/api/oidc/userinfo$')
+          - _env is search('(?m)^PROXY_BASE_URL=https://llm\.pve\.example\.test$')
+          - _env is search('(?m)^GENERIC_USER_ID_ATTRIBUTE=email$')
+          - _env is search('(?m)^GENERIC_SCOPE=openid profile email$')
+          - _env is search('(?m)^PROXY_ADMIN_ID=jevans@example\.com$')
+        fail_msg: >-
+          The rendered litellm.env does not carry the exact generic-OIDC lines
+          the plan pins. Real render:\n{{ _env }}
+        success_msg: SSO enabled renders the full generic-OIDC env block.
+
+    - name: The secret default is bao-first with an env fallback, never a literal
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'bao_apps_secrets.authelia_oidc_litellm_client_secret' in _oidc_defaults"
+          - "'LITELLM_OIDC_CLIENT_SECRET' in _oidc_defaults"
+        fail_msg: >-
+          roles/llm_router/defaults/main/65-oidc.yml no longer derives
+          llm_router_oidc_client_secret from bao_apps_secrets with the
+          LITELLM_OIDC_CLIENT_SECRET env fallback. A literal secret baked into
+          the defaults would ship a credential in the repository.
+        success_msg: The OIDC secret default is bao-first with an env fallback.
+      vars:
+        _oidc_defaults: "{{ lookup('file', _role_dir ~ '/defaults/main/65-oidc.yml') }}"
+
+- name: Verify the OIDC env block is honestly absent with no client secret
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry the defaults project from
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/../../llm-models.d"
+
+    - name: Load the real router group_vars
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/llm_router_group.yml"
+
+    - name: Load the estate group_vars the role defaults derive from
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/all.yml"
+
+    - name: Stub the tofu inventory data with NO secret anywhere
+      ansible.builtin.set_fact:
+        tofu_data:
+          domain: example.com
+          constants:
+            service_ports: { otel_traces_http: 4318 }
+        bao_local_llm_secrets: {}
+        bao_apps_secrets: {}
+
+    - name: Render the real env file
+      ansible.builtin.set_fact:
+        _env: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+
+    - name: No OIDC or proxy line renders when the secret never resolved
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _env is not search('(?m)^GENERIC_')
+          - _env is not search('(?m)^PROXY_')
+        fail_msg: >-
+          With no client secret in bao or the environment, the rendered
+          litellm.env still carries OIDC/proxy lines — SSO would be
+          half-configured against endpoints it cannot authenticate to.
+          Real render:\n{{ _env }}
+        success_msg: No secret, so the OIDC block is honestly absent.
+
+    - name: The secret default is bao-first with an env fallback, never a literal
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'bao_apps_secrets.authelia_oidc_litellm_client_secret' in _oidc_defaults"
+          - "'LITELLM_OIDC_CLIENT_SECRET' in _oidc_defaults"
+        fail_msg: >-
+          roles/llm_router/defaults/main/65-oidc.yml no longer derives
+          llm_router_oidc_client_secret from bao_apps_secrets with the
+          LITELLM_OIDC_CLIENT_SECRET env fallback. A literal secret baked into
+          the defaults would ship a credential in the repository.
+        success_msg: The OIDC secret default is bao-first with an env fallback.
+      vars:
+        _oidc_defaults: "{{ lookup('file', _role_dir ~ '/defaults/main/65-oidc.yml') }}"
