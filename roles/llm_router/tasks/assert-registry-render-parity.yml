@@ -49,8 +49,30 @@
       - _llm_router_cloud_fallback_missing_router | length == 0
       - _llm_router_cloud_router_not_fallback | length == 0
       - _llm_router_cloud_router_missing_target | length == 0
+      - _llm_router_narrow_preferred | length == 0
+      - _llm_router_partial_window_groups | length == 0
     fail_msg: >-
       Registry and rendered model_list disagree.
+      {% if _llm_router_partial_window_groups | length > 0 %}
+      WINDOW ADVERTISED BY SOME MEMBERS ONLY:
+      {{ _llm_router_partial_window_groups | join(', ') }} — these model_names
+      carry deployments where at least one advertises max_input_tokens and at
+      least one does not. A deployment with no window resolves it to null, which
+      exempts it from enable_pre_call_checks entirely: an over-long request its
+      advertising siblings would have refused is handed to it instead and
+      answered from a silently truncated prompt. Give every member its own real
+      window, or none of them one.
+      {% endif %}
+      {% if _llm_router_narrow_preferred | length > 0 %}
+      NARROW DEPLOYMENT PREFERRED: {{ _llm_router_narrow_preferred | join(', ') }}
+      — these model_names carry more than one deployment, and the one LiteLLM
+      picks first (lower `order`) advertises a SMALLER max_input_tokens than a
+      sibling it outranks. Order filtering keeps the lowest order still healthy,
+      so every request to that name — including a long-context one a wider
+      sibling could have served — lands on the narrow deployment and is refused
+      or truncated. Give the preferred deployment its sibling's real window, or
+      give it a distinct model_name so the two stop sharing a model group.
+      {% endif %}
       {% if _llm_router_enabled_unrendered | length > 0 %}
       ENABLED BUT NOT RENDERED: {{ _llm_router_enabled_unrendered | join(', ') }}
       — the registry advertises these but the template renders no deployment,
@@ -136,3 +158,67 @@
     _llm_router_cloud_router_missing_target: >-
       {{ _llm_router_cloud_router_targets
          | difference(_llm_router_rendered_names) }}
+    # Several model_names deliberately carry more than one deployment, so this
+    # walks the RENDERED list rather than _llm_router_rendered_names above,
+    # which is `| unique` precisely to hide those pairs from the name diff.
+    #
+    # The invariant is NOT "same name, same window" — that is stricter than the
+    # hazard and forbids a legitimate shape this repo already relies on. The
+    # budgeted groups pair a wide paid member with a narrower LOCAL SURVIVOR,
+    # and that is correct because the survivor is the LESS preferred member: it
+    # is reached only once the paid one is filtered out by budget.
+    #
+    # The hazard is a narrow deployment that WINS. Order filtering keeps the
+    # lowest `order` still in the healthy set (litellm/utils.py,
+    # _get_order_filtered_deployments), so a narrow member ranked ahead of a
+    # wide sibling captures every request to the shared name, and a long one
+    # is refused by enable_pre_call_checks or truncated — the whole group
+    # behaves as its smallest member. Flag exactly that: some pair where the
+    # preferred deployment is also the narrower one.
+    #
+    # Sentinels make the absent cases compare honestly. A deployment with no
+    # max_input_tokens advertises nothing (0), so a preferred member that
+    # advertises nothing while its sibling does is a conflict — that is the
+    # null-window failure in docs/LLM_MODELS_SCHEMA.md, not an exemption. A
+    # deployment with no `order` carries no preference, so it sorts behind
+    # every explicit one.
+    _llm_router_narrow_preferred: >-
+      {%- set ns = namespace(bad=[]) -%}
+      {%- set _ml = _llm_router_parity_config.model_list | default([]) -%}
+      {%- for _name in _ml | map(attribute='model_name') | unique | list -%}
+      {%- set _members = _ml | selectattr('model_name', 'equalto', _name) | list -%}
+      {%- for _a in _members -%}
+      {%- for _b in _members -%}
+      {%- if (_a.model_info | default({})).get('max_input_tokens', 0) | int
+             < (_b.model_info | default({})).get('max_input_tokens', 0) | int
+         and (_a.litellm_params | default({})).get('order', 999999) | int
+             < (_b.litellm_params | default({})).get('order', 999999) | int -%}
+      {%- set ns.bad = ns.bad + [_name] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.bad | unique | list }}
+    # The companion to the rule above, and the case it cannot see. A member
+    # advertising NO window is not "narrow", it is unbounded: max_input_tokens
+    # resolves to null and enable_pre_call_checks skips the deployment, so it
+    # absorbs a request every advertising sibling would have refused. Ranking
+    # it last does not help — being last is exactly when it gets the request.
+    # Uniformly unadvertised is fine and stays fine (the light tier's CPU/GPU
+    # pair carries no window on either member); MIXED is the defect.
+    _llm_router_partial_window_groups: >-
+      {%- set ns = namespace(bad=[]) -%}
+      {%- set _ml = _llm_router_parity_config.model_list | default([]) -%}
+      {%- for _name in _ml | map(attribute='model_name') | unique | list -%}
+      {%- set _members = _ml | selectattr('model_name', 'equalto', _name) | list -%}
+      {%- set _counter = namespace(advertised=0) -%}
+      {%- for _d in _members -%}
+      {%- if (_d.model_info | default({})).get('max_input_tokens') is not none -%}
+      {%- set _counter.advertised = _counter.advertised + 1 -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- if _counter.advertised > 0 and _counter.advertised < (_members | length) -%}
+      {%- set ns.bad = ns.bad + [_name] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.bad }}
