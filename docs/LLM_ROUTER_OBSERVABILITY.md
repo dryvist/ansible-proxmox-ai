@@ -156,24 +156,38 @@ is wrong in both directions, verified against the pinned distribution:
 - `attempted_retries` counts retries **within** one group and is reset when a
   fallback enters the next one, so it is not a chain depth.
 
-**What can answer it.** The router emits dedicated success and failure fallback
-events carrying the original model group alongside the one that served. In the
-pinned distribution exactly one shipped consumer implements them, the Prometheus
-integration, which turns each into a labelled counter recording the requested
-model, the model that served, the caller's key alias and the status code that
-triggered the fallback. That is queryable, survives any logging change, and
-costs one counter increment per fallback rather than per request. Per-request
-attribution would need a callback that writes the same event to the database,
-which is code this repository does not currently deploy.
+**What answers it, and is now configured.** Two instruments, deliberately
+complementary rather than redundant.
 
-**The router's own log cannot be raised to informational by the usual knobs.**
-Its three named loggers are left at their inherited level, which passes warnings
-and errors and drops informational records — which is why the routing trail is
-absent while error output is plentiful. `LITELLM_LOG` sets the **handler**
-threshold only and cannot recover a record the logger already dropped, and the
-supported verbosity switches jump straight to debug for every logger at once.
-The targeted route is a logging configuration file naming the router logger
-specifically, passed to the server at startup.
+*Fallback counters.* The router emits dedicated success and failure fallback
+events carrying the model group originally asked for alongside the one that
+served. In the pinned distribution exactly one shipped consumer implements them,
+the Prometheus integration, which turns each into a labelled counter recording
+the requested model, the serving model, the caller's key alias and the status
+code that triggered the fallback. It is enabled as a callback
+(`defaults/main/60-ops.yml`), and its Python package is installed explicitly
+because LiteLLM declares it under a different extra than the one this role
+installs — without that line the callback raises on startup. The metrics
+endpoint authenticates by default and is left that way, since these counters
+carry model names and key aliases. Cost is one counter increment per fallback,
+so it is volume-independent and survives any later logging change. It answers
+"did chains run, from which group to which, how often, triggered by what" at
+aggregate granularity, not per request.
+
+*The router's own log, scoped.* Per-request detail needs the router's
+informational records, and those were unreachable. Its three named loggers never
+have a level set, so they inherit the root level: warnings and errors pass,
+informational records are dropped **at the logger**. Two traps follow.
+`LITELLM_LOG` moves the **handler** threshold only, and no handler can recover a
+record the logger already discarded, so setting it to informational changes
+nothing while looking like the fix. The supported verbosity switches raise
+*every* logger to debug at once, which on a proxy carrying prompts is a
+data-exposure change rather than a diagnostic. The route taken instead is a
+logging configuration file naming the router logger alone, passed to the server
+at startup (`templates/logging.yaml.j2`, wired in `tasks/logging-config.yml`).
+That file has three ways to fail silently — disabling every logger it does not
+name, dropping the server's own access and error streams, and duplicating every
+line — each guarded and commented in the template.
 
 ## Known limits of the measurement
 
@@ -187,3 +201,10 @@ specifically, passed to the server at startup.
   in `45-database.yml` are deleted by the proxy's own cleanup job, so a query
   reaching further back returns a partial period rather than an error. Widening
   the reporting window means widening retention first.
+- **Growth is bounded but has not been measured against free space.** The
+  per-row bounds and the arithmetic are in `45-database.yml`, and the 30-day
+  window lands in the low hundreds of megabytes. The database volume is
+  **shared with another workload**, which is what made the original objection to
+  these logs reasonable, and this role cannot see the volume's free space.
+  Anyone with access to the cluster can close that in one look; until then the
+  objection is answered in principle and unmeasured in practice.

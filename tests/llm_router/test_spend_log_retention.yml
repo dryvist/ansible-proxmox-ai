@@ -190,6 +190,82 @@
       vars:
         _general: "{{ _config.general_settings }}"
 
+    # ROUTING OBSERVABILITY. Separate from retention but pinned in the same
+    # place because it shares the failure shape: a proxy with neither of these
+    # serves every request correctly and records nothing about WHY it chose what
+    # it chose, which is indistinguishable from a healthy one.
+    - name: The fallback-event consumer is registered
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'prometheus' in _config.litellm_settings.callbacks"
+        fail_msg: >-
+          litellm_settings.callbacks is
+          {{ _config.litellm_settings.callbacks | default('(absent)') }}. Without
+          the prometheus callback nothing consumes the router's fallback events,
+          and since the per-request row records only the deployment that SERVED
+          (never the group originally asked for), "did a fallback chain run" goes
+          back to being unanswerable from stored data in either direction.
+        success_msg: >-
+          Fallback events are consumed, so a fallback leaves a durable record.
+
+    - name: The venv carries the package that callback imports
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_pip_packages | select('match', '^prometheus-client') | list | length == 1
+        fail_msg: >-
+          litellm_settings.callbacks requests the prometheus callback but
+          llm_router_pip_packages does not install prometheus-client
+          ({{ llm_router_pip_packages }}). litellm[proxy] declares that package
+          under a DIFFERENT extra (proxy-runtime), so it is not pulled in
+          transitively and the proxy raises ImportError on startup — a converge
+          that renders cleanly and then fails to boot.
+        success_msg: prometheus-client is installed, so the callback can import.
+
+    - name: The router logger is raised above the level that hides routing
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _logging.loggers['LiteLLM Router'].level | upper in ['INFO', 'DEBUG']
+          - _logging.disable_existing_loggers == false
+          - "'root' not in _logging"
+          - "'handlers' not in _logging.loggers['LiteLLM Router']"
+        fail_msg: >-
+          The rendered logging config is wrong in a way that fails silently.
+          Checked: the router logger must be INFO or lower (got
+          {{ _logging.loggers['LiteLLM Router'].level | default('(absent)') }}) or
+          routing records are dropped at the logger and no handler can recover
+          them; disable_existing_loggers must be false (got
+          {{ _logging.disable_existing_loggers | default('(absent)') }}) or
+          applying this file silences every logger it does not name, including
+          the ones it exists to raise; no root level, or every library in the
+          process starts emitting INFO on a proxy that carries prompts; and no
+          handlers key on the router logger, or it gets a second handler
+          alongside the one LiteLLM attaches and every line is duplicated.
+        success_msg: >-
+          Router logger at {{ _logging.loggers['LiteLLM Router'].level }},
+          existing loggers preserved, root untouched, no duplicate handler.
+      vars:
+        _logging: >-
+          {{ lookup('template', _role_dir ~ '/templates/logging.yaml.j2') | from_yaml }}
+
+    - name: The unit passes the logging config it renders
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'--log_config ' ~ llm_router_log_config_file in _unit"
+        fail_msg: >-
+          litellm.service.j2 does not pass --log_config
+          {{ llm_router_log_config_file }}. The file would be written and never
+          read, so the router logger stays at its inherited level and the
+          routing trail stays invisible — with a rendered config on disk that
+          says otherwise.
+        success_msg: The unit reads the logging config the role deploys.
+      vars:
+        _unit: >-
+          {{ lookup('template', _role_dir ~ '/templates/litellm.service.j2') }}
+
     - name: Blanking the retention period stops the render
       block:
         - name: Enable spend logs with no retention period
