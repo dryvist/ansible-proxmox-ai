@@ -87,16 +87,70 @@ llm_router_ui_password: >-
      | mandatory('llm_router_ui_password must be seeded (bao apps/llm-router) when a
        router database is configured — it guards the admin UI that owns role routing') }}
 
-# Spend and error logs stay OUT of the database.
+# Per-request spend logs are ON, and the retention plan the previous setting
+# demanded is immediately below.
 #
-# Once DATABASE_URL is set, LiteLLM writes a spend-log row per request by
-# default. This cluster's volume is shared with Hindsight and the table has no
-# retention policy, so that grows without bound to buy telemetry this fabric
-# already has: spend and rate limiting live in Redis (roles/redis), and traces
-# go to the collector via the otel callback. Flip either to false only with a
-# retention plan.
-llm_router_disable_spend_logs: true
-llm_router_disable_error_logs: true
+# THESE WERE BOTH true. The recorded reason was not "logs are unwanted" — it
+# was "the table has no retention policy, so it grows without bound to buy
+# telemetry this fabric already has". Both halves of that have since been
+# tested and only the first still holds, so it is answered rather than ignored:
+#
+#   Unbounded growth — ANSWERED. LiteLLM has a native retention job
+#   (maximum_spend_logs_retention_period below). It did not exist in the
+#   release this proxy ran when the comment was written; hand-rolling a cleanup
+#   timer was the alternative then, and refusing the logs was the better
+#   trade. It is not the better trade against a setting.
+#
+#   "Telemetry this fabric already has" — DID NOT HOLD. Redis carries running
+#   spend counters, not a per-request record, so it cannot attribute a request
+#   to a deployment. The otel callback was the thing that could, and its export
+#   to the collector has been failing continuously (see README "Observability"),
+#   which is invisible precisely because a dropped span leaves nothing behind.
+#   The estate has therefore had NO durable per-request record at all, which is
+#   what makes the local-vs-remote serving share unmeasurable.
+#
+# What the row buys, per LiteLLM_SpendLogs in the pinned schema: `model` and
+# `model_group` (the name asked for), `model_id` + `api_base` (the deployment
+# actually selected, which is the local-or-remote answer), `status`
+# success/failure, `metadata.user_api_key_alias` (the caller), token counts and
+# request_duration_ms. Nothing else in this fabric records the selected
+# deployment.
+llm_router_disable_spend_logs: false
+# Failures need a row for the same reason successes do. disable_error_logs is
+# not a second table here: LiteLLM's failure hook returns EARLY when it is true
+# (_ProxyDBLogger._should_track_errors_in_db), so a failed request writes no
+# spend-log row at all. Left true, every rate-limited and errored request is
+# simply missing, and a success rate computed from the remainder is 100% by
+# construction — the exact shape of wrongness that reads like a healthy fabric.
+llm_router_disable_error_logs: false
+
+# Retention, which is what makes the two settings above affordable.
+#
+# 30 days: the serving-share metric is reported weekly (README
+# "Observability"), so a month holds four reports plus the month-over-month
+# comparison, and nothing reads a spend row older than that. Raising it is a
+# storage decision, not a correctness one.
+#
+# Row cost is bounded, not open-ended: prompts and responses are redacted
+# (llm_router_store_prompts_in_spend_logs below), and a failure row's
+# error_message and traceback are each capped at LiteLLM's
+# MAX_STRING_LENGTH_PROMPT_IN_DB (2048 chars). A success row is well under 1 KB
+# and a worst-case failure row a few KB, so a 30-day window on this proxy's
+# arrival rate stays in the hundreds of megabytes on a cluster already sized
+# for Hindsight.
+llm_router_spend_logs_retention_period: 30d
+# Cleanup cadence. LiteLLM defaults this to 1d when absent; it is declared so
+# the decision is visible in a diff, like store_model_in_db above. The job only
+# schedules at all when the period above is set.
+llm_router_spend_logs_retention_interval: 1d
+
+# Prompts and responses stay OUT of the row. This is LiteLLM's own default, and
+# it is declared anyway for two reasons: it is the difference between a
+# sub-kilobyte row and a multi-kilobyte one, which is the whole retention
+# arithmetic above; and it is the one setting whose silent upstream flip would
+# put every prompt this fabric serves into a shared database. A default is not
+# a decision until it is written down.
+llm_router_store_prompts_in_spend_logs: false
 
 # The router_settings the converge pushes back into the database so the
 # persisted row cannot shadow the rendered file. Derived from the rendered

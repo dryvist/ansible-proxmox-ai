@@ -1,0 +1,223 @@
+---
+# Pins the per-request-record contract in
+# roles/llm_router/templates/config.yaml.j2 + defaults/main/45-database.yml.
+#
+# WHY THIS TEST EXISTS. Three settings have to agree or the request log is
+# worse than not having one, and every disagreement is silent:
+#
+#   1. Spend logs OFF while a database is attached is the state this fabric ran
+#      in. The proxy serves normally, the Admin UI works, the roles persist —
+#      and no request is attributable to a deployment, so the local-vs-remote
+#      serving share the program is stated in cannot be computed. Nothing about
+#      a correctly-serving proxy distinguishes it from one keeping the record.
+#
+#   2. Error logs OFF drops the FAILED rows only. LiteLLM's failure hook
+#      returns early on that flag, so the table keeps every success and no
+#      failure, and any success rate derived from it is 100% by construction.
+#      A half-populated table reads exactly like a healthy one.
+#
+#   3. Spend logs ON with no retention period never schedules the cleanup job
+#      (proxy_server.py gates the scheduler on the key being present, not on a
+#      value), so the table grows without bound — the precise objection that
+#      kept the logs off in the first place, reintroduced by an edit that looks
+#      like it only touched a string.
+#
+# The negative case matters as much as the positive one: with no database the
+# whole general_settings block must stay absent rather than render retention
+# against a table that does not exist. A guard that only checks the armed
+# direction passes identically when the config never arms.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_spend_log_retention.yml -i localhost, -c local
+
+# ORDER IS LOAD-BEARING. The database-less case runs FIRST, before anything
+# calls set_fact: set_fact outranks include_vars and persists across plays for
+# the same host, so an unarmed case placed after the armed one reads the
+# attached host back and reports the block rendering when it should be absent.
+# That misfire happened while writing this test, and the vacuity guard below is
+# what caught it.
+- name: With no database the request-log block stays absent, not half-rendered
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          postgres_default: 5432
+    bao_local_llm_secrets: {}
+    bao_apps_secrets: {}
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Confirm the role really ships database-less, or the case is vacuous
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - (llm_router_db_host | trim) == ''
+        fail_msg: >-
+          defaults/main/45-database.yml now ships a non-empty llm_router_db_host
+          ('{{ llm_router_db_host }}'), so this play renders the armed config and
+          the assertion below proves nothing about the unarmed direction.
+
+    - name: Render the real proxy config with no database
+      ansible.builtin.set_fact:
+        _config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+
+    - name: No database means no request-log settings at all
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'database_url' not in _general"
+          - "'disable_spend_logs' not in _general"
+          - "'maximum_spend_logs_retention_period' not in _general"
+          - "'store_prompts_in_spend_logs' not in _general"
+        fail_msg: >-
+          With no database configured the rendered general_settings still
+          carries request-log keys ({{ _general.keys() | list }}). Retention and
+          log settings against a table that does not exist are a config that
+          claims a record it is not keeping.
+        success_msg: >-
+          Database-less render carries no request-log settings, so the proxy
+          converges honestly without one.
+      vars:
+        _general: "{{ _config.general_settings }}"
+
+# A SECOND play, and not for style: `include_vars` in the play above bound the
+# role defaults, and this play needs to override one of them with set_fact,
+# which outlives its play. Keeping the armed case last means nothing downstream
+# inherits the attached host.
+- name: The rendered config keeps a bounded, attributable per-request record
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          postgres_default: 5432
+    bao_local_llm_secrets: {}
+    bao_apps_secrets:
+      llm_router_db_password: not-a-real-password
+      llm_router_ui_password: not-a-real-password
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    # set_fact, not a play var: include_vars binds role defaults above a play
+    # var, so a play-level override of the database host is discarded and the
+    # db block would never render — the test would pass by measuring nothing.
+    - name: Attach a database, as the real inventory does
+      ansible.builtin.set_fact:
+        llm_router_db_host: postgres-under-test.example.test
+
+    - name: Render the real proxy config with a database attached
+      ansible.builtin.set_fact:
+        _config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+
+    - name: Every request, successful or not, leaves an attributable row
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _general.disable_spend_logs == false
+          - _general.disable_error_logs == false
+        fail_msg: >-
+          A database is attached but the request record is
+          disable_spend_logs={{ _general.disable_spend_logs | default('(absent)') }},
+          disable_error_logs={{ _general.disable_error_logs | default('(absent)') }}.
+          With spend logs off there is no per-request row at all, so no request
+          can be attributed to the deployment that served it. With error logs
+          off the failures alone are missing, which is worse than no data: the
+          surviving rows are all successes, and any success or rate-limit rate
+          computed from them is right by construction and wrong in fact.
+        success_msg: >-
+          Spend and error logs are both on, so every outcome leaves a row.
+      vars:
+        _general: "{{ _config.general_settings }}"
+
+    - name: The record is bounded by a retention job and carries no prompts
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - (_general.maximum_spend_logs_retention_period | default('') | trim) != ''
+          - (_general.maximum_spend_logs_retention_interval | default('') | trim) != ''
+          - _general.store_prompts_in_spend_logs == false
+        fail_msg: >-
+          Spend logs are enabled with
+          retention_period='{{ _general.maximum_spend_logs_retention_period | default('(absent)') }}',
+          interval='{{ _general.maximum_spend_logs_retention_interval | default('(absent)') }}',
+          store_prompts={{ _general.store_prompts_in_spend_logs | default('(absent)') }}.
+          An absent or empty period does not shorten retention — LiteLLM
+          schedules no cleanup job at all, so the table grows without bound,
+          which is the objection that kept these logs off originally. Storing
+          prompts multiplies every row by the size of the request it carried and
+          puts the served text into a shared database.
+        success_msg: >-
+          Retention is bounded
+          ({{ _general.maximum_spend_logs_retention_period }}, swept every
+          {{ _general.maximum_spend_logs_retention_interval }}) and prompts stay out.
+      vars:
+        _general: "{{ _config.general_settings }}"
+
+    - name: Blanking the retention period stops the render
+      block:
+        - name: Enable spend logs with no retention period
+          ansible.builtin.set_fact:
+            llm_router_spend_logs_retention_period: ""
+
+        - name: Render the config with an unbounded table
+          ansible.builtin.set_fact:
+            _unbounded: >-
+              {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') }}
+
+        - name: Fail because the render admitted an unbounded table
+          ansible.builtin.fail:
+            msg: >-
+              config.yaml.j2 rendered with spend logs enabled and no retention
+              period. That combination is the one failure mode with no visible
+              symptom until the shared cluster runs out of disk, and the
+              mandatory filter on that key is the only thing preventing it.
+      rescue:
+        - name: Confirm the failure was the retention guard
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - >-
+                'llm_router_spend_logs_retention_period must be set'
+                in (ansible_failed_result.msg | default(''))
+            fail_msg: >-
+              Something failed, but not the retention guard — got
+              {{ ansible_failed_result.msg | default('(none)') }}. A failure
+              from anywhere else would make this case pass for the wrong reason.
+            success_msg: Spend logs with no retention period are fatal at render.
