@@ -30,9 +30,10 @@ Required on every entry:
   provider          LiteLLM provider prefix — `openai` (local OpenAI-compatible
                     backends), `auto_router`, `dashscope`, `gemini`, or
                     `openrouter`.
-  tier              `large` | `light` | `vllm` | `hermes-router` |
+  tier              `large` | `light` | `vllm` | `opencode` | `hermes-router` |
                     `hermes-cloud` | `openrouter`. Selects the deployment
-                    shape; light entries become two same-name deployments.
+                    shape; light entries become two same-name deployments;
+                    opencode entries are flat-rate subscription deployments (order 20).
   enabled           false removes the entry from the rendered config entirely.
 
 Optional:

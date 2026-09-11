@@ -18,7 +18,7 @@ llm_router_registry_dir: "{{ role_path | dirname | dirname }}/llm-models.d"
 
 llm_router_model_registry: >-
   {{ _llm_registry_large + _llm_registry_light + _llm_registry_local_gpu
-     + _llm_registry_hermes_cloud + _llm_registry_openrouter }}
+     + _llm_registry_opencode + _llm_registry_hermes_cloud + _llm_registry_openrouter }}
 
 # Only enabled entries reach the rendered config or any derived contract.
 llm_router_registry_enabled: >-
@@ -35,6 +35,9 @@ llm_router_registry_enabled: >-
 # bearer-authed, no cross-tier fallback.
 llm_router_large_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'large') | list }}
+# opencode: flat-rate $10/mo subscription tier. Sunk cost exhausted before metered API tiers.
+llm_router_opencode_models: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'opencode') | list }}
 # light: the llama-swap model names, served as-is. Each becomes a CPU
 # `llm-light` deployment, plus a same-name GPU `llm-fast` deployment only when
 # llm_router_llm_fast_enabled is true — that toggle is what decides whether the
@@ -57,11 +60,12 @@ llm_router_vllm_models: >-
 llm_router_hermes_local_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-local') | list }}
 
-# Names owned by enabled registry entries after applying an optional route_group.
+# Names owned by enabled registry entries after applying an optional route_group,
+# plus any declared stable_aliases.
 # Multiple provider deployments may intentionally share one route group.
 llm_router_registry_enabled_route_names: >-
   {%- set ns = namespace(names=[]) -%}
   {%- for m in llm_router_registry_enabled -%}
-  {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] -%}
+  {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] + (m.stable_aliases | default([])) -%}
   {%- endfor -%}
   {{ ns.names | unique | list }}

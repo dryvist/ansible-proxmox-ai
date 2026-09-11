@@ -127,6 +127,33 @@ model_list:
       max_parallel_requests: {{ llm_router_passthrough_max_parallel_requests }}
 {% endif %}
 {% endif %}
+  # --- OpenCode Go subscription tier ($10/mo flat) ---
+  # Sunk-cost subscription: MUST be exhausted before metered API usage (OpenRouter).
+  # Order priority 20 (within 20-39 band), before metered APIs (70-99).
+{% for m in llm_router_opencode_models %}
+{% set _oc_env = m.credential_env | default(llm_router_opencode_credential_env) %}
+{% set _oc_key_field = m.key_field | default(_oc_env) %}
+{% set _oc_key = bao_local_llm_secrets[_oc_key_field] | default(lookup('env', _oc_env), true) %}
+{% if _oc_key | trim | length > 0 %}
+{% for _name in ([m.client_model_id] + (m.stable_aliases | default([]))) | unique %}
+  - model_name: {{ _name }}
+    litellm_params:
+      model: {{ litellm_model(m) }}
+      api_base: {{ m.api_base | default(llm_router_opencode_base_url) }}
+      api_key: os.environ/{{ _oc_env }}
+      use_chat_completions_api: true
+      order: {{ m.order | default(llm_router_opencode_default_order) }}
+      rpm: {{ m.rpm | default(llm_router_opencode_rpm) }}
+      tpm: {{ m.tpm | default(llm_router_opencode_tpm) }}
+      max_parallel_requests: {{ m.max_parallel_requests | default(llm_router_opencode_max_parallel_requests) }}
+    model_info:
+      max_input_tokens: {{ m.context_window }}
+      max_output_tokens: {{ m.max_output_tokens }}
+      max_tokens: {{ m.max_output_tokens }}
+{{- delegation_hints(m) }}
+{% endfor %}
+{% endif %}
+{% endfor %}
   # --- OpenRouter egress tier: explicit ids, one provider key ---
   # Never chained into fallbacks; an unseeded model renders no entry.
 {% for m in llm_router_openrouter_models %}
@@ -143,6 +170,7 @@ model_list:
       # otherwise healthy deployment. LiteLLM treats this as an internal control
       # flag and never forwards it in the upstream request body.
       use_chat_completions_api: true
+      order: {{ m.order | default(llm_router_openrouter_default_order) }}
       # Bound the minute so a runaway caller can't exhaust the period budget
       # before it's observed.
       rpm: {{ llm_router_openrouter_rpm }}
@@ -249,6 +277,7 @@ model_list:
     litellm_params:
       model: openrouter/*
       api_key: os.environ/OPENROUTER_API_KEY
+      order: {{ llm_router_openrouter_default_order }}
       rpm: {{ llm_router_openrouter_rpm }}
       tpm: {{ llm_router_openrouter_tpm }}
       max_parallel_requests: {{ llm_router_openrouter_max_parallel_requests }}
