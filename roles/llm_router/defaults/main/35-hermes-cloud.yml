@@ -82,10 +82,11 @@ llm_router_hermes_cloud_only_fallback_groups: >-
 #
 # Local legs are free, on-network attempts, so they go as early as they can
 # usefully be tried. That is NOT unconditionally first: a leg narrower than the
-# primary cannot serve what the primary just refused, and placing one ahead of
-# a rung that can aborts the whole chain. Under the default policy below, only
-# WIDE local legs lead; narrow ones go last. If every local leg is narrow, no
-# local leg is first.
+# primary cannot serve what the primary just refused, so placing one ahead of a
+# rung that can spends an attempt — and a unit of the shared max_fallbacks
+# budget — on a rung that was never going to answer. Under the default policy
+# below, only WIDE local legs lead; narrow ones go last. If every local leg is
+# narrow, no local leg is first.
 #
 # Order is composed by concatenation, never a re-sort — a plain `+` preserves
 # each side's own registry order within its half.
@@ -103,15 +104,26 @@ llm_router_hermes_primary_context_window: >-
 #
 #   primary 429s (a RATE error, not a size error) -> the ordinary `fallbacks`
 #   chain engages -> the next rung is a narrow leg -> the request is oversized
-#   for THAT leg -> pre-call checks raise ContextWindowExceededError -> litellm
-#   treats a context error raised INSIDE a fallback attempt as terminal and
-#   re-raises instead of advancing to the wider rungs behind it.
+#   for THAT leg -> pre-call checks raise ContextWindowExceededError, and that
+#   rung is spent without ever having been able to answer.
 #
-# Observed 2026-09-01: every overflow measured 35,643-44,740 tokens against a
-# 32768 leg, and the whole chain died there with free cloud rungs listed but
-# never reached. context_window_fallbacks does NOT rescue this -- the entries
-# are deployed and verified present, and the abort still happens, because the
-# map is not consulted for an error raised by a fallback leg.
+# CORRECTED against litellm 1.98.0. This block previously said the context
+# error is treated as terminal, that the whole chain dies there, and that
+# `context_window_fallbacks` "is not consulted for an error raised by a
+# fallback leg". All three are false:
+#
+#   * the map IS consulted, keyed on the failing LEG's own name;
+#   * a re-raise there is caught by the enclosing walk, which ADVANCES;
+#   * what ends a walk early is the shared max_fallbacks budget, which the
+#     nested per-group chains draw down too.
+#
+# An overflow observed 2026-09-01 against a 32768 leg, with wider cloud rungs
+# listed but not reached, is consistent with budget exhaustion rather than with
+# a terminal raise -- max_fallbacks was then derived from a single chain's
+# length while several chains render. That derivation now covers the whole map
+# (37-fallback-entry-points.yml). The narrow/wide split below is still worth
+# keeping: a narrow leg in front cannot answer, so it costs an attempt and a
+# unit of that budget for nothing.
 llm_router_hermes_local_narrow_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for m in llm_router_hermes_local_models -%}
