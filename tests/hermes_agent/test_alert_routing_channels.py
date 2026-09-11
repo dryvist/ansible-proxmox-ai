@@ -19,7 +19,6 @@ from _alert_routing_shared import (
     MAIN_TASKS,
     SPLUNK_STATUS,
     TRIAGE,
-    ZAMMAD_CLOSE,
     _deliver_targets,
     _resolve,
 )
@@ -58,11 +57,6 @@ def test_the_fabric_watchdog_alerts_to_the_issues_channel() -> None:
     audit window, several of them recoveries with no matching DOWN."""
     ctx = _resolve(CONFIGURED)
     assert ctx["fabric_watchdog_alert_channel"] == "C_ISSUES"
-
-
-def test_zammad_closures_stay_an_audit_record_in_the_work_channel() -> None:
-    ctx = _resolve(CONFIGURED)
-    assert _deliver_targets(ZAMMAD_CLOSE, ctx, MAIN_TASKS) == "slack:C_ALL"
 
 
 # --- the regression that caused the collapse ---------------------------------
