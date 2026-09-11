@@ -66,3 +66,36 @@
     success_msg: >-
       All models are within this guest's {{ llama_cpp_max_param_billions }}B
       ceiling.
+
+# --- Registry membership ------------------------------------------------------
+# defaults/main.yml types each served model's `name:` as a literal (the join
+# key to this file's backend facts, which the registry deliberately does not
+# carry). This is the loud-failure half of that tradeoff: a name that has
+# drifted from the registry — renamed, disabled, or never added — is caught
+# HERE, once, for every entry, rather than by a per-entry lookup that would
+# only re-type the same literal a second time for no benefit. Scoped per tier
+# so a light-tier name is checked against the light tier and a vllm-tier name
+# against the vllm tier, not the whole registry — a name that is real but in
+# the WRONG tier should fail exactly as loud as one that is not real at all.
+- name: Assert every served model name is a registered client_model_id for this tier
+  ansible.builtin.assert:
+    that:
+      - (llama_cpp_models | map(attribute='name') | list
+         | difference(_llama_cpp_expected_registry_ids)) | length == 0
+    fail_msg: >-
+      llama_cpp_models name(s)
+      {{ llama_cpp_models | map(attribute='name') | list
+         | difference(_llama_cpp_expected_registry_ids) }}
+      are not a registered client_model_id in the
+      {{ 'light' if 'llm_fast_group' in group_names else 'vllm' }} tier
+      (llm-models.d/). This role installs and serves whatever is listed in
+      llama_cpp_models regardless of the registry, so a drifted name here
+      serves a model the router never advertises for it — add or rename the
+      registry entry, or fix the name here to match it.
+    success_msg: >-
+      Every served model name is a registered client_model_id
+      ({{ _llama_cpp_expected_registry_ids | join(', ') }}).
+  vars:
+    _llama_cpp_expected_registry_ids: >-
+      {{ (llm_router_light_models if 'llm_fast_group' in group_names
+          else llm_router_vllm_models) | map(attribute='client_model_id') | list }}

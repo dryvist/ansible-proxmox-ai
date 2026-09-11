@@ -154,15 +154,41 @@ llama_cpp_health_check_timeout: 300
 #
 # hermes-4-14b (NousResearch Hermes-4-14B) was removed from this list — it is a
 # 14B model and violates the ABSOLUTE >=14B rule above. Do not re-add it here.
+#
+# `name:` on each entry is still a literal, deliberately — it is the JOIN KEY
+# between this file's backend facts (hf_repo, gguf, param_billions) and the
+# registry's own data, and llm-models.d/ is pure data on purpose (no
+# host/port/URL literals, no backend facts — docs/LLM_MODELS_SCHEMA.md), so it
+# cannot own the join key on this side. A lookup that selects a registry entry
+# by this same literal and returns it right back (e.g. `selectattr(...,
+# 'equalto', 'qwen3-4b') | first).client_model_id`) is NOT single-sourcing —
+# it is circular, adds a converge-time dependency on the registry for zero
+# de-duplication, and still re-types the literal, just inside the selector.
+# What the registry genuinely owns here is enforced separately, by the
+# converge-time assert below (tasks/guards.yml): every name here must resolve
+# to a registered client_model_id, so a rename in the registry fails loud
+# instead of silently drifting.
+#
+# `nomic-embed-text-v1.5`: an extra llama-swap alias on the embeddings entry
+# for third-party clients that default to this well-known embedding model
+# name. Nothing IN THIS REPO requests it (the only local embeddings consumer,
+# roles/llamaindex, requests `embeddings`), but a repo grep cannot see an
+# external/third-party consumer, and this fabric has a specific scar for
+# removing a serving-side alias on repo-local evidence alone (2026-07-28: every
+# consumer alias pointed at something the serving host did not serve — see
+# roles/llm_router/defaults/main/50-servable.yml). Kept for that reason.
+_llama_cpp_light_general_model_id: qwen3-4b
+_llama_cpp_light_embeddings_model_id: embeddings
+
 llama_cpp_hf_base: "https://huggingface.co"
 llama_cpp_models:
-  - name: qwen3-4b
+  - name: "{{ _llama_cpp_light_general_model_id }}"
     aliases: []
     hf_repo: "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF"
     gguf: "Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
     param_billions: 4
     embeddings: false
-  - name: embeddings
+  - name: "{{ _llama_cpp_light_embeddings_model_id }}"
     aliases: [nomic-embed-text-v1.5]
     hf_repo: "nomic-ai/nomic-embed-text-v1.5-GGUF"
     gguf: "nomic-embed-text-v1.5.Q4_K_M.gguf"
