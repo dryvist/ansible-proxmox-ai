@@ -123,9 +123,15 @@ llm_router_disable_spend_logs: false
 # _ProxyDBLogger.async_post_call_failure_hook returns early when
 # _should_track_errors_in_db() is false — so with it true a failed request
 # leaves no LiteLLM_SpendLogs row. The success path is gated by
-# disable_spend_logs instead, not by this. (The schema also declares a separate
-# LiteLLM_ErrorLogs table; whether this flag governs that one too was NOT
-# established, and nothing here reads it.)
+# disable_spend_logs instead, not by this.
+#
+# The schema also declares a LiteLLM_ErrorLogs table, and turning this flag off
+# does NOT start filling it: every reference to that table in the pinned
+# distribution is a SELECT (two reporting endpoints), with no writer anywhere.
+# It matters because the retention job below prunes the spend-log table and its
+# derived tool-index rows ONLY — an error table that did fill would be
+# unbounded, which is the original objection through a different door. Re-check
+# this on a version bump rather than assuming it stayed vestigial.
 #
 # Left true, every rate-limited and errored request is simply missing from the
 # request log, and a success rate computed from the remainder is 100% by
@@ -152,7 +158,11 @@ llm_router_disable_error_logs: false
 #     environment variable, not a setting here.
 #   - The table carries four indexes, so add roughly half again on top.
 # Multiply by the arrival rate and by 30 days. Raising the window multiplies
-# that total linearly and nothing else.
+# that total linearly and nothing else. At this fabric's current arrival rate
+# and refusal share that lands the full 30-day window in the low hundreds of
+# megabytes, worst case under half a gigabyte — a rounding error against the
+# volume, but confirm the free space before raising the window, because the
+# volume is shared and this role cannot see it.
 llm_router_spend_logs_retention_period: 30d
 # Cleanup cadence. LiteLLM defaults this to 1d when absent; it is declared so
 # the decision is visible in a diff, like store_model_in_db above. The job only

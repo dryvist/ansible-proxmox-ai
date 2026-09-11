@@ -130,6 +130,51 @@ GROUP BY tier
 ORDER BY answered DESC;
 ```
 
+## Identifying a fallback: what does not work, and why
+
+"Did a fallback chain run for this request" is a question this fabric has spent
+real effort on, so the answer is recorded here rather than re-derived.
+
+**The spend-log row cannot answer it, and the obvious reading of the columns is
+a trap.** It is tempting to treat `model` as the name asked for and
+`model_group` as the deployment selected, and call a difference a fallback. That
+is wrong in both directions, verified against the pinned distribution:
+
+- `model` is the **selected** deployment's upstream model string, reconstructed
+  with its provider prefix. It is not the caller's requested name.
+- `model_group` is the public name of the **selected** deployment too. On a
+  fallback the router overwrites the request's `model_group` with the fallback
+  target before the retry, so the row records where the request landed and not
+  where it started.
+- The two therefore differ on essentially every row by construction, fallback or
+  not. A query built on that comparison reports a fallback rate near 100%.
+- The router does track the chain as `previous_models`, but the spend-log
+  metadata is built from a fixed allowlist that does not include it, so it never
+  reaches the database.
+- `routing_decision` in that allowlist is auto-router provenance (complexity,
+  adaptive and quality strategies) and says nothing about fallbacks.
+- `attempted_retries` counts retries **within** one group and is reset when a
+  fallback enters the next one, so it is not a chain depth.
+
+**What can answer it.** The router emits dedicated success and failure fallback
+events carrying the original model group alongside the one that served. In the
+pinned distribution exactly one shipped consumer implements them, the Prometheus
+integration, which turns each into a labelled counter recording the requested
+model, the model that served, the caller's key alias and the status code that
+triggered the fallback. That is queryable, survives any logging change, and
+costs one counter increment per fallback rather than per request. Per-request
+attribution would need a callback that writes the same event to the database,
+which is code this repository does not currently deploy.
+
+**The router's own log cannot be raised to informational by the usual knobs.**
+Its three named loggers are left at their inherited level, which passes warnings
+and errors and drops informational records — which is why the routing trail is
+absent while error output is plentiful. `LITELLM_LOG` sets the **handler**
+threshold only and cannot recover a record the logger already dropped, and the
+supported verbosity switches jump straight to debug for every logger at once.
+The targeted route is a logging configuration file naming the router logger
+specifically, passed to the server at startup.
+
 ## Known limits of the measurement
 
 - **Caller attribution is partial, and the share does not depend on it.**
