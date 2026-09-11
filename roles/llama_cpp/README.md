@@ -45,7 +45,7 @@ Ordering: `tofu-proxmox` (LXC shell) → `ansible-proxmox` (GPU passthrough) →
 | model_name | aliases | kind |
 | --- | --- | --- |
 | `qwen3-4b` | — | chat (`--jinja`) |
-| `embeddings` | — | `--embeddings` |
+| `embeddings` | `nomic-embed-text-v1.5` | `--embeddings` |
 
 Both are members of the `chat` / `embeddings` llama-swap groups (`swap: false`
 for `embeddings`), so they stay loaded together. `hermes-4-14b` (14B) was
