@@ -118,11 +118,17 @@ llm_router_ui_password: >-
 # request_duration_ms. Nothing else in this fabric records the selected
 # deployment.
 llm_router_disable_spend_logs: false
-# Failures need a row for the same reason successes do. disable_error_logs is
-# not a second table here: LiteLLM's failure hook returns EARLY when it is true
-# (_ProxyDBLogger._should_track_errors_in_db), so a failed request writes no
-# spend-log row at all. Left true, every rate-limited and errored request is
-# simply missing, and a success rate computed from the remainder is 100% by
+# Failures need a row for the same reason successes do. What was verified in
+# the pinned source: this flag gates the SPEND-LOG write on the failure path —
+# _ProxyDBLogger.async_post_call_failure_hook returns early when
+# _should_track_errors_in_db() is false — so with it true a failed request
+# leaves no LiteLLM_SpendLogs row. The success path is gated by
+# disable_spend_logs instead, not by this. (The schema also declares a separate
+# LiteLLM_ErrorLogs table; whether this flag governs that one too was NOT
+# established, and nothing here reads it.)
+#
+# Left true, every rate-limited and errored request is simply missing from the
+# request log, and a success rate computed from the remainder is 100% by
 # construction — the exact shape of wrongness that reads like a healthy fabric.
 llm_router_disable_error_logs: false
 
@@ -133,13 +139,20 @@ llm_router_disable_error_logs: false
 # comparison, and nothing reads a spend row older than that. Raising it is a
 # storage decision, not a correctness one.
 #
-# Row cost is bounded, not open-ended: prompts and responses are redacted
-# (llm_router_store_prompts_in_spend_logs below), and a failure row's
-# error_message and traceback are each capped at LiteLLM's
-# MAX_STRING_LENGTH_PROMPT_IN_DB (2048 chars). A success row is well under 1 KB
-# and a worst-case failure row a few KB, so a 30-day window on this proxy's
-# arrival rate stays in the hundreds of megabytes on a cluster already sized
-# for Hindsight.
+# Row cost is BOUNDED, which is what makes a time-based window safe to reason
+# about. The bounds, so the next person can redo the arithmetic for their own
+# arrival rate rather than trusting a total:
+#   - Prompts and responses are redacted to "{}"
+#     (llm_router_store_prompts_in_spend_logs below), so a success row is the
+#     fixed columns plus the metadata blob — on the order of 1 KB.
+#   - A failure row additionally carries error_message and traceback, each
+#     capped by LiteLLM at MAX_STRING_LENGTH_PROMPT_IN_DB (2048 chars), so its
+#     worst case is roughly 5 KB and it cannot exceed that by carrying a larger
+#     request. Tracebacks are NOT suppressed by default; the opt-out is an
+#     environment variable, not a setting here.
+#   - The table carries four indexes, so add roughly half again on top.
+# Multiply by the arrival rate and by 30 days. Raising the window multiplies
+# that total linearly and nothing else.
 llm_router_spend_logs_retention_period: 30d
 # Cleanup cadence. LiteLLM defaults this to 1d when absent; it is declared so
 # the decision is visible in a diff, like store_model_in_db above. The job only
