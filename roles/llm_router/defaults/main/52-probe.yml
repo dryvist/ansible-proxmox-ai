@@ -42,7 +42,12 @@ _llm_router_probe_candidates: >-
      | list }}
 
 # One row per registered upstream id: where its listing lives, which credential
-# answers for it, and whether that credential resolves right now. Credential
+# answers for it, whether that credential resolves right now, and the name the
+# template renders it under. That last one is what lets the report separate
+# "this tier could not be checked" from "this tier is not on this proxy at
+# all" — every remote tier's render is gated on its credential, so an absent
+# credential means the deployment does not exist rather than merely being
+# unverified, and those are different facts to act on. Credential
 # VALUES never appear — only names and a boolean — so this is not secret.
 # An empty `endpoint` means no listing URL is known for that tier; those rows
 # become llm_router_probe_unsupported_tiers below rather than a silent drop.
@@ -63,6 +68,7 @@ _llm_router_probe_targets: >-
         'key_field': field,
         'has_credential': (bao_local_llm_secrets | default({}, true))[field]
           | default(lookup('env', cred), true) | trim | length > 0,
+        'route_name': m.route_group | default(m.client_model_id),
         'model': m.upstream_model_id}] -%}
   {%- endif -%}
   {%- endfor -%}
@@ -81,6 +87,7 @@ llm_router_remote_probes: >-
         'key_field': g[0].key_field,
         'has_credential': g[0].has_credential,
         'labels': g | map(attribute='label') | unique | list,
+        'route_names': g | map(attribute='route_name') | unique | list,
         'models': g | map(attribute='model') | unique | list}] -%}
   {%- endfor -%}
   {{ ns.out }}

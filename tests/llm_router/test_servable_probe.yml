@@ -22,10 +22,12 @@
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_servable_probe.yml -i localhost, -c local
 #
-# This file drives the JUDGE only. The plan it adjudicates — which endpoints are
-# probed at all, and with which registered ids — is proven separately in
-# test_servable_probe_plan.yml, which has to load the real defaults and registry
-# and would shadow every fixture below if it shared a file with them.
+# This file drives the JUDGE's GATE half. Its remote half is in
+# test_servable_probe_remote.yml and the plan it adjudicates in
+# test_servable_probe_plan.yml — the latter has to load the real defaults and
+# registry, whose variables land at host scope and outrank play vars, so keeping
+# it in a separate file (a separate process) is what stops it shadowing every
+# fixture here. That is a correctness boundary, not a filing convenience.
 
 - name: A serving gate that omits a claimed-servable model fails the converge
   hosts: localhost
@@ -173,110 +175,56 @@
           folding it into either hides a tier that has quietly stopped working.
         success_msg: A refused credential is reported as refused, and blocks nothing.
 
-- name: A provider listing missing a registered id fails the converge
+- name: Records the gate labels alias or peer are not mistaken for unregistered drift
   hosts: localhost
   gather_facts: false
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    llm_router_servable_models: []
-    llm_router_registry_enabled: []
+    # Only fixture-model-a is registered. The other two ids are unregistered and
+    # would each be fatal above — the ONLY thing that exempts them here is the
+    # gate's own label on the record. An alias appears in the listing when the
+    # gate enables alias listing; a peer appears when it federates, under an id
+    # form no registry entry can ever carry. Both are working configurations,
+    # so flagging them would be a false fatal over a healthy name.
+    #
+    # The conservative default is proven by the play above rather than restated
+    # here: its fixtures carry NO label at all and are still fatal, so an
+    # unlabelled record counts as a model and a gate that stops publishing this
+    # field degrades to the old behaviour rather than to a silent hole.
+    llm_router_servable_models: [fixture-model-a]
+    llm_router_registry_enabled:
+      - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
+    llm_router_remote_probes: []
     llm_router_probe_unsupported_tiers: []
-    _llm_router_gate_models: {status: -1}
-    llm_router_remote_probes:
-      - endpoint: https://fixture.invalid/v1/models
-        credential_env: FIXTURE_API_KEY
-        key_field: FIXTURE_API_KEY
-        has_credential: true
-        labels: [fixture-tier/fixture-provider]
-        models: [fixture-remote-a, fixture-remote-b]
-    _llm_router_remote_models:
-      results:
-        - status: 200
-          json:
-            data:
-              - {id: fixture-remote-a}
-          item:
-            endpoint: https://fixture.invalid/v1/models
-            labels: [fixture-tier/fixture-provider]
-            models: [fixture-remote-a, fixture-remote-b]
+    _llm_router_remote_models: {results: []}
+    _llm_router_gate_models:
+      status: 200
+      json:
+        data:
+          - id: fixture-model-a
+            meta:
+              llamaswap: {type: model, aliases: [fixture-role-alias]}
+          - id: fixture-role-alias
+            meta:
+              llamaswap: {type: alias, modelID: fixture-model-a}
+          - id: fixture-peer/fixture-model-z
+            meta:
+              llamaswap: {type: peer, peerID: fixture-peer}
   tasks:
-    - name: Prove an id the provider does not offer is fatal
-      block:
-        - name: Adjudicate a provider listing missing one registered id
-          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
-
-        - name: Fail because the judge admitted an unofferred registered id
-          ansible.builtin.fail:
-            msg: >-
-              assert-servable-parity.yml PASSED with fixture-remote-b registered
-              against an endpoint whose listing does not offer it. Every request
-              naming it would fail at the provider — this check is the only place
-              a typed id is compared with the endpoint that answers for it.
-      rescue:
-        - name: Confirm the judge failed for the absent remote id specifically
-          ansible.builtin.assert:
-            quiet: true
-            that:
-              - "'absent from the provider' in (ansible_failed_result.msg | default(''))"
-              - "'fixture-remote-b' in (ansible_failed_result.msg | default(''))"
-            fail_msg: >-
-              The judge failed, but not for the absent remote id — got
-              {{ ansible_failed_result.msg | default('(none)') }}.
-            success_msg: A registered id the provider does not offer is fatal, naming it.
-
-- name: An unreachable or uncredentialed remote tier is reported, not counted as verified
-  hosts: localhost
-  gather_facts: false
-  vars:
-    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    llm_router_servable_models: []
-    llm_router_registry_enabled: []
-    llm_router_probe_unsupported_tiers: [fixture-tier/unparseable-provider]
-    _llm_router_gate_models: {status: -1}
-    llm_router_remote_probes:
-      # Queried, and the endpoint never answered — carrying the SAME mismatch
-      # the play above proved fatal.
-      - endpoint: https://fixture-down.invalid/v1/models
-        credential_env: FIXTURE_API_KEY
-        key_field: FIXTURE_API_KEY
-        has_credential: true
-        labels: [fixture-tier/down]
-        models: [fixture-remote-a, fixture-remote-b]
-      # Never queried at all: no credential resolved, which is the normal state
-      # of a tier nobody has subscribed to.
-      - endpoint: https://fixture-unseeded.invalid/v1/models
-        credential_env: FIXTURE_UNSEEDED_KEY
-        key_field: FIXTURE_UNSEEDED_KEY
-        has_credential: false
-        labels: [fixture-tier/unseeded]
-        models: [fixture-remote-c]
-    _llm_router_remote_models:
-      results:
-        - status: 0
-          item:
-            endpoint: https://fixture-down.invalid/v1/models
-            labels: [fixture-tier/down]
-            models: [fixture-remote-a, fixture-remote-b]
-  tasks:
-    - name: Adjudicate with one endpoint down and one uncredentialed
+    - name: Adjudicate a listing carrying an alias and a peer record
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
 
-    - name: Confirm each decline is reported as its own kind of decline
+    - name: Confirm only the gate's real models were compared
       ansible.builtin.assert:
         quiet: true
         that:
-          - _llm_router_probe_report.verified | length == 0
-          - _llm_router_probe_report.unreachable == ['https://fixture-down.invalid/v1/models']
-          - _llm_router_probe_report.no_credential == ['https://fixture-unseeded.invalid/v1/models']
-          - _llm_router_probe_report.unsupported == ['fixture-tier/unparseable-provider']
+          - _llm_router_probe_report.gate == 'verified'
+          - _llm_router_probe_report.gate_ids == ['fixture-model-a']
         fail_msg: >-
-          Declines were not reported distinctly: verified=
-          {{ _llm_router_probe_report.verified }}, unreachable=
-          {{ _llm_router_probe_report.unreachable }}, no_credential=
-          {{ _llm_router_probe_report.no_credential }}, unsupported=
-          {{ _llm_router_probe_report.unsupported }}. A green converge in which
-          every probe silently declined is the failure mode this reporting
-          exists to prevent.
+          The gate's compared set was {{ _llm_router_probe_report.gate_ids }},
+          not just the one record it labels a model. An alias or peer id counted
+          as a served model fails the converge over a name that is working, and
+          neither is a name the registry can ever carry.
         success_msg: >-
-          Unreachable, uncredentialed and unparseable tiers are each reported as
-          unchecked, and none is counted as verified.
+          Alias and peer records are excluded by the gate's own label; only real
+          models are compared.

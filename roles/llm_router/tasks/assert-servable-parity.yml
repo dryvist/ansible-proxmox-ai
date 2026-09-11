@@ -26,9 +26,32 @@
                  if (_llm_router_gate_models.status | default(0) | int) in [401, 403]
                  else 'unreachable') }}
       status: "{{ _llm_router_gate_models.status | default(0) | int }}"
+      # ONLY the records the gate itself calls a model. Its listing self-labels
+      # every entry under meta.llamaswap.type: a physical model, an `alias`
+      # (emitted only when the gate enables alias listing), or a federated
+      # `peer` (id form `<peer>/<model>`, which no registry entry will ever
+      # carry). Both of those would otherwise be flagged as unregistered drift
+      # and fail a converge over a name that is working correctly.
+      #
+      # Deliberately NOT done by comparing against this repo's stable_aliases:
+      # those are LiteLLM model_group_alias names owned here, while the gate's
+      # aliases are the serving host's own role vocabulary owned in another
+      # repository. They are different sets that happen to share a word, so
+      # exempting ours would look principled and cover nothing.
+      #
+      # An UNLABELLED record counts as a model. If the gate ever stops
+      # publishing this field, the check degrades to its previous behaviour — a
+      # possible false fatal that announces itself — never to a hole that
+      # passes quietly.
       ids: >-
-        {{ (_llm_router_gate_models.json | default({}, true)).get('data', [])
-           | map(attribute='id') | list }}
+        {%- set ns = namespace(out=[]) -%}
+        {%- for r in (_llm_router_gate_models.json | default({}, true)).get('data', []) -%}
+        {%- if r.get('meta', {}).get('llamaswap', {}).get('type', 'model')
+               not in ['alias', 'peer'] -%}
+        {%- set ns.out = ns.out + [r.id] -%}
+        {%- endif -%}
+        {%- endfor -%}
+        {{ ns.out }}
     _llm_router_remote_probe_results: >-
       {%- set ns = namespace(out=[]) -%}
       {%- for r in _llm_router_remote_models.results | default([]) -%}
@@ -45,12 +68,9 @@
       {%- endfor -%}
       {{ ns.out }}
 
-# BEFORE the asserts, deliberately: a converge the probe fails should still
-# show what was and was not checked, and a debug task after a failing assert
-# never runs.
 # A machine-readable verdict, not only a printed one. The debug below renders
-# from it, and tests/llm_router/test_servable_probe.yml asserts on it — which
-# is what makes "skipped because unreachable" provable as a SKIP rather than
+# from it, and tests/llm_router/test_servable_probe.yml asserts on it — which is
+# what makes "skipped because unreachable" provable as a SKIP rather than
 # inferred from a converge that happened not to fail.
 - name: Summarise which probes verified, which were refused, and which never ran
   ansible.builtin.set_fact:
@@ -66,10 +86,42 @@
       unreachable: >-
         {{ _llm_router_remote_probe_results | selectattr('state', 'equalto', 'unreachable')
            | map(attribute='endpoint') | list }}
+      # TWO facts, not one. Every remote tier's render is gated on its own
+      # credential, so an unseeded tier is not merely unverified — it is not
+      # deployed on this proxy at all. Reporting only "could not check" states
+      # the milder of the two, and leaves a chain that is shorter in production
+      # than in the repository looking like a gap in this check's coverage
+      # rather than an absent tier.
+      not_deployed: "{{ _llm_router_absent_groups }}"
       no_credential: >-
-        {{ llm_router_remote_probes | rejectattr('has_credential')
-           | map(attribute='endpoint') | list }}
+        {{ _llm_router_uncredentialed | map(attribute='endpoint') | list
+           | difference(_llm_router_absent_groups) }}
       unsupported: "{{ llm_router_probe_unsupported_tiers }}"
+  vars:
+    _llm_router_uncredentialed: >-
+      {{ llm_router_remote_probes | rejectattr('has_credential') | list }}
+    # The names the template really rendered, read from the config
+    # assert-registry-render-parity.yml parsed a moment earlier in this same
+    # chain. Derived from the render rather than from the registry's enabled
+    # set, so a tier that stops rendering is observed rather than assumed.
+    _llm_router_rendered_model_names: >-
+      {{ (_llm_router_parity_config | default({}, true)).get('model_list', [])
+         | map(attribute='model_name') | unique | list }}
+    # Uncredentialed groups the render does not carry: POSITIVE evidence the
+    # tier is not on this proxy. With no render in scope this stays empty and
+    # every uncredentialed group falls back to the weaker "cannot check",
+    # because "I cannot tell whether it is deployed" must never be reported as
+    # "it is not deployed".
+    _llm_router_absent_groups: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- for g in _llm_router_uncredentialed -%}
+      {%- if _llm_router_rendered_model_names | length > 0
+             and g.route_names | default([])
+                 | intersect(_llm_router_rendered_model_names) | length == 0 -%}
+      {%- set ns.out = ns.out + [g.endpoint] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.out }}
 
 # BEFORE the asserts, deliberately: a converge the probe fails should still show
 # what was and was not checked, and a debug task after a failing assert never
@@ -94,7 +146,12 @@
         Remote endpoints NOT CHECKED, unreachable:
         {{ _llm_router_probe_report.unreachable | join(', ') | default('none', true) }}
       - >-
-        Remote endpoints NOT CHECKED, no credential resolved:
+        Remote tiers NOT DEPLOYED on this proxy — no credential, so the
+        template rendered no deployment for them at all:
+        {{ _llm_router_probe_report.not_deployed | join(', ') | default('none', true) }}
+      - >-
+        Remote endpoints NOT CHECKED, no credential resolved (the deployment
+        exists, the probe could not reach past the credential):
         {{ _llm_router_probe_report.no_credential | join(', ') | default('none', true) }}
       - >-
         Tiers with no model listing this role can parse:
