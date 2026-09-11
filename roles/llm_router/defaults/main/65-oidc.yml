@@ -1,0 +1,31 @@
+---
+# Authelia SSO for the admin UI (generic OIDC).
+#
+# LiteLLM's generic-OIDC support is driven entirely by environment variables:
+# GENERIC_CLIENT_ID/SECRET, the three endpoint URLs, PROXY_BASE_URL (the
+# redirect target is <proxy_base_url>/sso/callback), and
+# GENERIC_USER_ID_ATTRIBUTE. Authelia exposes its OIDC provider under
+# /api/oidc/* on the shared auth host, so every endpoint here is derived from
+# one issuer base instead of three literals that could drift apart.
+#
+# The secret is bao-first with an env fallback and deliberately NOT mandatory
+# (unlike llm_router_ui_password): until the Authelia side seeds the client
+# credential into OpenBao, llm_router_oidc_enabled stays false and the converge
+# stays green with SSO absent rather than half-configured. The enabled flag
+# follows the secret, not a manual switch, so there is exactly one signal.
+llm_router_oidc_client_id: litellm
+
+llm_router_oidc_issuer_base: "https://authelia.{{ ai_subdomain }}"
+llm_router_oidc_authorization_endpoint: "{{ llm_router_oidc_issuer_base }}/api/oidc/authorization"
+llm_router_oidc_token_endpoint: "{{ llm_router_oidc_issuer_base }}/api/oidc/token"
+llm_router_oidc_userinfo_endpoint: "{{ llm_router_oidc_issuer_base }}/api/oidc/userinfo"
+
+llm_router_oidc_client_secret: >-
+  {{ bao_apps_secrets.authelia_oidc_litellm_client_secret
+     | default(lookup('env', 'LITELLM_OIDC_CLIENT_SECRET'), true) }}
+
+llm_router_oidc_enabled: "{{ llm_router_oidc_client_secret | string | trim | length > 0 }}"
+
+llm_router_oidc_proxy_base_url: "https://llm.{{ ai_subdomain }}"
+llm_router_oidc_user_id_attribute: email
+llm_router_oidc_scope: "openid profile email"
