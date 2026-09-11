@@ -10,8 +10,8 @@
 # value must come from bao_apps_secrets with an env fallback, never a literal
 # baked into the defaults.
 #
-# Run (from the REPO ROOT, with PROXMOX_SUBDOMAIN exported):
-#   PROXMOX_SUBDOMAIN=pve.example.test \
+# Run (from the REPO ROOT — self-contained: every mandatory env-looked-up
+# secret and PROXMOX_SUBDOMAIN are stubbed below, so no environment is needed):
 #   ansible-playbook tests/llm_router/test_litellm_oidc_env.yml -i localhost, -c local
 
 - name: Verify the OIDC env block renders when the client secret resolves
@@ -37,9 +37,15 @@
         file: "{{ playbook_dir }}/../../inventory/group_vars/all.yml"
 
     # set_fact (precedence 19) outranks include_vars (18), so these stubs win
-    # over anything the defaults/group_vars derive from the same names.
+    # over anything the defaults/group_vars derive from the same names. The
+    # master key, large-tier bearer and PROXMOX_SUBDOMAIN are mandatory
+    # env-lookups in 60-ops.yml/all.yml; stubbing them here keeps the test
+    # self-contained, so its documented run command needs no environment.
     - name: Stub the tofu inventory data and the bao secret maps
       ansible.builtin.set_fact:
+        llm_router_master_key: dummy-render-check
+        llm_router_llm_large_bearer: dummy-render-check
+        ai_subdomain: pve.example.test
         tofu_data:
           domain: example.com
           constants:
@@ -58,7 +64,9 @@
         that:
           - _env is search('(?m)^GENERIC_CLIENT_ID=litellm$')
           - _env is search('(?m)^GENERIC_CLIENT_SECRET=dummy-render-check$')
-          - _env is search('(?m)^GENERIC_AUTHORIZATION_ENDPOINT=https://authelia\.pve\.example\.test/api/oidc/authorization$')
+          - >-
+            _env is search('(?m)^GENERIC_AUTHORIZATION_ENDPOINT='
+            ~ 'https://authelia\.pve\.example\.test/api/oidc/authorization$')
           - _env is search('(?m)^GENERIC_TOKEN_ENDPOINT=https://authelia\.pve\.example\.test/api/oidc/token$')
           - _env is search('(?m)^GENERIC_USERINFO_ENDPOINT=https://authelia\.pve\.example\.test/api/oidc/userinfo$')
           - _env is search('(?m)^PROXY_BASE_URL=https://llm\.pve\.example\.test$')
@@ -109,6 +117,9 @@
 
     - name: Stub the tofu inventory data with NO secret anywhere
       ansible.builtin.set_fact:
+        llm_router_master_key: dummy-render-check
+        llm_router_llm_large_bearer: dummy-render-check
+        ai_subdomain: pve.example.test
         tofu_data:
           domain: example.com
           constants:
