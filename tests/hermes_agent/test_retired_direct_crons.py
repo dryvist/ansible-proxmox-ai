@@ -73,6 +73,21 @@ def test_every_disabled_direct_cron_has_a_recognised_pause_task():
         "already on the guest keeps firing until something pauses it.")
 
 
+def test_unmanaged_splunk_auto_ssh_burst_is_retired_if_present():
+    defaults = load_defaults()
+    tasks = role_tasks_text(TASKS_PATH)
+
+    assert defaults["hermes_agent_retire_splunk_auto_ssh_burst"] is True
+    assert (
+        defaults["hermes_agent_retired_splunk_auto_ssh_burst_cron_name"]
+        == "splunk-auto-ssh-burst"
+    )
+    assert (
+        "cron pause {{ hermes_agent_retired_splunk_auto_ssh_burst_cron_name }}"
+        in " ".join(tasks.split())
+    )
+
+
 # test_a_retirement_that_names_a_card_leaves_that_card_able_to_run DELETED
 # (native-cron reframe): `replaced_by_card` no longer exists anywhere in
 # hermes_agent_direct_cron_jobs — confirmed by grepping defaults/main.yml for
