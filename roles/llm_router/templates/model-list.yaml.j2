@@ -127,6 +127,7 @@ model_list:
       max_parallel_requests: {{ llm_router_passthrough_max_parallel_requests }}
 {% endif %}
 {% endif %}
+{% include 'model-list-opencode.yaml.j2' %}
   # --- OpenRouter egress tier: explicit ids, one provider key ---
   # Never chained into fallbacks; an unseeded model renders no entry.
 {% for m in llm_router_openrouter_models %}
@@ -143,6 +144,7 @@ model_list:
       # otherwise healthy deployment. LiteLLM treats this as an internal control
       # flag and never forwards it in the upstream request body.
       use_chat_completions_api: true
+      order: {{ m.order | default(llm_router_openrouter_default_order) }}
       # Bound the minute so a runaway caller can't exhaust the period budget
       # before it's observed.
       rpm: {{ llm_router_openrouter_rpm }}
@@ -237,6 +239,18 @@ model_list:
       order: 2
     model_info:
       disable_background_health_check: true
+      # The survivor's OWN window, from the primary's registry entry — not the
+      # group's paid member's. Omitting it resolved max_input_tokens to null,
+      # which exempts this deployment from enable_pre_call_checks entirely: an
+      # over-long request that the paid member would have refused was instead
+      # handed to a local gate that cannot serve it, and answered from a
+      # silently truncated prompt. Advertising the real number is narrower than
+      # the paid member on purpose (55-roles.yml, "FALLBACK ORDER IS ONE-WAY"):
+      # a rejected request beats a confidently wrong answer. It stays the less
+      # preferred member by order, so it can only ever be reached once the paid
+      # member is budget-filtered out.
+      max_input_tokens: {{ llm_router_hermes_primary_context_window }}
+      max_tokens: {{ llm_router_hermes_primary_context_window }}
 {% endfor %}
 {% if llm_router_openrouter_wildcard_enabled | bool %}
 {% set _wc_key = bao_local_llm_secrets.OPENROUTER_API_KEY | default(lookup('env', 'OPENROUTER_API_KEY'), true) %}
@@ -249,6 +263,7 @@ model_list:
     litellm_params:
       model: openrouter/*
       api_key: os.environ/OPENROUTER_API_KEY
+      order: {{ llm_router_openrouter_default_order }}
       rpm: {{ llm_router_openrouter_rpm }}
       tpm: {{ llm_router_openrouter_tpm }}
       max_parallel_requests: {{ llm_router_openrouter_max_parallel_requests }}

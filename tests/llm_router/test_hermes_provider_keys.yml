@@ -55,6 +55,9 @@
           - mount: test-external
             path: test/provider-keys/openrouter
           - mount: test-external
+            path: test/provider-keys/opencode
+            optional: true
+          - mount: test-external
             path: test/provider-keys/gemini
             optional: true
           - mount: test-external
@@ -90,6 +93,15 @@
       ansible.builtin.set_fact:
         bao_local_llm_secrets:
           OPENROUTER_API_KEY: test-openrouter-provider-key
+          # Explicitly blank rather than absent. A field missing from this dict
+          # falls through to lookup('env', ...), so the "renders no credential"
+          # assertions below would be reading the RUNNER's environment and pass
+          # or fail on whether the operator happens to export one of these.
+          # A whitespace field is the fixture saying "this provider has no
+          # credential" in a way the fixture controls.
+          OPENCODE_API_KEY: "   "
+          GEMINI_API_KEY: "   "
+          DASHSCOPE_API_KEY: "   "
 
     - name: Re-evaluate the Hermes cloud projections
       ansible.builtin.include_vars:
@@ -137,6 +149,7 @@
             == [['hermes-cloud-free', 'hermes-cloud-openrouter']]
           - _cloud_models | length == 2
           - _environment | regex_findall('(?m)^OPENROUTER_API_KEY=') | length == 1
+          - _environment | regex_findall('(?m)^OPENCODE_API_KEY=') | length == 0
           - _environment | regex_findall('(?m)^GEMINI_API_KEY=') | length == 0
           - _environment | regex_findall('(?m)^DASHSCOPE_API_KEY=') | length == 0
         fail_msg: >-
@@ -213,6 +226,7 @@
       ansible.builtin.set_fact:
         bao_local_llm_secrets:
           OPENROUTER_API_KEY: "   "
+          OPENCODE_API_KEY: "  "
           GEMINI_API_KEY: "  "
           DASHSCOPE_API_KEY: "\n"
 
@@ -240,7 +254,8 @@
           - "'context_window_fallbacks' not in _config.router_settings"
           - _cloud_models | length == 0
           - _openrouter_egress | length == 0
-          - _environment | regex_findall('(?m)^(OPENROUTER|GEMINI|DASHSCOPE)_API_KEY=') | length == 0
+          - _opencode_deployments | length == 0
+          - _environment | regex_findall('(?m)^(OPENROUTER|OPENCODE|GEMINI|DASHSCOPE)_API_KEY=') | length == 0
         fail_msg: >-
           Whitespace-only secret fields must render no cloud deployments,
           fallbacks, or environment credentials -- only the not-credential-gated
@@ -252,3 +267,10 @@
         _openrouter_egress: >-
           {{ _config.model_list
              | selectattr('litellm_params.model', 'match', '^openrouter/') | list }}
+        # Matched on the tier's own base URL, not on a name prefix: a renamed
+        # entry would slip past a name match and this assertion would go quiet.
+        _opencode_deployments: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'equalto',
+                          llm_router_opencode_base_url) | list }}

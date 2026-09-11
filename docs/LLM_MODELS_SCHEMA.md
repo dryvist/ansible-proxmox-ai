@@ -30,9 +30,13 @@ Required on every entry:
   provider          LiteLLM provider prefix — `openai` (local OpenAI-compatible
                     backends), `auto_router`, `dashscope`, `gemini`, or
                     `openrouter`.
-  tier              `large` | `light` | `vllm` | `hermes-router` |
+  tier              `large` | `light` | `vllm` | `opencode` | `hermes-router` |
                     `hermes-cloud` | `openrouter`. Selects the deployment
                     shape; light entries become two same-name deployments.
+                    `opencode` is a subscription tier: it advertises no
+                    per-token price (see input_cost_per_token below) and its
+                    deployment order comes from a role default, never a
+                    registry field.
   enabled           false removes the entry from the rendered config entirely.
 
 Optional:
@@ -100,7 +104,11 @@ Optional:
   max_output_tokens   Maximum advertised output for the deployment.
   input_cost_per_token / output_cost_per_token
                       Real USD/token list prices used by cost routing and spend
-                      accounting. Never alter these to encode preference.
+                      accounting. Never alter these to encode preference. OMIT
+                      them on a flat-rate subscription tier rather than writing
+                      0: the marginal price there is not a number, and a
+                      literal zero would report the tier as free in spend
+                      accounting and rank it alongside genuinely free rungs.
   credential_env      One provider-level environment variable:
                       `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, or
                       `DASHSCOPE_API_KEY`.

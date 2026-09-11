@@ -1,0 +1,172 @@
+---
+# The flat-rate subscription tier's own render contract.
+#
+# Split out of test_hermes_provider_keys.yml, which crossed the repo's per-file
+# token budget. The seam is real rather than mechanical: that file is about one
+# provider credential enabling only its own fallback domain, this one is about
+# a single tier projecting one deployment per registry entry. Per
+# .token-limits.yaml the remedy for an over-budget file is a split along a seam
+# like this, never a raised budget.
+#
+# WHY THIS FILE EXISTS. Every other fixture in the suite leaves this tier's
+# credential unseeded, so its whole render block sits on the false branch of
+# its credential gate and nothing inside it is ever executed -- including the
+# hints projection, whose one known defect mode (a macro newline consumed by
+# trim_blocks) only shows on a key-gated tier. This is the play that runs it.
+#
+# Every expectation is DERIVED -- ids and windows from the registry entries,
+# order from the tier default. A literal model id, order or window typed here
+# would be a second place the value lives, which is the duplication
+# llm-models.d/ exists to remove; it would also keep passing after the registry
+# changed.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_opencode_tier_render.yml \
+#     -i localhost, -c local
+
+- name: Verify the seeded OpenCode subscription tier renders once per upstream
+  # Every other fixture in this file leaves OPENCODE_API_KEY unseeded, so the
+  # tier's whole render block sat on the false branch of its credential gate and
+  # nothing in it was ever executed. This play is the one that runs it.
+  #
+  # Every expectation below is DERIVED -- from the registry entries and from the
+  # tier's own defaults. A literal model id, order or window typed here would be
+  # a second place the value lives, which is the duplication llm-models.d/
+  # exists to remove; it would also keep passing after the registry changed.
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Seed the subscription credential and nothing else
+      ansible.builtin.set_fact:
+        bao_local_llm_secrets:
+          OPENCODE_API_KEY: test-opencode-subscription-key
+          # Blank, not absent: an absent field falls through to the runner's
+          # own environment and the metered-tier assertions below would depend
+          # on what the operator happens to export.
+          OPENROUTER_API_KEY: "   "
+          GEMINI_API_KEY: "   "
+          DASHSCOPE_API_KEY: "   "
+
+    - name: Re-evaluate the Hermes cloud projections
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
+
+    - name: Render the config and environment with the subscription key present
+      ansible.builtin.set_fact:
+        _config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+        _environment: >-
+          {{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}
+
+    - name: One deployment per registered upstream, at the tier's order and window
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # Degenerate-fixture guard: if the tier were ever emptied, every
+          # assertion below would hold vacuously and this play would prove
+          # nothing while still reporting green.
+          - llm_router_opencode_models | length > 0
+          - _rendered_shape == _registry_shape
+          # The hints projection, which no other fixture reaches on this tier.
+          # Counted against the registry rather than asserted per entry: every
+          # entry here declares hints, so an exact count is the strongest form
+          # and needs no list of ids.
+          - _hinted | length == llm_router_opencode_models | length
+          - _environment | regex_findall('(?m)^OPENCODE_API_KEY=') | length == 1
+          - _environment | regex_findall('(?m)^(OPENROUTER|GEMINI|DASHSCOPE)_API_KEY=') | length == 0
+        fail_msg: >-
+          The subscription tier does not project one deployment per upstream at
+          the tier's order and the entry's registered window, with its hints.
+          rendered={{ _rendered_shape }} expected={{ _registry_shape }}
+          hinted={{ _hinted | length }} of {{ llm_router_opencode_models | length }}.
+        success_msg: >-
+          {{ _rendered_shape | length }} subscription deployments render, one per
+          registry entry, each at order {{ llm_router_opencode_default_order }}
+          and its registered window.
+      vars:
+        _opencode_deployments: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'equalto',
+                          llm_router_opencode_base_url) | list }}
+        # One [name, order, window] row per rendered deployment against one per
+        # registry entry. Sorted, NOT deduplicated: a second deployment under an
+        # id already rendered is the banned duplicate this comparison exists to
+        # catch, and anything that collapses repeats would hide exactly that.
+        # Every expected value is read -- the id and window from the entry, the
+        # order from the tier default -- so a registry edit moves both sides
+        # together and a drifting template moves only one.
+        _rendered_shape: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for d in _opencode_deployments -%}
+          {%- set ns.rows = ns.rows + [[d.model_name,
+                d.litellm_params.order | int,
+                d.model_info.max_input_tokens | int]] -%}
+          {%- endfor -%}
+          {{ ns.rows | sort }}
+        _registry_shape: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for m in llm_router_opencode_models -%}
+          {%- set ns.rows = ns.rows + [[m.client_model_id,
+                llm_router_opencode_default_order | int,
+                m.context_window | int]] -%}
+          {%- endfor -%}
+          {{ ns.rows | sort }}
+        _hinted: >-
+          {{ _opencode_deployments
+             | selectattr('model_info.hints', 'defined') | list }}
+
+    - name: No subscription id shares a model group with a metered one
+      # The collision this tier's id prefix exists to prevent. Two deployments
+      # under one model_name form ONE LiteLLM model group, where the lower
+      # `order` wins selection -- so a subscription entry sharing a metered
+      # entry's id would capture that id's traffic at its own, much smaller,
+      # window. Asserted structurally against both tiers rather than against the
+      # two ids that collided once, so the next one is caught too.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _collisions | length == 0
+        fail_msg: >-
+          Subscription and metered tiers share client_model_id(s):
+          {{ _collisions | join(', ') }} -- they render into one model group and
+          the lower-order subscription deployment captures every request to the
+          name, at its own narrower window. Give the subscription entry a
+          distinct id.
+        success_msg: "No subscription id collides with the metered tier."
+      vars:
+        _collisions: >-
+          {{ llm_router_opencode_models | map(attribute='client_model_id') | list
+             | intersect(llm_router_openrouter_models
+                         | map(attribute='client_model_id') | list) }}
