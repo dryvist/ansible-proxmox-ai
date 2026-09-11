@@ -31,6 +31,52 @@ llm_router_light_api_key: "sk-noauth"
 # exists without anything noticing.
 llm_router_otel_endpoint: "{{ ai_orchestration_otel_endpoint }}"
 
+# --- Routing observability ----------------------------------------------------
+# Fallback events, as counters rather than prose.
+#
+# The router emits a dedicated event on every fallback, carrying the model group
+# ORIGINALLY asked for alongside the one that ended up serving. Exactly one
+# shipped integration consumes those events, and it turns each into a labelled
+# counter. Nothing else in this proxy records that pairing: the per-request row
+# carries only the deployment that served (see
+# docs/LLM_ROUTER_OBSERVABILITY.md, "Identifying a fallback"), so without this
+# "did a fallback chain run" is unanswerable from stored data in either
+# direction — which is exactly the state this fabric was in.
+#
+# Chosen over raising the log level because it is volume-independent: one
+# counter increment per fallback rather than lines per request, and it survives
+# any later logging change. The two are complements, not alternatives — the
+# scoped log level below gives the per-request trail this cannot.
+#
+# The metrics endpoint is AUTHENTICATED by default in this release
+# (require_auth_for_metrics_endpoint). Deliberately not disabled: the counters
+# carry model names and key aliases, and the proxy is fronted by an ingress that
+# can carry a credential. A scraper needs a key, exactly like any other client.
+llm_router_prometheus_enabled: true
+
+# Level for the router's OWN logger, and the reason this exists at all.
+#
+# LiteLLM never calls setLevel on its three named loggers, so they inherit the
+# root logger's WARNING. Errors and warnings are emitted; INFO records are
+# dropped AT THE LOGGER. Every routing decision — which rung was tried, whether
+# a chain was entered, which deployment was selected — is logged at INFO, so the
+# whole routing trail was invisible while the log looked healthy and busy.
+#
+# THE OBVIOUS FIX DOES NOT WORK, and silently. LITELLM_LOG sets the HANDLER
+# threshold only; a record the logger already discarded can never reach a
+# handler, so LITELLM_LOG=INFO changes nothing while looking like it should.
+# The supported switches (--detailed_debug, set_verbose) both jump EVERY logger
+# to DEBUG, which is not a diagnostic — it is every library plus payload dumps,
+# on a proxy that carries prompts. Refused.
+#
+# What is left is a logging config file, which the proxy hands to its server as
+# a dictConfig, naming the router logger alone. That is what this renders.
+# INFO on the router logger costs roughly one line per request plus fallback
+# lines, so it is affordable continuously; set it to WARNING to return to the
+# silent behaviour without removing the file.
+llm_router_router_log_level: INFO
+llm_router_log_config_file: "{{ llm_router_config_dir }}/logging.yaml"
+
 # Whether the routers carry the llm-fast (GPU) deployments. False while the
 # GPU host is frozen (see llama_cpp_service_enabled): the firewall DROPs
 # traffic to the dead backend, so a shuffled request hangs the full client

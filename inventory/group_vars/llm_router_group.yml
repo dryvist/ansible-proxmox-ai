@@ -68,8 +68,38 @@ _llm_router_spend_store_present: >-
 llm_router_redis_host: >-
   {{ hostvars[(groups['llm_redis_group'] | default([]))[0]].container_ip
      if (_llm_router_spend_store_present | bool) else '' }}
-llm_router_openrouter_budget_limit: "{{ 1.0 if (_llm_router_spend_store_present | bool) else 0 }}"
-llm_router_openrouter_budget_period: 1d
+
+# PERIOD IS WEEKLY, and the limit is deliberately NOT the daily one multiplied
+# by the period. Egress here is bursty rather than level: only a small minority
+# of days ever reach the ceiling, and the rest finish under it. A daily bucket
+# discards the unused majority and then refuses requests on exactly the days
+# that needed the headroom, which is the behaviour this replaces.
+#
+# The pair below is chosen so the change improves BOTH quantities the daily
+# bucket traded against each other, rather than buying one with the other:
+#   - a burst day may now draw several times what a single day could before, on
+#     the days that were being refused;
+#   - the worst-case spend per week FALLS well below seven times the old daily
+#     ceiling, so the outer exposure is tightened, not multiplied.
+# Multiplying the daily figure by seven would have held worst-case flat while
+# letting realised spend rise toward it, which is a larger change than the
+# redistribution this is meant to be.
+#
+# WHAT IS TRADED AWAY, because this is a real regression and not a free win:
+# the window is a tumbling one anchored at its first spend, not calendar
+# aligned (litellm/router_strategy/budget_limiter.py), and nothing here bounds
+# how fast it drains. A single caller can exhaust the window in minutes, and
+# the ceiling then holds until it rolls — longer than the previous period. The
+# per-deployment rate ceilings in
+# roles/llm_router/defaults/main/30-openrouter.yml bound the RATE of
+# accumulation and are the only lever over drain speed; lower them if that
+# recovery latency is unacceptable.
+#
+# Groups carrying a local survivor degrade to local serving when the ceiling
+# binds. The enumerated egress tier has no survivor and refuses instead, so
+# the longer recovery window is felt there.
+llm_router_openrouter_budget_limit: "{{ 3.0 if (_llm_router_spend_store_present | bool) else 0 }}"
+llm_router_openrouter_budget_period: 7d
 
 # Postgres for the Adaptive Router's learned quality estimates (see the role's
 # defaults/main/45-database.yml). Self-arming on the published inventory, the

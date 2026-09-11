@@ -82,10 +82,11 @@ llm_router_hermes_cloud_only_fallback_groups: >-
 #
 # Local legs are free, on-network attempts, so they go as early as they can
 # usefully be tried. That is NOT unconditionally first: a leg narrower than the
-# primary cannot serve what the primary just refused, and placing one ahead of
-# a rung that can aborts the whole chain. Under the default policy below, only
-# WIDE local legs lead; narrow ones go last. If every local leg is narrow, no
-# local leg is first.
+# primary cannot serve what the primary just refused, so placing one ahead of a
+# rung that can spends an attempt — and a unit of the shared max_fallbacks
+# budget — on a rung that was never going to answer. Under the default policy
+# below, only WIDE local legs lead; narrow ones go last. If every local leg is
+# narrow, no local leg is first.
 #
 # Order is composed by concatenation, never a re-sort — a plain `+` preserves
 # each side's own registry order within its half.
@@ -103,15 +104,26 @@ llm_router_hermes_primary_context_window: >-
 #
 #   primary 429s (a RATE error, not a size error) -> the ordinary `fallbacks`
 #   chain engages -> the next rung is a narrow leg -> the request is oversized
-#   for THAT leg -> pre-call checks raise ContextWindowExceededError -> litellm
-#   treats a context error raised INSIDE a fallback attempt as terminal and
-#   re-raises instead of advancing to the wider rungs behind it.
+#   for THAT leg -> pre-call checks raise ContextWindowExceededError, and that
+#   rung is spent without ever having been able to answer.
 #
-# Observed 2026-09-01: every overflow measured 35,643-44,740 tokens against a
-# 32768 leg, and the whole chain died there with free cloud rungs listed but
-# never reached. context_window_fallbacks does NOT rescue this -- the entries
-# are deployed and verified present, and the abort still happens, because the
-# map is not consulted for an error raised by a fallback leg.
+# CORRECTED against litellm 1.98.0. This block previously said the context
+# error is treated as terminal, that the whole chain dies there, and that
+# `context_window_fallbacks` "is not consulted for an error raised by a
+# fallback leg". All three are false:
+#
+#   * the map IS consulted, keyed on the failing LEG's own name;
+#   * a re-raise there is caught by the enclosing walk, which ADVANCES;
+#   * what ends a walk early is the shared max_fallbacks budget, which the
+#     nested per-group chains draw down too.
+#
+# An overflow observed 2026-09-01 against a 32768 leg, with wider cloud rungs
+# listed but not reached, is consistent with budget exhaustion rather than with
+# a terminal raise -- max_fallbacks was then derived from a single chain's
+# length while several chains render. That derivation now covers the whole map
+# (37-fallback-entry-points.yml). The narrow/wide split below is still worth
+# keeping: a narrow leg in front cannot answer, so it costs an attempt and a
+# unit of that budget for nothing.
 llm_router_hermes_local_narrow_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for m in llm_router_hermes_local_models -%}
@@ -156,6 +168,22 @@ llm_router_hermes_local_wide_groups: >-
 # outranks chain completion for this estate.
 llm_router_hermes_narrow_legs_last: true
 
+# THREE SEGMENTS, AND "LAST" MEANS LAST IN THE COMPOSED CHAIN.
+#
+# The order is local_wide + cloud_only + local_narrow. Anyone who needs a rung
+# in ABSOLUTE last position — a rung that must only ever be reached once
+# everything else has failed — will reach for a re-sort inside cloud_only, and
+# it will look like it worked. It does not: local_narrow is appended after
+# cloud_only, so a rung sorted last WITHIN the cloud segment is still tried
+# before every narrow local leg.
+#
+# Measured, pushing one group to the end of cloud_only:
+#   [alibaba, gemini, openrouter, <the rung>, hermes-local-4080]
+#
+# Absolute-last therefore needs a FOURTH segment appended after local_narrow,
+# not a re-sort of an existing one. Composition is by concatenation precisely
+# so segments stay independently orderable; add the segment rather than
+# re-sorting, and the property survives a later change to any other segment.
 llm_router_hermes_cloud_fallback_groups: >-
   {%- if llm_router_hermes_narrow_legs_last | bool -%}
   {{ llm_router_hermes_local_wide_groups
@@ -192,70 +220,6 @@ llm_router_hermes_cloud_zero_retry_groups: >-
 # registry independently in roles/llm_router/tasks/assert.yml.
 llm_router_hermes_default_fallback_chain: >-
   {{ llm_router_hermes_cloud_fallback_groups }}
-
-# One initial attempt plus every explicitly ordered fallback. This is a fallback
-# bound, not a retry budget; ordinary same-provider retries remain zero.
-llm_router_max_fallbacks: "{{ llm_router_hermes_default_fallback_chain | length }}"
-
-# A rung that serves a SMALLER context than the request needs is fatal to the
-# WHOLE chain, not just to that rung: LiteLLM re-enters its fallback machinery
-# for the failing leg, and on ContextWindowExceededError with no
-# context_window_fallbacks it looks the ordinary `fallbacks` map up under the
-# LEG's name rather than the original request's, finds no entry, and re-raises
-# instead of advancing (router.py::async_function_with_fallbacks, litellm
-# 1.98.0). Every cloud rung below is then never tried. So every group that can
-# raise that error needs an explicit escape hatch to the cloud rungs, which
-# serve a larger context.
-#
-# WHY THE PRIMARY IS KEYED TOO — this reverses an earlier decision.
-#
-# This map used to cover only the local legs, on the reasoning that
-# "hermes-default's own overflow already resolves through the ordinary chain,
-# and adding it here would skip the local legs for requests they can serve
-# perfectly well." Both halves of that turned out to be wrong.
-#
-# The first half is contradicted by production: five distinct cron jobs failed
-# with ContextWindowExceededError and "every fallback rung refused the request",
-# one of them exceeding the served window by 482 tokens. hermes-default's
-# overflow does NOT resolve through the ordinary chain; it aborts it.
-#
-# The second half misreads what the skip costs. context_window_fallbacks fires
-# ONLY on a context-window error, so keying the primary cannot divert an
-# ordinary request. It diverts exactly one class: a request already too large
-# for the primary. Every local leg advertises a window no larger than the
-# primary's, so a leg could never serve what the primary just refused —
-# "requests they can serve perfectly well" is an empty set here. Skipping them
-# for this one class costs nothing and is what makes the escape work at all.
-#
-# The keys are derived, never listed: local legs, the auto-router groups
-# themselves, and every deployment those routers can select. A hand-maintained
-# list would silently stop covering a tier the moment one was added.
-llm_router_context_window_escape_groups: >-
-  {%- set ns = namespace(groups=llm_router_local_fallback_groups | list) -%}
-  {%- for m in llm_router_hermes_virtual_models -%}
-  {%- set group = m.route_group | default(m.client_model_id) -%}
-  {%- if group not in ns.groups -%}
-  {%- set ns.groups = ns.groups + [group] -%}
-  {%- endif -%}
-  {%- endfor -%}
-  {%- for target in [llm_router_routine_model, llm_router_primary_model] -%}
-  {%- if target and target not in ns.groups -%}
-  {%- set ns.groups = ns.groups + [target] -%}
-  {%- endif -%}
-  {%- endfor -%}
-  {{ ns.groups }}
-
-# Renders nothing when no cloud rung is credentialed — an empty target list is
-# not "no map", and LiteLLM would take the empty branch and fall back to
-# nowhere instead of surfacing the real error.
-llm_router_context_window_fallbacks: >-
-  {%- set ns = namespace(pairs=[]) -%}
-  {%- if llm_router_hermes_cloud_only_fallback_groups | length > 0 -%}
-  {%- for group in llm_router_context_window_escape_groups -%}
-  {%- set ns.pairs = ns.pairs + [{group: llm_router_hermes_cloud_only_fallback_groups}] -%}
-  {%- endfor -%}
-  {%- endif -%}
-  {{ ns.pairs }}
 
 # Cloud groups that carry a spend ceiling, and therefore need a local survivor
 # member so budget exhaustion filters down to local instead of emptying the
