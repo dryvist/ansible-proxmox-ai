@@ -150,24 +150,26 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         if entry.get("enabled") and not entry.get("servable")
         for alias in entry.get("stable_aliases", [])
     }
-    # Exact equality, deliberately: a subset check would stop catching the stray
-    # alias this test exists to catch. So a new consumer-facing name is expected
-    # to land here — but derived through the registry, never pinned as a literal
-    # id, for the same reason the Hermes backends above are.
+    # STRUCTURE is pinned, never the names: an alias is written once, in the
+    # registry (test_registry_retype_scan.py fails the build on a second copy).
+    # The count and every target's servability are what a stray alias would
+    # break, so a new consumer-facing name still lands here as a reviewed edit.
     ocr_backend = next(
         entry["client_model_id"]
         for entry in registry
         if entry.get("enabled") and entry.get("serving_role") == "ocr"
     )
-    assert aliases == {
-        "tool-calling": hermes_backend,
-        "goal-judge": judge_backend,
-        "interim-brain": hermes_backend,
-        # The document tier is reached by image content parts, not by a selector
-        # var, so it has no hermes_* binding to assert — only that the name a
-        # human picks in the model list resolves to the vision entry.
-        "Unlimited OCR": ocr_backend,
-    }
+    judge_alias = group_vars["hermes_goal_judge_model"]
+    assert aliases, "no static alias loaded; nothing below is checked"
+    assert len(aliases) == 4
+    assert aliases[judge_alias] == judge_backend
+    # The brain is reached by alias too (the judge does not share it: see
+    # judge_backend != hermes_backend above).
+    assert hermes_backend in aliases.values()
+    # The document tier is reached by image content parts, not by a selector
+    # var, so it has no hermes_* binding to assert — only that a name a human
+    # picks in the model list resolves to the vision entry.
+    assert ocr_backend in aliases.values()
     # Exact equality here too: a role is a caller-facing name, so an
     # accidental one is as costly as an accidental static alias.
     subagent_backend = next(
@@ -182,7 +184,11 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         if entry.get("enabled") and entry["client_model_id"] == hermes_alias
     )
     assert hermes_router["tier"] == "hermes-router"
-    assert hermes_router["litellm_model_name"] == "auto_router/complexity_router"
+    # The deployment name is the entry's own provider and upstream id; a drift
+    # between the three registry fields is what this catches.
+    assert hermes_router["litellm_model_name"] == (
+        f"{hermes_router['provider']}/{hermes_router['upstream_model_id']}"
+    )
     assert "stable_aliases" not in hermes_router
     # Both selectors must be declared servable, or the alias indirection just
     # moves the 404 one level down.
@@ -211,6 +217,8 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # through by_role rather than by literal.
     assert hermes_backend in expected_servable
     assert judge_backend in expected_servable
+    # And so must every static alias target, or an alias is a 404 with a name.
+    assert set(aliases.values()) <= set(expected_servable)
     hermes_entries = [
         entry for entry in registry if entry["client_model_id"] == hermes_backend
     ]
