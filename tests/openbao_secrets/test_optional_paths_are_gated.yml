@@ -30,12 +30,18 @@
       # the ingest key is read downstream by the Cribl role. Nothing renders
       # with the path absent. Drop this entry with the optional flag once seeded.
       "ai/phoenix": no bao-fact consumer in this repo
+      # apps/github-actions and apps/prometheus are NOT listed here: neither
+      # is in openbao_secrets_domains right now (see the ORDERING comment on
+      # those paths in roles/openbao_secrets/defaults/main/10-domains.yml), so
+      # there is nothing for this dict to gate yet. Re-add
+      # "apps/github-actions": llm_router virtual-key empty-value gate and
+      # "apps/prometheus": llm_router virtual-key empty-value gate in the same
+      # change that re-adds each path.
       # Per-caller router keys: each 56-virtual-keys.yml entry defaults its
       # value to '' and seed-keys.yml rejects an empty value, so an absent
       # path registers nothing. Rendered in both directions below.
       "apps/open-webui": llm_router virtual-key empty-value gate
       "apps/langgraph": llm_router virtual-key empty-value gate
-      "apps/prometheus": llm_router virtual-key empty-value gate
   tasks:
     - name: Load the declared domains
       ansible.builtin.include_vars:
@@ -107,9 +113,13 @@
     ai_router_retry_after_seconds: 40
     hermes_brain_model: hermes-default
     hermes_goal_judge_model: goal-judge
-    # The aliases the three optional paths feed. Fails the completeness check
-    # below if 56-virtual-keys.yml gains or loses one without this list moving.
-    _optional_key_aliases: [open-webui, langgraph, prometheus-scrape]
+    # The aliases the optional paths feed. Fails the completeness check below
+    # if 56-virtual-keys.yml gains or loses one without this list moving.
+    # prometheus-scrape is NOT listed: apps/prometheus is deliberately absent
+    # from openbao_secrets_domains right now (see the ORDERING comment in
+    # roles/openbao_secrets/defaults/main/10-domains.yml). Re-add it here in
+    # the same change that re-adds the path.
+    _optional_key_aliases: [open-webui, langgraph]
   tasks:
     - name: Load the router defaults and registry the way the converge does
       ansible.builtin.import_tasks: ../llm_router/tasks/parity_setup.yml
@@ -145,35 +155,33 @@
           An optional path is only honest when its consumer renders nothing with
           the secret absent; a key that renders a value here would be
           registered on the proxy with whatever that value is.
-        success_msg: Unseeded, the three keys render empty and would not be registered.
+        success_msg: Unseeded, both keys render empty and would not be registered.
       vars:
         _unseeded_aliases: "{{ _unseeded | map(attribute='alias') | list }}"
         _unseeded_values: >-
           {{ _unseeded | selectattr('alias', 'in', _optional_key_aliases)
              | map(attribute='value') | list }}
 
-    - name: Seed all three fields
+    - name: Seed both fields
       ansible.builtin.set_fact:
         bao_apps_secrets:
           open_webui_llm_router_key: sk-ow-under-test
           langgraph_llm_router_key: sk-lg-under-test
-          prometheus_llm_router_key: sk-prom-under-test
 
     - name: Capture the seeded render
       ansible.builtin.set_fact:
         _seeded_registered: >-
           {{ llm_router_virtual_keys | rejectattr('value', 'equalto', '') | list }}
 
-    # Fails if: any of the three entries reads a different field than the
+    # Fails if: either entry reads a different field than the
     # generating map writes (fixture values are unique per alias, so a crossed
     # field shows as the wrong value), or an entry stops rendering when seeded.
-    - name: Seeded, all three keys render their own field and would be registered
+    - name: Seeded, both keys render their own field and would be registered
       ansible.builtin.assert:
         quiet: true
         that:
           - _seeded_by_alias['open-webui'] == 'sk-ow-under-test'
           - _seeded_by_alias['langgraph'] == 'sk-lg-under-test'
-          - _seeded_by_alias['prometheus-scrape'] == 'sk-prom-under-test'
         fail_msg: >-
           Seeded render registers
           {{ _seeded_registered | selectattr('alias', 'in', _optional_key_aliases) | map(attribute='alias') | list }}
@@ -181,7 +189,7 @@
           {{ _seeded_registered | selectattr('alias', 'in', _optional_key_aliases) | map(attribute='value') | list }}.
           Each alias must read exactly the field its generating map writes
           (roles/openbao openbao_generated_app_secrets in ansible-proxmox-apps).
-        success_msg: Seeded, all three keys render from their own field.
+        success_msg: Seeded, both keys render from their own field.
       vars:
         # alias -> value for the registered set; a missing alias raises here,
         # which is the failure wanted (the entry stopped rendering when seeded).
