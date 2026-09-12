@@ -174,20 +174,31 @@ so it is volume-independent and survives any later logging change. It answers
 "did chains run, from which group to which, how often, triggered by what" at
 aggregate granularity, not per request.
 
-*The router's own log, scoped.* Per-request detail needs the router's
-informational records, and those were unreachable. Its three named loggers never
-have a level set, so they inherit the root level: warnings and errors pass,
-informational records are dropped **at the logger**. Two traps follow.
-`LITELLM_LOG` moves the **handler** threshold only, and no handler can recover a
-record the logger already discarded, so setting it to informational changes
-nothing while looking like the fix. The supported verbosity switches raise
-*every* logger to debug at once, which on a proxy carrying prompts is a
-data-exposure change rather than a diagnostic. The route taken instead is a
-logging configuration file naming the router logger alone, passed to the server
-at startup (`templates/logging.yaml.j2`, wired in `tasks/logging-config.yml`).
-That file has three ways to fail silently — disabling every logger it does not
-name, dropping the server's own access and error streams, and duplicating every
-line — each guarded and commented in the template.
+*The router's own log.* Per-request detail needs the router's informational
+records, and those were unreachable. At import LiteLLM attaches a handler to its
+three named loggers and sets **no level** on them (`_logging.py:353-360`), so
+they inherit the root's WARNING: warnings and errors pass, informational records
+are dropped **at the logger**. The supported fix is `LITELLM_LOG=INFO` in the
+EnvironmentFile, and it works because it is read twice: at import it sets the
+attached handler's threshold (`_logging.py:137-143`; default DEBUG, so it never
+blocked INFO, and it carries the secret-redaction filter), and at proxy init the
+not-debug branch of `initialize()` calls `setLevel(INFO)` on exactly those three
+loggers (`proxy_server.py:7416-7433`), not on every library. The debug switches
+are refused: they raise *every* logger to debug, which on a proxy carrying
+prompts is a data-exposure change rather than a diagnostic.
+
+**A previous revision of this document said the opposite and shipped a
+regression; both are recorded so neither returns.** It claimed the env var moved
+the handler threshold only and "changed nothing", and instead rendered a
+`dictConfig` naming the router logger with no handlers key, believing that
+preserved LiteLLM's handler. The stdlib does the opposite: a non-incremental
+`dictConfig` removes every existing handler from any logger it names
+(`logging/config.py`, `common_logger_config`). The result stripped LiteLLM's
+handler and its redaction filter: INFO still fell to the last-resort handler
+(WARNING) and was dropped, while router WARNING and ERROR records — which carry
+provider error bodies — were emitted **unredacted**. Inert on its goal, a
+regression on redaction, and a test pinned the broken shape. Any future
+`dictConfig` here must own the handler and re-install the filters explicitly.
 
 ### What the pair makes decidable, which is the point of both
 
