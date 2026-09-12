@@ -13,10 +13,13 @@
 # What survives is the one thing upstream cannot see: a script-fed job that
 # exits 0 (runner success=True) and declares its own failure by prefixing
 # the marker _cron_route strips. Its `for_failure` never picks that up on
-# its own, so it needs to be told. Two small anchors instead of two call-site
-# rewrites: unpack the routing result right where _compose_run_delivery's
-# result lands, then fold `declared` into the existing for_failure expression
-# a few lines later.
+# its own, so it needs to be told. Stashes the flag on d.declared_failure
+# too (a plain dynamic attribute — _RunDelivery is an un-slotted dataclass),
+# not just the local _cron_declared_failure, because bookkeeping code
+# further down (_save_compose_deliver's own unresolved_origin check, and
+# _finish_completed_run's classify call) reads the SAME for_failure lane
+# and would otherwise read the runner's unforced success flag instead —
+# ledgering a suppressed-to-local declared failure as "delivered".
 - name: Route a self-declared cron failure through _cron_route
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
@@ -33,6 +36,7 @@
       \g<1>    job, success=d.success, error=d.error, final_response=final_response,
       \g<1>    output_file=output_file)
       \g<1>job, deliver_content, _cron_declared_failure = _cron_route(job, deliver_content)
+      \g<1>d.declared_failure = _cron_declared_failure
   notify: Restart hermes-gateway
 
 - name: Deliver a self-declared cron failure through the failure lane
@@ -43,4 +47,42 @@
     # is already there.
     regexp: '^([ \t]*)for_failure=not d\.success,$'
     replace: '\g<1>for_failure=not d.success or _cron_declared_failure,'
+  notify: Restart hermes-gateway
+
+# unresolved_origin decides whether an "origin" delivery target that
+# resolved to nothing gets recorded as such — computed from the SAME
+# for_failure lane the delivery call above uses, so a declared failure
+# routed to a resolvable failure_deliver target must not be misread as an
+# unresolved origin delivery.
+- name: Route unresolved_origin through the failure lane for a declared failure
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: |-
+      ^([ \t]*)d\.unresolved_origin = \($
+      [ \t]*_normalize_deliver_value\(_delivery_lane_value\(job, for_failure=not d\.success\)\) == "origin"$
+      [ \t]*and not _resolve_delivery_targets\(job, for_failure=not d\.success\)$
+      [ \t]*\)$
+    replace: |-
+      \1d.unresolved_origin = (
+      \1    _normalize_deliver_value(_delivery_lane_value(
+      \1        job, for_failure=not d.success or _cron_declared_failure)) == "origin"
+      \1    and not _resolve_delivery_targets(
+      \1        job, for_failure=not d.success or _cron_declared_failure)
+      \1)
+  notify: Restart hermes-gateway
+
+# _finish_completed_run classifies the delivery outcome for the run ledger
+# from the same for_failure lane, but it runs in a different function than
+# _cron_route — d.declared_failure (set above) is what carries the flag
+# across that boundary, since the local _cron_declared_failure variable is
+# not in scope there.
+- name: Route the run-ledger classification through the failure lane for a declared failure
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: >-
+      ^([ \t]*)normalized_deliver=_normalize_deliver_value\(_delivery_lane_value\(job,
+      for_failure=not d\.success\)\),$
+    replace: |-
+      \1normalized_deliver=_normalize_deliver_value(_delivery_lane_value(
+      \1    job, for_failure=not d.success or getattr(d, "declared_failure", False))),
   notify: Restart hermes-gateway

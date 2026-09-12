@@ -21,6 +21,59 @@
   register: hermes_agent_goal_mode_sources
   changed_when: false
 
+# These three checks used to be role-owned patches, retired (2026-09)
+# because upstream now does all of it natively. Kept as their own task,
+# separate from the main "required source patch" assert below, because a
+# failure here is an UPSTREAM REGRESSION (a behavior upstream used to
+# supply on its own has gone away), not a role patch that failed to apply
+# — the two need different fail messages so an operator reads the right
+# remediation.
+- name: Assert upstream still supplies the behavior these retired patches used to add
+  vars:
+    hermes_agent_cli_main_source: >-
+      {{ hermes_agent_goal_mode_sources.results[9].content | b64decode }}
+    hermes_agent_kanban_dispatch_source: >-
+      {{ hermes_agent_goal_mode_sources.results[10].content | b64decode }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # The cron CLI must hand its exit code back to the dispatcher.
+      # Retired as a role patch because upstream's cmd_cron is now
+      # generated via `_forward_command(..., forward_return=True)`, which
+      # already does this.
+      - >-
+        'cmd_cron = _forward_command("cmd_cron", "hermes_cli.cron", '
+        ~ '"cron_command", forward_return=True,'
+        in hermes_agent_cli_main_source
+      # A goal-mode worker must take the fully-quiet CLI path or its
+      # goal-loop hook never runs. Retired as a role patch because
+      # upstream's dispatcher already appends "-Q" for a goal-mode task on
+      # top of its own "-q" quiet chat invocation — but only INSIDE
+      # `if task.goal_mode:`. Asserting only that "-Q" appears somewhere
+      # after the chat invocation would still pass if upstream made "-Q"
+      # unconditional (every worker, not just goal-mode ones, would take
+      # the quiet-loop path) — so the gate itself is asserted too, not just
+      # ordering. `in` is checked ahead of `.index()` for each needle:
+      # `.index()` on a needle that is not present raises a Jinja
+      # ValueError, which surfaces as an unrelated template-error crash
+      # instead of this task's own fail_msg.
+      - >-
+        'cmd.extend(["chat", "-q", f"work kanban task {task.id}"])'
+        in hermes_agent_kanban_dispatch_source
+      - "'if task.goal_mode:' in hermes_agent_kanban_dispatch_source"
+      - "'cmd.append(\"-Q\")' in hermes_agent_kanban_dispatch_source"
+      - >-
+        hermes_agent_kanban_dispatch_source.index(
+          'cmd.extend(["chat", "-q", f"work kanban task {task.id}"])'
+        ) < hermes_agent_kanban_dispatch_source.index('if task.goal_mode:')
+        < hermes_agent_kanban_dispatch_source.index('cmd.append("-Q")')
+    fail_msg: >-
+      Upstream Hermes no longer supplies a behavior this role used to patch
+      in itself (cron exit-code propagation, or the goal-mode quiet CLI
+      path in hermes_cli/kanban_db_dispatch.py). This is an upstream
+      regression, not a missing role patch — the equivalent role patch
+      needs to be restored, not re-anchored.
+
 - name: Assert installed Hermes pinned-source patches
   vars:
     hermes_agent_goal_completion_source: >-
@@ -55,27 +108,6 @@
       # asserted — a drift back to a shorter tuple silently re-opens the
       # fail-open completion gate this line exists to close.
       - "'verdict, reason, _, _, _ = judge_goal(' in hermes_agent_goal_completion_source"
-      # The cron CLI must hand its exit code back to the dispatcher. Retired
-      # as a role patch (2026-09) because upstream's cmd_cron is now generated
-      # via `_forward_command(..., forward_return=True)`, which already does
-      # this; asserted directly against that call so an upstream regression
-      # back to a return-dropping wrapper still fails the converge loudly.
-      - >-
-        'cmd_cron = _forward_command("cmd_cron", "hermes_cli.cron", '
-        ~ '"cron_command", forward_return=True,'
-        in hermes_agent_cli_main_source
-      # A goal-mode worker must take the fully-quiet CLI path or its goal-loop
-      # hook never runs. Retired as a role patch (2026-09) because upstream's
-      # dispatcher already appends "-Q" for a goal-mode task on top of its own
-      # "-q" quiet chat invocation; asserted directly against both so an
-      # upstream regression back to the single-turn path still fails loudly.
-      - >-
-        'cmd.extend(["chat", "-q", f"work kanban task {task.id}"])'
-        in hermes_agent_kanban_dispatch_source
-      - >-
-        hermes_agent_kanban_dispatch_source.index(
-          'cmd.extend(["chat", "-q", f"work kanban task {task.id}"])'
-        ) < hermes_agent_kanban_dispatch_source.index('cmd.append("-Q")')
       - >-
         'SELECT id, status FROM tasks WHERE idempotency_key = ?'
         in hermes_agent_goal_reconcile_source
@@ -107,10 +139,10 @@
       # path's signal sites, and all four signal sites themselves — each
       # asserted so a partial landing (helper present but a call site
       # unpatched, or vice versa) fails loudly. Upstream's September 2026
-      # decomposition moved every one of these except the SIGKILL escalation
-      # out of kanban_db.py into kanban_db_dispatch.py; the escalation stays
-      # on hermes_agent_goal_reconcile_source until it is rewritten onto
-      # upstream's shared _sigkill(kill, pid) helper in a later PR.
+      # decomposition moved every one of these out of kanban_db.py into
+      # kanban_db_dispatch.py. The SIGKILL escalation is asserted
+      # separately below (not at all, until a later PR in this stack
+      # rewrites it onto upstream's shared _sigkill(kill, pid) helper).
       - >-
         'def _pid_is_hermes_worker(pid: int) -> bool:'
         in hermes_agent_kanban_dispatch_source
@@ -123,18 +155,20 @@
       - >-
         'kill(-pid, signal.SIGTERM)'
         in hermes_agent_kanban_dispatch_source
-      - >-
-        'kill(-pid, _sigkill)'
-        in hermes_agent_goal_reconcile_source
+      # NOT asserted here: SIGKILL escalation ('kill(-pid, _sigkill)' /
+      # 'kill(-int(pid), _sigkill)'). Both literals are permanently dead at
+      # v2026.9.11 — upstream centralized escalation onto a shared helper,
+      # _sigkill(kill, pid), in hermes_cli/kanban_db_dispatch.py, which
+      # neither literal describes. Asserting them here would check text
+      # that can never appear in this file again. A later PR in this stack
+      # rewrites the escalation task onto that helper and adds the matching
+      # assertion there.
       - >-
         'if pid <= 1 or pid == os.getpid() or not _pid_is_hermes_worker(pid):'
         in hermes_agent_kanban_dispatch_source
       - >-
         'kill(-int(pid), signal.SIGTERM)'
         in hermes_agent_kanban_dispatch_source
-      - >-
-        'kill(-int(pid), _sigkill)'
-        in hermes_agent_goal_reconcile_source
       - >-
         ('DEFAULT_JUDGE_TIMEOUT = '
          ~ (hermes_agent_kanban_goal_judge_timeout_seconds | float | string))
