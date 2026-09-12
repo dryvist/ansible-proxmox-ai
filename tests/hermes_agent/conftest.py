@@ -128,18 +128,35 @@ PATCHED_CRON_DELIVERY_SOURCE = (
     # patches_verify.yml so a version bump that drops it fails loudly rather
     # than NameError-ing the guard above at runtime.
     + '\ndef _is_cron_silence_response(text: str) -> bool:\n'
+    # The two call-site patches that used to route deliveries through
+    # _cron_route() to the issues channel are retired (patches_cron_failure_
+    # routing.yml) — upstream 2026.9.11 already calls _deliver_result/
+    # _deliver_crash_failure with the right for_failure lane on its own, so
+    # PINNED_CRON_DELIVERY_SOURCE needs no patch to reach that behaviour.
     + _apply_runtime_patch(
-        "Route failed cron deliveries from the exception path to the issues channel",
+        "Route cron delivery content through the output-validity guard",
         _apply_runtime_patch(
-            "Route failed cron deliveries to the issues channel",
-            _apply_runtime_patch(
-                "Route cron delivery content through the output-validity guard",
-                _apply_runtime_patch(
-                    "Route cron delivery content through the markup guard",
-                    PINNED_CRON_DELIVERY_SOURCE,
-                ),
-            ),
+            "Route cron delivery content through the markup guard",
+            PINNED_CRON_DELIVERY_SOURCE,
         ),
+    )
+    # What survives from that retired pair: a script-fed job that exits 0
+    # and declares its own failure. Minimal literal fragments — the real
+    # call-site shape each regexp anchors on, not a hand-copied "expected"
+    # patched string — feed the two surviving patches (
+    # patches_cron_failure_routing.yml).
+    + _apply_runtime_patch(
+        "Route a self-declared cron failure through _cron_route",
+        "    (\n"
+        "        deliver_content, d.blocked_config, _silent_alert, d.incident_acked, "
+        "d.failure_incident_id,\n"
+        "    ) = _compose_run_delivery(\n"
+        "        job, success=d.success, error=d.error, final_response=final_response,\n"
+        "        output_file=output_file)\n",
+    )
+    + _apply_runtime_patch(
+        "Deliver a self-declared cron failure through the failure lane",
+        "    for_failure=not d.success,\n",
     )
 )
 # cron/scheduler.py carries the opt-in goal-mode runner too, and
@@ -167,8 +184,11 @@ for _cron_timeout_task_name in (
     "Initialize the independent cron timeout result flags",
     "Keep polling whenever either cron deadline is enabled",
     "Bound the final cron poll to the exact remaining wall budget",
+    # "Guard the native inactivity comparison when that detector is
+    # disabled" was retired by PR A (b3054ce1): its negative-lookahead
+    # regexp on "Enforce the aggregate cron wall clock in the native poll
+    # loop" already excludes the case that guard used to patch separately.
     "Enforce the aggregate cron wall clock in the native poll loop",
-    "Guard the native inactivity comparison when that detector is disabled",
     "Raise the aggregate cron timeout before the inactivity handler",
 ):
     PATCHED_CRON_TIMEOUT_SOURCE = _apply_rendered_runtime_patch(
