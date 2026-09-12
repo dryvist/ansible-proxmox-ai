@@ -18,6 +18,7 @@
     - "{{ hermes_agent_install_dir }}/hermes_cli/main.py"
     - "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db_dispatch.py"
     - "{{ hermes_agent_install_dir }}/agent/turn_iteration_prep.py"
+    - "{{ hermes_agent_install_dir }}/agent/turn_truncation.py"
   register: hermes_agent_goal_mode_sources
   changed_when: false
 
@@ -47,6 +48,8 @@
       {{ hermes_agent_goal_mode_sources.results[10].content | b64decode }}
     hermes_agent_turn_iteration_prep_source: >-
       {{ hermes_agent_goal_mode_sources.results[11].content | b64decode }}
+    hermes_agent_turn_truncation_source: >-
+      {{ hermes_agent_goal_mode_sources.results[12].content | b64decode }}
   ansible.builtin.assert:
     quiet: true
     that:
@@ -136,6 +139,16 @@
         ('DEFAULT_JUDGE_TIMEOUT = '
          ~ (hermes_agent_kanban_goal_judge_timeout_seconds | float | string))
         in hermes_agent_goal_judge_source
+      # Both halves of the judge call-timing patch. Asserted together: the
+      # timer start without the latency log is a variable set and never
+      # read; the latency log without the timer start is a NameError on
+      # every judge call.
+      - >-
+        '_judge_started = time.monotonic()'
+        in hermes_agent_goal_judge_source
+      - >-
+        '"goal judge: API call latency=%.1fs",'
+        in hermes_agent_goal_judge_source
       - >-
         '_TRANSIENT_RETRY_BACKOFF_BASE = 15.0'
         in hermes_agent_auxiliary_source
@@ -146,16 +159,14 @@
         'resolved_provider != "custom"'
         in hermes_agent_auxiliary_source
       # These two patches used to share one file (agent/conversation_loop.py)
-      # and one combined count assertion, because `_tc_boost_cap` contains
-      # the substring `_boost_cap` and a bare `in` check would pass on
-      # either patch alone. Upstream's September 2026 decomposition moved
-      # them to different files (COMPAT_MANIFEST.md), so they are asserted
-      # separately now — each still proven by the same needle to guard
-      # against the same false-positive-on-either-alone failure mode.
+      # and a variable-name substring assertion (`_tc_boost_cap` contains
+      # `_boost_cap`). Upstream's September 2026 decomposition moved them to
+      # different files AND inlined the retry-boost one's standalone
+      # variable into the min() call it fed — asserted directly against
+      # that inlined expression now.
       - >-
-        hermes_agent_retry_source.count(
-          '_tc_boost_cap = agent.max_tokens if agent.max_tokens else max('
-        ) >= 1
+        'agent._ephemeral_max_output_tokens = min(_tc_boost, agent.max_tokens'
+        in hermes_agent_turn_truncation_source
       - >-
         hermes_agent_turn_iteration_prep_source.count(
           '_boost_cap = agent.max_tokens if agent.max_tokens else max('

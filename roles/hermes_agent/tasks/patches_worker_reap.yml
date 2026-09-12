@@ -149,55 +149,53 @@
 # alone; extending drain-on-shutdown isn't the fix and isn't user-facing.
 # See hermes_agent_hindsight_prefetch_timeout_seconds for the full writeup.
 - name: Patch Hindsight prefetch join timeout off the hardcoded 3.0s
+  # Rewritten: upstream refactored the debug-message-plus-join shape this
+  # used to anchor on into a shared helper, _join_prefetch(self, timeout,
+  # *, log=False), called from the per-turn prefetch path AND two shutdown
+  # drain paths. `log=True` is unique to the prefetch call (the shutdown
+  # joins pass no log kwarg), which is what lets this patch target only the
+  # prefetch path without touching drain-on-shutdown — smaller and safer
+  # than the old two-line anchor, since there is now only one number to
+  # get right instead of a debug-message match plus a bare 3.0.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/plugins/memory/hindsight/__init__.py"
-    regexp: |-
-      ^([ \t]*)logger\.debug\("Prefetch: waiting for background thread to complete"\)$
-      \1self\._prefetch_thread\.join\(timeout=3\.0\)$
-    replace: |-
-      \1logger.debug("Prefetch: waiting for background thread to complete")
-      \1self._prefetch_thread.join(timeout={{ hermes_agent_hindsight_prefetch_timeout_seconds | float }})
+    regexp: '^([ \t]*)self\._join_prefetch\(3\.0, log=True\)$'
+    replace: '\1self._join_prefetch({{ hermes_agent_hindsight_prefetch_timeout_seconds | float }}, log=True)'
   when: hermes_agent_memory_provider == 'hindsight'
   notify: Restart hermes-gateway
 
 # _sync_external_memory_for_turn() (run_agent.py) is the ONLY place that
-# queues the next turn's prefetch — it runs at end-of-turn and has four
-# silent exits (three early returns plus a bare except) with no logging at
-# any of them. prefetch_all() (turn_context.py), by contrast, runs
-# unconditionally at the start of every turn. So a turn whose predecessor hit
-# any of these four exits leaves nothing queued, and the next turn's prefetch
-# correctly reports empty with zero trace of why upstream. This does not
-# change what any of the four exits DO — same interrupted-turn skip, same
-# best-effort swallow — it only makes each one observable. Log level matches
-# the existing "Hindsight prefetch failed" bump above: warning, not debug, so
-# it actually reaches Splunk. No message/user/response text in any line.
-- name: Patch _sync_external_memory_for_turn to log its "interrupted" skip
+# queues the next turn's prefetch — it runs at end-of-turn and has silent
+# exits with no logging at any of them. prefetch_all() (turn_context.py), by
+# contrast, runs unconditionally at the start of every turn. So a turn whose
+# predecessor hit one of these exits leaves nothing queued, and the next
+# turn's prefetch correctly reports empty with zero trace of why upstream.
+# This does not change what any of the exits DO — same interrupted-turn
+# skip, same best-effort swallow — it only makes each one observable. Log
+# level matches the existing "Hindsight prefetch failed" bump above:
+# warning, not debug, so it actually reaches Splunk. No message/user/
+# response text in any line.
+#
+# Rewritten (2026-09), merging the two role patches that used to log this
+# separately: upstream combined the interrupted-turn guard and the
+# missing-input guard into ONE `if interrupted or not (...)` line, so the
+# two conditions are no longer independently anchorable — each one's own
+# log message covers what upstream's single combined condition can no
+# longer distinguish structurally, but the individual flag values in the
+# message body still tell a reader which sub-condition actually fired.
+- name: Patch _sync_external_memory_for_turn to log its interrupted/missing-input skip
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/run_agent.py"
     regexp: |-
-      ^(\s*)if interrupted:$
+      ^(\s*)if interrupted or not \(self\._memory_manager and final_response and original_user_message\):$
       \1    return$
     replace: |-
-      \1if interrupted:
+      \1if interrupted or not (self._memory_manager and final_response and original_user_message):
       \1    logger.warning(
-      \1        "Hermes external-memory sync/prefetch skipped: turn interrupted (session=%s)",
-      \1        self.session_id or "",
-      \1    )
-      \1    return
-  notify: Restart hermes-gateway
-
-- name: Patch _sync_external_memory_for_turn to log its missing-input skip
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/run_agent.py"
-    regexp: |-
-      ^(\s*)if not \(self\._memory_manager and final_response and original_user_message\):$
-      \1    return$
-    replace: |-
-      \1if not (self._memory_manager and final_response and original_user_message):
-      \1    logger.warning(
-      \1        "Hermes external-memory sync/prefetch skipped: missing manager=%s "
+      \1        "Hermes external-memory sync/prefetch skipped: interrupted=%s manager=%s "
       \1        "final_response=%s original_user_message=%s (session=%s)",
-      \1        bool(self._memory_manager), bool(final_response), bool(original_user_message), self.session_id or "",
+      \1        bool(interrupted), bool(self._memory_manager), bool(final_response),
+      \1        bool(original_user_message), self.session_id or "",
       \1    )
       \1    return
   notify: Restart hermes-gateway
@@ -219,27 +217,22 @@
   notify: Restart hermes-gateway
 
 - name: Patch _sync_external_memory_for_turn to log its swallowed exception
+  # Rewritten: the multi-line queue_prefetch_all(...) call this used to
+  # anchor on collapsed to one line, and upstream now wraps it in its own
+  # `if not is_trivial_prompt(user_text):` guard — nested one level deeper
+  # than the shared `try:`/`except Exception: pass` that also covers the
+  # sync_all(...) call just above it. The two calls no longer have separate
+  # exception handlers to distinguish between, so this logs on the shared
+  # handler; the message text (unchanged from the original patch's own
+  # wording) already names both calls for exactly this reason.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/run_agent.py"
-    # The call's own indentation is captured separately from the handler's
-    # (two independent line-anchored groups) instead of assuming the handler
-    # sits exactly one level out. Upstream wrapped the prefetch in an
-    # `if not is_trivial_prompt(user_text):` guard, which added a level and
-    # silently killed the old fixed-offset anchor — and de-indenting the call
-    # to fit would have moved the prefetch OUT of that guard, changing
-    # behavior. Reproducing both indents verbatim keeps the guard intact.
     regexp: |-
-      ^([ \t]*)self\._memory_manager\.queue_prefetch_all\($
-      \1    user_text,$
-      \1    session_id=self\.session_id or "",$
-      \1\)$
+      ^([ \t]*)self\._memory_manager\.queue_prefetch_all\(user_text, session_id=self\.session_id or ""\)$
       ([ \t]*)except Exception:$
       \2    pass$
     replace: |-
-      \1self._memory_manager.queue_prefetch_all(
-      \1    user_text,
-      \1    session_id=self.session_id or "",
-      \1)
+      \1self._memory_manager.queue_prefetch_all(user_text, session_id=self.session_id or "")
       \2except Exception as exc:
       \2    logger.warning(
       \2        "Hermes external-memory sync_all/queue_prefetch_all failed: %s (session=%s)",

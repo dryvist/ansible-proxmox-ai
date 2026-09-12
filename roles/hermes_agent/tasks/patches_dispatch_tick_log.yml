@@ -74,22 +74,27 @@
 # "ready work, nothing spawned" case is logged from the streak counter: on
 # the first idle tick and every tenth after (one line per ~10 min at the
 # default 60 s interval).
+# Rewritten: upstream restructured the if/else block this used to anchor on
+# into a single ternary assignment (`bad_ticks = bad_ticks + 1 if
+# ready_pending and not any_spawned else 0`), so there is no `bad_ticks +=
+# 1` line left to append a log statement inside. Adds a standalone
+# conditional log right after the ternary instead, gated on the exact same
+# predicate so it fires on the same ticks the old if-branch would have.
+# `max_in_progress` also moved: it is no longer a local in this function,
+# only reachable via `dispatcher.settings.max_in_progress`.
 - name: Log ready work that nothing was spawned for
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/gateway/kanban_watchers.py"
     regexp: |-
-      ^([ \t]*)if ready_pending and not any_spawned:
-      [ \t]*bad_ticks \+= 1
-      [ \t]*else:$
+      ^([ \t]*)bad_ticks = bad_ticks \+ 1 if ready_pending and not any_spawned else 0$
     replace: |-
-      \g<1>if ready_pending and not any_spawned:
-      \g<1>    bad_ticks += 1
-      \g<1>    if bad_ticks == 1 or bad_ticks % 10 == 0:
-      \g<1>        logger.info(
-      \g<1>            "kanban dispatcher tick: spawnable work ready, nothing spawned "
-      \g<1>            "for %d tick(s) (max_in_progress=%s)", bad_ticks, max_in_progress,
-      \g<1>        )
-      \g<1>else:
+      \1bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
+      \1if ready_pending and not any_spawned and (bad_ticks == 1 or bad_ticks % 10 == 0):
+      \1    logger.info(
+      \1        "kanban dispatcher tick: spawnable work ready, nothing spawned "
+      \1        "for %d tick(s) (max_in_progress=%s)",
+      \1        bad_ticks, dispatcher.settings.max_in_progress,
+      \1    )
   notify: Restart hermes-gateway
 
 - name: Read back the dispatcher sources

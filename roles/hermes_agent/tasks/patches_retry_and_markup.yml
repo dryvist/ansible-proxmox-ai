@@ -15,10 +15,18 @@
 # the app out from under this checkout and would silently drop the patch
 # otherwise.
 - name: Patch hermes-agent retry boost to respect the configured max_tokens ceiling
+  # Rewritten: upstream's September 2026 decomposition moved this to
+  # agent/turn_truncation.py and inlined the separate `_tc_boost_cap =`
+  # assignment directly into the min() call it fed. Same substitution,
+  # applied to the inlined expression instead of a standalone variable.
   ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
-    regexp: '^(\s*)_tc_boost_cap = max\(32768, _tc_requested_cap or 0\)$'
-    replace: '\1_tc_boost_cap = agent.max_tokens if agent.max_tokens else max(32768, _tc_requested_cap or 0)'
+    path: "{{ hermes_agent_install_dir }}/agent/turn_truncation.py"
+    regexp: >-
+      ^(\s*)agent\._ephemeral_max_output_tokens = min\(_tc_boost,
+      max\(32768, _tc_requested_cap or 0\)\)$
+    replace: >-
+      \1agent._ephemeral_max_output_tokens = min(_tc_boost, agent.max_tokens
+      if agent.max_tokens else max(32768, _tc_requested_cap or 0))
   notify: Restart hermes-gateway
 
 - name: Patch hermes-agent length-continuation boost to respect the configured max_tokens ceiling
@@ -132,35 +140,43 @@
 # `call_llm(task="goal_judge", ...)` shape also appears in `draft_contract`,
 # which is a one-off contract draft, not the per-turn verdict being measured.
 - name: Patch Hermes goal judge to time its model call
+  # Rewritten: the inline call_llm(...) invocation this used to anchor on
+  # moved into its own helper, _call_goal_judge_llm — the shape the old
+  # regexp matched no longer exists. Times the helper call instead of the
+  # inline shape; the latency emission below (unchanged) still reads
+  # _judge_started and getattr(resp, "model", ...) does not apply to a str
+  # return, so that task's own text is untouched here and covered by a
+  # separate read of `raw`.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
-    regexp: |-
-      ^([ \t]*)(?:_judge_started = time\.monotonic\(\)\n\1)*resp = call_llm\($
-      \1    task="goal_judge",$
-      \1    messages=\[$
-      \1        \{"role": "system", "content": JUDGE_SYSTEM_PROMPT\},$
+    regexp: >-
+      ^([ \t]*)(?:_judge_started = time\.monotonic\(\)\n\1)*raw =
+      _call_goal_judge_llm\(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout\)$
     replace: |-
       \1_judge_started = time.monotonic()
-      \1resp = call_llm(
-      \1    task="goal_judge",
-      \1    messages=[
-      \1        {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+      \1raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
   notify: Restart hermes-gateway
 
 - name: Patch Hermes goal judge to emit its model call latency
+  # Rewritten: `resp` no longer exists in this scope (the call it came from
+  # is now inside _call_goal_judge_llm, which discards the response object
+  # after extracting its text and returns a plain str). `getattr(resp,
+  # "model", ...)` against an undefined name would be a NameError on every
+  # judge call. Drops the resolved model name from this one log line rather
+  # than reach into the shared helper for it — the message text already
+  # says "goal judge", so the line is still attributable, just without a
+  # per-call model id.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
     regexp: |-
       ^([ \t]*)(?:logger\.info\($
-      \1    "goal judge: API call model=%s latency=%\.1fs",$
-      \1    getattr\(resp, "model", None\) or "unknown",$
+      \1    "goal judge: API call latency=%\.1fs",$
       \1    time\.monotonic\(\) - _judge_started,$
       \1\)$
       \1)*verdict, reason, parse_failed, wait_directive = _parse_judge_response\(raw\)$
     replace: |-
       \1logger.info(
-      \1    "goal judge: API call model=%s latency=%.1fs",
-      \1    getattr(resp, "model", None) or "unknown",
+      \1    "goal judge: API call latency=%.1fs",
       \1    time.monotonic() - _judge_started,
       \1)
       \1verdict, reason, parse_failed, wait_directive = _parse_judge_response(raw)
@@ -284,10 +300,13 @@
   notify: Restart hermes-gateway
 
 - name: Patch Hermes auxiliary retry delay for the local serial backend
+  # Re-anchored: the line grew a trailing comment upstream
+  # ("# Backoff base (seconds); overridable so tests can zero it out.").
+  # Allowed but not required, so the anchor still matches a bare value too.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/agent/auxiliary_client.py"
-    regexp: '^_TRANSIENT_RETRY_BACKOFF_BASE = 1\.0$'
-    replace: '_TRANSIENT_RETRY_BACKOFF_BASE = 15.0'
+    regexp: '^_TRANSIENT_RETRY_BACKOFF_BASE = 1\.0(\s+#.*)?$'
+    replace: '_TRANSIENT_RETRY_BACKOFF_BASE = 15.0\1'
   notify: Restart hermes-gateway
 
 - name: Retry auxiliary rate limits through the bounded transient path
@@ -297,11 +316,19 @@
     replace: 'return isinstance(status, int) and (status in (408, 429) or 500 <= status < 600)'
   notify: Restart hermes-gateway
 
+# Rewritten: the guard inverted and `should_fallback` dropped from this
+# call site. Upstream's own gate is now "skip fallback unless (auto mode OR
+# a capacity error)" — so an EXPLICIT non-auto provider pin still falls
+# back on a capacity error, which is exactly the defect this patch exists
+# to close. Narrows the capacity-error branch to exclude the explicit local
+# provider, leaving auto mode and every other explicit provider's capacity
+# fallback untouched. Only one call site carries this guard now (the old
+# patch's expected_matches: 2 no longer applies).
 - name: Disable post-budget fallback for the explicit local auxiliary provider
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/agent/auxiliary_client.py"
-    regexp: '^([ \t]*)if should_fallback and \(is_auto or is_capacity_error\):$'
-    replace: '\g<1>if should_fallback and (is_auto or (is_capacity_error and resolved_provider != "custom")):'
-  vars:
-    hermes_agent_pinned_patch_expected_matches: 2
+    regexp: '^([ \t]*)if reason is None or not \(is_auto or is_capacity_error\):$'
+    replace: >-
+      \1if reason is None or not (is_auto or (is_capacity_error and
+      resolved_provider != "custom")):
   notify: Restart hermes-gateway
