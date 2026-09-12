@@ -63,16 +63,20 @@
     replace: '\1kill(-pid, signal.SIGTERM)'
   notify: Restart hermes-gateway
 
-# NOT re-pathed here: upstream restructured this escalation onto a shared
-# helper, _sigkill(kill, pid) — a different call shape, not just a moved
-# file, so it needs a rewrite rather than a path change. Rewritten together
-# with the stale-reclaim escalation it now shares (deleted separately as
-# task 26, folded into this one) in a later PR in this stack.
-- name: Patch Hermes worker-reap timeout path to escalate on the worker's process group
+# Upstream centralized BOTH escalation call sites (timeout path and
+# stale-reclaim path) onto one shared helper, _sigkill(kill, pid)
+# (hermes_cli/kanban_db_dispatch.py) — a different call shape than the two
+# separate kill(pid, _sigkill) / kill(int(pid), _sigkill) sites this patch
+# and the deleted stale-reclaim escalation (formerly a separate task) used
+# to target, so this needs one rewrite of the shared helper rather than a
+# path change. Negative pid inside the helper covers both call sites at
+# once, closing the same process-group gap for both the timeout reaper and
+# the stale-reclaim path in one patch.
+- name: Patch Hermes worker-reap SIGKILL escalation to signal the worker's process group
   ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
-    regexp: '^([ \t]*)kill\(pid, _sigkill\)$'
-    replace: '\1kill(-pid, _sigkill)'
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db_dispatch.py"
+    regexp: '^([ \t]*)kill\(int\(pid\), getattr\(signal, "SIGKILL", signal\.SIGTERM\)\)$'
+    replace: '\1kill(-int(pid), getattr(signal, "SIGKILL", signal.SIGTERM))'
   notify: Restart hermes-gateway
 
 # Never signal PID 0/negative/1(init), this gateway process itself

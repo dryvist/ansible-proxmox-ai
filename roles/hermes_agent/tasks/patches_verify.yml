@@ -104,13 +104,13 @@
         in hermes_agent_goal_reconcile_source
       # Worker-reap process-group guard: the identity check function, the
       # safety condition guarding the timeout path's and the stale-reclaim
-      # path's signal sites, and all four signal sites themselves — each
-      # asserted so a partial landing (helper present but a call site
-      # unpatched, or vice versa) fails loudly. Upstream's September 2026
-      # decomposition moved every one of these except the SIGKILL escalation
-      # out of kanban_db.py into kanban_db_dispatch.py; the escalation stays
-      # on hermes_agent_goal_reconcile_source until it is rewritten onto
-      # upstream's shared _sigkill(kill, pid) helper in a later PR.
+      # path's signal sites, and every signal site — each asserted so a
+      # partial landing (helper present but a call site unpatched, or vice
+      # versa) fails loudly. Upstream's September 2026 decomposition moved
+      # every one of these out of kanban_db.py into kanban_db_dispatch.py,
+      # and centralized both paths' SIGKILL escalation onto one shared
+      # helper (_sigkill), so one assertion now covers what used to be two
+      # separate call sites.
       - >-
         'def _pid_is_hermes_worker(pid: int) -> bool:'
         in hermes_agent_kanban_dispatch_source
@@ -124,17 +124,14 @@
         'kill(-pid, signal.SIGTERM)'
         in hermes_agent_kanban_dispatch_source
       - >-
-        'kill(-pid, _sigkill)'
-        in hermes_agent_goal_reconcile_source
-      - >-
         'if pid <= 1 or pid == os.getpid() or not _pid_is_hermes_worker(pid):'
         in hermes_agent_kanban_dispatch_source
       - >-
         'kill(-int(pid), signal.SIGTERM)'
         in hermes_agent_kanban_dispatch_source
       - >-
-        'kill(-int(pid), _sigkill)'
-        in hermes_agent_goal_reconcile_source
+        'kill(-int(pid), getattr(signal, "SIGKILL", signal.SIGTERM))'
+        in hermes_agent_kanban_dispatch_source
       - >-
         ('DEFAULT_JUDGE_TIMEOUT = '
          ~ (hermes_agent_kanban_goal_judge_timeout_seconds | float | string))
