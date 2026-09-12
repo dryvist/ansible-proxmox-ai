@@ -135,7 +135,6 @@ stdout is delivered verbatim.
 | `kanban-digest` | `9 * * * *` | `kanban-digest.py` | `slack:<digest>` |
 | `splunk-error-digest` | `37 * * * *` | `splunk-error-digest.py` | `slack:<digest>` |
 | `splunk-security-digest` | `22 */6 * * *` | `splunk-security-digest.py` | `slack:<digest>` |
-| `zammad-auto-close` | `17 5 * * *` | `zammad-auto-close.py` | `slack:<hermes-all>` — **off by default** |
 | `cron-failure-rollup` | `7 * * * *` | `cron-failure-rollup.py` | `slack:<issues>` |
 
 `splunk-status-digest` runs on waking hours only, and a fully quiet run goes

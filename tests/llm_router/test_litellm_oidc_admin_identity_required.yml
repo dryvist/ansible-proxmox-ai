@@ -1,0 +1,123 @@
+---
+# Pins that PROXY_ADMIN_ID (llm_router_oidc_admin_email in
+# inventory/group_vars/llm_router_group.yml) is mandatory, fail-loud once OIDC
+# is enabled — never a literal personal-identity fallback. A separate
+# playbook from test_litellm_oidc_env.yml on purpose: ansible-core keeps
+# localhost facts (set_fact / include_vars results) alive across plays in one
+# playbook run, so a later play sharing that process would still see an
+# earlier play's stubbed admin_email instead of exercising the real,
+# unstubbed expression this test needs to fail.
+#
+# Run (from the REPO ROOT — self-contained, no environment needed, and
+# DEFAULT_USERNAME must be unset in the shell running it):
+#   ansible-playbook tests/llm_router/test_litellm_oidc_admin_identity_required.yml -i localhost, -c local
+
+- name: Verify the OIDC admin identity fails loud when DEFAULT_USERNAME is unset
+  hosts: localhost
+  gather_facts: false
+  # Loading the real all.yml group_vars below pulls in ansible_become: true
+  # (the estate default for real hosts); this play only writes a scratch file
+  # on the controller and needs no privilege, so pin it off explicitly rather
+  # than prompting for a sudo password (inventory/load_tofu.yml's localhost
+  # tasks use the same override for the same reason).
+  become: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry the defaults project from
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/../../llm-models.d"
+
+    - name: Load the real router group_vars (computes llm_router_oidc_admin_email for real)
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/llm_router_group.yml"
+
+    - name: Load the estate group_vars the role defaults derive from
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/all.yml"
+
+    - name: Stub every mandatory secret EXCEPT the OIDC admin identity
+      ansible.builtin.set_fact:
+        llm_router_master_key: dummy-render-check
+        llm_router_llm_large_bearer: dummy-render-check
+        ai_subdomain: pve.example.test
+        tofu_data:
+          domain: example.com
+          constants:
+            service_ports: { otel_traces_http: 4318 }
+        bao_local_llm_secrets: {}
+        bao_apps_secrets:
+          authelia_oidc_litellm_client_secret: dummy-render-check
+        # include_vars of all.yml above sets the ansible_become FACT to true
+        # (the estate default for real hosts) at a precedence that outranks
+        # this play's own `become: false` keyword. Re-set it here, in the same
+        # set_fact, so the later value wins and the scratch-file tasks below
+        # don't prompt for a sudo password they will never need.
+        ansible_become: false
+
+    # Anti-vacuity guard: if DEFAULT_USERNAME happens to be set in the shell
+    # running this test, llm_router_oidc_admin_email resolves instead of
+    # raising and the render below would silently succeed, hiding a real
+    # regression. Fail loudly here instead of passing vacuously.
+    - name: Precondition — DEFAULT_USERNAME must be unset for this negative case
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - lookup('env', 'DEFAULT_USERNAME') | length == 0
+        fail_msg: >-
+          DEFAULT_USERNAME is set in this shell, so the negative case below
+          cannot exercise the fail-loud path. Unset it and re-run.
+        success_msg: DEFAULT_USERNAME is unset, as this negative case requires.
+
+    # test_litellm_oidc_env.yml renders via `lookup('template', ...)`, which
+    # substitutes an inline "<< error ... >>" placeholder plus a warning for
+    # an undefined variable rather than raising — fine for pinning successful
+    # output, but it would make this negative case pass vacuously. The real
+    # converge path (roles/llm_router/tasks/main.yml) writes this file with
+    # the ansible.builtin.template ACTION, which does raise on an undefined
+    # variable; using the same module here is what actually proves the guard
+    # stops a converge instead of writing a broken EnvironmentFile.
+    - name: Create a scratch destination for the render attempt
+      ansible.builtin.tempfile:
+        state: file
+        suffix: litellm-env-negative-test
+      register: _scratch_env
+
+    - name: Render the real env file with no OIDC admin identity available
+      block:
+        - name: Attempt the render
+          ansible.builtin.template:
+            src: "{{ _role_dir }}/templates/litellm.env.j2"
+            dest: "{{ _scratch_env.path }}"
+            mode: "0600"
+        - name: Fail the test — the render should have raised
+          ansible.builtin.fail:
+            msg: >-
+              Rendering succeeded with DEFAULT_USERNAME unset. The mandatory
+              fail-loud guard on llm_router_oidc_admin_email
+              (inventory/group_vars/llm_router_group.yml) is missing or has
+              regressed back to a literal fallback.
+      rescue:
+        - name: The failure carries the specific fail-loud message
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - >-
+                'DEFAULT_USERNAME must be set for the LiteLLM OIDC admin identity'
+                in (ansible_failed_result.msg | string)
+            fail_msg: >-
+              The render failed, but not with the expected message. Got:
+              {{ ansible_failed_result.msg }}
+            success_msg: >-
+              An unset DEFAULT_USERNAME fails the render with the specific,
+              actionable message instead of silently falling back to a
+              personal identity literal.
+      always:
+        - name: Remove the scratch render
+          ansible.builtin.file:
+            path: "{{ _scratch_env.path }}"
+            state: absent

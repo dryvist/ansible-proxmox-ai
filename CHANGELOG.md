@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.41.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.40.0...v0.41.0) (2026-09-12)
+
+
+### Features
+
+* **hermes_agent:** typed triage and per-type closure in zammad-review cron ([#705](https://github.com/dryvist/ansible-proxmox-ai/issues/705)) ([3bbff39](https://github.com/dryvist/ansible-proxmox-ai/commit/3bbff395c5f88e2efde5f07a8c3bbfd9d32efa08))
+
+## [0.40.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.39.1...v0.40.0) (2026-09-12)
+
+
+### Features
+
+* **llm_router:** add OpenCode Go subscription models and priority routing ([#694](https://github.com/dryvist/ansible-proxmox-ai/issues/694)) ([fca0a4d](https://github.com/dryvist/ansible-proxmox-ai/commit/fca0a4d607b54fb64919e954094bc5981d73e218))
+* **llm_router:** Authelia generic-OIDC SSO for the admin UI ([#693](https://github.com/dryvist/ansible-proxmox-ai/issues/693)) ([346defd](https://github.com/dryvist/ansible-proxmox-ai/commit/346defde56153c4fd796ee6d02c4d266d656aa72))
+* **llm_router:** keep a bounded per-request record so serving share is measurable ([#697](https://github.com/dryvist/ansible-proxmox-ai/issues/697)) ([6f1e7a6](https://github.com/dryvist/ansible-proxmox-ai/commit/6f1e7a69b800a0ee3758513d73df6849a0c23e3c))
+* **llm_router:** probe the endpoints for what the registry claims is served ([#703](https://github.com/dryvist/ansible-proxmox-ai/issues/703)) ([135a017](https://github.com/dryvist/ansible-proxmox-ai/commit/135a0173741b497b1a1242bce3d7ce56267aaf7b))
+
+
+### Bug Fixes
+
+* **hermes_agent:** pause the unmanaged splunk-auto-ssh-burst cron ([#698](https://github.com/dryvist/ansible-proxmox-ai/issues/698)) ([60aa280](https://github.com/dryvist/ansible-proxmox-ai/commit/60aa280d8073d51a04a3ce3571d6540e4a6d7a03))
+* **hermes_agent:** refresh installer sha for 2026.8.31 ([ead554e](https://github.com/dryvist/ansible-proxmox-ai/commit/ead554ef4382bc9a52af4b12d914e3bf90e378b9))
+* **llm_router:** carry the OpenRouter spend ceiling over a weekly period ([#702](https://github.com/dryvist/ansible-proxmox-ai/issues/702)) ([6d29779](https://github.com/dryvist/ansible-proxmox-ai/commit/6d297792efe387b239821681a26a1c3d81668024))
+* **llm_router:** compare the gate listing against the whole registry, not the enabled set ([#706](https://github.com/dryvist/ansible-proxmox-ai/issues/706)) ([781dd0b](https://github.com/dryvist/ansible-proxmox-ai/commit/781dd0b6607647637bf04deb5319a05923ef364d))
+* **llm_router:** declare the subscription tier's credential in the registry ([#707](https://github.com/dryvist/ansible-proxmox-ai/issues/707)) ([0540a77](https://github.com/dryvist/ansible-proxmox-ai/commit/0540a77e50e97b944bc888d6e214c77fe3fe2a95))
+* **llm_router:** key fallbacks by every name that reaches the primary ([#700](https://github.com/dryvist/ansible-proxmox-ai/issues/700)) ([0cc868f](https://github.com/dryvist/ansible-proxmox-ai/commit/0cc868f33c3985875bd8963ad8632c0414740522))
+* **llm_router:** key fallbacks by every servable id and alias, fail-quick on a busy slot ([#713](https://github.com/dryvist/ansible-proxmox-ai/issues/713)) ([5b8d1cb](https://github.com/dryvist/ansible-proxmox-ai/commit/5b8d1cb41c39f606e572d048fa171969f50f2adf))
+* **llm_router:** set the log level through LITELLM_LOG; compute the serving share on a timer ([#710](https://github.com/dryvist/ansible-proxmox-ai/issues/710)) ([0bf944f](https://github.com/dryvist/ansible-proxmox-ai/commit/0bf944f3cf1d84c11359a7aa14b11ff8b7b31dde))
+* **llm_router:** stop the OIDC admin identity from falling back to a literal ([#711](https://github.com/dryvist/ansible-proxmox-ai/issues/711)) ([c46867e](https://github.com/dryvist/ansible-proxmox-ai/commit/c46867edc20ad9a1e3da064f31b5eb955fd731d6))
+* **molecule:** default qdrant fixture api key in converge playbook ([3c51e9e](https://github.com/dryvist/ansible-proxmox-ai/commit/3c51e9e29dde191dc2231c7ac47a15de38ada167))
+* **molecule:** default qdrant fixture api key in converge playbook ([9fa821a](https://github.com/dryvist/ansible-proxmox-ai/commit/9fa821ab3105f6a6d2525b4888eb629e1678da93))
+* **registry:** derive open_webui/hindsight/llama_cpp model ids from the registry ([#696](https://github.com/dryvist/ansible-proxmox-ai/issues/696)) ([8834f40](https://github.com/dryvist/ansible-proxmox-ai/commit/8834f4024b92fee5aa79cb2ac675234b28fa8cc8))
+* **registry:** finding 6 (bidirectional llama_cpp guard) + Phase 3 leftovers ([#712](https://github.com/dryvist/ansible-proxmox-ai/issues/712)) ([62d1eb9](https://github.com/dryvist/ansible-proxmox-ai/commit/62d1eb93a4648983ed2c31bc20e9753e0457429b))
+* **registry:** repoint the free Hermes rung at a servable upstream ([#701](https://github.com/dryvist/ansible-proxmox-ai/issues/701)) ([fcd4931](https://github.com/dryvist/ansible-proxmox-ai/commit/fcd4931fb98dfaa0d6664da9bbab5f7b929f5259))
+
 ## [0.39.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.39.0...v0.39.1) (2026-09-09)
 
 

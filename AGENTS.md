@@ -24,8 +24,11 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
   state is written ONCE, in the repo-root `llm-models.d/` registry. The role's
   defaults and templates are projections of it — never add a model id, alias or
   OpenBao key field to `roles/llm_router/` (or anywhere else); add or edit a
-  registry entry. A test fails the build when a registry value is re-typed in
-  the role's defaults.**
+  registry entry. `tests/llm_router/test_registry_retype_scan.py` fails the
+  build when a registry value is re-typed anywhere in the role, its tests or
+  the playbooks (the only literal it accepts is one the inventory itself
+  assigns as a consumer selection), and when any other role, the inventory or
+  a test names an upstream-only id instead of the client-facing name.**
   **Alias rule (hard): consumer-facing model aliases (`ai-default`,
   `ai-deep-analysis`, `claude-*`, any future tier name) live ONLY in
   `llm_router_model_group_aliases` (rendered as LiteLLM

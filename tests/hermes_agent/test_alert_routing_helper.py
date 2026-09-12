@@ -104,7 +104,7 @@ def test_the_marker_has_one_definition_shared_by_producer_and_consumer() -> None
     )
     assert "{{ hermes_agent_cron_issues_marker }}" in block
     for tpl in ("kanban-digest.py.j2", "splunk-digest.py.j2",
-                "splunk-triage.py.j2", "zammad-auto-close.py.j2"):
+                "splunk-triage.py.j2"):
         src = (ROLE / "templates" / tpl).read_text()
         assert 'ISSUES_MARKER = "{{ hermes_agent_cron_issues_marker }}"' in src, tpl
         assert "{ISSUES_MARKER}" in src, f"{tpl} declares the marker but never emits it"

@@ -14,7 +14,7 @@
           otel_traces_http: 4318
           redis_default: 6379
     bao_local_llm_secrets: {}
-    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: pve.example.test
     llm_router_master_key: sk-test-master
@@ -25,6 +25,27 @@
     ai_router_retry_after_seconds: 40
     hermes_brain_model: hermes-default
     hermes_goal_judge_model: goal-judge
+    # Registry-derived expectations, built from llm_router_model_registry
+    # directly (tier + credential_env) rather than from the credentialed
+    # projection the render uses — so an assert on the chain compares the
+    # render against the registry, not against its own input.
+    _local_groups: >-
+      {%- set ns = namespace(g=[]) -%}
+      {%- for m in llm_router_model_registry | selectattr('enabled')
+                   | selectattr('tier', 'equalto', 'hermes-local') -%}
+      {%- set g = m.fallback_group | default(m.route_group) -%}
+      {%- if g not in ns.g -%}{%- set ns.g = ns.g + [g] -%}{%- endif -%}
+      {%- endfor -%}
+      {{ ns.g }}
+    _openrouter_groups: >-
+      {%- set ns = namespace(g=[]) -%}
+      {%- for m in llm_router_model_registry | selectattr('enabled')
+                   | selectattr('tier', 'equalto', 'hermes-cloud')
+                   | selectattr('credential_env', 'equalto', 'OPENROUTER_API_KEY') -%}
+      {%- set g = m.fallback_group | default(m.route_group) -%}
+      {%- if g not in ns.g -%}{%- set ns.g = ns.g + [g] -%}{%- endif -%}
+      {%- endfor -%}
+      {{ ns.g }}
     openbao_secrets_kv_mount: test-kv
     openbao_secrets_ai_api_key_mount: test-external
     openbao_secrets_ai_api_key_path_prefix: test/provider-keys
@@ -123,25 +144,39 @@
         that:
           - llm_router_hermes_default_fallback_chain == _expected_chain
           - _fallback_chain == _expected_chain
-          # EVERY group that can raise ContextWindowExceeded escapes to the
-          # wider cloud rungs -- not just the narrow local leg. Without this
-          # LiteLLM aborts the entire chain at the failing rung on an over-long
-          # request instead of advancing past it, so the rungs listed above are
-          # not reached -- the chain reads correct and serves nothing.
-          #
-          # Asserted as a SET of keys plus a uniform value, rather than as a
-          # frozen list literal. The previous form pinned the exact one-entry
-          # list, which is what let the primary and the auto-router's own tier
-          # targets stay uncovered while this test stayed green: the literal
-          # described what the map WAS, so it could never notice what the map
-          # was MISSING.
+          # THE TRIPWIRE, now as counts sourced from the registry rather than
+          # a typed list: two cloud groups behind this credential, one local
+          # leg, and (default policy) the local leg last. A rung added under
+          # this credential, or a local leg added, must be reviewed here.
+          - _openrouter_groups | length == 2
+          - _local_groups | length == 1
           - >-
-            _cwf_keys | sort == [
-              'hermes-default', 'hermes-local-4080',
-              'mlx-community/Qwen3.6-35B-A3B-4bit',
-              'mlx-community/Qwen3.8-27B-4bit',
-              'tool-calling', 'interim-brain'
-            ] | sort
+            (_fallback_chain | last in _local_groups)
+            if llm_router_hermes_narrow_legs_last | bool
+            else (_fallback_chain | first in _local_groups)
+          # EVERY group that can raise ContextWindowExceeded escapes to the
+          # wider cloud rungs -- not just the narrow local leg. A rendered map
+          # that lacks a key re-raises under that name WITHOUT falling through
+          # to the ordinary fallbacks map (an absent map would fall through),
+          # so a partially populated map is worse than none: the chain reads
+          # correct and the unkeyed name serves nothing on an over-long
+          # request. (It does not abort the chain — the enclosing walk still
+          # advances; see 37-fallback-entry-points.yml.)
+          #
+          # Asserted as a SET of keys built from the registry PROJECTIONS and
+          # the rendered alias map — never a typed literal, and never the
+          # escape-groups var the template renders from. A literal described
+          # what the map WAS and could not notice what it was MISSING; the var
+          # would only prove the template copied itself. This composition is
+          # the policy: local legs, the auto-router groups, every servable id,
+          # every advertised alias.
+          - _cwf_keys | sort == _expected_cwf_keys | sort
+          # ANTI-VACUITY: the expected set must hold a local leg, a router
+          # group, the primary and at least one alias, or a hollowed registry
+          # passes this over a near-empty set.
+          - _expected_cwf_keys | length > 3
+          - llm_router_primary_model in _expected_cwf_keys
+          - (_config.router_settings.model_group_alias | list) | length > 0
           # The primary itself must be keyed. Five cron jobs died of exactly its
           # absence, one exceeding the served window by 482 tokens.
           - "'hermes-default' in _cwf_keys"
@@ -150,7 +185,7 @@
           - >-
             _config.router_settings.context_window_fallbacks
             | map('dict2items') | flatten | map(attribute='value') | unique
-            == [['hermes-cloud-free', 'hermes-cloud-openrouter']]
+            == [_openrouter_groups]
           - _cloud_models | length == 2
           - _environment | regex_findall('(?m)^OPENROUTER_API_KEY=') | length == 1
           - _environment | regex_findall('(?m)^OPENCODE_API_KEY=') | length == 0
@@ -162,20 +197,28 @@
           cloud={{ _cloud_models | map(attribute='litellm_params.model') | list }}.
       vars:
         # Order is policy-dependent (llm_router_hermes_narrow_legs_last, in
-        # roles/llm_router/defaults/main/35-hermes-cloud.yml). The 4080 leg is
-        # narrower than the primary, so under the default policy it goes LAST:
-        # ahead of a cloud rung it wastes that rung on an over-long
+        # roles/llm_router/defaults/main/35-hermes-cloud.yml). The local leg
+        # is narrower than the primary, so under the default policy it goes
+        # LAST: ahead of a cloud rung it wastes that rung on an over-long
         # request. Membership is what this task is really about -- one
-        # credential enables one provider group -- but the order is stated for
-        # both policies so a toggle flip surfaces here as a reviewed edit.
+        # credential enables one provider group -- so the chain is composed
+        # from the registry's own view of that credential plus the local
+        # legs, ordered by the policy, and the COUNTS are pinned below as the
+        # tripwire: a new rung under this credential must be reviewed here.
         _expected_chain: >-
-          {{ ['hermes-cloud-free', 'hermes-cloud-openrouter', 'hermes-local-4080']
+          {{ _openrouter_groups + _local_groups
              if llm_router_hermes_narrow_legs_last | bool
-             else ['hermes-local-4080', 'hermes-cloud-free',
-                   'hermes-cloud-openrouter'] }}
+             else _local_groups + _openrouter_groups }}
         _cwf_keys: >-
           {{ _config.router_settings.context_window_fallbacks | default([])
              | map('dict2items') | flatten | map(attribute='key') | list }}
+        _expected_cwf_keys: >-
+          {{ (llm_router_local_fallback_groups
+              + (llm_router_hermes_virtual_models
+                 | map(attribute='client_model_id') | list)
+              + llm_router_servable_models
+              + (_config.router_settings.model_group_alias | list))
+             | unique | list }}
         _fallback_chain: >-
           {{ _config.router_settings.fallbacks
              | selectattr('hermes-default', 'defined')
@@ -205,7 +248,7 @@
           otel_traces_http: 4318
           redis_default: 6379
     bao_local_llm_secrets: {}
-    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: pve.example.test
     llm_router_master_key: sk-test-master
@@ -216,6 +259,18 @@
     ai_router_retry_after_seconds: 40
     hermes_brain_model: hermes-default
     hermes_goal_judge_model: goal-judge
+    # Registry-derived expectations, built from llm_router_model_registry
+    # directly (tier + credential_env) rather than from the credentialed
+    # projection the render uses — so an assert on the chain compares the
+    # render against the registry, not against its own input.
+    _local_groups: >-
+      {%- set ns = namespace(g=[]) -%}
+      {%- for m in llm_router_model_registry | selectattr('enabled')
+                   | selectattr('tier', 'equalto', 'hermes-local') -%}
+      {%- set g = m.fallback_group | default(m.route_group) -%}
+      {%- if g not in ns.g -%}{%- set ns.g = ns.g + [g] -%}{%- endif -%}
+      {%- endfor -%}
+      {{ ns.g }}
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
@@ -249,8 +304,9 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_hermes_default_fallback_chain == ['hermes-local-4080']
-          - "_config.router_settings.fallbacks == [{'hermes-default': ['hermes-local-4080']}]"
+          - llm_router_hermes_default_fallback_chain == _local_groups
+          - _local_groups | length == 1
+          - "_config.router_settings.fallbacks == [{hermes_brain_model: _local_groups}]"
           # No cloud rung means nowhere wider to escape to, so the key is
           # omitted entirely. An empty map would not be "no map" to LiteLLM --
           # it would take the escape branch and fall back to nothing, hiding

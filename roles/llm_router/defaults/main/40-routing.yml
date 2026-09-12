@@ -47,6 +47,14 @@ llm_router_request_timeout_seconds: "{{ ai_router_request_timeout_seconds }}"
 # the slot while the caller's entire tolerance was one 15-second retry. A 429 is
 # "the slot is busy", never "the work is impossible", so it must not be fatal.
 #
+# TWO WAYS TO ABSORB IT, chosen per group name. A name that carries a fallback
+# chain hands the busy slot to the chain at once — its
+# model_group_retry_policy entry zeroes this figure (config.yaml.j2), and the
+# chain, not a sleep, is what keeps the 429 from reaching the caller. That is
+# every chain rung, every provider router, and every entry-point name
+# (37-fallback-entry-points.yml). The sleeping tolerance below applies only to
+# a name with no chain to hand over to. Same guarantee, different mechanism.
+#
 # Tolerance = rate_limit_retries x retry_after_seconds. 8 x 40s ~= 320s, sized
 # above the longest slot occupancy actually observed in that incident (211s) with
 # margin. Rejections cost microseconds, so the retry loop spends only the sleeps;
@@ -72,3 +80,33 @@ llm_router_retry_after_seconds: "{{ ai_router_retry_after_seconds }}"
 llm_router_retry_max_delay_seconds: "{{ llm_router_retry_after_seconds }}"
 # Rate-limit failures do not cool down the otherwise healthy deployment.
 llm_router_rate_limit_allowed_fails: 1000
+# Timeouts are judged against the SAME counter those 429s fill. litellm keeps
+# one failure counter per deployment for the router-level policy
+# (cooldown_handlers.py:404-408 passes no per-type suffix; :587-594 keys the
+# counter by deployment alone, TTL = cooldown_time, 30s here) while looking
+# the allowance up per exception type (router.py:12142-12148). So the figure
+# a timeout is compared against is not "timeouts in the window" but "failures
+# of ANY type in the window, plus this one". With no timeout allowance that
+# comparison falls to the generic allowed_fails of 2: a deployment that has
+# taken two busy-slot 429s in the last 30s is parked by its first timeout.
+#
+# 100 is derived from what the counter can actually hold, not from timeouts:
+#
+#   * Timeouts cannot cluster. Every bound in this role is >= 120s and the
+#     local tiers admit one or two in-flight requests, so one deployment can
+#     produce at most a couple of timeouts per 30s window. Any figure above
+#     that is reached only through 429 inflation, which is the case this
+#     exists to absorb — a slow rung finishing near its bound is expected
+#     behaviour, not a broken deployment.
+#   * It stays far below the rate-limit allowance on purpose. A timeout IS a
+#     stronger signal than a 429, and a deployment whose shared counter has
+#     climbed past 100 in 30s is under a rejection storm no single slot
+#     explains; parking it then is the right call.
+#   * It is an order of magnitude above the 429s one router instance can
+#     accumulate against one deployment in 30s at the arrival rates this
+#     estate has measured, so a healthy-but-busy slot is not parked by its
+#     first timeout.
+#
+# Deployments that set their own cooldown_time: 0 (the local GPU rung) never
+# reach this path at all; this governs the large tier and the cloud rungs.
+llm_router_timeout_allowed_fails: 100

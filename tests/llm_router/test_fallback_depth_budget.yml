@@ -1,0 +1,108 @@
+---
+# max_fallbacks is a SHARED depth budget across every chain the template
+# renders, read only at run_async_fallback entry (litellm 1.98.0). A bound
+# derived from one chain's length caps every other chain silently, and the
+# truncation is invisible to any test that does not count attempt keys. This
+# play reads the attempt-key count off the RENDERED config — distinct target
+# names plus one order-based retarget per target rendering more than one
+# `order` — and requires the bound to cover it.
+- name: Verify the fallback depth budget covers the rendered map
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    # Derived, never typed: the registry is the single source for every id.
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Produce the fully credentialed render
+      ansible.builtin.import_tasks: tasks/credentialed_render.yml
+
+    - name: The depth budget covers the longest path the map can produce
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _all_targets | length > 0
+          - _longest_chain | int > 0
+          # ANTI-VACUITY for the order half: at least one budgeted target must
+          # render two orders, or the retarget term is asserted over nothing.
+          # The input that would slip through: a render where no fallback
+          # target carries a local survivor — then the bound collapses to the
+          # name count and the second term is never exercised.
+          - _order_retarget_targets | length > 0
+          # max_fallbacks bounds rung ATTEMPTS along a path, not nesting depth:
+          # run_async_fallback increments once per attempted target and carries
+          # the running total into the nested call. The ceiling on a path is
+          # the number of DISTINCT ATTEMPT KEYS the walk can spend: every
+          # distinct target NAME, plus one order-based retarget for each target
+          # whose deployments render more than one `order` value (litellm
+          # prepends `{"model": g, "_target_order": o}` for the failing group,
+          # router.py:6318-6352, and it hashes to its own key). Both terms are
+          # read off the rendered config here, not the defaults' expression, so
+          # this tests the property and not the formula.
+          - >-
+            _config.router_settings.max_fallbacks | int
+            >= (_all_targets | length) + (_order_retarget_targets | length)
+          # Implied by the above, asserted separately so a regression that
+          # truncates the main chain names itself.
+          - _config.router_settings.max_fallbacks | int >= _longest_chain | int
+        fail_msg: >-
+          max_fallbacks={{ _config.router_settings.max_fallbacks }} does not
+          cover the rendered map. Distinct fallback targets:
+          {{ _all_targets | length }} {{ _all_targets }}. Targets that also
+          render more than one order value, each adding one order-based
+          retarget attempt: {{ _order_retarget_targets }}. Required:
+          {{ (_all_targets | length) + (_order_retarget_targets | length) }}.
+          Longest single chain: {{ _longest_chain }}. A bound below the
+          attempt-key count truncates nested chains silently.
+        success_msg: >-
+          max_fallbacks={{ _config.router_settings.max_fallbacks }} covers the
+          longest single chain ({{ _longest_chain }}), the
+          {{ _all_targets | length }} distinct targets, and the
+          {{ _order_retarget_targets | length }} order-based retarget(s)
+          ({{ _order_retarget_targets | join(', ') }}).
+      vars:
+        _all_targets: >-
+          {{ _config.router_settings.fallbacks
+             | map('dict2items') | flatten | map(attribute='value')
+             | flatten | unique | list }}
+        _longest_chain: >-
+          {{ _config.router_settings.fallbacks
+             | map('dict2items') | flatten | map(attribute='value')
+             | map('length') | list | max }}
+        # Fallback targets whose rendered deployments carry >1 distinct
+        # litellm_params.order — read from model_list, independent of the
+        # budgeted-groups var the defaults derive from.
+        _order_retarget_targets: >-
+          {%- set ns = namespace(out=[]) -%}
+          {%- for t in _all_targets -%}
+          {%- set os = namespace(vals=[]) -%}
+          {%- for d in _config.model_list | selectattr('model_name', 'equalto', t) -%}
+          {%- set o = (d.litellm_params | default({})).order | default(none) -%}
+          {%- if o is not none and o not in os.vals -%}
+          {%- set os.vals = os.vals + [o] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- if os.vals | length > 1 -%}
+          {%- set ns.out = ns.out + [t] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.out }}

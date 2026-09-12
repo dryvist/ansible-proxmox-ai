@@ -67,35 +67,82 @@
       All models are within this guest's {{ llama_cpp_max_param_billions }}B
       ceiling.
 
-# --- Registry membership ------------------------------------------------------
+# --- Registry membership (BOTH directions) ------------------------------------
 # defaults/main.yml types each served model's `name:` as a literal (the join
 # key to this file's backend facts, which the registry deliberately does not
 # carry). This is the loud-failure half of that tradeoff: a name that has
 # drifted from the registry — renamed, disabled, or never added — is caught
 # HERE, once, for every entry, rather than by a per-entry lookup that would
-# only re-type the same literal a second time for no benefit. Scoped per tier
-# so a light-tier name is checked against the light tier and a vllm-tier name
-# against the vllm tier, not the whole registry — a name that is real but in
-# the WRONG tier should fail exactly as loud as one that is not real at all.
+# only re-type the same literal a second time for no benefit.
+#
+# `llama_cpp_registry_tier` (inventory/group_vars/<group>.yml) names the
+# llm-models.d/ tier THIS HOST serves — set once per group, never inferred
+# from group_names here. A third llama_cpp host adds one line in its own
+# group_vars, not a new branch in this file.
+#
+# Checked in BOTH directions, not just "served names are registered"
+# (finding 6, 2026-09-11 review): a registry entry enabled for this tier that
+# is NOT in llama_cpp_models is advertised by the router and 404s at
+# llama-swap the moment a caller requests it — the 2026-07-28 class, caused by
+# the servable set and the serving host's actual set having no shared
+# definition. One direction alone cannot catch that; only symmetry can.
+- name: Assert this host's registry tier has at least one enabled entry
+  ansible.builtin.assert:
+    that:
+      # Anti-vacuity: an empty tier makes BOTH difference() asserts below pass
+      # trivially, which would silently stop checking anything the moment
+      # llama_cpp_registry_tier is misspelled or a tier is fully disabled.
+      - _llama_cpp_tier_registry_ids | length > 0
+    fail_msg: >-
+      llama_cpp_registry_tier is '{{ llama_cpp_registry_tier }}', but
+      llm-models.d/ has no ENABLED entry with that tier. Either this guest's
+      llama_cpp_registry_tier is misspelled, or every registry entry for this
+      tier was disabled — both leave the two asserts below checking nothing.
+  vars:
+    _llama_cpp_tier_registry_ids: >-
+      {{ llm_router_registry_enabled | selectattr('tier', 'equalto', llama_cpp_registry_tier)
+         | map(attribute='client_model_id') | list }}
+
 - name: Assert every served model name is a registered client_model_id for this tier
   ansible.builtin.assert:
     that:
       - (llama_cpp_models | map(attribute='name') | list
-         | difference(_llama_cpp_expected_registry_ids)) | length == 0
+         | difference(_llama_cpp_tier_registry_ids)) | length == 0
     fail_msg: >-
       llama_cpp_models name(s)
       {{ llama_cpp_models | map(attribute='name') | list
-         | difference(_llama_cpp_expected_registry_ids) }}
-      are not a registered client_model_id in the
-      {{ 'light' if 'llm_fast_group' in group_names else 'vllm' }} tier
-      (llm-models.d/). This role installs and serves whatever is listed in
-      llama_cpp_models regardless of the registry, so a drifted name here
+         | difference(_llama_cpp_tier_registry_ids) }}
+      are not a registered client_model_id in the {{ llama_cpp_registry_tier }}
+      tier (llm-models.d/). This role installs and serves whatever is listed
+      in llama_cpp_models regardless of the registry, so a drifted name here
       serves a model the router never advertises for it — add or rename the
       registry entry, or fix the name here to match it.
     success_msg: >-
       Every served model name is a registered client_model_id
-      ({{ _llama_cpp_expected_registry_ids | join(', ') }}).
+      ({{ _llama_cpp_tier_registry_ids | join(', ') }}).
   vars:
-    _llama_cpp_expected_registry_ids: >-
-      {{ (llm_router_light_models if 'llm_fast_group' in group_names
-          else llm_router_vllm_models) | map(attribute='client_model_id') | list }}
+    _llama_cpp_tier_registry_ids: >-
+      {{ llm_router_registry_enabled | selectattr('tier', 'equalto', llama_cpp_registry_tier)
+         | map(attribute='client_model_id') | list }}
+
+- name: Assert every enabled registry entry for this tier is actually served
+  ansible.builtin.assert:
+    that:
+      - (_llama_cpp_tier_registry_ids
+         | difference(llama_cpp_models | map(attribute='name') | list)) | length == 0
+    fail_msg: >-
+      Registry client_model_id(s)
+      {{ _llama_cpp_tier_registry_ids
+         | difference(llama_cpp_models | map(attribute='name') | list) }}
+      are enabled in the {{ llama_cpp_registry_tier }} tier (llm-models.d/) but
+      are NOT in this guest's llama_cpp_models. The router advertises them and
+      this backend does not serve them, so every request for one 404s at
+      llama-swap — the 2026-07-28 class in the other direction. Add the entry
+      to llama_cpp_models here, or disable it in the registry.
+    success_msg: >-
+      Every enabled {{ llama_cpp_registry_tier }}-tier registry entry is
+      served by this guest's llama_cpp_models.
+  vars:
+    _llama_cpp_tier_registry_ids: >-
+      {{ llm_router_registry_enabled | selectattr('tier', 'equalto', llama_cpp_registry_tier)
+         | map(attribute='client_model_id') | list }}
