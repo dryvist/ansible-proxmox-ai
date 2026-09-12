@@ -83,10 +83,13 @@ def test_patched_submit_keeps_its_block_indentation() -> None:
     patched = _apply_runtime_patch(REPLACE_TASK, PINNED_CRON_SUBMIT_SOURCE)
     body = [ln for ln in patched.splitlines() if "_cron_future" in ln]
     assert body, patched
-    assert all(ln.startswith("        ") for ln in body), body
+    # Re-anchored (patches_cron_wall_clock.yml): the monitor moved out of
+    # run_job into _run_agent_with_watchdog, losing 4 spaces of indentation
+    # (8 -> 4).
+    assert all(ln.startswith("    ") for ln in body), body
     # Compiles as a standalone block once the shared indent is stripped.
     compile(
-        "\n".join(ln[8:] for ln in patched.splitlines()),
+        "\n".join(ln[4:] for ln in patched.splitlines()),
         "patched-submit",
         "exec",
     )

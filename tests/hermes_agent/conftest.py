@@ -334,6 +334,50 @@ PINNED_CLI_MAIN_SOURCE = (
 PATCHED_CLI_MAIN_SOURCE = PINNED_CLI_MAIN_SOURCE.replace(
     "    cron_command(args)", "    return cron_command(args)"
 )
+# Upstream's September 2026 decomposition moved worker-reap process-group
+# guarding out of kanban_db.py into kanban_db_dispatch.py and centralized
+# both reapers' SIGKILL escalation onto one shared _sigkill(kill, pid)
+# helper, so patches_verify.yml checks all of it against ONE dedicated
+# hermes_agent_kanban_dispatch_source var, not hermes_agent_goal_reconcile_
+# source. Built the same way as every other PATCHED_* constant here: run
+# the role's own patch tasks over minimal real fragments, never hand-copy
+# the expected output.
+PATCHED_KANBAN_DISPATCH_SOURCE = (
+    _task("Patch Hermes worker-reap helper to verify PID identity before signaling")[
+        "ansible.builtin.blockinfile"
+    ]["block"]
+    + _apply_runtime_patch(
+        "Patch Hermes worker-reap SIGKILL escalation to signal the worker's process group",
+        _apply_runtime_patch(
+            "Patch Hermes worker-reap timeout path to signal the worker's process group",
+            _apply_runtime_patch(
+                "Patch Hermes worker-reap timeout path to verify PID safety before signaling",
+                PINNED_WORKER_REAP_SOURCE,
+            ),
+        ),
+    )
+    + _apply_runtime_patch(
+        "Patch Hermes worker-reap SIGKILL escalation to signal the worker's process group",
+        _apply_runtime_patch(
+            "Patch Hermes stale-reclaim worker termination to signal the worker's process group",
+            _apply_runtime_patch(
+                "Patch Hermes stale-reclaim worker termination to verify PID safety before signaling",
+                PINNED_STALE_RECLAIM_TERMINATE_SOURCE,
+            ),
+        ),
+    )
+)
+
+
+# Upstream's September 2026 decomposition also moved the length-continuation
+# max_tokens-ceiling patch's target file to turn_iteration_prep.py (path
+# change only, content unchanged) — checked against its own dedicated
+# hermes_agent_turn_iteration_prep_source var, not hermes_agent_retry_source.
+PATCHED_TURN_ITERATION_PREP_SOURCE = _apply_runtime_patch(
+    "Patch hermes-agent length-continuation boost to respect the configured "
+    "max_tokens ceiling",
+    PINNED_BOOST_CAP_SOURCE,
+)
 
 
 def _combined_assert_task() -> dict[str, Any]:
@@ -361,6 +405,8 @@ def _source_postconditions(
     goal_judge_source: str = PATCHED_GOAL_JUDGE_SOURCE,
     run_agent_source: str = PATCHED_RUN_AGENT_SOURCE,
     cli_main_source: str = PATCHED_CLI_MAIN_SOURCE,
+    kanban_dispatch_source: str = PATCHED_KANBAN_DISPATCH_SOURCE,
+    turn_iteration_prep_source: str = PATCHED_TURN_ITERATION_PREP_SOURCE,
 ) -> tuple[bool, ...]:
     that = _combined_assert_task()["ansible.builtin.assert"]["that"]
     environment = Environment(autoescape=False)
@@ -376,6 +422,8 @@ def _source_postconditions(
         "hermes_agent_hindsight_plugin_source": hindsight_plugin_source,
         "hermes_agent_run_agent_source": run_agent_source,
         "hermes_agent_cli_main_source": cli_main_source,
+        "hermes_agent_kanban_dispatch_source": kanban_dispatch_source,
+        "hermes_agent_turn_iteration_prep_source": turn_iteration_prep_source,
     }
     return tuple(
         bool(environment.compile_expression(condition)(**context)) for condition in that
