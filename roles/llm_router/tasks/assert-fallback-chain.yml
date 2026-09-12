@@ -75,6 +75,12 @@
       # PROVIDER COUNT (a reviewed onboarding decision each time it grows),
       # not a summed worst-case timeout.
       - "llm_router_hermes_default_fallback_chain | length <= 8"
+      # ZDR ordering: no free_zdrless member (a :free-suffixed OpenRouter id,
+      # zero_data_retention: false, no ZDR claim) may precede ANY other
+      # segment. The operator's rule is absolute — a rung with no ZDR claim
+      # sits strictly last — so this checks it against every other rung in
+      # the chain, not only the segment it is supposed to trail.
+      - "_llm_router_misplaced_zdrless_groups | length == 0"
       # Every rung narrower than the primary carries a context_window_fallbacks
       # escape hatch — not because its absence aborts the chain (it does not;
       # the enclosing walk advances), but because of how that map is consulted.
@@ -109,7 +115,9 @@
       context_window_fallbacks escape hatch (an over-long request re-raises
       at these rather than escaping to a wider rung, because a rendered map
       with a missing key never falls through):
-      {{ _llm_router_unescaped_narrow_groups }}.
+      {{ _llm_router_unescaped_narrow_groups }}. Free-zdrless rung(s) found
+      ahead of another segment, breaking the "no ZDR claim sits last" rule:
+      {{ _llm_router_misplaced_zdrless_groups }}.
       The four inputs every ordering failure turns on, because they differ
       between environments and are otherwise invisible here — primary model:
       {{ llm_router_primary_model | default('UNRESOLVED') }}; primary context
@@ -121,8 +129,28 @@
       Hermes fallback chain is ordered
       ({{ llm_router_hermes_default_fallback_chain | join(' -> ') }}), every
       rung is a real registry entry, no single provider's outage empties it,
-      and depth stays within the 5-rung cap.
+      and depth stays within the 8-rung cap.
   vars:
+    # ZDR ordering guard: a free_zdrless member (no ZDR claim) may not precede
+    # ANY other rung in the chain, not just the segments it is meant to
+    # follow. Checked against the other five segments explicitly rather than
+    # "everything before its own index" so a chain with only free_zdrless
+    # present (nothing to be ahead of) reports no violation.
+    _llm_router_misplaced_zdrless_groups: >-
+      {%- set ns = namespace(bad=[]) -%}
+      {%- set chain = llm_router_hermes_default_fallback_chain -%}
+      {%- set _other_groups = llm_router_local_fallback_groups
+            + llm_router_opencode_fallback_groups
+            + llm_router_hermes_cloud_only_fallback_groups -%}
+      {%- for g in llm_router_openrouter_free_groups -%}
+      {%- for h in _other_groups -%}
+      {%- if g in chain and h in chain
+             and chain.index(g) < chain.index(h) and g not in ns.bad -%}
+      {%- set ns.bad = ns.bad + [g] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.bad }}
     # Narrow local legs that precede a rung they should not, in the chain.
     # Each one is a place the chain can die with serviceable rungs behind it.
     # Scoped to opencode_sub + or_zdr_paid only, NOT the free segments: the
