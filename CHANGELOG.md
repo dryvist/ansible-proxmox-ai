@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.45.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.45.0...v0.45.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* **runner:** fall back to the ansible identity when semaphore login fails ([#741](https://github.com/dryvist/ansible-proxmox-ai/issues/741)) ([862892e](https://github.com/dryvist/ansible-proxmox-ai/commit/862892e1e8d72f72b3d2a847fa9f46863f75607d))
+
 ## [0.45.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.44.0...v0.45.0) (2026-09-12)
 
 
