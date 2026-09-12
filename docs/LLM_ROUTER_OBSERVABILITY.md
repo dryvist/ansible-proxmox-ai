@@ -175,18 +175,14 @@ loggers (`proxy_server.py:7416-7433`), not on every library. The debug switches
 are refused: they raise *every* logger to debug, which on a proxy carrying
 prompts is a data-exposure change rather than a diagnostic.
 
-**A previous revision of this document said the opposite and shipped a
-regression; both are recorded so neither returns.** It claimed the env var moved
-the handler threshold only and "changed nothing", and instead rendered a
-`dictConfig` naming the router logger with no handlers key, believing that
-preserved LiteLLM's handler. The stdlib does the opposite: a non-incremental
-`dictConfig` removes every existing handler from any logger it names
-(`logging/config.py`, `common_logger_config`). The result stripped LiteLLM's
-handler and its redaction filter: INFO still fell to the last-resort handler
-(WARNING) and was dropped, while router WARNING and ERROR records — which carry
-provider error bodies — were emitted **unredacted**. Inert on its goal, a
-regression on redaction, and a test pinned the broken shape. Any future
-`dictConfig` here must own the handler and re-install the filters explicitly.
+**Not a `--log_config` dictConfig.** A non-incremental `dictConfig` removes
+every existing handler from any logger it names (`logging/config.py`,
+`common_logger_config`), whether or not it supplies handlers. Naming the
+router logger there strips the handler LiteLLM attached at import together with
+its redaction filter, so records fall to the last-resort handler, which admits
+WARNING and above only and redacts nothing. A `dictConfig` for this proxy must
+own the handler and re-install both filters explicitly, or not name these
+loggers at all. The retention test asserts the unit carries no such flag.
 
 ### What the pair makes decidable, which is the point of both
 
