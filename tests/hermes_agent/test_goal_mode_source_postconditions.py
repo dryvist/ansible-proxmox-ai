@@ -3,6 +3,7 @@ from __future__ import annotations
 from conftest import (
     PATCHED_JUDGE_AVAILABLE_SOURCE,
     PATCHED_KANBAN_GOAL_LOOP_SOURCE,
+    PATCHED_TURN_ITERATION_PREP_SOURCE,
     PINNED_JUDGE_AVAILABLE_SOURCE,
     PINNED_BOOST_CAP_SOURCE,
     PINNED_COMPRESSOR_SCAN_SOURCE,
@@ -45,6 +46,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "run_agent.py",
         "hermes_cli/main.py",
         "hermes_cli/kanban_db_dispatch.py",
+        "agent/turn_iteration_prep.py",
     ]
 
     assert_task = _combined_assert_task()
@@ -114,10 +116,13 @@ def test_installed_source_postconditions_fail_closed() -> None:
         and ") == 2" in condition
         for condition in assert_task["ansible.builtin.assert"]["that"]
     )
+    # Re-anchored (PR C): this occurrence moved off hermes_agent_retry_source
+    # onto its own turn_iteration_prep_source var, and its own-file count
+    # dropped from 2 to 1 as a result.
     assert any(
         "_boost_cap = agent.max_tokens if agent.max_tokens else max(" in condition
         and ".count(" in condition
-        and ") == 2" in condition
+        and ") == 1" in condition
         for condition in assert_task["ansible.builtin.assert"]["that"]
     )
     assert 'resolved_provider != "custom"' in conditions
@@ -144,42 +149,41 @@ def test_installed_source_postconditions_fail_closed() -> None:
         + PINNED_PROTOCOL_VIOLATION_SOURCE
         + PINNED_PROTOCOL_RETRY_SOURCE
     )
-    worker_reap_source = PINNED_WORKER_REAP_SOURCE
-    for patch_name in (
-        "Patch Hermes worker-reap timeout path to verify PID safety before signaling",
-        "Patch Hermes worker-reap timeout path to signal the worker's process group",
-        "Patch Hermes worker-reap timeout path to escalate on the worker's process group",
-    ):
-        worker_reap_source = _apply_runtime_patch(patch_name, worker_reap_source)
-    # The blockinfile-inserted identity-check helper the three replaces
-    # above call into — landed separately from them at converge time, so
-    # the assert conditions checking for it need it present here too.
-    worker_reap_source = (
-        _task(
-            "Patch Hermes worker-reap helper to verify PID identity before signaling"
-        )["ansible.builtin.blockinfile"]["block"]
-        + worker_reap_source
+    # Upstream's September 2026 decomposition moved worker-reap
+    # process-group guarding out of kanban_db.py (hermes_agent_goal_
+    # reconcile_source) into kanban_db_dispatch.py, checked instead against
+    # its own dedicated hermes_agent_kanban_dispatch_source — see
+    # conftest.PATCHED_KANBAN_DISPATCH_SOURCE, built the same way (real
+    # patch tasks over minimal real fragments), reused here rather than
+    # rebuilt so this file and conftest can't drift apart on the same
+    # fixture.
+    worker_reap_source = _apply_runtime_patch(
+        "Patch Hermes worker-reap SIGKILL escalation to signal the worker's process group",
+        _apply_runtime_patch(
+            "Patch Hermes worker-reap timeout path to signal the worker's process group",
+            _apply_runtime_patch(
+                "Patch Hermes worker-reap timeout path to verify PID safety before signaling",
+                PINNED_WORKER_REAP_SOURCE,
+            ),
+        ),
     )
-    reconcile_source += worker_reap_source
-
-    # The stale-reclaim SIGKILL-escalation patch that used to sit here is
-    # GONE (patches_worker_reap.yml): folded into a shared-helper rewrite
-    # tracked separately, not yet applied.
-    stale_reclaim_source = PINNED_STALE_RECLAIM_TERMINATE_SOURCE
-    for patch_name in (
-        "Patch Hermes stale-reclaim worker termination to verify PID safety before signaling",
-        "Patch Hermes stale-reclaim worker termination to signal the worker's process group",
-    ):
-        stale_reclaim_source = _apply_runtime_patch(patch_name, stale_reclaim_source)
-    # The blockinfile-inserted identity-check helper both the timeout-path
-    # and stale-reclaim-path signal sites call into.
-    stale_reclaim_source = (
-        _task(
-            "Patch Hermes worker-reap helper to verify PID identity before signaling"
-        )["ansible.builtin.blockinfile"]["block"]
+    stale_reclaim_source = _apply_runtime_patch(
+        "Patch Hermes worker-reap SIGKILL escalation to signal the worker's process group",
+        _apply_runtime_patch(
+            "Patch Hermes stale-reclaim worker termination to signal the worker's process group",
+            _apply_runtime_patch(
+                "Patch Hermes stale-reclaim worker termination to verify PID safety before signaling",
+                PINNED_STALE_RECLAIM_TERMINATE_SOURCE,
+            ),
+        ),
+    )
+    kanban_dispatch_source = (
+        _task("Patch Hermes worker-reap helper to verify PID identity before signaling")[
+            "ansible.builtin.blockinfile"
+        ]["block"]
+        + worker_reap_source
         + stale_reclaim_source
     )
-    reconcile_source += stale_reclaim_source
     # The six client-side backoff hacks are gone (see
     # test_client_side_backoff_hacks_stay_reverted); only the two kept
     # max_tokens-ceiling patches still contribute to this source.
@@ -197,11 +201,9 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "Patch hermes-agent retry boost to respect the configured max_tokens ceiling",
         PINNED_TC_BOOST_CAP_SOURCE,
     )
-    retry_source += _apply_runtime_patch(
-        "Patch hermes-agent length-continuation boost to respect the configured "
-        "max_tokens ceiling",
-        PINNED_BOOST_CAP_SOURCE,
-    )
+    # Re-anchored (PR C): this patch's target file moved to
+    # turn_iteration_prep.py (path change only, content unchanged) — see
+    # conftest.PATCHED_TURN_ITERATION_PREP_SOURCE, reused here.
     auxiliary_source = "\n".join(
         (
             "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0",
@@ -347,22 +349,24 @@ def test_installed_source_postconditions_fail_closed() -> None:
             ),
         )
     )
-    # The length-continuation boost dropped while the _tc_ one landed. The
-    # needle `_boost_cap = agent.max_tokens ...` still occurs once (inside
-    # the _tc_boost_cap line), so only the ==2 count catches this — a plain
-    # substring assertion would pass here with the patch missing.
-    retry_source_tc_only = retry_source.replace(
+    # The length-continuation boost (turn_iteration_prep_source, its own
+    # dedicated var since PR C moved this patch's target file) dropped: the
+    # needle `_boost_cap = agent.max_tokens ...` reverting to the unpatched
+    # `_boost_cap = max(...)` form must go red on its own, independent of
+    # the unrelated _tc_boost_cap patch retry_source still carries.
+    unpatched_turn_iteration_prep_source = PATCHED_TURN_ITERATION_PREP_SOURCE.replace(
         "_boost_cap = agent.max_tokens if agent.max_tokens else max("
         "32768, _requested_cap or 0)",
         "_boost_cap = max(32768, _requested_cap or 0)",
     )
-    assert "_tc_boost_cap = agent.max_tokens" in retry_source_tc_only
+    assert "_tc_boost_cap = agent.max_tokens" in retry_source
     assert not all(
         _source_postconditions(
             completion_source,
             reconcile_source,
-            retry_source_tc_only,
+            retry_source,
             auxiliary_source,
+            turn_iteration_prep_source=unpatched_turn_iteration_prep_source,
         )
     )
     assert not all(
@@ -374,24 +378,27 @@ def test_installed_source_postconditions_fail_closed() -> None:
             hindsight_plugin_source=PINNED_HINDSIGHT_PREFETCH_SOURCE,
         )
     )
-    # Worker-reap process-group guard dropped: reconcile_source reverts to
-    # not carrying the patched reap at all — must go red.
+    # Worker-reap process-group guard dropped: kanban_dispatch_source
+    # reverts to not carrying the patched reap at all — must go red.
     assert not all(
         _source_postconditions(
             completion_source,
-            reconcile_source.replace(worker_reap_source, ""),
+            reconcile_source,
             retry_source,
             auxiliary_source,
+            kanban_dispatch_source=kanban_dispatch_source.replace(worker_reap_source, ""),
         )
     )
-    # Stale-reclaim process-group guard dropped: reconcile_source reverts to
-    # not carrying the patched reclaim termination at all — must go red.
+    # Stale-reclaim process-group guard dropped: kanban_dispatch_source
+    # reverts to not carrying the patched reclaim termination at all —
+    # must go red.
     assert not all(
         _source_postconditions(
             completion_source,
-            reconcile_source.replace(stale_reclaim_source, ""),
+            reconcile_source,
             retry_source,
             auxiliary_source,
+            kanban_dispatch_source=kanban_dispatch_source.replace(stale_reclaim_source, ""),
         )
     )
 
