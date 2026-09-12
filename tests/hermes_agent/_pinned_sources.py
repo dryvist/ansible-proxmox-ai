@@ -182,31 +182,47 @@ PINNED_CRON_TIMEOUT_SOURCE = '''\
         )
     return result
 '''
+# Both reapers now escalate through one shared helper (2026-09 upstream
+# rewrite, hermes_cli/kanban_db_dispatch.py) — the SIGKILL escalation patch
+# targets that helper's own body, not either call site, so it must be part
+# of both fixtures below for the escalation patch application to have
+# anything to match.
 PINNED_WORKER_REAP_SOURCE = '''\
+def _sigkill(kill, pid: int) -> bool:
+    """Best-effort SIGKILL; True when the signal was delivered."""
+    try:
+        kill(int(pid), getattr(signal, "SIGKILL", signal.SIGTERM))
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
 def _reap(pid, signal_fn=None):
     killed = False
     kill = signal_fn if signal_fn is not None else (
         os.kill if hasattr(os, "kill") else None
     )
     if kill is not None:
-        try:
+        with contextlib.suppress(ProcessLookupError, OSError):
             kill(pid, signal.SIGTERM)
-        except (ProcessLookupError, OSError):
-            pass
         for _ in range(10):
             if not _pid_alive(pid):
                 break
             time.sleep(0.5)
         if _pid_alive(pid):
-            try:
-                _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                kill(pid, _sigkill)
-                killed = True
-            except (ProcessLookupError, OSError):
-                pass
+            killed = _sigkill(kill, pid)
     return killed
 '''
 PINNED_STALE_RECLAIM_TERMINATE_SOURCE = '''\
+def _sigkill(kill, pid: int) -> bool:
+    """Best-effort SIGKILL; True when the signal was delivered."""
+    try:
+        kill(int(pid), getattr(signal, "SIGKILL", signal.SIGTERM))
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
 def _reclaim(pid, signal_fn=None):
     info = {"terminated": False, "sigkill": False}
     kill = signal_fn if signal_fn is not None else (
@@ -231,12 +247,9 @@ def _reclaim(pid, signal_fn=None):
         time.sleep(0.5)
 
     if _pid_alive(pid):
-        try:
-            _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-            kill(int(pid), _sigkill)
-            info["sigkill"] = True
-        except (ProcessLookupError, OSError):
+        if not _sigkill(kill, pid):
             return info
+        info["sigkill"] = True
 
     info["terminated"] = not _pid_alive(pid)
     return info
