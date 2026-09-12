@@ -23,6 +23,23 @@
 #
 # Model scope is derived from the registry, never hand-listed: a retired alias
 # cannot linger in a key's allowlist because it stops being derived.
+#
+# VALUE FORMAT, diagnosed the hard way (Semaphore task 108, 2026-09-12,
+# converge 30aabd67, the FIRST time this task ever ran against a live proxy).
+# LiteLLM's /key/generate rejects a caller-supplied `key` that does not start
+# with `sk-` and run at least 16 characters (key_management_endpoints.py
+# generate_key_fn; MINIMUM_CUSTOM_KEY_LENGTH defaults to 16) — a plain HTTP
+# 400, confirmed from the live proxy log: "Invalid key format. LiteLLM
+# Virtual Key must start with 'sk-'. Received: <masked>". `no_log: true` on
+# the /key/generate task below (needed because the body carries the raw
+# value) censored that message down to "the output has been hidden", so
+# diagnosing the first occurrence took a log-platform search instead of the
+# play recap. The value itself is generated one repo over
+# (ansible-proxmox-apps roles/openbao/tasks/seed_generated_app_secret.yml —
+# community.general.random_string, no prefix); this role only reads it, so
+# it cannot repair the value. assert-seed-key-format.yml can't fix that
+# either, but it turns the next occurrence into a message naming the alias
+# instead of a second log-platform trip.
 
 - name: Read the virtual keys the proxy already carries
   ansible.builtin.uri:
@@ -32,6 +49,27 @@
     timeout: "{{ llm_router_seed_request_timeout }}"
   register: llm_router_existing_keys
   no_log: true
+
+- name: Compute the virtual keys still needing to be minted
+  ansible.builtin.set_fact:
+    _llm_router_unseeded_keys: >-
+      {{ llm_router_virtual_keys
+         | rejectattr('value', 'equalto', '')
+         | rejectattr('alias', 'in', _llm_router_live_key_aliases) | list }}
+  vars:
+    # BRACKET access, never `.keys`. The response field is literally named
+    # "keys", and Jinja resolves `.keys` on a dict to the built-in METHOD
+    # instead — measured against the live proxy, which fails the whole task
+    # with "'builtin_function_or_method' object is not iterable". An entry
+    # with no alias is skipped rather than compared as None.
+    _llm_router_live_key_aliases: >-
+      {{ llm_router_existing_keys.json['keys'] | default([])
+         | selectattr('key_alias', 'defined')
+         | map(attribute='key_alias') | select('string') | list }}
+  no_log: true
+
+- name: Assert each seeded value is a valid LiteLLM custom key before minting
+  ansible.builtin.import_tasks: assert-seed-key-format.yml
 
 - name: Create the caller keys that are absent and have a seeded value
   ansible.builtin.uri:
@@ -46,20 +84,7 @@
       models: "{{ item.models }}"
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
-  loop: >-
-    {{ llm_router_virtual_keys
-       | rejectattr('value', 'equalto', '')
-       | rejectattr('alias', 'in', _llm_router_live_key_aliases) | list }}
+  loop: "{{ _llm_router_unseeded_keys }}"
   loop_control:
     label: "{{ item.alias }}"
-  vars:
-    # BRACKET access, never `.keys`. The response field is literally named
-    # "keys", and Jinja resolves `.keys` on a dict to the built-in METHOD
-    # instead — measured against the live proxy, which fails the whole task
-    # with "'builtin_function_or_method' object is not iterable". An entry
-    # with no alias is skipped rather than compared as None.
-    _llm_router_live_key_aliases: >-
-      {{ llm_router_existing_keys.json['keys'] | default([])
-         | selectattr('key_alias', 'defined')
-         | map(attribute='key_alias') | select('string') | list }}
   no_log: true
