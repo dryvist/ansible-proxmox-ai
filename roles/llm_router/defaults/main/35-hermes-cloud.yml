@@ -74,6 +74,72 @@ llm_router_hermes_cloud_only_fallback_groups: >-
   {%- endfor -%}
   {{ ns.groups }}
 
+# The cloud-only set split on whether the entry is metered. `input_cost_per_token`
+# is the registry's own marker of a real per-token price (docs/LLM_MODELS_SCHEMA.md);
+# an entry without one is a flat-fee or zero-marginal-cost rung, never a paid
+# one — this is what puts hermes-cloud-free in the free segment and every
+# alibaba/gemini/openrouter rung in the paid one, without a second typed list
+# that could drift from llm_router_hermes_cloud_only_fallback_groups.
+llm_router_hermes_cloud_paid_groups: >-
+  {%- set ns = namespace(groups=[]) -%}
+  {%- for m in llm_router_hermes_cloud_models_credentialed
+       | selectattr('input_cost_per_token', 'defined') -%}
+  {%- set group = m.fallback_group | default(m.route_group) -%}
+  {%- if group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups }}
+llm_router_hermes_cloud_free_groups: >-
+  {%- set ns = namespace(groups=[]) -%}
+  {%- for m in llm_router_hermes_cloud_models_credentialed
+       | rejectattr('input_cost_per_token', 'defined') -%}
+  {%- set group = m.fallback_group | default(m.route_group) -%}
+  {%- if group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups }}
+
+# OpenCode Go subscription tier as a fallback segment, opencode_sub. Keyed off
+# client_model_id, not fallback_group/route_group: llm-models.d/35-opencode.yml
+# deliberately carries neither (the opencode/ prefix already keeps each entry
+# its own model_name group, so there is nothing to dedupe against). Credential
+# gate mirrors llm_router_hermes_cloud_models_credentialed exactly — every
+# gated tier resolves its own key_field/credential_env the same way.
+llm_router_opencode_fallback_groups: >-
+  {%- set ns = namespace(models=[]) -%}
+  {%- for m in llm_router_opencode_models -%}
+  {%- set key = bao_local_llm_secrets[m.key_field]
+       | default(lookup('env', m.credential_env), true) -%}
+  {%- if key | trim | length > 0 -%}
+  {%- set ns.models = ns.models + [m.client_model_id] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.models }}
+
+# free_zdrless: the absolute-last segment. A DELIBERATE, NARROW exception to
+# the "OpenRouter's general tier is never part of any fallback chain"
+# boundary 30-openrouter.yml states for the metered allowlist — that boundary
+# protects the brain from a flaky general-purpose model degrading it; a
+# genuinely free (`:free`-suffixed) id carries no such risk beyond what
+# hermes-cloud-free already accepts, and this segment exists so the chain has
+# a last-resort rung even when hermes-cloud-free's own upstream is down. No
+# ZDR claim is made for these ids — that is what "zdrless" names — so they sit
+# after every ZDR-verified rung, never ahead of one. Same credential
+# (OPENROUTER_API_KEY) as the rest of the general tier.
+llm_router_openrouter_free_groups: >-
+  {%- set ns = namespace(models=[]) -%}
+  {%- for m in llm_router_openrouter_models
+       | selectattr('client_model_id', 'match', '.*:free$') -%}
+  {%- set key = bao_local_llm_secrets[m.key_field]
+       | default(lookup('env', m.credential_env), true) -%}
+  {%- if key | trim | length > 0 -%}
+  {%- set ns.models = ns.models + [m.client_model_id] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.models }}
+
 # NOTE ON NAMING: the hermes_cloud_* names below are historical. They now
 # build the WHOLE post-primary Hermes fallback chain, hermes-local legs
 # included, not only credential-gated cloud ones — kept unrenamed per the
@@ -198,13 +264,31 @@ llm_router_hermes_narrow_legs_last: true
 # not a re-sort of an existing one. Composition is by concatenation precisely
 # so segments stay independently orderable; add the segment rather than
 # re-sorting, and the property survives a later change to any other segment.
+# SIX SEGMENTS: local_wide -> opencode_sub -> or_zdr_paid -> local_narrow ->
+# free_sub -> free_zdrless. Still pure concatenation, never a re-sort, for the
+# same reason the three-segment version above this comment used to give:
+# each segment stays independently orderable and a later change to one cannot
+# silently reorder another. or_zdr_paid + free_sub together are exactly
+# llm_router_hermes_cloud_only_fallback_groups's membership (the paid/free
+# split is additive, not a narrowing), so the total membership this var
+# renders is unchanged in composition, only in ORDER: the OpenCode
+# subscription now precedes the ZDR-paid OpenRouter/Alibaba/Gemini rungs, and
+# the free segments now sit on either side of local_narrow instead of both
+# ahead of it.
 llm_router_hermes_cloud_fallback_groups: >-
   {%- if llm_router_hermes_narrow_legs_last | bool -%}
   {{ llm_router_hermes_local_wide_groups
-     + llm_router_hermes_cloud_only_fallback_groups
-     + llm_router_hermes_local_narrow_groups }}
+     + llm_router_opencode_fallback_groups
+     + llm_router_hermes_cloud_paid_groups
+     + llm_router_hermes_local_narrow_groups
+     + llm_router_hermes_cloud_free_groups
+     + llm_router_openrouter_free_groups }}
   {%- else -%}
-  {{ llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups }}
+  {{ llm_router_local_fallback_groups
+     + llm_router_opencode_fallback_groups
+     + llm_router_hermes_cloud_paid_groups
+     + llm_router_hermes_cloud_free_groups
+     + llm_router_openrouter_free_groups }}
   {%- endif -%}
 
 # LiteLLM's global 429 retry policy exists for a name with nowhere to fall
@@ -233,7 +317,9 @@ llm_router_hermes_cloud_zero_retry_groups: >-
   {%- set ns.groups = ns.groups + [m.route_group] -%}
   {%- endif -%}
   {%- endfor -%}
-  {%- if llm_router_hermes_cloud_only_fallback_groups | length > 0 -%}
+  {%- if (llm_router_hermes_cloud_only_fallback_groups
+          + llm_router_opencode_fallback_groups
+          + llm_router_openrouter_free_groups) | length > 0 -%}
   {%- for name in llm_router_entry_point_names -%}
   {%- if name not in ns.groups -%}
   {%- set ns.groups = ns.groups + [name] -%}
