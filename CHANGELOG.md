@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.45.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.44.0...v0.45.0) (2026-09-12)
+
+
+### Features
+
+* **openbao_secrets:** fetch the github-actions router key ([7611fe1](https://github.com/dryvist/ansible-proxmox-ai/commit/7611fe1c55d7e9c0adf9ce1be416ff37a2f381d5))
+
+
+### Bug Fixes
+
+* **ansible.cfg:** raise default forks to match documented run command ([a083760](https://github.com/dryvist/ansible-proxmox-ai/commit/a0837603b720d14b49067246d637c9f8285de130))
+* **openbao_secrets:** unlist apps/prometheus and apps/github-actions until their grants land ([#739](https://github.com/dryvist/ansible-proxmox-ai/issues/739)) ([83569d4](https://github.com/dryvist/ansible-proxmox-ai/commit/83569d45cfe3ed5da3717c6bfde8f8241ac38615))
+
 ## [0.44.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.43.0...v0.44.0) (2026-09-12)
 
 
