@@ -116,14 +116,16 @@ def test_the_anchor_is_re_emitted_so_no_branch_is_dropped() -> None:
         assert branch in patched
 
 
-# Verbatim from the job store, including the 324-char cap upstream applies
-# before the record is written. The cause survives that cap; what the operator
-# never saw was the classifier discarding it, not the truncation.
+# The shape stored by the job store, including the 324-char cap upstream
+# applies before the record is written. The cause survives that cap; what the
+# operator never saw was the classifier discarding it, not the truncation. The
+# fallback group names are placeholders: the classifier never reads them, and
+# a registry name belongs in the registry alone.
 FALLBACK_ERROR = (
     "RuntimeError: HTTP 429: litellm.BadGatewayError: BadGatewayError: "
     "OpenAIException - Error code: 502. Received Model Group=hermes-default\n"
-    "Available Model Group Fallbacks=['hermes-local-4080', 'hermes-cloud-free', "
-    "'hermes-cloud-openrouter']\n"
+    "Available Model Group Fallbacks=['local-leg', 'free-leg', "
+    "'paid-leg']\n"
     "Error doing the fallback: No deployments available - crossed budget: "
     "Exceeded budget "
 )

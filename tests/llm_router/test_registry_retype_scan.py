@@ -9,8 +9,9 @@ changes. This scan is what fails on that input.
 
 Two zones, because the rule has two sides:
 
-* The PROJECTION zone — roles/llm_router, tests/llm_router, playbooks — may
-  not carry any registry value at all. The one exception is not hand-listed:
+* The PROJECTION zone — roles/llm_router, tests/llm_router, playbooks, and
+  every Python test's string constants — may not carry any registry value at
+  all. The one exception is not hand-listed:
   a value the inventory assigns literally (`hermes_brain_model: hermes-default`)
   is the consumer-selection contract, and a test fixture supplying that same
   input is mirroring the inventory, not re-typing the registry. The set is
@@ -21,8 +22,9 @@ Two zones, because the rule has two sides:
   client_model_id or an alias; it may never name an upstream-only id, because
   that is the physical backend the router exists to hide.
 
-Parsed YAML values are scanned, never raw text: a comment naming a model is
-prose, not a re-type. A value counts when a scalar IS the value, ends in
+Parsed YAML values and Python string constants are scanned, never raw text: a
+comment or docstring naming a model is prose, not a re-type. A value counts
+when a scalar IS the value, ends in
 `/<value>` (a provider-prefixed form), or carries it as a quoted token inside a
 Jinja expression (`selectattr(..., 'equalto', '<value>')`, `['<value>', ...]`).
 Unquoted prose inside a message is not matched.
@@ -35,6 +37,7 @@ aliases, and the role seed necessarily carries the name.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -43,7 +46,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-PROJECTION_GLOBS = ("roles/llm_router/**/*.yml", "tests/llm_router/**/*.yml", "playbooks/**/*.yml")
+PROJECTION_GLOBS = ("roles/llm_router/**/*.yml", "tests/llm_router/**/*.yml", "playbooks/**/*.yml", "tests/**/*.py")
 CONSUMER_GLOBS = ("roles/*/defaults/**/*.yml", "roles/*/vars/**/*.yml", "inventory/group_vars/**/*.yml", "tests/**/*.yml")
 
 
@@ -89,16 +92,30 @@ def names(scalar: str, value: str) -> bool:
     return any(q == value or q.endswith("/" + value) for q in _QUOTED.findall(scalar))
 
 
+def _literals(path: Path):
+    """(location, string) for every literal in a YAML document or a Python source file."""
+    text = path.read_text(encoding="utf-8")
+    if path.suffix != ".py":
+        for doc in yaml.load_all(text, Loader=_Permissive):
+            for key_path, scalar in _scalars(doc):
+                yield ".".join(key_path[-3:]), scalar
+        return
+    tree = ast.parse(text)
+    docstrings = {n.value for n in ast.walk(tree) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node not in docstrings:
+            yield f"line {node.lineno}", node.value
+
+
 def _hits(root: Path, globs, values):
     for pattern in globs:
         for path in sorted(root.glob(pattern)):
             if "llm-models.d" in path.parts or not path.is_file():
                 continue
-            for doc in yaml.load_all(path.read_text(encoding="utf-8"), Loader=_Permissive):
-                for key_path, scalar in _scalars(doc):
-                    for value in values:
-                        if names(scalar, value):
-                            yield f"{path.relative_to(root)} [{'.'.join(key_path[-3:])}] spells '{value}'"
+            for where, literal in _literals(path):
+                for value in values:
+                    if names(literal, value):
+                        yield f"{path.relative_to(root)} [{where}] spells '{value}'"
 
 
 def inventory_literals(root: Path, values) -> set[str]:
@@ -133,8 +150,9 @@ def test_projection_zone_carries_no_registry_literal():
     offenders, _ = scan(REPO_ROOT)
     assert not offenders, (
         "Registry values re-typed where they must be derived (llm_router role, its "
-        "tests, playbooks). Use the registry projection — llm_router_primary_model, "
-        "llm_router_model_group_aliases, the tier lists — never the literal:\n  "
+        "tests, playbooks, Python tests). Use the registry projection — "
+        "llm_router_primary_model, llm_router_model_group_aliases, the tier lists — "
+        "or read llm-models.d/ and select by serving_role/tier, never the literal:\n  "
         + "\n  ".join(offenders)
     )
 
@@ -169,8 +187,18 @@ def test_the_scan_can_see_a_planted_literal(tmp_path: Path):
     other = tmp_path / "roles/other/defaults"
     other.mkdir(parents=True)
     (other / "main.yml").write_text("model: vendor/physical-name\nfine: cloud-rung\n")
+    py = tmp_path / "tests/other"
+    py.mkdir(parents=True)
+    (py / "test_y.py").write_text(
+        '"""Docstring naming org/planted-model is prose."""\n'
+        "# a comment naming planted-alias is prose\n"
+        "EXPECTED = {'planted-alias': 'x'}\n"
+        "MESSAGE = \"fallbacks=['org/planted-model']\"\n"
+    )
     projection, consumer = scan(tmp_path)
-    assert [h.split("[")[1].split("]")[0] for h in projection] == ["bare", "expr", "prefixed"], projection
+    assert [h.split("[")[1].split("]")[0] for h in projection] == [
+        "bare", "expr", "prefixed", "line 3", "line 4",
+    ], projection
     assert consumer == ["roles/other/defaults/main.yml [model] spells 'vendor/physical-name'"], consumer
 
 
