@@ -1,7 +1,8 @@
 # ollama
 
 Deploys **Ollama** as the local LLM inference server on an AMD **ROCm** GPU,
-inside an LXC (CT 167 `hermes-infer`, RX 6800), and provisions **Hermes 4 14B**.
+inside an LXC (CT 167 `hermes-infer`, RX 6800). Provisions no model — see
+"What it does" below.
 
 ## Installation
 
@@ -13,7 +14,7 @@ must be in place first. This role is wired into `playbooks/site.yml` against the
 from the repo's Nix dev shell (`direnv allow`).
 
 Ordering: `tofu-proxmox` (LXC shell) → `ansible-proxmox` (GPU passthrough) →
-**this role** (Ollama + ROCm + model) → `open_webui` (chat UI).
+**this role** (Ollama + ROCm).
 
 ## What it does
 
@@ -26,10 +27,14 @@ Ordering: `tofu-proxmox` (LXC shell) → `ansible-proxmox` (GPU passthrough) →
   how the host GIDs map to container group names.
 - Writes a systemd env drop-in (`OLLAMA_HOST`, `OLLAMA_MODELS`,
   `HSA_OVERRIDE_GFX_VERSION=10.3.0` for gfx1030, flash-attention, keep-alive).
-- Stages the **Hermes 4 14B** Q4_K_M GGUF as a local file (downloads from
-  HuggingFace only when absent) and registers it as `hermes4` via `ollama create`.
 - Restart-on-failure is applied by the shared `systemd_restart_policy` role via
   `group_vars/ollama_group.yml`.
+- Does NOT stage or register a model. `hermes4` (Hermes 4 14B, staged from a
+  local GGUF) was removed 2026-09-11: it was never a registered
+  `llm-models.d/` client_model_id, and nothing in the fabric routes a request
+  to this guest's Ollama API. Adding a model back means registering it in
+  `llm-models.d/` and wiring a router tier to this guest — see
+  `roles/ollama/defaults/main.yml`.
 
 ## Key variables (`defaults/main.yml`)
 
@@ -38,10 +43,6 @@ Ordering: `tofu-proxmox` (LXC shell) → `ansible-proxmox` (GPU passthrough) →
 | `ollama_api_port` | `tofu_data.constants.service_ports.ollama_api` | API port (no hardcode) |
 | `ollama_models_dir` | `/var/lib/ollama` | Model store (120 GB local-zfs vol) |
 | `ollama_hsa_override_gfx_version` | `10.3.0` | RX 6800 / Navi 21 / gfx1030 |
-| `ollama_model_name` | `hermes4` | Local alias |
-| `ollama_gguf_filename` | `NousResearch_Hermes-4-14B-Q4_K_M.gguf` | Staged GGUF blob |
-| `ollama_import_dir` | `{{ ollama_models_dir }}/import` | GGUF staging dir (persistent vol) |
-| `ollama_gguf_url` | bartowski HF `resolve/main/<file>` | Download source (only if absent) |
 
 ## Usage
 
@@ -54,7 +55,6 @@ env -u DOPPLER_PROJECT -u DOPPLER_CONFIG -u DOPPLER_ENVIRONMENT doppler run -- \
 ## Verify
 
 ```bash
-pct exec 167 -- rocminfo | grep -i gfx            # GPU visible to ROCm
-pct exec 167 -- ollama run hermes4 "say hi"        # GPU inference (watch radeontop)
-curl http://ollama.<PROXMOX_SUBDOMAIN>:11434/v1/models   # OpenAI-compatible endpoint
+pct exec 167 -- rocminfo | grep -i gfx                   # GPU visible to ROCm
+curl http://ollama.<PROXMOX_SUBDOMAIN>:11434/v1/models   # OpenAI-compatible endpoint (empty model list)
 ```
