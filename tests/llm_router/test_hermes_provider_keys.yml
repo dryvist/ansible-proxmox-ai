@@ -1,4 +1,10 @@
 ---
+# The whitespace-credential play that used to close this file was split out
+# to test_hermes_provider_keys_whitespace.yml when the registry-derived
+# fallback-chain assertions pushed this file over the repo's per-file token
+# budget. Per .token-limits.yaml the remedy is a split along a real seam,
+# never a raised budget.
+
 - name: Verify one provider key enables only that fallback domain
   hosts: localhost
   gather_facts: false
@@ -52,7 +58,7 @@
   tasks:
     - name: Load the external provider secret contract
       ansible.builtin.include_vars:
-        file: "{{ _secrets_role_dir }}/defaults/main.yml"
+        dir: "{{ _secrets_role_dir }}/defaults/main"
         name: _secrets_defaults
 
     - name: Provider keys use exact leaves on the external mount
@@ -60,7 +66,10 @@
         quiet: true
         that:
           - _provider_paths == _expected_provider_paths
-          - "'item.mount if item is mapping' in _fetch_task"
+          # A mapping entry's own mount is honoured; only its ABSENCE falls
+          # back to the KV default. Pinned as text because a swap of the two
+          # operands would read the default for every provider key.
+          - "'item.mount | default(openbao_secrets_kv_mount) if item is mapping' in _fetch_task"
           - "'item.path if item is mapping' in _fetch_task"
           - "'openbao_secrets_ai_api_key_mount' in _secrets_defaults_source"
           - "'openbao_secrets_ai_api_key_path_prefix' in _secrets_defaults_source"
@@ -97,7 +106,7 @@
         _fetch_task: >-
           {{ lookup('ansible.builtin.file', _secrets_role_dir ~ '/tasks/fetch_domain.yml') }}
         _secrets_defaults_source: >-
-          {{ lookup('ansible.builtin.file', _secrets_role_dir ~ '/defaults/main.yml') }}
+          {{ lookup('ansible.builtin.file', _secrets_role_dir ~ '/defaults/main/00-connection.yml') }}
 
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
@@ -233,104 +242,3 @@
           {{ _config.model_list
              | selectattr('model_name', 'equalto', 'hermes-cloud-openrouter')
              | selectattr('litellm_params.model', 'match', '^openrouter/') | list }}
-
-- name: Verify whitespace credentials enable no provider
-  hosts: localhost
-  gather_facts: false
-  vars:
-    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    tofu_data:
-      constants:
-        service_ports:
-          llm_router_api: 4000
-          llm_fast_api: 10434
-          ollama_api: 11434
-          otel_traces_http: 4318
-          redis_default: 6379
-    bao_local_llm_secrets: {}
-    ai_default_model: "{{ llm_router_primary_model }}"
-    llm_large_serving_host: llm-large
-    llm_router_subdomain: pve.example.test
-    llm_router_master_key: sk-test-master
-    llm_router_llm_large_bearer: test-bearer-token
-    ai_orchestration_otel_endpoint: http://otel.example.test:4318
-    ai_router_request_timeout_seconds: 2400
-    ai_stream_read_timeout_seconds: 1800
-    ai_router_retry_after_seconds: 40
-    hermes_brain_model: hermes-default
-    hermes_goal_judge_model: goal-judge
-    # Registry-derived expectations, built from llm_router_model_registry
-    # directly (tier + credential_env) rather than from the credentialed
-    # projection the render uses — so an assert on the chain compares the
-    # render against the registry, not against its own input.
-    _local_groups: >-
-      {%- set ns = namespace(g=[]) -%}
-      {%- for m in llm_router_model_registry | selectattr('enabled')
-                   | selectattr('tier', 'equalto', 'hermes-local') -%}
-      {%- set g = m.fallback_group | default(m.route_group) -%}
-      {%- if g not in ns.g -%}{%- set ns.g = ns.g + [g] -%}{%- endif -%}
-      {%- endfor -%}
-      {{ ns.g }}
-  tasks:
-    - name: Load the role defaults as they ship
-      ansible.builtin.include_vars:
-        dir: "{{ _role_dir }}/defaults/main"
-
-    - name: Load the model registry through the role
-      ansible.builtin.include_role:
-        name: llm_router
-        tasks_from: registry.yml
-
-    - name: Seed whitespace-only provider fields
-      ansible.builtin.set_fact:
-        bao_local_llm_secrets:
-          OPENROUTER_API_KEY: "   "
-          OPENCODE_API_KEY: "  "
-          GEMINI_API_KEY: "  "
-          DASHSCOPE_API_KEY: "\n"
-
-    - name: Re-evaluate the Hermes cloud projections
-      ansible.builtin.include_vars:
-        file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
-
-    - name: Render the empty-provider config and environment
-      ansible.builtin.set_fact:
-        _config: >-
-          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
-        _environment: >-
-          {{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}
-
-    - name: Whitespace is never treated as a credential
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - llm_router_hermes_default_fallback_chain == _local_groups
-          - _local_groups | length == 1
-          - "_config.router_settings.fallbacks == [{hermes_brain_model: _local_groups}]"
-          # No cloud rung means nowhere wider to escape to, so the key is
-          # omitted entirely. An empty map would not be "no map" to LiteLLM --
-          # it would take the escape branch and fall back to nothing, hiding
-          # the real error.
-          - "'context_window_fallbacks' not in _config.router_settings"
-          - _cloud_models | length == 0
-          - _openrouter_egress | length == 0
-          - _opencode_deployments | length == 0
-          - _environment | regex_findall('(?m)^(OPENROUTER|OPENCODE|GEMINI|DASHSCOPE)_API_KEY=') | length == 0
-        fail_msg: >-
-          Whitespace-only secret fields must render no cloud deployments,
-          fallbacks, or environment credentials -- only the not-credential-gated
-          local fallback.
-      vars:
-        _cloud_models: >-
-          {{ _config.model_list
-             | selectattr('model_name', 'match', '^hermes-cloud-') | list }}
-        _openrouter_egress: >-
-          {{ _config.model_list
-             | selectattr('litellm_params.model', 'match', '^openrouter/') | list }}
-        # Matched on the tier's own base URL, not on a name prefix: a renamed
-        # entry would slip past a name match and this assertion would go quiet.
-        _opencode_deployments: >-
-          {{ _config.model_list
-             | selectattr('litellm_params.api_base', 'defined')
-             | selectattr('litellm_params.api_base', 'equalto',
-                          llm_router_opencode_base_url) | list }}

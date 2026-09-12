@@ -264,6 +264,104 @@ class RunAnsibleGuardContract(unittest.TestCase):
         result = self._run("--limit", "localhost")
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    # --- execution-plane identity selection -------------------------------
+    # These stub curl itself (rather than relying on PROXMOX_SSH_KEY_PATH
+    # break-glass) to observe which sign URL and AppRole credentials the
+    # runner actually sends.
+
+    def _write_fake_curl(self):
+        # Records every invocation's URL + request body, then answers the
+        # two calls mint_ssh_cert() makes: approle login, then the CA sign.
+        self._write_executable(
+            "curl",
+            """
+            #!/usr/bin/env bash
+            url="${@: -1}"
+            body=""
+            prev=""
+            for a in "$@"; do
+              if [[ "$prev" == "--data" || "$prev" == "-d" ]]; then
+                if [[ "$a" == "@-" ]]; then
+                  body=$(cat)
+                else
+                  body=$(cat "$a" 2>/dev/null || echo "$a")
+                fi
+              fi
+              prev="$a"
+            done
+            printf 'URL=%s BODY=%s\\n' "$url" "$body" >> "$FAKE_CURL_LOG"
+            if [[ "$url" == *"/auth/approle/login" ]]; then
+              printf '{"auth":{"client_token":"fake-token"}}\\n'
+            elif [[ "$url" == *"/sign/"* ]]; then
+              printf '{"data":{"signed_key":"fake-cert-body"}}\\n'
+            elif [[ "$url" == *"/token/revoke-self" ]]; then
+              :
+            fi
+            exit 0
+            """,
+        )
+
+    def _run_with_bao(self, env_extra, allow_stale=False):
+        env = os.environ.copy()
+        env["PATH"] = f"{self.bin}{os.pathsep}{env['PATH']}"
+        env.pop("PROXMOX_SSH_KEY_PATH", None)
+        env.pop("SSH_KNOWN_HOSTS", None)
+        env["FAKE_CALLED_LOG"] = str(self.called_log)
+        env["FAKE_RECAP_FILE"] = str(self.recap_file)
+        env["FAKE_CURL_LOG"] = str(self.curl_log)
+        env["BAO_ADDR"] = "https://bao.example.invalid"
+        env.update(env_extra)
+        if allow_stale:
+            env["ALLOW_STALE_CHECKOUT"] = "1"
+        return subprocess.run(
+            [str(self.runner), "playbooks/site.yml", "--limit", "localhost"],
+            cwd=self.work,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_semaphore_pair_preferred_when_both_present(self):
+        self.curl_log = Path(self.tmp.name) / "curl.log"
+        self._write_fake_curl()
+        self._write_recap("localhost")
+        result = self._run_with_bao(
+            {
+                "OPENBAO_APPROLE_SEMAPHORE_ROLE_ID": "sem-role",
+                "OPENBAO_APPROLE_SEMAPHORE_SECRET_ID": "sem-secret",
+                "OPENBAO_APPROLE_ANSIBLE_ROLE_ID": "ans-role",
+                "OPENBAO_APPROLE_ANSIBLE_SECRET_ID": "ans-secret",
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("authenticated as: semaphore", result.stdout)
+        self.assertNotIn("WARNING", result.stderr)
+        log = self.curl_log.read_text(encoding="utf-8")
+        self.assertIn("/sign/automation-semaphore", log)
+        self.assertIn('"role_id":"sem-role"', log)
+        self.assertIn('"secret_id":"sem-secret"', log)
+        self.assertNotIn("ans-role", log)
+
+    def test_ansible_pair_fallback_warns_and_signs_automation_ansible(self):
+        self.curl_log = Path(self.tmp.name) / "curl.log"
+        self._write_fake_curl()
+        self._write_recap("localhost")
+        result = self._run_with_bao(
+            {
+                "OPENBAO_APPROLE_ANSIBLE_ROLE_ID": "ans-role",
+                "OPENBAO_APPROLE_ANSIBLE_SECRET_ID": "ans-secret",
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "OPENBAO_APPROLE_SEMAPHORE_ROLE_ID/OPENBAO_APPROLE_SEMAPHORE_SECRET_ID not set",
+            result.stderr,
+        )
+        self.assertIn("authenticated as: ansible", result.stdout)
+        log = self.curl_log.read_text(encoding="utf-8")
+        self.assertIn("/sign/automation-ansible", log)
+
 
 if __name__ == "__main__":
     unittest.main()

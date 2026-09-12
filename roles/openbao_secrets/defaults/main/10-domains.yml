@@ -1,9 +1,4 @@
 ---
-# openbao_secrets role defaults. Full pattern (bao-first resolution, the
-# FAIL-LOUD contract, its two deliberate no-op exceptions, and what every
-# consumer role must match) lives in README.md — this file is config, not
-# the essay.
-
 # Domains allowed to resolve empty instead of failing the play. The contract
 # default is an empty list; each entry below is a TODO to DELETE as soon as
 # that domain's AppRole + policy land (see the per-domain notes further down),
@@ -13,7 +8,7 @@
 # A 404 on such a path is skipped with a visible warning naming the path; a 403
 # — which means the credential is wrong, not the secret absent — and every other
 # error still fail. Only the mapping path form supports the flag; a bare string
-# path is always required.
+# path is always required. `mount` defaults to openbao_secrets_kv_mount.
 openbao_secrets_optional_domains:
   - ai-public   # AppRole/policy on secret/data/ai/public/* not provisioned yet
   - ai-runner   # CIDR-bound runner AppRole not provisioned yet
@@ -27,57 +22,6 @@ openbao_secrets_optional_domains:
                 #   only so the role's own bao-first defaults resolve to a
                 #   clean "missing from OpenBao" failure instead of an
                 #   undefined-variable error once it is wired up.
-
-# Shared connection inputs.
-openbao_secrets_bao_addr: "{{ lookup('env', 'BAO_ADDR') | default('', true) }}"
-# TLS terminates at the OpenBao Traefik ingress (a real cert), so verify by
-# default; override only for a direct-to-node http bootstrap endpoint.
-openbao_secrets_validate_certs: true
-openbao_secrets_kv_mount: secret
-openbao_secrets_ai_api_key_mount: >-
-  {{ lookup('ansible.builtin.env', 'OPENBAO_AI_API_KEY_MOUNT')
-     | default(openbao_secrets_kv_mount, true) }}
-openbao_secrets_ai_api_key_path_prefix: >-
-  {{ lookup('ansible.builtin.env', 'OPENBAO_AI_API_KEY_PATH_PREFIX')
-     | default('ai/saas', true) }}
-
-# Hermes' inbound job API is key-presence gated.  The read-side local-llm
-# AppRole cannot seed the key.  A human-authorized, short-lived token carrying
-# only the hermes-write policy may be supplied for the missing-key converge;
-# the ordinary runner BAO_TOKEN is deliberately never a fallback.
-openbao_secrets_hermes_writer_token: >-
-  {{ lookup('env', 'HERMES_WRITE_BAO_TOKEN') | default('', true) }}
-openbao_secrets_hermes_api_key_fallback: >-
-  {{ lookup('env', 'HERMES_API_SERVER_KEY') | default('', true) }}
-openbao_secrets_hermes_writer_max_ttl_seconds: 600
-openbao_secrets_hermes_api_key_path: ai/hermes
-openbao_secrets_hermes_api_key_field: HERMES_API_SERVER_KEY
-
-# The llm-router Redis password is generate-if-absent, same shape as the Hermes
-# key above.  The read-side local-llm AppRole cannot seed it.  A human-authorized,
-# short-lived token carrying only the llm-router-write policy may be supplied for
-# the missing-password converge; the ordinary runner BAO_TOKEN is deliberately
-# never a fallback.
-openbao_secrets_redis_writer_token: >-
-  {{ lookup('env', 'LLM_ROUTER_WRITE_BAO_TOKEN') | default('', true) }}
-openbao_secrets_redis_password_fallback: >-
-  {{ lookup('env', 'LLM_ROUTER_REDIS_PASSWORD') | default('', true) }}
-openbao_secrets_redis_writer_max_ttl_seconds: 600
-openbao_secrets_redis_password_path: ai/llm-router
-openbao_secrets_redis_password_field: LLM_ROUTER_REDIS_PASSWORD
-# Client failover across the OpenBao nodes: probe an ordered candidate list and
-# use the first reachable endpoint. See README for the full ordering + rationale.
-openbao_secrets_openbao_api_port: "{{ tofu_data['constants']['service_ports']['openbao_api'] | default(8200) }}"
-openbao_secrets_node_addrs: >-
-  {{ tofu_data['containers'] | default({}) | dict2items
-     | selectattr('value.tags', 'defined')
-     | selectattr('value.tags', 'contains', 'openbao')
-     | map(attribute='value.ip', default='') | reject('equalto', '')
-     | map('regex_replace', '^(.+)$', 'http://\1:' ~ (openbao_secrets_openbao_api_port | string))
-     | list }}
-openbao_secrets_bao_addr_candidates: >-
-  {{ (([openbao_secrets_bao_addr] if openbao_secrets_bao_addr | length > 0 else [])
-      + openbao_secrets_node_addrs) | unique }}
 
 # One entry per resource-domain identity this Ansible converge fetches for.
 # Each domain's role_id/secret_id come from its own env vars — sourced from
@@ -110,6 +54,10 @@ openbao_secrets_domains:
       # ORDERING (tasks/seed-keys.yml): apps/github-actions not yet listed —
       # grant lands via a separate converge; until then fetch 403s and fails
       # closed. Re-add alongside that grant.
+      # Per-caller router keys; contract in roles/llm_router/tasks/seed-keys.yml.
+      - {path: apps/open-webui, optional: true}
+      - {path: apps/langgraph, optional: true}
+      - {path: apps/prometheus, optional: true}
   # Public (non-secret) fabric coordination data — mirrors the "non-secret
   # coordination path" precedent in tofu-proxmox's SECRETS_HIERARCHY.md
   # (secret/platform/terrakube/main). Read-only, own least-privilege AppRole
