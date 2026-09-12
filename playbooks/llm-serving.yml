@@ -31,30 +31,21 @@
   roles:
     - role: llama_cpp
 
-# The NVIDIA serving guest, in two plays that MUST stay in this order.
+# The NVIDIA serving guest.
 #
-# CORRECTION, and do not re-derive the old reasoning from it. This play's
-# comment used to read "upstream llama.cpp ships no Linux CUDA binary, so CUDA
-# serving here is vLLM from official wheels." The first clause is true and
-# remains true. The conclusion does not follow: upstream ships a prebuilt Linux
-# VULKAN binary that runs on NVIDIA, which is how the 27B is served here now.
+# CORRECTION, and do not re-derive the old reasoning from it. This role used
+# to read "upstream llama.cpp ships no Linux CUDA binary, so CUDA serving here
+# is vLLM from official wheels." The first clause is true and remains true.
+# The conclusion does not follow: upstream ships a prebuilt Linux VULKAN
+# binary that runs on NVIDIA, which is how the 27B is served here now — see
+# inventory/group_vars/llm_vllm_group.yml for the full reasoning (vLLM cannot
+# read these weights at all; no CUDA build is not why Vulkan was chosen).
 #
-# vLLM runs first so it can RELEASE the card. With llama_cpp_gpu_backend set on
-# this group, vllm_service_enabled is false and the role stops the unit; the
-# llama.cpp play that follows then has the VRAM. Reversing these two plays
-# leaves both engines contending for a card that measured 15610 MiB of
-# 16376 MiB in use with vLLM alone.
-- name: Configure vLLM serving (NVIDIA)
-  hosts: llm_vllm_group
-  become: true
-  gather_facts: true
-  tags:
-    - vllm
-    - llm
-    - ai
-  roles:
-    - role: vllm
-
+# No vLLM role exists: llama.cpp on Vulkan (below) is the only engine
+# converged against this guest. The `llm_vllm_group` inventory group name and
+# the registry's `vllm` TIER key are a different thing — both name the
+# ROUTER's view of this guest, unrelated to which engine actually serves it;
+# do not remove either.
 - name: Configure llama.cpp serving on the NVIDIA guest (llama-swap, Vulkan)
   hosts: llm_vllm_group
   become: true
