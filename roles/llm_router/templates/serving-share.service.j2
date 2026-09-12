@@ -1,0 +1,23 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=LiteLLM serving-share metric (one JSON line to the journal)
+# Reads the same database the proxy writes; nothing to compute before it exists.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User={{ llm_router_user }}
+Group={{ llm_router_group }}
+# DATABASE_URL comes from the proxy's own EnvironmentFile, so the metric can
+# never read a different database than the one the rows land in.
+EnvironmentFile={{ llm_router_env_file }}
+# -A -t: unaligned, tuples only, so stdout is exactly the one JSON object the
+# query builds. The journal tags it with the identifier below; the estate's
+# syslog forwarder ships the journal, so the line reaches the log platform with
+# no shipper change. -v ON_ERROR_STOP so a failed query fails the unit instead
+# of emitting nothing and exiting 0.
+ExecStart=/usr/bin/psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 -A -t -f {{ llm_router_serving_share_query_file }}
+SyslogIdentifier={{ llm_router_serving_share_syslog_identifier }}
+StandardOutput=journal
+StandardError=journal

@@ -4,18 +4,29 @@
 # can fail on its own, so tests/llm_router/test_servable_probe.yml drives every
 # branch from hand-built fixtures, including the ones that must FAIL.
 #
-# THREE OUTCOMES PER PROBE, AND THEY ARE NOT INTERCHANGEABLE:
-#   verified    — the endpoint answered and its listing was compared.
-#   rejected    — it answered 401/403. The credential exists but no longer
-#                 works (a rotation), which is neither "absent" nor "down".
-#                 Reported, never fatal: a converge must not be blocked by a
-#                 key that expired somewhere else.
-#   unreachable — anything else. The serving host can be asleep, rebooting or
-#                 off the network; an optional tier can be unseeded entirely.
-#                 "Cannot check" is never "check failed".
-# The report below names each one separately, because a skip that reads like a
-# pass is how a check quietly stops running. A green converge where every
-# probe skipped is the failure mode this reporting is designed against.
+# THE VERDICTS, WITH THE INPUT THAT PRODUCES EACH. None is interchangeable
+# with another, and only the last is fatal:
+#   verified        — HTTP 200; the listing was compared.
+#   rejected        — HTTP 401/403. The credential exists but no longer works
+#                     (a rotation): neither "absent" nor "down".
+#   not_found       — HTTP 404. The endpoint was REACHED and has no listing at
+#                     that path: a wrong URL in this role's endpoint map, not an
+#                     outage, and it will never fix itself.
+#   unreachable     — anything else. Asleep, rebooting, off the network.
+#   not deployed    — no credential AND the render carries no deployment for
+#                     the tier (remote tiers only; see the summary task).
+#   listed_disabled — the gate serves an id the registry carries but has
+#                     disabled or parked as standby. The serving host
+#                     auto-registers every downloaded model that fits, so a
+#                     disabled entry that is still on disk is EXPECTED to be
+#                     listed; the registry disabling it is what keeps it out
+#                     of the router. Reported so the operator can see what is
+#                     still occupying the host; never fatal.
+#   FATAL           — a servable entry the gate does not list (the 2026-07-28
+#                     outage), or a served id that appears NOWHERE in the
+#                     registry, enabled or not.
+# "Cannot check" is never "check failed", and a skip that reads like a pass is
+# how a check quietly stops running: every verdict is named in the report.
 
 - name: Classify every model-listing probe this converge performed
   ansible.builtin.set_fact:
@@ -24,7 +35,9 @@
         {{ 'verified' if (_llm_router_gate_models.status | default(0) | int) == 200
            else ('rejected'
                  if (_llm_router_gate_models.status | default(0) | int) in [401, 403]
-                 else 'unreachable') }}
+                 else ('not_found'
+                       if (_llm_router_gate_models.status | default(0) | int) == 404
+                       else 'unreachable')) }}
       status: "{{ _llm_router_gate_models.status | default(0) | int }}"
       # ONLY the records the gate itself calls a model. Its listing self-labels
       # every entry under meta.llamaswap.type: a physical model, an `alias`
@@ -73,7 +86,8 @@
             'expected': r.item.models,
             'status': st,
             'state': 'verified' if st == 200
-                     else ('rejected' if st in [401, 403] else 'unreachable'),
+                     else ('rejected' if st in [401, 403]
+                           else ('not_found' if st == 404 else 'unreachable')),
             'missing': r.item.models | difference(served)}] -%}
       {%- endfor -%}
       {{ ns.out }}
@@ -96,6 +110,16 @@
       unreachable: >-
         {{ _llm_router_remote_probe_results | selectattr('state', 'equalto', 'unreachable')
            | map(attribute='endpoint') | list }}
+      not_found: >-
+        {{ _llm_router_remote_probe_results | selectattr('state', 'equalto', 'not_found')
+           | map(attribute='endpoint') | list }}
+      # Served ids the registry carries but does not enable. Derived against
+      # the FULL registry so a disabled entry still on the serving host is
+      # reported here rather than failing the converge as unregistered drift.
+      listed_disabled: >-
+        {{ _llm_router_gate_probe.ids
+           | intersect(_llm_router_registry_all_ids)
+           | difference(_llm_router_registry_enabled_ids) }}
       # TWO facts, not one. Every remote tier's render is gated on its own
       # credential, so an unseeded tier is not merely unverified — it is not
       # deployed on this proxy at all. Reporting only "could not check" states
@@ -108,6 +132,17 @@
            | difference(_llm_router_absent_groups) }}
       unsupported: "{{ llm_router_probe_unsupported_tiers }}"
   vars:
+    # Both id forms, because the registry's client-facing id and the id the
+    # backend knows are the same value on the large tier and may differ on
+    # another. The FULL registry (every entry, enabled or not, standby
+    # included) is what "registered" means below; the enabled projection only
+    # decides which of those are reported as disabled.
+    _llm_router_registry_all_ids: >-
+      {{ (llm_router_model_registry | map(attribute='client_model_id') | list)
+         + (llm_router_model_registry | map(attribute='upstream_model_id') | list) }}
+    _llm_router_registry_enabled_ids: >-
+      {{ (llm_router_registry_enabled | map(attribute='client_model_id') | list)
+         + (llm_router_registry_enabled | map(attribute='upstream_model_id') | list) }}
     _llm_router_uncredentialed: >-
       {{ llm_router_remote_probes | rejectattr('has_credential') | list }}
     # The names the template really rendered, read from the config
@@ -156,6 +191,15 @@
         Remote endpoints NOT CHECKED, unreachable:
         {{ _llm_router_probe_report.unreachable | join(', ') | default('none', true) }}
       - >-
+        Remote endpoints NOT CHECKED, reached but no listing at that path (404 —
+        a wrong URL in the endpoint map, not an outage):
+        {{ _llm_router_probe_report.not_found | join(', ') | default('none', true) }}
+      - >-
+        Served by the gate but DISABLED or standby in the registry (expected
+        while the weights remain on the host; the registry keeps them out of
+        the router):
+        {{ _llm_router_probe_report.listed_disabled | join(', ') | default('none', true) }}
+      - >-
         Remote tiers NOT DEPLOYED on this proxy — no credential, so the
         template rendered no deployment for them at all:
         {{ _llm_router_probe_report.not_deployed | join(', ') | default('none', true) }}
@@ -183,11 +227,13 @@
           ~ 'once. Fix by moving servable/serving_role onto an entry the gate really '
           ~ 'serves, never by widening the claim to match a stale alias. ')
          if _llm_router_unserved | length > 0 else '' }}
-      {{ ('Served but absent from the enabled registry: ['
+      {{ ('Served but absent from the registry entirely: ['
           ~ (_llm_router_unregistered | join(', ')) ~ ']. The registry is meant to be '
-          ~ 'the complete statement of what this fabric serves, so a model answering '
-          ~ 'under a name it does not carry is drift — register the entry or stop '
-          ~ 'serving it.')
+          ~ 'the complete statement of what this fabric can serve, so a model '
+          ~ 'answering under a name no entry carries — enabled or disabled — is '
+          ~ 'drift: register the entry (disabled is fine) or remove it from the '
+          ~ 'host. A DISABLED entry that is still served is not this failure; it '
+          ~ 'is reported as listed_disabled above.')
          if _llm_router_unregistered | length > 0 else '' }}
     success_msg: >-
       Serving gate confirms all {{ llm_router_servable_models | length }} servable
@@ -196,13 +242,19 @@
   vars:
     _llm_router_unserved: >-
       {{ llm_router_servable_models | difference(_llm_router_gate_probe.ids) }}
-    # Both id forms are permitted: the registry's client-facing id and the id
-    # the backend itself knows. They are the same value on the large tier, and
-    # accepting both keeps this direction honest for any tier where they differ.
+    # Against the FULL registry, deliberately. The serving host auto-registers
+    # every downloaded model that fits in memory, so a registry entry that is
+    # disabled but still on disk is EXPECTED in the gate's listing; comparing
+    # against the enabled projection turned every such entry — and the
+    # standby — into a converge failure, and under serial: 1 that strands the
+    # rest of the pool behind the first member. Only an id that appears
+    # nowhere in the registry is drift.
+    # Anti-vacuity: an empty registry makes every served id fail here, not
+    # pass; an undefined llm_router_model_registry errors rather than defaults.
     _llm_router_unregistered: >-
       {{ _llm_router_gate_probe.ids
-         | difference((llm_router_registry_enabled | map(attribute='client_model_id') | list)
-                      + (llm_router_registry_enabled | map(attribute='upstream_model_id') | list)) }}
+         | difference((llm_router_model_registry | map(attribute='client_model_id') | list)
+                      + (llm_router_model_registry | map(attribute='upstream_model_id') | list)) }}
 
 - name: Assert every registered remote id appears in its provider's own listing
   ansible.builtin.assert:

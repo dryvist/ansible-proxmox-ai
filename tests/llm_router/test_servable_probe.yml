@@ -38,6 +38,9 @@
     llm_router_registry_enabled:
       - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
       - {client_model_id: fixture-model-b, upstream_model_id: fixture-model-b}
+    llm_router_model_registry:
+      - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
+      - {client_model_id: fixture-model-b, upstream_model_id: fixture-model-b}
     llm_router_remote_probes: []
     llm_router_probe_unsupported_tiers: []
     _llm_router_remote_models: {results: []}
@@ -80,6 +83,11 @@
     llm_router_servable_models: [fixture-model-a]
     llm_router_registry_enabled:
       - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
+    # The full registry ALSO carries a disabled entry the gate serves. It must
+    # not appear in the failure: the fatal id is the one no entry carries.
+    llm_router_model_registry:
+      - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
+      - {client_model_id: fixture-model-disabled, upstream_model_id: fixture-model-disabled, enabled: false}
     llm_router_remote_probes: []
     llm_router_probe_unsupported_tiers: []
     _llm_router_remote_models: {results: []}
@@ -88,6 +96,7 @@
       json:
         data:
           - {id: fixture-model-a}
+          - {id: fixture-model-disabled}
           - {id: fixture-model-undeclared}
   tasks:
     - name: Prove a served-but-unregistered model is fatal
@@ -107,8 +116,12 @@
           ansible.builtin.assert:
             quiet: true
             that:
-              - "'Served but absent from the enabled registry' in (ansible_failed_result.msg | default(''))"
+              - "'Served but absent from the registry entirely' in (ansible_failed_result.msg | default(''))"
               - "'fixture-model-undeclared' in (ansible_failed_result.msg | default(''))"
+              # The disabled-but-served id is NOT drift and must not be named
+              # inside the failing set. It is reported as listed_disabled.
+              - "'[fixture-model-disabled' not in (ansible_failed_result.msg | default(''))"
+              - "'fixture-model-disabled]' not in (ansible_failed_result.msg | default(''))"
             fail_msg: >-
               The judge failed, but not for the unregistered model — got
               {{ ansible_failed_result.msg | default('(none)') }}.
@@ -124,6 +137,9 @@
     # check", not into silence that reads like success.
     llm_router_servable_models: [fixture-model-a, fixture-model-b]
     llm_router_registry_enabled:
+      - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
+      - {client_model_id: fixture-model-b, upstream_model_id: fixture-model-b}
+    llm_router_model_registry:
       - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
       - {client_model_id: fixture-model-b, upstream_model_id: fixture-model-b}
     llm_router_remote_probes: []
@@ -155,6 +171,8 @@
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     llm_router_servable_models: [fixture-model-a]
     llm_router_registry_enabled:
+      - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
+    llm_router_model_registry:
       - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
     llm_router_remote_probes: []
     llm_router_probe_unsupported_tiers: []
@@ -194,6 +212,8 @@
     llm_router_servable_models: [fixture-model-a]
     llm_router_registry_enabled:
       - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
+    llm_router_model_registry:
+      - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
     llm_router_remote_probes: []
     llm_router_probe_unsupported_tiers: []
     _llm_router_remote_models: {results: []}
@@ -228,3 +248,87 @@
         success_msg: >-
           Alias and peer records are excluded by the gate's own label; only real
           models are compared.
+
+- name: A served id the registry carries but disables passes, with its own verdict
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    # The serving host auto-registers every downloaded model that fits, so a
+    # disabled registry entry still on disk IS listed by the gate. Before this
+    # verdict existed that failed every converge as "unregistered" and, under
+    # serial: 1, stranded the pool behind the first member. The injected
+    # difference from the fatal play above is one field: the extra served id
+    # HAS a registry entry, merely disabled (and one parked as standby).
+    llm_router_servable_models: [fixture-model-a]
+    llm_router_registry_enabled:
+      - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
+    llm_router_model_registry:
+      - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
+      - {client_model_id: fixture-model-disabled, upstream_model_id: fixture-model-disabled, enabled: false}
+      - client_model_id: fixture-model-standby
+        upstream_model_id: fixture-model-standby
+        enabled: false
+        standby: true
+    llm_router_remote_probes: []
+    llm_router_probe_unsupported_tiers: []
+    _llm_router_remote_models: {results: []}
+    _llm_router_gate_models:
+      status: 200
+      json:
+        data:
+          - {id: fixture-model-a}
+          - {id: fixture-model-disabled}
+          - {id: fixture-model-standby}
+  tasks:
+    - name: Adjudicate a gate that still serves two disabled registry entries
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
+
+    # Anti-vacuity: the assert above ran (gate is verified, so its `when` held)
+    # and did not fail; this proves the two ids were classified rather than
+    # merely tolerated. An empty listed_disabled here means the verdict never
+    # fired and the pass was for the wrong reason.
+    - name: Confirm the disabled entries were reported as listed_disabled, not drift
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_probe_report.gate == 'verified'
+          - _llm_router_probe_report.listed_disabled | sort == ['fixture-model-disabled', 'fixture-model-standby']
+        fail_msg: >-
+          listed_disabled was {{ _llm_router_probe_report.listed_disabled }}. A
+          disabled entry the gate still serves must be reported under that
+          verdict — visible, never fatal — or the operator cannot see what is
+          still occupying the serving host.
+        success_msg: >-
+          Disabled and standby entries still on the host are reported as
+          listed_disabled and block nothing.
+
+- name: A gate that answers 404 is reported as reached-without-a-listing, apart from an outage
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_servable_models: [fixture-model-a]
+    llm_router_registry_enabled:
+      - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
+    llm_router_model_registry:
+      - {client_model_id: fixture-model-a, upstream_model_id: fixture-model-a}
+    llm_router_remote_probes: []
+    llm_router_probe_unsupported_tiers: []
+    _llm_router_remote_models: {results: []}
+    _llm_router_gate_models: {status: 404}
+  tasks:
+    - name: Adjudicate with the gate reached but no listing at the probed path
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
+
+    - name: Confirm a 404 is its own verdict
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_probe_report.gate == 'not_found'
+        fail_msg: >-
+          A 404 was recorded as "{{ _llm_router_probe_report.gate }}". A reached
+          endpoint with no listing at that path is a wrong URL in this role,
+          which never fixes itself; folding it into "unreachable" makes a
+          permanent configuration defect look like a transient outage.
+        success_msg: A 404 is reported as reached-without-a-listing, and blocks nothing.

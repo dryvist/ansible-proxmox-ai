@@ -8,7 +8,8 @@
 # with a connection error. Nothing else in this role's asserts inspects DNS,
 # so a URL built from a subdomain form that never resolves (the apex-vs-
 # subdomain trap that class documents) ships silently. This proves the guard
-# both stays quiet on resolvable hosts and fails loud on an unresolvable one.
+# stays quiet on resolvable hosts, fails loud on an unresolvable one, and
+# reports a resolver that could not run AS that — never as a DNS verdict.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_endpoint_dns_assert.yml -i localhost, -c local
@@ -98,3 +99,48 @@
             success_msg: >-
               An unresolvable backend host is fatal, naming the host, with
               the intended message.
+
+- name: The guard reports a resolver that cannot run as such, not as a DNS verdict
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_llm_fast_base_url: "http://localhost:10434/v1"
+    llm_router_llm_light_base_url: "http://localhost:10434/v1"
+    llm_router_llm_large_base_url: "https://localhost:11434/v1"
+    llm_router_llm_vllm_enabled: false
+    llm_router_llm_vllm_base_url: ""
+    llm_router_llm_large_standby_base_url: ""
+  tasks:
+    - name: Prove a missing resolver is reported as a resolver failure
+      block:
+        - name: Import the DNS resolution guard with no python3 on PATH
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-endpoint-dns.yml"
+          # An empty PATH means the guard's `python3` cannot be found, so the
+          # command module returns a non-0/1 rc for a host that DOES resolve
+          # (localhost). The only correct verdict is "resolver failure" — the
+          # host must never appear in the "does not resolve" list.
+          environment:
+            PATH: ""
+
+        - name: Fail because the guard passed with a resolver that never ran
+          ansible.builtin.fail:
+            msg: >-
+              roles/llm_router/tasks/assert-endpoint-dns.yml PASSED although
+              python3 was not on PATH and no resolution check ran. A guard
+              that passes when its tool is missing guards nothing.
+      rescue:
+        - name: Confirm the guard failed for the resolver-failure reason specifically
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'Resolver failure, NOT a DNS verdict' in (ansible_failed_result.msg | default(''))"
+              - "'Unresolvable backend host' not in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              The guard failed, but not as a resolver failure — got
+              {{ ansible_failed_result.msg | default('(none)') }}. A missing
+              tool reported as "does not resolve" is the conflation this
+              case exists to catch.
+            success_msg: >-
+              A resolver that cannot run is reported as a resolver failure,
+              distinct from a non-resolving host.

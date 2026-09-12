@@ -1,0 +1,53 @@
+---
+# The serving-share metric, produced on a schedule rather than by hand.
+#
+# Until this landed the number the program is stated in existed only as SQL in
+# a document: nothing computed it, nothing kept a baseline, and answering "are
+# we at target" needed someone with a database client and the patience to run
+# it. A timer on the router guest runs the same query daily and writes one JSON
+# line to the journal, which the estate's syslog forwarder already ships, so
+# the metric lands in the log platform with no shipper change and can be
+# charted, alerted on and compared week over week from there.
+#
+# Its own task file because main.yml sits against its per-file token budget,
+# and because this is a real seam: everything here is gated on the database
+# being attached, which is the only condition under which the rows it reads
+# exist. With no database the timer is simply not installed.
+#
+# The client is installed here rather than in the role's base package list so
+# a database-less deployment carries no database client it never uses.
+- name: Install the database client the metric query runs through
+  ansible.builtin.apt:
+    name: postgresql-client
+    state: present
+  when: llm_router_db_host | length > 0
+
+- name: Deploy the serving-share query
+  ansible.builtin.template:
+    src: serving-share.sql.j2
+    dest: "{{ llm_router_serving_share_query_file }}"
+    owner: root
+    group: "{{ llm_router_group }}"
+    mode: "0640"
+  when: llm_router_db_host | length > 0
+
+- name: Deploy the serving-share service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - serving-share.service
+    - serving-share.timer
+  when: llm_router_db_host | length > 0
+  register: llm_router_serving_share_units
+
+- name: Enable the serving-share timer
+  ansible.builtin.systemd:
+    name: serving-share.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ llm_router_serving_share_units is changed }}"
+  when: llm_router_db_host | length > 0

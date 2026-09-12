@@ -75,41 +75,29 @@ tier carried, and the rate of rate-limit responses actually **returned to a
 caller**. Retries that eventually succeeded are not in the latter; only the
 final outcome reaches the failure path that writes a row.
 
-## Queries
+## How the number is produced
 
-Run against the router's own database. `:estate_suffix` is a bind parameter
-carrying the internal subdomain (the value behind `PROXMOX_SUBDOMAIN`), so the
-query itself holds no address; in `psql`, `\set estate_suffix ...` and write it
-as `:'estate_suffix'`.
+Nothing about this is run by hand. `tasks/serving-share.yml` installs a systemd
+timer on each router that runs `templates/serving-share.sql.j2` daily against the
+proxy's own database and writes **one JSON line** to the journal under the
+identifier in `llm_router_serving_share_syslog_identifier`. The estate's syslog
+forwarder ships the journal, so the line reaches the log platform with no
+shipper change. That template is the definition of the metric; this document
+explains it and does not carry a second copy of the SQL.
 
-```sql
--- Weekly serving share, remote share, and caller-visible rate limiting.
--- The suffix is matched with wildcards on BOTH sides: api_base is a full URL
--- and ends in a port, so an anchored suffix match silently returns zero local
--- requests — a broken query and a failing fabric look the same from here.
-WITH reqs AS (
-  SELECT
-    date_trunc('week', "startTime") AS week,
-    status,
-    api_base LIKE '%' || :estate_suffix || '%' AS is_local,
-    metadata -> 'error_information' ->> 'error_code' AS error_code
-  FROM "LiteLLM_SpendLogs"
-  WHERE call_type IN ('acompletion', 'completion')
-    AND "startTime" >= now() - interval '28 days'
-)
-SELECT
-  week,
-  count(*) AS requests,
-  round(count(*) FILTER (WHERE is_local AND status = 'success')::numeric
-        / NULLIF(count(*), 0), 3) AS local_share,
-  round(count(*) FILTER (WHERE NOT is_local AND status = 'success')::numeric
-        / NULLIF(count(*), 0), 3) AS remote_share,
-  round(count(*) FILTER (WHERE status = 'failure' AND error_code = '429')::numeric
-        / NULLIF(count(*), 0), 3) AS caller_visible_429_rate
-FROM reqs
-GROUP BY week
-ORDER BY week DESC;
+The line carries `local_share`, `overflow_share`, `caller_429_rate`,
+`requests`, `window` and `computed_at`. Read it from the log platform, never
+from the host; a run that emits nothing is a finding about the pipeline, not
+an absence of traffic. Running the deployed query by hand for a spot check:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -A -t -f /etc/litellm/serving-share.sql
 ```
+
+For an ad-hoc breakdown the timer does not emit — which tier carried the work
+in a given week — `:estate_suffix` is a bind parameter carrying the internal
+subdomain, the same value the template renders in, so the query holds no
+address; in `psql`, `\set estate_suffix ...` and write it as `:'estate_suffix'`.
 
 ```sql
 -- Which tier carried the work, for the week just reported. Tier is derived
@@ -174,20 +162,27 @@ so it is volume-independent and survives any later logging change. It answers
 "did chains run, from which group to which, how often, triggered by what" at
 aggregate granularity, not per request.
 
-*The router's own log, scoped.* Per-request detail needs the router's
-informational records, and those were unreachable. Its three named loggers never
-have a level set, so they inherit the root level: warnings and errors pass,
-informational records are dropped **at the logger**. Two traps follow.
-`LITELLM_LOG` moves the **handler** threshold only, and no handler can recover a
-record the logger already discarded, so setting it to informational changes
-nothing while looking like the fix. The supported verbosity switches raise
-*every* logger to debug at once, which on a proxy carrying prompts is a
-data-exposure change rather than a diagnostic. The route taken instead is a
-logging configuration file naming the router logger alone, passed to the server
-at startup (`templates/logging.yaml.j2`, wired in `tasks/logging-config.yml`).
-That file has three ways to fail silently — disabling every logger it does not
-name, dropping the server's own access and error streams, and duplicating every
-line — each guarded and commented in the template.
+*The router's own log.* Per-request detail needs the router's informational
+records, and those were unreachable. At import LiteLLM attaches a handler to its
+three named loggers and sets **no level** on them (`_logging.py:353-360`), so
+they inherit the root's WARNING: warnings and errors pass, informational records
+are dropped **at the logger**. The supported fix is `LITELLM_LOG=INFO` in the
+EnvironmentFile, and it works because it is read twice: at import it sets the
+attached handler's threshold (`_logging.py:137-143`; default DEBUG, so it never
+blocked INFO, and it carries the secret-redaction filter), and at proxy init the
+not-debug branch of `initialize()` calls `setLevel(INFO)` on exactly those three
+loggers (`proxy_server.py:7416-7433`), not on every library. The debug switches
+are refused: they raise *every* logger to debug, which on a proxy carrying
+prompts is a data-exposure change rather than a diagnostic.
+
+**Not a `--log_config` dictConfig.** A non-incremental `dictConfig` removes
+every existing handler from any logger it names (`logging/config.py`,
+`common_logger_config`), whether or not it supplies handlers. Naming the
+router logger there strips the handler LiteLLM attached at import together with
+its redaction filter, so records fall to the last-resort handler, which admits
+WARNING and above only and redacts nothing. A `dictConfig` for this proxy must
+own the handler and re-install both filters explicitly, or not name these
+loggers at all. The retention test asserts the unit carries no such flag.
 
 ### What the pair makes decidable, which is the point of both
 
