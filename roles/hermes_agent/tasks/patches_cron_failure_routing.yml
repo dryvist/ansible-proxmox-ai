@@ -1,45 +1,46 @@
 ---
-- name: Route failed cron deliveries to the issues channel
-  # The `success` flag is already in scope at the delivery call, so routing on
-  # it needs no new signal and cannot misclassify a healthy job that happens to
-  # report an error. Rewrites the call, not the content, so the markup guard
-  # above is untouched. Idempotent: the rewritten line no longer matches.
-  # Upstream moved this call inside a side-effect fence and split it across
-  # six lines; the rewrite collapses it back to one so the anchor stays a
-  # single line and idempotency stays trivially checkable.
+# The two call-site patches that used to route BOTH normal and crashed-job
+# cron deliveries through _cron_route() to the issues channel are GONE:
+# upstream's `_save_compose_deliver` already calls
+# `_deliver_result(job, deliver_content, adapters=adapters, loop=loop,
+# for_failure=not d.success)` (with the comment "Failure summaries ... honor
+# the job's failure_deliver override (NS-788)"), and its own
+# `_deliver_crash_failure` already resolves the same lane with
+# for_failure=True. Both regexps matched a call shape from before that
+# refactor and would have matched zero times against 2026.9.11 — the whole
+# routing half of _cron_route (patches_retry_and_markup.yml) is subsumed.
+#
+# What survives is the one thing upstream cannot see: a script-fed job that
+# exits 0 (runner success=True) and declares its own failure by prefixing
+# the marker _cron_route strips. Its `for_failure` never picks that up on
+# its own, so it needs to be told. Two small anchors instead of two call-site
+# rewrites: unpack the routing result right where _compose_run_delivery's
+# result lands, then fold `declared` into the existing for_failure expression
+# a few lines later.
+- name: Route a self-declared cron failure through _cron_route
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
     regexp: |-
-      ^([ \t]*)delivery_error = _deliver_result\(
-      [ \t]*job,
-      [ \t]*deliver_content,
-      [ \t]*adapters=adapters,
-      [ \t]*loop=loop,
-      [ \t]*\)$
+      ^([ \t]*)\(
+      [ \t]*deliver_content, d\.blocked_config, _silent_alert, d\.incident_acked, d\.failure_incident_id,
+      [ \t]*\) = _compose_run_delivery\(
+      [ \t]*job, success=d\.success, error=d\.error, final_response=final_response,
+      [ \t]*output_file=output_file\)$
     replace: |-
-      \g<1>_routed_job, deliver_content = _cron_route(job, success, deliver_content)
-      \g<1>delivery_error = _deliver_result(_routed_job, deliver_content, adapters=adapters, loop=loop)
+      \g<1>(
+      \g<1>    deliver_content, d.blocked_config, _silent_alert, d.incident_acked, d.failure_incident_id,
+      \g<1>) = _compose_run_delivery(
+      \g<1>    job, success=d.success, error=d.error, final_response=final_response,
+      \g<1>    output_file=output_file)
+      \g<1>job, deliver_content, _cron_declared_failure = _cron_route(job, deliver_content)
   notify: Restart hermes-gateway
 
-- name: Route failed cron deliveries from the exception path to the issues channel
-  # Upstream grew a second delivery call: the outer exception handler, which
-  # only ever delivers a failure summary. Left unrouted it puts crashed-job
-  # alerts back on the work surface — the exact split this patch set exists to
-  # make. `success` is not in scope here and cannot be anything but False.
+- name: Deliver a self-declared cron failure through the failure lane
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    regexp: |-
-      ^([ \t]*)delivery_error = _deliver_result\(
-      [ \t]*job,
-      (?:[ \t]*#.*\n)*[ \t]*_summarize_cron_failure_for_delivery\(job, _err_text\)
-      [ \t]*\+ _failure_streak_nudge\(job\),
-      [ \t]*adapters=adapters,
-      [ \t]*loop=loop,
-      [ \t]*\)$
-    replace: |-
-      \g<1>_routed_job, _routed_content = _cron_route(
-      \g<1>    job, False,
-      \g<1>    _summarize_cron_failure_for_delivery(job, _err_text) + _failure_streak_nudge(job),
-      \g<1>)
-      \g<1>delivery_error = _deliver_result(_routed_job, _routed_content, adapters=adapters, loop=loop)
+    # Same call the assert reads back on; only the for_failure argument
+    # changes, so a re-applied patch is a no-op once ` or _cron_declared_failure`
+    # is already there.
+    regexp: '^([ \t]*)for_failure=not d\.success,$'
+    replace: '\g<1>for_failure=not d.success or _cron_declared_failure,'
   notify: Restart hermes-gateway

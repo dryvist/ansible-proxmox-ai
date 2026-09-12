@@ -205,13 +205,21 @@
           )
 
 
-      # Where a run that FAILED goes, instead of the job's own channel. Empty
-      # disables the split and leaves every result on its configured target.
-      _CRON_ISSUES_TARGET = "{{ hermes_agent_cron_failure_deliver }}"
-      # Script-fed crons exit 0 and PRINT their failure (`success` is True), so
-      # they declare it with this prefix, like [SILENT]. A marker the script
-      # owns, never a keyword match: a successful job REPORTING an error it
-      # observed is a finding and stays on the work surface.
+      # Routing a RUNNER-reported failure to the issues channel is retired as
+      # a role patch (2026-09): upstream's own `_deliver_result(...,
+      # for_failure=not d.success)` already reads a job's `failure_deliver`
+      # field for that case (NS-788), set at cron-create time from
+      # hermes_agent_cron_failure_deliver (reconcile_direct_cron.yml,
+      # reconcile_enqueuer_cron.yml). What upstream still cannot see is a
+      # script-fed job that exits 0 and prints its OWN failure with the
+      # marker below — the runner's own success flag stays True, so
+      # for_failure never picks up failure_deliver for it. That marker-strip
+      # plus the escalate-then-quiet ladder is what still needs a patch.
+      #
+      # Script-fed crons exit 0 and PRINT their failure (`success` is True),
+      # so they declare it with this prefix, like [SILENT]. A marker the
+      # script owns, never a keyword match: a successful job REPORTING an
+      # error it observed is a finding and stays on the work surface.
       _CRON_ISSUES_MARKER = "{{ hermes_agent_cron_issues_marker }}"
       # Escalate-then-quiet ladder (1858/1853): post failures 1, 3, 10, then
       # every 50th. Streak = persisted failure_streak + this run (delivery
@@ -232,27 +240,28 @@
           return streak in _CRON_FAILURE_LADDER or streak % _CRON_FAILURE_REPEAT_EVERY == 0
 
 
-      def _cron_route(job, success, content):
-          """Return (job, content) with failures routed to the issues channel.
+      def _cron_route(job, content):
+          """Strip a script-fed job's self-declared failure marker and apply
+          the escalate-then-quiet ladder to whether it gets posted.
 
-          Routes when the runner reports failure, or when a script-fed job
-          declared its own failure with the marker prefix. The marker is
-          stripped so it never reaches Slack. Never mutates the caller's job.
-          A runner failure off the ladder is delivered to `local` (no post).
+          Returns (job, content, declared). `declared` tells the caller to
+          deliver through the failure lane (for_failure=True) regardless of
+          the runner's own success flag, so upstream's native
+          failure_deliver routing applies to this case too. Never mutates
+          the caller's job except to force an off-ladder repeat to the
+          documented `failure_deliver: local` opt-out (no post).
           """
           declared = content.lstrip().startswith(_CRON_ISSUES_MARKER)
-          if declared:
-              content = content.lstrip()[len(_CRON_ISSUES_MARKER):].lstrip()
-          if (success and not declared) or not _CRON_ISSUES_TARGET:
-              return job, content
+          if not declared:
+              return job, content, False
+          content = content.lstrip()[len(_CRON_ISSUES_MARKER):].lstrip()
           name = job.get("name", job.get("id", "?"))
-          if not success:
-              streak = _cron_failure_streak(job)
-              if not _cron_failure_on_ladder(streak):
-                  logger.info("Job '%s': failure %d in a row — not posted", name, streak)
-                  return {**job, "deliver": "local"}, content
-          logger.info("Job '%s': run failed — routed to the issues channel", name)
-          return {**job, "deliver": _CRON_ISSUES_TARGET}, content
+          streak = _cron_failure_streak(job)
+          if not _cron_failure_on_ladder(streak):
+              logger.info("Job '%s': failure %d in a row — not posted", name, streak)
+              return {**job, "failure_deliver": "local"}, content, True
+          logger.info("Job '%s': self-declared failure — routed to the failure lane", name)
+          return job, content, True
   notify: Restart hermes-gateway
 
 - name: Route cron delivery content through the markup guard
