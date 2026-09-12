@@ -14,8 +14,7 @@ def create_task(conn, *, idempotency_key=None, goal_mode=False, goal_max_turns=N
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
+            "ORDER BY created_at DESC LIMIT 1", (idempotency_key,),
         ).fetchone()
         if row:
             return row["id"]
@@ -27,9 +26,12 @@ PINNED_GOAL_COMPLETION_SOURCE = "        verdict, reason, _, _, _ = judge_goal(\
 # nothing — these sat at v2026.7.7.2 while the role installed a much later
 # release, which is how seven patches came to match zero times with every test
 # passing. Re-verify with scripts/verify-pinned-patches.py on a version bump.
+# Re-anchored (PR I): upstream's September 2026 decomposition moved this to
+# agent/turn_truncation.py and inlined the separate `_tc_boost_cap =`
+# assignment directly into the min() call it fed.
 PINNED_TC_BOOST_CAP_SOURCE = (
-    "                                _tc_boost_cap = max("
-    "32768, _tc_requested_cap or 0)\n"
+    "    agent._ephemeral_max_output_tokens = min(_tc_boost, "
+    "max(32768, _tc_requested_cap or 0))\n"
 )
 PINNED_BOOST_CAP_SOURCE = (
     "            _boost_cap = max(32768, _requested_cap or 0)\n"
@@ -288,9 +290,7 @@ class _Agent:
         interrupted,
         messages=None,
     ) -> None:
-        if interrupted:
-            return
-        if not (self._memory_manager and final_response and original_user_message):
+        if interrupted or not (self._memory_manager and final_response and original_user_message):
             return
         user_text = _summarize_user_message_for_log(original_user_message, sep="\\n")
         response_text = _summarize_user_message_for_log(final_response, sep="\\n")
@@ -305,10 +305,8 @@ class _Agent:
                 response_text,
                 **sync_kwargs,
             )
-            self._memory_manager.queue_prefetch_all(
-                user_text,
-                session_id=self.session_id or "",
-            )
+            if not is_trivial_prompt(user_text):
+                self._memory_manager.queue_prefetch_all(user_text, session_id=self.session_id or "")
         except Exception:
             pass
 '''
@@ -335,20 +333,16 @@ JUDGE_ERROR = ("continue", "judge error: NotFoundError", False, None, True)
 # The two anchor regions of upstream judge_goal, verbatim and in order, with
 # the lines between them dropped — no patch keys on those, and the except
 # handler is already pinned above. Identical in v2026.8.3 and v2026.8.13.
+# Verbatim from hermes_cli/goals.py (v2026.9.11): the call moved into its
+# own _call_goal_judge_llm() helper (returns a plain str, discards the
+# response object), fetched and diffed directly against the pinned tag —
+# the previous "resp = call_llm(...)" inline shape no longer exists there.
 PINNED_JUDGE_CALL_SOURCE = '''\
     try:
-        resp = call_llm(
-            task="goal_judge",
-            messages=[
-                {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0,
-            max_tokens=_goal_judge_max_tokens(),
-            timeout=timeout,
-        )
-    except Exception:
-        raw = ""
+        raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
+    except Exception as exc:
+        logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
+        return "continue", f"judge error: {type(exc).__name__}", False, None, True
 
     verdict, reason, parse_failed, wait_directive = _parse_judge_response(raw)
 '''
@@ -444,9 +438,6 @@ PINNED_DISPATCH_TICK_SOURCE = (
                                 len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
                             )
                     ready_pending = await _to_thread_process_service(_ready_nonempty)
-                    if ready_pending and not any_spawned:
-                        bad_ticks += 1
-                    else:
-                        bad_ticks = 0
+                    bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
 '''
 )

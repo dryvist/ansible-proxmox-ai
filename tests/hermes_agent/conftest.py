@@ -209,8 +209,10 @@ PATCHED_HINDSIGHT_PREFETCH_SOURCE = _apply_runtime_patch(
 UPSTREAM_HINDSIGHT_PREFETCH_LINE_REMOVED = ""
 PATCHED_RUN_AGENT_SOURCE = PINNED_SYNC_EXTERNAL_MEMORY_SOURCE
 for _run_agent_task_name in (
-    'Patch _sync_external_memory_for_turn to log its "interrupted" skip',
-    "Patch _sync_external_memory_for_turn to log its missing-input skip",
+    # Rewritten (2026-09): upstream combined the interrupted-turn guard and
+    # the missing-input guard into ONE `if interrupted or not (...)` line,
+    # merging what used to be two separately-anchored role patches.
+    "Patch _sync_external_memory_for_turn to log its interrupted/missing-input skip",
     "Patch _sync_external_memory_for_turn to log its empty-flatten skip",
     "Patch _sync_external_memory_for_turn to log its swallowed exception",
 ):
@@ -366,6 +368,10 @@ PATCHED_KANBAN_DISPATCH_SOURCE = (
             ),
         ),
     )
+    # Both retired protocol-violation checks also moved off kanban_db.py
+    # into kanban_db_dispatch.py in the same September 2026 decomposition.
+    + PINNED_PROTOCOL_VIOLATION_SOURCE
+    + PINNED_PROTOCOL_RETRY_SOURCE
 )
 
 
@@ -377,6 +383,15 @@ PATCHED_TURN_ITERATION_PREP_SOURCE = _apply_runtime_patch(
     "Patch hermes-agent length-continuation boost to respect the configured "
     "max_tokens ceiling",
     PINNED_BOOST_CAP_SOURCE,
+)
+# Upstream's September 2026 decomposition also moved the retry-boost
+# max_tokens-ceiling patch's target file to turn_truncation.py and inlined
+# its standalone `_tc_boost_cap =` variable into the min() call it fed —
+# checked against its own dedicated hermes_agent_turn_truncation_source var,
+# not hermes_agent_retry_source (now unused by any condition).
+PATCHED_TURN_TRUNCATION_SOURCE = _apply_runtime_patch(
+    "Patch hermes-agent retry boost to respect the configured max_tokens ceiling",
+    PINNED_TC_BOOST_CAP_SOURCE,
 )
 
 
@@ -407,6 +422,7 @@ def _source_postconditions(
     cli_main_source: str = PATCHED_CLI_MAIN_SOURCE,
     kanban_dispatch_source: str = PATCHED_KANBAN_DISPATCH_SOURCE,
     turn_iteration_prep_source: str = PATCHED_TURN_ITERATION_PREP_SOURCE,
+    turn_truncation_source: str = PATCHED_TURN_TRUNCATION_SOURCE,
 ) -> tuple[bool, ...]:
     that = _combined_assert_task()["ansible.builtin.assert"]["that"]
     environment = Environment(autoescape=False)
@@ -424,6 +440,7 @@ def _source_postconditions(
         "hermes_agent_cli_main_source": cli_main_source,
         "hermes_agent_kanban_dispatch_source": kanban_dispatch_source,
         "hermes_agent_turn_iteration_prep_source": turn_iteration_prep_source,
+        "hermes_agent_turn_truncation_source": turn_truncation_source,
     }
     return tuple(
         bool(environment.compile_expression(condition)(**context)) for condition in that

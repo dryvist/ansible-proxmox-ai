@@ -47,6 +47,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "hermes_cli/main.py",
         "hermes_cli/kanban_db_dispatch.py",
         "agent/turn_iteration_prep.py",
+        "agent/turn_truncation.py",
     ]
 
     assert_task = _combined_assert_task()
@@ -143,16 +144,12 @@ def test_installed_source_postconditions_fail_closed() -> None:
     # (2026-09): upstream supplies the goal-mode quiet CLI path natively, so
     # this snippet rides along unpatched — no assertion in the combined
     # required-patch task targets its content any more.
-    reconcile_source = (
-        PINNED_WORKER_SPAWN_SOURCE
-        + reconcile_source
-        + PINNED_PROTOCOL_VIOLATION_SOURCE
-        + PINNED_PROTOCOL_RETRY_SOURCE
-    )
+    reconcile_source = PINNED_WORKER_SPAWN_SOURCE + reconcile_source
     # Upstream's September 2026 decomposition moved worker-reap
-    # process-group guarding out of kanban_db.py (hermes_agent_goal_
-    # reconcile_source) into kanban_db_dispatch.py, checked instead against
-    # its own dedicated hermes_agent_kanban_dispatch_source — see
+    # process-group guarding AND both protocol-violation retirements out of
+    # kanban_db.py (hermes_agent_goal_reconcile_source) into
+    # kanban_db_dispatch.py, checked instead against its own dedicated
+    # hermes_agent_kanban_dispatch_source — see
     # conftest.PATCHED_KANBAN_DISPATCH_SOURCE, built the same way (real
     # patch tasks over minimal real fragments), reused here rather than
     # rebuilt so this file and conftest can't drift apart on the same
@@ -183,6 +180,8 @@ def test_installed_source_postconditions_fail_closed() -> None:
         ]["block"]
         + worker_reap_source
         + stale_reclaim_source
+        + PINNED_PROTOCOL_VIOLATION_SOURCE
+        + PINNED_PROTOCOL_RETRY_SOURCE
     )
     # The six client-side backoff hacks are gone (see
     # test_client_side_backoff_hacks_stay_reverted); only the two kept
@@ -197,13 +196,12 @@ def test_installed_source_postconditions_fail_closed() -> None:
             "    assignee = _canonical_assignee(assignee)\n" + _tail,
         )
 
-    retry_source = _apply_runtime_patch(
-        "Patch hermes-agent retry boost to respect the configured max_tokens ceiling",
-        PINNED_TC_BOOST_CAP_SOURCE,
-    )
-    # Re-anchored (PR C): this patch's target file moved to
-    # turn_iteration_prep.py (path change only, content unchanged) — see
-    # conftest.PATCHED_TURN_ITERATION_PREP_SOURCE, reused here.
+    # Both max_tokens-ceiling patches moved off retry_source (now unused by
+    # any condition) onto their own dedicated vars — see
+    # conftest.PATCHED_TURN_ITERATION_PREP_SOURCE and
+    # conftest.PATCHED_TURN_TRUNCATION_SOURCE, reused here via
+    # _source_postconditions' defaults.
+    retry_source = ""
     auxiliary_source = "\n".join(
         (
             "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0",
@@ -253,15 +251,19 @@ def test_installed_source_postconditions_fail_closed() -> None:
             cron_scheduler_source=PINNED_CRON_DELIVERY_SOURCE,
         )
     )
+    # Re-anchored (PR I): both protocol-violation checks moved off
+    # reconcile_source onto kanban_dispatch_source with the rest of the
+    # September 2026 kanban_db_dispatch.py decomposition.
     assert not all(
         _source_postconditions(
             completion_source,
-            reconcile_source.replace(
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            kanban_dispatch_source=kanban_dispatch_source.replace(
                 "without a terminal kanban call counts as failed no",
                 "",
             ),
-            retry_source,
-            auxiliary_source,
         )
     )
     # The forced first-failure give-up back in upstream: a protocol violation
@@ -270,12 +272,13 @@ def test_installed_source_postconditions_fail_closed() -> None:
     assert not all(
         _source_postconditions(
             completion_source,
-            reconcile_source.replace(
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            kanban_dispatch_source=kanban_dispatch_source.replace(
                 "failure_limit=1 if is_systemic else None,",
                 "failure_limit=1 if (protocol_violation or is_systemic) else None,",
             ),
-            retry_source,
-            auxiliary_source,
         )
     )
     # The judge-error guard dropped (upstream loop unpatched): must go red
@@ -353,13 +356,13 @@ def test_installed_source_postconditions_fail_closed() -> None:
     # dedicated var since PR C moved this patch's target file) dropped: the
     # needle `_boost_cap = agent.max_tokens ...` reverting to the unpatched
     # `_boost_cap = max(...)` form must go red on its own, independent of
-    # the unrelated _tc_boost_cap patch retry_source still carries.
+    # the unrelated _tc_boost_cap patch (now on its own turn_truncation_
+    # source var, PR I — see the default PATCHED_TURN_TRUNCATION_SOURCE).
     unpatched_turn_iteration_prep_source = PATCHED_TURN_ITERATION_PREP_SOURCE.replace(
         "_boost_cap = agent.max_tokens if agent.max_tokens else max("
         "32768, _requested_cap or 0)",
         "_boost_cap = max(32768, _requested_cap or 0)",
     )
-    assert "_tc_boost_cap = agent.max_tokens" in retry_source
     assert not all(
         _source_postconditions(
             completion_source,
