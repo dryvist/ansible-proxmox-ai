@@ -38,13 +38,16 @@
 
     # set_fact (precedence 19) outranks include_vars (18), so these stubs win
     # over anything the defaults/group_vars derive from the same names. The
-    # master key, large-tier bearer and PROXMOX_SUBDOMAIN are mandatory
-    # env-lookups in 60-ops.yml/all.yml; stubbing them here keeps the test
-    # self-contained, so its documented run command needs no environment.
+    # master key, large-tier bearer, PROXMOX_SUBDOMAIN and the OIDC admin
+    # identity are mandatory env-lookups in 60-ops.yml/all.yml/group_vars;
+    # stubbing them here keeps the test self-contained, so its documented run
+    # command needs no environment. admin_email uses a neutral placeholder,
+    # never a real identity — see the negative case below for the unset path.
     - name: Stub the tofu inventory data and the bao secret maps
       ansible.builtin.set_fact:
         llm_router_master_key: dummy-render-check
         llm_router_llm_large_bearer: dummy-render-check
+        llm_router_oidc_admin_email: admin@example.test
         ai_subdomain: pve.example.test
         tofu_data:
           domain: example.com
@@ -72,7 +75,7 @@
           - _env is search('(?m)^PROXY_BASE_URL=https://llm\.pve\.example\.test$')
           - _env is search('(?m)^GENERIC_USER_ID_ATTRIBUTE=email$')
           - _env is search('(?m)^GENERIC_SCOPE=openid profile email$')
-          - _env is search('(?m)^PROXY_ADMIN_ID=jevans@example\.com$')
+          - _env is search('(?m)^PROXY_ADMIN_ID=admin@example\.test$')
         fail_msg: >-
           The rendered litellm.env does not carry the exact generic-OIDC lines
           the plan pins. Real render:\n{{ _env }}
@@ -99,6 +102,11 @@
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
   tasks:
+    # localhost facts persist across plays within one playbook run; without
+    # this, the previous play's set_fact stubs (e.g. llm_router_oidc_admin_email)
+    # would outrank this play's own include_vars/set_fact of the same names.
+    - name: Start this play with no facts carried over from the previous one
+      ansible.builtin.meta: clear_facts
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"

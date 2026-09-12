@@ -96,57 +96,15 @@
     enabled: true
     daemon_reload: true
 
-- name: Flush handlers so the environment + GPU groups apply before model pull
+- name: Flush handlers so the environment + GPU groups apply
   ansible.builtin.meta: flush_handlers
 
-# --- model provisioning (Hermes 4 14B) ---
-
-- name: List installed Ollama models
-  ansible.builtin.command: ollama list
-  register: ollama_model_list
-  changed_when: false
-  retries: 10
-  delay: 3
-  until: ollama_model_list.rc == 0
-
-- name: Register Hermes 4 14B from the local GGUF  # ~8.4 GB; only when absent
-  when: ollama_model_name not in ollama_model_list.stdout
-  block:
-    - name: Stage the Hermes 4 14B GGUF (download only if absent)
-      ansible.builtin.get_url:
-        url: "{{ ollama_gguf_url }}"
-        dest: "{{ ollama_gguf_path }}"
-        owner: "{{ ollama_user }}"
-        group: "{{ ollama_user }}"
-        mode: "0640"
-      register: ollama_gguf_download
-      until: ollama_gguf_download is succeeded
-      retries: 3
-      delay: 10
-
-    - name: Render the Modelfile (alias + params)
-      ansible.builtin.template:
-        src: Modelfile.j2
-        dest: "{{ ollama_models_dir }}/Modelfile.{{ ollama_model_name }}"
-        owner: "{{ ollama_user }}"
-        group: "{{ ollama_user }}"
-        mode: "0640"
-
-    - name: "Create the local-GGUF Ollama model {{ ollama_model_name }}"
-      ansible.builtin.command:
-        cmd: "ollama create {{ ollama_model_name }} -f {{ ollama_models_dir }}/Modelfile.{{ ollama_model_name }}"
-      changed_when: true
-
 # --- verify ---
+# No model is provisioned by this role (see defaults/main.yml) — only the
+# service itself is verified.
 
 - name: Verify Ollama service is active
   ansible.builtin.systemd:
     name: ollama
   register: ollama_service_state
   failed_when: ollama_service_state.status.ActiveState != 'active'
-
-- name: Verify the model is registered
-  ansible.builtin.command: ollama list
-  register: ollama_verify_list
-  changed_when: false
-  failed_when: ollama_model_name not in ollama_verify_list.stdout
