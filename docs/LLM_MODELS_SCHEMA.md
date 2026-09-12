@@ -110,8 +110,17 @@ Optional:
                       literal zero would report the tier as free in spend
                       accounting and rank it alongside genuinely free rungs.
   credential_env      One provider-level environment variable:
-                      `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, or
-                      `DASHSCOPE_API_KEY`.
+                      `OPENROUTER_API_KEY`, `GEMINI_API_KEY`,
+                      `DASHSCOPE_API_KEY`, or `OPENCODE_API_KEY`. REQUIRED,
+                      together with key_field, on every entry of a
+                      credential-gated tier (`opencode`, `hermes-cloud`,
+                      `hermes-cloud-router`, `openrouter`). The env, probe and
+                      role projections read both fields bare off the entry;
+                      there is no per-tier default to fall back on, so an
+                      entry missing either fails the render rather than
+                      inheriting another tier's key.
+                      tests/hermes_agent/test_goal_mode_contract.py enforces
+                      the requirement.
   key_field           Provider-level field in the provider's OpenBao KV path.
                       Multiple models for one provider deliberately share it;
                       model access is constrained by model_list and policy.
