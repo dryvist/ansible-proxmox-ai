@@ -17,110 +17,26 @@ are the ones whose violation is expensive and INVISIBLE:
 
 Runs bare (`python3 tests/hermes_agent/test_vikunja_bridge.py`) or under pytest.
 Plain asserts, no fixtures — same shape as the rest of this suite.
+
+The needs_triage/busy lane sweeps (triage_aged_blocked, requeue_busy, the
+reconcile busy-routing path, and the intake probe gate) live in
+test_vikunja_bridge_lanes.py — split out to stay under the token budget; both
+files share fixtures via _vikunja_bridge_shared.py.
 """
-import os
 import re
-import sqlite3
-import tempfile
-import time
-import types
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 from _role_files import role_defaults, role_tasks_text
-
-ROLE = REPO_ROOT / "roles/hermes_agent"
-TEMPLATE_PATH = ROLE / "templates/vikunja-bridge.py.j2"
-TEMPLATE = TEMPLATE_PATH.read_text()
-SERVICE = (ROLE / "templates/hermes-vikunja-bridge.service.j2").read_text()
-ENV_TEMPLATE = (ROLE / "templates/hermes-vikunja-bridge.env.j2").read_text()
-TASKS = role_tasks_text(ROLE)
-DEFAULTS_PATH = ROLE
-
-STATE_DIR = tempfile.mkdtemp(prefix="vikunja-bridge-selfcheck-")
-# Stand-ins for what Ansible renders from roles/hermes_agent/defaults/main.yml.
-FIXTURE_CONFIG = {
-    "HERMES_BIN": "/usr/local/bin/hermes",
-    "HERMES_HOME": STATE_DIR,
-    "DB_PATH": str(Path(STATE_DIR) / "kanban.db"),
-    "STATE_PATH": str(Path(STATE_DIR) / "state/vikunja-bridge.json"),
-    "VIKUNJA_URL": "https://vikunja.example.invalid",
-    "PROJECT_NAME": "Hermes",
-    "AGENT_NAME": "Hermes",
-    "BUCKET_READY": "Ready",
-    "BUCKET_IN_PROGRESS": "In Progress",
-    "BUCKET_DONE": "Done",
-    "BUCKET_BLOCKED": "Blocked",
-    "BUCKET_NEEDS_TRIAGE": "Needs Triage",
-    "BUCKET_BUSY": "Busy",
-    "BLOCKED_TRIAGE_DAYS": 7,
-    "BUSY_REQUEUE_SECONDS": 300,
-    "PROBE_STATE_PATH": str(Path(STATE_DIR) / "brain-watchdog" / "probe_state"),
-    "POLL_INTERVAL": 60,
-    "CARD_MAX_RUNTIME": "45m",
-    "CARD_MAX_RETRIES": 2,
-    "CARD_ASSIGNEE": "",
-    "INTAKE_LABEL": "hermes",
-    "MAX_INTAKE_PER_TICK": 3,
-}
-
-
-def load_bridge_module():
-    """Render the template's config lines to fixtures and import it as a module."""
-    out = []
-    for line in TEMPLATE.splitlines():
-        if "ansible_managed" in line:
-            continue
-        match = re.match(r"^(\w+) = .*\{\{", line)
-        if match:
-            name = match.group(1)
-            assert name in FIXTURE_CONFIG, f"template config {name} has no self-check fixture"
-            out.append(f"{name} = {FIXTURE_CONFIG[name]!r}")
-            continue
-        out.append(line)
-    rendered = "\n".join(out)
-    assert "{{" not in rendered, "self-check left an unrendered Jinja expression"
-    mod = types.ModuleType("vikunja_bridge")
-    exec(compile(rendered, str(TEMPLATE_PATH), "exec"), mod.__dict__)  # noqa: S102
-    return mod
-
-
-BRIDGE = load_bridge_module()
-
-
-class _patch:
-    """Swap module-level attributes on BRIDGE for the block, then restore.
-
-    The bridge's functions call each other by module-global lookup, so
-    patching the module attribute intercepts a call without ever reaching
-    Vikunja or kanban.db — the same posture as the rest of this suite, which
-    never lets a test touch the network.
-    """
-
-    def __init__(self, **attrs):
-        self.attrs = attrs
-        self.saved = {}
-
-    def __enter__(self):
-        for name, value in self.attrs.items():
-            self.saved[name] = getattr(BRIDGE, name)
-            setattr(BRIDGE, name, value)
-        return self
-
-    def __exit__(self, *exc):
-        for name, value in self.saved.items():
-            setattr(BRIDGE, name, value)
-
-
-def board_db():
-    """An in-memory stand-in with kanban.db's real column shape."""
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(
-        "CREATE TABLE tasks (id TEXT, status TEXT, consecutive_failures INT,"
-        " max_retries INT);"
-        "CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT,"
-        " outcome TEXT, summary TEXT, error TEXT, ended_at REAL);")
-    return conn
+from _vikunja_bridge_shared import (
+    BRIDGE,
+    DEFAULTS_PATH,
+    ENV_TEMPLATE,
+    ROLE,
+    SERVICE,
+    TASKS,
+    TEMPLATE,
+    board_db,
+)
 
 
 def test_the_scripts_own_self_check_passes():
@@ -315,106 +231,6 @@ def test_the_unit_restarts_forever_and_reads_its_env_file():
     assert "EnvironmentFile={{ hermes_agent_vikunja_bridge_env_file }}" in SERVICE
     # Wants, not Requires: a gateway restart must not take the bridge down.
     assert "Wants=network-online.target" in SERVICE and "Requires=" not in SERVICE
-
-
-def test_read_probe_state_reads_the_watchdogs_persisted_file_and_fails_open():
-    path = Path(BRIDGE.PROBE_STATE_PATH)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("busy\n")
-    assert BRIDGE.read_probe_state() == "busy"
-    path.write_text("garbage\n")
-    assert BRIDGE.read_probe_state() == "up", "unrecognized content fails open"
-    path.unlink()
-    assert BRIDGE.read_probe_state() == "up", "a guest with no watchdog must not starve intake"
-
-
-def test_triage_aged_blocked_starts_the_clock_then_moves_after_the_threshold():
-    calls = []
-    board = {"pid": 1, "view": 1, "blocked": 10, "needs_triage": 11,
-             "buckets": [{"id": 10, "title": "Blocked", "tasks": [{"id": 30}, {"id": 31}]}]}
-    with _patch(move_to_bucket=lambda p, v, b, t: calls.append(("move", b, t)),
-                comment=lambda t, text: calls.append(("comment", t))):
-        # First sighting: the clock starts, nothing moves yet.
-        blocked_since = {}
-        assert BRIDGE.triage_aged_blocked(board, blocked_since) == 0
-        assert set(blocked_since) == {"30", "31"}
-        assert calls == []
-
-        # 30 aged past the threshold; 31 is still fresh.
-        blocked_since["30"] = time.time() - (BRIDGE.BLOCKED_TRIAGE_DAYS * 86400 + 10)
-        moved = BRIDGE.triage_aged_blocked(board, blocked_since)
-        assert moved == 1
-        assert ("move", 11, 30) in calls
-        assert "30" not in blocked_since, "a triaged task must stop being tracked"
-        assert "31" in blocked_since, "an untriaged task keeps its dwell clock"
-
-    # A task that left Blocked on its own must stop being tracked too.
-    board["buckets"][0]["tasks"] = [{"id": 31}]
-    assert BRIDGE.bucket_tasks(board, 10) == [{"id": 31}]
-
-
-def test_requeue_busy_waits_for_retry_after_then_moves_to_ready():
-    calls = []
-    board = {"pid": 1, "view": 1, "ready": 2}
-    with _patch(move_to_bucket=lambda p, v, b, t: calls.append(("move", b, t)),
-                comment=lambda t, text: calls.append(("comment", t))):
-        not_yet = {"1": time.time() + 100}
-        assert BRIDGE.requeue_busy(board, not_yet) == 0
-        assert calls == [], "a retry-after in the future must not requeue yet"
-
-        due = {"2": time.time() - 1}
-        assert BRIDGE.requeue_busy(board, due) == 1
-        assert due == {}, "a requeued task must be dropped from the busy ledger"
-        assert ("move", 2, 2) in calls
-
-
-def test_reconcile_routes_a_probe_busy_failure_to_busy_not_blocked():
-    conn = sqlite3.connect(BRIDGE.DB_PATH)
-    conn.executescript(
-        "CREATE TABLE tasks (id TEXT, status TEXT, consecutive_failures INT,"
-        " max_retries INT);"
-        "CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT,"
-        " outcome TEXT, summary TEXT, error TEXT, ended_at REAL);")
-    conn.execute("INSERT INTO tasks VALUES ('card-99', 'failed', 1, 2)")
-    conn.execute("INSERT INTO task_runs VALUES (1, 'card-99', 'error', NULL, 'timeout', 5)")
-    conn.commit()
-    conn.close()
-    try:
-        calls = []
-        board = {"pid": 1, "view": 1, "blocked": 10, "busy": 12}
-        tracked = {"77": "card-99"}
-        busy_tasks = {}
-        with _patch(move_to_bucket=lambda p, v, b, t: calls.append(("move", b, t)),
-                    comment=lambda t, text: calls.append(("comment", t)),
-                    read_probe_state=lambda: "busy"):
-            settled = BRIDGE.reconcile(board, tracked, busy_tasks)
-        assert settled == 1
-        assert "77" not in tracked, "a busy-routed card is no longer awaited by the ledger"
-        assert "77" in busy_tasks and busy_tasks["77"] > time.time()
-        assert ("move", 12, 77) in calls, "must move to Busy, not Blocked"
-        assert ("move", 10, 77) not in calls
-    finally:
-        os.remove(BRIDGE.DB_PATH)
-
-
-def test_intake_is_gated_on_the_watchdog_probe_state():
-    calls = []
-    board_stub = {"pid": 1, "view": 1, "ready": 2, "in_progress": None, "done": None,
-                  "blocked": None, "needs_triage": None, "busy": None, "buckets": []}
-    common = dict(
-        resolve_board=lambda: board_stub,
-        reconcile=lambda *a: 0,
-        requeue_busy=lambda *a: 0,
-        triage_aged_blocked=lambda *a: 0,
-        intake=lambda *a: calls.append("intake") or 0,
-    )
-    with _patch(read_probe_state=lambda: "busy", **common):
-        BRIDGE.tick()
-    assert calls == [], "intake must not run while the probe is not up"
-
-    with _patch(read_probe_state=lambda: "up", **common):
-        BRIDGE.tick()
-    assert calls == ["intake"], "intake must run once the probe reads up"
 
 
 if __name__ == "__main__":
