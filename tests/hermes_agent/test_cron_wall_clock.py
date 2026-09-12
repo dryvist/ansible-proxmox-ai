@@ -195,8 +195,8 @@ def _compiled_monitor(clock: _Clock, future: _Future, interrupts: list[str]):
         }
     )
     source = (
-        "def run_monitor(agent, prompt, job, job_id, job_name, cancel_event=None, "
-        "worker_state=None):\n" + PATCHED_CRON_TIMEOUT_SOURCE
+        "def run_monitor(agent, prompt, job, job_id, job_name, task_id=None, "
+        "cancel_event=None, worker_state=None):\n" + PATCHED_CRON_TIMEOUT_SOURCE
     )
     exec(compile(source, "<patched-cron-monitor>", "exec"), namespace)
     return namespace["run_monitor"]

@@ -76,8 +76,8 @@ PINNED_CRON_DELIVERY_SOURCE = (
 # opt-in cron goal mode wraps.
 PINNED_CRON_SUBMIT_SOURCE = (
     "    _cron_context = contextvars.copy_context()\n"
-    "    _cron_future = _cron_pool.submit(_cron_context.run,"
-    " agent.run_conversation, prompt)\n"
+    "    _cron_future = _cron_pool.submit(\n"
+    "        _cron_context.run, agent.run_conversation, prompt, task_id=task_id)\n"
     "    _inactivity_timeout = False\n"
 )
 # Exact upstream v2026.9.11 monitor targeted by the aggregate-deadline patch —
@@ -123,7 +123,8 @@ PINNED_CRON_TIMEOUT_SOURCE = '''\
 
     _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     _cron_context = contextvars.copy_context()
-    _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+    _cron_future = _cron_pool.submit(
+        _cron_context.run, agent.run_conversation, prompt, task_id=task_id)
     if worker_state is not None:
         worker_state["future"] = _cron_future
     _inactivity_timeout = False
