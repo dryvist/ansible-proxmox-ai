@@ -114,16 +114,29 @@ llm_router_hermes_primary_context_window: >-
 #
 #   * the map IS consulted, keyed on the failing LEG's own name;
 #   * a re-raise there is caught by the enclosing walk, which ADVANCES;
-#   * what ends a walk early is the shared max_fallbacks budget, which the
-#     nested per-group chains draw down too.
+#   * max_fallbacks is read only at run_async_fallback ENTRY
+#     (fallback_event_handlers.py:317), never inside its loop — so it bounds
+#     how deep NESTED chains descend and can never cut a top-level chain short.
 #
-# An overflow observed 2026-09-01 against a 32768 leg, with wider cloud rungs
-# listed but not reached, is consistent with budget exhaustion rather than with
-# a terminal raise -- max_fallbacks was then derived from a single chain's
-# length while several chains render. That derivation now covers the whole map
-# (37-fallback-entry-points.yml). The narrow/wide split below is still worth
-# keeping: a narrow leg in front cannot answer, so it costs an attempt and a
-# unit of that budget for nothing.
+# That last point rules out a cause an earlier revision of this comment
+# offered. An overflow observed 2026-09-01 against a 32768 leg, with wider
+# cloud rungs listed but not reached, was NOT budget exhaustion: those rungs
+# sit at the top level of hermes-default's chain, which the budget cannot
+# truncate. Two causes remain un-excluded, and either fits the symptom:
+#
+#   * a DEPTH-0 raise on a partial map (router.py:6413-6414). The caller typed
+#     hermes-default; the map existed for the narrow leg but hermes-default was
+#     not yet a key in what the router had LOADED, so the primary's own
+#     overflow re-raised before the ordinary chain was ever entered — "every
+#     rung listed, none reached" is exactly that;
+#   * the router was not running the rendered file. router_settings persisted
+#     in the database shadowed the file until tasks/sync-router-settings.yml
+#     made the render authoritative, and that landed 2026-09-02 — one day
+#     after. "Verified present in the deployed config" described the file,
+#     not the row.
+#
+# The narrow/wide split below is still worth keeping: a narrow leg in front
+# cannot answer, so it costs an attempt and a unit of depth for nothing.
 llm_router_hermes_local_narrow_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for m in llm_router_hermes_local_models -%}
@@ -159,12 +172,13 @@ llm_router_hermes_local_wide_groups: >-
 #
 #   false -- registry order, narrow legs first. Keeps every fallback local for
 #     as long as possible. Cost: a request larger than a narrow leg's window
-#     kills the whole chain, which is the live defect this variable exists to
-#     address.
+#     spends that rung and a unit of the shared depth budget for nothing
+#     before the chain reaches a rung that can answer.
 #
 # Defaulted to true because the goal this router serves states the chain "must
-# actually fall back, with one always-alive cheap rung" -- a chain that aborts
-# on its second rung is not falling back. Flip it if local-only egress
+# actually fall back, with one always-alive cheap rung" -- a chain that burns
+# its early rungs on legs that cannot answer is falling back late and with
+# less depth left for the rungs that can. Flip it if local-only egress
 # outranks chain completion for this estate.
 llm_router_hermes_narrow_legs_last: true
 
@@ -193,13 +207,20 @@ llm_router_hermes_cloud_fallback_groups: >-
   {{ llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups }}
   {%- endif -%}
 
-# LiteLLM's global 429 retry policy exists for the local serving tier. Tagged
-# v1.97.0 source gives a matching model-group policy precedence over that
-# global policy, so enumerate every hermes-local and credential-backed cloud
-# alias/physical group here. This keeps each leg — local or paid — to one
-# attempt before fallback, including an explicit request to a physical group.
-# A local leg needs the identical zero-retry treatment: "busy" is not a
-# failure worth a 429 back-off any more than a paid provider's rate limit is.
+# LiteLLM's global 429 retry policy exists for a name with nowhere to fall
+# back to. A matching model-group policy takes precedence over it for that
+# name alone (router_utils/get_retry_from_policy.py:32-33, litellm 1.98.0), so
+# enumerate every name that DOES carry a chain: each chain rung, each
+# credential-backed provider router, each entry-point name that
+# 37-fallback-entry-points.yml keys, and the complexity router itself. Every
+# one of them then makes one attempt
+# and hands a busy slot to its chain immediately, instead of sleeping on it
+# for up to rate_limit_retries x retry_after first. "Busy" is not a failure
+# worth a back-off when a chain exists to absorb it — local or paid alike.
+#
+# Only when the cloud-only groups render, because that is the only condition
+# under which an entry-point name has a chain at all: with no credentialed
+# rung its zero-retry entry would strip the sleep and leave nothing behind it.
 llm_router_hermes_cloud_zero_retry_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for group in llm_router_hermes_cloud_fallback_groups -%}
@@ -212,6 +233,22 @@ llm_router_hermes_cloud_zero_retry_groups: >-
   {%- set ns.groups = ns.groups + [m.route_group] -%}
   {%- endif -%}
   {%- endfor -%}
+  {%- if llm_router_hermes_cloud_only_fallback_groups | length > 0 -%}
+  {%- for name in llm_router_entry_point_names -%}
+  {%- if name not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [name] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {#- The complexity router itself: the name that carries almost all traffic.
+      A busy local slot under it IS the overflow condition, so it hands to its
+      chain at once rather than sleeping on the slot first. -#}
+  {%- for m in llm_router_hermes_virtual_models -%}
+  {%- set name = m.route_group | default(m.client_model_id) -%}
+  {%- if name not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [name] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- endif -%}
   {{ ns.groups }}
 
 # The full post-primary Hermes chain: local legs then cloud groups, in

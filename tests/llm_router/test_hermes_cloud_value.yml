@@ -25,57 +25,8 @@
     hermes_brain_model: hermes-default
     hermes_goal_judge_model: goal-judge
   tasks:
-    - name: Load the role defaults as they ship
-      ansible.builtin.include_vars:
-        dir: "{{ _role_dir }}/defaults/main"
-
-    - name: Configure the shared budget store
-      ansible.builtin.set_fact:
-        llm_router_redis_host: redis.example.test
-        llm_router_redis_password: test-only-not-a-real-password
-
-    # assert-endpoint-dns.yml (part of the render-time assertions below) does a
-    # real resolver lookup on every advertised backend host. This fixture's
-    # llm_router_subdomain is the RFC 2606 reserved pve.example.test, which by
-    # design never resolves — point the base URLs at localhost so the guard
-    # checks its own logic against a host every runner actually resolves,
-    # rather than testing network reachability this suite never intended to
-    # exercise.
-    - name: Point advertised backend URLs at a host this runner can resolve
-      ansible.builtin.set_fact:
-        llm_router_llm_fast_base_url: "http://localhost:10434/v1"
-        llm_router_llm_light_base_url: "http://localhost:10434/v1"
-        llm_router_llm_large_base_url: "https://localhost:11434/v1"
-        llm_router_llm_vllm_base_url: "http://localhost:10434/v1"
-
-    - name: Load the model registry through the role
-      ansible.builtin.include_role:
-        name: llm_router
-        tasks_from: registry.yml
-
-    - name: Seed exactly one credential per API provider
-      ansible.builtin.set_fact:
-        bao_local_llm_secrets:
-          OPENROUTER_API_KEY: test-openrouter-provider-key
-          GEMINI_API_KEY: test-gemini-provider-key
-          DASHSCOPE_API_KEY: test-dashscope-provider-key
-
-    # The credential-derived defaults were evaluated before the set_fact above;
-    # reload this one defaults file exactly as a real play would evaluate it
-    # after Phase 0 publishes bao_local_llm_secrets.
-    - name: Re-evaluate the Hermes cloud projections with provider credentials
-      ansible.builtin.include_vars:
-        file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
-
-    - name: Run the role's render-time assertions
-      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert.yml"
-
-    - name: Render and parse the real proxy config and environment
-      ansible.builtin.set_fact:
-        _config: >-
-          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
-        _environment: >-
-          {{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}
+    - name: Produce the fully credentialed render
+      ansible.builtin.import_tasks: tasks/credentialed_render.yml
 
     - name: Provider chain, costs, and operational ceilings are exact
       ansible.builtin.assert:
@@ -88,29 +39,62 @@
           # deliberate, reviewed edit and not silently satisfy a formula.
           #
           # The 4080 leg is narrower than the primary, so under the default
-          # policy it sits LAST -- ahead of the cloud rungs it would abort the
-          # whole chain on an over-long request.
+          # policy it sits LAST -- ahead of the cloud rungs it would spend an
+          # attempt and a unit of depth on a rung that cannot answer.
           - llm_router_hermes_cloud_fallback_groups == _expected_chain
           - _fallback_chain == _expected_chain
-          # The chain PLUS the primary: max_fallbacks bounds rung ATTEMPTS
-          # along a path, and the per-cloud-group entries add the primary as a
-          # target the main chain does not itself contain (35-hermes-cloud.yml).
-          # Stated as the distinct-target set rather than a bare length, so a new
-          # target family has to be reviewed here instead of silently absorbed.
+          # Distinct target names PLUS one order-based retarget per budgeted
+          # target: max_fallbacks bounds rung ATTEMPTS along a path
+          # (37-fallback-entry-points.yml carries the source citations). Stated
+          # as the two sets rather than a bare number, so a new target family or
+          # a new budgeted rung has to be reviewed here instead of silently
+          # absorbed. The property itself (bound >= attempt keys, read off the
+          # render) is proven in test_fallback_entry_points.yml.
           - >-
             _config.router_settings.max_fallbacks | int
-            == (_fallback_chain + [llm_router_primary_model]) | unique | length
+            == ((_fallback_chain + [llm_router_primary_model]) | unique | length)
+               + (llm_router_hermes_cloud_budgeted_groups
+                  | intersect(_fallback_chain) | length)
           - _config.router_settings.num_retries | int == 0
           - _config.router_settings.retry_policy.RateLimitErrorRetries | int == 8
-          # The zero-retry set is the chain plus the virtual provider-router
-          # groups. Its leading rungs therefore inherit the chain's order; only
-          # the trailing four are stated literally, so a chain reorder does not
-          # have to be restated twice.
-          - llm_router_hermes_cloud_zero_retry_groups
+          # One failure counter per deployment serves EVERY allowance
+          # (cooldown_handlers.py:404-408 passes no per-type suffix), so a
+          # timeout is judged against a counter the busy-slot 429s have already
+          # filled. The timeout allowance must exist, sit strictly above the
+          # generic allowed_fails (or the first timeout after two 429s parks
+          # the deployment) and strictly below the rate-limit allowance (a
+          # timeout is the stronger signal). Rationale: 40-routing.yml.
+          - _config.router_settings.allowed_fails_policy.TimeoutErrorAllowedFails is defined
+          - >-
+            _config.router_settings.allowed_fails_policy.TimeoutErrorAllowedFails | int
+            > _config.router_settings.allowed_fails | int
+          - >-
+            _config.router_settings.allowed_fails_policy.TimeoutErrorAllowedFails | int
+            < _config.router_settings.allowed_fails_policy.RateLimitErrorAllowedFails | int
+          # The zero-retry set is the chain, the virtual provider-router groups,
+          # then every entry-point name (each servable id and each advertised
+          # alias — a busy local slot hands to its chain immediately rather than
+          # sleeping on the global 429 tolerance). Its leading rungs inherit the
+          # chain's order; the four router groups are stated literally so a
+          # chain reorder is not restated twice; the entry points derive from
+          # the servable set and the RENDERED alias map, never typed.
+          - >-
+            llm_router_hermes_cloud_zero_retry_groups
             == _expected_chain + ['hermes-cloud-alibaba-routine',
                                   'hermes-cloud-alibaba-agentic',
                                   'hermes-cloud-gemini-routine',
                                   'hermes-cloud-gemini-agentic']
+               + ((llm_router_servable_models
+                   + (_config.router_settings.model_group_alias | list))
+                  | unique | list)
+               + [hermes_brain_model]
+          # The complexity router hands a busy local slot to its chain at once
+          # when cloud rungs are credentialed. The no-credential half of this
+          # contract (it must NOT, since it would then have no chain) is pinned
+          # in test_hermes_default_failover.yml.
+          - >-
+            _config.router_settings.model_group_retry_policy[hermes_brain_model]
+              .RateLimitErrorRetries | int == 0
           - _cloud_retry_groups
             == llm_router_hermes_cloud_zero_retry_groups | sort
           - _nonzero_cloud_retry_groups | length == 0

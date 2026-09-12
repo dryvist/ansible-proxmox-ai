@@ -26,18 +26,29 @@
 # change means reading the rendered config (or the row the converge pushed),
 # not assuming either one wins by default.
 
-# Every name a caller can type that reaches the primary: its own
-# client_model_id plus each rendered alias resolving to it. These are ENTRY
-# POINTS, named directly by a caller, not rungs reached from a chain.
+# Every name a caller can type that reaches a servable large-tier model: each
+# servable client_model_id plus every rendered alias. These are ENTRY POINTS,
+# named directly by a caller, not rungs reached from a chain — and the two maps
+# below are looked up under the name AS TYPED, so each name needs its own key.
 #
-# Projected from the rendered alias map rather than the entry's raw
-# `stable_aliases`, so it can only name something the proxy advertises — an
-# alias on a non-servable entry is a seeded ROLE (see 50-servable.yml).
-llm_router_primary_entry_points: >-
-  {{ [llm_router_primary_model]
-     + (llm_router_model_group_aliases | dict2items
-        | selectattr('value', 'equalto', llm_router_primary_model)
-        | map(attribute='key') | list) }}
+# ALL servable entries, not only the primary. Callers name the routine model's
+# alias, the small tier's id and the OCR id directly; an entry point with no
+# key here makes a busy slot terminal for that caller while the same slot,
+# reached as a rung, would fall through.
+#
+# Projected from the servable set and the rendered alias map (50-servable.yml)
+# rather than raw `stable_aliases`, so it can only name something the proxy
+# advertises — an alias on a non-servable entry is a seeded ROLE.
+#
+# The OCR id and its alias are keyed too, and the key must not be read as
+# "OCR has cloud coverage": the cloud rungs are text-model groups, so a request
+# carrying image content may be refused there and the chain then fails through
+# rather than terminating — better than terminal, not a working OCR fallback.
+# The free rung's upstream is a vision-capable model and may in fact serve such
+# a request; that is unverified and not relied on.
+llm_router_entry_point_names: >-
+  {{ (llm_router_servable_models + (llm_router_model_group_aliases | list))
+     | unique | list }}
 
 # Depth bound for the WHOLE walk, not for one chain.
 #
@@ -49,18 +60,44 @@ llm_router_primary_entry_points: >-
 # entry-point chains above — so a bound taken from one chain's length caps the
 # others silently.
 #
-# The bound is the count of DISTINCT names used as a fallback target anywhere
-# in the map: an already-attempted target is skipped BEFORE the increment
-# (`attempted_targets`, shared by reference for the request), so no path can
-# outlast that count. Today that set is the chain plus the primary, which only
-# the per-cloud-group entries introduce and which need a credentialed rung.
+# The bound is the number of DISTINCT ATTEMPT KEYS the walk can spend, which is
+# two sets added together. An already-attempted key is skipped BEFORE the
+# increment (`attempted_targets`, shared by reference for the request), so no
+# path can outlast their total.
+#
+#   1. Every distinct NAME used as a fallback target anywhere in the map.
+#      Today: the chain plus the primary, which only the per-cloud-group
+#      entries introduce and which need a credentialed rung.
+#
+#   2. One ORDER-BASED retarget per budgeted group THAT IS ITSELF A TARGET.
+#      When a failing group has more than one `order` value, litellm prepends
+#      `{"model": <group>, "_target_order": <next order>}` to that group's
+#      fallback list (router.py:6318-6352, litellm 1.98.0); each such dict
+#      hashes to its own attempt key (fallback_event_handlers.py:146-168) and
+#      spends one unit of depth. The budgeted groups render two orders — the
+#      paid member at 1 and the local survivor at 2 (model-list.yaml.j2).
+#      But the lookup is by the name the walk is CURRENTLY under
+#      (`get_model_list(model_name=original_model_group)`, :6326), so a
+#      budgeted group contributes a retarget only when the walk can be under
+#      its name — i.e. when it appears in set 1. The provider routers' budgeted
+#      sub-groups never do: the walk stays under the router's own name while
+#      it selects among them. Counting those would over-state the bound.
+#
+# Only the base case at run_async_fallback ENTRY reads this bound; the loop
+# never re-checks it. So a top-level chain is always walked in full and the
+# bound governs how far NESTED chains may descend — which is where the
+# entry-point and per-group chains live.
 #
 # Still a fallback bound, not a retry budget; same-provider retries stay zero.
-llm_router_max_fallbacks: >-
+llm_router_fallback_target_names: >-
   {{ (llm_router_hermes_default_fallback_chain
       + ([llm_router_primary_model]
          if llm_router_hermes_cloud_only_fallback_groups | length > 0 else []))
-     | unique | length }}
+     | unique | list }}
+llm_router_max_fallbacks: >-
+  {{ (llm_router_fallback_target_names | length)
+     + (llm_router_hermes_cloud_budgeted_groups
+        | intersect(llm_router_fallback_target_names) | length) }}
 
 # A rung narrower than the request loses that rung, and THIS map — not the
 # ordinary one — decides what happens next. LiteLLM re-enters its fallback
@@ -96,9 +133,9 @@ llm_router_max_fallbacks: >-
 # serve perfectly well" is an empty set here.
 #
 # The keys are derived, never listed: local legs, the auto-router groups
-# themselves, every deployment those routers can select, and every alias a
-# caller can type for the primary. A hand-maintained list would silently stop
-# covering a tier the moment one was added.
+# themselves, and every entry-point name above (each servable id and every
+# alias). A hand-maintained list would silently stop covering a tier the
+# moment one was added.
 #
 # THE ALIASES ARE NOT REDUNDANT WITH THE ID. Both maps are looked up under the
 # name AS TYPED, and model_group_alias resolves below the fallback handler, so
@@ -112,7 +149,7 @@ llm_router_context_window_escape_groups: >-
   {%- set ns.groups = ns.groups + [group] -%}
   {%- endif -%}
   {%- endfor -%}
-  {%- for target in [llm_router_routine_model] + llm_router_primary_entry_points -%}
+  {%- for target in llm_router_entry_point_names -%}
   {%- if target and target not in ns.groups -%}
   {%- set ns.groups = ns.groups + [target] -%}
   {%- endif -%}
