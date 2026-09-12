@@ -66,6 +66,9 @@ class RunAnsibleGuardContract(unittest.TestCase):
             """
             #!/usr/bin/env bash
             printf 'called: %s\\n' "$*" >> "$FAKE_CALLED_LOG"
+            if [[ -n "${FAKE_CHILD_ROLE_ID_FILE:-}" ]]; then
+              printf '%s\\n' "${CONVERGE_ROLE_ID:-}" > "$FAKE_CHILD_ROLE_ID_FILE"
+            fi
             [[ -f "$FAKE_RECAP_FILE" ]] && cat "$FAKE_RECAP_FILE"
             exit 0
             """,
@@ -291,6 +294,9 @@ class RunAnsibleGuardContract(unittest.TestCase):
             done
             printf 'URL=%s BODY=%s\\n' "$url" "$body" >> "$FAKE_CURL_LOG"
             if [[ "$url" == *"/auth/approle/login" ]]; then
+              if [[ -n "${FAKE_LOGIN_FAIL_ROLE_ID:-}" && "$body" == *"\\"role_id\\":\\"$FAKE_LOGIN_FAIL_ROLE_ID\\""* ]]; then
+                exit 22
+              fi
               printf '{"auth":{"client_token":"fake-token"}}\\n'
             elif [[ "$url" == *"/sign/"* ]]; then
               printf '{"data":{"signed_key":"fake-cert-body"}}\\n'
@@ -361,6 +367,44 @@ class RunAnsibleGuardContract(unittest.TestCase):
         self.assertIn("authenticated as: ansible", result.stdout)
         log = self.curl_log.read_text(encoding="utf-8")
         self.assertIn("/sign/automation-ansible", log)
+
+    def test_semaphore_login_failure_falls_back_to_ansible_pair(self):
+        self.curl_log = Path(self.tmp.name) / "curl.log"
+        self._write_fake_curl()
+        self._write_recap("localhost")
+        result = self._run_with_bao(
+            {
+                "OPENBAO_APPROLE_SEMAPHORE_ROLE_ID": "sem-role",
+                "OPENBAO_APPROLE_SEMAPHORE_SECRET_ID": "sem-secret",
+                "OPENBAO_APPROLE_ANSIBLE_ROLE_ID": "ans-role",
+                "OPENBAO_APPROLE_ANSIBLE_SECRET_ID": "ans-secret",
+                "FAKE_LOGIN_FAIL_ROLE_ID": "sem-role",
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("semaphore AppRole login failed", result.stderr)
+        self.assertIn("authenticated as: ansible", result.stdout)
+        log = self.curl_log.read_text(encoding="utf-8")
+        self.assertIn("/sign/automation-ansible", log)
+        self.assertIn('"role_id":"ans-role"', log)
+
+    def test_ansible_playbook_inherits_the_winning_role_id(self):
+        self.curl_log = Path(self.tmp.name) / "curl.log"
+        self._write_fake_curl()
+        self._write_recap("localhost")
+        child_role_id_file = Path(self.tmp.name) / "child-role-id"
+        result = self._run_with_bao(
+            {
+                "OPENBAO_APPROLE_SEMAPHORE_ROLE_ID": "sem-role",
+                "OPENBAO_APPROLE_SEMAPHORE_SECRET_ID": "sem-secret",
+                "OPENBAO_APPROLE_ANSIBLE_ROLE_ID": "ans-role",
+                "OPENBAO_APPROLE_ANSIBLE_SECRET_ID": "ans-secret",
+                "FAKE_LOGIN_FAIL_ROLE_ID": "sem-role",
+                "FAKE_CHILD_ROLE_ID_FILE": str(child_role_id_file),
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(child_role_id_file.read_text(encoding="utf-8").strip(), "ans-role")
 
 
 if __name__ == "__main__":

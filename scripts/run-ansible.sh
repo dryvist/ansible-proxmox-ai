@@ -84,18 +84,36 @@ trap cleanup EXIT
 # $CONVERGE_SIGN_ROLE (principal is that role's own, TTL <=1h). OpenSSH pairs
 # id + id-cert.pub automatically via PROXMOX_SSH_KEY_PATH. No secret
 # material on any command line.
+bao_login() {
+  jq -nc --arg r "$CONVERGE_ROLE_ID" --arg s "$CONVERGE_SECRET_ID" \
+    '{role_id: $r, secret_id: $s}' \
+    | curl -fsSL --max-time 10 -H 'Content-Type: application/json' --data @- \
+      "$BAO_ADDR/v1/auth/approle/login"
+}
+
 mint_ssh_cert() {
   local mount=${SSH_CA_MOUNT:-ssh-client-ca} login token signed
   CERT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ansible-sshcert.XXXXXX") || return 1
   chmod 700 "$CERT_DIR"
   (umask 077 && ssh-keygen -q -t ed25519 -N '' -C "ansible-converge" -f "$CERT_DIR/id") || return 1
   { set +x; } 2>/dev/null
-  login=$(jq -nc --arg r "$CONVERGE_ROLE_ID" --arg s "$CONVERGE_SECRET_ID" \
-    '{role_id: $r, secret_id: $s}' \
-    | curl -fsSL --max-time 10 -H 'Content-Type: application/json' --data @- \
-      "$BAO_ADDR/v1/auth/approle/login") || return 1
+  login=$(bao_login) || {
+    # A refused semaphore login (bad/revoked secret_id) is not fatal — the
+    # shared ansible identity is still a valid principal on target hosts.
+    if [[ $CONVERGE_IDENTITY == semaphore && -n ${OPENBAO_APPROLE_ANSIBLE_ROLE_ID:-} && -n ${OPENBAO_APPROLE_ANSIBLE_SECRET_ID:-} ]]; then
+      echo "WARNING: semaphore AppRole login failed — falling back to the shared 'ansible' identity." >&2
+      CONVERGE_ROLE_ID=$OPENBAO_APPROLE_ANSIBLE_ROLE_ID
+      CONVERGE_SECRET_ID=$OPENBAO_APPROLE_ANSIBLE_SECRET_ID
+      CONVERGE_SIGN_ROLE="automation-ansible"
+      CONVERGE_IDENTITY="ansible"
+      login=$(bao_login) || return 1
+    else
+      return 1
+    fi
+  }
   token=$(printf '%s' "$login" | jq -er '.auth.client_token') || return 1
   RUNNER_BAO_TOKEN=$token
+  export CONVERGE_ROLE_ID CONVERGE_SECRET_ID
   signed=$(jq -nc --rawfile pub "$CERT_DIR/id.pub" --arg ttl "${SSH_CERT_TTL:-1h}" \
     '{public_key: $pub, ttl: $ttl}' \
     | curl -fsSL --max-time 10 \
