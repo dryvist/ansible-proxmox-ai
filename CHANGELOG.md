@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.40.0...v0.41.0) (2026-09-12)
+
+
+### Features
+
+* **hermes_agent:** typed triage and per-type closure in zammad-review cron ([#705](https://github.com/dryvist/ansible-proxmox-ai/issues/705)) ([3bbff39](https://github.com/dryvist/ansible-proxmox-ai/commit/3bbff395c5f88e2efde5f07a8c3bbfd9d32efa08))
+
 ## [0.40.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.39.1...v0.40.0) (2026-09-12)
 
 
