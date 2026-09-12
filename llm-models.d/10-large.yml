@@ -42,6 +42,11 @@ _llm_registry_large:
       - tool-calling
       - interim-brain
       - best
+      # A5: git synonym of `best`, replacing the DB-only `lead` role (its
+      # entry in llm_router_role_deployments, 55-roles.yml, is removed in
+      # the same change) — both names already targeted this same entry, so
+      # the swap changes nothing a caller of either name observes.
+      - lead
     hints:
       speed: slow
       quality: strong
@@ -63,9 +68,14 @@ _llm_registry_large:
       - goal-judge
     # `judge` is deliberately NOT added here yet: llm_router_role_deployments
     # (55-roles.yml) already seeds a live DB role named `judge` pointing at
-    # this same entry. A git alias of the same name would collide with it —
-    # the exact duplicate-name shape AGENTS.md's alias rule bans (#1004).
-    # A5 retires the DB role and adds this alias in the same converge.
+    # this same entry, and unlike `lead`/`ocr` this collision is NOT purely
+    # cosmetic to fix — "judge" (and cheap/embed/ocr, tried in the same A5
+    # pass) also collides with common-word literals throughout
+    # tests/hermes_agent/*.py (goal-mode cron fixtures, assignee defaults)
+    # that have nothing to do with this registry, discovered via
+    # test_registry_retype_scan.py exploding on the attempt. Fixing that is a
+    # cross-cutting rename sweep outside this PR's scope — see the PR body
+    # and Vikunja follow-up.
     hints:
       speed: fast
       quality: strong
@@ -82,16 +92,20 @@ _llm_registry_large:
     context_window: 32768
     servable: true
     serving_role: small
-    # `fast` and `cheap` are deliberately NOT added here yet. `cheap` collides
-    # with the live DB role of that name from llm_router_role_deployments
-    # (55-roles.yml) — same shape as `judge` above; A5 handles it. `fast`
-    # collides with a job name string in the PROJECTION zone
-    # tests/llm_router/test_registry_retype_scan.py scans (every
-    # tests/**/*.py literal): tests/hermes_agent/test_fabric_watchdog_pool_wait.py:88,112
-    # and tests/hermes_agent/test_fabric_watchdog_success_absence.py:84 each
-    # use job("fast", ...) as an unrelated fixture name, unconnected to this
-    # registry. A5 renames those three job names (e.g. `watchdog-fast`) in the
-    # same change that adds this alias, not a routine A2 add.
+    # `fast` and `cheap` are deliberately NOT added here yet. The
+    # tests/hermes_agent job-name collision `fast` originally had is fixed
+    # (renamed to "watchdog-fast"), but a SECOND, unrelated collision
+    # surfaced once it entered the protected alias set:
+    # tests/llm_router/test_registry_hints_projection.yml's own
+    # `_hint_speeds: [fast, medium, slow]` vocabulary fixture (hints.speed,
+    # a different field, same word) — genuinely unavoidable without renaming
+    # that vocabulary. `cheap` collides the same way `judge`/`embed`/`ocr`
+    # do (common words in tests/hermes_agent/*.py unrelated to this
+    # registry). All four deferred together; see the A5 PR body.
+    # `subagent` retargets onto THIS entry at the role_deployments layer
+    # (55-roles.yml — same target as `cheap`, was a dedicated ≥1M-context
+    # OpenRouter entry, now `long`, llm-models.d/50-openrouter.yml) but is
+    # not added as a stable_alias yet either, for the same reason.
     hints:
       speed: fast
       quality: routine
@@ -111,6 +125,14 @@ _llm_registry_large:
     serving_role: ocr
     stable_aliases:
       - Unlimited OCR
+    # `ocr` is deliberately NOT added here yet. Unlike `lead` (a pure
+    # naming-transport swap, safe to do unconditionally — see 55-roles.yml),
+    # `serving_role: ocr` on THIS SAME entry already spells the literal
+    # 'ocr' in llm_router_ocr_model's own selectattr('serving_role',
+    # 'equalto', 'ocr') (55-roles.yml) — a structural field collision the
+    # retype scan correctly flags the moment 'ocr' also becomes a protected
+    # alias value, on top of the same common-word collisions `judge` hit.
+    # Deferred with them.
     hints:
       speed: medium
       quality: routine

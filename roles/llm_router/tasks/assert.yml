@@ -24,7 +24,8 @@
       - _llm_router_required_safe_models | difference(_llm_router_safe_models) | length == 0
       - >-
         llm_router_model_group_aliases | dict2items | map(attribute='value')
-        | difference(_llm_router_safe_models + llm_router_hermes_router_ids)
+        | difference(_llm_router_safe_models + llm_router_hermes_router_ids
+                     + llm_router_long_context_alias_ids)
         | length == 0
     fail_msg: >-
       Compress-death trap (roles/llm_router/tasks/assert.yml): model(s)
@@ -71,7 +72,8 @@
     that:
       - >-
         llm_router_model_group_aliases | dict2items | map(attribute='value')
-        | difference(llm_router_servable_models + llm_router_hermes_router_ids)
+        | difference(llm_router_servable_models + llm_router_hermes_router_ids
+                     + llm_router_long_context_alias_ids)
         | length == 0
       # The servable set must itself be first-class entries, or this assert
       # could be satisfied by a model that then compresses its caller to death.
@@ -79,23 +81,25 @@
     fail_msg: >-
       Unroutable alias (roles/llm_router/tasks/assert.yml): alias target(s)
       [{{ llm_router_model_group_aliases | dict2items | map(attribute='value')
-          | difference(llm_router_servable_models + llm_router_hermes_router_ids)
+          | difference(llm_router_servable_models + llm_router_hermes_router_ids
+                       + llm_router_long_context_alias_ids)
           | unique | join(', ') }}]
       are not in llm_router_servable_models
-      [{{ llm_router_servable_models | join(', ') }}]
-      or the local complexity router
-      [{{ llm_router_hermes_router_ids | join(', ') }}].
+      [{{ llm_router_servable_models | join(', ') }}],
+      the local complexity router [{{ llm_router_hermes_router_ids | join(', ') }}], or
+      the long-context entry [{{ llm_router_long_context_alias_ids | join(', ') }}].
       The serving host runs llama-swap in single-model mode: anything outside
       that set is in disabledModels and returns HTTP 404 — not a degraded
       answer, no answer. On 2026-07-28 EVERY consumer alias was in this state at
       once (hermes-default, tool-calling, goal-judge, interim-brain), which stayed
       invisible only while llama-swap still grafted disabled ids onto the resident.
-      The complexity router is a deliberate exception (added when `default`
-      became a git alias): it dispatches to llm_router_routine_model /
-      llm_router_primary_model, which the compress-death assert above already
-      pins as servable and safe. Fix any OTHER unroutable target by repointing
-      it at llm_router_primary_model / llm_router_small_model — NOT by
-      widening this list to match a stale alias.
+      The complexity router and the long-context entry are deliberate
+      exceptions: the router dispatches to llm_router_routine_model /
+      llm_router_primary_model (already pinned safe above), and the
+      long-context target is a remote entry the servable invariant does not
+      apply to. Fix any OTHER unroutable target by repointing it at
+      llm_router_primary_model / llm_router_small_model — NOT by widening this
+      list to match a stale alias.
     success_msg: >-
       All {{ llm_router_model_group_aliases | length }} consumer aliases resolve
       into the servable set ({{ llm_router_servable_models | join(', ') }}) or
@@ -111,9 +115,8 @@
 # Cardinality guard on the hermes-router carve-out itself: exactly one entry
 # today (hermes-default). A second hermes-router-tier entry would silently
 # widen every consumer of llm_router_hermes_router_ids (llm_router_alias_pairs,
-# both asserts above, llm_router_registry_role_targets, test_alias_servable.yml)
-# at once — this forces that widening to be a reviewed registry change, not an
-# accident.
+# both asserts above, test_alias_servable.yml) at once — this forces that
+# widening to be a reviewed registry change, not an accident.
 - name: Assert the hermes-router alias carve-out has exactly one member
   ansible.builtin.assert:
     quiet: true
@@ -128,6 +131,34 @@
     success_msg: >-
       Exactly one hermes-router entry carries the alias carve-out
       ({{ llm_router_hermes_router_ids | join(', ') }}).
+
+# Same reason as the hermes-router guard above, shaped differently: unlike
+# the hermes-router tier (structurally at most one entry by design),
+# llm_router_long_context_alias_ids legitimately gathers every >=1M-context
+# ZDR OpenRouter entry the catalog carries (several, today) — the pool is
+# meant to be wide. What must stay singular is how many of THEM actually
+# declare a stable_alias and so contribute a pair here; a second one doing
+# so would silently give the long-context alias name two candidate targets,
+# with subelements/dict() picking one by iteration order rather than by a
+# reviewed decision.
+- name: Assert at most one long-context entry actually carries an alias
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_long_context_alias_pairs | length <= 1
+    fail_msg: >-
+      {{ _llm_router_long_context_alias_pairs | length }} long-context
+      entries ({{ llm_router_long_context_alias_ids | join(', ') }} is the
+      full candidate pool) declare a stable_alias at once — the alias name
+      picked resolves nondeterministically. Give at most one such entry a
+      stable_alias.
+    success_msg: >-
+      At most one long-context entry carries an alias
+      ({{ llm_router_long_context_alias_ids | join(', ') }} candidates).
+  vars:
+    _llm_router_long_context_alias_pairs: >-
+      {{ llm_router_alias_pairs
+         | selectattr('0.client_model_id', 'in', llm_router_long_context_alias_ids) | list }}
 
 # Hermes fallback-chain contract. Its own file so a test can import exactly
 # this assert and prove each failure mode, rather than restating its
