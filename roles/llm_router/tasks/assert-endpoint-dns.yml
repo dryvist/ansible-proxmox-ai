@@ -10,6 +10,13 @@
 # Runs ON the router guest (not the controller), because that is the resolver
 # path a live request actually takes. Read-only; safe in check mode, matching
 # the rest of this assert chain. Imported by assert.yml.
+#
+# The resolver is the target's own python3 (socket.getaddrinfo — the same
+# system resolver a request takes), not `getent hosts`: python3 is on every
+# host Ansible can manage at all, getent is Linux-only, and a missing tool
+# used to be indistinguishable from a non-resolving name. The check exits 1
+# ONLY for a non-resolving name; any other rc is the resolver itself failing
+# and is reported as that, never as a DNS verdict.
 
 - name: Resolve the set of backend hostnames this router config advertises
   ansible.builtin.set_fact:
@@ -22,18 +29,49 @@
       ) | map('urlsplit', 'hostname') | unique | list }}
 
 - name: Resolve each advertised backend hostname on this router guest
-  ansible.builtin.command: "getent hosts {{ item }}"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import socket, sys
+        try:
+            socket.getaddrinfo(sys.argv[1], None)
+        except socket.gaierror as exc:
+            sys.exit(f"unresolved: {exc}")
+      - "{{ item }}"
   loop: "{{ _llm_router_endpoint_hosts }}"
   loop_control:
     label: "{{ item }}"
   register: _llm_router_endpoint_dns
   changed_when: false
   # An unresolvable host is exactly the failure this file exists to report —
-  # the assert below collects every rc and names them together, rather than
+  # the asserts below collect every rc and name them together, rather than
   # this loop stopping the play on the first one with a bare "non-zero return
   # code" that does not say which host or why it matters.
   failed_when: false
   check_mode: false
+
+# Ordered before the DNS verdict on purpose: a host whose resolver never ran
+# must not be reported as "does not resolve". Fails on any rc other than 0
+# (resolved) or 1 (the script's own non-resolution exit) — e.g. the rc 2 the
+# command module returns when python3 is not on PATH, or a traceback exit.
+- name: Assert the resolver ran for every advertised backend hostname
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_resolver_failures | length == 0
+    fail_msg: >-
+      Resolver failure, NOT a DNS verdict (roles/llm_router/tasks/assert-endpoint-dns.yml):
+      the resolution check itself could not run on this router guest for
+      [{{ _llm_router_resolver_failures | map(attribute='item') | join(', ') }}]
+      (rc {{ _llm_router_resolver_failures | map(attribute='rc') | unique | join('/') }}:
+      {{ _llm_router_resolver_failures | map(attribute='msg', default='') | select | unique | join('; ') }}).
+      python3 must be on PATH for the connecting user; nothing is known yet
+      about whether these hosts resolve.
+  vars:
+    _llm_router_resolver_failures: >-
+      {{ _llm_router_endpoint_dns.results | rejectattr('rc', 'in', [0, 1]) | list }}
 
 - name: Assert every advertised backend hostname resolves on the router guest
   ansible.builtin.assert:
@@ -42,8 +80,8 @@
       - _llm_router_unresolved_hosts | length == 0
     fail_msg: >-
       Unresolvable backend host(s) (roles/llm_router/tasks/assert-endpoint-dns.yml):
-      [{{ _llm_router_unresolved_hosts | join(', ') }}] do not resolve via getent on
-      this router guest, but are advertised in a rendered backend base URL. A leased
+      [{{ _llm_router_unresolved_hosts | join(', ') }}] do not resolve on this
+      router guest, but are advertised in a rendered backend base URL. A leased
       guest resolves only at the apex, not under the subdomain — see
       llm_router_llm_vllm_base_url's comment in defaults/main/10-network.yml for the
       apex-vs-subdomain distinction this most often trips on.
@@ -52,5 +90,5 @@
       resolve ({{ _llm_router_endpoint_hosts | join(', ') }}).
   vars:
     _llm_router_unresolved_hosts: >-
-      {{ _llm_router_endpoint_dns.results | selectattr('rc', 'ne', 0)
+      {{ _llm_router_endpoint_dns.results | selectattr('rc', 'eq', 1)
          | map(attribute='item') | list }}
