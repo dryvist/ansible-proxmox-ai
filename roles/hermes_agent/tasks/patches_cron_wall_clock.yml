@@ -10,6 +10,35 @@
 # loop can run forever. Keep that useful native stall detector and add the
 # missing aggregate deadline around the same run_job monitor. The patch uses
 # upstream's own monotonic clock, poll loop, and request_hard_interrupt path.
+#
+# The hard-timeout raise below names the run's session id for the operator
+# reading the failure (the failure artifact keeps no response, so the
+# session is the only way to find the transcript). _cron_session_id is a
+# run_job local, not visible inside _run_agent_with_watchdog, so it is
+# threaded in as its own parameter — cron_session_id below — rather than
+# read from a name that does not exist in that scope.
+- name: Thread the cron session id into the watchdog function signature
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: >-
+      ^(    )agent, prompt: str, job: dict, job_id: str, job_name: str,
+      task_id: str, cancel_event,$
+    replace: |-
+      \1agent, prompt: str, job: dict, job_id: str, job_name: str,
+      \1task_id: str, cron_session_id: str, cancel_event,
+  notify: Restart hermes-gateway
+
+- name: Pass the cron session id at the watchdog call site
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: >-
+      ^([ \t]*)agent, prompt, job, job_id, job_name, scope\.task_id,
+      cancel_event,$
+    replace: |-
+      \1agent, prompt, job, job_id, job_name, scope.task_id,
+      \1_cron_session_id, cancel_event,
+  notify: Restart hermes-gateway
+
 - name: Add aggregate cron wall-clock helpers
   ansible.builtin.blockinfile:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
@@ -139,10 +168,15 @@
   # Re-anchored: the "# Agent still running — check inactivity." comment
   # this used to anchor after is gone, and _heartbeat_run_claim_if_due() is
   # now the last statement of the poll loop body — insert the check
-  # directly after it instead.
+  # directly after it instead. Negative lookahead makes this idempotent
+  # the same way the siblings above are: without it, a second converge
+  # against already-patched source (a plain call-site anchor does not
+  # care what follows it) inserts a second copy of the check block.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    regexp: '^(                )_heartbeat_run_claim_if_due\(\)$'
+    regexp: >-
+      ^(                )_heartbeat_run_claim_if_due\(\)$(?!\n\s*if
+      _hermes_cron_wall_clock_expired\()
     replace: |-
       \1_heartbeat_run_claim_if_due()
       {{ _hermes_cron_wall_check_block | indent(16, true) }}
@@ -206,7 +240,7 @@
               f"Cron job '{job_name}' exceeded aggregate wall clock "
               f"{int(elapsed)}s (limit {int(_cron_wall_timeout_limit)}s) "
               f"after {_calls} API call(s); last activity {_idle} before the kill"
-              f"{': ' + _doing if _doing else ''}; session {_cron_session_id}"
+              f"{': ' + _doing if _doing else ''}; session {cron_session_id}"
           )
 
       if _inactivity_timeout is True:
