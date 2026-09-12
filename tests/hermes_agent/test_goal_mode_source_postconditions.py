@@ -3,6 +3,7 @@ from __future__ import annotations
 from conftest import (
     PATCHED_JUDGE_AVAILABLE_SOURCE,
     PATCHED_KANBAN_GOAL_LOOP_SOURCE,
+    PATCHED_TURN_ITERATION_PREP_SOURCE,
     PINNED_JUDGE_AVAILABLE_SOURCE,
     PINNED_BOOST_CAP_SOURCE,
     PINNED_COMPRESSOR_SCAN_SOURCE,
@@ -44,6 +45,9 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "plugins/memory/hindsight/__init__.py",
         "run_agent.py",
         "hermes_cli/main.py",
+        "hermes_cli/kanban_db_dispatch.py",
+        "agent/turn_iteration_prep.py",
+        "agent/turn_truncation.py",
     ]
 
     assert_task = _combined_assert_task()
@@ -63,26 +67,23 @@ def test_installed_source_postconditions_fail_closed() -> None:
         in conditions
     )
     assert "goal_max_turns = COALESCE(?, goal_max_turns)" in conditions
-    assert any(
-        '*(["--quiet"] if task.goal_mode else []),' in condition
-        and ".count(" in condition
-        and ") == 1" in condition
-        for condition in assert_task["ansible.builtin.assert"]["that"]
-    )
-    assert any(
-        '"-q", prompt,' in condition
-        and ".count(" in condition
-        and ") == 1" in condition
-        for condition in assert_task["ansible.builtin.assert"]["that"]
-    )
-    assert '["--quiet"]' in conditions
+    # The worker-spawn "--quiet" patch is retired (2026-09): upstream's own
+    # kanban dispatcher already appends "-Q" for a goal-mode task, checked
+    # against the live installed source in "Assert upstream still supplies
+    # the behavior these retired patches used to add", not here.
     assert "WHERE id = ? AND status IN" in conditions
     assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in conditions
     assert "status in (408, 429)" in conditions
     assert "for idx in range(end - 1, start - 1, -1):" in conditions
     assert "_cron_markup_guard(job, output_file," in conditions
-    # A failed run must reach the issues channel, not the work surface.
-    assert "_deliver_result(_routed_job, deliver_content," in conditions
+    # A script-declared failure must reach the failure lane, not the runner's
+    # own (possibly True) success flag. The old call-site reroute this used
+    # to check ("_deliver_result(_routed_job, ...)") is retired
+    # (patches_cron_failure_routing.yml) — declared_failure now threads
+    # through the same for_failure lane upstream's own delivery already
+    # reads.
+    assert "job, deliver_content, _cron_declared_failure = _cron_route(job, deliver_content)" in conditions
+    assert "for_failure=not d.success or _cron_declared_failure," in conditions
     # Output-validity guard: wraps the markup guard's call, so it must be
     # present and wired to the actual delivery-content assignment.
     assert "def _cron_output_validity_guard(job, output_file, content, success):" in conditions
@@ -116,10 +117,13 @@ def test_installed_source_postconditions_fail_closed() -> None:
         and ") == 2" in condition
         for condition in assert_task["ansible.builtin.assert"]["that"]
     )
+    # Re-anchored (PR C): this occurrence moved off hermes_agent_retry_source
+    # onto its own turn_iteration_prep_source var, and its own-file count
+    # dropped from 2 to 1 as a result.
     assert any(
         "_boost_cap = agent.max_tokens if agent.max_tokens else max(" in condition
         and ".count(" in condition
-        and ") == 2" in condition
+        and ") == 1" in condition
         for condition in assert_task["ansible.builtin.assert"]["that"]
     )
     assert 'resolved_provider != "custom"' in conditions
@@ -136,49 +140,49 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "Patch Hermes idempotent create to reconcile goal-mode fields",
         PINNED_CREATE_TASK_SOURCE,
     )
-    reconcile_source = (
+    # The worker-spawn "--quiet" patch that used to apply here is retired
+    # (2026-09): upstream supplies the goal-mode quiet CLI path natively, so
+    # this snippet rides along unpatched — no assertion in the combined
+    # required-patch task targets its content any more.
+    reconcile_source = PINNED_WORKER_SPAWN_SOURCE + reconcile_source
+    # Upstream's September 2026 decomposition moved worker-reap
+    # process-group guarding AND both protocol-violation retirements out of
+    # kanban_db.py (hermes_agent_goal_reconcile_source) into
+    # kanban_db_dispatch.py, checked instead against its own dedicated
+    # hermes_agent_kanban_dispatch_source — see
+    # conftest.PATCHED_KANBAN_DISPATCH_SOURCE, built the same way (real
+    # patch tasks over minimal real fragments), reused here rather than
+    # rebuilt so this file and conftest can't drift apart on the same
+    # fixture.
+    worker_reap_source = _apply_runtime_patch(
+        "Patch Hermes worker-reap SIGKILL escalation to signal the worker's process group",
         _apply_runtime_patch(
-            "Patch Hermes Kanban workers to enter the quiet goal-loop path",
-            PINNED_WORKER_SPAWN_SOURCE,
-        )
-        + reconcile_source
+            "Patch Hermes worker-reap timeout path to signal the worker's process group",
+            _apply_runtime_patch(
+                "Patch Hermes worker-reap timeout path to verify PID safety before signaling",
+                PINNED_WORKER_REAP_SOURCE,
+            ),
+        ),
+    )
+    stale_reclaim_source = _apply_runtime_patch(
+        "Patch Hermes worker-reap SIGKILL escalation to signal the worker's process group",
+        _apply_runtime_patch(
+            "Patch Hermes stale-reclaim worker termination to signal the worker's process group",
+            _apply_runtime_patch(
+                "Patch Hermes stale-reclaim worker termination to verify PID safety before signaling",
+                PINNED_STALE_RECLAIM_TERMINATE_SOURCE,
+            ),
+        ),
+    )
+    kanban_dispatch_source = (
+        _task("Patch Hermes worker-reap helper to verify PID identity before signaling")[
+            "ansible.builtin.blockinfile"
+        ]["block"]
+        + worker_reap_source
+        + stale_reclaim_source
         + PINNED_PROTOCOL_VIOLATION_SOURCE
         + PINNED_PROTOCOL_RETRY_SOURCE
     )
-    worker_reap_source = PINNED_WORKER_REAP_SOURCE
-    for patch_name in (
-        "Patch Hermes worker-reap timeout path to verify PID safety before signaling",
-        "Patch Hermes worker-reap timeout path to signal the worker's process group",
-        "Patch Hermes worker-reap timeout path to escalate on the worker's process group",
-    ):
-        worker_reap_source = _apply_runtime_patch(patch_name, worker_reap_source)
-    # The blockinfile-inserted identity-check helper the three replaces
-    # above call into — landed separately from them at converge time, so
-    # the assert conditions checking for it need it present here too.
-    worker_reap_source = (
-        _task(
-            "Patch Hermes worker-reap helper to verify PID identity before signaling"
-        )["ansible.builtin.blockinfile"]["block"]
-        + worker_reap_source
-    )
-    reconcile_source += worker_reap_source
-
-    stale_reclaim_source = PINNED_STALE_RECLAIM_TERMINATE_SOURCE
-    for patch_name in (
-        "Patch Hermes stale-reclaim worker termination to verify PID safety before signaling",
-        "Patch Hermes stale-reclaim worker termination to signal the worker's process group",
-        "Patch Hermes stale-reclaim worker termination to escalate on the worker's process group",
-    ):
-        stale_reclaim_source = _apply_runtime_patch(patch_name, stale_reclaim_source)
-    # The blockinfile-inserted identity-check helper both the timeout-path
-    # and stale-reclaim-path signal sites call into.
-    stale_reclaim_source = (
-        _task(
-            "Patch Hermes worker-reap helper to verify PID identity before signaling"
-        )["ansible.builtin.blockinfile"]["block"]
-        + stale_reclaim_source
-    )
-    reconcile_source += stale_reclaim_source
     # The six client-side backoff hacks are gone (see
     # test_client_side_backoff_hacks_stay_reverted); only the two kept
     # max_tokens-ceiling patches still contribute to this source.
@@ -192,15 +196,12 @@ def test_installed_source_postconditions_fail_closed() -> None:
             "    assignee = _canonical_assignee(assignee)\n" + _tail,
         )
 
-    retry_source = _apply_runtime_patch(
-        "Patch hermes-agent retry boost to respect the configured max_tokens ceiling",
-        PINNED_TC_BOOST_CAP_SOURCE,
-    )
-    retry_source += _apply_runtime_patch(
-        "Patch hermes-agent length-continuation boost to respect the configured "
-        "max_tokens ceiling",
-        PINNED_BOOST_CAP_SOURCE,
-    )
+    # Both max_tokens-ceiling patches moved off retry_source (now unused by
+    # any condition) onto their own dedicated vars — see
+    # conftest.PATCHED_TURN_ITERATION_PREP_SOURCE and
+    # conftest.PATCHED_TURN_TRUNCATION_SOURCE, reused here via
+    # _source_postconditions' defaults.
+    retry_source = ""
     auxiliary_source = "\n".join(
         (
             "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0",
@@ -250,15 +251,19 @@ def test_installed_source_postconditions_fail_closed() -> None:
             cron_scheduler_source=PINNED_CRON_DELIVERY_SOURCE,
         )
     )
+    # Re-anchored (PR I): both protocol-violation checks moved off
+    # reconcile_source onto kanban_dispatch_source with the rest of the
+    # September 2026 kanban_db_dispatch.py decomposition.
     assert not all(
         _source_postconditions(
             completion_source,
-            reconcile_source.replace(
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            kanban_dispatch_source=kanban_dispatch_source.replace(
                 "without a terminal kanban call counts as failed no",
                 "",
             ),
-            retry_source,
-            auxiliary_source,
         )
     )
     # The forced first-failure give-up back in upstream: a protocol violation
@@ -267,12 +272,13 @@ def test_installed_source_postconditions_fail_closed() -> None:
     assert not all(
         _source_postconditions(
             completion_source,
-            reconcile_source.replace(
+            reconcile_source,
+            retry_source,
+            auxiliary_source,
+            kanban_dispatch_source=kanban_dispatch_source.replace(
                 "failure_limit=1 if is_systemic else None,",
                 "failure_limit=1 if (protocol_violation or is_systemic) else None,",
             ),
-            retry_source,
-            auxiliary_source,
         )
     )
     # The judge-error guard dropped (upstream loop unpatched): must go red
@@ -346,22 +352,24 @@ def test_installed_source_postconditions_fail_closed() -> None:
             ),
         )
     )
-    # The length-continuation boost dropped while the _tc_ one landed. The
-    # needle `_boost_cap = agent.max_tokens ...` still occurs once (inside
-    # the _tc_boost_cap line), so only the ==2 count catches this — a plain
-    # substring assertion would pass here with the patch missing.
-    retry_source_tc_only = retry_source.replace(
+    # The length-continuation boost (turn_iteration_prep_source, its own
+    # dedicated var since PR C moved this patch's target file) dropped: the
+    # needle `_boost_cap = agent.max_tokens ...` reverting to the unpatched
+    # `_boost_cap = max(...)` form must go red on its own, independent of
+    # the unrelated _tc_boost_cap patch (now on its own turn_truncation_
+    # source var, PR I — see the default PATCHED_TURN_TRUNCATION_SOURCE).
+    unpatched_turn_iteration_prep_source = PATCHED_TURN_ITERATION_PREP_SOURCE.replace(
         "_boost_cap = agent.max_tokens if agent.max_tokens else max("
         "32768, _requested_cap or 0)",
         "_boost_cap = max(32768, _requested_cap or 0)",
     )
-    assert "_tc_boost_cap = agent.max_tokens" in retry_source_tc_only
     assert not all(
         _source_postconditions(
             completion_source,
             reconcile_source,
-            retry_source_tc_only,
+            retry_source,
             auxiliary_source,
+            turn_iteration_prep_source=unpatched_turn_iteration_prep_source,
         )
     )
     assert not all(
@@ -373,65 +381,54 @@ def test_installed_source_postconditions_fail_closed() -> None:
             hindsight_plugin_source=PINNED_HINDSIGHT_PREFETCH_SOURCE,
         )
     )
-    # Worker-reap process-group guard dropped: reconcile_source reverts to
-    # not carrying the patched reap at all — must go red.
+    # Worker-reap process-group guard dropped: kanban_dispatch_source
+    # reverts to not carrying the patched reap at all — must go red.
     assert not all(
         _source_postconditions(
             completion_source,
-            reconcile_source.replace(worker_reap_source, ""),
+            reconcile_source,
             retry_source,
             auxiliary_source,
+            kanban_dispatch_source=kanban_dispatch_source.replace(worker_reap_source, ""),
         )
     )
-    # Stale-reclaim process-group guard dropped: reconcile_source reverts to
-    # not carrying the patched reclaim termination at all — must go red.
+    # Stale-reclaim process-group guard dropped: kanban_dispatch_source
+    # reverts to not carrying the patched reclaim termination at all —
+    # must go red.
     assert not all(
         _source_postconditions(
             completion_source,
-            reconcile_source.replace(stale_reclaim_source, ""),
+            reconcile_source,
             retry_source,
             auxiliary_source,
+            kanban_dispatch_source=kanban_dispatch_source.replace(stale_reclaim_source, ""),
         )
     )
 
 
-def test_cron_cli_exit_code_conditions_reject_unpatched_source() -> None:
-    """The cron exit-code assertion must fail against upstream's own source.
+def test_cron_cli_exit_code_condition_covers_the_retired_patch() -> None:
+    """The cron exit-code behavior is upstream-native, not a role patch.
 
-    Upstream's ``cmd_cron`` calls ``cron_command(args)`` and discards the
-    return value, so a failed ``hermes cron`` action exits 0. Measured on the
-    live guest 2026-08-16: ``hermes cron run <missing>`` prints "Failed to run
-    job: ... not found" and still returns 0. It is loud to a human and silent
-    to a program, which is why the brain watchdog re-reads job state off
-    ``cron list --all`` rather than trusting ``$?``.
+    Upstream's ``cmd_cron`` used to call ``cron_command(args)`` and discard
+    the return value, so a failed ``hermes cron`` action exited 0. Measured
+    on the live guest 2026-08-16: ``hermes cron run <missing>`` printed
+    "Failed to run job: ... not found" and still returned 0. It is loud to a
+    human and silent to a program, which is why the brain watchdog re-reads
+    job state off ``cron list --all`` rather than trusting ``$?``.
 
-    Asserting the patched form is present proves nothing on its own — a
-    condition that also holds for unpatched source would let the patch stop
-    applying unnoticed. This pins that it does not hold.
+    Retired as a role patch (2026-09): upstream's generated ``cmd_cron`` now
+    forwards the return value itself via ``_forward_command(...,
+    forward_return=True)``. There is no role-patch before/after pair left to
+    unit test — the condition below is asserted against the live installed
+    source in "Assert upstream still supplies the behavior these retired
+    patches used to add"; this test only pins that the condition exists.
     """
-    from jinja2 import Environment
-
-    from conftest import PATCHED_CLI_MAIN_SOURCE, PINNED_CLI_MAIN_SOURCE
-
     conditions = [
         c
-        for c in _task("Assert installed Hermes pinned-source patches")[
-            "ansible.builtin.assert"
-        ]["that"]
+        for c in _task(
+            "Assert upstream still supplies the behavior these retired patches used to add"
+        )["ansible.builtin.assert"]["that"]
         if "hermes_agent_cli_main_source" in c
     ]
     assert conditions, "no assertion covers the cron CLI exit code"
-
-    env = Environment(autoescape=False)
-
-    def _holds(source: str) -> bool:
-        return all(
-            bool(env.compile_expression(c)(hermes_agent_cli_main_source=source))
-            for c in conditions
-        )
-
-    assert _holds(PATCHED_CLI_MAIN_SOURCE)
-    assert not _holds(PINNED_CLI_MAIN_SOURCE), (
-        "the cron exit-code conditions hold against upstream's unpatched "
-        "cmd_cron, so the patch could silently stop applying"
-    )
+    assert any("forward_return=True" in c for c in conditions)

@@ -128,18 +128,35 @@ PATCHED_CRON_DELIVERY_SOURCE = (
     # patches_verify.yml so a version bump that drops it fails loudly rather
     # than NameError-ing the guard above at runtime.
     + '\ndef _is_cron_silence_response(text: str) -> bool:\n'
+    # The two call-site patches that used to route deliveries through
+    # _cron_route() to the issues channel are retired (patches_cron_failure_
+    # routing.yml) — upstream 2026.9.11 already calls _deliver_result/
+    # _deliver_crash_failure with the right for_failure lane on its own, so
+    # PINNED_CRON_DELIVERY_SOURCE needs no patch to reach that behaviour.
     + _apply_runtime_patch(
-        "Route failed cron deliveries from the exception path to the issues channel",
+        "Route cron delivery content through the output-validity guard",
         _apply_runtime_patch(
-            "Route failed cron deliveries to the issues channel",
-            _apply_runtime_patch(
-                "Route cron delivery content through the output-validity guard",
-                _apply_runtime_patch(
-                    "Route cron delivery content through the markup guard",
-                    PINNED_CRON_DELIVERY_SOURCE,
-                ),
-            ),
+            "Route cron delivery content through the markup guard",
+            PINNED_CRON_DELIVERY_SOURCE,
         ),
+    )
+    # What survives from that retired pair: a script-fed job that exits 0
+    # and declares its own failure. Minimal literal fragments — the real
+    # call-site shape each regexp anchors on, not a hand-copied "expected"
+    # patched string — feed the two surviving patches (
+    # patches_cron_failure_routing.yml).
+    + _apply_runtime_patch(
+        "Route a self-declared cron failure through _cron_route",
+        "    (\n"
+        "        deliver_content, d.blocked_config, _silent_alert, d.incident_acked, "
+        "d.failure_incident_id,\n"
+        "    ) = _compose_run_delivery(\n"
+        "        job, success=d.success, error=d.error, final_response=final_response,\n"
+        "        output_file=output_file)\n",
+    )
+    + _apply_runtime_patch(
+        "Deliver a self-declared cron failure through the failure lane",
+        "    for_failure=not d.success,\n",
     )
 )
 # cron/scheduler.py carries the opt-in goal-mode runner too, and
@@ -167,8 +184,11 @@ for _cron_timeout_task_name in (
     "Initialize the independent cron timeout result flags",
     "Keep polling whenever either cron deadline is enabled",
     "Bound the final cron poll to the exact remaining wall budget",
+    # "Guard the native inactivity comparison when that detector is
+    # disabled" was retired by PR A (b3054ce1): its negative-lookahead
+    # regexp on "Enforce the aggregate cron wall clock in the native poll
+    # loop" already excludes the case that guard used to patch separately.
     "Enforce the aggregate cron wall clock in the native poll loop",
-    "Guard the native inactivity comparison when that detector is disabled",
     "Raise the aggregate cron timeout before the inactivity handler",
 ):
     PATCHED_CRON_TIMEOUT_SOURCE = _apply_rendered_runtime_patch(
@@ -189,8 +209,10 @@ PATCHED_HINDSIGHT_PREFETCH_SOURCE = _apply_runtime_patch(
 UPSTREAM_HINDSIGHT_PREFETCH_LINE_REMOVED = ""
 PATCHED_RUN_AGENT_SOURCE = PINNED_SYNC_EXTERNAL_MEMORY_SOURCE
 for _run_agent_task_name in (
-    'Patch _sync_external_memory_for_turn to log its "interrupted" skip',
-    "Patch _sync_external_memory_for_turn to log its missing-input skip",
+    # Rewritten (2026-09): upstream combined the interrupted-turn guard and
+    # the missing-input guard into ONE `if interrupted or not (...)` line,
+    # merging what used to be two separately-anchored role patches.
+    "Patch _sync_external_memory_for_turn to log its interrupted/missing-input skip",
     "Patch _sync_external_memory_for_turn to log its empty-flatten skip",
     "Patch _sync_external_memory_for_turn to log its swallowed exception",
 ):
@@ -314,6 +336,63 @@ PINNED_CLI_MAIN_SOURCE = (
 PATCHED_CLI_MAIN_SOURCE = PINNED_CLI_MAIN_SOURCE.replace(
     "    cron_command(args)", "    return cron_command(args)"
 )
+# Upstream's September 2026 decomposition moved worker-reap process-group
+# guarding out of kanban_db.py into kanban_db_dispatch.py and centralized
+# both reapers' SIGKILL escalation onto one shared _sigkill(kill, pid)
+# helper, so patches_verify.yml checks all of it against ONE dedicated
+# hermes_agent_kanban_dispatch_source var, not hermes_agent_goal_reconcile_
+# source. Built the same way as every other PATCHED_* constant here: run
+# the role's own patch tasks over minimal real fragments, never hand-copy
+# the expected output.
+PATCHED_KANBAN_DISPATCH_SOURCE = (
+    _task("Patch Hermes worker-reap helper to verify PID identity before signaling")[
+        "ansible.builtin.blockinfile"
+    ]["block"]
+    + _apply_runtime_patch(
+        "Patch Hermes worker-reap SIGKILL escalation to signal the worker's process group",
+        _apply_runtime_patch(
+            "Patch Hermes worker-reap timeout path to signal the worker's process group",
+            _apply_runtime_patch(
+                "Patch Hermes worker-reap timeout path to verify PID safety before signaling",
+                PINNED_WORKER_REAP_SOURCE,
+            ),
+        ),
+    )
+    + _apply_runtime_patch(
+        "Patch Hermes worker-reap SIGKILL escalation to signal the worker's process group",
+        _apply_runtime_patch(
+            "Patch Hermes stale-reclaim worker termination to signal the worker's process group",
+            _apply_runtime_patch(
+                "Patch Hermes stale-reclaim worker termination to verify PID safety before signaling",
+                PINNED_STALE_RECLAIM_TERMINATE_SOURCE,
+            ),
+        ),
+    )
+    # Both retired protocol-violation checks also moved off kanban_db.py
+    # into kanban_db_dispatch.py in the same September 2026 decomposition.
+    + PINNED_PROTOCOL_VIOLATION_SOURCE
+    + PINNED_PROTOCOL_RETRY_SOURCE
+)
+
+
+# Upstream's September 2026 decomposition also moved the length-continuation
+# max_tokens-ceiling patch's target file to turn_iteration_prep.py (path
+# change only, content unchanged) — checked against its own dedicated
+# hermes_agent_turn_iteration_prep_source var, not hermes_agent_retry_source.
+PATCHED_TURN_ITERATION_PREP_SOURCE = _apply_runtime_patch(
+    "Patch hermes-agent length-continuation boost to respect the configured "
+    "max_tokens ceiling",
+    PINNED_BOOST_CAP_SOURCE,
+)
+# Upstream's September 2026 decomposition also moved the retry-boost
+# max_tokens-ceiling patch's target file to turn_truncation.py and inlined
+# its standalone `_tc_boost_cap =` variable into the min() call it fed —
+# checked against its own dedicated hermes_agent_turn_truncation_source var,
+# not hermes_agent_retry_source (now unused by any condition).
+PATCHED_TURN_TRUNCATION_SOURCE = _apply_runtime_patch(
+    "Patch hermes-agent retry boost to respect the configured max_tokens ceiling",
+    PINNED_TC_BOOST_CAP_SOURCE,
+)
 
 
 def _combined_assert_task() -> dict[str, Any]:
@@ -341,6 +420,9 @@ def _source_postconditions(
     goal_judge_source: str = PATCHED_GOAL_JUDGE_SOURCE,
     run_agent_source: str = PATCHED_RUN_AGENT_SOURCE,
     cli_main_source: str = PATCHED_CLI_MAIN_SOURCE,
+    kanban_dispatch_source: str = PATCHED_KANBAN_DISPATCH_SOURCE,
+    turn_iteration_prep_source: str = PATCHED_TURN_ITERATION_PREP_SOURCE,
+    turn_truncation_source: str = PATCHED_TURN_TRUNCATION_SOURCE,
 ) -> tuple[bool, ...]:
     that = _combined_assert_task()["ansible.builtin.assert"]["that"]
     environment = Environment(autoescape=False)
@@ -356,6 +438,9 @@ def _source_postconditions(
         "hermes_agent_hindsight_plugin_source": hindsight_plugin_source,
         "hermes_agent_run_agent_source": run_agent_source,
         "hermes_agent_cli_main_source": cli_main_source,
+        "hermes_agent_kanban_dispatch_source": kanban_dispatch_source,
+        "hermes_agent_turn_iteration_prep_source": turn_iteration_prep_source,
+        "hermes_agent_turn_truncation_source": turn_truncation_source,
     }
     return tuple(
         bool(environment.compile_expression(condition)(**context)) for condition in that

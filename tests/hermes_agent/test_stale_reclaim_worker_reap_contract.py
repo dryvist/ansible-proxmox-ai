@@ -16,11 +16,22 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles" / "hermes_agent"
 
 # Reduced _terminate_reclaimed_worker slice from detect_stale_running's
-# reclaim path (upstream v2026.7.7.2, hermes_cli/kanban_db.py) — the exact
-# lines the role's own regexes target, indentation included. Starts after
-# the pid/claim_lock and host-local checks, which the patches here don't
-# touch.
+# reclaim path (upstream v2026.9.11, hermes_cli/kanban_db_dispatch.py) —
+# the exact lines the role's own regexes target, indentation included.
+# Starts after the pid/claim_lock and host-local checks, which the patches
+# here don't touch. Includes the shared _sigkill(kill, pid) helper both
+# reapers now escalate through (2026-09 upstream rewrite), since the
+# escalation patch targets that helper's own body, not either call site.
 PINNED_TERMINATE_SOURCE = '''\
+def _sigkill(kill, pid: int) -> bool:
+    """Best-effort SIGKILL; True when the signal was delivered."""
+    try:
+        kill(int(pid), getattr(signal, "SIGKILL", signal.SIGTERM))
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
 def _reclaim(pid, signal_fn=None):
     info = {"terminated": False, "sigkill": False}
     kill = signal_fn if signal_fn is not None else (
@@ -45,12 +56,9 @@ def _reclaim(pid, signal_fn=None):
         time.sleep(0.5)
 
     if _pid_alive(pid):
-        try:
-            _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-            kill(int(pid), _sigkill)
-            info["sigkill"] = True
-        except (ProcessLookupError, OSError):
+        if not _sigkill(kill, pid):
             return info
+        info["sigkill"] = True
 
     info["terminated"] = not _pid_alive(pid)
     return info
@@ -62,8 +70,11 @@ RECLAIM_SIGNAL_SAFETY_PATCH_NAME = (
 RECLAIM_SIGTERM_PATCH_NAME = (
     "Patch Hermes stale-reclaim worker termination to signal the worker's process group"
 )
+# Shared with the timeout path (test_worker_reap_contract.py): ONE patch on
+# _sigkill()'s own body closes the process-group gap for both reapers, since
+# both now call the same helper.
 RECLAIM_SIGKILL_PATCH_NAME = (
-    "Patch Hermes stale-reclaim worker termination to escalate on the worker's process group"
+    "Patch Hermes worker-reap SIGKILL escalation to signal the worker's process group"
 )
 
 
@@ -161,11 +172,12 @@ def test_stale_reclaim_escalates_to_sigkill_on_the_process_group_if_sigterm_surv
         _patched_reclaim_source(), own_pid=1, pid_alive=True, is_hermes_worker=True
     )
     calls: list[tuple[int, int]] = []
-    reclaim(12345, signal_fn=lambda pid, sig: calls.append((pid, sig)))
+    info = reclaim(12345, signal_fn=lambda pid, sig: calls.append((pid, sig)))
     assert calls == [
         (-12345, signal_module.SIGTERM),
         (-12345, signal_module.SIGKILL),
     ]
+    assert info["sigkill"] is True
 
 
 def test_stale_reclaim_refuses_to_signal_the_gateways_own_pid() -> None:

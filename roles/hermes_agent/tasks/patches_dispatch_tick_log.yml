@@ -83,10 +83,13 @@
 # `max_in_progress` also moved: it is no longer a local in this function,
 # only reachable via `dispatcher.settings.max_in_progress`.
 - name: Log ready work that nothing was spawned for
+  # Idempotent: the negative lookahead skips a converge that already landed
+  # this block — without it, a second converge would re-match the
+  # unmodified anchor line and duplicate the injected if/logger block.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/gateway/kanban_watchers.py"
     regexp: |-
-      ^([ \t]*)bad_ticks = bad_ticks \+ 1 if ready_pending and not any_spawned else 0$
+      ^([ \t]*)bad_ticks = bad_ticks \+ 1 if ready_pending and not any_spawned else 0$(?!\n\1if ready_pending)
     replace: |-
       \1bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
       \1if ready_pending and not any_spawned and (bad_ticks == 1 or bad_ticks % 10 == 0):
