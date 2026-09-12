@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.42.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.41.0...v0.42.0) (2026-09-12)
+
+
+### Features
+
+* **llm_router:** register a github-actions virtual key ([#720](https://github.com/dryvist/ansible-proxmox-ai/issues/720)) ([52b6f04](https://github.com/dryvist/ansible-proxmox-ai/commit/52b6f0436331a1b9ca34c020b25cee645da80a34))
+
+
+### Bug Fixes
+
+* **openbao_secrets:** unlist opencode path until its grant lands ([#725](https://github.com/dryvist/ansible-proxmox-ai/issues/725)) ([b999d43](https://github.com/dryvist/ansible-proxmox-ai/commit/b999d4323a5c60e7b702599e764e67ef648942a7))
+
 ## [0.41.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.40.0...v0.41.0) (2026-09-12)
 
 
