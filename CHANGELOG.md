@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.43.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.42.0...v0.43.0) (2026-09-12)
+
+
+### Features
+
+* **ci:** run only the molecule scenarios a pull request touches ([#726](https://github.com/dryvist/ansible-proxmox-ai/issues/726)) ([ac3785d](https://github.com/dryvist/ansible-proxmox-ai/commit/ac3785d690b92cc29999dae42bb70de9aa577d66))
+
+
+### Bug Fixes
+
+* **openbao_secrets:** unlist apps/github-actions path until its grant lands ([#729](https://github.com/dryvist/ansible-proxmox-ai/issues/729)) ([78a1d0d](https://github.com/dryvist/ansible-proxmox-ai/commit/78a1d0d30ecada5eacb5d33b3d58f908f3605c46))
+
 ## [0.42.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.41.0...v0.42.0) (2026-09-12)
 
 
