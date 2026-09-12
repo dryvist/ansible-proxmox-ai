@@ -75,114 +75,112 @@ PINNED_CRON_DELIVERY_SOURCE = (
 # Verbatim from cron/scheduler.py — the single run_conversation submit that
 # opt-in cron goal mode wraps.
 PINNED_CRON_SUBMIT_SOURCE = (
-    "        _cron_context = contextvars.copy_context()\n"
-    "        _cron_future = _cron_pool.submit(_cron_context.run,"
+    "    _cron_context = contextvars.copy_context()\n"
+    "    _cron_future = _cron_pool.submit(_cron_context.run,"
     " agent.run_conversation, prompt)\n"
-    "        _inactivity_timeout = False\n"
+    "    _inactivity_timeout = False\n"
 )
-# Exact upstream v2026.8.3 monitor targeted by the aggregate-deadline patch.
-# Keep the complete control flow, not only replacement anchors: the transformed
-# fixture is compiled and executed with fake time/futures in the behavioral
-# tests, so a syntactically valid but incorrectly composed patch cannot pass.
+# Exact upstream v2026.9.11 monitor targeted by the aggregate-deadline patch —
+# _run_agent_with_watchdog (cron/scheduler.py), from _cron_timeout's
+# computation through the final `return result`. Fetched directly from
+# github.com/NousResearch/hermes-agent at the pinned tag, not hand-typed:
+# upstream moved inactivity detection off the poll loop onto its own daemon
+# thread (_watch_inactivity/_inactivity_watchdog_loop) since v2026.8.3, and a
+# hand-copied "close enough" snippet is exactly what let seven dead patches
+# stay green before. Keep the complete control flow, not only replacement
+# anchors: the transformed fixture is compiled and executed with fake time/
+# futures/threading in the behavioral tests, so a syntactically valid but
+# incorrectly composed patch cannot pass.
 PINNED_CRON_TIMEOUT_SOURCE = '''\
-        _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
-        _POLL_INTERVAL = 5.0
-        _job_schedule = job.get("schedule")
-        _is_oneshot = (
-            isinstance(_job_schedule, dict) and _job_schedule.get("kind") == "once"
-        )
-        _run_claim = job.get("run_claim")
-        _run_claim_owner = (
-            str(_run_claim.get("by") or "") if isinstance(_run_claim, dict) else ""
-        )
-        _last_claim_heartbeat = time.monotonic()
+    _cron_timeout = _cron_inactivity_seconds()
+    _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+    _POLL_INTERVAL = 5.0
+    _job_schedule = job.get("schedule")
+    _is_oneshot = isinstance(_job_schedule, dict) and _job_schedule.get("kind") == "once"
+    _run_claim = job.get("run_claim")
+    _run_claim_owner = str(_run_claim.get("by") or "") if isinstance(_run_claim, dict) else ""
+    _last_claim_heartbeat = time.monotonic()
 
-        def _heartbeat_run_claim_if_due():
-            nonlocal _last_claim_heartbeat
-            if not _is_oneshot or not _run_claim_owner:
-                return
-            _mono = time.monotonic()
-            if _mono - _last_claim_heartbeat < _RUN_CLAIM_HEARTBEAT_SECONDS:
-                return
-            _last_claim_heartbeat = _mono
-            try:
-                heartbeat_run_claim(job_id, expected_owner=_run_claim_owner)
-            except Exception:
-                logger.debug(
-                    "Job '%s': run_claim heartbeat failed", job_name, exc_info=True
-                )
+    def _abort_if_fire_claim_lost() -> None:
+        if cancel_event is None or not cancel_event.is_set():
+            return
+        if agent is not None and hasattr(agent, "interrupt"):
+            agent.interrupt("Cron fire claim ownership was lost")
+        raise RuntimeError(f"Cron job '{job_name}' lost its durable fire claim ownership")
 
-        _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        _cron_context = contextvars.copy_context()
-        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
-        _inactivity_timeout = False
+    def _heartbeat_run_claim_if_due():
+        nonlocal _last_claim_heartbeat
+        if not _is_oneshot or not _run_claim_owner:
+            return
+        _mono = time.monotonic()
+        if _mono - _last_claim_heartbeat < _RUN_CLAIM_HEARTBEAT_SECONDS:
+            return
+        _last_claim_heartbeat = _mono
         try:
-            if _cron_inactivity_limit is None:
-                if _is_oneshot:
-                    result = None
-                    while True:
-                        done, _ = concurrent.futures.wait(
-                            {_cron_future}, timeout=_POLL_INTERVAL,
-                        )
-                        if done:
-                            result = _cron_future.result()
-                            break
-                        _heartbeat_run_claim_if_due()
-                else:
-                    result = _cron_future.result()
-            else:
-                result = None
-                while True:
-                    done, _ = concurrent.futures.wait(
-                        {_cron_future}, timeout=_POLL_INTERVAL,
-                    )
-                    if done:
-                        result = _cron_future.result()
-                        break
-                    _heartbeat_run_claim_if_due()
-                    # Agent still running — check inactivity.
-                    _idle_secs = 0.0
-                    if hasattr(agent, "get_activity_summary"):
-                        try:
-                            _act = agent.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
-                        except Exception:
-                            pass
-                    if _idle_secs >= _cron_inactivity_limit:
-                        _inactivity_timeout = True
-                        break
+            heartbeat_run_claim(job_id, expected_owner=_run_claim_owner)
         except Exception:
-            _cron_pool.shutdown(wait=False, cancel_futures=True)
-            raise
-        finally:
-            _cron_pool.shutdown(wait=False, cancel_futures=True)
+            logger.debug("Job '%s': run_claim heartbeat failed", job_name, exc_info=True)
 
-        if _inactivity_timeout:
-            _activity = {}
-            if hasattr(agent, "get_activity_summary"):
-                try:
-                    _activity = agent.get_activity_summary()
-                except Exception:
-                    pass
-            _last_desc = _activity.get("last_activity_desc", "unknown")
-            _secs_ago = _activity.get("seconds_since_activity", 0)
-            _cur_tool = _activity.get("current_tool")
-            _iter_n = _activity.get("api_call_count", 0)
-            _iter_max = _activity.get("max_iterations", 0)
+    _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    _cron_context = contextvars.copy_context()
+    _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+    if worker_state is not None:
+        worker_state["future"] = _cron_future
+    _inactivity_timeout = False
+    _watch_stop = threading.Event()
 
-            logger.error(
-                "Job '%s' idle for %.0fs (inactivity limit %.0fs) "
-                "| last_activity=%s | iteration=%s/%s | tool=%s",
-                job_name, _secs_ago, _cron_inactivity_limit,
-                _last_desc, _iter_n, _iter_max,
-                _cur_tool or "none",
-            )
-            request_hard_interrupt(agent, "Cron job timed out (inactivity)")
-            raise TimeoutError(
-                f"Cron job '{job_name}' idle for "
-                f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
-                f"— last activity: {_last_desc}"
-            )
+    def _idle_seconds() -> float:
+        if not hasattr(agent, "get_activity_summary"):
+            return 0.0
+        try:
+            _act = agent.get_activity_summary()
+            return float(_act.get("seconds_since_activity", 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
+    def _watch_inactivity() -> None:
+        nonlocal _inactivity_timeout
+        if _cron_inactivity_limit is None:
+            return
+        if _inactivity_watchdog_loop(
+            get_idle_seconds=_idle_seconds, limit_s=_cron_inactivity_limit, poll_s=_POLL_INTERVAL,
+            stop=_watch_stop, future_done=_cron_future.done):
+            _inactivity_timeout = True
+
+    _watch_thread = threading.Thread(
+        target=_watch_inactivity, name=f"cron-inactivity-{str(job_id)[:8]}", daemon=True)
+    try:
+        if _cron_inactivity_limit is not None:
+            _watch_thread.start()
+        if _cron_inactivity_limit is None and not _is_oneshot and cancel_event is None:
+            result = _cron_future.result()
+        else:
+            result = None
+            while True:
+                done, _ = concurrent.futures.wait({_cron_future}, timeout=_POLL_INTERVAL)
+                if done:
+                    _abort_if_fire_claim_lost()
+                    result = _cron_future.result()
+                    break
+                if _inactivity_timeout:
+                    break
+                _abort_if_fire_claim_lost()
+                _heartbeat_run_claim_if_due()
+    except Exception:
+        _cron_pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    finally:
+        _watch_stop.set()
+        _cron_pool.shutdown(wait=False, cancel_futures=True)
+
+    if _inactivity_timeout:
+        _raise_inactivity_timeout(agent, job_name, _cron_inactivity_limit)
+
+    if not isinstance(result, dict):
+        raise RuntimeError(
+            f"agent.run_conversation returned {type(result).__name__} instead of dict: {result!r}"
+        )
+    return result
 '''
 PINNED_WORKER_REAP_SOURCE = '''\
 def _reap(pid, signal_fn=None):

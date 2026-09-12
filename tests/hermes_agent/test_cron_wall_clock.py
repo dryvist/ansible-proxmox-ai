@@ -51,6 +51,9 @@ class _Future:
     def result(self) -> dict:
         return {"completed": True, "final_response": "ok"}
 
+    def done(self) -> bool:
+        return self.clock.now >= self.done_at
+
 
 class _Executor:
     def __init__(self, future: _Future, **_kwargs) -> None:
@@ -83,15 +86,89 @@ class _Agent:
         }
 
 
+class _FakeWatchStop:
+    """Fake threading.Event: real code only calls .set()/.wait() on it; the
+    watchdog loop below is single-shot and ticked by hand, so .wait()'s
+    return value is never consulted."""
+
+    def __init__(self) -> None:
+        self.is_set_ = False
+
+    def set(self) -> None:
+        self.is_set_ = True
+
+    def wait(self, _timeout: float | None = None) -> bool:
+        return self.is_set_
+
+
+class _FakeWatchThread:
+    """Fake threading.Thread: upstream's real background watchdog thread is
+    unfakeable without either real wall-clock waits (slow, flaky) or a
+    cooperative simulation -- this is the latter. `.start()` does not run the
+    target; instead every fake `concurrent.futures.wait()` tick (below) also
+    ticks every started fake thread once, interleaving the "background"
+    watchdog check with the main poll loop deterministically, in lockstep
+    with the same fake clock, with no real concurrency at all."""
+
+    _registry: list["_FakeWatchThread"] = []
+
+    def __init__(self, target=None, name=None, daemon=None) -> None:
+        self.target = target
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+        type(self)._registry.append(self)
+
+
 def _compiled_monitor(clock: _Clock, future: _Future, interrupts: list[str]):
     namespace = _helper_namespace()
+    _FakeWatchThread._registry = []
 
     def wait(futures, timeout):
         selected = next(iter(futures))
         clock.now = min(clock.now + timeout, selected.done_at)
-        if clock.now >= selected.done_at:
+        done = clock.now >= selected.done_at
+        # Give every started fake watchdog thread one check per main-loop
+        # poll tick -- see _FakeWatchThread.
+        for watch_thread in _FakeWatchThread._registry:
+            if watch_thread.started:
+                watch_thread.target()
+        if done:
             return {selected}, set()
         return set(), set(futures)
+
+    def _inactivity_watchdog_loop(*, get_idle_seconds, limit_s, poll_s, stop, future_done):
+        # One-shot: called once per tick from the fake `wait()` above,
+        # rather than looping internally on a real threading.Event.wait().
+        if future_done():
+            return False
+        return float(get_idle_seconds() or 0.0) >= limit_s
+
+    def _cron_inactivity_seconds() -> float:
+        raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+        if not raw:
+            return 600.0
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return 600.0
+
+    def _raise_inactivity_timeout(agent, job_name, limit_s) -> None:
+        _activity: dict = {}
+        if hasattr(agent, "get_activity_summary"):
+            try:
+                _activity = agent.get_activity_summary()
+            except Exception:
+                pass
+        _last_desc = _activity.get("last_activity_desc", "unknown")
+        _secs_ago = _activity.get("seconds_since_activity", 0)
+        namespace["request_hard_interrupt"](agent, "Cron job timed out (inactivity)")
+        raise TimeoutError(
+            f"Cron job '{job_name}' idle for "
+            f"{int(_secs_ago)}s (limit {int(limit_s)}s) "
+            f"— last activity: {_last_desc}"
+        )
 
     namespace.update(
         {
@@ -105,18 +182,21 @@ def _compiled_monitor(clock: _Clock, future: _Future, interrupts: list[str]):
             "contextvars": SimpleNamespace(
                 copy_context=lambda: SimpleNamespace(run=lambda fn, *args: fn(*args))
             ),
+            "threading": SimpleNamespace(Event=_FakeWatchStop, Thread=_FakeWatchThread),
             "heartbeat_run_claim": lambda *_args, **_kwargs: None,
             "_hermes_cron_goal_run": lambda *_args, **_kwargs: None,
             "request_hard_interrupt": lambda _agent, reason: interrupts.append(reason),
             "_RUN_CLAIM_HEARTBEAT_SECONDS": 30.0,
+            "_cron_inactivity_seconds": _cron_inactivity_seconds,
+            "_inactivity_watchdog_loop": _inactivity_watchdog_loop,
+            "_raise_inactivity_timeout": _raise_inactivity_timeout,
             # A local of the enclosing scheduler function on the guest.
-            "_cron_session_id": "cron_test_session",
+            "cron_session_id": "cron_test_session",
         }
     )
     source = (
-        "def run_monitor(agent, prompt, job, job_id, job_name, _cron_timeout):\n"
-        + PATCHED_CRON_TIMEOUT_SOURCE
-        + "        return result\n"
+        "def run_monitor(agent, prompt, job, job_id, job_name, cancel_event=None, "
+        "worker_state=None):\n" + PATCHED_CRON_TIMEOUT_SOURCE
     )
     exec(compile(source, "<patched-cron-monitor>", "exec"), namespace)
     return namespace["run_monitor"]
@@ -192,13 +272,14 @@ def test_patched_monitor_checks_the_hard_wall_and_preserves_idle_guard() -> None
 
 def test_active_run_executes_the_integrated_hard_wall(monkeypatch) -> None:
     monkeypatch.setenv("HERMES_CRON_WALL_TIMEOUT", "3")
+    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "2")
     clock = _Clock()
     future = _Future(clock, done_at=30.0)
     interrupts: list[str] = []
     monitor = _compiled_monitor(clock, future, interrupts)
 
     with pytest.raises(TimeoutError, match="aggregate wall clock 3s") as raised:
-        monitor(_Agent(clock, active=True), "prompt", {}, "job-id", "job", 2.0)
+        monitor(_Agent(clock, active=True), "prompt", {}, "job-id", "job")
 
     assert clock.now == 3.0
     assert interrupts == ["Cron job exceeded hard wall clock"]
@@ -211,13 +292,14 @@ def test_active_run_executes_the_integrated_hard_wall(monkeypatch) -> None:
 
 def test_inactivity_executes_before_the_integrated_hard_wall(monkeypatch) -> None:
     monkeypatch.setenv("HERMES_CRON_WALL_TIMEOUT", "30")
+    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "2")
     clock = _Clock()
     future = _Future(clock, done_at=60.0)
     interrupts: list[str] = []
     monitor = _compiled_monitor(clock, future, interrupts)
 
     with pytest.raises(TimeoutError, match="idle for 5s"):
-        monitor(_Agent(clock, active=False), "prompt", {}, "job-id", "job", 2.0)
+        monitor(_Agent(clock, active=False), "prompt", {}, "job-id", "job")
 
     assert clock.now == 5.0
     assert interrupts == ["Cron job timed out (inactivity)"]
@@ -225,12 +307,13 @@ def test_inactivity_executes_before_the_integrated_hard_wall(monkeypatch) -> Non
 
 def test_integrated_monitor_returns_a_completed_future(monkeypatch) -> None:
     monkeypatch.setenv("HERMES_CRON_WALL_TIMEOUT", "30")
+    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "2")
     clock = _Clock()
     future = _Future(clock, done_at=1.0)
     interrupts: list[str] = []
     monitor = _compiled_monitor(clock, future, interrupts)
 
-    result = monitor(_Agent(clock, active=True), "prompt", {}, "job-id", "job", 2.0)
+    result = monitor(_Agent(clock, active=True), "prompt", {}, "job-id", "job")
 
     assert result == {"completed": True, "final_response": "ok"}
     assert clock.now == 1.0
