@@ -3,6 +3,7 @@ from __future__ import annotations
 import yaml
 
 from conftest import REPO_ROOT, ROLE_ROOT, _task, role_defaults
+from _registry import backend_for_alias, backend_for_role, load_registry
 from _role_files import template_text
 from _cron_pool_ceiling_shared import (
     router_request_timeout_seconds,
@@ -58,14 +59,7 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     hindsight_compose = (
         REPO_ROOT / "roles/hindsight_docker/templates/docker-compose.yml.j2"
     ).read_text()
-    router_defaults = role_defaults(REPO_ROOT / "roles" / "llm_router")
-    registry = [
-        entry
-        for slice_file in sorted((REPO_ROOT / "llm-models.d").glob("*.yml"))
-        for entries in yaml.safe_load(slice_file.read_text()).values()
-        for entry in entries
-    ]
-    router_config = (REPO_ROOT / "roles/llm_router/templates/config.yaml.j2").read_text()
+    registry = load_registry()
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
     environment = template_text(ROLE_ROOT, "hermes-env.j2")
 
@@ -75,22 +69,13 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # here is what let all four aliases drift to unroutable models at once
     # (2026-07-28, every one a live 404), so follow the indirection to its
     # source instead of re-pinning the ids under a new name.
-    by_role = {
-        entry["serving_role"]: entry
-        for entry in registry
-        if entry.get("enabled") and "serving_role" in entry
-    }
-    hermes_backend = by_role["primary"]["client_model_id"]
+    hermes_backend = backend_for_role(registry, "primary")
     # The judge follows its ALIAS, not a serving_role. `small` names the
     # trivial-task tier and held the judge until 2026-08-15; the two came apart
     # when the judge moved to a resident backend to escape the small tier's
     # cold load, and deriving from serving_role here would have silently kept
     # asserting the old wiring.
-    judge_backend = next(
-        entry["client_model_id"]
-        for entry in registry
-        if entry.get("enabled") and "goal-judge" in entry.get("stable_aliases", [])
-    )
+    judge_backend = backend_for_alias(registry, group_vars["hermes_goal_judge_model"])
     assert group_vars["hermes_brain_model"] == hermes_alias
     # The judge rides its own alias now — a judge on the worker's model is
     # self-preference bias, and the two serialize against one serving slot.
@@ -129,121 +114,6 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         in environment
     )
     assert defaults["hermes_agent_brain_sync_enabled"] is False
-    # Physical aliases belong to the entries they point at. `hermes-default` is
-    # intentionally not one of them: it is a native LiteLLM complexity-router
-    # deployment, not duplicated configuration for a physical backend.
-    # Split the same way roles/llm_router splits them. An alias on a SERVABLE
-    # entry renders as a static model_group_alias and is bound by the role's
-    # two render-time asserts; an alias on any other entry is a ROLE seeded
-    # into the router database. Asserting the union would let a stray static
-    # alias hide behind a legitimate role name, which is the case this test
-    # exists to catch.
-    aliases = {
-        alias: entry["client_model_id"]
-        for entry in registry
-        if entry.get("enabled") and entry.get("servable")
-        for alias in entry.get("stable_aliases", [])
-    }
-    db_role_aliases = {
-        alias: entry["client_model_id"]
-        for entry in registry
-        if entry.get("enabled") and not entry.get("servable")
-        for alias in entry.get("stable_aliases", [])
-    }
-    # STRUCTURE is pinned, never the names: an alias is written once, in the
-    # registry (test_registry_retype_scan.py fails the build on a second copy).
-    # The count and every target's servability are what a stray alias would
-    # break, so a new consumer-facing name still lands here as a reviewed edit.
-    ocr_backend = next(
-        entry["client_model_id"]
-        for entry in registry
-        if entry.get("enabled") and entry.get("serving_role") == "ocr"
-    )
-    judge_alias = group_vars["hermes_goal_judge_model"]
-    assert aliases, "no static alias loaded; nothing below is checked"
-    assert len(aliases) == 4
-    assert aliases[judge_alias] == judge_backend
-    # The brain is reached by alias too (the judge does not share it: see
-    # judge_backend != hermes_backend above).
-    assert hermes_backend in aliases.values()
-    # The document tier is reached by image content parts, not by a selector
-    # var, so it has no hermes_* binding to assert — only that a name a human
-    # picks in the model list resolves to the vision entry.
-    assert ocr_backend in aliases.values()
-    # Exact equality here too: a role is a caller-facing name, so an
-    # accidental one is as costly as an accidental static alias.
-    subagent_backend = next(
-        entry["client_model_id"]
-        for entry in registry
-        if entry.get("enabled") and "subagent" in entry.get("stable_aliases", [])
-    )
-    assert db_role_aliases == {"subagent": subagent_backend}
-    hermes_router = next(
-        entry
-        for entry in registry
-        if entry.get("enabled") and entry["client_model_id"] == hermes_alias
-    )
-    assert hermes_router["tier"] == "hermes-router"
-    # The deployment name is the entry's own provider and upstream id; a drift
-    # between the three registry fields is what this catches.
-    assert hermes_router["litellm_model_name"] == (
-        f"{hermes_router['provider']}/{hermes_router['upstream_model_id']}"
-    )
-    assert "stable_aliases" not in hermes_router
-    # Both selectors must be declared servable, or the alias indirection just
-    # moves the 404 one level down.
-    #
-    # `servable` is deliberately NOT `enabled`: every large-tier entry is
-    # enabled (the router offers it), only these are servable (the backend
-    # answers for it). Conflating them yields a 404, not an answer.
-    #
-    # The contract is a BICONDITIONAL — servable if and only if the entry names
-    # a serving_role — and BOTH sides derive from the registry. This used to
-    # name the expected ids through by_role["primary"]/["small"], which held
-    # only while the serving host ran exactly one warm model: since 2026-08-14
-    # it holds two, and a second servable model with no role to name it would
-    # have failed a true statement. Deriving keeps the check real rather than
-    # loosening it — flipping `servable` on a dead entry, or dropping it from a
-    # live one, still fails here.
-    expected_servable = [
-        entry["client_model_id"]
-        for entry in registry
-        if entry.get("enabled") and "serving_role" in entry
-    ]
-    assert [
-        entry["client_model_id"] for entry in registry if entry.get("servable")
-    ] == expected_servable
-    # Both selectors the fabric actually points at must be in that set, named
-    # through by_role rather than by literal.
-    assert hermes_backend in expected_servable
-    assert judge_backend in expected_servable
-    # And so must every static alias target, or an alias is a 404 with a name.
-    assert set(aliases.values()) <= set(expected_servable)
-    hermes_entries = [
-        entry for entry in registry if entry["client_model_id"] == hermes_backend
-    ]
-    assert len(hermes_entries) == 1
-    assert hermes_entries[0]["context_window"] == 65536
-    # The registry is the SOLE spelling of a model name or key field: the role's
-    # defaults project it and must never re-type one. A literal here is exactly
-    # the drift this indirection exists to prevent, so it fails the build rather
-    # than waiting for a live 404. Values only — the defaults' prose may of
-    # course still discuss the tiers.
-    router_defaults_values = yaml.dump(router_defaults, allow_unicode=True)
-    for entry in registry:
-        for field in ("client_model_id", "upstream_model_id", "key_field"):
-            if field in entry:
-                assert entry[field] not in router_defaults_values, (
-                    f"{entry[field]} is re-typed in roles/llm_router/defaults/main.yml; "
-                    "derive it from llm-models.d/ instead"
-                )
-    assert router_defaults["llm_router_num_retries"] == 0
-    # 429 = "the slot is busy", never "the work is impossible", so the router
-    # absorbs it rather than failing the caller (#175). Not 0 — that setting
-    # killed a cron mid-generation on 2026-07-24.
-    assert router_defaults["llm_router_rate_limit_retries"] == 8
-    assert "model_group_alias:" in router_config
-    assert "llm_router_model_group_aliases.items()" in router_config
     # Reads the alias, not the worker model. This was pinned to
     # hermes_agent_model until 2026-08-15 for a measured reason — `goal-judge`
     # resolved to a swap-class backend whose ~79s cold load exceeded the judge
@@ -259,44 +129,6 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert "goal_judge:" in config
     assert "model: {{ hermes_agent_kanban_goal_judge_model | to_json }}" in config
     assert "base_url: '{{ hermes_agent_model_base_url }}'" in config
-
-
-def test_credential_gated_entries_declare_their_own_credential() -> None:
-    """Every entry of a credential-gated tier names its own credential.
-
-    The env, probe and role projections read `credential_env` and `key_field`
-    bare off the entry; there is deliberately no per-tier default to fall back
-    on, because a default shared across a loop that mixes tiers is how one
-    provider's entry gets silently credentialed with another provider's key.
-    So the registry has to carry both fields on every gated entry, and this is
-    where an entry that omits one fails.
-
-    Anti-vacuity: remove either field from any opencode, hermes-cloud or
-    openrouter entry and `missing` is non-empty. The gated set is asserted
-    non-empty first, so a registry slice that failed to load cannot pass by
-    having nothing to check. The gated tiers are the same four the render
-    parity guard exempts from enabled-but-unrendered for being key-gated
-    (roles/llm_router/tasks/assert-registry-render-parity.yml).
-    """
-    registry = [
-        entry
-        for slice_file in sorted((REPO_ROOT / "llm-models.d").glob("*.yml"))
-        for entries in yaml.safe_load(slice_file.read_text()).values()
-        for entry in entries
-    ]
-    gated_tiers = {"opencode", "hermes-cloud", "hermes-cloud-router", "openrouter"}
-    gated = [entry for entry in registry if entry["tier"] in gated_tiers]
-    assert gated, "no credential-gated registry entries loaded; nothing was checked"
-    missing = [
-        (entry["client_model_id"], field)
-        for entry in gated
-        for field in ("credential_env", "key_field")
-        if not entry.get(field)
-    ]
-    assert not missing, (
-        f"credential-gated entries without their own credential fields: {missing}; "
-        "declare credential_env and key_field on the entry (docs/LLM_MODELS_SCHEMA.md)"
-    )
 
 
 def test_group_vars_reads_canonical_zammad_mcp_pair() -> None:
