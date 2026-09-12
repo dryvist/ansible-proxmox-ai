@@ -4,11 +4,17 @@
 # guarded or skipped work leaves no trace, and "ready work, nothing spawned"
 # surfaces only as the six-tick stuck warning. One INFO line per board per
 # tick names every non-zero outcome the DispatchResult already carries.
+# Upstream's September 2026 decomposition moved the spawn-result loop this
+# helper feeds out of kanban_watchers.py's mixin class into its own module,
+# gateway/kanban_watchers_dispatcher.py (_log_spawn_results), verbatim body
+# and all. The helper follows it: defining it beside the class it no longer
+# lives in and calling it from a different module is a NameError on the
+# first tick, not a smaller diff.
 - name: Add the dispatch tick line helper
   ansible.builtin.blockinfile:
-    path: "{{ hermes_agent_install_dir }}/gateway/kanban_watchers.py"
+    path: "{{ hermes_agent_install_dir }}/gateway/kanban_watchers_dispatcher.py"
     marker: "# {mark} ANSIBLE MANAGED BLOCK dispatch tick line"
-    insertbefore: '^class GatewayKanbanWatchersMixin:'
+    insertbefore: '^def _log_spawn_results\('
     block: |
       def _dispatch_tick_line(slug, res):
           """One line naming what a dispatch tick did on a board and why it
@@ -41,8 +47,13 @@
   notify: Restart hermes-gateway
 
 - name: Log every dispatch tick outcome, not only spawns
+  # The loop moved verbatim into _log_spawn_results (gateway/
+  # kanban_watchers_dispatcher.py) — same body, same `return any_spawned`
+  # contract the caller in kanban_watchers.py still depends on, which this
+  # replace does not touch (it only rewrites the for-loop body, not the
+  # function's own header/footer).
   ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/gateway/kanban_watchers.py"
+    path: "{{ hermes_agent_install_dir }}/gateway/kanban_watchers_dispatcher.py"
     regexp: |-
       ^([ \t]*)for slug, res in \(results or \[\]\):
       [ \t]*if res is not None and getattr\(res, "spawned", None\):
@@ -81,23 +92,32 @@
       \g<1>else:
   notify: Restart hermes-gateway
 
-- name: Read back the dispatcher source
+- name: Read back the dispatcher sources
   ansible.builtin.slurp:
-    src: "{{ hermes_agent_install_dir }}/gateway/kanban_watchers.py"
+    src: "{{ item }}"
+  loop:
+    - "{{ hermes_agent_install_dir }}/gateway/kanban_watchers_dispatcher.py"
+    - "{{ hermes_agent_install_dir }}/gateway/kanban_watchers.py"
   register: hermes_agent_dispatch_tick_readback
   changed_when: false
 
 # Keyed on the patched result, not the anchors: a regexp that matches nothing
-# reports ok and leaves the source unpatched.
+# reports ok and leaves the source unpatched. The helper and the loop it feeds
+# both moved to kanban_watchers_dispatcher.py (2026-09 re-path); the
+# ready-work-nothing-spawned line has not moved and is asserted against
+# kanban_watchers.py.
 - name: Assert the dispatch tick log is wired in
   ansible.builtin.assert:
     quiet: true
     that:
-      - "'def _dispatch_tick_line(slug, res):' in hermes_agent_dispatch_tick_source"
-      - "'_tick_line = _dispatch_tick_line(slug, res)' in hermes_agent_dispatch_tick_source"
-      - "'nothing spawned \"' in hermes_agent_dispatch_tick_source"
+      - "'def _dispatch_tick_line(slug, res):' in hermes_agent_dispatch_tick_dispatcher_source"
+      - "'_tick_line = _dispatch_tick_line(slug, res)' in hermes_agent_dispatch_tick_dispatcher_source"
+      - "'nothing spawned \"' in hermes_agent_dispatch_tick_watchers_source"
     fail_msg: >-
       The pinned Hermes source changed and the dispatch tick log patches did
       not apply; re-anchor them before converging.
   vars:
-    hermes_agent_dispatch_tick_source: "{{ hermes_agent_dispatch_tick_readback.content | b64decode }}"
+    hermes_agent_dispatch_tick_dispatcher_source: >-
+      {{ hermes_agent_dispatch_tick_readback.results[0].content | b64decode }}
+    hermes_agent_dispatch_tick_watchers_source: >-
+      {{ hermes_agent_dispatch_tick_readback.results[1].content | b64decode }}
