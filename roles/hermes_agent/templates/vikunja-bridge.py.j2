@@ -14,13 +14,24 @@ Three responsibilities, one poll loop:
              card via `hermes kanban create --idempotency-key vikunja-<id>`.
              The task then moves to the IN-PROGRESS bucket and gets a comment
              naming the card, so the board shows the handoff the moment it
-             happens rather than when the work ends.
+             happens rather than when the work ends. Gated on the brain
+             watchdog's probe: while it reads anything but "up", intake
+             claims nothing this tick and leaves every card in READY.
   reconcile  every tracked card is looked up in kanban.db (READ-ONLY, the same
              source and posture as kanban-digest.py) and, once its run has
              settled, its outcome is written back: summary comment, bucket
-             move, and `done` on success.
+             move, and `done` on success. A failure that coincides with a
+             non-"up" probe reading goes to the BUSY lane and is re-queued to
+             READY after busy_requeue_seconds, instead of BLOCKED.
+  triage     a task that has sat in BLOCKED longer than blocked_triage_days
+             moves to NEEDS_TRIAGE — the mechanism behind Vikunja 1523's 398
+             aged blocked cards silently starving 12 ready ones.
   ledger     the task<->card mapping lives in a schema-versioned JSON file
-             under the Hermes state dir, alongside the digests' state.
+             under the Hermes state dir, alongside the digests' state. Blocked
+             dwell time and busy retry-after timestamps live in a sibling
+             advisory file (see LANES_PATH) that self-heals off the live
+             board, so it never risks corrupting the one state that can't be
+             recovered from Vikunja itself.
 
 WHY NOT THE VIKUNJA MCP. This talks to Vikunja over plain REST with its own
 write-scoped token, and deliberately does NOT depend on the gateway's
@@ -71,12 +82,24 @@ BUCKET_READY = "{{ hermes_agent_vikunja_bridge_bucket_ready }}"
 BUCKET_IN_PROGRESS = "{{ hermes_agent_vikunja_bridge_bucket_in_progress }}"
 BUCKET_DONE = "{{ hermes_agent_vikunja_bridge_bucket_done }}"
 BUCKET_BLOCKED = "{{ hermes_agent_vikunja_bridge_bucket_blocked }}"
+# NEEDS_TRIAGE: a task aged out of Blocked (see BLOCKED_TRIAGE_DAYS) instead of
+# rotting there forever — the mechanism behind Vikunja 1523's 398 aged blocked
+# cards silently starving 12 ready ones. BUSY: a card that failed while the
+# shared brain was saturated, not because the work was bad — see reconcile().
+BUCKET_NEEDS_TRIAGE = "{{ hermes_agent_vikunja_bridge_bucket_needs_triage }}"
+BUCKET_BUSY = "{{ hermes_agent_vikunja_bridge_bucket_busy }}"
 POLL_INTERVAL = {{ hermes_agent_vikunja_bridge_poll_interval_seconds }}
 CARD_MAX_RUNTIME = "{{ hermes_agent_vikunja_bridge_card_max_runtime }}"
 CARD_MAX_RETRIES = {{ hermes_agent_vikunja_bridge_card_max_retries }}
 CARD_ASSIGNEE = "{{ hermes_agent_vikunja_bridge_card_assignee }}"
 INTAKE_LABEL = "{{ hermes_agent_vikunja_bridge_intake_label }}"
 MAX_INTAKE_PER_TICK = {{ hermes_agent_vikunja_bridge_max_intake_per_tick }}
+BLOCKED_TRIAGE_DAYS = {{ hermes_agent_vikunja_bridge_blocked_triage_days }}
+BUSY_REQUEUE_SECONDS = {{ hermes_agent_vikunja_bridge_busy_requeue_seconds }}
+# Raw up/busy/down classification the brain watchdog persists every cycle
+# (hermes-brain-watchdog.sh.j2), against the SAME router alias this agent
+# calls. Reusing it is the point — no second capacity service.
+PROBE_STATE_PATH = "{{ hermes_agent_hermes_home }}/brain-watchdog/probe_state"
 
 # The token is NEVER templated into this file — it arrives via the systemd
 # EnvironmentFile so the script itself carries no secret and is safe to read.
@@ -118,6 +141,21 @@ def clip(text, limit=SUMMARY_CHARS):
     """Length-capped. Truncation is marked, never silent."""
     text = (text or "").strip()
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def read_probe_state():
+    """up/busy/down from the watchdog's last cycle.
+
+    Missing or unreadable reads as "up" — fail OPEN, so a guest where the
+    watchdog is not (yet) deployed alongside this bridge does not
+    permanently starve intake.
+    """
+    try:
+        with open(PROBE_STATE_PATH) as handle:
+            value = handle.read().strip()
+    except OSError:
+        return "up"
+    return value if value in ("up", "busy", "down") else "up"
 
 
 # --- Vikunja REST -------------------------------------------------------------
@@ -353,6 +391,39 @@ def save_ledger(tracked):
     os.replace(tmp, tmp[: -len(".tmp")])
 
 
+# Separate file, not a STATE_SCHEMA bump: this state is ADVISORY (a missed
+# triage/requeue cycle self-heals off the board's live buckets next tick),
+# unlike the card ledger above, which is the only record of a task<->card
+# mapping. Keeping them apart means a lane-tracking bug can never corrupt the
+# one state that is not recoverable from Vikunja itself.
+LANES_PATH = STATE_PATH + ".lanes"
+
+
+def load_lanes():
+    """({blocked task id: since epoch}, {busy task id: retry-at epoch})."""
+    try:
+        with open(LANES_PATH) as handle:
+            state = json.load(handle)
+    except (OSError, ValueError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    blocked = state.get("blocked_since")
+    busy = state.get("busy_tasks")
+    return (
+        blocked if isinstance(blocked, dict) else {},
+        busy if isinstance(busy, dict) else {},
+    )
+
+
+def save_lanes(blocked_since, busy_tasks):
+    os.makedirs(os.path.dirname(LANES_PATH), exist_ok=True)
+    tmp = f"{LANES_PATH}.tmp"
+    with open(tmp, "w") as handle:
+        json.dump({"blocked_since": blocked_since, "busy_tasks": busy_tasks}, handle)
+    os.replace(tmp, tmp[: -len(".tmp")])
+
+
 # --- The loop -----------------------------------------------------------------
 
 def intake(board, tasks, tracked):
@@ -380,11 +451,12 @@ def intake(board, tasks, tracked):
     return picked
 
 
-def reconcile(board, tracked):
+def reconcile(board, tracked, busy_tasks):
     """Settled cards -> comment + bucket move + done. Returns the count."""
     if not tracked:
         return 0
     settled_count = 0
+    probe = read_probe_state()
     with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as conn:
         for task_id, card_id in list(tracked.items()):
             try:
@@ -394,6 +466,20 @@ def reconcile(board, tracked):
                 log(f"kanban.db read failed for card {card_id}: {exc}")
                 continue
             if not settled:
+                continue
+            if not ok and probe != "up" and board["busy"]:
+                # The card failed while the shared brain was saturated —
+                # capacity is the suspect, not the work. Busy lane + requeue
+                # instead of Blocked, so it is never misread as needing triage.
+                comment(int(task_id), f"{AGENT_NAME} card `{card_id}` did not finish "
+                        f"while the brain was {probe} — moved to {BUCKET_BUSY} for retry."
+                        f"\n\n{text}")
+                move_to_bucket(board["pid"], board["view"], board["busy"], int(task_id))
+                busy_tasks[task_id] = time.time() + BUSY_REQUEUE_SECONDS
+                del tracked[task_id]
+                save_ledger(tracked)
+                settled_count += 1
+                log(f"reconcile vikunja/{task_id} card {card_id} busy(probe={probe})")
                 continue
             verdict = "completed" if ok else "FAILED"
             comment(int(task_id), f"{AGENT_NAME} card `{card_id}` {verdict}:\n\n{text}")
@@ -428,7 +514,7 @@ def resolve_board():
     # should still process work; the move is skipped and the comment (which
     # carries the actual result) is posted either way. Losing the comment
     # because a column was renamed would be the worse failure.
-    for name in (BUCKET_IN_PROGRESS, BUCKET_DONE, BUCKET_BLOCKED):
+    for name in (BUCKET_IN_PROGRESS, BUCKET_DONE, BUCKET_BLOCKED, BUCKET_NEEDS_TRIAGE, BUCKET_BUSY):
         if name and name not in buckets:
             log(f"bucket {name!r} not found — its moves are skipped")
     return {
@@ -438,6 +524,8 @@ def resolve_board():
         "in_progress": buckets.get(BUCKET_IN_PROGRESS),
         "done": buckets.get(BUCKET_DONE),
         "blocked": buckets.get(BUCKET_BLOCKED),
+        "needs_triage": buckets.get(BUCKET_NEEDS_TRIAGE),
+        "busy": buckets.get(BUCKET_BUSY),
         # Carried from the same fetch that resolved the ids, so intake reads
         # the board exactly as it was when the buckets were resolved.
         "buckets": bucket_list,
@@ -451,15 +539,87 @@ def ready_tasks(board):
     return []
 
 
+def bucket_tasks(board, bucket_id):
+    """Tasks in one already-fetched bucket, by id. Empty for a falsy id (an
+    optional bucket the board never got) or one with no `tasks` key — same
+    empty-not-explode contract as ready_tasks, generalized for the sweeps
+    below."""
+    if not bucket_id:
+        return []
+    for entry in board["buckets"]:
+        if entry.get("id") == bucket_id:
+            return entry.get("tasks") or []
+    return []
+
+
+def triage_aged_blocked(board, blocked_since):
+    """Tasks that have sat in BLOCKED long enough to need a human, not another
+    retry. Returns the number moved.
+
+    Dwell time is tracked per Vikunja task id, not via a parent/child link —
+    the bridge has no visibility into Vikunja's own task relations, only the
+    bucket a task currently sits in.
+    """
+    if not board["blocked"] or not board["needs_triage"]:
+        return 0
+    now = time.time()
+    in_blocked = {task["id"] for task in bucket_tasks(board, board["blocked"])}
+    for task_id in list(blocked_since):
+        if int(task_id) not in in_blocked:
+            del blocked_since[task_id]  # left Blocked on its own; stop tracking
+    moved = 0
+    for task in bucket_tasks(board, board["blocked"]):
+        task_id = str(task["id"])
+        since = blocked_since.setdefault(task_id, now)
+        if now - since < BLOCKED_TRIAGE_DAYS * 86400:
+            continue
+        comment(task["id"], f"{AGENT_NAME}: blocked more than "
+                f"{BLOCKED_TRIAGE_DAYS}d — moved to {BUCKET_NEEDS_TRIAGE} for review.")
+        move_to_bucket(board["pid"], board["view"], board["needs_triage"], task["id"])
+        del blocked_since[task_id]
+        moved += 1
+        log(f"triage vikunja/{task_id} blocked {int((now - since) / 86400)}d -> needs_triage")
+    return moved
+
+
+def requeue_busy(board, busy_tasks):
+    """Cards moved to BUSY because a failure coincided with a non-up probe
+    (see reconcile) wait out BUSY_REQUEUE_SECONDS, then go back to READY for a
+    clean retry — the brain being saturated was not evidence the work itself
+    was bad. Returns the number re-queued.
+    """
+    if not board["ready"]:
+        return 0
+    now = time.time()
+    requeued = 0
+    for task_id, retry_at in list(busy_tasks.items()):
+        if now < retry_at:
+            continue
+        move_to_bucket(board["pid"], board["view"], board["ready"], int(task_id))
+        comment(int(task_id), f"{AGENT_NAME}: brain capacity recovered — re-queued in Ready.")
+        del busy_tasks[task_id]
+        requeued += 1
+        log(f"requeue vikunja/{task_id} busy -> ready")
+    return requeued
+
+
 def tick():
     board = resolve_board()
     if board is None:
         return
     tracked = load_ledger()
+    blocked_since, busy_tasks = load_lanes()
     # Reconcile BEFORE intake: finishing work frees the operator's in-progress
     # column before anything new lands in it, so the board never shows a
     # backlog of already-finished cards.
-    reconcile(board, tracked)
+    reconcile(board, tracked, busy_tasks)
+    requeue_busy(board, busy_tasks)
+    triage_aged_blocked(board, blocked_since)
+    save_lanes(blocked_since, busy_tasks)
+    probe = read_probe_state()
+    if probe != "up":
+        log(f"intake skipped — brain probe is {probe}")
+        return
     intake(board, ready_tasks(board), tracked)
 
 
@@ -532,6 +692,18 @@ def _self_check():
     settled, ok, text = card_state(conn, "c4")
     assert (settled, ok) == (True, False), "done with no completed run is NOT success"
     assert card_state(conn, "nosuch") == (False, False, ""), "unknown card must not settle"
+
+    # read_probe_state(): missing file reads as "up" (fail-open) so a guest
+    # without the watchdog deployed does not permanently starve intake.
+    assert read_probe_state() == "up"
+
+    # bucket_tasks(): same empty-not-explode contract as ready_tasks, and a
+    # falsy bucket id (an optional bucket the board never got) is empty too.
+    stub_board = {"buckets": [{"id": 1, "title": "Blocked", "tasks": [{"id": 20}]}]}
+    assert [t["id"] for t in bucket_tasks(stub_board, 1)] == [20]
+    assert bucket_tasks(stub_board, None) == []
+    assert bucket_tasks(stub_board, 99) == []
+
     print("self-check OK")
 
 
