@@ -1,0 +1,95 @@
+---
+# Regression test for the entry-point gate in config.yaml.j2: it used to be
+# `llm_router_hermes_cloud_only_fallback_groups | length > 0`, so a deployment
+# with ONLY the OpenCode credential seeded (no hermes-cloud key at all) still
+# had cloud_only render empty, the gate stayed closed, and every alias lost
+# its `fallbacks` and `context_window_fallbacks` keys entirely — a busy or
+# oversize request under any alias became terminal. The gate now reads
+# llm_router_context_window_wider_groups (opencode + cloud_only + openrouter
+# free), so OpenCode alone is enough to keep it open.
+- name: Verify an OpenCode-only credential still keeps entry points fallback-capable
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the model registry
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/../../llm-models.d"
+
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Configure the shared budget store
+      ansible.builtin.set_fact:
+        llm_router_redis_host: redis.example.test
+        llm_router_redis_password: test-only-not-a-real-password
+
+    - name: Seed only the OpenCode credential — no hermes-cloud key at all
+      ansible.builtin.set_fact:
+        bao_local_llm_secrets:
+          OPENCODE_API_KEY: test-opencode-subscription-key
+
+    - name: Re-evaluate the Hermes cloud projections and new segments
+      ansible.builtin.include_vars:
+        file: "{{ item }}"
+      loop:
+        - "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
+        - "{{ _role_dir }}/defaults/main/36-hermes-cloud-segments.yml"
+
+    - name: Render the config
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Every alias still carries a fallback and a context-window escape
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # ANTI-VACUITY: OpenCode alone must actually populate the chain, or
+          # this test would pass over an empty case it never meant to check.
+          - llm_router_opencode_fallback_groups | length > 0
+          - llm_router_hermes_cloud_only_fallback_groups | length == 0
+          - _rendered_aliases | length > 0
+          - _fallback_keys | length > 0
+          - _cwf_keys | length > 0
+          - _rendered_aliases | difference(_fallback_keys) | length == 0
+          - _rendered_aliases | difference(_cwf_keys) | length == 0
+        fail_msg: >-
+          With only OPENCODE_API_KEY seeded, every advertised alias must
+          still carry both a fallbacks entry and a context_window_fallbacks
+          entry. Missing fallbacks: {{ _rendered_aliases | difference(_fallback_keys) }}.
+          Missing context-window escapes:
+          {{ _rendered_aliases | difference(_cwf_keys) }}.
+        success_msg: >-
+          OpenCode-only credential state keeps all
+          {{ _rendered_aliases | length }} aliases fallback-capable.
+      vars:
+        _rendered_aliases: >-
+          {{ _config.router_settings.model_group_alias | default({}) | list }}
+        _fallback_keys: >-
+          {{ _config.router_settings.fallbacks
+             | map('dict2items') | flatten | map(attribute='key') | list }}
+        _cwf_keys: >-
+          {{ _config.router_settings.context_window_fallbacks | default([])
+             | map('dict2items') | flatten | map(attribute='key') | list }}

@@ -67,15 +67,17 @@
           # THE CONTRACT.
           - _entry_points | difference(_fallback_keys) | length == 0
           - _entry_points | difference(_cwf_keys) | length == 0
-          # Entry-point chains target the cloud-only groups and never
-          # hermes-default: an escalated call must not re-enter the chain that
-          # named it. (Cycle safety itself rests on attempted_targets, not on
-          # this — but re-entry would burn the shared depth budget for nothing.)
+          # Entry-point chains target the SAME six-segment ladder
+          # hermes-default uses (minus each entry's own name) and never
+          # hermes-default itself: an escalated call must not re-enter the
+          # chain that named it. (Cycle safety itself rests on
+          # attempted_targets, not on this — but re-entry would burn the
+          # shared depth budget for nothing.)
           - _entry_point_targets | length > 0
           - "'hermes-default' not in _entry_point_targets"
           - >-
             _entry_point_targets
-            | difference(llm_router_hermes_cloud_only_fallback_groups)
+            | difference(llm_router_hermes_default_fallback_chain)
             | length == 0
         fail_msg: >-
           Every servable id and every advertised alias must appear as a key in
@@ -90,7 +92,7 @@
         success_msg: >-
           All {{ _entry_points | length }} typeable names
           ({{ _entry_points | join(', ') }}) carry a fallback chain and a
-          context-window escape to the cloud-only groups.
+          context-window escape into the six-segment ladder.
       vars:
         _rendered_aliases: >-
           {{ _config.router_settings.model_group_alias | default({}) | list }}
@@ -109,6 +111,44 @@
              | map('dict2items') | flatten
              | selectattr('key', 'in', _entry_points)
              | map(attribute='value') | flatten | unique | list }}
+
+    # THE EXACT-MATCH CASE the subset check above cannot catch: a rung
+    # dropped from an entry point's own chain still passes "every target is
+    # IN the six-segment ladder" (a subset relation), so EVERY rendered
+    # alias — never a specific name typed here, the registry is the sole
+    # spelling — gets pinned to hold the WHOLE ladder, in the exact order,
+    # minus only its own name.
+    - name: Every alias carries the full segmented ladder, in order, minus itself
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_hermes_default_fallback_chain | length > 0
+          - _rendered_aliases | length > 0
+          - _mismatched_aliases | length == 0
+        fail_msg: >-
+          Alias fallback target(s) must equal the six-segment ladder
+          (35-hermes-cloud.yml / 36-hermes-cloud-segments.yml) exactly, minus
+          the alias's own name. Mismatched: {{ _mismatched_aliases }}.
+        success_msg: >-
+          All {{ _rendered_aliases | length }} aliases carry the full
+          segmented ladder in order.
+      vars:
+        _fallbacks_by_key: >-
+          {{ dict(_config.router_settings.fallbacks
+                  | map('dict2items') | flatten
+                  | map(attribute='key')
+                  | zip(_config.router_settings.fallbacks
+                        | map('dict2items') | flatten
+                        | map(attribute='value'))) }}
+        _mismatched_aliases: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for alias in _rendered_aliases -%}
+          {%- set _expected = llm_router_hermes_default_fallback_chain | reject('equalto', alias) | list -%}
+          {%- if (_fallbacks_by_key[alias] | default([])) != _expected -%}
+          {%- set ns.bad = ns.bad + [alias] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
 
     # THE STRUCTURAL INVARIANT, stated over the two rendered maps rather than
     # over the expressions that build them, so it cannot go tautological. This
