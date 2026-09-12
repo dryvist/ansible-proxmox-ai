@@ -1,4 +1,10 @@
 ---
+# Play-level failure isolation: every independent guest play below wraps its
+# role(s) in block/rescue, so one dead host can't abort the whole run (an
+# ansible-core executor behavior — see playbooks/tasks/record_isolated_failure.yml
+# for the root cause). The gate play at the end of this file still fails the
+# run if any play recorded a failure.
+#
 # Import OpenTofu infrastructure data before running application playbooks.
 # This populates the inventory dynamically from the published tofu inventory.
 - name: Load OpenTofu infrastructure inventory
@@ -80,8 +86,17 @@
       {{ hostvars['localhost']['tofu_data']['constants']['vector_db_ports'] }}
     qdrant_docker_http_port: "{{ _vdb_ports.qdrant_http }}"
     qdrant_docker_grpc_port: "{{ _vdb_ports.qdrant_grpc }}"
-  roles:
-    - role: qdrant_docker
+  tasks:
+    - name: Converge qdrant_docker (isolated — failure does not abort downstream plays)
+      block:
+        - name: Include qdrant_docker role
+          ansible.builtin.include_role:
+            name: qdrant_docker
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: qdrant_docker
 
 # =============================================================================
 # Phase 1b: Hindsight agent-memory service
@@ -111,8 +126,17 @@
     - hindsight_docker
     - memory
     - ai
-  roles:
-    - role: hindsight_docker
+  tasks:
+    - name: Converge hindsight_docker (isolated — failure does not abort downstream plays)
+      block:
+        - name: Include hindsight_docker role
+          ansible.builtin.include_role:
+            name: hindsight_docker
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: hindsight_docker
 
 # =============================================================================
 # Phase 2: Local LLM — Ollama inference (AMD ROCm) + Open WebUI chat
@@ -128,8 +152,17 @@
     - ollama
     - llm
     - ai
-  roles:
-    - role: ollama
+  tasks:
+    - name: Converge ollama (isolated — failure does not abort downstream plays)
+      block:
+        - name: Include ollama role
+          ansible.builtin.include_role:
+            name: ollama
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: ollama
 
 - name: Configure Open WebUI chat front-end
   hosts: open_webui_group
@@ -142,8 +175,17 @@
     - open_webui
     - llm
     - ai
-  roles:
-    - role: open_webui
+  tasks:
+    - name: Converge open_webui (isolated — failure does not abort downstream plays)
+      block:
+        - name: Include open_webui role
+          ansible.builtin.include_role:
+            name: open_webui
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: open_webui
 
 # Phase 3: the interactive agent plane (Hermes, its companion UI, herdr).
 # Split out to keep this file within its token budget — it converges here,
@@ -170,8 +212,17 @@
       {{ hostvars['localhost']['tofu_data']['constants']['vector_db_ports'] }}
     llamaindex_qdrant_host: "{{ hostvars['qdrant']['container_ip'] }}"
     llamaindex_qdrant_port: "{{ _vdb_ports.qdrant_http }}"
-  roles:
-    - role: llamaindex
+  tasks:
+    - name: Converge llamaindex (isolated — failure does not abort downstream plays)
+      block:
+        - name: Include llamaindex role
+          ansible.builtin.include_role:
+            name: llamaindex
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: llamaindex
 
 # =============================================================================
 # Phase 6: AI orchestration platforms + observability
@@ -188,8 +239,17 @@
   tags:
     - dify_docker
     - ai-orchestration
-  roles:
-    - role: dify_docker
+  tasks:
+    - name: Converge dify_docker (isolated — failure does not abort downstream plays)
+      block:
+        - name: Include dify_docker role
+          ansible.builtin.include_role:
+            name: dify_docker
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: dify_docker
 
 - name: Configure LangFlow visual prototyping
   hosts: langflow_group
@@ -198,8 +258,17 @@
   tags:
     - langflow_docker
     - ai-orchestration
-  roles:
-    - role: langflow_docker
+  tasks:
+    - name: Converge langflow_docker (isolated — failure does not abort downstream plays)
+      block:
+        - name: Include langflow_docker role
+          ansible.builtin.include_role:
+            name: langflow_docker
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: langflow_docker
 
 - name: Configure LangGraph server + Agent Chat UI (zero-cloud)
   hosts: langgraph_group
@@ -208,8 +277,17 @@
   tags:
     - langgraph_docker
     - ai-orchestration
-  roles:
-    - role: langgraph_docker
+  tasks:
+    - name: Converge langgraph_docker (isolated — failure does not abort downstream plays)
+      block:
+        - name: Include langgraph_docker role
+          ansible.builtin.include_role:
+            name: langgraph_docker
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: langgraph_docker
 
 - name: Configure agent-exec runtime (CrewAI + LangChain)
   hosts: agent_exec_group
@@ -218,8 +296,17 @@
   tags:
     - agent_exec
     - ai-orchestration
-  roles:
-    - role: agent_exec
+  tasks:
+    - name: Converge agent_exec (isolated — failure does not abort downstream plays)
+      block:
+        - name: Include agent_exec role
+          ansible.builtin.include_role:
+            name: agent_exec
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: agent_exec
 
 - name: Configure Langfuse LLM observability
   hosts: langfuse_group
@@ -228,8 +315,17 @@
   tags:
     - langfuse_docker
     - observability
-  roles:
-    - role: langfuse_docker
+  tasks:
+    - name: Converge langfuse_docker (isolated — failure does not abort downstream plays)
+      block:
+        - name: Include langfuse_docker role
+          ansible.builtin.include_role:
+            name: langfuse_docker
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: langfuse_docker
 
 - name: Configure Arize Phoenix LLM observability
   import_playbook: phoenix.yml
@@ -241,8 +337,17 @@
   tags:
     - agentgateway_docker
     - ai-orchestration
-  roles:
-    - role: agentgateway_docker
+  tasks:
+    - name: Converge agentgateway_docker (isolated — failure does not abort downstream plays)
+      block:
+        - name: Include agentgateway_docker role
+          ansible.builtin.include_role:
+            name: agentgateway_docker
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: agentgateway_docker
 
 - name: Configure docling-serve document extraction
   hosts: docling_serve_group
@@ -251,11 +356,41 @@
   tags:
     - docling_serve
     - ai-orchestration
-  roles:
-    - role: docling_serve
+  tasks:
+    - name: Converge docling_serve (isolated — failure does not abort downstream plays)
+      block:
+        - name: Include docling_serve role
+          ansible.builtin.include_role:
+            name: docling_serve
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: docling_serve
 
 # Phase 7: the headless agent execution plane (job runners, egress proxy,
 # pooled agent guests, pool return). Split out to keep this file within its
 # token budget; the proxy-before-guests ordering lives in that file's headers.
 - name: Configure the headless agent execution plane
   import_playbook: agent-runners.yml
+
+- name: Fail the run if any isolated play recorded a failure
+  hosts: localhost
+  gather_facts: false
+  tags:
+    - always
+  tasks:
+    # Failures are recorded host-locally (see tasks/record_isolated_failure.yml
+    # — a shared delegated fact would drop entries when hosts fail
+    # concurrently), so aggregate across every host's hostvars here.
+    - name: Surface isolated play failures
+      vars:
+        _all_isolated_failures: >-
+          {{ groups['all'] | union(['localhost'])
+             | map('extract', hostvars, 'site_isolated_failures')
+             | select('defined') | flatten }}
+      ansible.builtin.fail:
+        msg: >-
+          {{ _all_isolated_failures | length }} isolated play failure(s) —
+          the rest of site.yml still ran: {{ _all_isolated_failures | join('; ') }}
+      when: _all_isolated_failures | length > 0
