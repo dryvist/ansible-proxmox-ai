@@ -2,18 +2,30 @@
 # A failed cron run's artifact repeats the whole prompt (constant, ~15 KB,
 # reconstructable from the job definition) and keeps nothing of the run. The
 # prompt section becomes a hash and a length; the success artifact's prompt
-# section is untouched (its anchor ends in "## Response").
+# section is untouched.
+#
+# Rewritten (2026-09): the header text this used to target
+# ("## Prompt\n\n{prompt}\n\n## Error") no longer exists as one string —
+# upstream factored the header into a shared function, _run_doc_header,
+# used by BOTH the success and failure paths, with the "## Error" section
+# now composed separately in cron/scheduler_diagnostics.py. Patching the
+# shared header text itself would have hashed the prompt on the SUCCESS
+# artifact too, which this patch has never touched. Patches the FAILURE
+# call site instead: pass a hashed representation as the `prompt` argument
+# to _run_doc_header, rather than post-processing its output.
 - name: Hash the prompt in a failed cron run's artifact
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    regexp: '^## Prompt\n\n\{prompt\}\n\n## Error$'
+    regexp: |-
+      ^([ \t]*)_run_doc_header\(job, f"\{job_name\} \(FAILED\)", job_id, prompt\)$
     replace: |-
-      ## Prompt
-
-      sha256:{__import__("hashlib").sha256(str(prompt).encode("utf-8")).hexdigest()}
-      ({len(str(prompt))} chars; the job definition carries the text)
-
-      ## Error
+      \1_run_doc_header(
+      \1    job, f"{job_name} (FAILED)", job_id,
+      \1    (
+      \1        f'sha256:{__import__("hashlib").sha256(str(prompt).encode("utf-8")).hexdigest()} '
+      \1        f'({len(str(prompt))} chars; the job definition carries the text)'
+      \1    ),
+      \1)
   notify: Restart hermes-gateway
 
 - name: Read back the failure artifact writer
@@ -26,11 +38,18 @@
   ansible.builtin.assert:
     quiet: true
     that:
-      - "'sha256:{__import__(\"hashlib\").sha256(str(prompt)' in hermes_agent_failure_artifact_source"
-      - "'## Prompt\n\n{prompt}\n\n## Response' in hermes_agent_failure_artifact_source"
+      - >-
+        'sha256:{__import__("hashlib").sha256(str(prompt)'
+        in hermes_agent_failure_artifact_source
+      # The success path's own call is untouched — same function, plain
+      # prompt argument, own title text (no "(FAILED)" suffix) — proving
+      # the hash landed only on the failure branch.
+      - >-
+        '_run_doc_header(job, job_name, job_id, prompt) + f"## Response'
+        in hermes_agent_failure_artifact_source
     fail_msg: >-
       The pinned Hermes source changed and the failure-artifact prompt hash
-      patch did not apply (or the success artifact lost its prompt section);
-      re-anchor before converging.
+      patch did not apply (or the success artifact's own call site
+      changed); re-anchor before converging.
   vars:
     hermes_agent_failure_artifact_source: "{{ hermes_agent_failure_artifact_readback.content | b64decode }}"
