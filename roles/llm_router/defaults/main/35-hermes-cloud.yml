@@ -211,8 +211,9 @@ llm_router_hermes_cloud_fallback_groups: >-
 # back to. A matching model-group policy takes precedence over it for that
 # name alone (router_utils/get_retry_from_policy.py:32-33, litellm 1.98.0), so
 # enumerate every name that DOES carry a chain: each chain rung, each
-# credential-backed provider router, and each entry-point name that
-# 37-fallback-entry-points.yml keys. Every one of them then makes one attempt
+# credential-backed provider router, each entry-point name that
+# 37-fallback-entry-points.yml keys, and the complexity router itself. Every
+# one of them then makes one attempt
 # and hands a busy slot to its chain immediately, instead of sleeping on it
 # for up to rate_limit_retries x retry_after first. "Busy" is not a failure
 # worth a back-off when a chain exists to absorb it — local or paid alike.
@@ -234,6 +235,15 @@ llm_router_hermes_cloud_zero_retry_groups: >-
   {%- endfor -%}
   {%- if llm_router_hermes_cloud_only_fallback_groups | length > 0 -%}
   {%- for name in llm_router_entry_point_names -%}
+  {%- if name not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [name] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {#- The complexity router itself: the name that carries almost all traffic.
+      A busy local slot under it IS the overflow condition, so it hands to its
+      chain at once rather than sleeping on the slot first. -#}
+  {%- for m in llm_router_hermes_virtual_models -%}
+  {%- set name = m.route_group | default(m.client_model_id) -%}
   {%- if name not in ns.groups -%}
   {%- set ns.groups = ns.groups + [name] -%}
   {%- endif -%}
