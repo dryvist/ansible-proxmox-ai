@@ -51,7 +51,7 @@
           postgres_default: 5432
     bao_local_llm_secrets: {}
     bao_apps_secrets: {}
-    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: "pve.example.test"
     llm_router_master_key: sk-test-master
@@ -120,7 +120,10 @@
     bao_apps_secrets:
       llm_router_db_password: not-a-real-password
       llm_router_ui_password: not-a-real-password
-    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    # Read by the env template's OTEL line; an inventory var, so a play var
+    # binds. Placeholder only — the render is asserted on LITELLM_LOG, not this.
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: "pve.example.test"
     llm_router_master_key: sk-test-master
@@ -223,46 +226,33 @@
           that renders cleanly and then fails to boot.
         success_msg: prometheus-client is installed, so the callback can import.
 
-    - name: The router logger is raised above the level that hides routing
+    # Fails if: LITELLM_LOG is absent from the env render, is rendered at
+    # WARNING or above, or the unit grows a --log_config flag again. The env
+    # render is non-empty by construction (it always carries the master key),
+    # so an empty render cannot satisfy the search.
+    - name: The proxy is told to log routing decisions, through the one knob that works
       ansible.builtin.assert:
         quiet: true
         that:
-          - _logging.loggers['LiteLLM Router'].level | upper in ['INFO', 'DEBUG']
-          - _logging.disable_existing_loggers == false
-          - "'root' not in _logging"
-          - "'handlers' not in _logging.loggers['LiteLLM Router']"
+          - _env is search('(?m)^LITELLM_LOG=(INFO|DEBUG)$')
+          # ExecStart only: the unit's comment names the flag to say why it is
+          # absent, and a whole-file search would fail on the explanation.
+          - _unit is not search('(?m)^ExecStart=.*--log_config')
+          - _unit is search('(?m)^ExecStart=')
+          - _env | length > 0
         fail_msg: >-
-          The rendered logging config is wrong in a way that fails silently.
-          Checked: the router logger must be INFO or lower (got
-          {{ _logging.loggers['LiteLLM Router'].level | default('(absent)') }}) or
-          routing records are dropped at the logger and no handler can recover
-          them; disable_existing_loggers must be false (got
-          {{ _logging.disable_existing_loggers | default('(absent)') }}) or
-          applying this file silences every logger it does not name, including
-          the ones it exists to raise; no root level, or every library in the
-          process starts emitting INFO on a proxy that carries prompts; and no
-          handlers key on the router logger, or it gets a second handler
-          alongside the one LiteLLM attaches and every line is duplicated.
-        success_msg: >-
-          Router logger at {{ _logging.loggers['LiteLLM Router'].level }},
-          existing loggers preserved, root untouched, no duplicate handler.
+          Routing decisions are logged at INFO and LiteLLM sets no level on its
+          own loggers, so without LITELLM_LOG=INFO in the EnvironmentFile
+          (got: {{ _env | regex_search('(?m)^LITELLM_LOG=.*$') | default('absent') }})
+          every fallback and deployment-selection record is dropped at the
+          logger. And the unit must NOT pass --log_config: a dictConfig strips
+          LiteLLM's own handler and its secret-redaction filter from any logger
+          it names, which is the regression a previous revision shipped
+          (defaults/main/60-ops.yml).
+        success_msg: LITELLM_LOG set in the env file; no dictConfig on the unit.
       vars:
-        _logging: >-
-          {{ lookup('template', _role_dir ~ '/templates/logging.yaml.j2') | from_yaml }}
-
-    - name: The unit passes the logging config it renders
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - "'--log_config ' ~ llm_router_log_config_file in _unit"
-        fail_msg: >-
-          litellm.service.j2 does not pass --log_config
-          {{ llm_router_log_config_file }}. The file would be written and never
-          read, so the router logger stays at its inherited level and the
-          routing trail stays invisible — with a rendered config on disk that
-          says otherwise.
-        success_msg: The unit reads the logging config the role deploys.
-      vars:
+        _env: >-
+          {{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}
         _unit: >-
           {{ lookup('template', _role_dir ~ '/templates/litellm.service.j2') }}
 

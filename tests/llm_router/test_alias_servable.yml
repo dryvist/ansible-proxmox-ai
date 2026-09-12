@@ -122,12 +122,26 @@
         quiet: true
         that:
           - llm_router_virtual_keys | length > 0
-          - _key_scope_models | difference(_advertised) | length == 0
+          - _key_scope_models | difference(_advertised) | difference([_deny]) | length == 0
+          # The deny sentinel is LiteLLM's reserved name, not an advertised
+          # model, and it is admitted ONLY on a key that lists nothing else: a
+          # key mixing the sentinel with real names is a contradiction that
+          # LiteLLM resolves by granting the real names. Fails if any key
+          # carries the sentinel alongside another scope.
+          - _mixed_deny_keys | length == 0
+          # An EMPTY scope on a key means ALL MODELS in LiteLLM (auth_checks:
+          # len(models) == 0 -> all_model_access). Fails if any key renders
+          # with no scope at all — the shape a metrics-only key would take if
+          # written the obvious way, and it would be a full-access key.
+          - _empty_scope_keys | length == 0
         fail_msg: >-
           Virtual-key scope(s)
-          [{{ _key_scope_models | difference(_advertised) | join(', ') }}]
+          [{{ _key_scope_models | difference(_advertised) | difference([_deny]) | join(', ') }}]
           name nothing the router advertises. A key may only list a servable
-          model, a group alias, a role deployment, or a Hermes agent.
+          model, a group alias, a role deployment, a Hermes agent, or — alone —
+          the '{{ _deny }}' sentinel. Keys mixing the sentinel with other scopes:
+          [{{ _mixed_deny_keys | join(', ') }}]. Keys with an EMPTY scope, which
+          LiteLLM reads as every model: [{{ _empty_scope_keys | join(', ') }}].
         success_msg: >-
           all {{ llm_router_virtual_keys | length }} virtual keys scope
           {{ _key_scope_models | length }} advertised names
@@ -142,3 +156,14 @@
         _key_scope_models: >-
           {{ llm_router_virtual_keys | map(attribute='models') | flatten
              | unique | list }}
+        # LiteLLM's SpecialModelNames.no_default_models (_types.py).
+        _deny: no-default-models
+        _mixed_deny_keys: >-
+          {{ llm_router_virtual_keys
+             | selectattr('models', 'contains', _deny)
+             | rejectattr('models', 'equalto', [_deny])
+             | map(attribute='alias') | list }}
+        _empty_scope_keys: >-
+          {{ llm_router_virtual_keys
+             | selectattr('models', 'equalto', [])
+             | map(attribute='alias') | list }}

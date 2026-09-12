@@ -1,0 +1,39 @@
+{{ ansible_managed | comment('plain', prefix='', postfix='', decoration='-- ') }}
+-- The serving-share metric, computed over the trailing 7 days and emitted as
+-- ONE JSON object so the timer's journal line is a single parseable event.
+-- This file is the definition; docs/LLM_ROUTER_OBSERVABILITY.md explains it and
+-- points here rather than carrying a second copy of the SQL.
+--
+-- "local" is an api_base on an estate host: the internal subdomain is rendered
+-- in from the role variable, never typed here, and matched with wildcards on
+-- BOTH sides because api_base is a full URL ending in a port — an anchored
+-- suffix match returns zero local requests and reads exactly like a fabric
+-- serving nothing locally.
+--
+-- Chat completions only: embeddings are always local and would flatter the
+-- share. The numerator counts successes (a failed request was answered by
+-- nothing); the denominator counts every row, success or failure.
+-- A 429 counts against the caller only when it was the FINAL outcome: retries
+-- that later succeeded never reach the failure path that writes a row.
+WITH reqs AS (
+  SELECT
+    status,
+    api_base LIKE '%{{ llm_router_subdomain }}%' AS is_local,
+    metadata -> 'error_information' ->> 'error_code' AS error_code
+  FROM "LiteLLM_SpendLogs"
+  WHERE call_type IN ('acompletion', 'completion')
+    AND "startTime" >= now() - interval '7 days'
+)
+SELECT json_build_object(
+  'metric',            'llm_router_serving_share',
+  'window',            '7d',
+  'computed_at',       to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+  'requests',          count(*),
+  'local_share',       round(count(*) FILTER (WHERE is_local AND status = 'success')::numeric
+                             / NULLIF(count(*), 0), 4),
+  'overflow_share',    round(count(*) FILTER (WHERE NOT is_local AND status = 'success')::numeric
+                             / NULLIF(count(*), 0), 4),
+  'caller_429_rate',   round(count(*) FILTER (WHERE status = 'failure' AND error_code = '429')::numeric
+                             / NULLIF(count(*), 0), 4)
+)
+FROM reqs;

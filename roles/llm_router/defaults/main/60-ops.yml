@@ -54,28 +54,44 @@ llm_router_otel_endpoint: "{{ ai_orchestration_otel_endpoint }}"
 # can carry a credential. A scraper needs a key, exactly like any other client.
 llm_router_prometheus_enabled: true
 
-# Level for the router's OWN logger, and the reason this exists at all.
+# Level for LiteLLM's own three loggers, rendered as LITELLM_LOG in the
+# EnvironmentFile. Every routing decision — which rung was tried, whether a
+# chain was entered, which deployment was selected — is logged at INFO, and at
+# import LiteLLM sets NO level on those loggers (_logging.py:353-360 attaches a
+# handler, nothing calls setLevel), so they inherit the root's WARNING and the
+# whole routing trail was dropped at the logger while the log looked busy.
 #
-# LiteLLM never calls setLevel on its three named loggers, so they inherit the
-# root logger's WARNING. Errors and warnings are emitted; INFO records are
-# dropped AT THE LOGGER. Every routing decision — which rung was tried, whether
-# a chain was entered, which deployment was selected — is logged at INFO, so the
-# whole routing trail was invisible while the log looked healthy and busy.
+# LITELLM_LOG=INFO is the supported fix. It is read twice, and both readings
+# matter: at import it sets the threshold of the handler LiteLLM attaches
+# (_logging.py:137-143; default DEBUG, so it never blocked INFO and it carries
+# the secret-redaction filter), and at proxy init the not-debug branch of
+# initialize() calls setLevel(INFO) on exactly the three named loggers
+# (proxy_server.py:7416-7433) — not on every library. Cost: the proxy and
+# package loggers emit INFO too, roughly one line per request, not payload
+# dumps. Set WARNING to return to the previous silence.
 #
-# THE OBVIOUS FIX DOES NOT WORK, and silently. LITELLM_LOG sets the HANDLER
-# threshold only; a record the logger already discarded can never reach a
-# handler, so LITELLM_LOG=INFO changes nothing while looking like it should.
-# The supported switches (--detailed_debug, set_verbose) both jump EVERY logger
-# to DEBUG, which is not a diagnostic — it is every library plus payload dumps,
-# on a proxy that carries prompts. Refused.
+# NOT a --log_config dictConfig. A non-incremental dictConfig REMOVES every
+# existing handler from any logger it names (logging/config.py,
+# common_logger_config), whether or not it supplies handlers. Naming the
+# router logger there strips the handler LiteLLM attached — and the redaction
+# filter on it — so records fall to lastResort, which admits WARNING and above
+# only and redacts nothing. A dictConfig here must own the handler and
+# re-install both filters explicitly, or it must not name these loggers.
 #
-# What is left is a logging config file, which the proxy hands to its server as
-# a dictConfig, naming the router logger alone. That is what this renders.
-# INFO on the router logger costs roughly one line per request plus fallback
-# lines, so it is affordable continuously; set it to WARNING to return to the
-# silent behaviour without removing the file.
-llm_router_router_log_level: INFO
-llm_router_log_config_file: "{{ llm_router_config_dir }}/logging.yaml"
+# Debug is refused: --detailed_debug and set_verbose raise EVERY logger to
+# DEBUG, which on a proxy that carries prompts is a data-exposure change.
+llm_router_log_level: INFO
+
+# --- The serving-share metric, on a schedule (tasks/serving-share.yml) --------
+# One JSON line per run, to the journal, from the query in
+# templates/serving-share.sql.j2 — the definition lives THERE, once; the
+# observability doc explains it and points at it. Daily over a trailing 7-day
+# window: the target is weekly, and a daily sample of a weekly window shows a
+# bad day as a step instead of losing it inside one sample.
+llm_router_serving_share_query_file: "{{ llm_router_config_dir }}/serving-share.sql"
+llm_router_serving_share_syslog_identifier: llm-serving-share
+# Off the hour so it does not stack on the proxy's own daily retention sweep.
+llm_router_serving_share_on_calendar: "*-*-* 04:23:00"
 
 # Whether the routers carry the llm-fast (GPU) deployments. False while the
 # GPU host is frozen (see llama_cpp_service_enabled): the firewall DROPs
