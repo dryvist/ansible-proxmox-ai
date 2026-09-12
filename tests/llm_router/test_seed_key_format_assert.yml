@@ -1,0 +1,104 @@
+---
+# Pins the guard added after Semaphore task 108 (2026-09-12): LiteLLM's
+# /key/generate rejects a caller-supplied key that doesn't start with 'sk-'
+# and run at least 16 characters, and seed-keys.yml's own no_log (needed to
+# keep the raw value out of the log) censored that 400 down to nothing
+# useful. roles/llm_router/tasks/assert-seed-key-format.yml exists to fail
+# loud, by alias, before the /key/generate call ever fires. This proves it
+# stays quiet on a well-formed value, fails loud (naming the alias, never
+# the value -- checked against the WHOLE failed result, not just its msg)
+# on the exact shape that broke task 108, and rejects one that is
+# 'sk-'-prefixed but still too short.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_seed_key_format_assert.yml -i localhost, -c local
+
+- name: The guard passes every candidate that is a valid LiteLLM custom key
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _llm_router_unseeded_keys:
+      - alias: open-webui
+        value: "sk-{{ 'a' * 20 }}"
+        models: []
+      - alias: langgraph
+        value: "sk-{{ 'b' * 13 }}"
+        models: ["cheap", "embed"]
+  tasks:
+    - name: Run the key-format guard against an all-valid fixture
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-seed-key-format.yml"
+
+- name: The guard fails loud, naming the alias never the value, on a plain-alnum seed
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    # Same shape as the live 400: a random alnum value with no 'sk-' prefix —
+    # exactly what community.general.random_string (no prefix) produces in
+    # ansible-proxmox-apps' seed_generated_app_secret.yml.
+    _llm_router_unseeded_keys:
+      - alias: open-webui
+        value: "m8buABCDEFGHIJKLMNOPQRSTUVWXJkqw"
+        models: []
+  tasks:
+    - name: Prove an unprefixed seed value fails the guard
+      block:
+        - name: Import the key-format guard with an unprefixed fixture value
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-seed-key-format.yml"
+
+        - name: Fail because the guard admitted a value LiteLLM would reject
+          ansible.builtin.fail:
+            msg: >-
+              roles/llm_router/tasks/assert-seed-key-format.yml PASSED a
+              value with no 'sk-' prefix. That guard is the only thing
+              standing between this exact shape and the no_log-censored 400
+              that broke Semaphore task 108.
+      rescue:
+        - name: Confirm the guard failed for the alias, and never leaked the value
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'open-webui' in _seed_key_format_failure_text"
+              - "'m8buABCDEFGHIJKLMNOPQRSTUVWXJkqw' not in (ansible_failed_result | to_json)"
+            fail_msg: >-
+              The guard failed, but not with the expected alias-naming
+              message (and possible value leak) — got
+              {{ _seed_key_format_failure_text }}.
+            success_msg: "An unprefixed seed value is fatal, naming only the alias."
+          vars:
+            _seed_key_format_failure_text: "{{ ansible_failed_result.msg | default('(none)') }}"
+
+- name: The guard fails a 'sk-'-prefixed value that is still too short
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _llm_router_unseeded_keys:
+      - alias: prometheus-scrape
+        value: "sk-short"
+        models: ["no-default-models"]
+  tasks:
+    - name: Prove a too-short prefixed value fails the guard
+      block:
+        - name: Import the key-format guard with a too-short fixture value
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-seed-key-format.yml"
+
+        - name: Fail because the guard admitted a key below MINIMUM_CUSTOM_KEY_LENGTH
+          ansible.builtin.fail:
+            msg: >-
+              roles/llm_router/tasks/assert-seed-key-format.yml PASSED a
+              'sk-'-prefixed value shorter than LiteLLM's 16-character
+              minimum.
+      rescue:
+        - name: Confirm the guard failed for the short-value reason
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'prometheus-scrape' in _seed_key_format_failure_text"
+            fail_msg: >-
+              The guard failed, but not naming the expected alias — got
+              {{ _seed_key_format_failure_text }}.
+            success_msg: "A too-short 'sk-'-prefixed value is fatal, naming only the alias."
+          vars:
+            _seed_key_format_failure_text: "{{ ansible_failed_result.msg | default('(none)') }}"
