@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.44.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.43.0...v0.44.0) (2026-09-12)
+
+
+### Features
+
+* **openbao_secrets:** read the per-caller router key paths as optional ([c573995](https://github.com/dryvist/ansible-proxmox-ai/commit/c5739955e3250c215d8c55ac7f78313488cb552d))
+* **runner:** authenticate as the execution plane's own identity when its credential is present ([#733](https://github.com/dryvist/ansible-proxmox-ai/issues/733)) ([fcc49b3](https://github.com/dryvist/ansible-proxmox-ai/commit/fcc49b34732d50d82e14d7b037829cda472f2415))
+
 ## [0.43.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.42.0...v0.43.0) (2026-09-12)
 
 
