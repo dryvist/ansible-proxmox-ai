@@ -94,6 +94,11 @@ CARD_MAX_RETRIES = {{ hermes_agent_vikunja_bridge_card_max_retries }}
 CARD_ASSIGNEE = "{{ hermes_agent_vikunja_bridge_card_assignee }}"
 INTAKE_LABEL = "{{ hermes_agent_vikunja_bridge_intake_label }}"
 MAX_INTAKE_PER_TICK = {{ hermes_agent_vikunja_bridge_max_intake_per_tick }}
+# Design doc S1.1's three reusable labels: only hard-dep changes bridge
+# behaviour (recurring/oneshot are read by the dispatcher, not here). Reused
+# verbatim, not reserved as a role default — it is a fixed board convention,
+# same footing as INTAKE_LABEL's sibling constants above.
+HARD_DEP_LABEL = "hard-dep"
 BLOCKED_TRIAGE_DAYS = {{ hermes_agent_vikunja_bridge_blocked_triage_days }}
 BUSY_REQUEUE_SECONDS = {{ hermes_agent_vikunja_bridge_busy_requeue_seconds }}
 # Raw up/busy/down classification the brain watchdog persists every cycle
@@ -237,6 +242,24 @@ def mark_done(task_id):
     api("POST", f"/tasks/{task_id}", {"done": True})
 
 
+def has_undone_parent(task_id):
+    """True if a hard-dep task still has an unfinished Vikunja `parenttask`
+    relation (design doc S1.1: "a card with hard-dep refuses to run until
+    every parent is done").
+
+    One GET per hard-dep task, per call — hard-dep is an explicit per-card
+    opt-in and expected to stay rare, so this trades a little per-tick
+    network for not duplicating the board's relation graph in the bridge's
+    own state. A parent counts as done purely by Vikunja's own `done` flag:
+    the bridge never sets it except on a genuine success, so a parent sitting
+    in Blocked, Needs Triage or Busy is already `done: false` — no bucket
+    cross-reference needed.
+    """
+    detail = api("GET", f"/tasks/{task_id}") or {}
+    parents = (detail.get("related_tasks") or {}).get("parenttask") or []
+    return any(not parent.get("done") for parent in parents)
+
+
 def actionable(task, tracked):
     """Is this task ours to pick up?
 
@@ -249,11 +272,14 @@ def actionable(task, tracked):
         return False
     if str(task.get("id")) in tracked:
         return False
-    if INTAKE_LABEL:
-        labels = [(lbl.get("title") or "") for lbl in (task.get("labels") or [])]
-        if INTAKE_LABEL not in labels:
-            return False
-    return bool((task.get("description") or task.get("title") or "").strip())
+    labels = [(lbl.get("title") or "") for lbl in (task.get("labels") or [])]
+    if INTAKE_LABEL and INTAKE_LABEL not in labels:
+        return False
+    if not (task.get("description") or task.get("title") or "").strip():
+        return False
+    if HARD_DEP_LABEL in labels and has_undone_parent(task["id"]):
+        return False
+    return True
 
 
 # --- Hermes board -------------------------------------------------------------

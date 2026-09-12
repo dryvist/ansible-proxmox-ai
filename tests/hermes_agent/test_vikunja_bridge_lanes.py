@@ -105,6 +105,32 @@ def test_reconcile_routes_a_probe_busy_failure_to_busy_not_blocked():
         os.remove(BRIDGE.DB_PATH)
 
 
+def test_hard_dep_is_withheld_while_any_parenttask_relation_is_undone():
+    responses = {
+        1: {"related_tasks": {"parenttask": [{"done": True}]}},
+        2: {"related_tasks": {"parenttask": [{"done": True}, {"done": False}]}},
+        3: {"related_tasks": {}},
+    }
+
+    def fake_api(method, path, body=None):
+        return responses[int(path.rsplit("/", 1)[-1])]
+
+    with _patch(api=fake_api):
+        assert BRIDGE.has_undone_parent(1) is False
+        assert BRIDGE.has_undone_parent(2) is True
+        assert BRIDGE.has_undone_parent(3) is False, "no parenttask relation blocks nothing"
+
+    hard_dep = [{"title": BRIDGE.INTAKE_LABEL}, {"title": BRIDGE.HARD_DEP_LABEL}]
+    with _patch(api=fake_api):
+        assert BRIDGE.actionable({"id": 1, "title": "t", "labels": hard_dep}, {})
+        assert not BRIDGE.actionable({"id": 2, "title": "t", "labels": hard_dep}, {})
+        assert BRIDGE.actionable({"id": 3, "title": "t", "labels": hard_dep}, {})
+    # A task without the label is never routed through has_undone_parent at
+    # all — no relation lookup for the common (non-hard-dep) case.
+    assert BRIDGE.actionable(
+        {"id": 2, "title": "t", "labels": [{"title": BRIDGE.INTAKE_LABEL}]}, {})
+
+
 def test_intake_is_gated_on_the_watchdog_probe_state():
     calls = []
     board_stub = {"pid": 1, "view": 1, "ready": 2, "in_progress": None, "done": None,
