@@ -16,7 +16,7 @@
           otel_traces_http: 4318
           redis_default: 6379
     bao_local_llm_secrets: {}
-    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: pve.example.test
     llm_router_master_key: sk-test-master
@@ -32,7 +32,7 @@
         dir: "{{ _role_dir }}/defaults/main"
 
     # assert-endpoint-dns.yml (part of the render-time assertions below) does a
-    # real getent lookup on every advertised backend host. This fixture's
+    # real resolver lookup on every advertised backend host. This fixture's
     # llm_router_subdomain is the RFC 2606 reserved pve.example.test, which by
     # design never resolves — point the base URLs at localhost so the guard
     # checks its own logic against a host every runner actually resolves,
@@ -62,11 +62,24 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_hermes_default_fallback_chain == ['hermes-local-4080']
-          - "_config.router_settings.fallbacks == [{'hermes-default': ['hermes-local-4080']}]"
+          # The local leg is read from the registry, not re-typed, and there
+          # must be exactly one: an empty list here would let a chain that
+          # advertises nothing at all pass as "local only".
+          - _local_groups | length == 1
+          - llm_router_hermes_default_fallback_chain == _local_groups
+          - "_config.router_settings.fallbacks == [{hermes_brain_model: _local_groups}]"
           - _config.router_settings.max_fallbacks | int == 1
+          # With no cloud rung the complexity router has no chain to hand a
+          # busy slot to, so it must KEEP the global 429 sleep: no zero-retry
+          # entry. ANTI-VACUITY: the retry-policy map must exist and hold the
+          # local leg, or "not in" is trivially true over an absent map. The
+          # input that would slip through a weaker guard is a render with no
+          # model_group_retry_policy at all.
+          - _config.router_settings.model_group_retry_policy | length > 0
+          - llm_router_local_fallback_groups | first in _config.router_settings.model_group_retry_policy
+          - hermes_brain_model not in _config.router_settings.model_group_retry_policy
           - _cloud_models | length == 0
-          - _hermes_router.litellm_params.model == 'auto_router/complexity_router'
+          - _hermes_router.litellm_params.model == _hermes_registry_entry.litellm_model_name
           - _hermes_router.litellm_params.complexity_router_config.tiers.SIMPLE
             == llm_router_routine_model
           - _hermes_router.litellm_params.complexity_router_config.tiers.MEDIUM
@@ -87,4 +100,10 @@
              | selectattr('model_name', 'match', '^hermes-cloud-') | list }}
         _hermes_router: >-
           {{ _config.model_list
-             | selectattr('model_name', 'equalto', 'hermes-default') | first }}
+             | selectattr('model_name', 'equalto', hermes_brain_model) | first }}
+        _hermes_registry_entry: >-
+          {{ llm_router_model_registry
+             | selectattr('client_model_id', 'equalto', hermes_brain_model) | first }}
+        _local_groups: >-
+          {{ llm_router_model_registry | selectattr('tier', 'equalto', 'hermes-local')
+             | map(attribute='route_group') | unique | list }}

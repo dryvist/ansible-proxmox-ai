@@ -1,18 +1,20 @@
 ---
 # A fallback rung narrower than the primary cannot rescue a request the primary
-# refused for a NON-size reason, and litellm treats a context error raised
-# inside a fallback attempt as terminal. So a narrow leg placed ahead of the
-# wider rungs does not merely fail itself -- it kills the whole chain, with the
-# rungs behind it listed and never reached.
+# refused for a NON-size reason. Reached as a rung, it raises
+# ContextWindowExceededError before doing any work; litellm consults
+# context_window_fallbacks under the LEG's name, and with or without an entry
+# the enclosing walk ADVANCES (assert-fallback-chain.yml, 35-hermes-cloud.yml,
+# 37-fallback-entry-points.yml carry the source citations). So a narrow leg
+# ahead of the wider rungs does not kill the chain — it spends one attempt and
+# one unit of the shared depth budget on a rung that could never have
+# answered, every time.
 #
-# Observed 2026-09-01 on the live fleet: overflows of 35,643-44,740 tokens
-# against a 32768 leg, chain aborted, free cloud rungs never tried. Deploying
-# context_window_fallbacks entries for that leg did NOT fix it (verified present
-# in the deployed config while the abort continued), because the map is not
-# consulted for an error raised by a fallback leg.
+# An earlier version of this header said the leg aborted the whole chain and
+# that the map is not consulted for a fallback leg. Both were wrong against
+# the pinned source; the ordering rule survives on the cheaper, true reason.
 #
 # This test pins the ordering rule and BOTH policies, so a future edit cannot
-# silently reintroduce the abort.
+# silently put a rung that cannot answer in front of one that can.
 - name: Verify narrow local fallback legs are ordered behind the wider rungs
   hosts: localhost
   gather_facts: false
@@ -34,7 +36,7 @@
       OPENROUTER_API_KEY: test-openrouter-provider-key
       GEMINI_API_KEY: test-gemini-provider-key
       DASHSCOPE_API_KEY: test-dashscope-provider-key
-    ai_default_model: mlx-community/Qwen3.8-27B-4bit
+    ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: pve.example.test
     llm_router_master_key: test-master-key
@@ -94,8 +96,8 @@
             > _chain.index(llm_router_hermes_cloud_only_fallback_groups | last)
         fail_msg: >-
           A narrow local leg precedes a cloud rung in the chain. That is the
-          exact ordering that aborts the whole chain on a context error, with
-          the wider rungs listed and never reached. Chain was: {{ _chain }}
+          exact ordering that spends an attempt and a unit of depth budget on a
+          rung that cannot answer, ahead of the rungs that can. Chain was: {{ _chain }}
 
     - name: The chain still contains every group it did before the reorder
       ansible.builtin.assert:
@@ -116,7 +118,7 @@
     # fallback-chain.yml exists as its own file specifically so a test can
     # import it and prove each failure mode; until now nothing did, so its
     # ordering clause had never been shown to fire. Feed it the exact chain
-    # that aborted in production and require it to reject.
+    # observed in production and require it to reject.
     - name: The converge-time assert rejects a narrow leg placed ahead of a cloud rung
       block:
         - name: Import the assert with a misordered chain
@@ -130,8 +132,8 @@
           ansible.builtin.fail:
             msg: >-
               assert-fallback-chain.yml ACCEPTED a chain with a narrow local
-              leg ahead of the cloud rungs. That is the ordering that aborts
-              the whole chain on an over-long request, so the guard is inert.
+              leg ahead of the cloud rungs. That is the ordering that spends a
+              rung and depth on a leg that cannot answer, so the guard is inert.
       rescue:
         - name: Confirm it failed for the ordering reason, not an unrelated one
           ansible.builtin.assert:

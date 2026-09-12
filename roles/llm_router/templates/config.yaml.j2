@@ -22,19 +22,37 @@ router_settings:
     {{ alias | to_json }}: {{ target | to_json }}
 {% endfor %}
 {% if llm_router_hermes_default_fallback_chain | length > 0 %}
-  # The source-verified fallback key is the original request name, not the
-  # complexity-selected local group. Only credential-backed provider groups
-  # render here, so no dead route or duplicate local attempt is advertised.
+  # The source-verified fallback key is the name the caller of that invocation
+  # TYPED — captured on entry, so it is never the complexity-selected local
+  # group. It is equally never an alias resolved to its target: model_group_alias
+  # resolution happens below the fallback handler, and the lookup is a plain
+  # string match, so an alias and the id it points at are two independent keys
+  # and neither inherits the other's chain. Every name a caller can type needs
+  # its own entry.
+  # Only credential-backed provider groups render here, so no dead route or
+  # duplicate local attempt is advertised.
   fallbacks:
     - hermes-default: {{ llm_router_hermes_default_fallback_chain | to_json }}
 {% for _group in llm_router_hermes_default_fallback_chain if not _group.startswith('hermes-local') %}
     - {{ _group }}: {{ [llm_router_primary_model] | to_json }}
 {% endfor %}
+{% if llm_router_hermes_cloud_only_fallback_groups | length > 0 %}
+    # ENTRY POINTS. hermes-default is not the only name a caller uses: every
+    # servable id and every alias above is called directly, and a name with no
+    # key here makes a failure arriving that way terminal. These target the
+    # cloud-only groups directly, never hermes-default, so an escalated call
+    # cannot re-enter the chain that named it.
+{% for _name in llm_router_entry_point_names %}
+    - {{ _name | to_json }}: {{ llm_router_hermes_cloud_only_fallback_groups | to_json }}
+{% endfor %}
+{% endif %}
 {% endif %}
 {% if llm_router_context_window_fallbacks | length > 0 %}
   # Escape hatch for the local legs, which serve a smaller context than the
-  # primary. Without it an over-long request does not merely skip that rung —
-  # it aborts the whole chain there (see 35-hermes-cloud.yml for the mechanism).
+  # primary. Rendered all-or-nothing on purpose: a key missing from a map that
+  # EXISTS re-raises without ever consulting the ordinary fallbacks map, while
+  # no map at all falls through to it — so a partial map is worse than none
+  # (see 35-hermes-cloud.yml for the mechanism and the derivation).
   context_window_fallbacks:
 {% for entry in llm_router_context_window_fallbacks %}
 {% for group, targets in entry.items() %}
@@ -42,10 +60,11 @@ router_settings:
 {% endfor %}
 {% endfor %}
 {% endif %}
-  # Derived from the chain length (35-hermes-cloud.yml), not a fixed 1: this is
-  # a 5-leg chain now, and a hardcoded max_fallbacks here would silently cap
-  # every attempt after the first, truncating the whole fallback design while
-  # still rendering and passing every test that doesn't count fallback depth.
+  # Derived (35-hermes-cloud.yml) from the distinct target names in the whole
+  # map, not from one chain's length and not from a fixed 1. It bounds rung
+  # ATTEMPTS along a path rather than nesting, and several chains render here,
+  # so any narrower bound silently truncates the fallback design while still
+  # rendering and passing every test that doesn't count fallback depth.
   max_fallbacks: {{ llm_router_max_fallbacks }}
   # ESCALATION RECOVERS TO LOCAL. A caller escalates by naming a cloud group
   # directly; there is no separate "escalate" alias. Without the per-group
@@ -82,15 +101,34 @@ router_settings:
   retry_policy:
     RateLimitErrorRetries: {{ llm_router_rate_limit_retries }}
 {% if llm_router_hermes_cloud_zero_retry_groups | length > 0 %}
-  # Cloud groups advance on 429; local groups retain the global retry policy.
+  # Every group that carries a fallback chain advances on 429 instead of
+  # sleeping on the busy slot: the chain rungs, the provider routers, and each
+  # entry-point name above. Keyed by the name the caller TYPED for that
+  # invocation (router.py:6692, litellm 1.98.0) — the same key the fallback
+  # maps use — and a per-group policy REPLACES the global one for that name
+  # (router_utils/get_retry_from_policy.py:32-33), so zeroing 429 retries here
+  # leaves every other error type on num_retries and touches no other group.
+  # The global RateLimitErrorRetries above now governs only names with no
+  # chain to hand over to.
   model_group_retry_policy:
 {% for group in llm_router_hermes_cloud_zero_retry_groups %}
     {{ group }}:
       RateLimitErrorRetries: 0
 {% endfor %}
 {% endif %}
+  # ONE failure counter per deployment, MANY allowances. The router-level
+  # policy path passes no per-exception suffix (router_utils/
+  # cooldown_handlers.py:404-408, litellm 1.98.0), so every error type
+  # increments the same 30-second counter (:587-594, TTL = cooldown_time),
+  # while the allowance it is compared against is looked up per type
+  # (router.py:12142-12148). A run of 429s — allowed up to the rate-limit
+  # figure — therefore inflates the counter that the NEXT timeout is judged
+  # by. Without a timeout allowance that judgement uses the generic
+  # allowed_fails, so one timeout after two busy-slot 429s parks the
+  # deployment. Sizing rationale for the timeout figure: 40-routing.yml.
   allowed_fails_policy:
     RateLimitErrorAllowedFails: {{ llm_router_rate_limit_allowed_fails }}
+    TimeoutErrorAllowedFails: {{ llm_router_timeout_allowed_fails }}
 {% if llm_router_redis_host | length > 0 %}
   # Shared spend store — see README "Spend tracking (Redis)" for why the
   # budget below renders only alongside it, and why redis_port is a literal
@@ -125,6 +163,23 @@ general_settings:
   store_model_in_db: {{ llm_router_store_model_in_db | to_json }}
   disable_spend_logs: {{ llm_router_disable_spend_logs | to_json }}
   disable_error_logs: {{ llm_router_disable_error_logs | to_json }}
+{% if not llm_router_disable_spend_logs | bool %}
+  # Retention renders with the logs and only with them, so the table cannot be
+  # switched on without the job that bounds it. An empty value here does not
+  # misconfigure the cleanup job, it silently never schedules one
+  # (proxy_server.py gates the scheduler on this key being present at all),
+  # which is indistinguishable from a working config until the disk fills.
+  #
+  # `or undef(...)`, not `| mandatory(...)`: mandatory only fires on an
+  # UNDEFINED value and passes an empty string straight through, so it would
+  # render `maximum_spend_logs_retention_period: ""` and schedule nothing. The
+  # blank is the likely way to get this wrong — a default is never undefined.
+  maximum_spend_logs_retention_period: {{ ((llm_router_spend_logs_retention_period | trim)
+     or undef('llm_router_spend_logs_retention_period must be set whenever spend logs are enabled — see defaults/main/45-database.yml')) | to_json }}
+  maximum_spend_logs_retention_interval: {{ llm_router_spend_logs_retention_interval | to_json }}
+  # Redaction is the other half of the retention arithmetic; see 45-database.yml.
+  store_prompts_in_spend_logs: {{ llm_router_store_prompts_in_spend_logs | to_json }}
+{% endif %}
 {% endif %}
   # health_check_interval is general_settings-only (LiteLLM rejects it under
   # router_settings).
@@ -138,7 +193,12 @@ litellm_settings:
   # OTLP traces to the Cribl Edge collector (endpoint from the EnvironmentFile);
   # Cribl fans out to Langfuse + Splunk. No direct "langfuse" callback — it
   # requires the v2 SDK and errors on init with the v3 pip resolves.
-  callbacks: ["otel"]
+  #
+  # "prometheus" is NOT a second tracing sink. It is the only shipped consumer
+  # of the router's fallback events, and the only thing in this proxy that
+  # records the model group originally ASKED FOR next to the one that served.
+  # Rationale and the trap it replaces: defaults/main/60-ops.yml.
+  callbacks: {{ (['otel'] + (['prometheus'] if llm_router_prometheus_enabled | bool else [])) | to_json }}
   drop_params: true
 {% if llm_router_large_passthrough_enabled | bool %}
   # Resolve the wildcard against the gate's live /v1/models so this proxy's

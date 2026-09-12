@@ -95,119 +95,6 @@ jobs:
           ansible-playbook tests/openbao_secrets/verify_hermes_api_key_seed.yml
           -i inventory/hosts.yml -c local
 
-      # Every consumer alias must name a model the serving host will actually
-      # serve. On 2026-07-28 all four returned HTTP 404 at once — the serving
-      # host runs llama-swap in single-model mode, where a non-resident model is
-      # in disabledModels and 404s rather than being served under the wrong
-      # weights. Render-time and offline on purpose: the defect was invisible for
-      # as long as llama-swap grafted disabled ids onto the resident, so a live
-      # probe would have passed while Hermes was answered by a model nobody
-      # selected.
-      - name: Verify llm_router servable-alias contract
-        run: >-
-          ansible-playbook tests/llm_router/test_alias_servable.yml
-          -i localhost, -c local
-
-      - name: Verify llm_router process-recovery contract
-        run: >-
-          ansible-playbook tests/llm_router/test_service_restart_policy.yml
-          -i localhost, -c local
-
-      # The no-credential half of the rendered fallback contract: local
-      # complexity routing remains available while no unauthenticated cloud
-      # group is advertised.
-      - name: Verify llm_router hermes-default failover contract
-        run: >-
-          ansible-playbook tests/llm_router/test_hermes_default_failover.yml
-          -i localhost, -c local
-
-      # The credentialed half of the same contract: with cloud rungs present,
-      # a fallback leg narrower than the primary must not stand in front of
-      # them. A narrow leg raises ContextWindowExceededError, and LiteLLM
-      # treats a context error raised inside a fallback attempt as terminal --
-      # so a misordered chain aborts with its serviceable rungs never tried.
-      - name: Verify llm_router narrow-fallback ordering contract
-        run: >-
-          ansible-playbook tests/llm_router/test_fallback_narrow_legs_last.yml
-          -i localhost, -c local
-
-      - name: Verify llm_router Hermes cloud value contract
-        run: >-
-          ansible-playbook tests/llm_router/test_hermes_cloud_value.yml
-          -i localhost, -c local
-
-      - name: Verify llm_router provider-key contract
-        run: >-
-          ansible-playbook tests/llm_router/test_hermes_provider_keys.yml
-          -i localhost, -c local
-
-      # The paid-egress contract: the registry is the allowlist (no
-      # `openrouter/*` passthrough), and the spend ceiling is enforced by the
-      # router rather than described to the caller. Both failures are silent —
-      # the render succeeds either way and neither ansible-lint nor
-      # --syntax-check can see them.
-      - name: Verify llm_router OpenRouter allowlist and budget contract
-        run: >-
-          ansible-playbook tests/llm_router/test_openrouter_allowlist.yml
-          -i localhost, -c local
-
-      # The pairing invariant itself, proven from both sides: a budget with no
-      # store must FAIL the converge, and a store with no budget must pass. This
-      # list is enumerated, not globbed, so a test file added without a line
-      # here is decorative — the exact rot the hermes-default step above was
-      # rescued from. That matters more than usual for this one: the assertion
-      # it covers exists specifically to stop an unbacked ceiling being
-      # reintroduced, so a version of it that never runs restores the defect
-      # while looking like the guard against it.
-      - name: Verify llm_router budget/store pairing contract
-        run: >-
-          ansible-playbook tests/llm_router/test_budget_requires_store.yml
-          -i localhost, -c local
-      # Pins that every LOCAL deployment carries an in-flight admission cap.
-      # Until 2026-08 only the OpenRouter egress tier had rpm/tpm/
-      # max_parallel_requests, so LiteLLM admitted every inbound request to
-      # local backends unbounded.
-      - name: Verify llm_router local admission-cap contract
-        run: >-
-          ansible-playbook tests/llm_router/test_local_admission_cap.yml
-          -i localhost, -c local
-
-      # Pins the registry <-> rendered model_list parity guard
-      # (assert-registry-render-parity.yml) — the only check that catches an
-      # entry enabled in the registry but absent from the render, or vice
-      # versa; every other assert only checks the registry against itself.
-      - name: Verify llm_router registry/render parity contract
-        run: >-
-          ansible-playbook tests/llm_router/test_registry_render_parity.yml
-          -i localhost, -c local
-
-      # Pins that every llama-swap-backed deployment (large + standby, fast +
-      # light) stays excluded from background health checks, and that the
-      # dedicated vLLM tier and cloud legs remain probeable. Nothing else
-      # inspects model_info, so a template edit that drops the exclusion from
-      # one tier would otherwise ship silently.
-      - name: Verify llm_router background health-check exclusion contract
-        run: >-
-          ansible-playbook tests/llm_router/test_background_health_check_exclusion.yml
-          -i localhost, -c local
-
-      # Pins the heavy-tier serving identity contract: address and hostname
-      # come from a published authority, never a value committed here, and
-      # their absence is fatal rather than papered over.
-      - name: Verify llm_router heavy-tier serving identity contract
-        run: >-
-          ansible-playbook tests/llm_router/test_serving_identity.yml
-          -i localhost, -c local
-
-      # Pins the backend DNS resolution contract: every advertised backend
-      # base URL must resolve on the router guest itself, so an
-      # advertised-but-unresolvable host (the apex-vs-subdomain trap
-      # documented on llm_router_llm_vllm_base_url) fails the converge
-      # instead of a later, unrelated-looking connection error.
-      - name: Verify llm_router backend DNS resolution contract
-        run: >-
-          ansible-playbook tests/llm_router/test_endpoint_dns_assert.yml
-          -i localhost, -c local
       # The published alias contract is DERIVED from the registry, so the thing
       # to test is that the generator still parses it and renders the same bytes
       # twice — a checksum on a nondeterministic render is decoration. Runs on
@@ -256,6 +143,13 @@ jobs:
       # a green light for tests that never ran.
       - name: Run role self-checks
         run: python -m pytest tests/hermes_agent/ tests/llama_cpp/ -q
+
+  # The llm_router role's contract checks, in their own file: that list only
+  # grows and outgrew this file's token budget. Its result reaches the Merge
+  # Gate through this workflow's conclusion.
+  llm-router-contract:
+    name: LLM Router Contract
+    uses: ./.github/workflows/_llm-router-contract.yml
 
   verify-inventory-load:
     name: Verify Inventory Load

@@ -213,15 +213,25 @@ curl -X POST "$ROUTER/fallback" \
   -d '{"model": "subagent", "fallback_models": ["<first>", "<second>"], "fallback_type": "general"}'
 ```
 
+## Admin UI SSO
+
+`/ui` signs in via Authelia through LiteLLM's generic-OIDC environment. The
+block renders only when the client secret resolves; env contract:
+`defaults/main/65-oidc.yml`. Redirect target: `<PROXY_BASE_URL>/sso/callback`.
+`PROXY_ADMIN_ID` is the operator email, matching the APPS authelia role's
+`authelia_admin_email`.
+
+The secret is bao-first (`secret/apps/authelia`) with `LITELLM_OIDC_CLIENT_SECRET`
+env fallback, non-mandatory: until seeded the block stays absent and the
+converge stays green with SSO off. `UI_USERNAME`/`UI_PASSWORD` remain the
+`/fallback/login` break-glass. Boards link the router at `/ui` via the ingress
+`url_path`, not the API root.
+
 ## Observability
 
-`litellm_settings.callbacks: ["otel"]`:
-
-- **OTLP/HTTP** traces to the Cribl Edge collector
-  (`http://cribl-edge.<subdomain>:<otel_traces_http>/v1/traces`).
-
-`/health/liveliness` is unauthenticated by design (LiteLLM load-balancer probe), so
-Traefik health checks need no credential.
+What this proxy records, which record may be measured against, the health
+endpoint contract, and the serving-share metric:
+[docs/LLM_ROUTER_OBSERVABILITY.md](../../docs/LLM_ROUTER_OBSERVABILITY.md).
 
 ## Key variables (`defaults/main.yml`)
 
@@ -265,8 +275,8 @@ Scope is deliberately narrow, and the reasoning is in
   independent of adaptive routing. A config-file entry stays owned by the
   converge and read-only in the UI, so the catalog keeps its single source of
   truth while roles become editable — see "Roles" above.
-- Spend and error logs stay **out** of the database — unbounded per-request
-  growth. Spend lives in Redis; traces go to the collector.
+- Spend and error logs are **on**, bounded by a 30-day native retention job,
+  and carry no prompts — see `defaults/main/45-database.yml`.
 - Credentials are bao-first from `apps/llm-router`, the same field the Postgres
   converge in `ansible-proxmox-apps` uses to create the role, so the two ends
   cannot drift.

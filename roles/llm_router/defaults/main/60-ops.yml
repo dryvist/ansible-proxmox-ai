@@ -31,6 +31,68 @@ llm_router_light_api_key: "sk-noauth"
 # exists without anything noticing.
 llm_router_otel_endpoint: "{{ ai_orchestration_otel_endpoint }}"
 
+# --- Routing observability ----------------------------------------------------
+# Fallback events, as counters rather than prose.
+#
+# The router emits a dedicated event on every fallback, carrying the model group
+# ORIGINALLY asked for alongside the one that ended up serving. Exactly one
+# shipped integration consumes those events, and it turns each into a labelled
+# counter. Nothing else in this proxy records that pairing: the per-request row
+# carries only the deployment that served (see
+# docs/LLM_ROUTER_OBSERVABILITY.md, "Identifying a fallback"), so without this
+# "did a fallback chain run" is unanswerable from stored data in either
+# direction — which is exactly the state this fabric was in.
+#
+# Chosen over raising the log level because it is volume-independent: one
+# counter increment per fallback rather than lines per request, and it survives
+# any later logging change. The two are complements, not alternatives — the
+# scoped log level below gives the per-request trail this cannot.
+#
+# The metrics endpoint is AUTHENTICATED by default in this release
+# (require_auth_for_metrics_endpoint). Deliberately not disabled: the counters
+# carry model names and key aliases, and the proxy is fronted by an ingress that
+# can carry a credential. A scraper needs a key, exactly like any other client.
+llm_router_prometheus_enabled: true
+
+# Level for LiteLLM's own three loggers, rendered as LITELLM_LOG in the
+# EnvironmentFile. Every routing decision — which rung was tried, whether a
+# chain was entered, which deployment was selected — is logged at INFO, and at
+# import LiteLLM sets NO level on those loggers (_logging.py:353-360 attaches a
+# handler, nothing calls setLevel), so they inherit the root's WARNING and the
+# whole routing trail was dropped at the logger while the log looked busy.
+#
+# LITELLM_LOG=INFO is the supported fix. It is read twice, and both readings
+# matter: at import it sets the threshold of the handler LiteLLM attaches
+# (_logging.py:137-143; default DEBUG, so it never blocked INFO and it carries
+# the secret-redaction filter), and at proxy init the not-debug branch of
+# initialize() calls setLevel(INFO) on exactly the three named loggers
+# (proxy_server.py:7416-7433) — not on every library. Cost: the proxy and
+# package loggers emit INFO too, roughly one line per request, not payload
+# dumps. Set WARNING to return to the previous silence.
+#
+# NOT a --log_config dictConfig. A non-incremental dictConfig REMOVES every
+# existing handler from any logger it names (logging/config.py,
+# common_logger_config), whether or not it supplies handlers. Naming the
+# router logger there strips the handler LiteLLM attached — and the redaction
+# filter on it — so records fall to lastResort, which admits WARNING and above
+# only and redacts nothing. A dictConfig here must own the handler and
+# re-install both filters explicitly, or it must not name these loggers.
+#
+# Debug is refused: --detailed_debug and set_verbose raise EVERY logger to
+# DEBUG, which on a proxy that carries prompts is a data-exposure change.
+llm_router_log_level: INFO
+
+# --- The serving-share metric, on a schedule (tasks/serving-share.yml) --------
+# One JSON line per run, to the journal, from the query in
+# templates/serving-share.sql.j2 — the definition lives THERE, once; the
+# observability doc explains it and points at it. Daily over a trailing 7-day
+# window: the target is weekly, and a daily sample of a weekly window shows a
+# bad day as a step instead of losing it inside one sample.
+llm_router_serving_share_query_file: "{{ llm_router_config_dir }}/serving-share.sql"
+llm_router_serving_share_syslog_identifier: llm-serving-share
+# Off the hour so it does not stack on the proxy's own daily retention sweep.
+llm_router_serving_share_on_calendar: "*-*-* 04:23:00"
+
 # Whether the routers carry the llm-fast (GPU) deployments. False while the
 # GPU host is frozen (see llama_cpp_service_enabled): the firewall DROPs
 # traffic to the dead backend, so a shuffled request hangs the full client

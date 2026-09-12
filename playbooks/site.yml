@@ -105,6 +105,8 @@
   pre_tasks:
     - name: Gate on pool-member reachability
       ansible.builtin.import_tasks: tasks/pool_member_gate.yml
+    - name: Load the fabric model registry
+      ansible.builtin.import_tasks: tasks/load_fabric_registry.yml
   tags:
     - hindsight_docker
     - memory
@@ -133,6 +135,9 @@
   hosts: open_webui_group
   become: true
   gather_facts: true
+  pre_tasks:
+    - name: Load the fabric model registry
+      ansible.builtin.import_tasks: tasks/load_fabric_registry.yml
   tags:
     - open_webui
     - llm
@@ -140,105 +145,11 @@
   roles:
     - role: open_webui
 
-# =============================================================================
-# Phase 3: Hermes Agent — the NousResearch autonomous agent (NOT the serving
-# stack above). Headless `hermes gateway` daemon; brain = the fabric router;
-# memory = Hindsight; HERMES_HOME on a persisted ZFS volume.
-# =============================================================================
-
-- name: Configure Hermes Agent (autonomous agent)
-  hosts: hermes_agent_group
-  become: true
-  gather_facts: true
-  tags:
-    - hermes_agent
-    - agent
-    - ai
-    # The Hermes fleet is an LLM consumer converged alongside the serving
-    # fabric: a scoped `--tags llm` run of the whole LLM estate must reach it.
-    - llm
-  roles:
-    # codex_runner MUST run first — hermes_agent's config.yaml references its
-    # sudo grant + resolved Codex binary path (the escalation MCP entry).
-    - role: codex_runner
-    - role: hermes_agent
-    # Minutes-level MCP-fabric / LLM-front-door outage detection with Slack
-    # transition alerts — runs here so probes traverse exactly Hermes' path.
-    - role: fabric_watchdog
-
-# =============================================================================
-# Phase 3b: hermes-ui — the companion web guest (hermes-workspace chat UI +
-# mission-control dashboard, two independent Compose services on one LXC).
-# Ordered AFTER hermes_agent: hermes-workspace dials the gateway's job API, so
-# converging it first would leave the UI pointed at a front door that is not
-# serving yet. One guest, so no serial/pool gate — the role's own port and
-# /api/status health checks are the gate.
-# =============================================================================
-
-- name: Configure hermes-ui companion web guest
-  hosts: hermes_ui_group
-  become: true
-  gather_facts: true
-  tags:
-    - hermes_ui_docker
-    - agent
-    - ai
-    # Same rationale as the hermes_agent play: `--tags llm` covers the fleet.
-    - llm
-  roles:
-    - role: hermes_ui_docker
-
-# =============================================================================
-# Phase 3c: herdr — the agent multiplexer the coding CLIs run inside.
-#
-# Two NixOS guests, unlike everything else in this repo. The rule that nix
-# runs on the CONTROLLER and never on the guest still holds: these roles
-# install nothing, they call the shared nixos_deploy role, which runs
-# `nixos-rebuild --target-host` here and copies the closure over. Ansible stays
-# the orchestrator; nix-ai's flake stays the config.
-#
-# Two, not three: the Slack bridge is a herdr PLUGIN. It reads the runtime's
-# control socket directly, and its advantage over the dashboard is "no tunnel,
-# no relay" — true only while it is local to the server it watches. So it runs
-# as a companion unit on the runtime guest, wired by nix-ai's
-# services.herdr.hail and fed by herdr_server. Giving it a guest of its own is
-# what made a socket forward look necessary.
-#
-# Ordering. herdr_group converges FIRST and in its own play: the relay drives
-# the runtime over HERDR_REMOTES and asserts at converge time that a
-# herdr_group host exists. Converging it against a runtime that is not up yet
-# leaves a dashboard connected to nothing, which reports as a quiet fleet
-# rather than an error — the failure mode that assert exists to make loud.
-#
-# Single-node, so deliberately NO serial/max_fail_percentage/pool_member_gate:
-# per AGENTS.md the gate turns a down host into a silent skip, which is the
-# wrong trade for a one-member group. Adopt it in the same change that adds a
-# second runtime, alongside the ha_affinity_group in the tofu desired state.
-# =============================================================================
-
-- name: Configure the herdr runtime
-  hosts: herdr_group
-  become: true
-  gather_facts: true
-  tags:
-    - herdr_server
-    - herdr
-    - agent
-    - ai
-  roles:
-    - role: herdr_server
-
-- name: Configure the herdr web dashboard
-  hosts: herdr_ui_group
-  become: true
-  gather_facts: true
-  tags:
-    - herdr_remote
-    - herdr
-    - agent
-    - ai
-  roles:
-    - role: herdr_remote
+# Phase 3: the interactive agent plane (Hermes, its companion UI, herdr).
+# Split out to keep this file within its token budget — it converges here,
+# after Hindsight and before the serving fabric, exactly as before.
+- name: Configure the interactive agent plane
+  import_playbook: agents.yml
 
 # LLM serving and routing (both GPU guests, spend store, router). Split out
 # to keep this file within its token budget and because those plays are
@@ -343,82 +254,8 @@
   roles:
     - role: docling_serve
 
-# =============================================================================
-# Phase 7: Headless AI execution plane (WS7A) — AI job runners.
-# Confined guests (tofu `ai-runner` + `ai-github` tags) that run the Claude
-# Code / Codex CLIs in permission-skipping mode, driven by a systemd worker
-# polling the Vikunja AI Jobs queue. Safety is the LXC/firewall boundary, not
-# the agent — so this only ever converges guests behind a restrictive egress
-# profile. bao_ai_runner_secrets comes from the Phase 0 pre-fetch play.
-# =============================================================================
-
-- name: Configure headless AI job runners
-  hosts: ai_runner_group
-  become: true
-  gather_facts: true
-  tags:
-    - ai_runner
-    - agent
-    - ai
-  roles:
-    - role: ai_runner
-
-# =============================================================================
-# Phase 7a: Squid — the agent plane's egress chokepoint.
-#
-# This play MUST run BEFORE the pooled agent guests below: an `ai-proxied` guest
-# has no direct WAN rule, so until this proxy is up it cannot reach an apt repo,
-# the npm registry or GitHub, and agent_guest's very first toolchain task (an
-# apt update) fails. The domain allowlist enforced here is the plane's whole
-# egress boundary — the Proxmox firewall cannot filter by hostname.
-# =============================================================================
-
-- name: Configure the agent-plane egress proxy
-  hosts: squid_group
-  become: true
-  gather_facts: true
-  tags:
-    - squid
-    - agent
-    - ai
-  roles:
-    - role: squid
-
-# =============================================================================
-# Phase 7b: Pooled autonomous agent guests (ai-runner-pool-NN, `ai-proxied`).
-# agent_guest is ai_runner's successor: same Vikunja queue, but one job per
-# systemd unit under `bao agent` supervision, three CLIs instead of two, the
-# nix-ai autonomous config mirror, a clone/gitleaks/PR flow, and per-guest
-# transcript shipping. The legacy ai_runner play above stays until this role
-# carries load on the canary; removing it is a follow-up PR, not this one.
-# =============================================================================
-
-- name: Configure pooled autonomous agent guests
-  hosts: ai_agent_pool_group
-  become: true
-  gather_facts: true
-  tags:
-    - agent_guest
-    - agent
-    - ai
-  roles:
-    - role: agent_guest
-
-# Pool return lives in its OWN play, not inside the converge play above: play
-# tags are inherited by every task, so a `never`-tagged include inside the
-# converge play effectively carries `agent_guest` too — and `--tags
-# agent_guest` then overrides `never` and wipes the guest at the end of every
-# converge. Opt in explicitly:
-#   ansible-playbook playbooks/site.yml --tags agent_guest_pool_return --limit <guest>,localhost
-- name: Return pooled agent guests to the pool (drain, stop, de-credential, wipe)
-  hosts: ai_agent_pool_group
-  become: true
-  gather_facts: false
-  tags:
-    - never
-    - agent_guest_pool_return
-  tasks:
-    - name: Drain, stop, de-credential and wipe the guest
-      ansible.builtin.include_role:
-        name: agent_guest
-        tasks_from: pool_return.yml
+# Phase 7: the headless agent execution plane (job runners, egress proxy,
+# pooled agent guests, pool return). Split out to keep this file within its
+# token budget; the proxy-before-guests ordering lives in that file's headers.
+- name: Configure the headless agent execution plane
+  import_playbook: agent-runners.yml

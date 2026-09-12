@@ -1,0 +1,146 @@
+---
+# Pins the servable probe's PLAN (roles/llm_router/defaults/main/52-probe.yml):
+# which endpoints get queried, with which registered ids, and which tiers this
+# role cannot probe at all.
+#
+# WHY THIS TEST EXISTS. The plan is what decides whether the probe checks
+# anything. A plan that quietly drops a tier produces a converge where every
+# claim is unverified and nothing says so — the exact failure the probe was
+# built to end. Everything asserted below is derived from the registry rather
+# than typed, so a registry edit that breaks the projection fails here instead
+# of shipping as a silently narrower check.
+#
+# Its own file, apart from test_servable_probe.yml: this play loads the real
+# defaults and registry, and include_vars/include_role variables land at host
+# scope where they outrank the play vars every fixture in that file depends on.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_servable_probe_plan.yml -i localhost, -c local
+
+- name: The probe plan is a projection of the registry, grouped one query per endpoint
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _defaults_dir: "{{ playbook_dir }}/../../roles/llm_router/defaults/main"
+    # Seeded so the credential gate can be proven in the TRUE direction without
+    # depending on the runner's environment. The secret map wins over the env
+    # lookup, so this holds identically on CI and on a workstation that happens
+    # to export a provider key.
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: fixture-key-not-a-secret
+    bao_apps_secrets: {}
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _defaults_dir }}"
+
+    # Through the role's own task file, not a path spelled here: the registry
+    # dir derives from role_path, so a hand-rolled path would keep this test
+    # green while the converge's own lookup was broken.
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Every planned probe names an endpoint and at least one registered id
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_remote_probes | length > 0
+          - llm_router_remote_probes | rejectattr('endpoint') | list | length == 0
+          - llm_router_remote_probes | rejectattr('models') | list | length == 0
+        fail_msg: >-
+          The probe plan is empty or carries a group with no endpoint or no
+          models. A plan like that skips every remote tier while reporting
+          nothing was wrong.
+        success_msg: >-
+          {{ llm_router_remote_probes | length }} endpoint(s) planned, each with
+          the ids registered against it.
+
+    - name: The subscription tier's registered ids are grouped under its own listing URL
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _group | length == 1
+          - _group[0].models | symmetric_difference(_registered) | length == 0
+        fail_msg: >-
+          The subscription tier's registered ids {{ _registered }} are not the
+          set planned against its listing endpoint ({{ _group }}). This tier is
+          the reason the probe exists — its ids were registered from third-party
+          documentation because the endpoint's own listing needed a credential.
+        success_msg: >-
+          The subscription tier's {{ _registered | length }} registered id(s) are
+          planned against its own model listing.
+      vars:
+        _registered: >-
+          {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'opencode')
+             | map(attribute='upstream_model_id') | list }}
+        _group: >-
+          {{ llm_router_remote_probes
+             | selectattr('endpoint', 'equalto', llm_router_probe_model_list_urls.opencode)
+             | list }}
+
+    - name: A seeded provider credential marks its endpoint probeable
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _openrouter | length == 1
+          - _openrouter[0].has_credential
+        fail_msg: >-
+          The endpoint whose credential was seeded above is absent from the plan
+          or still reads as uncredentialed ({{ _openrouter }}). The credential
+          gate decides which endpoints are queried at all, so a gate that cannot
+          see a seeded key skips every tier forever.
+        success_msg: A seeded credential marks its endpoint probeable.
+      vars:
+        _openrouter: >-
+          {{ llm_router_remote_probes
+             | selectattr('endpoint', 'equalto', llm_router_probe_model_list_urls.openrouter)
+             | list }}
+
+    - name: Ids no catalog listing can return are excluded from the plan
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _planned | intersect(_virtual) | length == 0
+          - _planned | select('search', '^@preset/') | list | length == 0
+        fail_msg: >-
+          The plan contains id(s) no provider listing can return —
+          virtual router models [{{ _planned | intersect(_virtual) | join(', ') }}]
+          or a server-side preset. Both are resolved upstream rather than
+          catalogued, so probing for them would fail every converge for a model
+          that is working correctly.
+        success_msg: Virtual-router and server-side-preset ids stay out of the plan.
+      vars:
+        _planned: "{{ llm_router_remote_probes | map(attribute='models') | flatten | list }}"
+        _virtual: >-
+          {{ llm_router_model_registry | selectattr('provider', 'equalto', 'auto_router')
+             | map(attribute='upstream_model_id') | list }}
+
+    - name: A tier whose listing this role cannot parse is reported, not dropped
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_probe_unsupported_tiers | length > 0
+          - _unparseable | difference(llm_router_probe_unsupported_tiers) | length == 0
+        fail_msg: >-
+          Credential-gated tier(s) {{ _unparseable }} have no listing endpoint
+          and are not reported as unprobed. An unprobed tier that says nothing
+          is indistinguishable from a verified one, which is how a check rots
+          into decoration.
+        success_msg: >-
+          Unprobeable tier(s) {{ llm_router_probe_unsupported_tiers | join(', ') }}
+          are named on every converge.
+      vars:
+        # Derived, not typed: any credentialed entry that neither carries its
+        # own api_base nor matches the listing-URL map.
+        _unparseable: >-
+          {%- set ns = namespace(out=[]) -%}
+          {%- for m in _llm_router_probe_candidates -%}
+          {%- if m.credential_env is defined and m.api_base is not defined
+                 and m.provider not in llm_router_probe_model_list_urls
+                 and m.tier not in llm_router_probe_model_list_urls -%}
+          {%- set ns.out = ns.out + [m.tier ~ '/' ~ m.provider] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.out | unique | list }}

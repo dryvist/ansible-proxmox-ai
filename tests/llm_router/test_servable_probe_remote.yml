@@ -1,0 +1,177 @@
+---
+# Pins the REMOTE half of the servable probe's judge
+# (roles/llm_router/tasks/assert-servable-parity.yml): a provider listing that
+# does not offer a registered id is fatal, and each reason a remote tier went
+# unchecked is reported as its own kind of decline.
+#
+# Its own file, apart from the gate half, for size and for the same host-scope
+# reason test_servable_probe_plan.yml is separate. Fixture ids are deliberately
+# fake: a real registry id here would re-type a value the registry owns and rot
+# the moment the registry changes.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_servable_probe_remote.yml -i localhost, -c local
+
+- name: A provider listing missing a registered id fails the converge
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_servable_models: []
+    llm_router_registry_enabled: []
+    llm_router_model_registry: []
+    llm_router_probe_unsupported_tiers: []
+    _llm_router_gate_models: {status: -1}
+    llm_router_remote_probes:
+      - endpoint: https://fixture.invalid/v1/models
+        credential_env: FIXTURE_API_KEY
+        key_field: FIXTURE_API_KEY
+        has_credential: true
+        labels: [fixture-tier/fixture-provider]
+        models: [fixture-remote-a, fixture-remote-b]
+    _llm_router_remote_models:
+      results:
+        - status: 200
+          json:
+            data:
+              - {id: fixture-remote-a}
+          item:
+            endpoint: https://fixture.invalid/v1/models
+            labels: [fixture-tier/fixture-provider]
+            models: [fixture-remote-a, fixture-remote-b]
+  tasks:
+    - name: Prove an id the provider does not offer is fatal
+      block:
+        - name: Adjudicate a provider listing missing one registered id
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
+
+        - name: Fail because the judge admitted an unofferred registered id
+          ansible.builtin.fail:
+            msg: >-
+              assert-servable-parity.yml PASSED with fixture-remote-b registered
+              against an endpoint whose listing does not offer it. Every request
+              naming it would fail at the provider — this check is the only place
+              a typed id is compared with the endpoint that answers for it.
+      rescue:
+        - name: Confirm the judge failed for the absent remote id specifically
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'absent from the provider' in (ansible_failed_result.msg | default(''))"
+              - "'fixture-remote-b' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              The judge failed, but not for the absent remote id — got
+              {{ ansible_failed_result.msg | default('(none)') }}.
+            success_msg: A registered id the provider does not offer is fatal, naming it.
+
+- name: An unreachable or uncredentialed remote tier is reported, not counted as verified
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_servable_models: []
+    llm_router_registry_enabled: []
+    llm_router_model_registry: []
+    llm_router_probe_unsupported_tiers: [fixture-tier/unparseable-provider]
+    _llm_router_gate_models: {status: -1}
+    llm_router_remote_probes:
+      # Queried, and the endpoint never answered — carrying the SAME mismatch
+      # the play above proved fatal.
+      - endpoint: https://fixture-down.invalid/v1/models
+        credential_env: FIXTURE_API_KEY
+        key_field: FIXTURE_API_KEY
+        has_credential: true
+        labels: [fixture-tier/down]
+        models: [fixture-remote-a, fixture-remote-b]
+      # Never queried at all: no credential resolved, which is the normal state
+      # of a tier nobody has subscribed to.
+      - endpoint: https://fixture-unseeded.invalid/v1/models
+        credential_env: FIXTURE_UNSEEDED_KEY
+        key_field: FIXTURE_UNSEEDED_KEY
+        has_credential: false
+        labels: [fixture-tier/unseeded]
+        models: [fixture-remote-c]
+    _llm_router_remote_models:
+      results:
+        - status: 0
+          item:
+            endpoint: https://fixture-down.invalid/v1/models
+            labels: [fixture-tier/down]
+            models: [fixture-remote-a, fixture-remote-b]
+  tasks:
+    - name: Adjudicate with one endpoint down and one uncredentialed
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
+
+    - name: Confirm each decline is reported as its own kind of decline
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_probe_report.verified | length == 0
+          - _llm_router_probe_report.unreachable == ['https://fixture-down.invalid/v1/models']
+          - _llm_router_probe_report.no_credential == ['https://fixture-unseeded.invalid/v1/models']
+          - _llm_router_probe_report.unsupported == ['fixture-tier/unparseable-provider']
+        fail_msg: >-
+          Declines were not reported distinctly: verified=
+          {{ _llm_router_probe_report.verified }}, unreachable=
+          {{ _llm_router_probe_report.unreachable }}, no_credential=
+          {{ _llm_router_probe_report.no_credential }}, unsupported=
+          {{ _llm_router_probe_report.unsupported }}. A green converge in which
+          every probe silently declined is the failure mode this reporting
+          exists to prevent.
+        success_msg: >-
+          Unreachable, uncredentialed and unparseable tiers are each reported as
+          unchecked, and none is counted as verified.
+
+- name: An unseeded tier absent from the render is reported as not deployed, not merely unchecked
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_servable_models: []
+    llm_router_registry_enabled: []
+    llm_router_model_registry: []
+    llm_router_probe_unsupported_tiers: []
+    _llm_router_gate_models: {status: -1}
+    _llm_router_remote_models: {results: []}
+    # Two uncredentialed tiers, identical in every respect EXCEPT whether the
+    # rendered config below carries their name. That one difference is the
+    # whole injected defect: it must move a tier between the two verdicts.
+    llm_router_remote_probes:
+      - endpoint: https://fixture-absent.invalid/v1/models
+        credential_env: FIXTURE_ABSENT_KEY
+        key_field: FIXTURE_ABSENT_KEY
+        has_credential: false
+        labels: [fixture-tier/absent]
+        route_names: [fixture-group-absent]
+        models: [fixture-remote-a]
+      - endpoint: https://fixture-present.invalid/v1/models
+        credential_env: FIXTURE_PRESENT_KEY
+        key_field: FIXTURE_PRESENT_KEY
+        has_credential: false
+        labels: [fixture-tier/present]
+        route_names: [fixture-group-present]
+        models: [fixture-remote-b]
+    _llm_router_parity_config:
+      model_list:
+        - {model_name: fixture-group-present}
+        - {model_name: fixture-model-a}
+  tasks:
+    - name: Adjudicate two unseeded tiers, one of which the render does not carry
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-servable-parity.yml"
+
+    - name: Confirm an unrendered tier is reported as not deployed rather than unchecked
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_probe_report.not_deployed == ['https://fixture-absent.invalid/v1/models']
+          - _llm_router_probe_report.no_credential == ['https://fixture-present.invalid/v1/models']
+        fail_msg: >-
+          not_deployed={{ _llm_router_probe_report.not_deployed }},
+          no_credential={{ _llm_router_probe_report.no_credential }}. A tier the
+          render does not carry does not exist on this proxy, and saying only
+          "could not check" states the milder of two facts — it leaves a chain
+          that is shorter in production than in the repository looking like a
+          gap in this check rather than an absent tier.
+        success_msg: >-
+          An unrendered unseeded tier is reported as not deployed; a rendered
+          one is reported as merely unchecked.

@@ -27,10 +27,16 @@
       # chain top to bottom, so order IS the contract -- but the contract that
       # matters is not "local first", it is "no rung that cannot serve the
       # request stands in front of one that can". A leg narrower than the
-      # primary raises ContextWindowExceededError, and LiteLLM treats a context
-      # error raised INSIDE a fallback attempt as terminal, so such a leg does
-      # not merely fail itself: it aborts the whole chain with the wider rungs
-      # listed and never tried.
+      # primary raises ContextWindowExceededError before it does any work.
+      #
+      # WHAT THAT COSTS, corrected against litellm 1.98.0 source: NOT the whole
+      # chain. This comment used to say a context error raised inside a fallback
+      # attempt is terminal; it is not. The raise is caught by the enclosing
+      # walk, which advances to the next rung. What truncates a walk early is
+      # the shared max_fallbacks budget. The ordering still matters for the
+      # smaller, real reason: every narrow leg standing in front spends one
+      # attempt and one unit of that shared budget on a rung that could never
+      # have served the request.
       #
       # Asserting the property instead of the concatenation makes this check
       # STRONGER than the one it replaces, which passed happily on exactly the
@@ -66,11 +72,15 @@
       # not a summed worst-case timeout.
       - "llm_router_hermes_default_fallback_chain | length <= 5"
       # Every rung narrower than the primary carries a context_window_fallbacks
-      # escape hatch. A narrow rung without one does not merely reject the
-      # requests it cannot fit — LiteLLM aborts the ENTIRE chain at that rung
-      # (see 35-hermes-cloud.yml), so the wider rungs behind it go untried. The
-      # composition checks above pass happily on exactly that chain, which is
-      # how it reached production.
+      # escape hatch — not because its absence aborts the chain (it does not;
+      # the enclosing walk advances), but because of how that map is consulted.
+      # On a context error it is checked FIRST, and once the map EXISTS a
+      # missing key re-raises without ever falling through to the ordinary
+      # fallbacks map, whereas no map at all would fall through. So an unkeyed
+      # narrow rung silently loses its own escape to the wider rungs, and a
+      # partially populated map is worse than none. See 35-hermes-cloud.yml.
+      # The composition checks above pass happily on exactly that chain, which
+      # is how it reached production.
       - "_llm_router_unescaped_narrow_groups | length == 0"
       # ANTI-VACUITY. Narrowness is "context_window < primary's", and the
       # primary lookup defaults to 0 when it resolves nothing. At 0 no leg is
@@ -83,15 +93,18 @@
       got {{ llm_router_hermes_default_fallback_chain }}, which must hold
       exactly {{ llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups }}
       (in any order) with no duplicates. Narrow leg(s) standing in front of a
-      cloud rung that could serve the request, which aborts the whole chain:
+      cloud rung that could serve the request, spending an attempt and a unit
+      of the shared depth budget on a rung that cannot answer:
       {{ _llm_router_misordered_narrow_groups }}. Declared groups:
       {{ _llm_router_declared_groups }}. Provider(s) whose outage would empty
       the chain: {{ _llm_router_unsafe_providers }} (chain providers:
       {{ _llm_router_chain_providers }}). Depth is capped at 5 (1 local + free
       + 3 paid providers) — see the arithmetic comment above the assert before
       raising it. Rung(s) narrower than the primary with no
-      context_window_fallbacks escape hatch (these abort the whole chain on an
-      over-long request): {{ _llm_router_unescaped_narrow_groups }}.
+      context_window_fallbacks escape hatch (an over-long request re-raises
+      at these rather than escaping to a wider rung, because a rendered map
+      with a missing key never falls through):
+      {{ _llm_router_unescaped_narrow_groups }}.
       The four inputs every ordering failure turns on, because they differ
       between environments and are otherwise invisible here — primary model:
       {{ llm_router_primary_model | default('UNRESOLVED') }}; primary context
@@ -122,10 +135,11 @@
       {%- endfor -%}
       {{ ns.bad }}
     # Context the primary itself advertises; every rung is measured against it.
-    _llm_router_primary_context: >-
-      {{ (llm_router_registry_enabled
-          | selectattr('client_model_id', 'equalto', 'hermes-default')
-          | map(attribute='context_window') | list | first) | default(0) }}
+    # The same derivation the narrow/wide split is BUILT from
+    # (35-hermes-cloud.yml), resolved through llm_router_primary_model — never
+    # a typed id, which would be a second source for "primary width" that
+    # agrees only until the primary moves.
+    _llm_router_primary_context: "{{ llm_router_hermes_primary_context_window }}"
     # Chain rungs that advertise LESS context than the primary and have no
     # context_window_fallbacks entry. A rung with no declared context_window is
     # not assumed narrow — only a stated, smaller number counts.

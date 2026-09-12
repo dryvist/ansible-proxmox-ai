@@ -1,0 +1,55 @@
+---
+# Converge-time verification that what the registry CLAIMS is served actually
+# is — the network half. Rationale for the check existing at all, and every
+# projection it reads, are in defaults/main/52-probe.yml.
+#
+# SPLIT FROM ITS ADJUDICATION DELIBERATELY. The probes below need a network
+# and a credential; assert-servable-parity.yml needs neither, so a test can
+# import the judge with hand-built fixtures and make it FAIL. A check that can
+# only ever skip where it is tested is not a check.
+#
+# Read-only, and `check_mode: false` on both probes for the same reason
+# assert-endpoint-dns.yml sets it: a GET against a model listing changes
+# nothing, and a check-mode run that skipped them would report a verification
+# it never performed.
+#
+# `failed_when: false` on both, deliberately, and it is the safety property
+# this file exists to hold rather than an oversight. An unreachable gate (the
+# serving host asleep, rebooting, or off the network) and an unseeded optional
+# tier are both legitimate states that mean "cannot check", never "check
+# failed". The judge classifies each result and fails only on a real
+# disagreement; letting the module fail here would block a converge for a
+# reason unrelated to the change being deployed.
+#
+# `no_log: true` keeps the bearer out of a verbose run's task arguments. It
+# suppresses display only — the registered results the judge reads are intact.
+
+- name: Probe the large-tier serving gate's own model listing
+  ansible.builtin.uri:
+    url: "{{ llm_router_llm_large_base_url }}/models"
+    headers:
+      Authorization: "Bearer {{ llm_router_llm_large_bearer }}"
+    timeout: "{{ llm_router_probe_timeout }}"
+  register: _llm_router_gate_models
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Probe each credentialed remote tier's own model listing
+  ansible.builtin.uri:
+    url: "{{ item.endpoint }}"
+    headers:
+      Authorization: >-
+        Bearer {{ (bao_local_llm_secrets | default({}, true))[item.key_field]
+                  | default(lookup('env', item.credential_env), true) }}
+    timeout: "{{ llm_router_probe_timeout }}"
+  loop: "{{ llm_router_remote_probes | selectattr('has_credential') | list }}"
+  register: _llm_router_remote_models
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Adjudicate every probe result against the registry
+  ansible.builtin.import_tasks: assert-servable-parity.yml

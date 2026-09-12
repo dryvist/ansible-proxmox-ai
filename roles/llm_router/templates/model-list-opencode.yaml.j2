@@ -1,0 +1,35 @@
+{# Subscription tier — one deployment per registry entry, credential-gated.
+   Split out of model-list.yaml.j2 when that file crossed its per-file token
+   budget, following the seam that file already uses for the light tier and the
+   Hermes agents: one tier per file, so an agent changing this tier reads this
+   file and not every other tier as well. Per .token-limits.yaml the remedy for
+   an over-budget file is a split along a real seam, never a raised budget.
+
+   Included by model-list.yaml.j2, which owns the macros and the surrounding
+   tiers; `delegation_hints` and `litellm_model` resolve from that context. #}
+  # --- Subscription tier ---
+  # Each entry renders exactly one deployment, under its own registry id. See
+  # defaults/main/32-opencode.yml for what `order` does here, which today is
+  # nothing: it ranks deployments within one model_name group, and no entry in
+  # this tier shares a name with another tier's.
+{% for m in llm_router_opencode_models %}
+{% set _oc_env = m.credential_env %}
+{% set _oc_key = bao_local_llm_secrets[m.key_field] | default(lookup('env', _oc_env), true) %}
+{% if _oc_key | trim | length > 0 %}
+  - model_name: {{ m.client_model_id }}
+    litellm_params:
+      model: {{ litellm_model(m) }}
+      api_base: {{ m.api_base | default(llm_router_opencode_base_url) }}
+      api_key: os.environ/{{ _oc_env }}
+      use_chat_completions_api: true
+      order: {{ m.order | default(llm_router_opencode_default_order) }}
+      rpm: {{ m.rpm | default(llm_router_opencode_rpm) }}
+      tpm: {{ m.tpm | default(llm_router_opencode_tpm) }}
+      max_parallel_requests: {{ m.max_parallel_requests | default(llm_router_opencode_max_parallel_requests) }}
+    model_info:
+      max_input_tokens: {{ m.context_window }}
+      max_output_tokens: {{ m.max_output_tokens }}
+      max_tokens: {{ m.max_output_tokens }}
+{{- delegation_hints(m) }}
+{% endif %}
+{% endfor %}

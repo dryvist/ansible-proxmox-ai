@@ -23,20 +23,22 @@
 # cannot use this GPU". The first half is true and stays true; the second half
 # does not follow. Vulkan is the Linux GPU backend upstream publishes.
 
-# --- Engine swap --------------------------------------------------------------
-# STOPS the vLLM unit (the role sets state=stopped, enabled=false — it does not
-# merely skip), which is what releases the card. Measured: vLLM held
-# 15610 MiB of 16376 MiB while serving the 14B, leaving ~766 MiB free, so the
-# two engines cannot coexist on this card and this is not optional.
-#
-# This is also the rollback lever: set back to true and re-converge to restore
-# the previous 14B serving setup. The vLLM venv and its HuggingFace cache
-# (9.4 GB) are deliberately left in place on the guest's root disk, which has
-# 70 GB free, so rolling back costs no re-download.
-vllm_service_enabled: false
+# No vLLM role exists for this guest: llama.cpp on Vulkan (above) is the only
+# engine converged here. vLLM's unit stays stopped and disabled on the guest,
+# which is what leaves the full card free — measured: vLLM held 15610 MiB of
+# 16376 MiB while serving the 14B, leaving ~766 MiB free, so it cannot coexist
+# with llama.cpp on this card. vLLM's venv and HuggingFace cache (9.4 GB)
+# remain on the guest's root disk; reintroducing it here means adding the role
+# back, not flipping a variable.
 
 # --- llama.cpp on Vulkan ------------------------------------------------------
 llama_cpp_gpu_backend: vulkan
+
+# Which llm-models.d/ tier this guest serves — read by roles/llama_cpp/tasks/
+# guards.yml to check llama_cpp_models against the registry in BOTH directions
+# without hardcoding a group-name-to-tier map there. A host declares its own
+# tier once, here, rather than the guard inferring it from group membership.
+llama_cpp_registry_tier: vllm
 
 # Per-guest ceiling, raised DELIBERATELY from the role default of 14 to cover
 # this model's 27.78B on a 16 GB card. This is the ceiling mechanism working as
@@ -90,13 +92,24 @@ llama_cpp_max_param_billions: 31
 # instead of failing, which is what a fallback rung owes its callers.
 llama_cpp_parallel: 1
 
+# The two registry client_model_ids served here, named ONCE. Still literals,
+# deliberately — this is the JOIN KEY between this file's backend facts
+# (hf_repo, gguf, param_billions, which llm-models.d/ deliberately does not
+# carry — see roles/llama_cpp/defaults/main.yml for why) and the registry's
+# own data, and a join key necessarily appears on both sides of the join. What
+# the registry genuinely owns here is the context_window, derived below —
+# every selectattr lookup and both llama_cpp_models `name:` fields reference
+# these vars rather than re-typing the id a second time in this file.
+_llama_cpp_vllm_dense_model_id: qwen3.8-27b
+_llama_cpp_vllm_coder_model_id: qwen3-coder-30b
+
 llama_cpp_ctx_size: >-
   {{ (llm_router_model_registry
-      | selectattr('client_model_id', 'equalto', 'qwen3.8-27b')
+      | selectattr('client_model_id', 'equalto', _llama_cpp_vllm_dense_model_id)
       | first).context_window }}
 
 llama_cpp_models:
-  - name: qwen3.8-27b
+  - name: "{{ _llama_cpp_vllm_dense_model_id }}"
     aliases: []
     hf_repo: unsloth/Qwen3.8-27B-GGUF
     # Unsloth Dynamic v3 (imatrix). Filename verified against the repo's file
@@ -111,7 +124,7 @@ llama_cpp_models:
   # the arithmetic behind both. Its window is read from the registry for the
   # same reason the group default is: the number the backend serves and the
   # number the router advertises must be one number, not two that drift.
-  - name: qwen3-coder-30b
+  - name: "{{ _llama_cpp_vllm_coder_model_id }}"
     aliases: []
     hf_repo: unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
     gguf: Qwen3-Coder-30B-A3B-Instruct-UD-IQ3_XXS.gguf
@@ -119,7 +132,7 @@ llama_cpp_models:
     embeddings: false
     ctx_size: >-
       {{ (llm_router_model_registry
-          | selectattr('client_model_id', 'equalto', 'qwen3-coder-30b')
+          | selectattr('client_model_id', 'equalto', _llama_cpp_vllm_coder_model_id)
           | first).context_window }}
 
 # Restart llama-swap on failure (shared systemd restart policy role).
