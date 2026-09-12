@@ -1,0 +1,46 @@
+---
+# Runs on EVERY converge, not just first-seed — unlike seed-keys.yml, which
+# only mints a key the first time it is absent. A key's `monthly_budget` here
+# can change after the key already exists (this PR moves several from unset
+# to 14.0), and seed-keys.yml's "never touch a key that exists" contract would
+# otherwise strand every already-minted key on its original budget forever.
+#
+# Sends ONLY max_budget/budget_duration, never `models` or `key_alias` — an
+# operator may have hand-edited a key's model list in the Admin UI, and
+# resending the git-declared list on every converge would silently overwrite
+# that edit. Budget is the one field this role owns end to end, since nothing
+# else sets it.
+#
+# /key/update takes the actual key VALUE in its `key` field (LiteLLM hashes it
+# server-side to find the row), the same shape /key/generate takes — so this
+# needs no /key/list round trip first. A key whose value is unseeded (empty)
+# is skipped, same contract as seed-keys.yml, and a key with no monthly_budget
+# declared is skipped too rather than sent an update that would clear an
+# existing budget it never claimed to own.
+
+- name: Compute the budgeted keys to reconcile on every converge
+  ansible.builtin.set_fact:
+    _llm_router_budgeted_keys: >-
+      {{ llm_router_virtual_keys
+         | rejectattr('value', 'equalto', '')
+         | selectattr('monthly_budget', 'defined')
+         | rejectattr('monthly_budget', 'equalto', 0) | list }}
+  no_log: true
+
+- name: Resync max_budget/budget_duration on every budgeted key
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/update"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      key: "{{ item.value }}"
+      max_budget: "{{ item.monthly_budget }}"
+      budget_duration: "7d"
+    status_code: [200]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: "{{ _llm_router_budgeted_keys }}"
+  loop_control:
+    label: "{{ item.alias }}"
+  no_log: true

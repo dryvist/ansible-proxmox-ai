@@ -47,6 +47,40 @@
          | selectattr('monthly_budget', 'defined') | map(attribute='route_group') | list }}
     _llm_router_any_deployment_budget: "{{ _llm_router_budgeted_groups | length > 0 }}"
 
+# Per-KEY budgets are a different backing store than provider/deployment
+# budgets above: LiteLLM persists a key's spend and max_budget in its own
+# Postgres row, not Redis, so a key budget's honesty condition is the router
+# database rather than the shared cache. Same shape: reconcile-key-budgets.yml
+# is what actually pushes the value, but it is gated on this same
+# llm_router_db_host check in main.yml — this assert exists so a config that
+# somehow declares a monthly_budget on a virtual key with no database fails
+# loudly here too, rather than only via that task silently never running.
+- name: Assert a rendered key budget is backed by the router database
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - not _llm_router_any_key_budget
+        or (llm_router_db_host | default('') | trim | length > 0)
+    fail_msg: >-
+      A virtual key declares monthly_budget with no router database configured
+      (roles/llm_router/tasks/assert-budget-backing.yml).
+      Budgeted key aliases={{ _llm_router_budgeted_key_aliases }}.
+      LiteLLM tracks key spend and max_budget in its own database, not Redis;
+      with llm_router_db_host empty, seed-keys.yml/reconcile-key-budgets.yml
+      never run (main.yml gates both on it), so the budget declared here is
+      never actually sent to the proxy. Set llm_router_db_host (roles/postgres)
+      or drop monthly_budget from the affected key(s).
+    success_msg: >-
+      {{ 'Every rendered key budget is backed by the router database.'
+         if _llm_router_any_key_budget
+         else 'No key budget configured; nothing to back.' }}
+  vars:
+    _llm_router_budgeted_key_aliases: >-
+      {{ (llm_router_virtual_keys | default([]))
+         | selectattr('monthly_budget', 'defined')
+         | rejectattr('monthly_budget', 'equalto', 0) | map(attribute='alias') | list }}
+    _llm_router_any_key_budget: "{{ _llm_router_budgeted_key_aliases | length > 0 }}"
+
 # Naming a host is not reaching it. roles/redis makes AUTH mandatory and has no
 # passwordless branch, so an empty password here does not degrade to an
 # unauthenticated connection that happens to work — every LiteLLM call to the
