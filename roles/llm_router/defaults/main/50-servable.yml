@@ -58,18 +58,25 @@ llm_router_servable_models: >-
 # model_list entry — and, by construction, only ever at the entry that declared
 # it, which is always a member of the servable set above.
 #
-# SERVABLE ENTRIES ONLY. A static model_group_alias is subject to the two
-# asserts in tasks/assert.yml: its target must be in the servable set and must
-# be a first-class large-tier entry with a real context window. An alias
-# declared on an entry outside that set — an egress model, a light-tier one —
-# is a ROLE, and roles are seeded into the router database (tasks/seed-roles.yml)
-# where the Admin UI owns them thereafter. Filtering here is what lets one
-# `stable_aliases` field serve both mechanisms without either assert weakening:
-# every entry that carries an alias today is servable, so this changes nothing
-# about what currently renders.
+# SERVABLE ENTRIES, plus the hermes-router tier, ONLY. A static
+# model_group_alias is subject to the two asserts in tasks/assert.yml: its
+# target must be in the servable set (or be the local complexity router
+# itself) and must carry a real context window. An alias declared on an
+# entry outside both sets — an egress model, a light-tier one — is a ROLE,
+# and roles are seeded into the router database (tasks/seed-roles.yml) where
+# the Admin UI owns them thereafter. The hermes-router tier is admitted
+# alongside `servable` (not folded into it) because `servable` means "the
+# serving host will answer for this id directly" and the complexity router
+# never does — it dispatches to llm_router_routine_model /
+# llm_router_primary_model, which are already required to be servable and
+# safe by the asserts above. Adding it to `servable` itself would corrupt
+# llm_router_servable_models and the verify-servable probe (2026-07-28).
 llm_router_alias_pairs: >-
-  {{ llm_router_registry_enabled | selectattr('servable', 'defined')
-     | selectattr('servable') | selectattr('stable_aliases', 'defined')
+  {{ ((llm_router_registry_enabled | selectattr('servable', 'defined')
+       | selectattr('servable') | list)
+      + (llm_router_registry_enabled | selectattr('tier', 'defined')
+         | selectattr('tier', 'equalto', 'hermes-router') | list))
+     | selectattr('stable_aliases', 'defined')
      | subelements('stable_aliases') | list }}
 llm_router_model_group_aliases: >-
   {{ dict(llm_router_alias_pairs | map(attribute=1)
