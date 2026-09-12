@@ -261,6 +261,44 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert "base_url: '{{ hermes_agent_model_base_url }}'" in config
 
 
+def test_credential_gated_entries_declare_their_own_credential() -> None:
+    """Every entry of a credential-gated tier names its own credential.
+
+    The env, probe and role projections read `credential_env` and `key_field`
+    bare off the entry; there is deliberately no per-tier default to fall back
+    on, because a default shared across a loop that mixes tiers is how one
+    provider's entry gets silently credentialed with another provider's key.
+    So the registry has to carry both fields on every gated entry, and this is
+    where an entry that omits one fails.
+
+    Anti-vacuity: remove either field from any opencode, hermes-cloud or
+    openrouter entry and `missing` is non-empty. The gated set is asserted
+    non-empty first, so a registry slice that failed to load cannot pass by
+    having nothing to check. The gated tiers are the same four the render
+    parity guard exempts from enabled-but-unrendered for being key-gated
+    (roles/llm_router/tasks/assert-registry-render-parity.yml).
+    """
+    registry = [
+        entry
+        for slice_file in sorted((REPO_ROOT / "llm-models.d").glob("*.yml"))
+        for entries in yaml.safe_load(slice_file.read_text()).values()
+        for entry in entries
+    ]
+    gated_tiers = {"opencode", "hermes-cloud", "hermes-cloud-router", "openrouter"}
+    gated = [entry for entry in registry if entry["tier"] in gated_tiers]
+    assert gated, "no credential-gated registry entries loaded; nothing was checked"
+    missing = [
+        (entry["client_model_id"], field)
+        for entry in gated
+        for field in ("credential_env", "key_field")
+        if not entry.get(field)
+    ]
+    assert not missing, (
+        f"credential-gated entries without their own credential fields: {missing}; "
+        "declare credential_env and key_field on the entry (docs/LLM_MODELS_SCHEMA.md)"
+    )
+
+
 def test_group_vars_reads_canonical_zammad_mcp_pair() -> None:
     group_vars = (REPO_ROOT / "inventory/group_vars/hermes_agent_group.yml").read_text()
     assert "bao_local_llm_secrets.ZAMMAD_MCP_URL" in group_vars
