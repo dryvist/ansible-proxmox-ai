@@ -138,7 +138,6 @@ def _direct_deliver(cron_name_var: str, ctx: dict[str, str]) -> str:
 SPLUNK_STATUS = r'deliver: "(slack:\{\{ hermes_agent_splunk_status_digest_channel \}\})"'
 KANBAN = r'deliver: "(slack:\{\{ hermes_agent_kanban_digest_channel \}\})"'
 TRIAGE = r'deliver: "(slack:\{\{ hermes_agent_triage_channel \}\})"'
-ZAMMAD_CLOSE = r'deliver: "(slack:\{\{ hermes_agent_slack_hermes_all_channel \}\})"'
 # The fallback deliver expression is `item.deliver | default('slack:' ~ var)`,
 # not a standalone quoted string like the other call sites — item.deliver is
 # per-job (rendered separately by the per-job tests), so only the DEFAULT half
