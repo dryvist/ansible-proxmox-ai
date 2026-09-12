@@ -34,13 +34,23 @@ agent_exec_pip_packages:
   - opentelemetry-instrumentation-langchain==0.62.1
 
 # Autonomy seed loop: every interval the seed runs a tiny traced crew against
-# BOTH model tiers (large = real work; light = soak path). Override
-# the model names to match what each endpoint serves; the loop is resilient to a
-# single failed run. The large/light base URLs come from the ai_orchestration
-# group vars (ai_orchestration_model_large_base_url / ai_orchestration_ollama_base_url).
+# BOTH model tiers (large = real work; light = soak path). The model names
+# must match what each endpoint actually serves; the loop is resilient to a
+# single failed run, which is exactly why this drifted unnoticed before: the
+# light tier's default named "hermes4", a client_model_id that was never
+# registered in llm-models.d/, so every light-tier soak run 404'd at the
+# router silently since this was written. The large/light base URLs come from
+# the ai_orchestration group vars (ai_orchestration_model_large_base_url /
+# ai_orchestration_ollama_base_url).
 agent_exec_interval_seconds: 900
 agent_exec_model_large: "openai/default"
-agent_exec_model_light: "openai/hermes4"
+# Derived from the registry's light tier (the chat-capable, non-embedding
+# entry), not typed — a rename in the registry follows here automatically.
+# Requires the fabric registry loaded into this play's scope (tasks/main.yml
+# does this: a different play than llm_router's own).
+agent_exec_model_light: >-
+  openai/{{ (llm_router_light_models | rejectattr('embedding', 'defined')
+             | first).client_model_id }}
 # OpenAI-compatible API key for the model endpoints. The local runners ignore it;
 # override via SOPS only if an endpoint enforces auth.
 agent_exec_api_key: "sk-noauth"
