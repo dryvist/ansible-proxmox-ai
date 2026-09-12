@@ -35,6 +35,12 @@ ROLE_ROOT = REPO_ROOT / "roles" / "hermes_agent"
 # drift protection as every other PINNED_*_SOURCE fixture in this repo: if
 # upstream reindents or rewords this method, these patches should stop
 # matching and this test should go red, not silently patch nothing).
+# Verbatim upstream shape at v2026.9.11 (fetched and diffed directly against
+# the pinned tag): upstream combined the interrupted-turn guard and the
+# missing-input guard into ONE `if interrupted or not (...)` line, and
+# collapsed the multi-line queue_prefetch_all(...) call to one line, wrapped
+# in its own `if not is_trivial_prompt(user_text):` guard nested one level
+# deeper than the shared try/except that also covers sync_all(...).
 PINNED_SYNC_EXTERNAL_MEMORY_SOURCE = '''\
 class _Agent:
     def _sync_external_memory_for_turn(
@@ -45,9 +51,7 @@ class _Agent:
         interrupted: bool,
         messages: list | None = None,
     ) -> None:
-        if interrupted:
-            return
-        if not (self._memory_manager and final_response and original_user_message):
+        if interrupted or not (self._memory_manager and final_response and original_user_message):
             return
         user_text = _summarize_user_message_for_log(original_user_message, sep="\\n")
         response_text = _summarize_user_message_for_log(final_response, sep="\\n")
@@ -62,10 +66,8 @@ class _Agent:
                 response_text,
                 **sync_kwargs,
             )
-            self._memory_manager.queue_prefetch_all(
-                user_text,
-                session_id=self.session_id or "",
-            )
+            if not is_trivial_prompt(user_text):
+                self._memory_manager.queue_prefetch_all(user_text, session_id=self.session_id or "")
         except Exception:
             pass
 '''
@@ -88,8 +90,10 @@ def _apply_runtime_patch(name: str, source: str) -> str:
 # what the role actually produces and would assert against itself.
 PATCHED_SOURCE = PINNED_SYNC_EXTERNAL_MEMORY_SOURCE
 for _task_name in (
-    'Patch _sync_external_memory_for_turn to log its "interrupted" skip',
-    "Patch _sync_external_memory_for_turn to log its missing-input skip",
+    # Rewritten (2026-09): upstream merged the interrupted-turn and
+    # missing-input guards into one line, so what used to be two separately
+    # anchored role patches is now one.
+    "Patch _sync_external_memory_for_turn to log its interrupted/missing-input skip",
     "Patch _sync_external_memory_for_turn to log its empty-flatten skip",
     "Patch _sync_external_memory_for_turn to log its swallowed exception",
 ):
@@ -128,6 +132,7 @@ def _build(*, memory_manager: _FakeMemoryManager | None, session_id: str = "s1")
     namespace: dict[str, Any] = {
         "Any": Any,
         "_summarize_user_message_for_log": lambda v, sep="\n": v if isinstance(v, str) else "",
+        "is_trivial_prompt": lambda _text: False,
         "logger": fake_logger,
     }
     exec(PATCHED_SOURCE, namespace)
@@ -138,18 +143,23 @@ def _build(*, memory_manager: _FakeMemoryManager | None, session_id: str = "s1")
 
 
 def test_each_gate_logs_a_distinct_message_exactly_once() -> None:
-    assert PATCHED_SOURCE.count("Hermes external-memory sync/prefetch skipped: turn interrupted") == 1
-    assert PATCHED_SOURCE.count("Hermes external-memory sync/prefetch skipped: missing manager=%s") == 1
+    # Re-anchored (2026-09): the interrupted-turn and missing-input guards
+    # merged into one combined condition/message, so three gates now, not
+    # four — the individual flag values in the message body still tell a
+    # reader which sub-condition actually fired.
+    assert PATCHED_SOURCE.count(
+        "Hermes external-memory sync/prefetch skipped: interrupted=%s manager=%s"
+    ) == 1
     assert PATCHED_SOURCE.count("Hermes external-memory sync/prefetch skipped: empty after flatten") == 1
     assert PATCHED_SOURCE.count("Hermes external-memory sync_all/queue_prefetch_all failed: %s") == 1
 
 
 def test_no_gate_logs_message_or_response_content() -> None:
-    """The four new log lines carry booleans/session id/exception text only —
+    """The three new log lines carry booleans/session id/exception text only —
     never the raw user_text/response_text/original_user_message/final_response
     values, which would ship real conversation content into Splunk."""
     warning_calls = re.findall(r"logger\.warning\((?:[^()]|\([^()]*\))*\)", PATCHED_SOURCE)
-    assert len(warning_calls) == 4
+    assert len(warning_calls) == 3
     for call in warning_calls:
         assert "user_text,\n" not in call
         assert "response_text,\n" not in call
@@ -158,10 +168,17 @@ def test_no_gate_logs_message_or_response_content() -> None:
 
 
 def test_interrupted_gate_logs_and_still_returns_without_syncing() -> None:
+    # Re-anchored (2026-09): the interrupted-turn and missing-input guards
+    # merged into one combined condition/message — interrupted=True here,
+    # with manager/final_response/original_user_message all otherwise
+    # satisfied, so the flag values distinguish which sub-condition fired.
     method, agent, log = _build(memory_manager=_FakeMemoryManager())
     method(original_user_message="hi", final_response="hello", interrupted=True)
     assert len(log.warnings) == 1
-    assert log.warnings[0][0] == "Hermes external-memory sync/prefetch skipped: turn interrupted (session=%s)"
+    args = log.warnings[0]
+    assert args[0].startswith("Hermes external-memory sync/prefetch skipped: interrupted=%s manager=%s")
+    # interrupted=True, manager=True, final_response=True, original_user_message=True
+    assert args[1:5] == (True, True, True, True)
     assert agent._memory_manager.synced is False
     assert agent._memory_manager.queued is False
 
@@ -171,9 +188,9 @@ def test_missing_input_gate_logs_which_input_and_still_returns() -> None:
     method(original_user_message="hi", final_response=None, interrupted=False)
     assert len(log.warnings) == 1
     args = log.warnings[0]
-    assert args[0].startswith("Hermes external-memory sync/prefetch skipped: missing manager=%s")
-    # manager=True, final_response=False, original_user_message=True
-    assert args[1:4] == (True, False, True)
+    assert args[0].startswith("Hermes external-memory sync/prefetch skipped: interrupted=%s manager=%s")
+    # interrupted=False, manager=True, final_response=False, original_user_message=True
+    assert args[1:5] == (False, True, False, True)
     assert agent._memory_manager.synced is False
 
 
