@@ -1,0 +1,156 @@
+---
+# --- Recurring job catalog additions (W3 program, agents file S1.2/S1.6) -----
+# Four new agentic direct-cron jobs. Every prompt is inline here rather than
+# pulled from the pinned ai-llm-prompts catalog (reconcile_direct_cron.yml's
+# prompt_var is "an already-resolved var, inline or catalog-preloaded" —
+# both are first-class), since each is new work with no upstream prompt file
+# yet.
+#
+# blocked-parent-triage-digest and the daily-status lane-count append (see
+# 44-slack-and-status-cron-vars.yml / prompt_catalog.yml) both read HERMES'S
+# OWN internal kanban.db via the `kanban` tool every cron/kanban worker
+# already carries — never the operator's Vikunja board. That is the actual
+# Vikunja 1523 mechanism (398 blocked PARENT CARDS in Hermes's own queue
+# starving 12 todo CHILDREN via recompute_ready, which only promotes a child
+# once every parent is done or archived); the Vikunja-bridge lanes (PR7,
+# roles/hermes_agent/templates/vikunja-bridge.py.j2) are the complementary
+# fix on the OPERATOR'S board. No profile has Vikunja read access wired yet
+# (docs/operating-profiles.md: "+ Vikunja/Nautobot later" for homelab-admin
+# only), so a job reading the operator's board is not buildable today.
+#
+# backlog-sweeper is scoped to ZAMMAD ONLY for the same reason: "work it in
+# the matching profile" across trackers needs Vikunja read access on at least
+# one profile, which does not exist yet. Filed as a follow-up (Vikunja 3123)
+# rather than half-building cross-tracker routing against a tool no profile
+# has.
+hermes_agent_pricing_diff_enabled: true
+hermes_agent_pricing_diff_cron_name: pricing-diff
+hermes_agent_pricing_diff_cron_schedule: "23 7 * * 3"
+hermes_agent_pricing_diff_cron_prompt: >-
+  Weekly OpenRouter pricing-diff sweep. Recall memory key "pricing-diff-last"
+  (the model id -> prompt/completion price map you saved last run); if it is
+  absent this is your first run, so just save a baseline and reply exactly
+  [SILENT]. GET https://openrouter.ai/api/v1/models (public, no key) and
+  build the same map from its current contents. Compare only the models this
+  estate actually serves through — cross-reference ids against the router
+  registry conversationally if you have Docs MCP access to it; otherwise
+  compare every id in both maps. Report ONLY a model whose prompt or
+  completion price changed since last run, with the old price, the new
+  price, and the percent change. If nothing changed, reply exactly [SILENT].
+  Never propose or attempt to edit the router registry yourself — you can
+  only observe and report; a registry change is a human/coder decision at
+  the file `llm-models.d/` owns (AGENTS.md's hard rule). Save this run's full
+  map back to "pricing-diff-last" regardless of whether anything changed.
+
+hermes_agent_blocked_parent_triage_digest_enabled: true
+hermes_agent_blocked_parent_triage_digest_cron_name: blocked-parent-triage-digest
+hermes_agent_blocked_parent_triage_digest_cron_schedule: "11 8 * * *"
+hermes_agent_blocked_parent_triage_digest_cron_prompt: >-
+  Daily blocked-parent triage digest (Vikunja 1523: a parent card stuck in
+  blocked/needs_input status starves every child waiting on it, since
+  recompute_ready only promotes a child once ALL its parents are done or
+  archived). Use your kanban tool to list cards and their parent/child
+  relations and current status. Recall memory key
+  "blocked-parent-triage-last" (parent card ids you already flagged) and work
+  the delta — do not re-flag a parent you already reported unless its status
+  changed. Find every PARENT card that has been blocked or awaiting input for
+  more than 7 days AND has at least one child card that is otherwise ready to
+  run. For each, name the parent's id and age in days, the blocked reason if
+  the card has one, and how many children it is starving. You can only
+  observe and report — never mark a parent done, archived, or blocked
+  yourself; that is the operator's call. If none are found, reply exactly
+  [SILENT]. Save the flagged parent ids back to "blocked-parent-triage-last".
+
+hermes_agent_router_capacity_digest_enabled: true
+hermes_agent_router_capacity_digest_cron_name: router-capacity-digest
+hermes_agent_router_capacity_digest_cron_schedule: "37 8 * * *"
+hermes_agent_router_capacity_digest_cron_prompt: >-
+  Daily router-capacity digest. The router already emits ONE metric event
+  per day under syslog identifier "llm-serving-share", carrying `requests`,
+  `local_share`, `overflow_share`, `caller_429_rate`, `window` and
+  `computed_at` — read it from the log platform (never the host). Recall
+  memory key "router-capacity-digest-last" (yesterday's `caller_429_rate`
+  and `requests`) so the report is a genuine day-over-day comparison, not an
+  isolated number. Report today's requests, the 429 rate and how it moved
+  versus yesterday, and the overflow share. If the 429 rate genuinely
+  regressed (meaningfully worse, not day-to-day noise) or requests dropped to
+  near zero (a silent metric-emission gap, not low real traffic), say so
+  plainly as the headline; otherwise lead with "capacity nominal". If no
+  event landed in the log platform for today at all, report that as the
+  finding — a missing event is a pipeline defect, never silence. Save
+  today's numbers back to "router-capacity-digest-last".
+
+hermes_agent_backlog_sweep_enabled: true
+hermes_agent_backlog_sweep_cron_name: backlog-sweep
+hermes_agent_backlog_sweep_cron_schedule: "41 */4 * * *"
+hermes_agent_backlog_sweep_cron_prompt: >-
+  Backlog sweep, every 4 hours: pick ONE open Zammad incident and move it
+  forward. (Vikunja items are out of scope for this job today — no profile
+  has Vikunja read access yet.) Recall memory key "backlog-sweep-last" (the
+  ticket id you swept last run) so you do not pick the same one twice in a
+  row while it is unchanged. List open incidents across all groups and
+  queues; pick the oldest one that is not already "pending close" and that
+  your last article did not already fully answer. Investigate using your
+  available tools and read-only judgment, then post ONE article on the
+  ticket with what you found and a concrete next step — never a bare status
+  change with no evidence. If the fix needs a repository change, say so
+  explicitly in the article and note that no automated PR path exists for
+  this yet (the `coder` profile has not shipped); do not attempt one
+  yourself. You investigate and comment — you NEVER close, resolve, or move
+  a ticket to pending-close yourself, even one you are confident is done:
+  closing what you did not open is the approver's decision, not yours. Post
+  a Slack thread to the home channel naming the ticket, a one-line summary,
+  the ticket's own URL, and the permalink to the article you just posted, so
+  the approver can review and close in one click. Save the swept ticket id
+  back to "backlog-sweep-last".
+
+# Reassembled into hermes_agent_direct_cron_jobs by
+# 43-direct-cron-jobs-core.yml's concatenation.
+hermes_agent_direct_cron_jobs_recurring_catalog:
+  - name: "{{ hermes_agent_pricing_diff_cron_name }}"
+    schedule: "{{ hermes_agent_pricing_diff_cron_schedule }}"
+    prompt_var: hermes_agent_pricing_diff_cron_prompt
+    skill: ""
+    deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    hermes_home: "{{ hermes_agent_hermes_home }}/profiles/github-maint"
+    enabled: >-
+      {{ hermes_agent_pricing_diff_enabled | bool
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  - name: "{{ hermes_agent_blocked_parent_triage_digest_cron_name }}"
+    schedule: "{{ hermes_agent_blocked_parent_triage_digest_cron_schedule }}"
+    prompt_var: hermes_agent_blocked_parent_triage_digest_cron_prompt
+    skill: ""
+    deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    enabled: >-
+      {{ hermes_agent_blocked_parent_triage_digest_enabled | bool
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  - name: "{{ hermes_agent_router_capacity_digest_cron_name }}"
+    schedule: "{{ hermes_agent_router_capacity_digest_cron_schedule }}"
+    prompt_var: hermes_agent_router_capacity_digest_cron_prompt
+    skill: dryvist/splunk-monitor
+    deliver: "slack:{{ hermes_agent_slack_splunk_channel | default(hermes_agent_slack_hermes_all_channel, true) }}"
+    hermes_home: "{{ hermes_agent_hermes_home }}/profiles/splunk-admin"
+    enabled: >-
+      {{ hermes_agent_router_capacity_digest_enabled | bool
+         and hermes_agent_splunk_monitor_enabled | bool
+         and hermes_agent_splunk_mcp_url | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  - name: "{{ hermes_agent_backlog_sweep_cron_name }}"
+    schedule: "{{ hermes_agent_backlog_sweep_cron_schedule }}"
+    prompt_var: hermes_agent_backlog_sweep_cron_prompt
+    skill: dryvist/zammad-incidents
+    deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    hermes_home: "{{ hermes_agent_hermes_home }}/profiles/homelab-admin"
+    enabled: >-
+      {{ hermes_agent_backlog_sweep_enabled | bool
+         and hermes_agent_zammad_url | length > 0
+         and hermes_agent_zammad_api_token | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
