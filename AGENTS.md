@@ -245,7 +245,7 @@ host into a silent skip. Adopt them in the same change that adds the 2nd node.
 | Ansible lint | `ansible-lint` | pre-commit, every PR |
 | Playbook syntax | `ansible-playbook playbooks/site.yml --syntax-check` | every PR (CI) |
 | Inventory load | see below | every PR (CI) |
-| Molecule (per scenario) | `molecule test -s llamaindex` / `-s qdrant` | every PR (CI); locally before merging role changes (needs Docker) |
+| Molecule (per scenario) | `molecule test -s llamaindex` / `-s qdrant` | CI |
 
 **Inventory-load validation locally:**
 
