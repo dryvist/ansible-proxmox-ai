@@ -75,41 +75,29 @@ tier carried, and the rate of rate-limit responses actually **returned to a
 caller**. Retries that eventually succeeded are not in the latter; only the
 final outcome reaches the failure path that writes a row.
 
-## Queries
+## How the number is produced
 
-Run against the router's own database. `:estate_suffix` is a bind parameter
-carrying the internal subdomain (the value behind `PROXMOX_SUBDOMAIN`), so the
-query itself holds no address; in `psql`, `\set estate_suffix ...` and write it
-as `:'estate_suffix'`.
+Nothing about this is run by hand. `tasks/serving-share.yml` installs a systemd
+timer on each router that runs `templates/serving-share.sql.j2` daily against the
+proxy's own database and writes **one JSON line** to the journal under the
+identifier in `llm_router_serving_share_syslog_identifier`. The estate's syslog
+forwarder ships the journal, so the line reaches the log platform with no
+shipper change. That template is the definition of the metric; this document
+explains it and does not carry a second copy of the SQL.
 
-```sql
--- Weekly serving share, remote share, and caller-visible rate limiting.
--- The suffix is matched with wildcards on BOTH sides: api_base is a full URL
--- and ends in a port, so an anchored suffix match silently returns zero local
--- requests — a broken query and a failing fabric look the same from here.
-WITH reqs AS (
-  SELECT
-    date_trunc('week', "startTime") AS week,
-    status,
-    api_base LIKE '%' || :estate_suffix || '%' AS is_local,
-    metadata -> 'error_information' ->> 'error_code' AS error_code
-  FROM "LiteLLM_SpendLogs"
-  WHERE call_type IN ('acompletion', 'completion')
-    AND "startTime" >= now() - interval '28 days'
-)
-SELECT
-  week,
-  count(*) AS requests,
-  round(count(*) FILTER (WHERE is_local AND status = 'success')::numeric
-        / NULLIF(count(*), 0), 3) AS local_share,
-  round(count(*) FILTER (WHERE NOT is_local AND status = 'success')::numeric
-        / NULLIF(count(*), 0), 3) AS remote_share,
-  round(count(*) FILTER (WHERE status = 'failure' AND error_code = '429')::numeric
-        / NULLIF(count(*), 0), 3) AS caller_visible_429_rate
-FROM reqs
-GROUP BY week
-ORDER BY week DESC;
+The line carries `local_share`, `overflow_share`, `caller_429_rate`,
+`requests`, `window` and `computed_at`. Read it from the log platform, never
+from the host; a run that emits nothing is a finding about the pipeline, not
+an absence of traffic. Running the deployed query by hand for a spot check:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -A -t -f /etc/litellm/serving-share.sql
 ```
+
+For an ad-hoc breakdown the timer does not emit — which tier carried the work
+in a given week — `:estate_suffix` is a bind parameter carrying the internal
+subdomain, the same value the template renders in, so the query holds no
+address; in `psql`, `\set estate_suffix ...` and write it as `:'estate_suffix'`.
 
 ```sql
 -- Which tier carried the work, for the week just reported. Tier is derived

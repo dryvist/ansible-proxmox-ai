@@ -1,0 +1,138 @@
+---
+# Pins the serving-share metric job: tasks/serving-share.yml and its three
+# templates. Renders the real templates and asserts on the render — never on
+# the fixture — so a template edit that changes what the timer computes fails
+# here rather than in a dashboard nobody is watching.
+#
+# WHY. The number the program is stated in existed only as SQL in a document
+# until this job; every assert below names the input that would make it fail,
+# and none can pass on an empty render.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_serving_share.yml -i localhost, -c local
+
+- name: The serving-share job renders the documented metric, derived not typed
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    # Deliberately NOT the value in any default, so an assert that finds it in
+    # the render proves the template read the variable rather than a literal.
+    llm_router_subdomain: share-under-test.example.test
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          postgres_default: 5432
+    bao_local_llm_secrets: {}
+    bao_apps_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    # set_fact, not a play var: include_vars binds role defaults above a play
+    # var. The subdomain default in 10-network.yml reads an env var, so the
+    # fixture value has to be forced back in after the defaults load.
+    - name: Force the fixture subdomain past the role default
+      ansible.builtin.set_fact:
+        llm_router_subdomain: share-under-test.example.test
+
+    - name: Render the query, service and timer
+      ansible.builtin.set_fact:
+        _sql: "{{ lookup('template', _role_dir ~ '/templates/serving-share.sql.j2') }}"
+        _svc: "{{ lookup('template', _role_dir ~ '/templates/serving-share.service.j2') }}"
+        _tmr: "{{ lookup('template', _role_dir ~ '/templates/serving-share.timer.j2') }}"
+
+    # Fails if: the estate suffix is typed rather than rendered (fixture value
+    # absent), the wildcard is dropped from either side of the LIKE (an
+    # anchored match returns zero local rows), or the call_type filter is
+    # widened to embeddings. Empty render fails the first clause.
+    - name: The query defines local by the rendered estate suffix, chat completions only
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "\"LIKE '%share-under-test.example.test%'\" in _sql"
+          - "\"call_type IN ('acompletion', 'completion')\" in _sql"
+          - "'\"LiteLLM_SpendLogs\"' in _sql"
+        fail_msg: >-
+          serving-share.sql.j2 no longer defines "local" as an api_base carrying
+          the rendered subdomain matched on both sides, or no longer restricts to
+          chat completions. Either change silently moves the number: a typed or
+          anchored suffix reads as a fabric serving nothing locally, and
+          embeddings are always local and would flatter the share.
+        success_msg: Local is derived from the subdomain variable; chat completions only.
+
+    # Fails if: any of the four fields the doc promises is renamed or dropped,
+    # or the query stops emitting a single JSON object.
+    - name: The query emits one JSON object with the promised fields
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'json_build_object(' in _sql"
+          - "\"'local_share'\" in _sql"
+          - "\"'overflow_share'\" in _sql"
+          - "\"'caller_429_rate'\" in _sql"
+          - "\"'window'\" in _sql"
+          - "\"interval '7 days'\" in _sql"
+        fail_msg: >-
+          The rendered query does not build a single JSON object carrying
+          local_share, overflow_share, caller_429_rate and window over a 7-day
+          interval. The journal line is what the log platform parses; a renamed
+          field is a broken chart with a green timer.
+        success_msg: One JSON object, four promised fields, 7-day window.
+
+    # Fails if: the service reads a different env file than the proxy (and so
+    # could point at a different database), drops ON_ERROR_STOP (a failed
+    # query would exit 0 and emit nothing), runs as root, or loses the journal
+    # identifier the shipper keys on.
+    - name: The service reads the proxy's own database and fails loudly
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _svc is search('(?m)^EnvironmentFile=' ~ (llm_router_env_file | regex_escape) ~ '$')
+          - _svc is search(_exec_re)
+          - _svc is search('(?m)^User=' ~ (llm_router_user | regex_escape) ~ '$')
+          - _svc is search('(?m)^SyslogIdentifier=' ~ (llm_router_serving_share_syslog_identifier | regex_escape) ~ '$')
+          - _svc is search('(?m)^Type=oneshot$')
+        fail_msg: >-
+          serving-share.service.j2 drifted from its contract. It must load
+          {{ llm_router_env_file }} (the proxy's DATABASE_URL, so it can never
+          read a different database than the rows land in), run psql with
+          ON_ERROR_STOP against {{ llm_router_serving_share_query_file }}, run as
+          {{ llm_router_user }}, and tag the journal with
+          {{ llm_router_serving_share_syslog_identifier }}. Rendered:
+          {{ _svc }}
+        success_msg: Service reads the proxy env, fails on query error, tags the journal.
+      vars:
+        _exec_re: >-
+          (?m)^ExecStart=/usr/bin/psql "\$\{DATABASE_URL\}" -v ON_ERROR_STOP=1 .* -f
+          {{ llm_router_serving_share_query_file | regex_escape }}$
+
+    # Fails if: the timer loses its schedule, stops surviving reboots, or the
+    # daily cadence is replaced with something that hides a bad day.
+    - name: The timer fires daily and survives a reboot across the boundary
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _tmr is search('(?m)^OnCalendar=' ~ (llm_router_serving_share_on_calendar | regex_escape) ~ '$')
+          - _tmr is search('(?m)^Persistent=true$')
+          - _tmr is search('(?m)^WantedBy=timers.target$')
+          - llm_router_serving_share_on_calendar is search('^\*-\*-\* ')
+        fail_msg: >-
+          serving-share.timer.j2 must fire on
+          {{ llm_router_serving_share_on_calendar }} (a daily expression),
+          be Persistent so a reboot across the boundary still fires it, and be
+          wanted by timers.target. Rendered: {{ _tmr }}
+        success_msg: Daily, persistent, enabled.
