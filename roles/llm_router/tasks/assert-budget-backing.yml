@@ -81,6 +81,34 @@
          | rejectattr('monthly_budget', 'equalto', 0) | map(attribute='alias') | list }}
     _llm_router_any_key_budget: "{{ _llm_router_budgeted_key_aliases | length > 0 }}"
 
+# A key budget at or above the provider's own weekly ceiling defeats the
+# reason a per-key cap exists at all: one caller could then drain the whole
+# provider budget by itself, which is exactly what per-key budgets are meant
+# to prevent. Both are the same 7d period (roles/llm_router/defaults/main/
+# 56-virtual-keys.yml), so a plain numeric compare is enough — no separate
+# duration check needed.
+- name: Assert every key budget sits below the provider's weekly ceiling
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_oversized_key_budgets | length == 0
+    fail_msg: >-
+      A virtual key's monthly_budget is not below the provider's own weekly
+      ceiling (roles/llm_router/tasks/assert-budget-backing.yml).
+      Oversized keys={{ _llm_router_oversized_key_budgets }},
+      llm_router_openrouter_budget_limit={{ llm_router_openrouter_budget_limit | default(0) }}.
+      A key allowed to spend the whole provider ceiling by itself defeats the
+      reason per-key budgets exist. Lower the key's monthly_budget in
+      56-virtual-keys.yml.
+    success_msg: "Every key budget is strictly below the provider's weekly ceiling."
+  vars:
+    _llm_router_oversized_key_budgets: >-
+      {{ (llm_router_virtual_keys | default([]))
+         | selectattr('monthly_budget', 'defined')
+         | rejectattr('monthly_budget', 'equalto', 0)
+         | selectattr('monthly_budget', '>=', llm_router_openrouter_budget_limit | default(0) | float)
+         | map(attribute='alias') | list }}
+
 # Naming a host is not reaching it. roles/redis makes AUTH mandatory and has no
 # passwordless branch, so an empty password here does not degrade to an
 # unauthenticated connection that happens to work — every LiteLLM call to the
