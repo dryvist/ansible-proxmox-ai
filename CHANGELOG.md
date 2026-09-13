@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.49.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.48.0...v0.49.0) (2026-09-13)
+
+
+### Features
+
+* **hermes_agent:** add needs_triage and busy lanes to the Vikunja bridge ([#764](https://github.com/dryvist/ansible-proxmox-ai/issues/764)) ([8ee13b3](https://github.com/dryvist/ansible-proxmox-ai/commit/8ee13b3e62f858f1b8d634390643bdd9fee825df))
+
+
+### Bug Fixes
+
+* **ansible:** disable PTY for the PCT transport ([#787](https://github.com/dryvist/ansible-proxmox-ai/issues/787)) ([531c206](https://github.com/dryvist/ansible-proxmox-ai/commit/531c2068553ebe2f4a69e7f163b821edec32ad9f))
+* **hermes_agent:** re-anchor and rewrite the remaining agent-side patches (PR I) ([#760](https://github.com/dryvist/ansible-proxmox-ai/issues/760)) ([6222ca4](https://github.com/dryvist/ansible-proxmox-ai/commit/6222ca488562066db49a7a7c1a35b538c45e102a))
+* **hermes_agent:** retire pinned-source patches upstream now supplies (PR A) ([#751](https://github.com/dryvist/ansible-proxmox-ai/issues/751)) ([bfadbf6](https://github.com/dryvist/ansible-proxmox-ai/commit/bfadbf6353a5b15f22ac50574cd0e98e94e6d882))
+* **openbao_secrets:** re-add the github-actions and prometheus router-key domains ([e6700ab](https://github.com/dryvist/ansible-proxmox-ai/commit/e6700abd78c828858c625f32e9bde53528073d99))
+
 ## [0.48.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.47.0...v0.48.0) (2026-09-13)
 
 
