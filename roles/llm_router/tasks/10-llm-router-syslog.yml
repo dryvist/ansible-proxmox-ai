@@ -1,0 +1,42 @@
+---
+# Ship the litellm.service + serving-share journal lines to the dedicated LLM
+# Splunk index via a dedicated rsyslog ruleset (full flow in the template
+# header). Mirrors roles/hermes_agent's syslog_route.yml; gated by
+# llm_router_syslog_route_enabled.
+
+# rsyslog may not be present on this guest, so install it defensively — the
+# role stands alone. update_cache stays false: this guest reaches internal
+# mirrors only.
+- name: Install rsyslog
+  ansible.builtin.apt:
+    name: rsyslog
+    state: present
+    update_cache: false
+  when: llm_router_syslog_route_enabled | bool
+
+- name: Deploy the llm_router rsyslog forwarding ruleset
+  ansible.builtin.template:
+    src: llm-router-rsyslog.conf.j2
+    dest: "{{ llm_router_syslog_rsyslog_config_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart rsyslog
+  when: llm_router_syslog_route_enabled | bool
+
+# Full-config check, not a fragment `-f %s`: the drop-in's omfwd disk queue
+# needs the global workDirectory from the base config in scope, which a
+# standalone fragment lacks. Checking the master config picks the fragment up
+# with globals applied; on failure the play aborts here so the notified
+# restart never flushes a broken config.
+- name: Validate the full rsyslog configuration
+  ansible.builtin.command: rsyslogd -N1
+  changed_when: false
+  when: llm_router_syslog_route_enabled | bool
+
+- name: Enable and start rsyslog
+  ansible.builtin.systemd:
+    name: rsyslog
+    state: started
+    enabled: true
+  when: llm_router_syslog_route_enabled | bool

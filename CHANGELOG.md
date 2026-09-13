@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.47.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.46.0...v0.47.0) (2026-09-12)
+
+
+### Features
+
+* **llm_router:** best/default capability aliases ([#750](https://github.com/dryvist/ansible-proxmox-ai/issues/750)) ([a738b2f](https://github.com/dryvist/ansible-proxmox-ai/commit/a738b2f4a9e9e6dba9cf7d04f81ac83d08171f66))
+
+
+### Bug Fixes
+
+* **openbao_secrets:** unlist the bare provider-key path until its grant lands ([#767](https://github.com/dryvist/ansible-proxmox-ai/issues/767)) ([0731a8c](https://github.com/dryvist/ansible-proxmox-ai/commit/0731a8c2b848f1259985e73beafd3dd5c1205112))
+
+## [0.46.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.45.1...v0.46.0) (2026-09-12)
+
+
+### Features
+
+* **llm_router:** separate credential for one OpenRouter rung ([#749](https://github.com/dryvist/ansible-proxmox-ai/issues/749)) ([e2f0c38](https://github.com/dryvist/ansible-proxmox-ai/commit/e2f0c382724603580b2218319ac2979bc76f7aa1))
+
+
+### Bug Fixes
+
+* **llm_router:** assert seed-key format without the value in the result ([#752](https://github.com/dryvist/ansible-proxmox-ai/issues/752)) ([805edb6](https://github.com/dryvist/ansible-proxmox-ai/commit/805edb649c27e75b6e321ca8f3587dce3d267847))
+* **llm_router:** fail loud, by alias, on an invalid seeded virtual-key format ([#747](https://github.com/dryvist/ansible-proxmox-ai/issues/747)) ([3852a96](https://github.com/dryvist/ansible-proxmox-ai/commit/3852a96f8036f75a48469f9b5dc408d742b8feb3))
+* **site:** isolate play failures so one dead host cannot end the run ([#762](https://github.com/dryvist/ansible-proxmox-ai/issues/762)) ([bb9cbb9](https://github.com/dryvist/ansible-proxmox-ai/commit/bb9cbb9a5784ce46b33788294df7ceb33902100f))
+
 ## [0.45.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.45.0...v0.45.1) (2026-09-12)
 
 
