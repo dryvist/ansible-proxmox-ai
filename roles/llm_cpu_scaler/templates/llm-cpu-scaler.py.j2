@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Demand-driven start/stop for CPU LLM LXCs. Topology comes from config.json."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import ssl
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+
+def load_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text())
+
+
+def save_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def http_ok(url: str, timeout: float = 8.0) -> bool:
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return 200 <= resp.status < 300
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
+
+
+def proxmox_request(method: str, path: str, data: dict | None = None) -> dict:
+    host = os.environ.get("PROXMOX_API_HOST", "")
+    token_id = os.environ.get("PROXMOX_API_TOKEN_ID", "")
+    token_secret = os.environ.get("PROXMOX_API_TOKEN_SECRET", "")
+    if not all([host, token_id, token_secret]):
+        raise RuntimeError(
+            "PROXMOX_API_HOST, PROXMOX_API_TOKEN_ID, PROXMOX_API_TOKEN_SECRET required"
+        )
+
+    url = f"https://{host}:8006/api2/json{path}"
+    body = None
+    headers = {"Authorization": f"PVEAPIToken={token_id}={token_secret}"}
+    if data is not None:
+        body = json.dumps(data).encode()
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    ctx = ssl._create_unverified_context()
+    with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
+        payload = json.loads(resp.read().decode())
+    return payload.get("data", payload)
+
+
+def lxc_status(node: str, vmid: int) -> str:
+    data = proxmox_request("GET", f"/nodes/{node}/lxc/{vmid}/status/current")
+    return data.get("status", "unknown")
+
+
+def lxc_start(node: str, vmid: int) -> None:
+    proxmox_request("POST", f"/nodes/{node}/lxc/{vmid}/status/start")
+
+
+def lxc_stop(node: str, vmid: int) -> None:
+    proxmox_request("POST", f"/nodes/{node}/lxc/{vmid}/status/stop")
+
+
+def host_free_ram_mb(node: str) -> int:
+    data = proxmox_request("GET", f"/nodes/{node}/status")
+    mem = data.get("memory", {})
+    free = mem.get("free", 0)
+    return int(free / (1024 * 1024))
+
+
+def models_url(fqdn: str, port: int) -> str:
+    return f"http://{fqdn}:{port}/v1/models"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    args = parser.parse_args()
+
+    cfg = json.loads(Path(args.config).read_text())
+    state_path = Path(cfg["state_file"])
+    state = load_json(state_path)
+    now = time.time()
+
+    node = cfg["proxmox_node"]
+    vmids: dict[str, int] = {k: int(v) for k, v in cfg.get("guest_vmids", {}).items()}
+    fqdns: dict[str, str] = dict(cfg.get("guest_fqdns", {}))
+    port = int(cfg["light_api_port"])
+    moe_guests = set(cfg.get("moe_guests", []))
+
+    warm = list(cfg.get("warm_guests", []))
+    scale_order = list(cfg.get("scale_order", []))
+    idle_sec = int(cfg.get("idle_teardown_sec", 1200))
+    min_free = int(cfg.get("min_free_ram_mb", 40960))
+
+    for name in warm:
+        vmid = vmids.get(name)
+        if vmid is None:
+            continue
+        if lxc_status(node, vmid) != "running":
+            print(f"starting warm guest {name} ({vmid})")
+            lxc_start(node, vmid)
+
+    pressure = False
+    for name in warm:
+        fqdn = fqdns.get(name)
+        if fqdn and not http_ok(models_url(fqdn, port)):
+            pressure = True
+            state["last_moe_pressure"] = now
+            break
+
+    running_scaled: list[str] = []
+    for name in scale_order:
+        vmid = vmids.get(name)
+        if vmid is None:
+            continue
+        if lxc_status(node, vmid) == "running":
+            running_scaled.append(name)
+            fqdn = fqdns.get(name)
+            if fqdn and http_ok(models_url(fqdn, port)):
+                state.setdefault("last_success", {})[name] = now
+
+    if pressure and len(running_scaled) < len(scale_order):
+        for name in scale_order:
+            if name in running_scaled:
+                continue
+            if name in moe_guests and host_free_ram_mb(node) < min_free:
+                print(f"skip start {name}: free RAM below {min_free} MiB")
+                break
+            vmid = vmids[name]
+            print(f"scale up: starting {name} ({vmid})")
+            lxc_start(node, vmid)
+            state.setdefault("started_at", {})[name] = now
+            break
+
+    for name in scale_order:
+        if name in warm:
+            continue
+        vmid = vmids.get(name)
+        if vmid is None or lxc_status(node, vmid) != "running":
+            continue
+        last_ok = state.get("last_success", {}).get(
+            name, state.get("started_at", {}).get(name, now)
+        )
+        if now - last_ok >= idle_sec and not pressure:
+            print(f"scale down: stopping idle guest {name} ({vmid})")
+            lxc_stop(node, vmid)
+
+    save_json(state_path, state)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
