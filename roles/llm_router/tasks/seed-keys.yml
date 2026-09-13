@@ -43,7 +43,7 @@
 
 - name: Read the virtual keys the proxy already carries
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/list?page=1&size=100"
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/list?page=1&size=100&return_full_object=true"
     headers:
       Authorization: "Bearer {{ llm_router_master_key }}"
     timeout: "{{ llm_router_seed_request_timeout }}"
@@ -62,6 +62,14 @@
     # instead — measured against the live proxy, which fails the whole task
     # with "'builtin_function_or_method' object is not iterable". An entry
     # with no alias is skipped rather than compared as None.
+    #
+    # return_full_object=true IS REQUIRED (litellm 1.98.0
+    # key_management_endpoints.py list_keys/_list_key_helper): without it,
+    # "keys" is a list of token strings, not objects, so 'key_alias' is
+    # never 'defined' on any entry and this always renders []. Diagnosed
+    # from Semaphore task 180 (2026-09-13): every previously seeded alias
+    # looked unseeded and /key/generate 400'd with "Unique key aliases
+    # across all keys are required."
     _llm_router_live_key_aliases: >-
       {{ llm_router_existing_keys.json['keys'] | default([])
          | selectattr('key_alias', 'defined')
