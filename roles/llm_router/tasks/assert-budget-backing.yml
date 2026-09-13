@@ -127,6 +127,52 @@
       {%- endfor -%}
       {{ _out }}
 
+# "No single caller can drain the whole provider ceiling by itself" (the
+# reason per-key budgets exist at all) only holds if every key that CAN reach
+# every model actually carries a budget. A full-scope key with none is the
+# same defect the assert above catches for an oversized one, reached from the
+# other direction: nothing bounds it at all, so it alone could exhaust the
+# provider's weekly ceiling with room to spare.
+- name: Assert every full-model-scope key declares a budget
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_unbudgeted_full_scope_keys | length == 0
+    fail_msg: >-
+      Full-model-scope virtual key(s) {{ _llm_router_unbudgeted_full_scope_keys }}
+      declare no monthly_budget (roles/llm_router/tasks/assert-budget-backing.yml).
+      A key whose model list covers every servable id, alias and agent can
+      reach any deployment this proxy carries, so with no budget it alone
+      could drain the whole provider ceiling — exactly what per-key budgets
+      exist to prevent. Add a monthly_budget in 56-virtual-keys.yml.
+    success_msg: "Every full-model-scope key declares a budget."
+  vars:
+    # Same superset test as the scope itself: a key whose model list covers
+    # every entry _llm_router_key_scope_all names — the id set a human chat UI
+    # may select from — is full-scope, whether or not it happens to be built
+    # FROM that exact variable.
+    #
+    # Gated on llm_router_db_host directly (the same self-arming gate every
+    # budget here uses), inline rather than through an intermediate templated
+    # var: with no router database, 56-virtual-keys.yml's
+    # _llm_router_key_monthly_budget derivation is HONESTLY 0 for every key,
+    # full-scope or not, matching "no budget claimed" rather than the defect
+    # this assert exists to catch. Only once a database exists does a
+    # full-scope key with no budget mean anything.
+    _llm_router_unbudgeted_full_scope_keys: >-
+      {%- set _full = _llm_router_key_scope_all | default([]) | list -%}
+      {%- set _out = [] -%}
+      {%- if (llm_router_db_host | default('') | trim | length > 0) -%}
+      {%- for _k in (llm_router_virtual_keys | default([])) -%}
+      {%- if _full | length > 0
+         and (_full | difference(_k.models | default([]))) | length == 0
+         and (_k.monthly_budget | default(0) | float) <= 0 -%}
+      {%- set _discard = _out.append(_k.alias) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {{ _out }}
+
 # Naming a host is not reaching it. roles/redis makes AUTH mandatory and has no
 # passwordless branch, so an empty password here does not degrade to an
 # unauthenticated connection that happens to work — every LiteLLM call to the
