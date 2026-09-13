@@ -1,0 +1,105 @@
+---
+# Every llm_router_virtual_keys alias reads its value from
+# bao_apps_secrets["<name>_llm_router_key"] (56-virtual-keys.yml), which is
+# populated ONLY from a path openbao_secrets_domains' `apps` entry actually
+# fetches. An alias added there with no matching `apps/<alias>` path renders
+# an empty value forever — no error, just a key that silently never seeds
+# (tasks/seed-keys.yml skips an empty value) — exactly the gap #775's review
+# found. This pins the two lists together so a future alias without its path
+# fails CI instead of shipping silently broken.
+#
+# Two aliases are DELIBERATELY excluded: github-actions and prometheus-scrape
+# have no domain path yet by design (see the ORDERING comment on
+# roles/openbao_secrets/defaults/main/10-domains.yml) — their grants land in
+# a separate converge. Re-add them here in the same change that adds their path.
+- name: Verify every seeded virtual-key alias has a matching apps domain path
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _secrets_role_dir: "{{ playbook_dir }}/../../roles/openbao_secrets"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    bao_apps_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+    # Grants pending in a separate converge — see the ORDERING comment this
+    # mirrors in 10-domains.yml. Not a general escape hatch: a NEW alias with
+    # no path is a bug, not a candidate for this list.
+    _pending_grant_aliases: [github-actions, prometheus-scrape]
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the openbao_secrets domain declarations
+      ansible.builtin.include_vars:
+        dir: "{{ _secrets_role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Collect every path the apps domain declares
+      ansible.builtin.set_fact:
+        _apps_domain_paths: >-
+          {%- set ns = namespace(paths=[]) -%}
+          {%- for _d in openbao_secrets_domains | selectattr('name', 'equalto', 'apps') -%}
+          {%- for _p in _d.paths -%}
+          {%- set ns.paths = ns.paths + [_p.path if _p is mapping else _p] -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ ns.paths }}
+
+    - name: The test is not vacuous — the apps domain actually declares paths
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _apps_domain_paths | length > 0
+        fail_msg: >-
+          openbao_secrets_domains' apps entry rendered no paths, so the
+          coverage assert below would pass vacuously over nothing.
+        success_msg: "{{ _apps_domain_paths | length }} apps domain path(s) rendered"
+
+    - name: Assert every seeded virtual-key alias has a matching apps/<alias> path
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _uncovered | length == 0
+        fail_msg: >-
+          Virtual-key alias(es) {{ _uncovered }} have no matching
+          apps/<alias> path in openbao_secrets_domains (10-domains.yml), so
+          their value renders empty forever and the key never seeds. Add the
+          path there (and to tests/openbao_secrets/test_optional_paths_are_gated.yml's
+          gate list) in the same change that adds the alias.
+        success_msg: >-
+          All {{ (llm_router_virtual_keys | map(attribute='alias') | list
+                  | difference(_pending_grant_aliases)) | length }} seeded
+          virtual-key alias(es) have a matching apps domain path.
+      vars:
+        _uncovered: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for _alias in (llm_router_virtual_keys | map(attribute='alias') | list) -%}
+          {%- if _alias not in _pending_grant_aliases
+             and ('apps/' ~ _alias) not in _apps_domain_paths -%}
+          {%- set ns.bad = ns.bad + [_alias] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
