@@ -24,6 +24,8 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "run_agent.py",
         "hermes_cli/main.py",
         "hermes_cli/kanban_db_dispatch.py",
+        "agent/turn_iteration_prep.py",
+        "agent/turn_truncation.py",
     ]
 
     assert_task = _combined_assert_task()
@@ -52,8 +54,14 @@ def test_installed_source_postconditions_fail_closed() -> None:
     assert "status in (408, 429)" in conditions
     assert "for idx in range(end - 1, start - 1, -1):" in conditions
     assert "_cron_markup_guard(job, output_file," in conditions
-    # A failed run must reach the issues channel, not the work surface.
-    assert "_deliver_result(_routed_job, deliver_content," in conditions
+    # A script-declared failure must reach the failure lane, not the runner's
+    # own (possibly True) success flag. The old call-site reroute this used
+    # to check ("_deliver_result(_routed_job, ...)") is retired
+    # (patches_cron_failure_routing.yml) — declared_failure now threads
+    # through the same for_failure lane upstream's own delivery already
+    # reads.
+    assert "job, deliver_content, _cron_declared_failure = _cron_route(job, deliver_content)" in conditions
+    assert "for_failure=not d.success or _cron_declared_failure," in conditions
     # Output-validity guard: wraps the markup guard's call, so it must be
     # present and wired to the actual delivery-content assignment.
     assert "def _cron_output_validity_guard(job, output_file, content, success):" in conditions
@@ -87,10 +95,13 @@ def test_installed_source_postconditions_fail_closed() -> None:
         and ") == 2" in condition
         for condition in assert_task["ansible.builtin.assert"]["that"]
     )
+    # Re-anchored (PR C): this occurrence moved off hermes_agent_retry_source
+    # onto its own turn_iteration_prep_source var, and its own-file count
+    # dropped from 2 to 1 as a result.
     assert any(
         "_boost_cap = agent.max_tokens if agent.max_tokens else max(" in condition
         and ".count(" in condition
-        and ") == 2" in condition
+        and ") == 1" in condition
         for condition in assert_task["ansible.builtin.assert"]["that"]
     )
     assert 'resolved_provider != "custom"' in conditions
@@ -99,40 +110,24 @@ def test_installed_source_postconditions_fail_closed() -> None:
     ]
 
 
-def test_cron_cli_exit_code_conditions_reject_unpatched_source() -> None:
-    """The cron exit-code assertion must fail against upstream's own source.
 
-    Upstream's ``cmd_cron`` calls ``cron_command(args)`` and discards the
-    return value, so a failed ``hermes cron`` action exits 0. Measured on the
-    live guest 2026-08-16: ``hermes cron run <missing>`` prints "Failed to run
-    job: ... not found" and still returns 0. It is loud to a human and silent
-    to a program, which is why the brain watchdog re-reads job state off
-    ``cron list --all`` rather than trusting ``$?``.
+def test_cron_cli_exit_code_condition_covers_the_retired_patch() -> None:
+    """The cron exit-code behavior is upstream-native, not a role patch.
 
-    Asserting the patched form is present proves nothing on its own — a
-    condition that also holds for unpatched source would let the patch stop
-    applying unnoticed. This pins that it does not hold.
+    Upstream's ``cmd_cron`` used to call ``cron_command(args)`` and discard
+    the return value, so a failed ``hermes cron`` action exited 0. Measured
+    on the live guest 2026-08-16: ``hermes cron run <missing>`` printed
+    "Failed to run job: ... not found" and still returned 0. It is loud to a
+    human and silent to a program, which is why the brain watchdog re-reads
+    job state off ``cron list --all`` rather than trusting ``$?``.
+
+    Retired as a role patch (2026-09): upstream's generated ``cmd_cron`` now
+    forwards the return value itself via ``_forward_command(...,
+    forward_return=True)``. There is no role-patch before/after pair left to
+    unit test — the condition below is asserted against the live installed
+    source in "Assert upstream still supplies the behavior these retired
+    patches used to add"; this test only pins that the condition exists.
     """
-    from jinja2 import Environment
-
-    # Retired as a role patch: upstream's own cmd_cron now forwards its
-    # return value natively via _forward_command(..., forward_return=True),
-    # so this is tracked in the "upstream still supplies" task, not the
-    # required-patch assert. PATCHED_CLI_MAIN_SOURCE/PINNED_CLI_MAIN_SOURCE
-    # (conftest.py) represent the OLD patch-based `return cron_command(args)`
-    # shape and do not apply to this upstream-native check.
-    NATIVE_FORWARD_SOURCE = (
-        'cmd_cron = _forward_command("cmd_cron", "hermes_cli.cron", '
-        '"cron_command", forward_return=True,\n)\n'
-    )
-    OLD_UNFORWARDED_SOURCE = (
-        "def cmd_cron(args):\n"
-        '    """Cron job management."""\n'
-        "    from hermes_cli.cron import cron_command\n"
-        "\n"
-        "    cron_command(args)\n"
-    )
-
     conditions = [
         c
         for c in _task(
@@ -141,17 +136,4 @@ def test_cron_cli_exit_code_conditions_reject_unpatched_source() -> None:
         if "hermes_agent_cli_main_source" in c
     ]
     assert conditions, "no assertion covers the cron CLI exit code"
-
-    env = Environment(autoescape=False)
-
-    def _holds(source: str) -> bool:
-        return all(
-            bool(env.compile_expression(c)(hermes_agent_cli_main_source=source))
-            for c in conditions
-        )
-
-    assert _holds(NATIVE_FORWARD_SOURCE)
-    assert not _holds(OLD_UNFORWARDED_SOURCE), (
-        "the cron exit-code conditions hold against upstream's unpatched "
-        "cmd_cron, so the patch could silently stop applying"
-    )
+    assert any("forward_return=True" in c for c in conditions)

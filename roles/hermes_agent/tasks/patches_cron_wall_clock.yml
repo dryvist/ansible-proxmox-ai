@@ -10,6 +10,35 @@
 # loop can run forever. Keep that useful native stall detector and add the
 # missing aggregate deadline around the same run_job monitor. The patch uses
 # upstream's own monotonic clock, poll loop, and request_hard_interrupt path.
+#
+# The hard-timeout raise below names the run's session id for the operator
+# reading the failure (the failure artifact keeps no response, so the
+# session is the only way to find the transcript). _cron_session_id is a
+# run_job local, not visible inside _run_agent_with_watchdog, so it is
+# threaded in as its own parameter — cron_session_id below — rather than
+# read from a name that does not exist in that scope.
+- name: Thread the cron session id into the watchdog function signature
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: >-
+      ^(    )agent, prompt: str, job: dict, job_id: str, job_name: str,
+      task_id: str, cancel_event,$
+    replace: |-
+      \1agent, prompt: str, job: dict, job_id: str, job_name: str,
+      \1task_id: str, cron_session_id: str, cancel_event,
+  notify: Restart hermes-gateway
+
+- name: Pass the cron session id at the watchdog call site
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
+    regexp: >-
+      ^([ \t]*)agent, prompt, job, job_id, job_name, scope\.task_id,
+      cancel_event,$
+    replace: |-
+      \1agent, prompt, job, job_id, job_name, scope.task_id,
+      \1_cron_session_id, cancel_event,
+  notify: Restart hermes-gateway
+
 - name: Add aggregate cron wall-clock helpers
   ansible.builtin.blockinfile:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
@@ -51,12 +80,15 @@
   notify: Restart hermes-gateway
 
 - name: Resolve the aggregate cron wall clock beside the inactivity timeout
+  # Re-anchored: the monitor moved out of run_job into
+  # _run_agent_with_watchdog (cron/scheduler.py), losing 4 spaces of
+  # indentation (8 -> 4). Content unchanged.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
     regexp: |-
-      ^        _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None$(?!
-              _cron_wall_timeout_limit =)
-    replace: "{{ _hermes_cron_limits_block | indent(8, true) }}"
+      ^    _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None$(?!
+          _cron_wall_timeout_limit =)
+    replace: "{{ _hermes_cron_limits_block | indent(4, true) }}"
   vars:
     _hermes_cron_limits_block: |-
       _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
@@ -64,10 +96,11 @@
   notify: Restart hermes-gateway
 
 - name: Start the aggregate cron clock before submitting the conversation
+  # Re-anchored: same 8 -> 4 space re-indent as above; content unchanged.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    regexp: '^        _cron_context = contextvars\.copy_context\(\)$'
-    replace: "{{ _hermes_cron_pre_submit_block | indent(8, true) }}"
+    regexp: '^    _cron_context = contextvars\.copy_context\(\)$'
+    replace: "{{ _hermes_cron_pre_submit_block | indent(4, true) }}"
   vars:
     _hermes_cron_pre_submit_block: |-
       _cron_started_monotonic = time.monotonic()
@@ -75,58 +108,78 @@
   notify: Restart hermes-gateway
 
 - name: Initialize the independent cron timeout result flags
+  # Re-anchored: same 8 -> 4 space re-indent as above; content unchanged.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    regexp: '^        _inactivity_timeout = False$(?!\n        _hard_timeout = False)'
-    replace: "{{ _hermes_cron_start_block | indent(8, true) }}"
+    regexp: '^    _inactivity_timeout = False$(?!\n    _hard_timeout = False)'
+    replace: "{{ _hermes_cron_start_block | indent(4, true) }}"
   vars:
     _hermes_cron_start_block: |-
       _inactivity_timeout = False
       _hard_timeout = False
   notify: Restart hermes-gateway
 
+# HIGHEST MIS-ANCHOR RISK in this patch set. Upstream added a decoy: a
+# BARE `if _cron_inactivity_limit is None:` now sits inside
+# _watch_inactivity (cron/scheduler.py), at the SAME indentation as the
+# real gate below, and returns early when true. A regexp that only matched
+# the bare condition would hit that decoy FIRST (it appears earlier in the
+# file) and silently disable the inactivity watchdog by making it return
+# immediately, while this task itself would report a clean, matched
+# converge. The real gate also changed shape — upstream added its own
+# `and not _is_oneshot and cancel_event is None` terms — so the anchor
+# below matches the FULL current condition text, which the decoy's shorter
+# text cannot satisfy, rather than trying to re-exclude the decoy by
+# position. patches_verify_cron_wall_clock.yml's PR-A-retargeted assertion
+# for the decoy's own guard clause doubles as the negative check that this
+# patch left it untouched.
 - name: Keep polling whenever either cron deadline is enabled
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    regexp: '^            if _cron_inactivity_limit is None:$'
-    replace: '            if _cron_inactivity_limit is None and _cron_wall_timeout_limit is None:'
+    regexp: >-
+      ^(        )if _cron_inactivity_limit is None and not _is_oneshot and
+      cancel_event is None:$
+    replace: >-
+      \1if _cron_inactivity_limit is None and _cron_wall_timeout_limit is None
+      and not _is_oneshot and cancel_event is None:
   notify: Restart hermes-gateway
 
 - name: Bound the final cron poll to the exact remaining wall budget
+  # Rewritten, not just re-anchored: upstream collapsed the three-line
+  # concurrent.futures.wait(...) call this patch inserted a poll-timeout
+  # computation ahead of into one line. Same insertion, one anchor.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    regexp: |-
-      ^            else:
-                      result = None
-                      while True:
-                          done, _ = concurrent\.futures\.wait\(
-                              \{_cron_future\}, timeout=_POLL_INTERVAL,
-                          \)$
-    replace: "{{ _hermes_cron_bounded_wait_block | indent(12, true) }}"
-  vars:
-    _hermes_cron_bounded_wait_block: |-
-      else:
-          result = None
-          while True:
-              _cron_wait_timeout = _hermes_cron_poll_timeout(
-                  _cron_started_monotonic,
-                  _cron_wall_timeout_limit,
-                  _POLL_INTERVAL,
-              )
-              done, _ = concurrent.futures.wait(
-                  {_cron_future}, timeout=_cron_wait_timeout,
-              )
+    regexp: >-
+      ^(                )done, _ = concurrent\.futures\.wait\(\{_cron_future\},
+      timeout=_POLL_INTERVAL\)$
+    replace: |-
+      \1_cron_wait_timeout = _hermes_cron_poll_timeout(
+      \1    _cron_started_monotonic,
+      \1    _cron_wall_timeout_limit,
+      \1    _POLL_INTERVAL,
+      \1)
+      \1done, _ = concurrent.futures.wait(
+      \1    {_cron_future}, timeout=_cron_wait_timeout,
+      \1)
   notify: Restart hermes-gateway
 
 - name: Enforce the aggregate cron wall clock in the native poll loop
+  # Re-anchored: the "# Agent still running — check inactivity." comment
+  # this used to anchor after is gone, and _heartbeat_run_claim_if_due() is
+  # now the last statement of the poll loop body — insert the check
+  # directly after it instead. Negative lookahead makes this idempotent
+  # the same way the siblings above are: without it, a second converge
+  # against already-patched source (a plain call-site anchor does not
+  # care what follows it) inserts a second copy of the check block.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    regexp: |-
-      ^(                    _heartbeat_run_claim_if_due\(\)
-      )(                    # Agent still running — check inactivity\.)$
+    regexp: >-
+      ^(                )_heartbeat_run_claim_if_due\(\)$(?!\n\s*if
+      _hermes_cron_wall_clock_expired\()
     replace: |-
-      \g<1>{{ _hermes_cron_wall_check_block | indent(20, true) }}
-      \g<2>
+      \1_heartbeat_run_claim_if_due()
+      {{ _hermes_cron_wall_check_block | indent(16, true) }}
   vars:
     _hermes_cron_wall_check_block: |-
       if _hermes_cron_wall_clock_expired(
@@ -146,10 +199,15 @@
 # own guard clause so a regression still fails the converge loudly.
 
 - name: Raise the aggregate cron timeout before the inactivity handler
+  # Re-anchored: same 8 -> 4 space re-indent as the earlier tasks in this
+  # file; the trailing `if _inactivity_timeout is True:` line the block ends
+  # on re-creates the matched guard at the new indent level so the
+  # already-existing _raise_inactivity_timeout(...) call beneath it (itself
+  # untouched by this replace) stays correctly nested.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    regexp: '^        if _inactivity_timeout:$'
-    replace: "{{ _hermes_cron_hard_timeout_block | indent(8, true) }}"
+    regexp: '^    if _inactivity_timeout:$'
+    replace: "{{ _hermes_cron_hard_timeout_block | indent(4, true) }}"
   vars:
     # RULE FOR THE NEXT PATCH THAT RAISES SOMETHING NEW: extend
     # _summarize_cron_failure_for_delivery in the SAME change. That classifier
@@ -182,7 +240,7 @@
               f"Cron job '{job_name}' exceeded aggregate wall clock "
               f"{int(elapsed)}s (limit {int(_cron_wall_timeout_limit)}s) "
               f"after {_calls} API call(s); last activity {_idle} before the kill"
-              f"{': ' + _doing if _doing else ''}; session {_cron_session_id}"
+              f"{': ' + _doing if _doing else ''}; session {cron_session_id}"
           )
 
       if _inactivity_timeout is True:
@@ -236,13 +294,15 @@
           "Fallbacks are handled by the router in front of this agent, not in "
           "its own config — check the router's health before adding one here."
       )
+  # Re-anchored: upstream reflowed the string from three lines to two
+  # ("or set a cron fleet default ..." and "in config.yaml." merged); no
+  # wording change, so the replacement text is unchanged.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
     regexp: |-
       ^    return \(
               "No fallback chain configured — add one with `hermes fallback add`, "
-              "or set a cron fleet default via `cron\.model` \+ `cron\.model_provider` "
-              "in config\.yaml\."
+              "or set a cron fleet default via `cron\.model` \+ `cron\.model_provider` in config\.yaml\."
           \)$
     replace: "{{ _hermes_cron_fallback_advice | indent(4, true) }}"
   notify: Restart hermes-gateway
