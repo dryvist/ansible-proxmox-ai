@@ -1,0 +1,28 @@
+---
+# Shared rescue task for every independent site.yml play wrapped in
+# block/rescue for play-level failure isolation (issue #672).
+#
+# Root cause: when 100% of a play's targeted hosts fail a task, Ansible's
+# executor (ansible/executor/playbook_executor.py) breaks out of the
+# "for play in plays" loop and no further plays in the run execute — even
+# for hosts completely unrelated to the failure. This is unconditional core
+# behavior; any_errors_fatal does not control it (that setting only changes
+# what happens when *some*, not all, hosts in a play fail).
+#
+# Recording the failure here (instead of letting it propagate) means this
+# host finishes the play as "rescued", so it never counts toward the "all
+# hosts in this play failed" tally that triggers the abort. The "Fail the
+# run if any isolated play recorded a failure" gate play at the end of
+# site.yml still fails the overall run, so the exit code keeps reflecting
+# real failures.
+# Recorded on the FAILING HOST itself, never delegated to a shared fact:
+# concurrent rescues on several hosts would read-modify-write the same
+# localhost list and lose updates (each host runs its own tasks serially,
+# so a host-local append is race-free). The gate play aggregates across
+# hostvars at the end.
+- name: "Record isolated failure: {{ _isolated_play_name }}"
+  ansible.builtin.set_fact:
+    site_isolated_failures: >-
+      {{ (site_isolated_failures | default([])) +
+         [inventory_hostname ~ ' (' ~ _isolated_play_name ~ '): ' ~
+          (ansible_failed_result.msg | default(ansible_failed_task.name | default('task failed')))] }}

@@ -45,14 +45,17 @@ llm_router_embedding_model: >-
   {{ llm_router_registry_enabled | selectattr('embedding', 'defined')
      | selectattr('embedding') | map(attribute='client_model_id') | first }}
 
-# Roles declared on registry entries OUTSIDE the servable set. Those entries
-# cannot become static model_group_aliases (see 50-servable.yml), so their
-# `stable_aliases` are read here instead — which is what keeps the subagent
-# role's target from being spelled out a second time.
+# Roles declared on registry entries OUTSIDE both the servable set AND the
+# hermes-router carve-out (50-servable.yml). Those two sets' aliases become
+# static model_group_aliases instead; everything else's `stable_aliases` are
+# read here — which is what keeps the subagent role's target from being
+# spelled out a second time, and what keeps `default` (on hermes-default, a
+# hermes-router entry) from being dual-classified as both a git alias AND a
+# seeded DB role.
 llm_router_registry_role_targets: >-
   {%- set ns = namespace(pairs={}) -%}
   {%- for m in llm_router_registry_enabled -%}
-  {%- if not (m.servable | default(false)) -%}
+  {%- if not (m.servable | default(false)) and m.client_model_id not in llm_router_hermes_router_ids -%}
   {%- for role in m.stable_aliases | default([]) -%}
   {%- set _ = ns.pairs.update({role: m.client_model_id}) -%}
   {%- endfor -%}

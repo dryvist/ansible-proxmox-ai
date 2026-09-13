@@ -1,0 +1,60 @@
+---
+# Pins the router's syslog route: 10-llm-router-syslog.yml's template renders
+# the documented index/sourcetype and matches on the real unit names, never a
+# hand-typed fixture. See defaults/main/70-syslog.yml for the full flow.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_syslog_route.yml -i localhost, -c local
+
+- name: The router syslog route renders the documented taxonomy and unit match
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    ansible_managed: "test fixture"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    # Deliberately NOT the literal a converge would use, so an assert that
+    # finds it in the render proves the template read the variable rather
+    # than a typed-in value.
+    - name: Force the fixture syslog host/port past the mandatory tofu lookup
+      ansible.builtin.set_fact:
+        llm_router_syslog_host: syslog-under-test.example.test
+        llm_router_syslog_port: 19999
+
+    - name: Render the rsyslog ruleset
+      ansible.builtin.set_fact:
+        _conf: "{{ lookup('template', _role_dir ~ '/templates/llm-router-rsyslog.conf.j2') }}"
+
+    - name: Assert the render carries the fixture host and port, not a literal
+      ansible.builtin.assert:
+        that:
+          - "'syslog-under-test.example.test' in _conf"
+          - "'19999' in _conf"
+        fail_msg: >-
+          The rendered ruleset does not carry the fixture host/port — the
+          template may have a hardcoded value instead of the role variables.
+
+    - name: Assert the documented Splunk landing zone is present
+      ansible.builtin.assert:
+        that:
+          - "('index=' ~ llm_router_syslog_index) in _conf"
+          - "('sourcetype=' ~ llm_router_syslog_sourcetype) in _conf"
+        fail_msg: >-
+          The rendered ruleset's header comment does not name index=llm /
+          sourcetype=litellm:proxy — the Splunk side (see the W6 design file)
+          expects exactly these strings.
+
+    - name: Assert the ruleset matches the real litellm unit and stops
+      ansible.builtin.assert:
+        that:
+          - "'\"' ~ llm_router_service ~ '.service\"' in _conf"
+          - "llm_router_serving_share_syslog_identifier in _conf"
+          - "'  stop' in _conf"
+        fail_msg: >-
+          The ruleset must match litellm.service and the serving-share syslog
+          identifier by name, and must `stop` so router lines never
+          double-ship into index=os via a syslog_forwarder catch-all.

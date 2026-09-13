@@ -1,0 +1,63 @@
+---
+# Converge-time hardening checks. Included from tasks/main.yml on a live
+# guest, and directly from tests/llamaindex/test_hardening.yml (hosts:
+# localhost, no packages installed) to exercise both the pass and the
+# fail path without a full role run.
+#
+# Required PATH sources only: a `path` source is rendered/managed by this
+# same playbook (ai-stack-registry's registry.json, for one), so its
+# presence is something converge can actually verify. A `path` is a local
+# file; whether a `url` source is reachable depends on live network access
+# this task does not have (and should not gate a converge on) — that half of
+# "required" is enforced by index_docs.py itself, at run time, when the
+# systemd timer actually fetches it.
+- name: Compute the set of required path-type sources
+  ansible.builtin.set_fact:
+    llamaindex_required_path_sources: >-
+      {{ llamaindex_sources | selectattr('required', 'defined')
+         | selectattr('required') | selectattr('path', 'defined') | list }}
+
+- name: Stat every required path-type source
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+  loop: "{{ llamaindex_required_path_sources }}"
+  loop_control:
+    label: "{{ item.name }}"
+    loop_var: item
+  register: llamaindex_required_path_stats
+
+- name: Assert every required path-type source exists
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+    fail_msg: >-
+      required source '{{ item.item.name }}' is missing at
+      {{ item.item.path }}
+  loop: "{{ llamaindex_required_path_stats.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+# The sentinel does not exist before the first successful index run — that is
+# expected, not a failure. It becomes a failure once it exists and has gone
+# stale, which means the periodic index refresh has stopped succeeding.
+- name: Stat the index freshness sentinel
+  ansible.builtin.stat:
+    path: "{{ llamaindex_freshness_sentinel }}"
+  register: llamaindex_freshness_stat
+
+- name: Compute the freshness sentinel's age in seconds
+  ansible.builtin.set_fact:
+    llamaindex_freshness_age_seconds: >-
+      {{ (ansible_facts['date_time']['epoch'] | int)
+         - (llamaindex_freshness_stat.stat.mtime | int) }}
+  when: llamaindex_freshness_stat.stat.exists
+
+- name: Assert the index freshness sentinel is not stale
+  ansible.builtin.assert:
+    that:
+      - (llamaindex_freshness_age_seconds | int) < (llamaindex_freshness_max_age_hours | int) * 3600
+    fail_msg: >-
+      {{ llamaindex_freshness_sentinel }} was last touched more than
+      {{ llamaindex_freshness_max_age_hours }}h ago — the periodic RAG index
+      refresh has stopped succeeding.
+  when: llamaindex_freshness_stat.stat.exists
