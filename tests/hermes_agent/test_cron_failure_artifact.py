@@ -1,40 +1,44 @@
 """Self-check for the failed-run artifact prompt hash patch
 (patches_cron_failure_artifact.yml). Runs bare or under pytest."""
 import hashlib
-import runpy
-import tempfile
-from pathlib import Path
+import textwrap
 
 from conftest import _apply_runtime_patch
 
-# Verbatim from cron/scheduler.py — the failure artifact's prompt section,
-# distinguished from the success artifact by the "## Error" heading. Kept
-# here rather than in _pinned_sources.py to stay under that file's token budget.
+# Re-anchored (2026-09): upstream centralized the artifact header behind a
+# shared _run_doc_header(job, title, job_id, prompt) call — the failure and
+# success paths are now two call sites passing different `title` text,
+# rather than two separate "## Prompt...{prompt}..." template strings. The
+# patch wraps the failure call site's own `prompt` argument, distinguished
+# from the success call site by the `f"{job_name} (FAILED)"` title.
 PINNED_CRON_FAILURE_ARTIFACT_SOURCE = (
-    "## Prompt\n"
-    "\n"
-    "{prompt}\n"
-    "\n"
-    "## Error\n"
+    '                    _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)\n'
 )
 
 NAME = "Hash the prompt in a failed cron run's artifact"
-SUCCESS_ARTIFACT = "## Prompt\n\n{prompt}\n\n## Response\n"
+SUCCESS_ARTIFACT = '                _run_doc_header(job, job_name, job_id, prompt)\n'
 
 
-def _render(patched: str, prompt: str) -> str:
-    """Render the patched section under an f-string, as upstream's writer does."""
-    path = Path(tempfile.mkdtemp(prefix="cron-artifact-selfcheck-")) / "render.py"
-    path.write_text("ARTIFACT = f'''" + patched + "'''\n")
-    return runpy.run_path(str(path), init_globals={"prompt": prompt}, run_name="render")["ARTIFACT"]
+def _rendered_prompt_arg(patched: str, prompt: str) -> str:
+    """Exec the patched call site against a stub _run_doc_header and capture
+    the argument it actually received in the `prompt` position."""
+    calls: list[str] = []
+    namespace = {
+        "_run_doc_header": lambda job, title, job_id, prompt_arg: calls.append(prompt_arg),
+        "job": {},
+        "job_name": "x",
+        "job_id": "j1",
+        "prompt": prompt,
+    }
+    exec(textwrap.dedent(patched), namespace)  # noqa: S102 - test-only, self-authored source
+    return calls[0]
 
 
 def test_the_failure_artifact_prompt_becomes_a_hash_and_a_length():
     patched = _apply_runtime_patch(NAME, PINNED_CRON_FAILURE_ARTIFACT_SOURCE)
-    assert "## Prompt\n\nsha256:{__import__(\"hashlib\")" in patched
-    assert "## Error" in patched and "{prompt}\n\n## Error" not in patched
+    assert 'sha256:{__import__("hashlib")' in patched
     prompt = "x" * 15000
-    rendered = _render(patched, prompt)
+    rendered = _rendered_prompt_arg(patched, prompt)
     assert hashlib.sha256(prompt.encode()).hexdigest() in rendered
     assert "15000 chars" in rendered and prompt not in rendered
 

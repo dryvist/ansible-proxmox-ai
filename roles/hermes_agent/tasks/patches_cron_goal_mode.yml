@@ -39,19 +39,7 @@
               return None
 
 
-      def _cron_task_id(job_name):
-          """The id every log line of this run carries, derived once.
-
-          Mirrors the API server's own scheme (``api-<digest>``) so the two
-          origins are distinguishable at a glance, and uses the job NAME rather
-          than its opaque id so a reader can grep for what they already know.
-          The goal loop below builds the identical string for its own
-          bookkeeping; deriving it here means the two cannot drift apart.
-          """
-          return "cron:" + str(job_name)
-
-
-      def _hermes_cron_goal_run(agent, prompt, job_name):
+      def _hermes_cron_goal_run(agent, prompt, job_name, task_id):
           """Run a cron job's conversation, optionally under the goal judge.
 
           Returns the LAST ``run_conversation`` dict, so every downstream
@@ -61,17 +49,13 @@
           logged, never returned; returning it would sail through the dict
           guard and then be misread as a failed run.
 
-          Both calls below pass ``task_id``. Omitting it is not neutral:
-          ``AIAgent.run_conversation`` does ``effective_task_id = task_id or
-          str(uuid.uuid4())`` and stamps that id onto every log line the run
-          emits. Unnamed, a cron run's lines are indistinguishable from the
-          API server's (which supplies ``api-<digest>``), so a failed job
-          cannot be traced through the agent log at all — measured: 6,072
-          id-tagged lines in one day, every one ``api-``, none joinable to a
-          cron job. Diagnosing one wall-clock failure then costs an evening
-          of eliminating causes against unrelated instruments.
+          ``task_id`` is upstream's own — it now threads one natively into
+          the call this patch wraps, mirroring the API server's own scheme
+          (``api-<digest>``) so the two origins are distinguishable at a
+          glance. Every call below passes it through unchanged, so the goal
+          loop's own turns carry the same id as the first one.
           """
-          result = agent.run_conversation(prompt, task_id=_cron_task_id(job_name))
+          result = agent.run_conversation(prompt, task_id=task_id)
           if job_name not in _cron_goal_jobs() or not isinstance(result, dict):
               return result
           try:
@@ -111,7 +95,7 @@
                   return ""
               prior = state["result"].get("messages")
               nxt = agent.run_conversation(
-                  text, conversation_history=prior, task_id=_cron_task_id(job_name)
+                  text, conversation_history=prior, task_id=task_id
               )
               state["worker_turns"] += 1
               if isinstance(nxt, dict):
@@ -132,7 +116,7 @@
 
           _budget = _cron_goal_max_turns()
           decision = run_kanban_goal_loop(
-              task_id=_cron_task_id(job_name),
+              task_id=task_id,
               goal_text=prompt,
               run_turn=_run_turn,
               task_status_fn=lambda: "done" if state["judged_done"] else "running",
@@ -155,13 +139,17 @@
   notify: Restart hermes-gateway
 
 - name: Route the cron conversation through the goal-mode runner
-  # Idempotent: the rewritten line no longer matches its own regexp.
+  # Rewritten: the submit call moved into _run_agent_with_watchdog and grew
+  # to two lines, now threading upstream's own task_id natively — the exact
+  # thing _cron_task_id (dropped from the helper above) used to fabricate
+  # separately. Idempotent: the rewritten call no longer matches its own
+  # regexp.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
-    regexp: >-
-      ^([ \t]*)_cron_future = _cron_pool\.submit\(_cron_context\.run,
-      agent\.run_conversation, prompt\)$
-    replace: >-
-      \g<1>_cron_future = _cron_pool.submit(_cron_context.run,
-      _hermes_cron_goal_run, agent, prompt, job_name)
+    regexp: |-
+      ^([ \t]*)_cron_future = _cron_pool\.submit\(
+      [ \t]*_cron_context\.run, agent\.run_conversation, prompt, task_id=task_id\)$
+    replace: |-
+      \1_cron_future = _cron_pool.submit(
+      \1    _cron_context.run, _hermes_cron_goal_run, agent, prompt, job_name, task_id)
   notify: Restart hermes-gateway

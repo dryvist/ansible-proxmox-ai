@@ -1,43 +1,40 @@
 ---
-# The dispatcher sets HERMES_KANBAN_GOAL_MODE, but the pinned CLI only invokes
-# its goal-loop wrapper on the machine-readable quiet path. Without --quiet,
-# workers take the ordinary single-query path, return text, and exit rc=0 while
-# their card remains running.
-- name: Patch Hermes Kanban workers to enter the quiet goal-loop path
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
-    regexp: '^([ \t]*)(?:\*\(\["--quiet"\] if task\.goal_mode else \[\]\),\n\1)*"-q", prompt,$'
-    replace: |-
-      \1*(["--quiet"] if task.goal_mode else []),
-      \1"-q", prompt,
-  notify: Restart hermes-gateway
-
-# The two protocol-violation patches that used to sit here are GONE because
-# upstream adopted both behaviors itself. Verified against the pinned release
-# and current upstream: the clean-exit message now ends "— protocol violation.
-# If the prior run already did the work, verify it and report the result via
-# kanban_complete; a run that ends without a terminal kanban call counts as
-# failed no matter what it did.", and the crash path already reads
-# `failure_limit=1 if is_systemic else None,` with protocol violations routed
-# through their own bounded `violation_limit` streak. Both regexps therefore
-# matched ZERO times, so the patches were silently doing nothing while
-# patches_verify.yml still asserted their results — a converge would have
-# mutated source, fired the restart handler, and only then failed the assert.
-# The assertions are kept and retargeted at the upstream text that now supplies
-# the behavior, so an upstream regression still fails the converge loudly.
+# The goal-loop --quiet patch that used to sit here is GONE because upstream
+# adopted the behavior itself: the dispatcher's spawn command already does
+# `cmd.extend(["chat", "-q", ...])` then `if task.goal_mode: cmd.append("-Q")`
+# (hermes_cli/kanban_db_dispatch.py), with upstream's own comment explaining
+# that the goal-loop hook only runs on the fully-quiet branch. The regexp
+# therefore matched ZERO times, so the patch was silently doing nothing while
+# patches_verify.yml still asserted its result — a converge would have
+# mutated nothing, fired the restart handler for no reason, and only then
+# failed the assert.
+#
+# The two protocol-violation patches that used to sit here are GONE for the
+# same reason: upstream adopted both behaviors itself. Verified against the
+# pinned release and current upstream: the clean-exit message now ends "—
+# protocol violation. If the prior run already did the work, verify it and
+# report the result via kanban_complete; a run that ends without a terminal
+# kanban call counts as failed no matter what it did.", and the crash path
+# already reads `failure_limit=1 if is_systemic else None,` with protocol
+# violations routed through their own bounded `violation_limit` streak.
+#
+# All three assertions are kept and retargeted at the upstream text that now
+# supplies the behavior, so an upstream regression still fails the converge
+# loudly.
 
 # An idempotency hit returns before create_task applies new fields. Upgrade only
 # active goal-enabled repeats in place so a current-slot card is reconciled
 # without mutating completed history or downgrading an existing goal card.
 - name: Patch Hermes idempotent create to reconcile goal-mode fields
+  # Re-anchored: upstream reflowed the ORDER BY clause and the bind-tuple
+  # onto one line (previously two); no wording or logic change.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db.py"
     regexp: |-
       ^([ \t]*)row = conn\.execute\($
       \1    "SELECT id FROM tasks WHERE idempotency_key = \? "$
       \1    "AND status != 'archived' "$
-      \1    "ORDER BY created_at DESC LIMIT 1",$
-      \1    \(idempotency_key,\),$
+      \1    "ORDER BY created_at DESC LIMIT 1", \(idempotency_key,\),$
       \1\)\.fetchone\(\)$
       \1if row:$
       \1    return row\["id"\]$

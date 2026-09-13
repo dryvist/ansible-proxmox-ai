@@ -15,12 +15,26 @@
       - >-
         '_cron_inactivity_limit is None and _cron_wall_timeout_limit is None'
         in hermes_agent_cron_scheduler_source
+      # Both cron_session_id threading tasks (signature + call site) in ONE
+      # condition: a half-application — one lands, the other misses — is
+      # exactly what TypeErrors every cron run (a positional arg the
+      # signature doesn't expect, or an undefined name at the call site),
+      # and a converge where BOTH are missing would silently restore the
+      # NameError this threading exists to close. Neither landing alone is
+      # a passing state.
+      - >-
+        ('task_id: str, cron_session_id: str, cancel_event,'
+         in hermes_agent_cron_scheduler_source)
+        and ('_cron_session_id, cancel_event,'
+         in hermes_agent_cron_scheduler_source)
       # The patch writes the clock-start pair as one contiguous insertion; the
       # submit only needs to come AFTER it (upstream may add lines between —
       # v2026.8.19 inserted usage-audit lines there, which changes nothing
       # about the guarantee that the wall clock starts before the submit).
+      # Indentation dropped from 8 to 4 spaces when the monitor moved out of
+      # run_job into _run_agent_with_watchdog (2026-09 re-anchor).
       - >-
-        ('_cron_started_monotonic = time.monotonic()\n        '
+        ('_cron_started_monotonic = time.monotonic()\n    '
          ~ '_cron_context = contextvars.copy_context()  # wall clock starts before submit')
         in hermes_agent_cron_scheduler_source
       - >-
@@ -70,9 +84,32 @@
       - >-
         'Pausing hides the failures without fixing'
         in hermes_agent_cron_scheduler_source
-      - >-
-        'if _cron_inactivity_limit is not None and _idle_secs >= _cron_inactivity_limit:'
-        in hermes_agent_cron_scheduler_source
     fail_msg: >-
       The installed Hermes scheduler is missing the aggregate cron wall-clock
       patch; update the pinned-source patch before converging.
+
+# Separate from the assert above: this checks upstream's OWN guard, not a
+# role patch, so a failure here is an upstream regression, not a missing or
+# mis-anchored role patch, and needs a different remediation message.
+- name: Assert upstream still guards the inactivity comparison structurally
+  vars:
+    hermes_agent_cron_scheduler_source: >-
+      {{ hermes_agent_goal_mode_sources.results[6].content | b64decode }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # Retired as a role patch (2026-09): upstream now guards the None case
+      # structurally rather than needing a guarded comparison —
+      # `_watch_inactivity` returns immediately when the limit is unset, and
+      # the watchdog thread is only started when it is not. Asserted
+      # directly against that guard so a regression back to an unguarded
+      # comparison still fails the converge loudly.
+      - >-
+        'if _cron_inactivity_limit is None:\n            return'
+        in hermes_agent_cron_scheduler_source
+    fail_msg: >-
+      Upstream Hermes no longer structurally guards the inactivity
+      comparison against an unset limit in _watch_inactivity
+      (cron/scheduler.py). This is an upstream regression, not a missing
+      role patch — the retired inactivity-comparison-guard patch needs to
+      be restored, not re-anchored.
