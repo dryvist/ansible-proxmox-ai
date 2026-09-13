@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.47.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.46.0...v0.47.0) (2026-09-12)
+
+
+### Features
+
+* **llm_router:** best/default capability aliases ([#750](https://github.com/dryvist/ansible-proxmox-ai/issues/750)) ([a738b2f](https://github.com/dryvist/ansible-proxmox-ai/commit/a738b2f4a9e9e6dba9cf7d04f81ac83d08171f66))
+
+
+### Bug Fixes
+
+* **openbao_secrets:** unlist the bare provider-key path until its grant lands ([#767](https://github.com/dryvist/ansible-proxmox-ai/issues/767)) ([0731a8c](https://github.com/dryvist/ansible-proxmox-ai/commit/0731a8c2b848f1259985e73beafd3dd5c1205112))
+
 ## [0.46.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.45.1...v0.46.0) (2026-09-12)
 
 
