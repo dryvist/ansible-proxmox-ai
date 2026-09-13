@@ -192,17 +192,24 @@ general_settings:
   health_check_interval: {{ llm_router_health_check_interval }}
   health_check_skip_disabled_background_models: true
 {% endif %}
+{% if llm_router_alert_webhook_url | trim | length > 0 %}
+  # No generic "webhook" alert type in this pinned release (verified against
+  # source, zero hits) — "slack" is the mechanism that accepts an arbitrary
+  # alert_to_webhook_url, so it is used here to reach the notification hub
+  # rather than Slack directly.
+  alerting: ["slack"]
+  alert_to_webhook_url: {{ llm_router_alert_webhook_url | to_json }}
+  alert_types: {{ llm_router_alert_types | to_json }}
+{% endif %}
 
 litellm_settings:
-  # OTLP traces to the Cribl Edge collector (endpoint from the EnvironmentFile);
-  # Cribl fans out to Langfuse + Splunk. No direct "langfuse" callback — it
-  # requires the v2 SDK and errors on init with the v3 pip resolves.
+  # 2026-09-12: dropped "otel" from callbacks (continuously failing exporter).
   #
-  # "prometheus" is NOT a second tracing sink. It is the only shipped consumer
-  # of the router's fallback events, and the only thing in this proxy that
-  # records the model group originally ASKED FOR next to the one that served.
+  # "prometheus" is NOT a tracing sink. It is the only shipped consumer of the
+  # router's fallback events, and the only thing in this proxy that records
+  # the model group originally ASKED FOR next to the one that served.
   # Rationale and the trap it replaces: defaults/main/60-ops.yml.
-  callbacks: {{ (['otel'] + (['prometheus'] if llm_router_prometheus_enabled | bool else [])) | to_json }}
+  callbacks: {{ (['prometheus'] if llm_router_prometheus_enabled | bool else []) | to_json }}
   drop_params: true
 {% if llm_router_large_passthrough_enabled | bool %}
   # Resolve the wildcard against the gate's live /v1/models so this proxy's
