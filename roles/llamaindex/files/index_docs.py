@@ -66,13 +66,24 @@ def gather_documents(cfg: dict) -> list:
     from llama_index.core import Document
 
     docs = []
+    missing_required = []
     for source in cfg.get("index", {}).get("sources", []):
         name = source.get("name", "source")
         text = fetch_url(name, source) if source.get("url") else read_path(name, source)
         if not text:
+            if source.get("required"):
+                missing_required.append(name)
             continue
         docs.append(Document(text=text, metadata={"source": name}))
         print(f"loaded {name}: {len(text)} chars", file=sys.stderr)
+    if missing_required:
+        # Collect every failure before exiting, so one run reports all of
+        # them rather than the caller fixing one and re-running to find the
+        # next — a required source shrinking the index silently is exactly
+        # what `required: true` exists to prevent.
+        for name in missing_required:
+            print(f"FATAL: required source '{name}' did not resolve", file=sys.stderr)
+        sys.exit(1)
     return docs
 
 
@@ -130,6 +141,10 @@ def build_index(cfg: dict, docs: list) -> None:
         f"indexed {len(docs)} documents into qdrant collection '{collection}'",
         file=sys.stderr,
     )
+
+    sentinel = cfg.get("freshness_sentinel")
+    if sentinel:
+        Path(sentinel).touch()
 
 
 def main() -> int:

@@ -167,7 +167,10 @@ def test_stale_reclaim_signals_the_process_group_not_just_the_pid() -> None:
     assert info["sigkill"] is False
 
 
-def test_stale_reclaim_escalates_to_sigkill_on_the_process_group_if_sigterm_survives() -> None:
+def test_stale_reclaim_sigkill_escalation_is_process_group_scoped() -> None:
+    # The shared _sigkill(kill, pid) helper both reapers now call through
+    # (test_worker_reap_contract.py patches the same body) closes the
+    # process-group gap for the stale-reclaim path too, in the same patch.
     reclaim = _load_patched_reclaim(
         _patched_reclaim_source(), own_pid=1, pid_alive=True, is_hermes_worker=True
     )
