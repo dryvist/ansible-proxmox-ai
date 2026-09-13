@@ -17,12 +17,23 @@
 llm_router_registry_dir: "{{ role_path | dirname | dirname }}/llm-models.d"
 
 llm_router_model_registry: >-
-  {{ _llm_registry_large + _llm_registry_light + _llm_registry_local_gpu
-     + _llm_registry_opencode + _llm_registry_hermes_cloud + _llm_registry_openrouter }}
+  {{ _llm_registry_large + _llm_registry_light + _llm_registry_cpu_pool
+     + _llm_registry_local_gpu + _llm_registry_opencode + _llm_registry_hermes_cloud
+     + _llm_registry_openrouter }}
 
 # Only enabled entries reach the rendered config or any derived contract.
+# cpu-moe / cpu-9b also require inventory-backed api_base URLs — without them
+# the template renders nothing and registry/render parity fails loudly.
 llm_router_registry_enabled: >-
-  {{ llm_router_model_registry | selectattr('enabled') | list }}
+  {%- set ns = namespace(out=[]) -%}
+  {%- for m in (llm_router_model_registry | selectattr('enabled') | list) -%}
+  {%- if m.tier == 'cpu-moe' and (llm_router_cpu_moe_backend_urls | length) == 0 -%}
+  {%- elif m.tier == 'cpu-9b' and (llm_router_cpu_9b_backend_urls | length) == 0 -%}
+  {%- else -%}
+  {%- set ns.out = ns.out + [m] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.out }}
 
 # --- Model groups (tier views over the registry) ------------------------------
 # Each view is the enabled registry entries for one tier, in registry order.
@@ -44,6 +55,12 @@ llm_router_opencode_models: >-
 # tier is a load-balanced pair or a single deployment with no standby.
 llm_router_light_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'light') | list }}
+# cpu-moe / cpu-9b: CPU llama.cpp pool; each id renders two deployments
+# (-50 warm, -51 on demand). Scaler owns LXC power for -51 and both 9B guests.
+llm_router_cpu_moe_models: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'cpu-moe') | list }}
+llm_router_cpu_9b_models: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'cpu-9b') | list }}
 # vllm: served by the NVIDIA/CUDA guest. Its own tier rather than a `light`
 # entry, because the light tier renders a GPU+CPU deployment PAIR sharing a
 # model name, and no second backend serves these weights — rendering the pair

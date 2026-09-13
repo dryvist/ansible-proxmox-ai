@@ -73,7 +73,15 @@
     # runs. It used to double as the signal for WHICH role serves, which stopped
     # being true once a second engine existed. `llm-vllm` names the
     # IMPLEMENTATION, so a guest declaring it is excluded from llm_fast_group
-    # and does not receive both serving roles.
+    # and does not receive both serving roles. CPU-pool tag vocabulary is
+    # constants.llm_cpu_scaler.tags — never restated as literals here.
+    - name: Resolve CPU LLM pool tag vocabulary from tofu constants
+      ansible.builtin.set_fact:
+        _llm_cpu_moe_tag: "{{ tofu_data.constants.llm_cpu_scaler.tags.moe }}"
+        _llm_cpu_9b_tag: "{{ tofu_data.constants.llm_cpu_scaler.tags.nine_b }}"
+        _llm_cpu_pool_tags: "{{ tofu_data.constants.llm_cpu_scaler.pool_tags }}"
+      when: tofu_data.constants.llm_cpu_scaler is defined
+
     - name: Add AI LXC containers to inventory (proxmox_pct_remote connection)
       ansible.builtin.add_host:
         name: "{{ item.key }}"
@@ -114,6 +122,19 @@
               ['llm_fast_group']
               if 'llm-fast' in (item.value.tags | default([]))
               and 'llm-vllm' not in (item.value.tags | default([]))
+              and (item.value.tags | default([])) | intersect(_llm_cpu_pool_tags | default([])) | length == 0
+              else []
+            ) +
+            (
+              ['llm_cpu_moe_group']
+              if _llm_cpu_moe_tag is defined
+              and _llm_cpu_moe_tag in (item.value.tags | default([]))
+              else []
+            ) +
+            (
+              ['llm_cpu_9b_group']
+              if _llm_cpu_9b_tag is defined
+              and _llm_cpu_9b_tag in (item.value.tags | default([]))
               else []
             ) +
             (
@@ -280,9 +301,11 @@
         # the real fix and is tracked separately.
         tofu_ssh_container: >-
           {{ (item.value.tags | default([]))
-             | intersect(['hermes-agent', 'llm-router', 'llm-redis', 'llm-vllm',
-                          'llm-fast', 'open-webui', 'herdr', 'langfuse',
-                          'phoenix'])
+             | intersect(
+                 ['hermes-agent', 'llm-router', 'llm-redis', 'llm-vllm',
+                  'llm-fast', 'open-webui', 'herdr', 'langfuse', 'phoenix']
+                 + (_llm_cpu_pool_tags | default([]))
+               )
              | length > 0 }}
       loop: "{{ tofu_data.containers | dict2items }}"
       changed_when: false

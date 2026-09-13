@@ -30,9 +30,12 @@ Required on every entry:
   provider          LiteLLM provider prefix — `openai` (local OpenAI-compatible
                     backends), `auto_router`, `dashscope`, `gemini`, or
                     `openrouter`.
-  tier              `large` | `light` | `vllm` | `opencode` | `hermes-router` |
-                    `hermes-cloud` | `openrouter`. Selects the deployment
-                    shape; light entries become two same-name deployments.
+  tier              `large` | `light` | `cpu-moe` | `cpu-9b` | `vllm` |
+                    `opencode` | `hermes-router` | `hermes-cloud` |
+                    `openrouter`. Selects the deployment shape; light entries
+                    become two same-name deployments (GPU + CPU standby);
+                    cpu-moe and cpu-9b each become two same-name deployments
+                    against the CPU pool instances (warm + scaled).
                     `opencode` is a subscription tier: it advertises no
                     per-token price (see input_cost_per_token below) and its
                     deployment order comes from a role default, never a
