@@ -92,7 +92,9 @@ llm_router_entry_point_names: >-
 llm_router_fallback_target_names: >-
   {{ (llm_router_hermes_default_fallback_chain
       + ([llm_router_primary_model]
-         if llm_router_hermes_cloud_only_fallback_groups | length > 0 else []))
+         if (llm_router_hermes_cloud_only_fallback_groups
+             + llm_router_opencode_fallback_groups
+             + llm_router_openrouter_free_groups) | length > 0 else []))
      | unique | list }}
 llm_router_max_fallbacks: >-
   {{ (llm_router_fallback_target_names | length)
@@ -158,12 +160,19 @@ llm_router_context_window_escape_groups: >-
 
 # Renders nothing when no cloud rung is credentialed — an empty target list is
 # not "no map", and LiteLLM would take the empty branch and fall back to
-# nowhere instead of surfacing the real error.
+# nowhere instead of surfacing the real error. The escape target is every
+# wider-than-primary rung the six-segment chain can hold, not only the
+# hermes-cloud tier: an OpenCode or free-zdrless rung serves an over-long
+# request exactly as well as an alibaba/gemini/openrouter one does.
+llm_router_context_window_wider_groups: >-
+  {{ (llm_router_hermes_cloud_only_fallback_groups
+      + llm_router_opencode_fallback_groups
+      + llm_router_openrouter_free_groups) | unique | list }}
 llm_router_context_window_fallbacks: >-
   {%- set ns = namespace(pairs=[]) -%}
-  {%- if llm_router_hermes_cloud_only_fallback_groups | length > 0 -%}
+  {%- if llm_router_context_window_wider_groups | length > 0 -%}
   {%- for group in llm_router_context_window_escape_groups -%}
-  {%- set ns.pairs = ns.pairs + [{group: llm_router_hermes_cloud_only_fallback_groups}] -%}
+  {%- set ns.pairs = ns.pairs + [{group: llm_router_context_window_wider_groups}] -%}
   {%- endfor -%}
   {%- endif -%}
   {{ ns.pairs }}

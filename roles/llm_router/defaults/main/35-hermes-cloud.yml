@@ -198,13 +198,31 @@ llm_router_hermes_narrow_legs_last: true
 # not a re-sort of an existing one. Composition is by concatenation precisely
 # so segments stay independently orderable; add the segment rather than
 # re-sorting, and the property survives a later change to any other segment.
+# SIX SEGMENTS: local_wide -> opencode_sub -> or_zdr_paid -> local_narrow ->
+# free_sub -> free_zdrless. Still pure concatenation, never a re-sort, for the
+# same reason the three-segment version above this comment used to give:
+# each segment stays independently orderable and a later change to one cannot
+# silently reorder another. or_zdr_paid + free_sub together are exactly
+# llm_router_hermes_cloud_only_fallback_groups's membership (the paid/free
+# split is additive, not a narrowing), so the total membership this var
+# renders is unchanged in composition, only in ORDER: the OpenCode
+# subscription now precedes the ZDR-paid OpenRouter/Alibaba/Gemini rungs, and
+# the free segments now sit on either side of local_narrow instead of both
+# ahead of it.
 llm_router_hermes_cloud_fallback_groups: >-
   {%- if llm_router_hermes_narrow_legs_last | bool -%}
   {{ llm_router_hermes_local_wide_groups
-     + llm_router_hermes_cloud_only_fallback_groups
-     + llm_router_hermes_local_narrow_groups }}
+     + llm_router_opencode_fallback_groups
+     + llm_router_hermes_cloud_paid_groups
+     + llm_router_hermes_local_narrow_groups
+     + llm_router_hermes_cloud_free_groups
+     + llm_router_openrouter_free_groups }}
   {%- else -%}
-  {{ llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups }}
+  {{ llm_router_local_fallback_groups
+     + llm_router_opencode_fallback_groups
+     + llm_router_hermes_cloud_paid_groups
+     + llm_router_hermes_cloud_free_groups
+     + llm_router_openrouter_free_groups }}
   {%- endif -%}
 
 # LiteLLM's global 429 retry policy exists for a name with nowhere to fall
@@ -233,7 +251,9 @@ llm_router_hermes_cloud_zero_retry_groups: >-
   {%- set ns.groups = ns.groups + [m.route_group] -%}
   {%- endif -%}
   {%- endfor -%}
-  {%- if llm_router_hermes_cloud_only_fallback_groups | length > 0 -%}
+  {%- if (llm_router_hermes_cloud_only_fallback_groups
+          + llm_router_opencode_fallback_groups
+          + llm_router_openrouter_free_groups) | length > 0 -%}
   {%- for name in llm_router_entry_point_names -%}
   {%- if name not in ns.groups -%}
   {%- set ns.groups = ns.groups + [name] -%}
