@@ -1,14 +1,8 @@
-"""Pinned upstream source for worker reap/reclaim, goal judge, memory sync,
-Slack transport, and the kanban dispatcher tick.
+"""Verbatim upstream Hermes source snippets: worker/judge/memory/slack half.
 
-Split out of _pinned_sources.py once the shared module crossed the token
-budget: this half holds the worker-reap/reclaim/spawn, goal-judge, memory
-sync, kanban dispatcher tick, and Slack socket-mode transport snippets --
-the constants a worker/judge/dispatch test needs, without pulling in the
-cron scheduler and task-reconcile snippets a goal-mode test needs instead.
-Same drift protection as _pinned_sources.py: every constant here is
-upstream source EXACTLY as shipped, re-verify with
-scripts/verify-pinned-patches.py on a version bump.
+Split from _pinned_sources.py (over the repo's per-file token budget) — the
+task/goal/cron-delivery snippets stay there. Same contract: every constant is
+upstream source EXACTLY as shipped, never the expected post-patch form.
 """
 
 from __future__ import annotations

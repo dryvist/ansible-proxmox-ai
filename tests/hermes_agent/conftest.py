@@ -3,27 +3,24 @@
 The pinned-source patch tests reassemble upstream Hermes source snippets and
 run the role's own ansible.builtin.replace/blockinfile patches against them,
 so the same PATCHED_* constants and _apply_runtime_patch/_task helpers are
-needed by every test module in this file's original split -- kept here rather
+needed by every test module in this file's original split — kept here rather
 than duplicated so a patch task rename only needs updating once.
 
-The verbatim upstream snippets themselves live in _pinned_sources.py (goal
-judge and memory sync) and _pinned_sources_worker.py (worker reap/reclaim/
-spawn, kanban dispatcher, Slack transport), and the PATCHED_* constants
-derived from them (plus the _task/_apply_runtime_patch helpers and
-REPO_ROOT/ROLE_ROOT) live in _patched_sources.py, all re-exported here so
-`from conftest import PINNED_*`/`PATCHED_*` keeps working. Split out because
-a version bump only ever edits those strings, while the fixtures below
-change for unrelated reasons -- and because this file was over its token
-budget, whose remedy is splitting, never a bigger budget.
+The verbatim upstream snippets themselves live in _pinned_sources.py and the
+PATCHED_* constants derived from them (plus the _task/_apply_runtime_patch
+helpers and REPO_ROOT/ROLE_ROOT) live in _patched_sources.py, both
+re-exported here so `from conftest import PINNED_*`/`PATCHED_*` keeps
+working. Split out because a version bump only ever edits those strings,
+while the fixtures below change for unrelated reasons — and because this
+file was over its token budget, whose remedy is splitting, never a bigger
+budget.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Iterator
 
 import yaml

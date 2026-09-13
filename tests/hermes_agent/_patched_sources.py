@@ -2,7 +2,7 @@
 
 Split out of conftest.py (2026-09, token budget): everything here is
 produced by running the role's own patch tasks over the verbatim upstream
-fragments in _pinned_sources.py / _pinned_goal_loop.py -- never hand-copied,
+fragments in _pinned_sources.py / _pinned_goal_loop.py — never hand-copied,
 so a hand-typed "expected" string can never drift from what the role
 actually produces. conftest.py re-exports everything here (`from conftest
 import PATCHED_*` keeps working) and owns the actual pytest fixtures,

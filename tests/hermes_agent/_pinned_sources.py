@@ -1,12 +1,15 @@
-"""Verbatim upstream Hermes source snippets the patch tests run against.
+"""Verbatim upstream Hermes source snippets: task/goal/cron-delivery half.
 
-Split out of conftest.py: a version bump only ever edits these strings, and an
-agent re-anchoring a patch should read the snippets without the fixtures, and
-vice versa. Every constant is upstream source EXACTLY as shipped — never the
-expected post-patch form, which is what let seven dead patches stay green.
+Split from _pinned_sources.py (over the repo's per-file token budget) —
+worker-reap/judge/memory/slack/dispatch snippets moved to
+_pinned_sources_worker.py. A version bump only ever edits these strings, and
+an agent re-anchoring a patch should read the snippets without the fixtures,
+and vice versa. Every constant is upstream source EXACTLY as shipped — never
+the expected post-patch form, which is what let seven dead patches stay green.
 """
 
 from __future__ import annotations
+
 
 PINNED_CREATE_TASK_SOURCE = '''\
 def create_task(conn, *, idempotency_key=None, goal_mode=False, goal_max_turns=None):

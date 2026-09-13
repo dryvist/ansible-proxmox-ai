@@ -3,15 +3,15 @@ from __future__ import annotations
 from conftest import (
     PATCHED_JUDGE_AVAILABLE_SOURCE,
     PATCHED_KANBAN_GOAL_LOOP_SOURCE,
-    PATCHED_JUDGE_CALL_SOURCE,
     PATCHED_TURN_ITERATION_PREP_SOURCE,
+    PINNED_JUDGE_AVAILABLE_SOURCE,
     PINNED_BOOST_CAP_SOURCE,
     PINNED_COMPRESSOR_SCAN_SOURCE,
     PINNED_CREATE_TASK_SOURCE,
     PINNED_CRON_DELIVERY_SOURCE,
     PINNED_GOAL_COMPLETION_SOURCE,
     PINNED_HINDSIGHT_PREFETCH_SOURCE,
-    PINNED_JUDGE_AVAILABLE_SOURCE,
+    PATCHED_JUDGE_CALL_SOURCE,
     PINNED_JUDGE_CALL_SOURCE,
     PINNED_JUDGE_ERROR_SENTINEL_SOURCE,
     PINNED_KANBAN_GOAL_LOOP_SOURCE,
@@ -22,6 +22,7 @@ from conftest import (
     PINNED_WORKER_REAP_SOURCE,
     PINNED_WORKER_SPAWN_SOURCE,
     _apply_runtime_patch,
+    _combined_assert_task,
     _source_postconditions,
     _task,
 )
@@ -32,13 +33,10 @@ def test_installed_source_postconditions_hold_only_for_the_patched_sources() -> 
     (token budget): builds every source var _source_postconditions() reads
     and proves the combined assert task holds against the fully-patched
     form and goes red the moment any one patch is missing or half-applied.
-    The structural/substring checks on the assert task's own `that` list
+    The structural/substring checks on the assert task own `that` list
     live in test_goal_mode_source_postconditions.py, sharing nothing but
     the imports above.
     """
-
-    # Upstream-supplied now, not patch output: the arity, message, and
-    # failure_limit patches were retired for matching zero times.
     completion_source = PINNED_GOAL_COMPLETION_SOURCE
     # Same module as the completion gate, so it rides the same source var.
     completion_source += PATCHED_JUDGE_AVAILABLE_SOURCE
@@ -310,3 +308,5 @@ def test_installed_source_postconditions_hold_only_for_the_patched_sources() -> 
             kanban_dispatch_source=kanban_dispatch_source.replace(stale_reclaim_source, ""),
         )
     )
+
+
