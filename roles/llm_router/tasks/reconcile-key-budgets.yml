@@ -21,12 +21,19 @@
 - name: Compute the budgeted keys to reconcile on every converge
   ansible.builtin.set_fact:
     _llm_router_budgeted_keys: >-
-      {{ llm_router_virtual_keys
-         | rejectattr('value', 'equalto', '')
-         | selectattr('monthly_budget', 'defined')
-         | rejectattr('monthly_budget', 'equalto', 0) | list }}
+      {%- set _out = [] -%}
+      {%- for _k in (llm_router_virtual_keys | rejectattr('value', 'equalto', '') | list) -%}
+      {%- if (_k.monthly_budget | default(0) | float) > 0 -%}
+      {%- set _discard = _out.append(_k) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ _out }}
   no_log: true
 
+# llm_router_existing_keys is the /key/list snapshot seed-keys.yml already
+# registered earlier in this same play (seed-consumers.yml runs it first) —
+# read again here, not re-fetched, so changed_when below reflects the
+# pre-this-play state including anything seed-keys.yml just minted.
 - name: Resync max_budget/budget_duration on every budgeted key
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/key/update"
@@ -43,4 +50,21 @@
   loop: "{{ _llm_router_budgeted_keys }}"
   loop_control:
     label: "{{ item.alias }}"
+  # A no-op run (the live key already carries this exact budget) reports ok,
+  # not changed — compares the value about to be sent against what
+  # llm_router_existing_keys already showed for this alias, rather than
+  # assuming every successful POST changed something.
+  changed_when: >-
+    (_llm_router_live_key_budgets.get(item.alias, {}).get('max_budget', -1) | float)
+      != (item.monthly_budget | float)
+    or (_llm_router_live_key_budgets.get(item.alias, {}).get('budget_duration', '')) != '7d'
+  vars:
+    # Defined check first: a test or standalone import of this file, without
+    # seed-keys.yml's /key/list read having run first, must still template
+    # (empty map, so changed_when just falls back to true) rather than error.
+    _llm_router_live_key_budgets: >-
+      {%- set _live = llm_router_existing_keys.json['keys'] | default([])
+            if llm_router_existing_keys is defined else [] -%}
+      {%- set _named = _live | selectattr('key_alias', 'defined') | list -%}
+      {{ dict(_named | map(attribute='key_alias') | zip(_named)) }}
   no_log: true
