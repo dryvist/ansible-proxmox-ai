@@ -36,14 +36,18 @@ router_settings:
 {% for _group in llm_router_hermes_default_fallback_chain if not _group.startswith('hermes-local') %}
     - {{ _group }}: {{ [llm_router_primary_model] | to_json }}
 {% endfor %}
-{% if llm_router_hermes_cloud_only_fallback_groups | length > 0 %}
+{% if llm_router_context_window_wider_groups | length > 0 %}
     # ENTRY POINTS. hermes-default is not the only name a caller uses: every
     # servable id and every alias above is called directly, and a name with no
-    # key here makes a failure arriving that way terminal. These target the
-    # cloud-only groups directly, never hermes-default, so an escalated call
-    # cannot re-enter the chain that named it.
+    # key here makes a failure arriving that way terminal. Each targets the
+    # SAME six-segment ladder hermes-default uses (35-hermes-cloud.yml /
+    # 36-hermes-cloud-segments.yml), minus itself — an entry that IS one of
+    # the chain's own rungs (e.g. `best`, a servable id) must not target
+    # itself, which would either no-op or cycle depending on how litellm
+    # resolves a self-referential fallback. Never hermes-default's OWN name,
+    # so an escalated call cannot re-enter the chain that named it.
 {% for _name in llm_router_entry_point_names %}
-    - {{ _name | to_json }}: {{ llm_router_hermes_cloud_only_fallback_groups | to_json }}
+    - {{ _name | to_json }}: {{ (llm_router_hermes_default_fallback_chain | reject('equalto', _name) | list) | to_json }}
 {% endfor %}
 {% endif %}
 {% endif %}
@@ -188,17 +192,36 @@ general_settings:
   health_check_interval: {{ llm_router_health_check_interval }}
   health_check_skip_disabled_background_models: true
 {% endif %}
+{% if llm_router_alert_webhook_url | trim | length > 0 %}
+  # No generic "webhook" alert type in this pinned release (verified against
+  # source, zero hits) — "slack" is the mechanism used to reach the
+  # notification hub instead of Slack itself. alert_to_webhook_url is a MAP
+  # keyed by alert type in this release (checked at config load via
+  # .items()); a bare string crashes the proxy at startup the moment this
+  # URL is set. default_webhook_url is a constructor-only kwarg, not a
+  # config file key, so it cannot substitute for the per-type map.
+  #
+  # LiteLLM posts a fixed Slack envelope ({"text": ...}) with no way to
+  # change the payload shape. The hub has no inbound Slack-shape route, so
+  # the topic templates that JSON body directly via ntfy's own
+  # message-templating query parameters instead of adding a translating
+  # route.
+  alerting: ["slack"]
+  alert_to_webhook_url:
+{% for alert_type in llm_router_alert_types %}
+    {{ alert_type }}: {{ (llm_router_alert_webhook_url ~ "?template=yes&message=" ~ ("{{.text}}" | urlencode)) | to_json }}
+{% endfor %}
+  alert_types: {{ llm_router_alert_types | to_json }}
+{% endif %}
 
 litellm_settings:
-  # OTLP traces to the Cribl Edge collector (endpoint from the EnvironmentFile);
-  # Cribl fans out to Langfuse + Splunk. No direct "langfuse" callback — it
-  # requires the v2 SDK and errors on init with the v3 pip resolves.
+  # 2026-09-12: dropped "otel" from callbacks.
   #
-  # "prometheus" is NOT a second tracing sink. It is the only shipped consumer
-  # of the router's fallback events, and the only thing in this proxy that
-  # records the model group originally ASKED FOR next to the one that served.
+  # "prometheus" is NOT a tracing sink. It is the only shipped consumer of the
+  # router's fallback events, and the only thing in this proxy that records
+  # the model group originally ASKED FOR next to the one that served.
   # Rationale and the trap it replaces: defaults/main/60-ops.yml.
-  callbacks: {{ (['otel'] + (['prometheus'] if llm_router_prometheus_enabled | bool else [])) | to_json }}
+  callbacks: {{ (['prometheus'] if llm_router_prometheus_enabled | bool else []) | to_json }}
   drop_params: true
 {% if llm_router_large_passthrough_enabled | bool %}
   # Resolve the wildcard against the gate's live /v1/models so this proxy's

@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.48.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.47.0...v0.48.0) (2026-09-13)
+
+
+### Features
+
+* **llamaindex:** required-source assert, embed alias, freshness sentinel ([#781](https://github.com/dryvist/ansible-proxmox-ai/issues/781)) ([5e6ae57](https://github.com/dryvist/ansible-proxmox-ai/commit/5e6ae571e7e85d7c493be298236e3212e827b5d0))
+* **llm_router:** ship the router's journal to index=llm via rsyslog ([#776](https://github.com/dryvist/ansible-proxmox-ai/issues/776)) ([506aac7](https://github.com/dryvist/ansible-proxmox-ai/commit/506aac7ef1b34e0845c3e33ac634c89a93e1afb8))
+* **llm_router:** six-segment Hermes fallback chain ([#761](https://github.com/dryvist/ansible-proxmox-ai/issues/761)) ([2260ab3](https://github.com/dryvist/ansible-proxmox-ai/commit/2260ab33b28dfd79fe9759de0b80ee05544147fe))
+* **llm_router:** wire LiteLLM alerting to the ntfy hub, drop otel callback ([#777](https://github.com/dryvist/ansible-proxmox-ai/issues/777)) ([7c34569](https://github.com/dryvist/ansible-proxmox-ai/commit/7c34569b7b6d226689810a9412c5644e1c6e14c5))
+
+
+### Bug Fixes
+
+* **ansible.cfg:** size forks to the execution plane shared worker budget ([#772](https://github.com/dryvist/ansible-proxmox-ai/issues/772)) ([2b01e02](https://github.com/dryvist/ansible-proxmox-ai/commit/2b01e021690fa2e319e5b2b0c05c2539dcc26c15))
+* **deps:** pin the community.proxmox fork that carries the pct_remote fixes ([#780](https://github.com/dryvist/ansible-proxmox-ai/issues/780)) ([0729a87](https://github.com/dryvist/ansible-proxmox-ai/commit/0729a871d25a7965a8eb2f17b121f2fea527a7ab))
+
+## [0.47.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.46.0...v0.47.0) (2026-09-12)
+
+
+### Features
+
+* **llm_router:** best/default capability aliases ([#750](https://github.com/dryvist/ansible-proxmox-ai/issues/750)) ([a738b2f](https://github.com/dryvist/ansible-proxmox-ai/commit/a738b2f4a9e9e6dba9cf7d04f81ac83d08171f66))
+
+
+### Bug Fixes
+
+* **openbao_secrets:** unlist the bare provider-key path until its grant lands ([#767](https://github.com/dryvist/ansible-proxmox-ai/issues/767)) ([0731a8c](https://github.com/dryvist/ansible-proxmox-ai/commit/0731a8c2b848f1259985e73beafd3dd5c1205112))
+
+## [0.46.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.45.1...v0.46.0) (2026-09-12)
+
+
+### Features
+
+* **llm_router:** separate credential for one OpenRouter rung ([#749](https://github.com/dryvist/ansible-proxmox-ai/issues/749)) ([e2f0c38](https://github.com/dryvist/ansible-proxmox-ai/commit/e2f0c382724603580b2218319ac2979bc76f7aa1))
+
+
+### Bug Fixes
+
+* **llm_router:** assert seed-key format without the value in the result ([#752](https://github.com/dryvist/ansible-proxmox-ai/issues/752)) ([805edb6](https://github.com/dryvist/ansible-proxmox-ai/commit/805edb649c27e75b6e321ca8f3587dce3d267847))
+* **llm_router:** fail loud, by alias, on an invalid seeded virtual-key format ([#747](https://github.com/dryvist/ansible-proxmox-ai/issues/747)) ([3852a96](https://github.com/dryvist/ansible-proxmox-ai/commit/3852a96f8036f75a48469f9b5dc408d742b8feb3))
+* **site:** isolate play failures so one dead host cannot end the run ([#762](https://github.com/dryvist/ansible-proxmox-ai/issues/762)) ([bb9cbb9](https://github.com/dryvist/ansible-proxmox-ai/commit/bb9cbb9a5784ce46b33788294df7ceb33902100f))
+
 ## [0.45.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.45.0...v0.45.1) (2026-09-12)
 
 

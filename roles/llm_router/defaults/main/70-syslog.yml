@@ -1,0 +1,30 @@
+---
+# --- Ship the router's journal to the dedicated LLM Splunk index ------------
+# The litellm.service unit's own LITELLM_LOG trail and the llm-serving-share
+# JSON line (serving-share.service.j2) both write to the systemd journal, so
+# one rsyslog ruleset forwards both over one route. Mirrors the hermes_agent
+# syslog_route.yml / hermes-agent-rsyslog.conf.j2 pattern exactly (see that
+# role for the full flow comment); the ruleset's `stop` keeps router lines out
+# of index=os the same way.
+llm_router_syslog_route_enabled: true
+# Numbered 05- so the drop-in is evaluated before any 10-forward-cribl.conf
+# catch-all rsyslog may render on this guest.
+llm_router_syslog_rsyslog_config_path: /etc/rsyslog.d/05-llm-router.conf
+llm_router_syslog_host: "syslog.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}"
+# Port from tofu constants (ai_log_routing.llm_router). Mandatory, not
+# defaulted: this key does not exist there yet, so a converge fails loudly
+# here rather than silently forwarding to a guessed port or, worse, reusing
+# the shared homelab_llm port and stamping every line sourcetype=llamaswap
+# (ai_stamp/conf.yml.j2 in ansible-proxmox-apps derives sourcetype from the
+# INPUT PORT alone, with no per-programname override) instead of the intended
+# litellm:proxy. Tracked in Vikunja as the tofu-proxmox follow-up.
+llm_router_syslog_port: >-
+  {{ tofu_data.constants.ai_log_routing.llm_router.port
+     | mandatory('ai_log_routing.llm_router.port missing from tofu constants — see the tofu-proxmox follow-up') }}
+llm_router_syslog_queue_max_disk_space: 256m
+# Splunk-side taxonomy this route targets, asserted by
+# tests/template_render/verify/llm_router_syslog.yml. Not read by any task —
+# documentation only, so a reviewer can see the intended landing zone without
+# cross-referencing tofu-proxmox.
+llm_router_syslog_index: llm
+llm_router_syslog_sourcetype: "litellm:proxy"

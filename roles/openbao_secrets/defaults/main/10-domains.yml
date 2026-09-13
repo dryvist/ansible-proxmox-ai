@@ -51,12 +51,11 @@ openbao_secrets_domains:
       - apps/authelia   # authelia_oidc_{litellm,phoenix}_client_secret — the
                         #   shared OIDC client-secret path, consumed by llm_router
                         #   generic-OIDC SSO (65-oidc.yml) and phoenix_docker.
-      # ORDERING (tasks/seed-keys.yml): apps/github-actions and apps/prometheus
-      # not yet listed — grants land via separate converges; until then fetch
-      # 403s and fails closed. Re-add each alongside its grant.
       # Per-caller router keys; contract in roles/llm_router/tasks/seed-keys.yml.
+      - {path: apps/github-actions, optional: true}
       - {path: apps/open-webui, optional: true}
       - {path: apps/langgraph, optional: true}
+      - {path: apps/prometheus, optional: true}
   # Public (non-secret) fabric coordination data — mirrors the "non-secret
   # coordination path" precedent in tofu-proxmox's SECRETS_HIERARCHY.md
   # (secret/platform/terrakube/main). Read-only, own least-privilege AppRole
@@ -143,14 +142,17 @@ openbao_secrets_domains:
       - ai/open-webui  # OPEN_WEBUI_SECRET_KEY, OPEN_WEBUI_OPENAI_API_KEY
       - ai/hermes      # GH_PAT_WRITE_PROJECT_ISSUES, HERMES_GITHUB_APP_{ID,INSTALLATION_ID,
                        #   PRIVATE_KEY}.
+      # OPENROUTER_API_KEY (the free rung and the general openrouter tier) AND
+      # OPENROUTER_HERMES_KEY (the hermes-cloud-openrouter paid rung only, see
+      # llm-models.d/40-hermes-cloud.yml) are two fields in this ONE secret —
+      # every path merges its whole field set into bao_local_llm_secrets, so
+      # no second path is needed for the second field.
       - mount: "{{ openbao_secrets_ai_api_key_mount }}"
-        path: "{{ openbao_secrets_ai_api_key_path_prefix }}/openrouter"  # OPENROUTER_API_KEY
+        path: "{{ openbao_secrets_ai_api_key_path_prefix }}/openrouter"  # OPENROUTER_API_KEY, OPENROUTER_HERMES_KEY
       # ORDERING (see tasks/seed-keys.yml): opencode's key path is not yet
       # listed — its read grant lands via a separate converge; until then the
       # fetch 403s and fails closed (optional: true forgives only a 404).
       # Re-add the opencode path (optional: true) alongside that grant.
-      # optional: llm_router_hermes_cloud_models_credentialed drops a
-      # provider whose key is absent, and emits no env line for it.
       - mount: "{{ openbao_secrets_ai_api_key_mount }}"
         path: "{{ openbao_secrets_ai_api_key_path_prefix }}/gemini"      # GEMINI_API_KEY
         optional: true
