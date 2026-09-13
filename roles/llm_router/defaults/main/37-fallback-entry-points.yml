@@ -50,6 +50,28 @@ llm_router_entry_point_names: >-
   {{ (llm_router_servable_models + (llm_router_model_group_aliases | list))
      | unique | list }}
 
+# Which of those entry points target a ZDR backend — every one whose
+# resolved entry does NOT explicitly set zero_data_retention: false. Local
+# servable entries never set the field at all (nothing leaves the network),
+# so they default in here too; only a name resolving to the free_zdrless
+# rung's own kind of entry is excluded. config.yaml.j2 uses this to strip
+# llm_router_openrouter_free_groups (the one segment carrying no ZDR claim,
+# 36-hermes-cloud-segments.yml) out of a ZDR entry point's OWN ladder — an
+# alias that promises zero data retention must never end in a rung that
+# makes no such promise.
+llm_router_zdr_entry_point_names: >-
+  {%- set _zdr_false_ids = llm_router_registry_enabled
+        | selectattr('zero_data_retention', 'defined')
+        | rejectattr('zero_data_retention') | map(attribute='client_model_id') | list -%}
+  {%- set _out = [] -%}
+  {%- for _name in llm_router_entry_point_names -%}
+  {%- set _target = llm_router_model_group_aliases.get(_name, _name) -%}
+  {%- if _target not in _zdr_false_ids -%}
+  {%- set _discard = _out.append(_name) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ _out }}
+
 # Depth bound for the WHOLE walk, not for one chain.
 #
 # `fallback_depth` counts rung ATTEMPTS along the current path, NOT nesting:

@@ -85,7 +85,7 @@ def test_wait_threshold_is_independent_of_sibling_jobs() -> None:
     a_alone = [job("slow", cadence_min=15, last_ok_ago_min=5)]
     a_with_sibling = [
         job("slow", cadence_min=15, last_ok_ago_min=5),
-        job("fast", cadence_min=1, last_ok_ago_min=0),
+        job("watchdog-fast", cadence_min=1, last_ok_ago_min=0),
     ]
 
     state_alone = settle(a_alone)
@@ -109,7 +109,7 @@ def test_a_fast_sibling_cannot_tighten_a_slower_jobs_threshold() -> None:
     """
     jobs = [
         job("slow", cadence_min=20, last_ok_ago_min=5),
-        job("fast", cadence_min=1, last_ok_ago_min=0),
+        job("watchdog-fast", cadence_min=1, last_ok_ago_min=0),
     ]
     state = settle(jobs)
     _, _, state, _ = run(jobs, state, now=NOW + 20 * MINUTE)

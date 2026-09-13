@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 
 from conftest import _apply_runtime_patch
-from _pinned_sources import PINNED_SLACK_CONNECT_SOURCE
+from _pinned_sources_worker import PINNED_SLACK_CONNECT_SOURCE
 
 PATCH_NAME = "Patch slack_sdk Socket Mode connect retry to stop when the client is closed"
 

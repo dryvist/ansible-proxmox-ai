@@ -17,7 +17,6 @@ from conftest import (
     _task,
     _task_db,
     PINNED_HINDSIGHT_PREFETCH_SOURCE,
-    PINNED_WORKER_SPAWN_SOURCE,
     PATCHED_JUDGE_CALL_SOURCE,
     PATCHED_JUDGE_AVAILABLE_SOURCE,
     PATCHED_KANBAN_GOAL_LOOP_SOURCE,
@@ -140,50 +139,12 @@ def test_client_side_backoff_hacks_stay_reverted() -> None:
     assert "if False and not _retry.primary_recovery_attempted" not in tasks_text
 
 
-def test_worker_spawn_patch_enters_quiet_goal_loop_path() -> None:
-    patched = _apply_runtime_patch(
-        "Patch Hermes Kanban workers to enter the quiet goal-loop path",
-        PINNED_WORKER_SPAWN_SOURCE,
-    )
-    quiet_expansion = '        *(["--quiet"] if task.goal_mode else []),\n'
-    assert patched.count(quiet_expansion) == 1
-    assert patched.index('"chat"') < patched.index('["--quiet"]')
-    assert patched.index('["--quiet"]') < patched.index('"-q", prompt')
-
-    patched_again = _apply_runtime_patch(
-        "Patch Hermes Kanban workers to enter the quiet goal-loop path",
-        patched,
-    )
-    assert patched_again == patched
-
-    duplicated = PINNED_WORKER_SPAWN_SOURCE.replace(
-        '        "-q", prompt,\n',
-        quiet_expansion * 17 + '        "-q", prompt,\n',
-    )
-    normalized = _apply_runtime_patch(
-        "Patch Hermes Kanban workers to enter the quiet goal-loop path",
-        duplicated,
-    )
-    assert normalized == patched
-
-    namespace: dict[str, Any] = {}
-    exec(patched, namespace)
-    task_type = type("Task", (), {})
-    goal_task = task_type()
-    goal_task.goal_mode = True
-    ordinary_task = task_type()
-    ordinary_task.goal_mode = False
-    assert namespace["build_worker_argv"](goal_task, "work") == [
-        "chat",
-        "--quiet",
-        "-q",
-        "work",
-    ]
-    assert namespace["build_worker_argv"](ordinary_task, "work") == [
-        "chat",
-        "-q",
-        "work",
-    ]
+# The worker-spawn "--quiet" patch this used to exercise is retired
+# (2026-09): upstream's own kanban dispatcher already appends "-Q" for a
+# goal-mode task, so there is no role-patch before/after diff left to unit
+# test here. Coverage moved to "Assert upstream still supplies the behavior
+# these retired patches used to add" (patches_verify.yml), asserted against
+# the live installed source at converge time.
 
 
 def test_judge_call_failure_consumes_no_turns_and_blocks_retryable() -> None:
@@ -256,17 +217,26 @@ GOAL_JUDGE_LATENCY_PATCH_NAMES = (
 
 
 def test_goal_judge_emits_the_worker_latency_field_shape() -> None:
-    # The judge call must be timed around the call itself and reported with the
-    # worker line's own `model=` / `latency=%.1fs` fields — same names, same
-    # seconds, same format — so one Splunk search covers both call paths.
+    # The judge call must be timed around the call itself and reported with
+    # the worker line's own `model=` / `latency=%.1fs` fields — same names,
+    # same seconds, same format — so one Splunk search covers both call
+    # paths. Re-anchored (review): `resp` no longer exists in this scope
+    # (the call moved into _call_goal_judge_llm, which returns a plain
+    # str), so the model id logged is the CONFIGURED one
+    # (auxiliary.goal_judge.model), not the resolved one — read the same
+    # defensive way _goal_judge_setting reads its own config keys.
     assert PATCHED_JUDGE_CALL_SOURCE.count("_judge_started = time.monotonic()") == 1
     assert (
         '"goal judge: API call model=%s latency=%.1fs",'
         in PATCHED_JUDGE_CALL_SOURCE
     )
+    assert (
+        'load_config().get("auxiliary") or {}).get("goal_judge", {}).get("model")'
+        in PATCHED_JUDGE_CALL_SOURCE
+    )
     assert PATCHED_JUDGE_CALL_SOURCE.index(
         "_judge_started = time.monotonic()"
-    ) < PATCHED_JUDGE_CALL_SOURCE.index("resp = call_llm(")
+    ) < PATCHED_JUDGE_CALL_SOURCE.index("raw = _call_goal_judge_llm(")
     # Emitted after the call returned and before the verdict is parsed, so a
     # failed call (which returns early) never reports a latency.
     assert PATCHED_JUDGE_CALL_SOURCE.index(

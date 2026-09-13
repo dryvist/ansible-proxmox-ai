@@ -59,33 +59,62 @@ llm_router_servable_models: >-
 # it, which is always a member of the servable set above.
 #
 # The hermes-router tier's enabled entries, with a real context window —
-# the SOLE derivation of this carve-out. tasks/assert.yml (both asserts),
-# tests/llm_router/test_alias_servable.yml and
-# llm_router_registry_role_targets (55-roles.yml) all reference this var
-# rather than re-deriving it, so the carve-out can only ever mean one thing.
+# the SOLE derivation of this carve-out. tasks/assert.yml (both asserts) and
+# tests/llm_router/test_alias_servable.yml reference this var rather than
+# re-deriving it, so the carve-out can only ever mean one thing.
 llm_router_hermes_router_ids: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-router')
      | selectattr('context_window', 'defined') | rejectattr('context_window', 'none')
      | map(attribute='client_model_id') | list }}
 
-# SERVABLE ENTRIES, plus the hermes-router tier, ONLY. A static
-# model_group_alias is subject to the two asserts in tasks/assert.yml: its
-# target must be in the servable set (or be the local complexity router
-# itself) and must carry a real context window. An alias declared on an
-# entry outside both sets — an egress model, a light-tier one — is a ROLE,
-# and roles are seeded into the router database (tasks/seed-roles.yml) where
-# the Admin UI owns them thereafter. The hermes-router tier is admitted
+# The ≥1M-context, ZDR-by-default OpenRouter entry A5's `long` alias targets.
+# zero_data_retention defaults true (config.yaml.j2); an entry that opts out
+# says so explicitly (llm-models.d/50-openrouter.yml's free rung) and is
+# rejected here rather than trusted by omission.
+llm_router_long_context_alias_ids: >-
+  {%- set _candidates = llm_router_registry_enabled
+        | selectattr('tier', 'equalto', 'openrouter')
+        | selectattr('context_window', 'defined')
+        | selectattr('context_window', '>=', 1000000) | list -%}
+  {{ ((_candidates | rejectattr('zero_data_retention', 'defined') | list)
+      + (_candidates | selectattr('zero_data_retention', 'defined')
+         | selectattr('zero_data_retention') | list))
+     | map(attribute='client_model_id') | list }}
+
+# SERVABLE ENTRIES, plus the hermes-router tier and the long-context
+# carve-out, ONLY. A static model_group_alias is subject to the two asserts
+# in tasks/assert.yml: its target must be in the servable set (or one of the
+# two named carve-outs) and must carry a real context window (hermes-router
+# and long-context are each individually exempted there). An alias declared
+# on an entry outside all three sets is a ROLE, and roles are seeded into
+# the router database (tasks/seed-roles.yml) where the Admin UI owns them
+# thereafter. The hermes-router and long-context tiers are admitted
 # alongside `servable` (not folded into it) because `servable` means "the
-# serving host will answer for this id directly" and the complexity router
-# never does — it dispatches to llm_router_routine_model /
-# llm_router_primary_model, which are already required to be servable and
-# safe by the asserts above. Adding it to `servable` itself would corrupt
-# llm_router_servable_models and the verify-servable probe (2026-07-28).
+# serving host will answer for this id directly" and neither ever does — the
+# complexity router dispatches locally, and the long-context entry is a
+# remote paid OpenRouter model. Adding either to `servable` itself would
+# corrupt llm_router_servable_models and the verify-servable probe
+# (2026-07-28).
+#
+# `judge`/`cheap`/`embed`/`ocr` are deliberately NOT admitted here — they
+# stay DB-only roles (55-roles.yml). A5 (2026-09-12) tried moving all six
+# legacy role names into this projection at once; test_registry_retype_scan.py
+# caught that four of them collide with unrelated common-word literals
+# throughout tests/hermes_agent/*.py (goal-mode cron fixtures, kanban
+# assignee defaults) and, for `ocr`, with llm_router_ocr_model's own
+# selectattr('serving_role', 'equalto', 'ocr') (55-roles.yml). `lead` and
+# `subagent` had no such collision and are handled directly instead: `lead`
+# is a pure naming swap for `best`'s own target (its role_deployments entry
+# is simply removed, 55-roles.yml), and `subagent` retargets onto the small
+# tier at the role_deployments layer without becoming a git alias yet. The
+# other four are deferred to a follow-up; see the A5 PR body.
 llm_router_alias_pairs: >-
   {{ ((llm_router_registry_enabled | selectattr('servable', 'defined')
        | selectattr('servable') | list)
       + (llm_router_registry_enabled | selectattr('tier', 'defined')
-         | selectattr('tier', 'equalto', 'hermes-router') | list))
+         | selectattr('tier', 'equalto', 'hermes-router') | list)
+      + (llm_router_registry_enabled
+         | selectattr('client_model_id', 'in', llm_router_long_context_alias_ids) | list))
      | selectattr('stable_aliases', 'defined')
      | subelements('stable_aliases') | list }}
 llm_router_model_group_aliases: >-

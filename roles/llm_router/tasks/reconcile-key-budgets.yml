@@ -1,0 +1,78 @@
+---
+# Runs on EVERY converge, not just first-seed — unlike seed-keys.yml, which
+# only mints a key the first time it is absent. A key's `monthly_budget` here
+# can change after the key already exists (this PR moves several from unset
+# to 14.0), and seed-keys.yml's "never touch a key that exists" contract would
+# otherwise strand every already-minted key on its original budget forever.
+#
+# Sends ONLY max_budget/budget_duration, never `models` or `key_alias` — an
+# operator may have hand-edited a key's model list in the Admin UI, and
+# resending the git-declared list on every converge would silently overwrite
+# that edit. Budget is the one field this role owns end to end, since nothing
+# else sets it.
+#
+# /key/update takes the actual key VALUE in its `key` field (LiteLLM hashes it
+# server-side to find the row), the same shape /key/generate takes — so this
+# needs no /key/list round trip first. A key whose value is unseeded (empty)
+# is skipped, same contract as seed-keys.yml, and a key with no monthly_budget
+# declared is skipped too rather than sent an update that would clear an
+# existing budget it never claimed to own.
+
+- name: Compute the budgeted keys to reconcile on every converge
+  ansible.builtin.set_fact:
+    _llm_router_budgeted_keys: >-
+      {%- set _out = [] -%}
+      {%- for _k in (llm_router_virtual_keys | rejectattr('value', 'equalto', '') | list) -%}
+      {%- if (_k.monthly_budget | default(0) | float) > 0 -%}
+      {%- set _discard = _out.append(_k) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ _out }}
+  no_log: true
+
+# llm_router_existing_keys is the /key/list snapshot seed-keys.yml already
+# registered earlier in this same play (seed-consumers.yml runs it first) —
+# read again here, not re-fetched, so changed_when below reflects the
+# pre-this-play state including anything seed-keys.yml just minted.
+- name: Resync max_budget/budget_duration on every budgeted key
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/update"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      key: "{{ item.value }}"
+      max_budget: "{{ item.monthly_budget }}"
+      budget_duration: "7d"
+      # Same stacked-window contract as seed-keys.yml's /key/generate call —
+      # kept here too so a budget change on an already-minted key resyncs
+      # both windows, not just the flat one.
+      budget_limits:
+        - budget_duration: "24h"
+          max_budget: "{{ (item.monthly_budget | float / 7 * 2) | round | float }}"
+        - budget_duration: "7d"
+          max_budget: "{{ item.monthly_budget | float }}"
+    status_code: [200]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: "{{ _llm_router_budgeted_keys }}"
+  loop_control:
+    label: "{{ item.alias }}"
+  # A no-op run (the live key already carries this exact budget) reports ok,
+  # not changed — compares the value about to be sent against what
+  # llm_router_existing_keys already showed for this alias, rather than
+  # assuming every successful POST changed something.
+  changed_when: >-
+    (_llm_router_live_key_budgets.get(item.alias, {}).get('max_budget', -1) | float)
+      != (item.monthly_budget | float)
+    or (_llm_router_live_key_budgets.get(item.alias, {}).get('budget_duration', '')) != '7d'
+  vars:
+    # Defined check first: a test or standalone import of this file, without
+    # seed-keys.yml's /key/list read having run first, must still template
+    # (empty map, so changed_when just falls back to true) rather than error.
+    _llm_router_live_key_budgets: >-
+      {%- set _live = llm_router_existing_keys.json['keys'] | default([])
+            if llm_router_existing_keys is defined else [] -%}
+      {%- set _named = _live | selectattr('key_alias', 'defined') | list -%}
+      {{ dict(_named | map(attribute='key_alias') | zip(_named)) }}
+  no_log: true
