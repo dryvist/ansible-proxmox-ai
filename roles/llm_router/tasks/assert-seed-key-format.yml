@@ -10,22 +10,27 @@
 # same shape and filtering seed-keys.yml already computed for the /key/generate
 # loop, so a value with the wrong format is caught before that call ever
 # fires, and no_log never has to hide this task's failure message.
+# One assert over the precomputed list of offending aliases, not a loop over
+# the candidates: a looped assert's failed result carries the whole `item`,
+# value included, whatever loop_control.label says -- and Semaphore task 112
+# printed two seed values that way. The value only ever meets the reject
+# filter below; the task result holds alias names and a boolean.
 - name: Assert each seeded value is a valid LiteLLM custom key before minting
   ansible.builtin.assert:
     quiet: true
     that:
-      # sk- (3 chars) + at least 13 more, matching MINIMUM_CUSTOM_KEY_LENGTH=16.
-      - item.value is match('^sk-.{13,}$')
+      - _llm_router_malformed_key_aliases | length == 0
     fail_msg: >-
-      Seeded value for virtual-key alias '{{ item.alias }}' is not a valid
-      LiteLLM custom key: it must start with 'sk-' and be at least 16
-      characters (the value itself is never logged here). Fix the generator
-      in ansible-proxmox-apps (roles/openbao/tasks/seed_generated_app_secret.yml)
-      so this field is minted with the 'sk-' prefix.
-  loop: "{{ _llm_router_unseeded_keys }}"
-  loop_control:
-    label: "{{ item.alias }}"
-  # Deliberately NOT no_log: the whole point is that this message must reach
-  # the play recap. It is safe without it — the assert result carries only
-  # the alias (via loop_control.label) and the boolean outcome, never
-  # item.value; the "that" expression is the only thing that ever sees it.
+      Seeded value(s) for virtual-key alias(es)
+      {{ _llm_router_malformed_key_aliases | join(', ') }} are not valid
+      LiteLLM custom keys: each must start with 'sk-' and be at least 16
+      characters (the values themselves are never logged here). Fix the
+      generator in ansible-proxmox-apps
+      (roles/openbao/tasks/seed_generated_app_secret.yml) so this field is
+      minted with the 'sk-' prefix.
+  vars:
+    # sk- (3 chars) + at least 13 more, matching MINIMUM_CUSTOM_KEY_LENGTH=16.
+    _llm_router_malformed_key_aliases: >-
+      {{ _llm_router_unseeded_keys
+         | rejectattr('value', 'match', '^sk-.{13,}$')
+         | map(attribute='alias') | list }}
