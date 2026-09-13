@@ -51,7 +51,7 @@ def test_pricing_diff_never_touches_the_model_registry():
 
 def test_blocked_parent_triage_is_observe_only():
     prompt = DEFAULTS["hermes_agent_blocked_parent_triage_digest_cron_prompt"]
-    assert "recompute_ready" in prompt, "must name the actual Vikunja 1523 mechanism"
+    assert "recompute_ready" in prompt, "must name the actual blocked-parent-starves-children mechanism"
     assert "never mark a parent done, archived, or blocked yourself" in prompt
 
 
