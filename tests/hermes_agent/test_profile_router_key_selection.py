@@ -1,4 +1,4 @@
-"""Each Hermes store selects its OWN per-profile router key (Vikunja 3086).
+"""Each Hermes store selects its OWN per-profile router key.
 
 roles/llm_router A4 (56-virtual-keys.yml) seeds one virtual key per Hermes
 profile — hermes_<profile>_llm_router_key, mount `apps`, read here as
