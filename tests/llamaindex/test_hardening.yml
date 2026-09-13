@@ -9,6 +9,7 @@
   become: false
   vars:
     _hardening_tasks: "{{ playbook_dir }}/../../roles/llamaindex/tasks/assert_hardening.yml"
+    llamaindex_hardening_check_failed: false
 
   tasks:
     - name: Create a scratch directory for this test run
@@ -46,15 +47,26 @@
         llamaindex_freshness_sentinel: "{{ _scratch.path }}/never-created"
         llamaindex_freshness_max_age_hours: 48
       block:
+        - name: Assume the check will not fail
+          ansible.builtin.set_fact:
+            llamaindex_hardening_check_failed: false
+
         - name: Run the hardening checks (expected to fail)
           ansible.builtin.include_tasks: "{{ _hardening_tasks }}"
-        - name: Fail the test — the check should have failed and did not
-          ansible.builtin.fail:
-            msg: assert_hardening.yml passed with a missing required source
       rescue:
-        - name: Expected failure observed
-          ansible.builtin.debug:
-            msg: "OK: missing required source correctly failed the check"
+        - name: Record that the check failed
+          ansible.builtin.set_fact:
+            llamaindex_hardening_check_failed: true
+
+    # A real failure inside the block above sets llamaindex_hardening_check_failed
+    # via the rescue; nothing inside the block itself can set it true, so this
+    # assert only passes when assert_hardening.yml genuinely raised — it cannot
+    # be satisfied by a rescue that merely observed its own planted `fail`.
+    - name: Assert the missing required source actually failed the check
+      ansible.builtin.assert:
+        that:
+          - llamaindex_hardening_check_failed
+        fail_msg: assert_hardening.yml passed with a missing required source (should have failed)
 
     - name: A missing OPTIONAL path source must not fail the check
       vars:
@@ -99,29 +111,38 @@
         llamaindex_sources: []
         llamaindex_freshness_sentinel: "{{ _scratch.path }}/stale-sentinel"
         llamaindex_freshness_max_age_hours: 48
+        # touch's module-level modification_time takes the same "[[CC]YY]MMDDhhmm[.ss]"
+        # format as `touch -t` (portable — no GNU-only relative-date parsing, which
+        # BSD/macOS touch does not support).
+        _stale_epoch: >-
+          {{ (ansible_facts['date_time']['epoch'] | int)
+             - ((llamaindex_freshness_max_age_hours + 1) * 3600) }}
+        _stale_touch_ts: "{{ '%Y%m%d%H%M.%S' | strftime(_stale_epoch) }}"
       block:
-        - name: Touch a sentinel
+        - name: Assume the check will not fail
+          ansible.builtin.set_fact:
+            llamaindex_hardening_check_failed: false
+
+        - name: Touch a sentinel back-dated past the max age
           ansible.builtin.file:
             path: "{{ llamaindex_freshness_sentinel }}"
             state: touch
             mode: "0644"
-
-        - name: Back-date the sentinel past the max age
-          ansible.builtin.command:
-            cmd: >-
-              touch -d '{{ llamaindex_freshness_max_age_hours + 1 }} hours ago'
-              {{ llamaindex_freshness_sentinel }}
-          changed_when: true
+            modification_time: "{{ _stale_touch_ts }}"
+            access_time: "{{ _stale_touch_ts }}"
 
         - name: Run the hardening checks (expected to fail)
           ansible.builtin.include_tasks: "{{ _hardening_tasks }}"
-        - name: Fail the test — the check should have failed and did not
-          ansible.builtin.fail:
-            msg: assert_hardening.yml passed with a stale freshness sentinel
       rescue:
-        - name: Expected failure observed
-          ansible.builtin.debug:
-            msg: "OK: stale sentinel correctly failed the check"
+        - name: Record that the check failed
+          ansible.builtin.set_fact:
+            llamaindex_hardening_check_failed: true
+
+    - name: Assert the stale sentinel actually failed the check
+      ansible.builtin.assert:
+        that:
+          - llamaindex_hardening_check_failed
+        fail_msg: assert_hardening.yml passed with a stale freshness sentinel (should have failed)
 
     - name: Remove the scratch directory
       ansible.builtin.file:
