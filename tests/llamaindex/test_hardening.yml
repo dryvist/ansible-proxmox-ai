@@ -1,0 +1,129 @@
+---
+# Exercises roles/llamaindex/tasks/assert_hardening.yml directly (no
+# packages, no venv, no live router) against both the pass and the fail
+# path for each of its two checks: a missing required source, and a stale
+# freshness sentinel.
+- name: Verify llamaindex hardening checks fail closed, not open
+  hosts: localhost
+  gather_facts: true
+  become: false
+  vars:
+    _hardening_tasks: "{{ playbook_dir }}/../../roles/llamaindex/tasks/assert_hardening.yml"
+
+  tasks:
+    - name: Create a scratch directory for this test run
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: llamaindex-hardening-test-
+      register: _scratch
+
+    # --- Check 1: required path-type source ---------------------------------
+
+    - name: Required source exists — the check must pass
+      vars:
+        llamaindex_sources:
+          - name: present-required
+            path: "{{ _scratch.path }}/present.txt"
+            required: true
+        llamaindex_freshness_sentinel: "{{ _scratch.path }}/never-created"
+        llamaindex_freshness_max_age_hours: 48
+      block:
+        - name: Write the file the source points at
+          ansible.builtin.copy:
+            dest: "{{ _scratch.path }}/present.txt"
+            content: "content\n"
+            mode: "0644"
+
+        - name: Run the hardening checks
+          ansible.builtin.include_tasks: "{{ _hardening_tasks }}"
+
+    - name: A missing required path source must fail the check, not warn
+      vars:
+        llamaindex_sources:
+          - name: absent-required
+            path: "{{ _scratch.path }}/does-not-exist.txt"
+            required: true
+        llamaindex_freshness_sentinel: "{{ _scratch.path }}/never-created"
+        llamaindex_freshness_max_age_hours: 48
+      block:
+        - name: Run the hardening checks (expected to fail)
+          ansible.builtin.include_tasks: "{{ _hardening_tasks }}"
+        - name: Fail the test — the check should have failed and did not
+          ansible.builtin.fail:
+            msg: assert_hardening.yml passed with a missing required source
+      rescue:
+        - name: Expected failure observed
+          ansible.builtin.debug:
+            msg: "OK: missing required source correctly failed the check"
+
+    - name: A missing OPTIONAL path source must not fail the check
+      vars:
+        llamaindex_sources:
+          - name: absent-optional
+            path: "{{ _scratch.path }}/also-does-not-exist.txt"
+            required: false
+        llamaindex_freshness_sentinel: "{{ _scratch.path }}/never-created"
+        llamaindex_freshness_max_age_hours: 48
+      block:
+        - name: Run the hardening checks
+          ansible.builtin.include_tasks: "{{ _hardening_tasks }}"
+
+    # --- Check 2: freshness sentinel ----------------------------------------
+
+    - name: No sentinel yet (fresh host) — the check must pass
+      vars:
+        llamaindex_sources: []
+        llamaindex_freshness_sentinel: "{{ _scratch.path }}/never-created"
+        llamaindex_freshness_max_age_hours: 48
+      block:
+        - name: Run the hardening checks
+          ansible.builtin.include_tasks: "{{ _hardening_tasks }}"
+
+    - name: A fresh sentinel must pass the check
+      vars:
+        llamaindex_sources: []
+        llamaindex_freshness_sentinel: "{{ _scratch.path }}/fresh-sentinel"
+        llamaindex_freshness_max_age_hours: 48
+      block:
+        - name: Touch a sentinel with the current time
+          ansible.builtin.file:
+            path: "{{ llamaindex_freshness_sentinel }}"
+            state: touch
+            mode: "0644"
+
+        - name: Run the hardening checks
+          ansible.builtin.include_tasks: "{{ _hardening_tasks }}"
+
+    - name: A stale sentinel must fail the check, not warn
+      vars:
+        llamaindex_sources: []
+        llamaindex_freshness_sentinel: "{{ _scratch.path }}/stale-sentinel"
+        llamaindex_freshness_max_age_hours: 48
+      block:
+        - name: Touch a sentinel
+          ansible.builtin.file:
+            path: "{{ llamaindex_freshness_sentinel }}"
+            state: touch
+            mode: "0644"
+
+        - name: Back-date the sentinel past the max age
+          ansible.builtin.command:
+            cmd: >-
+              touch -d '{{ llamaindex_freshness_max_age_hours + 1 }} hours ago'
+              {{ llamaindex_freshness_sentinel }}
+          changed_when: true
+
+        - name: Run the hardening checks (expected to fail)
+          ansible.builtin.include_tasks: "{{ _hardening_tasks }}"
+        - name: Fail the test — the check should have failed and did not
+          ansible.builtin.fail:
+            msg: assert_hardening.yml passed with a stale freshness sentinel
+      rescue:
+        - name: Expected failure observed
+          ansible.builtin.debug:
+            msg: "OK: stale sentinel correctly failed the check"
+
+    - name: Remove the scratch directory
+      ansible.builtin.file:
+        path: "{{ _scratch.path }}"
+        state: absent
