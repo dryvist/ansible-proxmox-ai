@@ -109,6 +109,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
     ]
 
 
+
 def test_cron_cli_exit_code_condition_covers_the_retired_patch() -> None:
     """The cron exit-code behavior is upstream-native, not a role patch.
 
