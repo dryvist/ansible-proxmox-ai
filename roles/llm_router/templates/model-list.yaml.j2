@@ -65,7 +65,10 @@ model_list:
       # flag and never forwards it in the upstream request body.
       use_chat_completions_api: true
       # Queue excess work at the router instead of flooding the backend.
-      max_parallel_requests: {{ llm_router_local_max_parallel_requests }}
+      # Per-entry: mirrors THIS model's host effectiveConcurrency
+      # (10-large.yml max_parallel_requests) when the registry declares one,
+      # else the tier-wide default.
+      max_parallel_requests: {{ m.max_parallel_requests | default(llm_router_local_max_parallel_requests) }}
 {% if m.client_model_id == llm_router_primary_model %}
       num_retries: 2
 {% endif %}
@@ -98,8 +101,9 @@ model_list:
       # otherwise healthy deployment. LiteLLM treats this as an internal control
       # flag and never forwards it in the upstream request body.
       use_chat_completions_api: true
-      # Preserve the primary deployment's admission cap on failover.
-      max_parallel_requests: {{ llm_router_local_max_parallel_requests }}
+      # Preserve the primary deployment's OWN admission cap on failover —
+      # same entry, same host, so the same per-model value.
+      max_parallel_requests: {{ m.max_parallel_requests | default(llm_router_local_max_parallel_requests) }}
 {% if m.extra_body is defined %}
       extra_body:
 {% for _pk, _pv in m.extra_body.items() %}
@@ -247,7 +251,10 @@ model_list:
       api_base: {{ llm_router_llm_large_base_url }}
       api_key: os.environ/LLM_LARGE_BEARER_TOKEN
       use_chat_completions_api: true
-      max_parallel_requests: {{ llm_router_local_max_parallel_requests }}
+      # The primary's OWN cap (see llm_router_hermes_primary_max_parallel_requests,
+      # 35-hermes-cloud.yml) — this deployment IS the primary model, so it must
+      # track the same per-model value rather than the tier-wide default.
+      max_parallel_requests: {{ llm_router_hermes_primary_max_parallel_requests }}
       order: 2
     model_info:
       disable_background_health_check: true
