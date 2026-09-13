@@ -414,8 +414,6 @@ def _source_postconditions(
         "hermes_agent_goal_completion_source": completion_source,
         "hermes_agent_goal_reconcile_source": reconcile_source,
         "hermes_agent_goal_judge_source": goal_judge_source,
-        "hermes_agent_kanban_dispatch_source": kanban_dispatch_source,
-        "hermes_agent_turn_iteration_prep_source": turn_iteration_prep_source,
         "hermes_agent_kanban_goal_judge_timeout_seconds": 60,
         "hermes_agent_retry_source": retry_source,
         "hermes_agent_auxiliary_source": auxiliary_source,
@@ -424,6 +422,8 @@ def _source_postconditions(
         "hermes_agent_hindsight_plugin_source": hindsight_plugin_source,
         "hermes_agent_run_agent_source": run_agent_source,
         "hermes_agent_cli_main_source": cli_main_source,
+        "hermes_agent_kanban_dispatch_source": kanban_dispatch_source,
+        "hermes_agent_turn_iteration_prep_source": turn_iteration_prep_source,
     }
     return tuple(
         bool(environment.compile_expression(condition)(**context)) for condition in that
