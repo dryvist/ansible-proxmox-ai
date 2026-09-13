@@ -180,11 +180,14 @@ def test_patched_monitor_checks_the_hard_wall_and_preserves_idle_guard() -> None
     assert "_hermes_cron_wall_clock_expired(" in source
     assert "_hard_timeout = True" in source
     assert "Cron job exceeded hard wall clock" in source
-    assert (
-        "if _cron_inactivity_limit is not None and _idle_secs >= "
-        "_cron_inactivity_limit:" in source
-    )
-    assert "if _idle_secs >= _cron_inactivity_limit:" not in source
+    # The inactivity-comparison guard patch that used to sit here is retired
+    # (patches_cron_wall_clock.yml): its regexp no longer matches 2026.9.11's
+    # restructured inactivity poll, so it is a no-op and this fixture's
+    # unguarded "if _idle_secs >= _cron_inactivity_limit:" line is left as
+    # upstream wrote it. Upstream's own structural None-guard, which lives
+    # in _watch_inactivity outside this fixture's narrower snippet, is
+    # asserted against the real installed file in
+    # patches_verify_cron_wall_clock.yml, not here.
 
 
 def test_active_run_executes_the_integrated_hard_wall(monkeypatch) -> None:
