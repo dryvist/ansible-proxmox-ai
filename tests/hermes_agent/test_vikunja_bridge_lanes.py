@@ -8,8 +8,8 @@ Three properties worth pinning here:
 
 1. A task does not age silently in Blocked. Dwell time is tracked from first
    sighting and the task moves to Needs Triage once it crosses
-   blocked_triage_days — the mechanism behind Vikunja 1523's 398 aged blocked
-   cards silently starving 12 ready ones.
+   blocked_triage_days — the mechanism behind a real incident where a batch
+   of aged blocked parent cards silently starved their ready children.
 2. A card that failed while the shared brain was saturated is not confused
    with a card that failed because the work was bad — it goes to Busy and is
    re-queued, never Blocked.
