@@ -1,8 +1,12 @@
 ---
 llamaindex_data_dir: /opt/llamaindex
-# Embeddings come from the fabric router (llm-fast serves the `embeddings`
-# model, OpenAI-compatible); the local Ollama sidecar is retired.
-llamaindex_embed_model: "embeddings"
+# Embeddings come from the fabric router (OpenAI-compatible); the local
+# Ollama sidecar is retired. "embed" is the router's stable ROLE alias
+# (roles/llm_router/defaults/main/55-roles.yml declares `- role: embed`,
+# resolving to whichever registry entry the `embedding` flag names) — never
+# a physical model id, so a future re-target of the embedding model needs no
+# change here.
+llamaindex_embed_model: "embed"
 llamaindex_router_base_url: >-
   https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
   or undef('PROXMOX_SUBDOMAIN required') }}/v1
@@ -23,20 +27,40 @@ llamaindex_qdrant_collection: homelab_docs
 llamaindex_index_enabled: true
 # systemd OnCalendar for the refresh timer (daily; off the :00 mark).
 llamaindex_index_on_calendar: "*-*-* 04:17:00"
-# Documents to index. Each source has a name and either a `url` or a `path`.
-# A url source may name a Cloudflare Access service-token env pair; the indexer
-# skips that source (non-fatal) when the env is absent, so a converge without
-# the token still indexes every reachable source.
+# Documents to index. Each source has a name, either a `url` or a `path`, and
+# a `required` flag (default false). A url source may name a Cloudflare
+# Access service-token env pair; the indexer skips that source (non-fatal)
+# when the env is absent, so a converge without the token still indexes every
+# reachable source — required: false on such a source reflects that it is
+# EXPECTED to be skippable, not a promise it will always resolve. A source
+# with required: true failing to resolve fails the indexer run instead of
+# silently shrinking the index (see tasks/assert_hardening.yml for the
+# converge-time half of this, and index_docs.py for the run-time half).
 llamaindex_sources:
   - name: public-docs
     url: "https://docs.jacobpevans.com/llms-full.txt"
+    required: true
   - name: dryvist-docs
     url: "https://docs.dryvist.com/llms-full.txt"
     cf_access_client_id_env: CF_ACCESS_CLIENT_ID
     cf_access_client_secret_env: CF_ACCESS_CLIENT_SECRET
+    required: false
   - name: ai-stack-registry
     path: "{{ llamaindex_data_dir }}/registry.json"
+    # Only required when this same role actually renders the file (see
+    # llamaindex_registry_enabled below): required: true here when
+    # tofu_data is absent (molecule, and any future no-inventory run) would
+    # fail every converge on a file the role never promised to create.
+    required: "{{ llamaindex_registry_enabled | default(true) and tofu_data is defined }}"
 # Render the service-registry doc (ports/endpoints from tofu_data.constants) so
 # the index also covers the service registry. Skipped when tofu_data is absent
 # (e.g. molecule), leaving the ai-stack-registry source to skip its missing file.
 llamaindex_registry_enabled: true
+
+# --- Hardening ----------------------------------------------------------------
+# Touched by index_docs.py after each successful (non-dry-run) index build.
+# The converge-time probe below (tasks/assert_hardening.yml) fails when this
+# file exists and is older than the max age — it does NOT fail when the file
+# has never been created, since a brand-new host has no successful run yet.
+llamaindex_freshness_sentinel: "{{ llamaindex_data_dir }}/.last_successful_index"
+llamaindex_freshness_max_age_hours: 48

@@ -43,6 +43,10 @@
       {%- if g not in ns.g -%}{%- set ns.g = ns.g + [g] -%}{%- endif -%}
       {%- endfor -%}
       {{ ns.g }}
+    # The general openrouter tier's `:free` entries share OPENROUTER_API_KEY
+    # too (llm_router_openrouter_free_groups, 35-hermes-cloud.yml) and are now
+    # part of the same one-credential-one-provider-group contract this task
+    # tests, so they belong in this set alongside the hermes-cloud one.
     _openrouter_groups: >-
       {%- set ns = namespace(g=[]) -%}
       {%- for m in llm_router_model_registry | selectattr('enabled')
@@ -50,6 +54,12 @@
                    | selectattr('credential_env', 'equalto', 'OPENROUTER_API_KEY') -%}
       {%- set g = m.fallback_group | default(m.route_group) -%}
       {%- if g not in ns.g -%}{%- set ns.g = ns.g + [g] -%}{%- endif -%}
+      {%- endfor -%}
+      {%- for m in llm_router_model_registry | selectattr('enabled')
+                   | selectattr('tier', 'equalto', 'openrouter')
+                   | selectattr('client_model_id', 'match', '.*:free$')
+                   | selectattr('credential_env', 'equalto', 'OPENROUTER_API_KEY') -%}
+      {%- if m.client_model_id not in ns.g -%}{%- set ns.g = ns.g + [m.client_model_id] -%}{%- endif -%}
       {%- endfor -%}
       {{ ns.g }}
     openbao_secrets_kv_mount: test-kv
@@ -163,17 +173,20 @@
           - llm_router_hermes_default_fallback_chain == _expected_chain
           - _fallback_chain == _expected_chain
           # THE TRIPWIRE, now as counts sourced from the registry rather than
-          # a typed list: one cloud group behind this credential (the free
-          # rung only — hermes-cloud-openrouter now sits behind its own
-          # OPENROUTER_HERMES_KEY, see below), one local leg, and
-          # (default policy) the local leg last. A rung added under this
-          # credential, or a local leg added, must be reviewed here.
-          - _openrouter_groups | length == 1
+          # a typed list: two cloud groups behind this credential (the free
+          # rung and the general tier's :free rung — hermes-cloud-openrouter
+          # now sits behind its own OPENROUTER_HERMES_KEY, see below), one
+          # local leg, ordered local-then-free (both free segments sit AFTER
+          # local_narrow in the six-segment chain, 35-hermes-cloud.yml). A
+          # rung added under this credential, or a local leg added, must be
+          # reviewed here.
+          - _openrouter_groups | length == 2
           - _local_groups | length == 1
-          - >-
-            (_fallback_chain | last in _local_groups)
-            if llm_router_hermes_narrow_legs_last | bool
-            else (_fallback_chain | first in _local_groups)
+          # Local precedes both free segments unconditionally in the six-
+          # segment order (35-hermes-cloud.yml) — with no opencode/paid
+          # credential seeded here, the local leg (narrow or wide) is always
+          # the very first thing in the chain, in both policy states.
+          - _fallback_chain | first in _local_groups
           # EVERY group that can raise ContextWindowExceeded escapes to the
           # wider cloud rungs -- not just the narrow local leg. A rendered map
           # that lacks a key re-raises under that name WITHOUT falling through
@@ -228,10 +241,13 @@
         # from the registry's own view of that credential plus the local
         # legs, ordered by the policy, and the COUNTS are pinned below as the
         # tripwire: a new rung under this credential must be reviewed here.
-        _expected_chain: >-
-          {{ _openrouter_groups + _local_groups
-             if llm_router_hermes_narrow_legs_last | bool
-             else _local_groups + _openrouter_groups }}
+        # Local always precedes both free segments now: with no opencode or
+        # paid credential seeded, the narrow local leg lands in local_narrow
+        # (35-hermes-cloud.yml's six-segment order places that ahead of
+        # free_sub/free_zdrless in BOTH narrow_legs_last states), and a wide
+        # local leg would precede them too as local_wide, the very first
+        # segment.
+        _expected_chain: "{{ _local_groups + _openrouter_groups }}"
         _cwf_keys: >-
           {{ _config.router_settings.context_window_fallbacks | default([])
              | map('dict2items') | flatten | map(attribute='key') | list }}

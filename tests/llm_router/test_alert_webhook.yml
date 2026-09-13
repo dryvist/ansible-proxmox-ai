@@ -1,0 +1,160 @@
+---
+# Pins the alerting block in roles/llm_router/templates/config.yaml.j2:
+# it renders only when llm_router_alert_webhook_url is set, and it never
+# carries a hardcoded host.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_alert_webhook.yml -i localhost, -c local
+
+# ORDER IS LOAD-BEARING, same reason as test_spend_log_retention.yml: the
+# unarmed case runs first so a later set_fact cannot leak into it.
+- name: With no alert webhook configured, the alerting block stays absent
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Confirm the role really ships with no webhook set, or the case is vacuous
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - (llm_router_alert_webhook_url | trim) == ''
+        fail_msg: >-
+          defaults/main/60-ops.yml now ships a non-empty
+          llm_router_alert_webhook_url, so this play renders the armed config
+          and the assertion below proves nothing about the unarmed direction.
+
+    - name: Render the real proxy config with no alert webhook
+      ansible.builtin.set_fact:
+        _config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+
+    - name: No webhook URL means no alerting keys at all
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'alerting' not in _general"
+          - "'alert_to_webhook_url' not in _general"
+          - "'alert_types' not in _general"
+        fail_msg: >-
+          With no llm_router_alert_webhook_url configured, general_settings
+          still carries alerting keys ({{ _general.keys() | list }}). A
+          half-armed alerting block is a config that claims a delivery path
+          it does not have.
+        success_msg: "No alert webhook configured, no alerting keys rendered."
+      vars:
+        _general: "{{ _config.general_settings }}"
+
+- name: With an alert webhook configured, the block is wired and carries no literal host
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    # Deliberately NOT a literal a converge would use, so an assert that finds
+    # it in the render proves the template read the variable rather than a
+    # hand-typed value — same technique as test_syslog_route.yml.
+    - name: Force the fixture webhook URL past the empty default
+      ansible.builtin.set_fact:
+        llm_router_alert_webhook_url: "https://notify-hub-under-test.example.test/ai"
+
+    - name: Render the real proxy config with an alert webhook configured
+      ansible.builtin.set_fact:
+        _config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+
+    # alert_to_webhook_url is a MAP keyed by alert type in this pinned
+    # release (checked at config load via .items() -- a bare string crashes
+    # the proxy at startup the instant this URL is set), so this asserts the
+    # dict shape, one entry per subscribed alert type, each carrying ntfy's
+    # own message-templating query parameters (?template=yes&message=
+    # {{.text}}, URL-encoded) rather than a bare URL -- LiteLLM posts a
+    # fixed {"text": ...} Slack envelope with no other way to change the
+    # payload shape, and the hub has no inbound Slack-shape route.
+    - name: The alerting block is wired to the configured URL via "slack"
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _general.alerting == ["slack"]
+          - _general.alert_to_webhook_url is mapping
+          - _general.alert_to_webhook_url.keys() | sort == (_general.alert_types | sort)
+          - _general.alert_to_webhook_url.values() | unique | length == 1
+          - _expected_url in _general.alert_to_webhook_url.values()
+          - _general.alert_types | sort == (['budget_alerts', 'cooldown_deployment',
+            'db_exceptions', 'fallback_reports'] | sort)
+        fail_msg: >-
+          Expected alerting: ["slack"] with alert_to_webhook_url as a map
+          (one key per alert type) pointed at the fixture URL plus its
+          templating query string (this pinned LiteLLM release has no
+          generic "webhook" alerting type, and alert_to_webhook_url is a
+          dict, not a bare string); got
+          alerting={{ _general.alerting | default('(absent)') }},
+          alert_to_webhook_url={{ _general.alert_to_webhook_url | default('(absent)') }},
+          alert_types={{ _general.alert_types | default('(absent)') }}.
+        success_msg: "Alerting is wired through the fixture webhook URL, one map entry per alert type."
+      vars:
+        _general: "{{ _config.general_settings }}"
+        _expected_url: "https://notify-hub-under-test.example.test/ai?template=yes&message=%7B%7B.text%7D%7D"
+
+    - name: The template source carries no hardcoded host — only the variable
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not (_template_source is search('https?://[A-Za-z0-9.-]+\\.[A-Za-z]{2,}'))
+        fail_msg: >-
+          config.yaml.j2 contains a literal URL/host near the alerting block.
+          The webhook target must come only from llm_router_alert_webhook_url,
+          sourced from inventory (PROXMOX_SUBDOMAIN plus a topic name), never
+          a literal in committed text.
+        success_msg: "No literal host in the template source."
+      vars:
+        _template_source: "{{ lookup('file', _role_dir ~ '/templates/config.yaml.j2') }}"
+
+# NOTE ON COVERAGE: this proves the RENDERED YAML SHAPE only -- that
+# alert_to_webhook_url is a map keyed by alert type, gated on the URL var,
+# and free of a literal host. It does not call LiteLLM and cannot prove the
+# pinned release actually accepts this config or that ntfy's templating
+# query parameters produce the intended notification text; that requires a
+# live probe (see the PR body).

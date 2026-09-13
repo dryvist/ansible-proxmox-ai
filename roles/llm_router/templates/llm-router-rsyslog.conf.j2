@@ -1,0 +1,32 @@
+# {{ ansible_managed }}
+# Ship the router's journal to the LLM ingest listener:
+#   journald ({{ llm_router_service }}.service + the serving-share syslog
+#   identifier) -> {{ llm_router_syslog_host }}:{{ llm_router_syslog_port }} (tcp)
+#   -> HAProxy -> Cribl Stream (ai_stamp) -> Splunk index={{ llm_router_syslog_index }},
+#   sourcetype={{ llm_router_syslog_sourcetype }}.
+#
+# rsyslog ingests the journal by default on Debian, so every
+# {{ llm_router_service }}.service line arrives on the default ruleset. The
+# serving-share unit is a separate systemd unit tagged with its own
+# SyslogIdentifier, matched by programname. The DEDICATED ruleset forwards
+# those lines and `stop`s them, so they never also hit a syslog_forwarder
+# catch-all and double-ship into index=os. This drop-in is numbered 05- so it
+# is evaluated before any 10-forward-cribl.conf catch-all.
+
+ruleset(name="llm_router") {
+  action(type="omfwd"
+         target="{{ llm_router_syslog_host }}"
+         port="{{ llm_router_syslog_port }}"
+         protocol="tcp"
+         queue.type="LinkedList"
+         queue.filename="llm_router_fwd"
+         queue.maxDiskSpace="{{ llm_router_syslog_queue_max_disk_space }}"
+         queue.saveOnShutdown="on"
+         action.resumeRetryCount="-1")
+  stop
+}
+
+if ($!_SYSTEMD_UNIT == "{{ llm_router_service }}.service"
+    or $programname == "{{ llm_router_serving_share_syslog_identifier }}") then {
+  call llm_router
+}

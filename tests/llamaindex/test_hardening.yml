@@ -1,0 +1,150 @@
+---
+# Exercises roles/llamaindex/tasks/assert_hardening.yml directly (no
+# packages, no venv, no live router) against both the pass and the fail
+# path for each of its two checks: a missing required source, and a stale
+# freshness sentinel.
+- name: Verify llamaindex hardening checks fail closed, not open
+  hosts: localhost
+  gather_facts: true
+  become: false
+  vars:
+    _hardening_tasks: "{{ playbook_dir }}/../../roles/llamaindex/tasks/assert_hardening.yml"
+    llamaindex_hardening_check_failed: false
+
+  tasks:
+    - name: Create a scratch directory for this test run
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: llamaindex-hardening-test-
+      register: _scratch
+
+    # --- Check 1: required path-type source ---------------------------------
+
+    - name: Required source exists — the check must pass
+      vars:
+        llamaindex_sources:
+          - name: present-required
+            path: "{{ _scratch.path }}/present.txt"
+            required: true
+        llamaindex_freshness_sentinel: "{{ _scratch.path }}/never-created"
+        llamaindex_freshness_max_age_hours: 48
+      block:
+        - name: Write the file the source points at
+          ansible.builtin.copy:
+            dest: "{{ _scratch.path }}/present.txt"
+            content: "content\n"
+            mode: "0644"
+
+        - name: Run the hardening checks
+          ansible.builtin.include_tasks: "{{ _hardening_tasks }}"
+
+    - name: A missing required path source must fail the check, not warn
+      vars:
+        llamaindex_sources:
+          - name: absent-required
+            path: "{{ _scratch.path }}/does-not-exist.txt"
+            required: true
+        llamaindex_freshness_sentinel: "{{ _scratch.path }}/never-created"
+        llamaindex_freshness_max_age_hours: 48
+      block:
+        - name: Assume the check will not fail
+          ansible.builtin.set_fact:
+            llamaindex_hardening_check_failed: false
+
+        - name: Run the hardening checks (expected to fail)
+          ansible.builtin.include_tasks: "{{ _hardening_tasks }}"
+      rescue:
+        - name: Record that the check failed
+          ansible.builtin.set_fact:
+            llamaindex_hardening_check_failed: true
+
+    # A real failure inside the block above sets llamaindex_hardening_check_failed
+    # via the rescue; nothing inside the block itself can set it true, so this
+    # assert only passes when assert_hardening.yml genuinely raised — it cannot
+    # be satisfied by a rescue that merely observed its own planted `fail`.
+    - name: Assert the missing required source actually failed the check
+      ansible.builtin.assert:
+        that:
+          - llamaindex_hardening_check_failed
+        fail_msg: assert_hardening.yml passed with a missing required source (should have failed)
+
+    - name: A missing OPTIONAL path source must not fail the check
+      vars:
+        llamaindex_sources:
+          - name: absent-optional
+            path: "{{ _scratch.path }}/also-does-not-exist.txt"
+            required: false
+        llamaindex_freshness_sentinel: "{{ _scratch.path }}/never-created"
+        llamaindex_freshness_max_age_hours: 48
+      block:
+        - name: Run the hardening checks
+          ansible.builtin.include_tasks: "{{ _hardening_tasks }}"
+
+    # --- Check 2: freshness sentinel ----------------------------------------
+
+    - name: No sentinel yet (fresh host) — the check must pass
+      vars:
+        llamaindex_sources: []
+        llamaindex_freshness_sentinel: "{{ _scratch.path }}/never-created"
+        llamaindex_freshness_max_age_hours: 48
+      block:
+        - name: Run the hardening checks
+          ansible.builtin.include_tasks: "{{ _hardening_tasks }}"
+
+    - name: A fresh sentinel must pass the check
+      vars:
+        llamaindex_sources: []
+        llamaindex_freshness_sentinel: "{{ _scratch.path }}/fresh-sentinel"
+        llamaindex_freshness_max_age_hours: 48
+      block:
+        - name: Touch a sentinel with the current time
+          ansible.builtin.file:
+            path: "{{ llamaindex_freshness_sentinel }}"
+            state: touch
+            mode: "0644"
+
+        - name: Run the hardening checks
+          ansible.builtin.include_tasks: "{{ _hardening_tasks }}"
+
+    - name: A stale sentinel must fail the check, not warn
+      vars:
+        llamaindex_sources: []
+        llamaindex_freshness_sentinel: "{{ _scratch.path }}/stale-sentinel"
+        llamaindex_freshness_max_age_hours: 48
+        # touch's module-level modification_time takes the same "[[CC]YY]MMDDhhmm[.ss]"
+        # format as `touch -t` (portable — no GNU-only relative-date parsing, which
+        # BSD/macOS touch does not support).
+        _stale_epoch: >-
+          {{ (ansible_facts['date_time']['epoch'] | int)
+             - ((llamaindex_freshness_max_age_hours + 1) * 3600) }}
+        _stale_touch_ts: "{{ '%Y%m%d%H%M.%S' | strftime(_stale_epoch) }}"
+      block:
+        - name: Assume the check will not fail
+          ansible.builtin.set_fact:
+            llamaindex_hardening_check_failed: false
+
+        - name: Touch a sentinel back-dated past the max age
+          ansible.builtin.file:
+            path: "{{ llamaindex_freshness_sentinel }}"
+            state: touch
+            mode: "0644"
+            modification_time: "{{ _stale_touch_ts }}"
+            access_time: "{{ _stale_touch_ts }}"
+
+        - name: Run the hardening checks (expected to fail)
+          ansible.builtin.include_tasks: "{{ _hardening_tasks }}"
+      rescue:
+        - name: Record that the check failed
+          ansible.builtin.set_fact:
+            llamaindex_hardening_check_failed: true
+
+    - name: Assert the stale sentinel actually failed the check
+      ansible.builtin.assert:
+        that:
+          - llamaindex_hardening_check_failed
+        fail_msg: assert_hardening.yml passed with a stale freshness sentinel (should have failed)
+
+    - name: Remove the scratch directory
+      ansible.builtin.file:
+        path: "{{ _scratch.path }}"
+        state: absent
