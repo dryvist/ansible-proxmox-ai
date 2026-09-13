@@ -1,0 +1,78 @@
+---
+# Pins the fix for Semaphore task 180 (2026-09-13): LiteLLM's /key/list
+# defaults to returning "keys" as a list of token STRINGS, not objects
+# (litellm 1.98.0 key_management_endpoints.py list_keys/_list_key_helper —
+# return_full_object defaults to False). seed-keys.yml's
+# _llm_router_live_key_aliases expression only ever finds an alias on an
+# OBJECT entry, so a string-shaped response always renders [], every
+# previously seeded alias looks unseeded, and /key/generate 400s with
+# "Unique key aliases across all keys are required." This proves the
+# expression yields the real aliases against a full-object response (the
+# shape seed-keys.yml now requests with return_full_object=true) and still
+# yields [] against the old string-shaped response, documenting the bug it
+# fixed.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_seed_key_live_aliases.yml -i localhost, -c local
+
+- name: The live-alias expression finds aliases in a full-object /key/list response
+  hosts: localhost
+  gather_facts: false
+  vars:
+    llm_router_existing_keys:
+      json:
+        keys:
+          - key_alias: langgraph
+            token: hash1
+          - token: hash2
+    _llm_router_live_key_aliases: >-
+      {{ llm_router_existing_keys.json['keys'] | default([])
+         | selectattr('key_alias', 'defined')
+         | map(attribute='key_alias') | select('string') | list }}
+  tasks:
+    - name: Assert only the aliased entry is found
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_live_key_aliases == ['langgraph']
+        fail_msg: "Expected ['langgraph'], got {{ _llm_router_live_key_aliases }}"
+
+- name: The live-alias expression yields no aliases against the old token-string response
+  hosts: localhost
+  gather_facts: false
+  vars:
+    llm_router_existing_keys:
+      json:
+        keys: ["hash1", "hash2"]
+    _llm_router_live_key_aliases: >-
+      {{ llm_router_existing_keys.json['keys'] | default([])
+         | selectattr('key_alias', 'defined')
+         | map(attribute='key_alias') | select('string') | list }}
+  tasks:
+    - name: Assert the string-shaped response finds nothing (the bug fixed by requesting return_full_object=true)
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_live_key_aliases == []
+        fail_msg: "Expected [], got {{ _llm_router_live_key_aliases }}"
+
+- name: Verify seed-keys.yml requests the full-object shape /key/list needs to expose key_alias
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Read the seed-keys.yml source
+      ansible.builtin.slurp:
+        src: "{{ _role_dir }}/tasks/seed-keys.yml"
+      register: _seed_keys_source
+
+    - name: Assert the /key/list call carries return_full_object=true
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'return_full_object=true' in (_seed_keys_source.content | b64decode)"
+        fail_msg: >-
+          seed-keys.yml's /key/list request dropped return_full_object=true —
+          without it "keys" is token strings and every seeded alias is
+          re-created, 400ing on /key/generate.
