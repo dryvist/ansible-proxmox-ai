@@ -44,6 +44,7 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "plugins/memory/hindsight/__init__.py",
         "run_agent.py",
         "hermes_cli/main.py",
+        "hermes_cli/kanban_db_dispatch.py",
     ]
 
     assert_task = _combined_assert_task()
@@ -63,19 +64,10 @@ def test_installed_source_postconditions_fail_closed() -> None:
         in conditions
     )
     assert "goal_max_turns = COALESCE(?, goal_max_turns)" in conditions
-    assert any(
-        '*(["--quiet"] if task.goal_mode else []),' in condition
-        and ".count(" in condition
-        and ") == 1" in condition
-        for condition in assert_task["ansible.builtin.assert"]["that"]
-    )
-    assert any(
-        '"-q", prompt,' in condition
-        and ".count(" in condition
-        and ") == 1" in condition
-        for condition in assert_task["ansible.builtin.assert"]["that"]
-    )
-    assert '["--quiet"]' in conditions
+    # The worker-spawn "--quiet" patch is retired (2026-09): upstream's own
+    # kanban dispatcher already appends "-Q" for a goal-mode task, checked
+    # against the live installed source in "Assert upstream still supplies
+    # the behavior these retired patches used to add", not here.
     assert "WHERE id = ? AND status IN" in conditions
     assert "_TRANSIENT_RETRY_BACKOFF_BASE = 15.0" in conditions
     assert "status in (408, 429)" in conditions
@@ -136,11 +128,12 @@ def test_installed_source_postconditions_fail_closed() -> None:
         "Patch Hermes idempotent create to reconcile goal-mode fields",
         PINNED_CREATE_TASK_SOURCE,
     )
+    # The worker-spawn "--quiet" patch that used to apply here is retired
+    # (2026-09): upstream supplies the goal-mode quiet CLI path natively, so
+    # this snippet rides along unpatched — no assertion in the combined
+    # required-patch task targets its content any more.
     reconcile_source = (
-        _apply_runtime_patch(
-            "Patch Hermes Kanban workers to enter the quiet goal-loop path",
-            PINNED_WORKER_SPAWN_SOURCE,
-        )
+        PINNED_WORKER_SPAWN_SOURCE
         + reconcile_source
         + PINNED_PROTOCOL_VIOLATION_SOURCE
         + PINNED_PROTOCOL_RETRY_SOURCE
@@ -163,11 +156,13 @@ def test_installed_source_postconditions_fail_closed() -> None:
     )
     reconcile_source += worker_reap_source
 
+    # The stale-reclaim SIGKILL-escalation patch that used to sit here is
+    # GONE (patches_worker_reap.yml): folded into a shared-helper rewrite
+    # tracked separately, not yet applied.
     stale_reclaim_source = PINNED_STALE_RECLAIM_TERMINATE_SOURCE
     for patch_name in (
         "Patch Hermes stale-reclaim worker termination to verify PID safety before signaling",
         "Patch Hermes stale-reclaim worker termination to signal the worker's process group",
-        "Patch Hermes stale-reclaim worker termination to escalate on the worker's process group",
     ):
         stale_reclaim_source = _apply_runtime_patch(patch_name, stale_reclaim_source)
     # The blockinfile-inserted identity-check helper both the timeout-path
@@ -411,13 +406,29 @@ def test_cron_cli_exit_code_conditions_reject_unpatched_source() -> None:
     """
     from jinja2 import Environment
 
-    from conftest import PATCHED_CLI_MAIN_SOURCE, PINNED_CLI_MAIN_SOURCE
+    # Retired as a role patch: upstream's own cmd_cron now forwards its
+    # return value natively via _forward_command(..., forward_return=True),
+    # so this is tracked in the "upstream still supplies" task, not the
+    # required-patch assert. PATCHED_CLI_MAIN_SOURCE/PINNED_CLI_MAIN_SOURCE
+    # (conftest.py) represent the OLD patch-based `return cron_command(args)`
+    # shape and do not apply to this upstream-native check.
+    NATIVE_FORWARD_SOURCE = (
+        'cmd_cron = _forward_command("cmd_cron", "hermes_cli.cron", '
+        '"cron_command", forward_return=True,\n)\n'
+    )
+    OLD_UNFORWARDED_SOURCE = (
+        "def cmd_cron(args):\n"
+        '    """Cron job management."""\n'
+        "    from hermes_cli.cron import cron_command\n"
+        "\n"
+        "    cron_command(args)\n"
+    )
 
     conditions = [
         c
-        for c in _task("Assert installed Hermes pinned-source patches")[
-            "ansible.builtin.assert"
-        ]["that"]
+        for c in _task(
+            "Assert upstream still supplies the behavior these retired patches used to add"
+        )["ansible.builtin.assert"]["that"]
         if "hermes_agent_cli_main_source" in c
     ]
     assert conditions, "no assertion covers the cron CLI exit code"
@@ -430,8 +441,8 @@ def test_cron_cli_exit_code_conditions_reject_unpatched_source() -> None:
             for c in conditions
         )
 
-    assert _holds(PATCHED_CLI_MAIN_SOURCE)
-    assert not _holds(PINNED_CLI_MAIN_SOURCE), (
+    assert _holds(NATIVE_FORWARD_SOURCE)
+    assert not _holds(OLD_UNFORWARDED_SOURCE), (
         "the cron exit-code conditions hold against upstream's unpatched "
         "cmd_cron, so the patch could silently stop applying"
     )

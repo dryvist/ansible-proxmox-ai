@@ -167,8 +167,11 @@ for _cron_timeout_task_name in (
     "Initialize the independent cron timeout result flags",
     "Keep polling whenever either cron deadline is enabled",
     "Bound the final cron poll to the exact remaining wall budget",
+    # "Guard the native inactivity comparison when that detector is
+    # disabled" was retired by this same PR (b3054ce1): its negative-lookahead
+    # regexp on "Enforce the aggregate cron wall clock in the native poll
+    # loop" already excludes the case that guard used to patch separately.
     "Enforce the aggregate cron wall clock in the native poll loop",
-    "Guard the native inactivity comparison when that detector is disabled",
     "Raise the aggregate cron timeout before the inactivity handler",
 ):
     PATCHED_CRON_TIMEOUT_SOURCE = _apply_rendered_runtime_patch(

@@ -62,9 +62,12 @@ RECLAIM_SIGNAL_SAFETY_PATCH_NAME = (
 RECLAIM_SIGTERM_PATCH_NAME = (
     "Patch Hermes stale-reclaim worker termination to signal the worker's process group"
 )
-RECLAIM_SIGKILL_PATCH_NAME = (
-    "Patch Hermes stale-reclaim worker termination to escalate on the worker's process group"
-)
+# The stale-reclaim SIGKILL-escalation patch that used to sit here is GONE
+# (patches_worker_reap.yml): upstream restructured both reapers' SIGKILL
+# escalation onto one shared helper, so a dedicated stale-reclaim escalate
+# patch is folded into a rewrite of that helper, tracked separately, and not
+# yet applied here. Until then this path still signals SIGKILL at the bare
+# pid, not the process group — asserted below rather than assumed.
 
 
 def _task(name: str) -> dict[str, Any]:
@@ -86,7 +89,6 @@ def _patched_reclaim_source() -> str:
     for name in (
         RECLAIM_SIGNAL_SAFETY_PATCH_NAME,
         RECLAIM_SIGTERM_PATCH_NAME,
-        RECLAIM_SIGKILL_PATCH_NAME,
     ):
         source = _apply_replace(name, source)
     return source
@@ -156,7 +158,11 @@ def test_stale_reclaim_signals_the_process_group_not_just_the_pid() -> None:
     assert info["sigkill"] is False
 
 
-def test_stale_reclaim_escalates_to_sigkill_on_the_process_group_if_sigterm_survives() -> None:
+def test_stale_reclaim_sigkill_escalation_is_not_yet_process_group_scoped() -> None:
+    # Tracks a known gap (patches_worker_reap.yml): SIGTERM is process-group
+    # scoped, but the SIGKILL escalation this path falls back to when
+    # SIGTERM doesn't land is still signaled at the bare pid, pending the
+    # shared-helper rewrite. Update this test alongside that rewrite.
     reclaim = _load_patched_reclaim(
         _patched_reclaim_source(), own_pid=1, pid_alive=True, is_hermes_worker=True
     )
@@ -164,7 +170,7 @@ def test_stale_reclaim_escalates_to_sigkill_on_the_process_group_if_sigterm_surv
     reclaim(12345, signal_fn=lambda pid, sig: calls.append((pid, sig)))
     assert calls == [
         (-12345, signal_module.SIGTERM),
-        (-12345, signal_module.SIGKILL),
+        (12345, signal_module.SIGKILL),
     ]
 
 
