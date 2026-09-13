@@ -45,23 +45,25 @@ llm_router_embedding_model: >-
   {{ llm_router_registry_enabled | selectattr('embedding', 'defined')
      | selectattr('embedding') | map(attribute='client_model_id') | first }}
 
-# Roles declared on registry entries OUTSIDE both the servable set AND the
-# hermes-router carve-out (50-servable.yml). Those two sets' aliases become
-# static model_group_aliases instead; everything else's `stable_aliases` are
-# read here — which is what keeps the subagent role's target from being
-# spelled out a second time, and what keeps `default` (on hermes-default, a
-# hermes-router entry) from being dual-classified as both a git alias AND a
-# seeded DB role.
-llm_router_registry_role_targets: >-
-  {%- set ns = namespace(pairs={}) -%}
-  {%- for m in llm_router_registry_enabled -%}
-  {%- if not (m.servable | default(false)) and m.client_model_id not in llm_router_hermes_router_ids -%}
-  {%- for role in m.stable_aliases | default([]) -%}
-  {%- set _ = ns.pairs.update({role: m.client_model_id}) -%}
-  {%- endfor -%}
-  {%- endif -%}
-  {%- endfor -%}
-  {{ ns.pairs }}
+# A5 (2026-09-12):
+#
+# `lead` is RETIRED as a DB role entirely (no entry below any more): it
+# always targeted the exact same model `best` does, so it is now a pure git
+# alias instead (llm-models.d/10-large.yml) — a naming-transport change
+# only, zero functional difference for a caller of either name.
+#
+# `subagent` used to target a dedicated ≥1M-context paid OpenRouter entry.
+# That entry now carries the `long` git alias instead
+# (llm-models.d/50-openrouter.yml), and subagent stays pointed at the SAME
+# physical entry via llm_router_model_group_aliases.long (defined earlier,
+# 50-servable.yml) rather than being narrowed onto the small/cheap tier —
+# nix-ai's Claude Code subagent tier (lib/checks/litellm-local-claude-tier.nix,
+# modules/claude/settings-env.nix) requests `subagent` and needs the >200k
+# window `long` carries; narrowing this DB role ahead of that consumer
+# moving would silently truncate every subagent call. The subagent -> cheap
+# retarget waits for that migration (tracked separately); subagent is NOT
+# yet a git alias itself for the same common-word-collision reason
+# `judge`/`cheap`/`embed`/`ocr` are deferred (test_registry_retype_scan.py).
 
 # FALLBACK ORDER IS ONE-WAY, LARGEST CONTEXT FIRST.
 #
@@ -71,29 +73,13 @@ llm_router_registry_role_targets: >-
 # the over-long request rather than routing it, so a short-context fallback
 # behind a million-token model is not a safety net, it is a dead rung that
 # turns into a hard failure exactly when the fallback was supposed to help.
-#
-# A subagent rung must ALSO be zero-cost. This role carries delegated bulk
-# labor, so a rung that quietly bills per token turns a backend outage into
-# spend nobody chose — the failure mode the free-first design exists to
-# prevent. Paid egress stays reachable by name; it is never something a role
-# falls into.
-#
-# Both constraints together leave nothing in the catalog: the one free egress
-# entry with a comparable window serves less than the subagent target, and
-# every larger-window entry is paid. So NO fallback record is seeded —
-# subagent fails honestly, and the UI owner adds a rung deliberately if they
-# want one. An empty list here is the decision, not an omission.
-llm_router_subagent_fallbacks: []
 
 llm_router_role_deployments:
-  # The session/orchestrator tier: the largest accurate local model.
-  - role: lead
-    model: "{{ llm_router_primary_model }}"
-    fallbacks: ["{{ llm_router_routine_model }}", "{{ llm_router_small_model }}"]
-  # Delegated labor. Long context is the whole point of this role.
+  # Same physical target as the `long` alias — see the A5 note above for why
+  # this stays wide rather than narrowing to the small/cheap tier.
   - role: subagent
-    model: "{{ llm_router_registry_role_targets.subagent }}"
-    fallbacks: "{{ llm_router_subagent_fallbacks }}"
+    model: "{{ llm_router_model_group_aliases.long }}"
+    fallbacks: []
   # The judge, cross-family to the primary on purpose — the same model the
   # `goal-judge` alias resolves to today.
   - role: judge

@@ -81,7 +81,7 @@ def test_a_mass_stall_arrives_as_one_message_not_one_per_job() -> None:
 
 def test_a_healthy_fleet_says_nothing() -> None:
     jobs = [
-        job("fast", cadence_min=15, last_ok_ago_min=5),
+        job("watchdog-fast", cadence_min=15, last_ok_ago_min=5),
         job("hourly", cadence_min=60, last_ok_ago_min=20),
         job("daily", cadence_min=1440, last_ok_ago_min=300),
     ]
