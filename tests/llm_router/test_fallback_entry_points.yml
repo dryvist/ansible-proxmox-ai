@@ -12,6 +12,10 @@
 # terminal there, with no fall-through to the ordinary map — whereas no map at
 # all would fall through. Adding a name to one map and not the other therefore
 # buys a fallback chain and pays for it with a new terminal failure.
+#
+# The ZDR-ladder and wider-escape checks over these same rendered maps live in
+# test_fallback_zdr_and_escape.yml — split out to stay under the per-file
+# token budget, not because the contract differs.
 - name: Verify every primary entry-point name is keyed in both fallback maps
   hosts: localhost
   gather_facts: false
@@ -117,7 +121,9 @@
     # IN the six-segment ladder" (a subset relation), so EVERY rendered
     # alias — never a specific name typed here, the registry is the sole
     # spelling — gets pinned to hold the WHOLE ladder, in the exact order,
-    # minus only its own name.
+    # minus only its own name. A ZDR alias is held to a shorter exact chain:
+    # its own target strips llm_router_openrouter_free_groups (see
+    # config.yaml.j2), so the expected chain here strips it too.
     - name: Every alias carries the full segmented ladder, in order, minus itself
       ansible.builtin.assert:
         quiet: true
@@ -128,7 +134,8 @@
         fail_msg: >-
           Alias fallback target(s) must equal the six-segment ladder
           (35-hermes-cloud.yml / 36-hermes-cloud-segments.yml) exactly, minus
-          the alias's own name. Mismatched: {{ _mismatched_aliases }}.
+          the alias's own name (and, for a ZDR alias, minus the ZDR-less free
+          rungs too). Mismatched: {{ _mismatched_aliases }}.
         success_msg: >-
           All {{ _rendered_aliases | length }} aliases carry the full
           segmented ladder in order.
@@ -156,165 +163,3 @@
           {%- endif -%}
           {%- endfor -%}
           {{ ns.bad }}
-
-    # A ZDR alias's fallback list, stated directly over the rendered map —
-    # never re-deriving the exclusion the way the exact-match assert above
-    # does, so a bug shared by both derivations still fails here. An alias
-    # whose OWN target makes no ZDR promise is not held to this (nothing to
-    # promise, nothing to protect).
-    - name: No ZDR alias's fallback list contains a rung with no ZDR claim
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - llm_router_zdr_entry_point_names | length > 0
-          - _zdr_aliases_with_a_zdrless_rung | length == 0
-        fail_msg: >-
-          ZDR alias(es) {{ _zdr_aliases_with_a_zdrless_rung }} carry
-          llm_router_openrouter_free_groups
-          ({{ llm_router_openrouter_free_groups }}) — a rung that makes no ZDR
-          claim — in their own rendered fallback list. An alias whose target
-          promises zero data retention must never fall through to one that
-          does not. Fix: config.yaml.j2's entry-point loop must strip
-          llm_router_openrouter_free_groups from a ZDR alias's chain.
-        success_msg: >-
-          No ZDR alias's fallback list contains a rung with no ZDR claim.
-      vars:
-        _zdr_aliases_with_a_zdrless_rung: >-
-          {%- set ns = namespace(bad=[]) -%}
-          {%- for alias in (_config.router_settings.model_group_alias | default({}) | list) -%}
-          {%- if alias in llm_router_zdr_entry_point_names -%}
-          {%- set _rungs = _fallbacks_by_key[alias] | default([]) -%}
-          {%- if (_rungs | select('in', llm_router_openrouter_free_groups) | list) | length > 0 -%}
-          {%- set ns.bad = ns.bad + [alias] -%}
-          {%- endif -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.bad }}
-        _fallbacks_by_key: >-
-          {{ dict(_config.router_settings.fallbacks
-                  | map('dict2items') | flatten
-                  | map(attribute='key')
-                  | zip(_config.router_settings.fallbacks
-                        | map('dict2items') | flatten
-                        | map(attribute='value'))) }}
-
-    # THE STRUCTURAL INVARIANT, stated over the two rendered maps rather than
-    # over the expressions that build them, so it cannot go tautological. This
-    # is the guard for a rung added later by someone who has not read any of
-    # the reasoning above: it does not care WHICH rungs exist, only that none
-    # of them silently lost its escape hatch.
-    #
-    # NOT "every fallbacks key must be a context_window_fallbacks key". That
-    # stronger form is FALSE here by design and would fail on a correct config:
-    # each cloud group is a fallbacks key whose only target is the primary,
-    # which is NARROWER than it is. An oversize request the cloud rung refused
-    # could never have been served by the primary either, so that escape would
-    # be worthless and its absence costs nothing.
-    #
-    # The real rule is width-aware: a key needs an entry only when its chain
-    # contains a target that could actually serve what the key just refused —
-    # i.e. a WIDER one. Then, and only then, a missing entry is a live defect,
-    # because the re-raise never consults the ordinary fallbacks map and that
-    # wider target is unreachable for the one class of request it existed for.
-    - name: No fallback key with a wider escape is missing from the context map
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          # ANTI-VACUITY: the window lookup must be populated, and every name
-          # used as a fallback key or target must resolve in it. An unresolved
-          # name would compare as window 0 and quietly never be "wider", which
-          # is exactly how this check would rot when a new tier is added.
-          - _window_by_name | length > 0
-          - _names_without_window | length == 0
-          - _fallback_keys | length > 0
-          # THE INVARIANT.
-          - _keys_missing_a_reachable_escape | length == 0
-        fail_msg: >-
-          Fallback key(s) {{ _keys_missing_a_reachable_escape }} list a target
-          that serves a LARGER context than they do, but have no
-          context_window_fallbacks entry. An oversize request to such a key
-          re-raises there and never consults the ordinary fallbacks map, so
-          that wider target is unreachable for precisely the requests it was
-          added to catch — a partial map is worse than none. Add the group to
-          llm_router_context_window_escape_groups
-          (roles/llm_router/defaults/main/37-fallback-entry-points.yml).
-          Detail: {{ _wider_target_report }}. Names whose context window could
-          not be resolved from the registry (these would silently never be
-          flagged): {{ _names_without_window }}.
-        success_msg: >-
-          Every fallback key that lists a wider target also carries a
-          context-window escape ({{ _fallback_keys | length }} keys checked
-          against {{ _cwf_keys | length }} context keys).
-      vars:
-        # name -> advertised context window, from the registry only. Covers a
-        # deployment's own id and either grouping name it may be reached by,
-        # plus every alias, which inherits its target's window.
-        _window_by_name: >-
-          {%- set ns = namespace(pairs=[]) -%}
-          {%- for m in llm_router_registry_enabled -%}
-          {%- for name in [m.client_model_id, m.route_group | default(none),
-                           m.fallback_group | default(none)] -%}
-          {%- if name and (ns.pairs | selectattr('n', 'equalto', name) | list | length == 0) -%}
-          {%- set ns.pairs = ns.pairs + [{'n': name, 'w': m.context_window | default(0) | int}] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {%- endfor -%}
-          {%- for alias, target in llm_router_model_group_aliases.items() -%}
-          {%- if ns.pairs | selectattr('n', 'equalto', alias) | list | length == 0 -%}
-          {%- set tw = (ns.pairs | selectattr('n', 'equalto', target)
-                        | map(attribute='w') | list | first) | default(0) -%}
-          {%- set ns.pairs = ns.pairs + [{'n': alias, 'w': tw}] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ dict(ns.pairs | map(attribute='n') | zip(ns.pairs | map(attribute='w'))) }}
-        _names_without_window: >-
-          {%- set ns = namespace(bad=[]) -%}
-          {%- for name in (_fallback_keys + _all_fallback_targets) | unique -%}
-          {%- if name not in _window_by_name and name not in ns.bad -%}
-          {%- set ns.bad = ns.bad + [name] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.bad }}
-        _keys_missing_a_reachable_escape: >-
-          {%- set ns = namespace(bad=[]) -%}
-          {%- for entry in _config.router_settings.fallbacks -%}
-          {%- for key, targets in entry.items() -%}
-          {%- if key not in _cwf_keys -%}
-          {%- for t in targets -%}
-          {%- if (_window_by_name[t] | default(0) | int)
-                 > (_window_by_name[key] | default(0) | int)
-             and key not in ns.bad -%}
-          {%- set ns.bad = ns.bad + [key] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {%- endfor -%}
-          {{ ns.bad }}
-        _wider_target_report: >-
-          {%- set ns = namespace(lines=[]) -%}
-          {%- for entry in _config.router_settings.fallbacks -%}
-          {%- for key, targets in entry.items() -%}
-          {%- if key in _keys_missing_a_reachable_escape -%}
-          {%- for t in targets -%}
-          {%- if (_window_by_name[t] | default(0) | int)
-                 > (_window_by_name[key] | default(0) | int) -%}
-          {%- set ns.lines = ns.lines + [key ~ ' (' ~ _window_by_name[key] | default(0)
-                                         ~ ') -> ' ~ t ~ ' ('
-                                         ~ _window_by_name[t] | default(0) ~ ')'] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {%- endfor -%}
-          {{ ns.lines }}
-        _fallback_keys: >-
-          {{ _config.router_settings.fallbacks
-             | map('dict2items') | flatten | map(attribute='key') | list }}
-        _all_fallback_targets: >-
-          {{ _config.router_settings.fallbacks
-             | map('dict2items') | flatten | map(attribute='value')
-             | flatten | unique | list }}
-        _cwf_keys: >-
-          {{ _config.router_settings.context_window_fallbacks | default([])
-             | map('dict2items') | flatten | map(attribute='key') | list }}
