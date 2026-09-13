@@ -75,10 +75,21 @@
          if _llm_router_any_key_budget
          else 'No key budget configured; nothing to back.' }}
   vars:
+    # `| float > 0`, never `equalto(0)` — the same numeric coercion
+    # seed-keys.yml's own body already uses. A YAML string re-quoting of a
+    # Jinja reference (`"{{ _llm_router_key_monthly_budget }}"`, the
+    # workstation entries in 56-virtual-keys.yml) can fold that value to the
+    # STRING '0' rather than the int/float 0, and `equalto(0)` never matches
+    # a string against a number — every such key would then count as
+    # budgeted even with no database, defeating this very assert.
     _llm_router_budgeted_key_aliases: >-
-      {{ (llm_router_virtual_keys | default([]))
-         | selectattr('monthly_budget', 'defined')
-         | rejectattr('monthly_budget', 'equalto', 0) | map(attribute='alias') | list }}
+      {%- set _out = [] -%}
+      {%- for _k in (llm_router_virtual_keys | default([])) -%}
+      {%- if (_k.monthly_budget | default(0) | float) > 0 -%}
+      {%- set _discard = _out.append(_k.alias) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ _out }}
     _llm_router_any_key_budget: "{{ _llm_router_budgeted_key_aliases | length > 0 }}"
 
 # A key budget at or above the provider's own weekly ceiling defeats the
@@ -102,12 +113,19 @@
       56-virtual-keys.yml.
     success_msg: "Every key budget is strictly below the provider's weekly ceiling."
   vars:
+    # Same `| float` coercion as _llm_router_budgeted_key_aliases above, for
+    # the same reason — a stringified '0' would otherwise be excluded from
+    # neither this list nor that one by an equalto/numeric-comparison test.
     _llm_router_oversized_key_budgets: >-
-      {{ (llm_router_virtual_keys | default([]))
-         | selectattr('monthly_budget', 'defined')
-         | rejectattr('monthly_budget', 'equalto', 0)
-         | selectattr('monthly_budget', '>=', llm_router_openrouter_budget_limit | default(0) | float)
-         | map(attribute='alias') | list }}
+      {%- set _ceiling = llm_router_openrouter_budget_limit | default(0) | float -%}
+      {%- set _out = [] -%}
+      {%- for _k in (llm_router_virtual_keys | default([])) -%}
+      {%- set _budget = _k.monthly_budget | default(0) | float -%}
+      {%- if _budget > 0 and _budget >= _ceiling -%}
+      {%- set _discard = _out.append(_k.alias) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ _out }}
 
 # Naming a host is not reaching it. roles/redis makes AUTH mandatory and has no
 # passwordless branch, so an empty password here does not degrade to an
