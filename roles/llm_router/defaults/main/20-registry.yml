@@ -22,8 +22,18 @@ llm_router_model_registry: >-
      + _llm_registry_openrouter }}
 
 # Only enabled entries reach the rendered config or any derived contract.
+# cpu-moe / cpu-9b also require inventory-backed api_base URLs — without them
+# the template renders nothing and registry/render parity fails loudly.
 llm_router_registry_enabled: >-
-  {{ llm_router_model_registry | selectattr('enabled') | list }}
+  {%- set ns = namespace(out=[]) -%}
+  {%- for m in (llm_router_model_registry | selectattr('enabled') | list) -%}
+  {%- if m.tier == 'cpu-moe' and (llm_router_cpu_moe_backend_urls | length) == 0 -%}
+  {%- elif m.tier == 'cpu-9b' and (llm_router_cpu_9b_backend_urls | length) == 0 -%}
+  {%- else -%}
+  {%- set ns.out = ns.out + [m] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.out }}
 
 # --- Model groups (tier views over the registry) ------------------------------
 # Each view is the enabled registry entries for one tier, in registry order.
