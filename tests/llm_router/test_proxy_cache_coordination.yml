@@ -1,0 +1,70 @@
+---
+# The proxy-wide coordination cache (litellm_settings.cache/cache_params) must
+# render alongside the SAME Redis guard as router_settings.redis_host — never
+# on its own, or the config points litellm_settings.cache_params.host at
+# LLM_ROUTER_REDIS_HOST with nothing behind it. supported_call_types: [] is
+# what makes this coordination-only: no actual completion/embedding response
+# is cached (docs.litellm.ai/docs/proxy/redis_requirements).
+- name: Verify the coordination cache block renders only with a spend store
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Produce the fully credentialed render (carries a spend store)
+      ansible.builtin.import_tasks: tasks/credentialed_render.yml
+
+    - name: With a spend store, the coordination cache block is present
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _config.litellm_settings.cache | default(false)
+          - _config.litellm_settings.cache_params.type == 'redis'
+          - _config.litellm_settings.cache_params.host == 'os.environ/LLM_ROUTER_REDIS_HOST'
+          - _config.litellm_settings.cache_params.supported_call_types == []
+        fail_msg: >-
+          litellm_settings.cache/cache_params did not render as expected with
+          llm_router_redis_host set: {{ _config.litellm_settings }}.
+        success_msg: Coordination cache renders, coordination-only (supported_call_types == []).
+
+    - name: Re-render with no spend store configured
+      ansible.builtin.set_fact:
+        llm_router_redis_host: ""
+        llm_router_redis_password: ""
+
+    - name: Parse the no-store render
+      ansible.builtin.set_fact:
+        _no_store_config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+
+    - name: With no spend store, the coordination cache block is absent
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'cache' not in _no_store_config.litellm_settings"
+          - "'cache_params' not in _no_store_config.litellm_settings"
+        fail_msg: >-
+          litellm_settings carries cache/cache_params with no
+          llm_router_redis_host set: {{ _no_store_config.litellm_settings }}.
+          That points cache_params.host at an env var with no Redis behind it.
+        success_msg: No spend store, no coordination cache block — honestly absent.

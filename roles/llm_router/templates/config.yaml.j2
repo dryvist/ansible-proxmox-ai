@@ -204,6 +204,22 @@ litellm_settings:
   # Rationale and the trap it replaces: defaults/main/60-ops.yml.
   callbacks: {{ (['otel'] + (['prometheus'] if llm_router_prometheus_enabled | bool else [])) | to_json }}
   drop_params: true
+{% if llm_router_redis_host | length > 0 %}
+  # Proxy-wide coordination across the llm_router_group pool — key-cache
+  # invalidation, the DB write lock, shared budget counters — NOT response
+  # caching (docs.litellm.ai/docs/proxy/redis_requirements,
+  # "Coordination without response caching"). supported_call_types: [] is the
+  # documented lever to get coordination without caching any actual
+  # completion/embedding call. Same Redis instance and guard as
+  # router_settings' redis_host above.
+  cache: true
+  cache_params:
+    type: redis
+    host: os.environ/LLM_ROUTER_REDIS_HOST
+    port: {{ llm_router_redis_port }}
+    password: os.environ/LLM_ROUTER_REDIS_PASSWORD
+    supported_call_types: []
+{% endif %}
 {% if llm_router_large_passthrough_enabled | bool %}
   # Resolve the wildcard against the gate's live /v1/models so this proxy's
   # own /v1/models lists every passthrough model (not just the aliases) —

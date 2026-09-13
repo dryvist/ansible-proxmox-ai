@@ -84,6 +84,17 @@
       models: "{{ item.models }}"
       max_budget: "{{ item.monthly_budget if (item.monthly_budget | default(0) | float > 0) else omit }}"
       budget_duration: "{{ '7d' if (item.monthly_budget | default(0) | float > 0) else omit }}"
+      # A second, tighter window stacked on top of the flat weekly fields
+      # above (litellm 1.98.0 GenerateKeyRequest.budget_limits — confirmed on
+      # the pinned tag, litellm/models/team.py BudgetLimitEntry): a bad DAY
+      # cannot burn the whole week even while the week itself is in budget.
+      # Daily figure is the weekly ceiling pro-rated to two days' worth,
+      # rounded — not a separate policy number to keep in sync by hand.
+      budget_limits: >-
+        {{ [{'budget_duration': '24h',
+             'max_budget': ((item.monthly_budget | float / 7 * 2) | round | float)},
+            {'budget_duration': '7d', 'max_budget': item.monthly_budget | float}]
+           if (item.monthly_budget | default(0) | float > 0) else omit }}
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
   loop: "{{ _llm_router_unseeded_keys }}"
