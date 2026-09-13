@@ -94,6 +94,10 @@ def _context() -> dict[str, Any]:
     context.update(
         ansible_managed="managed",
         hermes_agent_model_api_key="MODELKEY",
+        # Empty so every store falls back to hermes_agent_model_api_key above
+        # (Vikunja 3086) — the per-profile-key selection itself is pinned in
+        # test_profile_router_key_selection.py, not here.
+        bao_apps_secrets={},
         hermes_agent_memory_provider="hindsight",
         hermes_agent_memory_mode="local_embedded",
         hermes_agent_wiki_enabled=True,

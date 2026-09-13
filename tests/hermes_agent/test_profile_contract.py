@@ -278,6 +278,10 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
     context = dict(_RENDER_CONTEXT)
     context.update(
         hermes_agent_model_api_key="MODELKEY",
+        # Empty so the render falls back to hermes_agent_model_api_key above
+        # (Vikunja 3086) — the selection itself is pinned in
+        # test_profile_router_key_selection.py, not here.
+        bao_apps_secrets={},
         hermes_agent_slack_bot_token="xoxb-x",
         hermes_agent_slack_app_token="xapp-x",
         hermes_agent_slack_allowed_users="U1",
