@@ -46,8 +46,19 @@ router_settings:
     # itself, which would either no-op or cycle depending on how litellm
     # resolves a self-referential fallback. Never hermes-default's OWN name,
     # so an escalated call cannot re-enter the chain that named it.
+    #
+    # A ZDR entry point (llm_router_zdr_entry_point_names, 37-fallback-
+    # entry-points.yml) additionally drops llm_router_openrouter_free_groups
+    # — the one segment carrying no ZDR claim — from its OWN ladder: an alias
+    # whose target promises zero data retention must never fall through to a
+    # rung that makes no such promise. hermes-default's own chain above is
+    # untouched; it is the general-purpose dispatcher of last resort.
 {% for _name in llm_router_entry_point_names %}
-    - {{ _name | to_json }}: {{ (llm_router_hermes_default_fallback_chain | reject('equalto', _name) | list) | to_json }}
+{% set _chain = llm_router_hermes_default_fallback_chain | reject('equalto', _name) | list %}
+{% if _name in llm_router_zdr_entry_point_names %}
+{% set _chain = _chain | reject('in', llm_router_openrouter_free_groups) | list %}
+{% endif %}
+    - {{ _name | to_json }}: {{ _chain | to_json }}
 {% endfor %}
 {% endif %}
 {% endif %}

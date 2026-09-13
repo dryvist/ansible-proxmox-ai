@@ -45,7 +45,7 @@ llm_router_embedding_model: >-
   {{ llm_router_registry_enabled | selectattr('embedding', 'defined')
      | selectattr('embedding') | map(attribute='client_model_id') | first }}
 
-# A5 (2026-09-12), two changes:
+# A5 (2026-09-12):
 #
 # `lead` is RETIRED as a DB role entirely (no entry below any more): it
 # always targeted the exact same model `best` does, so it is now a pure git
@@ -54,13 +54,16 @@ llm_router_embedding_model: >-
 #
 # `subagent` used to target a dedicated ≥1M-context paid OpenRouter entry.
 # That entry now carries the `long` git alias instead
-# (llm-models.d/50-openrouter.yml), and subagent retargets onto the small
-# local tier below — the same target `cheap` already uses. subagent is NOT
-# yet a git alias itself (llm-models.d/10-large.yml, 50-servable.yml have
-# the reason: a common-word collision test_registry_retype_scan.py caught on
-# the other four legacy names, deferred together); this retarget only moves
-# what model the DB role resolves to, via the delete-then-recreate reconcile
-# path below, which is exactly the mechanism built to make one of those safe.
+# (llm-models.d/50-openrouter.yml), and subagent stays pointed at the SAME
+# physical entry via llm_router_model_group_aliases.long (defined earlier,
+# 50-servable.yml) rather than being narrowed onto the small/cheap tier —
+# nix-ai's Claude Code subagent tier (lib/checks/litellm-local-claude-tier.nix,
+# modules/claude/settings-env.nix) requests `subagent` and needs the >200k
+# window `long` carries; narrowing this DB role ahead of that consumer
+# moving would silently truncate every subagent call. The subagent -> cheap
+# retarget waits for that migration (tracked separately); subagent is NOT
+# yet a git alias itself for the same common-word-collision reason
+# `judge`/`cheap`/`embed`/`ocr` are deferred (test_registry_retype_scan.py).
 
 # FALLBACK ORDER IS ONE-WAY, LARGEST CONTEXT FIRST.
 #
@@ -72,9 +75,10 @@ llm_router_embedding_model: >-
 # turns into a hard failure exactly when the fallback was supposed to help.
 
 llm_router_role_deployments:
-  # Delegated labor, same target as `cheap` — local, zero-cost, no rung.
+  # Same physical target as the `long` alias — see the A5 note above for why
+  # this stays wide rather than narrowing to the small/cheap tier.
   - role: subagent
-    model: "{{ llm_router_small_model }}"
+    model: "{{ llm_router_model_group_aliases.long }}"
     fallbacks: []
   # The judge, cross-family to the primary on purpose — the same model the
   # `goal-judge` alias resolves to today.

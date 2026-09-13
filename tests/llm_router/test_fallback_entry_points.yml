@@ -148,11 +148,55 @@
           {%- set ns = namespace(bad=[]) -%}
           {%- for alias in _rendered_aliases -%}
           {%- set _expected = llm_router_hermes_default_fallback_chain | reject('equalto', alias) | list -%}
+          {%- if alias in llm_router_zdr_entry_point_names -%}
+          {%- set _expected = _expected | reject('in', llm_router_openrouter_free_groups) | list -%}
+          {%- endif -%}
           {%- if (_fallbacks_by_key[alias] | default([])) != _expected -%}
           {%- set ns.bad = ns.bad + [alias] -%}
           {%- endif -%}
           {%- endfor -%}
           {{ ns.bad }}
+
+    # A ZDR alias's fallback list, stated directly over the rendered map —
+    # never re-deriving the exclusion the way the exact-match assert above
+    # does, so a bug shared by both derivations still fails here. An alias
+    # whose OWN target makes no ZDR promise is not held to this (nothing to
+    # promise, nothing to protect).
+    - name: No ZDR alias's fallback list contains a rung with no ZDR claim
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_zdr_entry_point_names | length > 0
+          - _zdr_aliases_with_a_zdrless_rung | length == 0
+        fail_msg: >-
+          ZDR alias(es) {{ _zdr_aliases_with_a_zdrless_rung }} carry
+          llm_router_openrouter_free_groups
+          ({{ llm_router_openrouter_free_groups }}) — a rung that makes no ZDR
+          claim — in their own rendered fallback list. An alias whose target
+          promises zero data retention must never fall through to one that
+          does not. Fix: config.yaml.j2's entry-point loop must strip
+          llm_router_openrouter_free_groups from a ZDR alias's chain.
+        success_msg: >-
+          No ZDR alias's fallback list contains a rung with no ZDR claim.
+      vars:
+        _zdr_aliases_with_a_zdrless_rung: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for alias in (_config.router_settings.model_group_alias | default({}) | list) -%}
+          {%- if alias in llm_router_zdr_entry_point_names -%}
+          {%- set _rungs = _fallbacks_by_key[alias] | default([]) -%}
+          {%- if (_rungs | select('in', llm_router_openrouter_free_groups) | list) | length > 0 -%}
+          {%- set ns.bad = ns.bad + [alias] -%}
+          {%- endif -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
+        _fallbacks_by_key: >-
+          {{ dict(_config.router_settings.fallbacks
+                  | map('dict2items') | flatten
+                  | map(attribute='key')
+                  | zip(_config.router_settings.fallbacks
+                        | map('dict2items') | flatten
+                        | map(attribute='value'))) }}
 
     # THE STRUCTURAL INVARIANT, stated over the two rendered maps rather than
     # over the expressions that build them, so it cannot go tautological. This
