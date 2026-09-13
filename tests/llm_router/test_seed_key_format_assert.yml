@@ -6,7 +6,8 @@
 # useful. roles/llm_router/tasks/assert-seed-key-format.yml exists to fail
 # loud, by alias, before the /key/generate call ever fires. This proves it
 # stays quiet on a well-formed value, fails loud (naming the alias, never
-# the value) on the exact shape that broke task 108, and rejects one that is
+# the value -- checked against the WHOLE failed result, not just its msg)
+# on the exact shape that broke task 108, and rejects one that is
 # 'sk-'-prefixed but still too short.
 #
 # Run (from the REPO ROOT):
@@ -59,20 +60,14 @@
             quiet: true
             that:
               - "'open-webui' in _seed_key_format_failure_text"
-              - "'m8buABCDEFGHIJKLMNOPQRSTUVWXJkqw' not in _seed_key_format_failure_text"
+              - "'m8buABCDEFGHIJKLMNOPQRSTUVWXJkqw' not in (ansible_failed_result | to_json)"
             fail_msg: >-
               The guard failed, but not with the expected alias-naming
               message (and possible value leak) — got
               {{ _seed_key_format_failure_text }}.
             success_msg: "An unprefixed seed value is fatal, naming only the alias."
           vars:
-            # A LOOPED assert's ansible_failed_result.msg is the generic
-            # "One or more items failed." — the per-item fail_msg lives in
-            # .results[].msg instead.
-            _seed_key_format_failure_text: >-
-              {{ (ansible_failed_result.results | default([])
-                  | map(attribute='msg') | list | join(' | '))
-                 or (ansible_failed_result.msg | default('(none)')) }}
+            _seed_key_format_failure_text: "{{ ansible_failed_result.msg | default('(none)') }}"
 
 - name: The guard fails a 'sk-'-prefixed value that is still too short
   hosts: localhost
@@ -106,7 +101,4 @@
               {{ _seed_key_format_failure_text }}.
             success_msg: "A too-short 'sk-'-prefixed value is fatal, naming only the alias."
           vars:
-            _seed_key_format_failure_text: >-
-              {{ (ansible_failed_result.results | default([])
-                  | map(attribute='msg') | list | join(' | '))
-                 or (ansible_failed_result.msg | default('(none)')) }}
+            _seed_key_format_failure_text: "{{ ansible_failed_result.msg | default('(none)') }}"

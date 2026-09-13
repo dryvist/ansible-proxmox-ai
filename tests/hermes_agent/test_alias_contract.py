@@ -35,22 +35,27 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     # is a ROLE seeded into the router database. Asserting the union would let
     # a stray static alias hide behind a legitimate role name, which is the
     # case this test exists to catch.
+    # The hermes-router tier is a second admitted class alongside `servable`
+    # (roles/llm_router/defaults/main/50-servable.yml's llm_router_alias_pairs):
+    # the local complexity router dispatches to llm_router_routine_model /
+    # llm_router_primary_model rather than answering directly, so an alias on
+    # it renders as a static model_group_alias too, not a DB role.
     aliases = {
         alias: entry["client_model_id"]
         for entry in registry
-        if entry.get("enabled") and entry.get("servable")
+        if entry.get("enabled") and (entry.get("servable") or entry.get("tier") == "hermes-router")
         for alias in entry.get("stable_aliases", [])
     }
     db_role_aliases = {
         alias: entry["client_model_id"]
         for entry in registry
-        if entry.get("enabled") and not entry.get("servable")
+        if entry.get("enabled") and not entry.get("servable") and entry.get("tier") != "hermes-router"
         for alias in entry.get("stable_aliases", [])
     }
     # The count and every target's servability are what a stray alias would
     # break, so a new consumer-facing name still lands here as a reviewed edit.
     assert aliases, "no static alias loaded; nothing below is checked"
-    assert len(aliases) == 4
+    assert len(aliases) == 6
     assert aliases[judge_alias] == judge_backend
     # The brain is reached by alias too (the judge does not share it, above).
     assert hermes_backend in aliases.values()
@@ -74,7 +79,10 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     assert hermes_router["litellm_model_name"] == (
         f"{hermes_router['provider']}/{hermes_router['upstream_model_id']}"
     )
-    assert "stable_aliases" not in hermes_router
+    # The only alias this entry may carry is `default` — the hermes-router
+    # carve-out this test's `aliases` bucket already admits above; a second
+    # name here would be an undeclared consumer-facing alias.
+    assert hermes_router.get("stable_aliases") == ["default"]
 
     # Both selectors must be declared servable, or the alias indirection just
     # moves the 404 one level down.
@@ -101,8 +109,15 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     ] == expected_servable
     assert hermes_backend in expected_servable
     assert judge_backend in expected_servable
-    # And so must every static alias target, or an alias is a 404 with a name.
-    assert set(aliases.values()) <= set(expected_servable)
+    # And so must every static alias target, or an alias is a 404 with a name
+    # — except the local complexity router itself, admitted above for the
+    # same reason llm_router_alias_pairs admits it.
+    hermes_router_ids = [
+        entry["client_model_id"]
+        for entry in registry
+        if entry.get("enabled") and entry.get("tier") == "hermes-router"
+    ]
+    assert set(aliases.values()) <= set(expected_servable) | set(hermes_router_ids)
     hermes_entries = [
         entry for entry in registry if entry["client_model_id"] == hermes_backend
     ]
