@@ -263,3 +263,56 @@
       script: "{{ hermes_agent_cron_failure_rollup_script_name }}"
       deliver: "slack:{{ hermes_agent_slack_issues_channel }}"
       enabled: "{{ hermes_agent_cron_failure_rollup_enabled | bool }}"
+
+# Coverage gate for the failure_deliver routing set up above (reconcile_
+# direct_cron.yml, reconcile_enqueuer_cron.yml): upstream v2026.9.11 has no
+# global/config-level default for failure_deliver (grep confirms `cron/
+# jobs.py`, `hermes_cli/config_defaults.py` and `cron/scheduler_delivery.py`
+# all resolve it only from the per-job field), so a job this role does not
+# create — an operator- or agent-created one via `hermes cron create`
+# without --failure-deliver — has NO routing for its own failures and
+# silently follows its normal `deliver` target instead. There is no
+# `hermes cron list --json`; `cron.jobs.list_jobs()` is called directly
+# instead of parsing the human-readable CLI text output.
+# Only enforced when failure routing is actually turned on (same "empty
+# disables the whole split" precedent as hermes_agent_cron_failure_deliver
+# itself) — otherwise this would fail on every converge purely because no
+# Slack issues channel is configured, which is a supported, intentional
+# state, not drift.
+- name: Check every scheduled cron job carries a failure_deliver override
+  ansible.builtin.command:
+    argv:
+      - "{{ hermes_agent_venv_python }}"
+      - -c
+      - |
+        from cron.jobs import list_jobs
+        missing = [
+            j.get("name") or j.get("id")
+            for j in list_jobs(include_disabled=True)
+            if not (j.get("failure_deliver") or "").strip()
+        ]
+        print(",".join(missing))
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  args:
+    chdir: "{{ hermes_agent_install_dir }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  when: hermes_agent_cron_failure_deliver | length > 0
+  register: hermes_agent_failure_deliver_coverage
+  changed_when: false
+
+- name: Assert every scheduled cron job carries a failure_deliver override
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_failure_deliver_coverage.stdout | trim | length == 0
+    fail_msg: >-
+      Job(s) with no failure_deliver override:
+      {{ hermes_agent_failure_deliver_coverage.stdout | trim }}.
+      A failed run on one of these follows its normal deliver target
+      instead of the issues channel, because upstream has no
+      config-level default for failure_deliver — set --failure-deliver
+      on the job (hermes cron edit <name> --failure-deliver ...) or add
+      it to this role's job definitions.
+  when: hermes_agent_cron_failure_deliver | length > 0

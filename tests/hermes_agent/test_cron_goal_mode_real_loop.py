@@ -96,7 +96,7 @@ def test_judge_actually_runs_against_the_real_loop(
     run = _goal_runner_namespace()["_hermes_cron_goal_run"]
     agent = _StubAgent()
 
-    run(agent, "sweep splunk", "splunk-triage")
+    run(agent, "sweep splunk", "splunk-triage", "task-id")
 
     assert calls["judge"] > 0, "the judge never ran — the loop exited early"
     assert agent.turns > 1, "no continuation turn — the judge drove nothing"
@@ -119,7 +119,7 @@ def test_satisfied_judge_completes_without_a_wasted_turn(
     run = _goal_runner_namespace()["_hermes_cron_goal_run"]
     agent = _StubAgent()
 
-    run(agent, "sweep splunk", "splunk-triage")
+    run(agent, "sweep splunk", "splunk-triage", "task-id")
 
     # One conversation: the original run. The finalize nudge is intercepted.
     assert agent.turns == 1
@@ -151,7 +151,7 @@ def test_real_loop_still_returns_the_conversation_dict(
     real_goals(["continue", "done"])
     run = _goal_runner_namespace()["_hermes_cron_goal_run"]
 
-    result = run(_StubAgent(), "sweep splunk", "splunk-triage")
+    result = run(_StubAgent(), "sweep splunk", "splunk-triage", "task-id")
 
     assert "outcome" not in result, "returned the decision dict, not the run"
     assert result["completed"] is True
