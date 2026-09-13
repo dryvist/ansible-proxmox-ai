@@ -35,7 +35,7 @@ Required on every entry:
                     `openrouter`. Selects the deployment shape; light entries
                     become two same-name deployments (GPU + CPU standby);
                     cpu-moe and cpu-9b each become two same-name deployments
-                    on pve-r540 (-50 warm, -51 scaled).
+                    against the CPU pool instances (warm + scaled).
                     `opencode` is a subscription tier: it advertises no
                     per-token price (see input_cost_per_token below) and its
                     deployment order comes from a role default, never a
