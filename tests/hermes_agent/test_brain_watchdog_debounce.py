@@ -167,6 +167,20 @@ def test_watchdog_uses_the_derived_brain_dependent_fleet() -> None:
     assert "{% for job in hermes_agent_brain_dependent_cron_names %}" in WATCHDOG
 
 
+def test_the_raw_probe_result_is_persisted_before_the_busy_grace_escalation() -> None:
+    """The Vikunja Kanban bridge (roles/hermes_agent/templates/vikunja-bridge.py.j2)
+    gates intake on this file rather than standing up a second probe against the
+    same router alias. It must see what THIS probe actually returned, so the
+    write has to land before `result` can be overwritten by the sustained-busy
+    escalation to "down".
+    """
+    before_escalation, _, after = WATCHDOG.partition('result="down"\nfi')
+    assert 'printf \'%s\\n\' "${result}" > "${STATE_DIR}/probe_state"' in before_escalation, (
+        "the probe_state file must be written before the busy-grace escalation "
+        "can overwrite `result`"
+    )
+
+
 if __name__ == "__main__":
     for _name, _fn in sorted(globals().items()):
         if _name.startswith("test_") and callable(_fn):

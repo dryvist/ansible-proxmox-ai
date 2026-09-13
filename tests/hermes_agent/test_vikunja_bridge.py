@@ -17,79 +17,26 @@ are the ones whose violation is expensive and INVISIBLE:
 
 Runs bare (`python3 tests/hermes_agent/test_vikunja_bridge.py`) or under pytest.
 Plain asserts, no fixtures — same shape as the rest of this suite.
+
+The needs_triage/busy lane sweeps (triage_aged_blocked, requeue_busy, the
+reconcile busy-routing path, and the intake probe gate) live in
+test_vikunja_bridge_lanes.py — split out to stay under the token budget; both
+files share fixtures via _vikunja_bridge_shared.py.
 """
 import re
-import sqlite3
-import tempfile
-import types
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 from _role_files import role_defaults, role_tasks_text
-
-ROLE = REPO_ROOT / "roles/hermes_agent"
-TEMPLATE_PATH = ROLE / "templates/vikunja-bridge.py.j2"
-TEMPLATE = TEMPLATE_PATH.read_text()
-SERVICE = (ROLE / "templates/hermes-vikunja-bridge.service.j2").read_text()
-ENV_TEMPLATE = (ROLE / "templates/hermes-vikunja-bridge.env.j2").read_text()
-TASKS = role_tasks_text(ROLE)
-DEFAULTS_PATH = ROLE
-
-STATE_DIR = tempfile.mkdtemp(prefix="vikunja-bridge-selfcheck-")
-# Stand-ins for what Ansible renders from roles/hermes_agent/defaults/main.yml.
-FIXTURE_CONFIG = {
-    "HERMES_BIN": "/usr/local/bin/hermes",
-    "HERMES_HOME": STATE_DIR,
-    "DB_PATH": str(Path(STATE_DIR) / "kanban.db"),
-    "STATE_PATH": str(Path(STATE_DIR) / "state/vikunja-bridge.json"),
-    "VIKUNJA_URL": "https://vikunja.example.invalid",
-    "PROJECT_NAME": "Hermes",
-    "AGENT_NAME": "Hermes",
-    "BUCKET_READY": "Ready",
-    "BUCKET_IN_PROGRESS": "In Progress",
-    "BUCKET_DONE": "Done",
-    "BUCKET_BLOCKED": "Blocked",
-    "POLL_INTERVAL": 60,
-    "CARD_MAX_RUNTIME": "45m",
-    "CARD_MAX_RETRIES": 2,
-    "CARD_ASSIGNEE": "",
-    "INTAKE_LABEL": "hermes",
-    "MAX_INTAKE_PER_TICK": 3,
-}
-
-
-def load_bridge_module():
-    """Render the template's config lines to fixtures and import it as a module."""
-    out = []
-    for line in TEMPLATE.splitlines():
-        if "ansible_managed" in line:
-            continue
-        match = re.match(r"^(\w+) = .*\{\{", line)
-        if match:
-            name = match.group(1)
-            assert name in FIXTURE_CONFIG, f"template config {name} has no self-check fixture"
-            out.append(f"{name} = {FIXTURE_CONFIG[name]!r}")
-            continue
-        out.append(line)
-    rendered = "\n".join(out)
-    assert "{{" not in rendered, "self-check left an unrendered Jinja expression"
-    mod = types.ModuleType("vikunja_bridge")
-    exec(compile(rendered, str(TEMPLATE_PATH), "exec"), mod.__dict__)  # noqa: S102
-    return mod
-
-
-BRIDGE = load_bridge_module()
-
-
-def board_db():
-    """An in-memory stand-in with kanban.db's real column shape."""
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(
-        "CREATE TABLE tasks (id TEXT, status TEXT, consecutive_failures INT,"
-        " max_retries INT);"
-        "CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT,"
-        " outcome TEXT, summary TEXT, error TEXT, ended_at REAL);")
-    return conn
+from _vikunja_bridge_shared import (
+    BRIDGE,
+    DEFAULTS_PATH,
+    ENV_TEMPLATE,
+    ROLE,
+    SERVICE,
+    TASKS,
+    TEMPLATE,
+    board_db,
+)
 
 
 def test_the_scripts_own_self_check_passes():
