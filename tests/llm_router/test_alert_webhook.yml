@@ -105,24 +105,38 @@
         _config: >-
           {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
 
+    # alert_to_webhook_url is a MAP keyed by alert type in this pinned
+    # release (checked at config load via .items() -- a bare string crashes
+    # the proxy at startup the instant this URL is set), so this asserts the
+    # dict shape, one entry per subscribed alert type, each carrying ntfy's
+    # own message-templating query parameters (?template=yes&message=
+    # {{.text}}, URL-encoded) rather than a bare URL -- LiteLLM posts a
+    # fixed {"text": ...} Slack envelope with no other way to change the
+    # payload shape, and the hub has no inbound Slack-shape route.
     - name: The alerting block is wired to the configured URL via "slack"
       ansible.builtin.assert:
         quiet: true
         that:
           - _general.alerting == ["slack"]
-          - _general.alert_to_webhook_url == "https://notify-hub-under-test.example.test/ai"
+          - _general.alert_to_webhook_url is mapping
+          - _general.alert_to_webhook_url.keys() | sort == (_general.alert_types | sort)
+          - _general.alert_to_webhook_url.values() | unique | length == 1
+          - _expected_url in _general.alert_to_webhook_url.values()
           - _general.alert_types | sort == (['budget_alerts', 'cooldown_deployment',
             'db_exceptions', 'fallback_reports'] | sort)
         fail_msg: >-
-          Expected alerting: ["slack"] with alert_to_webhook_url pointed at
-          the fixture URL (this pinned LiteLLM release has no generic
-          "webhook" alerting type); got
+          Expected alerting: ["slack"] with alert_to_webhook_url as a map
+          (one key per alert type) pointed at the fixture URL plus its
+          templating query string (this pinned LiteLLM release has no
+          generic "webhook" alerting type, and alert_to_webhook_url is a
+          dict, not a bare string); got
           alerting={{ _general.alerting | default('(absent)') }},
           alert_to_webhook_url={{ _general.alert_to_webhook_url | default('(absent)') }},
           alert_types={{ _general.alert_types | default('(absent)') }}.
-        success_msg: "Alerting is wired through the fixture webhook URL."
+        success_msg: "Alerting is wired through the fixture webhook URL, one map entry per alert type."
       vars:
         _general: "{{ _config.general_settings }}"
+        _expected_url: "https://notify-hub-under-test.example.test/ai?template=yes&message=%7B%7B.text%7D%7D"
 
     - name: The template source carries no hardcoded host — only the variable
       ansible.builtin.assert:
@@ -132,8 +146,15 @@
         fail_msg: >-
           config.yaml.j2 contains a literal URL/host near the alerting block.
           The webhook target must come only from llm_router_alert_webhook_url,
-          sourced from the environment (OpenBao/inventory), never a literal in
-          committed text.
+          sourced from inventory (PROXMOX_SUBDOMAIN plus a topic name), never
+          a literal in committed text.
         success_msg: "No literal host in the template source."
       vars:
         _template_source: "{{ lookup('file', _role_dir ~ '/templates/config.yaml.j2') }}"
+
+# NOTE ON COVERAGE: this proves the RENDERED YAML SHAPE only -- that
+# alert_to_webhook_url is a map keyed by alert type, gated on the URL var,
+# and free of a literal host. It does not call LiteLLM and cannot prove the
+# pinned release actually accepts this config or that ntfy's templating
+# query parameters produce the intended notification text; that requires a
+# live probe (see the PR body).

@@ -194,16 +194,28 @@ general_settings:
 {% endif %}
 {% if llm_router_alert_webhook_url | trim | length > 0 %}
   # No generic "webhook" alert type in this pinned release (verified against
-  # source, zero hits) — "slack" is the mechanism that accepts an arbitrary
-  # alert_to_webhook_url, so it is used here to reach the notification hub
-  # rather than Slack directly.
+  # source, zero hits) — "slack" is the mechanism used to reach the
+  # notification hub instead of Slack itself. alert_to_webhook_url is a MAP
+  # keyed by alert type in this release (checked at config load via
+  # .items()); a bare string crashes the proxy at startup the moment this
+  # URL is set. default_webhook_url is a constructor-only kwarg, not a
+  # config file key, so it cannot substitute for the per-type map.
+  #
+  # LiteLLM posts a fixed Slack envelope ({"text": ...}) with no way to
+  # change the payload shape. The hub has no inbound Slack-shape route, so
+  # the topic templates that JSON body directly via ntfy's own
+  # message-templating query parameters instead of adding a translating
+  # route.
   alerting: ["slack"]
-  alert_to_webhook_url: {{ llm_router_alert_webhook_url | to_json }}
+  alert_to_webhook_url:
+{% for alert_type in llm_router_alert_types %}
+    {{ alert_type }}: {{ (llm_router_alert_webhook_url ~ "?template=yes&message=" ~ ("{{.text}}" | urlencode)) | to_json }}
+{% endfor %}
   alert_types: {{ llm_router_alert_types | to_json }}
 {% endif %}
 
 litellm_settings:
-  # 2026-09-12: dropped "otel" from callbacks (continuously failing exporter).
+  # 2026-09-12: dropped "otel" from callbacks.
   #
   # "prometheus" is NOT a tracing sink. It is the only shipped consumer of the
   # router's fallback events, and the only thing in this proxy that records

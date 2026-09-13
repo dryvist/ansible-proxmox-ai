@@ -20,19 +20,10 @@ llm_router_llm_large_bearer: >-
 # The GPU/CPU light backends need no auth; a placeholder keeps the OpenAI client happy.
 llm_router_light_api_key: "sk-noauth"
 
-# --- Observability -----------------------------------------------------------
-# OTLP traces only. Cribl Stream is the OTLP/HTTP receiver (base URL; the
-# exporter appends the signal path) and fans the spans out to Langfuse (and
-# Splunk) — the router holds no Langfuse credentials.
-#
-# Single definition: derived from the shared orchestration endpoint rather than
-# repeating the host/port composition. Two independently-maintained copies of
-# the same URL is how one of them ends up pointing at a receiver that no longer
-# exists without anything noticing.
-llm_router_otel_endpoint: "{{ ai_orchestration_otel_endpoint }}"
-
-# --- Routing observability ----------------------------------------------------
-# Fallback events, as counters rather than prose.
+# --- Observability -------------------------------------------------------
+# Current path: Prometheus fallback-event counters (below) plus LITELLM_LOG
+# (further down) for the per-request routing trail. Fallback events, as
+# counters rather than prose.
 #
 # The router emits a dedicated event on every fallback, carrying the model group
 # ORIGINALLY asked for alongside the one that ended up serving. Exactly one
@@ -54,12 +45,15 @@ llm_router_otel_endpoint: "{{ ai_orchestration_otel_endpoint }}"
 # can carry a credential. A scraper needs a key, exactly like any other client.
 llm_router_prometheus_enabled: true
 
-# Alert sink. Empty by default so the block above renders only when a target
-# is configured — never a literal endpoint in this file. Source it from the
-# same notification hub every other watchdog in this estate already pages
-# through (see hermes_agent_brain_watchdog_ntfy_url for the pattern).
+# Alert sink topic on the shared notification hub. Empty by default so the
+# alerting block below renders only when explicitly turned on. Inventory-
+# derived the same way as hermes_agent_brain_watchdog_ntfy_url
+# (ansible-proxmox-ai's hermes_agent role) — PROXMOX_SUBDOMAIN plus a topic
+# name — never a raw full-URL secret read straight from the environment.
+llm_router_alert_webhook_topic: ""
 llm_router_alert_webhook_url: >-
-  {{ lookup('env', 'LLM_ROUTER_ALERT_WEBHOOK_URL') | default('', true) }}
+  {{ ('https://ntfy.' ~ lookup('env', 'PROXMOX_SUBDOMAIN') ~ '/' ~ llm_router_alert_webhook_topic)
+     if (llm_router_alert_webhook_topic | trim | length > 0) else '' }}
 llm_router_alert_types:
   - budget_alerts
   - fallback_reports
