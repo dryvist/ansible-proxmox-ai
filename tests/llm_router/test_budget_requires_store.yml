@@ -228,3 +228,69 @@
 
     - name: Import the budget-backing assert with the pair fully configured
       ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-budget-backing.yml
+
+    # The full-model-scope assert, both directions. A key covering every id
+    # the scope names is "full-scope" whether or not it is literally built
+    # from _llm_router_key_scope_all — the override below proves the check
+    # reads the actual model lists, not that one variable's identity.
+    - name: Configure a full-scope key with NO budget, database present
+      ansible.builtin.set_fact:
+        llm_router_db_host: postgres.example.test
+        _llm_router_key_scope_all: ["alpha", "beta"]
+        llm_router_virtual_keys:
+          - alias: unbudgeted-full-scope
+            value: test-value-not-a-real-key
+            models: ["alpha", "beta", "gamma"]
+
+    - name: Prove an unbudgeted full-scope key stops the converge
+      block:
+        - name: Import the budget-backing assert with an unbudgeted full-scope key
+          ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-budget-backing.yml
+
+        - name: Fail because the assert admitted an unbudgeted full-scope key
+          ansible.builtin.fail:
+            msg: >-
+              roles/llm_router/tasks/assert-budget-backing.yml PASSED with a
+              full-model-scope key carrying no budget. That key alone could
+              reach every deployment with nothing to bound its spend.
+      rescue:
+        - name: Confirm the failure was the full-scope-key assert
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - >-
+                'Full-model-scope virtual key(s)' in (ansible_failed_result.msg | default(''))
+                and 'unbudgeted-full-scope' in (ansible_failed_result.msg | default(''))
+            fail_msg: >-
+              Something failed, but not the full-scope-key assert (or not for
+              this key) — got {{ ansible_failed_result.msg | default('(none)') }}.
+            success_msg: An unbudgeted full-model-scope key is fatal, database present.
+
+    - name: The inverse — a budgeted full-scope key is permitted
+      ansible.builtin.set_fact:
+        llm_router_virtual_keys:
+          - alias: budgeted-full-scope
+            value: test-value-not-a-real-key
+            models: ["alpha", "beta", "gamma"]
+            # Below llm_router_openrouter_budget_limit (1.0, set earlier in
+            # this play), or the ceiling-comparison assert above this one in
+            # the imported file would fail first and this case would prove
+            # nothing about the full-scope assert specifically.
+            monthly_budget: 0.5
+
+    - name: Import the budget-backing assert with a budgeted full-scope key
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-budget-backing.yml
+
+    # And with no database, the SAME unbudgeted full-scope key from above must
+    # NOT trip the assert — the self-arming gate every other budget check
+    # here uses, since 0 there means honestly "no budget claimed", not a bug.
+    - name: Configure the same unbudgeted full-scope key with NO database
+      ansible.builtin.set_fact:
+        llm_router_db_host: ""
+        llm_router_virtual_keys:
+          - alias: unbudgeted-full-scope
+            value: test-value-not-a-real-key
+            models: ["alpha", "beta", "gamma"]
+
+    - name: Import the budget-backing assert with no database configured
+      ansible.builtin.import_tasks: ../../roles/llm_router/tasks/assert-budget-backing.yml

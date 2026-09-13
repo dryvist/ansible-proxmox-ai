@@ -3,7 +3,9 @@
 # before the agent hands the error back, so a cron failure is stored already
 # clipped — `mark_job_run` records verbatim what it is given, and nothing in
 # this role truncates. Total stored length is 324: "RuntimeError: " (14) plus
-# "HTTP <code>: " (10) plus the 300.
+# "HTTP <code>: " (10) plus the 300. Upstream's September 2026 decomposition
+# moved this formatter out of run_agent.py into agent/api_error_summary.py
+# verbatim (all five bounds, same line shapes) — a pure re-path.
 #
 # That cut lands at a content-dependent position, so the diagnosis survives or
 # dies depending on how long the FIRST line happened to be. Measured across the
@@ -22,7 +24,7 @@
 # JSON-payload branches were left at 300.
 - name: Widen the provider-error snippet so a fallback cause is not cut in half
   ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/run_agent.py"
+    path: "{{ hermes_agent_install_dir }}/agent/api_error_summary.py"
     regexp: '\[:300\]'
     replace: '[:500]'
   vars:
@@ -41,7 +43,7 @@
 # A read-back's own variable is namespaced to the patch it verifies.
 - name: Read back the widened provider-error snippet
   ansible.builtin.slurp:
-    src: "{{ hermes_agent_install_dir }}/run_agent.py"
+    src: "{{ hermes_agent_install_dir }}/agent/api_error_summary.py"
   register: hermes_agent_error_snippet_readback
   changed_when: false
 
@@ -52,5 +54,6 @@
       - "'[:300]' not in (hermes_agent_error_snippet_readback.content | b64decode)"
       - "'[:500]' in (hermes_agent_error_snippet_readback.content | b64decode)"
     fail_msg: >-
-      run_agent.py still carries a 300-character provider-error snippet bound.
-      A cron failure delivered from a clipped snippet names no cause.
+      agent/api_error_summary.py still carries a 300-character provider-error
+      snippet bound. A cron failure delivered from a clipped snippet names no
+      cause.

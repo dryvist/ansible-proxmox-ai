@@ -9,7 +9,7 @@ import tempfile
 import types
 from pathlib import Path
 
-from _pinned_sources import PINNED_DISPATCH_TICK_SOURCE
+from _pinned_sources_worker import PINNED_DISPATCH_TICK_SOURCE
 from _role_files import role_tasks
 from conftest import _apply_runtime_patch
 

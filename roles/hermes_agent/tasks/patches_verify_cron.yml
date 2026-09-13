@@ -43,14 +43,19 @@
       - >-
         '_cron_markup_guard(job, output_file, final_response'
         in hermes_agent_cron_scheduler_source
+      # Routing BOTH the normal and exception-path cron deliveries through
+      # _cron_route to an issues channel is retired as a role patch (2026-09):
+      # upstream's own for_failure=not d.success (below) and
+      # _deliver_crash_failure(..., for_failure=True) already read the job's
+      # failure_deliver field (NS-788) for a runner-reported failure. What
+      # survives is routing a script-fed job's SELF-declared failure (runner
+      # success=True) through the same failure lane — asserted directly
+      # against the unpack and the folded-in for_failure expression.
       - >-
-        '_deliver_result(_routed_job, deliver_content,'
+        'job, deliver_content, _cron_declared_failure = _cron_route(job, deliver_content)'
         in hermes_agent_cron_scheduler_source
-      # The exception path's own delivery call, routed the same way. Asserted
-      # separately because it carries its own failure summary rather than
-      # `deliver_content`, so the assertion above cannot cover it.
       - >-
-        '_deliver_result(_routed_job, _routed_content,'
+        'for_failure=not d.success or _cron_declared_failure,'
         in hermes_agent_cron_scheduler_source
       # Output-validity guard: the helper landed AND the delivery call was
       # rewritten to route through it. Either alone is a silent no-op in a
@@ -89,16 +94,16 @@
       # the call site is dead code that never judges anything, and the call
       # site without the helper is a NameError on every cron fire.
       - >-
-        'def _hermes_cron_goal_run(agent, prompt, job_name):'
+        'def _hermes_cron_goal_run(agent, prompt, job_name, task_id):'
         in hermes_agent_cron_scheduler_source
       - >-
-        '_hermes_cron_goal_run, agent, prompt, job_name)'
+        '_hermes_cron_goal_run, agent, prompt, job_name, task_id)'
         in hermes_agent_cron_scheduler_source
       # And the upstream call it replaced must be GONE — a `replace` that
       # matched nothing still reports ok, so presence of the new line is not
       # by itself proof the old path stopped being used.
       - >-
-        '_cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)'
+        '_cron_context.run, agent.run_conversation, prompt, task_id=task_id)'
         not in hermes_agent_cron_scheduler_source
       # The cron built-in memory rebind. Both halves asserted: the store
       # construction is what makes the memory tool answer at all, and the
@@ -174,15 +179,14 @@
       - >-
         '"goal judge: API call model=%s latency=%.1fs",'
         in hermes_agent_goal_judge_source
-      # The four _sync_external_memory_for_turn() observability log lines —
-      # one per silent exit. All four or none: the patch tasks above touch
-      # adjacent lines in the same function, so a partial landing here means
-      # a regex stopped matching upstream and the rest silently no-op'd.
+      # The _sync_external_memory_for_turn() observability log lines — one
+      # per silent exit. Upstream merged the interrupted-turn and
+      # missing-input guards into one condition (2026-09), so those two
+      # exits now share one combined message; asserted together with the
+      # remaining two, unmerged exits. A partial landing here means a regex
+      # stopped matching upstream and the rest silently no-op'd.
       - >-
-        'Hermes external-memory sync/prefetch skipped: turn interrupted'
-        in hermes_agent_run_agent_source
-      - >-
-        'Hermes external-memory sync/prefetch skipped: missing manager=%s'
+        'Hermes external-memory sync/prefetch skipped: interrupted=%s manager=%s'
         in hermes_agent_run_agent_source
       - >-
         'Hermes external-memory sync/prefetch skipped: empty after flatten'

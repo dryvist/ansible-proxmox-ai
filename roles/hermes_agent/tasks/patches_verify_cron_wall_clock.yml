@@ -15,12 +15,26 @@
       - >-
         '_cron_inactivity_limit is None and _cron_wall_timeout_limit is None'
         in hermes_agent_cron_scheduler_source
+      # Both cron_session_id threading tasks (signature + call site) in ONE
+      # condition: a half-application — one lands, the other misses — is
+      # exactly what TypeErrors every cron run (a positional arg the
+      # signature doesn't expect, or an undefined name at the call site),
+      # and a converge where BOTH are missing would silently restore the
+      # NameError this threading exists to close. Neither landing alone is
+      # a passing state.
+      - >-
+        ('task_id: str, cron_session_id: str, cancel_event,'
+         in hermes_agent_cron_scheduler_source)
+        and ('_cron_session_id, cancel_event,'
+         in hermes_agent_cron_scheduler_source)
       # The patch writes the clock-start pair as one contiguous insertion; the
       # submit only needs to come AFTER it (upstream may add lines between —
       # v2026.8.19 inserted usage-audit lines there, which changes nothing
       # about the guarantee that the wall clock starts before the submit).
+      # Indentation dropped from 8 to 4 spaces when the monitor moved out of
+      # run_job into _run_agent_with_watchdog (2026-09 re-anchor).
       - >-
-        ('_cron_started_monotonic = time.monotonic()\n        '
+        ('_cron_started_monotonic = time.monotonic()\n    '
          ~ '_cron_context = contextvars.copy_context()  # wall clock starts before submit')
         in hermes_agent_cron_scheduler_source
       - >-
