@@ -18,33 +18,33 @@ llm_router_large_port: "{{ tofu_data.constants.service_ports.ollama_api }}"
 llm_router_llm_fast_base_url: "http://llm-fast.{{ llm_router_subdomain }}:{{ llm_router_light_port }}/v1"
 llm_router_llm_light_base_url: "http://llm-light.{{ llm_router_subdomain }}:{{ llm_router_light_port }}/v1"
 
-# CPU pool — api_base from tofu inventory `ip` (DNS-first FQDN). Tag vocabulary
-# is constants.llm_cpu_scaler.tags — never restated here. Absent scaler / no
-# matching containers → empty list (registry_enabled then drops those tiers).
+# CPU pool — api_base from tofu inventory `ip`. Tag vocabulary is
+# constants.llm_cpu_scaler.tags — never restated here. One map keyed by registry
+# tier; absent scaler / no matching containers → empty lists (registry_enabled
+# then drops those tiers).
+llm_router_cpu_pool_backend_urls_by_tier: >-
+  {%- set ns = namespace(out={}) -%}
+  {%- set scaler = tofu_data.constants.llm_cpu_scaler | default({}) -%}
+  {%- set tags = scaler.tags | default({}) -%}
+  {%- set containers = tofu_data.containers | default({}) -%}
+  {%- set port = llm_router_light_port | string -%}
+  {%- for attr, tier in [('moe', 'cpu-moe'), ('nine_b', 'cpu-9b')] -%}
+  {%- set urls_ns = namespace(urls=[]) -%}
+  {%- set tag = tags[attr] | default('', true) -%}
+  {%- if tag -%}
+  {%- for name, c in containers.items() | sort -%}
+  {%- if tag in (c.tags | default([])) -%}
+  {%- set urls_ns.urls = urls_ns.urls + ['http://' ~ c.ip ~ ':' ~ port ~ '/v1'] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- endif -%}
+  {%- set _ = ns.out.update({tier: urls_ns.urls}) -%}
+  {%- endfor -%}
+  {{ ns.out }}
 llm_router_cpu_moe_backend_urls: >-
-  {%- set ns = namespace(urls=[]) -%}
-  {%- set scaler = tofu_data.constants.llm_cpu_scaler | default({}) -%}
-  {%- set moe = (scaler.tags | default({})).moe | default('', true) -%}
-  {%- if moe -%}
-  {%- for name, c in (tofu_data.containers | default({})).items() | sort -%}
-  {%- if moe in (c.tags | default([])) -%}
-  {%- set ns.urls = ns.urls + ['http://' ~ c.ip ~ ':' ~ (llm_router_light_port | string) ~ '/v1'] -%}
-  {%- endif -%}
-  {%- endfor -%}
-  {%- endif -%}
-  {{ ns.urls }}
+  {{ llm_router_cpu_pool_backend_urls_by_tier['cpu-moe'] | default([]) }}
 llm_router_cpu_9b_backend_urls: >-
-  {%- set ns = namespace(urls=[]) -%}
-  {%- set scaler = tofu_data.constants.llm_cpu_scaler | default({}) -%}
-  {%- set nine = (scaler.tags | default({})).nine_b | default('', true) -%}
-  {%- if nine -%}
-  {%- for name, c in (tofu_data.containers | default({})).items() | sort -%}
-  {%- if nine in (c.tags | default([])) -%}
-  {%- set ns.urls = ns.urls + ['http://' ~ c.ip ~ ':' ~ (llm_router_light_port | string) ~ '/v1'] -%}
-  {%- endif -%}
-  {%- endfor -%}
-  {%- endif -%}
-  {{ ns.urls }}
+  {{ llm_router_cpu_pool_backend_urls_by_tier['cpu-9b'] | default([]) }}
 
 # The NVIDIA/CUDA serving guest (vLLM). Same serving-API port as the light tier
 # — the port names the protocol, and the HOST is what distinguishes the backend,
