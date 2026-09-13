@@ -91,6 +91,42 @@
   changed_when: true
   when: hermes_agent_checkout.before != hermes_agent_checkout.after
 
+# THE CHECKOUT MOVING IS NOT PROOF THE RUNNING BINARY MOVED. Measured
+# 2026-09-12: both guests answered `hermes --version` with v0.20.6
+# (2026.8.27) — two releases behind the pin *at the time*, the same class of
+# silent drift the "PIN IS ENFORCED, NOT SEEDED" fix above was written to
+# close. `hermes --version` prints "Hermes Agent v{version} ({release_date})"
+# (hermes_cli/_startup_fast.py::print_fast_version_info), and
+# {release_date} is written by upstream release automation from the exact
+# same date-shaped string this role pins as hermes_agent_version — so this
+# assertion needs no separate date-tag-to-semver mapping table, only a
+# substring match on the pin's own value. Runs unconditionally (not gated on
+# hermes_agent_checkout/hermes_agent_install being changed) because the
+# failure mode is the checkout or installer claiming success while the
+# daemon still serves old code — exactly the case a `when:` on those
+# registers would hide.
+- name: Read the installed Hermes CLI's reported version
+  ansible.builtin.command:
+    cmd: "{{ hermes_agent_bin }} --version"
+  register: hermes_agent_installed_version
+  changed_when: false
+
+- name: Fail when the running Hermes binary does not report the pinned release
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "('(' ~ hermes_agent_version ~ ')') in hermes_agent_installed_version.stdout"
+    fail_msg: >-
+      {{ hermes_agent_bin }} --version reported
+      "{{ hermes_agent_installed_version.stdout | trim }}", which does not
+      contain "({{ hermes_agent_version }})" — the pinned release. The git
+      checkout and/or installer ran without error but the binary the daemon
+      actually executes is still on an older release. Do not restart the
+      service to "pick up" the change without first finding why install did
+      not move it (a non-editable second copy under venv/, as
+      patches_verify.yml already checks for elsewhere, or a converge that
+      never reached this role at all).
+
 # The dashboard SPA is NOT shipped down the git-checkout install path. Upstream
 # gitignores hermes_cli/web_dist/ and builds it in release CI, so the published
 # PyPI wheel carries the bundle but a `--branch <tag>` checkout never does, and
