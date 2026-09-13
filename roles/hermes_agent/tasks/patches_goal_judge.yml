@@ -1,0 +1,125 @@
+---
+# Split out of patches_retry_and_markup.yml (token budget): every patch here
+# targets the goal judge's own call path in hermes_cli/goals.py. Unrelated to
+# the boost/markup/auxiliary patches that stayed behind — no shared anchors,
+# no ordering dependency between the two files.
+- name: Patch Hermes goal judge timeout for the local light tier
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
+    regexp: '^DEFAULT_JUDGE_TIMEOUT = [0-9]+(?:\.[0-9]+)?$'
+    replace: 'DEFAULT_JUDGE_TIMEOUT = {{ hermes_agent_kanban_goal_judge_timeout_seconds | float }}'
+  notify: Restart hermes-gateway
+
+# A judge-call FAILURE is not a judge VERDICT. Upstream judge_goal masks its
+# own API errors as ("continue", "judge error: <Type>", ...), so the kanban
+# goal loop fires a continuation worker turn and increments turns_used for
+# every failed judge call — measured over 7 days, whole 8-turn budgets burned
+# in minutes (48% timeouts, 29% routing 404s, 11% 500s) with the worker never
+# executing a single tool call. The two patches below teach the loop to tell
+# the cases apart: a failed judge call re-polls the card (so a worker that
+# completed meanwhile still wins) and retries the judge after the role's flat
+# 15s local-backend delay, consuming NO turn; five consecutive failures block
+# the card cleanly with a "no worker turns were consumed" reason — sticky
+# blocked, i.e. retryable once the backend is healthy — so a total outage can
+# never spin the loop forever. Any real verdict resets the counter.
+#
+# The guard now keys on upstream's own `_transport_failed` return value, not on
+# the "judge error: " text it used to string-match. That sentinel pin is exactly
+# what drifted: `judge_goal` grew a fifth return value, the four-value anchor
+# stopped matching, and the guard went dead while its assertion still passed on
+# an unrelated line — judge failures have been burning whole turn budgets again
+# ever since. A flag the function returns cannot be reworded out from under the
+# guard the way a message can.
+- name: Patch Hermes kanban goal loop to count consecutive judge failures
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
+    regexp: '^([ \t]*)nudged_to_finalize = False$(?:\n\1judge_failures = 0)?'
+    replace: |-
+      \1nudged_to_finalize = False
+      \1judge_failures = 0
+  notify: Restart hermes-gateway
+
+- name: Patch Hermes kanban goal loop to retry judge errors without burning turns
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
+    regexp: |-
+      ^([ \t]*)verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal\(goal_text, last_response\)$
+      \1if verdict == "wait":$
+      \1    verdict = "continue"$
+      \1_log\(f"kanban goal loop: turn \{turns_used\}/\{max_turns\} verdict=\{verdict\} reason=.*\)$
+    replace: |-
+      \1verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+      \1if verdict == "wait":
+      \1    verdict = "continue"
+      \1if _transport_failed:
+      \1    judge_failures += 1
+      \1    _log(
+      \1        f"kanban goal loop: judge call failed ({judge_failures}/5, "
+      \1        f"{reason}); retrying without consuming a turn"
+      \1    )
+      \1    if judge_failures >= 5:
+      \1        try:
+      \1            block_fn(
+      \1                f"Goal judge unreachable {judge_failures} consecutive times "
+      \1                f"({reason}); no worker turns were consumed. Retry the card "
+      \1                f"once the judge backend is healthy."
+      \1            )
+      \1        except Exception as exc:
+      \1            _log(f"kanban goal loop: block_fn failed ({exc})")
+      \1        return {"outcome": "blocked_judge_unreachable", "turns_used": turns_used, "reason": reason}
+      \1    time.sleep(15.0)
+      \1    continue
+      \1judge_failures = 0
+      \1_log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
+  notify: Restart hermes-gateway
+
+# index=hermes is this fabric's latency telemetry (roles/hermes_agent/docs/splunk.md).
+# The worker path emits its own timing — `API call #N: model=... latency=%.1fs`
+# from conversation_loop.py — but the goal judge's model call goes out through
+# the auxiliary client, which emits no timing at all, so judge latency is
+# unmeasurable from the index the rest of the fabric is measured in.
+#
+# The two patches below time that call at its own call site and log it with the
+# SAME `model=` / `latency=` field names, units and `%.1fs` format the worker
+# line uses, so a single search covers both paths. Split in two because each
+# insertion is a PREFIX to its anchor, which is what makes the
+# `(?:...\n\1)*` optional-repeat form self-normalizing: re-running either patch
+# over already-patched source rewrites it byte-identically instead of inserting
+# a second copy (`hermes update` re-extracts the source, so both re-run every
+# converge). The call anchor carries JUDGE_SYSTEM_PROMPT deliberately — the same
+# `call_llm(task="goal_judge", ...)` shape also appears in `draft_contract`,
+# which is a one-off contract draft, not the per-turn verdict being measured.
+- name: Patch Hermes goal judge to time its model call
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
+    regexp: |-
+      ^([ \t]*)(?:_judge_started = time\.monotonic\(\)\n\1)*resp = call_llm\($
+      \1    task="goal_judge",$
+      \1    messages=\[$
+      \1        \{"role": "system", "content": JUDGE_SYSTEM_PROMPT\},$
+    replace: |-
+      \1_judge_started = time.monotonic()
+      \1resp = call_llm(
+      \1    task="goal_judge",
+      \1    messages=[
+      \1        {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+  notify: Restart hermes-gateway
+
+- name: Patch Hermes goal judge to emit its model call latency
+  ansible.builtin.replace:
+    path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
+    regexp: |-
+      ^([ \t]*)(?:logger\.info\($
+      \1    "goal judge: API call model=%s latency=%\.1fs",$
+      \1    getattr\(resp, "model", None\) or "unknown",$
+      \1    time\.monotonic\(\) - _judge_started,$
+      \1\)$
+      \1)*verdict, reason, parse_failed, wait_directive = _parse_judge_response\(raw\)$
+    replace: |-
+      \1logger.info(
+      \1    "goal judge: API call model=%s latency=%.1fs",
+      \1    getattr(resp, "model", None) or "unknown",
+      \1    time.monotonic() - _judge_started,
+      \1)
+      \1verdict, reason, parse_failed, wait_directive = _parse_judge_response(raw)
+  notify: Restart hermes-gateway
