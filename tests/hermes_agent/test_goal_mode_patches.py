@@ -218,15 +218,20 @@ GOAL_JUDGE_LATENCY_PATCH_NAMES = (
 
 def test_goal_judge_emits_the_worker_latency_field_shape() -> None:
     # The judge call must be timed around the call itself and reported with
-    # the worker line's own `latency=%.1fs` field — same seconds, same
-    # format — so a Splunk search over that field covers both call paths.
-    # Re-anchored: `resp` no longer exists in this scope (the call moved
-    # into _call_goal_judge_llm, which returns a plain str), so this line
-    # drops the resolved model name rather than reach into the shared
-    # helper for it — "model=%s" is gone from the message.
+    # the worker line's own `model=` / `latency=%.1fs` fields — same names,
+    # same seconds, same format — so one Splunk search covers both call
+    # paths. Re-anchored (review): `resp` no longer exists in this scope
+    # (the call moved into _call_goal_judge_llm, which returns a plain
+    # str), so the model id logged is the CONFIGURED one
+    # (auxiliary.goal_judge.model), not the resolved one — read the same
+    # defensive way _goal_judge_setting reads its own config keys.
     assert PATCHED_JUDGE_CALL_SOURCE.count("_judge_started = time.monotonic()") == 1
     assert (
-        '"goal judge: API call latency=%.1fs",'
+        '"goal judge: API call model=%s latency=%.1fs",'
+        in PATCHED_JUDGE_CALL_SOURCE
+    )
+    assert (
+        'load_config().get("auxiliary") or {}).get("goal_judge", {}).get("model")'
         in PATCHED_JUDGE_CALL_SOURCE
     )
     assert PATCHED_JUDGE_CALL_SOURCE.index(
