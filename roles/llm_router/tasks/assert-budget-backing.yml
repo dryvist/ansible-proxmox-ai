@@ -47,6 +47,132 @@
          | selectattr('monthly_budget', 'defined') | map(attribute='route_group') | list }}
     _llm_router_any_deployment_budget: "{{ _llm_router_budgeted_groups | length > 0 }}"
 
+# Per-KEY budgets are a different backing store than provider/deployment
+# budgets above: LiteLLM persists a key's spend and max_budget in its own
+# Postgres row, not Redis, so a key budget's honesty condition is the router
+# database rather than the shared cache. Same shape: reconcile-key-budgets.yml
+# is what actually pushes the value, but it is gated on this same
+# llm_router_db_host check in main.yml — this assert exists so a config that
+# somehow declares a monthly_budget on a virtual key with no database fails
+# loudly here too, rather than only via that task silently never running.
+- name: Assert a rendered key budget is backed by the router database
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - not _llm_router_any_key_budget
+        or (llm_router_db_host | default('') | trim | length > 0)
+    fail_msg: >-
+      A virtual key declares monthly_budget with no router database configured
+      (roles/llm_router/tasks/assert-budget-backing.yml).
+      Budgeted key aliases={{ _llm_router_budgeted_key_aliases }}.
+      LiteLLM tracks key spend and max_budget in its own database, not Redis;
+      with llm_router_db_host empty, seed-keys.yml/reconcile-key-budgets.yml
+      never run (main.yml gates both on it), so the budget declared here is
+      never actually sent to the proxy. Set llm_router_db_host (roles/postgres)
+      or drop monthly_budget from the affected key(s).
+    success_msg: >-
+      {{ 'Every rendered key budget is backed by the router database.'
+         if _llm_router_any_key_budget
+         else 'No key budget configured; nothing to back.' }}
+  vars:
+    # `| float > 0`, never `equalto(0)` — the same numeric coercion
+    # seed-keys.yml's own body already uses. A YAML string re-quoting of a
+    # Jinja reference (`"{{ _llm_router_key_monthly_budget }}"`, the
+    # workstation entries in 56-virtual-keys.yml) can fold that value to the
+    # STRING '0' rather than the int/float 0, and `equalto(0)` never matches
+    # a string against a number — every such key would then count as
+    # budgeted even with no database, defeating this very assert.
+    _llm_router_budgeted_key_aliases: >-
+      {%- set _out = [] -%}
+      {%- for _k in (llm_router_virtual_keys | default([])) -%}
+      {%- if (_k.monthly_budget | default(0) | float) > 0 -%}
+      {%- set _discard = _out.append(_k.alias) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ _out }}
+    _llm_router_any_key_budget: "{{ _llm_router_budgeted_key_aliases | length > 0 }}"
+
+# A key budget at or above the provider's own weekly ceiling defeats the
+# reason a per-key cap exists at all: one caller could then drain the whole
+# provider budget by itself, which is exactly what per-key budgets are meant
+# to prevent. Both are the same 7d period (roles/llm_router/defaults/main/
+# 56-virtual-keys.yml), so a plain numeric compare is enough — no separate
+# duration check needed.
+- name: Assert every key budget sits below the provider's weekly ceiling
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_oversized_key_budgets | length == 0
+    fail_msg: >-
+      A virtual key's monthly_budget is not below the provider's own weekly
+      ceiling (roles/llm_router/tasks/assert-budget-backing.yml).
+      Oversized keys={{ _llm_router_oversized_key_budgets }},
+      llm_router_openrouter_budget_limit={{ llm_router_openrouter_budget_limit | default(0) }}.
+      A key allowed to spend the whole provider ceiling by itself defeats the
+      reason per-key budgets exist. Lower the key's monthly_budget in
+      56-virtual-keys.yml.
+    success_msg: "Every key budget is strictly below the provider's weekly ceiling."
+  vars:
+    # Same `| float` coercion as _llm_router_budgeted_key_aliases above, for
+    # the same reason — a stringified '0' would otherwise be excluded from
+    # neither this list nor that one by an equalto/numeric-comparison test.
+    _llm_router_oversized_key_budgets: >-
+      {%- set _ceiling = llm_router_openrouter_budget_limit | default(0) | float -%}
+      {%- set _out = [] -%}
+      {%- for _k in (llm_router_virtual_keys | default([])) -%}
+      {%- set _budget = _k.monthly_budget | default(0) | float -%}
+      {%- if _budget > 0 and _budget >= _ceiling -%}
+      {%- set _discard = _out.append(_k.alias) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ _out }}
+
+# "No single caller can drain the whole provider ceiling by itself" (the
+# reason per-key budgets exist at all) only holds if every key that CAN reach
+# every model actually carries a budget. A full-scope key with none is the
+# same defect the assert above catches for an oversized one, reached from the
+# other direction: nothing bounds it at all, so it alone could exhaust the
+# provider's weekly ceiling with room to spare.
+- name: Assert every full-model-scope key declares a budget
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_unbudgeted_full_scope_keys | length == 0
+    fail_msg: >-
+      Full-model-scope virtual key(s) {{ _llm_router_unbudgeted_full_scope_keys }}
+      declare no monthly_budget (roles/llm_router/tasks/assert-budget-backing.yml).
+      A key whose model list covers every servable id, alias and agent can
+      reach any deployment this proxy carries, so with no budget it alone
+      could drain the whole provider ceiling — exactly what per-key budgets
+      exist to prevent. Add a monthly_budget in 56-virtual-keys.yml.
+    success_msg: "Every full-model-scope key declares a budget."
+  vars:
+    # Same superset test as the scope itself: a key whose model list covers
+    # every entry _llm_router_key_scope_all names — the id set a human chat UI
+    # may select from — is full-scope, whether or not it happens to be built
+    # FROM that exact variable.
+    #
+    # Gated on llm_router_db_host directly (the same self-arming gate every
+    # budget here uses), inline rather than through an intermediate templated
+    # var: with no router database, 56-virtual-keys.yml's
+    # _llm_router_key_monthly_budget derivation is HONESTLY 0 for every key,
+    # full-scope or not, matching "no budget claimed" rather than the defect
+    # this assert exists to catch. Only once a database exists does a
+    # full-scope key with no budget mean anything.
+    _llm_router_unbudgeted_full_scope_keys: >-
+      {%- set _full = _llm_router_key_scope_all | default([]) | list -%}
+      {%- set _out = [] -%}
+      {%- if (llm_router_db_host | default('') | trim | length > 0) -%}
+      {%- for _k in (llm_router_virtual_keys | default([])) -%}
+      {%- if _full | length > 0
+         and (_full | difference(_k.models | default([]))) | length == 0
+         and (_k.monthly_budget | default(0) | float) <= 0 -%}
+      {%- set _discard = _out.append(_k.alias) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {{ _out }}
+
 # Naming a host is not reaching it. roles/redis makes AUTH mandatory and has no
 # passwordless branch, so an empty password here does not degrade to an
 # unauthenticated connection that happens to work — every LiteLLM call to the

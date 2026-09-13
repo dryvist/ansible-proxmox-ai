@@ -2,36 +2,88 @@
 # --- PER-CALLER VIRTUAL KEYS -------------------------------------------------
 # One key per caller class instead of every consumer sharing the master key.
 # Buys per-caller attribution in the spend logs and revocation of one tool
-# without rotating everything. It does NOT buy per-key budgets: model_max_budget
-# is enterprise-licensed and the API rejects it here, which also rules out
-# budget_fallbacks. Budget-exhaustion recovery is the local survivor member in
-# each budgeted group instead (model-list.yaml.j2).
+# without rotating everything.
 #
-# Values are generated at the consumer's own tier and read here, never minted by
-# this role — see tasks/seed-keys.yml. An unseeded consumer renders an empty
-# value and is skipped, so this list is safe to carry before the generating
-# half exists.
+# `monthly_budget` (this role's own field name) becomes /key/generate's
+# `max_budget` + `budget_duration: 7d` in tasks/seed-keys.yml and gets
+# resynced onto an already-minted key by tasks/reconcile-key-budgets.yml —
+# model_max_budget is the one LiteLLM field this stays away from: it is
+# enterprise-licensed and the API rejects it, but a flat max_budget with
+# budget_duration is a plain field this deployment honors (probed live:
+# POST /key/generate with both set returns 200). Budget-exhaustion recovery
+# below the key ceiling is still the local survivor member in each budgeted
+# group (model-list.yaml.j2) — the key budget is an outer per-caller cap, not
+# a substitute for that. assert-budget-backing.yml extends to require the
+# router database before any key here carries a monthly_budget, the same way
+# it already requires Redis before a provider budget.
 #
-# Workstation clients (claude-code, codex, cursor, opencode) are deliberately
-# absent: they have no converge-delivered secret path, so they stay on the
-# master key until that is decided separately. The Hermes cron fleet is
-# absent for a different reason — its credential lives in the local-llm
-# domain, not apps, so it is a separate pass rather than a second entry here.
+# Values are generated at the consumer's own tier and read here, never minted
+# by this role — see tasks/seed-keys.yml. An unseeded consumer renders an
+# empty value and is skipped, so this list is safe to carry before the
+# generating half exists. The Hermes cron fleet's OWN inbound key (as opposed
+# to the per-profile keys below, which are outbound to the router) is absent
+# for a different reason — its credential lives in the local-llm domain, not
+# apps.
 #
 # Scopes are DERIVED from the registry rather than hand-listed. A retired
 # alias cannot linger in a key's allowlist because it stops being derived.
 
 # Everything a human chat UI may select: every servable model, every stable
 # alias, and every running agent.
+# Self-arms the same way llm_router_openrouter_budget_limit does: honestly
+# 0 (and so filtered out everywhere as "no budget") until the router
+# database is actually in the inventory, so no key here ever advertises a
+# ceiling assert-budget-backing.yml would then have to fail the build over.
+#
+# HALF of llm_router_openrouter_budget_limit (the provider's own 14.0/week
+# cap in inventory/group_vars/llm_router_group.yml), same 7d period,
+# deliberately — one consumer must not be ABLE to drain the whole provider
+# ceiling by itself. assert-budget-backing.yml enforces the inequality so
+# the two numbers cannot drift apart unnoticed.
+_llm_router_key_monthly_budget: >-
+  {{ 7.0 if (llm_router_db_host | default('') | trim | length > 0) else 0 }}
+
 _llm_router_key_scope_all: >-
   {{ (llm_router_servable_models
       + (llm_router_model_group_aliases | list)
       + (llm_router_hermes_agents | list)) | unique | list }}
 
-llm_router_virtual_keys:
+# One key per Hermes operating profile (roles/hermes_agent
+# defaults/main/150-fleet-health-profiles.yml `hermes_agent_profiles`), plus
+# the implicit `default` profile every card without an explicit assignee
+# runs under. DERIVED, not hand-listed: a profile renamed or retired there
+# stops being a key alias without a second edit here. `coder` (Vikunja 3085)
+# is not a real profile yet, so it is not yet a key — it appears the first
+# render after that profile is added, with no further edit to this file.
+_llm_router_hermes_profile_names: >-
+  {{ ['default'] + (hermes_agent_profiles | default([]) | map(attribute='name') | list) }}
+
+# `default` gets the full human chat scope — it is the cross-domain/board-meta/
+# write-bearing catch-all profile. Every named profile is bounded to
+# cheap/embed the same way langgraph is below: none of splunk-admin/
+# homelab-admin/github-maint carry a lead-tier job.
+_llm_router_hermes_profile_keys: >-
+  {%- set _items = [] -%}
+  {%- for _name in _llm_router_hermes_profile_names -%}
+  {%- set _discard = _items.append({
+        'alias': 'hermes-' ~ _name,
+        'value': bao_apps_secrets.get('hermes_' ~ (_name | replace('-', '_')) ~ '_llm_router_key', ''),
+        'models': (_llm_router_key_scope_all if _name == 'default' else ['cheap', 'embed']),
+        'monthly_budget': _llm_router_key_monthly_budget,
+      }) -%}
+  {%- endfor -%}
+  {{ _items }}
+
+# Static, one-off callers — a literal list here is fine for a fixed set of
+# named tools, as opposed to the profile set above, which is genuinely
+# derived from another role's data.
+_llm_router_static_virtual_keys:
   - alias: open-webui
     value: "{{ bao_apps_secrets.open_webui_llm_router_key | default('', true) }}"
     models: "{{ _llm_router_key_scope_all }}"
+    # Full model scope, so it needs the same budget every other full-scope key
+    # carries — see assert-budget-backing.yml's full-scope-key assert.
+    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
   # Graph workers do trivial classification and embedding only — no lead tier.
   - alias: langgraph
     value: "{{ bao_apps_secrets.langgraph_llm_router_key | default('', true) }}"
@@ -58,3 +110,24 @@ llm_router_virtual_keys:
   - alias: github-actions
     value: "{{ bao_apps_secrets.github_actions_llm_router_key | default('', true) }}"
     models: "{{ ['cheap', 'subagent'] }}"
+  # Workstation clients. Previously deliberately absent for lack of a
+  # converge-delivered secret path; each now gets a weekly-budgeted key on the
+  # same no-op-until-seeded contract as every entry above.
+  - alias: opencode
+    value: "{{ bao_apps_secrets.opencode_llm_router_key | default('', true) }}"
+    models: "{{ _llm_router_key_scope_all }}"
+    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+  - alias: raycast
+    value: "{{ bao_apps_secrets.raycast_llm_router_key | default('', true) }}"
+    models: "{{ _llm_router_key_scope_all }}"
+    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+  - alias: codex
+    value: "{{ bao_apps_secrets.codex_llm_router_key | default('', true) }}"
+    models: "{{ _llm_router_key_scope_all }}"
+    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+  - alias: cursor
+    value: "{{ bao_apps_secrets.cursor_llm_router_key | default('', true) }}"
+    models: "{{ _llm_router_key_scope_all }}"
+    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+
+llm_router_virtual_keys: "{{ _llm_router_static_virtual_keys + _llm_router_hermes_profile_keys }}"
