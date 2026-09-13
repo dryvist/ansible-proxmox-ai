@@ -15,15 +15,26 @@
 # the app out from under this checkout and would silently drop the patch
 # otherwise.
 - name: Patch hermes-agent retry boost to respect the configured max_tokens ceiling
+  # Rewritten: upstream's September 2026 decomposition moved this to
+  # agent/turn_truncation.py and inlined the separate `_tc_boost_cap =`
+  # assignment directly into the min() call it fed. Same substitution,
+  # applied to the inlined expression instead of a standalone variable.
   ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
-    regexp: '^(\s*)_tc_boost_cap = max\(32768, _tc_requested_cap or 0\)$'
-    replace: '\1_tc_boost_cap = agent.max_tokens if agent.max_tokens else max(32768, _tc_requested_cap or 0)'
+    path: "{{ hermes_agent_install_dir }}/agent/turn_truncation.py"
+    regexp: >-
+      ^(\s*)agent\._ephemeral_max_output_tokens = min\(_tc_boost,
+      max\(32768, _tc_requested_cap or 0\)\)$
+    replace: >-
+      \1agent._ephemeral_max_output_tokens = min(_tc_boost, agent.max_tokens
+      if agent.max_tokens else max(32768, _tc_requested_cap or 0))
   notify: Restart hermes-gateway
 
 - name: Patch hermes-agent length-continuation boost to respect the configured max_tokens ceiling
+  # Upstream split conversation_loop.py into focused files (COMPAT_MANIFEST.md,
+  # September 2026 decomposition); this call moved to turn_iteration_prep.py
+  # verbatim, so only the path changes here.
   ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/agent/conversation_loop.py"
+    path: "{{ hermes_agent_install_dir }}/agent/turn_iteration_prep.py"
     regexp: '^(\s*)_boost_cap = max\(32768, _requested_cap or 0\)$'
     replace: '\1_boost_cap = agent.max_tokens if agent.max_tokens else max(32768, _requested_cap or 0)'
   notify: Restart hermes-gateway
@@ -41,127 +52,6 @@
 # both the pinned release and current upstream. Its assertion below is kept and
 # retargeted at upstream's own five-value unpack, so a future arity change still
 # fails the converge instead of silently restoring the fail-open gate.
-
-- name: Patch Hermes goal judge timeout for the local light tier
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
-    regexp: '^DEFAULT_JUDGE_TIMEOUT = [0-9]+(?:\.[0-9]+)?$'
-    replace: 'DEFAULT_JUDGE_TIMEOUT = {{ hermes_agent_kanban_goal_judge_timeout_seconds | float }}'
-  notify: Restart hermes-gateway
-
-# A judge-call FAILURE is not a judge VERDICT. Upstream judge_goal masks its
-# own API errors as ("continue", "judge error: <Type>", ...), so the kanban
-# goal loop fires a continuation worker turn and increments turns_used for
-# every failed judge call — measured over 7 days, whole 8-turn budgets burned
-# in minutes (48% timeouts, 29% routing 404s, 11% 500s) with the worker never
-# executing a single tool call. The two patches below teach the loop to tell
-# the cases apart: a failed judge call re-polls the card (so a worker that
-# completed meanwhile still wins) and retries the judge after the role's flat
-# 15s local-backend delay, consuming NO turn; five consecutive failures block
-# the card cleanly with a "no worker turns were consumed" reason — sticky
-# blocked, i.e. retryable once the backend is healthy — so a total outage can
-# never spin the loop forever. Any real verdict resets the counter.
-#
-# The guard now keys on upstream's own `_transport_failed` return value, not on
-# the "judge error: " text it used to string-match. That sentinel pin is exactly
-# what drifted: `judge_goal` grew a fifth return value, the four-value anchor
-# stopped matching, and the guard went dead while its assertion still passed on
-# an unrelated line — judge failures have been burning whole turn budgets again
-# ever since. A flag the function returns cannot be reworded out from under the
-# guard the way a message can.
-- name: Patch Hermes kanban goal loop to count consecutive judge failures
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
-    regexp: '^([ \t]*)nudged_to_finalize = False$(?:\n\1judge_failures = 0)?'
-    replace: |-
-      \1nudged_to_finalize = False
-      \1judge_failures = 0
-  notify: Restart hermes-gateway
-
-- name: Patch Hermes kanban goal loop to retry judge errors without burning turns
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
-    regexp: |-
-      ^([ \t]*)verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal\(goal_text, last_response\)$
-      \1if verdict == "wait":$
-      \1    verdict = "continue"$
-      \1_log\(f"kanban goal loop: turn \{turns_used\}/\{max_turns\} verdict=\{verdict\} reason=.*\)$
-    replace: |-
-      \1verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
-      \1if verdict == "wait":
-      \1    verdict = "continue"
-      \1if _transport_failed:
-      \1    judge_failures += 1
-      \1    _log(
-      \1        f"kanban goal loop: judge call failed ({judge_failures}/5, "
-      \1        f"{reason}); retrying without consuming a turn"
-      \1    )
-      \1    if judge_failures >= 5:
-      \1        try:
-      \1            block_fn(
-      \1                f"Goal judge unreachable {judge_failures} consecutive times "
-      \1                f"({reason}); no worker turns were consumed. Retry the card "
-      \1                f"once the judge backend is healthy."
-      \1            )
-      \1        except Exception as exc:
-      \1            _log(f"kanban goal loop: block_fn failed ({exc})")
-      \1        return {"outcome": "blocked_judge_unreachable", "turns_used": turns_used, "reason": reason}
-      \1    time.sleep(15.0)
-      \1    continue
-      \1judge_failures = 0
-      \1_log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
-  notify: Restart hermes-gateway
-
-# index=hermes is this fabric's latency telemetry (roles/hermes_agent/docs/splunk.md).
-# The worker path emits its own timing — `API call #N: model=... latency=%.1fs`
-# from conversation_loop.py — but the goal judge's model call goes out through
-# the auxiliary client, which emits no timing at all, so judge latency is
-# unmeasurable from the index the rest of the fabric is measured in.
-#
-# The two patches below time that call at its own call site and log it with the
-# SAME `model=` / `latency=` field names, units and `%.1fs` format the worker
-# line uses, so a single search covers both paths. Split in two because each
-# insertion is a PREFIX to its anchor, which is what makes the
-# `(?:...\n\1)*` optional-repeat form self-normalizing: re-running either patch
-# over already-patched source rewrites it byte-identically instead of inserting
-# a second copy (`hermes update` re-extracts the source, so both re-run every
-# converge). The call anchor carries JUDGE_SYSTEM_PROMPT deliberately — the same
-# `call_llm(task="goal_judge", ...)` shape also appears in `draft_contract`,
-# which is a one-off contract draft, not the per-turn verdict being measured.
-- name: Patch Hermes goal judge to time its model call
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
-    regexp: |-
-      ^([ \t]*)(?:_judge_started = time\.monotonic\(\)\n\1)*resp = call_llm\($
-      \1    task="goal_judge",$
-      \1    messages=\[$
-      \1        \{"role": "system", "content": JUDGE_SYSTEM_PROMPT\},$
-    replace: |-
-      \1_judge_started = time.monotonic()
-      \1resp = call_llm(
-      \1    task="goal_judge",
-      \1    messages=[
-      \1        {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-  notify: Restart hermes-gateway
-
-- name: Patch Hermes goal judge to emit its model call latency
-  ansible.builtin.replace:
-    path: "{{ hermes_agent_install_dir }}/hermes_cli/goals.py"
-    regexp: |-
-      ^([ \t]*)(?:logger\.info\($
-      \1    "goal judge: API call model=%s latency=%\.1fs",$
-      \1    getattr\(resp, "model", None\) or "unknown",$
-      \1    time\.monotonic\(\) - _judge_started,$
-      \1\)$
-      \1)*verdict, reason, parse_failed, wait_directive = _parse_judge_response\(raw\)$
-    replace: |-
-      \1logger.info(
-      \1    "goal judge: API call model=%s latency=%.1fs",
-      \1    getattr(resp, "model", None) or "unknown",
-      \1    time.monotonic() - _judge_started,
-      \1)
-      \1verdict, reason, parse_failed, wait_directive = _parse_judge_response(raw)
-  notify: Restart hermes-gateway
 
 # A model that writes its tool call as TEXT (`<function=...>`, `<parameter=...>`)
 # instead of issuing it leaves that markup as its entire final response, and cron
@@ -183,7 +73,12 @@
   ansible.builtin.blockinfile:
     path: "{{ hermes_agent_install_dir }}/cron/scheduler.py"
     marker: "# {mark} ANSIBLE MANAGED BLOCK cron markup guard"
-    insertbefore: '^def _deliver_result\('
+    # Re-anchored: _deliver_result moved to cron/scheduler_delivery.py;
+    # cron/scheduler.py only imports it now, so inserting before the old def
+    # would put this helper in a module that no longer defines it.
+    # _compose_run_delivery (the function whose success branch calls this
+    # guard, per the task below) is still defined here.
+    insertbefore: '^def _compose_run_delivery\('
     block: |
       def _cron_markup_guard(job, output_file, content):
           """Never deliver unparsed tool-call markup to a chat platform.
@@ -205,13 +100,21 @@
           )
 
 
-      # Where a run that FAILED goes, instead of the job's own channel. Empty
-      # disables the split and leaves every result on its configured target.
-      _CRON_ISSUES_TARGET = "{{ hermes_agent_cron_failure_deliver }}"
-      # Script-fed crons exit 0 and PRINT their failure (`success` is True), so
-      # they declare it with this prefix, like [SILENT]. A marker the script
-      # owns, never a keyword match: a successful job REPORTING an error it
-      # observed is a finding and stays on the work surface.
+      # Routing a RUNNER-reported failure to the issues channel is retired as
+      # a role patch (2026-09): upstream's own `_deliver_result(...,
+      # for_failure=not d.success)` already reads a job's `failure_deliver`
+      # field for that case (NS-788), set at cron-create time from
+      # hermes_agent_cron_failure_deliver (reconcile_direct_cron.yml,
+      # reconcile_enqueuer_cron.yml). What upstream still cannot see is a
+      # script-fed job that exits 0 and prints its OWN failure with the
+      # marker below — the runner's own success flag stays True, so
+      # for_failure never picks up failure_deliver for it. That marker-strip
+      # plus the escalate-then-quiet ladder is what still needs a patch.
+      #
+      # Script-fed crons exit 0 and PRINT their failure (`success` is True),
+      # so they declare it with this prefix, like [SILENT]. A marker the
+      # script owns, never a keyword match: a successful job REPORTING an
+      # error it observed is a finding and stays on the work surface.
       _CRON_ISSUES_MARKER = "{{ hermes_agent_cron_issues_marker }}"
       # Escalate-then-quiet ladder (1858/1853): post failures 1, 3, 10, then
       # every 50th. Streak = persisted failure_streak + this run (delivery
@@ -232,27 +135,28 @@
           return streak in _CRON_FAILURE_LADDER or streak % _CRON_FAILURE_REPEAT_EVERY == 0
 
 
-      def _cron_route(job, success, content):
-          """Return (job, content) with failures routed to the issues channel.
+      def _cron_route(job, content):
+          """Strip a script-fed job's self-declared failure marker and apply
+          the escalate-then-quiet ladder to whether it gets posted.
 
-          Routes when the runner reports failure, or when a script-fed job
-          declared its own failure with the marker prefix. The marker is
-          stripped so it never reaches Slack. Never mutates the caller's job.
-          A runner failure off the ladder is delivered to `local` (no post).
+          Returns (job, content, declared). `declared` tells the caller to
+          deliver through the failure lane (for_failure=True) regardless of
+          the runner's own success flag, so upstream's native
+          failure_deliver routing applies to this case too. Never mutates
+          the caller's job except to force an off-ladder repeat to the
+          documented `failure_deliver: local` opt-out (no post).
           """
           declared = content.lstrip().startswith(_CRON_ISSUES_MARKER)
-          if declared:
-              content = content.lstrip()[len(_CRON_ISSUES_MARKER):].lstrip()
-          if (success and not declared) or not _CRON_ISSUES_TARGET:
-              return job, content
+          if not declared:
+              return job, content, False
+          content = content.lstrip()[len(_CRON_ISSUES_MARKER):].lstrip()
           name = job.get("name", job.get("id", "?"))
-          if not success:
-              streak = _cron_failure_streak(job)
-              if not _cron_failure_on_ladder(streak):
-                  logger.info("Job '%s': failure %d in a row — not posted", name, streak)
-                  return {**job, "deliver": "local"}, content
-          logger.info("Job '%s': run failed — routed to the issues channel", name)
-          return {**job, "deliver": _CRON_ISSUES_TARGET}, content
+          streak = _cron_failure_streak(job)
+          if not _cron_failure_on_ladder(streak):
+              logger.info("Job '%s': failure %d in a row — not posted", name, streak)
+              return {**job, "failure_deliver": "local"}, content, True
+          logger.info("Job '%s': self-declared failure — routed to the failure lane", name)
+          return job, content, True
   notify: Restart hermes-gateway
 
 - name: Route cron delivery content through the markup guard
@@ -267,10 +171,13 @@
   notify: Restart hermes-gateway
 
 - name: Patch Hermes auxiliary retry delay for the local serial backend
+  # Re-anchored: the line grew a trailing comment upstream
+  # ("# Backoff base (seconds); overridable so tests can zero it out.").
+  # Allowed but not required, so the anchor still matches a bare value too.
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/agent/auxiliary_client.py"
-    regexp: '^_TRANSIENT_RETRY_BACKOFF_BASE = 1\.0$'
-    replace: '_TRANSIENT_RETRY_BACKOFF_BASE = 15.0'
+    regexp: '^_TRANSIENT_RETRY_BACKOFF_BASE = 1\.0(\s+#.*)?$'
+    replace: '_TRANSIENT_RETRY_BACKOFF_BASE = 15.0\1'
   notify: Restart hermes-gateway
 
 - name: Retry auxiliary rate limits through the bounded transient path
@@ -280,11 +187,19 @@
     replace: 'return isinstance(status, int) and (status in (408, 429) or 500 <= status < 600)'
   notify: Restart hermes-gateway
 
+# Rewritten: the guard inverted and `should_fallback` dropped from this
+# call site. Upstream's own gate is now "skip fallback unless (auto mode OR
+# a capacity error)" — so an EXPLICIT non-auto provider pin still falls
+# back on a capacity error, which is exactly the defect this patch exists
+# to close. Narrows the capacity-error branch to exclude the explicit local
+# provider, leaving auto mode and every other explicit provider's capacity
+# fallback untouched. Only one call site carries this guard now (the old
+# patch's expected_matches: 2 no longer applies).
 - name: Disable post-budget fallback for the explicit local auxiliary provider
   ansible.builtin.replace:
     path: "{{ hermes_agent_install_dir }}/agent/auxiliary_client.py"
-    regexp: '^([ \t]*)if should_fallback and \(is_auto or is_capacity_error\):$'
-    replace: '\g<1>if should_fallback and (is_auto or (is_capacity_error and resolved_provider != "custom")):'
-  vars:
-    hermes_agent_pinned_patch_expected_matches: 2
+    regexp: '^([ \t]*)if reason is None or not \(is_auto or is_capacity_error\):$'
+    replace: >-
+      \1if reason is None or not (is_auto or (is_capacity_error and
+      resolved_provider != "custom")):
   notify: Restart hermes-gateway

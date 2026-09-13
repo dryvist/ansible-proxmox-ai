@@ -29,10 +29,10 @@ when a scalar IS the value, ends in
 Jinja expression (`selectattr(..., 'equalto', '<value>')`, `['<value>', ...]`).
 Unquoted prose inside a message is not matched.
 
-Role-name aliases (stable_aliases on a non-servable entry — the seeded DB
-roles, 55-roles.yml) are excluded from the alias set by the registry's own
-`servable` flag, not by a list here: they are role names, not model_group
-aliases, and the role seed necessarily carries the name.
+Role-name aliases (stable_aliases on a non-servable, non-long-context
+entry — the seeded DB roles, 55-roles.yml) are excluded from the alias set
+by the registry's own fields, not by a list here: they are role names, not
+model_group aliases, and the role seed necessarily carries the name.
 """
 
 from __future__ import annotations
@@ -65,7 +65,23 @@ def registry_values(root: Path) -> dict[str, set[str]]:
             for entry in entries:
                 values.setdefault(str(entry["client_model_id"]), set()).add("client")
                 values.setdefault(str(entry["upstream_model_id"]), set()).add("upstream")
-                if entry.get("servable"):
+                # A stable_alias counts as an "alias" value on a servable
+                # entry (unchanged) or a >=1M-context OpenRouter entry not
+                # opted out of ZDR (A5's `long` carve-out,
+                # llm_router_long_context_alias_ids in 50-servable.yml).
+                # Mirrored here on registry-native fields, since this scan
+                # has no Ansible context to call that var directly. The
+                # hermes-router and embedding carve-outs are deliberately
+                # NOT mirrored here yet: their alias names collide with
+                # common-word literals elsewhere in the tree (see A5 PR
+                # notes) and widening this set for them is exactly the
+                # explosion the `servable`-only rule was chosen to avoid.
+                is_alias_bearing = entry.get("servable") or (
+                    entry.get("tier") == "openrouter"
+                    and (entry.get("context_window") or 0) >= 1_000_000
+                    and entry.get("zero_data_retention", True) is not False
+                )
+                if is_alias_bearing:
                     for alias in entry.get("stable_aliases") or []:
                         values.setdefault(str(alias), set()).add("alias")
     return values

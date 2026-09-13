@@ -25,6 +25,47 @@
       Distro CA bundle present at {{ hermes_agent_ca_bundle_path }} — safe to
       pin as SSL_CERT_FILE.
 
+# The default store's own per-profile router key
+# (hermes_default_llm_router_key) is not seeded on every fleet yet — loud so
+# a converge running on the shared master key is visible, not silent.
+- name: Warn if the default store has no per-profile router key seeded yet
+  ansible.builtin.debug:
+    msg: >-
+      hermes_default_llm_router_key is not in bao_apps_secrets — the default
+      store falls back to the shared HERMES_AGENT_MODEL_API_KEY. Seed it in
+      ansible-proxmox-apps for per-profile spend attribution.
+  when: (bao_apps_secrets.get('hermes_default_llm_router_key', '') | default('', true)) == ''
+
+# One task covering every store (default plus every named profile), stated
+# directly over the value each template actually resolves — hermes-env.j2 /
+# hermes-env-profile.j2's own `bao_apps_secrets.get(...) or
+# hermes_agent_model_api_key` expression — rather than re-deriving the same
+# fallback condition a second way. A resolved key equal to the master key
+# means the per-profile field fell back, whatever the reason; naming the
+# profile is enough to act on, so the values themselves stay out of the log.
+- name: Warn on every store whose resolved router key fell back to the master key
+  ansible.builtin.debug:
+    msg: >-
+      Store(s) [{{ _hermes_agent_fallen_back_stores | join(', ') }}] resolved
+      to the shared HERMES_AGENT_MODEL_API_KEY instead of their own
+      per-profile router key. Seed the missing field(s) in
+      ansible-proxmox-apps for per-profile spend attribution.
+  when: _hermes_agent_fallen_back_stores | length > 0
+  no_log: true
+  vars:
+    _hermes_agent_resolved_keys: >-
+      {%- set _out = [] -%}
+      {%- for _name in (['default'] + (hermes_agent_profiles | default([]) | map(attribute='name') | list)) -%}
+      {%- set _field = 'hermes_' ~ (_name | replace('-', '_')) ~ '_llm_router_key' -%}
+      {%- set _resolved = bao_apps_secrets.get(_field, '') or hermes_agent_model_api_key -%}
+      {%- set _discard = _out.append({'name': _name, 'resolved': _resolved}) -%}
+      {%- endfor -%}
+      {{ _out }}
+    _hermes_agent_fallen_back_stores: >-
+      {{ _hermes_agent_resolved_keys
+         | selectattr('resolved', 'equalto', hermes_agent_model_api_key)
+         | map(attribute='name') | list }}
+
 - name: Deploy the Hermes secrets file (.env)
   ansible.builtin.template:
     src: hermes-env.j2

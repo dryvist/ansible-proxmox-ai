@@ -16,8 +16,64 @@
     - "{{ hermes_agent_install_dir }}/plugins/memory/hindsight/__init__.py"
     - "{{ hermes_agent_install_dir }}/run_agent.py"
     - "{{ hermes_agent_install_dir }}/hermes_cli/main.py"
+    - "{{ hermes_agent_install_dir }}/hermes_cli/kanban_db_dispatch.py"
+    - "{{ hermes_agent_install_dir }}/agent/turn_iteration_prep.py"
+    - "{{ hermes_agent_install_dir }}/agent/turn_truncation.py"
   register: hermes_agent_goal_mode_sources
   changed_when: false
+
+# These three checks used to be role-owned patches, retired (2026-09)
+# because upstream now does all of it natively. Kept as their own task,
+# separate from the main "required source patch" assert below, because a
+# failure here is an UPSTREAM REGRESSION (a behavior upstream used to
+# supply on its own has gone away), not a role patch that failed to apply
+# — the two need different fail messages so an operator reads the right
+# remediation.
+- name: Assert upstream still supplies the behavior these retired patches used to add
+  vars:
+    hermes_agent_cli_main_source: >-
+      {{ hermes_agent_goal_mode_sources.results[9].content | b64decode }}
+    hermes_agent_kanban_dispatch_source: >-
+      {{ hermes_agent_goal_mode_sources.results[10].content | b64decode }}
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # The cron CLI must hand its exit code back to the dispatcher.
+      # Retired as a role patch because upstream's cmd_cron is now
+      # generated via `_forward_command(..., forward_return=True)`, which
+      # already does this.
+      - >-
+        'cmd_cron = _forward_command("cmd_cron", "hermes_cli.cron", '
+        ~ '"cron_command", forward_return=True,'
+        in hermes_agent_cli_main_source
+      # A goal-mode worker must take the fully-quiet CLI path or its
+      # goal-loop hook never runs. Retired as a role patch because
+      # upstream's dispatcher already appends "-Q" for a goal-mode task on
+      # top of its own "-q" quiet chat invocation — but only INSIDE
+      # `if task.goal_mode:`. Asserting only that "-Q" appears somewhere
+      # after the chat invocation would still pass if upstream made "-Q"
+      # unconditional (every worker, not just goal-mode ones, would take
+      # the quiet-loop path) — so the gate itself is asserted too, not just
+      # ordering. `in` is checked ahead of `.index()` for each needle:
+      # `.index()` on a needle that is not present raises a Jinja
+      # ValueError, which surfaces as an unrelated template-error crash
+      # instead of this task's own fail_msg.
+      - >-
+        'cmd.extend(["chat", "-q", f"work kanban task {task.id}"])'
+        in hermes_agent_kanban_dispatch_source
+      - "'if task.goal_mode:' in hermes_agent_kanban_dispatch_source"
+      - "'cmd.append(\"-Q\")' in hermes_agent_kanban_dispatch_source"
+      - >-
+        hermes_agent_kanban_dispatch_source.index(
+          'cmd.extend(["chat", "-q", f"work kanban task {task.id}"])'
+        ) < hermes_agent_kanban_dispatch_source.index('if task.goal_mode:')
+        < hermes_agent_kanban_dispatch_source.index('cmd.append("-Q")')
+    fail_msg: >-
+      Upstream Hermes no longer supplies a behavior this role used to patch
+      in itself (cron exit-code propagation, or the goal-mode quiet CLI
+      path in hermes_cli/kanban_db_dispatch.py). This is an upstream
+      regression, not a missing role patch — the equivalent role patch
+      needs to be restored, not re-anchored.
 
 - name: Assert installed Hermes pinned-source patches
   vars:
@@ -41,6 +97,12 @@
       {{ hermes_agent_goal_mode_sources.results[8].content | b64decode }}
     hermes_agent_cli_main_source: >-
       {{ hermes_agent_goal_mode_sources.results[9].content | b64decode }}
+    hermes_agent_kanban_dispatch_source: >-
+      {{ hermes_agent_goal_mode_sources.results[10].content | b64decode }}
+    hermes_agent_turn_iteration_prep_source: >-
+      {{ hermes_agent_goal_mode_sources.results[11].content | b64decode }}
+    hermes_agent_turn_truncation_source: >-
+      {{ hermes_agent_goal_mode_sources.results[12].content | b64decode }}
   ansible.builtin.assert:
     quiet: true
     that:
@@ -49,20 +111,6 @@
       # asserted — a drift back to a shorter tuple silently re-opens the
       # fail-open completion gate this line exists to close.
       - "'verdict, reason, _, _, _ = judge_goal(' in hermes_agent_goal_completion_source"
-      # The cron CLI must hand its exit code back to the dispatcher. Upstream's
-      # cmd_cron drops it, so every failed `hermes cron` action exits 0 and any
-      # caller branching on $? reads a refusal as success. Asserted as a count
-      # so a re-added bare call alongside the patched one still fails.
-      - hermes_agent_cli_main_source.count('    return cron_command(args)') == 1
-      - hermes_agent_cli_main_source.count('\n    cron_command(args)') == 0
-      - >-
-        hermes_agent_goal_reconcile_source.count(
-          '*(["--quiet"] if task.goal_mode else []),'
-        ) == 1
-      - >-
-        hermes_agent_goal_reconcile_source.count(
-          '"-q", prompt,'
-        ) == 1
       - >-
         'SELECT id, status FROM tasks WHERE idempotency_key = ?'
         in hermes_agent_goal_reconcile_source
@@ -82,45 +130,58 @@
       # itself rather than by a role patch (both patches retired). The message is
       # what an operator reads, the failure_limit is what actually decides
       # whether the card is ever attempted again, and either regressing leaves a
-      # clean-exit card retired on its first violation again.
+      # clean-exit card retired on its first violation again. Both moved from
+      # kanban_db.py into kanban_db_dispatch.py along with everything else the
+      # September 2026 decomposition relocated out of that file.
       - >-
         'without a terminal kanban call counts as failed no'
-        in hermes_agent_goal_reconcile_source
+        in hermes_agent_kanban_dispatch_source
       - >-
         'failure_limit=1 if is_systemic else None,'
-        in hermes_agent_goal_reconcile_source
+        in hermes_agent_kanban_dispatch_source
       # Worker-reap process-group guard: the identity check function, the
       # safety condition guarding the timeout path's and the stale-reclaim
-      # path's signal sites, and all four signal sites themselves — each
-      # asserted so a partial landing (helper present but a call site
-      # unpatched, or vice versa) fails loudly.
+      # path's signal sites, and every signal site — each asserted so a
+      # partial landing (helper present but a call site unpatched, or vice
+      # versa) fails loudly. Upstream's September 2026 decomposition moved
+      # every one of these out of kanban_db.py into kanban_db_dispatch.py,
+      # and centralized both paths' SIGKILL escalation onto one shared
+      # helper (_sigkill), so one assertion now covers what used to be two
+      # separate call sites.
       - >-
         'def _pid_is_hermes_worker(pid: int) -> bool:'
-        in hermes_agent_goal_reconcile_source
+        in hermes_agent_kanban_dispatch_source
       - >-
         'kill is not None and pid > 1 and pid != os.getpid()'
-        in hermes_agent_goal_reconcile_source
+        in hermes_agent_kanban_dispatch_source
       - >-
         'and _pid_is_hermes_worker(pid)'
-        in hermes_agent_goal_reconcile_source
+        in hermes_agent_kanban_dispatch_source
       - >-
         'kill(-pid, signal.SIGTERM)'
-        in hermes_agent_goal_reconcile_source
-      - >-
-        'kill(-pid, _sigkill)'
-        in hermes_agent_goal_reconcile_source
+        in hermes_agent_kanban_dispatch_source
       - >-
         'if pid <= 1 or pid == os.getpid() or not _pid_is_hermes_worker(pid):'
-        in hermes_agent_goal_reconcile_source
+        in hermes_agent_kanban_dispatch_source
       - >-
         'kill(-int(pid), signal.SIGTERM)'
-        in hermes_agent_goal_reconcile_source
+        in hermes_agent_kanban_dispatch_source
       - >-
-        'kill(-int(pid), _sigkill)'
-        in hermes_agent_goal_reconcile_source
+        'kill(-int(pid), getattr(signal, "SIGKILL", signal.SIGTERM))'
+        in hermes_agent_kanban_dispatch_source
       - >-
         ('DEFAULT_JUDGE_TIMEOUT = '
          ~ (hermes_agent_kanban_goal_judge_timeout_seconds | float | string))
+        in hermes_agent_goal_judge_source
+      # Both halves of the judge call-timing patch. Asserted together: the
+      # timer start without the latency log is a variable set and never
+      # read; the latency log without the timer start is a NameError on
+      # every judge call.
+      - >-
+        '_judge_started = time.monotonic()'
+        in hermes_agent_goal_judge_source
+      - >-
+        '"goal judge: API call model=%s latency=%.1fs",'
         in hermes_agent_goal_judge_source
       - >-
         '_TRANSIENT_RETRY_BACKOFF_BASE = 15.0'
@@ -131,20 +192,19 @@
       - >-
         'resolved_provider != "custom"'
         in hermes_agent_auxiliary_source
-      # `_tc_boost_cap` CONTAINS the substring `_boost_cap`, so a bare
-      # `'_boost_cap = agent.max_tokens' in ...` would be satisfied by the
-      # _tc_ line alone and pass with the length-continuation patch missing.
-      # Count instead: both patched lines match the shorter needle, so 2 is
-      # the only value that proves BOTH landed (verified against upstream
-      # v2026.7.7.2 — unpatched 0, either patch alone 1, both 2).
+      # These two patches used to share one file (agent/conversation_loop.py)
+      # and a variable-name substring assertion (`_tc_boost_cap` contains
+      # `_boost_cap`). Upstream's September 2026 decomposition moved them to
+      # different files AND inlined the retry-boost one's standalone
+      # variable into the min() call it fed — asserted directly against
+      # that inlined expression now.
       - >-
-        hermes_agent_retry_source.count(
-          '_tc_boost_cap = agent.max_tokens if agent.max_tokens else max('
-        ) >= 1
+        'agent._ephemeral_max_output_tokens = min(_tc_boost, agent.max_tokens'
+        in hermes_agent_turn_truncation_source
       - >-
-        hermes_agent_retry_source.count(
+        hermes_agent_turn_iteration_prep_source.count(
           '_boost_cap = agent.max_tokens if agent.max_tokens else max('
-        ) == 2
+        ) == 1
     fail_msg: >-
       The pinned Hermes source changed and one or more required source
       patches were not installed; update the pinned-source patches before

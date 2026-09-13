@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import re
 import signal as signal_module
 from pathlib import Path
@@ -12,32 +13,37 @@ from _role_files import role_tasks
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles" / "hermes_agent"
 
-# Reduced reap slice from enforce_max_runtime (upstream v2026.7.7.2,
-# hermes_cli/kanban_db.py) — the exact lines the role's own regexes target,
-# indentation included. Not the whole function: only the SIGTERM/SIGKILL
-# block the three replace tasks below patch.
+# Reduced reap slice from enforce_max_runtime (upstream v2026.9.11,
+# hermes_cli/kanban_db_dispatch.py) — the exact lines the role's own regexes
+# target, indentation included. Not the whole function: only the SIGTERM/
+# SIGKILL block the three replace tasks below patch, plus the shared
+# _sigkill(kill, pid) helper both reapers now escalate through (2026-09
+# upstream rewrite) since the escalation patch targets that helper's own
+# body, not either call site.
 PINNED_REAP_SOURCE = '''\
+def _sigkill(kill, pid: int) -> bool:
+    """Best-effort SIGKILL; True when the signal was delivered."""
+    try:
+        kill(int(pid), getattr(signal, "SIGKILL", signal.SIGTERM))
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
 def _reap(pid, signal_fn=None):
     killed = False
     kill = signal_fn if signal_fn is not None else (
         os.kill if hasattr(os, "kill") else None
     )
     if kill is not None:
-        try:
+        with contextlib.suppress(ProcessLookupError, OSError):
             kill(pid, signal.SIGTERM)
-        except (ProcessLookupError, OSError):
-            pass
         for _ in range(10):
             if not _pid_alive(pid):
                 break
             time.sleep(0.5)
         if _pid_alive(pid):
-            try:
-                _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                kill(pid, _sigkill)
-                killed = True
-            except (ProcessLookupError, OSError):
-                pass
+            killed = _sigkill(kill, pid)
     return killed
 '''
 
@@ -48,7 +54,7 @@ REAP_SIGTERM_PATCH_NAME = (
     "Patch Hermes worker-reap timeout path to signal the worker's process group"
 )
 REAP_SIGKILL_PATCH_NAME = (
-    "Patch Hermes worker-reap timeout path to escalate on the worker's process group"
+    "Patch Hermes worker-reap SIGKILL escalation to signal the worker's process group"
 )
 
 
@@ -102,6 +108,7 @@ def _build_reap(*, own_pid: int, pid_alive: bool, is_hermes_worker: bool):
         "os": _FixedPid(own_pid),
         "signal": signal_module,
         "time": _NoSleepTime(),
+        "contextlib": contextlib,
         "_pid_alive": lambda pid: pid_alive,
         "_pid_is_hermes_worker": lambda pid: is_hermes_worker,
     }

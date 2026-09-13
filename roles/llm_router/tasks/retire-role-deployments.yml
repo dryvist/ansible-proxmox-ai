@@ -1,0 +1,79 @@
+---
+# DELETE-THEN-ALIAS, in this one play. A name that used to be a DB-only role
+# (tasks/seed-roles.yml) and has since become a git-declared alias
+# (llm_router_model_group_aliases, 50-servable.yml — `lead` as of A5) must
+# never carry BOTH at once: config.yaml.j2 already rendered the alias into
+# the file this converge deployed (earlier in this same role), so the only
+# remaining step is deleting the live DB row under that exact name before
+# the pending config-file-changed handler restarts the proxy. No flag: this
+# is always safe to run — a name is only ever a candidate here because it is
+# ALREADY a declared alias, so deleting a same-named DB row can only remove
+# a duplicate, never something the config does not also provide.
+#
+# Runs after seed-roles.yml (tasks/main.yml) so a role newly seeded this
+# same converge is still caught if it happens to collide with an alias.
+
+- name: Read the model deployments the proxy carries, to find any shadowed by an alias
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/model/info"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  register: llm_router_alias_shadow_lookup
+  no_log: true
+
+- name: Delete each live model deployment whose name is now a declared alias
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/model/delete"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      id: >-
+        {{ llm_router_alias_shadow_lookup.json.data
+           | selectattr('model_name', 'equalto', item)
+           | map(attribute='model_info.id') | first }}
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: >-
+    {{ (llm_router_model_group_aliases | list)
+       | select('in', _llm_router_live_deployment_names) | list }}
+  loop_control:
+    label: "{{ item }}"
+  vars:
+    _llm_router_live_deployment_names: >-
+      {{ llm_router_alias_shadow_lookup.json.data | default([])
+         | map(attribute='model_name') | list }}
+  no_log: true
+
+# Proves the delete actually landed: a declared alias name must never also
+# be a live model_list row, or the deployment (not the alias) answers the
+# name — LiteLLM resolves a literal deployment name before consulting
+# model_group_alias.
+- name: Assert no declared alias name still exists as a model deployment
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/model/info"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  register: llm_router_alias_shadow_recheck
+  no_log: true
+
+- name: Assert every alias name is clear of a shadowing deployment
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_still_shadowed | length == 0
+    fail_msg: >-
+      Alias name(s) [{{ _llm_router_still_shadowed | join(', ') }}] still
+      exist as a live model deployment after the delete above
+      (roles/llm_router/tasks/retire-role-deployments.yml) — the deployment,
+      not the alias, will answer that name. Delete it manually via
+      /model/delete and re-converge.
+    success_msg: "No declared alias name is shadowed by a model deployment."
+  vars:
+    _llm_router_still_shadowed: >-
+      {{ (llm_router_model_group_aliases | list)
+         | select('in', llm_router_alias_shadow_recheck.json.data | default([])
+                         | map(attribute='model_name') | list) | list }}

@@ -39,23 +39,36 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     # (roles/llm_router/defaults/main/50-servable.yml's llm_router_alias_pairs):
     # the local complexity router dispatches to llm_router_routine_model /
     # llm_router_primary_model rather than answering directly, so an alias on
-    # it renders as a static model_group_alias too, not a DB role.
+    # it renders as a static model_group_alias too, not a DB role. A5 adds a
+    # third: a >=1M-context OpenRouter entry not explicitly opted out of ZDR
+    # (llm_router_long_context_alias_ids) — `long`'s carve-out.
+    def _is_long_context(entry: dict) -> bool:
+        return (
+            entry.get("tier") == "openrouter"
+            and (entry.get("context_window") or 0) >= 1_000_000
+            and entry.get("zero_data_retention", True) is not False
+        )
+
     aliases = {
         alias: entry["client_model_id"]
         for entry in registry
-        if entry.get("enabled") and (entry.get("servable") or entry.get("tier") == "hermes-router")
+        if entry.get("enabled")
+        and (entry.get("servable") or entry.get("tier") == "hermes-router" or _is_long_context(entry))
         for alias in entry.get("stable_aliases", [])
     }
     db_role_aliases = {
         alias: entry["client_model_id"]
         for entry in registry
-        if entry.get("enabled") and not entry.get("servable") and entry.get("tier") != "hermes-router"
+        if entry.get("enabled")
+        and not entry.get("servable")
+        and entry.get("tier") != "hermes-router"
+        and not _is_long_context(entry)
         for alias in entry.get("stable_aliases", [])
     }
     # The count and every target's servability are what a stray alias would
     # break, so a new consumer-facing name still lands here as a reviewed edit.
     assert aliases, "no static alias loaded; nothing below is checked"
-    assert len(aliases) == 6
+    assert len(aliases) == 8
     assert aliases[judge_alias] == judge_backend
     # The brain is reached by alias too (the judge does not share it, above).
     assert hermes_backend in aliases.values()
@@ -64,8 +77,12 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     # picks in the model list resolves to the vision entry.
     assert backend_for_role(registry, "ocr") in aliases.values()
     # A role is a caller-facing name, so an accidental one is as costly as an
-    # accidental static alias: exactly one, the delegation role.
-    assert len(db_role_aliases) == 1
+    # accidental static alias. A5 (2026-09-12): zero today — `subagent` is a
+    # DB role with NO stable_alias of its own (it targets the same physical
+    # entry `long` does, via llm_router_model_group_aliases.long, not via a
+    # second alias declaration); `judge`/`cheap`/`embed`/`ocr` are still
+    # DB-only roles but likewise carry no stable_alias yet.
+    assert len(db_role_aliases) == 0
     assert set(db_role_aliases.values()) & set(aliases.values()) == set()
 
     hermes_router = next(
@@ -110,14 +127,18 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     assert hermes_backend in expected_servable
     assert judge_backend in expected_servable
     # And so must every static alias target, or an alias is a 404 with a name
-    # — except the local complexity router itself, admitted above for the
-    # same reason llm_router_alias_pairs admits it.
+    # — except the local complexity router and the long-context carve-out,
+    # each admitted above for the same reason llm_router_alias_pairs admits
+    # them (neither is something the serving host answers for directly).
     hermes_router_ids = [
         entry["client_model_id"]
         for entry in registry
         if entry.get("enabled") and entry.get("tier") == "hermes-router"
     ]
-    assert set(aliases.values()) <= set(expected_servable) | set(hermes_router_ids)
+    long_context_ids = [
+        entry["client_model_id"] for entry in registry if entry.get("enabled") and _is_long_context(entry)
+    ]
+    assert set(aliases.values()) <= set(expected_servable) | set(hermes_router_ids) | set(long_context_ids)
     hermes_entries = [
         entry for entry in registry if entry["client_model_id"] == hermes_backend
     ]
