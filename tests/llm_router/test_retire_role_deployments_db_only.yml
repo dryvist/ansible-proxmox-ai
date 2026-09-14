@@ -1,0 +1,89 @@
+---
+# Pins the fix for Semaphore task 186 (2026-09-14): /model/info always
+# appends one synthetic row per declared model_group_alias (litellm 1.98.0
+# router.py get_model_list_from_model_alias), copied from the underlying
+# deployment with model_name rewritten to the alias but model_info.id still
+# the UNDERLYING deployment's id. retire-role-deployments.yml's delete-id
+# expression matched that projection row too, so it 400'd on config-declared
+# backends and could have deleted a real backend when the id happened to be
+# DB-stored. This proves the fixed expression (mirroring
+# roles/llm_router/tasks/retire-role-deployments.yml's delete-task vars)
+# picks only a row with model_info.db_model true, and yields nothing when
+# no such row exists.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_retire_role_deployments_db_only.yml -i localhost, -c local
+
+- name: The db-only id expression finds only the genuine DB-stored shadow
+  hosts: localhost
+  gather_facts: false
+  vars:
+    item: an-alias
+    llm_router_alias_shadow_lookup:
+      json:
+        data:
+          - model_name: an-alias
+            model_info: {id: cfg-hash, db_model: false}
+          - model_name: an-alias
+            model_info: {id: db-id, db_model: true}
+          - model_name: unrelated-model
+            model_info: {id: other-hash, db_model: false}
+    _llm_router_alias_shadow_db_ids: >-
+      {{ llm_router_alias_shadow_lookup.json.data | default([])
+         | selectattr('model_name', 'equalto', item)
+         | selectattr('model_info.db_model', 'equalto', true)
+         | map(attribute='model_info.id') | list }}
+  tasks:
+    - name: Assert only the DB-stored row's id is selected
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_alias_shadow_db_ids == ['db-id']
+        fail_msg: "Expected ['db-id'], got {{ _llm_router_alias_shadow_db_ids }}"
+
+- name: The db-only id expression yields nothing when only the alias projection row exists
+  hosts: localhost
+  gather_facts: false
+  vars:
+    item: an-alias
+    llm_router_alias_shadow_lookup:
+      json:
+        data:
+          - model_name: an-alias
+            model_info: {id: cfg-hash, db_model: false}
+          - model_name: unrelated-model
+            model_info: {id: other-hash, db_model: false}
+    _llm_router_alias_shadow_db_ids: >-
+      {{ llm_router_alias_shadow_lookup.json.data | default([])
+         | selectattr('model_name', 'equalto', item)
+         | selectattr('model_info.db_model', 'equalto', true)
+         | map(attribute='model_info.id') | list }}
+  tasks:
+    - name: "Assert no id is selected, so the delete task's when: condition skips this item"
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_alias_shadow_db_ids == []
+        fail_msg: "Expected [], got {{ _llm_router_alias_shadow_db_ids }}"
+
+- name: Verify the task file reads /v2/model/info, not the alias-projecting v1 endpoint
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Read the retire-role-deployments.yml source
+      ansible.builtin.slurp:
+        src: "{{ _role_dir }}/tasks/retire-role-deployments.yml"
+      register: _retire_source
+
+    - name: Assert both reads use /v2/model/info and the delete task filters on db_model
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "(_source_text | regex_findall('/v2/model/info\\?page=1&size=100')) | length == 2"
+          - "'/model/info\"' not in _source_text"
+          - "'model_info.db_model' in _source_text"
+        fail_msg: "retire-role-deployments.yml no longer matches the expected /v2/model/info + db_model shape"
+      vars:
+        _source_text: "{{ _retire_source.content | b64decode }}"
