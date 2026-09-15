@@ -5,17 +5,25 @@
 # never carry BOTH at once: config.yaml.j2 already rendered the alias into
 # the file this converge deployed (earlier in this same role), so the only
 # remaining step is deleting the live DB row under that exact name before
-# the pending config-file-changed handler restarts the proxy. No flag: this
-# is always safe to run — a name is only ever a candidate here because it is
-# ALREADY a declared alias, so deleting a same-named DB row can only remove
-# a duplicate, never something the config does not also provide.
+# the pending config-file-changed handler restarts the proxy.
+#
+# Reads use /v2/model/info, not /model/info: the v1 endpoint always appends
+# one synthetic row per declared alias (copied from its underlying
+# deployment, with model_name rewritten to the alias name but model_info.id
+# still the UNDERLYING deployment's id), so every declared alias always
+# looks "live" there whether or not a real shadowing row exists. /v2/model/info
+# returns only real deployments. The delete step additionally restricts the
+# id to a row with model_info.db_model true — the field LiteLLM itself uses
+# to mark a DB-stored deployment — since a config-declared deployment can't
+# be removed via this API and isn't a duplicate to clean up here; it is a
+# registry-level naming collision the final assert below must catch instead.
 #
 # Runs after seed-roles.yml (tasks/main.yml) so a role newly seeded this
 # same converge is still caught if it happens to collide with an alias.
 
 - name: Read the model deployments the proxy carries, to find any shadowed by an alias
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ llm_router_api_port }}/model/info"
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/v2/model/info?page=1&size=100"
     headers:
       Authorization: "Bearer {{ llm_router_master_key }}"
     timeout: "{{ llm_router_seed_request_timeout }}"
@@ -30,10 +38,7 @@
       Authorization: "Bearer {{ llm_router_master_key }}"
     body_format: json
     body:
-      id: >-
-        {{ llm_router_alias_shadow_lookup.json.data
-           | selectattr('model_name', 'equalto', item)
-           | map(attribute='model_info.id') | first }}
+      id: "{{ _llm_router_alias_shadow_db_ids | first }}"
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
   loop: >-
@@ -45,15 +50,23 @@
     _llm_router_live_deployment_names: >-
       {{ llm_router_alias_shadow_lookup.json.data | default([])
          | map(attribute='model_name') | list }}
+    _llm_router_alias_shadow_db_ids: >-
+      {{ llm_router_alias_shadow_lookup.json.data | default([])
+         | selectattr('model_name', 'equalto', item)
+         | selectattr('model_info.db_model', 'equalto', true)
+         | map(attribute='model_info.id') | list }}
+  when: _llm_router_alias_shadow_db_ids | length > 0
   no_log: true
 
 # Proves the delete actually landed: a declared alias name must never also
 # be a live model_list row, or the deployment (not the alias) answers the
 # name — LiteLLM resolves a literal deployment name before consulting
-# model_group_alias.
+# model_group_alias. This also catches a config-declared deployment sharing
+# an alias's name: the delete task above never touches it (not DB-stored),
+# so it is still present here and fails loud as the registry violation it is.
 - name: Assert no declared alias name still exists as a model deployment
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ llm_router_api_port }}/model/info"
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/v2/model/info?page=1&size=100"
     headers:
       Authorization: "Bearer {{ llm_router_master_key }}"
     timeout: "{{ llm_router_seed_request_timeout }}"

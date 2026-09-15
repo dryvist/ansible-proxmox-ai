@@ -1,0 +1,25 @@
+{# CPU llama.cpp pool — one loop over tiers; backends from
+   llm_router_cpu_pool_backend_urls_by_tier (tofu tags → inventory ips). #}
+{% for tier, models in [
+  ('cpu-moe', llm_router_cpu_moe_models),
+  ('cpu-9b', llm_router_cpu_9b_models),
+] %}
+{% for m in models %}
+{% for base in llm_router_cpu_pool_backend_urls_by_tier[tier] | default([]) %}
+  - model_name: {{ m.client_model_id }}
+    litellm_params:
+      model: {{ litellm_model(m) }}
+      api_base: {{ base }}
+      api_key: {{ llm_router_light_api_key }}
+      use_chat_completions_api: true
+      max_parallel_requests: {{ llm_router_local_max_parallel_requests }}
+    model_info:
+      disable_background_health_check: true
+{% if m.context_window is defined %}
+      max_input_tokens: {{ m.context_window }}
+      max_tokens: {{ m.context_window }}
+{% endif %}
+{{- delegation_hints(m) }}
+{% endfor %}
+{% endfor %}
+{% endfor %}

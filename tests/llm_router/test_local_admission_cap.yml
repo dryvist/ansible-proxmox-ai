@@ -135,22 +135,46 @@
              | rejectattr('litellm_params.max_parallel_requests', 'defined')
              | map(attribute='model_name') | list }}
 
-    - name: The cap matches the documented default, not an arbitrary literal
-      # Pins the value to the variable so a future edit moves the default rather
-      # than scattering literals through the template.
+    # A6: a large-tier registry entry may declare its OWN max_parallel_requests
+    # (mirroring that model's host effectiveConcurrency) instead of inheriting
+    # the tier-wide default — so the expected value is looked up PER DEPLOYMENT
+    # from the registry, not pinned to one shared literal. Every large-tier
+    # entry declares one today (all 1, ground truth as of 2026-09-02), so this
+    # still fails on a value that drifts from what the registry actually says.
+    - name: Each local deployment's cap matches its own registry declaration
       ansible.builtin.assert:
         quiet: true
         that:
-          - _values | unique == [llm_router_local_max_parallel_requests | int]
+          - _mismatched | length == 0
         fail_msg: >-
-          Local deployments render max_parallel_requests {{ _values | unique }},
-          expected {{ llm_router_local_max_parallel_requests }} from
-          llm_router_local_max_parallel_requests.
-        success_msg: "cap == llm_router_local_max_parallel_requests ({{ llm_router_local_max_parallel_requests }})"
+          Local deployment(s) render max_parallel_requests that disagree with
+          their own registry declaration (or the tier-wide default when none is
+          declared): {{ _mismatched }}.
+        success_msg: >-
+          All {{ _local | length }} local deployment(s) carry the
+          max_parallel_requests their own registry entry declares (or the
+          tier-wide default).
       vars:
-        _values: >-
-          {{ _local | map(attribute='litellm_params.max_parallel_requests')
-             | map('int') | list }}
+        _expected_by_name: >-
+          {%- set ns = namespace(pairs=[]) -%}
+          {%- for m in llm_router_registry_enabled -%}
+          {%- if ns.pairs | selectattr('n', 'equalto', m.client_model_id) | list | length == 0 -%}
+          {%- set ns.pairs = ns.pairs + [{'n': m.client_model_id,
+                'v': m.max_parallel_requests | default(llm_router_local_max_parallel_requests) | int}] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ dict(ns.pairs | map(attribute='n') | zip(ns.pairs | map(attribute='v'))) }}
+        _mismatched: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for d in _local -%}
+          {%- set _rendered = d.litellm_params.max_parallel_requests | int -%}
+          {%- set _default = llm_router_local_max_parallel_requests | int -%}
+          {%- set _expected = _expected_by_name[d.model_name] | default(_default) -%}
+          {%- if _rendered != _expected -%}
+          {%- set ns.bad = ns.bad + [d.model_name ~ ' rendered=' ~ _rendered ~ ' expected=' ~ _expected] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
 
     # The pool multiplies this. Three members each hold an INDEPENDENT
     # asyncio.Semaphore (LiteLLM caches it local_only=True, so redis cannot
@@ -158,21 +182,36 @@
     # At 1 that is 3 against a 2-slot backend — a deliberate 1-over overcommit,
     # because no integer makes three independent semaphores sum to 2. At 2 it
     # would be 6, which is the original defect with extra steps.
-    - name: The per-member cap stays low enough that the pool does not re-flood
+    # A6: per-model registry values can now diverge from the tier-wide
+    # default, so the pool-ceiling bound is checked against EVERY distinct
+    # value the large tier declares (the default itself, plus each entry's
+    # own max_parallel_requests), not the default alone.
+    - name: No local admission cap, tier default or per-model, exceeds the pool bound
       ansible.builtin.assert:
         quiet: true
         that:
           - llm_router_local_max_parallel_requests | int >= 1
-          - llm_router_local_max_parallel_requests | int <= 1
+          - _over_bound | length == 0
         fail_msg: >-
-          llm_router_local_max_parallel_requests is
-          {{ llm_router_local_max_parallel_requests }}. Three pool members each
-          hold an independent in-process semaphore, so the backend sees 3x this
-          number against 2 available slots. Raising it is not a capacity
-          improvement — it restores the unbuffered flood this cap exists to stop.
-          If the backend's --decode-concurrency has genuinely increased, change
-          that first and update this bound WITH the measurement that justifies it.
-        success_msg: "per-member cap 1 => pool ceiling 3 against a 2-slot backend"
+          Cap(s) over 1 declared: {{ _over_bound }}. Three pool members each
+          hold an independent in-process semaphore, so the backend sees 3x
+          whichever model's cap this is. Raising it is not a capacity
+          improvement — it restores the unbuffered flood this cap exists to
+          stop. If a model's host effectiveConcurrency has genuinely
+          increased, update its registry entry WITH the measurement that
+          justifies it, and re-derive this bound alongside it.
+        success_msg: >-
+          Tier default and every per-model large-tier cap are each <= 1
+          (pool ceiling 3 per model against a 1-slot backend).
+      vars:
+        _large_tier_values: >-
+          {{ llm_router_registry_enabled
+             | selectattr('tier', 'equalto', 'large')
+             | selectattr('max_parallel_requests', 'defined')
+             | map(attribute='max_parallel_requests') | map('int') | unique | list }}
+        _over_bound: >-
+          {{ ([llm_router_local_max_parallel_requests | int] + _large_tier_values)
+             | select('gt', 1) | list }}
 
     - name: The passthrough wildcard is capped independently when enabled
       # Separate knob on purpose: LiteLLM keys the semaphore per DEPLOYMENT and
