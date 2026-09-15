@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.50.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.49.0...v0.50.0) (2026-09-15)
+
+
+### Features
+
+* **hermes_agent:** add three recurring jobs, a backlog sweeper, and a daily-status board summary ([#770](https://github.com/dryvist/ansible-proxmox-ai/issues/770)) ([8ee004f](https://github.com/dryvist/ansible-proxmox-ai/commit/8ee004f7584540fd9f85564c69328f097f1069fe))
+* **llm_router:** per-model max_parallel_requests on the large tier ([#778](https://github.com/dryvist/ansible-proxmox-ai/issues/778)) ([f78c772](https://github.com/dryvist/ansible-proxmox-ai/commit/f78c772cb838bb50764a43a376d3a27f9dfb475d))
+* **llm:** CPU MoE/9B pool + tofu-derived scaler ([#786](https://github.com/dryvist/ansible-proxmox-ai/issues/786)) ([d02e36b](https://github.com/dryvist/ansible-proxmox-ai/commit/d02e36b6e1eb6e57017dfebf4a5b8989cd5f08ad))
+
+
+### Bug Fixes
+
+* **llm_router:** dedup seeded keys against full /key/list objects ([150c08a](https://github.com/dryvist/ansible-proxmox-ai/commit/150c08adba3f64ad9dcea99e829f991e0b4867d7))
+* **llm_router:** dedup seeded keys against full /key/list objects ([26e9e32](https://github.com/dryvist/ansible-proxmox-ai/commit/26e9e329d57a57f119ddd8adb37556c22b9c6e61))
+* **llm_router:** read real deployments from /v2/model/info when retiring alias shadows ([#795](https://github.com/dryvist/ansible-proxmox-ai/issues/795)) ([9a9aea9](https://github.com/dryvist/ansible-proxmox-ai/commit/9a9aea97022d1fefb7f451c2db7e749d0af6446a))
+
 ## [0.49.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.48.0...v0.49.0) (2026-09-13)
 
 
