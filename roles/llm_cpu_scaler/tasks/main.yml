@@ -1,0 +1,137 @@
+---
+# Resolve pool membership and Proxmox API target from the published inventory.
+# Scaler identity/paths/tags come from tofu_data.constants.llm_cpu_scaler only.
+
+- name: Collect CPU LLM pool guests from tofu inventory
+  vars:
+    _pool: >-
+      {%- set ns = namespace(names=[]) -%}
+      {%- set tags = llm_cpu_scaler_cfg.pool_tags -%}
+      {%- for name, c in (tofu_data.containers | default({})).items() -%}
+      {%- if (c.tags | default([])) | intersect(tags) | length > 0 -%}
+      {%- set ns.names = ns.names + [name] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.names | sort }}
+  ansible.builtin.set_fact:
+    llm_cpu_scaler_pool_guests: "{{ _pool }}"
+
+- name: Assert the CPU LLM pool is declared in tofu inventory
+  ansible.builtin.assert:
+    that:
+      - llm_cpu_scaler_pool_guests | length > 0
+    fail_msg: >-
+      No containers carry tags {{ llm_cpu_scaler_cfg.pool_tags }} in
+      tofu_data.containers — add the pool guests to deployment.json.
+
+- name: Resolve warm / scale / moe sets and VMIDs from tags
+  vars:
+    _warm_tag: "{{ llm_cpu_scaler_cfg.tags.warm }}"
+    _moe_tag: "{{ llm_cpu_scaler_cfg.tags.moe }}"
+    _warm: >-
+      {%- set ns = namespace(names=[]) -%}
+      {%- for name in llm_cpu_scaler_pool_guests -%}
+      {%- if _warm_tag in (tofu_data.containers[name].tags | default([])) -%}
+      {%- set ns.names = ns.names + [name] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.names | sort }}
+    _moe: >-
+      {%- set ns = namespace(names=[]) -%}
+      {%- for name in llm_cpu_scaler_pool_guests -%}
+      {%- if _moe_tag in (tofu_data.containers[name].tags | default([])) -%}
+      {%- set ns.names = ns.names + [name] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.names | sort }}
+    _vmids: >-
+      {%- set ns = namespace(out={}) -%}
+      {%- for name in llm_cpu_scaler_pool_guests -%}
+      {%- set _ = ns.out.update({name: tofu_data.containers[name].vmid}) -%}
+      {%- endfor -%}
+      {{ ns.out }}
+    _fqdns: >-
+      {%- set ns = namespace(out={}) -%}
+      {%- for name in llm_cpu_scaler_pool_guests -%}
+      {%- set _ = ns.out.update({name: tofu_data.containers[name].ip}) -%}
+      {%- endfor -%}
+      {{ ns.out }}
+  ansible.builtin.set_fact:
+    llm_cpu_scaler_warm_guests: "{{ _warm }}"
+    llm_cpu_scaler_scale_order: "{{ llm_cpu_scaler_pool_guests | difference(_warm) | sort }}"
+    llm_cpu_scaler_moe_guests: "{{ _moe }}"
+    llm_cpu_scaler_guest_vmids: "{{ _vmids }}"
+    llm_cpu_scaler_guest_fqdns: "{{ _fqdns }}"
+    llm_cpu_scaler_proxmox_node: "{{ tofu_data.containers[llm_cpu_scaler_pool_guests[0]].node }}"
+
+- name: Assert every pool guest sits on one node with a warm member
+  ansible.builtin.assert:
+    that:
+      - llm_cpu_scaler_pool_guests
+        | map('extract', tofu_data.containers)
+        | map(attribute='node')
+        | unique
+        | list
+        | length == 1
+      - llm_cpu_scaler_warm_guests | length >= 1
+    fail_msg: >-
+      CPU LLM pool guests must share one Proxmox node and at least one must
+      carry tag {{ llm_cpu_scaler_cfg.tags.warm }} (the always-on MoE). Nodes seen:
+      {{ llm_cpu_scaler_pool_guests | map('extract', tofu_data.containers)
+         | map(attribute='node') | unique | list }}.
+
+- name: Derive Proxmox API host from tofu nodes map + domain
+  ansible.builtin.set_fact:
+    llm_cpu_scaler_proxmox_api_host: >-
+      {{ (tofu_data.nodes[llm_cpu_scaler_proxmox_node] | default({})).role
+         | default(llm_cpu_scaler_proxmox_node, true)
+         ~ '.' ~ (tofu_data.domain | mandatory('tofu_data.domain missing')) }}
+
+- name: Install scaler directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ llm_cpu_scaler_cfg.install_dir }}"
+    - "{{ llm_cpu_scaler_cfg.config_dir }}"
+    - "{{ llm_cpu_scaler_cfg.state_dir }}"
+
+- name: Render scaler config
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ llm_cpu_scaler_cfg.config_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart llm-cpu-scaler
+
+- name: Install scaler script
+  ansible.builtin.template:
+    src: llm-cpu-scaler.py.j2
+    dest: "{{ llm_cpu_scaler_cfg.install_dir }}/{{ llm_cpu_scaler_cfg.script }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart llm-cpu-scaler
+
+- name: Install systemd unit and timer
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/etc/systemd/system/{{ item.unit }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { src: llm-cpu-scaler.service.j2, unit: "{{ llm_cpu_scaler_cfg.service }}" }
+    - { src: llm-cpu-scaler.timer.j2, unit: "{{ llm_cpu_scaler_cfg.timer }}" }
+  notify: Restart llm-cpu-scaler timer
+
+- name: Enable and start scaler timer
+  ansible.builtin.systemd:
+    name: "{{ llm_cpu_scaler_cfg.timer }}"
+    enabled: true
+    state: started
+    daemon_reload: true
