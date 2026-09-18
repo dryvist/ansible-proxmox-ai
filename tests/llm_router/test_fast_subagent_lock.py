@@ -144,14 +144,31 @@ def test_refresh_and_release_use_atomic_compare_scripts():
 
 def test_role_calls_auto_release_direct_calls_need_the_header():
     # The core semantics split this PR's fix depends on: _maybe_release must
-    # gate role-call release on membership alone, and direct-call release on
-    # the explicit header — mixing these up either breaks multi-call
-    # cache-affinity for direct callers or leaves fast/subagent's lock held
-    # for the full TTL after a fast, successful call.
+    # gate role-call release on the stamped caller shape alone, and
+    # direct-call release on the explicit header — mixing these up either
+    # breaks multi-call cache-affinity for direct callers or leaves
+    # fast/subagent's lock held for the full TTL after a fast, successful
+    # call.
     source = render()
     maybe_release = source.split("async def _maybe_release")[1].split("async def async_post_call_success_hook")[0]
-    assert "is_role_call = model in ROLE_NAMES" in maybe_release
+    assert 'shape = (data.get("metadata") or {}).get(_LOCK_SHAPE_KEY)' in maybe_release
+    assert 'is_role_call = shape == "role"' in maybe_release
     assert "if not is_role_call and not _release_requested(data):" in maybe_release
+
+
+def test_release_eligibility_reads_metadata_not_model():
+    # Regression guard for the coupled blockers-2-and-3 fix: release
+    # eligibility must NOT be re-derived from data["model"] at post-call
+    # time, because the Router's own ordinary fallback chain can rewrite
+    # that field before async_post_call_success_hook ever sees it — which
+    # would silently defeat release for a fast/subagent call that fell
+    # through past hermes-local-4080 to a later rung. The pre-call hook must
+    # stamp the shape into metadata before anything else can touch model.
+    source = render()
+    pre_call = source.split("async def async_pre_call_hook")[1].split("async def _maybe_release")[0]
+    assert 'data.setdefault("metadata", {})[_LOCK_SHAPE_KEY] = "role" if is_role_call else "direct"' in pre_call
+    maybe_release = source.split("async def _maybe_release")[1].split("async def async_post_call_success_hook")[0]
+    assert 'data.get("model")' not in maybe_release
 
 
 def test_success_and_failure_hooks_both_call_maybe_release():

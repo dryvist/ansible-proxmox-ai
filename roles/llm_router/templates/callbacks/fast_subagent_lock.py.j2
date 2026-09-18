@@ -59,12 +59,34 @@ long as the underlying work is in flight, not the full TTL. Every
 `fast`/`subagent` acquisition auto-releases on that SAME request's own
 completion (success or failure), via async_post_call_success_hook /
 async_post_call_failure_hook below — so a caller that finishes in 5s frees
-the slot in 5s, not 300s. This does not change WHEN the lock is taken, only
-how long it is held, which is what actually matters for "does an idle 4080
-lock out fast-gpu/direct callers" — that window is now bounded by one
-request's wall-clock time, not the TTL. A genuine acquisition-time fix (gate
-on the Router's actually-resolved deployment, not the caller-typed name)
-would need a hook this file could not identify with confidence.
+the slot in 5s, not 300s, EVEN IF the Router's own ordinary fallback chain
+carried the request past hermes-local-4080 to a later rung (Mac Studio /
+cloud / long) without this file's involvement — release does not depend on
+which rung actually served the request. This does not change WHEN the lock
+is taken, only how long it is held, which is what actually matters for
+"does an idle 4080 lock out fast-gpu/direct callers" — that window is now
+bounded by one request's wall-clock time, not the TTL. A genuine
+acquisition-time fix (gate on the Router's actually-resolved deployment, not
+the caller-typed name) would need a hook this file could not identify with
+confidence.
+
+WHY RELEASE READS data["metadata"], NOT data["model"]. The first version of
+this fix keyed release eligibility off `data.get("model")`, matching it
+against ROLE_NAMES/GATED_MODELS the same way the pre-call hook does. That
+breaks the moment the Router's own fallback machinery rewrites `data["model"]`
+to reflect whichever deployment actually served the request (LiteLLM's
+documented pattern for request logging) — a `fast` call that fell through to
+a cloud rung would then read back as some unrelated model id at post-call
+time, `is_role_call` would evaluate false, and `_maybe_release` would skip
+entirely: the exact "holds the lock for the full 300s while the 4080 sits
+idle" failure this fix exists to prevent, and the one that makes `fast-gpu`'s
+429-means-busy signal unreliable for every caller told to trust it. Fixed by
+stamping the caller shape ("role" vs "direct") into `data["metadata"]` in
+`async_pre_call_hook`, before anything downstream has a chance to touch
+`data["model"]`, and reading that stamp back in `_maybe_release` instead.
+`metadata` is litellm's own documented pass-through field for exactly this
+kind of request-scoped custom data, and unlike `model` nothing else in the
+request lifecycle has a reason to overwrite it.
 
 Direct callers (GATED_MODELS) do NOT auto-release on completion — that
 would break the ORIGINAL feature this lock exists for (a caller like Hermes
@@ -103,6 +125,10 @@ GATED_MODELS = frozenset({{ llm_router_subagent_lock_model_ids | to_json }})
 # hard-rejecting — see 55-roles.yml and the module docstring above.
 ROLE_NAMES = frozenset({{ llm_router_subagent_lock_role_names | to_json }})
 ROLE_REDIRECT_TARGET = {{ llm_router_primary_model | to_json }}
+# metadata key _maybe_release reads to learn the caller shape (role vs
+# direct) that async_pre_call_hook determined — see the module docstring for
+# why this cannot be re-derived from data["model"] at post-call time.
+_LOCK_SHAPE_KEY = "subagent_lock_caller_shape"
 
 # Same connection this proxy already uses for spend tracking (router_settings
 # in config.yaml.j2): host/password via the systemd EnvironmentFile, port as
@@ -195,6 +221,10 @@ class FastSubagentLock(CustomLogger):
         is_role_call = model in ROLE_NAMES
         if model not in GATED_MODELS and not is_role_call:
             return data
+        # Stamped BEFORE anything downstream (the Router's own fallback
+        # machinery included) gets a chance to rewrite data["model"] — see
+        # the module docstring. _maybe_release reads this, never data["model"].
+        data.setdefault("metadata", {})[_LOCK_SHAPE_KEY] = "role" if is_role_call else "direct"
         caller_id = _caller_id(user_api_key_dict)
         client = self._get_client()
         # NX+EX in one round trip: acquires only if absent, sets the TTL as
@@ -225,11 +255,12 @@ class FastSubagentLock(CustomLogger):
     async def _maybe_release(self, data: dict, user_api_key_dict) -> None:
         """Shared by the success and failure post-call hooks — see the
         module docstring for why role calls auto-release unconditionally
-        while direct calls release only on the explicit header."""
-        model = data.get("model")
-        is_role_call = model in ROLE_NAMES
-        if model not in GATED_MODELS and not is_role_call:
+        while direct calls release only on the explicit header, and for why
+        this reads data["metadata"] rather than data["model"]."""
+        shape = (data.get("metadata") or {}).get(_LOCK_SHAPE_KEY)
+        if shape is None:
             return
+        is_role_call = shape == "role"
         if not is_role_call and not _release_requested(data):
             return
         caller_id = _caller_id(user_api_key_dict)
