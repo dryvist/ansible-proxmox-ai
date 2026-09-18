@@ -52,20 +52,42 @@ llm_router_embedding_model: >-
 # alias instead (llm-models.d/10-large.yml) — a naming-transport change
 # only, zero functional difference for a caller of either name.
 #
-# `subagent` used to target a dedicated ≥1M-context paid OpenRouter entry.
-# That entry now carries the `long` git alias instead
-# (llm-models.d/50-openrouter.yml), and subagent stays pointed at the SAME
-# physical entry via llm_router_model_group_aliases.long (defined earlier,
-# 50-servable.yml) rather than being narrowed onto the small/cheap tier —
-# nix-ai's Claude Code subagent tier (lib/checks/litellm-local-claude-tier.nix,
-# modules/claude/settings-env.nix) requests `subagent` and needs the >200k
-# window `long` carries; narrowing this DB role ahead of that consumer
-# moving would silently truncate every subagent call. The subagent -> cheap
-# retarget waits for that migration (tracked separately); subagent is NOT
-# yet a git alias itself for the same common-word-collision reason
-# `judge`/`cheap`/`embed`/`ocr` are deferred (test_registry_retype_scan.py).
+# SUPERSEDES the A5 note (2026-09-12): `subagent` no longer targets `long`
+# directly. `subagent` and the new `fast` role (Codex's own `--profile fast`
+# and nix-ai's aliases.nix already reference this name; the router never had
+# one before) now share ONE local-first chain instead: try the 4080
+# (hermes-local-4080, the same fail-fast local leg the session lock in
+# 57-subagent-lock.yml/fast_subagent_lock.py.j2 covers), then the Mac
+# Studio's own resident brain, then the fastest ZDR-compliant free cloud
+# rung, then the first (registry-order) paid cloud rung, with `long` kept as
+# the terminal rung — NOT dropped, moved. `long`'s >200k-context escape hatch
+# (nix-ai's Claude Code subagent tier) is preserved two ways: it is still the
+# LAST fallback tried on an ordinary failure, and 37-fallback-entry-points.yml
+# separately maps both role names straight to it via context_window_fallbacks
+# for a request too large for the chain's first (narrower) rung — evaluated
+# against "fast"/"subagent" own advertised window BEFORE any chain walk
+# begins, so that depth-0 case does not depend on walking the ordinary list
+# at all. subagent is still NOT a git alias itself, for the same common-word-
+# collision reason `judge`/`cheap`/`embed`/`ocr` are deferred
+# (test_registry_retype_scan.py).
+#
+# UNVERIFIED, no live proxy this PR: whether a DB-role's own `/fallback`
+# record draws on the SAME router_settings.max_fallbacks depth budget the
+# config-rendered chains do (37-fallback-entry-points.yml). If it does, this
+# 4-rung chain could in principle be truncated before reaching `long` under
+# the worst case of every earlier rung failing — every role deployment before
+# this PR only ever carried 0 or 1 fallbacks, so that interaction has never
+# been exercised. Confirm live before relying on the terminal rung under load.
+_llm_router_fast_subagent_chain:
+  - "{{ llm_router_primary_model }}"
+  - "{{ (llm_router_hermes_cloud_free_groups | first) if (llm_router_hermes_cloud_free_groups | length > 0) else '' }}"
+  - "{{ (llm_router_hermes_cloud_paid_groups | first) if (llm_router_hermes_cloud_paid_groups | length > 0) else '' }}"
+  - "{{ llm_router_model_group_aliases.long }}"
 
-# FALLBACK ORDER IS ONE-WAY, LARGEST CONTEXT FIRST.
+# FALLBACK ORDER IS ONE-WAY, LARGEST CONTEXT FIRST — for every role EXCEPT
+# fast/subagent above, whose chain is intentionally local-first / narrowest
+# rung first and relies on context_window_fallbacks (not ordering) to keep an
+# oversize request from being poisoned. See the note above the chain var.
 #
 # A fallback that serves a smaller context than the model it replaces does not
 # degrade a caller, it poisons one: the request is silently truncated and the
@@ -75,11 +97,18 @@ llm_router_embedding_model: >-
 # turns into a hard failure exactly when the fallback was supposed to help.
 
 llm_router_role_deployments:
-  # Same physical target as the `long` alias — see the A5 note above for why
-  # this stays wide rather than narrowing to the small/cheap tier.
+  # Local-first: try the 4080 before anything else. See the note above
+  # _llm_router_fast_subagent_chain for why this no longer targets `long`
+  # directly and how the >200k escape hatch stays reachable.
   - role: subagent
-    model: "{{ llm_router_model_group_aliases.long }}"
-    fallbacks: []
+    model: "{{ llm_router_hermes_local_4080_id }}"
+    fallbacks: "{{ _llm_router_fast_subagent_chain | reject('equalto', '') | list }}"
+  # Same chain, second name — both Codex's `--profile fast` and this
+  # project's own `subagent` naming already have external callers expecting
+  # them; see the note above _llm_router_fast_subagent_chain.
+  - role: fast
+    model: "{{ llm_router_hermes_local_4080_id }}"
+    fallbacks: "{{ _llm_router_fast_subagent_chain | reject('equalto', '') | list }}"
   # The judge, cross-family to the primary on purpose — the same model the
   # `goal-judge` alias resolves to today.
   - role: judge
@@ -105,10 +134,15 @@ llm_router_seed_request_timeout: 30
 # Connection parameters for a role's target, keyed by client_model_id and built
 # from the SAME registry fields config.yaml.j2 renders — a role deployment is a
 # real deployment, so it carries the target's own upstream and credential rather
-# than an extra hop through this proxy. Only the three tiers a role can target
-# are projected; a role pointing anywhere else fails the assert in
+# than an extra hop through this proxy. Only the tiers a role can target are
+# projected; a role pointing anywhere else fails the assert in
 # tasks/seed-roles.yml rather than being seeded with half a configuration.
 # Values are secret REFERENCES (os.environ/), never secrets.
+#
+# vllm/hermes-local ADDED for the fast/subagent chain above — mirrors
+# model-list.yaml.j2's own vLLM-tier rendering exactly (same api_base/api_key
+# pair), which is the only reason those two match what config.yaml.j2 already
+# advertises for the same client_model_id.
 _llm_router_role_params: >-
   {%- set ns = namespace(params={}) -%}
   {%- for m in llm_router_registry_enabled -%}
@@ -135,6 +169,12 @@ _llm_router_role_params: >-
         'model': upstream,
         'api_base': llm_router_opencode_base_url,
         'api_key': 'os.environ/' ~ m.credential_env,
+        'use_chat_completions_api': true}}) -%}
+  {%- elif m.tier in ['vllm', 'hermes-local'] -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'api_base': llm_router_llm_vllm_base_url,
+        'api_key': llm_router_light_api_key,
         'use_chat_completions_api': true}}) -%}
   {%- endif -%}
   {%- endfor -%}

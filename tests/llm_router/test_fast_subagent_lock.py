@@ -32,6 +32,8 @@ DEFAULT_CONTEXT = {
     # be derived, never re-typed as a literal, even in a test fixture.
     "llm_router_subagent_lock_model_ids": ["fixture-model-a", "fixture-model-b", "fixture-model-c"],
     "llm_router_redis_port": 6379,
+    "llm_router_subagent_lock_role_names": ["fixture-role-fast", "fixture-role-subagent"],
+    "llm_router_primary_model": "fixture-primary-model",
 }
 
 
@@ -98,6 +100,30 @@ def test_scalar_constants_render_from_their_own_variable(var, needle):
     changed = {"llm_router_subagent_lock_key": "other:key", "llm_router_subagent_lock_ttl_seconds": 60,
                "llm_router_subagent_lock_release_header": "x-other", "llm_router_redis_port": 1234}[var]
     assert needle not in render(**{var: changed})
+
+
+def test_role_names_reflect_their_own_variable():
+    source = render(llm_router_subagent_lock_role_names=["x", "y"])
+    match = re.search(r"ROLE_NAMES = frozenset\((\[.*?\])\)", source)
+    assert match, source
+    assert json.loads(match.group(1)) == ["x", "y"]
+
+
+def test_role_redirect_target_reflects_its_own_variable():
+    source = render(llm_router_primary_model="some-primary")
+    assert 'ROLE_REDIRECT_TARGET = "some-primary"' in source
+
+
+def test_role_call_redirects_instead_of_raising():
+    # The one behavioral fork this file adds over the original direct-caller
+    # lock: a role-call contention path must rewrite data["model"] and
+    # return, never reach the `raise HTTPException` branch.
+    source = render()
+    pre_call = source.split("async def async_pre_call_hook")[1].split("async def async_post_call_success_hook")[0]
+    assert 'data["model"] = ROLE_REDIRECT_TARGET' in pre_call
+    # The redirect branch must be reached BEFORE the raise, not after it
+    # (dead code that never runs on the intended path).
+    assert pre_call.index('data["model"] = ROLE_REDIRECT_TARGET') < pre_call.index("raise HTTPException")
 
 
 def test_redis_import_is_guarded_not_unconditional():

@@ -38,3 +38,28 @@ llm_router_subagent_lock_ttl_seconds: 300
 
 llm_router_subagent_lock_key: "subagent:4080:lock"
 llm_router_subagent_lock_release_header: x-subagent-release
+
+# The single hermes-local-tier entry (currently exactly one: hermes-local-4080)
+# — derived rather than hand-listed for the same reason the gated set above
+# is, and reused as the `fast`/`subagent` DB roles' primary target in
+# 55-roles.yml so that file carries no registry literal either.
+llm_router_hermes_local_4080_id: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-local')
+     | map(attribute='client_model_id') | list | first }}
+
+# --- fast/subagent role-call redirect-on-contention ---------------------------
+# See 55-roles.yml for the chain these two DB roles share and why. A caller
+# naming one of these role names directly reaches fast_subagent_lock.py.j2
+# under the role's OWN name (a DB-seeded role is a first-class LiteLLM
+# model_group with its own deployments, not a config alias substituted before
+# the callback runs) — contention on one of these redirects the request onto
+# the chain's first fallback rung instead of rejecting it, UNLIKE a direct
+# call naming hermes-local-4080/qwen3.8-27b/qwen3-coder-30b, which still gets
+# the hard 429 (local-subagents' "429 = wait" contract for those names is
+# unchanged). See fast_subagent_lock.py.j2 and its module docstring for why
+# this is a template-time redirect target rather than a live lookup of the
+# role's own DB-stored fallback order (UI-reorderability tradeoff, documented
+# there).
+llm_router_subagent_lock_role_names:
+  - fast
+  - subagent
