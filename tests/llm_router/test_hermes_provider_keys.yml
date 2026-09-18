@@ -214,11 +214,28 @@
           # absence, one exceeding the served window by 482 tokens.
           - "'hermes-default' in _cwf_keys"
           # Every escape target is this provider's groups and nothing else --
-          # the original intent of this test, preserved.
+          # the original intent of this test, preserved -- EXCEPT fast/subagent
+          # (55-roles.yml), which escape straight to `long` and are excluded
+          # here on purpose; checked separately below.
           - >-
             _config.router_settings.context_window_fallbacks
+            | rejectattr('fast', 'defined') | rejectattr('subagent', 'defined')
             | map('dict2items') | flatten | map(attribute='value') | unique
             == [_openrouter_groups]
+          # fast/subagent escape to `long` specifically (37-fallback-entry-
+          # points.yml), not this provider's groups -- both DB roles' ORDINARY
+          # fallback chain is local-only and never reaches a cloud rung, but
+          # an over-long request is a different failure mode and must still
+          # reach the >200k-context rung `subagent` already depended on before
+          # this PR (it used to target `long` directly).
+          - >-
+            _config.router_settings.context_window_fallbacks
+            | selectattr('fast', 'defined') | map(attribute='fast') | list
+            == [[llm_router_model_group_aliases.long]]
+          - >-
+            _config.router_settings.context_window_fallbacks
+            | selectattr('subagent', 'defined') | map(attribute='subagent') | list
+            == [[llm_router_model_group_aliases.long]]
           # hermes-cloud-openrouter (kimi-k2.6, glm-5.2) stays dark: its
           # credential is OPENROUTER_HERMES_KEY, absent from this fixture.
           - _cloud_models | length == 0
@@ -256,7 +273,8 @@
               + (llm_router_hermes_virtual_models
                  | map(attribute='client_model_id') | list)
               + llm_router_servable_models
-              + (_config.router_settings.model_group_alias | list))
+              + (_config.router_settings.model_group_alias | list)
+              + llm_router_subagent_lock_role_names)
              | unique | list }}
         _fallback_chain: >-
           {{ _config.router_settings.fallbacks

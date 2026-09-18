@@ -55,26 +55,31 @@ llm_router_embedding_model: >-
 # SUPERSEDES the A5 note (2026-09-12): `subagent` no longer targets `long`
 # directly. `subagent` and the new `fast` role (Codex's own `--profile fast`
 # and nix-ai's aliases.nix already reference this name; the router never had
-# one before) now share ONE LOCAL-ONLY chain instead: try the 4080
+# one before) now share ONE LOCAL-ONLY ORDINARY chain instead: try the 4080
 # (hermes-local-4080, the same fail-fast local leg the session lock in
 # 57-subagent-lock.yml/fast_subagent_lock.py.j2 covers), then the Mac
 # Studio's own resident brain. Stops there, deliberately — this alias exists
 # for cheap/local/no-budget-consumed delegation, and chaining into a paid or
 # remote rung under the same name would silently spend money under a name
 # that is supposed to mean "free and local". If both local rungs are
-# unavailable, the request fails outright (LiteLLM's normal behaviour for an
-# exhausted fallback list) rather than escalating anywhere else — the calling
-# harness is expected to notice that failure and fall back to its OWN native
-# subagent tooling, not this alias's job.
+# unavailable (busy, timed out, or any other ordinary failure), the request
+# fails outright (LiteLLM's normal behaviour for an exhausted fallback list)
+# rather than escalating anywhere else — the calling harness is expected to
+# notice that failure and fall back to its OWN native subagent tooling, not
+# this alias's job.
 #
-# `long`'s >200k-context escape hatch (nix-ai's Claude Code subagent tier,
-# the pre-existing `subagent` -> `long` direct target this supersedes) is a
-# SEPARATE, EXISTING thing this chain does not touch, reference, or
-# interact with in any way — no context_window_fallbacks entry is added for
-# `fast`/`subagent` here. A request too large for hermes-local-4080's own
-# advertised window (32768 tokens) therefore fails outright rather than
-# escaping anywhere, including to the Mac Studio primary — same reasoning:
-# an explicit failure here is the intended behaviour, not a gap.
+# TWO DIFFERENT FAILURE MODES, two different mechanisms — an over-long
+# request is NOT the same problem as a busy backend, and is handled
+# separately. `long`'s >200k-context escape hatch is what `subagent` already
+# depended on before this PR (it used to target `long` directly), and that
+# capability is PRESERVED, not dropped: 37-fallback-entry-points.yml adds
+# `fast`/`subagent` -> `long` entries to context_window_fallbacks, evaluated
+# against the role's OWN advertised window (hermes-local-4080's 32768) at
+# depth 0, before this ordinary chain is ever walked. So a request too large
+# for the 4080 still reaches `long` (a genuinely different failure this alias
+# is not trying to protect callers from), while a request that fits but finds
+# both local rungs busy still fails outright rather than reaching any paid or
+# remote rung (the failure mode the local-only chain above exists to bound).
 #
 # subagent is still NOT a git alias itself, for the same common-word-
 # collision reason `judge`/`cheap`/`embed`/`ocr` are deferred
@@ -83,8 +88,11 @@ _llm_router_fast_subagent_chain:
   - "{{ llm_router_primary_model }}"
 
 # FALLBACK ORDER IS ONE-WAY, LARGEST CONTEXT FIRST — for every role EXCEPT
-# fast/subagent above, whose two-rung chain is local-only by design (see the
-# note above the chain var) and never reaches a rung this rule would apply to.
+# fast/subagent above, whose two-rung ORDINARY chain is local-only by design
+# (see the note above the chain var) and never reaches a rung this rule would
+# apply to; its own over-long-request case is handled by
+# context_window_fallbacks instead of ordering, same as it always was for
+# `subagent`'s pre-PR direct `long` target.
 #
 # A fallback that serves a smaller context than the model it replaces does not
 # degrade a caller, it poisons one: the request is silently truncated and the
