@@ -1,0 +1,121 @@
+{{ ansible_managed | comment }}
+"""LiteLLM custom callback: a reject-fast, per-caller session lock for the
+RTX 4080's single llama.cpp slot (guest llm-4080).
+
+Deployed by roles/llm_router next to config.yaml, and resolved by LiteLLM
+from litellm_settings.callbacks: "fast_subagent_lock.proxy_handler_instance"
+(config.yaml.j2) — LiteLLM imports a callback module relative to the config
+file's own directory, so this file must live beside config.yaml. NOT smoke-
+tested against a live proxy in the PR that added this; see the PR body.
+
+Rationale for the lock, the model set it covers, and the TTL:
+roles/llm_router/defaults/main/57-subagent-lock.yml.
+"""
+
+import os
+
+from fastapi import HTTPException
+from litellm.integrations.custom_logger import CustomLogger
+
+try:
+    import redis.asyncio as redis_asyncio
+except ImportError:  # pragma: no cover - always present inside the litellm[proxy] venv
+    redis_asyncio = None
+
+LOCK_KEY = {{ llm_router_subagent_lock_key | to_json }}
+LOCK_TTL_SECONDS = {{ llm_router_subagent_lock_ttl_seconds }}
+RELEASE_HEADER = {{ llm_router_subagent_lock_release_header | to_json }}
+# The client_model_id set that shares the 4080's single llama.cpp slot and KV
+# cache — derived from the registry by tier, see 57-subagent-lock.yml.
+GATED_MODELS = frozenset({{ llm_router_subagent_lock_model_ids | to_json }})
+
+# Same connection this proxy already uses for spend tracking (router_settings
+# in config.yaml.j2): host/password via the systemd EnvironmentFile, port as
+# a non-secret literal baked in at render time — reusing that pattern rather
+# than declaring a second Redis config.
+_REDIS_HOST = os.environ.get("LLM_ROUTER_REDIS_HOST", "")
+_REDIS_PORT = {{ llm_router_redis_port }}
+_REDIS_PASSWORD = os.environ.get("LLM_ROUTER_REDIS_PASSWORD") or None
+
+
+def _caller_id(user_api_key_dict) -> str:
+    """The identity a lock decision is made against — a virtual key's alias
+    (roles/llm_router/defaults/main/56-virtual-keys.yml), falling back to the
+    key's own token for an unaliased/master-key caller so the lock still
+    degrades to a real (if less readable) identity rather than colliding
+    every unattributed caller onto the literal string "unknown"."""
+    return (
+        getattr(user_api_key_dict, "key_alias", None)
+        or getattr(user_api_key_dict, "token", None)
+        or "unknown"
+    )
+
+
+class FastSubagentLock(CustomLogger):
+    """One caller at a time on the 4080. Every other caller is rejected with
+    429 immediately — no wait-queue, no preemption. The 300s TTL is the only
+    release path guaranteed to fire; X-Subagent-Release is a courtesy on top
+    of it, checked only after the call completes."""
+
+    def __init__(self, client=None):
+        # Injectable for tests (tests/llm_router/test_fast_subagent_lock.py);
+        # production always lazy-connects via _get_client below.
+        self._client = client
+
+    def _get_client(self):
+        if self._client is not None:
+            return self._client
+        if redis_asyncio is None:
+            raise RuntimeError(
+                "redis.asyncio is unavailable — expected inside the litellm[proxy] venv"
+            )
+        self._client = redis_asyncio.Redis(
+            host=_REDIS_HOST,
+            port=_REDIS_PORT,
+            password=_REDIS_PASSWORD,
+            decode_responses=True,
+        )
+        return self._client
+
+    async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type: str):
+        if data.get("model") not in GATED_MODELS:
+            return data
+        caller_id = _caller_id(user_api_key_dict)
+        client = self._get_client()
+        # NX+EX in one round trip: acquires only if absent, refreshes the TTL
+        # as a side effect of the very acquisition that succeeds.
+        acquired = await client.set(LOCK_KEY, caller_id, nx=True, ex=LOCK_TTL_SECONDS)
+        if acquired:
+            return data
+        holder = await client.get(LOCK_KEY)
+        if holder == caller_id:
+            # Same caller, still working — refresh so continued use keeps the
+            # lock alive instead of expiring mid-session.
+            await client.expire(LOCK_KEY, LOCK_TTL_SECONDS)
+            return data
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "llm-4080 is locked by another caller",
+                "held_by": holder,
+                "retry_after_seconds": LOCK_TTL_SECONDS,
+            },
+            headers={"Retry-After": str(LOCK_TTL_SECONDS)},
+        )
+
+    async def async_post_call_success_hook(self, data: dict, user_api_key_dict, response):
+        if data.get("model") not in GATED_MODELS:
+            return response
+        headers = (data.get("proxy_server_request") or {}).get("headers") or {}
+        released = str(headers.get(RELEASE_HEADER, "")).strip().lower() in ("1", "true", "yes")
+        if not released:
+            return response
+        caller_id = _caller_id(user_api_key_dict)
+        client = self._get_client()
+        holder = await client.get(LOCK_KEY)
+        if holder == caller_id:
+            await client.delete(LOCK_KEY)
+        return response
+
+
+proxy_handler_instance = FastSubagentLock()

@@ -1,0 +1,40 @@
+---
+# --- SESSION LOCK for the RTX 4080's single llama.cpp slot --------------------
+# templates/callbacks/fast_subagent_lock.py.j2 — a LiteLLM custom callback,
+# registered in litellm_settings.callbacks (config.yaml.j2) only alongside a
+# configured spend store (llm_router_redis_host), the same gate the Redis
+# block in config.yaml.j2 already uses — the lock has nowhere to live without
+# it. Deployed by tasks/main.yml next to config.yaml.
+#
+# WHY reject-fast, not a queue: llama.cpp serves this card with exactly one
+# in-flight slot (llama_cpp_parallel: 1, inventory/group_vars/
+# llm_vllm_group.yml — the KV cache is one unified buffer, so more slots
+# would divide capacity, not add concurrency). A second caller queuing behind
+# the first would tie up a router worker for the ~190-300s this rung can take
+# (llm-models.d/30-local-gpu.yml); refusing it immediately with Retry-After
+# lets the caller's own fallback chain move on instead.
+#
+# WHY the lock covers three names, not one. llama-swap keeps only ONE model
+# loaded at a time on this card (groups.chat, swap: true,
+# roles/llama_cpp/templates/llama-swap.yaml.j2) and TWO client-facing
+# registry entries share it (tier: vllm — qwen3.8-27b, qwen3-coder-30b), plus
+# the hermes-local-4080 fallback rung onto the same weights (tier:
+# hermes-local). Any one of the three evicts the KV cache another was
+# building, so gating the lock on a single alias (as first scoped) would have
+# left the other two free to thrash a cache the lock was supposed to protect.
+# Derived from the registry by tier rather than hand-listed, so a future
+# vllm-tier entry on this card is covered automatically — see
+# tests/llm_router/test_fast_subagent_lock.py for the assumption this filter
+# makes about tier naming staying single-guest.
+llm_router_subagent_lock_model_ids: >-
+  {{ llm_router_registry_enabled
+     | selectattr('tier', 'in', ['vllm', 'hermes-local'])
+     | map(attribute='client_model_id') | list }}
+
+# The only release path GUARANTEED to fire — an unattended Hermes caller that
+# crashes or times out must not hold the lock forever. X-Subagent-Release is a
+# courtesy on top of this, never a substitute (fast_subagent_lock.py.j2).
+llm_router_subagent_lock_ttl_seconds: 300
+
+llm_router_subagent_lock_key: "subagent:4080:lock"
+llm_router_subagent_lock_release_header: x-subagent-release

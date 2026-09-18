@@ -232,7 +232,14 @@ litellm_settings:
   # router's fallback events, and the only thing in this proxy that records
   # the model group originally ASKED FOR next to the one that served.
   # Rationale and the trap it replaces: defaults/main/60-ops.yml.
-  callbacks: {{ (['prometheus'] if llm_router_prometheus_enabled | bool else []) | to_json }}
+  #
+  # fast_subagent_lock only alongside a configured spend store — same gate the
+  # Redis block above uses, since the lock has nowhere to live without one.
+  # Rationale, gated model set, TTL: defaults/main/57-subagent-lock.yml.
+  callbacks: >-
+    {{ ((['prometheus'] if llm_router_prometheus_enabled | bool else [])
+        + (['fast_subagent_lock.proxy_handler_instance'] if llm_router_redis_host | length > 0 else []))
+       | to_json }}
   drop_params: true
 {% if llm_router_large_passthrough_enabled | bool %}
   # Resolve the wildcard against the gate's live /v1/models so this proxy's
