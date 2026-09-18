@@ -198,15 +198,16 @@ Where no catalogued model satisfies both, the role is seeded with no fallback
 record at all. It then fails honestly rather than silently, and whoever owns
 the UI adds a rung deliberately.
 
-**`fast`/`subagent` are a deliberate exception to both rules.** Their chain is
-local-first by design (try the 4080 before anything wider, then a free rung,
-then one paid rung, `long` last) and does carry a paid rung — the truncation
-risk the first rule guards against is instead closed by
-`context_window_fallbacks` (`defaults/main/37-fallback-entry-points.yml`),
-which escapes a request too large for the role's own advertised window
-straight to `long` rather than walking the ordinary chain. See
-`defaults/main/55-roles.yml`'s note above `_llm_router_fast_subagent_chain`
-for the full reasoning, including what is still unverified.
+**`fast`/`subagent` are local-only, by design, not by the two rules above.**
+Their chain is exactly two rungs — the 4080, then the Mac Studio primary —
+and stops there: no free or paid rung, and no reference to `long`'s own
+>200k-context escape hatch (a separate, pre-existing mechanism this chain
+does not touch). A request too large even for the 4080's own advertised
+window fails outright rather than escalating anywhere, on purpose — this
+alias exists for cheap/local/no-budget-consumed delegation, and the calling
+harness is expected to fall back to its own native subagent tooling on that
+failure, not this alias. See `defaults/main/55-roles.yml`'s note above
+`_llm_router_fast_subagent_chain` for the full reasoning.
 
 ### Swap a role
 

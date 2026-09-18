@@ -190,42 +190,11 @@ llm_router_context_window_wider_groups: >-
   {{ (llm_router_hermes_cloud_only_fallback_groups
       + llm_router_opencode_fallback_groups
       + llm_router_openrouter_free_groups) | unique | list }}
-#
-# fast/subagent (55-roles.yml) ADD TWO MORE KEYS here, alongside the block
-# above: those two DB-seeded roles target hermes-local-4080 directly (32768
-# tokens), and a request too large for that — evaluated against the ROLE'S
-# OWN advertised window, at depth 0, before any chain walk begins — must
-# escape straight to `long`'s >200k window rather than re-raising or walking
-# rungs no narrower rung in that chain could have served either.
-#
-# Gated on `long`'s underlying entry actually being CREDENTIALED, not merely
-# on it existing in the registry (llm_router_long_context_alias_ids is a
-# registry-only fact and says nothing about whether OPENROUTER_API_KEY
-# resolved) — the same distinction llm_router_context_window_wider_groups
-# above already draws for the provider-scoped map, via each `_credentialed`
-# projection. Missing this the first time round rendered a reference to a
-# model_group_alias entry with no live deployment behind it whenever no
-# OpenRouter credential was seeded at all.
-llm_router_long_context_credentialed: >-
-  {%- set _ns = namespace(live=false) -%}
-  {%- for m in llm_router_registry_enabled
-        | selectattr('client_model_id', 'in', llm_router_long_context_alias_ids) -%}
-  {%- set _key = bao_local_llm_secrets[m.key_field] | default(lookup('env', m.credential_env), true) -%}
-  {%- if _key | trim | length > 0 -%}
-  {%- set _ns.live = true -%}
-  {%- endif -%}
-  {%- endfor -%}
-  {{ _ns.live }}
 llm_router_context_window_fallbacks: >-
   {%- set ns = namespace(pairs=[]) -%}
   {%- if llm_router_context_window_wider_groups | length > 0 -%}
   {%- for group in llm_router_context_window_escape_groups -%}
   {%- set ns.pairs = ns.pairs + [{group: llm_router_context_window_wider_groups}] -%}
-  {%- endfor -%}
-  {%- endif -%}
-  {%- if llm_router_long_context_credentialed | bool -%}
-  {%- for _role in llm_router_subagent_lock_role_names -%}
-  {%- set ns.pairs = ns.pairs + [{_role: [llm_router_model_group_aliases.long]}] -%}
   {%- endfor -%}
   {%- endif -%}
   {{ ns.pairs }}

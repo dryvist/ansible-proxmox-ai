@@ -55,39 +55,36 @@ llm_router_embedding_model: >-
 # SUPERSEDES the A5 note (2026-09-12): `subagent` no longer targets `long`
 # directly. `subagent` and the new `fast` role (Codex's own `--profile fast`
 # and nix-ai's aliases.nix already reference this name; the router never had
-# one before) now share ONE local-first chain instead: try the 4080
+# one before) now share ONE LOCAL-ONLY chain instead: try the 4080
 # (hermes-local-4080, the same fail-fast local leg the session lock in
 # 57-subagent-lock.yml/fast_subagent_lock.py.j2 covers), then the Mac
-# Studio's own resident brain, then the fastest ZDR-compliant free cloud
-# rung, then the first (registry-order) paid cloud rung, with `long` kept as
-# the terminal rung — NOT dropped, moved. `long`'s >200k-context escape hatch
-# (nix-ai's Claude Code subagent tier) is preserved two ways: it is still the
-# LAST fallback tried on an ordinary failure, and 37-fallback-entry-points.yml
-# separately maps both role names straight to it via context_window_fallbacks
-# for a request too large for the chain's first (narrower) rung — evaluated
-# against "fast"/"subagent" own advertised window BEFORE any chain walk
-# begins, so that depth-0 case does not depend on walking the ordinary list
-# at all. subagent is still NOT a git alias itself, for the same common-word-
+# Studio's own resident brain. Stops there, deliberately — this alias exists
+# for cheap/local/no-budget-consumed delegation, and chaining into a paid or
+# remote rung under the same name would silently spend money under a name
+# that is supposed to mean "free and local". If both local rungs are
+# unavailable, the request fails outright (LiteLLM's normal behaviour for an
+# exhausted fallback list) rather than escalating anywhere else — the calling
+# harness is expected to notice that failure and fall back to its OWN native
+# subagent tooling, not this alias's job.
+#
+# `long`'s >200k-context escape hatch (nix-ai's Claude Code subagent tier,
+# the pre-existing `subagent` -> `long` direct target this supersedes) is a
+# SEPARATE, EXISTING thing this chain does not touch, reference, or
+# interact with in any way — no context_window_fallbacks entry is added for
+# `fast`/`subagent` here. A request too large for hermes-local-4080's own
+# advertised window (32768 tokens) therefore fails outright rather than
+# escaping anywhere, including to the Mac Studio primary — same reasoning:
+# an explicit failure here is the intended behaviour, not a gap.
+#
+# subagent is still NOT a git alias itself, for the same common-word-
 # collision reason `judge`/`cheap`/`embed`/`ocr` are deferred
 # (test_registry_retype_scan.py).
-#
-# UNVERIFIED, no live proxy this PR: whether a DB-role's own `/fallback`
-# record draws on the SAME router_settings.max_fallbacks depth budget the
-# config-rendered chains do (37-fallback-entry-points.yml). If it does, this
-# 4-rung chain could in principle be truncated before reaching `long` under
-# the worst case of every earlier rung failing — every role deployment before
-# this PR only ever carried 0 or 1 fallbacks, so that interaction has never
-# been exercised. Confirm live before relying on the terminal rung under load.
 _llm_router_fast_subagent_chain:
   - "{{ llm_router_primary_model }}"
-  - "{{ (llm_router_hermes_cloud_free_groups | first) if (llm_router_hermes_cloud_free_groups | length > 0) else '' }}"
-  - "{{ (llm_router_hermes_cloud_paid_groups | first) if (llm_router_hermes_cloud_paid_groups | length > 0) else '' }}"
-  - "{{ llm_router_model_group_aliases.long }}"
 
 # FALLBACK ORDER IS ONE-WAY, LARGEST CONTEXT FIRST — for every role EXCEPT
-# fast/subagent above, whose chain is intentionally local-first / narrowest
-# rung first and relies on context_window_fallbacks (not ordering) to keep an
-# oversize request from being poisoned. See the note above the chain var.
+# fast/subagent above, whose two-rung chain is local-only by design (see the
+# note above the chain var) and never reaches a rung this rule would apply to.
 #
 # A fallback that serves a smaller context than the model it replaces does not
 # degrade a caller, it poisons one: the request is silently truncated and the
@@ -97,18 +94,18 @@ _llm_router_fast_subagent_chain:
 # turns into a hard failure exactly when the fallback was supposed to help.
 
 llm_router_role_deployments:
-  # Local-first: try the 4080 before anything else. See the note above
-  # _llm_router_fast_subagent_chain for why this no longer targets `long`
-  # directly and how the >200k escape hatch stays reachable.
+  # Local-only: try the 4080, then the Mac Studio primary, then fail. See the
+  # note above _llm_router_fast_subagent_chain for why this no longer targets
+  # `long` and does not chain into any paid or remote rung.
   - role: subagent
     model: "{{ llm_router_hermes_local_4080_id }}"
-    fallbacks: "{{ _llm_router_fast_subagent_chain | reject('equalto', '') | list }}"
+    fallbacks: "{{ _llm_router_fast_subagent_chain }}"
   # Same chain, second name — both Codex's `--profile fast` and this
   # project's own `subagent` naming already have external callers expecting
   # them; see the note above _llm_router_fast_subagent_chain.
   - role: fast
     model: "{{ llm_router_hermes_local_4080_id }}"
-    fallbacks: "{{ _llm_router_fast_subagent_chain | reject('equalto', '') | list }}"
+    fallbacks: "{{ _llm_router_fast_subagent_chain }}"
   # The judge, cross-family to the primary on purpose — the same model the
   # `goal-judge` alias resolves to today.
   - role: judge
