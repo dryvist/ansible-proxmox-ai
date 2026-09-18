@@ -1,0 +1,78 @@
+---
+# Pins llm_router_subagent_lock_model_ids' composition against the REAL
+# defaults and the REAL rendered callback file, not a hand-typed literal.
+#
+# WHY THIS EXISTS. `fast-gpu` (55-roles.yml) is unioned onto the registry-
+# derived tier set in 57-subagent-lock.yml specifically so its calls get the
+# same hard-429 lock treatment as a direct hermes-local-4080/qwen3.8-27b/
+# qwen3-coder-30b call, never the fast/subagent redirect. That union is one
+# `+ ['fast-gpu']` in a Jinja expression with no independent enforcement — a
+# future edit that drops it (or renames fast-gpu) leaves the role silently
+# UNLOCKED: calls to it would pass straight through the callback with no
+# contention check at all, no error, no failing test elsewhere, because
+# tests/llm_router/test_fast_subagent_lock.py renders the callback template
+# with synthetic fixture ids and structurally cannot see this specific
+# real-value regression.
+- name: Verify fast-gpu is gated by the 4080 session lock, not redirected
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: fast-gpu is in the gated set, and NOT in the redirect set
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'fast-gpu' in llm_router_subagent_lock_model_ids"
+          - "'fast-gpu' not in llm_router_subagent_lock_role_names"
+          # ANTI-VACUITY: the tier-derived ids must still be there too — a
+          # regression that replaced the whole derivation with just
+          # ['fast-gpu'] would otherwise pass the assertion above.
+          - (llm_router_subagent_lock_model_ids | difference(['fast-gpu']) | length) >= 3
+        fail_msg: >-
+          llm_router_subagent_lock_model_ids is
+          {{ llm_router_subagent_lock_model_ids }} and
+          llm_router_subagent_lock_role_names is
+          {{ llm_router_subagent_lock_role_names }} — fast-gpu must be gated
+          (hard 429 on contention) and must NOT be a redirect-on-contention
+          role name, or a caller sequencing its own fallback around it would
+          get silently answered by a different model instead of the 429 it
+          needs to detect contention.
+
+    - name: Render the real callback file the converge deploys
+      ansible.builtin.set_fact:
+        _callback_source: >-
+          {{ lookup('template', _role_dir ~ '/templates/callbacks/fast_subagent_lock.py.j2') }}
+
+    - name: The rendered callback's own GATED_MODELS constant carries fast-gpu
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'\"fast-gpu\"' in _callback_source"
+          - _callback_source is search('GATED_MODELS = frozenset\\(\\[[^\\]]*\"fast-gpu\"[^\\]]*\\]\\)')
+        fail_msg: >-
+          The rendered fast_subagent_lock.py.j2 does not carry "fast-gpu"
+          inside its GATED_MODELS frozenset literal — the deployed callback
+          would not lock fast-gpu calls at all.

@@ -126,6 +126,48 @@ def test_role_call_redirects_instead_of_raising():
     assert pre_call.index('data["model"] = ROLE_REDIRECT_TARGET') < pre_call.index("raise HTTPException")
 
 
+def test_refresh_and_release_use_atomic_compare_scripts():
+    # TOCTOU fix: no bare GET-then-EXPIRE or GET-then-DELETE pair anywhere —
+    # both must go through the Lua compare-and-act scripts.
+    source = render()
+    assert "_REFRESH_IF_HOLDER_SCRIPT" in source
+    assert "_RELEASE_IF_HOLDER_SCRIPT" in source
+    assert 'redis.call("GET", KEYS[1]) == ARGV[1]' in source
+    assert "await client.eval(_REFRESH_IF_HOLDER_SCRIPT" in source
+    assert "await client.eval(_RELEASE_IF_HOLDER_SCRIPT" in source
+    # The old two-call pattern must be gone from the hook bodies (a plain
+    # substring ban is enough here: nothing else in this file has reason to
+    # call .expire() or a bare .get()-then-.delete() pair).
+    assert "await client.expire(" not in source
+    assert "await client.delete(" not in source
+
+
+def test_role_calls_auto_release_direct_calls_need_the_header():
+    # The core semantics split this PR's fix depends on: _maybe_release must
+    # gate role-call release on membership alone, and direct-call release on
+    # the explicit header — mixing these up either breaks multi-call
+    # cache-affinity for direct callers or leaves fast/subagent's lock held
+    # for the full TTL after a fast, successful call.
+    source = render()
+    maybe_release = source.split("async def _maybe_release")[1].split("async def async_post_call_success_hook")[0]
+    assert "is_role_call = model in ROLE_NAMES" in maybe_release
+    assert "if not is_role_call and not _release_requested(data):" in maybe_release
+
+
+def test_success_and_failure_hooks_both_call_maybe_release():
+    source = render()
+    assert "await self._maybe_release(data, user_api_key_dict)" in source.split(
+        "async def async_post_call_success_hook"
+    )[1].split("async def async_post_call_failure_hook")[0]
+    failure_hook = source.split("async def async_post_call_failure_hook")[1]
+    assert "await self._maybe_release(data, user_api_key_dict)" in failure_hook
+    # UNVERIFIED-signature defensiveness: the failure hook must never let an
+    # exception escape (it would interfere with the actual failure response
+    # reaching the caller, which matters far more than releasing the lock a
+    # little early).
+    assert "except Exception" in failure_hook
+
+
 def test_redis_import_is_guarded_not_unconditional():
     # The whole point of the try/except is that this file must stay
     # importable in an environment without the redis package (this pytest

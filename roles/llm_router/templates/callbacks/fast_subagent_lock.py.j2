@@ -45,6 +45,43 @@ TWO DIFFERENT BEHAVIORS ON CONTENTION, by how the caller named the request:
     proxy's own management API on every contended request, or an in-process
     read of LiteLLM's own Router object, and neither was verifiable without a
     running proxy.
+
+ACQUISITION HAPPENS BEFORE THE ROUTER PICKS A RUNG, which is a known,
+partial limitation, not a solved one. `async_pre_call_hook` fires once per
+REQUEST — before litellm has attempted any deployment — so it cannot tell
+whether THIS specific attempt will actually reach hermes-local-4080's
+deployment (today it always does: hermes-local-4080 is `fast`'s and
+`subagent`'s ONLY deployment, so the first attempt always targets it, but
+that is a fact about the CURRENT converge, not something this file can
+verify at runtime — see the redirect-target limitation above for the same
+root cause). What this file DOES do about it: hold the lock for exactly as
+long as the underlying work is in flight, not the full TTL. Every
+`fast`/`subagent` acquisition auto-releases on that SAME request's own
+completion (success or failure), via async_post_call_success_hook /
+async_post_call_failure_hook below — so a caller that finishes in 5s frees
+the slot in 5s, not 300s. This does not change WHEN the lock is taken, only
+how long it is held, which is what actually matters for "does an idle 4080
+lock out fast-gpu/direct callers" — that window is now bounded by one
+request's wall-clock time, not the TTL. A genuine acquisition-time fix (gate
+on the Router's actually-resolved deployment, not the caller-typed name)
+would need a hook this file could not identify with confidence — see
+async_post_call_failure_hook's docstring for the same signature-uncertainty
+caveat.
+
+Direct callers (GATED_MODELS) do NOT auto-release on completion — that
+would break the ORIGINAL feature this lock exists for (a caller like Hermes
+holding the lock across several repeat calls to keep the KV cache warm,
+57-subagent-lock.yml). Auto-release is scoped to ROLE_NAMES only, because
+`fast`/`subagent` calls are single-shot ad hoc delegation by design (no
+multi-call session), so releasing after the one call that used the lock is
+correct there and would be wrong for a direct caller.
+
+Both the refresh-if-same-holder and release-if-same-holder operations use a
+Lua script (single Redis round trip: GET-compare-then-EXPIRE/DEL
+atomically) instead of separate GET-then-EXPIRE / GET-then-DELETE calls —
+the two-call form has a TOCTOU window where a DIFFERENT, newer holder's
+lock could be refreshed or deleted by a caller who no longer holds it,
+between the GET and the second call.
 """
 
 import os
@@ -78,6 +115,28 @@ _REDIS_PORT = {{ llm_router_redis_port }}
 _REDIS_PASSWORD = os.environ.get("LLM_ROUTER_REDIS_PASSWORD") or None
 
 
+# Atomic compare-and-refresh: extends the TTL only if the caller asking is
+# still the recorded holder. Returns 1 on refresh, 0 if the key is absent or
+# held by someone else (never raises for "not the holder" — that is an
+# ordinary, expected outcome, not an error).
+_REFRESH_IF_HOLDER_SCRIPT = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("EXPIRE", KEYS[1], ARGV[2])
+else
+  return 0
+end
+"""
+
+# Atomic compare-and-delete: same shape, for release instead of refresh.
+_RELEASE_IF_HOLDER_SCRIPT = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+else
+  return 0
+end
+"""
+
+
 def _caller_id(user_api_key_dict) -> str:
     """The identity a lock decision is made against — a virtual key's alias
     (roles/llm_router/defaults/main/56-virtual-keys.yml), falling back to the
@@ -91,14 +150,21 @@ def _caller_id(user_api_key_dict) -> str:
     )
 
 
+def _release_requested(data: dict) -> bool:
+    headers = (data.get("proxy_server_request") or {}).get("headers") or {}
+    return str(headers.get(RELEASE_HEADER, "")).strip().lower() in ("1", "true", "yes")
+
+
 class FastSubagentLock(CustomLogger):
     """One caller at a time on the 4080. A direct caller (GATED_MODELS) that
     loses the race is rejected with 429 immediately — no wait-queue, no
-    preemption. A fast/subagent role caller (ROLE_NAMES) that loses the race
-    is silently redirected instead — see the module docstring. The 300s TTL
-    is the only release path guaranteed to fire; X-Subagent-Release is a
-    courtesy on top of it for direct callers, checked only after the call
-    completes."""
+    preemption; it holds the lock across repeat calls (cache-affinity across
+    a session), released only by the 300s TTL or an explicit
+    X-Subagent-Release. A fast/subagent role caller (ROLE_NAMES) that loses
+    the race is silently redirected instead, and — unlike a direct caller —
+    auto-releases the lock on its OWN call's completion, success or failure:
+    see the module docstring for why the two callers need different release
+    semantics."""
 
     def __init__(self, client=None):
         # Injectable for tests (tests/llm_router/test_fast_subagent_lock.py);
@@ -120,6 +186,12 @@ class FastSubagentLock(CustomLogger):
         )
         return self._client
 
+    async def _refresh_if_holder(self, client, caller_id: str) -> bool:
+        return bool(await client.eval(_REFRESH_IF_HOLDER_SCRIPT, 1, LOCK_KEY, caller_id, LOCK_TTL_SECONDS))
+
+    async def _release_if_holder(self, client, caller_id: str) -> bool:
+        return bool(await client.eval(_RELEASE_IF_HOLDER_SCRIPT, 1, LOCK_KEY, caller_id))
+
     async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type: str):
         model = data.get("model")
         is_role_call = model in ROLE_NAMES
@@ -127,22 +199,21 @@ class FastSubagentLock(CustomLogger):
             return data
         caller_id = _caller_id(user_api_key_dict)
         client = self._get_client()
-        # NX+EX in one round trip: acquires only if absent, refreshes the TTL
-        # as a side effect of the very acquisition that succeeds.
+        # NX+EX in one round trip: acquires only if absent, sets the TTL as
+        # a side effect of the very acquisition that succeeds.
         acquired = await client.set(LOCK_KEY, caller_id, nx=True, ex=LOCK_TTL_SECONDS)
         if acquired:
             return data
-        holder = await client.get(LOCK_KEY)
-        if holder == caller_id:
-            # Same caller, still working — refresh so continued use keeps the
-            # lock alive instead of expiring mid-session.
-            await client.expire(LOCK_KEY, LOCK_TTL_SECONDS)
+        if await self._refresh_if_holder(client, caller_id):
+            # Same caller, still working — refreshed so continued use keeps
+            # the lock alive instead of expiring mid-session.
             return data
         if is_role_call:
             # See the module docstring: redirect, not raise — an exception
             # here cannot reach the Router's own fallback engine.
             data["model"] = ROLE_REDIRECT_TARGET
             return data
+        holder = await client.get(LOCK_KEY)
         raise HTTPException(
             status_code=429,
             detail={
@@ -153,19 +224,39 @@ class FastSubagentLock(CustomLogger):
             headers={"Retry-After": str(LOCK_TTL_SECONDS)},
         )
 
-    async def async_post_call_success_hook(self, data: dict, user_api_key_dict, response):
-        if data.get("model") not in GATED_MODELS:
-            return response
-        headers = (data.get("proxy_server_request") or {}).get("headers") or {}
-        released = str(headers.get(RELEASE_HEADER, "")).strip().lower() in ("1", "true", "yes")
-        if not released:
-            return response
+    async def _maybe_release(self, data: dict, user_api_key_dict) -> None:
+        """Shared by the success and failure post-call hooks — see the
+        module docstring for why role calls auto-release unconditionally
+        while direct calls release only on the explicit header."""
+        model = data.get("model")
+        is_role_call = model in ROLE_NAMES
+        if model not in GATED_MODELS and not is_role_call:
+            return
+        if not is_role_call and not _release_requested(data):
+            return
         caller_id = _caller_id(user_api_key_dict)
         client = self._get_client()
-        holder = await client.get(LOCK_KEY)
-        if holder == caller_id:
-            await client.delete(LOCK_KEY)
+        await self._release_if_holder(client, caller_id)
+
+    async def async_post_call_success_hook(self, data: dict, user_api_key_dict, response):
+        await self._maybe_release(data, user_api_key_dict)
         return response
+
+    # UNVERIFIED signature — could not confirm against a live litellm[proxy]
+    # process in this PR. Deliberately defensive (**kwargs, broad except):
+    # a wrong guess about this hook's exact parameter names/order must
+    # degrade to "the lock is not released early" (falls back to the 300s
+    # TTL, the pre-existing safety net), never to an exception that could
+    # interfere with the actual failure response reaching the caller.
+    async def async_post_call_failure_hook(self, *args, **kwargs):
+        try:
+            data = kwargs.get("request_data") or kwargs.get("data") or (args[0] if args else None)
+            user_api_key_dict = kwargs.get("user_api_key_dict")
+            if not isinstance(data, dict) or user_api_key_dict is None:
+                return
+            await self._maybe_release(data, user_api_key_dict)
+        except Exception:  # noqa: BLE001 - see docstring: must never break the failure path
+            pass
 
 
 proxy_handler_instance = FastSubagentLock()
