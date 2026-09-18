@@ -229,10 +229,13 @@ fields (`num_retries: 0`, short `request_timeout`/`stream_timeout`,
 `allowed_fails: 50`) mean "available or busy, don't retry me" — a single GPU
 either has a free slot or it does not.
 
-`context_window: 16384` (not the primary's 65536) is deliberate:
-`enable_pre_call_checks` skips a deployment whose window cannot hold the
-request, so this leg self-selects for short requests and a long one falls
-through without wasting an attempt.
+`context_window: 32768` (not the primary's 65536) shares the `*ctx4080` YAML
+anchor with the guest's own `vllm`-tier `qwen3.8-27b` entry — the two serve
+the same weights and must advertise the same window. `enable_pre_call_checks`
+still skips a deployment whose window cannot hold the request, so this leg
+self-selects out of requests too large for this card, even though it no
+longer trims further below the `vllm`-tier entry's own window the way it once
+did.
 
 ## The free OpenRouter preset (`hermes-cloud-free` / `best-free`)
 

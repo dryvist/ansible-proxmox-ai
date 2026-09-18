@@ -76,6 +76,54 @@ llama_cpp_ctx_size: "{{ 8192 if llama_cpp_gpu | bool else 2048 }}"
 # than queue.
 llama_cpp_parallel: ~
 
+# --- KV-cache reuse ------------------------------------------------------------
+# Repeat requests from the SAME caller should land on a warm cache instead of
+# a cold reload — this is what the 4080's per-caller session lock
+# (ansible-proxmox-ai's llm_router role, roles/llm_router/defaults/main/
+# 57-subagent-lock.yml) exists to make possible: holding the lock across
+# several requests is worthless if every request still pays a cold prompt.
+#
+# --cache-prompt is deliberately NOT rendered here. UNVERIFIED against the
+# resolved release (no live host access this PR) — llama.cpp's server has
+# kept per-slot prompt-prefix reuse on by default for a long time, and adding
+# the flag would be a redundant no-op if that still holds. Confirm with
+# `llama-server --help` on the resolved release before adding it back; if it
+# proves to still be a real opt-in there, add
+# `{{ ('--cache-prompt' if llama_cpp_cache_prompt | bool else '') }}`
+# to the group in llama-swap.yaml.j2 rather than forcing it on unconditionally.
+#
+# 256: llama.cpp's own long-documented default minimum chunk size for
+# cache-shift reuse — small enough to catch a repeated system-prompt/tool-
+# schema prefix, large enough that the reuse scan is not itself the cost.
+# Re-measure once benchmarking exercises a real workload.
+llama_cpp_cache_reuse: 256
+
+# Unset renders NO flag at all — same sentinel idiom as llama_cpp_parallel
+# above. UNVERIFIED spellings/semantics this PR (task named `--cache-ram`
+# aka `-cram` and `--cache-idle-slots`); confirm against `llama-server --help`
+# on the resolved release before setting either on any host.
+llama_cpp_cache_ram: ~
+llama_cpp_cache_idle_slots: false
+
+# -sps/--slot-prompt-similarity is deliberately untouched anywhere in this
+# role — no concrete reason to move it off the resolved release's own
+# default; do not add a variable for it without one.
+
+# --- Speculative decoding (optional, PATH ONLY) --------------------------------
+# TODO(benchmarking): draft/target model choice comes from a separate
+# mlx-benchmarks sweep in a different repo/PR, not this one. This wires the
+# CONFIG PATH only — every llama_cpp_models entry renders no spec-decode
+# flags at all until its own `spec_draft_model` field is set (see the models
+# list below for the field shape).
+#
+# UNVERIFIED against the resolved release (no live host access this PR): the
+# task named `--spec-draft-model` (aka `-md`/`--model-draft`),
+# `--spec-draft-n-max`/`--spec-draft-n-min`, and `--spec-type`
+# (draft-simple/draft-eagle3/draft-mtp). Confirm all four spellings against
+# `llama-server --help` before setting spec_draft_model on any model entry.
+llama_cpp_spec_draft_n_max_default: 16
+llama_cpp_spec_draft_n_min_default: 5
+
 # GPU device nodes passed in by ansible-proxmox lxc_gpu_features. The role stats
 # these at runtime and adds the service user to whatever groups own them, so device
 # access works regardless of how host GIDs map to container groups.
@@ -180,6 +228,10 @@ llama_cpp_health_check_timeout: 300
 _llama_cpp_light_general_model_id: qwen3-4b
 _llama_cpp_light_embeddings_model_id: embeddings
 
+# Optional per-entry speculative-decode fields (unset on every entry below,
+# on purpose — see the TODO(benchmarking) note above): `spec_draft_model`
+# (a GGUF filename in llama_cpp_models_dir, same as `gguf`), `spec_draft_n_max`,
+# `spec_draft_n_min` (both default from the two variables above), `spec_type`.
 llama_cpp_hf_base: "https://huggingface.co"
 llama_cpp_models:
   - name: "{{ _llama_cpp_light_general_model_id }}"
