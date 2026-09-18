@@ -57,8 +57,12 @@ verify at runtime — see the redirect-target limitation above for the same
 root cause). What this file DOES do about it: hold the lock for exactly as
 long as the underlying work is in flight, not the full TTL. Every
 `fast`/`subagent` acquisition auto-releases on that SAME request's own
-completion (success or failure), via async_post_call_success_hook /
-async_post_call_failure_hook below — so a caller that finishes in 5s frees
+completion — success, failure, or (the path every real client in this
+estate actually uses) an SSE stream finishing or erroring — via
+async_post_call_success_hook / async_post_call_failure_hook /
+async_post_call_streaming_iterator_hook below, see that method's own
+docstring for why the streaming case needs a real override rather than
+relying on the two hooks above. So a caller that finishes in 5s frees
 the slot in 5s, not 300s, EVEN IF the Router's own ordinary fallback chain
 carried the request past hermes-local-4080 to a later rung (Mac Studio /
 cloud / long) without this file's involvement — release does not depend on
@@ -96,6 +100,34 @@ holding the lock across several repeat calls to keep the KV cache warm,
 multi-call session), so releasing after the one call that used the lock is
 correct there and would be wrong for a direct caller.
 
+PARTICIPATES, NOT ACQUIRED — two races a naive "release on every role call's
+completion" gets wrong, both real:
+
+  (a) The SAME caller alias holds the lock via a direct `fast-gpu` call
+      (deliberate multi-call hold, KV-cache affinity) and separately makes a
+      `fast` role call. That role call's acquire attempt finds its own
+      caller_id already holding the lock and refreshes it — but the hold
+      belongs to the direct call, not to this role call. If this role call
+      released on its own completion, it would tear down the direct caller's
+      still-active hold out from under it.
+
+  (b) Two role calls from the SAME caller alias run concurrently (parallel
+      subagents dispatched from one workstation key). The first to acquire
+      establishes the hold; the second refreshes it. If release were keyed
+      on "did I ever touch the lock", the FIRST call finishing would delete
+      the lock while the SECOND is still mid-flight, letting a third caller
+      in on a 4080 slot that is not actually free.
+
+Both are solved together by _ROLE_INFLIGHT_KEY, a companion counter whose
+mere EXISTENCE (not its value) marks a hold as role-owned. A role call
+"participates" (sets `_LOCK_PARTICIPATES_KEY`, and thus owes a release on
+its own completion) only when it freshly acquires the lock, or refreshes a
+hold the counter shows is ALREADY role-owned — never when it refreshes a
+hold with no counter, which can only mean a direct caller (case a)
+established it. `_release_role_participant` decrements the counter and
+deletes the lock only once it reaches zero (case b) — see
+_ACQUIRE_OR_REFRESH_ROLE_SCRIPT / _RELEASE_ROLE_PARTICIPANT_SCRIPT.
+
 Both the refresh-if-same-holder and release-if-same-holder operations use a
 Lua script (single Redis round trip: GET-compare-then-EXPIRE/DEL
 atomically) instead of separate GET-then-EXPIRE / GET-then-DELETE calls —
@@ -129,6 +161,15 @@ ROLE_REDIRECT_TARGET = {{ llm_router_primary_model | to_json }}
 # direct) that async_pre_call_hook determined — see the module docstring for
 # why this cannot be re-derived from data["model"] at post-call time.
 _LOCK_SHAPE_KEY = "subagent_lock_caller_shape"
+# metadata key: True only when THIS role call actually joined the
+# role-tracked hold (either it freshly acquired the lock, or it refreshed a
+# hold an earlier role call already joined) — see the module docstring's
+# "PARTICIPATES, NOT ACQUIRED" section for why a role call that merely
+# refreshed someone else's (a direct caller's) hold must NOT set this.
+_LOCK_PARTICIPATES_KEY = "subagent_lock_role_participates"
+# Companion key tracking how many in-flight role calls currently share the
+# lock — see the module docstring.
+_ROLE_INFLIGHT_KEY = LOCK_KEY + ":role_inflight"
 
 # Same connection this proxy already uses for spend tracking (router_settings
 # in config.yaml.j2): host/password via the systemd EnvironmentFile, port as
@@ -160,6 +201,58 @@ else
 end
 """
 
+# Role-call acquire-or-refresh, single round trip. Distinguishes THREE
+# outcomes (KEYS[1]=LOCK_KEY, KEYS[2]=role-inflight counter,
+# ARGV[1]=caller_id, ARGV[2]=ttl):
+#   2 = fresh acquire, or a refresh of a hold role calls already joined
+#       (the counter key exists) — this call now counts toward the
+#       inflight total and MUST decrement it on its own completion.
+#   1 = refreshed the SAME caller's hold, but the counter key is absent,
+#       meaning that hold was established by a direct caller (fast-gpu /
+#       hermes-local-4080), not by any role call — proceeds to the
+#       deployment same as 2, but must NOT touch the counter on
+#       completion: releasing here would delete a direct caller's
+#       deliberate multi-call hold out from under it.
+#   0 = contended by a different caller — the pre-call hook redirects.
+# The counter's own existence (not its value) is what marks a hold as
+# role-owned; only a role call's own fresh acquire or a refresh of an
+# already role-owned hold creates/grows it.
+_ACQUIRE_OR_REFRESH_ROLE_SCRIPT = """
+local holder = redis.call("GET", KEYS[1])
+if not holder then
+  redis.call("SET", KEYS[1], ARGV[1], "EX", ARGV[2])
+  redis.call("SET", KEYS[2], 1, "EX", ARGV[2])
+  return 2
+end
+if holder ~= ARGV[1] then
+  return 0
+end
+redis.call("EXPIRE", KEYS[1], ARGV[2])
+if redis.call("EXISTS", KEYS[2]) == 1 then
+  redis.call("INCR", KEYS[2])
+  redis.call("EXPIRE", KEYS[2], ARGV[2])
+  return 2
+end
+return 1
+"""
+
+# Release one role call's share of the inflight count. Deletes the lock (and
+# the counter) only once every role call that joined it has released —
+# case (b): parallel subagents on one caller must not have the first one to
+# finish evict the ones still in flight.
+_RELEASE_ROLE_PARTICIPANT_SCRIPT = """
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then
+  return 0
+end
+local n = redis.call("DECR", KEYS[2])
+if n <= 0 then
+  redis.call("DEL", KEYS[1])
+  redis.call("DEL", KEYS[2])
+  return 1
+end
+return 0
+"""
+
 
 def _caller_id(user_api_key_dict) -> str:
     """The identity a lock decision is made against — a virtual key's alias
@@ -186,9 +279,11 @@ class FastSubagentLock(CustomLogger):
     a session), released only by the 300s TTL or an explicit
     X-Subagent-Release. A fast/subagent role caller (ROLE_NAMES) that loses
     the race is silently redirected instead, and — unlike a direct caller —
-    auto-releases the lock on its OWN call's completion, success or failure:
-    see the module docstring for why the two callers need different release
-    semantics."""
+    auto-releases its share of the lock when its own call completes
+    (success, failure, or its stream ending), but only if it actually
+    PARTICIPATES in the hold: see the module docstring's "PARTICIPATES, NOT
+    ACQUIRED" section for why a role call that merely refreshed someone
+    else's hold must not release it."""
 
     def __init__(self, client=None):
         # Injectable for tests (tests/llm_router/test_fast_subagent_lock.py);
@@ -216,6 +311,16 @@ class FastSubagentLock(CustomLogger):
     async def _release_if_holder(self, client, caller_id: str) -> bool:
         return bool(await client.eval(_RELEASE_IF_HOLDER_SCRIPT, 1, LOCK_KEY, caller_id))
 
+    async def _acquire_or_refresh_role(self, client, caller_id: str) -> int:
+        return int(
+            await client.eval(
+                _ACQUIRE_OR_REFRESH_ROLE_SCRIPT, 2, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id, LOCK_TTL_SECONDS
+            )
+        )
+
+    async def _release_role_participant(self, client, caller_id: str) -> bool:
+        return bool(await client.eval(_RELEASE_ROLE_PARTICIPANT_SCRIPT, 2, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id))
+
     async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type: str):
         model = data.get("model")
         is_role_call = model in ROLE_NAMES
@@ -224,9 +329,26 @@ class FastSubagentLock(CustomLogger):
         # Stamped BEFORE anything downstream (the Router's own fallback
         # machinery included) gets a chance to rewrite data["model"] — see
         # the module docstring. _maybe_release reads this, never data["model"].
-        data.setdefault("metadata", {})[_LOCK_SHAPE_KEY] = "role" if is_role_call else "direct"
+        metadata = data.setdefault("metadata", {})
+        metadata[_LOCK_SHAPE_KEY] = "role" if is_role_call else "direct"
         caller_id = _caller_id(user_api_key_dict)
         client = self._get_client()
+        if is_role_call:
+            outcome = await self._acquire_or_refresh_role(client, caller_id)
+            if outcome == 0:
+                # Contended by a different caller. See the module docstring:
+                # redirect, not raise — an exception here cannot reach the
+                # Router's own fallback engine.
+                data["model"] = ROLE_REDIRECT_TARGET
+                return data
+            if outcome == 2:
+                # This call now shares the role-tracked hold and must
+                # release its share on completion — see _maybe_release and
+                # the module docstring's "PARTICIPATES, NOT ACQUIRED"
+                # section for why outcome == 1 (refreshed a direct caller's
+                # hold) deliberately does NOT set this.
+                metadata[_LOCK_PARTICIPATES_KEY] = True
+            return data
         # NX+EX in one round trip: acquires only if absent, sets the TTL as
         # a side effect of the very acquisition that succeeds.
         acquired = await client.set(LOCK_KEY, caller_id, nx=True, ex=LOCK_TTL_SECONDS)
@@ -235,11 +357,6 @@ class FastSubagentLock(CustomLogger):
         if await self._refresh_if_holder(client, caller_id):
             # Same caller, still working — refreshed so continued use keeps
             # the lock alive instead of expiring mid-session.
-            return data
-        if is_role_call:
-            # See the module docstring: redirect, not raise — an exception
-            # here cannot reach the Router's own fallback engine.
-            data["model"] = ROLE_REDIRECT_TARGET
             return data
         holder = await client.get(LOCK_KEY)
         raise HTTPException(
@@ -253,23 +370,53 @@ class FastSubagentLock(CustomLogger):
         )
 
     async def _maybe_release(self, data: dict, user_api_key_dict) -> None:
-        """Shared by the success and failure post-call hooks — see the
-        module docstring for why role calls auto-release unconditionally
-        while direct calls release only on the explicit header, and for why
-        this reads data["metadata"] rather than data["model"]."""
-        shape = (data.get("metadata") or {}).get(_LOCK_SHAPE_KEY)
+        """Shared by every post-call hook (success, failure, and the
+        streaming iterator below) — see the module docstring for why role
+        calls auto-release unconditionally while direct calls release only
+        on the explicit header, and for why this reads data["metadata"]
+        rather than data["model"]."""
+        metadata = data.get("metadata") or {}
+        shape = metadata.get(_LOCK_SHAPE_KEY)
         if shape is None:
-            return
-        is_role_call = shape == "role"
-        if not is_role_call and not _release_requested(data):
             return
         caller_id = _caller_id(user_api_key_dict)
         client = self._get_client()
+        if shape == "role":
+            # Only a call that actually joined the role-tracked hold
+            # releases — see async_pre_call_hook and the module docstring.
+            # A role call that never set this (contention-redirected, or
+            # refreshed a direct caller's own hold) has nothing to release.
+            if metadata.get(_LOCK_PARTICIPATES_KEY):
+                await self._release_role_participant(client, caller_id)
+            return
+        if not _release_requested(data):
+            return
         await self._release_if_holder(client, caller_id)
 
     async def async_post_call_success_hook(self, data: dict, user_api_key_dict, response):
         await self._maybe_release(data, user_api_key_dict)
         return response
+
+    async def async_post_call_streaming_iterator_hook(self, user_api_key_dict, response, request_data: dict):
+        """The non-streaming success hook above is NEVER reached for a
+        streaming request on the pinned litellm[proxy]==1.98.0 — the proxy's
+        base request processor returns the SSE generator straight to the
+        client via its own select_data_generator branch before it ever calls
+        proxy_logging_obj.post_call_success_hook (litellm/proxy/
+        common_request_processing.py). Every real client in this estate
+        streams, so without this override every fast/subagent lock held
+        would sit at the full 300s TTL regardless of the metadata-based fix
+        above. ProxyLogging only routes a request through this hook at all
+        if a callback overrides it (litellm/proxy/utils.py,
+        ProxyLogging._callback_capabilities / needs_iterator_wrap check
+        `"async_post_call_streaming_iterator_hook" in cls_attrs`) — a real
+        method override on this class, confirmed against the pinned tag's
+        source for this PR, not merely documented."""
+        try:
+            async for item in response:
+                yield item
+        finally:
+            await self._maybe_release(request_data, user_api_key_dict)
 
     # Signature confirmed against LiteLLM's own docs (docs.litellm.ai/docs/
     # proxy/call_hooks, fetched for this PR) — NOT verified against a live

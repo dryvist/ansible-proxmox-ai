@@ -142,18 +142,80 @@ def test_refresh_and_release_use_atomic_compare_scripts():
     assert "await client.delete(" not in source
 
 
-def test_role_calls_auto_release_direct_calls_need_the_header():
-    # The core semantics split this PR's fix depends on: _maybe_release must
-    # gate role-call release on the stamped caller shape alone, and
-    # direct-call release on the explicit header — mixing these up either
-    # breaks multi-call cache-affinity for direct callers or leaves
+def test_role_calls_gate_on_participates_direct_calls_need_the_header():
+    # The core semantics this PR's fix depends on: _maybe_release must gate
+    # role-call release on _LOCK_PARTICIPATES_KEY (never unconditionally on
+    # caller shape alone — see test_role_call_release_requires_participation
+    # for why), and direct-call release on the explicit header — mixing
+    # these up either breaks multi-call cache-affinity for direct callers,
+    # tears down a direct caller's hold out from under it, or leaves
     # fast/subagent's lock held for the full TTL after a fast, successful
     # call.
     source = render()
     maybe_release = source.split("async def _maybe_release")[1].split("async def async_post_call_success_hook")[0]
-    assert 'shape = (data.get("metadata") or {}).get(_LOCK_SHAPE_KEY)' in maybe_release
-    assert 'is_role_call = shape == "role"' in maybe_release
-    assert "if not is_role_call and not _release_requested(data):" in maybe_release
+    assert 'shape = metadata.get(_LOCK_SHAPE_KEY)' in maybe_release
+    assert 'if shape == "role":' in maybe_release
+    assert "if metadata.get(_LOCK_PARTICIPATES_KEY):" in maybe_release
+    assert "if not _release_requested(data):" in maybe_release
+
+
+def test_role_call_release_requires_participation():
+    # Regression guard for the should-fix half of this round: a role call
+    # that merely refreshed someone else's hold (outcome 1 — a direct
+    # caller's fast-gpu hold) must not set _LOCK_PARTICIPATES_KEY, or its
+    # own completion would tear that hold down. Only outcome 2 (fresh
+    # acquire, or a refresh of an already role-owned hold) participates.
+    source = render()
+    pre_call = source.split("async def async_pre_call_hook")[1].split("async def _maybe_release")[0]
+    assert "outcome = await self._acquire_or_refresh_role(client, caller_id)" in pre_call
+    assert "if outcome == 0:" in pre_call
+    assert "if outcome == 2:" in pre_call
+    assert "metadata[_LOCK_PARTICIPATES_KEY] = True" in pre_call
+    # Anti-vacuity: outcome == 1 must fall through WITHOUT setting the
+    # participates flag — assert the flag-setting line is nested only under
+    # the outcome == 2 branch, not a bare unconditional assignment.
+    assert pre_call.count("metadata[_LOCK_PARTICIPATES_KEY] = True") == 1
+
+
+def test_role_inflight_counter_gates_release_not_just_holder_match():
+    # Case (b) from the module docstring: two role calls from the same
+    # caller sharing a hold must not have the first one to finish delete it
+    # out from under the second, still in-flight, one. The release script
+    # must DECR a counter and only DEL once it reaches zero, not delete on
+    # a bare holder match the way the direct-caller scripts do.
+    source = render()
+    assert "_ACQUIRE_OR_REFRESH_ROLE_SCRIPT" in source
+    assert "_RELEASE_ROLE_PARTICIPANT_SCRIPT" in source
+    assert 'local n = redis.call("DECR", KEYS[2])' in source
+    assert "if n <= 0 then" in source
+    assert "_ACQUIRE_OR_REFRESH_ROLE_SCRIPT, 2, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id, LOCK_TTL_SECONDS" in source
+    assert "_RELEASE_ROLE_PARTICIPANT_SCRIPT, 2, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id" in source
+
+
+def test_streaming_iterator_hook_is_a_real_override_that_releases():
+    # BLOCKER: on litellm[proxy]==1.98.0, async_post_call_success_hook is
+    # never reached for a streaming request — see the method's own
+    # docstring for the source citations. Every real client in this estate
+    # streams, so this override is required, not optional, and it must be
+    # a real async-generator method (ProxyLogging only wraps the stream
+    # through it when a callback's own class attrs define it) that still
+    # yields every item and releases even if the caller aborts mid-stream.
+    source = render()
+    assert "async def async_post_call_streaming_iterator_hook(self, user_api_key_dict, response, request_data" in source
+    streaming_hook = source.split("async def async_post_call_streaming_iterator_hook")[1].split(
+        "async def async_post_call_failure_hook"
+    )[0]
+    assert "async for item in response:" in streaming_hook
+    assert "yield item" in streaming_hook
+    assert "finally:" in streaming_hook
+    assert "await self._maybe_release(request_data, user_api_key_dict)" in streaming_hook
+    # The release must be reached via `finally`, not only on the happy path
+    # — anti-vacuity: the finally block must come after the try, and the
+    # release call must be inside the finally, not merely present anywhere
+    # in the method.
+    assert streaming_hook.index("finally:") < streaming_hook.rindex(
+        "await self._maybe_release(request_data, user_api_key_dict)"
+    )
 
 
 def test_release_eligibility_reads_metadata_not_model():
@@ -166,7 +228,8 @@ def test_release_eligibility_reads_metadata_not_model():
     # stamp the shape into metadata before anything else can touch model.
     source = render()
     pre_call = source.split("async def async_pre_call_hook")[1].split("async def _maybe_release")[0]
-    assert 'data.setdefault("metadata", {})[_LOCK_SHAPE_KEY] = "role" if is_role_call else "direct"' in pre_call
+    assert 'metadata = data.setdefault("metadata", {})' in pre_call
+    assert 'metadata[_LOCK_SHAPE_KEY] = "role" if is_role_call else "direct"' in pre_call
     maybe_release = source.split("async def _maybe_release")[1].split("async def async_post_call_success_hook")[0]
     assert 'data.get("model")' not in maybe_release
 
@@ -175,7 +238,7 @@ def test_success_and_failure_hooks_both_call_maybe_release():
     source = render()
     assert "await self._maybe_release(data, user_api_key_dict)" in source.split(
         "async def async_post_call_success_hook"
-    )[1].split("async def async_post_call_failure_hook")[0]
+    )[1].split("async def async_post_call_streaming_iterator_hook")[0]
     failure_hook = source.split("async def async_post_call_failure_hook")[1]
     # request_data, not data — matches litellm's documented
     # async_post_call_failure_hook signature (docs.litellm.ai/docs/proxy/call_hooks).
