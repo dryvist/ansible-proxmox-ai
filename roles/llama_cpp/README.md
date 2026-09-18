@@ -77,7 +77,7 @@ reports active and completions return. The role therefore runs `vulkaninfo`
 and fails the converge when no device is reported, rather than shipping a
 GPU deployment that quietly is not one.
 
-## Key variables (`defaults/main.yml`)
+## Key variables (`defaults/main/`)
 
 | Var | Default | Purpose |
 | --- | --- | --- |
