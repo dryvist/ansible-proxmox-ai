@@ -26,10 +26,18 @@
 # vllm-tier entry on this card is covered automatically — see
 # tests/llm_router/test_fast_subagent_lock.py for the assumption this filter
 # makes about tier naming staying single-guest.
+#
+# `fast-gpu` (55-roles.yml) is UNIONED IN, not registry-derived — it is a DB
+# role name, not a registered client_model_id, but it targets this exact
+# backend and must be treated identically for lock purposes: same hard 429
+# on contention as the three names above, deliberately NOT the redirect
+# behaviour the ROLE_NAMES set below gives fast/subagent (see the note there
+# for why a redirect would defeat fast-gpu's whole purpose).
 llm_router_subagent_lock_model_ids: >-
-  {{ llm_router_registry_enabled
-     | selectattr('tier', 'in', ['vllm', 'hermes-local'])
-     | map(attribute='client_model_id') | list }}
+  {{ (llm_router_registry_enabled
+      | selectattr('tier', 'in', ['vllm', 'hermes-local'])
+      | map(attribute='client_model_id') | list)
+     + ['fast-gpu'] }}
 
 # The only release path GUARANTEED to fire — an unattended Hermes caller that
 # crashes or times out must not hold the lock forever. X-Subagent-Release is a
@@ -60,6 +68,13 @@ llm_router_hermes_local_4080_id: >-
 # this is a template-time redirect target rather than a live lookup of the
 # role's own DB-stored fallback order (UI-reorderability tradeoff, documented
 # there).
+#
+# `fast-gpu` is DELIBERATELY NOT in this set — it is unioned into
+# llm_router_subagent_lock_model_ids above instead, so it gets the hard 429
+# a direct caller gets, never a redirect. Its whole purpose is letting a
+# caller detect 4080 contention and run its OWN fallback sequence; a silent
+# redirect here would answer from a different model without the caller ever
+# knowing the 4080 was busy, defeating that.
 llm_router_subagent_lock_role_names:
   - fast
   - subagent

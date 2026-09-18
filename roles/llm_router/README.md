@@ -198,22 +198,23 @@ Where no catalogued model satisfies both, the role is seeded with no fallback
 record at all. It then fails honestly rather than silently, and whoever owns
 the UI adds a rung deliberately.
 
-**`fast`/`subagent` are local-only for ORDINARY failures, by design, not by
-the two rules above.** Their ordinary chain is exactly two rungs — the 4080,
-then the Mac Studio primary — and stops there: no free or paid rung. If both
-are busy/timed out/down, the request fails outright rather than escalating
-anywhere, on purpose — this alias exists for cheap/local/no-budget-consumed
-delegation, and the calling harness is expected to fall back to its own
-native subagent tooling on that failure, not this alias.
-
-An over-long request is a DIFFERENT failure mode, handled separately: both
-roles still escape to `long`'s >200k-context window via
+**`fast`/`subagent` are a deliberate exception to both rules.** Their chain is
+local-first by design (try the 4080 before anything wider, then a free rung,
+then one paid rung, `long` last) and does carry a paid rung — the truncation
+risk the first rule guards against is instead closed by
 `context_window_fallbacks` (`defaults/main/37-fallback-entry-points.yml`),
-evaluated against the role's own advertised window before the ordinary chain
-is ever walked — this is the same capability `subagent` had before this PR
-(it used to target `long` directly), preserved rather than dropped. See
+which escapes a request too large for the role's own advertised window
+straight to `long` rather than walking the ordinary chain. See
 `defaults/main/55-roles.yml`'s note above `_llm_router_fast_subagent_chain`
-for the full reasoning.
+for the full reasoning, including what is still unverified.
+
+**`fast-gpu` is a third, narrower role — just the 4080, `fallbacks: []`.**
+For a caller that wants to address "just the 4080" directly without naming
+its physical model id, and build its own fallback sequence around that one
+call (e.g. try `fast-gpu`, then its own local model, then the full `fast`
+chain above as a catch-all). Contention fails outright, never redirects —
+see `defaults/main/57-subagent-lock.yml` for why a redirect here would
+defeat the caller's own sequencing.
 
 ### Swap a role
 
