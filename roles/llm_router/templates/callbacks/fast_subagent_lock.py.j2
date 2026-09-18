@@ -64,9 +64,7 @@ how long it is held, which is what actually matters for "does an idle 4080
 lock out fast-gpu/direct callers" — that window is now bounded by one
 request's wall-clock time, not the TTL. A genuine acquisition-time fix (gate
 on the Router's actually-resolved deployment, not the caller-typed name)
-would need a hook this file could not identify with confidence — see
-async_post_call_failure_hook's docstring for the same signature-uncertainty
-caveat.
+would need a hook this file could not identify with confidence.
 
 Direct callers (GATED_MODELS) do NOT auto-release on completion — that
 would break the ORIGINAL feature this lock exists for (a caller like Hermes
@@ -242,21 +240,23 @@ class FastSubagentLock(CustomLogger):
         await self._maybe_release(data, user_api_key_dict)
         return response
 
-    # UNVERIFIED signature — could not confirm against a live litellm[proxy]
-    # process in this PR. Deliberately defensive (**kwargs, broad except):
-    # a wrong guess about this hook's exact parameter names/order must
-    # degrade to "the lock is not released early" (falls back to the 300s
-    # TTL, the pre-existing safety net), never to an exception that could
-    # interfere with the actual failure response reaching the caller.
-    async def async_post_call_failure_hook(self, *args, **kwargs):
+    # Signature confirmed against LiteLLM's own docs (docs.litellm.ai/docs/
+    # proxy/call_hooks, fetched for this PR) — NOT verified against a live
+    # process on the pinned 1.98.0 release specifically. Still wrapped
+    # defensively: a documented-but-wrong-on-this-pin signature must degrade
+    # to "the lock is not released early" (falls back to the 300s TTL, the
+    # pre-existing safety net), never to an exception that could interfere
+    # with the actual failure response reaching the caller. Returning None
+    # (rather than an HTTPException) leaves the original error untouched, as
+    # documented.
+    async def async_post_call_failure_hook(
+        self, request_data: dict, original_exception: Exception, user_api_key_dict, traceback_str=None
+    ):
         try:
-            data = kwargs.get("request_data") or kwargs.get("data") or (args[0] if args else None)
-            user_api_key_dict = kwargs.get("user_api_key_dict")
-            if not isinstance(data, dict) or user_api_key_dict is None:
-                return
-            await self._maybe_release(data, user_api_key_dict)
+            await self._maybe_release(request_data, user_api_key_dict)
         except Exception:  # noqa: BLE001 - see docstring: must never break the failure path
             pass
+        return None
 
 
 proxy_handler_instance = FastSubagentLock()

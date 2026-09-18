@@ -160,11 +160,13 @@ def test_success_and_failure_hooks_both_call_maybe_release():
         "async def async_post_call_success_hook"
     )[1].split("async def async_post_call_failure_hook")[0]
     failure_hook = source.split("async def async_post_call_failure_hook")[1]
-    assert "await self._maybe_release(data, user_api_key_dict)" in failure_hook
-    # UNVERIFIED-signature defensiveness: the failure hook must never let an
-    # exception escape (it would interfere with the actual failure response
-    # reaching the caller, which matters far more than releasing the lock a
-    # little early).
+    # request_data, not data — matches litellm's documented
+    # async_post_call_failure_hook signature (docs.litellm.ai/docs/proxy/call_hooks).
+    assert "await self._maybe_release(request_data, user_api_key_dict)" in failure_hook
+    # Defensive even with a docs-confirmed signature (not verified against a
+    # live process on the pinned release): the failure hook must never let
+    # an exception escape, which would interfere with the actual failure
+    # response reaching the caller — more important than releasing early.
     assert "except Exception" in failure_hook
 
 
