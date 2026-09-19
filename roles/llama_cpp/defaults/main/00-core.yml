@@ -1,17 +1,14 @@
 ---
 # llama_cpp role defaults — the light serving tier: llama.cpp (llama-server) on an
 # AMD ROCm GPU inside a privileged LXC (guest `llm-fast`, RX 6800 = gfx1030).
-# llama-server runs directly as the systemd unit (native router mode — see
-# templates/llama-server.service.j2), presenting ONE OpenAI-compatible endpoint
-# over whatever GGUFs its --models-dir finds present.
+# llama-server runs directly as the systemd unit (native router mode, a
+# rendered --models-preset — see templates/llama-server.service.j2 and
+# templates/llama-cpp-models.ini.j2), presenting ONE OpenAI-compatible
+# endpoint over exactly the models this role declares present.
 #
-# llama-swap fronted this role until 2026-09-19 and was retired: with one model
-# per card, its swap feature was never exercisable under the router's admission
-# rule, and its own config surface (a default concurrencyLimit that didn't match
-# the server's real slot count, a separate YAML the two had to agree on) caused
-# two serving faults in one day. llama-server's own router mode does the same
-# job (model discovery, load/unload, a built-in web UI) without a second
-# process or a second config format.
+# llama-swap was used until 2026-09-19 and was retired: no value for a
+# single-model card — llama-server's own router mode covers swapping, without
+# a second process or a second config format.
 #
 # ABSOLUTE RULE: never serve a model with param_billions >= 14 on this GPU
 # (llm-fast, RX 6800, 16 GB VRAM). A single Hermes-4-14B (Q4, ~8.4 GB) load
@@ -47,9 +44,15 @@ llama_cpp_install_dir: /opt/llama-cpp
 llama_cpp_server_bin: "{{ llama_cpp_install_dir }}/llama-server"
 llama_cpp_data_dir: /var/lib/llama-cpp
 # Read-only shared model storage — this guest never downloads or writes model
-# weights (tasks/main.yml asserts the mount is actually read-only). llama-server's
-# own router mode (--models-dir) scans this directory directly; no per-guest copy.
+# weights (tasks/main.yml asserts the mount is actually read-only). The
+# --models-preset (templates/llama-cpp-models.ini.j2) points each model's
+# `model =` path at a file under here; no per-guest copy.
 llama_cpp_models_dir: "{{ llama_cpp_data_dir }}/models"
+# The rendered --models-preset INI (templates/llama-cpp-models.ini.j2) —
+# llama-swap's config.yaml.j2 destination, renamed and reformatted, not a new
+# concept.
+llama_cpp_config_dir: /etc/llama-cpp
+llama_cpp_config_file: "{{ llama_cpp_config_dir }}/models.ini"
 
 # --- GPU backend -------------------------------------------------------------
 # Which upstream llama.cpp build to deploy. Upstream ships a prebuilt Linux

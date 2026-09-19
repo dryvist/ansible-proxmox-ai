@@ -18,32 +18,24 @@ Environment=LD_LIBRARY_PATH={{ llama_cpp_install_dir }}
    attribute. #}
 Environment=HSA_OVERRIDE_GFX_VERSION={{ llama_cpp_hsa_override_gfx_version }}
 {% endif %}
-# Router mode (native to llama-server since ~b10xxx, replaces llama-swap):
-# --models-dir scans this guest's read-only model mount and registers one
-# servable id per GGUF found there (id = filename minus ".gguf" for a
-# top-level file, or the subdirectory name for multimodal/multi-shard — see
-# common/preset.cpp load_from_models_dir upstream). --models-max caps how
-# many stay resident at once; every other flag below is a DEFAULT applied to
-# every model instance the router loads (upstream docs, "Using multiple
-# models" — not a per-model override). That is a real limitation versus
-# llama-swap's per-model cmd: a guest serving models of different kinds (a
-# chat model AND an embeddings model, e.g. llm_fast_group) cannot express
-# per-model flags this way — only a single-model-family-per-guest fleet
-# (every currently-enabled model here is a plain chat model) is exact today.
-# A guest that needs true per-model overrides would use --models-preset (an
-# INI, not implemented here — nothing currently enabled needs it).
+# Router mode (native to llama-server, replaces llama-swap): --models-preset
+# points at the rendered INI (templates/llama-cpp-models.ini.j2) — one section
+# per present, guard-checked model, section name = the registry id, so the
+# router serves exactly the ids this role already declared, never anything
+# else on the shared mount. --models-max caps how many stay resident at once.
+# Only --parallel/--metrics/-ngl apply uniformly to every instance (upstream
+# docs, "default arguments... passed to every model instance"); per-model
+# ctx-size and chat-vs-embeddings flags live IN the preset, never here — a
+# top-level CLI arg would override every preset entry's own value (upstream
+# precedence: CLI > preset).
 ExecStart={{ llama_cpp_server_bin }} \
   --host 0.0.0.0 --port {{ llama_cpp_api_port }} \
-  --models-dir {{ llama_cpp_models_dir }} \
+  --models-preset {{ llama_cpp_config_file }} \
   --models-max {{ llama_cpp_models_max }} \
   --models-autoload \
   --parallel {{ llama_cpp_parallel | mandatory("llama_cpp_parallel must be set for this group") }} \
   --metrics \
-  -ngl {{ llama_cpp_ngl }} \
-  --ctx-size {{ llama_cpp_ctx_size }} \
-  --flash-attn on \
-  --jinja \
-  --cache-reuse {{ llama_cpp_cache_reuse }}{{ (' --cache-ram ' ~ llama_cpp_cache_ram) if llama_cpp_cache_ram is not none else '' }}{{ ' --cache-idle-slots' if llama_cpp_cache_idle_slots | bool else '' }}
+  -ngl {{ llama_cpp_ngl }}
 # Restart policy is managed by the systemd_restart_policy role (99-restart-policy.conf).
 
 [Install]

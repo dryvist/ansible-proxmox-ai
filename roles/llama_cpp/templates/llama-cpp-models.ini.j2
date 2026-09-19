@@ -1,0 +1,35 @@
+{{ ansible_managed | comment }}
+# llama-server --models-preset (replaces llama-swap's config.yaml). One
+# section per present, guard-checked model (llama_cpp_models_present) — the
+# section name IS the id the router serves and IS the registry's
+# client_model_id (llm-models.d/), never the GGUF filename. Per-model
+# ctx-size and chat-vs-embeddings flags live here so a guest mixing model
+# kinds (a chat model and an embeddings model) still gets the right flags for
+# each, unlike a plain --models-dir directory scan.
+{% for m in llama_cpp_models_present %}
+[{{ m.name }}]
+model = {{ llama_cpp_models_dir }}/{{ m.gguf }}
+ctx-size = {{ m.ctx_size | default(llama_cpp_ctx_size) }}
+{% if m.embeddings %}
+embeddings = true
+pooling = mean
+{# Non-causal embedding inputs must fit in ONE physical batch; the
+   llama-server default (512) silently caps inputs far below ctx-size and
+   500s anything larger. Match the batch to the context window. #}
+batch-size = {{ m.ctx_size | default(llama_cpp_ctx_size) }}
+ubatch-size = {{ m.ctx_size | default(llama_cpp_ctx_size) }}
+{% else %}
+flash-attn = on
+jinja = true
+{# Repeat requests from the same caller should land on a warm cache — see
+   the rationale in roles/llama_cpp/defaults/main/10-cache-specdecode.yml. #}
+cache-reuse = {{ llama_cpp_cache_reuse }}
+{% if llama_cpp_cache_ram is not none %}
+cache-ram = {{ llama_cpp_cache_ram }}
+{% endif %}
+{% if llama_cpp_cache_idle_slots | bool %}
+cache-idle-slots = true
+{% endif %}
+{% endif %}
+
+{% endfor %}

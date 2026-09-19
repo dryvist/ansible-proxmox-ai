@@ -57,7 +57,7 @@
     shell: /usr/sbin/nologin
     create_home: true
 
-- name: Create the install and models directories
+- name: Create the install, config and models directories
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: directory
@@ -66,6 +66,7 @@
     mode: "{{ item.mode }}"
   loop:
     - { path: "{{ llama_cpp_install_dir }}", owner: root, group: root, mode: "0755" }
+    - { path: "{{ llama_cpp_config_dir }}", owner: root, group: root, mode: "0755" }
     - path: "{{ llama_cpp_models_dir }}"
       owner: "{{ llama_cpp_user }}"
       group: "{{ llama_cpp_group }}"
@@ -169,11 +170,9 @@
 # This guest never downloads model weights: it is told where they are and how
 # to load them. The models directory is populated out of band (a read-only
 # mount of shared model storage), so a declared GGUF that is not there yet is
-# reported and left out of the served set, not fetched and not a failure.
-# llama-server's own router mode (--models-dir, below) re-discovers whatever
-# is actually present at startup independently — this check exists so a
-# missing GGUF is reported clearly at converge time rather than only showing
-# up later as an unexplained 404 the first time a caller asks for it.
+# reported and left out of llama_cpp_models_present — and therefore out of
+# the rendered --models-preset (templates/llama-cpp-models.ini.j2), not
+# fetched and not a failure.
 - name: Check which declared model GGUFs are present
   ansible.builtin.stat:
     path: "{{ llama_cpp_models_dir }}/{{ item.gguf }}"
@@ -192,8 +191,8 @@
   ansible.builtin.debug:
     msg: >-
       {{ item.item.name }} is declared but {{ llama_cpp_models_dir }}/{{ item.item.gguf }}
-      is not present on this guest; llama-server's --models-dir will not
-      serve it until the model storage provides it.
+      is not present on this guest; it is left out of the rendered
+      --models-preset until the model storage provides it.
   loop: "{{ llama_cpp_gguf_stat.results | rejectattr('stat.exists') | list }}"
   loop_control:
     label: "{{ item.item.name }} ({{ item.item.gguf }})"
@@ -222,6 +221,15 @@
     success_msg: "{{ llama_cpp_models_dir }} is a read-only mount."
 
 # --- Service -------------------------------------------------------------------
+- name: Deploy the llama-server --models-preset
+  ansible.builtin.template:
+    src: llama-cpp-models.ini.j2
+    dest: "{{ llama_cpp_config_file }}"
+    owner: root
+    group: "{{ llama_cpp_group }}"
+    mode: "0640"
+  notify: Restart llama-server
+
 - name: Deploy the llama-server systemd unit
   ansible.builtin.template:
     src: llama-server.service.j2

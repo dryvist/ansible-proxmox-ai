@@ -1,10 +1,12 @@
 """Render llama-server.service.j2 and prove the systemd unit actually asks for
-router mode, one resident model, the right port, and the mandatory slot count.
+router mode against the rendered --models-preset, the resident-model cap, the
+right port, and the mandatory slot count.
 
 WHY THIS EXISTS. llama-swap was retired 2026-09-19 (see roles/llama_cpp/README.md):
 llama-server now runs directly as the unit, in its own native router mode
-(--models-dir), rather than being fronted by a second process and a second
-config format. Nothing here parses this file as YAML — it is a systemd unit
+(--models-preset — see test_llama_cpp_models_ini.py for that file's own
+contract), rather than being fronted by a second process and a second config
+format. Nothing here parses this file as YAML — it is a systemd unit
 (INI-style), not YAML — so this test does the equivalent thing that
 test_concurrency_limit.py did for the retired llama-swap.yaml.j2: render with
 Ansible's REAL Jinja settings (trim_blocks=True, lstrip_blocks=False — see
@@ -33,14 +35,10 @@ DEFAULT_CONTEXT = {
     "llama_cpp_hsa_override_gfx_version": "10.3.0",
     "llama_cpp_server_bin": "/opt/llama-cpp/llama-server",
     "llama_cpp_api_port": 10434,
-    "llama_cpp_models_dir": "/var/lib/llama-cpp/models",
+    "llama_cpp_config_file": "/etc/llama-cpp/models.ini",
     "llama_cpp_models_max": 1,
     "llama_cpp_parallel": 1,
     "llama_cpp_ngl": 99,
-    "llama_cpp_ctx_size": 32768,
-    "llama_cpp_cache_reuse": 256,
-    "llama_cpp_cache_ram": None,
-    "llama_cpp_cache_idle_slots": False,
 }
 
 
@@ -70,9 +68,11 @@ def test_template_exists():
 
 
 def test_exec_start_carries_router_mode_and_the_mandatory_slot_count():
-    exec_start = _exec_start(render(llama_cpp_models_dir="/mnt/ro-models", llama_cpp_models_max=1, llama_cpp_parallel=3))
+    exec_start = _exec_start(
+        render(llama_cpp_config_file="/mnt/x/models.ini", llama_cpp_models_max=1, llama_cpp_parallel=3)
+    )
     assert "/opt/llama-cpp/llama-server" in exec_start
-    assert "--models-dir /mnt/ro-models" in exec_start
+    assert "--models-preset /mnt/x/models.ini" in exec_start
     assert "--models-max 1" in exec_start
     assert "--parallel 3" in exec_start
     assert "--metrics" in exec_start
