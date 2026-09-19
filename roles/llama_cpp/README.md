@@ -35,7 +35,9 @@ Ordering: `tofu-proxmox` (LXC shell) → `ansible-proxmox` (GPU passthrough) →
   nodes (resolved at runtime via `stat`), so the server can open `/dev/kfd` +
   `/dev/dri` regardless of how host GIDs map to container group names (same idiom as
   `roles/ollama`).
-- Stages the model GGUFs as local files (downloads only when absent).
+- Never downloads model weights. Each declared GGUF is checked for presence in
+  `llama_cpp_models_dir` (populated out of band from shared model storage);
+  absent ones are reported and left out of the llama-swap config.
 - Renders the llama-swap config (a co-resident model group) + a systemd unit,
   listening on `service_ports.llm_fast_api`. Restart-on-failure is applied by the
   shared `systemd_restart_policy` role via `group_vars/llm_fast_group.yml`.
@@ -87,7 +89,7 @@ GPU deployment that quietly is not one.
 | `llama_cpp_vulkan_packages` | loader + `vulkan-tools` | `vulkaninfo` backs the device-visibility gate |
 | `llama_cpp_models` | 2-model list | served models + GGUF sources (each needs `param_billions`) |
 | `llama_cpp_install_dir` | `/opt/llama-cpp` | binary + bundled ROCm `.so` files (also `LD_LIBRARY_PATH`) |
-| `llama_cpp_models_dir` | `/var/lib/llama-cpp/models` | staged GGUFs (persistent volume) |
+| `llama_cpp_models_dir` | `/var/lib/llama-cpp/models` | GGUFs provided by shared model storage; the role only reads here |
 | `llama_cpp_rocm_packages` | `[]` | best-effort container ROCm runtime packages |
 
 ## Usage
