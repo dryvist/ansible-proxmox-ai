@@ -131,22 +131,9 @@ own spend, silently turning a stated ceiling into N times its real value and
 resetting it on every rolling converge — a control that reports a limit it
 does not hold is worse than an absent one.
 
-`redis_host`/`redis_password` resolve through `os.environ/`, like every other
-secret in this config; `redis_port` renders as a literal int instead, because
-LiteLLM's documented Redis examples type it that way and an unresolved
-`os.environ/` marker where an int is expected risks failing at client
-construction — the port is not a secret either, so routing it through the
-EnvironmentFile bought nothing.
-
-Deliberately absent: `fail_closed_budget_enforcement`. It governs LiteLLM's
-Postgres-backed virtual-key budgets, not the provider budget above, and 503s
-when spend can't be verified against Redis or a database.
-
-The proxy now **has** a database (see `defaults/main/45-database.yml`), so that
-is no longer the reason. The reason is the other one, and it still stands: this
-proxy **issues no virtual keys**, so there are no key budgets to enforce and the
-setting would be inert at best, a 503 generator on the fabric's only front door
-at worst. Reconsider it when virtual keys are issued, not before.
+Why `redis_port` renders as a literal int rather than `os.environ/`, and why
+`fail_closed_budget_enforcement` is deliberately absent — moved to
+[`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md#redis-spend-tracking-details).
 
 ## Model role aliases
 
@@ -183,13 +170,11 @@ role by hand or through the Admin UI — moved to
 Router settings — `router_settings` in `config.yaml`: `fallbacks`,
 `routing_strategy`, `allowed_fails`, `cooldown_time`, `model_group_alias` —
 are administered in the LiteLLM Admin UI, at **Router Settings**, the same
-"database owns it after first seed" contract role deployments already have
-(above), and Virtual Keys → allowed models already have
-(`tasks/seed-keys.yml`: mints a key only when absent, then only ever adds
-model names to an existing key's scope; `tasks/reconcile-key-budgets.yml`
-never sends `models`, only budget fields). `llm_router_seed_mode`
-(`defaults/main/45-database.yml`, default `initial`) is the one variable
-that extends the same contract to `router_settings`:
+"database owns it after first seed" contract Roles and Virtual Keys already
+have (above). `llm_router_seed_mode` (`defaults/main/45-database.yml`,
+default `initial`) extends that same contract to `router_settings` — how
+Roles and Virtual Keys already enforce it:
+[`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md#same-contract-elsewhere).
 
 - **`initial`** (default) — the converge seeds `router_settings` into the
   database only the first time, when no row exists yet
@@ -203,37 +188,10 @@ that extends the same contract to `router_settings`:
   back to `initial`.
 
 Facts this rests on, verified against the pinned `litellm==1.98.0` wheel
-(never guessed):
-
-- **Startup merge direction**: with `store_model_in_db: true`, the database
-  row wins over `config.yaml` for every key it carries — `ProxyConfig.
-  _update_config_fields`'s `_deep_merge_dicts` (`litellm/proxy/
-  proxy_server.py:6357-6371`), called from `_update_config_from_db`
-  (`proxy_server.py:6418-6452`), called from `get_config` at startup
-  (`proxy_server.py:4448-4452`). A key the file renders but the database
-  never touched keeps the file's value; a key the UI has written wins on
-  every subsequent proxy start, restart or not.
-- **The UI write path**: Router Settings saves through `POST /config/update`
-  (`proxy_server.py:15394`, `router_settings` block at
-  `proxy_server.py:15517-15527`) — merge-per-key, request wins, upserted into
-  the `LiteLLM_Config` table. There is no `PUT /fallback/{model}` endpoint in
-  this pinned release (verified: zero matches in `proxy_server.py`'s route
-  table) — anything that call shape reports back is not the UI's actual
-  write path.
-- **Propagation, no restart needed**: `/config/update` triggers
-  `ProxyConfig.add_deployment` once immediately, and every proxy instance
-  also runs it on its own APScheduler `interval` job
-  (`proxy_server.py:8845-8853`, gated on `store_model_in_db`), every
-  `PROXY_CONFIG_RELOAD_INTERVAL_SECONDS` (`litellm/constants.py:1522`,
-  default **30s**). That job's `_add_router_settings_from_db_config`
-  (`proxy_server.py:6031-6068`) re-reads the row and calls
-  `llm_router.update_settings(**combined_router_settings)` live — a fallback
-  or routing-strategy edit made in the UI on one router reaches every other
-  router in the pool within ~30 seconds, no restart. Models added/edited in
-  the UI (`LiteLLM_ProxyModelTable`) reconcile through the same
-  `add_deployment` job and the same interval. Key model-scope changes are
-  served from `user_api_key_cache`, in-memory TTL 60s by default
-  (`proxy_server.py:1527`, `general_settings.user_api_key_cache_ttl`).
+(never guessed) — the startup merge direction, the UI's actual write path,
+and how an edit propagates to the rest of the pool without a restart — moved
+to
+[`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md).
 
 ## Virtual keys (`defaults/main/56-virtual-keys.yml`)
 
@@ -297,37 +255,18 @@ endpoint contract, and the serving-share metric:
   hard-required — a missing constant fails loud.
 - Secrets `LLM_ROUTER_MASTER_KEY` + `LLM_LARGE_BEARER_TOKEN` are env-sourced
   (SOPS/Doppler) today; the OpenBao migration is a separate phase.
-- `prisma` was originally installed into the venv while the proxy was DB-less,
-  for a reason unrelated to databases: litellm[proxy] no longer pulls it, and
-  LiteLLM's auth-error handler unconditionally imports it to classify DB
-  outages — without it, a rejected or absent API key raised
-  `ModuleNotFoundError` and returned 500 instead of 401. Its presence was never
-  evidence that DB mode was intended, and the dependency is still required when
-  no database is configured.
+- `prisma` is required even with no database configured — why, moved to
+  [`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md#prisma-without-a-database)
+  alongside the other database-adjacent facts.
 
 ### Database (optional)
 
 Set `llm_router_db_host` and the proxy attaches PostgreSQL for the **Adaptive
-Router's learned quality estimates**, which LiteLLM loads at startup. Leave it
-empty and the router still serves every request — it simply forgets each
-restart and reverts to cold-start priors, which is a silent degradation rather
-than a visible failure.
-
-Scope is deliberately narrow, and the reasoning is in
-`defaults/main/45-database.yml`:
-
-- `store_model_in_db` is **true**, and carries role deployments only. It is
-  independent of adaptive routing. A config-file entry stays owned by the
-  converge and read-only in the UI, so the catalog keeps its single source of
-  truth while roles become editable — see "Roles" above.
-- Spend and error logs are **on**, bounded by a 30-day native retention job,
-  and carry no prompts — see `defaults/main/45-database.yml`.
-- Credentials are bao-first from `apps/llm-router`, the same field the Postgres
-  converge in `ansible-proxmox-apps` uses to create the role, so the two ends
-  cannot drift.
-
-The database shares the ai-VLAN cluster that backs Hindsight, which already
-carries the estate's DR standard.
+Router's learned quality estimates**; leave it empty and the router still
+serves every request, it just forgets each restart. Scope, credentials and
+retention — moved to
+[`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md#database-optional)
+alongside the seed-mode facts, since both describe the same database.
 
 ## Usage
 
