@@ -178,6 +178,14 @@ Full detail — the two rules a seeded fallback rung must satisfy, the
 role by hand or through the Admin UI — moved to
 [`docs/LLM_ROUTER_ROLES.md`](../../docs/LLM_ROUTER_ROLES.md).
 
+## Virtual keys (`defaults/main/56-virtual-keys.yml`)
+
+One key per caller, seeded from its own apps-domain secret. Naming rule: the
+scope word for open-source repositories is `oss` (`github-actions-oss`,
+`review-oss`, `github_actions_oss_llm_router_key`); the word "public" never
+appears in a credential, path, variable or role name — a key so named reads as
+if the key itself were public.
+
 ## Subscription rung (chatgpt/ provider)
 
 `codex-subscription` (`chatgpt/<llm_router_chatgpt_model>`, the ChatGPT

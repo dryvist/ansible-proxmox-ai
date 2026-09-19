@@ -2,7 +2,7 @@
 # Pins the two CI review roles and the Codex/Z.ai rungs (55-roles.yml,
 # 33-zai.yml, llm-models.d/40-hermes-cloud.yml, 45-zai.yml):
 #
-#   * review-public: local rungs → free external rungs → the Z.ai pair as
+#   * review-oss: local rungs → free external rungs → the Z.ai pair as
 #     its terminal, free tier before metered;
 #   * NO other role's ladder contains a Z.ai deployment, and no chain or
 #     segment derives from the zai tier;
@@ -12,8 +12,8 @@
 #     api_key and a 15 s first-byte bound, the openai rung ends every other
 #     chat ladder, both at the highest reasoning effort the Responses path
 #     accepts;
-#   * the CI keys: github-actions → review-private only, github-actions-public
-#     → review-public only;
+#   * the CI keys: github-actions → review-private only, github-actions-oss
+#     → review-oss only;
 #   * both review roles are lock-redirect roles and sit under the admission
 #     budget like every other role.
 #
@@ -34,7 +34,7 @@
           redis_default: 6379
     bao_apps_secrets:
       github_actions_llm_router_key: sk-fixture-gha
-      github_actions_public_llm_router_key: sk-fixture-gha-public
+      github_actions_oss_llm_router_key: sk-fixture-gha-oss
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: "pve.example.test"
@@ -79,7 +79,7 @@
     - name: Note the rendered deployment names and the review roles
       ansible.builtin.set_fact:
         _rendered_names: "{{ _config.model_list | map(attribute='model_name') | list }}"
-        _public: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-public') | first }}"
+        _public: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-oss') | first }}"
         _private: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}"
 
     - name: Public review ends in the Z.ai pair, free tier before metered, after the free external rungs
@@ -97,15 +97,15 @@
           - llm_router_external_paid_rungs | intersect(_public.fallbacks) | length == 0
           - llm_router_external_subscription_rungs | intersect(_public.fallbacks) | length == 0
           - llm_router_zai_groups | difference(_rendered_names) | length == 0
-        fail_msg: "review-public: {{ _public.model }} -> {{ _public.fallbacks | join(' -> ') }}"
-        success_msg: "review-public: {{ _public.model }} -> {{ _public.fallbacks | join(' -> ') }}"
+        fail_msg: "review-oss: {{ _public.model }} -> {{ _public.fallbacks | join(' -> ') }}"
+        success_msg: "review-oss: {{ _public.model }} -> {{ _public.fallbacks | join(' -> ') }}"
 
     - name: No other role, and no chain, carries a Z.ai deployment
       ansible.builtin.assert:
         quiet: true
         that:
           - >-
-            llm_router_role_deployments | rejectattr('role', 'equalto', 'review-public')
+            llm_router_role_deployments | rejectattr('role', 'equalto', 'review-oss')
             | map(attribute='fallbacks') | flatten | intersect(llm_router_zai_groups) | length == 0
           - >-
             _config.router_settings.fallbacks | map('dict2items') | flatten
@@ -156,26 +156,26 @@
           {{ _config.model_list | selectattr('model_name', 'equalto', 'codex-api')
              | selectattr('litellm_params.model', 'match', '^openai/gpt') | list }}
 
-    # The public key sits behind llm_router_public_ci_key_enabled: with the
+    # The public key sits behind llm_router_oss_ci_key_enabled: with the
     # switch off (the shipped default) it renders empty and seed-keys registers
     # nothing, however the apps secret reads; on, the secret's value renders.
     # The path side of the switch: tests/openbao_secrets/test_optional_paths_are_gated.yml.
     - name: Capture the switch-off render, then flip the switch on
       ansible.builtin.set_fact:
         _off: "{{ llm_router_virtual_keys }}"
-        llm_router_public_ci_key_enabled: true
+        llm_router_oss_ci_key_enabled: true
 
     - name: The public CI key is inert with its switch off and minted with it on
       ansible.builtin.assert:
         quiet: true
         that:
           - _off_value == ''
-          - _on_value == 'sk-fixture-gha-public'
+          - _on_value == 'sk-fixture-gha-oss'
       vars:
         _off_value: >-
-          {{ _off | selectattr('alias', 'equalto', 'github-actions-public') | map(attribute='value') | first }}
+          {{ _off | selectattr('alias', 'equalto', 'github-actions-oss') | map(attribute='value') | first }}
         _on_value: >-
-          {{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-public')
+          {{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss')
              | map(attribute='value') | first }}
         _apps_paths: >-
           {{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths
@@ -186,12 +186,12 @@
         quiet: true
         that:
           - _gha.models == ['review-private']
-          - _gha_public.models == ['review-public']
-          - "'review-public' in llm_router_subagent_lock_role_names"
+          - _gha_oss.models == ['review-oss']
+          - "'review-oss' in llm_router_subagent_lock_role_names"
           - "'review-private' in llm_router_subagent_lock_role_names"
       vars:
         _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
-        _gha_public: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-public') | first }}"
+        _gha_oss: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
 
     # Whitespace, never absent: an absent field falls through to the RUNNER's
     # environment (test_hermes_provider_keys.yml has the same fixture rule).
@@ -213,9 +213,9 @@
         _bare_private: >-
           {{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}
         _bare_public: >-
-          {{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-public') | first }}
+          {{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-oss') | first }}
 
-    - name: Uncredentialed, review-private is local-only and review-public stops at the free rungs
+    - name: Uncredentialed, review-private is local-only and review-oss stops at the free rungs
       ansible.builtin.assert:
         quiet: true
         that:
