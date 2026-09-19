@@ -61,6 +61,19 @@ models:
       - "{{ a }}"
 {% endfor %}
 {% endif %}
+{% if llama_cpp_parallel is not none %}
+    {# A caller must never wait behind a busy slot: llama-swap's own default
+       concurrencyLimit is 10, so up to 10 requests are admitted and handed to
+       llama-server, which QUEUES anything past its slot count instead of
+       rejecting it — measured as a ~6 minute hang before the router's own
+       Gateway Timeout (2026-09-19, review-public role), not an instant 429.
+       Pinning this to the same slot count llama_cpp_parallel already declares
+       makes llama-swap itself reject the (slots+1)th request immediately
+       (HTTP 429, swaputil.ConcurrencyLimitError) rather than admit it into a
+       queue llama-server never rejects from. Left unset on groups that never
+       opted into a fixed slot count, so this does not change their behaviour. #}
+    concurrencyLimit: {{ llama_cpp_parallel }}
+{% endif %}
     cmd: |
       ${server-base}
       --model {{ llama_cpp_models_dir }}/{{ m.gguf }}
