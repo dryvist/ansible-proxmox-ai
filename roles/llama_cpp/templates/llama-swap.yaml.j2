@@ -7,12 +7,25 @@ healthCheckTimeout: {{ llama_cpp_health_check_timeout }}
 startPort: {{ llama_cpp_start_port }}
 logLevel: info
 
+# Requests to a per-model /metrics scrape must not trigger a swap: the "chat"
+# group holds more than one member (swap:true), and llama-swap treats ANY
+# proxied request to an unloaded model's /upstream/<model>/... path as a load
+# request. Without this, a Prometheus scrape of the currently-swapped-out
+# model would load-thrash the pair every scrape interval. ignorePaths fully
+# replaces llama-swap's default list, so the stock static-asset patterns are
+# repeated here rather than lost.
+upstream:
+  ignorePaths:
+    - '.*\.(js|json|css|png|gif|jpg|jpeg|ico|txt)$'
+    - '.*/metrics$'
+
 # Shared llama-server invocation. ${PORT} is assigned per model by llama-swap.
 macros:
   "server-base": >-
     {{ llama_cpp_server_bin }}
     --host 127.0.0.1 --port ${PORT}
     -ngl {{ llama_cpp_ngl }}
+    --metrics
     {{ ('--parallel ' ~ llama_cpp_parallel) if llama_cpp_parallel is not none else '' }}
 
 groups:
