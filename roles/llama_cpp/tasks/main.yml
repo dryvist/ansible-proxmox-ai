@@ -13,6 +13,8 @@
       # OpenMP runtime: the prebuilt llama-server links libgomp.so.1, which
       # the minimal Debian LXC template does not ship.
       - libgomp1
+      # stdlib venv for the Hugging Face CLI that stages the GGUFs.
+      - python3-venv
     state: present
     update_cache: true
     cache_valid_time: 3600
@@ -253,16 +255,28 @@
   register: llama_cpp_gguf_stat
 
 # get_url streams the whole file in one request and cannot resume; a 12 GB pull
-# whose connection drops mid-stream restarts from zero on every retry. The
-# script resumes into <dest>.part and only renames once the size matches the
-# origin, so <dest> present means <dest> complete.
+# whose connection drops mid-stream restarts from zero on every retry. The hub's
+# own CLI downloads in chunks, resumes, and only places the file once complete.
+- name: Install the Hugging Face CLI into its own venv
+  ansible.builtin.pip:
+    name: "{{ llama_cpp_hf_pip_packages }}"
+    state: present
+    virtualenv: "{{ llama_cpp_hf_venv }}"
+    virtualenv_command: python3 -m venv
+  when: llama_cpp_gguf_stat.results | rejectattr('stat.exists') | list | length > 0
+
 - name: Stage the model GGUFs (resumable, only if absent)
-  ansible.builtin.script:
-    cmd: >-
-      stage-gguf.sh
-      "{{ llama_cpp_hf_base }}/{{ item.item.hf_repo }}/resolve/main/{{ item.item.gguf }}"
-      "{{ llama_cpp_models_dir }}/{{ item.item.gguf }}"
+  ansible.builtin.command:
+    argv:
+      - "{{ llama_cpp_hf_venv }}/bin/hf"
+      - download
+      - "{{ item.item.hf_repo }}"
+      - "{{ item.item.gguf }}"
+      - --local-dir
+      - "{{ llama_cpp_models_dir }}"
     creates: "{{ llama_cpp_models_dir }}/{{ item.item.gguf }}"
+  environment:
+    HF_ENDPOINT: "{{ llama_cpp_hf_base }}"
   loop: "{{ llama_cpp_gguf_stat.results }}"
   loop_control:
     label: "{{ item.item.name }} ({{ item.item.gguf }})"
