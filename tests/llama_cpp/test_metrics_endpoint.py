@@ -60,6 +60,7 @@ def render(**overrides) -> str:
     env = jinja2.Environment(trim_blocks=True, lstrip_blocks=True)
     env.filters["comment"] = _comment_filter
     env.filters["bool"] = lambda v: bool(v)
+    env.filters["mandatory"] = lambda v, msg="": v
     context = {**DEFAULT_CONTEXT, **overrides}
     return env.from_string(TEMPLATE_PATH.read_text(encoding="utf-8")).render(**context)
 
