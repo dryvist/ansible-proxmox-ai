@@ -141,7 +141,8 @@
           Virtual-key scope(s)
           [{{ _key_scope_models | difference(_advertised) | difference([_deny]) | join(', ') }}]
           name nothing the router advertises. A key may only list a servable
-          model, a group alias, a role deployment, a Hermes agent, or — alone —
+          model, a group alias, a role deployment or a rung of its chain, a
+          Hermes agent, or — alone —
           the '{{ _deny }}' sentinel. Keys mixing the sentinel with other scopes:
           [{{ _mixed_deny_keys | join(', ') }}]. Keys with an EMPTY scope, which
           LiteLLM reads as every model: [{{ _empty_scope_keys | join(', ') }}].
@@ -150,11 +151,17 @@
           {{ _key_scope_models | length }} advertised names
       vars:
         # Everything a caller can legitimately address on this proxy.
+        # ... plus every rung a role's chain walks (59-key-scopes.yml grants
+        # them to the role's keys; the proxy checks the key for the fallback
+        # target too). Each such rung is a rendered group, asserted by
+        # test_local_first_by_order.yml.
         _advertised: >-
           {{ (llm_router_servable_models
               + (llm_router_model_group_aliases | list)
               + (llm_router_hermes_agents | list)
-              + (llm_router_role_deployments | map(attribute='role') | list))
+              + (llm_router_role_deployments | map(attribute='role') | list)
+              + (llm_router_role_deployments | map(attribute='model') | list)
+              + (llm_router_role_deployments | map(attribute='fallbacks') | flatten))
              | unique | list }}
         _key_scope_models: >-
           {{ llm_router_virtual_keys | map(attribute='models') | flatten
