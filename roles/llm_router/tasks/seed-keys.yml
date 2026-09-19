@@ -90,6 +90,7 @@
       key: "{{ item.value }}"
       key_alias: "{{ item.alias }}"
       models: "{{ item.models }}"
+      allowed_routes: "{{ item.allowed_routes | default(omit) }}"
       max_budget: "{{ item.monthly_budget if (item.monthly_budget | default(0) | float > 0) else omit }}"
       budget_duration: "{{ '7d' if (item.monthly_budget | default(0) | float > 0) else omit }}"
       # A second, tighter window stacked on top of the flat weekly fields
@@ -108,4 +109,40 @@
   loop: "{{ _llm_router_unseeded_keys }}"
   loop_control:
     label: "{{ item.alias }}"
+  no_log: true
+
+# RECONCILE allowed_routes on a key that already exists. Keys are minted once
+# and otherwise left alone, so a route allowlist added to a seed entry after
+# the key was minted never reaches the proxy — the key keeps 401ing on the
+# route the allowlist names. Only keys whose seed declares allowed_routes and
+# whose live record differs are touched; models and budgets stay as they are.
+- name: Grant seeded route allowlists to live keys that lack them
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/update"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      key: "{{ item.value }}"
+      allowed_routes: "{{ item.allowed_routes }}"
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: >-
+    {{ llm_router_virtual_keys
+       | rejectattr('value', 'equalto', '')
+       | selectattr('allowed_routes', 'defined')
+       | selectattr('alias', 'in', _llm_router_live_key_aliases) | list }}
+  loop_control:
+    label: "{{ item.alias }} -> {{ item.allowed_routes | join(', ') }}"
+  vars:
+    _llm_router_live_key_aliases: >-
+      {{ llm_router_existing_keys.json['keys'] | default([])
+         | selectattr('key_alias', 'defined')
+         | map(attribute='key_alias') | select('string') | list }}
+    _llm_router_live_routes: >-
+      {{ llm_router_existing_keys.json['keys'] | default([])
+         | selectattr('key_alias', 'equalto', item.alias)
+         | map(attribute='allowed_routes', default=none) | first | default(none) }}
+  when: (_llm_router_live_routes | default(none)) != item.allowed_routes
   no_log: true
