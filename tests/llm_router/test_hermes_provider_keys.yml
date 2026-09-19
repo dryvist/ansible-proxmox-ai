@@ -283,18 +283,25 @@
                  | map(attribute='client_model_id') | list)
               + llm_router_servable_models
               + (_config.router_settings.model_group_alias | list)
-              + llm_router_long_context_escape_roles)
+              + llm_router_long_context_escape_roles
+              + _roles_with_external)
              | unique | list }}
+        # Roles with an external rung are keyed too (test_local_first_by_order.yml).
+        _roles_with_external: >-
+          {%- set out = [] -%}
+          {%- set _local = llm_router_local_fallback_groups + [llm_router_primary_model]
+                           + llm_router_servable_models -%}
+          {%- for d in llm_router_role_deployments
+                if d.role not in llm_router_long_context_escape_roles
+                and d.fallbacks | difference(_local) | length > 0 -%}
+          {%- set _ = out.append(d.role) -%}
+          {%- endfor -%}
+          {{ out }}
         _fallback_chain: >-
           {{ _config.router_settings.fallbacks
              | selectattr('hermes-default', 'defined')
              | map(attribute='hermes-default') | flatten }}
-        # Cloud deployments IN that group, not every member. It also carries a
-        # local survivor (no budget, higher order) so budget exhaustion filters
-        # down to local instead of emptying the group — see the LOCAL SURVIVOR
-        # block in model-list.yaml.j2. That member reaches the local serving
-        # gate, not a provider, so a per-provider credential assertion must not
-        # count it; matching on model_name alone did.
+        # Provider deployments only: a per-provider credential assertion.
         _cloud_models: >-
           {{ _config.model_list
              | selectattr('model_name', 'equalto', 'hermes-cloud-openrouter')

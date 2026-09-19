@@ -1,0 +1,219 @@
+---
+# Local first is FALLBACK ORDER, never membership of a cloud group
+# (35-hermes-cloud.yml, 38-zero-retry-groups.yml, 59-key-scopes.yml):
+#
+#   * no rendered group that has an external member also has a local one —
+#     a local member inside a paid group is picked while the paid members are
+#     cooling down, 429s on its held slot, and dead-ends the whole chain;
+#   * a cloud group with several members retries onto the next member
+#     (deployment num_retries and the group's RateLimitErrorRetries both equal
+#     llm_router_cloud_group_retries); single-member cloud groups and every
+#     local rung stay at zero and hand over at once; the cloud retry spend fits
+#     the admission budget;
+#   * a key scoped to a role reaches every group in that role's chain.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_local_first_by_order.yml -i localhost, -c local
+- name: Verify local-first is expressed as fallback order
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      github_actions_llm_router_key: sk-fixture-gha
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: sk-or-fixture
+      OPENROUTER_HERMES_KEY: sk-orh-fixture
+      OPENAI_API_KEY: sk-oa-fixture
+      ZAI_API_KEY: sk-zai-fixture
+    _local_bases: >-
+      {{ [llm_router_llm_large_base_url, llm_router_llm_light_base_url,
+          llm_router_llm_fast_base_url, llm_router_llm_vllm_base_url] }}
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Model a node that holds a ChatGPT login
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: true
+
+    - name: Run the role's own admission-budget assert
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assert-admission-budget.yml
+
+    - name: Render config.yaml.j2 with every credential present
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Split the rendered deployments into local and external
+      ansible.builtin.set_fact:
+        _local_names: >-
+          {{ _config.model_list | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'in', _local_bases)
+             | map(attribute='model_name') | unique | list }}
+        _external_names: >-
+          {{ (_config.model_list | rejectattr('litellm_params.api_base', 'defined') | list
+              + _config.model_list | selectattr('litellm_params.api_base', 'defined')
+                | rejectattr('litellm_params.api_base', 'in', _local_bases) | list)
+             | map(attribute='model_name') | unique | list }}
+        _cloud_members: >-
+          {{ _config.model_list | selectattr('model_name', 'in', _cloud_groups) | list }}
+        _policy: "{{ _config.router_settings.model_group_retry_policy }}"
+      vars:
+        _cloud_groups: "{{ llm_router_hermes_cloud_models_credentialed | map(attribute='route_group') | list }}"
+
+    - name: No group mixes a local member with an external one
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _external_names | length > 0
+          - _local_names | length > 0
+          - _local_names | intersect(_external_names) | length == 0
+          - llm_router_hermes_cloud_budgeted_groups | intersect(_local_names) | length == 0
+        fail_msg: "groups with both local and external members: {{ _local_names | intersect(_external_names) }}"
+
+    - name: Multi-member cloud groups retry onto the next member, everything else hands over at once
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_multi_member_cloud_groups | length > 0
+          - llm_router_multi_member_cloud_groups | intersect(_local_names) | length == 0
+          - llm_router_cloud_group_retries | int > 0
+          - >-
+            _cloud_members | selectattr('model_name', 'in', llm_router_multi_member_cloud_groups)
+            | map(attribute='litellm_params.num_retries') | unique | list == [llm_router_cloud_group_retries | int]
+          - >-
+            _cloud_members | rejectattr('model_name', 'in', llm_router_multi_member_cloud_groups)
+            | map(attribute='litellm_params.num_retries') | unique | list == [0]
+          - >-
+            llm_router_multi_member_cloud_groups | map('extract', _policy) | map(attribute='RateLimitErrorRetries')
+            | unique | list == [llm_router_cloud_group_retries | int]
+          - >-
+            _policy | dict2items | rejectattr('key', 'in', llm_router_multi_member_cloud_groups)
+            | map(attribute='value.RateLimitErrorRetries') | unique | list == [0]
+          - _config.router_settings.retry_policy.RateLimitErrorRetries | int == 0
+          - >-
+            (llm_router_cloud_group_retries | int) * (ai_router_retry_after_seconds | int)
+            <= llm_router_admission_budget_seconds | int
+        fail_msg: "multi={{ llm_router_multi_member_cloud_groups }} policy={{ _policy }}"
+
+    - name: A key scoped to a role carries every group in that role's chain, and each is rendered
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _chain_names | difference(_rendered_names) | length == 0
+          - _gha.models[0] == 'review-private'
+          - (_private.fallbacks + [_private.model]) | difference(_gha.models) | length == 0
+          - _uncovered | length == 0
+        fail_msg: >-
+          github-actions={{ _gha.models }} uncovered={{ _uncovered }}
+          unrendered={{ _chain_names | difference(_rendered_names) }}
+      vars:
+        _rendered_names: "{{ _config.model_list | map(attribute='model_name') | unique | list }}"
+        _chain_names: >-
+          {{ (llm_router_role_deployments | map(attribute='model') | list
+              + llm_router_role_deployments | map(attribute='fallbacks') | flatten) | unique | list }}
+        _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
+        _private: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}"
+        # Every key x role it names: the chain must be a subset of the key's models.
+        _uncovered: >-
+          {%- set out = [] -%}
+          {%- for k in llm_router_virtual_keys -%}
+          {%- for d in llm_router_role_deployments if d.role in k.models -%}
+          {%- if ([d.model] + d.fallbacks) | difference(k.models) | length > 0 -%}
+          {%- set _ = out.append(k.alias ~ ':' ~ d.role) -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+
+    # A context-window error under a group the map does not key is raised, not
+    # walked (router.py::async_function_with_fallbacks, litellm 1.98.0).
+    - name: Every role with an external rung escapes a too-wide request to those rungs
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _roles_with_external | length > 0
+          - _roles_with_external | difference(_cw_map | list) | length == 0
+          - _cw_local | length == 0
+        fail_msg: >-
+          roles missing a context_window_fallbacks key:
+          {{ _roles_with_external | difference(_cw_map | list) }}; entries naming a local rung: {{ _cw_local }}
+      vars:
+        _cw_map: >-
+          {{ _config.router_settings.context_window_fallbacks
+             | map('dict2items') | flatten | items2dict }}
+        _roles_with_external: >-
+          {%- set out = [] -%}
+          {%- for d in llm_router_role_deployments
+                if d.fallbacks | difference(_local_rungs) | length > 0 -%}
+          {%- set _ = out.append(d.role) -%}
+          {%- endfor -%}
+          {{ out }}
+        _local_rungs: "{{ llm_router_local_fallback_groups + [llm_router_primary_model] + llm_router_servable_models }}"
+        _cw_local: >-
+          {{ _cw_map | dict2items | selectattr('key', 'in', llm_router_role_deployments | map(attribute='role') | list)
+             | map(attribute='value') | flatten | intersect(_local_names) | list }}
+
+    # Every openrouter/ deployment names an id in OpenRouter's model listing.
+    # The listing is a snapshot (tests/llm_router/fixtures/openrouter-model-ids.txt,
+    # `curl -s https://openrouter.ai/api/v1/models | jq -r '.data[].id' | sort`),
+    # refreshed whenever a registry entry changes: the assert stays offline.
+    - name: Every OpenRouter deployment names a listed model id
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _openrouter_ids | length > 0
+          - _listed | length > 100
+          - _openrouter_ids | difference(_listed) | length == 0
+        fail_msg: "OpenRouter ids not in the listing: {{ _openrouter_ids | difference(_listed) }}"
+      vars:
+        _listed: "{{ lookup('file', playbook_dir ~ '/fixtures/openrouter-model-ids.txt').splitlines() }}"
+        # The wildcard passthrough is a pattern, not an id; presets are OpenRouter-side.
+        _openrouter_ids: >-
+          {{ _config.model_list | map(attribute='litellm_params.model')
+             | select('match', '^openrouter/') | map('regex_replace', '^openrouter/', '')
+             | reject('equalto', '*') | reject('match', '^@preset/') | unique | list }}
+
+    # The proxy answers "Missing credentials" for a deployment rendered without
+    # one; only the chatgpt/ provider (OAuth file) and the complexity router
+    # carry none by design.
+    - name: Every external deployment renders a credential
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _keyless | length == 0
+        fail_msg: "external deployments without api_key: {{ _keyless }}"
+      vars:
+        _keyless: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'in', _external_names)
+             | rejectattr('litellm_params.api_key', 'defined')
+             | rejectattr('litellm_params.model', 'match', '^(chatgpt/|auto_router/)')
+             | map(attribute='model_name') | list }}
