@@ -20,13 +20,16 @@ upstream:
     - '.*/metrics$'
 
 # Shared llama-server invocation. ${PORT} is assigned per model by llama-swap.
+# llama_cpp_parallel is MANDATORY (roles/llama_cpp/defaults/main/00-core.yml) —
+# every group sets its own fixed slot count, never llama-server's auto-detect,
+# because it is also what llama-swap's concurrencyLimit below is pinned to.
 macros:
   "server-base": >-
     {{ llama_cpp_server_bin }}
     --host 127.0.0.1 --port ${PORT}
     -ngl {{ llama_cpp_ngl }}
     --metrics
-    {{ ('--parallel ' ~ llama_cpp_parallel) if llama_cpp_parallel is not none else '' }}
+    --parallel {{ llama_cpp_parallel }}
 
 groups:
   # VRAM discipline (learned the hard way: full co-residency of the models
@@ -61,19 +64,16 @@ models:
       - "{{ a }}"
 {% endfor %}
 {% endif %}
-{% if llama_cpp_parallel is not none %}
     {# A caller must never wait behind a busy slot: llama-swap's own default
        concurrencyLimit is 10, so up to 10 requests are admitted and handed to
        llama-server, which QUEUES anything past its slot count instead of
-       rejecting it — measured as a ~6 minute hang before the router's own
-       Gateway Timeout (2026-09-19, review-public role), not an instant 429.
-       Pinning this to the same slot count llama_cpp_parallel already declares
-       makes llama-swap itself reject the (slots+1)th request immediately
-       (HTTP 429, swaputil.ConcurrencyLimitError) rather than admit it into a
-       queue llama-server never rejects from. Left unset on groups that never
-       opted into a fixed slot count, so this does not change their behaviour. #}
+       rejecting it. Pinning this to the same llama_cpp_parallel value the
+       macro above passes as --parallel makes llama-swap itself reject the
+       (slots+1)th request immediately (HTTP 429,
+       swaputil.ConcurrencyLimitError) rather than admit it into a queue
+       llama-server never rejects from. One base variable for both — never two
+       numbers that can drift apart. #}
     concurrencyLimit: {{ llama_cpp_parallel }}
-{% endif %}
     cmd: |
       ${server-base}
       --model {{ llama_cpp_models_dir }}/{{ m.gguf }}

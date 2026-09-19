@@ -69,15 +69,37 @@ llama_cpp_hsa_override_gfx_version: "10.3.0"
 llama_cpp_ngl: "{{ 99 if llama_cpp_gpu | bool else 0 }}"
 llama_cpp_ctx_size: "{{ 8192 if llama_cpp_gpu | bool else 2048 }}"
 
-# Server slots. Unset renders NO --parallel flag at all, so a host that does not
-# override this gets byte-identical arguments to before this variable existed —
-# a sentinel like -1 would only be equivalent if the pinned build treats it as
-# "absent", which is not worth relying on. Override per group only where the KV
-# arithmetic demands it: the cache is UNIFIED (one buffer of ctx_size shared by
-# all slots, not ctx_size per slot), so N slots do not multiply capacity, they
-# divide it — concurrent requests that together exceed ctx_size fail rather
-# than queue.
-llama_cpp_parallel: ~
+# Server slots — MANDATORY, no default and no auto-detect. Every group that
+# renders this role sets its own fixed value in group_vars (tasks/guards.yml
+# asserts it at converge time; the template requires it too).
+#
+# This used to be left unset by default, rendering NO --parallel flag at all —
+# llama-server then auto-picked a slot count (`-np -1`). That silently broke a
+# SECOND consumer that assumed a fixed number: llama-swap's own
+# concurrencyLimit defaults to 10 when a model doesn't set one, so with the
+# slot count unknown here there was nothing to pin concurrencyLimit to, and up
+# to 10 requests were admitted per model and handed to a llama-server that
+# QUEUES anything past its real (auto-chosen) slot count instead of rejecting
+# it — a caller could wait behind a busy slot indefinitely instead of getting
+# an immediate reject.
+#
+# This is now the ONE base value every consumer of the slot count reads,
+# rather than separate numbers that can drift apart:
+#   - llama-server's own -np/--parallel flag (llama-swap.yaml.j2 macro)
+#   - the KV-cache arithmetic below: the cache is UNIFIED (one buffer of
+#     ctx_size shared by all slots, not ctx_size per slot), so N slots do not
+#     multiply capacity, they divide it — a group whose slot count changes must
+#     re-check its ctx_size against that division, not just this value
+#   - llama-swap's per-model concurrencyLimit (llama-swap.yaml.j2)
+#   - for the vLLM and CPU-pool tiers, roles/llm_router reads THIS SAME
+#     variable via hostvars to size that deployment's max_parallel_requests
+#     (roles/llm_router/defaults/main/10-network.yml) — the router and the
+#     backend it fronts can never disagree about how many requests fit.
+#
+# No default is set here on purpose — see tasks/guards.yml, "Assert every
+# group declares a fixed slot count", which fails the converge loud and early
+# when a group leaves this undefined, instead of the template rendering a
+# literal "None" into --parallel or silently falling back to no flag at all.
 
 # GPU device nodes passed in by ansible-proxmox lxc_gpu_features. The role stats
 # these at runtime and adds the service user to whatever groups own them, so device

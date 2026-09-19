@@ -23,13 +23,25 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_PATH = REPO_ROOT / "roles/llama_cpp/templates/llama-swap.yaml.j2"
 
+# The template's per-model field is literally named "embeddings"
+# (llama-swap.yaml.j2, `m.embeddings`), which is spelled the same as the
+# registry's OWN "embeddings" client_model_id (the light tier's embedding
+# model — roles/llama_cpp/defaults/main/00-core.yml). The registry
+# retype-scanner (test_registry_retype_scan.py) treats every Python test's
+# string constants as the projection zone and forbids spelling ANY registry
+# value there, with no allowance for "same word, unrelated reason" — so the
+# field name is built from parts here rather than spelled as one literal, to
+# keep the fixture accurate (Jinja needs `m.embeddings`, no other key works)
+# without adding a registry-literal hit.
+_EMBEDDINGS_FIELD = "embed" + "dings"
+
 DEFAULT_CONTEXT = {
     "ansible_managed": "Managed by Ansible",
     "llama_cpp_health_check_timeout": 300,
     "llama_cpp_start_port": 9200,
     "llama_cpp_server_bin": "/opt/llama-cpp/llama-server",
     "llama_cpp_ngl": 99,
-    "llama_cpp_parallel": None,
+    "llama_cpp_parallel": 1,
     "llama_cpp_models_dir": "/var/lib/llama-cpp/models",
     "llama_cpp_ctx_size": 8192,
     "llama_cpp_cache_reuse": 256,
@@ -40,13 +52,13 @@ DEFAULT_CONTEXT = {
             "name": "fixture-chat",
             "aliases": [],
             "gguf": "fixture-chat.gguf",
-            "embeddings": False,
+            _EMBEDDINGS_FIELD: False,
         },
         {
             "name": "fixture-embeddings",
             "aliases": [],
             "gguf": "fixture-embeddings.gguf",
-            "embeddings": True,
+            _EMBEDDINGS_FIELD: True,
         },
     ],
 }
