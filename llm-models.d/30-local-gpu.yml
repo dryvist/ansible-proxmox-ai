@@ -5,15 +5,32 @@ _llm_registry_local_gpu:
   # ── NVIDIA GPU tier ─────────────────────────────────────────────────────────
   # Tier key stays `vllm` (names the ROUTER TIER/URL, not the engine) — this
   # guest serves via llama.cpp on Vulkan, not vLLM; no vLLM role exists (see
-  # inventory/group_vars/llm_vllm_group.yml for why Vulkan serves it). Must
-  # match llama-swap's name in inventory/group_vars/llm_vllm_group.yml.
+  # inventory/group_vars/llm_vllm_group.yml for why Vulkan serves it).
+  #
+  # upstream_model_id is NOT a free label here — llama-server's own router
+  # mode (llama-swap retired 2026-09-19) derives the id it actually serves
+  # straight from the GGUF filename with ".gguf" stripped (verified against
+  # llama.cpp's common/preset.cpp, load_from_models_dir, at the pinned
+  # release), so this must equal that filename exactly. See
+  # inventory/group_vars/llm_vllm_group.yml for the current filename and the
+  # same warning on the `gguf:` field there.
   # Window/timeout anchors; guest derives too. Why: llm_vllm_group.yml.
   - client_model_id: qwen3.8-27b
-    upstream_model_id: qwen3.8-27b
+    upstream_model_id: Qwen3.8-27B-UD-IQ3_XXS
     provider: openai
     tier: vllm
     enabled: true
     context_window: &ctx4080 32768
+    # Tighter than the local-tier default (llm_router_local_stream_timeout_seconds,
+    # 90s): llama-server has no reject-when-busy mode (router mode included),
+    # so a busy slot here queues rather than 429s — llama-swap's
+    # concurrencyLimit was the only thing giving this rung an instant 429, and
+    # it is gone. 15 matches llm_router_admission_budget_seconds (the golden
+    # "never wait on a busy local model" rule this rung cannot fully honor
+    # anymore) as closely as a timeout, rather than a reject, can: a caller
+    # waits at most 15s before falling to the next rung instead of the 90s
+    # every other local tier gets.
+    stream_timeout: 15
     hints:
       speed: slow
       quality: strong
@@ -25,7 +42,10 @@ _llm_registry_local_gpu:
   # than replacing it: the entry above is the Hermes chain's local rung and
   # answers general work, and swapping a coder in there would have degraded
   # every non-coding fallback to buy coding throughput. The card serves one
-  # model at a time and llama-swap swaps between them.
+  # model at a time; re-enabling both together needs --models-preset on the
+  # guest (see roles/llama_cpp/templates/llama-server.service.j2) since the
+  # two need different ctx_size and plain router mode only takes shared
+  # defaults.
   #
   # 16384, not the 32768 above, and that is arithmetic rather than caution.
   # This model bears KV on all 48 layers at 96 KiB/token against the dense
@@ -38,11 +58,12 @@ _llm_registry_local_gpu:
   # DISABLED: the GGUF is not on the card's shared model store yet, so the
   # backend answers 404 for it; re-enable in the same change that lands it.
   - client_model_id: qwen3-coder-30b
-    upstream_model_id: qwen3-coder-30b
+    upstream_model_id: Qwen3-Coder-30B-A3B-Instruct-UD-IQ3_XXS
     provider: openai
     tier: vllm
     enabled: false
     context_window: 16384
+    stream_timeout: 15
     hints:
       speed: medium
       quality: strong
@@ -83,7 +104,7 @@ _llm_registry_local_gpu:
   # chain moves on. A caller that gives up sooner than that will see no answer
   # from this rung and should not read that as a hang.
   - client_model_id: hermes-local-4080
-    upstream_model_id: qwen3.8-27b
+    upstream_model_id: Qwen3.8-27B-UD-IQ3_XXS
     provider: openai
     tier: hermes-local
     route_group: hermes-local-4080
@@ -91,9 +112,12 @@ _llm_registry_local_gpu:
     enabled: true
     context_window: *ctx4080
     num_retries: 0
-    # Whole-call bound stays generation-sized; the first-byte bound is the
-    # role-wide local figure (llm_router_local_stream_timeout_seconds, below
-    # the ingress cut), so it is not restated here.
+    # Whole-call bound stays generation-sized; the first-byte bound is
+    # TIGHTENED below (15s), not the role-wide local figure — same backend,
+    # same reason as the vllm-tier qwen3.8-27b entry above: llama-swap's
+    # concurrencyLimit retired 2026-09-19, so a busy slot here queues instead
+    # of 429ing, and this is the leg the Hermes chain actually calls.
+    stream_timeout: 15
     request_timeout: 300
     # A rung that has failed this many times inside cooldown_time is parked
     # for cooldown_time and the ladder skips it — a 429 storm from a held

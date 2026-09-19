@@ -219,21 +219,25 @@
              | map(attribute='model_name') | list }}
 
     # Every enabled entry on the card's tier names a model the serving guest's
-    # llama-swap actually lists (inventory/group_vars/llm_vllm_group.yml); a
-    # registry entry with no backing GGUF answers 404 on every attempt.
+    # llama-server router mode actually finds (inventory/group_vars/
+    # llm_vllm_group.yml): llama-swap's retirement (2026-09-19) means the
+    # served id is the GGUF filename with ".gguf" stripped, NOT the
+    # llama_cpp_models `name:` bookkeeping field — see the comment on
+    # llama_cpp_models in that file. A registry entry with no backing GGUF
+    # answers 404 on every attempt either way.
     - name: Load the serving guest's model list
       ansible.builtin.include_vars:
         file: "{{ playbook_dir }}/../../inventory/group_vars/llm_vllm_group.yml"
 
-    - name: Every enabled card-tier registry entry is served by llama-swap
+    - name: Every enabled card-tier registry entry is served by the card
       ansible.builtin.assert:
         quiet: true
         that:
           - _card_ids | length > 0
           - _card_ids | difference(_served) | length == 0
-        fail_msg: "card-tier entries with no llama-swap model: {{ _card_ids | difference(_served) }}"
+        fail_msg: "card-tier entries with no served model: {{ _card_ids | difference(_served) }}"
       vars:
         _card_ids: >-
           {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm')
              | map(attribute='upstream_model_id') | list }}
-        _served: "{{ llama_cpp_models | map(attribute='name') | list }}"
+        _served: "{{ llama_cpp_models | map(attribute='gguf') | map('regex_replace', '\\.gguf$', '') | list }}"
