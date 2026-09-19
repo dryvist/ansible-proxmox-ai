@@ -136,11 +136,14 @@ llm_router_role_deployments:
   - role: judge
     model: "{{ llm_router_routine_model }}"
     fallbacks: ["{{ llm_router_small_model }}"]
-  # Trivial background chores. Local first, then the free and paid cloud
-  # rungs of the chain above: a role that refuses is the standing rule inverted.
+  # Trivial background chores and every CI review. The GPU rung first — the
+  # fastest local model, and a busy slot hands over at once (57-subagent-lock
+  # lists this role, so contention redirects instead of waiting) — then the
+  # studio, free and paid rungs of the chain above; never `long`. A role that
+  # refuses is the standing rule inverted.
   - role: cheap
-    model: "{{ llm_router_small_model }}"
-    fallbacks: "{{ _llm_router_fast_subagent_chain[1:3] | reject('equalto', '') | list }}"
+    model: "{{ llm_router_hermes_local_4080_id }}"
+    fallbacks: "{{ _llm_router_fast_subagent_chain[0:3] | reject('equalto', '') | list }}"
   - role: embed
     model: "{{ llm_router_embedding_model }}"
     fallbacks: []
@@ -198,6 +201,16 @@ _llm_router_role_params: >-
         'api_base': llm_router_llm_vllm_base_url,
         'api_key': llm_router_light_api_key,
         'use_chat_completions_api': true}}) -%}
+  {%- endif -%}
+  {#- The registry entry's own attempt bounds ride along, so a DB role on a
+      slow rung times out on that rung's figure (hermes-local-4080: 300 s,
+      llm-models.d/30-local-gpu.yml), not the router-wide ceiling. Without
+      this a role on the 4080 waited the full router timeout before its
+      chain moved on. -#}
+  {%- if m.client_model_id in ns.params -%}
+  {%- for k in ['num_retries', 'request_timeout', 'stream_timeout'] if m[k] is defined -%}
+  {%- set _ = ns.params[m.client_model_id].update({('timeout' if k == 'request_timeout' else k): m[k]}) -%}
+  {%- endfor -%}
   {%- endif -%}
   {%- endfor -%}
   {{ ns.params }}

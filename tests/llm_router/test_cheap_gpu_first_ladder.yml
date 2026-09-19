@@ -1,0 +1,82 @@
+---
+# Pins the `cheap` role's seed and the attempt bounds every DB role inherits
+# from its registry entry (roles/llm_router/defaults/main/55-roles.yml,
+# 57-subagent-lock.yml).
+#
+# `cheap` is the alias every CI review runs on. Its seed targets the GPU rung
+# first, hands a busy slot over through the lock's redirect (never a wait),
+# and walks the studio, free and paid rungs after it — never `long`. The
+# role's litellm_params carry the GPU entry's own num_retries/timeout figures,
+# so a slow answer on that rung is bounded by the rung, not by the router-wide
+# ceiling.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_cheap_gpu_first_ladder.yml -i localhost, -c local
+- name: Verify the cheap role's GPU-first ladder and per-rung bounds
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _defaults_dir: "{{ playbook_dir }}/../../roles/llm_router/defaults/main"
+    bao_apps_secrets: {}
+    # The role params render api_base values from these, same fixture shape as
+    # test_local_admission_cap.yml; only the bounds are under test here.
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    ai_router_request_timeout_seconds: 2400
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _defaults_dir }}"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Resolve the cheap deployment and the GPU registry entry
+      ansible.builtin.set_fact:
+        _cheap: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'cheap') | first }}"
+        _gpu: >-
+          {{ llm_router_registry_enabled
+             | selectattr('client_model_id', 'equalto', llm_router_hermes_local_4080_id) | first }}
+
+    - name: Cheap targets the GPU rung and walks studio, free, paid — never long
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _cheap.model == llm_router_hermes_local_4080_id
+          - _cheap.fallbacks[0] == llm_router_primary_model
+          - llm_router_model_group_aliases.long not in _cheap.fallbacks
+          - _cheap.fallbacks | length >= 1
+        fail_msg: "cheap seed is {{ _cheap }}"
+        success_msg: "cheap: {{ _cheap.model }} -> {{ _cheap.fallbacks | join(' -> ') }}"
+
+    - name: Cheap is a redirect-on-contention role, like fast and subagent
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'cheap' in llm_router_subagent_lock_role_names"
+          - "'fast' in llm_router_subagent_lock_role_names"
+          - "'subagent' in llm_router_subagent_lock_role_names"
+
+    - name: Every role on the GPU rung carries that rung's own attempt bounds
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_role_params[llm_router_hermes_local_4080_id].num_retries == _gpu.num_retries
+          - _llm_router_role_params[llm_router_hermes_local_4080_id].timeout == _gpu.request_timeout
+          - _llm_router_role_params[llm_router_hermes_local_4080_id].stream_timeout == _gpu.stream_timeout
+          - _gpu.request_timeout | int < ai_router_request_timeout_seconds | int
+        fail_msg: "GPU role params are {{ _llm_router_role_params[llm_router_hermes_local_4080_id] }}"
+        success_msg: >-
+          GPU role params: num_retries={{ _llm_router_role_params[llm_router_hermes_local_4080_id].num_retries }}
+          timeout={{ _llm_router_role_params[llm_router_hermes_local_4080_id].timeout }}s
