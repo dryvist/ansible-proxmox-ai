@@ -2,8 +2,8 @@
 # Pins the two CI review roles and the Codex/Z.ai rungs (55-roles.yml,
 # 33-zai.yml, llm-models.d/40-hermes-cloud.yml, 45-zai.yml):
 #
-#   * review-oss: local rungs → free external rungs → the Z.ai pair as
-#     its terminal, free tier before metered;
+#   * review-oss: local rungs → the Z.ai pair as its terminal, free tier
+#     before metered; NO free OpenRouter rung (provider filters, daily cap);
 #   * NO other role's ladder contains a Z.ai deployment, and no chain or
 #     segment derives from the zai tier;
 #   * review-private: local rungs → chatgpt/ subscription → openai/ API key,
@@ -82,7 +82,7 @@
         _public: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-oss') | first }}"
         _private: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}"
 
-    - name: Public review ends in the Z.ai pair, free tier before metered, after the free external rungs
+    - name: Public review ends in the Z.ai pair, free tier before metered, with no free external rung
       ansible.builtin.assert:
         quiet: true
         that:
@@ -93,7 +93,8 @@
           - _public.model == llm_router_hermes_local_4080_id
           - _public.fallbacks[0] == llm_router_primary_model
           - _public.fallbacks[-2:] == llm_router_zai_groups
-          - llm_router_external_free_rungs | difference(_public.fallbacks) | length == 0
+          - llm_router_external_free_rungs | intersect(_public.fallbacks) | length == 0
+          - _public.fallbacks == [llm_router_primary_model] + llm_router_zai_groups
           - llm_router_external_paid_rungs | intersect(_public.fallbacks) | length == 0
           - llm_router_external_subscription_rungs | intersect(_public.fallbacks) | length == 0
           - llm_router_zai_groups | difference(_rendered_names) | length == 0
@@ -147,9 +148,7 @@
           - >-
             llm_router_external_terminal_rungs.index('codex-subscription')
             < llm_router_external_terminal_rungs.index(llm_router_external_paid_rungs | first)
-          - >-
-            llm_router_external_terminal_rungs.index(llm_router_external_free_rungs | last)
-            < llm_router_external_terminal_rungs.index('codex-subscription')
+          - llm_router_external_free_rungs | intersect(llm_router_external_terminal_rungs) | length == 0
       vars:
         _chatgpt: "{{ _config.model_list | selectattr('model_name', 'equalto', 'codex-subscription') | list }}"
         _openai: >-
@@ -219,12 +218,12 @@
         _bare_public: >-
           {{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-oss') | first }}
 
-    - name: Uncredentialed, review-private is local-only and review-oss stops at the free rungs
+    - name: Uncredentialed, both review roles are local-only
       ansible.builtin.assert:
         quiet: true
         that:
           - _bare_private.fallbacks == [llm_router_primary_model]
-          - _bare_public.fallbacks | last in llm_router_external_free_rungs
+          - _bare_public.fallbacks == [llm_router_primary_model]
           - >-
             _bare.model_list
             | selectattr('model_name', 'in', ['codex-subscription'] + _zai_ids)

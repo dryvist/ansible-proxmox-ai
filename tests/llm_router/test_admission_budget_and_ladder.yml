@@ -45,6 +45,7 @@
     bao_local_llm_secrets:
       OPENROUTER_API_KEY: sk-or-fixture
       OPENROUTER_HERMES_KEY: sk-orh-fixture
+      OPENAI_API_KEY: sk-oa-fixture
     _local_bases: >-
       {{ [llm_router_llm_large_base_url, llm_router_llm_light_base_url,
           llm_router_llm_fast_base_url, llm_router_llm_vllm_base_url] }}
@@ -57,6 +58,12 @@
       ansible.builtin.include_role:
         name: llm_router
         tasks_from: registry.yml
+
+    # include_vars binds the role default (false) as a host fact; model a
+    # logged-in node the same way so the subscription rung renders.
+    - name: Model a node that holds a ChatGPT login
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: true
 
     - name: Run the role's own admission-budget assert
       ansible.builtin.include_role:
@@ -122,7 +129,10 @@
                _local | map(attribute='litellm_params.num_retries') | max] | max)
              * (_config.router_settings.retry_after | int) }}
 
-    - name: Every chat role's ladder carries the external terminal rungs, free before paid
+    # The free rungs (provider parameter/data-policy filters, agentic gate,
+    # daily cap — measured on the log platform) sit in NO ladder; every chat
+    # ladder ends in the subscription rung then the paid rungs.
+    - name: Every chat role's ladder carries the terminal rungs, subscription before paid, no free rung
       ansible.builtin.assert:
         quiet: true
         that:
@@ -130,13 +140,15 @@
           - llm_router_external_paid_rungs | length >= 1
           - llm_router_external_terminal_rungs | length >= 2
           - llm_router_external_terminal_rungs | difference(item.fallbacks) | length == 0
+          - llm_router_external_free_rungs | intersect(item.fallbacks) | length == 0
           - >-
-            item.fallbacks.index(llm_router_external_free_rungs | first)
+            item.fallbacks.index(llm_router_external_subscription_rungs | first)
             < item.fallbacks.index(llm_router_external_paid_rungs | first)
           - _config.router_settings.default_fallbacks == llm_router_external_terminal_rungs
+          - llm_router_external_free_rungs | intersect(_config.router_settings.default_fallbacks) | length == 0
         fail_msg: >-
           {{ item.role }}: {{ item.fallbacks }} does not carry
-          {{ llm_router_external_terminal_rungs }} free-before-paid
+          {{ llm_router_external_terminal_rungs }} subscription-before-paid with no free rung
         success_msg: "{{ item.role }}: {{ item.model }} -> {{ item.fallbacks | join(' -> ') }}"
       loop: >-
         {{ llm_router_role_deployments
