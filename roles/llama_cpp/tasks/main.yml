@@ -230,6 +230,40 @@
     mode: "0640"
   notify: Restart llama-server
 
+# --- Retire llama-swap --------------------------------------------------------
+# llama-swap predates this role's --models-preset design (retired 2026-09-19,
+# see README) and is not self-cleaning: left enabled, it binds
+# llama_cpp_api_port on the next boot alongside llama-server, and whichever
+# wins is random. Idempotent on a host that never ran it — the stop is guarded
+# on the unit file actually existing, and `file: state=absent` is a no-op on
+# an already-absent path.
+- name: Check whether the retired llama-swap unit still exists
+  ansible.builtin.stat:
+    path: /etc/systemd/system/llama-swap.service
+  register: llama_cpp_retired_swap_unit
+
+- name: Stop and disable the retired llama-swap unit
+  ansible.builtin.systemd_service:
+    name: llama-swap
+    state: stopped
+    enabled: false
+  when: llama_cpp_retired_swap_unit.stat.exists
+
+- name: Remove the retired llama-swap unit, drop-in, config and binary
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/llama-swap.service
+    - /etc/systemd/system/llama-swap.service.d/99-restart-policy.conf
+    - /etc/llama-swap
+    - /usr/local/bin/llama-swap
+
+- name: Reload systemd after removing the retired llama-swap unit
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: llama_cpp_retired_swap_unit.stat.exists
+
 - name: Deploy the llama-server systemd unit
   ansible.builtin.template:
     src: llama-server.service.j2

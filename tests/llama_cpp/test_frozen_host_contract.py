@@ -28,6 +28,7 @@ DEFAULTS: dict = {}
 for _defaults_file in sorted((ROLE / "defaults" / "main").glob("*.yml")):
     DEFAULTS.update(yaml.safe_load(_defaults_file.read_text()))
 TASKS = (ROLE / "tasks" / "main.yml").read_text()
+TASKS_YAML = yaml.safe_load(TASKS)
 
 # The guardrails moved into an include when tasks/main.yml was split to stay
 # under the token budget. Read main.yml PLUS the files it actually includes,
@@ -94,3 +95,19 @@ def test_the_converge_time_size_guard_is_still_wired() -> None:
     """The role asserts the size rule itself, so an override cannot smuggle a big model in."""
     assert f"| select('ge', {MAX_PARAM_BILLIONS}) | list | length) == 0" in REACHABLE_TASKS
     assert "rejectattr('param_billions', 'defined') | list | length) == 0" in REACHABLE_TASKS
+
+
+def test_retire_llama_swap_removes_exactly_the_known_paths() -> None:
+    """llama-swap (retired 2026-09-19) is not self-cleaning: a stray unit left
+    on a host binds llama_cpp_api_port on the next boot alongside llama-server,
+    and whichever wins is random. Pin the exact path list so a future edit
+    that drops one of these leaves a stray behind instead of failing loud."""
+    remove_task = next(
+        t for t in TASKS_YAML if t["name"] == "Remove the retired llama-swap unit, drop-in, config and binary"
+    )
+    assert remove_task["loop"] == [
+        "/etc/systemd/system/llama-swap.service",
+        "/etc/systemd/system/llama-swap.service.d/99-restart-policy.conf",
+        "/etc/llama-swap",
+        "/usr/local/bin/llama-swap",
+    ]
