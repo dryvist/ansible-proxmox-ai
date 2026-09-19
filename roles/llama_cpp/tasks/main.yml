@@ -1,9 +1,10 @@
 ---
-# llama.cpp (llama-server) + llama-swap on AMD ROCm in an LXC. Idempotent.
-# Prereqs (upstream): ansible-proxmox lxc_gpu_features has bound /dev/kfd + /dev/dri
-# into this CT (GPU build only). We only need the service user to be able to use them.
+# llama.cpp (llama-server), router mode, on an AMD ROCm/NVIDIA Vulkan/CPU LXC.
+# Idempotent. Prereqs (upstream): ansible-proxmox lxc_gpu_features has bound
+# /dev/kfd + /dev/dri into this CT (GPU build only). We only need the service
+# user to be able to use them.
 
-- name: Install llama.cpp / llama-swap prerequisites
+- name: Install llama.cpp prerequisites
   ansible.builtin.apt:
     name:
       - curl
@@ -56,7 +57,7 @@
     shell: /usr/sbin/nologin
     create_home: true
 
-- name: Create the install, models and config directories
+- name: Create the install, config and models directories
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: directory
@@ -158,92 +159,20 @@
           cp -a {{ llama_cpp_server_find.files[0].path | dirname }}/.
           {{ llama_cpp_install_dir }}/
       changed_when: true
-      notify: Restart llama-swap
+      notify: Restart llama-server
 
     - name: Remove the temporary extraction directory
       ansible.builtin.file:
         path: "{{ llama_cpp_extract_tmp.path }}"
         state: absent
 
-# --- llama-swap release (resolve latest, install once) -----------------------
-- name: Check whether the llama-swap binary is already installed
-  ansible.builtin.stat:
-    path: "{{ llama_cpp_swap_bin }}"
-  register: llama_cpp_swap_stat
-
-- name: Install the llama-swap release binary
-  when: not llama_cpp_swap_stat.stat.exists
-  block:
-    - name: Resolve the latest llama-swap release metadata
-      ansible.builtin.uri:
-        url: "{{ llama_cpp_swap_releases_api }}"
-        return_content: true
-        headers:
-          Accept: application/vnd.github+json
-      register: llama_cpp_swap_release
-
-    - name: Select the llama-swap release asset by name pattern
-      ansible.builtin.set_fact:
-        llama_cpp_swap_asset_url: >-
-          {{ llama_cpp_swap_release.json.assets
-             | selectattr('name', 'match', llama_cpp_swap_asset_regex)
-             | map(attribute='browser_download_url') | list
-             | first | default('') }}
-
-    - name: Assert a matching llama-swap asset was found
-      ansible.builtin.assert:
-        that:
-          - llama_cpp_swap_asset_url | length > 0
-        fail_msg: >-
-          No llama-swap release asset matched {{ llama_cpp_swap_asset_regex }}
-          in {{ llama_cpp_swap_releases_api }} — the asset naming may have changed.
-
-    - name: Create a temporary llama-swap extraction directory
-      ansible.builtin.tempfile:
-        state: directory
-        suffix: llama-swap
-      register: llama_cpp_swap_tmp
-
-    - name: Download and extract the llama-swap release tarball
-      ansible.builtin.unarchive:
-        src: "{{ llama_cpp_swap_asset_url }}"
-        dest: "{{ llama_cpp_swap_tmp.path }}"
-        remote_src: true
-
-    - name: Locate the extracted llama-swap binary
-      ansible.builtin.find:
-        paths: "{{ llama_cpp_swap_tmp.path }}"
-        patterns: llama-swap
-        file_type: file
-        recurse: true
-      register: llama_cpp_swap_find
-
-    - name: Assert the llama-swap binary was found in the archive
-      ansible.builtin.assert:
-        that:
-          - llama_cpp_swap_find.matched | int > 0
-        fail_msg: "No 'llama-swap' binary found in the release archive — the layout may have changed."
-
-    - name: Install the llama-swap binary
-      ansible.builtin.copy:
-        src: "{{ llama_cpp_swap_find.files[0].path }}"
-        dest: "{{ llama_cpp_swap_bin }}"
-        remote_src: true
-        owner: root
-        group: root
-        mode: "0755"
-      notify: Restart llama-swap
-
-    - name: Remove the temporary llama-swap extraction directory
-      ansible.builtin.file:
-        path: "{{ llama_cpp_swap_tmp.path }}"
-        state: absent
-
-# --- Model presence ----------------------------------------------------------
+# --- Model presence -----------------------------------------------------------
 # This guest never downloads model weights: it is told where they are and how
 # to load them. The models directory is populated out of band (a read-only
 # mount of shared model storage), so a declared GGUF that is not there yet is
-# reported and left out of the served set, not fetched and not a failure.
+# reported and left out of llama_cpp_models_present — and therefore out of
+# the rendered --models-preset (templates/llama-cpp-models.ini.j2), not
+# fetched and not a failure.
 - name: Check which declared model GGUFs are present
   ansible.builtin.stat:
     path: "{{ llama_cpp_models_dir }}/{{ item.gguf }}"
@@ -262,55 +191,78 @@
   ansible.builtin.debug:
     msg: >-
       {{ item.item.name }} is declared but {{ llama_cpp_models_dir }}/{{ item.item.gguf }}
-      is not present on this guest; it is left out of the llama-swap config
-      until the model storage provides it.
+      is not present on this guest; it is left out of the rendered
+      --models-preset until the model storage provides it.
   loop: "{{ llama_cpp_gguf_stat.results | rejectattr('stat.exists') | list }}"
   loop_control:
     label: "{{ item.item.name }} ({{ item.item.gguf }})"
 
-# --- Config + service --------------------------------------------------------
-- name: Deploy the llama-swap configuration
+# --- Never a local, writable model copy ---------------------------------------
+# --models-dir points straight at this mount (the unit below); a converge that
+# somehow lands on a plain writable directory instead of the shared read-only
+# mount would silently let this guest accumulate its own model copies. Assert
+# the mount, don't assume it — the earlier "create the models directory" task
+# above would succeed either way, so this is the check that actually notices.
+- name: Check the model storage mount options
+  ansible.builtin.command:
+    cmd: findmnt --noheadings --output OPTIONS --target {{ llama_cpp_models_dir }}
+  register: llama_cpp_models_dir_mount
+  changed_when: false
+
+- name: Assert the model storage is mounted read-only
+  ansible.builtin.assert:
+    that:
+      - "'ro' in (llama_cpp_models_dir_mount.stdout | trim).split(',')"
+    fail_msg: >-
+      {{ llama_cpp_models_dir }} is not mounted read-only
+      (options: {{ llama_cpp_models_dir_mount.stdout }}). This guest must
+      never download or write model weights locally — mount the shared model
+      dataset read-only at this path.
+    success_msg: "{{ llama_cpp_models_dir }} is a read-only mount."
+
+# --- Service -------------------------------------------------------------------
+- name: Deploy the llama-server --models-preset
   ansible.builtin.template:
-    src: llama-swap.yaml.j2
+    src: llama-cpp-models.ini.j2
     dest: "{{ llama_cpp_config_file }}"
     owner: root
     group: "{{ llama_cpp_group }}"
     mode: "0640"
-  notify: Restart llama-swap
+  notify: Restart llama-server
 
-- name: Deploy the llama-swap systemd unit
+- name: Deploy the llama-server systemd unit
   ansible.builtin.template:
-    src: llama-swap.service.j2
-    dest: /etc/systemd/system/llama-swap.service
+    src: llama-server.service.j2
+    dest: /etc/systemd/system/llama-server.service
     owner: root
     group: root
     mode: "0644"
-  notify: Restart llama-swap
+  notify: Restart llama-server
 
-- name: Enable and start llama-swap
+- name: Enable and start llama-server
   ansible.builtin.systemd:
-    name: llama-swap
+    name: llama-server
     state: "{{ llama_cpp_service_enabled | ternary('started', 'stopped') }}"
     enabled: "{{ llama_cpp_service_enabled }}"
     daemon_reload: true
 
-- name: Flush handlers so config / unit changes apply before verification
+- name: Flush handlers so the unit change applies before verification
   ansible.builtin.meta: flush_handlers
   when: llama_cpp_service_enabled
 
-# --- Verify ------------------------------------------------------------------
+# --- Verify --------------------------------------------------------------------
 # Type=simple reports 'active' the instant the process forks; poll until it settles
 # so a service that crashes a moment later fails loud here (mirrors roles/agent_exec).
-- name: Verify the llama-swap service is active
+- name: Verify the llama-server service is active
   ansible.builtin.systemd:
-    name: llama-swap
+    name: llama-server
   register: llama_cpp_service_state
   until: llama_cpp_service_state.status.ActiveState | default('') == 'active'
   retries: 5
   delay: 3
   when: llama_cpp_service_enabled
 
-- name: Verify the llama-swap API is listening
+- name: Verify the llama-server API is listening
   ansible.builtin.wait_for:
     host: 127.0.0.1
     port: "{{ llama_cpp_api_port }}"

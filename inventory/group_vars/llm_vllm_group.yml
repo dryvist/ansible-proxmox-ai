@@ -88,8 +88,14 @@ llama_cpp_max_param_billions: 31
 # slots did not buy concurrency — three concurrent ~24k requests need ~72k
 # against a 32768 buffer and ALL THREE failed with "Context size has been
 # exceeded" (measured; the same request serially returns 200). Two slots would
-# only move that cliff, not remove it. At one slot a second request queues
-# instead of failing, which is what a fallback rung owes its callers.
+# only move that cliff, not remove it. At one slot, this SAME value is also
+# what caps the router's own max_parallel_requests for this deployment
+# (roles/llm_router templates, hostvars-derived) — LiteLLM raises a 429 the
+# instant a second concurrent request would exceed it, so the reject moved
+# from llama-swap's concurrencyLimit to the router, not away. Residual: that
+# cap is per LiteLLM process and the pool runs three, so a cross-process
+# collision still queues in llama-server itself — bounded by this rung's own
+# stream_timeout override, see the registry entry below.
 llama_cpp_parallel: 1
 
 # The two registry client_model_ids served here, named ONCE. Still literals,
@@ -108,6 +114,16 @@ llama_cpp_ctx_size: >-
       | first).context_window }}
 
 llama_cpp_models:
+  # `name:` IS the served model id: it becomes the --models-preset section
+  # name (templates/llama-cpp-models.ini.j2), which is what llama-server's
+  # router mode actually serves under — independent of the GGUF filename,
+  # unlike a plain --models-dir scan (which derives the id from the filename
+  # itself; verified against common/preset.cpp at the pinned release). This
+  # is also the JOIN KEY between this file's backend facts (hf_repo, gguf,
+  # param_billions, which llm-models.d/ deliberately does not carry — see
+  # roles/llama_cpp/defaults/main/00-core.yml) and the registry's own data —
+  # roles/llm_router's registry entry (llm-models.d/30-local-gpu.yml,
+  # upstream_model_id) must equal it, or every request 404s.
   - name: "{{ _llama_cpp_vllm_dense_model_id }}"
     aliases: []
     hf_repo: unsloth/Qwen3.8-27B-GGUF
@@ -120,13 +136,15 @@ llama_cpp_models:
   # The coding rung (registry qwen3-coder-30b, disabled) returns here in the
   # same change that lands its GGUF on the shared model store: hf_repo
   # unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF, UD-IQ3_XXS, 11.97 GiB, its
-  # ctx_size read from the registry entry like the dense one above.
+  # ctx_size read from the registry entry like the dense one above. The
+  # --models-preset already gives it its own ctx-size entry independent of
+  # the dense model's — no extra work needed to re-enable it correctly.
 
-# Restart llama-swap on failure (shared systemd restart policy role).
+# Restart llama-server on failure (shared systemd restart policy role).
 systemd_restart_policy_services:
-  - llama-swap
+  - llama-server
 
 # Serving logs to the homelab_llm AI ingest listener, matching llm_fast_group.
 syslog_forwarder_program_routes:
-  - program: llama-swap
+  - program: llama-server
     port: "{{ tofu_data.constants.ai_log_routing.homelab_llm.port | default(10323) }}"

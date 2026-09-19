@@ -1,9 +1,14 @@
 ---
-# llama_cpp role defaults — the light serving tier: llama.cpp (llama-server) behind
-# llama-swap, on an AMD ROCm GPU inside a privileged LXC (guest `llm-fast`, RX 6800
-# = gfx1030). llama-swap presents ONE OpenAI-compatible endpoint and keeps the
-# configured models co-resident (a group with swap:false), so a small general
-# model + an embeddings model fit in 16 GB at Q4 and answer without reload churn.
+# llama_cpp role defaults — the light serving tier: llama.cpp (llama-server) on an
+# AMD ROCm GPU inside a privileged LXC (guest `llm-fast`, RX 6800 = gfx1030).
+# llama-server runs directly as the systemd unit (native router mode, a
+# rendered --models-preset — see templates/llama-server.service.j2 and
+# templates/llama-cpp-models.ini.j2), presenting ONE OpenAI-compatible
+# endpoint over exactly the models this role declares present.
+#
+# llama-swap was used until 2026-09-19 and was retired: no value for a
+# single-model card — llama-server's own router mode covers swapping, without
+# a second process or a second config format.
 #
 # ABSOLUTE RULE: never serve a model with param_billions >= 14 on this GPU
 # (llm-fast, RX 6800, 16 GB VRAM). A single Hermes-4-14B (Q4, ~8.4 GB) load
@@ -37,11 +42,17 @@ llama_cpp_group: llama-cpp
 # data volume beside them.
 llama_cpp_install_dir: /opt/llama-cpp
 llama_cpp_server_bin: "{{ llama_cpp_install_dir }}/llama-server"
-llama_cpp_swap_bin: /usr/local/bin/llama-swap
 llama_cpp_data_dir: /var/lib/llama-cpp
+# Read-only shared model storage — this guest never downloads or writes model
+# weights (tasks/main.yml asserts the mount is actually read-only). The
+# --models-preset (templates/llama-cpp-models.ini.j2) points each model's
+# `model =` path at a file under here; no per-guest copy.
 llama_cpp_models_dir: "{{ llama_cpp_data_dir }}/models"
-llama_cpp_config_dir: /etc/llama-swap
-llama_cpp_config_file: "{{ llama_cpp_config_dir }}/config.yaml"
+# The rendered --models-preset INI (templates/llama-cpp-models.ini.j2) —
+# llama-swap's config.yaml.j2 destination, renamed and reformatted, not a new
+# concept.
+llama_cpp_config_dir: /etc/llama-cpp
+llama_cpp_config_file: "{{ llama_cpp_config_dir }}/models.ini"
 
 # --- GPU backend -------------------------------------------------------------
 # Which upstream llama.cpp build to deploy. Upstream ships a prebuilt Linux
@@ -69,15 +80,12 @@ llama_cpp_hsa_override_gfx_version: "10.3.0"
 llama_cpp_ngl: "{{ 99 if llama_cpp_gpu | bool else 0 }}"
 llama_cpp_ctx_size: "{{ 8192 if llama_cpp_gpu | bool else 2048 }}"
 
-# Server slots. Unset renders NO --parallel flag at all, so a host that does not
-# override this gets byte-identical arguments to before this variable existed —
-# a sentinel like -1 would only be equivalent if the pinned build treats it as
-# "absent", which is not worth relying on. Override per group only where the KV
-# arithmetic demands it: the cache is UNIFIED (one buffer of ctx_size shared by
-# all slots, not ctx_size per slot), so N slots do not multiply capacity, they
-# divide it — concurrent requests that together exceed ctx_size fail rather
-# than queue.
-llama_cpp_parallel: ~
+# Server slots — MANDATORY, no default. Every group sets its own fixed value
+# in group_vars; the template's `| mandatory(...)` fails the render loud when
+# a group leaves it unset, rather than falling back to llama-server's
+# auto-detect (which left llama-swap's concurrencyLimit with no matching
+# number to reject on). One base value for -np, concurrencyLimit, and the
+# router's max_parallel_requests (llama-swap.yaml.j2, llm_router templates).
 
 # GPU device nodes passed in by ansible-proxmox lxc_gpu_features. The role stats
 # these at runtime and adds the service user to whatever groups own them, so device
@@ -121,7 +129,6 @@ llama_cpp_vulkan_packages:
 # Query the GitHub "latest release" and pick the asset by NAME pattern, so both the
 # build tag AND the embedded ROCm version can move without a role change.
 llama_cpp_llamacpp_releases_api: "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=5"
-llama_cpp_swap_releases_api: "https://api.github.com/repos/mostlygeek/llama-swap/releases/latest"
 # GPU build -> the ubuntu ROCm tarball; CPU build -> the plain ubuntu x64 tarball.
 llama_cpp_llamacpp_asset_regex: >-
   {{ '^llama-.*-bin-ubuntu-rocm-.*-x64[.]tar[.]gz$'
@@ -129,21 +136,20 @@ llama_cpp_llamacpp_asset_regex: >-
      else '^llama-.*-bin-ubuntu-vulkan-x64[.]tar[.]gz$'
      if llama_cpp_gpu_backend == 'vulkan'
      else '^llama-.*-bin-ubuntu-x64[.]tar[.]gz$' }}
-llama_cpp_swap_asset_regex: '^llama-swap_.*_linux_amd64[.]tar[.]gz$'
 
-# --- llama-swap listener -----------------------------------------------------
-# The single OpenAI-compatible port llama-swap listens on. From the tofu ports
-# registry (no hardcoded ports — see the ip-addressing rule); hard-required like
-# every other role's port so a missing constant fails loud rather than guessing.
+# --- llama-server listener ----------------------------------------------------
+# The single OpenAI-compatible port llama-server listens on (router mode — one
+# process, no per-model ports to hand out). From the tofu ports registry (no
+# hardcoded ports — see the ip-addressing rule); hard-required like every other
+# role's port so a missing constant fails loud rather than guessing.
 llama_cpp_api_port: "{{ tofu_data.constants.service_ports.llm_fast_api }}"
 
-# Per-model upstream ports llama-swap hands to each llama-server it spawns start here
-# (well clear of the public API port). llama-swap assigns ${PORT} from this base.
-llama_cpp_start_port: 9200
-
-# How long llama-swap waits for a model to become healthy before declaring it
-# unhealthy (a cold model load from disk into VRAM needs headroom).
-llama_cpp_health_check_timeout: 300
+# Router-mode cap on simultaneously loaded models (--models-max). 1: every guest
+# this role serves holds exactly one loaded model at a time today (the card/CPU
+# budget that made llama_cpp_parallel: 1 the right slot count in the first place
+# applies here too — the hardware, not the router, is the ceiling). Raise per
+# group only behind a measured VRAM/RAM budget for more than one resident model.
+llama_cpp_models_max: 1
 
 # --- Models (co-resident) ----------------------------------------------------
 # Both stay loaded together (see the group in the template): a small general

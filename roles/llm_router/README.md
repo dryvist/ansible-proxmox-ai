@@ -33,7 +33,8 @@ full field reference.
 
 Two fields are easy to confuse and must not be: `enabled` means the router
 offers the id at all, `servable` means the backend will actually answer for it.
-The serving host runs llama-swap in single-model mode, so a non-servable id
+The serving host runs llama-server's own router mode against a rendered
+`--models-preset` (one section per present model), so a non-servable id
 returns HTTP 404 rather than a degraded answer.
 
 Common edits:

@@ -1,11 +1,19 @@
 # llama_cpp
 
 Deploys the **light serving tier**: [llama.cpp](https://github.com/ggml-org/llama.cpp)
-(`llama-server`) behind [llama-swap](https://github.com/mostlygeek/llama-swap) on an
-AMD **ROCm** GPU, inside a privileged LXC (guest `llm-fast`, RX 6800 = gfx1030).
-llama-swap presents **one** OpenAI-compatible endpoint and keeps the configured
-models co-resident, so a small general model + an embeddings model fit in
-16 GB at Q4 and answer without reload churn.
+(`llama-server`) on an AMD **ROCm** GPU, inside a privileged LXC (guest `llm-fast`,
+RX 6800 = gfx1030). `llama-server` runs directly as the systemd unit, in its
+native **router mode**, presenting **one** OpenAI-compatible endpoint over
+exactly the models a rendered `--models-preset` (one section per present,
+guard-checked model — see `templates/llama-cpp-models.ini.j2`) declares.
+
+llama-swap was used until 2026-09-19 and was retired: no value for a
+single-model card — llama-server's own router mode covers swapping.
+**Residual**: the router's own admission cap (`max_parallel_requests`,
+`roles/llm_router`) is per LiteLLM process, and the pool runs three, so up to
+three requests can be admitted against this card's one slot; the fourth and
+later collisions queue in llama-server itself, bounded by this rung's
+`stream_timeout` override (`llm_router_admission_budget_seconds`).
 
 **Absolute rule:** never serve a model with `param_billions >= 14` on this GPU.
 The host has hard-locked repeatedly under large-model GPU loads (VRAM eviction
@@ -22,25 +30,26 @@ first. Wired into `playbooks/site.yml` against `llm_fast_group` (guests tagged
 (`direnv allow`).
 
 Ordering: `tofu-proxmox` (LXC shell) → `ansible-proxmox` (GPU passthrough) →
-**this role** (llama.cpp + llama-swap + models) → `llm_router` (LiteLLM front door).
+**this role** (llama.cpp + models) → `llm_router` (LiteLLM front door).
 
 ## What it does
 
 - Installs `curl`, `ca-certificates`, `tar`, `gzip`.
 - Resolves and installs the **latest** llama.cpp release (the `ubuntu-rocm` asset,
   selected by name pattern so both the build tag and the embedded ROCm version can
-  move without a role change) and the **latest** llama-swap release, each once
-  behind a presence guard.
+  move without a role change), once behind a presence guard.
 - Adds the `llama-cpp` service user to whatever groups own the passed-in GPU device
   nodes (resolved at runtime via `stat`), so the server can open `/dev/kfd` +
   `/dev/dri` regardless of how host GIDs map to container group names (same idiom as
   `roles/ollama`).
-- Never downloads model weights. Each declared GGUF is checked for presence in
-  `llama_cpp_models_dir` (populated out of band from shared model storage);
-  absent ones are reported and left out of the llama-swap config.
-- Renders the llama-swap config (a co-resident model group) + a systemd unit,
-  listening on `service_ports.llm_fast_api`. Restart-on-failure is applied by the
-  shared `systemd_restart_policy` role via `group_vars/llm_fast_group.yml`.
+- Never downloads or writes model weights. Each declared GGUF is checked for
+  presence in `llama_cpp_models_dir` (populated out of band from shared model
+  storage; the role asserts the mount is read-only); absent ones are reported.
+- Renders `llama_cpp_config_file` (a `--models-preset` INI, one section per
+  present model — `templates/llama-cpp-models.ini.j2`) and a systemd unit
+  running `llama-server` directly in router mode against it, listening on
+  `service_ports.llm_fast_api`. Restart-on-failure is applied by the shared
+  `systemd_restart_policy` role via `group_vars/llm_fast_group.yml`.
 
 ## Models
 
@@ -49,9 +58,12 @@ Ordering: `tofu-proxmox` (LXC shell) → `ansible-proxmox` (GPU passthrough) →
 | `qwen3-4b` | — | chat (`--jinja`) |
 | `embeddings` | `nomic-embed-text-v1.5` | `--embeddings` |
 
-Both are members of the `chat` / `embeddings` llama-swap groups (`swap: false`
-for `embeddings`), so they stay loaded together. `hermes-4-14b` (14B) was
-removed — see "Absolute rule" above.
+`hermes-4-14b` (14B) was removed — see "Absolute rule" above. The preset's
+section name (== `model_name`/registry `client_model_id`) is the id the
+router serves — unlike a plain `--models-dir` scan, it does not depend on the
+GGUF filename, and each section carries its own ctx-size and
+chat-vs-embeddings flags, so mixing a chat model and an embeddings model on
+one guest still gets the right flags for each.
 
 ## GPU backend
 
@@ -83,13 +95,16 @@ GPU deployment that quietly is not one.
 
 | Var | Default | Purpose |
 | --- | --- | --- |
-| `llama_cpp_api_port` | `tofu_data.constants.service_ports.llm_fast_api` | llama-swap listen port (no hardcode) |
+| `llama_cpp_api_port` | `tofu_data.constants.service_ports.llm_fast_api` | llama-server listen port (no hardcode) |
 | `llama_cpp_gpu_backend` | `rocm` | `rocm` \| `vulkan` \| `cpu` — selects the upstream asset |
 | `llama_cpp_max_param_billions` | `14` | per-guest ceiling, asserted everywhere; raise explicitly per guest |
 | `llama_cpp_vulkan_packages` | loader + `vulkan-tools` | `vulkaninfo` backs the device-visibility gate |
 | `llama_cpp_models` | 2-model list | served models + GGUF sources (each needs `param_billions`) |
+| `llama_cpp_models_max` | `1` | `--models-max` — resident-model cap for router mode |
+| `llama_cpp_parallel` | mandatory, no default | `-np`/`--parallel` — every group sets its own value |
 | `llama_cpp_install_dir` | `/opt/llama-cpp` | binary + bundled ROCm `.so` files (also `LD_LIBRARY_PATH`) |
-| `llama_cpp_models_dir` | `/var/lib/llama-cpp/models` | GGUFs provided by shared model storage; the role only reads here |
+| `llama_cpp_models_dir` | `/var/lib/llama-cpp/models` | read-only shared model mount each preset entry's `model =` path resolves under |
+| `llama_cpp_config_file` | `/etc/llama-cpp/models.ini` | the rendered `--models-preset` |
 | `llama_cpp_rocm_packages` | `[]` | best-effort container ROCm runtime packages |
 
 ## Usage

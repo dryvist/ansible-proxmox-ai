@@ -6,7 +6,10 @@ _llm_registry_local_gpu:
   # Tier key stays `vllm` (names the ROUTER TIER/URL, not the engine) — this
   # guest serves via llama.cpp on Vulkan, not vLLM; no vLLM role exists (see
   # inventory/group_vars/llm_vllm_group.yml for why Vulkan serves it). Must
-  # match llama-swap's name in inventory/group_vars/llm_vllm_group.yml.
+  # match the --models-preset section name in
+  # inventory/group_vars/llm_vllm_group.yml (llama_cpp_models `name:`), which
+  # is what llama-server's router mode actually serves under — a
+  # --models-preset section name, not the GGUF filename.
   # Window/timeout anchors; guest derives too. Why: llm_vllm_group.yml.
   - client_model_id: qwen3.8-27b
     upstream_model_id: qwen3.8-27b
@@ -14,6 +17,19 @@ _llm_registry_local_gpu:
     tier: vllm
     enabled: true
     context_window: &ctx4080 32768
+    # Tighter than the local-tier default (llm_router_local_stream_timeout_seconds,
+    # 90s): llama-server has no reject-when-busy mode in any mode. The
+    # router's own max_parallel_requests (hostvars-derived from this guest's
+    # llama_cpp_parallel, roles/llm_router templates) is what gives this rung
+    # its instant 429 now — llama-swap's concurrencyLimit moved to the
+    # router, it did not disappear. This stream_timeout only bounds the
+    # residual: max_parallel_requests is enforced per LiteLLM process, and
+    # the pool runs three, so a cross-process collision still queues in
+    # llama-server itself. llm_router_admission_budget_seconds (never a
+    # literal — one base value for the whole "never wait on a busy local
+    # model" rule) bounds that residual wait instead of the 90s every other
+    # local tier gets.
+    stream_timeout: "{{ llm_router_admission_budget_seconds }}"
     hints:
       speed: slow
       quality: strong
@@ -25,7 +41,8 @@ _llm_registry_local_gpu:
   # than replacing it: the entry above is the Hermes chain's local rung and
   # answers general work, and swapping a coder in there would have degraded
   # every non-coding fallback to buy coding throughput. The card serves one
-  # model at a time and llama-swap swaps between them.
+  # model at a time; the guest's --models-preset already gives each model its
+  # own ctx-size entry, so re-enabling both needs no template change.
   #
   # 16384, not the 32768 above, and that is arithmetic rather than caution.
   # This model bears KV on all 48 layers at 96 KiB/token against the dense
@@ -43,6 +60,7 @@ _llm_registry_local_gpu:
     tier: vllm
     enabled: false
     context_window: 16384
+    stream_timeout: "{{ llm_router_admission_budget_seconds }}"
     hints:
       speed: medium
       quality: strong
@@ -91,9 +109,11 @@ _llm_registry_local_gpu:
     enabled: true
     context_window: *ctx4080
     num_retries: 0
-    # Whole-call bound stays generation-sized; the first-byte bound is the
-    # role-wide local figure (llm_router_local_stream_timeout_seconds, below
-    # the ingress cut), so it is not restated here.
+    # Whole-call bound stays generation-sized; the first-byte bound is
+    # TIGHTENED below to the admission budget, not the role-wide local
+    # figure — same backend, same reason as the vllm-tier qwen3.8-27b entry
+    # above, and this is the leg the Hermes chain actually calls.
+    stream_timeout: "{{ llm_router_admission_budget_seconds }}"
     request_timeout: 300
     # A rung that has failed this many times inside cooldown_time is parked
     # for cooldown_time and the ladder skips it — a 429 storm from a held
