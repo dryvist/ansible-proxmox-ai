@@ -118,8 +118,13 @@ def _literals(path: Path):
         return
     tree = ast.parse(text)
     docstrings = {n.value for n in ast.walk(tree) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}
+    # A dict-literal key is a field name (e.g. the llama_cpp per-model schema's
+    # `"embeddings"` boolean flag), never a re-typed registry VALUE — mirrors
+    # _scalars() above, which recurses into YAML mapping values only and never
+    # treats a mapping key as a scanned literal.
+    dict_keys = {k for n in ast.walk(tree) if isinstance(n, ast.Dict) for k in n.keys if isinstance(k, ast.Constant)}
     for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node not in docstrings:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node not in docstrings and node not in dict_keys:
             yield f"line {node.lineno}", node.value
 
 
@@ -208,7 +213,7 @@ def test_the_scan_can_see_a_planted_literal(tmp_path: Path):
     (py / "test_y.py").write_text(
         '"""Docstring naming org/planted-model is prose."""\n'
         "# a comment naming planted-alias is prose\n"
-        "EXPECTED = {'planted-alias': 'x'}\n"
+        "EXPECTED = {'x': 'planted-alias'}\n"
         "MESSAGE = \"fallbacks=['org/planted-model']\"\n"
     )
     projection, consumer = scan(tmp_path)
@@ -216,6 +221,17 @@ def test_the_scan_can_see_a_planted_literal(tmp_path: Path):
         "bare", "expr", "prefixed", "line 3", "line 4",
     ], projection
     assert consumer == ["roles/other/defaults/main.yml [model] spells 'vendor/physical-name'"], consumer
+
+
+def test_python_dict_key_is_not_a_retype_but_a_value_still_is(tmp_path: Path):
+    """A schema field name in key position (e.g. llama_cpp's `embeddings` bool flag) is not scanned;
+    the identical string in value position still is. Uses a word that is not itself a registry value, so
+    this test's own source doesn't trip test_projection_zone_carries_no_registry_literal."""
+    src = tmp_path / "snippet.py"
+    src.write_text("FIXTURE = {'schema-field': False}\nOFFENDER = {'model': 'schema-field'}\n")
+    literals = dict(_literals(src))
+    assert "line 1" not in literals, literals
+    assert literals["line 2"] == "schema-field", literals
 
 
 def test_inventory_literal_is_the_contract_not_a_retype(tmp_path: Path):
