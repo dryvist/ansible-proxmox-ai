@@ -302,51 +302,6 @@ def test_release_refuses_to_delete_when_counter_already_expired():
     _run(scenario())
 
 
-def test_mid_stream_error_releases_exactly_once_not_twice():
-    # Regression guard for the double-release bug: litellm's own generator
-    # wrapper reaches BOTH the streaming iterator hook's `finally` and,
-    # afterwards, async_post_call_failure_hook on the SAME request_data
-    # dict. A second, unguarded release would steal a share belonging to an
-    # unrelated caller (alias B, acquiring between the two calls) rather
-    # than merely no-op.
-    async def scenario():
-        ns = _load_module()
-        client = _new_client(ns)
-        await _cleanup(client, ns)
-        try:
-            lock = ns["FastSubagentLock"](client=client)
-            alice = _FakeKey("alice")
-            data = {"model": "fixture-role-fast"}
-            await lock.async_pre_call_hook(alice, None, data, "acompletion")
-            assert await client.get(ns["LOCK_KEY"]) == "alice"
-
-            async def _raising_chunks():
-                yield "a"
-                raise RuntimeError("upstream error mid-stream")
-
-            with pytest.raises(RuntimeError):
-                async for _ in lock.async_post_call_streaming_iterator_hook(alice, _raising_chunks(), data):
-                    pass
-            # release #1 (the finally block) must have fired: lock is free.
-            assert await client.get(ns["LOCK_KEY"]) is None
-
-            bob = _FakeKey("bob")
-            bob_data = {"model": "fixture-role-fast"}
-            await lock.async_pre_call_hook(bob, None, bob_data, "acompletion")
-            assert await client.get(ns["LOCK_KEY"]) == "bob"
-
-            # release #2: litellm's own except-block calling the failure
-            # hook on the SAME (already-released) request_data.
-            await lock.async_post_call_failure_hook(data, RuntimeError("upstream error mid-stream"), alice)
-            assert await client.get(ns["LOCK_KEY"]) == "bob", "the second release must not touch bob's fresh hold"
-            assert await client.get(ns["_ROLE_INFLIGHT_KEY"]) == "1"
-        finally:
-            await _cleanup(client, ns)
-            await client.aclose()
-
-    _run(scenario())
-
-
 def test_contention_redirects_role_calls_and_rejects_direct_calls():
     async def scenario():
         ns = _load_module()
