@@ -176,6 +176,11 @@ llm_router_seed_request_timeout: 30
 # model-list.yaml.j2's own vLLM-tier rendering exactly (same api_base/api_key
 # pair), which is the only reason those two match what config.yaml.j2 already
 # advertises for the same client_model_id.
+# The registry entry's own attempt bounds (num_retries, request_timeout as
+# `timeout`, stream_timeout) ride along onto every role's params, so a DB role
+# on a slow rung times out on that rung's figure (the GPU entry declares 300 s
+# in llm-models.d/30-local-gpu.yml), not the router-wide ceiling. Without this
+# a role on the GPU waited the full router timeout before its chain moved on.
 _llm_router_role_params: >-
   {%- set ns = namespace(params={}) -%}
   {%- for m in llm_router_registry_enabled -%}
@@ -210,11 +215,6 @@ _llm_router_role_params: >-
         'api_key': llm_router_light_api_key,
         'use_chat_completions_api': true}}) -%}
   {%- endif -%}
-  {#- The registry entry's own attempt bounds ride along, so a DB role on a
-      slow rung times out on that rung's figure (hermes-local-4080: 300 s,
-      llm-models.d/30-local-gpu.yml), not the router-wide ceiling. Without
-      this a role on the 4080 waited the full router timeout before its
-      chain moved on. -#}
   {%- if m.client_model_id in ns.params -%}
   {%- for k in ['num_retries', 'request_timeout', 'stream_timeout'] if m[k] is defined -%}
   {%- set _ = ns.params[m.client_model_id].update({('timeout' if k == 'request_timeout' else k): m[k]}) -%}
