@@ -46,6 +46,26 @@ llm_router_cpu_moe_backend_urls: >-
 llm_router_cpu_9b_backend_urls: >-
   {{ llm_router_cpu_pool_backend_urls_by_tier['cpu-9b'] | default([]) }}
 
+# This deployment's admission cap, read from the SAME variable the serving
+# host's llama_cpp role uses for -np/--parallel and llama-swap's
+# concurrencyLimit (inventory/group_vars/llm_cpu_pool_group.yml,
+# llama_cpp_parallel — mandatory there, no default here either). Not a
+# separately-set literal: the router and the backend it fronts would
+# otherwise be two numbers that can drift apart the moment either changes.
+# hostvars carries group_vars for every inventory host regardless of which
+# play targets it, so this resolves even when the current play never touches
+# llm_cpu_pool_group.
+#
+# Falls back to the tier-wide default (same idiom as
+# _llm_router_spend_store_present above) only when the group has no member at
+# all — an isolated template render (a unit test against localhost, no real
+# inventory) rather than a real converge, where the group always has the
+# member that makes it exist.
+llm_router_cpu_pool_max_parallel_requests: >-
+  {{ hostvars[(groups['llm_cpu_pool_group'] | default([]))[0]].llama_cpp_parallel
+     if (groups['llm_cpu_pool_group'] | default([]) | length > 0)
+     else llm_router_local_max_parallel_requests }}
+
 # The NVIDIA/CUDA serving guest (vLLM). Same serving-API port as the light tier
 # — the port names the protocol, and the HOST is what distinguishes the backend,
 # so a second constant for the same OpenAI API would be a second place to keep
@@ -81,6 +101,15 @@ llm_router_llm_vllm_enabled: true
 # upstream cannot be resolved looks identical to a working one from the model
 # list alone.
 llm_router_llm_vllm_base_url: "http://llm-4080.{{ llm_router_apex_domain }}:{{ llm_router_light_port }}/v1"
+# This deployment's admission cap (used by both the vLLM tier and the
+# hermes-local-4080 leg over it) — same idiom and same reason as
+# llm_router_cpu_pool_max_parallel_requests above: read from the guest's own
+# llama_cpp_parallel (inventory/group_vars/llm_vllm_group.yml) via hostvars,
+# never a separately-set literal. Same isolated-render fallback too.
+llm_router_llm_vllm_max_parallel_requests: >-
+  {{ hostvars[(groups['llm_vllm_group'] | default([]))[0]].llama_cpp_parallel
+     if (groups['llm_vllm_group'] | default([]) | length > 0)
+     else llm_router_local_max_parallel_requests }}
 # The large-tier gate (a caddy TLS front on the Mac Studio, apex-level cert via
 # Route53 DNS-01) reverse-proxies to the host's llama-swap. It has always been
 # addressed apex-level (one label under the subdomain's parent), because the

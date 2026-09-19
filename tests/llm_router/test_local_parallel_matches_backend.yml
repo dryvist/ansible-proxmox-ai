@@ -1,0 +1,179 @@
+---
+# Pins that the router never guesses a local backend's concurrency: the vLLM
+# tier (plus its hermes-local-4080 leg) and the CPU llama.cpp pool each render
+# max_parallel_requests from the SAME llama_cpp_parallel value the serving
+# guest's own llama_cpp role uses for -np/--parallel and llama-swap's
+# concurrencyLimit (roles/llama_cpp/defaults/main/00-core.yml), read via
+# hostvars — never a separately-set literal that can drift out of step with
+# what the backend actually serves.
+#
+# Two DISTINCT values (3 and 2) are given to the two synthetic groups below on
+# purpose: a bug that wired both tiers to the same variable, or to the
+# tier-wide fallback, would still pass a test using one shared value for both.
+#
+# Run (from the REPO ROOT — the registry load resolves the llm_router role
+# through ansible.cfg's cwd-relative roles_path):
+#   ansible-playbook tests/llm_router/test_local_parallel_matches_backend.yml -i localhost, -c local
+- name: Verify local deployment concurrency is derived from the backend's own slot count
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _vllm_parallel: 3
+    _cpu_pool_parallel: 2
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            moe: cpu-moe-tag
+            nine_b: cpu-9b-tag
+      containers:
+        cpu-moe-01:
+          ip: 10.0.0.10
+          tags: [cpu-moe-tag]
+        cpu-9b-01:
+          ip: 10.0.0.11
+          tags: [cpu-9b-tag]
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    # Synthetic serving guests, standing in for the real inventory groups
+    # (llm_vllm_group, llm_cpu_pool_group) load_tofu.yml derives from tofu
+    # tags. hostvars carries a group's llama_cpp_parallel regardless of which
+    # host the current play targets — add_host is enough to prove the
+    # derivation actually reads it, without a real inventory fixture.
+    - name: Add a synthetic vLLM-tier guest
+      ansible.builtin.add_host:
+        name: fixture-4080
+        groups: llm_vllm_group
+        llama_cpp_parallel: "{{ _vllm_parallel }}"
+
+    - name: Add a synthetic CPU-pool guest
+      ansible.builtin.add_host:
+        name: fixture-cpu-pool
+        groups: llm_cpu_pool_group
+        llama_cpp_parallel: "{{ _cpu_pool_parallel }}"
+
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Render the real config.yaml.j2 template into a string
+      ansible.builtin.set_fact:
+        _rendered_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') }}"
+
+    - name: Parse the rendered config as YAML
+      ansible.builtin.set_fact:
+        _config: "{{ _rendered_config | from_yaml }}"
+
+    - name: Select every vLLM-tier and hermes-local-4080 deployment
+      ansible.builtin.set_fact:
+        _vllm_deployments: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url)
+             | list }}
+
+    - name: Select every CPU-pool deployment
+      ansible.builtin.set_fact:
+        _cpu_pool_deployments: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'in', _cpu_pool_urls)
+             | list }}
+      vars:
+        _cpu_pool_urls: >-
+          {{ llm_router_cpu_moe_backend_urls + llm_router_cpu_9b_backend_urls }}
+
+    - name: The test is not vacuous — both tiers actually rendered
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _vllm_deployments | length > 0
+          - _cpu_pool_deployments | length > 0
+        fail_msg: >-
+          vLLM deployments={{ _vllm_deployments | length }},
+          CPU-pool deployments={{ _cpu_pool_deployments | length }}. An empty
+          selection would satisfy every assertion below and report success
+          while proving nothing — the fixture inventory or the registry is
+          broken, not the derivation this test checks.
+
+    - name: Every vLLM-tier / hermes-local-4080 deployment matches the guest's llama_cpp_parallel
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _mismatched | length == 0
+        fail_msg: >-
+          {{ _mismatched }} rendered a max_parallel_requests that disagrees
+          with the synthetic guest's llama_cpp_parallel ({{ _vllm_parallel }}).
+          The router and the backend it fronts must read the SAME variable —
+          see llm_router_llm_vllm_max_parallel_requests in
+          roles/llm_router/defaults/main/10-network.yml.
+        success_msg: >-
+          All {{ _vllm_deployments | length }} vLLM-tier / hermes-local
+          deployment(s) match llama_cpp_parallel={{ _vllm_parallel }}.
+      vars:
+        _mismatched: >-
+          {{ _vllm_deployments
+             | rejectattr('litellm_params.max_parallel_requests', 'equalto', _vllm_parallel)
+             | map(attribute='model_name') | list }}
+
+    - name: Every CPU-pool deployment matches the guest's llama_cpp_parallel
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _mismatched | length == 0
+        fail_msg: >-
+          {{ _mismatched }} rendered a max_parallel_requests that disagrees
+          with the synthetic guest's llama_cpp_parallel
+          ({{ _cpu_pool_parallel }}). See
+          llm_router_cpu_pool_max_parallel_requests in
+          roles/llm_router/defaults/main/10-network.yml.
+        success_msg: >-
+          All {{ _cpu_pool_deployments | length }} CPU-pool deployment(s)
+          match llama_cpp_parallel={{ _cpu_pool_parallel }}.
+      vars:
+        _mismatched: >-
+          {{ _cpu_pool_deployments
+             | rejectattr('litellm_params.max_parallel_requests', 'equalto', _cpu_pool_parallel)
+             | map(attribute='model_name') | list }}
+
+    - name: The two tiers did not accidentally share one value
+      # A bug that wired both tiers to the same variable (or to the tier-wide
+      # fallback) would still pass the two assertions above if _vllm_parallel
+      # and _cpu_pool_parallel happened to be equal — they are deliberately
+      # not, so this is the assertion that actually catches cross-wiring.
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _vllm_parallel != _cpu_pool_parallel
+          - llm_router_llm_vllm_max_parallel_requests | int == _vllm_parallel
+          - llm_router_cpu_pool_max_parallel_requests | int == _cpu_pool_parallel
+        fail_msg: >-
+          llm_router_llm_vllm_max_parallel_requests=
+          {{ llm_router_llm_vllm_max_parallel_requests }},
+          llm_router_cpu_pool_max_parallel_requests=
+          {{ llm_router_cpu_pool_max_parallel_requests }} — expected
+          {{ _vllm_parallel }} and {{ _cpu_pool_parallel }} respectively.
+        success_msg: "vLLM and CPU-pool concurrency derive independently, from their own guest."

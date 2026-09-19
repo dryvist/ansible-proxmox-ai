@@ -1,4 +1,29 @@
 ---
+# --- Mandatory slot count -----------------------------------------------------
+# llama_cpp_parallel has no role default (defaults/main/00-core.yml) — every
+# group that renders llama-swap sets its own fixed value. Checked here, first,
+# and BEFORE the package installs and template render below, so a group that
+# forgot it fails in seconds with a clear message instead of after installing
+# llama.cpp/llama-swap and only then failing on an undefined-variable error
+# out of the template. It is the one base value llama-server (-np/--parallel),
+# llama-swap (concurrencyLimit) and, for the vLLM/CPU-pool tiers,
+# roles/llm_router (max_parallel_requests via hostvars) all read — see the
+# comment on llama_cpp_parallel for why a per-consumer literal is not
+# acceptable here.
+- name: Assert this group declares a fixed llama_cpp_parallel slot count
+  ansible.builtin.assert:
+    that:
+      - llama_cpp_parallel is defined
+      - llama_cpp_parallel | int > 0
+    fail_msg: >-
+      llama_cpp_parallel is not set for this group. Set it explicitly in this
+      guest's group_vars (a fixed positive slot count) — leaving it unset used
+      to render no --parallel flag at all, which let llama-server auto-pick a
+      slot count that llama-swap's concurrencyLimit and the router's
+      max_parallel_requests had no way to match, so a caller could queue
+      behind a busy slot instead of getting an immediate reject.
+    success_msg: "llama_cpp_parallel = {{ llama_cpp_parallel }} for this group."
+
 # --- Absolute GPU-size guardrail ---------------------------------------------
 # The llm-fast host (RX 6800, 16 GB VRAM) has hard-locked 5x under GPU load; VRAM
 # eviction of a large model is the documented hard-hang cause (see the ABSOLUTE
