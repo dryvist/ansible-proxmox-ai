@@ -1,0 +1,480 @@
+{{ ansible_managed | comment }}
+"""LiteLLM custom callback: a reject-fast, per-caller session lock for the
+RTX 4080's single llama.cpp slot (guest llm-4080).
+
+Deployed by roles/llm_router next to config.yaml, and resolved by LiteLLM
+from litellm_settings.callbacks: "fast_subagent_lock.proxy_handler_instance"
+(config.yaml.j2) — LiteLLM imports a callback module relative to the config
+file's own directory, so this file must live beside config.yaml. NOT smoke-
+tested against a live proxy in the PR that added this; see the PR body.
+
+Rationale for the lock, the model set it covers, and the TTL:
+roles/llm_router/defaults/main/57-subagent-lock.yml.
+
+TWO DIFFERENT BEHAVIORS ON CONTENTION, by how the caller named the request:
+
+  * A direct call (GATED_MODELS — hermes-local-4080, either vllm-tier id, or
+    the `fast-gpu` DB role, which is unioned in for exactly this hard-429
+    treatment; see 57-subagent-lock.yml for why it must not redirect) gets
+    the hard 429 above. Unchanged from the first version of this file.
+
+  * A `fast`/`subagent` role call (ROLE_NAMES) REDIRECTS onto
+    ROLE_REDIRECT_TARGET instead of rejecting. This is deliberately NOT "raise
+    the same 429 and let LiteLLM's Router fall back" — `async_pre_call_hook`
+    runs in the PROXY layer (`proxy_logging_obj.pre_call_hook`, called before
+    `llm_router.acompletion()`), before the Router's own fallback/cooldown
+    engine is ever entered, so an exception raised here propagates straight to
+    the client and CANNOT trigger a Router-level fallback, regardless of
+    exception type (a `litellm.RateLimitError` would not behave differently
+    here than the `HTTPException` above — neither ever reaches the Router).
+    This is the author's best understanding of the pinned litellm[proxy]
+    architecture, NOT verified against a live process in this PR — confirm
+    before trusting it under load. Rewriting `data["model"]` here, before
+    dispatch, is the mechanism `async_pre_call_hook` actually supports for
+    changing what a request hits.
+
+    ROLE_REDIRECT_TARGET is TEMPLATED AT CONVERGE TIME (the chain's own
+    second rung — see 55-roles.yml's `_llm_router_fast_subagent_chain`), not
+    read live from the role's own DB-stored fallback order. An operator who
+    reorders `fast`/`subagent` in the Admin UI changes the ORDINARY (non-
+    contention) fallback path immediately — that is plain LiteLLM role
+    routing, unaffected by this file — but does NOT change what THIS
+    callback redirects to on contention specifically, until the next
+    converge re-renders this file. Flagged as a real limitation, not solved
+    here: a live lookup would need either a second network hop to this same
+    proxy's own management API on every contended request, or an in-process
+    read of LiteLLM's own Router object, and neither was verifiable without a
+    running proxy.
+
+ACQUISITION HAPPENS BEFORE THE ROUTER PICKS A RUNG, which is a known,
+partial limitation, not a solved one. `async_pre_call_hook` fires once per
+REQUEST — before litellm has attempted any deployment — so it cannot tell
+whether THIS specific attempt will actually reach hermes-local-4080's
+deployment (today it always does: hermes-local-4080 is `fast`'s and
+`subagent`'s ONLY deployment, so the first attempt always targets it, but
+that is a fact about the CURRENT converge, not something this file can
+verify at runtime — see the redirect-target limitation above for the same
+root cause). What this file DOES do about it: hold the lock for exactly as
+long as the underlying work is in flight, not the full TTL. Every
+`fast`/`subagent` acquisition auto-releases on that SAME request's own
+completion — success, failure, or (the path every real client in this
+estate actually uses) an SSE stream finishing or erroring — via
+async_post_call_success_hook / async_post_call_failure_hook /
+async_post_call_streaming_iterator_hook below, see that method's own
+docstring for why the streaming case needs a real override rather than
+relying on the two hooks above. So a caller that finishes in 5s frees
+the slot in 5s, not 300s, EVEN IF the Router's own ordinary fallback chain
+carried the request past hermes-local-4080 to a later rung (Mac Studio /
+cloud / long) without this file's involvement — release does not depend on
+which rung actually served the request. This does not change WHEN the lock
+is taken, only how long it is held, which is what actually matters for
+"does an idle 4080 lock out fast-gpu/direct callers" — that window is now
+bounded by one request's wall-clock time, not the TTL. A genuine
+acquisition-time fix (gate on the Router's actually-resolved deployment, not
+the caller-typed name) would need a hook this file could not identify with
+confidence.
+
+WHY RELEASE READS data["metadata"], NOT data["model"]. The first version of
+this fix keyed release eligibility off `data.get("model")`, matching it
+against ROLE_NAMES/GATED_MODELS the same way the pre-call hook does. That
+breaks the moment the Router's own fallback machinery rewrites `data["model"]`
+to reflect whichever deployment actually served the request (LiteLLM's
+documented pattern for request logging) — a `fast` call that fell through to
+a cloud rung would then read back as some unrelated model id at post-call
+time, `is_role_call` would evaluate false, and `_maybe_release` would skip
+entirely: the exact "holds the lock for the full 300s while the 4080 sits
+idle" failure this fix exists to prevent, and the one that makes `fast-gpu`'s
+429-means-busy signal unreliable for every caller told to trust it. Fixed by
+stamping the caller shape ("role" vs "direct") into `data["metadata"]` in
+`async_pre_call_hook`, before anything downstream has a chance to touch
+`data["model"]`, and reading that stamp back in `_maybe_release` instead.
+`metadata` is litellm's own documented pass-through field for exactly this
+kind of request-scoped custom data, and unlike `model` nothing else in the
+request lifecycle has a reason to overwrite it.
+
+Direct callers (GATED_MODELS) do NOT auto-release on completion — that
+would break the ORIGINAL feature this lock exists for (a caller like Hermes
+holding the lock across several repeat calls to keep the KV cache warm,
+57-subagent-lock.yml). Auto-release is scoped to ROLE_NAMES only, because
+`fast`/`subagent` calls are single-shot ad hoc delegation by design (no
+multi-call session), so releasing after the one call that used the lock is
+correct there and would be wrong for a direct caller.
+
+PARTICIPATES, NOT ACQUIRED — two races a naive "release on every role call's
+completion" gets wrong, both real:
+
+  (a) The SAME caller alias holds the lock via a direct `fast-gpu` call
+      (deliberate multi-call hold, KV-cache affinity) and separately makes a
+      `fast` role call. That role call's acquire attempt finds its own
+      caller_id already holding the lock and refreshes it — but the hold
+      belongs to the direct call, not to this role call. If this role call
+      released on its own completion, it would tear down the direct caller's
+      still-active hold out from under it.
+
+  (b) Two role calls from the SAME caller alias run concurrently (parallel
+      subagents dispatched from one workstation key). The first to acquire
+      establishes the hold; the second refreshes it. If release were keyed
+      on "did I ever touch the lock", the FIRST call finishing would delete
+      the lock while the SECOND is still mid-flight, letting a third caller
+      in on a 4080 slot that is not actually free.
+
+Both are solved together by _ROLE_INFLIGHT_KEY, a companion counter whose
+mere EXISTENCE (not its value) marks a hold as role-owned. A role call
+"participates" (sets `_LOCK_PARTICIPATES_KEY`, and thus owes a release on
+its own completion) only when it freshly acquires the lock, or refreshes a
+hold the counter shows is ALREADY role-owned — never when it refreshes a
+hold with no counter, which can only mean a direct caller (case a)
+established it. `_release_role_participant` decrements the counter and
+deletes the lock only once it reaches zero (case b) — see
+_ACQUIRE_OR_REFRESH_ROLE_SCRIPT / _RELEASE_ROLE_PARTICIPANT_SCRIPT.
+
+DOCUMENTED CEILING, deliberately not closed: the mirror image of case (a).
+A role call freshly acquires (participates, role-owned), and a DIRECT
+caller (fast-gpu) then refreshes that SAME hold via the ordinary direct-
+caller path (_refresh_if_holder — unchanged, never touches the counter).
+When the original role call completes, it still owns one share of a
+counter now at 1, decrements to 0, and deletes the lock — even though the
+direct caller is still relying on it. Symmetric-looking to case (a), but
+NOT fixed the same way: a direct caller relies on the 300s TTL or an
+explicit X-Subagent-Release, never a completion-triggered auto-release (see
+above for why), so there is no signal this file could use to mark "a direct
+caller has since taken over this hold" without giving direct callers the
+same auto-release-on-completion behavior that was deliberately rejected for
+them — reopening the idle-GPU-held-for-the-full-TTL failure for a direct
+caller that never sends the header. Accepted as a narrow, understood gap
+rather than compounding the design to close it: a role call establishing
+the hold, followed by that SAME caller alias pivoting to a direct call
+before the role call finishes, is a narrower window than the un-mitigated
+"redirect always holds 300s" failure this whole file exists to fix.
+
+Both the refresh-if-same-holder and release-if-same-holder operations use a
+Lua script (single Redis round trip: GET-compare-then-EXPIRE/DEL
+atomically) instead of separate GET-then-EXPIRE / GET-then-DELETE calls —
+the two-call form has a TOCTOU window where a DIFFERENT, newer holder's
+lock could be refreshed or deleted by a caller who no longer holds it,
+between the GET and the second call.
+"""
+
+import os
+
+from fastapi import HTTPException
+from litellm.integrations.custom_logger import CustomLogger
+
+try:
+    import redis.asyncio as redis_asyncio
+except ImportError:  # pragma: no cover - always present inside the litellm[proxy] venv
+    redis_asyncio = None
+
+LOCK_KEY = {{ llm_router_subagent_lock_key | to_json }}
+LOCK_TTL_SECONDS = {{ llm_router_subagent_lock_ttl_seconds }}
+RELEASE_HEADER = {{ llm_router_subagent_lock_release_header | to_json }}
+# The client_model_id set that shares the 4080's single llama.cpp slot and KV
+# cache — derived from the registry by tier, plus the `fast-gpu` DB role
+# name, see 57-subagent-lock.yml.
+GATED_MODELS = frozenset({{ llm_router_subagent_lock_model_ids | to_json }})
+# DB-seeded role names whose calls redirect around contention instead of
+# hard-rejecting — see 55-roles.yml and the module docstring above.
+ROLE_NAMES = frozenset({{ llm_router_subagent_lock_role_names | to_json }})
+ROLE_REDIRECT_TARGET = {{ llm_router_primary_model | to_json }}
+# metadata key _maybe_release reads to learn the caller shape (role vs
+# direct) that async_pre_call_hook determined — see the module docstring for
+# why this cannot be re-derived from data["model"] at post-call time.
+_LOCK_SHAPE_KEY = "subagent_lock_caller_shape"
+# metadata key: True only when THIS role call actually joined the
+# role-tracked hold (either it freshly acquired the lock, or it refreshed a
+# hold an earlier role call already joined) — see the module docstring's
+# "PARTICIPATES, NOT ACQUIRED" section for why a role call that merely
+# refreshed someone else's (a direct caller's) hold must NOT set this.
+_LOCK_PARTICIPATES_KEY = "subagent_lock_role_participates"
+# Companion key tracking how many in-flight role calls currently share the
+# lock — see the module docstring.
+_ROLE_INFLIGHT_KEY = LOCK_KEY + ":role_inflight"
+
+# Same connection this proxy already uses for spend tracking (router_settings
+# in config.yaml.j2): host/password via the systemd EnvironmentFile, port as
+# a non-secret literal baked in at render time — reusing that pattern rather
+# than declaring a second Redis config.
+_REDIS_HOST = os.environ.get("LLM_ROUTER_REDIS_HOST", "")
+_REDIS_PORT = {{ llm_router_redis_port }}
+_REDIS_PASSWORD = os.environ.get("LLM_ROUTER_REDIS_PASSWORD") or None
+
+
+# Atomic compare-and-refresh: extends the TTL only if the caller asking is
+# still the recorded holder. Returns 1 on refresh, 0 if the key is absent or
+# held by someone else (never raises for "not the holder" — that is an
+# ordinary, expected outcome, not an error).
+_REFRESH_IF_HOLDER_SCRIPT = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("EXPIRE", KEYS[1], ARGV[2])
+else
+  return 0
+end
+"""
+
+# Atomic compare-and-delete: same shape, for release instead of refresh.
+_RELEASE_IF_HOLDER_SCRIPT = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+else
+  return 0
+end
+"""
+
+# Role-call acquire-or-refresh, single round trip. Distinguishes THREE
+# outcomes (KEYS[1]=LOCK_KEY, KEYS[2]=role-inflight counter,
+# ARGV[1]=caller_id, ARGV[2]=ttl):
+#   2 = fresh acquire, or a refresh of a hold role calls already joined
+#       (the counter key exists) — this call now counts toward the
+#       inflight total and MUST decrement it on its own completion.
+#   1 = refreshed the SAME caller's hold, but the counter key is absent,
+#       meaning that hold was established by a direct caller (fast-gpu /
+#       hermes-local-4080), not by any role call — proceeds to the
+#       deployment same as 2, but must NOT touch the counter on
+#       completion: releasing here would delete a direct caller's
+#       deliberate multi-call hold out from under it.
+#   0 = contended by a different caller — the pre-call hook redirects.
+# The counter's own existence (not its value) is what marks a hold as
+# role-owned; only a role call's own fresh acquire or a refresh of an
+# already role-owned hold creates/grows it.
+_ACQUIRE_OR_REFRESH_ROLE_SCRIPT = """
+local holder = redis.call("GET", KEYS[1])
+if not holder then
+  redis.call("SET", KEYS[1], ARGV[1], "EX", ARGV[2])
+  redis.call("SET", KEYS[2], 1, "EX", ARGV[2])
+  return 2
+end
+if holder ~= ARGV[1] then
+  return 0
+end
+redis.call("EXPIRE", KEYS[1], ARGV[2])
+if redis.call("EXISTS", KEYS[2]) == 1 then
+  redis.call("INCR", KEYS[2])
+  redis.call("EXPIRE", KEYS[2], ARGV[2])
+  return 2
+end
+return 1
+"""
+
+# Release one role call's share of the inflight count. Deletes the lock (and
+# the counter) only once every role call that joined it has released —
+# case (b): parallel subagents on one caller must not have the first one to
+# finish evict the ones still in flight. The EXISTS guard matters: a long
+# role stream plus a direct caller's own refreshes (which only EXPIRE
+# LOCK_KEY, never the counter) can let the counter expire and vanish before
+# the stream's own release runs — DECR on a missing key returns -1, which
+# without this guard would delete a lock this call was never tracked
+# against.
+_RELEASE_ROLE_PARTICIPANT_SCRIPT = """
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then
+  return 0
+end
+if redis.call("EXISTS", KEYS[2]) == 0 then
+  return 0
+end
+local n = redis.call("DECR", KEYS[2])
+if n <= 0 then
+  redis.call("DEL", KEYS[1])
+  redis.call("DEL", KEYS[2])
+  return 1
+end
+return 0
+"""
+
+
+def _caller_id(user_api_key_dict) -> str:
+    """The identity a lock decision is made against — a virtual key's alias
+    (roles/llm_router/defaults/main/56-virtual-keys.yml), falling back to the
+    key's own token for an unaliased/master-key caller so the lock still
+    degrades to a real (if less readable) identity rather than colliding
+    every unattributed caller onto the literal string "unknown"."""
+    return (
+        getattr(user_api_key_dict, "key_alias", None)
+        or getattr(user_api_key_dict, "token", None)
+        or "unknown"
+    )
+
+
+def _release_requested(data: dict) -> bool:
+    headers = (data.get("proxy_server_request") or {}).get("headers") or {}
+    return str(headers.get(RELEASE_HEADER, "")).strip().lower() in ("1", "true", "yes")
+
+
+class FastSubagentLock(CustomLogger):
+    """One caller at a time on the 4080. A direct caller (GATED_MODELS) that
+    loses the race is rejected with 429 immediately — no wait-queue, no
+    preemption; it holds the lock across repeat calls (cache-affinity across
+    a session), released only by the 300s TTL or an explicit
+    X-Subagent-Release. A fast/subagent role caller (ROLE_NAMES) that loses
+    the race is silently redirected instead, and — unlike a direct caller —
+    auto-releases its share of the lock when its own call completes
+    (success, failure, or its stream ending), but only if it actually
+    PARTICIPATES in the hold: see the module docstring's "PARTICIPATES, NOT
+    ACQUIRED" section for why a role call that merely refreshed someone
+    else's hold must not release it."""
+
+    def __init__(self, client=None):
+        # Injectable for tests (tests/llm_router/test_fast_subagent_lock.py);
+        # production always lazy-connects via _get_client below.
+        self._client = client
+
+    def _get_client(self):
+        if self._client is not None:
+            return self._client
+        if redis_asyncio is None:
+            raise RuntimeError(
+                "redis.asyncio is unavailable — expected inside the litellm[proxy] venv"
+            )
+        self._client = redis_asyncio.Redis(
+            host=_REDIS_HOST,
+            port=_REDIS_PORT,
+            password=_REDIS_PASSWORD,
+            decode_responses=True,
+        )
+        return self._client
+
+    async def _refresh_if_holder(self, client, caller_id: str) -> bool:
+        return bool(await client.eval(_REFRESH_IF_HOLDER_SCRIPT, 1, LOCK_KEY, caller_id, LOCK_TTL_SECONDS))
+
+    async def _release_if_holder(self, client, caller_id: str) -> bool:
+        return bool(await client.eval(_RELEASE_IF_HOLDER_SCRIPT, 1, LOCK_KEY, caller_id))
+
+    async def _acquire_or_refresh_role(self, client, caller_id: str) -> int:
+        return int(
+            await client.eval(
+                _ACQUIRE_OR_REFRESH_ROLE_SCRIPT, 2, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id, LOCK_TTL_SECONDS
+            )
+        )
+
+    async def _release_role_participant(self, client, caller_id: str) -> bool:
+        return bool(await client.eval(_RELEASE_ROLE_PARTICIPANT_SCRIPT, 2, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id))
+
+    async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type: str):
+        model = data.get("model")
+        is_role_call = model in ROLE_NAMES
+        if model not in GATED_MODELS and not is_role_call:
+            return data
+        # Stamped BEFORE anything downstream (the Router's own fallback
+        # machinery included) gets a chance to rewrite data["model"] — see
+        # the module docstring. _maybe_release reads this, never data["model"].
+        metadata = data.setdefault("metadata", {})
+        metadata[_LOCK_SHAPE_KEY] = "role" if is_role_call else "direct"
+        caller_id = _caller_id(user_api_key_dict)
+        client = self._get_client()
+        if is_role_call:
+            outcome = await self._acquire_or_refresh_role(client, caller_id)
+            if outcome == 0:
+                # Contended by a different caller. See the module docstring:
+                # redirect, not raise — an exception here cannot reach the
+                # Router's own fallback engine.
+                data["model"] = ROLE_REDIRECT_TARGET
+                return data
+            if outcome == 2:
+                # This call now shares the role-tracked hold and must
+                # release its share on completion — see _maybe_release and
+                # the module docstring's "PARTICIPATES, NOT ACQUIRED"
+                # section for why outcome == 1 (refreshed a direct caller's
+                # hold) deliberately does NOT set this.
+                metadata[_LOCK_PARTICIPATES_KEY] = True
+            return data
+        # NX+EX in one round trip: acquires only if absent, sets the TTL as
+        # a side effect of the very acquisition that succeeds.
+        acquired = await client.set(LOCK_KEY, caller_id, nx=True, ex=LOCK_TTL_SECONDS)
+        if acquired:
+            return data
+        if await self._refresh_if_holder(client, caller_id):
+            # Same caller, still working — refreshed so continued use keeps
+            # the lock alive instead of expiring mid-session.
+            return data
+        holder = await client.get(LOCK_KEY)
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "llm-4080 is locked by another caller",
+                "held_by": holder,
+                "retry_after_seconds": LOCK_TTL_SECONDS,
+            },
+            headers={"Retry-After": str(LOCK_TTL_SECONDS)},
+        )
+
+    async def _maybe_release(self, data: dict, user_api_key_dict) -> None:
+        """Shared by every post-call hook (success, failure, and the
+        streaming iterator below) — see the module docstring for why role
+        calls auto-release unconditionally while direct calls release only
+        on the explicit header, and for why this reads data["metadata"]
+        rather than data["model"]."""
+        metadata = data.get("metadata") or {}
+        shape = metadata.get(_LOCK_SHAPE_KEY)
+        if shape is None:
+            return
+        caller_id = _caller_id(user_api_key_dict)
+        client = self._get_client()
+        if shape == "role":
+            # pop, not get: an upstream exception mid-stream reaches BOTH
+            # the streaming iterator hook's `finally` and, afterwards,
+            # async_post_call_failure_hook on the SAME request_data dict —
+            # litellm's own generator wrapper re-raises into its except
+            # block, which calls the failure hook after the iterator hook's
+            # finally has already run. Without consuming the flag here, that
+            # second call would see it still set and decrement the inflight
+            # counter a second time for one call, stealing a share that
+            # belongs to a genuinely separate, still in-flight sibling.
+            if metadata.pop(_LOCK_PARTICIPATES_KEY, None):
+                await self._release_role_participant(client, caller_id)
+            return
+        if not _release_requested(data):
+            return
+        await self._release_if_holder(client, caller_id)
+
+    async def async_post_call_success_hook(self, data: dict, user_api_key_dict, response):
+        await self._maybe_release(data, user_api_key_dict)
+        return response
+
+    async def async_post_call_streaming_iterator_hook(self, user_api_key_dict, response, request_data: dict):
+        """The non-streaming success hook above is NEVER reached for a
+        streaming request on the pinned litellm[proxy]==1.98.0 — the proxy's
+        base request processor returns the SSE generator straight to the
+        client via its own select_data_generator branch before it ever calls
+        proxy_logging_obj.post_call_success_hook (litellm/proxy/
+        common_request_processing.py). Every real client in this estate
+        streams, so without this override every fast/subagent lock held
+        would sit at the full 300s TTL regardless of the metadata-based fix
+        above. ProxyLogging only routes a request through this hook at all
+        if a callback overrides it (litellm/proxy/utils.py,
+        ProxyLogging._callback_capabilities / needs_iterator_wrap check
+        `"async_post_call_streaming_iterator_hook" in cls_attrs`, a leaf-
+        class __dict__ check — this method must stay defined directly on
+        FastSubagentLock, never on an intermediate base) — a real method
+        override on this class, confirmed against the pinned tag's source
+        for this PR, not merely documented. On this same pin, a client that
+        disconnects mid-stream reaches this generator only as a
+        GeneratorExit raised when the generator object itself is garbage
+        collected (proxy_server.py), not as an immediate signal — prompt in
+        practice under CPython's refcounting GC, but not a guarantee this
+        file can rely on. The 300s TTL remains the hard bound for that
+        case, same as every other release path here."""
+        try:
+            async for item in response:
+                yield item
+        finally:
+            await self._maybe_release(request_data, user_api_key_dict)
+
+    # Signature confirmed against LiteLLM's own docs (docs.litellm.ai/docs/
+    # proxy/call_hooks, fetched for this PR) — NOT verified against a live
+    # process on the pinned 1.98.0 release specifically. Still wrapped
+    # defensively: a documented-but-wrong-on-this-pin signature must degrade
+    # to "the lock is not released early" (falls back to the 300s TTL, the
+    # pre-existing safety net), never to an exception that could interfere
+    # with the actual failure response reaching the caller. Returning None
+    # (rather than an HTTPException) leaves the original error untouched, as
+    # documented.
+    async def async_post_call_failure_hook(
+        self, request_data: dict, original_exception: Exception, user_api_key_dict, traceback_str=None
+    ):
+        try:
+            await self._maybe_release(request_data, user_api_key_dict)
+        except Exception:  # noqa: BLE001 - see docstring: must never break the failure path
+            pass
+        return None
+
+
+proxy_handler_instance = FastSubagentLock()
