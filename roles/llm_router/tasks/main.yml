@@ -190,55 +190,8 @@
   no_log: true
   notify: Restart litellm
 
-# The retired daily-rotation deployment (deleted 2026-07-16) left a config.yaml
-# symlink + per-phase configs + flip timers on converged routers; these cleanup
-# tasks are idempotent no-ops once a host is clean.
-- name: Stat the LiteLLM config path
-  ansible.builtin.stat:
-    path: "{{ llm_router_config_file }}"
-  register: llm_router_config_stat
-
-- name: Drop the retired rotation symlink so the render below writes a real file
-  ansible.builtin.file:
-    path: "{{ llm_router_config_file }}"
-    state: absent
-  when: llm_router_config_stat.stat.islnk | default(false)
-
-- name: Remove the retired rotation timers, units, per-phase configs and sentinel
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - /etc/systemd/system/litellm-rotate-large.timer
-    - /etc/systemd/system/litellm-rotate-large.service
-    - /etc/systemd/system/litellm-rotate-optimized.timer
-    - /etc/systemd/system/litellm-rotate-optimized.service
-    - "{{ llm_router_config_dir }}/config-large.yaml"
-    - "{{ llm_router_config_dir }}/config-optimized.yaml"
-    - "{{ llm_router_config_dir }}/rotation-paused"
-  register: llm_router_rotation_cleanup
-
-# systemd only forgets a deleted unit after a reload; stop is best-effort since
-# the timer may already be gone or never deployed.
-- name: Stop the retired rotation timers
-  ansible.builtin.systemd:
-    name: "{{ item }}"
-    state: stopped
-    enabled: false
-  loop:
-    - litellm-rotate-large.timer
-    - litellm-rotate-optimized.timer
-  failed_when: false
-  when:
-    - llm_router_rotation_cleanup is changed
-    - ansible_virtualization_type | default('') != 'docker'
-
-- name: Reload systemd after removing the rotation units
-  ansible.builtin.systemd:
-    daemon_reload: true
-  when:
-    - llm_router_rotation_cleanup is changed
-    - ansible_virtualization_type | default('') != 'docker'
+- name: Remove the retired per-phase rotation before rendering the config
+  ansible.builtin.import_tasks: retire-rotation.yml
 
 # Deployed unconditionally (harmless if the callback goes unregistered when
 # llm_router_redis_host is empty) so the import never fails against a file
