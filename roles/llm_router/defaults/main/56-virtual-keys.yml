@@ -105,11 +105,18 @@ _llm_router_static_virtual_keys:
   # NOT `models: []`. On a key an EMPTY list means ALL models
   # (auth_checks.py, `len(models) == 0` -> all_model_access), so a metrics-only
   # key written the obvious way would be a full-access key with a friendly
-  # alias. The sentinel is a non-matching, non-empty allowlist: /metrics needs
-  # no model and gets through; any completion request is refused.
+  # alias. The sentinel is a non-matching, non-empty allowlist: any
+  # completion request is refused.
+  #
+  # /metrics is an ADMIN-ONLY route for a virtual key unless the key carries
+  # `allowed_routes` naming it (route_checks.py, litellm 1.98.0) — without
+  # this list the key 401s on every scrape with "Only proxy admin can be
+  # used", which a scraper reports as no data. Both spellings: the proxy
+  # 307s /metrics to /metrics/ and the check is on the path as requested.
   - alias: prometheus-scrape
     value: "{{ bao_apps_secrets.prometheus_llm_router_key | default('', true) }}"
     models: "{{ ['no-default-models'] }}"
+    allowed_routes: ["/metrics", "/metrics/"]
   # CI. Delegated bulk work and cheap classification only — no lead tier, so a
   # workflow cannot spend on the expensive rung, and revoking CI's access is one
   # key rather than a rotation for every caller. Same contract as the entries
