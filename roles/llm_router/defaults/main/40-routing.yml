@@ -40,28 +40,32 @@ llm_router_num_retries: 0
 llm_router_request_timeout_seconds: "{{ ai_router_request_timeout_seconds }}"
 
 # --- ADMISSION BUDGET: never hold for a model that is already busy ----------
-# A rung at capacity is handed over, not waited on. Every retry a LOCAL rung
-# may spend waiting for admission — retries x (backoff + time-to-first-token
-# bound) — fits inside this many seconds, and the ladder behind it carries the
-# request on. tasks/assert.yml and tests/llm_router/test_admission_budget.yml
-# hold the product to this figure, so a future retry bump cannot widen it.
+# A rung at capacity is handed over, not waited on. Both local gates reject an
+# over-capacity request with a 429 in milliseconds, and with zero rate-limit
+# retries that 429 IS the hand-off; the retry budget a LOCAL rung may spend on
+# admission — retries x backoff — fits inside this many seconds.
+# tasks/assert-admission-budget.yml and tests/llm_router/
+# test_admission_budget_and_ladder.yml hold the product to this figure, so a
+# future retry bump cannot widen it.
 llm_router_admission_budget_seconds: 15
-# Time-to-first-token bound on every local rung: the capacity signal. A local
-# backend that has admitted a request streams its first token in well under
-# this; one that has not is queueing, and queueing is what this forbids. The
-# whole-call `timeout` is separate and stays generation-sized — this bounds the
-# wait for the first byte, never the generation.
-llm_router_local_stream_timeout_seconds: 15
-# Attempts per local rung before handing over. One timeout retry at most: with
-# the 429 path retrying zero times below, this is the only retry a local rung
-# can make, and the budget assert bounds it.
+# First-byte bound on every local rung, for the ADMITTED request whose backend
+# never starts answering (a hung or wedged slot, not a busy one — busy is the
+# instant 429 above). First byte on a local rung is the prefill: at the
+# measured ~160-275 s time-to-first-token for a ~26k-token prompt on the
+# studio 27B, 90 keeps prompts up to roughly the 10k-token class local and
+# hands longer ones to cloud. It must stay BELOW the ingress's response-header
+# timeout (ai_ingress_response_header_timeout_seconds, 120) or the caller sees
+# a 504 before the fallback can fire; the assert holds that inequality. The
+# whole-call `timeout` is separate and stays generation-sized.
+llm_router_local_stream_timeout_seconds: 90
+# Attempts per local rung before handing over: none. A failed or stalled
+# local rung is handed to the ladder, and the budget assert bounds the product.
 llm_router_local_num_retries: 0
 # Timeout retries router-wide (retry_policy.TimeoutErrorRetries). A retry
 # policy entry REPLACES a deployment's own num_retries for that error type
 # (router_utils/get_retry_from_policy.py, litellm 1.98.0), so this is the
 # retry count every local rung actually gets on a stalled first byte. Zero:
-# the first-byte bound alone is the whole 15 s budget, and a stalled rung is
-# handed over, not re-asked.
+# a stalled rung is handed over, not re-asked.
 llm_router_timeout_retries: 0
 # Rate limits are absorbed HERE, not by the caller. The serving tier admits one
 # in-flight request per model (llama-swap concurrencyLimit) and rejects the rest

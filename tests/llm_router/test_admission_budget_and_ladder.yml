@@ -2,9 +2,10 @@
 # Pins the operator rule of 2026-09-19: NEVER hold for a model that is busy.
 #
 #   * a 429 hands over at once (RateLimitErrorRetries 0);
-#   * every local rung's retry budget — retries x (retry_after + first-byte
-#     bound) — fits the admission budget, asserted as the PRODUCT so a retry
-#     bump cannot widen it;
+#   * every local rung's retry budget — retries x retry_after — fits the
+#     admission budget, asserted as the PRODUCT so a retry bump cannot widen
+#     it, and its first-byte bound sits below the ingress cut (the declared
+#     constant, never a literal);
 #   * every chat role's ladder ends in the external terminal rungs, free
 #     first, then metered, and default_fallbacks carries the same list; the
 #     terminal rungs are present whenever their credential resolves.
@@ -36,6 +37,7 @@
     ai_router_request_timeout_seconds: 2400
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
     hermes_brain_model: hermes-default
     hermes_goal_judge_model: goal-judge
     # Every external credential the registry gates on, so every terminal
@@ -74,61 +76,51 @@
           - _config.router_settings.retry_after | int <= llm_router_admission_budget_seconds | int
           - _config.router_settings.num_retries | int == 0
 
-    - name: Every local deployment carries the first-byte bound and the budget holds as a product
+    - name: Every local deployment is bounded below the ingress cut with no retries
       ansible.builtin.assert:
         quiet: true
         that:
           - _local | length >= 5
           - _local | rejectattr('litellm_params.stream_timeout', 'defined') | list | length == 0
           - _local | rejectattr('litellm_params.num_retries', 'defined') | list | length == 0
-          - _over | length == 0
+          - _local | selectattr('litellm_params.num_retries', 'gt', 0) | list | length == 0
+          - _over_ingress | length == 0
         fail_msg: >-
-          Local deployments without a first-byte bound:
+          Local deployments without a bound:
           {{ _local | rejectattr('litellm_params.stream_timeout', 'defined') | map(attribute='model_name') | list }};
-          over the {{ llm_router_admission_budget_seconds }}s budget: {{ _over }}
+          at or over the {{ ai_ingress_response_header_timeout_seconds }}s ingress cut: {{ _over_ingress }}
         success_msg: >-
-          {{ _local | length }} local deployments bounded; worst case
-          {{ _worst }}s of {{ llm_router_admission_budget_seconds }}s
+          {{ _local | length }} local deployments bounded at
+          <= {{ _local | map(attribute='litellm_params.stream_timeout') | max }}s
+          under the {{ ai_ingress_response_header_timeout_seconds }}s ingress cut
       vars:
         _local: >-
           {{ _config.model_list
              | selectattr('litellm_params.api_base', 'defined')
              | selectattr('litellm_params.api_base', 'in', _local_bases)
              | rejectattr('litellm_params.model', 'search', '[*]$') | list }}
-        # retries x (retry_after + stream_timeout) + the first attempt's wait
-        _budgets: >-
-          {{ _local | map(attribute='litellm_params')
-             | map('combine', {'_r': _config.router_settings.retry_after | int}) | list }}
-        _over: >-
+        _over_ingress: >-
           {{ _local
-             | selectattr('litellm_params.stream_timeout', 'gt', llm_router_admission_budget_seconds | int)
-             | map(attribute='model_name') | list
-             + (_local
-                | selectattr('litellm_params.num_retries', 'gt', 0)
-                | map(attribute='model_name') | list) }}
-        _worst: >-
-          {{ (_local | map(attribute='litellm_params.stream_timeout') | max)
-             + ([llm_router_timeout_retries | int, _local | map(attribute='litellm_params.num_retries') | max] | max)
-               * ((_config.router_settings.retry_after | int)
-                  + (_local | map(attribute='litellm_params.stream_timeout') | max)) }}
+             | selectattr('litellm_params.stream_timeout', 'ge', ai_ingress_response_header_timeout_seconds | int)
+             | map(attribute='model_name') | list }}
 
-    - name: The worst-case admission wait on a local rung fits the budget
+    - name: The retry budget on a local rung is a product that fits the admission budget
       ansible.builtin.assert:
         quiet: true
         that:
-          - _worst | int <= llm_router_admission_budget_seconds | int
-        fail_msg: "worst case {{ _worst }}s > budget {{ llm_router_admission_budget_seconds }}s"
+          - _budget | int <= llm_router_admission_budget_seconds | int
+        fail_msg: "retry budget {{ _budget }}s > admission budget {{ llm_router_admission_budget_seconds }}s"
+        success_msg: "retry budget {{ _budget }}s of {{ llm_router_admission_budget_seconds }}s"
       vars:
         _local: >-
           {{ _config.model_list
              | selectattr('litellm_params.api_base', 'defined')
              | selectattr('litellm_params.api_base', 'in', _local_bases)
              | rejectattr('litellm_params.model', 'search', '[*]$') | list }}
-        _worst: >-
-          {{ (_local | map(attribute='litellm_params.stream_timeout') | max)
-             + ([llm_router_timeout_retries | int, _local | map(attribute='litellm_params.num_retries') | max] | max)
-               * ((_config.router_settings.retry_after | int)
-                  + (_local | map(attribute='litellm_params.stream_timeout') | max)) }}
+        _budget: >-
+          {{ ([_config.router_settings.retry_policy.TimeoutErrorRetries | int,
+               _local | map(attribute='litellm_params.num_retries') | max] | max)
+             * (_config.router_settings.retry_after | int) }}
 
     - name: Every chat role's ladder carries the external terminal rungs, free before paid
       ansible.builtin.assert:
