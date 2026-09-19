@@ -95,11 +95,14 @@ llm_router_long_context_escape_roles:
   - fast
   - subagent
 
-_llm_router_fast_subagent_chain:
-  - "{{ llm_router_primary_model }}"
-  - "{{ (llm_router_hermes_cloud_free_groups | first) if (llm_router_hermes_cloud_free_groups | length > 0) else '' }}"
-  - "{{ (llm_router_hermes_cloud_paid_groups | first) if (llm_router_hermes_cloud_paid_groups | length > 0) else '' }}"
-  - "{{ llm_router_model_group_aliases.long }}"
+# fast/subagent: the 4080 (their target), the Mac Studio's resident brain,
+# the external terminal rungs above, and `long` kept as the last rung it
+# always was. cheap/judge stop at the terminal rungs (never `long`).
+_llm_router_fast_subagent_chain: >-
+  {{ [llm_router_primary_model] + llm_router_external_terminal_rungs
+     + [llm_router_model_group_aliases.long] }}
+_llm_router_cheap_chain: >-
+  {{ [llm_router_primary_model] + llm_router_external_terminal_rungs }}
 
 # FALLBACK ORDER IS ONE-WAY, LARGEST CONTEXT FIRST — for every role EXCEPT
 # fast/subagent above, whose chain is intentionally local-first / narrowest
@@ -120,20 +123,19 @@ _llm_router_fast_subagent_chain:
 # the worst case of every earlier rung failing — every role deployment before
 # this PR only ever carried 0 or 1 fallbacks, so that interaction has never
 # been exercised. Confirm live before relying on the terminal rung under load.
-
 llm_router_role_deployments:
   # Local-first: try the 4080 before anything else. See the note above
   # _llm_router_fast_subagent_chain for why this no longer targets `long`
   # directly and how the >200k escape hatch stays reachable.
   - role: subagent
     model: "{{ llm_router_hermes_local_4080_id }}"
-    fallbacks: "{{ _llm_router_fast_subagent_chain | reject('equalto', '') | list }}"
+    fallbacks: "{{ _llm_router_fast_subagent_chain }}"
   # Same chain, second name — both Codex's `--profile fast` and this
   # project's own `subagent` naming already have external callers expecting
   # them; see the note above _llm_router_fast_subagent_chain.
   - role: fast
     model: "{{ llm_router_hermes_local_4080_id }}"
-    fallbacks: "{{ _llm_router_fast_subagent_chain | reject('equalto', '') | list }}"
+    fallbacks: "{{ _llm_router_fast_subagent_chain }}"
   # Just the 4080, no fallback — see the note above _llm_router_fast_subagent_chain
   # for why this must fail outright rather than redirecting anywhere.
   - role: fast-gpu
@@ -143,15 +145,24 @@ llm_router_role_deployments:
   # `goal-judge` alias resolves to today.
   - role: judge
     model: "{{ llm_router_routine_model }}"
-    fallbacks: ["{{ llm_router_small_model }}"]
+    fallbacks: "{{ [llm_router_small_model] + llm_router_external_terminal_rungs }}"
   # Trivial background chores and every CI review. The GPU rung first — the
   # fastest local model, and a busy slot hands over at once (57-subagent-lock
   # lists this role, so contention redirects instead of waiting) — then the
-  # studio, free and paid rungs of the chain above; never `long`. A role that
-  # refuses is the standing rule inverted.
+  # studio, free and paid rungs of the chain above. A role that refuses is the
+  # standing rule inverted.
   - role: cheap
     model: "{{ llm_router_hermes_local_4080_id }}"
-    fallbacks: "{{ _llm_router_fast_subagent_chain[0:3] | reject('equalto', '') | list }}"
+    fallbacks: "{{ _llm_router_cheap_chain }}"
+  - role: review-public
+    model: "{{ llm_router_hermes_local_4080_id }}"
+    fallbacks: "{{ _llm_router_review_public_chain }}"
+  - role: review-private
+    model: "{{ llm_router_hermes_local_4080_id }}"
+    fallbacks: "{{ _llm_router_review_private_chain }}"
+  # embed/ocr have no same-modality external rung (no cloud embeddings, no
+  # cloud OCR in the registry): bounded by the same admission figures as
+  # every local rung, they fail FAST on a busy backend rather than hold.
   - role: embed
     model: "{{ llm_router_embedding_model }}"
     fallbacks: []
@@ -177,10 +188,12 @@ llm_router_seed_request_timeout: 30
 # pair), which is the only reason those two match what config.yaml.j2 already
 # advertises for the same client_model_id.
 # The registry entry's own attempt bounds (num_retries, request_timeout as
-# `timeout`, stream_timeout) ride along onto every role's params, so a DB role
-# on a slow rung times out on that rung's figure (the GPU entry declares 300 s
-# in llm-models.d/30-local-gpu.yml), not the router-wide ceiling. Without this
-# a role on the GPU waited the full router timeout before its chain moved on.
+# `timeout`, stream_timeout) ride along onto every role's params, and every
+# LOCAL target is then held to the admission bounds of 40-routing.yml (first
+# byte within llm_router_local_stream_timeout_seconds, at most
+# llm_router_local_num_retries retries) — an entry may tighten them, never
+# loosen them. Without this a role on a busy local rung waited the whole
+# router timeout before its chain moved on.
 _llm_router_role_params: >-
   {%- set ns = namespace(params={}) -%}
   {%- for m in llm_router_registry_enabled -%}
@@ -219,6 +232,14 @@ _llm_router_role_params: >-
   {%- for k in ['num_retries', 'request_timeout', 'stream_timeout'] if m[k] is defined -%}
   {%- set _ = ns.params[m.client_model_id].update({('timeout' if k == 'request_timeout' else k): m[k]}) -%}
   {%- endfor -%}
+  {%- if m.tier in ['large', 'light', 'vllm', 'hermes-local'] -%}
+  {%- set _p = ns.params[m.client_model_id] -%}
+  {%- set _ = _p.update({
+        'num_retries': [_p.num_retries | default(llm_router_local_num_retries),
+                        llm_router_local_num_retries] | min,
+        'stream_timeout': [_p.stream_timeout | default(llm_router_local_stream_timeout_seconds),
+                           llm_router_local_stream_timeout_seconds] | min}) -%}
+  {%- endif -%}
   {%- endif -%}
   {%- endfor -%}
   {{ ns.params }}

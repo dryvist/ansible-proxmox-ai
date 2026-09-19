@@ -115,6 +115,16 @@ router_settings:
   retry_after: {{ llm_router_retry_after_seconds }}
   retry_policy:
     RateLimitErrorRetries: {{ llm_router_rate_limit_retries }}
+    # A stalled first byte gets ONE more attempt after retry_after; the
+    # admission budget (40-routing.yml) bounds retries x (retry_after +
+    # stream_timeout) on every local rung.
+    TimeoutErrorRetries: {{ llm_router_timeout_retries }}
+{% if llm_router_default_fallbacks | length > 0 %}
+  # Catch-all ladder for any name without its own fallbacks entry, so no
+  # request can dead-end on a busy or failed rung: the free external rung,
+  # then the paid one (55-roles.yml, llm_router_default_fallbacks).
+  default_fallbacks: {{ llm_router_default_fallbacks | to_json }}
+{% endif %}
 {% if llm_router_hermes_cloud_zero_retry_groups | length > 0 %}
   # Every group that carries a fallback chain advances on 429 instead of
   # sleeping on the busy slot: the chain rungs, the provider routers, and each

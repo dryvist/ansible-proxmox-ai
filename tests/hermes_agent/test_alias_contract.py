@@ -159,10 +159,12 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
                     "derive it from llm-models.d/ instead"
                 )
     assert router_defaults["llm_router_num_retries"] == 0
-    # 429 = "the slot is busy", never "the work is impossible", so the router
-    # absorbs it rather than failing the caller (#175). Not 0 — that setting
-    # killed a cron mid-generation on 2026-07-24.
-    assert router_defaults["llm_router_rate_limit_retries"] == 8
+    # 429 = "the slot is busy" and is the HAND-OFF signal (operator rule,
+    # 2026-09-19): never retried on the same rung, the ladder behind it takes
+    # the request. The 2026-07-24 cron kill this figure once guarded against is
+    # covered by every name carrying a ladder plus default_fallbacks.
+    assert router_defaults["llm_router_rate_limit_retries"] == 0
+    assert router_defaults["llm_router_admission_budget_seconds"] == 15
     assert "model_group_alias:" in router_config
     assert "llm_router_model_group_aliases.items()" in router_config
 
