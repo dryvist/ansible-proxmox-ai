@@ -176,6 +176,34 @@ llm_router_spend_logs_retention_interval: 1d
 # a decision until it is written down.
 llm_router_store_prompts_in_spend_logs: false
 
+# One base variable gates every router_settings seed step (Vikunja 3316):
+# ladders (fallbacks, routing_strategy, ...) are administered live in the
+# LiteLLM Admin UI and must stay editable there between converges.
+#
+#   initial (default) — seed router_settings into the database only the
+#     first time, when the LiteLLM_Config row is still absent (the row this
+#     role's own render put there is the DR "from scratch" case; a row an
+#     operator has since edited in the UI is left alone). Model deployments
+#     and virtual-key model scopes/budgets already follow this contract
+#     unconditionally (tasks/seed-roles.yml, tasks/seed-keys.yml,
+#     tasks/reconcile-key-budgets.yml) — nothing else to gate there.
+#   rebuild — DR / full overwrite: every converge re-pushes the rendered
+#     file's router_settings, discarding whatever the database holds. Use
+#     for one converge to restore the git-declared ladder from scratch, then
+#     set back to initial.
+#
+# See roles/llm_router/README.md -> "Editing ladders in the UI" for the
+# LiteLLM-source facts (config-merge direction, propagation interval) this
+# contract rests on.
+llm_router_seed_mode: initial
+
+# Whether sync-router-settings.yml may push the rendered file's payload into
+# the database this converge. rebuild always may (DR reset); initial may only
+# when tasks/probe-router-settings.yml found no existing row to protect.
+_llm_router_router_settings_may_seed: >-
+  {{ llm_router_seed_mode == 'rebuild'
+     or not (llm_router_router_settings_in_db | default(false)) }}
+
 # The router_settings the converge pushes back into the database so the
 # persisted row cannot shadow the rendered file. Derived from the rendered
 # config rather than a hand-listed key set, minus the credential (never sent

@@ -178,6 +178,63 @@ Full detail — the two rules a seeded fallback rung must satisfy, the
 role by hand or through the Admin UI — moved to
 [`docs/LLM_ROUTER_ROLES.md`](../../docs/LLM_ROUTER_ROLES.md).
 
+## Editing ladders in the UI (`llm_router_seed_mode`, Vikunja 3316)
+
+Router settings — `router_settings` in `config.yaml`: `fallbacks`,
+`routing_strategy`, `allowed_fails`, `cooldown_time`, `model_group_alias` —
+are administered in the LiteLLM Admin UI, at **Router Settings**, the same
+"database owns it after first seed" contract role deployments already have
+(above), and Virtual Keys → allowed models already have
+(`tasks/seed-keys.yml`: mints a key only when absent, then only ever adds
+model names to an existing key's scope; `tasks/reconcile-key-budgets.yml`
+never sends `models`, only budget fields). `llm_router_seed_mode`
+(`defaults/main/45-database.yml`, default `initial`) is the one variable
+that extends the same contract to `router_settings`:
+
+- **`initial`** (default) — the converge seeds `router_settings` into the
+  database only the first time, when no row exists yet
+  (`tasks/probe-router-settings.yml`, a read-only `psql` check —
+  litellm 1.98.0's `/config/list` never returns this section). Once a row
+  exists, a converge leaves it alone; `tasks/sync-router-settings.yml` is
+  skipped.
+- **`rebuild`** — DR / from-scratch reset. Every converge re-pushes the
+  rendered file's `router_settings`, discarding whatever the Admin UI holds.
+  Set it for one converge to restore the git-declared ladder, then set it
+  back to `initial`.
+
+Facts this rests on, verified against the pinned `litellm==1.98.0` wheel
+(never guessed):
+
+- **Startup merge direction**: with `store_model_in_db: true`, the database
+  row wins over `config.yaml` for every key it carries — `ProxyConfig.
+  _update_config_fields`'s `_deep_merge_dicts` (`litellm/proxy/
+  proxy_server.py:6357-6371`), called from `_update_config_from_db`
+  (`proxy_server.py:6418-6452`), called from `get_config` at startup
+  (`proxy_server.py:4448-4452`). A key the file renders but the database
+  never touched keeps the file's value; a key the UI has written wins on
+  every subsequent proxy start, restart or not.
+- **The UI write path**: Router Settings saves through `POST /config/update`
+  (`proxy_server.py:15394`, `router_settings` block at
+  `proxy_server.py:15517-15527`) — merge-per-key, request wins, upserted into
+  the `LiteLLM_Config` table. There is no `PUT /fallback/{model}` endpoint in
+  this pinned release (verified: zero matches in `proxy_server.py`'s route
+  table) — anything that call shape reports back is not the UI's actual
+  write path.
+- **Propagation, no restart needed**: `/config/update` triggers
+  `ProxyConfig.add_deployment` once immediately, and every proxy instance
+  also runs it on its own APScheduler `interval` job
+  (`proxy_server.py:8845-8853`, gated on `store_model_in_db`), every
+  `PROXY_CONFIG_RELOAD_INTERVAL_SECONDS` (`litellm/constants.py:1522`,
+  default **30s**). That job's `_add_router_settings_from_db_config`
+  (`proxy_server.py:6031-6068`) re-reads the row and calls
+  `llm_router.update_settings(**combined_router_settings)` live — a fallback
+  or routing-strategy edit made in the UI on one router reaches every other
+  router in the pool within ~30 seconds, no restart. Models added/edited in
+  the UI (`LiteLLM_ProxyModelTable`) reconcile through the same
+  `add_deployment` job and the same interval. Key model-scope changes are
+  served from `user_api_key_cache`, in-memory TTL 60s by default
+  (`proxy_server.py:1527`, `general_settings.user_api_key_cache_ttl`).
+
 ## Virtual keys (`defaults/main/56-virtual-keys.yml`)
 
 One key per caller, seeded from its own apps-domain secret. Naming rule: the
@@ -229,6 +286,7 @@ endpoint contract, and the serving-share metric:
 | `llm_router_light_port` | `service_ports.llm_fast_api` | llm-fast / llm-light backend port |
 | `llm_router_large_port` | `service_ports.ollama_api` | llm-large backend port |
 | `llm_router_routing_strategy` | `simple-shuffle` | load-balancing across same-name deployments |
+| `llm_router_seed_mode` | `initial` | `initial` seeds `router_settings` once then leaves Admin UI edits alone; `rebuild` = DR full overwrite |
 | `llm_router_master_key` | `env LLM_ROUTER_MASTER_KEY` (mandatory) | proxy master key |
 | `llm_router_llm_large_bearer` | `env LLM_LARGE_BEARER_TOKEN` (mandatory) | llm-large bearer |
 

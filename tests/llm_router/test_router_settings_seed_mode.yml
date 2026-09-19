@@ -1,0 +1,196 @@
+---
+# Pins llm_router_seed_mode (Vikunja 3316): router_settings (fallback ladders,
+# routing_strategy, ...) must stay editable in the LiteLLM Admin UI between
+# converges. `initial` (default) seeds the database only the first time, when
+# no router_settings row exists yet; `rebuild` always overwrites it (DR /
+# from-scratch reset). See roles/llm_router/README.md -> "Editing ladders in
+# the UI" and defaults/main/45-database.yml for the litellm-source facts this
+# rests on.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_router_settings_seed_mode.yml -i localhost, -c local
+
+- name: The role default is initial, not rebuild
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Assert llm_router_seed_mode defaults to initial
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_seed_mode == 'initial'
+        fail_msg: >-
+          llm_router_seed_mode defaults to '{{ llm_router_seed_mode }}', not
+          'initial' — a converge would overwrite an Admin UI ladder edit by
+          default, which is the exact regression this variable exists to stop.
+        success_msg: initial is the default seed mode.
+
+- name: The seed gate protects an existing row only in initial mode
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the role defaults so the gate expression under test is real, not re-typed
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    # set_fact, not task `vars:` — include_vars (above) outranks task vars in
+    # Ansible's precedence order, so a task-local `vars:` override of
+    # llm_router_seed_mode would be silently ignored and every case below
+    # would exercise the include_vars default (initial) regardless of what
+    # this task claims to set. set_fact outranks include_vars, so it actually
+    # overrides. Diagnosed by writing this test: the rebuild case below
+    # reported false with the vars-only version because llm_router_seed_mode
+    # never left 'initial'.
+    - name: initial mode, row present -> the seed gate stays closed
+      block:
+        - ansible.builtin.set_fact:
+            llm_router_seed_mode: initial
+            llm_router_router_settings_in_db: true
+        - ansible.builtin.assert:
+            quiet: true
+            that:
+              - not (_llm_router_router_settings_may_seed | bool)
+            fail_msg: >-
+              _llm_router_router_settings_may_seed is true with
+              seed_mode=initial and an existing row —
+              sync-router-settings.yml would run and clobber an Admin UI edit.
+
+    - name: initial mode, no row yet -> the seed gate opens (first seed)
+      block:
+        - ansible.builtin.set_fact:
+            llm_router_seed_mode: initial
+            llm_router_router_settings_in_db: false
+        - ansible.builtin.assert:
+            quiet: true
+            that:
+              - _llm_router_router_settings_may_seed | bool
+            fail_msg: >-
+              _llm_router_router_settings_may_seed is false with
+              seed_mode=initial and no existing row — a brand-new database
+              would never get the git-declared initial ladder.
+
+    - name: rebuild mode, row present -> the seed gate still opens (DR overwrite)
+      block:
+        - ansible.builtin.set_fact:
+            llm_router_seed_mode: rebuild
+            llm_router_router_settings_in_db: true
+        - ansible.builtin.assert:
+            quiet: true
+            that:
+              - _llm_router_router_settings_may_seed | bool
+            fail_msg: >-
+              _llm_router_router_settings_may_seed is false with
+              seed_mode=rebuild — the DR full-overwrite mode must run
+              regardless of what the database already holds.
+
+    - name: The probe fact reads a missing table the same as no row
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not _probe_result
+        fail_msg: >-
+          A non-zero psql rc (LiteLLM_Config not created yet on a fresh
+          database) must read as "no row", not fail the play — got true.
+      vars:
+        # Mirrors tasks/probe-router-settings.yml's set_fact expression
+        # exactly, against a fake `psql` failure (missing relation).
+        llm_router_router_settings_probe:
+          rc: 3
+          stdout: ""
+        _probe_result: >-
+          {{ llm_router_router_settings_probe.rc == 0
+             and (llm_router_router_settings_probe.stdout | default('') | trim) == '1' }}
+
+    - name: The probe fact reads a found row as present
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _probe_result
+        fail_msg: "psql rc=0 stdout='1' must read as row-present — got false."
+      vars:
+        llm_router_router_settings_probe:
+          rc: 0
+          stdout: "1\n"
+        _probe_result: >-
+          {{ llm_router_router_settings_probe.rc == 0
+             and (llm_router_router_settings_probe.stdout | default('') | trim) == '1' }}
+
+- name: main.yml imports the probe before the gated sync, both keyed off seed_mode
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Read tasks/main.yml
+      ansible.builtin.slurp:
+        src: "{{ _role_dir }}/tasks/main.yml"
+      register: _main_source
+
+    - name: Assert the probe import precedes the gated sync import, and each carries the right when
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'import_tasks: probe-router-settings.yml' in _text"
+          - "'import_tasks: sync-router-settings.yml' in _text"
+          - _probe_offset != -1
+          - _sync_offset != -1
+          - _probe_offset < _sync_offset
+          - "\"llm_router_seed_mode == 'initial'\" in _text"
+          - "'_llm_router_router_settings_may_seed | bool' in _text"
+        fail_msg: >-
+          tasks/main.yml no longer imports probe-router-settings.yml before
+          the seed_mode-gated sync-router-settings.yml import — the DB read
+          this gate depends on would run too late, or not at all.
+      vars:
+        _text: "{{ _main_source.content | b64decode }}"
+        _probe_offset: "{{ _text.find('import_tasks: probe-router-settings.yml') }}"
+        _sync_offset: "{{ _text.find('import_tasks: sync-router-settings.yml') }}"
+
+- name: Model deployments and key model scopes already stay first-seed-only, unconditionally
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    # These already satisfy the operator directive's "creates missing keys,
+    # never rewrites an existing key's model scope/budget" — this pins that
+    # so a future edit to either file can't silently regress it back to a
+    # rewrite. seed-roles.yml's own first-seed contract is pinned separately
+    # by its own tests; only the "never removes" half is re-asserted here.
+    - name: Read seed-keys.yml
+      ansible.builtin.slurp:
+        src: "{{ _role_dir }}/tasks/seed-keys.yml"
+      register: _seed_keys_source
+
+    - name: Read reconcile-key-budgets.yml
+      ansible.builtin.slurp:
+        src: "{{ _role_dir }}/tasks/reconcile-key-budgets.yml"
+      register: _budgets_source
+
+    - name: Assert key model scope is union-only and budget updates never touch models
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'_llm_router_live_models + item.models) | unique' in _keys_text"
+          - "'models' not in _budgets_body"
+        fail_msg: >-
+          Either seed-keys.yml stopped unioning model scope onto an existing
+          key (a Admin-UI-added model would be dropped) or
+          reconcile-key-budgets.yml's /key/update body started sending
+          `models` (its every-converge budget resync would overwrite an
+          Admin-UI model-scope edit).
+      vars:
+        _keys_text: "{{ _seed_keys_source.content | b64decode }}"
+        # Only the /key/update request body, not the whole file (whose
+        # comments legitimately discuss `models`) — from the `body:` key
+        # of the resync task down to its `status_code:` line.
+        _budgets_body: >-
+          {{ (_budgets_source.content | b64decode).split('body:')[1].split('status_code:')[0] }}

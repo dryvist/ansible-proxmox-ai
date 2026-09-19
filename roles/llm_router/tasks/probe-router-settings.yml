@@ -1,0 +1,39 @@
+---
+# Read-only: does the database already hold a router_settings row? Only
+# imported in llm_router_seed_mode: initial (main.yml), to decide whether
+# sync-router-settings.yml may push this converge's rendered payload — a row
+# already there may carry an operator's Admin UI edit (Router Settings ->
+# fallbacks/routing_strategy/...), which the file must not clobber. See
+# roles/llm_router/README.md -> "Editing ladders in the UI" for why this is
+# a DB read, not an HTTP one: litellm 1.98.0's /config/list only ever reads
+# general_settings (proxy_server.py get_config_general_settings), never
+# router_settings.
+#
+# psql, already installed earlier in this same play by tasks/serving-share.yml
+# under the same llm_router_db_host gate — no new package here.
+#
+# failed_when: false because a brand-new database has no LiteLLM_Config table
+# yet at this point in the play (created by the `prisma db push` task in
+# main.yml, but a ROW only exists once a proxy has actually started and
+# written one through /config/update): "relation does not exist" and "0 rows"
+# both mean the same thing to this probe, so both are read as "no row, safe
+# to seed" rather than failing the play.
+- name: Check whether the database already holds a router_settings row
+  ansible.builtin.command:
+    argv:
+      - psql
+      - >-
+        postgresql://{{ llm_router_db_user }}:{{ llm_router_db_password | urlencode
+        }}@{{ llm_router_db_host }}:{{ llm_router_db_port }}/{{ llm_router_db_name }}
+      - -tAc
+      - "SELECT 1 FROM \"LiteLLM_Config\" WHERE param_name = 'router_settings'"
+  register: llm_router_router_settings_probe
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Record whether the router_settings row already exists
+  ansible.builtin.set_fact:
+    llm_router_router_settings_in_db: >-
+      {{ llm_router_router_settings_probe.rc == 0
+         and (llm_router_router_settings_probe.stdout | default('') | trim) == '1' }}
