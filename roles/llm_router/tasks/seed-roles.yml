@@ -8,6 +8,13 @@
 #
 # Runs LAST in the role, after the liveness probe: these are HTTP calls against
 # the proxy this play just started, so it must already be serving.
+#
+# One exception to "does nothing to one that already exists": a role whose
+# MODEL TARGET moved (the stale-reconcile path near the end of this file)
+# also gets its fallback order re-seeded, since /model/delete + /model/new
+# replace the deployment but carry no fallback record with it. That still
+# only fires on a real target change, never on a steady-state converge, so a
+# UI-edited fallback order on an unchanged role is still untouched.
 
 - name: Assert every role targets a model the catalog describes
   ansible.builtin.assert:
@@ -109,6 +116,49 @@
   when: item.fallbacks | select('in', _llm_router_live_models) | list | length > 0
   no_log: true
 
+# BACKFILL a fallback order onto an existing role that has NONE. Seeding only
+# ever creates, so a role first seeded with an empty list (cheap, until its
+# ladder was declared) kept refusing forever: a rung that fails with no
+# fallback record is a hard error to the caller, the standing local-first
+# rule inverted. Gated on the proxy reporting no record at all (404 from
+# GET /fallback/<role>), so a UI-edited order is never touched.
+- name: Read the fallback record of each existing role that declares one
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/fallback/{{ item.role }}?fallback_type=general"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: [200, 404]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: >-
+    {{ llm_router_role_deployments
+       | selectattr('role', 'in', _llm_router_live_models)
+       | selectattr('fallbacks') | list }}
+  loop_control:
+    label: "{{ item.role }}"
+  register: llm_router_role_fallback_records
+  no_log: true
+
+- name: Backfill the declared fallback order onto roles that carry none
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/fallback"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      model: "{{ item.item.role }}"
+      fallback_models: "{{ item.item.fallbacks | select('in', _llm_router_live_models) | list }}"
+      fallback_type: general
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: "{{ llm_router_role_fallback_records.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.role }} -> {{ item.item.fallbacks | select('in', _llm_router_live_models) | join(', ') }}"
+  when:
+    - item.status | default(0) == 404
+    - item.item.fallbacks | select('in', _llm_router_live_models) | list | length > 0
+  no_log: true
+
 # RECONCILE an existing role whose target has moved in the registry. Seeding
 # only ever creates, so a role pointed at a model that was later repointed or
 # retired keeps answering from the stale target forever — the subagent role sat
@@ -178,4 +228,32 @@
   loop: "{{ _llm_router_stale_roles }}"
   loop_control:
     label: "{{ item.role }} -> {{ item.model }}"
+  no_log: true
+
+# /model/delete + /model/new above replace the deployment but carry no
+# fallback record of their own — every role retargeted through this path
+# before now (judge/cheap/embed/ocr/subagent) happened to carry 0 or 1
+# fallbacks, so a role losing its fallback order on retarget went
+# unnoticed. Re-seed it here so a role with a real chain (subagent/fast,
+# 55-roles.yml) does not silently lose it the moment its target moves.
+# Same idempotent shape as "Seed the fallback order for the roles just
+# created" above — a steady-state converge (nothing stale) loops over
+# nothing, so a UI-edited fallback order on an UNCHANGED role is untouched.
+- name: Seed the fallback order for the roles just retargeted
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/fallback"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      model: "{{ item.role }}"
+      fallback_models: "{{ item.fallbacks | select('in', _llm_router_live_models) | list }}"
+      fallback_type: general
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: "{{ _llm_router_stale_roles | selectattr('fallbacks') | list }}"
+  loop_control:
+    label: "{{ item.role }} -> {{ item.fallbacks | select('in', _llm_router_live_models) | join(', ') }}"
+  when: item.fallbacks | select('in', _llm_router_live_models) | list | length > 0
   no_log: true

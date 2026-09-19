@@ -20,7 +20,13 @@ import yaml
 
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "llama_cpp"
 HANDLERS = yaml.safe_load((ROLE / "handlers" / "main.yml").read_text())
-DEFAULTS = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text())
+# defaults/main.yml was split into defaults/main/*.yml to stay under the
+# token budget — merge every file the same way Ansible merges a
+# defaults/main/ directory (no key collisions between the split files here,
+# so a plain dict union is exact, not an approximation).
+DEFAULTS: dict = {}
+for _defaults_file in sorted((ROLE / "defaults" / "main").glob("*.yml")):
+    DEFAULTS.update(yaml.safe_load(_defaults_file.read_text()))
 TASKS = (ROLE / "tasks" / "main.yml").read_text()
 
 # The guardrails moved into an include when tasks/main.yml was split to stay
