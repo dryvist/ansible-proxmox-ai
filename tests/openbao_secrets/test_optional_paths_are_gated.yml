@@ -73,6 +73,32 @@
           An optional path is only safe when its consumer renders nothing with
           the secret absent — add the gate, then record it here.
 
+    # A path with `enabled: false` stays declared (so the gate above still
+    # names its consumer) but fetch_domain.yml's loop leaves it unread — the
+    # same filter expression, both directions.
+    - name: Capture the switch-off fetch list, then flip the switch on
+      ansible.builtin.set_fact:
+        _fetched_off: >-
+          {{ _apps | select('mapping') | rejectattr('enabled', 'defined') | map(attribute='path') | list }}
+        llm_router_public_ci_key_enabled: true
+      vars:
+        _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
+
+    - name: A disabled optional path is declared but not fetched until its switch flips
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'apps/github-actions-public' in _optional_paths"
+          - _fetched_off | select('search', 'github-actions-public') | list | length == 0
+          - _fetched_on | select('search', 'github-actions-public') | list | length == 1
+        fail_msg: "off={{ _fetched_off }} on={{ _fetched_on }}"
+      vars:
+        _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
+        _fetched_on: >-
+          {{ (_apps | select('mapping') | rejectattr('enabled', 'defined') | list
+              + _apps | selectattr('enabled', 'defined') | selectattr('enabled') | list)
+             | map(attribute='path') | list }}
+
     - name: Load the gateway defaults with no secrets available
       ansible.builtin.include_vars:
         file: "{{ _gateway_role_dir }}/defaults/main.yml"
