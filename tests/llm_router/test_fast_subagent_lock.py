@@ -155,7 +155,7 @@ def test_role_calls_gate_on_participates_direct_calls_need_the_header():
     maybe_release = source.split("async def _maybe_release")[1].split("async def async_post_call_success_hook")[0]
     assert 'shape = metadata.get(_LOCK_SHAPE_KEY)' in maybe_release
     assert 'if shape == "role":' in maybe_release
-    assert "if metadata.get(_LOCK_PARTICIPATES_KEY):" in maybe_release
+    assert "if metadata.pop(_LOCK_PARTICIPATES_KEY, None):" in maybe_release
     assert "if not _release_requested(data):" in maybe_release
 
 
@@ -190,6 +190,24 @@ def test_role_inflight_counter_gates_release_not_just_holder_match():
     assert "if n <= 0 then" in source
     assert "_ACQUIRE_OR_REFRESH_ROLE_SCRIPT, 2, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id, LOCK_TTL_SECONDS" in source
     assert "_RELEASE_ROLE_PARTICIPANT_SCRIPT, 2, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id" in source
+
+
+def test_release_is_idempotent_against_a_double_call():
+    # Regression guard: an upstream exception mid-stream reaches BOTH the
+    # streaming iterator hook's `finally` and, afterwards,
+    # async_post_call_failure_hook on the SAME request_data dict. Without
+    # consuming the participates flag, the second call would decrement the
+    # role-inflight counter a second time for one call, stealing a share
+    # that belongs to a genuinely separate, still in-flight sibling. The fix
+    # is to pop (not get) the flag, so the second call is a no-op — and the
+    # release script itself must also refuse to DECR a counter that has
+    # already expired/vanished (a long role stream plus a direct caller's
+    # own EXPIRE-only refreshes can let the counter disappear first).
+    source = render()
+    maybe_release = source.split("async def _maybe_release")[1].split("async def async_post_call_success_hook")[0]
+    assert "if metadata.pop(_LOCK_PARTICIPATES_KEY, None):" in maybe_release
+    assert 'if metadata.get(_LOCK_PARTICIPATES_KEY):' not in maybe_release
+    assert 'if redis.call("EXISTS", KEYS[2]) == 0 then\n  return 0\nend' in source
 
 
 def test_streaming_iterator_hook_is_a_real_override_that_releases():

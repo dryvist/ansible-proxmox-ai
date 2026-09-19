@@ -128,6 +128,25 @@ established it. `_release_role_participant` decrements the counter and
 deletes the lock only once it reaches zero (case b) — see
 _ACQUIRE_OR_REFRESH_ROLE_SCRIPT / _RELEASE_ROLE_PARTICIPANT_SCRIPT.
 
+DOCUMENTED CEILING, deliberately not closed: the mirror image of case (a).
+A role call freshly acquires (participates, role-owned), and a DIRECT
+caller (fast-gpu) then refreshes that SAME hold via the ordinary direct-
+caller path (_refresh_if_holder — unchanged, never touches the counter).
+When the original role call completes, it still owns one share of a
+counter now at 1, decrements to 0, and deletes the lock — even though the
+direct caller is still relying on it. Symmetric-looking to case (a), but
+NOT fixed the same way: a direct caller relies on the 300s TTL or an
+explicit X-Subagent-Release, never a completion-triggered auto-release (see
+above for why), so there is no signal this file could use to mark "a direct
+caller has since taken over this hold" without giving direct callers the
+same auto-release-on-completion behavior that was deliberately rejected for
+them — reopening the idle-GPU-held-for-the-full-TTL failure for a direct
+caller that never sends the header. Accepted as a narrow, understood gap
+rather than compounding the design to close it: a role call establishing
+the hold, followed by that SAME caller alias pivoting to a direct call
+before the role call finishes, is a narrower window than the un-mitigated
+"redirect always holds 300s" failure this whole file exists to fix.
+
 Both the refresh-if-same-holder and release-if-same-holder operations use a
 Lua script (single Redis round trip: GET-compare-then-EXPIRE/DEL
 atomically) instead of separate GET-then-EXPIRE / GET-then-DELETE calls —
@@ -239,9 +258,17 @@ return 1
 # Release one role call's share of the inflight count. Deletes the lock (and
 # the counter) only once every role call that joined it has released —
 # case (b): parallel subagents on one caller must not have the first one to
-# finish evict the ones still in flight.
+# finish evict the ones still in flight. The EXISTS guard matters: a long
+# role stream plus a direct caller's own refreshes (which only EXPIRE
+# LOCK_KEY, never the counter) can let the counter expire and vanish before
+# the stream's own release runs — DECR on a missing key returns -1, which
+# without this guard would delete a lock this call was never tracked
+# against.
 _RELEASE_ROLE_PARTICIPANT_SCRIPT = """
 if redis.call("GET", KEYS[1]) ~= ARGV[1] then
+  return 0
+end
+if redis.call("EXISTS", KEYS[2]) == 0 then
   return 0
 end
 local n = redis.call("DECR", KEYS[2])
@@ -382,11 +409,16 @@ class FastSubagentLock(CustomLogger):
         caller_id = _caller_id(user_api_key_dict)
         client = self._get_client()
         if shape == "role":
-            # Only a call that actually joined the role-tracked hold
-            # releases — see async_pre_call_hook and the module docstring.
-            # A role call that never set this (contention-redirected, or
-            # refreshed a direct caller's own hold) has nothing to release.
-            if metadata.get(_LOCK_PARTICIPATES_KEY):
+            # pop, not get: an upstream exception mid-stream reaches BOTH
+            # the streaming iterator hook's `finally` and, afterwards,
+            # async_post_call_failure_hook on the SAME request_data dict —
+            # litellm's own generator wrapper re-raises into its except
+            # block, which calls the failure hook after the iterator hook's
+            # finally has already run. Without consuming the flag here, that
+            # second call would see it still set and decrement the inflight
+            # counter a second time for one call, stealing a share that
+            # belongs to a genuinely separate, still in-flight sibling.
+            if metadata.pop(_LOCK_PARTICIPATES_KEY, None):
                 await self._release_role_participant(client, caller_id)
             return
         if not _release_requested(data):
@@ -409,9 +441,17 @@ class FastSubagentLock(CustomLogger):
         above. ProxyLogging only routes a request through this hook at all
         if a callback overrides it (litellm/proxy/utils.py,
         ProxyLogging._callback_capabilities / needs_iterator_wrap check
-        `"async_post_call_streaming_iterator_hook" in cls_attrs`) — a real
-        method override on this class, confirmed against the pinned tag's
-        source for this PR, not merely documented."""
+        `"async_post_call_streaming_iterator_hook" in cls_attrs`, a leaf-
+        class __dict__ check — this method must stay defined directly on
+        FastSubagentLock, never on an intermediate base) — a real method
+        override on this class, confirmed against the pinned tag's source
+        for this PR, not merely documented. On this same pin, a client that
+        disconnects mid-stream reaches this generator only as a
+        GeneratorExit raised when the generator object itself is garbage
+        collected (proxy_server.py), not as an immediate signal — prompt in
+        practice under CPython's refcounting GC, but not a guarantee this
+        file can rely on. The 300s TTL remains the hard bound for that
+        case, same as every other release path here."""
         try:
             async for item in response:
                 yield item

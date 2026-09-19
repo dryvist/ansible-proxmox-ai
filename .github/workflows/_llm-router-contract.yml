@@ -36,6 +36,25 @@ jobs:
       LLM_ROUTER_MASTER_KEY: sk-ci-placeholder-not-a-secret
       LLM_LARGE_BEARER_TOKEN: ci-placeholder-bearer-not-a-secret
       PROXMOX_SUBDOMAIN: pve.example.test
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+
+    # ONLY for tests/llm_router/test_fast_subagent_lock_behavioral.py — a
+    # real Redis to exercise fast_subagent_lock.py.j2's actual EVAL calls
+    # against, not just text-assert its rendered source. Every other step in
+    # this job touches no network resource; this is the one exception, and
+    # it is a plain, unauthenticated container-to-container service, not a
+    # secret or a reachable endpoint outside this job.
+    services:
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
 
     steps:
       - name: Checkout code
@@ -48,10 +67,14 @@ jobs:
 
       # pytest joins the existing pip install: the hermes_agent self-checks below
       # use parametrize and raises, so pytest is their runner, not an extra tool.
+      # redis is ONLY for test_fast_subagent_lock_behavioral.py, which skips
+      # cleanly (not silently) if it or the redis: service above is missing —
+      # see that file's own docstring for why litellm/fastapi themselves are
+      # deliberately NOT added here.
       - name: Install Ansible
         run: |
           python -m pip install --upgrade pip
-          pip install ansible pytest pyyaml
+          pip install ansible pytest pyyaml redis
 
       - name: Install Ansible dependencies
         run: |
