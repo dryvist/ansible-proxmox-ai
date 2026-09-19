@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.51.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.50.0...v0.51.0) (2026-09-19)
+
+
+### Features
+
+* **llm_router:** 4080 session lock, KV-cache flags, fast/subagent/fast-gpu roles ([#799](https://github.com/dryvist/ansible-proxmox-ai/issues/799)) ([1a806e0](https://github.com/dryvist/ansible-proxmox-ai/commit/1a806e0eb9b4f00654f3470d6efc212f361b694b))
+
+
+### Bug Fixes
+
+* **llm_router:** merge system messages before every deployment; give cheap a fallback ladder ([#800](https://github.com/dryvist/ansible-proxmox-ai/issues/800)) ([741d1df](https://github.com/dryvist/ansible-proxmox-ai/commit/741d1df6850ba2183e228de711be365537f0e8bc))
+
 ## [0.50.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.49.0...v0.50.0) (2026-09-15)
 
 
