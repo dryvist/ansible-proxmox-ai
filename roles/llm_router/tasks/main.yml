@@ -332,6 +332,26 @@
   retries: "{{ llm_router_liveness_retries }}"
   delay: "{{ llm_router_liveness_delay }}"
 
+# Liveness alone is not the proof: the listener is up before the config is
+# loaded, and a config the proxy cannot load leaves /v1/models empty or the
+# process in a crash loop that the systemd poll above can miss between
+# restarts. A non-empty authenticated model list is what proves THIS member
+# serves the rendered config, and it is the gate the rolling play waits on.
+- name: Verify this member serves the rendered model list
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/v1/models"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: 200
+    return_content: true
+  register: llm_router_models_probe
+  until:
+    - llm_router_models_probe.status == 200
+    - (llm_router_models_probe.json.data | default([])) | length > 0
+  retries: "{{ llm_router_liveness_retries }}"
+  delay: "{{ llm_router_liveness_delay }}"
+  no_log: true
+
 # Virtual keys, their budgets, and caller-facing roles — split into its own
 # file (seed-consumers.yml) once main.yml outgrew its token budget; a real
 # seam (all three are first-seed-against-the-live-proxy work), not an

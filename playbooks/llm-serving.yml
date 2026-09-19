@@ -149,6 +149,13 @@
   # this member's window, so the next member is not touched until this one is
   # serving again. max_fail_percentage: 0 stops the play on any failure rather
   # than marching on to break the rest.
+  #
+  # NOT isolated. The rescue the other plays use turns a failed member into a
+  # "rescued" one, which max_fail_percentage never sees — so a render that
+  # killed member 1 was still rolled onto members 2 and 3 (2026-09-19, the
+  # whole front door down from one config). The failure is recorded for the
+  # end-of-run gate AND re-raised, so the batch stops at the first bad member
+  # while the others keep serving the previous config.
   serial: 1
   max_fail_percentage: 0
   pre_tasks:
@@ -159,16 +166,22 @@
     - llm
     - ai
   tasks:
-    - name: Converge llm_router (isolated — failure does not abort downstream plays)
+    - name: Converge llm_router (a failed member stops the rolling batch)
       block:
         - name: Include llm_router role
           ansible.builtin.include_role:
             name: llm_router
       rescue:
-        - name: Record isolated failure and continue
+        - name: Record the failure for the end-of-run gate
           ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
           vars:
             _isolated_play_name: llm_router
+        - name: Stop the rolling converge at this member
+          ansible.builtin.fail:
+            msg: >-
+              llm_router failed on {{ inventory_hostname }}:
+              {{ ansible_failed_result.msg | default(ansible_failed_task.name | default('task failed')) }}.
+              Remaining pool members keep their previous config.
 
 - name: Configure the CPU LLM pool scaler
   hosts: llm_router_group
