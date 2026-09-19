@@ -146,3 +146,41 @@
          | map(attribute='allowed_routes', default=none) | first | default(none) }}
   when: (_llm_router_live_routes | default(none)) != item.allowed_routes
   no_log: true
+
+
+# RECONCILE, union only, the model names a live key lacks. Keys are minted
+# once, so a name added to a seed entry's list after the mint (a new role in
+# 55-roles.yml, a new servable model) never reaches an existing key and every
+# request to it 403s. Sending the git list outright would erase a name an
+# operator added in the Admin UI, so the update is the UNION of live and
+# seeded: names are only ever added, never removed. A key whose live list
+# already carries every seeded name is left untouched.
+- name: Grant seeded model names to live keys that lack them
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/update"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      key: "{{ item.value }}"
+      models: "{{ (_llm_router_live_models + item.models) | unique | list }}"
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: >-
+    {{ llm_router_virtual_keys
+       | rejectattr('value', 'equalto', '')
+       | selectattr('alias', 'in', _llm_router_live_key_aliases) | list }}
+  loop_control:
+    label: "{{ item.alias }} +{{ item.models | difference(_llm_router_live_models) | join(', ') }}"
+  vars:
+    _llm_router_live_key_aliases: >-
+      {{ llm_router_existing_keys.json['keys'] | default([])
+         | selectattr('key_alias', 'defined')
+         | map(attribute='key_alias') | select('string') | list }}
+    _llm_router_live_models: >-
+      {{ llm_router_existing_keys.json['keys'] | default([])
+         | selectattr('key_alias', 'equalto', item.alias)
+         | map(attribute='models', default=[]) | first | default([]) }}
+  when: item.models | difference(_llm_router_live_models) | length > 0
+  no_log: true
