@@ -1,0 +1,41 @@
+---
+# ADMISSION BUDGET (defaults/main/40-routing.yml): a request never holds for
+# a local rung that is already busy. A 429 hands over at once (zero rate-limit
+# retries), a stalled first byte is bounded per rung, and the whole retry
+# budget a local rung can spend waiting — retries x (backoff + first-byte
+# bound) — fits inside llm_router_admission_budget_seconds. Its own file so a
+# test can import exactly this assert and prove each failure mode. That every
+# rendered local deployment actually carries the bound is the template's
+# local_bounds macro plus tests/llm_router/test_admission_budget_and_ladder.yml.
+- name: Assert the admission budget bounds every local rung and 429s hand over at once
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # A 429 from a rung is the hand-off signal, never a reason to sleep on it.
+      - llm_router_rate_limit_retries | int == 0
+      # The one timeout retry and its backoff are part of the budget below.
+      - llm_router_timeout_retries | int <= 1
+      - llm_router_retry_max_delay_seconds | int >= llm_router_retry_after_seconds | int
+      # The first-byte bound alone fits the budget with room for one retry.
+      - llm_router_local_stream_timeout_seconds | int <= llm_router_admission_budget_seconds | int
+      # The PRODUCT is the contract: a future retry bump cannot widen it.
+      - (_llm_router_local_admission_budget | int) <= (llm_router_admission_budget_seconds | int)
+    fail_msg: >-
+      Admission budget is unsound (roles/llm_router/tasks/assert-admission-budget.yml):
+      rate_limit_retries={{ llm_router_rate_limit_retries }} (must be 0),
+      timeout_retries={{ llm_router_timeout_retries }},
+      retry_after={{ llm_router_retry_after_seconds }}s,
+      local stream_timeout={{ llm_router_local_stream_timeout_seconds }}s,
+      local num_retries={{ llm_router_local_num_retries }} give a
+      {{ _llm_router_local_admission_budget }}s worst case against the
+      {{ llm_router_admission_budget_seconds }}s budget.
+    success_msg: >-
+      A busy local rung costs at most {{ _llm_router_local_admission_budget }}s
+      before the ladder moves on (budget {{ llm_router_admission_budget_seconds }}s).
+  vars:
+    # Worst case on one local rung: the first attempt's first-byte wait, then
+    # each retry's backoff plus another first-byte wait.
+    _llm_router_local_admission_budget: >-
+      {{ (llm_router_local_stream_timeout_seconds | int)
+         + ((([llm_router_local_num_retries | int, llm_router_timeout_retries | int] | max))
+            * ((llm_router_retry_after_seconds | int) + (llm_router_local_stream_timeout_seconds | int))) }}

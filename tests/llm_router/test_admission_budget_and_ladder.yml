@@ -1,0 +1,198 @@
+---
+# Pins the operator rule of 2026-09-19: NEVER hold for a model that is busy.
+#
+#   * a 429 hands over at once (RateLimitErrorRetries 0);
+#   * every local rung's retry budget — retries x (retry_after + first-byte
+#     bound) — fits the admission budget, asserted as the PRODUCT so a retry
+#     bump cannot widen it;
+#   * every chat role's ladder ends in the external terminal rungs, free
+#     first, then metered, and default_fallbacks carries the same list; the
+#     terminal rungs are present whenever their credential resolves.
+#
+# Rendered twice: no external credential at all (the ladder must still be a
+# list, even if empty of externals), and every credential present.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_admission_budget_and_ladder.yml -i localhost, -c local
+- name: Verify the admission budget and the guaranteed ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+    # Every external credential the registry gates on, so every terminal
+    # rung renders.
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: sk-or-fixture
+      OPENROUTER_HERMES_KEY: sk-orh-fixture
+    _local_bases: >-
+      {{ [llm_router_llm_large_base_url, llm_router_llm_light_base_url,
+          llm_router_llm_fast_base_url, llm_router_llm_vllm_base_url] }}
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Run the role's own admission-budget assert
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assert-admission-budget.yml
+
+    - name: Render config.yaml.j2 with every credential present
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: 429 is the hand-off signal and the timeout retry is bounded
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _config.router_settings.retry_policy.RateLimitErrorRetries | int == 0
+          - _config.router_settings.retry_policy.TimeoutErrorRetries | int <= 1
+          - _config.router_settings.retry_after | int <= llm_router_admission_budget_seconds | int
+          - _config.router_settings.num_retries | int == 0
+
+    - name: Every local deployment carries the first-byte bound and the budget holds as a product
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _local | length >= 5
+          - _local | rejectattr('litellm_params.stream_timeout', 'defined') | list | length == 0
+          - _local | rejectattr('litellm_params.num_retries', 'defined') | list | length == 0
+          - _over | length == 0
+        fail_msg: >-
+          Local deployments without a first-byte bound:
+          {{ _local | rejectattr('litellm_params.stream_timeout', 'defined') | map(attribute='model_name') | list }};
+          over the {{ llm_router_admission_budget_seconds }}s budget: {{ _over }}
+        success_msg: >-
+          {{ _local | length }} local deployments bounded; worst case
+          {{ _worst }}s of {{ llm_router_admission_budget_seconds }}s
+      vars:
+        _local: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'in', _local_bases)
+             | rejectattr('litellm_params.model', 'search', '[*]$') | list }}
+        # retries x (retry_after + stream_timeout) + the first attempt's wait
+        _budgets: >-
+          {{ _local | map(attribute='litellm_params')
+             | map('combine', {'_r': _config.router_settings.retry_after | int}) | list }}
+        _over: >-
+          {{ _local
+             | selectattr('litellm_params.stream_timeout', 'gt', llm_router_admission_budget_seconds | int)
+             | map(attribute='model_name') | list
+             + (_local
+                | selectattr('litellm_params.num_retries', 'gt', 0)
+                | map(attribute='model_name') | list) }}
+        _worst: >-
+          {{ (_local | map(attribute='litellm_params.stream_timeout') | max)
+             + ([llm_router_timeout_retries | int, _local | map(attribute='litellm_params.num_retries') | max] | max)
+               * ((_config.router_settings.retry_after | int)
+                  + (_local | map(attribute='litellm_params.stream_timeout') | max)) }}
+
+    - name: The worst-case admission wait on a local rung fits the budget
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _worst | int <= llm_router_admission_budget_seconds | int
+        fail_msg: "worst case {{ _worst }}s > budget {{ llm_router_admission_budget_seconds }}s"
+      vars:
+        _local: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'in', _local_bases)
+             | rejectattr('litellm_params.model', 'search', '[*]$') | list }}
+        _worst: >-
+          {{ (_local | map(attribute='litellm_params.stream_timeout') | max)
+             + ([llm_router_timeout_retries | int, _local | map(attribute='litellm_params.num_retries') | max] | max)
+               * ((_config.router_settings.retry_after | int)
+                  + (_local | map(attribute='litellm_params.stream_timeout') | max)) }}
+
+    - name: Every chat role's ladder carries the external terminal rungs, free before paid
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_external_free_rungs | length >= 1
+          - llm_router_external_paid_rungs | length >= 1
+          - llm_router_external_terminal_rungs | length >= 2
+          - llm_router_external_terminal_rungs | difference(item.fallbacks) | length == 0
+          - >-
+            item.fallbacks.index(llm_router_external_free_rungs | first)
+            < item.fallbacks.index(llm_router_external_paid_rungs | first)
+          - _config.router_settings.default_fallbacks == llm_router_external_terminal_rungs
+        fail_msg: >-
+          {{ item.role }}: {{ item.fallbacks }} does not carry
+          {{ llm_router_external_terminal_rungs }} free-before-paid
+        success_msg: "{{ item.role }}: {{ item.model }} -> {{ item.fallbacks | join(' -> ') }}"
+      loop: >-
+        {{ llm_router_role_deployments
+           | selectattr('role', 'in', ['fast', 'subagent', 'cheap', 'judge']) | list }}
+      loop_control:
+        label: "{{ item.role }}"
+
+    - name: The terminal rungs are distinct deployments and every one renders
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_external_terminal_rungs | unique | length == llm_router_external_terminal_rungs | length
+          - llm_router_external_terminal_rungs | difference(_rendered_names) | length == 0
+          - _providers | length >= 1
+        fail_msg: >-
+          Terminal rungs {{ llm_router_external_terminal_rungs }} not all rendered
+          ({{ llm_router_external_terminal_rungs | difference(_rendered_names) }}),
+          providers {{ _providers }}
+        success_msg: "terminal providers: {{ _providers }}"
+      vars:
+        _rendered_names: "{{ _config.model_list | map(attribute='model_name') | list }}"
+        _providers: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'in', llm_router_external_terminal_rungs)
+             | map(attribute='litellm_params.model') | map('regex_replace', '/.*$', '') | unique | list }}
+
+    - name: Roles without a same-modality external rung stay bounded and fail fast
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - item.fallbacks == []
+          - >-
+            _config.model_list | selectattr('model_name', 'equalto', item.model)
+            | map(attribute='litellm_params.stream_timeout') | list | length > 0
+      loop: "{{ llm_router_role_deployments | selectattr('role', 'in', ['embed', 'ocr']) | list }}"
+      loop_control:
+        label: "{{ item.role }}"
+
+    - name: Render again with no external credential at all
+      ansible.builtin.set_fact:
+        _bare: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+      vars:
+        bao_local_llm_secrets: {}
+
+    - name: With nothing credentialed the ladder degrades to a list, never a string or a crash
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _bare.router_settings.retry_policy.RateLimitErrorRetries | int == 0
+          - _bare.router_settings.default_fallbacks | default([]) is sequence
+          - _bare.router_settings.default_fallbacks | default([]) is not string

@@ -89,13 +89,20 @@ _llm_registry_local_gpu:
     enabled: true
     context_window: *ctx4080
     num_retries: 0
-    request_timeout: &to4080 300
-    stream_timeout: *to4080
-    allowed_fails: 50
+    # Whole-call bound stays generation-sized; the FIRST-BYTE bound is the
+    # admission rule (llm_router_local_stream_timeout_seconds): a slot that
+    # has not started streaming within it is busy, and the ladder moves on.
+    request_timeout: 300
+    stream_timeout: 15
+    # A rung that has failed this many times inside cooldown_time is parked
+    # for cooldown_time and the ladder skips it — a 429 storm from a held
+    # slot no longer re-hits the card on every call. Sized to the admission
+    # budget (llm_router_admission_budget_seconds), not to a retry loop.
+    allowed_fails: 3
     # 0 is the intent, not the observed behaviour: the proxy still parks this
     # deployment 30s after repeated timeouts, self-clearing. Do not widen
     # allowed_fails instead — it was never the binding constraint.
-    cooldown_time: 0
+    cooldown_time: 15
     hints:
       speed: slow
       quality: strong

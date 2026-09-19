@@ -38,6 +38,31 @@ llm_router_cooldown_time: 30
 # their interaction with fallbacks and the external wall-clock ceiling.
 llm_router_num_retries: 0
 llm_router_request_timeout_seconds: "{{ ai_router_request_timeout_seconds }}"
+
+# --- ADMISSION BUDGET: never hold for a model that is already busy ----------
+# A rung at capacity is handed over, not waited on. Every retry a LOCAL rung
+# may spend waiting for admission — retries x (backoff + time-to-first-token
+# bound) — fits inside this many seconds, and the ladder behind it carries the
+# request on. tasks/assert.yml and tests/llm_router/test_admission_budget.yml
+# hold the product to this figure, so a future retry bump cannot widen it.
+llm_router_admission_budget_seconds: 15
+# Time-to-first-token bound on every local rung: the capacity signal. A local
+# backend that has admitted a request streams its first token in well under
+# this; one that has not is queueing, and queueing is what this forbids. The
+# whole-call `timeout` is separate and stays generation-sized — this bounds the
+# wait for the first byte, never the generation.
+llm_router_local_stream_timeout_seconds: 15
+# Attempts per local rung before handing over. One timeout retry at most: with
+# the 429 path retrying zero times below, this is the only retry a local rung
+# can make, and the budget assert bounds it.
+llm_router_local_num_retries: 0
+# Timeout retries router-wide (retry_policy.TimeoutErrorRetries). A retry
+# policy entry REPLACES a deployment's own num_retries for that error type
+# (router_utils/get_retry_from_policy.py, litellm 1.98.0), so this is the
+# retry count every local rung actually gets on a stalled first byte. Zero:
+# the first-byte bound alone is the whole 15 s budget, and a stalled rung is
+# handed over, not re-asked.
+llm_router_timeout_retries: 0
 # Rate limits are absorbed HERE, not by the caller. The serving tier admits one
 # in-flight request per model (llama-swap concurrencyLimit) and rejects the rest
 # instantly — its own option doc names this router as the layer that "absorbs
@@ -60,7 +85,12 @@ llm_router_request_timeout_seconds: "{{ ai_router_request_timeout_seconds }}"
 # margin. Rejections cost microseconds, so the retry loop spends only the sleeps;
 # the budget still fits under the client's 1800s read ceiling with ~1480s left
 # for the generation itself.
-llm_router_rate_limit_retries: 8
+# ZERO since the admission rule above: a 429 is the hand-off signal. Every
+# name that can be asked for carries a ladder (fallbacks below, plus
+# router_settings.default_fallbacks for any that does not), so the request
+# moves to the next rung in the same call instead of sleeping on the busy one.
+# The tolerance arithmetic the comment above describes is retired with it.
+llm_router_rate_limit_retries: 0
 # Minimum sleep between rate-limit retries (LiteLLM router_settings.retry_after).
 # LiteLLM boxes each backoff into [retry_after, MAX_RETRY_DELAY]; the ceiling
 # defaults to 8s and would silently clamp this, so the service env pins
@@ -73,6 +103,11 @@ llm_router_rate_limit_retries: 8
 # never share a play, so a role-local literal was unassertable. Value unchanged;
 # raise it in all.yml, and expect the hermes_agent assert to demand the probe
 # timeout move with it.
+# Minimum backoff before a retry. Sourced from the all.yml constant so the
+# brain watchdog's probe deadline can be asserted against it from
+# roles/hermes_agent (the two never share a play). Small since the admission
+# rule: a 429 is never retried on the same rung, so this only sizes the
+# backoff before a timeout retry, inside the 15 s budget.
 llm_router_retry_after_seconds: "{{ ai_router_retry_after_seconds }}"
 # Raises LiteLLM's global backoff ceiling so retry_after is not clamped. Only the
 # rate-limit path retries at all (num_retries is 0 and no other error type has a
