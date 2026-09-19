@@ -75,6 +75,7 @@
     - name: Render config.yaml.j2 with every credential present
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _environment: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
 
     - name: Note the rendered deployment names and the review roles
       ansible.builtin.set_fact:
@@ -98,6 +99,13 @@
           - llm_router_external_paid_rungs | intersect(_public.fallbacks) | length == 0
           - llm_router_external_subscription_rungs | intersect(_public.fallbacks) | length == 0
           - llm_router_zai_groups | difference(_rendered_names) | length == 0
+          # The credential-gated MODEL LIST rendering above only proves
+          # bao_local_llm_secrets.ZAI_API_KEY resolved; LiteLLM's
+          # `api_key: os.environ/ZAI_API_KEY` also needs the systemd
+          # EnvironmentFile to actually carry that variable, or every Z.ai
+          # call fails auth at runtime and review-oss falls through to
+          # default_fallbacks with a green contract test overhead.
+          - _environment | regex_findall('(?m)^ZAI_API_KEY=') | length == 1
         fail_msg: "review-oss: {{ _public.model }} -> {{ _public.fallbacks | join(' -> ') }}"
         success_msg: "review-oss: {{ _public.model }} -> {{ _public.fallbacks | join(' -> ') }}"
 
