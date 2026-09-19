@@ -61,34 +61,41 @@ models:
       - "{{ a }}"
 {% endfor %}
 {% endif %}
-    {# Pinned to the same llama_cpp_parallel value passed to --parallel below,
-       so llama-swap rejects the (slots+1)th request immediately (HTTP 429)
-       instead of admitting it into llama-server's own queue. mandatory():
-       a group that leaves llama_cpp_parallel unset fails here, loud. #}
+{# Pinned to the same llama_cpp_parallel value passed to --parallel below,
+   so llama-swap rejects the (slots+1)th request immediately (HTTP 429)
+   instead of admitting it into llama-server's own queue. mandatory():
+   a group that leaves llama_cpp_parallel unset fails here, loud.
+   NOTE: this comment tag must start at column 0 — Ansible's real Jinja
+   environment sets trim_blocks but not lstrip_blocks, so an indented
+   comment on its own line leaves its OWN leading whitespace as literal
+   output, doubling the indentation of the line that follows it. That is
+   what broke this exact line in production (2026-09-19): concurrencyLimit
+   rendered at 8 spaces against cmd's 4, which is a YAML structural key at
+   the wrong level, not survivable whitespace inside a block scalar. #}
     concurrencyLimit: {{ llama_cpp_parallel | mandatory("llama_cpp_parallel must be set for this group") }}
     cmd: |
       ${server-base}
       --model {{ llama_cpp_models_dir }}/{{ m.gguf }}
-      {# Per-model window, falling back to the group default. A second model on
-         one card does not get to share one number: KV cost per token is a
-         property of the model's attention shape, so two models at the same
-         window can differ by a gigabyte of VRAM. The entry's own value must
-         match what the registry advertises for that model — see the group_vars
-         comment on llama_cpp_ctx_size for why those are one number. #}
+{# Per-model window, falling back to the group default. A second model on
+   one card does not get to share one number: KV cost per token is a
+   property of the model's attention shape, so two models at the same
+   window can differ by a gigabyte of VRAM. The entry's own value must
+   match what the registry advertises for that model — see the group_vars
+   comment on llama_cpp_ctx_size for why those are one number. #}
       --ctx-size {{ m.ctx_size | default(llama_cpp_ctx_size) }}
 {% if m.embeddings %}
       --embeddings
       --pooling mean
-      {# Non-causal embedding inputs must fit in ONE physical batch; the
-         llama-server default (512) silently caps inputs far below ctx-size
-         and 500s anything larger. Match the batch to the context window. #}
+{# Non-causal embedding inputs must fit in ONE physical batch; the
+   llama-server default (512) silently caps inputs far below ctx-size
+   and 500s anything larger. Match the batch to the context window. #}
       --batch-size {{ m.ctx_size | default(llama_cpp_ctx_size) }}
       --ubatch-size {{ m.ctx_size | default(llama_cpp_ctx_size) }}
 {% else %}
       --flash-attn on
       --jinja
-      {# Repeat requests from the same caller should land on a warm cache —
-         see the rationale in roles/llama_cpp/defaults/main/10-cache-specdecode.yml. #}
+{# Repeat requests from the same caller should land on a warm cache —
+   see the rationale in roles/llama_cpp/defaults/main/10-cache-specdecode.yml. #}
       --cache-reuse {{ llama_cpp_cache_reuse }}
 {% if llama_cpp_cache_ram is not none %}
       --cache-ram {{ llama_cpp_cache_ram }}
@@ -97,9 +104,9 @@ models:
       --cache-idle-slots
 {% endif %}
 {% if m.spec_draft_model is defined %}
-      {# TODO(benchmarking): draft/target model choice is a separate
-         mlx-benchmarks sweep, a different repo/PR. Flag spellings here are
-         UNVERIFIED against the resolved release — see defaults/main/10-cache-specdecode.yml. #}
+{# TODO(benchmarking): draft/target model choice is a separate
+   mlx-benchmarks sweep, a different repo/PR. Flag spellings here are
+   UNVERIFIED against the resolved release — see defaults/main/10-cache-specdecode.yml. #}
       --spec-draft-model {{ llama_cpp_models_dir }}/{{ m.spec_draft_model }}
       --spec-draft-n-max {{ m.spec_draft_n_max | default(llama_cpp_spec_draft_n_max_default) }}
       --spec-draft-n-min {{ m.spec_draft_n_min | default(llama_cpp_spec_draft_n_min_default) }}

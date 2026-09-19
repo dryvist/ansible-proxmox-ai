@@ -57,7 +57,9 @@ def _comment_filter(text: str) -> str:
 
 
 def render(**overrides) -> str:
-    env = jinja2.Environment(trim_blocks=True, lstrip_blocks=True)
+    # lstrip_blocks=False matches Ansible's real Jinja environment exactly
+    # (see test_concurrency_limit.py for why True here would hide a real bug).
+    env = jinja2.Environment(trim_blocks=True, lstrip_blocks=False)
     env.filters["comment"] = _comment_filter
     env.filters["bool"] = lambda v: bool(v)
     env.filters["mandatory"] = lambda v, msg="": v

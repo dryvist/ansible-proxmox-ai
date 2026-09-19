@@ -49,8 +49,17 @@ def render(*, strict: bool = False, omit: tuple[str, ...] = (), **overrides) -> 
     context = {**DEFAULT_CONTEXT, **overrides}
     for key in omit:
         context.pop(key, None)
+    # trim_blocks=True, lstrip_blocks=False matches Ansible's REAL Jinja
+    # environment exactly (ansible/_internal/_templating/_jinja_bits.py:
+    # trim_blocks is an Ansible override, lstrip_blocks is the unmodified
+    # jinja2 default of False). lstrip_blocks=True here would have hidden
+    # the 2026-09-19 outage: an indented {# comment #} on its own line
+    # leaves its own leading whitespace as literal output when
+    # lstrip_blocks is False, doubling the indentation of the next line —
+    # which is exactly what put concurrencyLimit outside the model's
+    # mapping and broke the YAML parse in production.
     env = jinja2.Environment(
-        trim_blocks=True, lstrip_blocks=True, undefined=jinja2.StrictUndefined if strict else jinja2.Undefined
+        trim_blocks=True, lstrip_blocks=False, undefined=jinja2.StrictUndefined if strict else jinja2.Undefined
     )
     env.filters["comment"] = _comment_filter
     env.filters["bool"] = lambda v: bool(v)
