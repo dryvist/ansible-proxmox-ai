@@ -35,12 +35,19 @@ DEFAULT_CONTEXT = {
     "llama_cpp_cache_reuse": 256,
     "llama_cpp_cache_ram": None,
     "llama_cpp_cache_idle_slots": False,
-    # dict(...) keyword form -- see test_concurrency_limit.py's comment on
-    # the identical fixture: "embeddings" is a real template field name that
-    # collides with a registered registry model id, not a re-typed model.
     "llama_cpp_models_present": [
-        dict(name="fixture-chat", aliases=[], gguf="fixture-chat.gguf", embeddings=False),
-        dict(name="fixture-embeddings", aliases=[], gguf="fixture-embeddings.gguf", embeddings=True),
+        {
+            "name": "fixture-chat",
+            "aliases": [],
+            "gguf": "fixture-chat.gguf",
+            "embeddings": False,
+        },
+        {
+            "name": "fixture-embeddings",
+            "aliases": [],
+            "gguf": "fixture-embeddings.gguf",
+            "embeddings": True,
+        },
     ],
 }
 

@@ -37,15 +37,19 @@ DEFAULT_CONTEXT = {
     "llama_cpp_cache_reuse": 256,
     "llama_cpp_cache_ram": None,
     "llama_cpp_cache_idle_slots": False,
-    # dict(...) keyword form, not a {"embeddings": ...} literal: the key is
-    # the real llama_cpp_models_present[].embeddings template field, but a
-    # dict literal's string key is an AST constant like any other, and
-    # "embeddings" also names a registered registry model id (llm-models.d/
-    # 20-light.yml) -- tripping the retype scanner (tests/llm_router/
-    # test_registry_retype_scan.py) on a field name, not a re-typed model.
     "llama_cpp_models_present": [
-        dict(name="fixture-chat", aliases=[], gguf="fixture-chat.gguf", embeddings=False),
-        dict(name="fixture-embeddings", aliases=[], gguf="fixture-embeddings.gguf", embeddings=True),
+        {
+            "name": "fixture-chat",
+            "aliases": [],
+            "gguf": "fixture-chat.gguf",
+            "embeddings": False,
+        },
+        {
+            "name": "fixture-embeddings",
+            "aliases": [],
+            "gguf": "fixture-embeddings.gguf",
+            "embeddings": True,
+        },
     ],
 }
 
