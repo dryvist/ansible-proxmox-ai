@@ -239,11 +239,12 @@
         path: "{{ llama_cpp_swap_tmp.path }}"
         state: absent
 
-# --- Model staging -----------------------------------------------------------
-# get_url alone is not "only if absent": with dest present it still issues the
-# request, and the HF CDN ignores If-Modified-Since — every converge re-pulled
-# the full multi-GB files. A stat gate makes presence the skip condition.
-- name: Check which model GGUFs are already staged
+# --- Model presence ----------------------------------------------------------
+# This guest never downloads model weights: it is told where they are and how
+# to load them. The models directory is populated out of band (a read-only
+# mount of shared model storage), so a declared GGUF that is not there yet is
+# reported and left out of the served set, not fetched and not a failure.
+- name: Check which declared model GGUFs are present
   ansible.builtin.stat:
     path: "{{ llama_cpp_models_dir }}/{{ item.gguf }}"
     get_checksum: false
@@ -252,21 +253,20 @@
     label: "{{ item.name }} ({{ item.gguf }})"
   register: llama_cpp_gguf_stat
 
-- name: Stage the model GGUFs (download only if absent)
-  ansible.builtin.get_url:
-    url: "{{ llama_cpp_hf_base }}/{{ item.item.hf_repo }}/resolve/main/{{ item.item.gguf }}"
-    dest: "{{ llama_cpp_models_dir }}/{{ item.item.gguf }}"
-    owner: "{{ llama_cpp_user }}"
-    group: "{{ llama_cpp_group }}"
-    mode: "0640"
-  loop: "{{ llama_cpp_gguf_stat.results }}"
+- name: Serve only the models whose GGUF is present
+  ansible.builtin.set_fact:
+    llama_cpp_models_present: >-
+      {{ llama_cpp_gguf_stat.results | selectattr('stat.exists') | map(attribute='item') | list }}
+
+- name: Report declared models whose GGUF is absent
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item.name }} is declared but {{ llama_cpp_models_dir }}/{{ item.item.gguf }}
+      is not present on this guest; it is left out of the llama-swap config
+      until the model storage provides it.
+  loop: "{{ llama_cpp_gguf_stat.results | rejectattr('stat.exists') | list }}"
   loop_control:
     label: "{{ item.item.name }} ({{ item.item.gguf }})"
-  when: not item.stat.exists
-  register: llama_cpp_gguf_download
-  until: llama_cpp_gguf_download is succeeded
-  retries: 3
-  delay: 10
 
 # --- Config + service --------------------------------------------------------
 - name: Deploy the llama-swap configuration
