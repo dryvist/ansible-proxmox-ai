@@ -176,3 +176,72 @@ _llm_registry_hermes_cloud:
     credential_env: OPENROUTER_HERMES_KEY
     key_field: OPENROUTER_HERMES_KEY
     monthly_budget: 1.67
+
+  # SUBSCRIPTION RUNG: LiteLLM's native chatgpt/ provider (OAuth device-code
+  # login per router node into CHATGPT_TOKEN_DIR; the converge never touches
+  # that file — roles/llm_router/README.md "Subscription rung"). Sits after
+  # the local rungs in `review-private` and after every free external rung in
+  # the other chat ladders, always BEFORE any metered rung: a metered rung is
+  # reached only once this one answers with the rate-limit class (any 429 —
+  # the provider raises no dedicated usage-limit error). `subscription: true`
+  # keeps it out of the free segment despite carrying no per-token price.
+  # Rendered only on a node that holds a login. Responses-native: the proxy
+  # bridges chat completions to it, never the reverse. The model id is ONE
+  # variable (llm_router_chatgpt_model, 35-hermes-cloud.yml) — the operator's
+  # "Luna" is not a chatgpt/ catalog id today (see that variable's note).
+  # Reasoning effort is the highest the Responses path accepts.
+  - client_model_id: codex-subscription-model
+    upstream_model_id: "{{ llm_router_chatgpt_model }}"
+    litellm_model_name: "chatgpt/{{ llm_router_chatgpt_model }}"
+    provider: chatgpt
+    tier: hermes-cloud
+    route_group: codex-subscription
+    enabled: true
+    subscription: true
+    mode: responses
+    context_window: 128000
+    max_output_tokens: 128000
+    # No key: credentialed by the per-node login file (35-hermes-cloud.yml,
+    # llm_router_chatgpt_auth_file_present). These two fields satisfy the
+    # schema and name nothing that resolves.
+    credential_env: CHATGPT_LOGIN_FILE
+    key_field: CHATGPT_LOGIN_FILE
+    zero_data_retention: false
+    reasoning_effort: xhigh
+    # Ladder rung only (58-review-roles.yml): never part of the Hermes brain's
+    # own chain, which is the agent's primary and keeps its order.
+    hermes_chain: false
+    request_timeout: 300
+    # First-byte bound: a node whose login needs the device-code flow blocks
+    # the request while it polls; this turns that hold into a hand-over to
+    # the API-key rung inside the admission budget.
+    stream_timeout: 15
+
+  # TERMINAL PAID RUNG of every chat ladder (55-roles.yml): the provider's
+  # own API-key endpoint, deliberately LAST in the paid segment so every
+  # cheaper metered rung is tried first. Renders only when its credential
+  # resolves (roles/openbao_secrets 10-domains.yml declares the path). This
+  # upstream makes no ZDR claim; it is the rung that is guaranteed to answer,
+  # not a ZDR one, and sits behind every ZDR rung for that reason.
+  - client_model_id: codex-api-model
+    upstream_model_id: "{{ llm_router_chatgpt_model }}"
+    litellm_model_name: "openai/{{ llm_router_chatgpt_model }}"
+    provider: openai
+    tier: hermes-cloud
+    route_group: codex-api
+    enabled: true
+    mode: responses
+    context_window: 272000
+    max_output_tokens: 128000
+    input_cost_per_token: 0.00000175
+    output_cost_per_token: 0.000014
+    credential_env: OPENAI_API_KEY
+    key_field: OPENAI_API_KEY
+    zero_data_retention: false
+    reasoning_effort: xhigh
+    # Ladder rung only (58-review-roles.yml): never part of the Hermes brain's
+    # own chain, which is the agent's primary and keeps its order.
+    hermes_chain: false
+    monthly_budget: 1.67
+    request_timeout: 300
+    stream_timeout: 90

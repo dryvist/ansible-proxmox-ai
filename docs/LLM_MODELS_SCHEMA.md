@@ -28,11 +28,13 @@ Required on every entry:
                     independent naming decisions, and collapsing them is how a
                     rename upstream silently becomes a rename for callers.
   provider          LiteLLM provider prefix — `openai` (local OpenAI-compatible
-                    backends), `auto_router`, `dashscope`, `gemini`, or
-                    `openrouter`.
+                    backends, and the provider's own API), `auto_router`,
+                    `dashscope`, `gemini`, `openrouter`, or `chatgpt` (the
+                    subscription over OAuth; no key field resolves for it —
+                    a per-node login file credentials it).
   tier              `large` | `light` | `cpu-moe` | `cpu-9b` | `vllm` |
                     `opencode` | `hermes-router` | `hermes-cloud` |
-                    `openrouter`. Selects the deployment shape; light entries
+                    `openrouter` | `zai`. Selects the deployment shape; light entries
                     become two same-name deployments (GPU + CPU standby);
                     cpu-moe and cpu-9b each become two same-name deployments
                     against the CPU pool instances (warm + scaled).
@@ -43,6 +45,15 @@ Required on every entry:
   enabled           false removes the entry from the rendered config entirely.
 
 Optional:
+  subscription        true marks a flat-rate rung with no per-token price that
+                      is NOT free (the chatgpt/ rung): it joins neither the
+                      free nor the paid segment and 55-roles.yml places it
+                      between them.
+  mode                model_info.mode override (`responses` for a
+                      Responses-native model; default `chat`).
+  reasoning_effort    Forwarded as litellm_params.reasoning_effort (hermes-cloud
+                      tier); the Responses path accepts none|minimal|low|
+                      medium|high|xhigh.
   litellm_model_name  Explicit override for `litellm_params.model`. Omitted
                       everywhere today because the value is STRUCTURALLY
                       composed as `<provider>/<upstream_model_id>` — it is a
