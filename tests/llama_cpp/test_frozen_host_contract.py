@@ -1,7 +1,7 @@
 """Safety contract for a llama_cpp host that is set never to serve.
 
 WHY THIS EXISTS. `llama_cpp_service_enabled: false` is what keeps a host from
-serving. The role honours it in "Enable and start llama-swap" (stopped+disabled),
+serving. The role honours it in "Enable and start llama-server" (stopped+disabled),
 but that task is not sufficient on its own: notified handlers run at the END of
 the play, after it, and `systemd: state: restarted` starts a disabled unit —
 `disabled` suppresses autostart, not an explicit start. So an ungated restart
@@ -51,7 +51,7 @@ def test_every_restart_handler_is_gated_on_the_serve_toggle() -> None:
     assert restarting, "expected at least one restart handler; the gate below would be vacuous without it"
     for handler in restarting:
         assert handler.get("when") == SERVE_TOGGLE, (
-            f"handler {handler['name']!r} restarts llama-swap without `when: {SERVE_TOGGLE}` — "
+            f"handler {handler['name']!r} restarts the service without `when: {SERVE_TOGGLE}` — "
             "a config change would start the service on a host set never to serve"
         )
 
