@@ -148,7 +148,12 @@
              else openbao_secrets_kv_mount }}
         path: "{{ item.path if item is mapping else item }}"
         validate_certs: "{{ openbao_secrets_validate_certs }}"
-      loop: "{{ openbao_domain.paths }}"
+      # A mapping path may carry `enabled: false` to stay declared but
+      # unfetched until its policy row lands (a 403 is never tolerated).
+      loop: >-
+        {{ openbao_domain.paths | rejectattr('enabled', 'defined') | list
+           + openbao_domain.paths | selectattr('enabled', 'defined')
+             | selectattr('enabled') | list }}
       register: openbao_secrets_domain_reads
       # Reads only — see the vault_login note above. The seed/publish tasks in
       # this role WRITE and deliberately keep honoring check mode.

@@ -156,6 +156,31 @@
           {{ _config.model_list | selectattr('model_name', 'equalto', 'codex-api')
              | selectattr('litellm_params.model', 'match', '^openai/gpt') | list }}
 
+    # The public key sits behind llm_router_public_ci_key_enabled: with the
+    # switch off (the shipped default) it renders empty and seed-keys registers
+    # nothing, however the apps secret reads; on, the secret's value renders.
+    # The path side of the switch: tests/openbao_secrets/test_optional_paths_are_gated.yml.
+    - name: Capture the switch-off render, then flip the switch on
+      ansible.builtin.set_fact:
+        _off: "{{ llm_router_virtual_keys }}"
+        llm_router_public_ci_key_enabled: true
+
+    - name: The public CI key is inert with its switch off and minted with it on
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _off_value == ''
+          - _on_value == 'sk-fixture-gha-public'
+      vars:
+        _off_value: >-
+          {{ _off | selectattr('alias', 'equalto', 'github-actions-public') | map(attribute='value') | first }}
+        _on_value: >-
+          {{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-public')
+             | map(attribute='value') | first }}
+        _apps_paths: >-
+          {{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths
+             | select('mapping') | list }}
+
     - name: The CI keys are scoped to exactly their review role
       ansible.builtin.assert:
         quiet: true
