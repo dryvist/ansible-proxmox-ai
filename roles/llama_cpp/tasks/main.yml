@@ -252,21 +252,31 @@
     label: "{{ item.name }} ({{ item.gguf }})"
   register: llama_cpp_gguf_stat
 
-- name: Stage the model GGUFs (download only if absent)
-  ansible.builtin.get_url:
-    url: "{{ llama_cpp_hf_base }}/{{ item.item.hf_repo }}/resolve/main/{{ item.item.gguf }}"
-    dest: "{{ llama_cpp_models_dir }}/{{ item.item.gguf }}"
-    owner: "{{ llama_cpp_user }}"
-    group: "{{ llama_cpp_group }}"
-    mode: "0640"
+# get_url streams the whole file in one request and cannot resume; a 12 GB pull
+# whose connection drops mid-stream restarts from zero on every retry. The
+# script resumes into <dest>.part and only renames once the size matches the
+# origin, so <dest> present means <dest> complete.
+- name: Stage the model GGUFs (resumable, only if absent)
+  ansible.builtin.script:
+    cmd: >-
+      stage-gguf.sh
+      "{{ llama_cpp_hf_base }}/{{ item.item.hf_repo }}/resolve/main/{{ item.item.gguf }}"
+      "{{ llama_cpp_models_dir }}/{{ item.item.gguf }}"
+    creates: "{{ llama_cpp_models_dir }}/{{ item.item.gguf }}"
   loop: "{{ llama_cpp_gguf_stat.results }}"
   loop_control:
     label: "{{ item.item.name }} ({{ item.item.gguf }})"
   when: not item.stat.exists
-  register: llama_cpp_gguf_download
-  until: llama_cpp_gguf_download is succeeded
-  retries: 3
-  delay: 10
+
+- name: Own the staged model GGUFs
+  ansible.builtin.file:
+    path: "{{ llama_cpp_models_dir }}/{{ item.gguf }}"
+    owner: "{{ llama_cpp_user }}"
+    group: "{{ llama_cpp_group }}"
+    mode: "0640"
+  loop: "{{ llama_cpp_models }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.gguf }})"
 
 # --- Config + service --------------------------------------------------------
 - name: Deploy the llama-swap configuration
