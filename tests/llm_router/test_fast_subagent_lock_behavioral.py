@@ -10,10 +10,17 @@ REQUIRES a reachable Redis (or Redis-protocol-compatible) server and the
 `redis` package — neither is installed by this repo's minimal pytest job
 today (.github/workflows/_llm-router-contract.yml: `ansible pytest pyyaml`).
 CI adds both explicitly for this file: `redis` on the pip install line, and
-a `redis:` service container on the job — see that workflow. Locally,
-without either, EVERY TEST IN THIS FILE SKIPS with an explicit reason
-(pytest_collection_modifyitems below) — never a silent pass; `pytest -rs`
-shows the reason.
+a `redis:` service container on the job — see that workflow.
+
+LLM_ROUTER_REQUIRE_REDIS switches what an unreachable Redis MEANS. Unset
+(the local-dev default): every test here SKIPS with a reason (`pytestmark`
+below) — a bare "N skipped" is visible, but only `pytest -rs` shows why, so
+don't read a plain pass count as proof the lock's real Redis behavior ran.
+Set to "1" (CI, see the workflow): the same condition is a collection-time
+`pytest.fail` instead — this file reports FAILED, not skipped, so a broken
+redis: service or a drifted pip line cannot produce a green job with zero
+lock coverage. See test_fast_subagent_lock_behavioral_require_redis.py for
+the test proving both halves of this switch.
 
 WHY fastapi/litellm ARE NOT REAL DEPENDENCIES HERE. The rendered module
 imports `HTTPException` from fastapi and subclasses `CustomLogger` from
@@ -142,6 +149,15 @@ def _redis_probe():
 
 
 _REDIS_ADDR, _REDIS_SKIP_REASON = _redis_probe()
+_REQUIRE_REDIS = os.environ.get("LLM_ROUTER_REQUIRE_REDIS", "") == "1"
+
+if _REDIS_ADDR is None and _REQUIRE_REDIS:
+    # See the module docstring: fail collection, don't skip, under the var.
+    pytest.fail(
+        f"LLM_ROUTER_REQUIRE_REDIS=1 but Redis is unavailable: {_REDIS_SKIP_REASON}",
+        pytrace=False,
+    )
+
 pytestmark = pytest.mark.skipif(_REDIS_ADDR is None, reason=_REDIS_SKIP_REASON or "redis unavailable")
 
 
