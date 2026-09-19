@@ -178,6 +178,20 @@ Full detail — the two rules a seeded fallback rung must satisfy, the
 role by hand or through the Admin UI — moved to
 [`docs/LLM_ROUTER_ROLES.md`](../../docs/LLM_ROUTER_ROLES.md).
 
+## Subscription rung (chatgpt/ provider)
+
+`codex-subscription` (`chatgpt/<llm_router_chatgpt_model>`, the ChatGPT
+subscription over OAuth, `reasoning_effort: xhigh`) sits after the local rungs
+in `review-private` and after the free external rungs in the other chat
+ladders, always before any metered rung; `codex-api` (the same model
+on the provider API key) is the metered rung behind it. The login is a
+per-node file, `<llm_router_config_dir>/chatgpt/auth.json`, that the proxy
+owns and rewrites on every refresh; the converge creates the directory and
+never the file. Login once per router node: when a node needs one, the proxy
+log prints `Sign in with ChatGPT using device code:` with the verify URL and
+code — complete it on that node and the provider refreshes thereafter. With
+no login on a node the rung is not rendered there.
+
 ## Admin UI SSO
 
 `/ui` signs in via Authelia through LiteLLM's generic-OIDC environment. The

@@ -95,18 +95,6 @@ llm_router_long_context_escape_roles:
   - fast
   - subagent
 
-# EXTERNAL TERMINAL RUNGS, cost order, credential-gated: every free cloud
-# rung (ZDR first, then the free_zdrless segment), then every paid cloud rung
-# in registry order. Every chat ladder below ends with this list, and
-# router_settings.default_fallbacks carries it for any name that has no
-# ladder of its own, so no request can dead-end on a busy local rung.
-llm_router_external_free_rungs: >-
-  {{ (llm_router_hermes_cloud_free_groups + llm_router_openrouter_free_groups) | unique | list }}
-llm_router_external_paid_rungs: "{{ llm_router_hermes_cloud_paid_groups | unique | list }}"
-llm_router_external_terminal_rungs: >-
-  {{ llm_router_external_free_rungs + llm_router_external_paid_rungs }}
-llm_router_default_fallbacks: "{{ llm_router_external_terminal_rungs }}"
-
 # fast/subagent: the 4080 (their target), the Mac Studio's resident brain,
 # the external terminal rungs above, and `long` kept as the last rung it
 # always was. cheap/judge stop at the terminal rungs (never `long`).
@@ -135,7 +123,6 @@ _llm_router_cheap_chain: >-
 # the worst case of every earlier rung failing — every role deployment before
 # this PR only ever carried 0 or 1 fallbacks, so that interaction has never
 # been exercised. Confirm live before relying on the terminal rung under load.
-
 llm_router_role_deployments:
   # Local-first: try the 4080 before anything else. See the note above
   # _llm_router_fast_subagent_chain for why this no longer targets `long`
@@ -167,6 +154,12 @@ llm_router_role_deployments:
   - role: cheap
     model: "{{ llm_router_hermes_local_4080_id }}"
     fallbacks: "{{ _llm_router_cheap_chain }}"
+  - role: review-public
+    model: "{{ llm_router_hermes_local_4080_id }}"
+    fallbacks: "{{ _llm_router_review_public_chain }}"
+  - role: review-private
+    model: "{{ llm_router_hermes_local_4080_id }}"
+    fallbacks: "{{ _llm_router_review_private_chain }}"
   # embed/ocr have no same-modality external rung (no cloud embeddings, no
   # cloud OCR in the registry): bounded by the same admission figures as
   # every local rung, they fail FAST on a busy backend rather than hold.
