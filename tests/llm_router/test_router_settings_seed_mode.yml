@@ -7,6 +7,12 @@
 # the UI" and defaults/main/45-database.yml for the litellm-source facts this
 # rests on.
 #
+# The last two plays pin the SAME gate on tasks/seed-roles.yml's role-layer
+# reconcile: `initial` treats a role as stale only when its model target
+# moved; `rebuild` treats every live, catalogued role as stale, re-pushing
+# current litellm_params and fallbacks onto all of them
+# (docs/LLM_ROUTER_SETTINGS_SEED_MODE.md -> "Same contract elsewhere").
+#
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_router_settings_seed_mode.yml -i localhost, -c local
 
@@ -200,3 +206,124 @@
         # of the resync task down to its `status_code:` line.
         _budgets_body: >-
           {{ (_budgets_source.content | b64decode).split('body:')[1].split('status_code:')[0] }}
+
+- name: Seed-roles.yml's stale-roles fact leaves an on-target role alone in initial mode, re-stales it in rebuild mode
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    # set_fact, not play/task `vars:` — a prior play in this file
+    # (`include_vars: dir: defaults/main`) already set the REAL
+    # llm_router_role_deployments/_llm_router_role_params etc. as host facts,
+    # and facts outrank play/task vars in Ansible's precedence order (the
+    # same trap documented above, "The seed gate protects an existing row
+    # only in initial mode"). Without set_fact this test would silently
+    # exercise the shipped 55-roles.yml data instead of this fixture.
+    - name: Fix a fake proxy state — one role, already on its declared target
+      ansible.builtin.set_fact:
+        llm_router_role_deployments:
+          - role: judge
+            model: routine-model
+            fallbacks: [small-model]
+        _llm_router_live_models: [judge, routine-model, small-model]
+        _llm_router_role_params:
+          routine-model: {model: "upstream/routine"}
+        llm_router_existing_models:
+          json:
+            data:
+              - model_name: judge
+                litellm_params: {model: "upstream/routine"}
+                model_info: {id: judge-db-id}
+
+    # Mirrors tasks/seed-roles.yml's _llm_router_stale_roles set_fact
+    # expression exactly (same convention as
+    # test_retire_role_deployments_db_only.yml) rather than running the role
+    # against a live proxy.
+    - name: Compute which roles the real expression sees as on-target
+      ansible.builtin.set_fact:
+        _llm_router_roles_on_target: >-
+          {{ llm_router_existing_models.json.data | default([])
+             | selectattr('litellm_params.model', 'defined')
+             | selectattr('litellm_params.model', 'in',
+                          llm_router_role_deployments | map(attribute='model')
+                          | map('extract', _llm_router_role_params)
+                          | map(attribute='model') | list)
+             | map(attribute='model_name') | list }}
+
+    - name: Initial mode -> the on-target role is NOT stale (UI-owned, left alone)
+      block:
+        - name: Set llm_router_seed_mode=initial and compute the stale-roles expression
+          ansible.builtin.set_fact:
+            llm_router_seed_mode: initial
+        - name: Compute _llm_router_stale_roles per the real expression
+          ansible.builtin.set_fact:
+            _llm_router_stale_roles: >-
+              {{ (llm_router_role_deployments
+                  | selectattr('role', 'in', _llm_router_live_models)
+                  | selectattr('model', 'in', _llm_router_live_models) | list)
+                 if llm_router_seed_mode == 'rebuild'
+                 else (llm_router_role_deployments
+                       | selectattr('role', 'in', _llm_router_live_models)
+                       | selectattr('model', 'in', _llm_router_live_models)
+                       | rejectattr('role', 'in', _llm_router_roles_on_target) | list) }}
+        - name: Assert the on-target role is untouched
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - _llm_router_stale_roles == []
+            fail_msg: >-
+              initial mode marked an on-target role stale — it would be
+              deleted/recreated even though nothing moved, which is exactly
+              the "converge undoes a UI edit" regression llm_router_seed_mode
+              exists to prevent.
+
+    - name: Rebuild mode -> the SAME on-target role IS treated as stale (full re-seed)
+      block:
+        - name: Set llm_router_seed_mode=rebuild and compute the stale-roles expression
+          ansible.builtin.set_fact:
+            llm_router_seed_mode: rebuild
+        - name: Compute _llm_router_stale_roles per the real expression
+          ansible.builtin.set_fact:
+            _llm_router_stale_roles: >-
+              {{ (llm_router_role_deployments
+                  | selectattr('role', 'in', _llm_router_live_models)
+                  | selectattr('model', 'in', _llm_router_live_models) | list)
+                 if llm_router_seed_mode == 'rebuild'
+                 else (llm_router_role_deployments
+                       | selectattr('role', 'in', _llm_router_live_models)
+                       | selectattr('model', 'in', _llm_router_live_models)
+                       | rejectattr('role', 'in', _llm_router_roles_on_target) | list) }}
+        - name: Assert the on-target role is re-staled anyway
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - _llm_router_stale_roles | map(attribute='role') | list == ['judge']
+            fail_msg: >-
+              rebuild mode did not mark the on-target role stale —
+              llm_router_seed_mode: rebuild would leave an existing role's
+              litellm_params (timeout/window clamps) and fallback list
+              unrefreshed, the exact gap this PR closes.
+
+- name: Tasks/seed-roles.yml's stale-roles fact actually branches on llm_router_seed_mode
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Read tasks/seed-roles.yml
+      ansible.builtin.slurp:
+        src: "{{ _role_dir }}/tasks/seed-roles.yml"
+      register: _seed_roles_source
+
+    - name: Assert the stale-roles fact checks llm_router_seed_mode == 'rebuild'
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "\"llm_router_seed_mode == 'rebuild'\" in _text"
+          - "'_llm_router_stale_roles' in _text"
+        fail_msg: >-
+          tasks/seed-roles.yml's _llm_router_stale_roles fact no longer
+          branches on llm_router_seed_mode — rebuild would stop widening the
+          delete+recreate loop to every role, regressing back to
+          initial-only stale-target reconciliation.
+      vars:
+        _text: "{{ _seed_roles_source.content | b64decode }}"
