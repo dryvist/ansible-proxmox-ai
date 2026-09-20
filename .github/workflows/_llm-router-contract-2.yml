@@ -35,6 +35,28 @@ jobs:
       PROXMOX_SUBDOMAIN: pve.example.test
       REDIS_HOST: localhost
       REDIS_PORT: 6379
+      # test_fast_subagent_lock_behavioral.py: a missing redis package or an
+      # unreachable server must FAIL this job, never quietly skip the one
+      # suite that exercises the lock's real Redis behavior — see that
+      # file's own docstring.
+      LLM_ROUTER_REQUIRE_REDIS: "1"
+
+    # ONLY for tests/llm_router/test_fast_subagent_lock_behavioral.py — a
+    # real Redis to exercise fast_subagent_lock.py.j2's actual EVAL calls
+    # against, not just text-assert its rendered source. Every other step in
+    # this job touches no network resource; this is the one exception, and
+    # it is a plain, unauthenticated container-to-container service, not a
+    # secret or a reachable endpoint outside this job.
+    services:
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
 
     steps:
       - name: Checkout code
