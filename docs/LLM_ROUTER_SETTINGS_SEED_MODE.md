@@ -1,39 +1,44 @@
-# llm_router router_settings seed mode: the litellm==1.98.0 facts
+# llm_router router_settings seed mode: the litellm==1.102.0 facts
 
 Split out of `roles/llm_router/README.md` ("Editing ladders in the UI") to
 keep both files under the repo's per-file token budget
-(`.token-limits.yaml`). Verified against the pinned `litellm==1.98.0` wheel,
-never guessed.
+(`.token-limits.yaml`). Verified against the pinned `litellm==1.102.0` wheel,
+never guessed. (Re-verified on the 1.98.0 → 1.102.0 bump: same mechanism
+throughout, function/route names unchanged, only line numbers moved.)
 
 - **Startup merge direction**: with `store_model_in_db: true`, the database
   row wins over `config.yaml` for every key it carries — `ProxyConfig.
   _update_config_fields`'s `_deep_merge_dicts` (`litellm/proxy/
-  proxy_server.py:6357-6371`), called from `_update_config_from_db`
-  (`proxy_server.py:6418-6452`), called from `get_config` at startup
-  (`proxy_server.py:4448-4452`). A key the file renders but the database
+  proxy_server.py:7205-7281`), called from `_update_config_from_db`
+  (`proxy_server.py:7288-`), called from `get_config` at startup
+  (`proxy_server.py:5181-5225`). A key the file renders but the database
   never touched keeps the file's value; a key the UI has written wins on
   every subsequent proxy start, restart or not.
 - **The UI write path**: Router Settings saves through `POST /config/update`
-  (`proxy_server.py:15394`, `router_settings` block at
-  `proxy_server.py:15517-15527`) — merge-per-key, request wins, upserted into
+  (`proxy_server.py:16831`) — merge-per-key, request wins, upserted into
   the `LiteLLM_Config` table. There is no `PUT /fallback/{model}` endpoint in
-  this pinned release (verified: zero matches in `proxy_server.py`'s route
-  table) — anything that call shape reports back is not the UI's actual
-  write path.
+  this pinned release (verified: the only `/fallback*` route is
+  `/fallback/login`, the UI's OAuth redirect, unrelated to fallback config) —
+  anything that call shape reports back is not the UI's actual write path.
 - **Propagation, no restart needed**: `/config/update` triggers
-  `ProxyConfig.add_deployment` once immediately, and every proxy instance
-  also runs it on its own APScheduler `interval` job
-  (`proxy_server.py:8845-8853`, gated on `store_model_in_db`), every
-  `PROXY_CONFIG_RELOAD_INTERVAL_SECONDS` (`litellm/constants.py:1522`,
+  `ProxyConfig.add_deployment` (`proxy_server.py:7360`) once immediately, and
+  every proxy instance also runs it on its own APScheduler `interval` job,
+  every `PROXY_CONFIG_RELOAD_INTERVAL_SECONDS` (`litellm/constants.py:1720`,
   default **30s**). That job's `_add_router_settings_from_db_config`
-  (`proxy_server.py:6031-6068`) re-reads the row and calls
-  `llm_router.update_settings(**combined_router_settings)` live — a fallback
-  or routing-strategy edit made in the UI on one router reaches every other
-  router in the pool within ~30 seconds, no restart. Models added/edited in
-  the UI (`LiteLLM_ProxyModelTable`) reconcile through the same
-  `add_deployment` job and the same interval. Key model-scope changes are
-  served from `user_api_key_cache`, in-memory TTL 60s by default
-  (`proxy_server.py:1527`, `general_settings.user_api_key_cache_ttl`).
+  (`proxy_server.py:6855`, called from `proxy_server.py:6640`) re-reads the
+  row and calls `llm_router.update_settings(**combined_router_settings)`
+  live — a fallback or routing-strategy edit made in the UI on one router
+  reaches every other router in the pool within ~30 seconds, no restart.
+  Models added/edited in the UI (`LiteLLM_ProxyModelTable`) reconcile through
+  the same `add_deployment` job and the same interval. Key model-scope
+  changes are served from `user_api_key_cache`, in-memory TTL 60s by default
+  (`proxy_server.py:1660`, `general_settings.user_api_key_cache_ttl`, read at
+  `proxy_server.py:5860`).
+  - New in this range (additive, not consulted by this role's converge):
+    `management_endpoints/router_settings_endpoints.py` adds a Key > Team
+    hierarchical `router_settings` lookup ahead of the global one this doc
+    describes — irrelevant here since this proxy issues no virtual keys with
+    their own `router_settings` (see "Redis spend-tracking details" below).
 
 ## Database (optional)
 
