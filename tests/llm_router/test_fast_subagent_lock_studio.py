@@ -33,6 +33,7 @@ DEFAULT_CONTEXT = {
     "llm_router_studio_lock_model_ids": ["fixture-studio-a", "fixture-studio-b"],
     "llm_router_studio_lock_role_names": ["fixture-role-fast", "fixture-role-judge"],
     "llm_router_studio_role_overflow_targets": {"fixture-role-fast": "fixture-terminal-rung"},
+    "llm_router_studio_direct_overflow_targets": {"fixture-studio-a": "fixture-terminal-rung"},
 }
 
 
@@ -51,16 +52,55 @@ def render(**overrides) -> str:
 # --- THE STUDIO GATE (RED before this PR: none of STUDIO_* existed) ----------
 
 
-def test_direct_caller_rejection_raises_http_exception():
-    # The rejection itself moved into a shared helper (_reject_direct, reused
-    # by both gates) — assert the raise still lives there and both gates
-    # actually call it.
+def test_only_the_4080_gate_uses_reject_direct():
+    # _reject_direct (the shared raise-on-contention helper) stays exclusive
+    # to the 4080 gate — a direct studio caller must NEVER reach it, since
+    # the studio's direct path redirects instead of raising (see
+    # test_studio_direct_caller_never_raises_redirects_instead).
     source = render()
     reject = source.split("async def _reject_direct")[1].split("async def async_pre_call_hook")[0]
     assert "raise HTTPException(" in reject
     assert 'f"{backend_name} is locked by another caller"' in reject
     assert 'await self._reject_direct(client, LOCK_KEY, caller_id, "llm-4080")' in source
-    assert 'await self._reject_direct(client, STUDIO_LOCK_KEY, caller_id, "llm-large")' in source
+    assert 'await self._reject_direct(client, STUDIO_LOCK_KEY' not in source
+
+
+def test_studio_direct_caller_never_raises_redirects_instead():
+    # The core behavioral fork this round adds: unlike the 4080, a direct
+    # studio caller that loses the race is redirected (STUDIO_DIRECT_OVERFLOW),
+    # never raised — unconditionally, matching the module docstring's
+    # rationale (the studio is shared, an exception here bypasses the
+    # Router's own fallback engine).
+    source = render()
+    pre_call = source.split("async def async_pre_call_hook")[1].split("async def _maybe_release")[0]
+    stage_two = pre_call.split("# --- Stage 2")[1]
+    direct_branch = stage_two.split("if is_studio_role:")[1]
+    assert "raise HTTPException" not in direct_branch
+    assert "overflow = STUDIO_DIRECT_OVERFLOW.get(model)" in direct_branch
+    assert 'data["model"] = overflow' in direct_branch
+
+
+def test_studio_direct_overflow_reflects_its_own_variable():
+    source = render(llm_router_studio_direct_overflow_targets={"best": "codex-subscription"})
+    match = re.search(r"STUDIO_DIRECT_OVERFLOW = (\{.*?\})", source)
+    assert match, source
+    assert json.loads(match.group(1)) == {"best": "codex-subscription"}
+
+
+def test_studio_direct_shape_metadata_only_stamped_on_an_actual_hold():
+    # A redirected (never-held) direct attempt must not be stamped as
+    # "direct" in metadata, or _maybe_release would later try to release a
+    # lock this caller never actually acquired.
+    source = render()
+    pre_call = source.split("async def async_pre_call_hook")[1].split("async def _maybe_release")[0]
+    direct_branch = pre_call.split("if is_studio_role:")[1]
+    assert (
+        'if acquired or await self._refresh_if_holder(client, STUDIO_LOCK_KEY, caller_id):'
+        in direct_branch
+    )
+    assert direct_branch.index(
+        'if acquired or await self._refresh_if_holder(client, STUDIO_LOCK_KEY, caller_id):'
+    ) < direct_branch.index('metadata[_STUDIO_LOCK_SHAPE_KEY] = "direct"')
 
 
 def test_studio_gated_models_and_role_names_reflect_their_own_variables():

@@ -38,6 +38,7 @@ DEFAULT_CONTEXT = {
     "llm_router_studio_lock_model_ids": ["fixture-studio-a", "fixture-studio-b"],
     "llm_router_studio_lock_role_names": ["fixture-role-fast", "fixture-role-judge"],
     "llm_router_studio_role_overflow_targets": {"fixture-role-fast": "fixture-terminal-rung"},
+    "llm_router_studio_direct_overflow_targets": {"fixture-studio-a": "fixture-terminal-rung"},
 }
 
 

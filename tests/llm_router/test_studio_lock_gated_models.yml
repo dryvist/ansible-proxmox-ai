@@ -129,6 +129,42 @@
           that role's own declared fallback chain's first rung outside both
           gates' combined model-id sets.
 
+    - name: The hermes-default dispatcher is a studio-gated direct entry point, not a role
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'hermes-default' in llm_router_studio_lock_model_ids"
+          - "'default' in llm_router_studio_lock_model_ids"
+          - "'hermes-default' not in llm_router_studio_lock_role_names"
+        fail_msg: >-
+          llm_router_studio_lock_model_ids is
+          {{ llm_router_studio_lock_model_ids }} — hermes-default and its
+          alias must be gated on the studio too (it dispatches straight onto
+          primary/routine with no deployment of its own), as a DIRECT id,
+          never a role.
+
+    - name: A busy studio never hard-fails a direct caller — every gated direct id/alias has a non-local rung
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_studio_direct_overflow_targets['hermes-default'] == llm_router_hermes_default_fallback_chain[0]
+          - >-
+            llm_router_studio_direct_overflow_targets[llm_router_primary_model]
+            == llm_router_hermes_default_fallback_chain[0]
+          # ANTI-VACUITY: every studio-gated id/alias must actually be a key —
+          # an unconditional-redirect promise (never hard-fail) only holds if
+          # nothing is silently dropped from the map.
+          - >-
+            llm_router_studio_lock_model_ids
+            | difference(llm_router_studio_direct_overflow_targets.keys() | list)
+            | length == 0
+        fail_msg: >-
+          llm_router_studio_direct_overflow_targets is
+          {{ llm_router_studio_direct_overflow_targets }} — every direct
+          id/alias/hermes-default gated on the studio must have a non-local
+          rung, so a contended direct caller is always redirected, never
+          hard-failed.
+
     - name: Render the real callback file the converge deploys
       ansible.builtin.set_fact:
         _callback_source: >-
@@ -143,6 +179,9 @@
             ~ llm_router_primary_model ~ '"[^\\]]*\\]\\)')
           - _callback_source is search('STUDIO_ROLE_NAMES = frozenset\\(\\[[^\\]]*"judge"[^\\]]*\\]\\)')
           - "_callback_source is search('\"review-oss\": \"' ~ llm_router_zai_groups[0] ~ '\"')"
+          - >-
+            _callback_source is search('STUDIO_DIRECT_OVERFLOW = \\{[^}]*"hermes-default": "'
+            ~ llm_router_hermes_default_fallback_chain[0] ~ '"')
         fail_msg: >-
           The rendered fast_subagent_lock.py.j2 does not carry the studio
           gate's derived constants — the deployed callback would not gate
