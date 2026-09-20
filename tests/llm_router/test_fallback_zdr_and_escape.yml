@@ -125,7 +125,10 @@
       vars:
         # name -> advertised context window, from the registry only. Covers a
         # deployment's own id and either grouping name it may be reached by,
-        # plus every alias, which inherits its target's window.
+        # plus every alias, which inherits its target's window, plus the
+        # embed/ocr DB role names (58-review-roles.yml
+        # llm_router_cross_modality_fail_fast_names), which inherit their
+        # own target's window the same way an alias does.
         _window_by_name: >-
           {%- set ns = namespace(pairs=[]) -%}
           {%- for m in llm_router_registry_enabled -%}
@@ -141,6 +144,13 @@
           {%- set tw = (ns.pairs | selectattr('n', 'equalto', target)
                         | map(attribute='w') | list | first) | default(0) -%}
           {%- set ns.pairs = ns.pairs + [{'n': alias, 'w': tw}] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- for role_name, target in {'embed': llm_router_embedding_model, 'ocr': llm_router_ocr_model}.items() -%}
+          {%- if ns.pairs | selectattr('n', 'equalto', role_name) | list | length == 0 -%}
+          {%- set tw = (ns.pairs | selectattr('n', 'equalto', target)
+                        | map(attribute='w') | list | first) | default(0) -%}
+          {%- set ns.pairs = ns.pairs + [{'n': role_name, 'w': tw}] -%}
           {%- endif -%}
           {%- endfor -%}
           {{ dict(ns.pairs | map(attribute='n') | zip(ns.pairs | map(attribute='w'))) }}

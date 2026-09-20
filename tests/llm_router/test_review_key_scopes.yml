@@ -1,0 +1,95 @@
+---
+# Split out of test_review_roles.yml (#854 CI: that file was already at the
+# per-file token budget — #842 split test_review_oss_context_window_order.yml
+# out of it for the same reason). Owns ONE contract: the CI review keys'
+# `models` actually widen past their role name.
+#
+# `enforce_fallback_model_access` (37-fallback-entry-points.yml) re-checks a
+# fallback target against the calling key's `models` on every hop, so a key
+# scoped to the role name alone is refused the instant its own chain hands
+# over — 59-key-scopes.yml exists precisely to widen past that. This asserts
+# the widening actually happened (each role's chain is a subset of its key's
+# models), not only that no unrelated group leaked in.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_review_key_scopes.yml -i localhost, -c local
+- name: Verify the CI review keys widen past their role name
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      github_actions_llm_router_key: sk-fixture-gha
+      github_actions_oss_llm_router_key: sk-fixture-gha-oss
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: sk-or-fixture
+      OPENROUTER_HERMES_KEY: sk-orh-fixture
+      OPENAI_API_KEY: sk-oa-fixture
+      ZAI_API_KEY: sk-zai-fixture
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    # include_vars loads the role default (false) as a host fact, which
+    # outranks a play var: model a logged-in node so the Codex subscription
+    # rung (codex-subscription) actually joins review-private's chain.
+    - name: Model a node that holds a ChatGPT login
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: true
+
+    - name: Note the review roles' rendered fallback chains
+      ansible.builtin.set_fact:
+        _public: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-oss') | first }}"
+        _private: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}"
+
+    - name: The CI keys are scoped to exactly their review role
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # First scope is the role; the rest is its chain.
+          - _gha.models[0] == 'review-private'
+          - _gha.models | intersect(['review-oss'] + llm_router_zai_groups) | length == 0
+          - _gha_oss.models[0] == 'review-oss'
+          - "'review-private' not in _gha_oss.models"
+          - "'review-oss' in llm_router_subagent_lock_role_names"
+          - "'review-private' in llm_router_subagent_lock_role_names"
+          # POSITIVE side of the contract above: assert the widening
+          # actually happened rather than only that no unrelated group
+          # leaked in.
+          - _public.fallbacks | difference(_gha_oss.models) | length == 0
+          - _private.fallbacks | difference(_gha.models) | length == 0
+          # review-private is the privacy boundary #845 enforces: its key
+          # must never carry a Z.ai or OpenRouter rung, by name pattern, not
+          # only via the review-oss/zai-group check above.
+          - _gha.models | select('match', '^zai-') | list | length == 0
+          - _gha.models | select('match', '.*openrouter.*') | list | length == 0
+        fail_msg: "gha={{ _gha.models }} gha_oss={{ _gha_oss.models }}"
+        success_msg: "gha={{ _gha.models }} gha_oss={{ _gha_oss.models }}"
+      vars:
+        _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
+        _gha_oss: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"

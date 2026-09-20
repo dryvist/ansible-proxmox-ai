@@ -63,6 +63,11 @@ DEFAULT_CONTEXT = {
     "llm_router_redis_port": 6379,
     "llm_router_subagent_lock_role_names": ["fixture-role-fast", "fixture-role-subagent"],
     "llm_router_primary_model": "fixture-primary-model",
+    "llm_router_studio_lock_key": "test:subagent:studio:lock",
+    "llm_router_studio_lock_model_ids": ["fixture-studio-a", "fixture-studio-b"],
+    "llm_router_studio_lock_role_names": ["fixture-role-fast", "fixture-role-subagent", "fixture-role-judge"],
+    "llm_router_studio_role_overflow_targets": {"fixture-role-judge": "fixture-terminal-rung"},
+    "llm_router_studio_direct_overflow_targets": {"fixture-studio-a": "fixture-terminal-rung"},
 }
 
 
@@ -178,7 +183,9 @@ def _new_client(ns):
 
 
 async def _cleanup(client, ns):
-    await client.delete(ns["LOCK_KEY"], ns["_ROLE_INFLIGHT_KEY"])
+    await client.delete(
+        ns["LOCK_KEY"], ns["_ROLE_INFLIGHT_KEY"], ns["STUDIO_LOCK_KEY"], ns["_STUDIO_ROLE_INFLIGHT_KEY"]
+    )
 
 
 def _run(coro):

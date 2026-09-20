@@ -68,7 +68,7 @@
           # advertises nothing at all pass as "local only".
           - _local_groups | length == 1
           - llm_router_hermes_default_fallback_chain == _local_groups
-          - "_config.router_settings.fallbacks == [{hermes_brain_model: _local_groups}]"
+          - _config.router_settings.fallbacks == _expected_fallbacks
           - _config.router_settings.max_fallbacks | int == 1
           # With no cloud rung the complexity router has no chain to hand a
           # busy slot to, so it must KEEP the global 429 sleep: no zero-retry
@@ -108,3 +108,12 @@
         _local_groups: >-
           {{ llm_router_model_registry | selectattr('tier', 'equalto', 'hermes-local')
              | map(attribute='route_group') | unique | list }}
+        # The cross-modality fail-fast entries (58-review-roles.yml) render
+        # unconditionally, credentials or not, so the credential-free fixture
+        # still carries them after the local-only entry.
+        _expected_fallbacks: >-
+          {%- set ns = namespace(items=[{hermes_brain_model: _local_groups}]) -%}
+          {%- for _name in llm_router_cross_modality_fail_fast_names -%}
+          {%- set ns.items = ns.items + [{_name: []}] -%}
+          {%- endfor -%}
+          {{ ns.items }}

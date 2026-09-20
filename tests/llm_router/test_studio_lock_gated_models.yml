@@ -1,0 +1,188 @@
+---
+# Pins the studio gate's composition against the REAL defaults and the REAL
+# rendered callback file — same pattern as test_subagent_lock_gated_models.yml
+# for the 4080 gate, extended to the second (studio) lock this PR adds.
+#
+# WHY THIS EXISTS. See fast_subagent_lock.py.j2's module docstring ("THE
+# STUDIO GATE"): max_parallel_requests alone cannot give a busy studio
+# deployment instant hand-over on litellm 1.102.0 (the Router's own
+# asyncio.Semaphore acquire has no timeout wrapped around it) — this second
+# gate is the actual fix, and every fact it renders from is derived, never
+# hand-typed, so a registry edit (a new servable role, a reordered fallback
+# chain) cannot silently desync the gate from what it is meant to cover.
+- name: Verify the studio gate's composition and rendered callback
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      github_actions_llm_router_key: sk-fixture-gha
+      github_actions_oss_llm_router_key: sk-fixture-gha-oss
+    # Every credential a rung in these chains needs, so this test sees the
+    # SAME fully-credentialed chains production does — same fixture set
+    # test_review_roles.yml uses, since the studio gate's overflow map draws
+    # on the exact same review-oss/review-private chains.
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: sk-or-fixture
+      OPENROUTER_HERMES_KEY: sk-orh-fixture
+      OPENAI_API_KEY: sk-oa-fixture
+      ZAI_API_KEY: sk-zai-fixture
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    # include_vars above loads the role default (false) as a host fact,
+    # which outranks a play var — model a logged-in node the same way
+    # test_review_roles.yml does, so review-private's Codex-subscription
+    # rung is credentialed here too.
+    - name: Model a node that holds a ChatGPT login
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: true
+
+    - name: The studio gate covers every servable large-tier role, derived not hand-listed
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_primary_model in llm_router_studio_lock_model_ids
+          - llm_router_routine_model in llm_router_studio_lock_model_ids
+          - llm_router_small_model in llm_router_studio_lock_model_ids
+          - llm_router_ocr_model in llm_router_studio_lock_model_ids
+        fail_msg: >-
+          llm_router_studio_lock_model_ids is
+          {{ llm_router_studio_lock_model_ids }} — every one of
+          primary/routine/small/ocr must be in it, or a busy one of them
+          would still queue on the Router's own semaphore uncontested by
+          this gate.
+
+    - name: The studio lock's capacity is a single uniform value (RED if the registry ever disagrees with itself)
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_studio_lock_capacity | length == 1
+        fail_msg: >-
+          llm_router_studio_lock_capacity is
+          {{ llm_router_studio_lock_capacity }} — the studio gate shares ONE
+          lock across primary/routine/small/ocr (fast_subagent_lock.py.j2's
+          module docstring documents this as a deliberate simplification),
+          which only holds together while every one of those ids declares
+          the SAME max_parallel_requests. They disagree now — split the
+          shared lock into one per id (or a counting semaphore) before this
+          can pass again.
+
+    - name: Every 4080-redirect role plus judge is in the studio gate's role names
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'fast' in llm_router_studio_lock_role_names"
+          - "'subagent' in llm_router_studio_lock_role_names"
+          - "'cheap' in llm_router_studio_lock_role_names"
+          - "'review-oss' in llm_router_studio_lock_role_names"
+          - "'review-private' in llm_router_studio_lock_role_names"
+          - "'judge' in llm_router_studio_lock_role_names"
+          # ANTI-VACUITY: fast-gpu/embed/ocr must NOT be — none of them has a
+          # non-local rung to redirect to, so gating them here would either
+          # queue anyway (embed/ocr) or defeat fast-gpu's own fallback
+          # sequencing (55-roles.yml explains why fast-gpu must fail
+          # outright, never redirect).
+          - "'fast-gpu' not in llm_router_studio_lock_role_names"
+          - "'embed' not in llm_router_studio_lock_role_names"
+          - "'ocr' not in llm_router_studio_lock_role_names"
+
+    - name: Each role's overflow target is its own chain's first non-local rung
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_studio_role_overflow_targets['review-oss'] == llm_router_zai_groups[0]
+          - llm_router_studio_role_overflow_targets['review-private'] == llm_router_external_subscription_rungs[0]
+          - llm_router_studio_role_overflow_targets['fast'] == llm_router_external_terminal_rungs[0]
+          - llm_router_studio_role_overflow_targets['subagent'] == llm_router_external_terminal_rungs[0]
+          - llm_router_studio_role_overflow_targets['cheap'] == llm_router_external_terminal_rungs[0]
+          - llm_router_studio_role_overflow_targets['judge'] == llm_router_external_terminal_rungs[0]
+          # ANTI-VACUITY: a role with no non-local rung must be ABSENT from
+          # the map (fast-gpu is not even a studio-gated role name above,
+          # so it can never appear here regardless).
+          - "'fast-gpu' not in llm_router_studio_role_overflow_targets"
+          - "'embed' not in llm_router_studio_role_overflow_targets"
+          - "'ocr' not in llm_router_studio_role_overflow_targets"
+        fail_msg: >-
+          llm_router_studio_role_overflow_targets is
+          {{ llm_router_studio_role_overflow_targets }} — each entry must be
+          that role's own declared fallback chain's first rung outside both
+          gates' combined model-id sets.
+
+    - name: The hermes-default dispatcher is a studio-gated direct entry point, not a role
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'hermes-default' in llm_router_studio_lock_model_ids"
+          - "'default' in llm_router_studio_lock_model_ids"
+          - "'hermes-default' not in llm_router_studio_lock_role_names"
+        fail_msg: >-
+          llm_router_studio_lock_model_ids is
+          {{ llm_router_studio_lock_model_ids }} — hermes-default and its
+          alias must be gated on the studio too (it dispatches straight onto
+          primary/routine with no deployment of its own), as a DIRECT id,
+          never a role.
+
+    - name: A busy studio never hard-fails a direct caller — every gated direct id/alias has a non-local rung
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_studio_direct_overflow_targets['hermes-default'] == llm_router_hermes_default_fallback_chain[0]
+          - >-
+            llm_router_studio_direct_overflow_targets[llm_router_primary_model]
+            == llm_router_hermes_default_fallback_chain[0]
+          # ANTI-VACUITY: every studio-gated id/alias must actually be a key —
+          # an unconditional-redirect promise (never hard-fail) only holds if
+          # nothing is silently dropped from the map.
+          - >-
+            llm_router_studio_lock_model_ids
+            | difference(llm_router_studio_direct_overflow_targets.keys() | list)
+            | length == 0
+        fail_msg: >-
+          llm_router_studio_direct_overflow_targets is
+          {{ llm_router_studio_direct_overflow_targets }} — every direct
+          id/alias/hermes-default gated on the studio must have a non-local
+          rung, so a contended direct caller is always redirected, never
+          hard-failed.
+
+    - name: Render the real callback file the converge deploys
+      ansible.builtin.set_fact:
+        _callback_source: >-
+          {{ lookup('template', _role_dir ~ '/templates/callbacks/fast_subagent_lock.py.j2') }}
+
+    - name: The rendered callback's STUDIO_* constants carry the real derived values
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _callback_source is search('STUDIO_GATED_MODELS = frozenset\\(\\[[^\\]]*"'
+            ~ llm_router_primary_model ~ '"[^\\]]*\\]\\)')
+          - _callback_source is search('STUDIO_ROLE_NAMES = frozenset\\(\\[[^\\]]*"judge"[^\\]]*\\]\\)')
+          - "_callback_source is search('\"review-oss\": \"' ~ llm_router_zai_groups[0] ~ '\"')"
+          - >-
+            _callback_source is search('STUDIO_DIRECT_OVERFLOW = \\{[^}]*"hermes-default": "'
+            ~ llm_router_hermes_default_fallback_chain[0] ~ '"')
+        fail_msg: >-
+          The rendered fast_subagent_lock.py.j2 does not carry the studio
+          gate's derived constants — the deployed callback would not gate
+          the studio at all.

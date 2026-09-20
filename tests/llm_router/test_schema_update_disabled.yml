@@ -1,0 +1,129 @@
+---
+# Pins DISABLE_SCHEMA_UPDATE=True in the DATABASE_URL block of
+# roles/llm_router/templates/litellm.env.j2.
+#
+# WHY THIS TEST EXISTS (ai #845). `main.yml`'s "Sync the proxy schema into the
+# database" task runs `prisma db push` as the service user before every
+# restart — the only schema-management path this role has ever used. Without
+# DISABLE_SCHEMA_UPDATE, litellm's own startup defaults to `prisma migrate
+# deploy` instead (proxy_cli.py: use_migrate=not use_prisma_db_push, no CLI
+# flag or env var passed here), which fails P3005 against a db-push-managed
+# schema with no migration history, then crash-loops trying to write a
+# baseline migration into its own root-owned package directory
+# (litellm_proxy_extras/migrations/0_init). See
+# docs/LLM_ROUTER_SETTINGS_SEED_MODE.md -> "Schema updates".
+#
+# Gated on llm_router_store_model_in_db, the SAME condition as the ansible
+# db-push task, so the two cannot separate: litellm's startup migration is
+# never disabled without the ansible-side push that makes disabling it safe.
+#
+# Run (from the REPO ROOT — self-contained):
+#   ansible-playbook tests/llm_router/test_schema_update_disabled.yml -i localhost, -c local
+
+- name: Verify DISABLE_SCHEMA_UPDATE renders whenever the db-push task runs
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry the defaults project from
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/../../llm-models.d"
+
+    - name: Load the real router group_vars
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/llm_router_group.yml"
+
+    - name: Load the estate group_vars the role defaults derive from
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/all.yml"
+
+    - name: Stub the tofu inventory data and the bao secret maps
+      ansible.builtin.set_fact:
+        llm_router_master_key: dummy-render-check
+        llm_router_llm_large_bearer: dummy-render-check
+        ai_subdomain: pve.example.test
+        tofu_data:
+          domain: example.com
+          constants:
+            service_ports: { otel_traces_http: 4318, postgres_default: 5432 }
+        bao_local_llm_secrets: {}
+        bao_apps_secrets:
+          llm_router_db_password: dummy-render-check
+          llm_router_ui_password: dummy-render-check
+        llm_router_db_host: postgres-ai.pve.example.test
+
+    - name: Render the real env file
+      ansible.builtin.set_fact:
+        _env: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+
+    - name: The db-backed env carries DISABLE_SCHEMA_UPDATE alongside DATABASE_URL
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _env is search('(?m)^DATABASE_URL=')
+          - _env is search('(?m)^DISABLE_SCHEMA_UPDATE=True$')
+        fail_msg: >-
+          Expected DISABLE_SCHEMA_UPDATE=True alongside DATABASE_URL — without
+          it litellm's own startup runs `prisma migrate deploy` against a
+          db-push-managed schema and crash-loops on P3005 (ai #845). Real
+          render:\n{{ _env }}
+        success_msg: >-
+          DISABLE_SCHEMA_UPDATE=True renders, leaving schema management to
+          the ansible-side `prisma db push` task.
+
+- name: Verify DISABLE_SCHEMA_UPDATE is honestly absent with no database
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Start this play with no facts carried over from the previous one
+      ansible.builtin.meta: clear_facts
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry the defaults project from
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/../../llm-models.d"
+
+    - name: Load the real router group_vars
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/llm_router_group.yml"
+
+    - name: Load the estate group_vars the role defaults derive from
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/all.yml"
+
+    - name: Stub the tofu inventory data with NO database configured
+      ansible.builtin.set_fact:
+        llm_router_master_key: dummy-render-check
+        llm_router_llm_large_bearer: dummy-render-check
+        ai_subdomain: pve.example.test
+        tofu_data:
+          domain: example.com
+          constants:
+            service_ports: { otel_traces_http: 4318 }
+        bao_local_llm_secrets: {}
+        bao_apps_secrets: {}
+        llm_router_db_host: ""
+
+    - name: Render the real env file
+      ansible.builtin.set_fact:
+        _env: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+
+    - name: No DATABASE_URL or DISABLE_SCHEMA_UPDATE line renders with no database
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _env is not search('(?m)^DATABASE_URL=')
+          - _env is not search('(?m)^DISABLE_SCHEMA_UPDATE=')
+        fail_msg: >-
+          With no database configured, the rendered litellm.env still carries
+          a schema-management line. Real render:\n{{ _env }}
+        success_msg: No database, so no schema-management line renders.

@@ -103,7 +103,7 @@ GPU deployment that quietly is not one.
 | `llama_cpp_models_max` | `1` | `--models-max` — resident-model cap for router mode |
 | `llama_cpp_parallel` | mandatory, no default | `-np`/`--parallel` — every group sets its own value |
 | `llama_cpp_install_dir` | `/opt/llama-cpp` | binary + bundled ROCm `.so` files (also `LD_LIBRARY_PATH`) |
-| `llama_cpp_models_dir` | `/var/lib/llama-cpp/models` | read-only shared model mount each preset entry's `model =` path resolves under |
+| `llama_cpp_models_dir` | `container_models_mount_path` (tofu-published) | read-only shared model mount for each preset entry's `model =` path |
 | `llama_cpp_config_file` | `/etc/llama-cpp/models.ini` | the rendered `--models-preset` |
 | `llama_cpp_rocm_packages` | `[]` | best-effort container ROCm runtime packages |
 
