@@ -82,6 +82,25 @@ llm_router_vllm_models: >-
 llm_router_hermes_local_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-local') | list }}
 
+# The SAME prefill-derived cap model-list.yaml.j2 applies to every
+# vllm/hermes-local deployment ("SMALLER of the context window and what this
+# card can prefill in the admission budget") — computed ONCE here so a role
+# pointed at the same backend (55-roles.yml _llm_router_role_model_info) can
+# never advertise a bigger window than the physical deployment does. Falls
+# back to the raw context_window with no vllm host inventoried, same as the
+# template's own no-inventory fallback.
+_llm_router_vllm_max_input_tokens_by_model: >-
+  {%- set ns = namespace(out={}) -%}
+  {%- set _vllm_hosts = groups['llm_vllm_group'] | default([]) -%}
+  {%- for m in llm_router_vllm_models + llm_router_hermes_local_models -%}
+  {%- set _cap = ([m.context_window,
+        hostvars[_vllm_hosts[0]].llama_cpp_prefill_tokens_per_second | int
+          * llm_router_admission_budget_seconds | int] | min)
+        if (_vllm_hosts | length > 0) else m.context_window -%}
+  {%- set ns.out = ns.out | combine({m.client_model_id: _cap}) -%}
+  {%- endfor -%}
+  {{ ns.out }}
+
 # Names owned by enabled registry entries after applying an optional route_group.
 # Multiple provider deployments may intentionally share one route group.
 #
