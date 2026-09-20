@@ -45,6 +45,15 @@
       {%- if g not in ns.g -%}{%- set ns.g = ns.g + [g] -%}{%- endif -%}
       {%- endfor -%}
       {{ ns.g }}
+    # The cross-modality fail-fast entries (58-review-roles.yml) render
+    # unconditionally, credentials or not, so the credential-free fixture
+    # still carries them after the local-only entry.
+    _expected_fallbacks: >-
+      {%- set ns2 = namespace(items=[{hermes_brain_model: _local_groups}]) -%}
+      {%- for _name in llm_router_cross_modality_fail_fast_names -%}
+      {%- set ns2.items = ns2.items + [{_name: []}] -%}
+      {%- endfor -%}
+      {{ ns2.items }}
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
@@ -82,7 +91,7 @@
         that:
           - llm_router_hermes_default_fallback_chain == _local_groups
           - _local_groups | length == 1
-          - "_config.router_settings.fallbacks == [{hermes_brain_model: _local_groups}]"
+          - _config.router_settings.fallbacks == _expected_fallbacks
           # No cloud rung means nowhere wider to escape to, so the key is
           # omitted entirely. An empty map would not be "no map" to LiteLLM --
           # it would take the escape branch and fall back to nothing, hiding
