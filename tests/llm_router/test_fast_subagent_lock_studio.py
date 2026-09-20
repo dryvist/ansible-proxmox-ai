@@ -74,10 +74,10 @@ def test_studio_direct_caller_never_raises_redirects_instead():
     source = render()
     pre_call = source.split("async def async_pre_call_hook")[1].split("async def _maybe_release")[0]
     stage_two = pre_call.split("# --- Stage 2")[1]
-    direct_branch = stage_two.split("if is_studio_role:")[1]
-    assert "raise HTTPException" not in direct_branch
-    assert "overflow = STUDIO_DIRECT_OVERFLOW.get(model)" in direct_branch
-    assert 'data["model"] = overflow' in direct_branch
+    assert "raise HTTPException" not in stage_two
+    assert "overflow_map = STUDIO_ROLE_OVERFLOW if is_studio_role else STUDIO_DIRECT_OVERFLOW" in stage_two
+    assert "overflow = overflow_map.get(original_role if is_studio_role else model)" in stage_two
+    assert 'data["model"] = overflow' in stage_two
 
 
 def test_studio_direct_overflow_reflects_its_own_variable():
@@ -87,20 +87,27 @@ def test_studio_direct_overflow_reflects_its_own_variable():
     assert json.loads(match.group(1)) == {"best": "codex-subscription"}
 
 
-def test_studio_direct_shape_metadata_only_stamped_on_an_actual_hold():
-    # A redirected (never-held) direct attempt must not be stamped as
-    # "direct" in metadata, or _maybe_release would later try to release a
-    # lock this caller never actually acquired.
+def test_studio_never_holds_a_session_both_shapes_share_one_counting_path():
+    # The defect this round's second fix closes: a direct studio caller must
+    # NOT get the 4080's plain SET-NX session lock (held across calls,
+    # released only by TTL/header) — every studio caller, role or direct,
+    # goes through the SAME counting acquire-or-refresh path, so a hold
+    # auto-releases on that call's own completion and "contended" means a
+    # genuinely in-flight different caller.
     source = render()
     pre_call = source.split("async def async_pre_call_hook")[1].split("async def _maybe_release")[0]
-    direct_branch = pre_call.split("if is_studio_role:")[1]
+    stage_two = pre_call.split("# --- Stage 2")[1]
     assert (
-        'if acquired or await self._refresh_if_holder(client, STUDIO_LOCK_KEY, caller_id):'
-        in direct_branch
+        "outcome = await self._acquire_or_refresh_role(client, STUDIO_LOCK_KEY, _STUDIO_ROLE_INFLIGHT_KEY, "
+        "caller_id)" in stage_two
     )
-    assert direct_branch.index(
-        'if acquired or await self._refresh_if_holder(client, STUDIO_LOCK_KEY, caller_id):'
-    ) < direct_branch.index('metadata[_STUDIO_LOCK_SHAPE_KEY] = "direct"')
+    # No separate direct-only acquire path left at all.
+    assert "client.set(STUDIO_LOCK_KEY" not in stage_two
+    assert "_refresh_if_holder(client, STUDIO_LOCK_KEY" not in stage_two
+    # Metadata is stamped only on an actual hold (outcome == 2), never on a
+    # redirected (never-held) attempt.
+    assert stage_two.index("if outcome == 0:") < stage_two.index("if outcome == 2:")
+    assert stage_two.index("if outcome == 2:") < stage_two.rindex("metadata[_STUDIO_LOCK_PARTICIPATES_KEY] = True")
 
 
 def test_studio_gated_models_and_role_names_reflect_their_own_variables():
@@ -162,9 +169,9 @@ def test_studio_role_redirects_to_its_overflow_target_not_a_constant():
     source = render()
     pre_call = source.split("async def async_pre_call_hook")[1].split("async def _maybe_release")[0]
     assert "original_role = model" in pre_call
-    assert "overflow = STUDIO_ROLE_OVERFLOW.get(original_role)" in pre_call
+    assert "overflow = overflow_map.get(original_role if is_studio_role else model)" in pre_call
     assert "if overflow is not None:" in pre_call
-    assert '            data["model"] = overflow' in pre_call
+    assert '                data["model"] = overflow' in pre_call
 
 
 def test_studio_role_with_no_overflow_target_queues_rather_than_raises():
@@ -180,29 +187,29 @@ def test_studio_role_with_no_overflow_target_queues_rather_than_raises():
     assert "return data" in stage_two
 
 
-def test_studio_gate_uses_its_own_shape_and_participates_keys():
-    # The two gates must track hold state independently — sharing
-    # _LOCK_SHAPE_KEY/_LOCK_PARTICIPATES_KEY between them would let a studio
-    # release accidentally consume the 4080 gate's own bookkeeping (or vice
-    # versa) for a role call that touched both in one request.
+def test_studio_gate_has_no_shape_key_only_a_participates_key():
+    # The studio gate has no "shape" distinction at release time (role vs.
+    # direct behave identically) — only _STUDIO_LOCK_PARTICIPATES_KEY, unlike
+    # the 4080 gate which still needs _LOCK_SHAPE_KEY to pick between its
+    # header-gated session release and its role auto-release.
     source = render()
-    assert '_STUDIO_LOCK_SHAPE_KEY = "studio_lock_caller_shape"' in source
+    assert "_STUDIO_LOCK_SHAPE_KEY" not in source
     assert '_STUDIO_LOCK_PARTICIPATES_KEY = "studio_lock_role_participates"' in source
-    assert "metadata[_STUDIO_LOCK_SHAPE_KEY] = " in source
     assert "metadata[_STUDIO_LOCK_PARTICIPATES_KEY] = True" in source
 
 
-def test_maybe_release_handles_both_gates_independently():
+def test_maybe_release_studio_has_no_header_gated_release_path():
     source = render()
     maybe_release = source.split("async def _maybe_release")[1].split("async def async_post_call_success_hook")[0]
     assert "shape = metadata.get(_LOCK_SHAPE_KEY)" in maybe_release
-    assert "studio_shape = metadata.get(_STUDIO_LOCK_SHAPE_KEY)" in maybe_release
-    assert 'if studio_shape == "role":' in maybe_release
-    assert 'elif studio_shape == "direct" and _release_requested(data):' in maybe_release
+    # The studio's release is unconditional on the participates flag — no
+    # header check, no "direct" branch, unlike the 4080's.
+    studio_release = maybe_release.split("_STUDIO_LOCK_PARTICIPATES_KEY")[1]
+    assert "_release_requested" not in studio_release
     assert "self._release_role_participant(client, STUDIO_LOCK_KEY, _STUDIO_ROLE_INFLIGHT_KEY, caller_id)" in (
         maybe_release
     )
-    assert "self._release_if_holder(client, STUDIO_LOCK_KEY, caller_id)" in maybe_release
+    assert "self._release_if_holder(client, STUDIO_LOCK_KEY" not in maybe_release
 
 
 if __name__ == "__main__":

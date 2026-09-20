@@ -165,8 +165,22 @@ studio deployment QUEUES at the Router layer indefinitely, the exact defect
 this file exists to avoid for the 4080. STUDIO_GATED_MODELS/STUDIO_ROLE_NAMES/
 STUDIO_ROLE_OVERFLOW/STUDIO_DIRECT_OVERFLOW below give the studio the same
 redirect-fast treatment, under a SEPARATE lock key (subagent:studio:lock) so
-the two backends never block each other. Three differences from the 4080
+the two backends never block each other. Four differences from the 4080
 gate, all documented in 57-subagent-lock.yml:
+
+  * The studio NEVER holds a SESSION, for either caller shape. The 4080's
+    plain SET-NX lock (below) is an exclusive-session semantic, correct for
+    one developer's own GPU held across repeat calls; copying it onto the
+    studio would let the first interactive caller (Open WebUI, Claude Code,
+    OpenCode, hermes-default — any of them) hold the shared brain for the
+    full TTL while every other caller is redirected onto a paid cloud rung,
+    even between the holder's own turns. So EVERY studio caller — role or
+    direct alike — runs through the SAME counting acquire-or-refresh path
+    (_acquire_or_refresh_role / _STUDIO_ROLE_INFLIGHT_KEY, the exact
+    mechanism the role path already used before this note), auto-releasing
+    on that call's own completion (_maybe_release, unconditionally — no
+    release header for the studio). "Contended" means a genuinely in-flight
+    different caller, never merely "someone touched this earlier."
 
   * A DIRECT caller is NEVER hard-rejected on studio contention, unlike the
     4080's direct callers. The 4080's hard 429 is an exclusive-session
@@ -264,7 +278,9 @@ STUDIO_ROLE_OVERFLOW = {{ llm_router_studio_role_overflow_targets | to_json }}
 # path. A name absent from this map has no non-local rung and is left to
 # queue — see 57-subagent-lock.yml.
 STUDIO_DIRECT_OVERFLOW = {{ llm_router_studio_direct_overflow_targets | to_json }}
-_STUDIO_LOCK_SHAPE_KEY = "studio_lock_caller_shape"
+# The studio has no "shape" distinction at release time — role and direct
+# callers share ONE in-flight-counted hold (see async_pre_call_hook's Stage
+# 2), so this is the only bookkeeping key the studio gate needs.
 _STUDIO_LOCK_PARTICIPATES_KEY = "studio_lock_role_participates"
 _STUDIO_ROLE_INFLIGHT_KEY = STUDIO_LOCK_KEY + ":role_inflight"
 
@@ -497,47 +513,37 @@ class FastSubagentLock(CustomLogger):
         # alias or hermes-default, or `judge`, none of which ever touch the
         # 4080) or via the 4080 redirect above (model is now
         # ROLE_REDIRECT_TARGET, a studio id).
+        #
+        # EVERY studio caller — role or direct — runs through the SAME
+        # counting acquire-or-refresh path (never the 4080's plain SET-NX
+        # session lock): the studio is shared, in-flight work only, never
+        # one caller's session. "Contended" means a DIFFERENT caller is
+        # genuinely in flight right now, not that some earlier caller once
+        # held the name and hasn't explicitly released it. See the module
+        # docstring for why a session hold here would starve every other
+        # interactive caller onto a paid cloud rung while the studio sits
+        # idle between the holder's own turns.
         is_studio_role = original_role in STUDIO_ROLE_NAMES
         if model not in STUDIO_GATED_MODELS and not is_studio_role:
             return data
         metadata = data.setdefault("metadata", {})
-        if is_studio_role:
-            metadata[_STUDIO_LOCK_SHAPE_KEY] = "role"
-            outcome = await self._acquire_or_refresh_role(
-                client, STUDIO_LOCK_KEY, _STUDIO_ROLE_INFLIGHT_KEY, caller_id
-            )
-            if outcome == 0:
-                overflow = STUDIO_ROLE_OVERFLOW.get(original_role)
-                if overflow is not None:
-                    data["model"] = overflow
-                # else: no non-local rung declared for this role — queue on
-                # the Router's own semaphore, today's pre-existing
-                # behaviour, rather than raise (this hook never hard-fails
-                # a role call — see 57-subagent-lock.yml).
-                return data
-            if outcome == 2:
-                metadata[_STUDIO_LOCK_PARTICIPATES_KEY] = True
+        outcome = await self._acquire_or_refresh_role(client, STUDIO_LOCK_KEY, _STUDIO_ROLE_INFLIGHT_KEY, caller_id)
+        if outcome == 0:
+            # A role's own chain (STUDIO_ROLE_OVERFLOW, keyed by the role
+            # name) vs. a direct caller's own chain (STUDIO_DIRECT_OVERFLOW,
+            # keyed by the id/alias/hermes-default actually typed) — never
+            # raised, never queued when a rung exists (see
+            # 57-subagent-lock.yml's derivation of both maps).
+            overflow_map = STUDIO_ROLE_OVERFLOW if is_studio_role else STUDIO_DIRECT_OVERFLOW
+            overflow = overflow_map.get(original_role if is_studio_role else model)
+            if overflow is not None:
+                data["model"] = overflow
+            # else: no non-local rung declared for this name — queue on the
+            # Router's own semaphore, today's pre-existing behaviour, rather
+            # than raise (this hook never hard-fails a studio caller).
             return data
-        # Direct caller: NEVER hard-fails, unlike the 4080's _reject_direct —
-        # the studio is the shared brain every interactive caller reaches,
-        # and a pre-call-hook exception bypasses the Router's own fallback
-        # engine entirely (see the module docstring). Acquire/refresh exactly
-        # as the 4080 gate does; on contention, redirect to this id/alias's
-        # own first non-local rung — the SAME rung the Router's own
-        # router_settings.fallbacks entry for this name would try next
-        # anyway (see 57-subagent-lock.yml's derivation) — instead of
-        # raising. metadata is only stamped on an actual hold, so a
-        # redirected (never-held) attempt is never mistaken for one at
-        # release time.
-        acquired = await client.set(STUDIO_LOCK_KEY, caller_id, nx=True, ex=LOCK_TTL_SECONDS)
-        if acquired or await self._refresh_if_holder(client, STUDIO_LOCK_KEY, caller_id):
-            metadata[_STUDIO_LOCK_SHAPE_KEY] = "direct"
-            return data
-        overflow = STUDIO_DIRECT_OVERFLOW.get(model)
-        if overflow is not None:
-            data["model"] = overflow
-        # else: no non-local rung for this id/alias — queue on the Router's
-        # own semaphore (today's pre-existing behaviour), never raise.
+        if outcome == 2:
+            metadata[_STUDIO_LOCK_PARTICIPATES_KEY] = True
         return data
 
     async def _maybe_release(self, data: dict, user_api_key_dict) -> None:
@@ -569,12 +575,11 @@ class FastSubagentLock(CustomLogger):
                 await self._release_role_participant(client, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id)
         elif shape == "direct" and _release_requested(data):
             await self._release_if_holder(client, LOCK_KEY, caller_id)
-        studio_shape = metadata.get(_STUDIO_LOCK_SHAPE_KEY)
-        if studio_shape == "role":
-            if metadata.pop(_STUDIO_LOCK_PARTICIPATES_KEY, None):
-                await self._release_role_participant(client, STUDIO_LOCK_KEY, _STUDIO_ROLE_INFLIGHT_KEY, caller_id)
-        elif studio_shape == "direct" and _release_requested(data):
-            await self._release_if_holder(client, STUDIO_LOCK_KEY, caller_id)
+        # The studio gate has no header-gated session release — see Stage
+        # 2's docstring: role and direct callers share one in-flight-counted
+        # hold, released here unconditionally on completion.
+        if metadata.pop(_STUDIO_LOCK_PARTICIPATES_KEY, None):
+            await self._release_role_participant(client, STUDIO_LOCK_KEY, _STUDIO_ROLE_INFLIGHT_KEY, caller_id)
 
     async def async_post_call_success_hook(self, data: dict, user_api_key_dict, response):
         await self._maybe_release(data, user_api_key_dict)
