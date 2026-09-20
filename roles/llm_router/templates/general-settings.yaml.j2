@@ -1,0 +1,56 @@
+general_settings:
+  master_key: os.environ/LLM_ROUTER_MASTER_KEY
+{% if llm_router_db_host | length > 0 %}
+  # Adaptive-router state. Gated on the same condition as DATABASE_URL in the
+  # EnvironmentFile, so config and env cannot separate. os.environ/ because the
+  # URL embeds the password. Rationale for all four: defaults/main/45-database.yml.
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: {{ llm_router_store_model_in_db | to_json }}
+  disable_spend_logs: {{ llm_router_disable_spend_logs | to_json }}
+  disable_error_logs: {{ llm_router_disable_error_logs | to_json }}
+{% if not llm_router_disable_spend_logs | bool %}
+  # Retention renders with the logs and only with them, so the table cannot be
+  # switched on without the job that bounds it. An empty value here does not
+  # misconfigure the cleanup job, it silently never schedules one
+  # (proxy_server.py gates the scheduler on this key being present at all),
+  # which is indistinguishable from a working config until the disk fills.
+  #
+  # `or undef(...)`, not `| mandatory(...)`: mandatory only fires on an
+  # UNDEFINED value and passes an empty string straight through, so it would
+  # render `maximum_spend_logs_retention_period: ""` and schedule nothing. The
+  # blank is the likely way to get this wrong — a default is never undefined.
+  maximum_spend_logs_retention_period: {{ ((llm_router_spend_logs_retention_period | trim)
+     or undef('llm_router_spend_logs_retention_period must be set whenever spend logs are enabled — see defaults/main/45-database.yml')) | to_json }}
+  maximum_spend_logs_retention_interval: {{ llm_router_spend_logs_retention_interval | to_json }}
+  # Redaction is the other half of the retention arithmetic; see 45-database.yml.
+  store_prompts_in_spend_logs: {{ llm_router_store_prompts_in_spend_logs | to_json }}
+{% endif %}
+{% endif %}
+  # health_check_interval is general_settings-only (LiteLLM rejects it under
+  # router_settings).
+  background_health_checks: {{ llm_router_background_health_checks | to_json }}
+{% if llm_router_background_health_checks %}
+  health_check_interval: {{ llm_router_health_check_interval }}
+  health_check_skip_disabled_background_models: true
+{% endif %}
+{% if llm_router_alert_webhook_url | trim | length > 0 %}
+  # No generic "webhook" alert type in this pinned release (verified against
+  # source, zero hits) — "slack" is the mechanism used to reach the
+  # notification hub instead of Slack itself. alert_to_webhook_url is a MAP
+  # keyed by alert type in this release (checked at config load via
+  # .items()); a bare string crashes the proxy at startup the moment this
+  # URL is set. default_webhook_url is a constructor-only kwarg, not a
+  # config file key, so it cannot substitute for the per-type map.
+  #
+  # LiteLLM posts a fixed Slack envelope ({"text": ...}) with no way to
+  # change the payload shape. The hub has no inbound Slack-shape route, so
+  # the topic templates that JSON body directly via ntfy's own
+  # message-templating query parameters instead of adding a translating
+  # route.
+  alerting: ["slack"]
+  alert_to_webhook_url:
+{% for alert_type in llm_router_alert_types %}
+    {{ alert_type }}: {{ (llm_router_alert_webhook_url ~ "?template=yes&message=" ~ ("{{.text}}" | urlencode)) | to_json }}
+{% endfor %}
+  alert_types: {{ llm_router_alert_types | to_json }}
+{% endif %}
