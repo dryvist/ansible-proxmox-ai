@@ -44,7 +44,7 @@ molecule test -s qdrant
 ### LLM serving
 
 - `ollama` — Ollama model server
-- `llama_cpp` — llama.cpp + llama-swap (GPU-tier serving)
+- `llama_cpp` — llama-server, direct (GPU-tier serving)
 - `llm_router` — LiteLLM proxy, the single OpenAI-compatible front door for
   the large/light serving tiers
 - `open_webui` — Open WebUI chat frontend
