@@ -132,22 +132,9 @@ own spend, silently turning a stated ceiling into N times its real value and
 resetting it on every rolling converge — a control that reports a limit it
 does not hold is worse than an absent one.
 
-`redis_host`/`redis_password` resolve through `os.environ/`, like every other
-secret in this config; `redis_port` renders as a literal int instead, because
-LiteLLM's documented Redis examples type it that way and an unresolved
-`os.environ/` marker where an int is expected risks failing at client
-construction — the port is not a secret either, so routing it through the
-EnvironmentFile bought nothing.
-
-Deliberately absent: `fail_closed_budget_enforcement`. It governs LiteLLM's
-Postgres-backed virtual-key budgets, not the provider budget above, and 503s
-when spend can't be verified against Redis or a database.
-
-The proxy now **has** a database (see `defaults/main/45-database.yml`), so that
-is no longer the reason. The reason is the other one, and it still stands: this
-proxy **issues no virtual keys**, so there are no key budgets to enforce and the
-setting would be inert at best, a 503 generator on the fabric's only front door
-at worst. Reconsider it when virtual keys are issued, not before.
+Why `redis_port` renders as a literal int rather than `os.environ/`, and why
+`fail_closed_budget_enforcement` is deliberately absent — moved to
+[`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md#redis-spend-tracking-details).
 
 ## Model role aliases
 
@@ -178,6 +165,34 @@ Full detail — the two rules a seeded fallback rung must satisfy, the
 `fast`/`subagent`/`fast-gpu` roles and how each is scoped, and how to swap a
 role by hand or through the Admin UI — moved to
 [`docs/LLM_ROUTER_ROLES.md`](../../docs/LLM_ROUTER_ROLES.md).
+
+## Editing ladders in the UI (`llm_router_seed_mode`, Vikunja 3316)
+
+Router settings — `router_settings` in `config.yaml`: `fallbacks`,
+`routing_strategy`, `allowed_fails`, `cooldown_time`, `model_group_alias` —
+are administered in the LiteLLM Admin UI, at **Router Settings**, the same
+"database owns it after first seed" contract Roles and Virtual Keys already
+have (above). `llm_router_seed_mode` (`defaults/main/45-database.yml`,
+default `initial`) extends that same contract to `router_settings` — how
+Roles and Virtual Keys already enforce it:
+[`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md#same-contract-elsewhere).
+
+- **`initial`** (default) — the converge seeds `router_settings` into the
+  database only the first time, when no row exists yet
+  (`tasks/probe-router-settings.yml`, a read-only `psql` check —
+  litellm 1.98.0's `/config/list` never returns this section). Once a row
+  exists, a converge leaves it alone; `tasks/sync-router-settings.yml` is
+  skipped.
+- **`rebuild`** — DR / from-scratch reset. Every converge re-pushes the
+  rendered file's `router_settings`, discarding whatever the Admin UI holds.
+  Set it for one converge to restore the git-declared ladder, then set it
+  back to `initial`.
+
+Facts this rests on, verified against the pinned `litellm==1.98.0` wheel
+(never guessed) — the startup merge direction, the UI's actual write path,
+and how an edit propagates to the rest of the pool without a restart — moved
+to
+[`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md).
 
 ## Virtual keys (`defaults/main/56-virtual-keys.yml`)
 
@@ -230,6 +245,7 @@ endpoint contract, and the serving-share metric:
 | `llm_router_light_port` | `service_ports.llm_fast_api` | llm-fast / llm-light backend port |
 | `llm_router_large_port` | `service_ports.ollama_api` | llm-large backend port |
 | `llm_router_routing_strategy` | `simple-shuffle` | load-balancing across same-name deployments |
+| `llm_router_seed_mode` | `initial` | `initial` seeds `router_settings` once then leaves Admin UI edits alone; `rebuild` = DR full overwrite |
 | `llm_router_master_key` | `env LLM_ROUTER_MASTER_KEY` (mandatory) | proxy master key |
 | `llm_router_llm_large_bearer` | `env LLM_LARGE_BEARER_TOKEN` (mandatory) | llm-large bearer |
 
@@ -240,37 +256,18 @@ endpoint contract, and the serving-share metric:
   hard-required — a missing constant fails loud.
 - Secrets `LLM_ROUTER_MASTER_KEY` + `LLM_LARGE_BEARER_TOKEN` are env-sourced
   (SOPS/Doppler) today; the OpenBao migration is a separate phase.
-- `prisma` was originally installed into the venv while the proxy was DB-less,
-  for a reason unrelated to databases: litellm[proxy] no longer pulls it, and
-  LiteLLM's auth-error handler unconditionally imports it to classify DB
-  outages — without it, a rejected or absent API key raised
-  `ModuleNotFoundError` and returned 500 instead of 401. Its presence was never
-  evidence that DB mode was intended, and the dependency is still required when
-  no database is configured.
+- `prisma` is required even with no database configured — why, moved to
+  [`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md#prisma-without-a-database)
+  alongside the other database-adjacent facts.
 
 ### Database (optional)
 
 Set `llm_router_db_host` and the proxy attaches PostgreSQL for the **Adaptive
-Router's learned quality estimates**, which LiteLLM loads at startup. Leave it
-empty and the router still serves every request — it simply forgets each
-restart and reverts to cold-start priors, which is a silent degradation rather
-than a visible failure.
-
-Scope is deliberately narrow, and the reasoning is in
-`defaults/main/45-database.yml`:
-
-- `store_model_in_db` is **true**, and carries role deployments only. It is
-  independent of adaptive routing. A config-file entry stays owned by the
-  converge and read-only in the UI, so the catalog keeps its single source of
-  truth while roles become editable — see "Roles" above.
-- Spend and error logs are **on**, bounded by a 30-day native retention job,
-  and carry no prompts — see `defaults/main/45-database.yml`.
-- Credentials are bao-first from `apps/llm-router`, the same field the Postgres
-  converge in `ansible-proxmox-apps` uses to create the role, so the two ends
-  cannot drift.
-
-The database shares the ai-VLAN cluster that backs Hindsight, which already
-carries the estate's DR standard.
+Router's learned quality estimates**; leave it empty and the router still
+serves every request, it just forgets each restart. Scope, credentials and
+retention — moved to
+[`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md#database-optional)
+alongside the seed-mode facts, since both describe the same database.
 
 ## Usage
 
