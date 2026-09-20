@@ -222,15 +222,16 @@
           # The primary itself must be keyed. Five cron jobs died of exactly its
           # absence, one exceeding the served window by 482 tokens.
           - "'hermes-default' in _cwf_keys"
-          # Every escape target is this provider's groups and nothing else --
-          # the original intent of this test, preserved -- EXCEPT fast/subagent
-          # (55-roles.yml), which escape straight to `long` and are excluded
-          # here on purpose; checked separately below.
+          # Every escape target is drawn from this provider's groups and
+          # nothing else -- EXCEPT fast/subagent, excluded here on purpose,
+          # checked separately below. A SUBSET check, not exact-match: a
+          # chain member's own tail can be a narrower slice of
+          # _openrouter_groups (e.g. hermes-cloud-free -> just :free).
           - >-
             _config.router_settings.context_window_fallbacks
             | rejectattr('fast', 'defined') | rejectattr('subagent', 'defined')
-            | map('dict2items') | flatten | map(attribute='value') | unique
-            == [_openrouter_groups]
+            | map('dict2items') | flatten | map(attribute='value') | flatten
+            | unique | difference(_openrouter_groups) | length == 0
           # fast/subagent no longer escape to `long` (55-roles.yml): with only
           # the free key present their chain has no external rung, so neither
           # is keyed, and `long` sits in no role's chain.
@@ -282,7 +283,8 @@
               + llm_router_servable_models
               + (_config.router_settings.model_group_alias | list)
               + llm_router_long_context_escape_roles
-              + _roles_with_external)
+              + _roles_with_external
+              + llm_router_chain_groups_with_own_tail)
              | unique | list }}
         # Roles with an external rung are keyed too (test_local_first_by_order.yml).
         _roles_with_external: >-
