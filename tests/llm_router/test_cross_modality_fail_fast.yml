@@ -1,0 +1,88 @@
+---
+# embed/embeddings/ocr must fail FAST on a busy or failed local backend, never
+# walk default_fallbacks into a chat-ladder rung of a different modality
+# (promotion-811-review.md finding 7). Before the fix, config.yaml.j2's
+# router_settings.fallbacks map carried no key for any of these three names,
+# so litellm's get_fallback_model_group fell through to default_fallbacks —
+# the five-rung chat chain, ending on the paid codex-api rung — on an
+# embedding or OCR failure.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_cross_modality_fail_fast.yml -i localhost, -c local
+- name: Verify embed/embeddings/ocr carry an explicit empty fallback chain
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Produce the fully credentialed render
+      ansible.builtin.import_tasks: tasks/credentialed_render.yml
+
+    - name: Each cross-modality name carries an EXACT empty fallbacks entry
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # ANTI-VACUITY FIRST: the var itself is non-empty and every name in
+          # it is a real key in the rendered map (never a typo silently
+          # asserting over nothing).
+          - llm_router_cross_modality_fail_fast_names | length > 0
+          - llm_router_cross_modality_fail_fast_names | difference(_fallback_keys) | length == 0
+          # THE CONTRACT: each one's chain is exactly empty, not merely
+          # short — an exact match on an empty list still short-circuits
+          # default_fallbacks (litellm get_fallback_model_group), whereas a
+          # missing key would fall through to it.
+          - _nonempty_chains | length == 0
+        fail_msg: >-
+          embed/embeddings/ocr must each key an EXACT empty fallbacks entry so
+          a failure there never reaches default_fallbacks
+          ({{ llm_router_default_fallbacks }}). Missing keys:
+          {{ llm_router_cross_modality_fail_fast_names | difference(_fallback_keys) }}.
+          Non-empty chains found: {{ _nonempty_chains }}.
+        success_msg: >-
+          embed/embeddings/ocr all carry an exact empty fallbacks entry.
+      vars:
+        _fallback_keys: >-
+          {{ _config.router_settings.fallbacks
+             | map('dict2items') | flatten | map(attribute='key') | list }}
+        _by_key: >-
+          {{ dict(_fallback_keys
+                  | zip(_config.router_settings.fallbacks
+                        | map('dict2items') | flatten | map(attribute='value'))) }}
+        _nonempty_chains: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for name in llm_router_cross_modality_fail_fast_names -%}
+          {%- if (_by_key[name] | default(['unset'])) != [] -%}
+          {%- set ns.bad = ns.bad + [name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
+
+    - name: default_fallbacks itself carries none of the cross-modality names
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # Guards against "fixed" by adding them to default_fallbacks
+          # instead of an exact entry — that would still walk the chat
+          # ladder, just via a different key.
+          - llm_router_default_fallbacks | intersect(llm_router_cross_modality_fail_fast_names) | length == 0
