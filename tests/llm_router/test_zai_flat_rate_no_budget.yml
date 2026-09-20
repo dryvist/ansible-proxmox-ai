@@ -1,0 +1,95 @@
+---
+# RED->GREEN for the 2026-09-20 incident: zai-glm-5.3-flash's registry-declared
+# monthly_budget: 1.67 (llm-models.d/45-zai.yml) tripped litellm's ESTIMATED
+# spend on the Z.ai GLM Coding Plan — a flat-rate subscription with no
+# marginal per-call cost — while the operator's real plan usage sat in the
+# single digits, silently zeroing out `Available Model Group Fallbacks` for
+# every caller of that rung. The fix (33-zai.yml
+# llm_router_flat_rate_api_bases, model-list-zai.yaml.j2 and
+# model-list.yaml.j2) derives the skip from api_base rather than hand-editing
+# the registry, so a future flat-rate deployment gets it automatically.
+#
+# Positive control: an OpenRouter paid deployment (hermes-cloud-openrouter,
+# real pay-per-token pricing, no flat-rate api_base) must KEEP its budget —
+# proves the rule is api_base-scoped, not "no cloud tier ever gets a budget".
+
+- name: Verify a flat-rate api_base never renders a dollar budget
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Produce the fully credentialed render
+      ansible.builtin.import_tasks: tasks/credentialed_render.yml
+
+    - name: Every Z.ai deployment renders on the flat-rate coding-plan api_base
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _zai_deployments | length >= 2
+          - >-
+            _zai_deployments
+            | rejectattr('litellm_params.api_base', 'equalto', llm_router_zai_base_url)
+            | list | length == 0
+        fail_msg: >-
+          Fixture assumption broke: every zai-tier deployment must render on
+          llm_router_zai_base_url, or this test proves nothing.
+      vars:
+        _zai_deployments: >-
+          {{ _config.model_list | selectattr('model_name', 'match', '^zai-') | list }}
+
+    - name: Neither Z.ai deployment carries a dollar budget
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _zai_deployments | selectattr('litellm_params.max_budget', 'defined') | list | length == 0
+          - _zai_deployments | selectattr('litellm_params.budget_duration', 'defined') | list | length == 0
+        fail_msg: >-
+          A Z.ai (flat-rate GLM Coding Plan) deployment rendered max_budget or
+          budget_duration — a dollar ceiling on estimated spend against a
+          subscription plan is a false cutoff, not a real limit. Rendered:
+          {{ _zai_deployments | map(attribute='litellm_params') | list }}.
+      vars:
+        _zai_deployments: >-
+          {{ _config.model_list | selectattr('model_name', 'match', '^zai-') | list }}
+
+    - name: A real pay-per-token OpenRouter deployment still keeps its budget
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _openrouter_paid_deployments | length >= 1
+          - >-
+            _openrouter_paid_deployments
+            | selectattr('litellm_params.max_budget', 'defined') | list | length
+            == _openrouter_paid_deployments | length
+        fail_msg: >-
+          hermes-cloud-openrouter's paid deployments lost their budget too —
+          the flat-rate skip must be scoped to llm_router_flat_rate_api_bases,
+          never to the whole hermes-cloud tier.
+      vars:
+        _openrouter_paid_deployments: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', 'hermes-cloud-openrouter')
+             | selectattr('litellm_params.input_cost_per_token', 'defined')
+             | list }}
