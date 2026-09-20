@@ -36,6 +36,41 @@ llm_router_registry_enabled: >-
   {%- endfor -%}
   {{ ns.out }}
 
+# Values a credential can resolve to that are NEVER a real credential, however
+# non-empty they render: "local" is the placeholder every local
+# OpenAI-compatible backend convention uses for OPENAI_API_KEY (opencode,
+# Codex CLI tooling, etc.), and an ambient shell/session that happens to set
+# it lands in the SAME `lookup('env', m.credential_env)` fallback every
+# provider credential below falls through to when its OpenBao path is
+# unseeded — indistinguishable from a real key until the provider's own 401.
+# One list, not a per-provider check, because the failure mode is generic:
+# ANY credential_env could someday collide with a locally-common placeholder.
+llm_router_credential_placeholder_values:
+  - local
+
+# ONE resolution for every registry entry that declares a credential_env —
+# bao_local_llm_secrets first, the ansible-controller's own environment as
+# the fallback, in that order, exactly as every provider file used to
+# recompute inline. Keyed by credential_env (not client_model_id): several
+# models can share one provider key, and this dict is the single place that
+# decides whether that key is actually present, so it is built once here
+# rather than re-derived at each of the nine call sites that used to run
+# this same three-line expression themselves. Rejects an empty resolution
+# AND a placeholder one (above) — a credentialed-tier gate that only checked
+# non-empty would treat that placeholder as a live key.
+llm_router_resolved_credentials: >-
+  {%- set ns = namespace(map={}) -%}
+  {%- for m in llm_router_registry_enabled | selectattr('credential_env', 'defined') | list -%}
+  {%- if m.credential_env not in ns.map -%}
+  {%- set _raw = (bao_local_llm_secrets[m.key_field]
+        | default(lookup('env', m.credential_env), true) | trim) -%}
+  {%- if (_raw | length > 0) and (_raw not in llm_router_credential_placeholder_values) -%}
+  {%- set _discard = ns.map.update({m.credential_env: _raw}) -%}
+  {%- endif -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.map }}
+
 # --- Model groups (tier views over the registry) ------------------------------
 # Each view is the enabled registry entries for one tier, in registry order.
 # The templates iterate these; the entries themselves are registry dicts
