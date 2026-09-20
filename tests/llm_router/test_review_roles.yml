@@ -4,8 +4,9 @@
 #
 #   * review-oss: local rungs → the Z.ai pair as its terminal, free tier
 #     before metered; NO free OpenRouter rung (provider filters, daily cap);
-#   * NO other role's ladder contains a Z.ai deployment, and no chain or
-#     segment derives from the zai tier;
+#   * NO other role_deployment's ladder contains a Z.ai deployment (the
+#     primary group's own chain DOES, since 2026-09-20 — see
+#     35-hermes-cloud.yml; that boundary moved, it did not tighten);
 #   * review-private: local rungs → chatgpt/ subscription → openai/ API key,
 #     nothing else; with neither Codex rung credentialed it is local-only;
 #   * the Codex rungs render only when credentialed, the chatgpt rung has no
@@ -123,19 +124,22 @@
         fail_msg: "review-oss: {{ _public.model }} -> {{ _public.fallbacks | join(' -> ') }}"
         success_msg: "review-oss: {{ _public.model }} -> {{ _public.fallbacks | join(' -> ') }}"
 
-    - name: No other role, and no chain, carries a Z.ai deployment
+    # RULE CHANGE (2026-09-20): Z.ai is no longer review-oss-exclusive — it
+    # is now also a segment of llm_router_hermes_cloud_fallback_groups
+    # (35-hermes-cloud.yml), the primary group's own chain (ai #845's
+    # enforce_fallback_model_access prunes each key's own reach). Still true:
+    # no OTHER role_deployment carries it, and default_fallbacks /
+    # llm_router_external_terminal_rungs never do.
+    - name: No OTHER role carries a Z.ai deployment; the terminal/default ladders still never do
       ansible.builtin.assert:
         quiet: true
         that:
           - >-
             llm_router_role_deployments | rejectattr('role', 'equalto', 'review-oss')
             | map(attribute='fallbacks') | flatten | intersect(llm_router_zai_groups) | length == 0
-          - >-
-            _config.router_settings.fallbacks | map('dict2items') | flatten
-            | map(attribute='value') | flatten | intersect(llm_router_zai_groups) | length == 0
           - _config.router_settings.default_fallbacks | intersect(llm_router_zai_groups) | length == 0
           - llm_router_external_terminal_rungs | intersect(llm_router_zai_groups) | length == 0
-          - llm_router_hermes_cloud_fallback_groups | intersect(llm_router_zai_groups) | length == 0
+          - llm_router_hermes_cloud_fallback_groups | intersect(llm_router_zai_groups) | length > 0
 
     - name: Every public role's non-empty chain ends in a terminal rung; review-private is the only cloud exception
       ansible.builtin.assert:
