@@ -120,6 +120,26 @@ llm_router_fallback_target_names: >-
      | unique | list }}
 llm_router_max_fallbacks: "{{ llm_router_fallback_target_names | length }}"
 
+# Opt-in since litellm 1.102.0 (litellm/proxy/auth/fallback_model_access.py,
+# wired at proxy_server.py via fallback_access_check=router_fallback_access_check
+# — absent before 1.100.0). While true, EVERY fallback target LiteLLM's router
+# walk is about to attempt — at every recursion depth, same/off-chain alike —
+# is re-checked against the calling key's own allowed-models list
+# (can_key_call_resolved_model, the identical check request auth already ran
+# against the top-level model name); an unauthorized target is skipped, not
+# attempted. Requests with no key in metadata (internal health checks) pass
+# through unrestricted. Fails closed: an exception during the lookup itself
+# skips the target rather than attempting it.
+#
+# Closes the privacy leak in review-alias-trace.md §6: LiteLLM's nested walk
+# re-keys on the failed rung's own name, not the client's original model
+# (unchanged in 1.102.0 — see 00-identity.yml), so a review-private-scoped key
+# could otherwise reach an unrelated model's own fallback entry, including a
+# cloud rung its role was never meant to reach. This setting re-authorizes
+# every hop regardless of which chain surfaced it; it does not fix the
+# re-keying/chain-abandonment itself (no upstream fix, no ETA).
+llm_router_enforce_fallback_model_access: true
+
 # A rung narrower than the request loses that rung, and THIS map — not the
 # ordinary one — decides what happens next. LiteLLM re-enters its fallback
 # machinery for the failing leg under the LEG's own name and consults this map
