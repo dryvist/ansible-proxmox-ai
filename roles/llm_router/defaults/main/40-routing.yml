@@ -58,6 +58,17 @@ llm_router_admission_budget_seconds: 15
 # a 504 before the fallback can fire; the assert holds that inequality. The
 # whole-call `timeout` is separate and stays generation-sized.
 llm_router_local_stream_timeout_seconds: 90
+# NON-streaming counterpart to the stream bound above. LiteLLM's Router
+# resolves `timeout` for a non-streaming call independently of
+# `stream_timeout` (litellm/router.py _get_timeout / _get_non_stream_timeout,
+# 1.98.0) and falls back to the generation-sized 2400s request_timeout when a
+# deployment sets neither — the gap that let a 29,193-token NON-streaming
+# review-oss call ride the ingress cut three times (362s, 2026-09-19 23:14Z)
+# with no local-rung bound of its own (model-list.yaml.j2 local_bounds).
+# Derived from the ingress ceiling minus a margin so THIS timeout fires first:
+# a real litellm.Timeout the fallback chain can act on, not a raw 504 the
+# ingress drops the connection with.
+llm_router_local_request_timeout_seconds: "{{ (ai_ingress_response_header_timeout_seconds | int) - 5 }}"
 # Attempts per local rung before handing over: none. A failed or stalled
 # local rung is handed to the ladder, and the budget assert bounds the product.
 llm_router_local_num_retries: 0

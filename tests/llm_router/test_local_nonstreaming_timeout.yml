@@ -1,0 +1,199 @@
+---
+# NON-STREAMING ADMISSION BOUND. A local rung's non-streaming call has no
+# `stream_timeout` to fall back on (litellm/router.py _get_timeout picks
+# stream_timeout ONLY when kwargs["stream"] is true), so it needs its OWN
+# `timeout` or it rides litellm_settings.request_timeout (2400s) with no
+# per-rung bound at all. Confirmed live: 2026-09-19, two independent
+# review-oss CI reviews (dryvist/ansible-proxmox-ai#828, 29,193 tokens;
+# dryvist/nix-darwin#2540, 5,004 tokens — prompt size was NOT the
+# discriminator) each held ~361s before the caller saw
+# `litellm.Timeout: OpenAIException - Gateway Timeout`, because no local rung
+# in the chain carried a non-streaming timeout of its own.
+#
+# On the OLD render (this repo before this fix): the assertions below would
+# FAIL — no local deployment carried litellm_params.timeout at all, so
+# `_missing_timeout` would list every one of them. That is the red-on-old
+# evidence; there is no separate "checked out the old code" step here because
+# the failure mode is structural (a key never rendered), reproducible by
+# reverting roles/llm_router/templates/model-list.yaml.j2's local_bounds
+# macro to drop the unconditional `timeout:` line.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_local_nonstreaming_timeout.yml -i localhost, -c local
+- name: Verify every local deployment carries a non-streaming timeout below the ingress cut
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+    # The exact prompt size from the 2026-09-19 23:14Z review-oss incident
+    # (dryvist/ansible-proxmox-ai#828). Used below to prove the vLLM tier's
+    # rendered max_input_tokens would have skipped this rung at pre-call —
+    # never sent to a real backend, purely arithmetic on the rendered config.
+    _incident_prompt_tokens: 29193
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    # Models an inventoried vLLM serving host the way a real converge has one
+    # (inventory/group_vars/llm_vllm_group.yml), so the template's
+    # hostvars[...] lookup exercises the real prefill-derived path instead of
+    # falling back to the raw context_window (the no-inventory fallback that
+    # unit tests with no llm_vllm_group host would otherwise hit).
+    - name: Model an inventoried vLLM serving host with a measured prefill rate
+      ansible.builtin.add_host:
+        name: test-vllm-host
+        groups: llm_vllm_group
+        llama_cpp_parallel: 1
+        llama_cpp_prefill_tokens_per_second: 120
+
+    - name: Render the real config.yaml.j2 template into a string
+      ansible.builtin.set_fact:
+        _rendered_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') }}"
+
+    - name: Parse the rendered config as YAML
+      ansible.builtin.set_fact:
+        _config: "{{ _rendered_config | from_yaml }}"
+
+    # Same local-backend selector as test_local_admission_cap.yml — derived
+    # from the vars that RENDER the deployments, not a name substring, so a
+    # new local backend is in scope automatically.
+    - name: Select every deployment pointed at a local backend
+      ansible.builtin.set_fact:
+        _local: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'in', _local_base_urls)
+             | rejectattr('model_name', 'equalto', '*')
+             | list }}
+      vars:
+        _local_base_urls: >-
+          {{ [llm_router_llm_large_base_url,
+              llm_router_llm_fast_base_url,
+              llm_router_llm_light_base_url,
+              llm_router_llm_vllm_base_url]
+             + ([llm_router_llm_large_standby_base_url]
+                if llm_router_llm_large_standby_base_url | length > 0 else []) }}
+
+    - name: The test is not vacuous — local deployments actually rendered
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _local | length > 0
+        fail_msg: "No local deployments rendered, so the assertions below would pass vacuously."
+        success_msg: "{{ _local | length }} local deployment(s) rendered"
+
+    - name: Every local deployment carries a non-streaming timeout
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _missing_timeout | length == 0
+        fail_msg: >-
+          {{ _missing_timeout | length }} local deployment(s) render with no
+          litellm_params.timeout ({{ _missing_timeout | join(', ') }}). A
+          non-streaming call to one of these NEVER uses stream_timeout
+          (litellm/router.py _get_timeout picks it only when kwargs["stream"]
+          is true) and rides litellm_settings.request_timeout (2400s) with no
+          per-rung bound — the exact gap behind the 2026-09-19 361s Gateway
+          Timeout incidents.
+        success_msg: "all {{ _local | length }} local deployment(s) carry a non-streaming timeout"
+      vars:
+        _missing_timeout: >-
+          {{ _local | rejectattr('litellm_params.timeout', 'defined') | map(attribute='model_name') | list }}
+
+    - name: Every local deployment's non-streaming timeout is below the ingress cut
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _over_cut | length == 0
+        fail_msg: >-
+          Local deployment(s) render litellm_params.timeout at or above the
+          {{ ai_ingress_response_header_timeout_seconds }}s ingress cut:
+          {{ _over_cut }}. That timeout must fire BEFORE the ingress does, or
+          the caller sees a raw cut with no litellm.Timeout for the fallback
+          chain to act on.
+        success_msg: >-
+          Every local deployment's non-streaming timeout is below the
+          {{ ai_ingress_response_header_timeout_seconds }}s ingress cut.
+      vars:
+        _over_cut: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for d in _local -%}
+          {%- if d.litellm_params.timeout | int >= ai_ingress_response_header_timeout_seconds | int -%}
+          {%- set ns.bad = ns.bad + [d.model_name ~ '=' ~ d.litellm_params.timeout] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
+
+    - name: Pre-call checks are enabled so a too-large prompt skips a rung before calling it
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _config.router_settings.enable_pre_call_checks | bool
+        fail_msg: >-
+          router_settings.enable_pre_call_checks is not true — LiteLLM will
+          not skip a deployment whose max_input_tokens is exceeded, so an
+          oversized prompt is admitted rather than handed to the next rung.
+        success_msg: "enable_pre_call_checks is true"
+
+    # The specific incident prompt (29,193 tokens) against the vLLM tier's
+    # (Studio 27B) rendered max_input_tokens — this is arithmetic on the
+    # rendered config, never a live call. On the OLD render (max_input_tokens
+    # == raw context_window, 32768) this assertion FAILS: the incident prompt
+    # fit inside the window and was admitted. On the NEW render
+    # (prefill-budget-derived), it must be skipped.
+    - name: The vLLM tier's rendered max_input_tokens would skip the incident prompt
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _vllm | length > 0
+          - (_vllm[0].model_info.max_input_tokens | int) < _incident_prompt_tokens
+        fail_msg: >-
+          The vLLM tier's rendered max_input_tokens
+          ({{ (_vllm[0].model_info.max_input_tokens | default('undefined')) }})
+          is not below the {{ _incident_prompt_tokens }}-token incident
+          prompt, so pre-call checks would ADMIT it rather than skip to the
+          next rung — the 2026-09-19 23:14Z scenario, unfixed.
+        success_msg: >-
+          The vLLM tier's max_input_tokens
+          ({{ _vllm[0].model_info.max_input_tokens }}) is below the
+          {{ _incident_prompt_tokens }}-token incident prompt: pre-call
+          checks skip this rung for it.
+      vars:
+        _vllm: >-
+          {%- set ns = namespace(out=[]) -%}
+          {%- for d in _config.model_list -%}
+          {%- if d.litellm_params is defined
+               and d.litellm_params.api_base is defined
+               and d.litellm_params.api_base == llm_router_llm_vllm_base_url
+               and d.model_info is defined
+               and d.model_info.max_input_tokens is defined -%}
+          {%- set ns.out = ns.out + [d] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.out }}

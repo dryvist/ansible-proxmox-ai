@@ -13,13 +13,24 @@
    "ADMISSION BUDGET"): the first-byte bound is the capacity signal and the
    retry count is the whole retry budget on the rung; an entry may declare
    tighter figures, never looser (tasks/assert.yml holds the product to the
-   budget). The whole-call timeout stays generation-sized. #}
+   budget). The whole-call timeout stays generation-sized.
+
+   `timeout` (non-streaming) is NOT optional the way it used to be. LiteLLM's
+   Router._get_timeout (litellm/router.py:3358-3364) picks stream_timeout only
+   when kwargs["stream"] is true; a non-streaming call always resolves through
+   _get_non_stream_timeout (router.py:3347-3356), which fell through past this
+   macro (only stream_timeout was ever emitted) to litellm_settings.
+   request_timeout — 2400s, sized for generation-length calls, not a busy
+   local rung. Confirmed live: 2026-09-19 23:14-23:20Z, a 29,193-token
+   NON-streaming review-oss request rode that 2400s ceiling with no local-side
+   bound, taking three review-oss fallback legs (llm-router-{1,2,3} Splunk
+   index=llm) to their raw ingress cut (~120s each, 362s total) before the
+   caller finally saw litellm.Timeout — the local rung never signalled a
+   problem itself. #}
 {% macro local_bounds(m) %}
       num_retries: {{ [m.num_retries | default(llm_router_local_num_retries), llm_router_local_num_retries] | min }}
       stream_timeout: {{ [m.stream_timeout | default(llm_router_local_stream_timeout_seconds), llm_router_local_stream_timeout_seconds] | min }}
-{% if m.request_timeout is defined %}
-      timeout: {{ m.request_timeout }}
-{% endif %}
+      timeout: {{ [m.request_timeout | default(llm_router_local_request_timeout_seconds), llm_router_local_request_timeout_seconds] | min }}
 {% endmacro %}
 model_list:
 {% include 'model-list-hermes-agents.yaml.j2' %}
@@ -300,7 +311,25 @@ model_list:
       mode: embedding
 {% elif m.context_window is defined %}
       # Mandatory here — see README "The vLLM tier and the Hermes local GPU leg".
-      max_input_tokens: {{ m.context_window }}
+      # max_input_tokens is the SMALLER of the model's context window and what
+      # this card can PREFILL inside llm_router_admission_budget_seconds — a
+      # prompt within the window but too slow to prefill in budget must still
+      # be skipped at pre-call (enable_pre_call_checks, config.yaml.j2), not
+      # admitted and left to the non-streaming timeout above. Per-host,
+      # fail-loud WHEN THE HOST IS INVENTORIED: llama_cpp_prefill_tokens_per_second
+      # lives once in inventory/group_vars/llm_vllm_group.yml and is undefined
+      # (hard error) on any inventoried host it has not been measured for,
+      # deliberately — no fabricated fleet-wide default. Falls back to the raw
+      # context window only when no llm_vllm_group host exists at all (a
+      # render/test context with no inventory, same convention as
+      # max_parallel_requests above).
+      max_input_tokens: >-
+        {{ (
+             [m.context_window,
+              hostvars[(groups['llm_vllm_group'] | default([]))[0]].llama_cpp_prefill_tokens_per_second | int
+                * llm_router_admission_budget_seconds | int]
+             | min
+           ) if (groups['llm_vllm_group'] | default([]) | length > 0) else m.context_window }}
       max_tokens: {{ m.context_window }}
 {% endif %}
 {% if m.allowed_fails is defined %}
