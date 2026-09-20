@@ -123,6 +123,29 @@
         fail_msg: "review-oss: {{ _public.model }} -> {{ _public.fallbacks | join(' -> ') }}"
         success_msg: "review-oss: {{ _public.model }} -> {{ _public.fallbacks | join(' -> ') }}"
 
+    - name: Review-oss context-window escape is deterministic and in declared order
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _cwf_review_oss | length > 0
+          - _cwf_review_oss == _expected_review_oss_cwf
+        fail_msg: >-
+          context_window_fallbacks[review-oss] must equal review-oss's own
+          chain minus its local rungs, IN ORDER
+          (37-fallback-entry-points.yml must use `reject('in', _local) |
+          list`, not the set-based `difference`, which reorders
+          non-deterministically per PYTHONHASHSEED). Rendered:
+          {{ _cwf_review_oss }}. Expected: {{ _expected_review_oss_cwf }}.
+        success_msg: "context_window_fallbacks[review-oss] == {{ _cwf_review_oss }}, in declared order"
+      vars:
+        _local_rungs: "{{ llm_router_local_fallback_groups + [llm_router_primary_model] + llm_router_servable_models }}"
+        _expected_review_oss_cwf: "{{ _public.fallbacks | reject('in', _local_rungs) | list }}"
+        _cwf_review_oss: >-
+          {{ (_config.router_settings.context_window_fallbacks
+              | map('dict2items') | flatten
+              | selectattr('key', 'equalto', 'review-oss')
+              | map(attribute='value') | list | first) | default([]) }}
+
     - name: No other role, and no chain, carries a Z.ai deployment
       ansible.builtin.assert:
         quiet: true
