@@ -33,13 +33,10 @@ llm_router_default_fallbacks: "{{ llm_router_external_terminal_rungs }}"
 # keeps this credential-gated the same way every other member already is —
 # renders empty the moment OPENROUTER_HERMES_KEY is unseeded.
 #
-# ORDER MATTERS beyond membership: 37-fallback-entry-points.yml's chain
-# composition still references llm_router_zai_groups directly for the
-# pre-free_zdrless slot (unaffected here); 58-review-roles.yml's own
-# `llm_router_external_rung_own_fallbacks` below walks THIS list to derive
-# each external rung's own fallback entry as "the remainder after itself" —
-# so a member missing from this list, or reordered, changes the escape path
-# litellm 1.98's nested fallback takes for that rung when IT fails.
+# Reachable ONLY through the role rows (review-oss/review-private,
+# 55-/58-roles.yml) and the ZDR-paid-OpenRouter isolation above — NOT used
+# by llm_router_hermes_own_fallback_by_group below, which derives every
+# group's own tail directly from the chain itself instead.
 llm_router_shared_external_continuation: >-
   {{ (llm_router_zai_groups
       + (llm_router_hermes_cloud_paid_groups | select('equalto', 'hermes-cloud-openrouter') | list)
@@ -48,45 +45,54 @@ llm_router_shared_external_continuation: >-
 
 # THE FIX for litellm 1.98's nested-fallback-follows-the-failed-rung's-own-
 # chain behavior (router.py::async_function_with_fallbacks): once a walk is
-# UNDER an external rung's own name (e.g. it was reached as review-oss's
-# second attempt, or as hermes-default's chain advanced to it), a further
-# failure on THAT rung consults the rung's OWN key in the fallbacks map, not
-# the chain that reached it. Before this fix every non-local group's own key
-# pointed at [llm_router_primary_model] (config.yaml.j2's per-group loop) —
-# correct for an ordinary cloud rung (a request the primary refused for a
-# non-size reason CAN often be served by the primary), but wrong for a
-# member of the shared external continuation specifically: the primary is
-# capped narrower than these rungs exist to serve in the first place (that
-# is why the caller escalated past it), so pointing back at it just re-hits
-# the same cap. The correct continuation is what is left of THIS list after
-# the failing rung, so the walk keeps escalating instead of doubling back.
+# UNDER a group's own name (e.g. hermes-default's chain advanced to it, or
+# it was reached as review-oss's second attempt), a further failure on THAT
+# group consults the group's OWN key in the fallbacks map, not the chain
+# that reached it. Before this fix every non-local group's own key pointed
+# at [llm_router_primary_model] (config.yaml.j2's per-group loop) — wrong
+# for ANY group in the chain, not only the shared external continuation:
+# the interactive caller's first hop past the primary is often
+# hermes-cloud-alibaba, and an alibaba 429 walking its old [primary] entry
+# hit the identical cap, one rung earlier.
 #
-# One dict, keyed by rung name, built by index rather than hand-listed pairs
-# — a future member added to llm_router_shared_external_continuation gets
-# its own correct tail automatically, with no second place to update.
-llm_router_external_rung_own_fallbacks: >-
+# GENERALIZED (2026-09-21): own(X), for every non-local group X in
+# llm_router_hermes_default_fallback_chain, is that SAME chain's own tail
+# after X, local rungs filtered out (they are never reachable a second time
+# this way — a caller already past X has no reason to re-enter one). The
+# shared external continuation above is nothing but the chain's own last
+# members, so it needs no separate expression here; the four-rung mapping
+# this fixed originally is simply what this produces for X in
+# {zai-glm-4.5-flash, zai-glm-5.3-flash, hermes-cloud-openrouter, codex-api}.
+#
+# ZDR: a group that is ALSO one of the caller-typed entry points
+# (llm_router_zdr_entry_point_names, 37-fallback-entry-points.yml) drops the
+# free-zdrless segment from its own tail too, same rule config.yaml.j2
+# already applies to every entry point's ladder — a rung promising no data
+# leaves the network must never fall through to one making no such promise.
+# One dict, built by index rather than hand-listed pairs, keyed by every
+# group the chain actually contains — a chain member added or reordered in
+# 35-hermes-cloud.yml gets its own correct tail with no second place to
+# update, and config.yaml.j2's per-group loop (its only consumer, plus the
+# context-window escape below) needs no `else [primary]` branch at all.
+llm_router_hermes_own_fallback_by_group: >-
   {%- set ns = namespace(map={}) -%}
-  {%- for _name in llm_router_shared_external_continuation -%}
-  {%- set _idx = llm_router_shared_external_continuation.index(_name) -%}
-  {%- set _discard = ns.map.update({_name: llm_router_shared_external_continuation[_idx + 1 :]}) -%}
+  {%- set _chain = llm_router_hermes_default_fallback_chain -%}
+  {%- for _group in _chain if not _group.startswith('hermes-local') -%}
+  {%- set _idx = _chain.index(_group) -%}
+  {%- set _tail = _chain[_idx + 1 :] | reject('match', '^hermes-local') | list -%}
+  {%- if _group in llm_router_zdr_entry_point_names -%}
+  {%- set _tail = _tail | reject('in', llm_router_openrouter_free_groups) | list -%}
+  {%- endif -%}
+  {%- set _discard = ns.map.update({_group: _tail}) -%}
   {%- endfor -%}
   {{ ns.map }}
 
-# ALL of config.yaml.j2's per-group entries, one lookup — a continuation
-# member gets its own remainder above, every other non-local group keeps the
-# pre-existing "recovers to local" default. Kept as its own var (rather than
-# a ternary inline in the template) purely to keep that template's per-file
-# token budget clear.
-llm_router_hermes_own_fallback_by_group: >-
-  {%- set ns = namespace(map={}) -%}
-  {%- for _group in llm_router_hermes_default_fallback_chain
-        if not _group.startswith('hermes-local') -%}
-  {%- set _discard = ns.map.update({_group:
-        llm_router_external_rung_own_fallbacks[_group]
-        if _group in llm_router_external_rung_own_fallbacks
-        else [llm_router_primary_model]}) -%}
-  {%- endfor -%}
-  {{ ns.map }}
+# Keys of the above whose own tail is non-empty — the ones that need a
+# context_window_fallbacks escape too (37-fallback-entry-points.yml) and the
+# ones a provider-scoped render must still key (test_hermes_provider_keys.yml).
+llm_router_chain_groups_with_own_tail: >-
+  {{ llm_router_hermes_own_fallback_by_group | dict2items
+     | selectattr('value') | map(attribute='key') | list }}
 
 # REVIEW ROLES — local first, always. `review-oss` overflows to the Z.ai
 # pair (33-zai.yml) — still no free rung (see above) — and, if the pair

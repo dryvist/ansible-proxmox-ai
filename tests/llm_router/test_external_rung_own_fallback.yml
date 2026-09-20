@@ -3,16 +3,18 @@
 # router_settings.fallbacks, not the chain that reached it
 # (router.py::async_function_with_fallbacks). Before 2026-09-20 every
 # non-local group's own key pointed at [llm_router_primary_model]
-# (config.yaml.j2's per-group loop) — wrong for a member of the shared
-# external continuation (58-review-roles.yml): the primary is narrower than
-# what escalated past it, so pointing back re-hits the same cap. Root-caused
+# (config.yaml.j2's per-group loop) — wrong for ANY chain member, not only
+# the shared external continuation: an interactive caller's first hop past
+# the primary is often hermes-cloud-alibaba, and an alibaba 429 walking its
+# old [primary] entry hit the identical cap one rung earlier. Root-caused
 # from a live review-oss run (ai #847): zai-glm-4.5-flash 429'd and the walk
-# died there instead of reaching the rest of the continuation.
+# died there instead of reaching the rest of the chain.
 #
-# THE CONTRACT: every member of llm_router_shared_external_continuation owns
-# a fallback entry equal to the remainder of that list after itself — never
+# THE CONTRACT (generalized 2026-09-21): every non-local member of
+# llm_router_hermes_default_fallback_chain owns a fallback entry equal to
+# the chain's own tail after itself, local rungs filtered out — never
 # llm_router_primary_model, never any local rung.
-- name: Verify every external-continuation member's own fallback entry continues the SAME chain, never local
+- name: Verify every non-local chain member's own fallback entry continues the SAME chain, never local
   hosts: localhost
   gather_facts: false
   vars:
@@ -42,13 +44,17 @@
     - name: Produce the fully credentialed render
       ansible.builtin.import_tasks: tasks/credentialed_render.yml
 
-    - name: The continuation is non-empty, or every assertion below passes over nothing
+    - name: The chain is non-empty, or every assertion below passes over nothing
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_shared_external_continuation | length > 1
+          - _non_local_chain | length > 1
+      vars:
+        _non_local_chain: >-
+          {{ llm_router_hermes_default_fallback_chain
+             | reject('match', '^hermes-local') | list }}
 
-    - name: Every continuation member's rendered entry equals the remainder after itself, never local
+    - name: Every non-local chain member's rendered entry equals the chain's own tail after itself, never local
       ansible.builtin.assert:
         quiet: true
         that:
@@ -61,16 +67,18 @@
           contains a local rung or the primary (litellm's nested fallback
           will re-hit the exact cap the caller escalated past):
           {{ _members_pointed_at_local }}. Members whose entry does not
-          equal the remainder of llm_router_shared_external_continuation
-          after themselves: {{ _members_with_wrong_tail }}. Fix:
-          llm_router_external_rung_own_fallbacks (58-review-roles.yml) and
+          equal the chain's own tail after themselves:
+          {{ _members_with_wrong_tail }}. Fix:
+          llm_router_hermes_own_fallback_by_group (58-review-roles.yml) and
           config.yaml.j2's per-group loop.
         success_msg: >-
-          All {{ llm_router_shared_external_continuation | length }}
-          continuation members ({{ llm_router_shared_external_continuation
-          | join(' -> ') }}) own a fallback entry that continues the same
-          chain and never recovers to a local rung.
+          All {{ _non_local_chain | length }} non-local chain members
+          ({{ _non_local_chain | join(' -> ') }}) own a fallback entry that
+          continues the same chain and never recovers to a local rung.
       vars:
+        _non_local_chain: >-
+          {{ llm_router_hermes_default_fallback_chain
+             | reject('match', '^hermes-local') | list }}
         _fallbacks_by_key: >-
           {{ dict(_config.router_settings.fallbacks
                   | map('dict2items') | flatten
@@ -78,13 +86,13 @@
                   | zip(_config.router_settings.fallbacks
                         | map('dict2items') | flatten
                         | map(attribute='value'))) }}
-        _expected_tail_by_member: "{{ llm_router_external_rung_own_fallbacks }}"
+        _expected_tail_by_member: "{{ llm_router_hermes_own_fallback_by_group }}"
         _members_missing_a_key: >-
-          {{ llm_router_shared_external_continuation
+          {{ _non_local_chain
              | reject('in', _fallbacks_by_key.keys() | list) | list }}
         _members_pointed_at_local: >-
           {%- set ns = namespace(bad=[]) -%}
-          {%- for name in llm_router_shared_external_continuation -%}
+          {%- for name in _non_local_chain -%}
           {%- set _entry = _fallbacks_by_key[name] | default([]) -%}
           {%- if llm_router_primary_model in _entry
              or (_entry | select('match', '^hermes-local') | list | length > 0) -%}
@@ -94,28 +102,31 @@
           {{ ns.bad }}
         _members_with_wrong_tail: >-
           {%- set ns = namespace(bad=[]) -%}
-          {%- for name in llm_router_shared_external_continuation -%}
+          {%- for name in _non_local_chain -%}
           {%- if (_fallbacks_by_key[name] | default([])) != (_expected_tail_by_member[name] | default([])) -%}
           {%- set ns.bad = ns.bad + [name] -%}
           {%- endif -%}
           {%- endfor -%}
           {{ ns.bad }}
 
-    # THE TERMINAL RUNG CASE SPECIFICALLY: the last member's remainder is
-    # empty, so litellm sees an explicit empty fallback list for it — a
-    # further failure there raises immediately, which is correct: it IS the
-    # last rung. (`llm_router_external_rung_own_fallbacks` still keys it,
+    # THE TERMINAL RUNG CASE SPECIFICALLY: the last member's tail is empty,
+    # so litellm sees an explicit empty fallback list for it — a further
+    # failure there raises immediately, which is correct: it IS the last
+    # rung. (`llm_router_hermes_own_fallback_by_group` still keys it,
     # config.yaml.j2's `if _group in ...` renders `- name: []`; this is a
     # real, present key, not an absent one — distinct from the "missing a
     # key" failure mode the assertion above already covers.)
-    - name: The terminal continuation member's own entry is present and empty
+    - name: The chain's terminal member's own entry is present and empty
       ansible.builtin.assert:
         quiet: true
         that:
           - _terminal_member in _fallbacks_by_key
           - _fallbacks_by_key[_terminal_member] == []
       vars:
-        _terminal_member: "{{ llm_router_shared_external_continuation | last }}"
+        _non_local_chain: >-
+          {{ llm_router_hermes_default_fallback_chain
+             | reject('match', '^hermes-local') | list }}
+        _terminal_member: "{{ _non_local_chain | last }}"
         _fallbacks_by_key: >-
           {{ dict(_config.router_settings.fallbacks
                   | map('dict2items') | flatten
