@@ -20,7 +20,7 @@
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_local_nonstreaming_timeout.yml -i localhost, -c local
-- name: Verify every local deployment carries a non-streaming timeout below the ingress cut
+- name: Verify every local deployment carries a non-streaming timeout from the router's own base var
   hosts: localhost
   gather_facts: false
   vars:
@@ -126,25 +126,30 @@
         _missing_timeout: >-
           {{ _local | rejectattr('litellm_params.timeout', 'defined') | map(attribute='model_name') | list }}
 
-    - name: Every local deployment's non-streaming timeout is below the ingress cut
+    # NOT the ingress: the router is the SOLE bound on this path (the ingress
+    # response-header timeout is being taken out of the router route
+    # entirely, homelab-contracts #78), so every local deployment's timeout
+    # must trace to the router's own mandatory var, never a looser value.
+    - name: Every local deployment's non-streaming timeout traces to the router's own base var
       ansible.builtin.assert:
         quiet: true
         that:
-          - _over_cut | length == 0
+          - llm_router_local_request_timeout_seconds | int > 0
+          - _over_base | length == 0
         fail_msg: >-
-          Local deployment(s) render litellm_params.timeout at or above the
-          {{ ai_ingress_response_header_timeout_seconds }}s ingress cut:
-          {{ _over_cut }}. That timeout must fire BEFORE the ingress does, or
-          the caller sees a raw cut with no litellm.Timeout for the fallback
-          chain to act on.
+          Local deployment(s) render litellm_params.timeout above
+          llm_router_local_request_timeout_seconds
+          ({{ llm_router_local_request_timeout_seconds }}s):
+          {{ _over_base }}. An entry may declare a TIGHTER figure of its own
+          (m.request_timeout), never looser than the router's base var.
         success_msg: >-
-          Every local deployment's non-streaming timeout is below the
-          {{ ai_ingress_response_header_timeout_seconds }}s ingress cut.
+          Every local deployment's non-streaming timeout is at or below the
+          router's own base var ({{ llm_router_local_request_timeout_seconds }}s).
       vars:
-        _over_cut: >-
+        _over_base: >-
           {%- set ns = namespace(bad=[]) -%}
           {%- for d in _local -%}
-          {%- if d.litellm_params.timeout | int >= ai_ingress_response_header_timeout_seconds | int -%}
+          {%- if d.litellm_params.timeout | int > llm_router_local_request_timeout_seconds | int -%}
           {%- set ns.bad = ns.bad + [d.model_name ~ '=' ~ d.litellm_params.timeout] -%}
           {%- endif -%}
           {%- endfor -%}
