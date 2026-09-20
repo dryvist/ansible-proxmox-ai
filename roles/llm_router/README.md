@@ -180,7 +180,7 @@ Roles and Virtual Keys already enforce it:
 - **`initial`** (default) — the converge seeds `router_settings` into the
   database only the first time, when no row exists yet
   (`tasks/probe-router-settings.yml`, a read-only `psql` check —
-  litellm 1.98.0's `/config/list` never returns this section). Once a row
+  litellm 1.102.0's `/config/list` never returns this section). Once a row
   exists, a converge leaves it alone; `tasks/sync-router-settings.yml` is
   skipped.
 - **`rebuild`** — DR / from-scratch reset. Every converge re-pushes the
@@ -188,7 +188,7 @@ Roles and Virtual Keys already enforce it:
   Set it for one converge to restore the git-declared ladder, then set it
   back to `initial`.
 
-Facts this rests on, verified against the pinned `litellm==1.98.0` wheel
+Facts this rests on, verified against the pinned `litellm==1.102.0` wheel
 (never guessed) — the startup merge direction, the UI's actual write path,
 and how an edit propagates to the rest of the pool without a restart — moved
 to
