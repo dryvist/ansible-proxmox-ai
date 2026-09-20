@@ -211,14 +211,28 @@ llm_router_hermes_narrow_legs_last: true
 # not a re-sort of an existing one. Composition is by concatenation precisely
 # so segments stay independently orderable; add the segment rather than
 # re-sorting, and the property survives a later change to any other segment.
-# SIX SEGMENTS: local_wide -> opencode_sub -> or_zdr_paid -> local_narrow ->
-# free_sub -> free_zdrless. Still pure concatenation, never a re-sort, for the
-# same reason the three-segment version above this comment used to give:
-# each segment stays independently orderable and a later change to one cannot
-# silently reorder another. or_zdr_paid + free_sub together are exactly
+# EIGHT SEGMENTS: local_wide -> opencode_sub -> or_zdr_paid -> local_narrow ->
+# free_sub -> zai_overflow -> free_zdrless -> shared_terminal. Still pure
+# concatenation, never a re-sort.
+#
+# OPERATOR DECISION (2026-09-20): every rendered chain ends in a guaranteed
+# final fallback — ai #845's enforce_fallback_model_access prunes each
+# caller KEY down to what it may use, so rendering these last two segments
+# widely costs a pruned key nothing:
+#   * zai_overflow (llm_router_zai_groups, 33-zai.yml) — ZDR-true by
+#     omission, so BEFORE free_zdrless. No longer review-oss-exclusive.
+#   * shared_terminal (llm_router_external_subscription_rungs +
+#     llm_router_hermes_cloud_api_key_groups, 58-review-roles.yml) — the same
+#     terminal every role_deployment chain already ends in. AFTER
+#     free_zdrless: codex-subscription/codex-api set zero_data_retention:
+#     false, same "sits last" class. Both carry `hermes_chain: false`
+#     (llm-models.d/40-hermes-cloud.yml) to stay out of or_zdr_paid above;
+#     appending them here is what makes them reachable from this chain.
+#
+# or_zdr_paid + free_sub together are exactly
 # llm_router_hermes_cloud_only_fallback_groups's membership (the paid/free
-# split is additive, not a narrowing), so the total membership this var
-# renders is unchanged in composition, only in ORDER: the OpenCode
+# split is additive, not a narrowing), so that part of the total membership
+# this var renders is unchanged in composition, only in ORDER: the OpenCode
 # subscription now precedes the ZDR-paid OpenRouter/Alibaba/Gemini rungs, and
 # the free segments now sit on either side of local_narrow instead of both
 # ahead of it.
@@ -229,13 +243,19 @@ llm_router_hermes_cloud_fallback_groups: >-
      + llm_router_hermes_cloud_paid_groups
      + llm_router_hermes_local_narrow_groups
      + llm_router_hermes_cloud_free_groups
-     + llm_router_openrouter_free_groups }}
+     + llm_router_zai_groups
+     + llm_router_openrouter_free_groups
+     + llm_router_external_subscription_rungs
+     + llm_router_hermes_cloud_api_key_groups }}
   {%- else -%}
   {{ llm_router_local_fallback_groups
      + llm_router_opencode_fallback_groups
      + llm_router_hermes_cloud_paid_groups
      + llm_router_hermes_cloud_free_groups
-     + llm_router_openrouter_free_groups }}
+     + llm_router_zai_groups
+     + llm_router_openrouter_free_groups
+     + llm_router_external_subscription_rungs
+     + llm_router_hermes_cloud_api_key_groups }}
   {%- endif -%}
 
 # The full post-primary Hermes chain: local legs then cloud groups, in
