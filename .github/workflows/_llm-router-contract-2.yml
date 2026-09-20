@@ -1,0 +1,218 @@
+---
+# The llm_router role's data contract — part 2 of 2.
+#
+# See _llm-router-contract.yml for why this list is split at all: it is an
+# ENUMERATED contract that only grows and outgrew a single file's token
+# budget twice. This half owns the Redis service, needed only by its final
+# pytest step (test_fast_subagent_lock_behavioral.py exercises
+# fast_subagent_lock.py.j2's real EVAL calls against it).
+#
+# Called by _data-contract.yml, so its result still reaches the Merge Gate
+# through that workflow's conclusion.
+
+name: LLM Router Contract 2
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  llm-router-contract-2:
+    name: Check
+    runs-on: ubuntu-latest
+
+    # Static placeholders for the required-environment inputs the llm_router
+    # role reads. No workflow context or untrusted input is interpolated here.
+    # NOT secrets and NOT a bypass: the role's guards still refuse a real
+    # converge with these unset, and the checks below render the config rather
+    # than reaching any provider. Without them `lookup('env', NAME) |
+    # mandatory(...)` returns '' rather than raising, and every check that
+    # renders the proxy config asserts against a config carrying an EMPTY
+    # master key and bearer token — and passes.
+    env:
+      LLM_ROUTER_MASTER_KEY: sk-ci-placeholder-not-a-secret
+      LLM_LARGE_BEARER_TOKEN: ci-placeholder-bearer-not-a-secret
+      PROXMOX_SUBDOMAIN: pve.example.test
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      # test_fast_subagent_lock_behavioral.py: a missing redis package or an
+      # unreachable server must FAIL this job, never quietly skip the one
+      # suite that exercises the lock's real Redis behavior — see that
+      # file's own docstring.
+      LLM_ROUTER_REQUIRE_REDIS: "1"
+
+    # ONLY for tests/llm_router/test_fast_subagent_lock_behavioral.py — a
+    # real Redis to exercise fast_subagent_lock.py.j2's actual EVAL calls
+    # against, not just text-assert its rendered source. Every other step in
+    # this job touches no network resource; this is the one exception, and
+    # it is a plain, unauthenticated container-to-container service, not a
+    # secret or a reachable endpoint outside this job.
+    services:
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.14'
+
+      # pytest joins the existing pip install: the final self-check step below
+      # uses parametrize and raises, so pytest is their runner, not an extra
+      # tool. redis is ONLY for test_fast_subagent_lock_behavioral.py, which
+      # skips cleanly (not silently) if it or the redis: service above is
+      # missing — see that file's own docstring.
+      - name: Install Ansible
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible pytest pyyaml redis
+
+      # Cache Galaxy content keyed on requirements.yml. On a hit the collections
+      # (and any roles) are already present, so the install below is skipped;
+      # on a miss (requirements.yml changed) it runs and repopulates the cache.
+      # Same key/paths as dryvist/.github's _ansible-ci.yml so a warm run of
+      # either workflow warms the other.
+      - name: Cache Ansible Galaxy content
+        id: galaxy-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.ansible/collections
+            ~/.ansible/roles
+          key: ansible-galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+
+      - name: Install Ansible dependencies
+        if: steps.galaxy-cache.outputs.cache-hit != 'true'
+        run: |
+          ansible-galaxy install -r requirements.yml
+
+      - name: Verify llm_router budget/store pairing contract
+        run: >-
+          ansible-playbook tests/llm_router/test_budget_requires_store.yml
+          -i localhost, -c local
+      # Pins the per-request-record contract: with a database attached, every
+      # request leaves an attributable row, the table is bounded by a retention
+      # job, and prompts stay out of it. Each half fails silently on its own —
+      # spend logs off means no request can be tied to the deployment that
+      # served it, error logs off leaves only successes so every derived rate
+      # is right by construction, and a missing retention period schedules no
+      # cleanup at all rather than a long one.
+      - name: Verify llm_router request-record retention contract
+        run: >-
+          ansible-playbook tests/llm_router/test_spend_log_retention.yml
+          -i localhost, -c local
+      # Pins the serving-share metric job: the query derives "local" from the
+      # subdomain variable and emits one JSON object with the promised fields;
+      # the service reads the proxy's own env file and fails loudly; the timer
+      # is daily and persistent. Without this the number the program is stated
+      # in is a document, not a measurement.
+      - name: Verify llm_router serving-share metric job contract
+        run: >-
+          ansible-playbook tests/llm_router/test_serving_share.yml
+          -i localhost, -c local
+      # Pins that every LOCAL deployment carries an in-flight admission cap.
+      # Until 2026-08 only the OpenRouter egress tier had rpm/tpm/
+      # max_parallel_requests, so LiteLLM admitted every inbound request to
+      # local backends unbounded.
+      - name: Verify llm_router local admission-cap contract
+        run: >-
+          ansible-playbook tests/llm_router/test_local_admission_cap.yml
+          -i localhost, -c local
+
+      # Pins the registry <-> rendered model_list parity guard
+      # (assert-registry-render-parity.yml) — the only check that catches an
+      # entry enabled in the registry but absent from the render, or vice
+      # versa; every other assert only checks the registry against itself.
+      - name: Verify llm_router registry/render parity contract
+        run: >-
+          ansible-playbook tests/llm_router/test_registry_render_parity.yml
+          -i localhost, -c local
+
+      # Pins that every llama-swap-backed deployment (large + standby, fast +
+      # light) stays excluded from background health checks, and that the
+      # dedicated vLLM tier and cloud legs remain probeable. Nothing else
+      # inspects model_info, so a template edit that drops the exclusion from
+      # one tier would otherwise ship silently.
+      - name: Verify llm_router background health-check exclusion contract
+        run: >-
+          ansible-playbook tests/llm_router/test_background_health_check_exclusion.yml
+          -i localhost, -c local
+
+      # Pins the heavy-tier serving identity contract: address and hostname
+      # come from a published authority, never a value committed here, and
+      # their absence is fatal rather than papered over.
+      - name: Verify llm_router heavy-tier serving identity contract
+        run: >-
+          ansible-playbook tests/llm_router/test_serving_identity.yml
+          -i localhost, -c local
+
+      # Pins the backend DNS resolution contract: every advertised backend
+      # base URL must resolve on the router guest itself, so an
+      # advertised-but-unresolvable host (the apex-vs-subdomain trap
+      # documented on llm_router_llm_vllm_base_url) fails the converge
+      # instead of a later, unrelated-looking connection error.
+      - name: Verify llm_router backend DNS resolution contract
+        run: >-
+          ansible-playbook tests/llm_router/test_endpoint_dns_assert.yml
+          -i localhost, -c local
+
+      # The gate half of the servable probe: a registry claim the serving gate
+      # contradicts is fatal, and each reason it declined to check is reported
+      # as a decline rather than passing silently.
+      - name: Verify llm_router servable probe gate contract
+        run: >-
+          ansible-playbook tests/llm_router/test_servable_probe.yml
+          -i localhost, -c local
+
+      # The remote half: a provider listing missing a registered id is fatal,
+      # and an unseeded tier is reported as not deployed, not merely unchecked.
+      - name: Verify llm_router servable probe remote contract
+        run: >-
+          ansible-playbook tests/llm_router/test_servable_probe_remote.yml
+          -i localhost, -c local
+
+      # Which endpoints the probe plans to query at all. A plan that drops a
+      # tier verifies nothing while the converge stays green.
+      - name: Verify llm_router servable probe plan contract
+        run: >-
+          ansible-playbook tests/llm_router/test_servable_probe_plan.yml
+          -i localhost, -c local
+
+      # Pins the generic-OIDC env block litellm.env.j2 emits once the Authelia
+      # client secret resolves, and its honest absence when none does. Nothing
+      # else renders that template outside a converge, so without this step the
+      # SSO-env contract ships unverified — this list is enumerated, not
+      # globbed, so an unlisted test is decorative.
+      - name: Verify llm_router generic-OIDC env rendering contract
+        run: >-
+          ansible-playbook tests/llm_router/test_litellm_oidc_env.yml
+          -i localhost, -c local
+
+      # PROXY_ADMIN_ID must never fall back to a literal identity: proves the
+      # render fails loud when the runtime env carries no admin id, instead of
+      # silently shipping a personal identifier. A separate playbook from the
+      # step above — see the header comment in the test file for why.
+      - name: Verify llm_router OIDC admin identity is mandatory, never a literal
+        run: >-
+          ansible-playbook tests/llm_router/test_litellm_oidc_admin_identity_required.yml
+          -i localhost, -c local
+
+      # The registry rule's teeth: a registry value re-typed as a literal in
+      # the role, its tests or the playbooks fails here. Render parity cannot
+      # see that input — a REGISTERED id typed a second time renders correctly
+      # until the registry entry changes. pytest, not a `python3 <file>` loop,
+      # for the same reason as the role self-checks in _data-contract.yml.
+      - name: Verify llm_router registry single-source contract
+        run: python -m pytest tests/llm_router/ -q
