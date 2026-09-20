@@ -34,6 +34,10 @@ DEFAULT_CONTEXT = {
     "llm_router_redis_port": 6379,
     "llm_router_subagent_lock_role_names": ["fixture-role-fast", "fixture-role-subagent"],
     "llm_router_primary_model": "fixture-primary-model",
+    "llm_router_studio_lock_key": "subagent:studio:lock",
+    "llm_router_studio_lock_model_ids": ["fixture-studio-a", "fixture-studio-b"],
+    "llm_router_studio_lock_role_names": ["fixture-role-fast", "fixture-role-judge"],
+    "llm_router_studio_role_overflow_targets": {"fixture-role-fast": "fixture-terminal-rung"},
 }
 
 
@@ -117,13 +121,17 @@ def test_role_redirect_target_reflects_its_own_variable():
 def test_role_call_redirects_instead_of_raising():
     # The one behavioral fork this file adds over the original direct-caller
     # lock: a role-call contention path must rewrite data["model"] and
-    # return, never reach the `raise HTTPException` branch.
+    # fall through (to the studio gate), never reach the direct-caller
+    # rejection path (_reject_direct, which raises HTTPException).
     source = render()
-    pre_call = source.split("async def async_pre_call_hook")[1].split("async def async_post_call_success_hook")[0]
+    pre_call = source.split("async def async_pre_call_hook")[1].split("async def _maybe_release")[0]
     assert 'data["model"] = ROLE_REDIRECT_TARGET' in pre_call
-    # The redirect branch must be reached BEFORE the raise, not after it
-    # (dead code that never runs on the intended path).
-    assert pre_call.index('data["model"] = ROLE_REDIRECT_TARGET') < pre_call.index("raise HTTPException")
+    assert "await self._reject_direct(client, LOCK_KEY, caller_id" in pre_call
+    # The redirect branch must be reached BEFORE the 4080 direct-reject call,
+    # not after it (dead code that never runs on the intended path).
+    assert pre_call.index('data["model"] = ROLE_REDIRECT_TARGET') < pre_call.index(
+        "await self._reject_direct(client, LOCK_KEY, caller_id"
+    )
 
 
 def test_refresh_and_release_use_atomic_compare_scripts():
@@ -156,7 +164,7 @@ def test_role_calls_gate_on_participates_direct_calls_need_the_header():
     assert 'shape = metadata.get(_LOCK_SHAPE_KEY)' in maybe_release
     assert 'if shape == "role":' in maybe_release
     assert "if metadata.pop(_LOCK_PARTICIPATES_KEY, None):" in maybe_release
-    assert "if not _release_requested(data):" in maybe_release
+    assert 'elif shape == "direct" and _release_requested(data):' in maybe_release
 
 
 def test_role_call_release_requires_participation():
@@ -167,7 +175,7 @@ def test_role_call_release_requires_participation():
     # acquire, or a refresh of an already role-owned hold) participates.
     source = render()
     pre_call = source.split("async def async_pre_call_hook")[1].split("async def _maybe_release")[0]
-    assert "outcome = await self._acquire_or_refresh_role(client, caller_id)" in pre_call
+    assert "outcome = await self._acquire_or_refresh_role(client, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id)" in pre_call
     assert "if outcome == 0:" in pre_call
     assert "if outcome == 2:" in pre_call
     assert "metadata[_LOCK_PARTICIPATES_KEY] = True" in pre_call
@@ -188,8 +196,19 @@ def test_role_inflight_counter_gates_release_not_just_holder_match():
     assert "_RELEASE_ROLE_PARTICIPANT_SCRIPT" in source
     assert 'local n = redis.call("DECR", KEYS[2])' in source
     assert "if n <= 0 then" in source
-    assert "_ACQUIRE_OR_REFRESH_ROLE_SCRIPT, 2, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id, LOCK_TTL_SECONDS" in source
-    assert "_RELEASE_ROLE_PARTICIPANT_SCRIPT, 2, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id" in source
+    # The scripts are shared by both gates via generic (lock_key, inflight_key)
+    # helper methods — the acquire/release helper bodies carry the generic
+    # eval signature, and EACH gate's call site pins its own two keys.
+    assert "_ACQUIRE_OR_REFRESH_ROLE_SCRIPT, 2, lock_key, inflight_key, caller_id, LOCK_TTL_SECONDS" in source
+    assert "_RELEASE_ROLE_PARTICIPANT_SCRIPT, 2, lock_key, inflight_key, caller_id" in source
+    assert "self._acquire_or_refresh_role(client, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id)" in source
+    assert (
+        "self._acquire_or_refresh_role(\n                client, STUDIO_LOCK_KEY, _STUDIO_ROLE_INFLIGHT_KEY, caller_id\n            )"
+        in source
+        or "self._acquire_or_refresh_role(client, STUDIO_LOCK_KEY, _STUDIO_ROLE_INFLIGHT_KEY, caller_id)" in source
+    )
+    assert "self._release_role_participant(client, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id)" in source
+    assert "self._release_role_participant(client, STUDIO_LOCK_KEY, _STUDIO_ROLE_INFLIGHT_KEY, caller_id)" in source
 
 
 def test_release_is_idempotent_against_a_double_call():
@@ -278,6 +297,12 @@ def test_redis_import_is_guarded_not_unconditional():
     source = render()
     assert "try:\n    import redis.asyncio as redis_asyncio" in source
     assert "except ImportError" in source
+
+
+# The studio gate's own STUDIO_* suite lives in
+# test_fast_subagent_lock_studio.py — split out to stay under this repo's
+# per-file token budget (.token-limits.yaml), same render() helper and
+# template.
 
 
 if __name__ == "__main__":

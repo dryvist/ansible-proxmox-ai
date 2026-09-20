@@ -1,6 +1,8 @@
 {{ ansible_managed | comment }}
 """LiteLLM custom callback: a reject-fast, per-caller session lock for the
-RTX 4080's single llama.cpp slot (guest llm-4080).
+RTX 4080's single llama.cpp slot (guest llm-4080), PLUS a second, independent
+gate for the Mac Studio's servable ids (see "THE STUDIO GATE" below) —
+different lock keys, so contention on one never blocks the other.
 
 Deployed by roles/llm_router next to config.yaml, and resolved by LiteLLM
 from litellm_settings.callbacks: "fast_subagent_lock.proxy_handler_instance"
@@ -153,6 +155,50 @@ atomically) instead of separate GET-then-EXPIRE / GET-then-DELETE calls —
 the two-call form has a TOCTOU window where a DIFFERENT, newer holder's
 lock could be refreshed or deleted by a caller who no longer holds it,
 between the GET and the second call.
+
+THE STUDIO GATE. `llm_router_local_max_parallel_requests` / each large-tier
+entry's own `max_parallel_requests` (llm-models.d/10-large.yml) is a LiteLLM
+Router-internal `asyncio.Semaphore`, acquired with a plain `async with` — no
+timeout wraps that acquire (confirmed against litellm==1.102.0 router.py
+`_acompletion`, not merely inferred). So a second caller against a busy
+studio deployment QUEUES at the Router layer indefinitely, the exact defect
+this file exists to avoid for the 4080. STUDIO_GATED_MODELS/STUDIO_ROLE_NAMES/
+STUDIO_ROLE_OVERFLOW below give the studio the same reject-fast/redirect-fast
+treatment, under a SEPARATE lock key (subagent:studio:lock) so the two
+backends never block each other. Two differences from the 4080 gate, both
+documented in 57-subagent-lock.yml:
+
+  * ONE shared lock covers all four studio ids (primary/routine/small/ocr),
+    even though — unlike the 4080's three ids, which share one physical
+    process — primary and routine are two separately resident processes
+    that CAN genuinely run concurrently (maxResidentWorkers=2). This is a
+    deliberate simplification trading some of that real concurrency for one
+    lock to reason about (see 57-subagent-lock.yml for the full tradeoff and
+    the upgrade path — split into a per-id lock, or a counting semaphore
+    above capacity 1, if it ever measures worse than the wait it replaces).
+
+  * A role call's redirect target is NOT a single constant the way
+    ROLE_REDIRECT_TARGET is for the 4080 (redirecting to the studio again
+    would just move the wait, not remove it). STUDIO_ROLE_OVERFLOW is a
+    per-role map to that role's own first NON-LOCAL rung (its declared
+    fallback chain, first entry outside both locks' gated sets — see
+    57-subagent-lock.yml's derivation). A role absent from the map (no
+    non-local rung exists for it) is left to queue on the Router's own
+    semaphore — today's pre-existing behaviour, never a hard failure from
+    this hook.
+
+Both gates are checked in ONE `async_pre_call_hook` invocation because a
+role call's chain can visit BOTH backends (fast/subagent/cheap/review-oss/
+review-private hit the 4080 first, then the studio): if the 4080 gate
+redirects such a call, `model` is now a studio id and must be checked
+against the studio gate before this hook returns — otherwise the request
+would sail past the 4080 fix straight into the exact studio-side queuing
+this second gate exists to prevent. `judge` skips the 4080 gate entirely
+(its target is a studio id directly) and is checked only against the studio
+gate. The original role name is preserved as `original_role` across a
+possible 4080 redirect specifically so STUDIO_ROLE_OVERFLOW can still be
+looked up by the caller's actual role, not by whatever `model` a first-stage
+redirect left behind.
 """
 
 import os
@@ -189,6 +235,17 @@ _LOCK_PARTICIPATES_KEY = "subagent_lock_role_participates"
 # Companion key tracking how many in-flight role calls currently share the
 # lock — see the module docstring.
 _ROLE_INFLIGHT_KEY = LOCK_KEY + ":role_inflight"
+
+# --- THE STUDIO GATE (see "THE STUDIO GATE" in the module docstring) ---------
+STUDIO_LOCK_KEY = {{ llm_router_studio_lock_key | to_json }}
+STUDIO_GATED_MODELS = frozenset({{ llm_router_studio_lock_model_ids | to_json }})
+STUDIO_ROLE_NAMES = frozenset({{ llm_router_studio_lock_role_names | to_json }})
+# role -> first non-local rung to redirect onto on studio contention; a role
+# with no non-local rung is simply absent — see 57-subagent-lock.yml.
+STUDIO_ROLE_OVERFLOW = {{ llm_router_studio_role_overflow_targets | to_json }}
+_STUDIO_LOCK_SHAPE_KEY = "studio_lock_caller_shape"
+_STUDIO_LOCK_PARTICIPATES_KEY = "studio_lock_role_participates"
+_STUDIO_ROLE_INFLIGHT_KEY = STUDIO_LOCK_KEY + ":role_inflight"
 
 # Same connection this proxy already uses for spend tracking (router_settings
 # in config.yaml.j2): host/password via the systemd EnvironmentFile, port as
@@ -332,82 +389,131 @@ class FastSubagentLock(CustomLogger):
         )
         return self._client
 
-    async def _refresh_if_holder(self, client, caller_id: str) -> bool:
-        return bool(await client.eval(_REFRESH_IF_HOLDER_SCRIPT, 1, LOCK_KEY, caller_id, LOCK_TTL_SECONDS))
+    async def _refresh_if_holder(self, client, lock_key: str, caller_id: str) -> bool:
+        return bool(await client.eval(_REFRESH_IF_HOLDER_SCRIPT, 1, lock_key, caller_id, LOCK_TTL_SECONDS))
 
-    async def _release_if_holder(self, client, caller_id: str) -> bool:
-        return bool(await client.eval(_RELEASE_IF_HOLDER_SCRIPT, 1, LOCK_KEY, caller_id))
+    async def _release_if_holder(self, client, lock_key: str, caller_id: str) -> bool:
+        return bool(await client.eval(_RELEASE_IF_HOLDER_SCRIPT, 1, lock_key, caller_id))
 
-    async def _acquire_or_refresh_role(self, client, caller_id: str) -> int:
+    async def _acquire_or_refresh_role(self, client, lock_key: str, inflight_key: str, caller_id: str) -> int:
         return int(
             await client.eval(
-                _ACQUIRE_OR_REFRESH_ROLE_SCRIPT, 2, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id, LOCK_TTL_SECONDS
+                _ACQUIRE_OR_REFRESH_ROLE_SCRIPT, 2, lock_key, inflight_key, caller_id, LOCK_TTL_SECONDS
             )
         )
 
-    async def _release_role_participant(self, client, caller_id: str) -> bool:
-        return bool(await client.eval(_RELEASE_ROLE_PARTICIPANT_SCRIPT, 2, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id))
+    async def _release_role_participant(self, client, lock_key: str, inflight_key: str, caller_id: str) -> bool:
+        return bool(await client.eval(_RELEASE_ROLE_PARTICIPANT_SCRIPT, 2, lock_key, inflight_key, caller_id))
 
-    async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type: str):
-        model = data.get("model")
-        is_role_call = model in ROLE_NAMES
-        if model not in GATED_MODELS and not is_role_call:
-            return data
-        # Stamped BEFORE anything downstream (the Router's own fallback
-        # machinery included) gets a chance to rewrite data["model"] — see
-        # the module docstring. _maybe_release reads this, never data["model"].
-        metadata = data.setdefault("metadata", {})
-        metadata[_LOCK_SHAPE_KEY] = "role" if is_role_call else "direct"
-        caller_id = _caller_id(user_api_key_dict)
-        client = self._get_client()
-        if is_role_call:
-            outcome = await self._acquire_or_refresh_role(client, caller_id)
-            if outcome == 0:
-                # Contended by a different caller. See the module docstring:
-                # redirect, not raise — an exception here cannot reach the
-                # Router's own fallback engine.
-                data["model"] = ROLE_REDIRECT_TARGET
-                return data
-            if outcome == 2:
-                # This call now shares the role-tracked hold and must
-                # release its share on completion — see _maybe_release and
-                # the module docstring's "PARTICIPATES, NOT ACQUIRED"
-                # section for why outcome == 1 (refreshed a direct caller's
-                # hold) deliberately does NOT set this.
-                metadata[_LOCK_PARTICIPATES_KEY] = True
-            return data
-        # NX+EX in one round trip: acquires only if absent, sets the TTL as
-        # a side effect of the very acquisition that succeeds.
-        acquired = await client.set(LOCK_KEY, caller_id, nx=True, ex=LOCK_TTL_SECONDS)
+    async def _reject_direct(self, client, lock_key: str, caller_id: str, backend_name: str) -> None:
+        """Shared by both gates' direct-caller path: acquire-or-refresh, or
+        raise the hard 429. See the module docstring — this is the "no
+        wait-queue, no preemption" half of both locks."""
+        acquired = await client.set(lock_key, caller_id, nx=True, ex=LOCK_TTL_SECONDS)
         if acquired:
-            return data
-        if await self._refresh_if_holder(client, caller_id):
-            # Same caller, still working — refreshed so continued use keeps
-            # the lock alive instead of expiring mid-session.
-            return data
-        holder = await client.get(LOCK_KEY)
+            return
+        if await self._refresh_if_holder(client, lock_key, caller_id):
+            return
+        holder = await client.get(lock_key)
         raise HTTPException(
             status_code=429,
             detail={
-                "error": "llm-4080 is locked by another caller",
+                "error": f"{backend_name} is locked by another caller",
                 "held_by": holder,
                 "retry_after_seconds": LOCK_TTL_SECONDS,
             },
             headers={"Retry-After": str(LOCK_TTL_SECONDS)},
         )
 
+    async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type: str):
+        model = data.get("model")
+        # Preserved across a possible 4080 redirect below — STUDIO_ROLE_OVERFLOW
+        # is keyed by the caller's ACTUAL role, not by whatever `model` a
+        # first-stage redirect leaves behind. See the module docstring's
+        # "Both gates are checked in ONE hook invocation" section.
+        original_role = model
+        caller_id = _caller_id(user_api_key_dict)
+        client = self._get_client()
+
+        # --- Stage 1: the 4080 gate — UNCHANGED behaviour/config ---------------
+        is_role_call = model in ROLE_NAMES
+        if model in GATED_MODELS or is_role_call:
+            # Stamped BEFORE anything downstream (the Router's own fallback
+            # machinery included) gets a chance to rewrite data["model"] —
+            # see the module docstring. _maybe_release reads this, never
+            # data["model"].
+            metadata = data.setdefault("metadata", {})
+            metadata[_LOCK_SHAPE_KEY] = "role" if is_role_call else "direct"
+            if is_role_call:
+                outcome = await self._acquire_or_refresh_role(client, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id)
+                if outcome == 0:
+                    # Contended by a different caller. See the module
+                    # docstring: redirect, not raise — an exception here
+                    # cannot reach the Router's own fallback engine. Falls
+                    # through to Stage 2 below: the redirect target IS a
+                    # studio id and must be checked against that gate too.
+                    data["model"] = ROLE_REDIRECT_TARGET
+                    model = ROLE_REDIRECT_TARGET
+                else:
+                    if outcome == 2:
+                        # This call now shares the role-tracked hold and
+                        # must release its share on completion — see
+                        # _maybe_release and the module docstring's
+                        # "PARTICIPATES, NOT ACQUIRED" section for why
+                        # outcome == 1 (refreshed a direct caller's hold)
+                        # deliberately does NOT set this.
+                        metadata[_LOCK_PARTICIPATES_KEY] = True
+                    # Reached the 4080 cleanly — no need to also check the
+                    # studio gate for this attempt.
+                    return data
+            else:
+                # Direct caller of a GATED_MODELS id: hard 429, unchanged.
+                await self._reject_direct(client, LOCK_KEY, caller_id, "llm-4080")
+                return data
+
+        # --- Stage 2: the studio gate — see "THE STUDIO GATE" in the module ----
+        # docstring. Reached either directly (a caller named a studio id or
+        # `judge`, which never touches the 4080) or via the 4080 redirect
+        # above (model is now ROLE_REDIRECT_TARGET, a studio id).
+        is_studio_role = original_role in STUDIO_ROLE_NAMES
+        if model not in STUDIO_GATED_MODELS and not is_studio_role:
+            return data
+        metadata = data.setdefault("metadata", {})
+        metadata[_STUDIO_LOCK_SHAPE_KEY] = "role" if is_studio_role else "direct"
+        if is_studio_role:
+            outcome = await self._acquire_or_refresh_role(
+                client, STUDIO_LOCK_KEY, _STUDIO_ROLE_INFLIGHT_KEY, caller_id
+            )
+            if outcome == 0:
+                overflow = STUDIO_ROLE_OVERFLOW.get(original_role)
+                if overflow is not None:
+                    data["model"] = overflow
+                # else: no non-local rung declared for this role — queue on
+                # the Router's own semaphore, today's pre-existing
+                # behaviour, rather than raise (this hook never hard-fails
+                # a role call — see 57-subagent-lock.yml).
+                return data
+            if outcome == 2:
+                metadata[_STUDIO_LOCK_PARTICIPATES_KEY] = True
+            return data
+        await self._reject_direct(client, STUDIO_LOCK_KEY, caller_id, "llm-large")
+        return data
+
     async def _maybe_release(self, data: dict, user_api_key_dict) -> None:
         """Shared by every post-call hook (success, failure, and the
         streaming iterator below) — see the module docstring for why role
         calls auto-release unconditionally while direct calls release only
         on the explicit header, and for why this reads data["metadata"]
-        rather than data["model"]."""
+        rather than data["model"]. Releases BOTH gates independently: a
+        request that participated in the studio hold, the 4080 hold, or
+        both (impossible today — Stage 1 returns before Stage 2 runs
+        whenever the 4080 itself served the request — but a role call
+        redirected onto the studio only ever holds the studio's share) is
+        released once per gate whose shape metadata is present."""
         metadata = data.get("metadata") or {}
-        shape = metadata.get(_LOCK_SHAPE_KEY)
-        if shape is None:
-            return
         caller_id = _caller_id(user_api_key_dict)
         client = self._get_client()
+        shape = metadata.get(_LOCK_SHAPE_KEY)
         if shape == "role":
             # pop, not get: an upstream exception mid-stream reaches BOTH
             # the streaming iterator hook's `finally` and, afterwards,
@@ -419,11 +525,15 @@ class FastSubagentLock(CustomLogger):
             # counter a second time for one call, stealing a share that
             # belongs to a genuinely separate, still in-flight sibling.
             if metadata.pop(_LOCK_PARTICIPATES_KEY, None):
-                await self._release_role_participant(client, caller_id)
-            return
-        if not _release_requested(data):
-            return
-        await self._release_if_holder(client, caller_id)
+                await self._release_role_participant(client, LOCK_KEY, _ROLE_INFLIGHT_KEY, caller_id)
+        elif shape == "direct" and _release_requested(data):
+            await self._release_if_holder(client, LOCK_KEY, caller_id)
+        studio_shape = metadata.get(_STUDIO_LOCK_SHAPE_KEY)
+        if studio_shape == "role":
+            if metadata.pop(_STUDIO_LOCK_PARTICIPATES_KEY, None):
+                await self._release_role_participant(client, STUDIO_LOCK_KEY, _STUDIO_ROLE_INFLIGHT_KEY, caller_id)
+        elif studio_shape == "direct" and _release_requested(data):
+            await self._release_if_holder(client, STUDIO_LOCK_KEY, caller_id)
 
     async def async_post_call_success_hook(self, data: dict, user_api_key_dict, response):
         await self._maybe_release(data, user_api_key_dict)

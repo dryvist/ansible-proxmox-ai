@@ -81,3 +81,101 @@ llm_router_subagent_lock_role_names:
   - cheap
   - review-oss
   - review-private
+
+# --- SECOND GATE: the Mac Studio backend ---------------------------------------
+# Same reject-fast/redirect-fast idea as the 4080 gate above, ported to the
+# large tier's servable ids (fast_subagent_lock.py.j2 — a second, independent
+# lock, own Redis key, so studio contention and 4080 contention never block
+# each other). WHY THIS EXISTS: llm_router_local_max_parallel_requests /
+# each entry's own max_parallel_requests (llm-models.d/10-large.yml) is a
+# LiteLLM Router-internal asyncio.Semaphore, acquired with a plain `async
+# with` — no timeout wraps that acquire (litellm 1.102.0 router.py
+# `_acompletion`) — so a second caller against a busy studio entry QUEUES
+# indefinitely at the Router layer instead of failing over, the same defect
+# the 4080 gate was built to avoid. Every local admission var in
+# 40-routing.yml (llm_router_local_request_timeout_seconds,
+# llm_router_admission_budget_seconds) only bounds the HTTP call made AFTER
+# a slot is acquired; none of them reach this wait. Confirmed against
+# litellm==1.102.0 source, not merely inferred from the docs.
+#
+# Derived by tier + serving_role, same pattern as llm_router_primary_model
+# et al. (50-servable.yml) — a future large-tier role stays covered without
+# a hand-edit here.
+llm_router_studio_lock_model_ids: >-
+  {{ (llm_router_registry_enabled
+      | selectattr('tier', 'equalto', 'large')
+      | selectattr('serving_role', 'defined')
+      | selectattr('serving_role', 'in', ['primary', 'routine', 'small', 'ocr'])
+      | map(attribute='client_model_id') | list)
+     + (llm_router_registry_enabled
+        | selectattr('tier', 'equalto', 'large')
+        | selectattr('serving_role', 'defined')
+        | selectattr('serving_role', 'in', ['primary', 'routine', 'small', 'ocr'])
+        | selectattr('stable_aliases', 'defined')
+        | map(attribute='stable_aliases') | list | sum(start=[])) }}
+
+# The 4080 gate covers three ids that share ONE physical llama.cpp process —
+# gating each independently would be wrong (freeing one lets the others
+# thrash the same KV cache it was supposed to protect). The studio's four
+# ids do NOT share that constraint the same way (primary + routine are two
+# separate resident processes, maxResidentWorkers=2, and can genuinely run
+# concurrently) — a single shared lock key here is a DELIBERATE
+# simplification, not a discovered fact: it trades some of that real
+# concurrency (a busy primary now also holds off an idle routine/small/ocr
+# call) for one lock to reason about, matching the operator's stated
+# "never wait on a busy local rung" priority over throughput. Capacity is
+# read from the registry's own fact (never a new literal) and asserted
+# uniform below; split into one lock per model id (or a counting semaphore
+# above capacity 1) if that tradeoff ever measures worse than the wait it
+# replaces.
+llm_router_studio_lock_capacity: >-
+  {{ (llm_router_registry_enabled
+      | selectattr('tier', 'equalto', 'large')
+      | selectattr('serving_role', 'defined')
+      | selectattr('serving_role', 'in', ['primary', 'routine', 'small', 'ocr'])
+      | map(attribute='max_parallel_requests') | unique | list) }}
+
+llm_router_studio_lock_key: "subagent:studio:lock"
+
+# Role calls that redirect around studio contention instead of queuing on the
+# Router's own semaphore. `judge` is ADDED here (never part of the 4080 gate
+# — its primary target is the routine studio id directly, it never touches
+# the 4080 at all) alongside the five roles the 4080 gate already redirects,
+# since every one of them can land on the studio: the five either overflow
+# there from the 4080 gate (ROLE_REDIRECT_TARGET = llm_router_primary_model),
+# or (judge) target it directly.
+llm_router_studio_lock_role_names:
+  - fast
+  - subagent
+  - cheap
+  - review-oss
+  - review-private
+  - judge
+
+# Per-role first NON-LOCAL rung to redirect onto when the studio is busy —
+# "local" meaning either lock's own gated set, so a role whose chain visits
+# the 4080 then the studio (fast/subagent/cheap/review-oss/review-private) or
+# the studio directly (judge, via its routine/small pair) skips straight to
+# the first rung neither lock covers: review-oss -> its Z.ai pair,
+# review-private -> its first Codex rung, fast/subagent/cheap/judge -> the
+# shared external terminal rungs. A role with NO non-local rung at all
+# (fast-gpu, embed, ocr) is simply absent from this map — fast-gpu never
+# reaches the studio gate (its chain is `[]`, the 4080 alone), and embed/ocr
+# aren't in llm_router_studio_lock_role_names, so the callback's fallback for
+# "role gated but nothing to redirect to" (queue, today's behaviour) never
+# actually fires for any role currently listed; kept as a defensive no-op in
+# the callback rather than an assumption a future role addition could
+# silently violate.
+llm_router_studio_role_overflow_targets: >-
+  {%- set ns = namespace(map={}) -%}
+  {%- set _local_ids = (llm_router_subagent_lock_model_ids + llm_router_studio_lock_model_ids) | unique | list -%}
+  {%- for rd in llm_router_role_deployments -%}
+  {%- if rd.role in llm_router_studio_lock_role_names -%}
+  {%- set _chain = [rd.model] + (rd.fallbacks | default([]) | list) -%}
+  {%- set _non_local = _chain | reject('in', _local_ids) | list -%}
+  {%- if _non_local | length > 0 -%}
+  {%- set _ = ns.map.update({rd.role: _non_local[0]}) -%}
+  {%- endif -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.map }}

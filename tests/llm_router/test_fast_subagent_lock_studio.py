@@ -1,0 +1,169 @@
+"""Render fast_subagent_lock.py.j2's STUDIO_* gate and prove the render is
+valid, correctly substituted Python — split out of test_fast_subagent_lock.py
+(the 4080 gate's own suite) purely to stay under this repo's per-file token
+budget (.token-limits.yaml); same render() helper and template, same
+constraints on what this CI job can import (no fastapi/litellm/redis — see
+that file's module docstring for why).
+"""
+
+from __future__ import annotations
+
+import json
+import py_compile
+import re
+import tempfile
+from pathlib import Path
+
+import jinja2
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TEMPLATE_PATH = REPO_ROOT / "roles/llm_router/templates/callbacks/fast_subagent_lock.py.j2"
+
+DEFAULT_CONTEXT = {
+    "ansible_managed": "Managed by Ansible",
+    "llm_router_subagent_lock_key": "subagent:4080:lock",
+    "llm_router_subagent_lock_ttl_seconds": 300,
+    "llm_router_subagent_lock_release_header": "x-subagent-release",
+    "llm_router_subagent_lock_model_ids": ["fixture-model-a", "fixture-model-b", "fixture-model-c"],
+    "llm_router_redis_port": 6379,
+    "llm_router_subagent_lock_role_names": ["fixture-role-fast", "fixture-role-subagent"],
+    "llm_router_primary_model": "fixture-primary-model",
+    "llm_router_studio_lock_key": "subagent:studio:lock",
+    "llm_router_studio_lock_model_ids": ["fixture-studio-a", "fixture-studio-b"],
+    "llm_router_studio_lock_role_names": ["fixture-role-fast", "fixture-role-judge"],
+    "llm_router_studio_role_overflow_targets": {"fixture-role-fast": "fixture-terminal-rung"},
+}
+
+
+def _comment_filter(text: str) -> str:
+    return "\n".join(f"# {line}" if line else "#" for line in str(text).splitlines())
+
+
+def render(**overrides) -> str:
+    env = jinja2.Environment()
+    env.filters["to_json"] = lambda v: json.dumps(v)
+    env.filters["comment"] = _comment_filter
+    context = {**DEFAULT_CONTEXT, **overrides}
+    return env.from_string(TEMPLATE_PATH.read_text(encoding="utf-8")).render(**context)
+
+
+# --- THE STUDIO GATE (RED before this PR: none of STUDIO_* existed) ----------
+
+
+def test_direct_caller_rejection_raises_http_exception():
+    # The rejection itself moved into a shared helper (_reject_direct, reused
+    # by both gates) — assert the raise still lives there and both gates
+    # actually call it.
+    source = render()
+    reject = source.split("async def _reject_direct")[1].split("async def async_pre_call_hook")[0]
+    assert "raise HTTPException(" in reject
+    assert 'f"{backend_name} is locked by another caller"' in reject
+    assert 'await self._reject_direct(client, LOCK_KEY, caller_id, "llm-4080")' in source
+    assert 'await self._reject_direct(client, STUDIO_LOCK_KEY, caller_id, "llm-large")' in source
+
+
+def test_studio_gated_models_and_role_names_reflect_their_own_variables():
+    source = render(
+        llm_router_studio_lock_model_ids=["studio-a", "studio-b"],
+        llm_router_studio_lock_role_names=["fixture-judge"],
+    )
+    gated = re.search(r"STUDIO_GATED_MODELS = frozenset\((\[.*?\])\)", source)
+    roles = re.search(r"STUDIO_ROLE_NAMES = frozenset\((\[.*?\])\)", source)
+    assert gated and json.loads(gated.group(1)) == ["studio-a", "studio-b"]
+    assert roles and json.loads(roles.group(1)) == ["fixture-judge"]
+
+
+def test_studio_lock_key_reflects_its_own_variable_and_differs_from_4080():
+    source = render(llm_router_studio_lock_key="other:studio:key")
+    assert 'STUDIO_LOCK_KEY = "other:studio:key"' in source
+    # The two gates must never share a Redis key, or contention on one would
+    # block the other — defeats the whole point of a second, independent gate.
+    assert "LOCK_KEY = " in source
+    assert 'LOCK_KEY = "other:studio:key"' not in source.split("STUDIO_LOCK_KEY")[0]
+
+
+def test_studio_role_overflow_reflects_its_own_variable():
+    source = render(llm_router_studio_role_overflow_targets={"review-oss": "zai-4.5-flash"})
+    match = re.search(r"STUDIO_ROLE_OVERFLOW = (\{.*?\})", source)
+    assert match, source
+    assert json.loads(match.group(1)) == {"review-oss": "zai-4.5-flash"}
+
+
+def test_renders_to_syntactically_valid_python_with_studio_gate():
+    source = render(
+        llm_router_studio_lock_model_ids=["studio-a"],
+        llm_router_studio_lock_role_names=["fixture-role-judge"],
+        llm_router_studio_role_overflow_targets={"fixture-role-judge": "zai-4.5-flash"},
+    )
+    with tempfile.NamedTemporaryFile(suffix=".py", mode="w", delete=False) as f:
+        f.write(source)
+        path = f.name
+    try:
+        py_compile.compile(path, doraise=True)
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def test_studio_direct_caller_falls_through_from_stage_one():
+    # A caller naming a studio id directly is neither in GATED_MODELS nor
+    # ROLE_NAMES (4080), so Stage 1 must fall through to Stage 2 rather than
+    # returning early.
+    source = render()
+    pre_call = source.split("async def async_pre_call_hook")[1].split("async def _maybe_release")[0]
+    assert "if model in GATED_MODELS or is_role_call:" in pre_call
+    assert "if model not in STUDIO_GATED_MODELS and not is_studio_role:" in pre_call
+
+
+def test_studio_role_redirects_to_its_overflow_target_not_a_constant():
+    # Unlike the 4080 gate (one constant, ROLE_REDIRECT_TARGET), the studio
+    # gate's redirect target is per-role — looked up by the ORIGINAL role
+    # name, which must be captured before Stage 1 can rewrite data["model"].
+    source = render()
+    pre_call = source.split("async def async_pre_call_hook")[1].split("async def _maybe_release")[0]
+    assert "original_role = model" in pre_call
+    assert "overflow = STUDIO_ROLE_OVERFLOW.get(original_role)" in pre_call
+    assert "if overflow is not None:" in pre_call
+    assert '            data["model"] = overflow' in pre_call
+
+
+def test_studio_role_with_no_overflow_target_queues_rather_than_raises():
+    # A role gated on the studio with nothing in STUDIO_ROLE_OVERFLOW (no
+    # non-local rung declared for it) must return data unchanged on
+    # contention — never raise. Anti-vacuity: the branch must be an
+    # else-of-None, not a bare pass-through that also fires when overflow IS
+    # set.
+    source = render()
+    pre_call = source.split("async def async_pre_call_hook")[1].split("async def _maybe_release")[0]
+    stage_two = pre_call.split("# --- Stage 2")[1]
+    assert "raise HTTPException" not in stage_two
+    assert "return data" in stage_two
+
+
+def test_studio_gate_uses_its_own_shape_and_participates_keys():
+    # The two gates must track hold state independently — sharing
+    # _LOCK_SHAPE_KEY/_LOCK_PARTICIPATES_KEY between them would let a studio
+    # release accidentally consume the 4080 gate's own bookkeeping (or vice
+    # versa) for a role call that touched both in one request.
+    source = render()
+    assert '_STUDIO_LOCK_SHAPE_KEY = "studio_lock_caller_shape"' in source
+    assert '_STUDIO_LOCK_PARTICIPATES_KEY = "studio_lock_role_participates"' in source
+    assert "metadata[_STUDIO_LOCK_SHAPE_KEY] = " in source
+    assert "metadata[_STUDIO_LOCK_PARTICIPATES_KEY] = True" in source
+
+
+def test_maybe_release_handles_both_gates_independently():
+    source = render()
+    maybe_release = source.split("async def _maybe_release")[1].split("async def async_post_call_success_hook")[0]
+    assert "shape = metadata.get(_LOCK_SHAPE_KEY)" in maybe_release
+    assert "studio_shape = metadata.get(_STUDIO_LOCK_SHAPE_KEY)" in maybe_release
+    assert 'if studio_shape == "role":' in maybe_release
+    assert 'elif studio_shape == "direct" and _release_requested(data):' in maybe_release
+    assert "self._release_role_participant(client, STUDIO_LOCK_KEY, _STUDIO_ROLE_INFLIGHT_KEY, caller_id)" in (
+        maybe_release
+    )
+    assert "self._release_if_holder(client, STUDIO_LOCK_KEY, caller_id)" in maybe_release
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))
