@@ -1,7 +1,7 @@
 """Safety contract for a llama_cpp host that is set never to serve.
 
 WHY THIS EXISTS. `llama_cpp_service_enabled: false` is what keeps a host from
-serving. The role honours it in "Enable and start llama-swap" (stopped+disabled),
+serving. The role honours it in "Enable and start llama-server" (stopped+disabled),
 but that task is not sufficient on its own: notified handlers run at the END of
 the play, after it, and `systemd: state: restarted` starts a disabled unit —
 `disabled` suppresses autostart, not an explicit start. So an ungated restart
@@ -28,6 +28,7 @@ DEFAULTS: dict = {}
 for _defaults_file in sorted((ROLE / "defaults" / "main").glob("*.yml")):
     DEFAULTS.update(yaml.safe_load(_defaults_file.read_text()))
 TASKS = (ROLE / "tasks" / "main.yml").read_text()
+TASKS_YAML = yaml.safe_load(TASKS)
 
 # The guardrails moved into an include when tasks/main.yml was split to stay
 # under the token budget. Read main.yml PLUS the files it actually includes,
@@ -51,7 +52,7 @@ def test_every_restart_handler_is_gated_on_the_serve_toggle() -> None:
     assert restarting, "expected at least one restart handler; the gate below would be vacuous without it"
     for handler in restarting:
         assert handler.get("when") == SERVE_TOGGLE, (
-            f"handler {handler['name']!r} restarts llama-swap without `when: {SERVE_TOGGLE}` — "
+            f"handler {handler['name']!r} restarts the service without `when: {SERVE_TOGGLE}` — "
             "a config change would start the service on a host set never to serve"
         )
 
@@ -94,3 +95,19 @@ def test_the_converge_time_size_guard_is_still_wired() -> None:
     """The role asserts the size rule itself, so an override cannot smuggle a big model in."""
     assert f"| select('ge', {MAX_PARAM_BILLIONS}) | list | length) == 0" in REACHABLE_TASKS
     assert "rejectattr('param_billions', 'defined') | list | length) == 0" in REACHABLE_TASKS
+
+
+def test_retire_llama_swap_removes_exactly_the_known_paths() -> None:
+    """llama-swap (retired 2026-09-19) is not self-cleaning: a stray unit left
+    on a host binds llama_cpp_api_port on the next boot alongside llama-server,
+    and whichever wins is random. Pin the exact path list so a future edit
+    that drops one of these leaves a stray behind instead of failing loud."""
+    remove_task = next(
+        t for t in TASKS_YAML if t["name"] == "Remove the retired llama-swap unit, drop-in, config and binary"
+    )
+    assert remove_task["loop"] == [
+        "/etc/systemd/system/llama-swap.service",
+        "/etc/systemd/system/llama-swap.service.d/99-restart-policy.conf",
+        "/etc/llama-swap",
+        "/usr/local/bin/llama-swap",
+    ]

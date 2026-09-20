@@ -105,22 +105,36 @@ _llm_router_static_virtual_keys:
   # NOT `models: []`. On a key an EMPTY list means ALL models
   # (auth_checks.py, `len(models) == 0` -> all_model_access), so a metrics-only
   # key written the obvious way would be a full-access key with a friendly
-  # alias. The sentinel is a non-matching, non-empty allowlist: /metrics needs
-  # no model and gets through; any completion request is refused.
+  # alias. The sentinel is a non-matching, non-empty allowlist: any
+  # completion request is refused.
+  #
+  # /metrics is an ADMIN-ONLY route for a virtual key unless the key carries
+  # `allowed_routes` naming it (route_checks.py, litellm 1.98.0) — without
+  # this list the key 401s on every scrape with "Only proxy admin can be
+  # used", which a scraper reports as no data. Both spellings: the proxy
+  # 307s /metrics to /metrics/ and the check is on the path as requested.
   - alias: prometheus-scrape
     value: "{{ bao_apps_secrets.prometheus_llm_router_key | default('', true) }}"
     models: "{{ ['no-default-models'] }}"
-  # CI. Delegated bulk work and cheap classification only — no lead tier, so a
-  # workflow cannot spend on the expensive rung, and revoking CI's access is one
-  # key rather than a rotation for every caller. Same contract as the entries
-  # above: the value is generated in the apps domain and merely read here.
-  #
-  # judge and fast added for PR/commit AI review wired through this key —
-  # both stay within "no lead tier" (judge is the local cross-family judge
-  # model; fast is the local-only 4080/Mac-Studio role, 55-roles.yml).
+    allowed_routes: ["/metrics", "/metrics/"]
+  # CI, PRIVATE repositories: the `review-private` role only (55-roles.yml —
+  # local rungs then the Codex rungs, nothing else). The value is generated in
+  # the apps domain and merely read here; revoking CI's access is one key.
+  # The live key's model list is reconciled by union (seed-keys.yml), so the
+  # roles it carried before (cheap, subagent, fast, judge) stay until removed
+  # in the Admin UI once every CI caller has moved to the review roles.
   - alias: github-actions
     value: "{{ bao_apps_secrets.github_actions_llm_router_key | default('', true) }}"
-    models: "{{ ['cheap', 'subagent', 'fast', 'judge'] }}"
+    models: "{{ ['review-private'] }}"
+  # CI, open-source repositories: the `review-oss` role only — local rungs, the
+  # free external rungs, then the Z.ai pair. Its value is a separate apps-
+  # domain secret (github-actions-oss) behind the same switch that fetches
+  # it (openbao_secrets 10-domains.yml); off or unseeded, the key is not minted.
+  - alias: github-actions-oss
+    value: >-
+      {{ bao_apps_secrets.github_actions_oss_llm_router_key | default('', true)
+         if llm_router_oss_ci_key_enabled | default(false) | bool else '' }}
+    models: "{{ ['review-oss'] }}"
   # Workstation clients. Previously deliberately absent for lack of a
   # converge-delivered secret path; each now gets a weekly-budgeted key on the
   # same no-op-until-seeded contract as every entry above.
@@ -150,4 +164,6 @@ _llm_router_static_virtual_keys:
     models: "{{ _llm_router_key_scope_all }}"
     monthly_budget: "{{ _llm_router_key_monthly_budget }}"
 
-llm_router_virtual_keys: "{{ _llm_router_static_virtual_keys + _llm_router_hermes_profile_keys }}"
+# The declared list; llm_router_virtual_keys (59-key-scopes.yml) widens each
+# key's `models` with every group in its roles' chains.
+_llm_router_declared_virtual_keys: "{{ _llm_router_static_virtual_keys + _llm_router_hermes_profile_keys }}"

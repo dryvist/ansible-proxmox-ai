@@ -1,0 +1,34 @@
+{# Z.ai overflow tier — one deployment per registry entry, credential-gated,
+   the terminal rungs of `review-oss` and of no other role (55-roles.yml).
+   Same shape as the subscription tier file; included by model-list.yaml.j2,
+   which owns the macros. #}
+  # --- Z.ai overflow tier (review-oss only) ---
+{% for m in llm_router_zai_models %}
+{% set _z_env = m.credential_env %}
+{% set _z_key = bao_local_llm_secrets[m.key_field] | default(lookup('env', _z_env), true) %}
+{% if _z_key | trim | length > 0 %}
+  - model_name: {{ m.client_model_id }}
+    litellm_params:
+      model: {{ litellm_model(m) }}
+      api_base: {{ llm_router_zai_base_url }}
+      api_key: os.environ/{{ _z_env }}
+      use_chat_completions_api: true
+      input_cost_per_token: {{ m.input_cost_per_token | default(0) }}
+      output_cost_per_token: {{ m.output_cost_per_token | default(0) }}
+      rpm: {{ llm_router_zai_rpm }}
+      tpm: {{ llm_router_zai_tpm }}
+      max_parallel_requests: {{ llm_router_zai_max_parallel_requests }}
+      num_retries: 0
+      timeout: {{ m.request_timeout | default(llm_router_zai_request_timeout_seconds) }}
+      stream_timeout: {{ m.stream_timeout | default(llm_router_zai_request_timeout_seconds) }}
+{% if m.monthly_budget is defined %}
+      max_budget: {{ m.monthly_budget }}
+      budget_duration: {{ llm_router_hermes_cloud_monthly_budget_period }}
+{% endif %}
+    model_info:
+      mode: chat
+      max_input_tokens: {{ m.context_window }}
+      max_output_tokens: {{ m.max_output_tokens }}
+      max_tokens: {{ m.max_output_tokens }}{{ delegation_hints(m) }}
+{% endif %}
+{% endfor %}

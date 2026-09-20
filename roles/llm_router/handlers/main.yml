@@ -1,25 +1,36 @@
 ---
-# DEFINED FIRST ON PURPOSE. Handlers run in definition order, not notification
-# order, so this corrects the shadowing config row while the old proxy is still
-# up and the restart below then boots from it.
-- name: Sync router settings into the database
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ llm_router_api_port }}/config/update"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ llm_router_master_key }}"
-    body_format: json
-    body:
-      router_settings: "{{ _llm_router_settings_payload }}"
-    status_code: [200, 201]
-    timeout: "{{ llm_router_seed_request_timeout }}"
-  no_log: true
-
+# Handlers run in definition order, not notification order, so this reflects
+# the real dependency chain: restart onto the new config file first, wait for
+# the proxy to actually come back up, THEN correct the shadowing DB row —
+# never against a proxy that's still down or still serving the old config.
+#
+# store_model_in_db means the DB row wins at startup (see
+# tasks/sync-router-settings.yml), so this order has a real, accepted cost:
+# the restart boots from the OLD row and serves it until the corrective POST
+# below lands, which can be tens of seconds behind the restart (LiteLLM's
+# APScheduler reload interval) even though the liveness wait itself is fast.
+# That window is the trade for never blocking a restart behind a proxy that
+# is already down — do not "fix" this back to sync-before-restart.
+#
+# ansible.builtin.include_tasks (dynamic), not import_tasks: import_tasks is
+# a STATIC include — Ansible flattens it at parse time, so the imported
+# file's OWN task names become the registered handlers and the name given to
+# the import_tasks line here is discarded. notify: "Wait for LiteLLM
+# liveness before syncing settings" would then match no handler at all
+# (import_tasks silently drops it, or errors, depending on
+# error_on_missing_handler). include_tasks is dynamic: the name on THIS line
+# is the one that gets registered and notified.
 - name: Restart litellm
   ansible.builtin.systemd:
     name: "{{ llm_router_service }}"
     state: restarted
     daemon_reload: true
+
+- name: Wait for LiteLLM liveness before syncing settings
+  ansible.builtin.include_tasks: ../tasks/verify-liveness.yml
+
+- name: Sync router settings into the database
+  ansible.builtin.include_tasks: ../tasks/sync-router-settings-request.yml
 
 - name: Restart rsyslog
   ansible.builtin.systemd:

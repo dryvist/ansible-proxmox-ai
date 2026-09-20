@@ -1,0 +1,87 @@
+---
+# Pins the TYPE of litellm_settings.callbacks in the rendered config.yaml.j2.
+#
+# A folded block scalar around a to_json expression (`callbacks: >-`) parses
+# as ONE STRING that merely looks like a list; the proxy then imports that
+# string as a module name and exits at startup, on every router at once. The
+# render is syntactically valid YAML either way, so nothing short of a type
+# check on the parsed value catches it. Rendered twice: with the spend store
+# absent (lock callback off) and present (lock callback on), so both branches
+# of the expression are covered.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_callbacks_render_as_list.yml -i localhost, -c local
+- name: Verify litellm_settings.callbacks renders as a YAML list
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    bao_apps_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    # include_vars loads llm_router_redis_host as a host fact, which outranks a
+    # task-level var, so the store toggle is a set_fact between two renders.
+    - name: Render config.yaml.j2 without a spend store
+      ansible.builtin.set_fact:
+        _rendered: "{{ {'without': (lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml)} }}"
+
+    - name: Configure a spend store
+      ansible.builtin.set_fact:
+        llm_router_redis_host: redis.example.test
+
+    - name: Render config.yaml.j2 with a spend store
+      ansible.builtin.set_fact:
+        _rendered: >-
+          {{ _rendered | combine({'with': (lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml)}) }}
+
+    - name: The callbacks value is a list of strings in both renders
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered[item].litellm_settings.callbacks is not string
+          - _rendered[item].litellm_settings.callbacks is sequence
+          - _rendered[item].litellm_settings.callbacks | length > 0
+          - _rendered[item].litellm_settings.callbacks | reject('string') | list | length == 0
+          - "'system_merge.proxy_handler_instance' in _rendered[item].litellm_settings.callbacks"
+          - "'request_metrics.proxy_handler_instance' in _rendered[item].litellm_settings.callbacks"
+        fail_msg: >-
+          litellm_settings.callbacks rendered ({{ item }} spend store) as
+          {{ _rendered[item].litellm_settings.callbacks | type_debug }}:
+          {{ _rendered[item].litellm_settings.callbacks }}
+        success_msg: "{{ item }} spend store: callbacks={{ _rendered[item].litellm_settings.callbacks }}"
+      loop: [without, with]
+
+    - name: The lock callback appears only when a spend store is configured
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'fast_subagent_lock.proxy_handler_instance' in _rendered['with'].litellm_settings.callbacks"
+          - "'fast_subagent_lock.proxy_handler_instance' not in _rendered['without'].litellm_settings.callbacks"

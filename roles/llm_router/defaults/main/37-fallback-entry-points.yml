@@ -118,10 +118,23 @@ llm_router_fallback_target_names: >-
              + llm_router_opencode_fallback_groups
              + llm_router_openrouter_free_groups) | length > 0 else []))
      | unique | list }}
-llm_router_max_fallbacks: >-
-  {{ (llm_router_fallback_target_names | length)
-     + (llm_router_hermes_cloud_budgeted_groups
-        | intersect(llm_router_fallback_target_names) | length) }}
+llm_router_max_fallbacks: "{{ llm_router_fallback_target_names | length }}"
+
+# Opt-in since litellm 1.102.0 (litellm/proxy/auth/fallback_model_access.py,
+# wired at proxy_server.py via fallback_access_check=router_fallback_access_check
+# — absent before 1.100.0). While true, EVERY fallback target LiteLLM's router
+# walk is about to attempt — at every recursion depth, same/off-chain alike —
+# is re-checked against the calling key's own allowed-models list
+# (can_key_call_resolved_model, the identical check request auth already ran
+# against the top-level model name); an unauthorized target is skipped, not
+# attempted. Requests with no key in metadata (internal health checks) pass
+# through unrestricted. Fails closed: an exception during the lookup itself
+# skips the target rather than attempting it.
+#
+# Re-authorizes every hop regardless of which chain surfaced it; it does not
+# change the fallback walk's own re-keying behavior (see 00-identity.yml —
+# no upstream fix, no ETA).
+llm_router_enforce_fallback_model_access: true
 
 # A rung narrower than the request loses that rung, and THIS map — not the
 # ordinary one — decides what happens next. LiteLLM re-enters its fallback
@@ -230,8 +243,21 @@ llm_router_context_window_fallbacks: >-
   {%- endfor -%}
   {%- endif -%}
   {%- if llm_router_long_context_credentialed | bool -%}
-  {%- for _role in llm_router_subagent_lock_role_names -%}
+  {%- for _role in llm_router_long_context_escape_roles -%}
   {%- set ns.pairs = ns.pairs + [{_role: [llm_router_model_group_aliases.long]}] -%}
   {%- endfor -%}
   {%- endif -%}
+  {#- Every other role: a request wider than its local rungs skips straight to
+      the role's own external rungs. With this map present, a group it does
+      not key RAISES on a context-window error instead of walking its
+      ordinary fallbacks (router.py::async_function_with_fallbacks, litellm
+      1.98.0), so a role with external rungs but no key here dead-ends. -#}
+  {%- set _local = llm_router_local_fallback_groups + [llm_router_primary_model] + llm_router_servable_models -%}
+  {%- for d in llm_router_role_deployments
+        if d.role not in llm_router_long_context_escape_roles -%}
+  {%- set _wider = d.fallbacks | reject('in', _local) | list -%}
+  {%- if _wider | length > 0 -%}
+  {%- set ns.pairs = ns.pairs + [{d.role: _wider}] -%}
+  {%- endif -%}
+  {%- endfor -%}
   {{ ns.pairs }}

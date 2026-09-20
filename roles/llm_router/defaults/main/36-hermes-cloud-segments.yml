@@ -11,10 +11,36 @@
 # one — this is what puts hermes-cloud-free in the free segment and every
 # alibaba/gemini/openrouter rung in the paid one, without a second typed list
 # that could drift from llm_router_hermes_cloud_only_fallback_groups.
+# Entries marked `hermes_chain: false` (the Codex rungs) are ladder rungs
+# only: they never join the brain's own chain, which keeps its order.
 llm_router_hermes_cloud_paid_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for m in llm_router_hermes_cloud_models_credentialed
-       | selectattr('input_cost_per_token', 'defined') -%}
+       | selectattr('input_cost_per_token', 'defined')
+       | rejectattr('hermes_chain', 'defined') -%}
+  {%- set group = m.fallback_group | default(m.route_group) -%}
+  {%- if group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups }}
+# A `subscription: true` entry (the chatgpt/ rung) is neither: no per-token
+# price, but not free either — 58-review-roles.yml places it between the two.
+# The provider API-key rung behind it, ladder-only as well:
+llm_router_hermes_cloud_subscription_groups: >-
+  {%- set ns = namespace(groups=[]) -%}
+  {%- for m in llm_router_hermes_cloud_models_credentialed
+       | selectattr('subscription', 'defined') -%}
+  {%- set group = m.fallback_group | default(m.route_group) -%}
+  {%- if group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups }}
+llm_router_hermes_cloud_api_key_groups: >-
+  {%- set ns = namespace(groups=[]) -%}
+  {%- for m in llm_router_hermes_cloud_models_credentialed
+       | selectattr('hermes_chain', 'defined') | rejectattr('subscription', 'defined') -%}
   {%- set group = m.fallback_group | default(m.route_group) -%}
   {%- if group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [group] -%}
@@ -24,7 +50,8 @@ llm_router_hermes_cloud_paid_groups: >-
 llm_router_hermes_cloud_free_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for m in llm_router_hermes_cloud_models_credentialed
-       | rejectattr('input_cost_per_token', 'defined') -%}
+       | rejectattr('input_cost_per_token', 'defined')
+       | rejectattr('subscription', 'defined') -%}
   {%- set group = m.fallback_group | default(m.route_group) -%}
   {%- if group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [group] -%}

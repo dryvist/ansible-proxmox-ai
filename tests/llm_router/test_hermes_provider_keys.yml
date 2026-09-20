@@ -29,6 +29,7 @@
     ai_router_request_timeout_seconds: 2400
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
     hermes_brain_model: hermes-default
     hermes_goal_judge_model: goal-judge
     # Registry-derived expectations, built from llm_router_model_registry
@@ -110,6 +111,12 @@
           - mount: test-external
             path: test/provider-keys/alibaba
             optional: true
+          - mount: test-external
+            path: test/provider-keys/openai
+            optional: true
+          - mount: test-external
+            path: test/provider-keys/zai
+            optional: true
           - mount: test-kv
             path: ai/mcp/nautobot
             optional: true
@@ -149,6 +156,8 @@
           OPENCODE_API_KEY: "   "
           GEMINI_API_KEY: "   "
           DASHSCOPE_API_KEY: "   "
+          OPENAI_API_KEY: "   "
+          ZAI_API_KEY: "   "
           # Deliberately absent (not even blank): the dedicated Hermes
           # OpenRouter credential (OPENROUTER_HERMES_KEY, see
           # llm-models.d/40-hermes-cloud.yml) is a SEPARATE key from the one
@@ -222,20 +231,18 @@
             | rejectattr('fast', 'defined') | rejectattr('subagent', 'defined')
             | map('dict2items') | flatten | map(attribute='value') | unique
             == [_openrouter_groups]
-          # fast/subagent escape to `long` specifically (37-fallback-entry-
-          # points.yml), not this provider's groups -- both DB roles' ORDINARY
-          # fallback chain is local-only and never reaches a cloud rung, but
-          # an over-long request is a different failure mode and must still
-          # reach the >200k-context rung `subagent` already depended on before
-          # this PR (it used to target `long` directly).
+          # fast/subagent no longer escape to `long` (55-roles.yml): with only
+          # the free key present their chain has no external rung, so neither
+          # is keyed, and `long` sits in no role's chain.
           - >-
             _config.router_settings.context_window_fallbacks
-            | selectattr('fast', 'defined') | map(attribute='fast') | list
-            == [[llm_router_model_group_aliases.long]]
+            | selectattr('fast', 'defined') | list | length == 0
           - >-
             _config.router_settings.context_window_fallbacks
-            | selectattr('subagent', 'defined') | map(attribute='subagent') | list
-            == [[llm_router_model_group_aliases.long]]
+            | selectattr('subagent', 'defined') | list | length == 0
+          - >-
+            llm_router_role_deployments | map(attribute='fallbacks') | flatten
+            | select('equalto', llm_router_model_group_aliases.long) | list | length == 0
           # hermes-cloud-openrouter (kimi-k2.6, glm-5.2) stays dark: its
           # credential is OPENROUTER_HERMES_KEY, absent from this fixture.
           - _cloud_models | length == 0
@@ -274,18 +281,25 @@
                  | map(attribute='client_model_id') | list)
               + llm_router_servable_models
               + (_config.router_settings.model_group_alias | list)
-              + llm_router_subagent_lock_role_names)
+              + llm_router_long_context_escape_roles
+              + _roles_with_external)
              | unique | list }}
+        # Roles with an external rung are keyed too (test_local_first_by_order.yml).
+        _roles_with_external: >-
+          {%- set out = [] -%}
+          {%- set _local = llm_router_local_fallback_groups + [llm_router_primary_model]
+                           + llm_router_servable_models -%}
+          {%- for d in llm_router_role_deployments
+                if d.role not in llm_router_long_context_escape_roles
+                and d.fallbacks | difference(_local) | length > 0 -%}
+          {%- set _ = out.append(d.role) -%}
+          {%- endfor -%}
+          {{ out }}
         _fallback_chain: >-
           {{ _config.router_settings.fallbacks
              | selectattr('hermes-default', 'defined')
              | map(attribute='hermes-default') | flatten }}
-        # Cloud deployments IN that group, not every member. It also carries a
-        # local survivor (no budget, higher order) so budget exhaustion filters
-        # down to local instead of emptying the group — see the LOCAL SURVIVOR
-        # block in model-list.yaml.j2. That member reaches the local serving
-        # gate, not a provider, so a per-provider credential assertion must not
-        # count it; matching on model_name alone did.
+        # Provider deployments only: a per-provider credential assertion.
         _cloud_models: >-
           {{ _config.model_list
              | selectattr('model_name', 'equalto', 'hermes-cloud-openrouter')

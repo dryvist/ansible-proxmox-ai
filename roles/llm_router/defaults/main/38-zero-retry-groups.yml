@@ -1,0 +1,64 @@
+---
+# Split out of 35-hermes-cloud.yml when that file crossed its per-file token
+# budget; the remedy for an over-budget file is a split along a real seam,
+# never a raised budget. Load order among defaults files does not matter.
+# LiteLLM's global 429 retry policy exists for a name with nowhere to fall
+# back to. A matching model-group policy takes precedence over it for that
+# name alone (router_utils/get_retry_from_policy.py:32-33, litellm 1.98.0), so
+# enumerate every name that DOES carry a chain: each chain rung, each
+# credential-backed provider router, each entry-point name that
+# 37-fallback-entry-points.yml keys, and the complexity router itself. Every
+# one of them then makes one attempt
+# and hands a busy slot to its chain immediately, instead of sleeping on it
+# for up to rate_limit_retries x retry_after first. "Busy" is not a failure
+# worth a back-off when a chain exists to absorb it — local or paid alike.
+#
+# Only when the cloud-only groups render, because that is the only condition
+# under which an entry-point name has a chain at all: with no credentialed
+# rung its zero-retry entry would strip the sleep and leave nothing behind it.
+llm_router_hermes_cloud_zero_retry_groups: >-
+  {%- set ns = namespace(groups=[]) -%}
+  {%- for group in llm_router_hermes_cloud_fallback_groups -%}
+  {%- if group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- for m in llm_router_hermes_local_models + llm_router_hermes_cloud_models_credentialed -%}
+  {%- if m.route_group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [m.route_group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- if (llm_router_hermes_cloud_only_fallback_groups
+          + llm_router_opencode_fallback_groups
+          + llm_router_openrouter_free_groups) | length > 0 -%}
+  {%- for name in llm_router_entry_point_names -%}
+  {%- if name not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [name] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {#- The complexity router itself: the name that carries almost all traffic.
+      A busy local slot under it IS the overflow condition, so it hands to its
+      chain at once rather than sleeping on the slot first. -#}
+  {%- for m in llm_router_hermes_virtual_models -%}
+  {%- set name = m.route_group | default(m.client_model_id) -%}
+  {%- if name not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [name] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- endif -%}
+  {{ ns.groups }}
+
+# Cloud groups with more than one credentialed member. Only these keep a
+# rate-limit retry (llm_router_cloud_group_retries, 40-routing.yml): one
+# member's per-minute 429 then tries the next member instead of leaving the
+# group for its chain. A single-member group has no next member, so it stays
+# at zero and hands over at once. Local rungs never appear here.
+llm_router_multi_member_cloud_groups: >-
+  {%- set ns = namespace(groups=[]) -%}
+  {%- set all = llm_router_hermes_cloud_models_credentialed | map(attribute='route_group') | list -%}
+  {%- for g in all | unique -%}
+  {%- if all | select('equalto', g) | list | length > 1 -%}
+  {%- set ns.groups = ns.groups + [g] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups }}

@@ -1,0 +1,26 @@
+---
+# Split out of the handler so a failure is readable: no_log:true on the uri
+# call hides its whole result (body AND the status/url that would otherwise
+# help), so the explicit fail below — which carries no secret — is what
+# actually reports what broke.
+- name: POST the corrected router_settings row
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/config/update"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      router_settings: "{{ _llm_router_settings_payload }}"
+    status_code: [200, 201]
+  register: llm_router_sync_result
+  failed_when: false
+  no_log: true
+  timeout: "{{ llm_router_seed_request_timeout }}"
+
+- name: Fail loud if the router_settings sync did not succeed
+  ansible.builtin.fail:
+    msg: >-
+      router_settings sync to http://127.0.0.1:{{ llm_router_api_port }}/config/update
+      returned status {{ llm_router_sync_result.status | default('no response') }}
+  when: llm_router_sync_result.status | default(0) not in [200, 201]

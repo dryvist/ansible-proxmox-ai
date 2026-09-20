@@ -197,6 +197,9 @@
 # llm_router_redis_host is empty) so the import never fails against a file
 # that only sometimes exists — config.yaml.j2's callbacks list is the one
 # place this feature is actually gated.
+- name: Record the per-node ChatGPT subscription login (never written here)
+  ansible.builtin.import_tasks: chatgpt-auth.yml
+
 - name: Deploy the fast-subagent-lock LiteLLM callback
   ansible.builtin.template:
     src: callbacks/fast_subagent_lock.py.j2
@@ -216,6 +219,17 @@
     mode: "0640"
   notify: Restart litellm
 
+# Registered unconditionally: reads only litellm's own StandardLoggingPayload,
+# present on every request regardless of backend or store config.
+- name: Deploy the request-metrics LiteLLM callback
+  ansible.builtin.copy:
+    src: callbacks/request_metrics.py
+    dest: "{{ llm_router_config_dir }}/request_metrics.py"
+    owner: root
+    group: "{{ llm_router_group }}"
+    mode: "0640"
+  notify: Restart litellm
+
 - name: Deploy the LiteLLM proxy config
   ansible.builtin.template:
     src: config.yaml.j2
@@ -228,45 +242,8 @@
 - name: Compute the serving-share metric on a schedule
   ansible.builtin.import_tasks: serving-share.yml
 
-- name: Resolve the heavy-tier serving apex IP for LiteLLM host pinning
-  # Preference order: the published reservation (tofu constants.serving.ip, or
-  # the env override) first, controller-side DNS second. DNS stays as a fallback
-  # rather than being removed with the literal, because it is a real resolution
-  # of the same reservation — the record is generated from the same value — and
-  # not a guess. The hostname has no such second authority, which is why its
-  # assert in assert.yml is fatal and this one is not.
-  ansible.builtin.set_fact:
-    llm_router_llm_large_ip: >-
-      {{
-        llm_large_serving_ip
-        | default(lookup('pipe', 'dig +short ' ~ llm_router_llm_large_fqdn ~ ' | head -n1'), true)
-        | trim
-      }}
-
-- name: Assert the Mac Studio apex resolved for LiteLLM host pinning
-  ansible.builtin.assert:
-    that:
-      - llm_router_llm_large_ip | length > 0
-    fail_msg: >-
-      Could not resolve {{ llm_router_llm_large_fqdn }} to an IPv4 address for
-      the LiteLLM /etc/hosts pin.
-
-- name: Pin the Mac Studio apex in /etc/hosts for LiteLLM
-  # Keep a local resolver pin here so the router hosts do not depend on their
-  # own DNS path before they can reach the gate.
-  ansible.builtin.lineinfile:
-    path: /etc/hosts
-    owner: root
-    group: root
-    mode: "0644"
-    regexp: >-
-      ^{{ llm_router_llm_large_ip | regex_escape }}\s+.*\b{{ llm_router_llm_large_fqdn | regex_escape }}\b
-    line: >-
-      {{ llm_router_llm_large_ip }}
-      {{ llm_router_llm_large_fqdn }}
-    create: true
-    state: present
-  notify: Restart litellm
+- name: Pin the Mac Studio serving apex for LiteLLM host pinning
+  ansible.builtin.import_tasks: pin-llm-large-host.yml
 
 - name: Deploy the litellm systemd unit
   ansible.builtin.template:
@@ -284,14 +261,29 @@
     enabled: true
     daemon_reload: true
 
+# Read-only probe, initial mode only: rebuild always overwrites regardless of
+# what the database holds, so there is nothing for it to decide.
+- name: Check whether an operator-editable router_settings row already exists
+  ansible.builtin.import_tasks: probe-router-settings.yml
+  when:
+    - llm_router_db_host | length > 0
+    - llm_router_store_model_in_db | bool
+    - llm_router_seed_mode == 'initial'
+
 # BEFORE the flush, deliberately: the persisted router_settings row shadows the
 # rendered file, so it has to be corrected while the old proxy is still up and
 # then picked up by the very restart this flush performs.
+#
+# Gated by llm_router_seed_mode (defaults/main/45-database.yml): in `initial`
+# mode (default) this is skipped once a row already exists, so a converge
+# cannot overwrite a Router Settings edit made in the Admin UI. `rebuild`
+# always runs — the DR / from-scratch reset.
 - name: Keep the database from shadowing the rendered router settings
   ansible.builtin.import_tasks: sync-router-settings.yml
   when:
     - llm_router_db_host | length > 0
     - llm_router_store_model_in_db | bool
+    - _llm_router_router_settings_may_seed | bool
 
 - name: Flush handlers so config / unit changes apply before verification
   ansible.builtin.meta: flush_handlers
@@ -306,31 +298,36 @@
   retries: 5
   delay: 3
 
-# /health/liveliness is unauthenticated by design (LiteLLM load-balancer probe),
-# so this confirms the proxy is serving without needing the master key.
-#
-# The budget is deliberately large. LiteLLM does not bind its listener until it
-# has registered every entry in model_list, and that work scales with the list:
-# on 2026-07-30 a router with ~30 entries was still emitting register_model
-# lines nearly four minutes after systemd reported the unit active. The former
-# 5 x 3 s budget gave it fifteen seconds.
-#
-# Failing here is worse than it looks, which is why the budget matters more than
-# the fifteen seconds it used to save. This task is the last one in the role, so
-# a host that trips it fails the play, and a failed host ends the run for every
-# host behind it in the batch — "NO MORE HOSTS LEFT". On 2026-07-30 that left a
-# third router still serving the previous config while the first two had moved
-# on, i.e. the fleet silently disagreed with itself about which models the
-# aliases resolve to. A slow start read as a broken one, and the cost was
-# charged to a host that was never touched.
+# This task is the last one in the role, so a host that trips it fails the
+# play, and a failed host ends the run for every host behind it in the batch —
+# "NO MORE HOSTS LEFT". On 2026-07-30 that left a third router still serving
+# the previous config while the first two had moved on, i.e. the fleet
+# silently disagreed with itself about which models the aliases resolve to.
+# A slow start read as a broken one, and the cost was charged to a host that
+# was never touched. See verify-liveness.yml for the check itself — imported
+# here and from handlers/main.yml, one declaration, not a copy.
 - name: Verify the LiteLLM liveness endpoint answers
+  ansible.builtin.import_tasks: verify-liveness.yml
+
+# Liveness alone is not the proof: the listener is up before the config is
+# loaded, and a config the proxy cannot load leaves /v1/models empty or the
+# process in a crash loop that the systemd poll above can miss between
+# restarts. A non-empty authenticated model list is what proves THIS member
+# serves the rendered config, and it is the gate the rolling play waits on.
+- name: Verify this member serves the rendered model list
   ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ llm_router_api_port }}/health/liveliness"
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/v1/models"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
     status_code: 200
-  register: llm_router_liveness
-  until: llm_router_liveness.status == 200
+    return_content: true
+  register: llm_router_models_probe
+  until:
+    - llm_router_models_probe.status == 200
+    - (llm_router_models_probe.json.data | default([])) | length > 0
   retries: "{{ llm_router_liveness_retries }}"
   delay: "{{ llm_router_liveness_delay }}"
+  no_log: true
 
 # Virtual keys, their budgets, and caller-facing roles — split into its own
 # file (seed-consumers.yml) once main.yml outgrew its token budget; a real
@@ -340,5 +337,6 @@
 - name: Seed virtual keys, their budgets, and caller-facing roles
   ansible.builtin.import_tasks: seed-consumers.yml
 
-- name: Ship the router's journal to the dedicated LLM Splunk index
-  ansible.builtin.import_tasks: 10-llm-router-syslog.yml
+# The journal forwarding route (10-llm-router-syslog.yml) is NOT imported
+# here: playbooks/llm-serving.yml runs it as its own play over the whole pool
+# after the rolling converge, so a log-route failure never stops the rollout.

@@ -88,9 +88,36 @@ llama_cpp_max_param_billions: 31
 # slots did not buy concurrency — three concurrent ~24k requests need ~72k
 # against a 32768 buffer and ALL THREE failed with "Context size has been
 # exceeded" (measured; the same request serially returns 200). Two slots would
-# only move that cliff, not remove it. At one slot a second request queues
-# instead of failing, which is what a fallback rung owes its callers.
+# only move that cliff, not remove it. At one slot, this SAME value is also
+# what caps the router's own max_parallel_requests for this deployment
+# (roles/llm_router templates, hostvars-derived) — LiteLLM raises a 429 the
+# instant a second concurrent request would exceed it, so the reject moved
+# from llama-swap's concurrencyLimit to the router, not away. Residual: that
+# cap is per LiteLLM process and the pool runs three, so a cross-process
+# collision still queues in llama-server itself — bounded by this rung's own
+# stream_timeout override, see the registry entry below.
 llama_cpp_parallel: 1
+
+# PREFILL THROUGHPUT, for the router's admission pre-call check
+# (roles/llm_router templates/model-list.yaml.j2, the vLLM tier block) to skip
+# this rung — before ever calling it — for a prompt too large to prefill
+# inside llm_router_admission_budget_seconds (15s). Read via hostvars from
+# THIS group so a card change only edits here, never the router role.
+#
+# Scoped to THIS tier only: the 4080 (llm_fast_group) and CPU-pool
+# (llm_cpu_pool_group) tiers keep the raw registry context_window as their
+# max_input_tokens until each has its own measured prefill rate here — no
+# fabricated fleet-wide number.
+#
+# # measured 2026-09-19 (opencode 27B bench, reference_opencode_bench_27b_
+# baseline): 160-275s time-to-first-token against a ~26,000-token prompt on
+# this exact card/quant, i.e. 26000/275=~95 .. 26000/160=~162 tokens/s
+# prefill. 120 sits inside that band rather than at either extreme; a
+# fresh, higher measurement RAISES the cap. RE-MEASURE by diffing
+# request-arrival vs first-generated-token timestamps for a real prompt
+# against THIS host (not extrapolated from a different quant or card) — the
+# source bench used a different harness, not this router's own access log.
+llama_cpp_prefill_tokens_per_second: 120
 
 # The two registry client_model_ids served here, named ONCE. Still literals,
 # deliberately — this is the JOIN KEY between this file's backend facts
@@ -101,7 +128,6 @@ llama_cpp_parallel: 1
 # every selectattr lookup and both llama_cpp_models `name:` fields reference
 # these vars rather than re-typing the id a second time in this file.
 _llama_cpp_vllm_dense_model_id: qwen3.8-27b
-_llama_cpp_vllm_coder_model_id: qwen3-coder-30b
 
 llama_cpp_ctx_size: >-
   {{ (llm_router_model_registry
@@ -109,6 +135,16 @@ llama_cpp_ctx_size: >-
       | first).context_window }}
 
 llama_cpp_models:
+  # `name:` IS the served model id: it becomes the --models-preset section
+  # name (templates/llama-cpp-models.ini.j2), which is what llama-server's
+  # router mode actually serves under — independent of the GGUF filename,
+  # unlike a plain --models-dir scan (which derives the id from the filename
+  # itself; verified against common/preset.cpp at the pinned release). This
+  # is also the JOIN KEY between this file's backend facts (hf_repo, gguf,
+  # param_billions, which llm-models.d/ deliberately does not carry — see
+  # roles/llama_cpp/defaults/main/00-core.yml) and the registry's own data —
+  # roles/llm_router's registry entry (llm-models.d/30-local-gpu.yml,
+  # upstream_model_id) must equal it, or every request 404s.
   - name: "{{ _llama_cpp_vllm_dense_model_id }}"
     aliases: []
     hf_repo: unsloth/Qwen3.8-27B-GGUF
@@ -118,28 +154,18 @@ llama_cpp_models:
     param_billions: 27.78
     embeddings: false
 
-  # The coding rung. Weights 11.97 GiB (UD-IQ3_XXS, Unsloth Dynamic v3,
-  # filename verified against the repo listing) against the dense entry's
-  # 11.09, and a 16384 window rather than 32768 — the registry entry carries
-  # the arithmetic behind both. Its window is read from the registry for the
-  # same reason the group default is: the number the backend serves and the
-  # number the router advertises must be one number, not two that drift.
-  - name: "{{ _llama_cpp_vllm_coder_model_id }}"
-    aliases: []
-    hf_repo: unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
-    gguf: Qwen3-Coder-30B-A3B-Instruct-UD-IQ3_XXS.gguf
-    param_billions: 30.53
-    embeddings: false
-    ctx_size: >-
-      {{ (llm_router_model_registry
-          | selectattr('client_model_id', 'equalto', _llama_cpp_vllm_coder_model_id)
-          | first).context_window }}
+  # The coding rung (registry qwen3-coder-30b, disabled) returns here in the
+  # same change that lands its GGUF on the shared model store: hf_repo
+  # unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF, UD-IQ3_XXS, 11.97 GiB, its
+  # ctx_size read from the registry entry like the dense one above. The
+  # --models-preset already gives it its own ctx-size entry independent of
+  # the dense model's — no extra work needed to re-enable it correctly.
 
-# Restart llama-swap on failure (shared systemd restart policy role).
+# Restart llama-server on failure (shared systemd restart policy role).
 systemd_restart_policy_services:
-  - llama-swap
+  - llama-server
 
 # Serving logs to the homelab_llm AI ingest listener, matching llm_fast_group.
 syslog_forwarder_program_routes:
-  - program: llama-swap
+  - program: llama-server
     port: "{{ tofu_data.constants.ai_log_routing.homelab_llm.port | default(10323) }}"

@@ -1,0 +1,59 @@
+---
+# Pins general_settings.enforce_fallback_model_access in
+# roles/llm_router/templates/config.yaml.j2.
+#
+# WHY THIS TEST EXISTS. litellm 1.102.0 added an opt-in per-fallback-target
+# re-check of the calling key's own allowed-models list
+# (litellm/proxy/auth/fallback_model_access.py, wired at proxy_server.py via
+# fallback_access_check=router_fallback_access_check) — a no-op unless
+# general_settings.enforce_fallback_model_access: true is set (see
+# 37-fallback-entry-points.yml). Without this assert, a future template edit
+# could silently drop the key with nothing else in this role noticing.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_fallback_model_access_enforced.yml -i localhost, -c local
+
+- name: The rendered config enforces per-fallback-target model access
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Render the real proxy config
+      ansible.builtin.set_fact:
+        _config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+
+    - name: Fallback model access enforcement is on, unconditionally
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _config.general_settings.enforce_fallback_model_access == true
+        fail_msg: >-
+          Expected general_settings.enforce_fallback_model_access: true (litellm
+          1.102.0's per-fallback-target key re-check); got
+          {{ _config.general_settings.enforce_fallback_model_access | default('(absent)') }}.
+          See defaults/main/37-fallback-entry-points.yml.
+        success_msg: "enforce_fallback_model_access: true is wired into general_settings."

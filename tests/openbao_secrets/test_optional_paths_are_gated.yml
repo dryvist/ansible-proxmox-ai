@@ -18,6 +18,9 @@
       "ai/saas/openai": llm_router cloud-model credential gate
       "ai/saas/gemini": llm_router cloud-model credential gate
       "ai/saas/alibaba": llm_router cloud-model credential gate
+      # The Z.ai overflow pair (llm-models.d/45-zai.yml) renders only with
+      # its key; without it review-oss stops at the free external rungs.
+      "ai/saas/zai": llm_router cloud-model credential gate
       # ai/saas/opencode is NOT listed here: it isn't in openbao_secrets_domains
       # at all right now (see the ORDERING comment on that path in
       # roles/openbao_secrets/defaults/main/10-domains.yml), so there is
@@ -34,6 +37,7 @@
       # value to '' and seed-keys.yml rejects an empty value, so an absent
       # path registers nothing. Rendered in both directions below.
       "apps/github-actions": llm_router virtual-key empty-value gate
+      "apps/github-actions-oss": llm_router virtual-key empty-value gate
       "apps/open-webui": llm_router virtual-key empty-value gate
       "apps/langgraph": llm_router virtual-key empty-value gate
       "apps/opencode": llm_router virtual-key empty-value gate
@@ -68,6 +72,32 @@
           {{ _optional_paths | reject('in', _gated_optional_paths) | list }}.
           An optional path is only safe when its consumer renders nothing with
           the secret absent — add the gate, then record it here.
+
+    # A path with `enabled: false` stays declared (so the gate above still
+    # names its consumer) but fetch_domain.yml's loop leaves it unread — the
+    # same filter expression, both directions.
+    - name: Capture the switch-off fetch list, then flip the switch on
+      ansible.builtin.set_fact:
+        _fetched_off: >-
+          {{ _apps | select('mapping') | rejectattr('enabled', 'defined') | map(attribute='path') | list }}
+        llm_router_oss_ci_key_enabled: true
+      vars:
+        _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
+
+    - name: A disabled optional path is declared but not fetched until its switch flips
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'apps/github-actions-oss' in _optional_paths"
+          - _fetched_off | select('search', 'github-actions-oss') | list | length == 0
+          - _fetched_on | select('search', 'github-actions-oss') | list | length == 1
+        fail_msg: "off={{ _fetched_off }} on={{ _fetched_on }}"
+      vars:
+        _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
+        _fetched_on: >-
+          {{ (_apps | select('mapping') | rejectattr('enabled', 'defined') | list
+              + _apps | selectattr('enabled', 'defined') | selectattr('enabled') | list)
+             | map(attribute='path') | list }}
 
     - name: Load the gateway defaults with no secrets available
       ansible.builtin.include_vars:

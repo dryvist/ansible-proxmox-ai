@@ -9,6 +9,21 @@
 {% if m.hints is defined %}{{ "\n" }}      hints: {{ m.hints | to_json }}{% endif %}
 {%- endmacro %}
 {% macro litellm_model(m) %}{{ m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id) }}{% endmacro %}
+{# Admission bounds every LOCAL rung carries (defaults/main/40-routing.yml,
+   "ADMISSION BUDGET"): the first-byte bound is the capacity signal, the
+   retry count is the whole retry budget; an entry may declare tighter
+   figures, never looser. The whole-call timeout stays generation-sized.
+
+   `timeout` (non-streaming) is mandatory: LiteLLM picks stream_timeout
+   only for streaming calls (litellm/router.py _get_timeout); non-streaming
+   falls through to the 2400s litellm_settings.request_timeout otherwise —
+   confirmed live 2026-09-19, a non-streaming rung with no bound of its
+   own rode that ceiling before the caller saw litellm.Timeout. #}
+{% macro local_bounds(m) %}
+      num_retries: {{ [m.num_retries | default(llm_router_local_num_retries), llm_router_local_num_retries] | min }}
+      stream_timeout: {{ [m.stream_timeout | default(llm_router_local_stream_timeout_seconds), llm_router_local_stream_timeout_seconds] | min }}
+      timeout: {{ [m.request_timeout | default(llm_router_local_request_timeout_seconds), llm_router_local_request_timeout_seconds] | min }}
+{% endmacro %}
 model_list:
 {% include 'model-list-hermes-agents.yaml.j2' %}
   # --- Hermes-only local complexity router ---
@@ -69,9 +84,7 @@ model_list:
       # (10-large.yml max_parallel_requests) when the registry declares one,
       # else the tier-wide default.
       max_parallel_requests: {{ m.max_parallel_requests | default(llm_router_local_max_parallel_requests) }}
-{% if m.client_model_id == llm_router_primary_model %}
-      num_retries: 2
-{% endif %}
+{{ local_bounds(m) }}
 {% if m.extra_body is defined %}
       # Forwarded VERBATIM to the backend (drop_params would otherwise strip a
       # non-OpenAI param like repetition_penalty). See the registry entry.
@@ -104,6 +117,7 @@ model_list:
       # Preserve the primary deployment's OWN admission cap on failover —
       # same entry, same host, so the same per-model value.
       max_parallel_requests: {{ m.max_parallel_requests | default(llm_router_local_max_parallel_requests) }}
+{{ local_bounds(m) }}
 {% if m.extra_body is defined %}
       extra_body:
 {% for _pk, _pv in m.extra_body.items() %}
@@ -132,6 +146,7 @@ model_list:
 {% endif %}
 {% endif %}
 {% include 'model-list-opencode.yaml.j2' %}
+{% include 'model-list-zai.yaml.j2' %}
   # --- OpenRouter egress tier: explicit ids, one provider key ---
   # Never chained into fallbacks; an unseeded model renders no entry.
 {% for m in llm_router_openrouter_models %}
@@ -175,7 +190,9 @@ model_list:
   - model_name: {{ m.route_group }}
     litellm_params:
       model: {{ litellm_model(m) }}
+{% if m.provider != 'chatgpt' %}
       api_key: os.environ/{{ m.credential_env }}
+{% endif %}
 {% if m.api_base is defined %}
       api_base: {{ m.api_base }}
 {% endif %}
@@ -200,8 +217,12 @@ model_list:
       # in this role sets both from one value.
       stream_timeout: {{ m.stream_timeout }}
 {% endif %}
-      num_retries: 0
-      # Preferred while in budget; the local survivor below carries order 2.
+      # A group with several cloud members retries onto the next member; a
+      # single-member group hands over to its chain at once (38-zero-retry-groups.yml).
+      num_retries: {{ llm_router_cloud_group_retries if m.route_group in llm_router_multi_member_cloud_groups else 0 }}
+{% if m.reasoning_effort is defined %}
+      reasoning_effort: {{ m.reasoning_effort }}
+{% endif %}
       order: 1
 {% if m.monthly_budget is defined %}
       # Absent on hermes-cloud-free: nothing to bound, and a rendered ceiling
@@ -224,52 +245,10 @@ model_list:
           zdr: {{ m.zero_data_retention | default(true) | bool | lower }}
 {% endif %}
     model_info:
-      mode: chat
+      mode: {{ m.mode | default('chat') }}
       max_input_tokens: {{ m.context_window }}
       max_output_tokens: {{ m.max_output_tokens }}
       max_tokens: {{ m.max_output_tokens }}{{ delegation_hints(m) }}
-{% endfor %}
-{% for _group in llm_router_hermes_cloud_budgeted_groups %}
-  # LOCAL SURVIVOR for {{ _group }}. Budgets FILTER a model group rather than
-  # failing it: an over-budget deployment is dropped from the healthy set and
-  # the router only raises when that set is left EMPTY
-  # (router_strategy/budget_limiter.py). Order filtering runs AFTER that and
-  # keeps the lowest order still present (litellm/utils.py,
-  # _get_order_filtered_deployments).
-  #
-  # So this member is never chosen while the paid one is in budget, and is all
-  # that remains once the paid one is dropped — which is what turns budget
-  # exhaustion into a local answer instead of a refusal.
-  #
-  # It is the only native route. A fallbacks entry cannot work: the raise
-  # happens during deployment selection, before an attempt exists to fail.
-  # Per-key model_max_budget with budget_fallbacks is ENTERPRISE-LICENSED and
-  # is rejected on this deployment — do not retry that route.
-  - model_name: {{ _group }}
-    litellm_params:
-      model: openai/{{ llm_router_primary_model }}
-      api_base: {{ llm_router_llm_large_base_url }}
-      api_key: os.environ/LLM_LARGE_BEARER_TOKEN
-      use_chat_completions_api: true
-      # The primary's OWN cap (see llm_router_hermes_primary_max_parallel_requests,
-      # 35-hermes-cloud.yml) — this deployment IS the primary model, so it must
-      # track the same per-model value rather than the tier-wide default.
-      max_parallel_requests: {{ llm_router_hermes_primary_max_parallel_requests }}
-      order: 2
-    model_info:
-      disable_background_health_check: true
-      # The survivor's OWN window, from the primary's registry entry — not the
-      # group's paid member's. Omitting it resolved max_input_tokens to null,
-      # which exempts this deployment from enable_pre_call_checks entirely: an
-      # over-long request that the paid member would have refused was instead
-      # handed to a local gate that cannot serve it, and answered from a
-      # silently truncated prompt. Advertising the real number is narrower than
-      # the paid member on purpose (55-roles.yml, "FALLBACK ORDER IS ONE-WAY"):
-      # a rejected request beats a confidently wrong answer. It stays the less
-      # preferred member by order, so it can only ever be reached once the paid
-      # member is budget-filtered out.
-      max_input_tokens: {{ llm_router_hermes_primary_context_window }}
-      max_tokens: {{ llm_router_hermes_primary_context_window }}
 {% endfor %}
 {% if llm_router_openrouter_wildcard_enabled | bool %}
 {% set _wc_key = bao_local_llm_secrets.OPENROUTER_API_KEY | default(lookup('env', 'OPENROUTER_API_KEY'), true) %}
@@ -312,26 +291,27 @@ model_list:
       # otherwise healthy deployment. LiteLLM treats this as an internal control
       # flag and never forwards it in the upstream request body.
       use_chat_completions_api: true
-      # Same admission cap as the other local tiers: this backend serves one
-      # request at a time, so the router queues excess instead of forwarding it
-      # into an instant refusal.
-      max_parallel_requests: {{ llm_router_local_max_parallel_requests }}
-{% if m.num_retries is defined %}
-      num_retries: {{ m.num_retries }}
-{% endif %}
-{% if m.request_timeout is defined %}
-      timeout: {{ m.request_timeout }}
-{% endif %}
-{% if m.stream_timeout is defined %}
-      stream_timeout: {{ m.stream_timeout }}
-{% endif %}
+      # Same base value the serving guest's llama_cpp role uses for -np
+      # (inventory/group_vars/llm_vllm_group.yml).
+      max_parallel_requests: {{ hostvars[(groups['llm_vllm_group'] | default([]))[0]].llama_cpp_parallel
+                                 if (groups['llm_vllm_group'] | default([]) | length > 0)
+                                 else llm_router_local_max_parallel_requests }}
+{{ local_bounds(m) }}
 {% if m.embedding | default(false) or m.context_window is defined or m.allowed_fails is defined or m.cooldown_time is defined or m.hints is defined %}
     model_info:
 {% if m.embedding | default(false) %}
       mode: embedding
 {% elif m.context_window is defined %}
-      # Mandatory here — see README "The vLLM tier and the Hermes local GPU leg".
-      max_input_tokens: {{ m.context_window }}
+      # Mandatory — README "The vLLM tier and the Hermes local GPU leg".
+      # SMALLER of the context window and what this card can prefill in the
+      # admission budget, so an in-window but too-slow prompt skips at
+      # pre-call. Computed ONCE in defaults/main/20-registry.yml
+      # (_llm_router_vllm_max_input_tokens_by_model) so 55-roles.yml's role
+      # deployment on the same backend can never advertise a bigger window
+      # than this one does. Set-then-emit-inline, never a folded block
+      # scalar (always a string, breaking LiteLLM's int-typed pre-call check).
+{% set _vllm_max_input_tokens = _llm_router_vllm_max_input_tokens_by_model[m.client_model_id] %}
+      max_input_tokens: {{ _vllm_max_input_tokens }}
       max_tokens: {{ m.context_window }}
 {% endif %}
 {% if m.allowed_fails is defined %}

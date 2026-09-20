@@ -17,7 +17,7 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
 ### LLM serving
 
 - `ollama` — Ollama model server
-- `llama_cpp` — llama.cpp + llama-swap (GPU-tier serving)
+- `llama_cpp` — llama-server, direct (GPU-tier serving)
 - `llm_router` — LiteLLM proxy, the single OpenAI-compatible front door for
   the large/light serving tiers.
   **Registry rule (hard): every model name, alias, tier and enabled/servable

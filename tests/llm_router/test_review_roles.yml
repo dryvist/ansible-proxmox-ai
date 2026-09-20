@@ -1,0 +1,282 @@
+---
+# Pins the two CI review roles and the Codex/Z.ai rungs (55-roles.yml,
+# 33-zai.yml, llm-models.d/40-hermes-cloud.yml, 45-zai.yml):
+#
+#   * review-oss: local rungs → the Z.ai pair as its terminal, free tier
+#     before metered; NO free OpenRouter rung (provider filters, daily cap);
+#   * NO other role's ladder contains a Z.ai deployment, and no chain or
+#     segment derives from the zai tier;
+#   * review-private: local rungs → chatgpt/ subscription → openai/ API key,
+#     nothing else; with neither Codex rung credentialed it is local-only;
+#   * the Codex rungs render only when credentialed, the chatgpt rung has no
+#     api_key and a 15 s first-byte bound, the openai rung ends every other
+#     chat ladder, both at the highest reasoning effort the Responses path
+#     accepts;
+#   * the CI keys: github-actions → review-private only, github-actions-oss
+#     → review-oss only;
+#   * both review roles are lock-redirect roles and sit under the admission
+#     budget like every other role.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_review_roles.yml -i localhost, -c local
+- name: Verify the review roles and their terminal rungs
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      github_actions_llm_router_key: sk-fixture-gha
+      github_actions_oss_llm_router_key: sk-fixture-gha-oss
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: sk-or-fixture
+      OPENROUTER_HERMES_KEY: sk-orh-fixture
+      OPENAI_API_KEY: sk-oa-fixture
+      ZAI_API_KEY: sk-zai-fixture
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    # include_vars loads the role default (false) as a host fact, which
+    # outranks a play var: model a logged-in node with a fact of the same rank.
+    - name: Model a node that holds a ChatGPT login
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: true
+
+    - name: Run the role's own admission-budget assert
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assert-admission-budget.yml
+
+    - name: Render config.yaml.j2 with every credential present
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _environment: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+
+    - name: Note the rendered deployment names and the review roles
+      ansible.builtin.set_fact:
+        _rendered_names: "{{ _config.model_list | map(attribute='model_name') | list }}"
+        _public: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-oss') | first }}"
+        _private: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}"
+
+    - name: Public review ends in the Z.ai pair then the paid terminal, free before metered, no free external rung
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_zai_groups == (llm_router_zai_models | map(attribute='client_model_id') | list)
+          - llm_router_zai_groups | length == 2
+          - (llm_router_zai_models | first).input_cost_per_token is not defined
+          - (llm_router_zai_models | last).input_cost_per_token is defined
+          - _public.model == llm_router_hermes_local_4080_id
+          - _public.fallbacks[0] == llm_router_primary_model
+          - _public.fallbacks[1:1 + (llm_router_zai_groups | length)] == llm_router_zai_groups
+          - llm_router_external_free_rungs | intersect(_public.fallbacks) | length == 0
+          - >-
+            _public.fallbacks == [llm_router_primary_model] + llm_router_zai_groups
+            + llm_router_external_paid_rungs
+          - llm_router_external_subscription_rungs | intersect(_public.fallbacks) | length == 0
+          - llm_router_zai_groups | difference(_rendered_names) | length == 0
+          # The Z.ai pair is not itself a terminal rung (test below, "no other
+          # role carries a Z.ai deployment"), so review-oss needed the escape:
+          # the chain's own last rung before the fix (zai) was not in
+          # llm_router_external_terminal_rungs, and after the fix its real
+          # last rung is.
+          - _public.fallbacks[-1] in llm_router_external_terminal_rungs
+          # The credential-gated MODEL LIST rendering above only proves
+          # bao_local_llm_secrets.ZAI_API_KEY resolved; LiteLLM's
+          # `api_key: os.environ/ZAI_API_KEY` also needs the systemd
+          # EnvironmentFile to actually carry that variable, or every Z.ai
+          # call fails auth at runtime and review-oss falls through to
+          # default_fallbacks with a green contract test overhead.
+          - _environment | regex_findall('(?m)^ZAI_API_KEY=') | length == 1
+          # The GLM Coding Plan is served only at the /api/coding/paas/v4
+          # endpoint; the plain /api/paas/v4 path is pay-as-you-go and 429s
+          # for an operator with no balance there.
+          - llm_router_zai_base_url is search('/api/coding/paas/v4$')
+          - >-
+            _config.model_list | selectattr('model_name', 'in', llm_router_zai_groups)
+            | map(attribute='litellm_params.api_base') | unique | list == [llm_router_zai_base_url]
+        fail_msg: "review-oss: {{ _public.model }} -> {{ _public.fallbacks | join(' -> ') }}"
+        success_msg: "review-oss: {{ _public.model }} -> {{ _public.fallbacks | join(' -> ') }}"
+
+    - name: No other role, and no chain, carries a Z.ai deployment
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            llm_router_role_deployments | rejectattr('role', 'equalto', 'review-oss')
+            | map(attribute='fallbacks') | flatten | intersect(llm_router_zai_groups) | length == 0
+          - >-
+            _config.router_settings.fallbacks | map('dict2items') | flatten
+            | map(attribute='value') | flatten | intersect(llm_router_zai_groups) | length == 0
+          - _config.router_settings.default_fallbacks | intersect(llm_router_zai_groups) | length == 0
+          - llm_router_external_terminal_rungs | intersect(llm_router_zai_groups) | length == 0
+          - llm_router_hermes_cloud_fallback_groups | intersect(llm_router_zai_groups) | length == 0
+
+    - name: Every public role's non-empty chain ends in a terminal rung; review-private is the only cloud exception
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # selectattr('fallbacks') keeps only the roles whose chain is
+          # non-empty (fast-gpu/embed/ocr deliberately render []; see
+          # 55-roles.yml for why those must fail outright, not escape).
+          # review-private is excluded by name, not by shape: its own last
+          # rung (codex-api) already sits in external_terminal_rungs, so the
+          # exclusion here documents the RULE (no third-party cloud rung),
+          # not merely today's arithmetic.
+          - >-
+            llm_router_role_deployments
+            | rejectattr('role', 'equalto', 'review-private')
+            | selectattr('fallbacks')
+            | map(attribute='fallbacks') | map('last') | list
+            | difference(llm_router_external_terminal_rungs) | length == 0
+        fail_msg: >-
+          a public role's chain dead-ends outside llm_router_external_terminal_rungs:
+          {{ llm_router_role_deployments | rejectattr('role', 'equalto', 'review-private')
+             | selectattr('fallbacks') | map(attribute='fallbacks') | map('last') | list
+             | difference(llm_router_external_terminal_rungs) }}
+
+    - name: Private review is local rungs then the Codex rungs and nothing else
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _private.model == llm_router_hermes_local_4080_id
+          - _private.fallbacks == [llm_router_primary_model, 'codex-subscription', 'codex-api']
+          - llm_router_external_free_rungs | intersect(_private.fallbacks) | length == 0
+          - "'hermes-cloud-openrouter' not in _private.fallbacks"
+          - llm_router_zai_groups | intersect(_private.fallbacks) | length == 0
+        fail_msg: "review-private: {{ _private.model }} -> {{ _private.fallbacks | join(' -> ') }}"
+        success_msg: "review-private: {{ _private.model }} -> {{ _private.fallbacks | join(' -> ') }}"
+
+    - name: The Codex rungs render as specified
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _chatgpt | length == 1
+          - "'api_key' not in _chatgpt[0].litellm_params"
+          - _chatgpt[0].litellm_params.model == 'chatgpt/' ~ llm_router_chatgpt_model
+          - _chatgpt[0].litellm_params.reasoning_effort == 'xhigh'
+          - _chatgpt[0].litellm_params.stream_timeout | int <= llm_router_admission_budget_seconds | int
+          - _chatgpt[0].litellm_params.num_retries | int == 0
+          - _chatgpt[0].model_info.mode == 'responses'
+          - _openai | length == 1
+          - _openai[0].litellm_params.model == 'openai/' ~ llm_router_chatgpt_model
+          - _openai[0].litellm_params.api_key == 'os.environ/OPENAI_API_KEY'
+          - _openai[0].litellm_params.reasoning_effort == 'xhigh'
+          - _openai[0].litellm_params.stream_timeout | int < ai_ingress_response_header_timeout_seconds | int
+          - llm_router_external_terminal_rungs | last == 'codex-api'
+          - llm_router_external_subscription_rungs == ['codex-subscription']
+          - >-
+            llm_router_external_terminal_rungs.index('codex-subscription')
+            < llm_router_external_terminal_rungs.index(llm_router_external_paid_rungs | first)
+          - llm_router_external_free_rungs | intersect(llm_router_external_terminal_rungs) | length == 0
+      vars:
+        _chatgpt: "{{ _config.model_list | selectattr('model_name', 'equalto', 'codex-subscription') | list }}"
+        _openai: >-
+          {{ _config.model_list | selectattr('model_name', 'equalto', 'codex-api')
+             | selectattr('litellm_params.model', 'match', '^openai/gpt') | list }}
+
+    # The public key sits behind llm_router_oss_ci_key_enabled: with the
+    # switch off (the shipped default) it renders empty and seed-keys registers
+    # nothing, however the apps secret reads; on, the secret's value renders.
+    # The path side of the switch: tests/openbao_secrets/test_optional_paths_are_gated.yml.
+    - name: Capture the switch-off render, then flip the switch on
+      ansible.builtin.set_fact:
+        _off: "{{ llm_router_virtual_keys }}"
+        llm_router_oss_ci_key_enabled: true
+
+    - name: The public CI key is inert with its switch off and minted with it on
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _off_value == ''
+          - _on_value == 'sk-fixture-gha-oss'
+      vars:
+        _off_value: >-
+          {{ _off | selectattr('alias', 'equalto', 'github-actions-oss') | map(attribute='value') | first }}
+        _on_value: >-
+          {{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss')
+             | map(attribute='value') | first }}
+        _apps_paths: >-
+          {{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths
+             | select('mapping') | list }}
+
+    - name: The CI keys are scoped to exactly their review role
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # First scope is the role; the rest is its chain (59-key-scopes.yml,
+          # asserted in test_local_first_by_order.yml).
+          - _gha.models[0] == 'review-private'
+          - _gha.models | intersect(['review-oss'] + llm_router_zai_groups) | length == 0
+          - _gha_oss.models[0] == 'review-oss'
+          - "'review-private' not in _gha_oss.models"
+          - "'review-oss' in llm_router_subagent_lock_role_names"
+          - "'review-private' in llm_router_subagent_lock_role_names"
+      vars:
+        _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
+        _gha_oss: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
+
+    # Whitespace, never absent: an absent field falls through to the RUNNER's
+    # environment (test_hermes_provider_keys.yml has the same fixture rule).
+    - name: Model a node with no ChatGPT login and no Codex or Z.ai key
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: false
+        bao_local_llm_secrets:
+          OPENROUTER_API_KEY: sk-or-fixture
+          OPENROUTER_HERMES_KEY: "   "
+          OPENAI_API_KEY: "   "
+          ZAI_API_KEY: "   "
+          GEMINI_API_KEY: "   "
+          DASHSCOPE_API_KEY: "   "
+          OPENCODE_API_KEY: "   "
+
+    - name: Render again with no Codex or Z.ai credential
+      ansible.builtin.set_fact:
+        _bare: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _bare_private: >-
+          {{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}
+        _bare_public: >-
+          {{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-oss') | first }}
+
+    - name: Uncredentialed, both review roles are local-only
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _bare_private.fallbacks == [llm_router_primary_model]
+          - _bare_public.fallbacks == [llm_router_primary_model]
+          - >-
+            _bare.model_list
+            | selectattr('model_name', 'in', ['codex-subscription'] + _zai_ids)
+            | list | length == 0
+          - >-
+            _bare.model_list | selectattr('model_name', 'equalto', 'codex-api')
+            | selectattr('litellm_params.model', 'match', '^openai/gpt') | list | length == 0
+        fail_msg: "private={{ _bare_private.fallbacks }} public={{ _bare_public.fallbacks }}"
+      vars:
+        _zai_ids: "{{ llm_router_zai_models | map(attribute='client_model_id') | list }}"
+        success_msg: "uncredentialed: private={{ _bare_private.fallbacks }} public={{ _bare_public.fallbacks }}"

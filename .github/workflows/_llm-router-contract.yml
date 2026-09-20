@@ -2,11 +2,11 @@
 # The llm_router role's data contract, split out of _data-contract.yml.
 #
 # WHY ITS OWN FILE. These checks are an ENUMERATED list — a test file added
-# without a line here is decorative — so the list only grows, and it grew past
-# the repo's per-file token budget while three PRs were appending to it at
-# once. The budget exists to force exactly this split rather than to be raised:
-# an agent changing one router contract should read this file, not every
-# openbao, hermes and phoenix check as well.
+# without a matrix entry is decorative — so the list only grows, and it grew
+# past the repo's per-file token budget twice while it repeated a full step
+# block (name, comment, run) per check. A `strategy.matrix` collapses that to
+# one shared step and one line per playbook, which is what actually fixes the
+# growth rather than moving it to a second file.
 #
 # Called by _data-contract.yml, so its result still reaches the Merge Gate
 # through that workflow's conclusion.
@@ -21,17 +21,132 @@ permissions:
 
 jobs:
   llm-router-contract:
-    name: Check
+    name: ${{ matrix.playbook }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One or two space-separated tests/llm_router/*.yml playbooks per
+        # entry — two only where the original single ansible-playbook
+        # invocation ran them together (process-recovery pair, admission
+        # pair), preserved here so they still share one Ansible process.
+        playbook:
+          - tests/llm_router/test_alias_servable.yml # servable-alias contract
+          # admission budget, ladder, local-first order
+          - tests/llm_router/test_admission_budget_and_ladder.yml tests/llm_router/test_local_first_by_order.yml
+          - tests/llm_router/test_review_roles.yml # review roles, Codex rungs, Z.ai overflow
+          # Kept out of the pairing above: test_review_roles.yml's tail
+          # clears bao_local_llm_secrets via set_fact, and that host fact
+          # persists across plays sharing one ansible-playbook process.
+          - tests/llm_router/test_review_oss_context_window_order.yml # review-oss context-window escape order
+          - tests/llm_router/test_callbacks_render_as_list.yml # callbacks parse as a list, not a block scalar
+          # process-recovery + rolling-converge
+          - tests/llm_router/test_service_restart_policy.yml tests/llm_router/test_syslog_route_outside_rolling_play.yml
+          - tests/llm_router/test_hermes_default_failover.yml # no-credential fallback stays local
+          - tests/llm_router/test_fallback_narrow_legs_last.yml # narrow-fallback ordering
+          - tests/llm_router/test_fallback_entry_points.yml # fallback entry-point contract
+          - tests/llm_router/test_fallback_zdr_and_escape.yml # ZDR-ladder purity + escape coverage
+          - tests/llm_router/test_fallback_depth_budget.yml # fallback depth-budget contract
+          - tests/llm_router/test_fallback_model_access_enforced.yml # per-fallback-target key re-check is on
+          - tests/llm_router/test_hermes_cloud_value.yml # Hermes cloud value contract
+          - tests/llm_router/test_hermes_provider_policy.yml # provider credential policy
+          - tests/llm_router/test_hermes_provider_keys.yml # provider-key contract
+          - tests/llm_router/test_hermes_provider_keys_whitespace.yml # whitespace-credential contract
+          - tests/llm_router/test_virtual_key_apps_paths_covered.yml # every virtual-key alias has an apps domain path
+          - tests/llm_router/test_key_budget_limits_window.yml # key budget-limits daily window arithmetic
+          - tests/llm_router/test_opencode_tier_render.yml # subscription-tier render contract
+          - tests/llm_router/test_openrouter_allowlist.yml # OpenRouter allowlist + budget contract
+          - tests/llm_router/test_budget_requires_store.yml # budget/store pairing contract
+          - tests/llm_router/test_spend_log_retention.yml # request-record retention contract
+          - tests/llm_router/test_serving_share.yml # serving-share metric job contract
+          - tests/llm_router/test_local_admission_cap.yml # local admission-cap contract
+          - tests/llm_router/test_registry_render_parity.yml # registry/render parity contract
+          - tests/llm_router/test_background_health_check_exclusion.yml # background health-check exclusion
+          - tests/llm_router/test_serving_identity.yml # heavy-tier serving identity contract
+          - tests/llm_router/test_endpoint_dns_assert.yml # backend DNS resolution contract
+          - tests/llm_router/test_servable_probe.yml # servable probe gate contract
+          - tests/llm_router/test_servable_probe_remote.yml # servable probe remote contract
+          - tests/llm_router/test_servable_probe_plan.yml # servable probe plan contract
+          - tests/llm_router/test_litellm_oidc_env.yml # generic-OIDC env rendering contract
+          # OIDC admin identity is mandatory, never a literal
+          - tests/llm_router/test_litellm_oidc_admin_identity_required.yml
+          - tests/llm_router/test_alert_webhook.yml # alerting block renders only when a webhook URL is set
+          - tests/llm_router/test_cheap_gpu_first_ladder.yml # cheap role's GPU-first ladder and per-rung bounds
+          # GPU rung admission derives from the guest's own llama_cpp_parallel
+          - tests/llm_router/test_gpu_rung_admission_matches_backend.yml
+          - tests/llm_router/test_hermes_agents.yml # every published Hermes agent renders as its own deployment
+          # every local deployment carries its own non-streaming timeout
+          - tests/llm_router/test_local_nonstreaming_timeout.yml
+          # OpenCode-only credential keeps entry points fallback-capable
+          - tests/llm_router/test_opencode_only_entry_points.yml
+          - tests/llm_router/test_registry_hints_projection.yml # registry hints reach the rendered model_info
+          # role-deployment retirement selects only the DB-stored shadow
+          - tests/llm_router/test_retire_role_deployments_db_only.yml
+          - tests/llm_router/test_router_settings_seed_mode.yml # settings seed-mode defaults to initial, never rebuild
+          # settings DB sync handler runs after the restart handler
+          - tests/llm_router/test_router_settings_sync_after_restart.yml
+          - tests/llm_router/test_seed_key_format_assert.yml # seed-key format guard fails loud before /key/generate
+          # live-alias expression matches the full-object /key/list response
+          - tests/llm_router/test_seed_key_live_aliases.yml
+          # fast-gpu is gated by the 4080 session lock, not redirected
+          - tests/llm_router/test_subagent_lock_gated_models.yml
+          - tests/llm_router/test_syslog_route.yml # router syslog route renders the documented taxonomy and unit match
 
     # Static placeholders for the required-environment inputs the llm_router
     # role reads. No workflow context or untrusted input is interpolated here.
     # NOT secrets and NOT a bypass: the role's guards still refuse a real
     # converge with these unset, and the checks below render the config rather
-    # than reaching any provider. Without them `lookup('env', NAME) |
-    # mandatory(...)` returns '' rather than raising, and every check that
-    # renders the proxy config asserts against a config carrying an EMPTY
-    # master key and bearer token — and passes.
+    # than reaching any provider.
+    env:
+      LLM_ROUTER_MASTER_KEY: sk-ci-placeholder-not-a-secret
+      LLM_LARGE_BEARER_TOKEN: ci-placeholder-bearer-not-a-secret
+      PROXMOX_SUBDOMAIN: pve.example.test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.14'
+
+      - name: Install Ansible
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible
+
+      # Cache Galaxy content keyed on requirements.yml. On a hit the collections
+      # (and any roles) are already present, so the install below is skipped;
+      # on a miss (requirements.yml changed) it runs and repopulates the cache.
+      # Same key/paths as dryvist/.github's _ansible-ci.yml so a warm run of
+      # either workflow warms the other.
+      - name: Cache Ansible Galaxy content
+        id: galaxy-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.ansible/collections
+            ~/.ansible/roles
+          key: ansible-galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+
+      - name: Install Ansible dependencies
+        if: steps.galaxy-cache.outputs.cache-hit != 'true'
+        run: |
+          ansible-galaxy install -r requirements.yml
+
+      - name: Run llm_router contract playbook
+        run: ansible-playbook ${{ matrix.playbook }} -i localhost, -c local
+
+  # Not part of the matrix above: this is pytest, not ansible-playbook, and it
+  # needs a real Redis to exercise fast_subagent_lock.py.j2's actual EVAL
+  # calls (test_fast_subagent_lock_behavioral.py), which nothing else in this
+  # file needs — a service scoped to every matrix instance would start Redis
+  # 30 times for one consumer.
+  llm-router-registry-contract:
+    name: Registry single-source contract
+    runs-on: ubuntu-latest
+
     env:
       LLM_ROUTER_MASTER_KEY: sk-ci-placeholder-not-a-secret
       LLM_LARGE_BEARER_TOKEN: ci-placeholder-bearer-not-a-secret
@@ -44,12 +159,6 @@ jobs:
       # file's own docstring.
       LLM_ROUTER_REQUIRE_REDIS: "1"
 
-    # ONLY for tests/llm_router/test_fast_subagent_lock_behavioral.py — a
-    # real Redis to exercise fast_subagent_lock.py.j2's actual EVAL calls
-    # against, not just text-assert its rendered source. Every other step in
-    # this job touches no network resource; this is the one exception, and
-    # it is a plain, unauthenticated container-to-container service, not a
-    # secret or a reachable endpoint outside this job.
     services:
       redis:
         image: redis:8-alpine
@@ -70,247 +179,24 @@ jobs:
         with:
           python-version: '3.14'
 
-      # pytest joins the existing pip install: the hermes_agent self-checks below
-      # use parametrize and raises, so pytest is their runner, not an extra tool.
-      # redis is ONLY for test_fast_subagent_lock_behavioral.py, which skips
-      # cleanly (not silently) if it or the redis: service above is missing —
-      # see that file's own docstring for why litellm/fastapi themselves are
-      # deliberately NOT added here.
       - name: Install Ansible
         run: |
           python -m pip install --upgrade pip
           pip install ansible pytest pyyaml redis
 
+      - name: Cache Ansible Galaxy content
+        id: galaxy-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.ansible/collections
+            ~/.ansible/roles
+          key: ansible-galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+
       - name: Install Ansible dependencies
+        if: steps.galaxy-cache.outputs.cache-hit != 'true'
         run: |
           ansible-galaxy install -r requirements.yml
-
-      # Every consumer alias must name a model the serving host will actually
-      # serve. On 2026-07-28 all four returned HTTP 404 at once — the serving
-      # host runs llama-swap in single-model mode, where a non-resident model is
-      # in disabledModels and 404s rather than being served under the wrong
-      # weights. Render-time and offline on purpose: the defect was invisible for
-      # as long as llama-swap grafted disabled ids onto the resident, so a live
-      # probe would have passed while Hermes was answered by a model nobody
-      # selected.
-      - name: Verify llm_router servable-alias contract
-        run: >-
-          ansible-playbook tests/llm_router/test_alias_servable.yml
-          -i localhost, -c local
-
-      - name: Verify llm_router process-recovery contract
-        run: >-
-          ansible-playbook tests/llm_router/test_service_restart_policy.yml
-          -i localhost, -c local
-
-      # The no-credential half of the rendered fallback contract: local
-      # complexity routing remains available while no unauthenticated cloud
-      # group is advertised.
-      - name: Verify llm_router hermes-default failover contract
-        run: >-
-          ansible-playbook tests/llm_router/test_hermes_default_failover.yml
-          -i localhost, -c local
-
-      # The credentialed half of the same contract: with cloud rungs present,
-      # a fallback leg narrower than the primary must not stand in front of
-      # them. A narrow leg raises ContextWindowExceededError before doing any
-      # work, so every one standing in front spends an attempt -- and a unit of
-      # the shared max_fallbacks budget -- on a rung that could not have served
-      # the request. (It does not abort the chain; the walk advances. See
-      # roles/llm_router/tasks/assert-fallback-chain.yml.)
-      - name: Verify llm_router narrow-fallback ordering contract
-        run: >-
-          ansible-playbook tests/llm_router/test_fallback_narrow_legs_last.yml
-          -i localhost, -c local
-
-      # Both fallback maps are looked up under the model name AS TYPED, with no
-      # alias resolution first -- so every servable id and every advertised
-      # alias needs its own key in each. A name in one map but not the other
-      # is a regression either way round.
-      - name: Verify llm_router fallback entry-point contract
-        run: >-
-          ansible-playbook tests/llm_router/test_fallback_entry_points.yml
-          -i localhost, -c local
-
-      # Split from the entry-point contract above to stay under the per-file
-      # token budget — same rendered maps, the ZDR-ladder and wider-escape
-      # invariants over them.
-      - name: Verify llm_router ZDR-ladder purity and context-window escape coverage
-        run: >-
-          ansible-playbook tests/llm_router/test_fallback_zdr_and_escape.yml
-          -i localhost, -c local
-
-      # max_fallbacks is one depth budget shared by every rendered chain; the
-      # attempt-key count it must cover is read off the render, not the
-      # defaults' own expression.
-      - name: Verify llm_router fallback depth-budget contract
-        run: >-
-          ansible-playbook tests/llm_router/test_fallback_depth_budget.yml
-          -i localhost, -c local
-
-      - name: Verify llm_router Hermes cloud value contract
-        run: >-
-          ansible-playbook tests/llm_router/test_hermes_cloud_value.yml
-          -i localhost, -c local
-
-      - name: Verify llm_router provider-key contract
-        run: >-
-          ansible-playbook tests/llm_router/test_hermes_provider_keys.yml
-          -i localhost, -c local
-
-      - name: Verify llm_router whitespace-credential contract
-        run: >-
-          ansible-playbook tests/llm_router/test_hermes_provider_keys_whitespace.yml
-          -i localhost, -c local
-
-      - name: Verify every seeded virtual-key alias has an apps domain path
-        run: >-
-          ansible-playbook tests/llm_router/test_virtual_key_apps_paths_covered.yml
-          -i localhost, -c local
-
-      - name: Verify the key budget-limits daily window arithmetic
-        run: >-
-          ansible-playbook tests/llm_router/test_key_budget_limits_window.yml
-          -i localhost, -c local
-
-      # The paid-egress contract: the registry is the allowlist (no
-      # `openrouter/*` passthrough), and the spend ceiling is enforced by the
-      # router rather than described to the caller. Both failures are silent —
-      # the render succeeds either way and neither ansible-lint nor
-      # --syntax-check can see them.
-      # The subscription tier's own render contract. Every other fixture leaves
-      # its credential unseeded, so without this step the tier's whole render
-      # block -- including the hints projection -- ships unexecuted. This list
-      # is enumerated, not globbed: a test file added without a line here is
-      # decorative.
-      - name: Verify llm_router subscription-tier render contract
-        run: >-
-          ansible-playbook tests/llm_router/test_opencode_tier_render.yml
-          -i localhost, -c local
-
-      - name: Verify llm_router OpenRouter allowlist and budget contract
-        run: >-
-          ansible-playbook tests/llm_router/test_openrouter_allowlist.yml
-          -i localhost, -c local
-
-      # The pairing invariant itself, proven from both sides: a budget with no
-      # store must FAIL the converge, and a store with no budget must pass. This
-      # list is enumerated, not globbed, so a test file added without a line
-      # here is decorative — the exact rot the hermes-default step above was
-      # rescued from. That matters more than usual for this one: the assertion
-      # it covers exists specifically to stop an unbacked ceiling being
-      # reintroduced, so a version of it that never runs restores the defect
-      # while looking like the guard against it.
-      - name: Verify llm_router budget/store pairing contract
-        run: >-
-          ansible-playbook tests/llm_router/test_budget_requires_store.yml
-          -i localhost, -c local
-      # Pins the per-request-record contract: with a database attached, every
-      # request leaves an attributable row, the table is bounded by a retention
-      # job, and prompts stay out of it. Each half fails silently on its own —
-      # spend logs off means no request can be tied to the deployment that
-      # served it, error logs off leaves only successes so every derived rate
-      # is right by construction, and a missing retention period schedules no
-      # cleanup at all rather than a long one.
-      - name: Verify llm_router request-record retention contract
-        run: >-
-          ansible-playbook tests/llm_router/test_spend_log_retention.yml
-          -i localhost, -c local
-      # Pins the serving-share metric job: the query derives "local" from the
-      # subdomain variable and emits one JSON object with the promised fields;
-      # the service reads the proxy's own env file and fails loudly; the timer
-      # is daily and persistent. Without this the number the program is stated
-      # in is a document, not a measurement.
-      - name: Verify llm_router serving-share metric job contract
-        run: >-
-          ansible-playbook tests/llm_router/test_serving_share.yml
-          -i localhost, -c local
-      # Pins that every LOCAL deployment carries an in-flight admission cap.
-      # Until 2026-08 only the OpenRouter egress tier had rpm/tpm/
-      # max_parallel_requests, so LiteLLM admitted every inbound request to
-      # local backends unbounded.
-      - name: Verify llm_router local admission-cap contract
-        run: >-
-          ansible-playbook tests/llm_router/test_local_admission_cap.yml
-          -i localhost, -c local
-
-      # Pins the registry <-> rendered model_list parity guard
-      # (assert-registry-render-parity.yml) — the only check that catches an
-      # entry enabled in the registry but absent from the render, or vice
-      # versa; every other assert only checks the registry against itself.
-      - name: Verify llm_router registry/render parity contract
-        run: >-
-          ansible-playbook tests/llm_router/test_registry_render_parity.yml
-          -i localhost, -c local
-
-      # Pins that every llama-swap-backed deployment (large + standby, fast +
-      # light) stays excluded from background health checks, and that the
-      # dedicated vLLM tier and cloud legs remain probeable. Nothing else
-      # inspects model_info, so a template edit that drops the exclusion from
-      # one tier would otherwise ship silently.
-      - name: Verify llm_router background health-check exclusion contract
-        run: >-
-          ansible-playbook tests/llm_router/test_background_health_check_exclusion.yml
-          -i localhost, -c local
-
-      # Pins the heavy-tier serving identity contract: address and hostname
-      # come from a published authority, never a value committed here, and
-      # their absence is fatal rather than papered over.
-      - name: Verify llm_router heavy-tier serving identity contract
-        run: >-
-          ansible-playbook tests/llm_router/test_serving_identity.yml
-          -i localhost, -c local
-
-      # Pins the backend DNS resolution contract: every advertised backend
-      # base URL must resolve on the router guest itself, so an
-      # advertised-but-unresolvable host (the apex-vs-subdomain trap
-      # documented on llm_router_llm_vllm_base_url) fails the converge
-      # instead of a later, unrelated-looking connection error.
-      - name: Verify llm_router backend DNS resolution contract
-        run: >-
-          ansible-playbook tests/llm_router/test_endpoint_dns_assert.yml
-          -i localhost, -c local
-
-      # The gate half of the servable probe: a registry claim the serving gate
-      # contradicts is fatal, and each reason it declined to check is reported
-      # as a decline rather than passing silently.
-      - name: Verify llm_router servable probe gate contract
-        run: >-
-          ansible-playbook tests/llm_router/test_servable_probe.yml
-          -i localhost, -c local
-
-      # The remote half: a provider listing missing a registered id is fatal,
-      # and an unseeded tier is reported as not deployed, not merely unchecked.
-      - name: Verify llm_router servable probe remote contract
-        run: >-
-          ansible-playbook tests/llm_router/test_servable_probe_remote.yml
-          -i localhost, -c local
-
-      # Which endpoints the probe plans to query at all. A plan that drops a
-      # tier verifies nothing while the converge stays green.
-      - name: Verify llm_router servable probe plan contract
-        run: >-
-          ansible-playbook tests/llm_router/test_servable_probe_plan.yml
-          -i localhost, -c local
-
-      # Pins the generic-OIDC env block litellm.env.j2 emits once the Authelia
-      # client secret resolves, and its honest absence when none does. Nothing
-      # else renders that template outside a converge, so without this step the
-      # SSO-env contract ships unverified — this list is enumerated, not
-      # globbed, so an unlisted test is decorative.
-      - name: Verify llm_router generic-OIDC env rendering contract
-        run: >-
-          ansible-playbook tests/llm_router/test_litellm_oidc_env.yml
-          -i localhost, -c local
-
-      # PROXY_ADMIN_ID must never fall back to a literal identity: proves the
-      # render fails loud when the runtime env carries no admin id, instead of
-      # silently shipping a personal identifier. A separate playbook from the
-      # step above — see the header comment in the test file for why.
-      - name: Verify llm_router OIDC admin identity is mandatory, never a literal
-        run: >-
-          ansible-playbook tests/llm_router/test_litellm_oidc_admin_identity_required.yml
-          -i localhost, -c local
 
       # The registry rule's teeth: a registry value re-typed as a literal in
       # the role, its tests or the playbooks fails here. Render parity cannot

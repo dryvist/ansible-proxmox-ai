@@ -1,0 +1,150 @@
+---
+# Pins the ONE base variable contract for the 4080's admission control:
+# llama_cpp_parallel (inventory/group_vars/llm_vllm_group.yml) feeds both the
+# serving guest's -np/preset --parallel AND the router's own
+# max_parallel_requests for that deployment (roles/llm_router/templates/
+# model-list.yaml.j2, hostvars-derived) — never a separately-set literal.
+# stream_timeout for the same rung is llm_router_admission_budget_seconds,
+# never a literal either (llm-models.d/30-local-gpu.yml).
+#
+# ORDER MATTERS: the unset case runs FIRST, on the guest before it ever
+# carries llama_cpp_parallel, then the SAME hostname is re-added with the
+# var set for the matching assertions. add_host is idempotent per hostname
+# (updates that host's vars in place) — using two different hostnames would
+# leave the group's first member (`groups['llm_vllm_group'][0]`, what the
+# router templates actually read) permanently pinned to whichever was added
+# first, silently skipping whichever case ran second.
+#
+# Run (from the REPO ROOT — the registry load resolves the llm_router role
+# through ansible.cfg's cwd-relative roles_path):
+#   ansible-playbook tests/llm_router/test_gpu_rung_admission_matches_backend.yml -i localhost, -c local
+- name: Verify the GPU rung's admission control derives from the guest's own llama_cpp_parallel
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _vllm_parallel: 3
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Add the synthetic vLLM-tier guest WITHOUT llama_cpp_parallel
+      ansible.builtin.add_host:
+        name: fixture-4080
+        groups: llm_vllm_group
+
+    - name: Attempt the render with the guest missing llama_cpp_parallel
+      ansible.builtin.set_fact:
+        _unused: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') }}"
+      register: _render_with_unset_parallel
+      ignore_errors: true
+
+    - name: Confirm the unset case actually failed to render
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _render_with_unset_parallel is failed
+        fail_msg: >-
+          Rendering with the vLLM guest's llama_cpp_parallel unset succeeded —
+          it must fail loud, not silently fall back to a tier-wide default.
+
+    - name: Re-add the SAME guest, now WITH a distinctive llama_cpp_parallel
+      ansible.builtin.add_host:
+        name: fixture-4080
+        groups: llm_vllm_group
+        llama_cpp_parallel: "{{ _vllm_parallel }}"
+        # Also mandatory, fail-loud, per the same one-base-variable contract
+        # (roles/llm_router/templates/model-list.yaml.j2, the vLLM tier's
+        # max_input_tokens) — not this test's own subject, so a plain
+        # measured-looking value is enough to let the render past it.
+        llama_cpp_prefill_tokens_per_second: 120
+
+    - name: Render the real config.yaml.j2 template into a string
+      ansible.builtin.set_fact:
+        _rendered_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') }}"
+
+    - name: Parse the rendered config as YAML
+      ansible.builtin.set_fact:
+        _config: "{{ _rendered_config | from_yaml }}"
+
+    - name: Select the vLLM-tier and hermes-local-4080 deployments
+      ansible.builtin.set_fact:
+        _gpu_deployments: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url)
+             | list }}
+
+    - name: The test is not vacuous — the GPU rung actually rendered
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _gpu_deployments | length > 0
+        fail_msg: >-
+          No GPU-rung deployments rendered — the fixture inventory or the
+          registry is broken, not the derivation this test checks.
+
+    - name: Every GPU-rung deployment's max_parallel_requests equals the guest's own llama_cpp_parallel
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _mismatched | length == 0
+        fail_msg: >-
+          {{ _mismatched }} rendered max_parallel_requests that disagrees with
+          the synthetic guest's llama_cpp_parallel ({{ _vllm_parallel }}) —
+          the router and the backend it fronts must read the SAME variable.
+        success_msg: >-
+          All {{ _gpu_deployments | length }} GPU-rung deployment(s) match
+          llama_cpp_parallel={{ _vllm_parallel }}.
+      vars:
+        _mismatched: >-
+          {{ _gpu_deployments
+             | rejectattr('litellm_params.max_parallel_requests', 'equalto', _vllm_parallel)
+             | map(attribute='model_name') | list }}
+
+    - name: The card-tier and hermes-local-4080 registry entries carry the admission budget as stream_timeout
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _card_entries | length > 0
+          - _wrong | length == 0
+        fail_msg: >-
+          {{ _wrong }} carry a stream_timeout that is not
+          llm_router_admission_budget_seconds
+          ({{ llm_router_admission_budget_seconds }}) — a literal here can
+          silently drift from the golden "never wait on a busy local model"
+          rule this value is meant to express.
+      vars:
+        _card_entries: >-
+          {{ llm_router_registry_enabled
+             | selectattr('tier', 'in', ['vllm', 'hermes-local']) | list }}
+        _wrong: >-
+          {{ _card_entries
+             | rejectattr('stream_timeout', 'equalto', llm_router_admission_budget_seconds | int)
+             | map(attribute='client_model_id') | list }}

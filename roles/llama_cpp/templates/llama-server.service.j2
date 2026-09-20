@@ -1,0 +1,42 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=llama-server (router mode, {{ llama_cpp_gpu_backend }}) — retired llama-swap 2026-09-19
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ llama_cpp_user }}
+Group={{ llama_cpp_group }}
+WorkingDirectory={{ llama_cpp_data_dir }}
+# The release binary and its bundled .so files share the install dir.
+Environment=LD_LIBRARY_PATH={{ llama_cpp_install_dir }}
+{% if llama_cpp_gpu_backend == 'rocm' %}
+{# ROCm ONLY. This was previously emitted for any GPU build, which would put an
+   AMD-specific gfx-version override into an NVIDIA unit — harmless-looking,
+   and exactly the kind of stray environment that makes a later failure hard to
+   attribute. #}
+Environment=HSA_OVERRIDE_GFX_VERSION={{ llama_cpp_hsa_override_gfx_version }}
+{% endif %}
+# Router mode (native to llama-server, replaces llama-swap): --models-preset
+# points at the rendered INI (templates/llama-cpp-models.ini.j2) — one section
+# per present, guard-checked model, section name = the registry id, so the
+# router serves exactly the ids this role already declared, never anything
+# else on the shared mount. --models-max caps how many stay resident at once.
+# Only --parallel/--metrics/-ngl apply uniformly to every instance (upstream
+# docs, "default arguments... passed to every model instance"); per-model
+# ctx-size and chat-vs-embeddings flags live IN the preset, never here — a
+# top-level CLI arg would override every preset entry's own value (upstream
+# precedence: CLI > preset).
+ExecStart={{ llama_cpp_server_bin }} \
+  --host 0.0.0.0 --port {{ llama_cpp_api_port }} \
+  --models-preset {{ llama_cpp_config_file }} \
+  --models-max {{ llama_cpp_models_max }} \
+  --models-autoload \
+  --parallel {{ llama_cpp_parallel | mandatory("llama_cpp_parallel must be set for this group") }} \
+  --metrics \
+  -ngl {{ llama_cpp_ngl }}
+# Restart policy is managed by the systemd_restart_policy role (99-restart-policy.conf).
+
+[Install]
+WantedBy=multi-user.target

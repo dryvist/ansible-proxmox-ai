@@ -10,12 +10,12 @@
 
 # =============================================================================
 # Phase 4: LLM serving fabric — llama.cpp light tier + LiteLLM front door.
-# llama.cpp + llama-swap (llm-fast) serves the co-resident light models;
+# llama.cpp router mode (llm-fast) serves the co-resident light models;
 # the LiteLLM proxy (llm-router x3) is the single OpenAI-compatible endpoint,
 # fronted by Traefik at https://llm.<subdomain>, routing large vs light by alias.
 # =============================================================================
 
-- name: Configure llama.cpp light-tier serving (llama-swap, AMD ROCm)
+- name: Configure llama.cpp light-tier serving (router mode, AMD ROCm)
   hosts: llm_fast_group
   become: true
   gather_facts: true
@@ -81,7 +81,7 @@
 # the registry's `vllm` TIER key are a different thing — both name the
 # ROUTER's view of this guest, unrelated to which engine actually serves it;
 # do not remove either.
-- name: Configure llama.cpp serving on the NVIDIA guest (llama-swap, Vulkan)
+- name: Configure llama.cpp serving on the NVIDIA guest (router mode, Vulkan)
   hosts: llm_vllm_group
   become: true
   gather_facts: true
@@ -90,7 +90,7 @@
   # SAME way the llm_router converge and fabric_watchdog load it, so the path is
   # never hand-rolled. public: true is required: without it the registry is in
   # scope only for the included tasks, and llama_cpp_ctx_size then resolves
-  # undefined when the role renders llama-swap's config.
+  # undefined when the role renders the --models-preset.
   pre_tasks:
     - name: Load the fabric model registry
       ansible.builtin.include_role:
@@ -149,6 +149,13 @@
   # this member's window, so the next member is not touched until this one is
   # serving again. max_fail_percentage: 0 stops the play on any failure rather
   # than marching on to break the rest.
+  #
+  # NOT isolated. The rescue the other plays use turns a failed member into a
+  # "rescued" one, which max_fail_percentage never sees — so a render that
+  # killed member 1 was still rolled onto members 2 and 3 (2026-09-19, the
+  # whole front door down from one config). The failure is recorded for the
+  # end-of-run gate AND re-raised, so the batch stops at the first bad member
+  # while the others keep serving the previous config.
   serial: 1
   max_fail_percentage: 0
   pre_tasks:
@@ -159,16 +166,22 @@
     - llm
     - ai
   tasks:
-    - name: Converge llm_router (isolated — failure does not abort downstream plays)
+    - name: Converge llm_router (a failed member stops the rolling batch)
       block:
         - name: Include llm_router role
           ansible.builtin.include_role:
             name: llm_router
       rescue:
-        - name: Record isolated failure and continue
+        - name: Record the failure for the end-of-run gate
           ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
           vars:
             _isolated_play_name: llm_router
+        - name: Stop the rolling converge at this member
+          ansible.builtin.fail:
+            msg: >-
+              llm_router failed on {{ inventory_hostname }}:
+              {{ ansible_failed_result.msg | default(ansible_failed_task.name | default('task failed')) }}.
+              Remaining pool members keep their previous config.
 
 - name: Configure the CPU LLM pool scaler
   hosts: llm_router_group
@@ -191,6 +204,33 @@
           ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
           vars:
             _isolated_play_name: llm_cpu_scaler
+
+# Journal forwarding for the router pool, after every member is converged.
+# Its own play, not a task inside the rolling converge above: the route
+# renders from inventory constants alone, so a missing one fails HERE — loud,
+# named in the end-of-run gate — after the ladder has landed on all members,
+# never splitting the pool between two configs. Contract:
+# tests/llm_router/test_syslog_route_outside_rolling_play.yml.
+- name: Ship the router pool's journal to the dedicated LLM Splunk index
+  hosts: llm_router_group
+  become: true
+  gather_facts: false
+  tags:
+    - llm_router
+    - llm
+    - ai
+  tasks:
+    - name: Converge the llm_router log route (isolated — failure does not abort downstream plays)
+      block:
+        - name: Include the llm_router syslog route
+          ansible.builtin.include_role:
+            name: llm_router
+            tasks_from: 10-llm-router-syslog.yml
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: llm_router_syslog_route
 
 # =============================================================================
 # Phase 5: LlamaIndex RAG Engine

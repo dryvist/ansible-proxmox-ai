@@ -1,0 +1,25 @@
+---
+# The chatgpt/ provider's login is a PER-NODE file the proxy owns: it rewrites
+# auth.json on every token refresh (litellm 1.98.0 llms/chatgpt/
+# authenticator.py `_write_auth_file`, plain open+json.dump, no lock), and the
+# provider rotates refresh tokens single-use, so a copied file breaks the
+# moment another node refreshes. The converge therefore creates only the
+# directory, never the file, and records whether this node holds a login so
+# the subscription rung renders only where it can answer. The login itself is
+# a one-time device-code flow per node, announced in the proxy log.
+- name: Ensure the per-node ChatGPT token directory exists
+  ansible.builtin.file:
+    path: "{{ llm_router_chatgpt_token_dir }}"
+    state: directory
+    owner: "{{ llm_router_user }}"
+    group: "{{ llm_router_group }}"
+    mode: "0700"
+
+- name: Check whether this node already holds a ChatGPT login
+  ansible.builtin.stat:
+    path: "{{ llm_router_chatgpt_token_dir }}/auth.json"
+  register: llm_router_chatgpt_auth_stat
+
+- name: Record whether the subscription rung is credentialed on this node
+  ansible.builtin.set_fact:
+    llm_router_chatgpt_auth_file_present: "{{ llm_router_chatgpt_auth_stat.stat.exists }}"

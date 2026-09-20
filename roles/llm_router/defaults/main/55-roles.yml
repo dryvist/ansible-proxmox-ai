@@ -87,11 +87,22 @@ llm_router_embedding_model: >-
 # subagent is still NOT a git alias itself, for the same common-word-
 # collision reason `judge`/`cheap`/`embed`/`ocr` are deferred
 # (test_registry_retype_scan.py).
-_llm_router_fast_subagent_chain:
-  - "{{ llm_router_primary_model }}"
-  - "{{ (llm_router_hermes_cloud_free_groups | first) if (llm_router_hermes_cloud_free_groups | length > 0) else '' }}"
-  - "{{ (llm_router_hermes_cloud_paid_groups | first) if (llm_router_hermes_cloud_paid_groups | length > 0) else '' }}"
-  - "{{ llm_router_model_group_aliases.long }}"
+# The roles whose OVERSIZED request escapes straight to `long` via
+# context_window_fallbacks (37-fallback-entry-points.yml). fast/subagent only:
+# `cheap` shares the GPU-first ladder and the lock's redirect but must never
+# reach `long`, so it is deliberately absent here.
+llm_router_long_context_escape_roles: []
+
+# fast/subagent: the 4080 (their target), the Mac Studio's resident brain,
+# the external terminal rungs above, and `long` kept as the last rung it
+# always was. cheap/judge stop at the terminal rungs (never `long`).
+# No `long` (the OpenRouter-hosted Z.ai rung) behind private harness
+# traffic: an oversize request escapes to the chain's own external rungs via
+# context_window_fallbacks (37-fallback-entry-points.yml) instead.
+_llm_router_fast_subagent_chain: >-
+  {{ [llm_router_primary_model] + llm_router_external_terminal_rungs }}
+_llm_router_cheap_chain: >-
+  {{ [llm_router_primary_model] + llm_router_external_terminal_rungs }}
 
 # FALLBACK ORDER IS ONE-WAY, LARGEST CONTEXT FIRST — for every role EXCEPT
 # fast/subagent above, whose chain is intentionally local-first / narrowest
@@ -112,20 +123,19 @@ _llm_router_fast_subagent_chain:
 # the worst case of every earlier rung failing — every role deployment before
 # this PR only ever carried 0 or 1 fallbacks, so that interaction has never
 # been exercised. Confirm live before relying on the terminal rung under load.
-
 llm_router_role_deployments:
   # Local-first: try the 4080 before anything else. See the note above
   # _llm_router_fast_subagent_chain for why this no longer targets `long`
   # directly and how the >200k escape hatch stays reachable.
   - role: subagent
     model: "{{ llm_router_hermes_local_4080_id }}"
-    fallbacks: "{{ _llm_router_fast_subagent_chain | reject('equalto', '') | list }}"
+    fallbacks: "{{ _llm_router_fast_subagent_chain }}"
   # Same chain, second name — both Codex's `--profile fast` and this
   # project's own `subagent` naming already have external callers expecting
   # them; see the note above _llm_router_fast_subagent_chain.
   - role: fast
     model: "{{ llm_router_hermes_local_4080_id }}"
-    fallbacks: "{{ _llm_router_fast_subagent_chain | reject('equalto', '') | list }}"
+    fallbacks: "{{ _llm_router_fast_subagent_chain }}"
   # Just the 4080, no fallback — see the note above _llm_router_fast_subagent_chain
   # for why this must fail outright rather than redirecting anywhere.
   - role: fast-gpu
@@ -135,12 +145,24 @@ llm_router_role_deployments:
   # `goal-judge` alias resolves to today.
   - role: judge
     model: "{{ llm_router_routine_model }}"
-    fallbacks: ["{{ llm_router_small_model }}"]
-  # Trivial background chores. Local first, then the free and paid cloud
-  # rungs of the chain above: a role that refuses is the standing rule inverted.
+    fallbacks: "{{ [llm_router_small_model] + llm_router_external_terminal_rungs }}"
+  # Trivial background chores and every CI review. The GPU rung first — the
+  # fastest local model, and a busy slot hands over at once (57-subagent-lock
+  # lists this role, so contention redirects instead of waiting) — then the
+  # studio, free and paid rungs of the chain above. A role that refuses is the
+  # standing rule inverted.
   - role: cheap
-    model: "{{ llm_router_small_model }}"
-    fallbacks: "{{ _llm_router_fast_subagent_chain[1:3] | reject('equalto', '') | list }}"
+    model: "{{ llm_router_hermes_local_4080_id }}"
+    fallbacks: "{{ _llm_router_cheap_chain }}"
+  - role: review-oss
+    model: "{{ llm_router_hermes_local_4080_id }}"
+    fallbacks: "{{ _llm_router_review_oss_chain }}"
+  - role: review-private
+    model: "{{ llm_router_hermes_local_4080_id }}"
+    fallbacks: "{{ _llm_router_review_private_chain }}"
+  # embed/ocr have no same-modality external rung (no cloud embeddings, no
+  # cloud OCR in the registry): bounded by the same admission figures as
+  # every local rung, they fail FAST on a busy backend rather than hold.
   - role: embed
     model: "{{ llm_router_embedding_model }}"
     fallbacks: []
@@ -165,6 +187,14 @@ llm_router_seed_request_timeout: 30
 # model-list.yaml.j2's own vLLM-tier rendering exactly (same api_base/api_key
 # pair), which is the only reason those two match what config.yaml.j2 already
 # advertises for the same client_model_id.
+# The registry entry's own attempt bounds (num_retries, request_timeout as
+# `timeout`, stream_timeout) ride along onto every role's params, and every
+# LOCAL target is then held to the admission bounds of 40-routing.yml (first
+# byte within llm_router_local_stream_timeout_seconds, at most
+# llm_router_local_num_retries retries, non-streaming calls bounded by
+# llm_router_local_request_timeout_seconds) — an entry may tighten them,
+# never loosen them. Without the timeout clamp a role on a busy local rung
+# rode the whole 2400s generation timeout instead.
 _llm_router_role_params: >-
   {%- set ns = namespace(params={}) -%}
   {%- for m in llm_router_registry_enabled -%}
@@ -199,6 +229,21 @@ _llm_router_role_params: >-
         'api_key': llm_router_light_api_key,
         'use_chat_completions_api': true}}) -%}
   {%- endif -%}
+  {%- if m.client_model_id in ns.params -%}
+  {%- for k in ['num_retries', 'request_timeout', 'stream_timeout'] if m[k] is defined -%}
+  {%- set _ = ns.params[m.client_model_id].update({('timeout' if k == 'request_timeout' else k): m[k]}) -%}
+  {%- endfor -%}
+  {%- if m.tier in ['large', 'light', 'vllm', 'hermes-local'] -%}
+  {%- set _p = ns.params[m.client_model_id] -%}
+  {%- set _ = _p.update({
+        'num_retries': [_p.num_retries | default(llm_router_local_num_retries),
+                        llm_router_local_num_retries] | min,
+        'stream_timeout': [_p.stream_timeout | default(llm_router_local_stream_timeout_seconds),
+                           llm_router_local_stream_timeout_seconds] | min,
+        'timeout': [_p.timeout | default(llm_router_local_request_timeout_seconds),
+                    llm_router_local_request_timeout_seconds] | min}) -%}
+  {%- endif -%}
+  {%- endif -%}
   {%- endfor -%}
   {{ ns.params }}
 
@@ -213,7 +258,9 @@ _llm_router_role_model_info: >-
   {%- elif m.context_window is defined -%}
   {%- set _ = ns.info.update({m.client_model_id: {
         'mode': 'chat',
-        'max_input_tokens': m.context_window,
+        'max_input_tokens': _llm_router_vllm_max_input_tokens_by_model[m.client_model_id]
+                             if m.client_model_id in _llm_router_vllm_max_input_tokens_by_model
+                             else m.context_window,
         'max_tokens': m.max_output_tokens | default(m.context_window)}}) -%}
   {%- else -%}
   {%- set _ = ns.info.update({m.client_model_id: {'mode': 'chat'}}) -%}
