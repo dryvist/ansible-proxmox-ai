@@ -19,6 +19,14 @@
       # The first-byte bound sits below the ingress cut, or the caller sees the
       # ingress's 504 before the fallback can fire.
       - llm_router_local_stream_timeout_seconds | int < ai_ingress_response_header_timeout_seconds | int
+      # The NON-streaming path (model-list.yaml.j2 local_bounds `timeout`) has
+      # its own mandatory bound, not derived from the ingress — that ceiling
+      # is being taken out of this route entirely, so the router must be the
+      # sole bound. Just a positivity check: the real contract is bounding
+      # ONE attempt on ONE rung, and the caller's worst case is this value
+      # times the ladder's length, which varies per role and isn't asserted
+      # here as a single number.
+      - llm_router_local_request_timeout_seconds | int > 0
       # The PRODUCT is the contract: a future retry bump cannot widen it.
       - (_llm_router_local_admission_budget | int) <= (llm_router_admission_budget_seconds | int)
       # Multi-member cloud groups retry onto the next member; that spend fits too.
@@ -33,12 +41,16 @@
       {{ _llm_router_local_admission_budget }}s retry budget against
       {{ llm_router_admission_budget_seconds }}s; local
       stream_timeout={{ llm_router_local_stream_timeout_seconds }}s must be
-      below the ingress cut of {{ ai_ingress_response_header_timeout_seconds }}s.
+      below the ingress cut of {{ ai_ingress_response_header_timeout_seconds }}s;
+      non-streaming timeout={{ llm_router_local_request_timeout_seconds }}s
+      must be a positive, router-owned bound.
     success_msg: >-
       A busy local rung costs at most {{ _llm_router_local_admission_budget }}s of
-      retry backoff (budget {{ llm_router_admission_budget_seconds }}s); a hung one
-      {{ llm_router_local_stream_timeout_seconds }}s, under the
-      {{ ai_ingress_response_header_timeout_seconds }}s ingress cut.
+      retry backoff (budget {{ llm_router_admission_budget_seconds }}s); a hung
+      streaming rung {{ llm_router_local_stream_timeout_seconds }}s under the
+      {{ ai_ingress_response_header_timeout_seconds }}s ingress cut; a hung
+      non-streaming one {{ llm_router_local_request_timeout_seconds }}s, the
+      router's own bound.
   vars:
     # Admission wait on one local rung: every retry's backoff. The 429 itself
     # costs milliseconds; the first-byte bound is the hung-slot case, held
