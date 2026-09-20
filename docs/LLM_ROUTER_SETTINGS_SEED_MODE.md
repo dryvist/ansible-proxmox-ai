@@ -56,9 +56,6 @@ Scope is deliberately narrow, and the reasoning is in
   converge in `ansible-proxmox-apps` uses to create the role, so the two ends
   cannot drift.
 
-The database shares the ai-VLAN cluster that backs Hindsight, which already
-carries the estate's DR standard.
-
 ## Prisma without a database
 
 `prisma` was originally installed into the venv while the proxy was DB-less,
@@ -90,8 +87,9 @@ Deliberately absent: `fail_closed_budget_enforcement`. It governs LiteLLM's
 Postgres-backed virtual-key budgets, not the provider budget above, and 503s
 when spend can't be verified against Redis or a database.
 
-The proxy now **has** a database (see `defaults/main/45-database.yml`), so that
-is no longer the reason. The reason is the other one, and it still stands: this
-proxy **issues no virtual keys**, so there are no key budgets to enforce and the
-setting would be inert at best, a 503 generator on the fabric's only front door
-at worst. Reconsider it when virtual keys are issued, not before.
+The proxy now **has** a database (see `defaults/main/45-database.yml`) and
+**issues virtual keys** (`defaults/main/56-virtual-keys.yml`), one per
+caller. This setting is deliberately still absent: it 503s the fabric's
+only front door whenever spend can't be verified against Redis or the
+database, and no caller's budget enforcement depends on it today.
+Reconsider it if that changes.
