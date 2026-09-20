@@ -46,9 +46,9 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - "'liveness' in _handlers | lower"
-          - "_handlers.index('name: Restart litellm') < (_handlers | lower).index('liveness')"
-          - "(_handlers | lower).index('liveness') < _handlers.index('name: Sync router settings into the database')"
+          - "'name: Wait for LiteLLM liveness before syncing settings' in _handlers"
+          - "_handlers.index('name: Restart litellm') < _handlers.index('name: Wait for LiteLLM liveness before syncing settings')"
+          - "_handlers.index('name: Wait for LiteLLM liveness before syncing settings') < _handlers.index('name: Sync router settings into the database')"
         fail_msg: >-
           No liveness check sits between the restart and the DB sync handler
           — the sync must not fire until the restarted proxy is confirmed
@@ -67,3 +67,28 @@
           litellm" before "Sync router settings into the database" so both
           fire together and run in the safe order.
         success_msg: "sync-router-settings.yml notifies restart before sync"
+
+    # import_tasks is a STATIC include: Ansible flattens it at parse time, so
+    # a handler entry like `name: Wait for LiteLLM liveness before syncing
+    # settings` + `ansible.builtin.import_tasks: verify-liveness.yml` would
+    # silently discard that name and register the IMPORTED file's own task
+    # name instead — leaving every notify: of the wrapper name pointing at
+    # nothing. include_tasks is dynamic and keeps the wrapper name as the
+    # actual registered handler. Proven live in a throwaway check-mode run
+    # (RUNNING HANDLER [Restart litellm] -> [Wait for LiteLLM liveness
+    # before syncing settings] -> [Sync router settings into the database],
+    # in that order) — this assertion pins it so a regression back to
+    # import_tasks fails statically instead of only at converge time.
+    - name: The two wrapped handlers use include_tasks, never import_tasks
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'ansible.builtin.import_tasks' not in _handlers"
+          - "_handlers is search('name: Wait for LiteLLM liveness before syncing settings\\s*\\n\\s*ansible\\.builtin\\.include_tasks')"
+          - "_handlers is search('name: Sync router settings into the database\\s*\\n\\s*ansible\\.builtin\\.include_tasks')"
+        fail_msg: >-
+          handlers/main.yml must use ansible.builtin.include_tasks (dynamic)
+          for the liveness-wait and DB-sync entries, never import_tasks
+          (static) — import_tasks flattens at parse time and silently drops
+          the wrapper name notify: relies on, so the handler never fires.
+        success_msg: "Both wrapped handlers use include_tasks, so their notify names actually resolve"
