@@ -1,0 +1,125 @@
+---
+# litellm 1.98's nested fallback consults a FAILED RUNG'S OWN key in
+# router_settings.fallbacks, not the chain that reached it
+# (router.py::async_function_with_fallbacks). Before 2026-09-20 every
+# non-local group's own key pointed at [llm_router_primary_model]
+# (config.yaml.j2's per-group loop) — wrong for a member of the shared
+# external continuation (58-review-roles.yml): the primary is narrower than
+# what escalated past it, so pointing back re-hits the same cap. Root-caused
+# from a live review-oss run (ai #847): zai-glm-4.5-flash 429'd and the walk
+# died there instead of reaching the rest of the continuation.
+#
+# THE CONTRACT: every member of llm_router_shared_external_continuation owns
+# a fallback entry equal to the remainder of that list after itself — never
+# llm_router_primary_model, never any local rung.
+- name: Verify every external-continuation member's own fallback entry continues the SAME chain, never local
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Produce the fully credentialed render
+      ansible.builtin.import_tasks: tasks/credentialed_render.yml
+
+    - name: The continuation is non-empty, or every assertion below passes over nothing
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_shared_external_continuation | length > 1
+
+    - name: Every continuation member's rendered entry equals the remainder after itself, never local
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _members_missing_a_key | length == 0
+          - _members_pointed_at_local | length == 0
+          - _members_with_wrong_tail | length == 0
+        fail_msg: >-
+          Members with no fallbacks key at all (silently terminal on 429):
+          {{ _members_missing_a_key }}. Members whose own entry still
+          contains a local rung or the primary (litellm's nested fallback
+          will re-hit the exact cap the caller escalated past):
+          {{ _members_pointed_at_local }}. Members whose entry does not
+          equal the remainder of llm_router_shared_external_continuation
+          after themselves: {{ _members_with_wrong_tail }}. Fix:
+          llm_router_external_rung_own_fallbacks (58-review-roles.yml) and
+          config.yaml.j2's per-group loop.
+        success_msg: >-
+          All {{ llm_router_shared_external_continuation | length }}
+          continuation members ({{ llm_router_shared_external_continuation
+          | join(' -> ') }}) own a fallback entry that continues the same
+          chain and never recovers to a local rung.
+      vars:
+        _fallbacks_by_key: >-
+          {{ dict(_config.router_settings.fallbacks
+                  | map('dict2items') | flatten
+                  | map(attribute='key')
+                  | zip(_config.router_settings.fallbacks
+                        | map('dict2items') | flatten
+                        | map(attribute='value'))) }}
+        _expected_tail_by_member: "{{ llm_router_external_rung_own_fallbacks }}"
+        _members_missing_a_key: >-
+          {{ llm_router_shared_external_continuation
+             | reject('in', _fallbacks_by_key.keys() | list) | list }}
+        _members_pointed_at_local: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for name in llm_router_shared_external_continuation -%}
+          {%- set _entry = _fallbacks_by_key[name] | default([]) -%}
+          {%- if llm_router_primary_model in _entry
+             or (_entry | select('match', '^hermes-local') | list | length > 0) -%}
+          {%- set ns.bad = ns.bad + [name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
+        _members_with_wrong_tail: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for name in llm_router_shared_external_continuation -%}
+          {%- if (_fallbacks_by_key[name] | default([])) != (_expected_tail_by_member[name] | default([])) -%}
+          {%- set ns.bad = ns.bad + [name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
+
+    # THE TERMINAL RUNG CASE SPECIFICALLY: the last member's remainder is
+    # empty, so litellm sees an explicit empty fallback list for it — a
+    # further failure there raises immediately, which is correct: it IS the
+    # last rung. (`llm_router_external_rung_own_fallbacks` still keys it,
+    # config.yaml.j2's `if _group in ...` renders `- name: []`; this is a
+    # real, present key, not an absent one — distinct from the "missing a
+    # key" failure mode the assertion above already covers.)
+    - name: The terminal continuation member's own entry is present and empty
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _terminal_member in _fallbacks_by_key
+          - _fallbacks_by_key[_terminal_member] == []
+      vars:
+        _terminal_member: "{{ llm_router_shared_external_continuation | last }}"
+        _fallbacks_by_key: >-
+          {{ dict(_config.router_settings.fallbacks
+                  | map('dict2items') | flatten
+                  | map(attribute='key')
+                  | zip(_config.router_settings.fallbacks
+                        | map('dict2items') | flatten
+                        | map(attribute='value'))) }}
