@@ -313,13 +313,17 @@ model_list:
       # is fail-loud on any inventoried host, deliberately no fabricated
       # default; falls back to the raw window only with no vllm host at all
       # (render/test context, same convention as max_parallel_requests above).
-      max_input_tokens: >-
-        {{ (
-             [m.context_window,
-              hostvars[(groups['llm_vllm_group'] | default([]))[0]].llama_cpp_prefill_tokens_per_second | int
-                * llm_router_admission_budget_seconds | int]
-             | min
-           ) if (groups['llm_vllm_group'] | default([]) | length > 0) else m.context_window }}
+      # Set-then-emit-inline, never a folded block scalar around the number:
+      # YAML folds a block scalar to a STRING regardless of content, so
+      # LiteLLM's int-typed pre-call check would compare against "1800"
+      # rather than 1800 and never skip the rung.
+{% set _vllm_max_input_tokens = (
+     [m.context_window,
+      hostvars[(groups['llm_vllm_group'] | default([]))[0]].llama_cpp_prefill_tokens_per_second | int
+        * llm_router_admission_budget_seconds | int]
+     | min
+   ) if (groups['llm_vllm_group'] | default([]) | length > 0) else m.context_window %}
+      max_input_tokens: {{ _vllm_max_input_tokens }}
       max_tokens: {{ m.context_window }}
 {% endif %}
 {% if m.allowed_fails is defined %}

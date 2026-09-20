@@ -172,6 +172,45 @@
     # == raw context_window, 32768) this assertion FAILS: the incident prompt
     # fit inside the window and was admitted. On the NEW render
     # (prefill-budget-derived), it must be skipped.
+    - name: Select the vLLM tier's rendered deployment(s)
+      ansible.builtin.set_fact:
+        _vllm: >-
+          {%- set ns = namespace(out=[]) -%}
+          {%- for d in _config.model_list -%}
+          {%- if d.litellm_params is defined
+               and d.litellm_params.api_base is defined
+               and d.litellm_params.api_base == llm_router_llm_vllm_base_url
+               and d.model_info is defined
+               and d.model_info.max_input_tokens is defined -%}
+          {%- set ns.out = ns.out + [d] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.out }}
+
+    # A YAML block scalar (`>-`) around a Jinja expression ALWAYS renders a
+    # STRING, whatever the expression evaluates to — this is what actually
+    # broke here once: `max_input_tokens: >-` emitted "1800" (quoted or not,
+    # still a str once from_yaml loads it), and LiteLLM's int-typed pre-call
+    # check either TypeErrors on it or never skips the rung. `| int` in the
+    # assertion below would SILENTLY COERCE that string and hide the defect
+    # — so this check runs BEFORE any `| int` filter touches the value, on
+    # the raw type `from_yaml` produced.
+    - name: The vLLM tier's rendered max_input_tokens is an actual integer, not a string
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _vllm | length > 0
+          - _vllm[0].model_info.max_input_tokens is number
+        fail_msg: >-
+          max_input_tokens rendered as {{ _vllm[0].model_info.max_input_tokens
+          | type_debug }} ({{ _vllm[0].model_info.max_input_tokens }}), not a
+          number. A folded/literal YAML block scalar (`>-`/`|`) around the
+          Jinja expression always renders a string regardless of content —
+          set the value into a template variable and emit it inline instead.
+        success_msg: >-
+          max_input_tokens rendered as an actual integer
+          ({{ _vllm[0].model_info.max_input_tokens }}).
+
     - name: The vLLM tier's rendered max_input_tokens would skip the incident prompt
       ansible.builtin.assert:
         quiet: true
@@ -189,16 +228,3 @@
           ({{ _vllm[0].model_info.max_input_tokens }}) is below the
           {{ _incident_prompt_tokens }}-token incident prompt: pre-call
           checks skip this rung for it.
-      vars:
-        _vllm: >-
-          {%- set ns = namespace(out=[]) -%}
-          {%- for d in _config.model_list -%}
-          {%- if d.litellm_params is defined
-               and d.litellm_params.api_base is defined
-               and d.litellm_params.api_base == llm_router_llm_vllm_base_url
-               and d.model_info is defined
-               and d.model_info.max_input_tokens is defined -%}
-          {%- set ns.out = ns.out + [d] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.out }}
