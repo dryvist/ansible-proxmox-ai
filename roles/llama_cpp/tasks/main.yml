@@ -43,6 +43,22 @@
 - name: Enforce the model-size guardrails
   ansible.builtin.include_tasks: guards.yml
 
+# llama_cpp_models_dir is sourced from tofu-proxmox's published inventory
+# (defaults/main/00-core.yml) and is empty when this host has no shared
+# models mount there. Every task below assumes a real path — fail loud here,
+# naming the gap, instead of creating a directory or running findmnt against
+# an empty string.
+- name: Assert tofu-proxmox published a shared models mount for this host
+  ansible.builtin.assert:
+    that:
+      - llama_cpp_models_dir | length > 0
+    fail_msg: >-
+      This host has no shared models mount published by tofu-proxmox
+      (containers[*].models_mount_path is unset for this guest in the
+      inventory). The llama_cpp role needs a read-only shared model mount —
+      add one to this guest's mount_points in deployment.json and republish
+      the inventory before converging it.
+
 - name: Create the llama-cpp service group
   ansible.builtin.group:
     name: "{{ llama_cpp_group }}"
