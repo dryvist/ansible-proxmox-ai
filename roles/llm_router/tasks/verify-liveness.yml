@@ -1,0 +1,23 @@
+---
+# /health/liveliness is unauthenticated by design (LiteLLM load-balancer probe),
+# so this confirms the proxy is serving without needing the master key.
+#
+# The budget is deliberately large. LiteLLM does not bind its listener until it
+# has registered every entry in model_list, and that work scales with the list:
+# on 2026-07-30 a router with ~30 entries was still emitting register_model
+# lines nearly four minutes after systemd reported the unit active. The former
+# 5 x 3 s budget gave it fifteen seconds.
+#
+# Failing here is worse than it looks, which is why the budget matters more than
+# the fifteen seconds it used to save. Imported both as the last task in the role
+# (a failed host there ends the run for every host behind it in the batch —
+# "NO MORE HOSTS LEFT") and as the handler that gates the router-settings DB sync
+# on a restarted proxy actually being back up — one declaration, not a copy.
+- name: Verify the LiteLLM liveness endpoint answers
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/health/liveliness"
+    status_code: 200
+  register: llm_router_liveness
+  until: llm_router_liveness.status == 200
+  retries: "{{ llm_router_liveness_retries }}"
+  delay: "{{ llm_router_liveness_delay }}"

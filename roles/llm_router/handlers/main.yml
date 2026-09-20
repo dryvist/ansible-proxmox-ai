@@ -1,25 +1,19 @@
 ---
-# DEFINED FIRST ON PURPOSE. Handlers run in definition order, not notification
-# order, so this corrects the shadowing config row while the old proxy is still
-# up and the restart below then boots from it.
-- name: Sync router settings into the database
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ llm_router_api_port }}/config/update"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ llm_router_master_key }}"
-    body_format: json
-    body:
-      router_settings: "{{ _llm_router_settings_payload }}"
-    status_code: [200, 201]
-    timeout: "{{ llm_router_seed_request_timeout }}"
-  no_log: true
-
+# Handlers run in definition order, not notification order, so this reflects
+# the real dependency chain: restart onto the new config file first, wait for
+# the proxy to actually come back up, THEN correct the shadowing DB row —
+# never against a proxy that's still down or still serving the old config.
 - name: Restart litellm
   ansible.builtin.systemd:
     name: "{{ llm_router_service }}"
     state: restarted
     daemon_reload: true
+
+- name: Wait for LiteLLM liveness before syncing settings
+  ansible.builtin.import_tasks: ../tasks/verify-liveness.yml
+
+- name: Sync router settings into the database
+  ansible.builtin.import_tasks: ../tasks/sync-router-settings-request.yml
 
 - name: Restart rsyslog
   ansible.builtin.systemd:

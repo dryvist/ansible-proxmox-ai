@@ -1,0 +1,69 @@
+---
+# Zammad 1000422: "Sync router settings into the database" ran BEFORE
+# "Restart litellm" in handlers/main.yml (handlers run in file-definition
+# order, not notification order). When the proxy was already down
+# (crash-looping on a bad prior config), the sync's POST got
+# connection-refused, the handler failed, and the rolling converge stopped at
+# that member — never reaching the restart that would have fixed it.
+#
+# Pins the real ordering: restart -> liveness wait -> DB sync, so a
+# regression back to sync-before-restart fails here instead of the next
+# outage.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_router_settings_sync_after_restart.yml -i localhost, -c local
+
+- name: The router-settings DB sync runs after the restart, not before it
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Read the handlers file as shipped
+      ansible.builtin.set_fact:
+        _handlers: "{{ lookup('file', _role_dir ~ '/handlers/main.yml') }}"
+
+    - name: Read the task that notifies the restart/sync handlers
+      ansible.builtin.set_fact:
+        _sync_task: "{{ lookup('file', _role_dir ~ '/tasks/sync-router-settings.yml') }}"
+
+    - name: Handlers run in definition order — restart must be defined before sync
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'Restart litellm' in _handlers"
+          - "'Sync router settings into the database' in _handlers"
+          - "_handlers.index('name: Restart litellm') < _handlers.index('name: Sync router settings into the database')"
+        fail_msg: >-
+          handlers/main.yml must define "Restart litellm" before "Sync router
+          settings into the database" — handlers run in definition order, not
+          notification order, so a sync defined first runs against the OLD
+          proxy process and fails with connection-refused whenever that
+          process is down (Zammad 1000422).
+        success_msg: "Restart litellm is defined before the DB sync handler"
+
+    - name: A liveness wait sits between the restart and the sync
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'liveness' in _handlers | lower"
+          - "_handlers.index('name: Restart litellm') < (_handlers | lower).index('liveness')"
+          - "(_handlers | lower).index('liveness') < _handlers.index('name: Sync router settings into the database')"
+        fail_msg: >-
+          No liveness check sits between the restart and the DB sync handler
+          — the sync must not fire until the restarted proxy is confirmed
+          back up, not merely restarted.
+        success_msg: "A liveness wait gates the DB sync after the restart"
+
+    - name: The sync-triggering task notifies the restart before the sync
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'Restart litellm' in _sync_task"
+          - "'Sync router settings into the database' in _sync_task"
+          - "_sync_task.index('Restart litellm') < _sync_task.index('Sync router settings into the database')"
+        fail_msg: >-
+          tasks/sync-router-settings.yml's notify list must list "Restart
+          litellm" before "Sync router settings into the database" so both
+          fire together and run in the safe order.
+        success_msg: "sync-router-settings.yml notifies restart before sync"

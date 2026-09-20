@@ -8,8 +8,13 @@
 # a stale routing_groups entry survived its removal from the template and kept
 # registering a handler that raised on every success event.
 #
-# Runs BEFORE the handler flush, against the still-running proxy, so the
-# restart that follows boots from the corrected row.
+# Notifies restart -> liveness wait -> sync, in that order (handlers run in
+# definition order, not notification order — see handlers/main.yml). The
+# corrective POST runs against the freshly-restarted, confirmed-live proxy,
+# never the old one: posting first, before the restart, meant a proxy that
+# was already down (crash-looping on a bad prior config) failed the POST
+# with connection-refused and stopped the rolling converge at that member —
+# never reaching the restart that would have fixed it.
 #
 # /config/update merges per key and the request wins
 # (proxy_server.py: "router_settings: merge existing + request, request wins"),
@@ -36,5 +41,6 @@
     group: root
     mode: "0644"
   notify:
-    - Sync router settings into the database
     - Restart litellm
+    - Wait for LiteLLM liveness before syncing settings
+    - Sync router settings into the database
