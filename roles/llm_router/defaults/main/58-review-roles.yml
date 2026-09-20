@@ -21,14 +21,26 @@ llm_router_external_terminal_rungs: >-
   {{ llm_router_external_subscription_rungs + llm_router_external_paid_rungs }}
 llm_router_default_fallbacks: "{{ llm_router_external_terminal_rungs }}"
 
-# REVIEW ROLES — local first, always. `review-oss` may overflow only to the
-# Z.ai pair (33-zai.yml), its terminal — no free rung (see above).
+# REVIEW ROLES — local first, always. `review-oss` overflows to the Z.ai
+# pair (33-zai.yml) — still no free rung (see above) — and, if the pair
+# itself fails (both members busy, or the paid member's plan/quota is
+# exhausted), on to the same paid terminal every other public chain ends
+# in. That escape is a single conditional, not a hand-appended list: it
+# fires only when the chain's own last rung is not already one of
+# llm_router_external_terminal_rungs, so a chain that already ends in a
+# subscription/paid rung (subagent/fast/judge/cheap above) is untouched,
+# and review-oss stops escaping the moment its own terminal changes to
+# something already covered.
 # `review-private` may leave the estate ONLY for the Codex rungs: the
 # subscription first, the API key last — no OpenRouter, no free tier, no
 # Z.ai, ever. Until a Codex rung is credentialed it renders local-only and
 # fails fast; tests/llm_router/test_review_roles.yml states both contracts.
 _llm_router_review_oss_chain: >-
-  {{ [llm_router_primary_model] + llm_router_zai_groups }}
+  {%- set _chain = [llm_router_primary_model] + llm_router_zai_groups -%}
+  {{ _chain + (llm_router_external_paid_rungs
+               if (_chain | length > 1
+                   and _chain[-1] not in llm_router_external_terminal_rungs)
+               else []) }}
 _llm_router_review_private_chain: >-
   {{ [llm_router_primary_model] + llm_router_external_subscription_rungs
      + llm_router_hermes_cloud_api_key_groups }}
