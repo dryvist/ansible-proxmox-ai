@@ -158,8 +158,9 @@ git and changes rarely; roles (which model a caller-facing name resolves to,
 and its fallback order) live in the router database and the Admin UI owns
 them, changing often. The first seed is declared in
 `defaults/main/55-roles.yml`; `tasks/seed-roles.yml` writes a role only when
-the running proxy carries no deployment by that name, so a converge never
-overwrites an edit made in the UI.
+the running proxy carries no deployment by that name, so an `initial`-mode
+converge never overwrites an edit made in the UI — `rebuild` (below) is the
+exception.
 
 Full detail — the two rules a seeded fallback rung must satisfy, the
 `fast`/`subagent`/`fast-gpu` roles and how each is scoped, and how to swap a
@@ -184,8 +185,9 @@ Roles and Virtual Keys already enforce it:
   exists, a converge leaves it alone; `tasks/sync-router-settings.yml` is
   skipped.
 - **`rebuild`** — DR / from-scratch reset. Every converge re-pushes the
-  rendered file's `router_settings`, discarding whatever the Admin UI holds.
-  Set it for one converge to restore the git-declared ladder, then set it
+  rendered file's `router_settings` and re-seeds every declared role
+  deployment and its fallback list, discarding whatever the Admin UI holds.
+  Set it for one converge to restore the git-declared state, then set it
   back to `initial`.
 
 Facts this rests on, verified against the pinned `litellm==1.102.0` wheel
@@ -245,7 +247,7 @@ endpoint contract, and the serving-share metric:
 | `llm_router_light_port` | `service_ports.llm_fast_api` | llm-fast / llm-light backend port |
 | `llm_router_large_port` | `service_ports.ollama_api` | llm-large backend port |
 | `llm_router_routing_strategy` | `simple-shuffle` | load-balancing across same-name deployments |
-| `llm_router_seed_mode` | `initial` | `initial` seeds `router_settings` once then leaves Admin UI edits alone; `rebuild` = DR full overwrite |
+| `llm_router_seed_mode` | `initial` | `initial` seeds `router_settings`/roles once then leaves Admin UI edits alone; `rebuild` = DR full overwrite of both |
 | `llm_router_master_key` | `env LLM_ROUTER_MASTER_KEY` (mandatory) | proxy master key |
 | `llm_router_llm_large_bearer` | `env LLM_LARGE_BEARER_TOKEN` (mandatory) | llm-large bearer |
 

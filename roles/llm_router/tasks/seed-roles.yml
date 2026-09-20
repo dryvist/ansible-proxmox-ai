@@ -1,20 +1,32 @@
 ---
-# FIRST SEED ONLY. Creates a role deployment when the running proxy has none by
-# that name, and does nothing at all to one that already exists. That asymmetry
-# is the whole contract: role targets and fallback order are edited in the Admin
-# UI, and a converge that re-asserted them would silently undo every such edit
-# the next time it ran — which is exactly the "no git change per swap" property
-# this design exists to provide (defaults/main/55-roles.yml).
+# FIRST SEED ONLY in llm_router_seed_mode: initial (default,
+# defaults/main/45-database.yml). Creates a role deployment when the running
+# proxy has none by that name, and does nothing at all to one that already
+# exists. That asymmetry is the whole contract: role targets and fallback
+# order are edited in the Admin UI, and a converge that re-asserted them
+# would silently undo every such edit the next time it ran — which is
+# exactly the "no git change per swap" property this design exists to
+# provide (defaults/main/55-roles.yml).
+#
+# In llm_router_seed_mode: rebuild (DR / from-scratch reset), that asymmetry
+# is deliberately dropped for role deployments too: EVERY declared role is
+# treated as stale (the reconcile path near the end of this file), so a
+# rebuild converge deletes and recreates each one with the current
+# litellm_params (timeout/window clamps, #843) and pushes its declared
+# fallback list, exactly like router_settings already does
+# (_llm_router_router_settings_may_seed, defaults/main/45-database.yml) —
+# git wins across the whole role layer, not just router_settings.
 #
 # Runs LAST in the role, after the liveness probe: these are HTTP calls against
 # the proxy this play just started, so it must already be serving.
 #
-# One exception to "does nothing to one that already exists": a role whose
-# MODEL TARGET moved (the stale-reconcile path near the end of this file)
-# also gets its fallback order re-seeded, since /model/delete + /model/new
-# replace the deployment but carry no fallback record with it. That still
-# only fires on a real target change, never on a steady-state converge, so a
-# UI-edited fallback order on an unchanged role is still untouched.
+# One exception to "does nothing to one that already exists" in `initial`
+# mode: a role whose MODEL TARGET moved (the stale-reconcile path near the
+# end of this file) also gets its fallback order re-seeded, since
+# /model/delete + /model/new replace the deployment but carry no fallback
+# record with it. That still only fires on a real target change, never on a
+# steady-state converge, so a UI-edited fallback order on an unchanged role
+# is still untouched — in `initial` mode.
 
 - name: Assert every role targets a model the catalog describes
   ansible.builtin.assert:
@@ -159,11 +171,15 @@
     - item.item.fallbacks | select('in', _llm_router_live_models) | list | length > 0
   no_log: true
 
-# RECONCILE an existing role whose target has moved in the registry. Seeding
-# only ever creates, so a role pointed at a model that was later repointed or
-# retired keeps answering from the stale target forever — the subagent role sat
-# on a withdrawn stealth model this way, 404ing on every call while the registry
-# had already been corrected.
+# RECONCILE an existing role whose target has moved in the registry (`initial`
+# mode), or EVERY existing role unconditionally (`rebuild` mode — see the
+# file header). Seeding only ever creates, so in `initial` mode a role
+# pointed at a model that was later repointed or retired keeps answering
+# from the stale target forever — the subagent role sat on a withdrawn
+# stealth model this way, 404ing on every call while the registry had
+# already been corrected. `rebuild` widens this same loop to every role so a
+# DR reset also re-pushes current litellm_params and fallbacks onto roles
+# whose target never moved.
 #
 # Delete-then-create rather than /model/update, deliberately. 55-roles.yml
 # records the measured trap: /model/update writes the new litellm_params and
@@ -172,17 +188,22 @@
 # path that is correct whether or not the window changed, so there is no
 # same-window special case to get wrong.
 #
-# Idempotent by construction: the loop is empty unless a live role's model
-# string actually differs from the registry's, so a steady-state converge
-# changes nothing.
+# Idempotent by construction: in `initial` mode the loop is empty unless a
+# live role's model string actually differs from the registry's, so a
+# steady-state converge changes nothing; in `rebuild` mode it always covers
+# every live, catalogued role, by design.
 
-- name: Note which role deployments point somewhere the registry no longer does
+- name: Note which role deployments point somewhere the registry no longer does, or every role under rebuild
   ansible.builtin.set_fact:
     _llm_router_stale_roles: >-
-      {{ llm_router_role_deployments
-         | selectattr('role', 'in', _llm_router_live_models)
-         | selectattr('model', 'in', _llm_router_live_models)
-         | rejectattr('role', 'in', _llm_router_roles_on_target) | list }}
+      {{ (llm_router_role_deployments
+          | selectattr('role', 'in', _llm_router_live_models)
+          | selectattr('model', 'in', _llm_router_live_models) | list)
+         if llm_router_seed_mode == 'rebuild'
+         else (llm_router_role_deployments
+               | selectattr('role', 'in', _llm_router_live_models)
+               | selectattr('model', 'in', _llm_router_live_models)
+               | rejectattr('role', 'in', _llm_router_roles_on_target) | list) }}
   vars:
     _llm_router_roles_on_target: >-
       {{ llm_router_existing_models.json.data | default([])
@@ -235,11 +256,13 @@
 # before now (judge/cheap/embed/ocr/subagent) happened to carry 0 or 1
 # fallbacks, so a role losing its fallback order on retarget went
 # unnoticed. Re-seed it here so a role with a real chain (subagent/fast,
-# 55-roles.yml) does not silently lose it the moment its target moves.
-# Same idempotent shape as "Seed the fallback order for the roles just
-# created" above — a steady-state converge (nothing stale) loops over
-# nothing, so a UI-edited fallback order on an UNCHANGED role is untouched.
-- name: Seed the fallback order for the roles just retargeted
+# 55-roles.yml) does not silently lose it the moment its target moves — and,
+# under `rebuild`, every declared role, since _llm_router_stale_roles above
+# then covers all of them regardless of target drift. Same idempotent shape
+# as "Seed the fallback order for the roles just created" above — a
+# steady-state `initial` converge (nothing stale) loops over nothing, so a
+# UI-edited fallback order on an UNCHANGED role is untouched outside rebuild.
+- name: Seed the fallback order for the roles just retargeted or rebuilt
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/fallback"
     method: POST
