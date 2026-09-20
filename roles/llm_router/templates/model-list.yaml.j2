@@ -10,16 +10,19 @@
 {%- endmacro %}
 {% macro litellm_model(m) %}{{ m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id) }}{% endmacro %}
 {# Admission bounds every LOCAL rung carries (defaults/main/40-routing.yml,
-   "ADMISSION BUDGET"): the first-byte bound is the capacity signal and the
-   retry count is the whole retry budget on the rung; an entry may declare
-   tighter figures, never looser (tasks/assert.yml holds the product to the
-   budget). The whole-call timeout stays generation-sized. #}
+   "ADMISSION BUDGET"): the first-byte bound is the capacity signal, the
+   retry count is the whole retry budget; an entry may declare tighter
+   figures, never looser. The whole-call timeout stays generation-sized.
+
+   `timeout` (non-streaming) is mandatory: LiteLLM picks stream_timeout
+   only for streaming calls (litellm/router.py _get_timeout); non-streaming
+   falls through to the 2400s litellm_settings.request_timeout otherwise —
+   confirmed live 2026-09-19, a non-streaming rung with no bound of its
+   own rode that ceiling before the caller saw litellm.Timeout. #}
 {% macro local_bounds(m) %}
       num_retries: {{ [m.num_retries | default(llm_router_local_num_retries), llm_router_local_num_retries] | min }}
       stream_timeout: {{ [m.stream_timeout | default(llm_router_local_stream_timeout_seconds), llm_router_local_stream_timeout_seconds] | min }}
-{% if m.request_timeout is defined %}
-      timeout: {{ m.request_timeout }}
-{% endif %}
+      timeout: {{ [m.request_timeout | default(llm_router_local_request_timeout_seconds), llm_router_local_request_timeout_seconds] | min }}
 {% endmacro %}
 model_list:
 {% include 'model-list-hermes-agents.yaml.j2' %}
@@ -299,8 +302,21 @@ model_list:
 {% if m.embedding | default(false) %}
       mode: embedding
 {% elif m.context_window is defined %}
-      # Mandatory here — see README "The vLLM tier and the Hermes local GPU leg".
-      max_input_tokens: {{ m.context_window }}
+      # Mandatory — README "The vLLM tier and the Hermes local GPU leg".
+      # SMALLER of the context window and what this card can prefill in
+      # the admission budget, so an in-window but too-slow prompt skips
+      # at pre-call. llama_cpp_prefill_tokens_per_second (group_vars/
+      # llm_vllm_group.yml) is fail-loud when inventoried, no fabricated
+      # default; falls back to the raw window with no vllm host at all.
+      # Set-then-emit-inline, never a folded block scalar (always a
+      # string, breaking LiteLLM's int-typed pre-call check).
+{% set _vllm_max_input_tokens = (
+     [m.context_window,
+      hostvars[(groups['llm_vllm_group'] | default([]))[0]].llama_cpp_prefill_tokens_per_second | int
+        * llm_router_admission_budget_seconds | int]
+     | min
+   ) if (groups['llm_vllm_group'] | default([]) | length > 0) else m.context_window %}
+      max_input_tokens: {{ _vllm_max_input_tokens }}
       max_tokens: {{ m.context_window }}
 {% endif %}
 {% if m.allowed_fails is defined %}
