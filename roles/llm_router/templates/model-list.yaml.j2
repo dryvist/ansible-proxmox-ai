@@ -303,19 +303,14 @@ model_list:
       mode: embedding
 {% elif m.context_window is defined %}
       # Mandatory — README "The vLLM tier and the Hermes local GPU leg".
-      # SMALLER of the context window and what this card can prefill in
-      # the admission budget, so an in-window but too-slow prompt skips
-      # at pre-call. llama_cpp_prefill_tokens_per_second (group_vars/
-      # llm_vllm_group.yml) is fail-loud when inventoried, no fabricated
-      # default; falls back to the raw window with no vllm host at all.
-      # Set-then-emit-inline, never a folded block scalar (always a
-      # string, breaking LiteLLM's int-typed pre-call check).
-{% set _vllm_max_input_tokens = (
-     [m.context_window,
-      hostvars[(groups['llm_vllm_group'] | default([]))[0]].llama_cpp_prefill_tokens_per_second | int
-        * llm_router_admission_budget_seconds | int]
-     | min
-   ) if (groups['llm_vllm_group'] | default([]) | length > 0) else m.context_window %}
+      # SMALLER of the context window and what this card can prefill in the
+      # admission budget, so an in-window but too-slow prompt skips at
+      # pre-call. Computed ONCE in defaults/main/20-registry.yml
+      # (_llm_router_vllm_max_input_tokens_by_model) so 55-roles.yml's role
+      # deployment on the same backend can never advertise a bigger window
+      # than this one does. Set-then-emit-inline, never a folded block
+      # scalar (always a string, breaking LiteLLM's int-typed pre-call check).
+{% set _vllm_max_input_tokens = _llm_router_vllm_max_input_tokens_by_model[m.client_model_id] %}
       max_input_tokens: {{ _vllm_max_input_tokens }}
       max_tokens: {{ m.context_window }}
 {% endif %}

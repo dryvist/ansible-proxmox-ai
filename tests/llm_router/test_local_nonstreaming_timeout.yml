@@ -155,6 +155,54 @@
           {%- endfor -%}
           {{ ns.bad }}
 
+    # B2: _llm_router_role_params (55-roles.yml) is the SEPARATE render
+    # tasks/seed-roles.yml uses to seed DB role deployments (review-oss/
+    # cheap/fast/subagent/judge/embed/ocr) — the old code never added
+    # `timeout` there, so these rode the 2400s request_timeout with no bound.
+    - name: Every LOCAL role deployment's timeout traces to the router's own base var
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _role_bad_timeout | length == 0
+        fail_msg: >-
+          role params with no/looser timeout than
+          {{ llm_router_local_request_timeout_seconds }}s: {{ _role_bad_timeout }}
+        success_msg: "every local role deployment's timeout <= {{ llm_router_local_request_timeout_seconds }}s"
+      vars:
+        _local_role_ids: >-
+          {{ (llm_router_large_models + llm_router_light_models
+              + llm_router_vllm_models + llm_router_hermes_local_models)
+             | map(attribute='client_model_id') | list }}
+        _role_bad_timeout: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for id in _local_role_ids if id in _llm_router_role_params -%}
+          {%- set _t = _llm_router_role_params[id].timeout | default(-1) -%}
+          {%- if _t | int < 0 or _t | int > llm_router_local_request_timeout_seconds | int -%}
+          {%- set ns.bad = ns.bad + [id ~ '=' ~ _t] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
+
+    # (5): a role on the same 4080/vllm backend must advertise the SAME
+    # prefill-derived window as model_list, not the raw context_window, or
+    # the pre-call skip only ever protects the Hermes chains.
+    - name: Every vllm/hermes-local role's window matches the model_list rendering
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _role_bad_window | length == 0
+        fail_msg: "role max_input_tokens mismatched with model_list: {{ _role_bad_window }}"
+        success_msg: "every vllm/hermes-local role's max_input_tokens matches model_list"
+      vars:
+        _role_bad_window: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for id, cap in _llm_router_vllm_max_input_tokens_by_model.items() if id in _llm_router_role_model_info -%}
+          {%- if _llm_router_role_model_info[id].max_input_tokens | int != cap | int -%}
+          {%- set ns.bad = ns.bad + [id ~ '=' ~ _llm_router_role_model_info[id].max_input_tokens ~ '!=' ~ cap] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
+
     - name: Pre-call checks are enabled so a too-large prompt skips a rung before calling it
       ansible.builtin.assert:
         quiet: true

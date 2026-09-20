@@ -191,9 +191,10 @@ llm_router_seed_request_timeout: 30
 # `timeout`, stream_timeout) ride along onto every role's params, and every
 # LOCAL target is then held to the admission bounds of 40-routing.yml (first
 # byte within llm_router_local_stream_timeout_seconds, at most
-# llm_router_local_num_retries retries) — an entry may tighten them, never
-# loosen them. Without this a role on a busy local rung waited the whole
-# router timeout before its chain moved on.
+# llm_router_local_num_retries retries, non-streaming calls bounded by
+# llm_router_local_request_timeout_seconds) — an entry may tighten them,
+# never loosen them. Without the timeout clamp a role on a busy local rung
+# rode the whole 2400s generation timeout instead.
 _llm_router_role_params: >-
   {%- set ns = namespace(params={}) -%}
   {%- for m in llm_router_registry_enabled -%}
@@ -238,7 +239,9 @@ _llm_router_role_params: >-
         'num_retries': [_p.num_retries | default(llm_router_local_num_retries),
                         llm_router_local_num_retries] | min,
         'stream_timeout': [_p.stream_timeout | default(llm_router_local_stream_timeout_seconds),
-                           llm_router_local_stream_timeout_seconds] | min}) -%}
+                           llm_router_local_stream_timeout_seconds] | min,
+        'timeout': [_p.timeout | default(llm_router_local_request_timeout_seconds),
+                    llm_router_local_request_timeout_seconds] | min}) -%}
   {%- endif -%}
   {%- endif -%}
   {%- endfor -%}
@@ -255,7 +258,9 @@ _llm_router_role_model_info: >-
   {%- elif m.context_window is defined -%}
   {%- set _ = ns.info.update({m.client_model_id: {
         'mode': 'chat',
-        'max_input_tokens': m.context_window,
+        'max_input_tokens': _llm_router_vllm_max_input_tokens_by_model[m.client_model_id]
+                             if m.client_model_id in _llm_router_vllm_max_input_tokens_by_model
+                             else m.context_window,
         'max_tokens': m.max_output_tokens | default(m.context_window)}}) -%}
   {%- else -%}
   {%- set _ = ns.info.update({m.client_model_id: {'mode': 'chat'}}) -%}
