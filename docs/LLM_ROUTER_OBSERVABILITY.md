@@ -19,10 +19,11 @@ load-balancer probe — so Traefik health checks need no credential.
 proxy writes one `LiteLLM_SpendLogs` row per request carrying `model` and
 `model_group` (the name the caller asked for), `model_id` and `api_base` (the
 deployment actually selected), `status`, token counts, `request_duration_ms`,
-and `metadata.user_api_key_alias`. Nothing else in this fabric records which
-deployment served a request, which is why the metric below is defined against
-this table and not against traces. The settings that arm it, and the reasoning
-for each: `roles/llm_router/defaults/main/45-database.yml`.
+and `metadata.user_api_key_alias`. Until the `request_metrics` callback below,
+nothing else in this fabric recorded which deployment served a request
+without a database attached, which is why the metric below is defined
+against this table and not against traces. The settings that arm it, and the
+reasoning for each: `roles/llm_router/defaults/main/45-database.yml`.
 
 **OTLP traces are a convenience, not a source of truth.**
 `litellm_settings.callbacks: ["otel"]` exports spans over OTLP/HTTP to the
@@ -49,6 +50,40 @@ the same things:
 
 This role declares the callback and the endpoint and cannot fix either of the
 remaining two.
+
+## Per-request event in the log platform (`event=llm_request`)
+
+The `LiteLLM_SpendLogs` row above needs a database attached
+(`45-database.yml`); a router with no store attached recorded nothing
+per-request until now. The `request_metrics` callback
+(`files/callbacks/request_metrics.py`) closes that gap independent of the
+store: it fires on every success and failure and writes one JSON line to
+stdout, already carried by this unit's journal → the existing llm_router
+rsyslog route → `index=llm`, `sourcetype=litellm:proxy`
+(`defaults/main/70-syslog.yml`) — no new pipeline.
+
+Fields: `ts`, `event` (`llm_request`), `model_group` (the SERVING group —
+see "Identifying a fallback" below for why, not the one originally asked
+for), `model`, `api_base` (host only), `status`, `error_class`,
+`latency_ms`, `ttft_ms`, `prompt_tokens`, `completion_tokens`, `cache_hit`,
+`key_alias`, `call_id` (this attempt), `trace_id` (shared by every rung one
+originating request's fallback chain attempts — `stats count by trace_id`
+turns that into a per-request chain depth, the exact per-request question
+"Identifying a fallback" below says the spend-log row cannot answer). Never
+carries prompt or response content.
+
+```spl
+index=llm sourcetype="litellm:proxy" event=llm_request
+| spath
+| stats p50(latency_ms) p95(latency_ms) count by model_group, model
+```
+
+Not verified against a live index: this repo owns no Splunk props/transforms
+for `sourcetype=litellm:proxy` (Splunk-side config lives in the app repo), so
+whether `spath` parses the line directly or needs a `rex` to strip a syslog
+header first is unconfirmed here. If `spath` finds no fields, extract the
+trailing JSON object explicitly: `| rex "(?<_json>\{.*\})$" | spath
+input=_json`.
 
 ## Definition
 
@@ -208,9 +243,13 @@ Neither instrument settles it alone, and that is why both are configured:
 - The **scoped router log** makes an individual decision readable when someone
   needs to look at one rather than count them.
 
-A per-request record in the database joining to the spend log would be strictly
-more information that does not change this decision, at the cost of running
-custom logging code on the guest. It is deliberately not built.
+A per-request record in the **database** joining to the spend log would be
+strictly more information that does not change this decision, at the cost of
+running custom logging code on the guest. It is deliberately not built. The
+`request_metrics` event above is not that: it writes to the log platform, not
+the database, for a different question (per-model-group latency, not chain-
+depth disambiguation) — `trace_id` incidentally makes chain depth answerable
+too, but that is not why the callback exists.
 
 ## Known limits of the measurement
 
