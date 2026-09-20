@@ -99,11 +99,22 @@ no database is configured.
 
 ## Same contract elsewhere
 
-Role deployments and Virtual Keys already carry the same "database owns it
-after first seed" contract `llm_router_seed_mode` extends to
-`router_settings`: `tasks/seed-keys.yml` mints a key only when absent, then
-only ever adds model names to an existing key's scope; `tasks/
-reconcile-key-budgets.yml` never sends `models`, only budget fields.
+Virtual Keys carry the same "database owns it after first seed" contract
+`llm_router_seed_mode` extends to `router_settings`: `tasks/seed-keys.yml`
+mints a key only when absent, then only ever adds model names to an
+existing key's scope; `tasks/reconcile-key-budgets.yml` never sends
+`models`, only budget fields.
+
+Role deployments (`tasks/seed-roles.yml`) carry the same `llm_router_seed_mode`
+gate directly, not just the same contract by convention: in `initial` mode a
+role is created once and then left alone (target and fallback order become
+Admin-UI-owned), the same "database owns it after first seed" shape. In
+`rebuild` mode every declared role is deleted and recreated with its current
+`litellm_params` (including the timeout/window clamps to the local admission
+bounds) and its declared fallback list pushed via `/fallback` — a full
+re-seed of the role layer, run alongside the `router_settings` overwrite so a
+DR reset restores git's role targets, fallbacks, and router settings in one
+converge.
 
 ## Redis spend-tracking details
 
