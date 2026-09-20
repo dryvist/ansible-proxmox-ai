@@ -7,8 +7,8 @@ native **router mode**, presenting **one** OpenAI-compatible endpoint over
 exactly the models a rendered `--models-preset` (one section per present,
 guard-checked model — see `templates/llama-cpp-models.ini.j2`) declares.
 
-llama-swap was used until 2026-09-19 and was retired: no value for a
-single-model card — llama-server's own router mode covers swapping.
+llama-swap is retired: no value for a single-model card — llama-server's
+own router mode covers swapping.
 **Residual**: the router's own admission cap (`max_parallel_requests`,
 `roles/llm_router`) is per LiteLLM process, and the pool runs three, so up to
 three requests can be admitted against this card's one slot; the fourth and

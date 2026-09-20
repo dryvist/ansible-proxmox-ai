@@ -56,9 +56,9 @@ that number. If they now agree at 131,072, this note goes away with the edit.
 ## The routine tier (`mlx-community/Qwen3.6-35B-A3B-4bit`)
 
 The second warm model, resident beside the primary rather than swapping
-against it (nix-darwin `maxResidentWorkers = 2`). It held `serving_role:
-primary` and all three consumer aliases until 2026-08-14; both moved to the
-27B and this entry stayed servable, because it is: the host serves it,
+against it (nix-darwin `maxResidentWorkers = 2`). The 27B now carries
+`serving_role: primary` and the three consumer aliases; this entry stays
+servable because it is: the host serves it,
 verified from the worker's own command line at converge. It carries a
 `serving_role` rather than none so the registry's real invariant still holds —
 servable if and only if the entry names the role it serves in. Its `65536`
