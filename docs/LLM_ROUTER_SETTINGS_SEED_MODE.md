@@ -61,6 +61,32 @@ Scope is deliberately narrow, and the reasoning is in
   converge in `ansible-proxmox-apps` uses to create the role, so the two ends
   cannot drift.
 
+## Schema updates: `db push` (ansible), never `migrate deploy` (litellm)
+
+`main.yml` runs `prisma db push` as the service user before every restart —
+idempotent, and the only path that has ever touched this schema. LiteLLM's
+own startup also tries to manage the schema, and its default there is
+different: `proxy_cli.py` calls `PrismaManager.setup_database(use_migrate=not
+use_prisma_db_push, ...)` with `use_prisma_db_push` defaulting `False` (a
+CLI-only flag with no env var), so an unmodified `litellm` boot always
+attempts `prisma migrate deploy`. Against a schema this role has only ever
+`db push`ed — no `_prisma_migrations` history — that fails `P3005` (schema
+not empty), and litellm's own recovery path then tries to create a baseline
+migration inside its installed package directory
+(`litellm_proxy_extras/migrations/0_init`), which is root-owned like every
+other pip-installed path, so the service user's write fails with
+`PermissionError` and the proxy crash-loops (ai #845, litellm 1.98.0 →
+1.102.0).
+
+The fix is `DISABLE_SCHEMA_UPDATE=True` in the rendered env file
+(`litellm.env.j2`, gated on `llm_router_store_model_in_db` like the `db push`
+task itself): `should_update_prisma_schema()` then returns `False` and
+startup takes the `check_prisma_schema_diff()` branch instead, which only
+logs a diff (never raises) and leaves schema management entirely to the
+`db push` task that already ran. Verified against the pinned
+`litellm==1.102.0` wheel (`litellm/proxy/proxy_cli.py`,
+`litellm/proxy/db/prisma_client.py`, `litellm/proxy/db/check_migration.py`).
+
 ## Prisma without a database
 
 `prisma` was originally installed into the venv while the proxy was DB-less,
