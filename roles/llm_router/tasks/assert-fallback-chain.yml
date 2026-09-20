@@ -21,7 +21,8 @@
         == (llm_router_local_fallback_groups
             + llm_router_hermes_cloud_only_fallback_groups
             + llm_router_opencode_fallback_groups
-            + llm_router_openrouter_free_groups) | sort
+            + llm_router_openrouter_free_groups
+            + llm_router_shared_external_continuation) | unique | sort
       - >-
         llm_router_hermes_default_fallback_chain | unique | length
         == llm_router_hermes_default_fallback_chain | length
@@ -63,18 +64,13 @@
       - >-
         llm_router_hermes_default_fallback_chain | length <= 1
         or _llm_router_unsafe_providers | length == 0
-      # Depth bound: 1 local + 2 OpenCode subscription ids + 3 paid providers
-      # (alibaba, gemini, openrouter) + 1 free (hermes-cloud-free) + 1
-      # free-zdrless (an OpenRouter :free id) = 8, fully credentialed. A local
-      # leg is cheap to add — it fails fast on its own per-model override
-      # (request_timeout/stream_timeout, ~20s/10s here) rather than the
-      # router's global per-attempt timeout (ai_router_request_timeout_seconds).
-      # That global timeout is deliberately set ABOVE the client's stream-read
-      # ceiling (ai_stream_read_timeout_seconds) so the CLIENT, not the router,
-      # is what bounds one slow leg (see 40-routing.yml) — so this cap bounds
-      # PROVIDER COUNT (a reviewed onboarding decision each time it grows),
-      # not a summed worst-case timeout.
-      - "llm_router_hermes_default_fallback_chain | length <= 8"
+      # Depth bound: 8 (1 local + 2 OpenCode + 3 paid providers + free +
+      # free-zdrless), PLUS the shared external continuation every chain ends
+      # in since 2026-09-20 (35-hermes-cloud.yml): 2 Z.ai + subscription +
+      # provider API key = 4 more, 12 total, fully credentialed. This cap
+      # bounds PROVIDER COUNT (a reviewed onboarding decision each time it
+      # grows), not a worst-case timeout — see 40-routing.yml for why.
+      - "llm_router_hermes_default_fallback_chain | length <= 12"
       # ZDR ordering: no free_zdrless member (a :free-suffixed OpenRouter id,
       # zero_data_retention: false, no ZDR claim) may precede ANY other
       # segment. The operator's rule is absolute — a rung with no ZDR claim
@@ -101,17 +97,19 @@
     fail_msg: >-
       Hermes fallback chain is unsound (roles/llm_router/tasks/assert-fallback-chain.yml):
       got {{ llm_router_hermes_default_fallback_chain }}, which must hold
-      exactly {{ llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups
-      + llm_router_opencode_fallback_groups + llm_router_openrouter_free_groups }}
+      exactly {{ (llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups
+      + llm_router_opencode_fallback_groups + llm_router_openrouter_free_groups
+      + llm_router_shared_external_continuation) | unique | list }}
       (in any order) with no duplicates. Narrow leg(s) standing in front of a
       cloud rung that could serve the request, spending an attempt and a unit
       of the shared depth budget on a rung that cannot answer:
       {{ _llm_router_misordered_narrow_groups }}. Declared groups:
       {{ _llm_router_declared_groups }}. Provider(s) whose outage would empty
       the chain: {{ _llm_router_unsafe_providers }} (chain providers:
-      {{ _llm_router_chain_providers }}). Depth is capped at 8 (1 local + 2
-      OpenCode + 3 paid providers + free + free-zdrless) — see the arithmetic
-      comment above the assert before raising it. Rung(s) narrower than the primary with no
+      {{ _llm_router_chain_providers }}). Depth is capped at 12 (1 local + 2
+      OpenCode + 3 paid providers + free + free-zdrless + the shared external
+      continuation's 2 Z.ai + subscription + provider-API-key) — see the
+      arithmetic comment above the assert before raising it. Rung(s) narrower than the primary with no
       context_window_fallbacks escape hatch (an over-long request re-raises
       at these rather than escaping to a wider rung, because a rendered map
       with a missing key never falls through):
@@ -129,7 +127,7 @@
       Hermes fallback chain is ordered
       ({{ llm_router_hermes_default_fallback_chain | join(' -> ') }}), every
       rung is a real registry entry, no single provider's outage empties it,
-      and depth stays within the 8-rung cap.
+      and depth stays within the 12-rung cap.
   vars:
     # ZDR ordering guard: a free_zdrless member (no ZDR claim) may not precede
     # ANY other rung in the chain, not just the segments it is meant to
@@ -139,9 +137,13 @@
     _llm_router_misplaced_zdrless_groups: >-
       {%- set ns = namespace(bad=[]) -%}
       {%- set chain = llm_router_hermes_default_fallback_chain -%}
+      {#- The shared terminal (codex-subscription/codex-api) makes no ZDR
+          claim either, same class as free_zdrless, so it is NOT listed here —
+          both sit after free_zdrless and neither owes it precedence. -#}
       {%- set _other_groups = llm_router_local_fallback_groups
             + llm_router_opencode_fallback_groups
-            + llm_router_hermes_cloud_only_fallback_groups -%}
+            + llm_router_hermes_cloud_only_fallback_groups
+            + llm_router_zai_groups -%}
       {%- for g in llm_router_openrouter_free_groups -%}
       {%- for h in _other_groups -%}
       {%- if g in chain and h in chain
@@ -206,7 +208,8 @@
       {{ ns.bad }}
     _llm_router_declared_groups: >-
       {{ (llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups
-          + llm_router_opencode_fallback_groups + llm_router_openrouter_free_groups)
+          + llm_router_opencode_fallback_groups + llm_router_openrouter_free_groups
+          + llm_router_shared_external_continuation)
          | unique | list }}
     # First enabled registry entry to declare each fallback_group owns that
     # group's provider. route_group fallback matters: entries sharing one
