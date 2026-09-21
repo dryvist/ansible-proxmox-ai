@@ -1,0 +1,83 @@
+---
+# Pins the OTel trace-export restoration: "otel" must render in
+# litellm_settings.callbacks alongside the existing "prometheus" entry, and
+# OTEL_ENDPOINT in litellm.env.j2 must derive from the shared orchestration
+# endpoint (never a second, independently-maintained copy of the URL).
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_otel_export.yml -i localhost, -c local
+
+- name: Verify OTel traces export to the shared orchestration collector
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: "http://otel.example.test:4318"
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Render the real proxy config
+      ansible.builtin.set_fact:
+        _config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+
+    - name: Render the real env file
+      ansible.builtin.set_fact:
+        _env: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+
+    - name: Otel exports alongside prometheus and the endpoint derives from the shared var
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'otel' in _config.litellm_settings.callbacks"
+          - "'prometheus' in _config.litellm_settings.callbacks"
+          - _env is search('(?m)^OTEL_EXPORTER=otlp_http$')
+          - _env is search('(?m)^OTEL_ENDPOINT=http://otel\\.example\\.test:4318/v1/traces$')
+        fail_msg: >-
+          Expected "otel" in litellm_settings.callbacks and OTEL_ENDPOINT derived
+          from ai_orchestration_otel_endpoint plus /v1/traces in litellm.env;
+          got callbacks={{ _config.litellm_settings.callbacks }}. Real env
+          render:\n{{ _env }}
+        success_msg: >-
+          OTel traces export alongside the existing prometheus callback, endpoint
+          derived from ai_orchestration_otel_endpoint (no second copy of the URL).
+
+    - name: Opentelemetry exporter packages ship in the venv
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'opentelemetry-api' in llm_router_pip_packages"
+          - "'opentelemetry-sdk' in llm_router_pip_packages"
+          - "'opentelemetry-exporter-otlp' in llm_router_pip_packages"
+        fail_msg: >-
+          The opentelemetry exporter packages backing the "otel" callback are
+          missing from llm_router_pip_packages
+          ({{ llm_router_pip_packages }}), so litellm[proxy] would raise
+          ImportError enabling the callback restored above.
+        success_msg: The opentelemetry exporter packages ship alongside the callback.
+
+# NOTE ON COVERAGE: this proves the RENDERED YAML/env SHAPE and the pip
+# package list only. It does not call LiteLLM and cannot prove the pinned
+# release actually exports a span or that the collector accepts it — that
+# requires a live probe (see the PR body).
