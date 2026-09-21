@@ -25,12 +25,15 @@ converge if the shared store and the cap separate). It is currently
 **disabled**: `llm_router_openrouter_budget_limit` defaults to `0`. Enabling
 it is a config change (set the limit), not an architecture change. The
 router does separately enforce a rate ceiling per egress deployment
-regardless of the spend cap's state. Caller-side policy (deliberate
-escalation, `:free` rules) is therefore still doing real work rather than
-being the only backstop.
+regardless of the spend cap's state — that ceiling, not the disabled spend
+cap, is the current backstop against runaway OpenRouter cost.
 
-The `:free` endpoint is rate-limited, and the vendor logs prompt/session data on
-that variant — never send confidential material through it.
+OpenRouter models are never chained into a router fallback; a consumer opts
+in by naming the id directly. The one `:free`-variant entry
+(`llm_router/README.md`'s `nvidia/nemotron-3-ultra-550b-a55b:free`) is
+rate-limited, and the vendor logs prompt/session data on that variant —
+never send confidential material through it. No router fallback chain
+contains a `:free` rung.
 
 ## Hermes local-first value routing
 

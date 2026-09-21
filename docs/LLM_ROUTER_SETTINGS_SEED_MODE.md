@@ -61,8 +61,31 @@ Scope is deliberately narrow, and the reasoning is in
   converge in `ansible-proxmox-apps` uses to create the role, so the two ends
   cannot drift.
 
-The database shares the ai-VLAN cluster that backs Hindsight, which already
-carries the estate's DR standard.
+## Schema updates: `db push` (ansible), never `migrate deploy` (litellm)
+
+`main.yml` runs `prisma db push` as the service user before every restart —
+idempotent, and the only path that has ever touched this schema. LiteLLM's
+own startup also tries to manage the schema, and its default there is
+different: `proxy_cli.py` calls `PrismaManager.setup_database(use_migrate=not
+use_prisma_db_push, ...)` with `use_prisma_db_push` defaulting `False` (a
+CLI-only flag with no env var), so an unmodified `litellm` boot always
+attempts `prisma migrate deploy`. Against a schema this role has only ever
+`db push`ed — no `_prisma_migrations` history — that fails `P3005` (schema
+not empty), and litellm's own recovery path then tries to create a baseline
+migration inside its installed package directory
+(`litellm_proxy_extras/migrations/0_init`), which is root-owned like every
+other pip-installed path, so the service user's write fails with
+`PermissionError` and the proxy crash-loops (ai #845, litellm 1.98.0 →
+1.102.0).
+
+The fix is `DISABLE_SCHEMA_UPDATE=True` in the rendered env file
+(`litellm.env.j2`, gated on `llm_router_store_model_in_db` like the `db push`
+task itself): `should_update_prisma_schema()` then returns `False` and
+startup takes the `check_prisma_schema_diff()` branch instead, which only
+logs a diff (never raises) and leaves schema management entirely to the
+`db push` task that already ran. Verified against the pinned
+`litellm==1.102.0` wheel (`litellm/proxy/proxy_cli.py`,
+`litellm/proxy/db/prisma_client.py`, `litellm/proxy/db/check_migration.py`).
 
 ## Prisma without a database
 
@@ -76,11 +99,22 @@ no database is configured.
 
 ## Same contract elsewhere
 
-Role deployments and Virtual Keys already carry the same "database owns it
-after first seed" contract `llm_router_seed_mode` extends to
-`router_settings`: `tasks/seed-keys.yml` mints a key only when absent, then
-only ever adds model names to an existing key's scope; `tasks/
-reconcile-key-budgets.yml` never sends `models`, only budget fields.
+Virtual Keys carry the same "database owns it after first seed" contract
+`llm_router_seed_mode` extends to `router_settings`: `tasks/seed-keys.yml`
+mints a key only when absent, then only ever adds model names to an
+existing key's scope; `tasks/reconcile-key-budgets.yml` never sends
+`models`, only budget fields.
+
+Role deployments (`tasks/seed-roles.yml`) carry the same `llm_router_seed_mode`
+gate directly, not just the same contract by convention: in `initial` mode a
+role is created once and then left alone (target and fallback order become
+Admin-UI-owned), the same "database owns it after first seed" shape. In
+`rebuild` mode every declared role is deleted and recreated with its current
+`litellm_params` (including the timeout/window clamps to the local admission
+bounds) and its declared fallback list pushed via `/fallback` — a full
+re-seed of the role layer, run alongside the `router_settings` overwrite so a
+DR reset restores git's role targets, fallbacks, and router settings in one
+converge.
 
 ## Redis spend-tracking details
 
@@ -95,8 +129,9 @@ Deliberately absent: `fail_closed_budget_enforcement`. It governs LiteLLM's
 Postgres-backed virtual-key budgets, not the provider budget above, and 503s
 when spend can't be verified against Redis or a database.
 
-The proxy now **has** a database (see `defaults/main/45-database.yml`), so that
-is no longer the reason. The reason is the other one, and it still stands: this
-proxy **issues no virtual keys**, so there are no key budgets to enforce and the
-setting would be inert at best, a 503 generator on the fabric's only front door
-at worst. Reconsider it when virtual keys are issued, not before.
+The proxy now **has** a database (see `defaults/main/45-database.yml`) and
+**issues virtual keys** (`defaults/main/56-virtual-keys.yml`), one per
+caller. This setting is deliberately still absent: it 503s the fabric's
+only front door whenever spend can't be verified against Redis or the
+database, and no caller's budget enforcement depends on it today.
+Reconsider it if that changes.

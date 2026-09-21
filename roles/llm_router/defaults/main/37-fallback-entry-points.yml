@@ -1,14 +1,15 @@
 ---
-# Entry points, depth bound, and the context-window escape.
+# Entry points and the depth bound. The context-window escape (which used to
+# live here too) is 37-context-window-escape.yml — split out purely for the
+# token-budget gate, same file otherwise; see that file's own header.
 #
 # Split out of 35-hermes-cloud.yml, which owns WHICH cloud tiers are
 # credentialed and HOW the fallback chain is ordered. This file owns a
-# different question: what names a caller can put in a request, how far a
-# fallback walk may travel, and where an oversize request escapes to. An agent
-# changing one need not read the other.
+# different question: what names a caller can put in a request and how far a
+# fallback walk may travel. An agent changing one need not read the other.
 #
 # Everything here is a lazy projection over the chain vars in 35-, so load
-# order between the two files does not matter.
+# order between the files does not matter.
 #
 # THESE KEYS REACH THE RUNTIME; the rendered file is authoritative for them.
 # Worth stating because 00-identity.yml notes that role deployments and their
@@ -110,6 +111,11 @@ llm_router_zdr_entry_point_names: >-
 # bound governs how far NESTED chains may descend — which is where the
 # entry-point and per-group chains live.
 #
+# Covers the Hermes-chain names only. The DB-seeded role chains
+# (review-oss/review-private/cheap/fast/subagent/judge, seeded via
+# /fallback) render outside this file and are not counted here, so a role
+# chain longer than this bound is silently truncated with no signal.
+#
 # Still a fallback bound, not a retry budget; same-provider retries stay zero.
 llm_router_fallback_target_names: >-
   {{ (llm_router_hermes_default_fallback_chain
@@ -135,129 +141,3 @@ llm_router_max_fallbacks: "{{ llm_router_fallback_target_names | length }}"
 # change the fallback walk's own re-keying behavior (see 00-identity.yml —
 # no upstream fix, no ETA).
 llm_router_enforce_fallback_model_access: true
-
-# A rung narrower than the request loses that rung, and THIS map — not the
-# ordinary one — decides what happens next. LiteLLM re-enters its fallback
-# machinery for the failing leg under the LEG's own name and consults this map
-# first (router.py::async_function_with_fallbacks, litellm 1.98.0): with the
-# map rendered but no entry for that name it re-raises WITHOUT ever reading
-# the ordinary `fallbacks` map, whereas with no map at all control falls
-# through to it. A PARTIALLY POPULATED MAP IS THEREFORE WORSE THAN NO MAP,
-# which is why these keys are derived rather than listed.
-#
-# That re-raise does NOT kill the chain that named the leg — it is caught and
-# the walk advances. (An earlier version of this comment claimed every cloud
-# rung below is then never tried; that is false. Only the shared max_fallbacks
-# budget truncates a walk.)
-#
-# WHY THE PRIMARY IS KEYED TOO — this reverses an earlier decision.
-#
-# This map used to cover only the local legs, on the reasoning that
-# "hermes-default's own overflow already resolves through the ordinary chain,
-# and adding it here would skip the local legs for requests they can serve
-# perfectly well." Both halves of that turned out to be wrong.
-#
-# The first half: an overflow on hermes-default does NOT resolve through the
-# ordinary chain, because unkeyed it never reaches that chain at all (the
-# asymmetry above). Observed as cron jobs failing with
-# ContextWindowExceededError and every rung refusing the request.
-#
-# The second half misreads what the skip costs. This map fires ONLY on a
-# context-window error, so keying the primary cannot divert an ordinary
-# request. It diverts exactly one class: a request already too large for the
-# primary. Every local leg advertises a window no larger than the primary's, so
-# a leg could never serve what the primary just refused — "requests they can
-# serve perfectly well" is an empty set here.
-#
-# The keys are derived, never listed: local legs, the auto-router groups
-# themselves, and every entry-point name above (each servable id and every
-# alias). A hand-maintained list would silently stop covering a tier the
-# moment one was added.
-#
-# THE ALIASES ARE NOT REDUNDANT WITH THE ID. Both maps are looked up under the
-# name AS TYPED, and model_group_alias resolves below the fallback handler, so
-# an alias and its target are separate keys inheriting nothing from each other.
-# Keying the id alone leaves alias callers on the partial-map path above.
-llm_router_context_window_escape_groups: >-
-  {%- set ns = namespace(groups=llm_router_local_fallback_groups | list) -%}
-  {%- for m in llm_router_hermes_virtual_models -%}
-  {%- set group = m.route_group | default(m.client_model_id) -%}
-  {%- if group not in ns.groups -%}
-  {%- set ns.groups = ns.groups + [group] -%}
-  {%- endif -%}
-  {%- endfor -%}
-  {%- for target in llm_router_entry_point_names -%}
-  {%- if target and target not in ns.groups -%}
-  {%- set ns.groups = ns.groups + [target] -%}
-  {%- endif -%}
-  {%- endfor -%}
-  {{ ns.groups }}
-
-# Renders nothing when no cloud rung is credentialed — an empty target list is
-# not "no map", and LiteLLM would take the empty branch and fall back to
-# nowhere instead of surfacing the real error. The escape target is every
-# wider-than-primary rung the six-segment chain can hold, not only the
-# hermes-cloud tier: an OpenCode or free-zdrless rung serves an over-long
-# request exactly as well as an alibaba/gemini/openrouter one does.
-llm_router_context_window_wider_groups: >-
-  {{ (llm_router_hermes_cloud_only_fallback_groups
-      + llm_router_opencode_fallback_groups
-      + llm_router_openrouter_free_groups) | unique | list }}
-#
-# fast/subagent (55-roles.yml) ADD TWO MORE KEYS here — a DIFFERENT failure
-# mode from the block above. Those two DB-seeded roles' ORDINARY fallback
-# chain is local-only (hermes-local-4080 -> the Mac Studio primary, nothing
-# else) and does NOT reach a cloud rung on a busy/timeout/etc failure — see
-# 55-roles.yml. A too-large-for-the-4080 request is a genuinely different
-# failure mode, evaluated against the ROLE'S OWN advertised window (32768,
-# hermes-local-4080's) at depth 0, before any chain walk begins: this is what
-# `subagent` already depended on before this PR (it used to target `long`
-# directly), so this key preserves that existing capability rather than
-# adding a new one — an oversized subagent call must still reach the
-# >200k-context rung, not fail outright the way ordinary contention now does.
-#
-# Gated on `long`'s underlying entry actually being CREDENTIALED, not merely
-# on it existing in the registry (llm_router_long_context_alias_ids is a
-# registry-only fact and says nothing about whether OPENROUTER_API_KEY
-# resolved) — the same distinction llm_router_context_window_wider_groups
-# above already draws for the provider-scoped map, via each `_credentialed`
-# projection. Missing this the first time round rendered a reference to a
-# model_group_alias entry with no live deployment behind it whenever no
-# OpenRouter credential was seeded at all (caught by
-# test_hermes_provider_keys_whitespace.yml).
-llm_router_long_context_credentialed: >-
-  {%- set _ns = namespace(live=false) -%}
-  {%- for m in llm_router_registry_enabled
-        | selectattr('client_model_id', 'in', llm_router_long_context_alias_ids) -%}
-  {%- set _key = bao_local_llm_secrets[m.key_field] | default(lookup('env', m.credential_env), true) -%}
-  {%- if _key | trim | length > 0 -%}
-  {%- set _ns.live = true -%}
-  {%- endif -%}
-  {%- endfor -%}
-  {{ _ns.live }}
-llm_router_context_window_fallbacks: >-
-  {%- set ns = namespace(pairs=[]) -%}
-  {%- if llm_router_context_window_wider_groups | length > 0 -%}
-  {%- for group in llm_router_context_window_escape_groups -%}
-  {%- set ns.pairs = ns.pairs + [{group: llm_router_context_window_wider_groups}] -%}
-  {%- endfor -%}
-  {%- endif -%}
-  {%- if llm_router_long_context_credentialed | bool -%}
-  {%- for _role in llm_router_long_context_escape_roles -%}
-  {%- set ns.pairs = ns.pairs + [{_role: [llm_router_model_group_aliases.long]}] -%}
-  {%- endfor -%}
-  {%- endif -%}
-  {#- Every other role: a request wider than its local rungs skips straight to
-      the role's own external rungs. With this map present, a group it does
-      not key RAISES on a context-window error instead of walking its
-      ordinary fallbacks (router.py::async_function_with_fallbacks, litellm
-      1.98.0), so a role with external rungs but no key here dead-ends. -#}
-  {%- set _local = llm_router_local_fallback_groups + [llm_router_primary_model] + llm_router_servable_models -%}
-  {%- for d in llm_router_role_deployments
-        if d.role not in llm_router_long_context_escape_roles -%}
-  {%- set _wider = d.fallbacks | reject('in', _local) | list -%}
-  {%- if _wider | length > 0 -%}
-  {%- set ns.pairs = ns.pairs + [{d.role: _wider}] -%}
-  {%- endif -%}
-  {%- endfor -%}
-  {{ ns.pairs }}
