@@ -4,10 +4,9 @@ roles/llm_router A4 (56-virtual-keys.yml) seeds one virtual key per Hermes
 profile — hermes_<profile>_llm_router_key, mount `apps`, read here as
 bao_apps_secrets — so a store's spend attributes to that profile.
 
-Operator rule (2026-09-21): nothing that calls the router holds the shared
-master key. A store whose own key is not yet seeded must fail the render
-loudly (mandatory) rather than silently widen onto the master key or onto a
-sibling store's key.
+No Hermes store uses the shared master key. A store whose own key is not
+yet seeded must fail the render loudly (mandatory) rather than silently
+widen onto the master key or onto a sibling store's key.
 """
 
 from __future__ import annotations
