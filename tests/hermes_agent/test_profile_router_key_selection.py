@@ -1,25 +1,34 @@
-"""Each Hermes store selects its OWN per-profile router key.
+"""Each Hermes store uses ONLY its own per-profile router key.
 
 roles/llm_router A4 (56-virtual-keys.yml) seeds one virtual key per Hermes
 profile — hermes_<profile>_llm_router_key, mount `apps`, read here as
-bao_apps_secrets — so a store's spend attributes to that profile instead of
-every store chaining off the one shared HERMES_AGENT_MODEL_API_KEY.
+bao_apps_secrets — so a store's spend attributes to that profile.
 
-Before its own key is seeded, a store must keep working: fall back to the
-shared key rather than render an empty credential.
+Operator rule (2026-09-21): nothing that calls the router holds the shared
+master key. A store whose own key is not yet seeded must fail the render
+loudly (mandatory) rather than silently widen onto the master key or onto a
+sibling store's key.
 """
 
 from __future__ import annotations
 
-from jinja2 import Environment, FileSystemLoader
+import pytest
+from jinja2 import Environment, FileSystemLoader, Undefined
 
 from conftest import ROLE_ROOT
+
+
+def _mandatory(value, msg=""):
+    if isinstance(value, Undefined):
+        raise ValueError(msg)
+    return value
 
 
 def _jinja_env() -> Environment:
     env = Environment(autoescape=False, loader=FileSystemLoader(ROLE_ROOT / "templates"))
     env.filters["comment"] = lambda v: f"# {v}"
     env.filters["bool"] = bool
+    env.filters["mandatory"] = _mandatory
     return env
 
 
@@ -34,7 +43,10 @@ def _base_context() -> dict:
     # these are exercised by the assertions below.
     return dict(
         ansible_managed="managed",
-        hermes_agent_model_api_key="SHARED-MASTER-KEY",
+        # hermes_agent_model_api_key is itself the default store's mandatory
+        # scoped key now (defaults/main/20-brain-and-slack.yml) — never the
+        # master key. hermes-env.j2 just relays it.
+        hermes_agent_model_api_key="sk-default-own-key",
         hermes_agent_memory_provider="hindsight",
         hermes_agent_memory_mode="local_external",
         hermes_agent_wiki_enabled=False,
@@ -64,14 +76,6 @@ def test_default_store_uses_its_own_seeded_key() -> None:
     assert _model_api_key(rendered) == "sk-default-own-key"
 
 
-def test_default_store_falls_back_when_its_key_is_not_seeded() -> None:
-    env = _jinja_env()
-    context = _base_context()
-    context["bao_apps_secrets"] = {}
-    rendered = env.get_template("hermes-env.j2").render(**context)
-    assert _model_api_key(rendered) == "SHARED-MASTER-KEY"
-
-
 def test_named_profile_uses_its_own_seeded_key() -> None:
     env = _jinja_env()
     context = _base_context()
@@ -85,11 +89,26 @@ def test_named_profile_uses_its_own_seeded_key() -> None:
     assert _model_api_key(rendered) == "sk-splunk-admin-own-key"
 
 
-def test_named_profile_falls_back_when_its_key_is_not_seeded() -> None:
+def test_named_profile_never_falls_back_to_a_sibling_or_the_default_key() -> None:
+    """A profile without its own seeded key fails loudly — it must not
+    silently run on the default store's key (which is itself never the
+    master key any more, but is still a broader identity than this profile
+    declared)."""
     env = _jinja_env()
     context = _base_context()
     context["hermes_agent_profile"] = {"name": "github-maint", "env": []}
     # A DIFFERENT profile's key is present, but github-maint's own is not.
     context["bao_apps_secrets"] = {"hermes_splunk_admin_llm_router_key": "sk-splunk-admin-own-key"}
-    rendered = env.get_template("hermes-env-profile.j2").render(**context)
-    assert _model_api_key(rendered) == "SHARED-MASTER-KEY"
+    with pytest.raises(ValueError):
+        env.get_template("hermes-env-profile.j2").render(**context)
+
+
+def test_rendered_env_never_carries_the_shared_master_key_variable() -> None:
+    """The master key never appears anywhere in a rendered store's .env —
+    only each store's own seeded value, sourced from bao_apps_secrets."""
+    env = _jinja_env()
+    context = _base_context()
+    context["bao_apps_secrets"] = {"hermes_default_llm_router_key": "sk-default-own-key"}
+    rendered = env.get_template("hermes-env.j2").render(**context)
+    assert "ai_orchestration_model_api_key" not in rendered
+    assert "SHARED-MASTER-KEY" not in rendered

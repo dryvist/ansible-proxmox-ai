@@ -134,13 +134,21 @@ hermes_agent_cron_wall_timeout_seconds: >-
 # bounded Splunk search. The brain call is separately bounded by
 # hermes_agent_stream_stale_timeout above.
 hermes_agent_mcp_tool_timeout_seconds: 180
-# The api key IS the LiteLLM router master key; source it from the canonical
-# LLM_ROUTER_MASTER_KEY env (same as the llm_router role) so no per-run mapping
-# is needed. HERMES_AGENT_MODEL_API_KEY still overrides if explicitly set.
+# This is the DEFAULT store's own scoped router key, never the shared
+# master key — the master key is not an allowed fallback for any Hermes
+# store (operator rule, 2026-09-21: nothing calling the router holds it).
+# hermes_default_llm_router_key is seeded by roles/llm_router
+# (defaults/main/56-virtual-keys.yml) from the value ansible-proxmox-apps
+# generates; a converge with that field unseeded fails loudly here rather
+# than silently widening every store onto the master key.
+# HERMES_AGENT_MODEL_API_KEY still overrides if explicitly set (molecule/
+# local runs).
 hermes_agent_model_api_key: >-
   {{ lookup('env', 'HERMES_AGENT_MODEL_API_KEY')
-     | default(ai_orchestration_model_api_key, true)
-     | mandatory('Hermes was not supplied to this role') }}
+     | default(bao_apps_secrets['hermes_default_llm_router_key'], true)
+     | mandatory('hermes_default_llm_router_key missing from bao_apps_secrets —
+                  seed it in ansible-proxmox-apps. The shared router master key
+                  is no longer an allowed fallback for any Hermes store.') }}
 
 # --- Slack gateway (Socket Mode) ---
 # Sourced the same way as the model key: plain env lookup, fed by Doppler at

@@ -54,6 +54,10 @@ def _jinja_env() -> Environment:
     env.filters["to_json"] = json.dumps
     env.filters["bool"] = bool
     env.filters["comment"] = lambda v: f"# {v}"
+    # Passthrough: this module isn't testing router-key selection (that's
+    # test_profile_router_key_selection.py), just credential blanking, so a
+    # missing bao_apps_secrets field should render blank here, not raise.
+    env.filters["mandatory"] = lambda v, msg="": v
     return env
 
 
@@ -278,9 +282,9 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
     context = dict(_RENDER_CONTEXT)
     context.update(
         hermes_agent_model_api_key="MODELKEY",
-        # Empty so the render falls back to hermes_agent_model_api_key above —
-        # the selection itself is pinned in
-        # test_profile_router_key_selection.py, not here.
+        # Empty — the mandatory filter is stubbed to a passthrough above, so
+        # a missing field renders blank. Router-key selection itself is
+        # pinned in test_profile_router_key_selection.py, not here.
         bao_apps_secrets={},
         hermes_agent_slack_bot_token="xoxb-x",
         hermes_agent_slack_app_token="xapp-x",
@@ -306,7 +310,14 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
     }
 
     for profile in _profiles():
-        rendered = env.from_string(src).render(hermes_agent_profile=profile, **context)
+        # Router-key selection is pinned in test_profile_router_key_selection.py;
+        # here it only needs a non-empty value so the credential-blanking
+        # assertions below aren't polluted by an unrelated mandatory() raise.
+        profile_context = dict(context)
+        profile_context["bao_apps_secrets"] = {
+            f"hermes_{profile['name'].replace('-', '_')}_llm_router_key": "MODELKEY"
+        }
+        rendered = env.from_string(src).render(hermes_agent_profile=profile, **profile_context)
         values = dict(
             line.split("=", 1) for line in rendered.splitlines() if "=" in line and not line.startswith("#")
         )
