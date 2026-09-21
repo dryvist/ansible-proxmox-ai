@@ -95,6 +95,24 @@ _llm_router_static_virtual_keys:
   - alias: langgraph
     value: "{{ bao_apps_secrets.langgraph_llm_router_key | default('', true) }}"
     models: "{{ ['cheap', 'embed'] }}"
+  # n8n's LiteLLM Request node (roles/n8n_docker/templates/docker-compose.yml.j2
+  # LITELLM_ROUTER_*), scoped to the `cheap` role — n8n_docker_seed_model
+  # names this same role.
+  - alias: n8n
+    value: "{{ bao_apps_secrets.n8n_llm_router_key | default('', true) }}"
+    models: "{{ ['cheap'] }}"
+  # Hindsight's background retain (fact extraction) scope, plus the
+  # literal primary model its reflect/consolidation scopes call directly
+  # (hindsight_docker_llm_model = ai_default_model, a physical model id,
+  # not a role — so it has to be listed literally rather than picked up
+  # by the role-chain expansion 59-key-scopes.yml does for `cheap`).
+  - alias: hindsight
+    value: "{{ bao_apps_secrets.hindsight_llm_router_key | default('', true) }}"
+    models: "{{ ['cheap', llm_router_primary_model] }}"
+    # Background retain (fact extraction) hot-loops with no client-side
+    # backoff (vendor image ships no interval/rate knob) — one call/second
+    # is plenty for a backlog and bounds it at the layer we control.
+    rpm_limit: 60
   # The metrics scraper. /metrics is authenticated by default and this proxy
   # keeps it that way (60-ops.yml), so the scrape needs a key that nothing else
   # would otherwise issue. Same contract as the two above: the value is
@@ -117,6 +135,11 @@ _llm_router_static_virtual_keys:
     value: "{{ bao_apps_secrets.prometheus_llm_router_key | default('', true) }}"
     models: "{{ ['no-default-models'] }}"
     allowed_routes: ["/metrics", "/metrics/"]
+  # Zammad's AI provider (custom_open_ai), scoped to the `cheap` role —
+  # zammad_ai_model names this same role.
+  - alias: zammad
+    value: "{{ bao_apps_secrets.zammad_llm_router_key | default('', true) }}"
+    models: "{{ ['cheap'] }}"
   # CI, PRIVATE repositories: the `review-private` role only (55-roles.yml —
   # local rungs then the Codex rungs, nothing else). The value is generated in
   # the apps domain and merely read here; revoking CI's access is one key.
@@ -167,3 +190,11 @@ _llm_router_static_virtual_keys:
 # The declared list; llm_router_virtual_keys (59-key-scopes.yml) widens each
 # key's `models` with every group in its roles' chains.
 _llm_router_declared_virtual_keys: "{{ _llm_router_static_virtual_keys + _llm_router_hermes_profile_keys }}"
+
+# On-demand rotation switch for tasks/seed-keys.yml: empty on every ordinary
+# converge. Names the alias(es) above whose live key should be deleted and
+# re-minted this run, after ansible-proxmox-apps has already regenerated the
+# matching *_llm_router_key OpenBao value (its own
+# openbao_seed_rotate_fields switch) — e.g.
+# -e llm_router_rotate_key_aliases=['n8n'].
+llm_router_rotate_key_aliases: []

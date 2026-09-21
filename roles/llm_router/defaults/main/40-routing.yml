@@ -47,7 +47,20 @@ llm_router_request_timeout_seconds: "{{ ai_router_request_timeout_seconds }}"
 # tasks/assert-admission-budget.yml and tests/llm_router/
 # test_admission_budget_and_ladder.yml hold the product to this figure, so a
 # future retry bump cannot widen it.
-llm_router_admission_budget_seconds: 15
+#
+# 4 (was 15): operator rule 2026-09-19 superseded by the 2026-09-21
+# "no queueing" rule — a busy LOCAL slot hands over INSTANTLY, never waits out
+# a retry window. llm_router_local_num_retries and llm_router_rate_limit_retries
+# were already 0 (the local product was always 0s in practice); the true floor
+# is the multi-member CLOUD group retry this same budget also bounds
+# (llm_router_cloud_group_retries x llm_router_retry_after_seconds = 2 x 2s = 4s
+# at the production retry_after) — a real per-provider-member retry, not local
+# admission, so it can't go to zero. 4 removes the 11s of unused headroom a
+# future local retry bump could otherwise quietly spend without the assert
+# noticing. Local staying uncooled on a 429 (llm_router_rate_limit_allowed_fails,
+# below) is what lets the very next request probe local again rather than
+# skipping it for a stale cooldown.
+llm_router_admission_budget_seconds: 4
 # First-byte bound on every local rung, for the ADMITTED request whose backend
 # never starts answering (a hung or wedged slot, not a busy one — busy is the
 # instant 429 above). First byte on a local rung is the prefill: at the

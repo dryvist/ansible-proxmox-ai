@@ -56,6 +56,90 @@
           - _llm_router_live_key_aliases == []
         fail_msg: "Expected [], got {{ _llm_router_live_key_aliases }}"
 
+- name: The create failure expression treats an existing alias as success, not failure
+  hosts: localhost
+  gather_facts: false
+  # Pins the real fix for Semaphore tasks 267/277 (2026-09-21): mint every
+  # virtual key with a seeded value every run, and let LiteLLM's own
+  # alias-uniqueness check at /key/generate be the "does this exist" answer
+  # instead of a fragile client-side pre-filter. A 400 whose body says the
+  # alias already exists means the create has nothing left to do; any other
+  # non-2xx is still a real failure. Uses the exact failed_when expression
+  # seed-keys.yml runs, against the real error body LiteLLM 1.102.0 returns
+  # (confirmed on the live proxy: {"error":{"message":"Key with alias 'X'
+  # already exists. Unique key aliases across all keys are required.", ...}}).
+  vars:
+    _llm_router_key_generate_result_exists:
+      status: 400
+      json:
+        error:
+          message: "Key with alias 'claude-code' already exists. Unique key aliases across all keys are required."
+    _llm_router_key_generate_result_other_400:
+      status: 400
+      json:
+        error:
+          message: "Invalid key format. LiteLLM Virtual Key must start with 'sk-'."
+    _llm_router_key_generate_result_created:
+      status: 200
+      json:
+        key: "sk-whatever"
+  tasks:
+    - name: Assert an alias-exists 400 does not fail
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            not (_llm_router_key_generate_result_exists.status not in [200, 201]
+            and 'already exists' not in
+              (_llm_router_key_generate_result_exists.json.error.message | default('')))
+        fail_msg: "An alias-exists 400 was treated as a failure"
+
+    - name: Assert a different 400 still fails
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            (_llm_router_key_generate_result_other_400.status not in [200, 201]
+            and 'already exists' not in
+              (_llm_router_key_generate_result_other_400.json.error.message | default('')))
+        fail_msg: "A non-alias-exists 400 was NOT treated as a failure"
+
+    - name: Assert a real 200 does not fail
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            not (_llm_router_key_generate_result_created.status not in [200, 201]
+            and 'already exists' not in
+              (_llm_router_key_generate_result_created.json.error.message | default('')))
+        fail_msg: "A successful create was treated as a failure"
+
+- name: Verify seed-keys.yml mints every seeded key unconditionally and tolerates an existing alias
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Read the seed-keys.yml source
+      ansible.builtin.slurp:
+        src: "{{ _role_dir }}/tasks/seed-keys.yml"
+      register: _seed_keys_source_create
+
+    - name: Assert the create loop is not gated by a pre-filtered "unseeded" list, and accepts an alias-exists 400
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'rejectattr(''alias'', ''in''' not in (_seed_keys_source_create.content | b64decode)"
+          - "'status_code: [200, 201, 400]' in (_seed_keys_source_create.content | b64decode)"
+          - "'already exists' in (_seed_keys_source_create.content | b64decode)"
+        fail_msg: >-
+          seed-keys.yml's key-generate loop went back to pre-filtering by a
+          client-side live-alias read — that read has been wrong more than
+          once for a reason narrower than pagination (Semaphore tasks
+          267/277) and turned an already-existing alias into a hard failure
+          instead of the no-op /key/generate's own uniqueness check already
+          treats it as.
+
 - name: Verify seed-keys.yml requests the full-object shape /key/list needs to expose key_alias
   hosts: localhost
   gather_facts: false

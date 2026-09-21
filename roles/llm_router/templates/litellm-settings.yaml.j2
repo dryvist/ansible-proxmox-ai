@@ -1,9 +1,14 @@
 litellm_settings:
-  # 2026-09-12: dropped "otel" from callbacks.
+  # "otel" (with LITELLM_OTEL_V2=true, see litellm.env.j2) exports one nested,
+  # GenAI-semconv trace per request over OTLP/HTTP to the shared collector;
+  # the collector fans spans out to Langfuse + Phoenix. No direct "langfuse"
+  # callback — it requires the v2 SDK and errors on init with the v3 pip
+  # resolves; no direct "langfuse_otel" preset either — that connects
+  # straight to Langfuse with credentials this proxy does not hold.
   #
-  # "prometheus" is NOT a tracing sink. It is the only shipped consumer of the
-  # router's fallback events, and the only thing in this proxy that records
-  # the model group originally ASKED FOR next to the one that served.
+  # "prometheus" is NOT a second tracing sink. It is the only shipped consumer
+  # of the router's fallback events, and the only thing in this proxy that
+  # records the model group originally ASKED FOR next to the one that served.
   # Rationale and the trap it replaces: defaults/main/60-ops.yml.
   #
   # fast_subagent_lock only alongside a configured spend store — same gate the
@@ -23,7 +28,8 @@ litellm_settings:
   # A flow sequence on the key's own line. Under a folded scalar (`>-`) the
   # JSON text became one YAML STRING and LiteLLM tried to import a module
   # literally named `["prometheus", ...` — every router crash-looped.
-  callbacks: {{ ((['prometheus'] if llm_router_prometheus_enabled | bool else [])
+  callbacks: {{ (['otel']
+        + (['prometheus'] if llm_router_prometheus_enabled | bool else [])
         + (['fast_subagent_lock.proxy_handler_instance'] if llm_router_redis_host | length > 0 else [])
         + ['system_merge.proxy_handler_instance', 'request_metrics.proxy_handler_instance'])
        | to_json }}
