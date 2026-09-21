@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.52.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.52.0...v0.52.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **llama_cpp:** derive the models mount from tofu instead of a stale default ([#848](https://github.com/dryvist/ansible-proxmox-ai/issues/848)) ([cce5279](https://github.com/dryvist/ansible-proxmox-ai/commit/cce5279dbbed544c89a4d5bb34a1853808b4a922))
+* **llm_router:** a flat-rate api_base never renders a dollar budget ([#855](https://github.com/dryvist/ansible-proxmox-ai/issues/855)) ([98d1b2b](https://github.com/dryvist/ansible-proxmox-ai/commit/98d1b2b547788fd52a3aedd3dfc90edfa50dc539))
+* **llm_router:** busy studio rung hands over immediately ([#850](https://github.com/dryvist/ansible-proxmox-ai/issues/850)) ([b54fe9d](https://github.com/dryvist/ansible-proxmox-ai/commit/b54fe9de1e9820871130aa1c6587cd5c7bb79f86))
+* **llm_router:** consolidate credential resolution into one dict ([#856](https://github.com/dryvist/ansible-proxmox-ai/issues/856)) ([ad01c09](https://github.com/dryvist/ansible-proxmox-ai/commit/ad01c091bfeeaa2a6ae699e9ba725aa226272a4d))
+* **llm_router:** disable litellm's own prisma migrate deploy at startup ([#849](https://github.com/dryvist/ansible-proxmox-ai/issues/849)) ([2a4db31](https://github.com/dryvist/ansible-proxmox-ai/commit/2a4db31c995bbd98dc63fbdee9ead1ebd57551dc))
+* **llm_router:** every fallback chain ends in the shared external continuation ([#846](https://github.com/dryvist/ansible-proxmox-ai/issues/846)) ([43445f0](https://github.com/dryvist/ansible-proxmox-ai/commit/43445f09782acb68e32963812f0bbd68b02afb0e))
+* **llm_router:** rebuild re-seeds role deployments and their fallbacks ([#847](https://github.com/dryvist/ansible-proxmox-ai/issues/847)) ([bbe2446](https://github.com/dryvist/ansible-proxmox-ai/commit/bbe24465876a07a6c637063d906021f5b27651c6))
+* **llm_router:** three small findings from the [#811](https://github.com/dryvist/ansible-proxmox-ai/issues/811) promotion review ([#844](https://github.com/dryvist/ansible-proxmox-ai/issues/844)) ([331a2cc](https://github.com/dryvist/ansible-proxmox-ai/commit/331a2cc4cf6c383b4cb06edbcb7022a2ea391a11))
+
 ## [0.52.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.51.0...v0.52.0) (2026-09-20)
 
 
