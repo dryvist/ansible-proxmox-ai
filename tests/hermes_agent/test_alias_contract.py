@@ -164,7 +164,9 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     # the request. The 2026-07-24 cron kill this figure once guarded against is
     # covered by every name carrying a ladder plus default_fallbacks.
     assert router_defaults["llm_router_rate_limit_retries"] == 0
-    assert router_defaults["llm_router_admission_budget_seconds"] == 15
+    # 4 (was 15): the "no queueing" rule (operator, 2026-09-21) — a busy
+    # local slot hands over instantly, never waits out a retry window.
+    assert router_defaults["llm_router_admission_budget_seconds"] == 4
     assert "model_group_alias:" in router_config
     assert "llm_router_model_group_aliases.items()" in router_config
 

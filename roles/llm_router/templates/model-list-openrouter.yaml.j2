@@ -1,0 +1,49 @@
+{# OpenRouter egress tier — explicit ids, one provider key. Split out of
+   model-list.yaml.j2 when that file crossed its per-file token budget,
+   following the seam that file already uses for every other tier: one tier
+   per file, so an agent changing this tier reads this file and not every
+   other tier as well. Per .token-limits.yaml the remedy for an over-budget
+   file is a split along a real seam, never a raised budget.
+
+   Included by model-list.yaml.j2, which owns the macros and the surrounding
+   tiers; `delegation_hints` and `litellm_model` resolve from that context.
+   Never chained into fallbacks; an unseeded model renders no entry. #}
+{% for m in llm_router_openrouter_models %}
+{% set _or_env = m.credential_env %}
+{% set _or_key = llm_router_resolved_credentials.get(m.credential_env, '') %}
+{% if _or_key | length > 0 %}
+  - model_name: {{ m.client_model_id }}
+    litellm_params:
+      model: {{ litellm_model(m) }}
+      api_key: os.environ/{{ _or_env }}
+      # /v1/responses -> /chat/completions bridge. None of these backends serve
+      # a Responses endpoint, and without this a Responses-only client (Codex
+      # and anything else speaking that wire protocol) reaches a 404 on an
+      # otherwise healthy deployment. LiteLLM treats this as an internal control
+      # flag and never forwards it in the upstream request body.
+      use_chat_completions_api: true
+      order: {{ m.order | default(llm_router_openrouter_default_order) }}
+      # Bound the minute so a runaway caller can't exhaust the period budget
+      # before it's observed.
+      rpm: {{ llm_router_openrouter_rpm }}
+      tpm: {{ llm_router_openrouter_tpm }}
+      max_parallel_requests: {{ llm_router_openrouter_max_parallel_requests }}
+    model_info:
+      # A background probe here spends a real request against OpenRouter's
+      # own per-key rate limit — measured live 2026-09-21 landing RateLimitError
+      # on this exact tier. num_retries: 0 (router-wide) already means every
+      # genuine call proves liveness or fails over at once, so the ping buys
+      # nothing readiness doesn't already have.
+      disable_background_health_check: true
+      max_input_tokens: {{ m.context_window }}
+{% if m.max_output_tokens is defined %}
+      # An entry that declares its own generation cap gets it here; without one
+      # the context window is the only bound this tier has ever advertised.
+      max_output_tokens: {{ m.max_output_tokens }}
+      max_tokens: {{ m.max_output_tokens }}
+{% else %}
+      max_tokens: {{ m.context_window }}
+{% endif %}
+{{- delegation_hints(m) }}
+{% endif %}
+{% endfor %}
