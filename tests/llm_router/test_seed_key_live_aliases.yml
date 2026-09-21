@@ -56,6 +56,70 @@
           - _llm_router_live_key_aliases == []
         fail_msg: "Expected [], got {{ _llm_router_live_key_aliases }}"
 
+- name: The pagination merge finds an alias that only exists on page 2
+  hosts: localhost
+  gather_facts: false
+  # Pins the fix for Semaphore task 267 (2026-09-21): /key/list caps at
+  # size=100, so a live count past 100 leaves aliases beyond page 1 invisible
+  # to the single-page expression above, and they look unseeded even though
+  # they already exist — /key/generate then 400s "Unique key aliases across
+  # all keys are required" for keys that were never touched. This is the
+  # SAME llm_router_all_live_keys merge expression seed-keys.yml runs, fed
+  # a 2-page mock response, proving an alias that only appears on page 2
+  # still ends up in the live-alias set.
+  vars:
+    llm_router_existing_keys:
+      json:
+        keys:
+          - key_alias: claude-code
+            token: hash1
+        total_pages: 2
+    llm_router_existing_keys_more_pages:
+      results:
+        - json:
+            keys:
+              - key_alias: hindsight
+                token: hash2
+    llm_router_all_live_keys: >-
+      {{ (llm_router_existing_keys.json['keys'] | default([]))
+         + (llm_router_existing_keys_more_pages.results | default([])
+            | map(attribute='json', default={})
+            | map(attribute='keys', default=[]) | sum(start=[])) }}
+    _llm_router_live_key_aliases: >-
+      {{ llm_router_all_live_keys
+         | selectattr('key_alias', 'defined')
+         | map(attribute='key_alias') | select('string') | list }}
+  tasks:
+    - name: Assert both the page-1 and page-2 aliases are found
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_live_key_aliases == ['claude-code', 'hindsight']
+        fail_msg: "Expected ['claude-code', 'hindsight'], got {{ _llm_router_live_key_aliases }}"
+
+- name: Verify seed-keys.yml fetches every /key/list page, not only page 1
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Read the seed-keys.yml source
+      ansible.builtin.slurp:
+        src: "{{ _role_dir }}/tasks/seed-keys.yml"
+      register: _seed_keys_source_paginated
+
+    - name: Assert it loops over total_pages instead of trusting page 1 alone
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'total_pages' in (_seed_keys_source_paginated.content | b64decode)"
+          - "'llm_router_all_live_keys' in (_seed_keys_source_paginated.content | b64decode)"
+        fail_msg: >-
+          seed-keys.yml stopped paginating /key/list — once live keys exceed
+          one page (size=100), aliases beyond page 1 look unseeded and
+          /key/generate 400s "Unique key aliases across all keys are
+          required" for keys that already exist (Semaphore task 267).
+
 - name: Verify seed-keys.yml requests the full-object shape /key/list needs to expose key_alias
   hosts: localhost
   gather_facts: false
