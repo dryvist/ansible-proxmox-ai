@@ -48,6 +48,46 @@
       Authorization: "Bearer {{ llm_router_master_key }}"
     timeout: "{{ llm_router_seed_request_timeout }}"
   register: llm_router_existing_keys
+
+# ROTATION. Once minted, a key's `key` value is a LiteLLM primary identifier —
+# there is no "update the value" endpoint — so rotation is delete-then-mint,
+# never an in-place PATCH. Off by default (empty list, no-op on every ordinary
+# converge): an operator names the aliases to rotate in
+# llm_router_rotate_key_aliases right after the OpenBao value has actually
+# changed (each key family's own generate play, e.g.
+# ansible-proxmox-apps roles/openbao seed_generated_app_secret.yml with
+# openbao_seed_rotate_fields set — see that file's header for the matching
+# apps-side switch). Deleting here, before "unseeded keys" is computed below,
+# is what makes the very next task on this same run re-mint the same alias
+# with the value bao_apps_secrets now holds — one converge, no manual step
+# in between. `key_aliases` (not `keys`/token) so this never needs the old
+# token value, which this role does not otherwise read back.
+- name: Delete the live key for every alias flagged for rotation
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/delete"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      key_aliases: "{{ llm_router_rotate_key_aliases | default([]) }}"
+    status_code: [200, 201]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  when: (llm_router_rotate_key_aliases | default([]) | length) > 0
+  no_log: true
+
+# Re-read after a rotation delete, so the alias(es) just removed above are
+# absent from this fact and the "unseeded keys" computation below mints them
+# fresh in the same play. Skipped when nothing was deleted — the first read
+# above is already current.
+- name: Re-read the live keys when a rotation delete ran
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/list?page=1&size=100&return_full_object=true"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  register: llm_router_existing_keys
+  when: (llm_router_rotate_key_aliases | default([]) | length) > 0
   no_log: true
 
 - name: Compute the virtual keys still needing to be minted
