@@ -76,3 +76,41 @@
       {%- set _named = _live | selectattr('key_alias', 'defined') | list -%}
       {{ dict(_named | map(attribute='key_alias') | zip(_named)) }}
   no_log: true
+
+# Same contract, for rpm_limit: seed-keys.yml only sets it at first mint, so
+# a limit added (or changed) on an already-minted key — e.g. hindsight's
+# background retain loop hot-looping against no rate cap — would otherwise
+# never reach the live key.
+- name: Compute the rate-limited keys to reconcile on every converge
+  ansible.builtin.set_fact:
+    _llm_router_rate_limited_keys: >-
+      {{ llm_router_virtual_keys
+         | rejectattr('value', 'equalto', '')
+         | selectattr('rpm_limit', 'defined') | list }}
+  no_log: true
+
+- name: Resync rpm_limit on every rate-limited key
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/update"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      key: "{{ item.value }}"
+      rpm_limit: "{{ item.rpm_limit }}"
+    status_code: [200]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: "{{ _llm_router_rate_limited_keys }}"
+  loop_control:
+    label: "{{ item.alias }}"
+  changed_when: >-
+    (_llm_router_live_key_rpm.get(item.alias, {}).get('rpm_limit', -1) | int(-1))
+      != (item.rpm_limit | int)
+  vars:
+    _llm_router_live_key_rpm: >-
+      {%- set _live = llm_router_existing_keys.json['keys'] | default([])
+            if llm_router_existing_keys is defined else [] -%}
+      {%- set _named = _live | selectattr('key_alias', 'defined') | list -%}
+      {{ dict(_named | map(attribute='key_alias') | zip(_named)) }}
+  no_log: true
