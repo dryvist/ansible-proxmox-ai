@@ -106,12 +106,24 @@ _llm_router_static_virtual_keys:
   # (hindsight_docker_llm_model = ai_default_model, a physical model id,
   # not a role — so it has to be listed literally rather than picked up
   # by the role-chain expansion 59-key-scopes.yml does for `cheap`).
+  # Scoped to one genuinely-free OpenRouter deployment only (Vikunja 3385 is
+  # the re-enable-wider-access condition): the retain (background
+  # fact-extraction) worker hot-loops with no rate guard at all — confirmed
+  # upstream (vectorize-io/hindsight#4532), not fixable by the client-side
+  # backoff knobs already tried (ai#873). `cheap`/`hermes-default` are
+  # deliberately absent — every credentialed paid/local rung stays off
+  # limits while the loop is unbounded. NOT the `hermes-cloud-free` GROUP:
+  # that name sits inside `llm_router_hermes_default_fallback_chain`
+  # (35-hermes-cloud.yml) and its own fallback tail
+  # (`llm_router_hermes_own_fallback_by_group`, 58-review-roles.yml) walks
+  # into the paid groups that follow it in the chain — only hermes-local
+  # entries are stripped from a tail, not paid ones. A bare deployment id
+  # like this one carries no `fallbacks:` entry of its own (only
+  # chain-member GROUP names get one, config.yaml.j2), so a failure here
+  # can't hop anywhere.
   - alias: hindsight
     value: "{{ bao_apps_secrets.hindsight_llm_router_key | default('', true) }}"
-    models: "{{ ['cheap', llm_router_primary_model] }}"
-    # Background retain (fact extraction) hot-loops with no client-side
-    # backoff (vendor image ships no interval/rate knob) — one call/second
-    # is plenty for a backlog and bounds it at the layer we control.
+    models: "{{ ['openrouter/z-ai/glm-5.2:free'] }}"
     rpm_limit: 60
   # The metrics scraper. /metrics is authenticated by default and this proxy
   # keeps it that way (60-ops.yml), so the scrape needs a key that nothing else
