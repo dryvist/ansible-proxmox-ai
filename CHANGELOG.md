@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.53.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.52.1...v0.53.0) (2026-09-21)
+
+
+### Features
+
+* **hermes:** add a daily GitHub Actions cache health check ([#865](https://github.com/dryvist/ansible-proxmox-ai/issues/865)) ([c2c48cb](https://github.com/dryvist/ansible-proxmox-ai/commit/c2c48cb6fd4160621a22d23cf1c9f6decc57133f))
+* **llm_router:** add a router key alias for n8n ([#863](https://github.com/dryvist/ansible-proxmox-ai/issues/863)) ([22ae264](https://github.com/dryvist/ansible-proxmox-ai/commit/22ae26402da709e5288f097697362e8b68c48e20))
+* **llm_router:** add a router key alias for zammad ([#864](https://github.com/dryvist/ansible-proxmox-ai/issues/864)) ([1d2de66](https://github.com/dryvist/ansible-proxmox-ai/commit/1d2de666186a44b120e301681d63fd2400f678a9))
+
+
+### Bug Fixes
+
+* **hermes_agent:** remove master-key fallback for every store's router key ([#861](https://github.com/dryvist/ansible-proxmox-ai/issues/861)) ([aa72c87](https://github.com/dryvist/ansible-proxmox-ai/commit/aa72c87524bdacfa2969dd37085a5d9a85b073f5))
+* **hindsight_docker:** add retain-scope config vars ([#862](https://github.com/dryvist/ansible-proxmox-ai/issues/862)) ([8699746](https://github.com/dryvist/ansible-proxmox-ai/commit/8699746de2eff9a6fdfdb71083a6727da4d073fa))
+* **hindsight_docker:** back off before retrying a 429'd extraction call ([a6f946f](https://github.com/dryvist/ansible-proxmox-ai/commit/a6f946ff565979cc696935dee0a8ab3812d1ec27))
+* **hindsight_docker:** back off before retrying a 429'd extraction call ([b12fc09](https://github.com/dryvist/ansible-proxmox-ai/commit/b12fc0942269b6dadaae1507fcbc012f352daf4c))
+* **llm_router:** cap hindsight virtual key at rpm_limit 60 ([#872](https://github.com/dryvist/ansible-proxmox-ai/issues/872)) ([d83985c](https://github.com/dryvist/ansible-proxmox-ai/commit/d83985cefe143f2a78e32188176e66129c8323cd))
+* **llm_router:** export OTel traces to the orchestration collector again ([#858](https://github.com/dryvist/ansible-proxmox-ai/issues/858)) ([09ec0a6](https://github.com/dryvist/ansible-proxmox-ai/commit/09ec0a6099db2eee77c58381190ecbefe70bb670))
+* **llm_router:** mint every seeded key unconditionally in seed-keys.yml ([#870](https://github.com/dryvist/ansible-proxmox-ai/issues/870)) ([4fec953](https://github.com/dryvist/ansible-proxmox-ai/commit/4fec95366e554295e139454aa5f812601c6ccded))
+* **llm_router:** paginate /key/list before computing live key aliases ([#867](https://github.com/dryvist/ansible-proxmox-ai/issues/867)) ([af300e8](https://github.com/dryvist/ansible-proxmox-ai/commit/af300e89815fcbd3c29afbd1ce1d03f633fa7128))
+* **llm_router:** tighten admission budget, exclude cloud rungs from background health checks ([#871](https://github.com/dryvist/ansible-proxmox-ai/issues/871)) ([89d098b](https://github.com/dryvist/ansible-proxmox-ai/commit/89d098be2f96aff536690338fc8187837f528cb3))
+
 ## [0.52.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.52.0...v0.52.1) (2026-09-21)
 
 
