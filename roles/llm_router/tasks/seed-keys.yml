@@ -90,67 +90,24 @@
   when: (llm_router_rotate_key_aliases | default([]) | length) > 0
   no_log: true
 
-# PAGINATION. The read above (and the rotation re-read) is /key/list page=1
-# only, capped at litellm's max size=100. Once live keys exceed that page,
-# every alias beyond page 1 is invisible below and looks unseeded, so its
-# /key/generate 400s with "Unique key aliases across all keys are required"
-# — the alias genuinely already exists, this task just never saw it
-# (Semaphore task 267, 2026-09-21: seeding two new consumers pushed the live
-# count past 100 for the first time and 10 unrelated, already-minted aliases
-# — claude-code, codex, cursor, github-actions, hermes-default, langgraph,
-# open-webui, opencode, prometheus-scrape, raycast — all 400'd; the
-# no_log-censored play recap hid the real message, only the router's own log
-# named the alias). Fetch every remaining page and merge before anything
-# reads live keys.
-- name: Fetch every remaining page of live virtual keys
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/list?page={{ item }}&size=100&return_full_object=true"
-    headers:
-      Authorization: "Bearer {{ llm_router_master_key }}"
-    timeout: "{{ llm_router_seed_request_timeout }}"
-  register: llm_router_existing_keys_more_pages
-  loop: "{{ range(2, (llm_router_existing_keys.json.total_pages | default(1) | int) + 1) | list }}"
-  when: (llm_router_existing_keys.json.total_pages | default(1) | int) > 1
-  no_log: true
-
-- name: Merge every page of live virtual keys into one list
-  ansible.builtin.set_fact:
-    llm_router_all_live_keys: >-
-      {{ (llm_router_existing_keys.json['keys'] | default([]))
-         + (llm_router_existing_keys_more_pages.results | default([])
-            | map(attribute='json', default={})
-            | map(attribute='keys', default=[]) | sum(start=[])) }}
-  no_log: true
-
-- name: Compute the virtual keys still needing to be minted
-  ansible.builtin.set_fact:
-    _llm_router_unseeded_keys: >-
-      {{ llm_router_virtual_keys
-         | rejectattr('value', 'equalto', '')
-         | rejectattr('alias', 'in', _llm_router_live_key_aliases) | list }}
-  vars:
-    # BRACKET access, never `.keys`, still applies to each raw page (see
-    # llm_router_all_live_keys above) — Jinja resolves `.keys` on a dict to
-    # the built-in METHOD instead. An entry with no alias is skipped rather
-    # than compared as None.
-    #
-    # return_full_object=true IS REQUIRED (litellm 1.98.0
-    # key_management_endpoints.py list_keys/_list_key_helper): without it,
-    # "keys" is a list of token strings, not objects, so 'key_alias' is
-    # never 'defined' on any entry and this always renders []. Diagnosed
-    # from Semaphore task 180 (2026-09-13): every previously seeded alias
-    # looked unseeded and /key/generate 400'd with "Unique key aliases
-    # across all keys are required."
-    _llm_router_live_key_aliases: >-
-      {{ llm_router_all_live_keys
-         | selectattr('key_alias', 'defined')
-         | map(attribute='key_alias') | select('string') | list }}
-  no_log: true
-
+# CREATE, idempotently. seed-keys.yml used to pre-compute an "unseeded"
+# subset from the /key/list read above and mint only that subset — fragile,
+# because whatever this task's client-side view of "already live" misses
+# (Semaphore tasks 267/277, 2026-09-21: several already-minted aliases kept
+# showing as unseeded run after run, for a reason narrower than what
+# return_full_object=true fixed in the past) turns into a hard 400 instead
+# of the no-op it should be. LiteLLM's own alias-uniqueness constraint at
+# /key/generate is already the authoritative "does this exist" check, so
+# every virtual key with a seeded value is submitted every run, and a 400
+# whose body says the alias already exists is treated as the create having
+# nothing left to do, not a failure — this task no longer needs to get the
+# live-alias read right to be correct.
 - name: Assert each seeded value is a valid LiteLLM custom key before minting
   ansible.builtin.import_tasks: assert-seed-key-format.yml
+  vars:
+    _llm_router_unseeded_keys: "{{ llm_router_virtual_keys | rejectattr('value', 'equalto', '') | list }}"
 
-- name: Create the caller keys that are absent and have a seeded value
+- name: Create the caller keys that have a seeded value (an existing alias is not a failure)
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/key/generate"
     method: POST
@@ -175,11 +132,16 @@
              'max_budget': ((item.monthly_budget | float / 7 * 2) | round | float)},
             {'budget_duration': '7d', 'max_budget': item.monthly_budget | float}]
            if (item.monthly_budget | default(0) | float > 0) else omit }}
-    status_code: [200, 201]
+    status_code: [200, 201, 400]
     timeout: "{{ llm_router_seed_request_timeout }}"
-  loop: "{{ _llm_router_unseeded_keys }}"
+  loop: "{{ llm_router_virtual_keys | rejectattr('value', 'equalto', '') | list }}"
   loop_control:
     label: "{{ item.alias }}"
+  register: _llm_router_key_generate_result
+  failed_when: >-
+    _llm_router_key_generate_result.status not in [200, 201]
+    and 'already exists' not in
+      (_llm_router_key_generate_result.json.error.message | default(''))
   no_log: true
 
 # RECONCILE allowed_routes on a key that already exists. Keys are minted once
@@ -208,11 +170,11 @@
     label: "{{ item.alias }} -> {{ item.allowed_routes | join(', ') }}"
   vars:
     _llm_router_live_key_aliases: >-
-      {{ llm_router_all_live_keys
+      {{ llm_router_existing_keys.json['keys'] | default([])
          | selectattr('key_alias', 'defined')
          | map(attribute='key_alias') | select('string') | list }}
     _llm_router_live_routes: >-
-      {{ llm_router_all_live_keys
+      {{ llm_router_existing_keys.json['keys'] | default([])
          | selectattr('key_alias', 'equalto', item.alias)
          | map(attribute='allowed_routes', default=none) | first | default(none) }}
   when: (_llm_router_live_routes | default(none)) != item.allowed_routes
@@ -246,11 +208,11 @@
     label: "{{ item.alias }} +{{ item.models | difference(_llm_router_live_models) | join(', ') }}"
   vars:
     _llm_router_live_key_aliases: >-
-      {{ llm_router_all_live_keys
+      {{ llm_router_existing_keys.json['keys'] | default([])
          | selectattr('key_alias', 'defined')
          | map(attribute='key_alias') | select('string') | list }}
     _llm_router_live_models: >-
-      {{ llm_router_all_live_keys
+      {{ llm_router_existing_keys.json['keys'] | default([])
          | selectattr('key_alias', 'equalto', item.alias)
          | map(attribute='models', default=[]) | first | default([]) }}
   when: item.models | difference(_llm_router_live_models) | length > 0
