@@ -170,6 +170,12 @@ model_list:
       tpm: {{ llm_router_openrouter_tpm }}
       max_parallel_requests: {{ llm_router_openrouter_max_parallel_requests }}
     model_info:
+      # A background probe here spends a real request against OpenRouter's
+      # own per-key rate limit — measured live 2026-09-21 landing RateLimitError
+      # on this exact tier. num_retries: 0 (router-wide) already means every
+      # genuine call proves liveness or fails over at once, so the ping buys
+      # nothing readiness doesn't already have.
+      disable_background_health_check: true
       max_input_tokens: {{ m.context_window }}
 {% if m.max_output_tokens is defined %}
       # An entry that declares its own generation cap gets it here; without one
@@ -249,6 +255,10 @@ model_list:
 {% endif %}
     model_info:
       mode: {{ m.mode | default('chat') }}
+      # Same rationale as the OpenRouter tier above: a real call already
+      # proves liveness or hands over at once (num_retries above), so a
+      # synthetic probe only spends this cloud rung's own rate limit.
+      disable_background_health_check: true
       max_input_tokens: {{ m.context_window }}
       max_output_tokens: {{ m.max_output_tokens }}
       max_tokens: {{ m.max_output_tokens }}{{ delegation_hints(m) }}
