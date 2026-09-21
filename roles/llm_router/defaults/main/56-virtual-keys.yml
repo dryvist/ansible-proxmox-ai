@@ -106,12 +106,22 @@ _llm_router_static_virtual_keys:
   # (hindsight_docker_llm_model = ai_default_model, a physical model id,
   # not a role — so it has to be listed literally rather than picked up
   # by the role-chain expansion 59-key-scopes.yml does for `cheap`).
+  # Model access removed (Vikunja 3385 is the re-enable condition): the
+  # retain (background fact-extraction) worker hot-loops with no rate guard
+  # at all — confirmed upstream (vectorize-io/hindsight#4532), not fixable
+  # by the client-side backoff knobs already tried (ai#873). At ~1,300
+  # calls/min, 100% refused by rpm_limit (ai#872), it was still burning
+  # router CPU and bloating LiteLLM_SpendLogs on every refusal. Sentinel
+  # models list (see prometheus-scrape below) refuses every completion
+  # request before it is even rate-limited or logged as a spend row, same
+  # "does this need to run at all" call as disabling the worker outright —
+  # except this doesn't stop Hindsight's own service/API, only its router
+  # access, and it was already at 0% success so no working capability is
+  # lost. Re-enable by restoring `models: [cheap, llm_router_primary_model]`
+  # once upstream ships a rate/queue-depth guard on the loop.
   - alias: hindsight
     value: "{{ bao_apps_secrets.hindsight_llm_router_key | default('', true) }}"
-    models: "{{ ['cheap', llm_router_primary_model] }}"
-    # Background retain (fact extraction) hot-loops with no client-side
-    # backoff (vendor image ships no interval/rate knob) — one call/second
-    # is plenty for a backlog and bounds it at the layer we control.
+    models: "{{ ['no-default-models'] }}"
     rpm_limit: 60
   # The metrics scraper. /metrics is authenticated by default and this proxy
   # keeps it that way (60-ops.yml), so the scrape needs a key that nothing else
