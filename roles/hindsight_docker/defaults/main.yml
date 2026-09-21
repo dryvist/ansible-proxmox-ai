@@ -40,38 +40,20 @@ hindsight_docker_db_password: >-
      | mandatory('hindsight_db_password was not supplied to this role') }}
 
 # --- LLM (fact extraction / reflection) --------------------------------------
-# The LiteLLM router is THE fabric endpoint. The global model/key below back
-# reflect + consolidation (interactive-adjacent reasoning, wants the accurate
-# primary tier); retain (background fact extraction) is scoped separately.
+# The global model/key below back reflect + consolidation; retain (background
+# fact extraction) is scoped separately below.
 hindsight_docker_llm_base_url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1"
 hindsight_docker_llm_model: "{{ ai_default_model }}"
 # bao-first (apps/hindsight, generated at source, same per-caller-key contract
-# open-webui/langgraph already use) with the historical master-key fallback
-# for a converge that predates the seeded value.
+# open-webui/langgraph already use).
 hindsight_docker_llm_api_key: >-
   {{ lookup('env', 'HINDSIGHT_LLM_API_KEY')
      | default(bao_apps_secrets.hindsight_llm_router_key, true)
-     | default(ai_orchestration_model_api_key, true)
      | mandatory('Hindsight was not supplied to this role') }}
 
-# retain_extract_facts is 100% of Hindsight's LLM traffic in practice
-# (background per-turn fact extraction) and does not need the accurate/slow
-# primary tier the interactive scopes above use — it needs a fast model that
-# is available, per upstream's guidance to keep extraction on a small model.
-# `cheap` is this fabric's existing background-chore role (55-roles.yml):
-# GPU-first, falls back through the same chain `subagent`/`fast` use. This is
-# what stopped retain from contending with Hermes' own hermes-default brain
-# for the SAME single-concurrency primary model (measured: 18.4k/20.7k router
-# calls in 24h were retain_extract_facts 429s against that shared slot).
+# `cheap` is this fabric's existing background-chore role (55-roles.yml).
 hindsight_docker_retain_llm_model: cheap
-# One extraction in flight per replica — matches this fabric's local-serving
-# admission contract (every large-tier model_list entry already caps
-# max_parallel_requests: 1) instead of layering a second, uncoordinated queue
-# on top of it.
 hindsight_docker_retain_llm_max_concurrent: 1
-# No client-side retry storm into a busy local slot — the router's own
-# fallback chain (cheap's fallbacks) is the recovery path, not four
-# sequential retries against the same admission gate that just refused it.
 hindsight_docker_retain_llm_max_retries: 1
 
 # --- Control Plane UI ---------------------------------------------------------

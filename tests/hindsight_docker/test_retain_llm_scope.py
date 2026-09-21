@@ -81,13 +81,21 @@ def test_retain_scope_does_not_retry_into_a_busy_local_slot() -> None:
 
 
 def test_no_master_key_variable_reaches_the_compose_render() -> None:
-    # The template only ever interpolates hindsight_docker_llm_api_key --
-    # this proves the RENDER SITE carries no separate master-key reference a
-    # future edit could reintroduce; the resolution order (dedicated key
-    # first, master key only as a legacy fallback) lives in defaults/main.yml.
+    # The template only ever interpolates hindsight_docker_llm_api_key.
     assert "ai_orchestration_model_api_key" not in TEMPLATE_PATH.read_text()
     rendered = _render({"hindsight_docker_llm_api_key": "sk-hindsight-test"})
     assert "sk-hindsight-test" in _env_line(rendered, "HINDSIGHT_API_LLM_API_KEY")
+
+
+def test_defaults_carry_no_master_key_fallback() -> None:
+    # hindsight_docker_llm_api_key must resolve only to the dedicated
+    # per-caller key (or the HINDSIGHT_LLM_API_KEY env override) and fail
+    # loudly via `mandatory()` when neither is set -- never fall through to
+    # the shared router credential.
+    defaults = (REPO_ROOT / "roles/hindsight_docker/defaults/main.yml").read_text()
+    assert "ai_orchestration_model_api_key" not in defaults
+    assert "hindsight_docker_llm_api_key" in defaults
+    assert "mandatory(" in defaults
 
 
 if __name__ == "__main__":
