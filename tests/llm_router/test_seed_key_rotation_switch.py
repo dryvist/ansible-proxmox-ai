@@ -38,12 +38,16 @@ def test_delete_task_is_gated_on_a_non_empty_rotate_list() -> None:
 
 
 def test_keys_are_re_read_after_a_rotation_delete() -> None:
-    """Without a re-read, the deleted alias is still in
-    _llm_router_live_key_aliases from the FIRST /key/list call, so the
-    'unseeded keys' computation right after would skip re-minting it."""
+    """The re-read keeps the route/model reconcile tasks' view of live keys
+    current after a rotation delete — the create step itself no longer
+    depends on this read (it mints every seeded key unconditionally and
+    treats an existing alias as a no-op, see test_seed_key_live_aliases.yml),
+    but the reconcile tasks after it still diff against a live read."""
     delete_idx = SEED_KEYS_SOURCE.index("/key/delete")
     reread_idx = SEED_KEYS_SOURCE.index(
         "Re-read the live keys when a rotation delete ran"
     )
-    unseeded_idx = SEED_KEYS_SOURCE.index("Compute the virtual keys still needing to be minted")
-    assert delete_idx < reread_idx < unseeded_idx
+    create_idx = SEED_KEYS_SOURCE.index(
+        "Create the caller keys that have a seeded value"
+    )
+    assert delete_idx < reread_idx < create_idx
