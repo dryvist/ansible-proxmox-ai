@@ -2,15 +2,6 @@
 fabric's light `cheap` role, at concurrency 1, with a bounded retry budget —
 not the fabric-wide primary/master-key defaults every other LLM call here
 uses.
-
-WHY THIS EXISTS. Splunk (index=llm, 24h) showed retain_extract_facts calling
-openai/hermes-default (this fabric's single-concurrency PRIMARY model, the
-same one Hermes' own interactive brain uses) at 100-500 req/min, producing
-18.4k/20.7k router calls as 429s in one 24h window. Root cause, read from
-roles/hindsight_docker/defaults/main.yml before this fix:
-hindsight_docker_llm_model defaulted straight to `ai_default_model`
-(fabric-wide primary, max_parallel_requests: 1) with no retain-scope override,
-and hindsight_docker_llm_api_key fell back to the shared router master key.
 """
 
 from __future__ import annotations
