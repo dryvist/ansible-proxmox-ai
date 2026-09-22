@@ -58,3 +58,18 @@
           The ruleset must match litellm.service and the serving-share syslog
           identifier by name, and must `stop` so router lines never
           double-ship into index=os via a syslog_forwarder catch-all.
+
+    # Regression: this estate's rsyslog.conf loads imuxsock/imklog, not
+    # imjournal, so $!_SYSTEMD_UNIT is never populated and a
+    # $!_SYSTEMD_UNIT-only match silently never fires for litellm's own
+    # lines — verified live on llm-router-1, where they fell through to
+    # 10-forward-cribl.conf's `$programname == 'litellm'` rule and kept
+    # landing on the old shared port (sourcetype=llamaswap) instead of this
+    # ruleset. $programname is the property imuxsock actually sets.
+    - name: Assert the ruleset also matches litellm by $programname
+      ansible.builtin.assert:
+        that:
+          - "('$programname == \"' ~ llm_router_service ~ '\"') in _conf"
+        fail_msg: >-
+          The ruleset must match litellm.service by $programname, not only
+          by $!_SYSTEMD_UNIT — see the 2026-09-22 llm-sourcetype incident.
