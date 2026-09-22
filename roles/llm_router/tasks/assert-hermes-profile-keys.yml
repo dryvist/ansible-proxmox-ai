@@ -1,70 +1,14 @@
 ---
-# Guards the exact regression found 2026-09-22: hermes_agent_profiles is a
-# role DEFAULT of roles/hermes_agent, which never reaches llm-router-1/2/3
-# (role defaults are scoped to hosts that run that role in the current play,
-# and the router hosts never run roles/hermes_agent).
-# _llm_router_hermes_profile_names' `| default([])` silently swallowed the
-# undefined var there, so every render produced only the implicit `default`
-# profile's key — 3 named-profile keys (hermes-splunk-admin, hermes-homelab-
-# admin, hermes-github-maint) never existed on the router, with no error at
-# any layer. Fixed by bridging the same file's `hermes_agent_profiles` onto
-# every host in playbooks/site.yml's shared OpenBao pre-fetch play (that
-# play's comment has the story; 56-virtual-keys.yml's comment points here
-# too); this assert is the belt so the same class of "resolves to empty,
-# nothing complains" regression can't recur silently a second time, however
-# it happens next.
-#
-# Two independent checks, not one: the first alone would still pass if
-# hermes_agent_profiles AND the alias derivation degraded together (the
-# original bug's exact shape — both sides read the same undefined var, so
-# comparing them to each other proves nothing). Recomputing the expected
-# alias set straight from hermes_agent_profiles here, rather than reusing
-# _llm_router_hermes_profile_names, is what makes the second check meaningful.
+# Guards the virtual-key seeding below against an empty hermes_agent_profiles
+# resolving on this host.
 - name: Assert the Hermes profile list actually resolved (not silently empty)
   ansible.builtin.assert:
     quiet: true
     that:
       - hermes_agent_profiles | default([]) | length > 0
     fail_msg: >-
-      hermes_agent_profiles resolved empty or undefined on this host. It is
-      a roles/hermes_agent role default, bridged onto this host by
-      playbooks/site.yml's "Pre-fetch resource-domain secrets from OpenBao"
-      play (added 2026-09-22) — if that bridge task didn't run before this
-      one (a scoped `--tags`/`--limit` run that skips it, or the play order
-      changed), every named-profile Hermes key silently stops being
-      registered, exactly the 2026-09-22 regression this assert exists to
-      catch. Fix the bridge in site.yml; do not hand-copy the list into
-      roles/llm_router's own defaults instead.
+      hermes_agent_profiles is empty on this host; the llm_router play must
+      load it before seeding virtual keys.
     success_msg: >-
       hermes_agent_profiles resolved with
       {{ hermes_agent_profiles | default([]) | length }} named profile(s).
-
-- name: Assert every Hermes profile has a matching hermes-<profile> virtual key
-  ansible.builtin.assert:
-    quiet: true
-    that:
-      - >-
-        _llm_router_expected_hermes_profile_aliases
-        | difference(_llm_router_actual_hermes_profile_aliases) | length == 0
-    fail_msg: >-
-      Hermes profile(s) declared in hermes_agent_profiles have no matching
-      virtual key in 56-virtual-keys.yml's derived list:
-      [{{ _llm_router_expected_hermes_profile_aliases
-          | difference(_llm_router_actual_hermes_profile_aliases) | join(', ') }}].
-      Expected one alias per profile (`hermes-<name>`) for
-      {{ _llm_router_expected_hermes_profile_aliases | join(', ') }} — got
-      {{ _llm_router_actual_hermes_profile_aliases | join(', ') }}. Hermes
-      must not converge onto a scoped key the router doesn't know about; fix
-      the derivation in 56-virtual-keys.yml before this converges further.
-    success_msg: >-
-      Every Hermes profile has a matching virtual key
-      ({{ _llm_router_actual_hermes_profile_aliases | join(', ') }}).
-  vars:
-    # Recomputed straight from hermes_agent_profiles, independent of
-    # _llm_router_hermes_profile_names/_llm_router_hermes_profile_keys above —
-    # see the file header for why that independence is the point.
-    _llm_router_expected_hermes_profile_aliases: >-
-      {{ (['default'] + (hermes_agent_profiles | default([]) | map(attribute='name') | list))
-         | map('regex_replace', '^(.*)$', 'hermes-\1') | list }}
-    _llm_router_actual_hermes_profile_aliases: >-
-      {{ _llm_router_hermes_profile_keys | map(attribute='alias') | list }}

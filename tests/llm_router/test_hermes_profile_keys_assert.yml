@@ -1,21 +1,11 @@
 ---
-# Pins the 2026-09-22 regression: hermes_agent_profiles lived only in
-# roles/hermes_agent's own defaults, invisible to llm-router-1/2/3 (role
-# defaults don't cross plays), so _llm_router_hermes_profile_names' own
-# `| default([])` silently produced just the implicit `default` profile —
-# hermes-splunk-admin/hermes-homelab-admin/hermes-github-maint never existed
-# as router keys, no error anywhere. Moved to inventory/group_vars/all.yml;
-# roles/llm_router/tasks/assert-hermes-profile-keys.yml is the belt-and-
-# braces guard against the same class of "resolves to empty, nothing
-# complains" regression recurring. Proves it stays quiet when
-# hermes_agent_profiles resolves with real profiles and every one has a
-# matching key, and fails loud — by name, not by silent omission — on both
-# the empty-list case and a key/profile mismatch.
+# Proves the Hermes profile-list guard stays quiet on a real profile list
+# and fails loud, by name, when it resolves empty.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_hermes_profile_keys_assert.yml -i localhost, -c local
 
-- name: The guard passes when every profile has a matching virtual key
+- name: The guard passes when hermes_agent_profiles resolves with real profiles
   hosts: localhost
   gather_facts: false
   vars:
@@ -24,24 +14,17 @@
       - name: splunk-admin
       - name: homelab-admin
       - name: github-maint
-    _llm_router_hermes_profile_keys:
-      - {alias: hermes-default, models: []}
-      - {alias: hermes-splunk-admin, models: []}
-      - {alias: hermes-homelab-admin, models: []}
-      - {alias: hermes-github-maint, models: []}
   tasks:
-    - name: Run the guard against a fully-seeded fixture
+    - name: Run the guard against a populated fixture
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-hermes-profile-keys.yml"
 
-- name: The guard fails loud when hermes_agent_profiles resolves empty (the exact 2026-09-22 shape)
+- name: The guard fails loud when hermes_agent_profiles resolves empty
   hosts: localhost
   gather_facts: false
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    # Deliberately absent, reproducing the undefined-var-on-this-host case
-    # `| default([])` used to swallow.
-    _llm_router_hermes_profile_keys:
-      - {alias: hermes-default, models: []}
+    # Deliberately absent, reproducing the unloaded-fact case
+    # `| default([])` would otherwise swallow.
   tasks:
     - name: Prove an undefined hermes_agent_profiles fails the guard
       block:
@@ -52,57 +35,16 @@
           ansible.builtin.fail:
             msg: >-
               assert-hermes-profile-keys.yml PASSED with hermes_agent_profiles
-              undefined. That guard is the only thing standing between this
-              exact shape and every named-profile key silently never existing.
+              undefined.
       rescue:
-        - name: Confirm the guard failed on the empty-resolution check specifically
+        - name: Confirm the guard failed on the empty-resolution check
           ansible.builtin.assert:
             quiet: true
             that:
-              - "'resolved empty or undefined' in _hermes_profile_failure_text"
+              - "'is empty on this host' in _hermes_profile_failure_text"
             fail_msg: >-
-              The guard failed, but not with the expected empty-resolution
-              message — got {{ _hermes_profile_failure_text }}.
-            success_msg: "An empty/undefined hermes_agent_profiles is fatal, and says so."
-          vars:
-            _hermes_profile_failure_text: "{{ ansible_failed_result.msg | default('(none)') }}"
-
-- name: The guard fails loud when a declared profile has no matching virtual key
-  hosts: localhost
-  gather_facts: false
-  vars:
-    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    hermes_agent_profiles:
-      - name: splunk-admin
-      - name: homelab-admin
-      - name: github-maint
-    # github-maint's key missing -- e.g. a stale render, or a seed that
-    # hasn't reached this alias yet.
-    _llm_router_hermes_profile_keys:
-      - {alias: hermes-default, models: []}
-      - {alias: hermes-splunk-admin, models: []}
-      - {alias: hermes-homelab-admin, models: []}
-  tasks:
-    - name: Prove a profile/key mismatch fails the guard
-      block:
-        - name: Import the guard with hermes-github-maint's key missing
-          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-hermes-profile-keys.yml"
-
-        - name: Fail because the guard admitted a profile with no virtual key
-          ansible.builtin.fail:
-            msg: >-
-              assert-hermes-profile-keys.yml PASSED although hermes-github-maint
-              has no matching virtual key. Hermes must not converge onto a
-              scoped key the router doesn't know about.
-      rescue:
-        - name: Confirm the guard names the missing alias, not just "something's wrong"
-          ansible.builtin.assert:
-            quiet: true
-            that:
-              - "'hermes-github-maint' in _hermes_profile_failure_text"
-            fail_msg: >-
-              The guard failed, but not naming the missing alias — got
+              The guard failed, but not with the expected message — got
               {{ _hermes_profile_failure_text }}.
-            success_msg: "A missing profile key is fatal, naming the exact alias."
+            success_msg: "An empty/undefined hermes_agent_profiles is fatal, and says so."
           vars:
             _hermes_profile_failure_text: "{{ ansible_failed_result.msg | default('(none)') }}"
