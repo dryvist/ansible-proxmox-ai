@@ -1,0 +1,50 @@
+---
+# Proves the Hermes profile-list guard stays quiet on a real profile list
+# and fails loud, by name, when it resolves empty.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_hermes_profile_keys_assert.yml -i localhost, -c local
+
+- name: The guard passes when hermes_agent_profiles resolves with real profiles
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    hermes_agent_profiles:
+      - name: splunk-admin
+      - name: homelab-admin
+      - name: github-maint
+  tasks:
+    - name: Run the guard against a populated fixture
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-hermes-profile-keys.yml"
+
+- name: The guard fails loud when hermes_agent_profiles resolves empty
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    # Deliberately absent, reproducing the unloaded-fact case
+    # `| default([])` would otherwise swallow.
+  tasks:
+    - name: Prove an undefined hermes_agent_profiles fails the guard
+      block:
+        - name: Import the guard with hermes_agent_profiles absent
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-hermes-profile-keys.yml"
+
+        - name: Fail because the guard admitted an empty/undefined profile list
+          ansible.builtin.fail:
+            msg: >-
+              assert-hermes-profile-keys.yml PASSED with hermes_agent_profiles
+              undefined.
+      rescue:
+        - name: Confirm the guard failed on the empty-resolution check
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'is empty on this host' in _hermes_profile_failure_text"
+            fail_msg: >-
+              The guard failed, but not with the expected message — got
+              {{ _hermes_profile_failure_text }}.
+            success_msg: "An empty/undefined hermes_agent_profiles is fatal, and says so."
+          vars:
+            _hermes_profile_failure_text: "{{ ansible_failed_result.msg | default('(none)') }}"
