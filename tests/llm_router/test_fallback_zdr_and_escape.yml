@@ -153,6 +153,24 @@
           {%- set ns.pairs = ns.pairs + [{'n': role_name, 'w': tw}] -%}
           {%- endif -%}
           {%- endfor -%}
+          {#- `free` / `free-zdrless`: two standalone model groups split
+              by zero_data_retention, each windowed to its own widest
+              member. -#}
+          {%- set _free_entries = llm_router_registry_enabled
+                | selectattr('in_free_route', 'defined') | selectattr('in_free_route') | list -%}
+          {%- set _free_zdr_windows = (_free_entries | selectattr('zero_data_retention', 'undefined') | list
+                + (_free_entries | selectattr('zero_data_retention', 'defined')
+                   | selectattr('zero_data_retention') | list))
+                | map(attribute='context_window') | list -%}
+          {%- set _free_zdrless_windows = _free_entries
+                | selectattr('zero_data_retention', 'defined') | rejectattr('zero_data_retention')
+                | map(attribute='context_window') | list -%}
+          {%- if _free_zdr_windows | length > 0 -%}
+          {%- set ns.pairs = ns.pairs + [{'n': 'free', 'w': _free_zdr_windows | max}] -%}
+          {%- endif -%}
+          {%- if _free_zdrless_windows | length > 0 -%}
+          {%- set ns.pairs = ns.pairs + [{'n': 'free-zdrless', 'w': _free_zdrless_windows | max}] -%}
+          {%- endif -%}
           {{ dict(ns.pairs | map(attribute='n') | zip(ns.pairs | map(attribute='w'))) }}
         _names_without_window: >-
           {%- set ns = namespace(bad=[]) -%}

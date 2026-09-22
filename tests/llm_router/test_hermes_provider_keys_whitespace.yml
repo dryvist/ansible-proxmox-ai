@@ -47,12 +47,14 @@
       {{ ns.g }}
     # The cross-modality fail-fast entries (58-review-roles.yml) render
     # unconditionally, credentials or not, so the credential-free fixture
-    # still carries them after the local-only entry.
+    # still carries them after the local-only entry. PLUS `free`'s own
+    # real (non-empty) entry, also unconditional.
     _expected_fallbacks: >-
       {%- set ns2 = namespace(items=[{hermes_brain_model: _local_groups}]) -%}
       {%- for _name in llm_router_cross_modality_fail_fast_names -%}
       {%- set ns2.items = ns2.items + [{_name: []}] -%}
       {%- endfor -%}
+      {%- set ns2.items = ns2.items + [{'free': ['free-zdrless']}] -%}
       {{ ns2.items }}
   tasks:
     - name: Load the role defaults as they ship
@@ -92,11 +94,14 @@
           - llm_router_hermes_default_fallback_chain == _local_groups
           - _local_groups | length == 1
           - _config.router_settings.fallbacks == _expected_fallbacks
-          # No cloud rung means nowhere wider to escape to, so the key is
-          # omitted entirely. An empty map would not be "no map" to LiteLLM --
-          # it would take the escape branch and fall back to nothing, hiding
-          # the real error.
-          - "'context_window_fallbacks' not in _config.router_settings"
+          # No cloud rung means nowhere wider to escape to for anything
+          # ORDINARY -- an empty map would not be "no map" to LiteLLM, it
+          # would take the escape branch and fall back to nothing, hiding
+          # the real error. The map is never fully absent any more: `free`
+          # renders its own explicit entry here unconditionally, pointing
+          # at `free-zdrless` the same way a local leg points at the
+          # primary.
+          - "_config.router_settings.context_window_fallbacks == [{'free': ['free-zdrless']}]"
           - _cloud_models | length == 0
           - _openrouter_egress | length == 0
           - _opencode_deployments | length == 0
