@@ -1,9 +1,11 @@
 ---
 # The whitespace-credential play that used to close this file was split out
-# to test_hermes_provider_keys_whitespace.yml when the registry-derived
-# fallback-chain assertions pushed this file over the repo's per-file token
-# budget. Per .token-limits.yaml the remedy is a split along a real seam,
-# never a raised budget.
+# to test_hermes_provider_keys_whitespace.yml, and the context-window-escape
+# assertions to test_hermes_provider_keys_escape.yml, each time the
+# registry-derived assertions pushed this file over the repo's per-file
+# token budget. Per .token-limits.yaml the remedy is a split along a real
+# seam, never a raised budget — this file keeps chain MEMBERSHIP; escape-map
+# completeness lives in the sibling above.
 
 - name: Verify one provider key enables only that fallback domain
   hosts: localhost
@@ -196,54 +198,7 @@
           # credential seeded here, the local leg (narrow or wide) is always
           # the very first thing in the chain, in both policy states.
           - _fallback_chain | first in _local_groups
-          # EVERY group that can raise ContextWindowExceeded escapes to the
-          # wider cloud rungs -- not just the narrow local leg. A rendered map
-          # that lacks a key re-raises under that name WITHOUT falling through
-          # to the ordinary fallbacks map (an absent map would fall through),
-          # so a partially populated map is worse than none: the chain reads
-          # correct and the unkeyed name serves nothing on an over-long
-          # request. (It does not abort the chain — the enclosing walk still
-          # advances; see 37-fallback-entry-points.yml.)
-          #
-          # Asserted as a SET of keys built from the registry PROJECTIONS and
-          # the rendered alias map — never a typed literal, and never the
-          # escape-groups var the template renders from. A literal described
-          # what the map WAS and could not notice what it was MISSING; the var
-          # would only prove the template copied itself. This composition is
-          # the policy: local legs, the auto-router groups, every servable id,
-          # every advertised alias.
-          - _cwf_keys | sort == _expected_cwf_keys | sort
-          # ANTI-VACUITY: the expected set must hold a local leg, a router
-          # group, the primary and at least one alias, or a hollowed registry
-          # passes this over a near-empty set.
-          - _expected_cwf_keys | length > 3
-          - llm_router_primary_model in _expected_cwf_keys
           - (_config.router_settings.model_group_alias | list) | length > 0
-          # The primary itself must be keyed. Five cron jobs died of exactly its
-          # absence, one exceeding the served window by 482 tokens.
-          - "'hermes-default' in _cwf_keys"
-          # Every escape target is drawn from this provider's groups and
-          # nothing else -- EXCEPT fast/subagent, excluded here on purpose,
-          # checked separately below. A SUBSET check, not exact-match: a
-          # chain member's own tail can be a narrower slice of
-          # _openrouter_groups (e.g. hermes-cloud-free -> just :free).
-          - >-
-            _config.router_settings.context_window_fallbacks
-            | rejectattr('fast', 'defined') | rejectattr('subagent', 'defined')
-            | map('dict2items') | flatten | map(attribute='value') | flatten
-            | unique | difference(_openrouter_groups) | length == 0
-          # fast/subagent no longer escape to `long` (55-roles.yml): with only
-          # the free key present their chain has no external rung, so neither
-          # is keyed, and `long` sits in no role's chain.
-          - >-
-            _config.router_settings.context_window_fallbacks
-            | selectattr('fast', 'defined') | list | length == 0
-          - >-
-            _config.router_settings.context_window_fallbacks
-            | selectattr('subagent', 'defined') | list | length == 0
-          - >-
-            llm_router_role_deployments | map(attribute='fallbacks') | flatten
-            | select('equalto', llm_router_model_group_aliases.long) | list | length == 0
           # hermes-cloud-openrouter (kimi-k2.6, glm-5.2) stays dark: its
           # credential is OPENROUTER_HERMES_KEY, absent from this fixture.
           - _cloud_models | length == 0
@@ -273,34 +228,6 @@
         # local leg would precede them too as local_wide, the very first
         # segment.
         _expected_chain: "{{ _local_groups + _openrouter_groups }}"
-        _cwf_keys: >-
-          {{ _config.router_settings.context_window_fallbacks | default([])
-             | map('dict2items') | flatten | map(attribute='key') | list }}
-        # PLUS `free` (58-review-roles.yml, 2026-09-22 operator decision): a
-        # standalone model group with its own unconditional explicit empty
-        # entry in this map (config.yaml.j2), never a chain member or alias.
-        _expected_cwf_keys: >-
-          {{ (llm_router_local_fallback_groups
-              + (llm_router_hermes_virtual_models
-                 | map(attribute='client_model_id') | list)
-              + llm_router_servable_models
-              + (_config.router_settings.model_group_alias | list)
-              + ['free']
-              + llm_router_long_context_escape_roles
-              + _roles_with_external
-              + llm_router_chain_groups_with_own_tail)
-             | unique | list }}
-        # Roles with an external rung are keyed too (test_local_first_by_order.yml).
-        _roles_with_external: >-
-          {%- set out = [] -%}
-          {%- set _local = llm_router_local_fallback_groups + [llm_router_primary_model]
-                           + llm_router_servable_models -%}
-          {%- for d in llm_router_role_deployments
-                if d.role not in llm_router_long_context_escape_roles
-                and d.fallbacks | difference(_local) | length > 0 -%}
-          {%- set _ = out.append(d.role) -%}
-          {%- endfor -%}
-          {{ out }}
         _fallback_chain: >-
           {{ _config.router_settings.fallbacks
              | selectattr('hermes-default', 'defined')
