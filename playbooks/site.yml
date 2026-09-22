@@ -69,6 +69,29 @@
         openbao_secrets_by_domain: "{{ hostvars['localhost'].openbao_secrets_by_domain | default({}) }}"
       no_log: true
 
+    # roles/llm_router's virtual-key seeding (defaults/main/56-virtual-keys.yml)
+    # derives one key per Hermes operating profile from hermes_agent_profiles
+    # — but that is a role DEFAULT of roles/hermes_agent
+    # (defaults/main/150-fleet-health-profiles.yml), and role defaults are
+    # scoped to hosts that run that role in the CURRENT play. llm-router-1/2/3
+    # never run roles/hermes_agent, so on those hosts
+    # `hermes_agent_profiles | default([])` silently resolved to `[]` — every
+    # render since produced only the implicit `default` profile's virtual key,
+    # never the named ones, with no error anywhere (found 2026-09-22 auditing
+    # Vikunja 3359). Read straight from that one file — never hand-copied —
+    # and published here the same way openbao_secrets_by_domain is above, so
+    # every host in THIS shared play, including llm_router_group, sees the
+    # same single definition. hermes_agent's own tasks are unaffected: this
+    # fact simply matches what its role default already provides there.
+    - name: Read Hermes' own operating-profile list once, for every host in this play
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/hermes_agent/defaults/main/150-fleet-health-profiles.yml"
+        name: _hermes_fleet_health_defaults
+
+    - name: Publish hermes_agent_profiles to every host in this play
+      ansible.builtin.set_fact:
+        hermes_agent_profiles: "{{ _hermes_fleet_health_defaults.hermes_agent_profiles }}"
+
 # =============================================================================
 # Phase 1: Qdrant Vector Database
 # AI RAG vector database — Docker in LXC container
