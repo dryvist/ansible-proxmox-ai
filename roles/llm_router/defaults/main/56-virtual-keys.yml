@@ -81,6 +81,43 @@ _llm_router_hermes_profile_keys: >-
   {%- endfor -%}
   {{ _items }}
 
+# The hindsight virtual key's SOLE reachable model is a caller-facing ALIAS,
+# deliberately never the real registry id directly. router_settings.fallbacks
+# keys strictly on the name AS CALLED (config.yaml.j2's own comment on that
+# block; confirmed against litellm 1.102.0's
+# Router.get_fallback_model_group, which `break`s on the first exact match),
+# so an alias and its target are two fully independent fallback keys —
+# upstream issue BerriAI/litellm#10317 is the closed bug report proving an
+# alias never inherits its target's chain. That independence is exactly what
+# this key needs: the target below is also the terminal free_zdrless chain
+# member (llm_router_openrouter_free_groups, 36-hermes-cloud-segments.yml),
+# so it already carries a non-empty own-tail fallback entry ending on a paid
+# rung for the GENERAL chain's own escalation
+# (llm_router_hermes_own_fallback_by_group, 58-review-roles.yml;
+# test_external_rung_own_fallback.yml pins every chain member to exactly
+# that tail, no exceptions) — giving the shared target itself a competing
+# override would either break that pin or, if it somehow didn't, still lose
+# to the FIRST matching entry litellm actually reads. The alias sidesteps
+# both: it is never a chain member, so it owns its OWN entry outright
+# (config.yaml.j2's cross-modality fail-fast loop gives it one), and the
+# shared target's own escalation for every other caller is untouched. The
+# model list allowlist alone cannot substitute for this — LiteLLM never
+# re-checks it on a fallback hop.
+llm_router_hindsight_free_alias: hindsight-free
+# The real, registry-backed target the alias above resolves to: the first
+# enabled, genuinely free (`:free`-suffixed) OpenRouter entry — same
+# selector llm_router_openrouter_free_groups uses (36-hermes-cloud-
+# segments.yml), minus its credential gate, so this resolves the same way
+# whether or not OPENROUTER_API_KEY happens to be seeded in the fixture
+# rendering it (the registry rule forbids typing the id itself here — AGENTS.md,
+# test_registry_retype_scan.py). Re-enable-wider-access condition: Vikunja
+# 3385 (the retain worker's unbounded upstream hot-loop).
+llm_router_hindsight_free_deployment: >-
+  {{ (llm_router_registry_enabled
+      | selectattr('tier', 'equalto', 'openrouter')
+      | selectattr('client_model_id', 'match', '.*:free$')
+      | map(attribute='client_model_id') | list) | first }}
+
 # Static, one-off callers — a literal list here is fine for a fixed set of
 # named tools, as opposed to the profile set above, which is genuinely
 # derived from another role's data.
@@ -101,20 +138,18 @@ _llm_router_static_virtual_keys:
   - alias: n8n
     value: "{{ bao_apps_secrets.n8n_llm_router_key | default('', true) }}"
     models: "{{ ['cheap'] }}"
-  # Hindsight's background retain (fact extraction) scope, plus the
-  # literal primary model its reflect/consolidation scopes call directly
-  # (hindsight_docker_llm_model = ai_default_model, a physical model id,
-  # not a role — so it has to be listed literally rather than picked up
-  # by the role-chain expansion 59-key-scopes.yml does for `cheap`).
-  # Temporarily no model access: every free-tier chain member's own
-  # fallback tail includes a paid rung (35-hermes-cloud.yml /
-  # 58-review-roles.yml chain ordering), so no free scope is hop-safe here.
-  # `no-default-models` is the only scope this key carries until that
-  # changes.
+  # Hindsight's background retain (fact extraction) scope: EXACTLY the one
+  # free deployment above, nothing else. `models_authoritative: true` makes
+  # seed-keys.yml REPLACE the live key's model list every run instead of
+  # the usual add-only union — this key's scope must be able to NARROW, not
+  # only grow, or a name granted before the free-only boundary landed
+  # (`cheap`, the primary model, the `no-default-models` stopgap) would
+  # linger on the live key forever.
   - alias: hindsight
     value: "{{ bao_apps_secrets.hindsight_llm_router_key | default('', true) }}"
-    models: "{{ ['no-default-models'] }}"
+    models: "{{ [llm_router_hindsight_free_alias] }}"
     rpm_limit: 60
+    models_authoritative: true
   # The metrics scraper. /metrics is authenticated by default and this proxy
   # keeps it that way (60-ops.yml), so the scrape needs a key that nothing else
   # would otherwise issue. Same contract as the two above: the value is
