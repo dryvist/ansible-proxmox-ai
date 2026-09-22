@@ -1,51 +1,41 @@
-{# Standalone `free` model group (2026-09-22 operator decision). Split out of
-   model-list.yaml.j2 when that file crossed its per-file token budget,
-   following the seam that file already uses for every other tier: one group
-   per file, so an agent changing this one reads this file and not every
-   other tier as well. Per .token-limits.yaml the remedy for an over-budget
-   file is a split along a real seam, never a raised budget.
-
-   Included by model-list.yaml.j2, which owns the macros and the surrounding
-   tiers; `litellm_model` resolves from that context.
-
-   A caller-facing group no chain segment feeds into: every registry entry
-   marked `free: true` (llm-models.d/40-hermes-cloud.yml,
-   llm-models.d/50-openrouter.yml) gets a SECOND deployment here under this
-   one shared model_name, load-balanced by LiteLLM's own Router the same
-   way any other multi-deployment group already is (hermes-cloud-openrouter's
-   kimi/glm pair, model-list.yaml.j2's hermes-cloud loop). Its own ladder
-   registration — route_group for a hermes-cloud entry, client_model_id for
-   an openrouter one — is untouched, so this is an ADDITIONAL registration
-   of the same entry, never a duplicated fact. config.yaml.j2's
-   cross-modality fail-fast loop gives `free` its own explicit empty
-   fallbacks/context_window_fallbacks entry, so a busy/failed call under
-   this name fails fast rather than reaching for a chain segment this group
-   was never part of.
-
-   `order`, ranked widest-context-first: LiteLLM's own order filtering keeps
-   only the lowest-order deployment(s) among healthy siblings
-   (assert-registry-render-parity.yml's NARROW-DEPLOYMENT-PREFERRED check),
-   so an unranked group would let whichever member happens to sort first
-   capture every request under this name — including one only a wider
-   sibling could serve — and silently truncate or refuse it. #}
-{% for m in llm_router_registry_enabled | selectattr('free', 'defined') | selectattr('free')
-     | sort(attribute='context_window', reverse=true) %}
-{% set _free_key = llm_router_resolved_credentials.get(m.credential_env, '') %}
-{% if _free_key | length > 0 %}
-  - model_name: free
+{# Standalone `free` / `free-zdrless` model groups; membership from
+   `in_free_route`, split by zero_data_retention. Split out of
+   model-list.yaml.j2 per .token-limits.yaml (real seam, never a raised
+   budget); included by it, so `litellm_model` resolves from that context.
+   Two model_names, not one, because assert-registry-render-parity.yml's
+   NARROW-DEPLOYMENT-PREFERRED check forbids a narrower deployment
+   outranking a wider sibling under one model_name, and the ZDR-true
+   members here (131072 tok) are narrower than the ZDR-false one
+   (1,000,000 tok); `free` -> `free-zdrless` (config.yaml.j2) is that
+   check's own stated remedy, a distinct model_name. Membership stays
+   apart from the price word `free`: the OpenCode Go entries here are a
+   paid subscription tier, route membership and price are separate
+   facts. `litellm_params.order` gives in-request escalation to the next
+   order once the current one's deployments are exhausted
+   (litellm/router_utils/fallback_event_handlers.py,
+   `async_function_with_fallbacks_common_utils`), before the group's own
+   external fallback entry is consulted. #}
+{% macro _free_deployment(m, model_name, idx) %}
+  - model_name: {{ model_name }}
     litellm_params:
       model: {{ litellm_model(m) }}
+{% if m.tier == 'opencode' %}
+      # provider: openai is an OpenAI-compatible wire protocol at a non-default endpoint.
+      api_base: {{ m.api_base | default(llm_router_opencode_base_url) }}
+{% endif %}
       api_key: os.environ/{{ m.credential_env }}
       use_chat_completions_api: true
-      order: {{ loop.index0 }}
-      # Every current free-marked entry shares OPENROUTER_API_KEY, the same
-      # account-wide credential 30-openrouter.yml's own rate ceilings
-      # already protect — reused here rather than a second set of numbers
-      # for the same key. The only enforcement a storage-less proxy has on
-      # an account-wide credential (test_openrouter_allowlist.yml).
+      order: {{ idx }}
+      # Rate/concurrency ceilings mirror this entry's own provider tier.
+{% if m.tier == 'opencode' %}
+      rpm: {{ llm_router_opencode_rpm }}
+      tpm: {{ llm_router_opencode_tpm }}
+      max_parallel_requests: {{ llm_router_opencode_max_parallel_requests }}
+{% else %}
       rpm: {{ llm_router_openrouter_rpm }}
       tpm: {{ llm_router_openrouter_tpm }}
       max_parallel_requests: {{ llm_router_openrouter_max_parallel_requests }}
+{% endif %}
     model_info:
       disable_background_health_check: true
       max_input_tokens: {{ m.context_window }}
@@ -55,5 +45,26 @@
 {% else %}
       max_tokens: {{ m.context_window }}
 {% endif %}
+{% endmacro %}
+{% set _free_entries = llm_router_registry_enabled | selectattr('in_free_route', 'defined') | selectattr('in_free_route') | list %}
+{# `free`: ZDR-true members, OpenCode Go tier first, order from the attributes. #}
+{% set _free_opencode = _free_entries | selectattr('tier', 'equalto', 'opencode') | list %}
+{% set _free_zdr_other = (_free_entries | rejectattr('tier', 'equalto', 'opencode')
+     | selectattr('zero_data_retention', 'undefined') | list)
+     + (_free_entries | rejectattr('tier', 'equalto', 'opencode')
+        | selectattr('zero_data_retention', 'defined') | selectattr('zero_data_retention') | list) %}
+{% set _free_zdr_ordered = _free_opencode + _free_zdr_other %}
+{% for m in _free_zdr_ordered %}
+{% set _free_key = llm_router_resolved_credentials.get(m.credential_env, '') %}
+{% if _free_key | length > 0 %}
+{{ _free_deployment(m, 'free', loop.index) }}
+{% endif %}
+{% endfor %}
+{# `free-zdrless`: the ZDR-false members, the terminal half `free`'s own fallback entry points at. #}
+{% set _free_zdrless = _free_entries | selectattr('zero_data_retention', 'defined') | rejectattr('zero_data_retention') | list %}
+{% for m in _free_zdrless %}
+{% set _free_key = llm_router_resolved_credentials.get(m.credential_env, '') %}
+{% if _free_key | length > 0 %}
+{{ _free_deployment(m, 'free-zdrless', loop.index) }}
 {% endif %}
 {% endfor %}

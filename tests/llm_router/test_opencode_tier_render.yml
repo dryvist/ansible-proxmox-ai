@@ -118,11 +118,20 @@
           registry entry, each at order {{ llm_router_opencode_default_order }}
           and its registered window.
       vars:
+        # api_base alone is not selective enough any more: the standalone
+        # `free` group (model-list-free.yaml.j2) also renders an OpenCode
+        # Go deployment at this SAME api_base, under model_name `free`,
+        # not this tier's own client_model_id. Positively select the
+        # tier's own naming instead of excluding a magic string, so this
+        # stays correct regardless of what else ever shares the endpoint.
         _opencode_deployments: >-
           {{ _config.model_list
              | selectattr('litellm_params.api_base', 'defined')
              | selectattr('litellm_params.api_base', 'equalto',
-                          llm_router_opencode_base_url) | list }}
+                          llm_router_opencode_base_url)
+             | selectattr('model_name', 'in',
+                          llm_router_opencode_models | map(attribute='client_model_id') | list)
+             | list }}
         # One [name, order, window] row per rendered deployment against one per
         # registry entry. Sorted, NOT deduplicated: a second deployment under an
         # id already rendered is the banned duplicate this comparison exists to
