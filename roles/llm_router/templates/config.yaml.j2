@@ -21,14 +21,6 @@ router_settings:
 {% for alias, target in llm_router_model_group_aliases.items() %}
     {{ alias | to_json }}: {{ target | to_json }}
 {% endfor %}
-    # The hindsight virtual key's own alias (56-virtual-keys.yml) — never
-    # folded into llm_router_model_group_aliases itself, which is the
-    # registry-derived set every OTHER static alias comes from
-    # (tests/hermes_agent/test_alias_contract.py pins that derivation by
-    # name). This one is a deliberate, documented exception (see the
-    # fallbacks entry below for why), so it renders as its own line here
-    # instead.
-    {{ llm_router_hindsight_free_alias | to_json }}: {{ llm_router_hindsight_free_deployment | to_json }}
 {% if llm_router_hermes_default_fallback_chain | length > 0 %}
   # The source-verified fallback key is the name the caller of that invocation
   # TYPED — captured on entry, so it is never the complexity-selected local
@@ -44,35 +36,12 @@ router_settings:
 {% for _group in llm_router_hermes_default_fallback_chain if not _group.startswith('hermes-local') %}
     - {{ _group }}: {{ llm_router_hermes_own_fallback_by_group[_group] | to_json }}
 {% endfor %}
-  # Explicit empty chains for embed/embeddings/ocr: fail FAST, never walk
-  # default_fallbacks (58-review-roles.yml).
-  #
-  # PLUS the hindsight virtual key's own alias (llm_router_hindsight_free_alias,
-  # 56-virtual-keys.yml) — NOT the real deployment
-  # (llm_router_hindsight_free_deployment) it targets above. That target is
-  # itself a member of the chain (free_zdrless segment,
-  # 36-hermes-cloud-segments.yml), so the per-group loop just above already
-  # gave IT a non-empty own-tail entry ending on a paid rung
-  # (llm_router_hermes_own_fallback_by_group, 58-review-roles.yml) — correct
-  # for the general chain's own escalation through that rung, and
-  # test_external_rung_own_fallback.yml pins every non-local chain member to
-  # exactly that tail, no exceptions. LiteLLM's Router.get_fallback_model_group
-  # (router_utils/fallback_event_handlers.py, litellm 1.102.0) keys strictly on
-  # the model name AS CALLED and `break`s on the FIRST exact match in the
-  # fallbacks list, so a later duplicate entry for that SAME key is DEAD CODE,
-  # never consulted (confirmed against the pinned source; a duplicate key
-  # would also silently pass this file's own tests, which build their
-  # comparison dict with a naive last-wins zip — so it would look right and
-  # be wrong live). Giving the target itself a second, competing entry here
-  # would therefore do nothing for hop-safety while also breaking that pinned
-  # test. The alias is a second, independent name for the exact same
-  # mechanism upstream issue BerriAI/litellm#10317 confirms: an alias never
-  # inherits its target's fallback chain, so it needs, and gets, its own
-  # explicit empty one — hindsight's traffic (which calls the alias, never
-  # the raw id) fails FAST on a busy/failed call instead of escalating into
-  # spend the free-only key must never reach, and the shared target's own
-  # escalation for every other caller is untouched.
-{% for _name in llm_router_cross_modality_fail_fast_names + [llm_router_hindsight_free_alias] %}
+  # Explicit empty chains for embed/embeddings/ocr, PLUS the standalone
+  # `free` model group (58-review-roles.yml): fail FAST, never walk
+  # default_fallbacks. `free` is never a member of the chain above (it is
+  # not a ladder segment, model-list.yaml.j2), so this is its ONLY entry —
+  # no per-group loop above to collide with, unlike a real chain member.
+{% for _name in llm_router_cross_modality_fail_fast_names %}
     - {{ _name | to_json }}: []
 {% endfor %}
 {% if llm_router_context_window_wider_groups | length > 0 %}
@@ -101,31 +70,25 @@ router_settings:
 {% endfor %}
 {% endif %}
 {% endif %}
-{% if (llm_router_context_window_fallbacks | length > 0) or llm_router_hindsight_free_alias %}
+{% if (llm_router_context_window_fallbacks | length > 0) or ('free' in llm_router_cross_modality_fail_fast_names) %}
   # Escape hatch for the local legs, which serve a smaller context than the
   # primary. Rendered all-or-nothing on purpose: a key missing from a map that
   # EXISTS re-raises without ever consulting the ordinary fallbacks map, while
   # no map at all falls through to it — so a partial map is worse than none
   # (see 35-hermes-cloud.yml for the mechanism and the derivation).
   #
-  # PLUS the hindsight virtual key's alias (llm_router_hindsight_free_alias,
-  # 56-virtual-keys.yml), rendered unconditionally with an EXPLICIT EMPTY
-  # target list, same reason as its `fallbacks:` entry above: this key's
-  # model can carry the largest context window in the registry, so the only
-  # "wider" rung available would be a paid one — an escape here would be the
-  # identical hop-unsafety this change exists to close, just through
-  # LiteLLM's OTHER escalation path (enable_pre_call_checks /
-  # ContextWindowExceededError) instead of an ordinary busy/failed one. Also
-  # keeps this map's own all-or-nothing rule honest: this key must never be
-  # the one a future entry added here for an unrelated reason accidentally
-  # leaves out, falling through to something wider.
+  # PLUS `free` (58-review-roles.yml), rendered unconditionally with an
+  # explicit empty target list, same reason as its `fallbacks:` entry below:
+  # `free` is not a chain segment, so it has no "wider" rung to escape to
+  # either — an oversize request there re-raises instead of reaching for a
+  # rung it was never part of.
   context_window_fallbacks:
 {% for entry in llm_router_context_window_fallbacks %}
 {% for group, targets in entry.items() %}
     - {{ group }}: {{ targets | to_json }}
 {% endfor %}
 {% endfor %}
-    - {{ llm_router_hindsight_free_alias | to_json }}: []
+    - free: []
 {% endif %}
   # Derived (35-hermes-cloud.yml) from the distinct target names in the whole
   # map, not from one chain's length and not from a fixed 1. It bounds rung

@@ -297,3 +297,53 @@ model_list:
 {% endif %}
 {% endif %}
 {% endfor %}
+  # --- Standalone `free` model group (2026-09-22 operator decision) -------
+  # A caller-facing group no chain segment feeds into: every registry entry
+  # marked `free: true` (llm-models.d/40-hermes-cloud.yml,
+  # llm-models.d/50-openrouter.yml) gets a SECOND deployment here under this
+  # one shared model_name, load-balanced by LiteLLM's own Router the same
+  # way any other multi-deployment group already is (hermes-cloud-openrouter's
+  # kimi/glm pair, model-list.yaml.j2's hermes-cloud loop). Its own ladder
+  # registration — route_group for a hermes-cloud entry, client_model_id for
+  # an openrouter one — is untouched, so this is an ADDITIONAL registration
+  # of the same entry, never a duplicated fact. config.yaml.j2's
+  # cross-modality fail-fast loop gives `free` its own explicit empty
+  # fallbacks/context_window_fallbacks entry, so a busy/failed call under
+  # this name fails fast rather than reaching for a chain segment this group
+  # was never part of.
+  #
+  # `order`, ranked widest-context-first: LiteLLM's own order filtering keeps
+  # only the lowest-order deployment(s) among healthy siblings
+  # (assert-registry-render-parity.yml's NARROW-DEPLOYMENT-PREFERRED check),
+  # so an unranked group would let whichever member happens to sort first
+  # capture every request under this name — including one only a wider
+  # sibling could serve — and silently truncate or refuse it.
+{% for m in llm_router_registry_enabled | selectattr('free', 'defined') | selectattr('free')
+     | sort(attribute='context_window', reverse=true) %}
+{% set _free_key = llm_router_resolved_credentials.get(m.credential_env, '') %}
+{% if _free_key | length > 0 %}
+  - model_name: free
+    litellm_params:
+      model: {{ litellm_model(m) }}
+      api_key: os.environ/{{ m.credential_env }}
+      use_chat_completions_api: true
+      order: {{ loop.index0 }}
+      # Every current free-marked entry shares OPENROUTER_API_KEY, the same
+      # account-wide credential 30-openrouter.yml's own rate ceilings
+      # already protect — reused here rather than a second set of numbers
+      # for the same key. The only enforcement a storage-less proxy has on
+      # an account-wide credential (test_openrouter_allowlist.yml).
+      rpm: {{ llm_router_openrouter_rpm }}
+      tpm: {{ llm_router_openrouter_tpm }}
+      max_parallel_requests: {{ llm_router_openrouter_max_parallel_requests }}
+    model_info:
+      disable_background_health_check: true
+      max_input_tokens: {{ m.context_window }}
+{% if m.max_output_tokens is defined %}
+      max_output_tokens: {{ m.max_output_tokens }}
+      max_tokens: {{ m.max_output_tokens }}
+{% else %}
+      max_tokens: {{ m.context_window }}
+{% endif %}
+{% endif %}
+{% endfor %}

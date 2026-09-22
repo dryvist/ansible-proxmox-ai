@@ -127,10 +127,8 @@
         # deployment's own id and either grouping name it may be reached by,
         # plus every alias, which inherits its target's window, plus the
         # embed/ocr DB role names (58-review-roles.yml
-        # llm_router_cross_modality_fail_fast_names) and the hindsight
-        # virtual key's alias (llm_router_hindsight_free_alias,
-        # 56-virtual-keys.yml), which inherit their own target's window the
-        # same way a real alias does.
+        # llm_router_cross_modality_fail_fast_names), which inherit their
+        # own target's window the same way an alias does.
         _window_by_name: >-
           {%- set ns = namespace(pairs=[]) -%}
           {%- for m in llm_router_registry_enabled -%}
@@ -148,16 +146,24 @@
           {%- set ns.pairs = ns.pairs + [{'n': alias, 'w': tw}] -%}
           {%- endif -%}
           {%- endfor -%}
-          {%- set _cross_modality_windows = {'embed': llm_router_embedding_model, 'ocr': llm_router_ocr_model} -%}
-          {%- set _cross_modality_windows = _cross_modality_windows
-                | combine({llm_router_hindsight_free_alias: llm_router_hindsight_free_deployment}) -%}
-          {%- for role_name, target in _cross_modality_windows.items() -%}
+          {%- for role_name, target in {'embed': llm_router_embedding_model, 'ocr': llm_router_ocr_model}.items() -%}
           {%- if ns.pairs | selectattr('n', 'equalto', role_name) | list | length == 0 -%}
           {%- set tw = (ns.pairs | selectattr('n', 'equalto', target)
                         | map(attribute='w') | list | first) | default(0) -%}
           {%- set ns.pairs = ns.pairs + [{'n': role_name, 'w': tw}] -%}
           {%- endif -%}
           {%- endfor -%}
+          {#- `free` (58-review-roles.yml, 2026-09-22 operator decision): a
+              standalone model group with more than one member
+              (model-list.yaml.j2), so its window is the WIDEST member's --
+              order ranks that member first, so a healthy proxy always
+              serves at least that much. -#}
+          {%- set _free_windows = llm_router_registry_enabled
+                | selectattr('free', 'defined') | selectattr('free')
+                | map(attribute='context_window') | list -%}
+          {%- if _free_windows | length > 0 -%}
+          {%- set ns.pairs = ns.pairs + [{'n': 'free', 'w': _free_windows | max}] -%}
+          {%- endif -%}
           {{ dict(ns.pairs | map(attribute='n') | zip(ns.pairs | map(attribute='w'))) }}
         _names_without_window: >-
           {%- set ns = namespace(bad=[]) -%}
