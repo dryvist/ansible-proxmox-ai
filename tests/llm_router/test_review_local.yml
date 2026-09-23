@@ -1,0 +1,82 @@
+---
+# Pins the local-only review role (55-roles.yml, 58-review-roles.yml):
+#
+#   * review-local targets the resident routine model with no fallbacks;
+#   * router_settings.fallbacks carries an exact empty entry for it, so
+#     default_fallbacks can never apply;
+#   * the github-actions key may call it.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_review_local.yml -i localhost, -c local
+- name: Verify the local-only review role
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      github_actions_llm_router_key: sk-fixture-gha
+      github_actions_oss_llm_router_key: sk-fixture-gha-oss
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: "http://otel.example.test:4318"
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: sk-or-fixture
+      OPENROUTER_HERMES_KEY: sk-orh-fixture
+      OPENAI_API_KEY: sk-oa-fixture
+      ZAI_API_KEY: sk-zai-fixture
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Render config.yaml.j2 with every credential present
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _environment: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+
+    - name: Local review maps to the resident routine model with no fallbacks at all
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _local.model == llm_router_routine_model
+          - _local.fallbacks == []
+          - llm_router_local_only_fail_fast_names == ['review-local']
+          - _local_fallback_entry == []
+        fail_msg: "review-local: {{ _local.model }} -> {{ _local.fallbacks }}"
+        success_msg: "review-local: {{ _local.model }} -> {{ _local.fallbacks }}"
+      vars:
+        _local: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-local') | first }}"
+        _local_fallback_entry: >-
+          {{ _config.router_settings.fallbacks | selectattr('review-local', 'defined')
+             | map(attribute='review-local') | first }}
+
+    - name: The private CI key may call the local-only review role
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'review-local' in _gha.models"
+        fail_msg: "github-actions models: {{ _gha.models }}"
+      vars:
+        _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
