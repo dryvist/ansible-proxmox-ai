@@ -1,15 +1,18 @@
 ---
 # Every Hermes profile's own config.yaml.j2 renders `model.default` from
-# hermes_brain_model directly, so every profile's key must be able to call
-# that name whatever its scope, or the profile 403s on its own brain model.
-- name: Assert every Hermes profile key can reach hermes_brain_model directly
+# hermes_brain_model directly, and llm_router_enforce_fallback_model_access
+# re-checks the key on every hop a request through it walks, so a profile
+# key must hold the whole chain reachable from hermes_brain_model, not only
+# the entry point, or a fallback partway through is refused silently.
+- name: Assert every Hermes profile key can reach hermes_brain_model's whole chain
   ansible.builtin.assert:
     quiet: true
     that:
-      - hermes_brain_model in item.models
+      - _llm_router_directly_callable_ladder_names | difference(item.models) | length == 0
     fail_msg: >-
-      {{ item.alias }} is scoped to {{ item.models }}, which does not
-      include hermes_brain_model ({{ hermes_brain_model }}).
+      {{ item.alias }} is scoped to {{ item.models }}, which is missing
+      {{ _llm_router_directly_callable_ladder_names | difference(item.models) }}
+      from hermes_brain_model's own chain.
   loop: "{{ llm_router_virtual_keys | selectattr('alias', 'match', '^hermes-') | list }}"
   loop_control:
     label: "{{ item.alias }}"

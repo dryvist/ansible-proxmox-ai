@@ -4,10 +4,23 @@
 # holding only `review-private` is refused the moment the 4080 hands over.
 # Derived from llm_router_role_deployments, never listed: a chain edit widens
 # the keys with it. seed-keys.yml mints and reconciles from this list.
+#
+# A key DECLARING hermes_brain_model's entry point gets the same treatment,
+# widened to _llm_router_directly_callable_ladder_names (56-virtual-keys.yml)
+# rather than a role's model + fallbacks — a named Hermes profile key that
+# only ever names the entry point still needs the whole chain, since a
+# request through it walks every hop the same as the full-scope key does.
+# Checked against the key's OWN declared list, before role-widening below —
+# a key that only reaches the entry point transitively, as one rung of a
+# role's own chain (e.g. review-private's own last-resort fallback), is not
+# thereby granted the rest of a chain it was never scoped to call directly.
 llm_router_virtual_keys: >-
   {%- set out = [] -%}
   {%- for k in _llm_router_declared_virtual_keys -%}
   {%- set ns = namespace(models=k.models | list) -%}
+  {%- if k.models | select('in', _llm_router_directly_callable_ladder_names) | list | length > 0 -%}
+  {%- set ns.models = ns.models + _llm_router_directly_callable_ladder_names -%}
+  {%- endif -%}
   {%- for d in llm_router_role_deployments if d.role in k.models -%}
   {%- set ns.models = ns.models + [d.model] + (d.fallbacks | list) -%}
   {%- endfor -%}
