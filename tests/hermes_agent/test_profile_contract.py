@@ -41,7 +41,7 @@ _RENDER_CONTEXT: dict[str, Any] = {
     "hermes_agent_splunk_mcp_url": "https://mcp.example.com/splunk",
     "hermes_agent_docs_mcp_enabled": True,
     "hermes_agent_grep_mcp_enabled": True,
-    "hermes_agent_vikunja_mcp_enabled": False,
+    "hermes_agent_vikunja_mcp_enabled": True,
     "hermes_agent_nautobot_mcp_enabled": False,
     "hermes_agent_timezone": "UTC",
 }
@@ -274,5 +274,3 @@ def test_profile_config_template_renders_scoped_mcp_only() -> None:
 
         rendered_servers = set(parsed.get("mcp_servers", {}))
         assert rendered_servers == set(profile["mcp"])
-
-

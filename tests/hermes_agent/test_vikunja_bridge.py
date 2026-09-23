@@ -216,11 +216,19 @@ def test_the_bridge_is_off_by_default_and_asserts_its_own_credential():
     defaults = role_defaults(DEFAULTS_PATH)
     assert defaults["hermes_agent_vikunja_bridge_enabled"] is False, (
         "a bridge that writes to the operator's board must be opted into")
-    # It does not need — and must not silently depend on — the read-only MCP
-    # route: every operation it performs is a write.
-    assert defaults["hermes_agent_vikunja_mcp_enabled"] is False
 
     asserts = role_tasks_text(ROLE, "assert.yml")
+    tasks = role_tasks_text(ROLE)
+    # It does not need — and must not silently depend on — the read-only MCP
+    # route: every operation it performs is a write. Checked structurally
+    # (the bridge's own gating never names the MCP flag) rather than by
+    # pinning the MCP flag's global default, which the homelab-admin profile
+    # now flips true independently once the /vikunja gateway route is live.
+    assert "hermes_agent_vikunja_mcp_enabled" not in asserts
+    for line in tasks.splitlines():
+        if "hermes_agent_vikunja_bridge" in line and "when" in line:
+            assert "hermes_agent_vikunja_mcp_enabled" not in line, line
+
     assert "hermes_agent_vikunja_bridge_token | length > 0" in asserts, (
         "enabling the bridge with no token must fail the converge, not ship a no-op")
     assert "hermes_agent_vikunja_bridge_card_assignee" in asserts

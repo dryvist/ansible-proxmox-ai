@@ -64,19 +64,43 @@ hermes_agent_summary_cron_prompt: >-
   Post the once-daily operator summary to this channel, built from your own
   last-24h cron findings and memory (Splunk, Zammad incidents
   opened/updated/resolved, fabric health, GitHub org findings). For Splunk
-  ingest volume specifically, recall memory key "daily-operator-summary-last"
-  (saved by the separate daily-operator-summary-v2 job) instead of re-querying
-  it yourself — that job already owns per-index event/host counts; do not
-  duplicate its Splunk tool calls here. STRICT rules: deltas and open action
-  items only — never restate unchanged or benign status; every line must be
-  either NEW since yesterday's summary or an open item awaiting a human. Lead
-  with anything needing operator action. No Markdown tables (Slack does not
-  render them) — short lines or key: value pairs. At most 15 lines. Recall
-  memory key "daily-summary-last" to compute the delta and save today's
-  fingerprint back to it. If genuinely nothing new and nothing open, say
-  exactly that in one line — never pad. Self-check before posting: every line
-  is a delta or an open action item — drop anything that is unchanged or
-  benign status.
+  ingest volume specifically, run one bounded search over the last 24h for
+  per-index event/host counts and report it in one line — do not exceed that
+  single query. STRICT rules: deltas and open action items only — never
+  restate unchanged or benign status; every line must be either NEW since
+  yesterday's summary or an open item awaiting a human. Lead with anything
+  needing operator action. No Markdown tables (Slack does not render them) —
+  short lines or key: value pairs. At most 15 lines. Recall memory key
+  "daily-summary-last" to compute the delta and save today's fingerprint back
+  to it. If genuinely nothing new and nothing open, say exactly that in one
+  line — never pad. Self-check before posting: every line is a delta or an
+  open action item — drop anything that is unchanged or benign status.
+
+  VIKUNJA PRIORITIES. Query EXACTLY these project ids via the vikunja MCP
+  route, and no others: 40 (Inbox), 42 (nix), 43 (proxmox), 44
+  (governance-ci), 45 (observability), 46 (network), 48 (ai), 49 (hardware),
+  50 (docs), 71 (secrets-security). Do not guess, infer, or recall a project
+  id from anywhere else — an id not on this list is wrong, and never query
+  project 9 (visicore) or any other project not listed here; it is employer
+  work, not homelab. From those projects' open (not done) tasks, rank by
+  priority field first, then by age, then by whether it blocks other open
+  tasks, and list the top 5-10. For each: project, task id, title, priority,
+  age in days. For the single highest-ranked item, write a short plan: what
+  needs to happen and a one-paragraph prompt someone could hand to an agent
+  to resolve it — propose only, do not start the work yourself.
+
+  ZAMMAD IN THE SAME RANKING. Pull open/pending-close Zammad incidents (same
+  read scope zammad-review already uses) and weave them into the SAME top
+  5-10 ranked list above by the same priority/age/blocking logic — not a
+  separate list. An incident and a Vikunja task compete for the same slots.
+
+  PROPOSE, NEVER CLOSE. For any Vikunja task or Zammad incident in your
+  ranked list (or noticed elsewhere in today's recall) that looks resolved
+  from the evidence you already have, propose it as one line: "<system>
+  #<id> looks resolved: <one-line evidence>; confirm to close." Never call a
+  resolve/close/done API yourself from this job — proposal only, the same
+  evidence-before-resolve discipline zammad-review already follows for
+  Zammad, extended here to Vikunja tasks too.
 
 # --- Zammad review: proactive incident lifecycle across ALL queues ----------
 # Operator directive 2026-07-18: Hermes proactively READS open Zammad

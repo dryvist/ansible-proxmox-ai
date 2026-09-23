@@ -16,12 +16,14 @@ Four changes, each with a specific way to regress silently:
 3. The new fleet-health card exists, is assigned to the default profile
    (cross-domain/meta, same home as review/daily-summary), and starts paused
    like every new card.
-4. daily-summary's prompt defers to daily-operator-summary-v2's saved memory
-   key for Splunk ingest volume instead of re-deriving it, so unpausing
-   daily-summary later does not double the Splunk tool calls that topic costs.
+4. daily-summary's prompt no longer references daily-operator-summary-v2's
+   saved memory key for Splunk ingest volume (that job is retired and the key
+   is never written) — it runs one bounded query of its own instead. See
+   test_daily_summary_vikunja_zammad.py for the later Vikunja/Zammad ranking
+   additions to this same prompt.
 
-Runs bare (`python3 tests/hermes_agent/test_kanban_audit_20260801.py`) or under
-pytest. Plain asserts, no fixtures, no framework.
+Runs bare (`python3 tests/hermes_agent/test_kanban_native_cron_reframe.py`) or
+under pytest. Plain asserts, no fixtures, no framework.
 """
 from pathlib import Path
 
@@ -140,9 +142,17 @@ def test_fleet_health_card_exists_and_is_lifted() -> None:
     assert "restart" in prompt and "never" in prompt
 
 
-def test_daily_summary_defers_to_daily_operator_summary_v2_for_ingest_volume() -> None:
+def test_daily_summary_no_longer_depends_on_the_retired_v2_job() -> None:
+    """daily-operator-summary-v2 is disabled (see 120-docs-and-review-crons.yml
+    history) and writes "daily-operator-summary-last" nowhere any more — a
+    prompt that still recalled it would silently always find nothing. The
+    Splunk ingest-volume figure this job used to defer to that job for is now
+    a single bounded query daily-summary runs itself.
+    """
     prompt = _defaults()["hermes_agent_summary_cron_prompt"]
-    assert "daily-operator-summary-last" in prompt
+    assert "daily-operator-summary-last" not in prompt
+    assert "daily-operator-summary-v2" not in prompt
+    assert "ingest volume" in prompt
 
 
 if __name__ == "__main__":
