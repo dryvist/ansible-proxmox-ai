@@ -42,6 +42,49 @@ llm_router_db_password: >-
 # idle lifetime below any such timeout makes the client recycle first.
 llm_router_db_max_idle_connection_lifetime: 60
 
+# Postgres connection budget for the shared postgres-ai cluster this role's
+# database lives on (top of this file). ansible-proxmox-apps roles/postgres
+# declares no max_connections override (verified: that repo has zero hits for
+# the setting), so the cluster runs on PostgreSQL's own compiled-in default —
+# undeclared as a decision anywhere until this line. True single-sourcing
+# across repos would need a published tofu-proxmox constant plus an explicit
+# GUC set in that role, and setting max_connections there requires a full
+# postgres restart on a cluster that already backs Hindsight as well as this
+# router's own routing state — out of scope for this change; tracked
+# separately (Vikunja).
+llm_router_pg_max_connections: 100
+
+# Uvicorn worker processes per router instance. Its only consumer today is the
+# pool-limit math below, which is why it lives here rather than a process-
+# topology file of its own. LiteLLM's own --num_workers CLI default
+# (DEFAULT_NUM_WORKERS_LITELLM_PROXY, litellm/constants.py, pinned 1.102.0) is
+# 1, and litellm.service.j2 has never passed a --num_workers flag, so 1 is the
+# actual current behaviour made explicit rather than a new choice. Wired into
+# the unit below so a future bump here is the one place that changes it.
+llm_router_num_workers: 1
+
+# How many llm_router_group members exist. groups[], not a hand-typed count:
+# a literal would drift the moment a router is added or removed without
+# someone remembering to bump it here too — the GPU rung's max_parallel_requests
+# hit exactly this before it moved to hostvars (test_gpu_rung_admission_matches_backend.yml).
+# Guarded to 1 so a context with no router group loaded (an isolated unit test
+# that never add_hosts one) still renders a real number instead of dividing by
+# zero.
+_llm_router_instance_count: "{{ (groups['llm_router_group'] | default([]) | length) or 1 }}"
+
+# general_settings.database_connection_pool_limit: LiteLLM's own default (10,
+# proxy/_types.py, "default connection pool for prisma client") is PER PROCESS,
+# so the real ceiling on the shared cluster is that number times every process
+# that opens one — every worker, on every router instance. Left at the
+# LiteLLM default, today's 3 routers x 1 worker each already sit under the
+# connection budget above, but nothing enforced that; a future worker or
+# instance bump would only be caught by Postgres itself refusing the
+# (budget+1)th connection, at whatever moment traffic happens to open it.
+# Derived instead, so the two can never drift apart.
+llm_router_db_connection_pool_limit: >-
+  {{ (llm_router_pg_max_connections / (_llm_router_instance_count * llm_router_num_workers))
+     | int }}
+
 # Database-backed model storage, for ROLE DEPLOYMENTS ONLY.
 #
 # store_model_in_db is INDEPENDENT of adaptive routing. Adaptive routing needs
