@@ -1,13 +1,4 @@
-"""model-routing-review is a donna-identity job, not an ops one.
-
-The live `hermes cron create` job it replaces (see
-46-recurring-catalog-model-routing-review.yml) only ever existed on
-hermes-donna's own job store, never hermes-agent's (confirmed against both
-hosts). Without an explicit `identities:` override every catalog job
-defaults to [hermes] (hermes_agent_job_identities_default), so leaving it
-unset would have created it on hermes-agent too. Mirrors
-test_ai_news_donna.py's ownership-expression pattern.
-"""
+"""model-routing-review belongs to the donna identity only."""
 
 from __future__ import annotations
 
