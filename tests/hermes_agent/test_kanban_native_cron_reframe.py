@@ -22,8 +22,8 @@ Four changes, each with a specific way to regress silently:
    test_daily_summary_vikunja_zammad.py for the later Vikunja/Zammad ranking
    additions to this same prompt.
 
-Runs bare (`python3 tests/hermes_agent/test_kanban_audit_20260801.py`) or under
-pytest. Plain asserts, no fixtures, no framework.
+Runs bare (`python3 tests/hermes_agent/test_kanban_native_cron_reframe.py`) or
+under pytest. Plain asserts, no fixtures, no framework.
 """
 from pathlib import Path
 
