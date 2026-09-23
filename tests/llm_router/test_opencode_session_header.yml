@@ -1,0 +1,122 @@
+---
+# OpenCode Go requires an x-opencode-session header on every request. Covers
+# both places these deployments render: the standalone subscription-tier
+# group (model-list-opencode.yaml.j2) and the shared free/free-zdrless group
+# (model-list-free.yaml.j2).
+#
+# Deliberately does NOT touch, assert on, or reuse
+# tests/llm_router/tasks/credentialed_render.yml — that shared fixture feeds
+# ~20 other contract tests, several of which assert exact chain/deployment
+# composition, and seeding OPENCODE_API_KEY there would shift what all of
+# them see. This test owns its own minimal, OpenCode-only fixture instead,
+# the same shape test_opencode_only_entry_points.yml already uses.
+- name: Verify OpenCode Go deployments carry the required session header
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the model registry
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/../../llm-models.d"
+
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Configure the shared budget store
+      ansible.builtin.set_fact:
+        llm_router_redis_host: redis.example.test
+        llm_router_redis_password: test-only-not-a-real-password
+
+    - name: Seed only the OpenCode credential
+      ansible.builtin.set_fact:
+        bao_local_llm_secrets:
+          OPENCODE_API_KEY: test-opencode-subscription-key
+
+    - name: Re-evaluate the Hermes cloud projections and new segments
+      ansible.builtin.include_vars:
+        file: "{{ item }}"
+      loop:
+        - "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
+        - "{{ _role_dir }}/defaults/main/36-hermes-cloud-segments.yml"
+
+    - name: Render the config
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Both registered OpenCode upstreams actually rendered, or the assertions below check nothing
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _standalone_opencode | length == 2
+          - _free_opencode | length == 2
+      vars:
+        _standalone_opencode: >-
+          {{ _config.model_list | selectattr('model_name', 'match', '^opencode/') | list }}
+        _free_opencode: >-
+          {{ _config.model_list | selectattr('model_name', 'in', ['free', 'free-zdrless'])
+             | selectattr('litellm_params.model', 'search', 'glm-5.3-flash|minimax-m3') | list }}
+
+    - name: Every OpenCode deployment, in both groups, carries a non-empty x-opencode-session header
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _missing_standalone | length == 0
+          - _missing_free | length == 0
+        fail_msg: >-
+          OpenCode Go requires x-opencode-session on every request. Standalone
+          deployments with no usable header: {{ _missing_standalone }}.
+          free/free-zdrless members with no usable header:
+          {{ _missing_free }}. Fix: model-list-opencode.yaml.j2 and
+          model-list-free.yaml.j2's `_free_deployment` macro
+          (litellm_params.extra_headers).
+        success_msg: >-
+          All {{ _standalone_opencode | length }} standalone and
+          {{ _free_opencode | length }} free-route OpenCode deployments carry
+          x-opencode-session.
+      vars:
+        _standalone_opencode: >-
+          {{ _config.model_list | selectattr('model_name', 'match', '^opencode/') | list }}
+        _free_opencode: >-
+          {{ _config.model_list | selectattr('model_name', 'in', ['free', 'free-zdrless'])
+             | selectattr('litellm_params.model', 'search', 'glm-5.3-flash|minimax-m3') | list }}
+        _missing_standalone: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for d in _standalone_opencode -%}
+          {%- set _hdr = (d.litellm_params.extra_headers | default({})).get('x-opencode-session', '') -%}
+          {%- if _hdr | length == 0 -%}
+          {%- set ns.bad = ns.bad + [d.model_name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
+        _missing_free: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for d in _free_opencode -%}
+          {%- set _hdr = (d.litellm_params.extra_headers | default({})).get('x-opencode-session', '') -%}
+          {%- if _hdr | length == 0 -%}
+          {%- set ns.bad = ns.bad + [d.model_name ~ ':' ~ d.litellm_params.model] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}
