@@ -1,0 +1,110 @@
+---
+# Pins the general_settings.database_connection_pool_limit contract
+# (defaults/main/45-database.yml, rendered by templates/general-settings.yaml.j2).
+#
+# LiteLLM's own default (10, litellm/proxy/_types.py) is a PER-PROCESS Prisma
+# client pool, so the fleet's real draw is that number times every process
+# that opens one. This pins the derivation — llm_router_pg_connection_budget
+# / (router-group size x llm_router_num_workers) — against a synthetic
+# 3-router group, rather than the literal 10 the current topology happens to
+# produce, so a change to either input is caught here instead of only by
+# Postgres refusing a connection at some later moment.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_db_connection_pool_limit.yml -i localhost, -c local
+
+- name: The database connection pool limit is derived, not a stored literal
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          postgres_default: 5432
+    bao_local_llm_secrets: {}
+    bao_apps_secrets:
+      llm_router_db_password: not-a-real-password
+      llm_router_ui_password: not-a-real-password
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    # Three synthetic hosts, matching today's real llm-router-1/2/3 count —
+    # groups[] is what the rendered template actually reads
+    # (_llm_router_instance_count, defaults/main/45-database.yml), never a
+    # hand-typed number in this test either.
+    - name: Populate a 3-member router group, as the real inventory does
+      ansible.builtin.add_host:
+        name: "llm-router-{{ item }}"
+        groups: llm_router_group
+      loop: [1, 2, 3]
+
+    - name: Attach a database, as the real inventory does
+      ansible.builtin.set_fact:
+        llm_router_db_host: postgres-under-test.example.test
+
+    - name: Render the real proxy config with a database and a 3-router group
+      ansible.builtin.set_fact:
+        _config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+
+    - name: The pool limit is the PG budget divided across every process that opens one
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _config.general_settings.database_connection_pool_limit
+            == ((llm_router_pg_connection_budget / (3 * llm_router_num_workers)) | int)
+        fail_msg: >-
+          general_settings.database_connection_pool_limit is
+          {{ _config.general_settings.database_connection_pool_limit | default('(absent)') }},
+          expected llm_router_pg_connection_budget ({{ llm_router_pg_connection_budget }})
+          divided across 3 router instances x llm_router_num_workers
+          ({{ llm_router_num_workers }}) worker(s) each. A literal here instead of
+          this derivation is exactly the kind of second source of truth that
+          drifts the moment either input changes.
+        success_msg: >-
+          database_connection_pool_limit tracks the PG budget divided across
+          every router process that can open one.
+
+    - name: A router-group size of zero still renders a real number, not a crash
+      block:
+        - name: Drop the synthetic router group
+          ansible.builtin.set_fact:
+            _empty_groups: "{{ groups | combine({'llm_router_group': []}) }}"
+
+        - name: Re-render with no router group loaded
+          ansible.builtin.set_fact:
+            _config_no_group: >-
+              {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2',
+                         template_vars={'groups': _empty_groups}) | from_yaml }}
+
+        - name: The guarded instance count falls back to 1, not a divide-by-zero error
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - _config_no_group.general_settings.database_connection_pool_limit
+                == ((llm_router_pg_connection_budget / llm_router_num_workers) | int)
+            fail_msg: >-
+              With no router group loaded, database_connection_pool_limit is
+              {{ _config_no_group.general_settings.database_connection_pool_limit
+                 | default('(absent)') }}; expected the guarded 1-instance
+              fallback ({{ (llm_router_pg_connection_budget / llm_router_num_workers) | int }}).
+            success_msg: >-
+              An empty router group is guarded to 1 instance, never a
+              ZeroDivisionError.

@@ -42,6 +42,51 @@ llm_router_db_password: >-
 # idle lifetime below any such timeout makes the client recycle first.
 llm_router_db_max_idle_connection_lifetime: 60
 
+# The ROUTER FLEET's share of the shared postgres-ai cluster this role's
+# database lives on (top of this file) — never the cluster's whole
+# max_connections. That cluster also backs Hindsight and its own replication,
+# and deriving from the full ceiling would hand the routers all of it (a prior
+# draft of this var did exactly that: 100 / 3 instances = 33 each, 99 total).
+# 30 is today's ALREADY-IN-EFFECT total, not a new allowance: LiteLLM's own
+# per-process pool default (10, proxy/_types.py) times today's 3 router
+# instances. Fixing the total here rather than deriving from the cluster
+# ceiling means a future router bump SHRINKS each instance's share
+# (30 / 4 = 7) instead of growing the fleet's total draw on a cluster it does
+# not own outright.
+llm_router_pg_connection_budget: 30
+
+# Uvicorn worker processes per router instance. Its only consumer today is the
+# pool-limit math below, which is why it lives here rather than a process-
+# topology file of its own. LiteLLM's own --num_workers CLI default
+# (DEFAULT_NUM_WORKERS_LITELLM_PROXY, litellm/constants.py, pinned 1.102.0) is
+# 1, and litellm.service.j2 has never passed a --num_workers flag, so 1 is the
+# actual current behaviour made explicit rather than a new choice. Wired into
+# the unit below so a future bump here is the one place that changes it.
+llm_router_num_workers: 1
+
+# How many llm_router_group members exist. groups[], not a hand-typed count:
+# a literal would drift the moment a router is added or removed without
+# someone remembering to bump it here too — the GPU rung's max_parallel_requests
+# hit exactly this before it moved to hostvars (test_gpu_rung_admission_matches_backend.yml).
+# Guarded to 1 so a context with no router group loaded (an isolated unit test
+# that never add_hosts one) still renders a real number instead of dividing by
+# zero.
+_llm_router_instance_count: "{{ (groups['llm_router_group'] | default([]) | length) or 1 }}"
+
+# general_settings.database_connection_pool_limit. LiteLLM's own default (10,
+# proxy/_types.py, "default connection pool for prisma client") is PER
+# PROCESS, so the fleet's real draw is that number times every process that
+# opens one — every worker, on every router instance. Deriving from the
+# fixed budget above rather than leaving this at the LiteLLM default means
+# the PER-INSTANCE limit shrinks automatically as the fleet grows
+# (30 / 3 instances / 1 worker = 10, unchanged from today's default; a 4th
+# router drops it to 7 per instance without anyone touching this line), so
+# the total the fleet can ever hold open stays 30 regardless of how many
+# instances or workers exist.
+llm_router_db_connection_pool_limit: >-
+  {{ (llm_router_pg_connection_budget / (_llm_router_instance_count * llm_router_num_workers))
+     | int }}
+
 # Database-backed model storage, for ROLE DEPLOYMENTS ONLY.
 #
 # store_model_in_db is INDEPENDENT of adaptive routing. Adaptive routing needs
