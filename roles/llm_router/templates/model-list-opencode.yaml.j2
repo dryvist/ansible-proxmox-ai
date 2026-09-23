@@ -12,6 +12,21 @@
   # defaults/main/32-opencode.yml for what `order` does here, which today is
   # nothing: it ranks deployments within one model_name group, and no entry in
   # this tier shares a name with another tier's.
+  #
+  # x-opencode-session: OpenCode Zen/Go has rejected every request missing this
+  # header since 2026-09-06 ("Request is missing x-opencode-session and cannot
+  # be routed efficiently") — https://opencode.ai/docs/zen/. The vendor wants
+  # "one stable ID per conversation", injected per request from the caller's
+  # own session; litellm_params is rendered once at config load, so it cannot
+  # carry a per-conversation value without a custom pre_call_hook (litellm
+  # 1.102.0 has no built-in per-request header templating — router.py's
+  # extra_headers handling, ~11773, only ever forwards the static config
+  # value). A value stable PER DEPLOYMENT is the closest a static config can
+  # get, and it still satisfies the one check that actually gates the
+  # request: presence. ponytail: router-wide stability, not per-caller;
+  # upgrade to real per-conversation ids with a pre_call_hook keyed on
+  # metadata.session_id if OpenCode's cache-hit rate on this tier ever
+  # matters enough to justify one.
 {% for m in llm_router_opencode_models %}
 {% set _oc_env = m.credential_env %}
 {% set _oc_key = llm_router_resolved_credentials.get(_oc_env, '') %}
@@ -22,6 +37,8 @@
       api_base: {{ m.api_base | default(llm_router_opencode_base_url) }}
       api_key: os.environ/{{ _oc_env }}
       use_chat_completions_api: true
+      extra_headers:
+        x-opencode-session: "hermes-router-{{ m.client_model_id | regex_replace('/', '-') }}"
       order: {{ m.order | default(llm_router_opencode_default_order) }}
       rpm: {{ m.rpm | default(llm_router_opencode_rpm) }}
       tpm: {{ m.tpm | default(llm_router_opencode_tpm) }}
