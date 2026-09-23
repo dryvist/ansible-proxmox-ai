@@ -1,0 +1,70 @@
+---
+# Owns ONE contract: the litellm-local key's `models` actually widen past
+# its two declared roles.
+#
+# enforce_fallback_model_access (37-fallback-entry-points.yml) re-checks a
+# fallback target against the calling key's `models` on every hop, so a key
+# scoped to the role name alone is refused the instant its own chain hands
+# over — 59-key-scopes.yml exists precisely to widen past that. This asserts
+# the widening actually happened, not only that no unrelated group leaked in.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_litellm_local_key_scope.yml -i localhost, -c local
+- name: Verify the litellm-local key widens past its two declared roles
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      litellm_local_llm_router_key: sk-fixture-litellm-local
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Note the fast and fast-gpu roles' rendered fallback chains
+      ansible.builtin.set_fact:
+        _fast: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'fast') | first }}"
+        _fast_gpu: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'fast-gpu') | first }}"
+
+    - name: The key is scoped to exactly its two declared roles, widened by their chains
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'fast' in _key.models"
+          - "'fast-gpu' in _key.models"
+          # POSITIVE side: assert the widening actually happened rather than
+          # only that no unrelated group leaked in.
+          - _fast.fallbacks | difference(_key.models) | length == 0
+          - _fast_gpu.fallbacks | difference(_key.models) | length == 0
+          - _fast.model in _key.models
+        fail_msg: >-
+          litellm-local={{ _key.models }} fast.fallbacks={{ _fast.fallbacks }}
+          fast-gpu.fallbacks={{ _fast_gpu.fallbacks }}
+        success_msg: "litellm-local={{ _key.models }}"
+      vars:
+        _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'litellm-local') | first }}"
