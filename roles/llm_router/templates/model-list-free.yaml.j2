@@ -53,18 +53,17 @@
      | selectattr('zero_data_retention', 'undefined') | list)
      + (_free_entries | rejectattr('tier', 'equalto', 'opencode')
         | selectattr('zero_data_retention', 'defined') | selectattr('zero_data_retention') | list) %}
-{% set _free_zdr_ordered = _free_opencode + _free_zdr_other %}
+{# Credentialed only: filtered BEFORE the loop, not skipped inside it, so a
+   missing credential never consumes an order slot that the next rendered
+   deployment then silently inherits. #}
+{% set _free_zdr_ordered = (_free_opencode + _free_zdr_other)
+     | selectattr('credential_env', 'in', llm_router_resolved_credentials.keys() | list) | list %}
 {% for m in _free_zdr_ordered %}
-{% set _free_key = llm_router_resolved_credentials.get(m.credential_env, '') %}
-{% if _free_key | length > 0 %}
 {{ _free_deployment(m, 'free', loop.index) }}
-{% endif %}
 {% endfor %}
 {# `free-zdrless`: the ZDR-false members, the terminal half `free`'s own fallback entry points at. #}
-{% set _free_zdrless = _free_entries | selectattr('zero_data_retention', 'defined') | rejectattr('zero_data_retention') | list %}
+{% set _free_zdrless = _free_entries | selectattr('zero_data_retention', 'defined') | rejectattr('zero_data_retention')
+     | selectattr('credential_env', 'in', llm_router_resolved_credentials.keys() | list) | list %}
 {% for m in _free_zdrless %}
-{% set _free_key = llm_router_resolved_credentials.get(m.credential_env, '') %}
-{% if _free_key | length > 0 %}
 {{ _free_deployment(m, 'free-zdrless', loop.index) }}
-{% endif %}
 {% endfor %}
