@@ -150,6 +150,33 @@
     shell: /bin/bash # the agent's terminal tool needs a real shell
     create_home: true
 
+# The unit template (gateway_and_dashboard_units.yml, later in this play)
+# orders the gateway after user@<uid>.service — that needs the numeric uid,
+# not the name, since systemd's per-user manager unit is instanced by uid.
+- name: Look up the hermes user's uid (for the gateway unit's user@<uid>.service ordering)
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ hermes_agent_user }}"
+- name: Set hermes_agent_uid fact
+  ansible.builtin.set_fact:
+    hermes_agent_uid: "{{ getent_passwd[hermes_agent_user][1] }}"
+
+# Upstream's restart-safe cron worker dispatch (v2026.9.11+) launches each due
+# job in a transient `systemd-run --user --scope` so the worker survives a
+# gateway restart — that requires a reachable user D-Bus session
+# (/run/user/<uid>/bus), which a plain `system: true` user never gets: nothing
+# starts `user@<uid>.service` for it. Upstream's own guidance for exactly this
+# symptom ("cannot create restart-safe systemd scope ... no reachable user
+# D-Bus session") is `loginctl enable-linger <user>` (see
+# NousResearch/hermes-agent#110628) — linger starts and holds `user@<uid>.service`
+# from boot, independent of any login, which is what the scope creation needs.
+# `enable-linger` is idempotent and file-marker-based
+# (/var/lib/systemd/linger/<user>), so this is safe to run every converge.
+- name: Enable systemd user lingering for the hermes user (restart-safe cron dispatch needs a user D-Bus session)
+  ansible.builtin.command:
+    cmd: loginctl enable-linger {{ hermes_agent_user }}
+    creates: /var/lib/systemd/linger/{{ hermes_agent_user }}
+
 # The home is a pre-existing ZFS data-volume mount (deployment.json mount_point),
 # so `create_home` above is a no-op for it — the dir already exists, owned by
 # root:root from the mount. Claim it for the hermes user explicitly, or the agent
