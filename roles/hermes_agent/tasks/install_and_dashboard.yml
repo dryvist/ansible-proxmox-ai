@@ -50,6 +50,35 @@
 # does for "already applied"), which is how a dead judge-error retry guard went
 # unnoticed. So: the installed checkout's release tag is real state, and a
 # converge moves it.
+# The installer's own `git clone --branch {{ version }}` (comment above) can
+# leave remote.origin.fetch as a single-branch refspec that names the tag
+# under refs/heads/ — a real git quirk: `clone --branch <tag> --single-
+# branch` records that same shape whether <tag> is a branch or a tag. Once
+# stored, ANY later plain `git fetch --tags origin` (no explicit refspec)
+# falls back to that stored value and fails trying to resolve a
+# refs/heads/<tag> ref that was never a branch — measured live on
+# hermes-donna: `fatal: couldn't find remote ref refs/heads/v2026.8.27`.
+# Normalize it back to the ordinary full-fetch shape before every converge,
+# so no checkout can stay stuck in that state regardless of how it got
+# there. Skipped on a brand-new install: there is no checkout yet to
+# normalize, and the installer step above creates it fresh.
+- name: Check whether the Hermes checkout already exists
+  ansible.builtin.stat:
+    path: "{{ hermes_agent_install_dir }}/.git/config"
+  register: hermes_agent_existing_checkout
+
+- name: Normalize the Hermes checkout's remote fetch refspec
+  community.general.git_config:
+    name: remote.origin.fetch
+    scope: local
+    repo: "{{ hermes_agent_install_dir }}"
+    # The ordinary shape `git remote add`/a non-single-branch clone writes:
+    # every remote branch into the remote-tracking namespace, never
+    # directly into local refs/heads/* (git refuses to fetch into whatever
+    # branch is currently checked out, so that shape is unsafe here too).
+    value: "+refs/heads/*:refs/remotes/origin/*"
+  when: hermes_agent_existing_checkout.stat.exists
+
 - name: Pin the Hermes checkout to the release tag
   ansible.builtin.git:
     repo: "{{ hermes_agent_repo_url }}"
