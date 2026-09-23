@@ -80,15 +80,27 @@
 # absent from this fact and the "unseeded keys" computation below mints them
 # fresh in the same play. Skipped when nothing was deleted — the first read
 # above is already current.
+#
+# Registers onto a TEMP var, never straight onto llm_router_existing_keys: a
+# skipped task still overwrites its register: target with a {skipped: true}
+# stub that carries no `.json`, which silently emptied every alias match
+# below on every ordinary (no-rotation) converge. set_fact does not share
+# that failure mode — when its own when: is false it does nothing at all —
+# so the next task only replaces the first read when a rotation actually ran.
 - name: Re-read the live keys when a rotation delete ran
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/key/list?page=1&size=100&return_full_object=true"
     headers:
       Authorization: "Bearer {{ llm_router_master_key }}"
     timeout: "{{ llm_router_seed_request_timeout }}"
-  register: llm_router_existing_keys
+  register: _llm_router_existing_keys_after_rotation
   when: (llm_router_rotate_key_aliases | default([]) | length) > 0
   no_log: true
+
+- name: Keep the first read when no rotation ran
+  ansible.builtin.set_fact:
+    llm_router_existing_keys: "{{ _llm_router_existing_keys_after_rotation }}"
+  when: (llm_router_rotate_key_aliases | default([]) | length) > 0
 
 # CREATE, idempotently. seed-keys.yml used to pre-compute an "unseeded"
 # subset from the /key/list read above and mint only that subset — fragile,
