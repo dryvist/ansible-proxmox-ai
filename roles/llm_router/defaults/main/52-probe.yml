@@ -78,16 +78,25 @@ _llm_router_probe_targets: >-
 
 # The probe plan: one query per endpoint, carrying every id registered against
 # it. Grouped so a tier with six models costs one round trip, not six.
+#
+# A group can span more than one credential_env -- one openrouter endpoint
+# already serves both OPENROUTER_API_KEY and OPENROUTER_HERMES_KEY rows -- so
+# the representative row is picked as the FIRST one that actually resolves a
+# credential, not always g[0]: taking g[0] unconditionally reported the whole
+# group uncredentialed whenever registry order put an unresolved row first,
+# even with a real key seeded for a different row in the same group.
 llm_router_remote_probes: >-
   {%- set ns = namespace(out=[]) -%}
   {%- set rows = _llm_router_probe_targets | rejectattr('endpoint', 'equalto', '') | list -%}
   {%- for url in rows | map(attribute='endpoint') | unique -%}
   {%- set g = rows | selectattr('endpoint', 'equalto', url) | list -%}
+  {%- set _credentialed = g | selectattr('has_credential') | list -%}
+  {%- set _rep = _credentialed[0] if (_credentialed | length > 0) else g[0] -%}
   {%- set ns.out = ns.out + [{
         'endpoint': url,
-        'credential_env': g[0].credential_env,
-        'key_field': g[0].key_field,
-        'has_credential': g[0].has_credential,
+        'credential_env': _rep.credential_env,
+        'key_field': _rep.key_field,
+        'has_credential': (_credentialed | length > 0),
         'labels': g | map(attribute='label') | unique | list,
         'route_names': g | map(attribute='route_name') | unique | list,
         'models': g | map(attribute='model') | unique | list}] -%}
