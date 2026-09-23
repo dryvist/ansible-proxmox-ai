@@ -1,0 +1,179 @@
+---
+# Pins the fix for a live incident (2026-09-23 rebuild converge, all 3
+# routers): hindsight's key kept the old `no-default-models` lockout
+# instead of the seeded `[free, free-zdrless]` scope, even though
+# `models_authoritative: true` on that key is supposed to force a REPLACE
+# every run (roles/llm_router/defaults/main/56-virtual-keys.yml).
+#
+# ROOT CAUSE. "Re-read the live keys when a rotation delete ran"
+# (seed-keys.yml) registers straight onto `llm_router_existing_keys` with
+# `when: (llm_router_rotate_key_aliases | length) > 0`. On an ordinary
+# converge (no rotation requested) that `when:` is false — but a skipped
+# task still overwrites its `register:` target with a `{skipped: true}`
+# stub that carries no `.json`, clobbering the successful first read from
+# the task right above it. Every alias-matching expression downstream
+# (`_llm_router_live_key_aliases`, `_llm_router_live_models`) then reads an
+# empty `.json.keys | default([])`, so both "Grant seeded ..." loops render
+# zero items and silently do nothing — no error, no changed=, no evidence
+# in the play recap beyond a bare "skipping" with no per-item lines.
+# `ansible.builtin.set_fact` does not have this failure mode: when ITS OWN
+# `when:` is false, it simply does not run, leaving the prior value alone.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_seed_keys_rotation_reread_preserves_existing.yml -i localhost, -c local
+
+- name: A skipped register overwrites its target; register-onto-temp-var + conditional set_fact does not
+  hosts: localhost
+  gather_facts: false
+  vars:
+    llm_router_rotate_key_aliases: []
+  tasks:
+    - name: Seed the fake first read (hindsight still at the old lockout scope)
+      ansible.builtin.set_fact:
+        _existing_keys_seed:
+          json:
+            keys:
+              - key_alias: hindsight
+                models: ["no-default-models"]
+
+    - name: Load the seed into both a bug-repro var and a fix-repro var
+      ansible.builtin.set_fact:
+        _bug_repro: "{{ _existing_keys_seed }}"
+        _fix_repro: "{{ _existing_keys_seed }}"
+
+    # Mirrors the CURRENT (buggy) seed-keys.yml shape exactly: register the
+    # conditional re-read directly onto the variable that already holds the
+    # good read. The module is irrelevant to this failure mode (it is an
+    # Ansible register/when interaction, not a `uri`-specific quirk) —
+    # `debug` reproduces it with no network dependency.
+    - name: Bug pattern -- register the conditional re-read directly onto the live var
+      ansible.builtin.debug:
+        msg: pretend re-read
+      register: _bug_repro
+      when: (llm_router_rotate_key_aliases | length) > 0
+
+    - name: Assert the bug pattern loses the earlier read (documents the failure this test pins)
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _bug_repro.json is not defined
+        fail_msg: >-
+          Expected the skip-overwrite to erase .json, proving the failure
+          mode this test exists to catch. If this now fails, Ansible's
+          register-on-skip behavior changed upstream and the fix below may
+          no longer be the right one.
+
+    # Mirrors the FIX: register the conditional re-read onto a throwaway
+    # var, then only assign the real var with set_fact -- which, unlike
+    # register, does nothing at all when its own when: is false.
+    - name: Fix pattern -- register onto a temp var
+      ansible.builtin.debug:
+        msg: pretend re-read
+      register: _fix_repro_after_rotation
+      when: (llm_router_rotate_key_aliases | length) > 0
+
+    - name: Fix pattern -- set_fact the real var only when the temp var was actually produced
+      ansible.builtin.set_fact:
+        _fix_repro: "{{ _fix_repro_after_rotation }}"
+      when: (llm_router_rotate_key_aliases | length) > 0
+
+    - name: Assert the fix pattern preserves the earlier read when no rotation ran
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _fix_repro.json['keys'][0].key_alias == 'hindsight'
+          - _fix_repro.json['keys'][0].models == ['no-default-models']
+        fail_msg: "The fix pattern should leave the original read untouched; got {{ _fix_repro }}"
+
+- name: With the read preserved, the models-authoritative grant loop actually targets hindsight
+  hosts: localhost
+  gather_facts: false
+  # The exact vars/loop/when from seed-keys.yml's "Grant seeded model names
+  # to live keys that lack them" task, verbatim, against the state the fix
+  # above leaves in place after an ordinary (no-rotation) converge.
+  vars:
+    llm_router_existing_keys:
+      json:
+        keys:
+          - key_alias: hindsight
+            models: ["no-default-models"]
+    llm_router_virtual_keys:
+      - alias: hindsight
+        value: sk-test-hindsight-0123456789
+        models: ["free", "free-zdrless"]
+        rpm_limit: 60
+        models_authoritative: true
+  tasks:
+    - name: Compute the grant loop's item list
+      ansible.builtin.set_fact:
+        _grant_loop_items: >-
+          {{ llm_router_virtual_keys
+             | rejectattr('value', 'equalto', '')
+             | selectattr('alias', 'in', _llm_router_live_key_aliases) | list }}
+      vars:
+        _llm_router_live_key_aliases: >-
+          {{ llm_router_existing_keys.json['keys'] | default([])
+             | selectattr('key_alias', 'defined')
+             | map(attribute='key_alias') | select('string') | list }}
+
+    - name: Assert hindsight is in the loop (the grant would fire)
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _grant_loop_items | map(attribute='alias') | list == ['hindsight']
+        fail_msg: "Expected the grant loop to contain hindsight; got {{ _grant_loop_items }}"
+
+    - name: Compute the models-authoritative grant condition and the PATCH body it would send
+      ansible.builtin.set_fact:
+        _grant_fires: >-
+          {{ (item.models | difference(_llm_router_live_models) | length > 0)
+             or ((item.models_authoritative | default(false))
+                 and (_llm_router_live_models | difference(item.models) | length > 0)) }}
+        _grant_models_body: >-
+          {{ item.models if (item.models_authoritative | default(false))
+             else (_llm_router_live_models + item.models) | unique | list }}
+      vars:
+        item: "{{ _grant_loop_items[0] }}"
+        _llm_router_live_models: >-
+          {{ llm_router_existing_keys.json['keys'] | default([])
+             | selectattr('key_alias', 'equalto', item.alias)
+             | map(attribute='models', default=[]) | first | default([]) }}
+
+    - name: Assert the grant fires and replaces the lockout with the seeded scope
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _grant_fires | bool
+          - _grant_models_body == ['free', 'free-zdrless']
+        fail_msg: >-
+          Expected the models-authoritative grant to fire and REPLACE
+          models with ['free', 'free-zdrless']; got fires={{ _grant_fires }}
+          body={{ _grant_models_body }}
+
+- name: Verify seed-keys.yml applies the temp-var + conditional set_fact fix
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Read the seed-keys.yml source
+      ansible.builtin.slurp:
+        src: "{{ _role_dir }}/tasks/seed-keys.yml"
+      register: _seed_keys_source
+
+    - name: Assert only the FIRST read registers directly onto llm_router_existing_keys
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # "Read the virtual keys the proxy already carries" (unconditional,
+          # correct) is the only task allowed to register onto this name
+          # directly; a second occurrence means the rotation re-read still
+          # does it too, and a skipped register overwrites the good read
+          # with a {skipped: true} stub on every ordinary converge.
+          - "(_seed_keys_source.content | b64decode).count('register: llm_router_existing_keys\\n') == 1"
+          - "'ansible.builtin.set_fact' in (_seed_keys_source.content | b64decode)"
+        fail_msg: >-
+          seed-keys.yml's rotation re-read task still registers directly
+          onto llm_router_existing_keys -- a skipped register overwrites it
+          with a {skipped: true} stub on every ordinary (no-rotation)
+          converge, silently emptying every downstream alias match.
