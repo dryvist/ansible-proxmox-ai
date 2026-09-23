@@ -1,0 +1,51 @@
+---
+# Phase 0-telemetry: publish converge-freshness configuration. Hands the
+# `converge_telemetry` callback plugin its endpoint, the inventory roster and
+# the repo git SHA. The callback (not a play) decides per host whether the
+# converge actually succeeded, using Ansible's own end-of-run counters — see
+# callback_plugins/converge_telemetry.py. The HEC token is deliberately NOT
+# published here; the callback reads SPLUNK_HEC_TOKEN itself so the secret
+# never enters run stats.
+
+- name: Publish converge-freshness telemetry configuration
+  hosts: localhost
+  gather_facts: false
+  become: false
+  tags:
+    - always
+  vars:
+    ansible_become: false
+    converge_telemetry_roster: >-
+      {{ groups['all'] | default([]) | reject('equalto', 'localhost') | list }}
+    converge_telemetry_fqdns: >-
+      {{ dict(converge_telemetry_roster | zip(
+           converge_telemetry_roster
+           | map('extract', hostvars, 'hostname')
+           | map('regex_replace', '$', '.' ~ tofu_data.domain)
+           | list)) }}
+  tasks:
+    - name: Read the repository revision being converged
+      ansible.builtin.command:
+        cmd: git rev-parse HEAD
+        chdir: "{{ playbook_dir }}/.."
+      register: converge_telemetry_head
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Publish converge-freshness configuration for the callback plugin
+      ansible.builtin.set_stats:
+        aggregate: false
+        data:
+          converge_telemetry:
+            check_mode: "{{ ansible_check_mode }}"
+            hec_url: "{{ splunk_hec_base_url }}/services/collector/event"
+            index: "{{ converge_telemetry_index | default('ansible') }}"
+            verify_tls: "{{ converge_telemetry_verify_tls | default(false) | bool }}"
+            timeout: "{{ converge_telemetry_timeout | default(10) | int }}"
+            git_sha: "{{ converge_telemetry_head.stdout | default('') | trim }}"
+            roster: "{{ converge_telemetry_roster }}"
+            fqdns: "{{ converge_telemetry_fqdns }}"
+            desired_state_current: "{{ tofu_desired_state_current | default(omit) }}"
+            desired_state_published: "{{ tofu_desired_state_published | default(omit) }}"
+            desired_state_live: "{{ tofu_desired_state_live | default(omit) }}"
