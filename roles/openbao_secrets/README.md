@@ -100,8 +100,9 @@ it from a pre-fetch play — no Galaxy install needed:
 
 ## Usage
 
-Set `BAO_ADDR` plus each domain's `<DOMAIN>_VAULT_ROLE_ID` / `_SECRET_ID`
-(see [Inputs (env)](#inputs-env)), then run through the normal wrapper:
+Set `BAO_ADDR` plus each domain's `OPENBAO_APPROLE_<DOMAIN>_ROLE_ID` /
+`_SECRET_ID` (see [Inputs (env)](#inputs-env)), then run through the normal
+wrapper:
 
 ```sh
 doppler run -- ansible-playbook playbooks/site.yml --tags openbao_secrets
@@ -127,11 +128,18 @@ server-side quorum HA needs a fourth node and is out of scope.
 
 | Domain | AppRole env vars | KV paths | Consumers |
 | --- | --- | --- | --- |
-| `apps` | `APPS_VAULT_ROLE_ID` / `_SECRET_ID` | `apps/hindsight` | `hindsight_docker` |
-| `ai-public` | `AI_PUBLIC_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/public/brain` (non-secret) | `ai_default_model` + brain-sync timers (below) |
-| `ai-runner` | `AI_RUNNER_VAULT_ROLE_ID` / `_SECRET_ID` | dispatch and provider credentials | job-runner guests (`ai_runner`, `agent_guest`) |
-| `hermes` | `HERMES_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/hermes` (path-exact) | none yet — see below |
-| `local-llm` | `LOCAL_LLM_VAULT_ROLE_ID` / `_SECRET_ID` | `ai/*`; exact paths in defaults | every AI role in this repo |
+| `apps` | `OPENBAO_APPROLE_APPS_ROLE_ID` / `_SECRET_ID` | `apps/hindsight` | `hindsight_docker` |
+| `ai-public` | `OPENBAO_APPROLE_AI_PUBLIC_ROLE_ID` / `_SECRET_ID` | `ai/public/brain` (non-secret) | `ai_default_model` + brain-sync timers (below) |
+| `ai-runner` | `OPENBAO_APPROLE_AI_RUNNER_ROLE_ID` / `_SECRET_ID` | dispatch and provider credentials | job-runner guests (`ai_runner`, `agent_guest`) |
+| `hermes` | `OPENBAO_APPROLE_HERMES_ROLE_ID` / `_SECRET_ID` | `ai/hermes` (path-exact) | none yet — see below |
+| `local-llm` | `OPENBAO_APPROLE_LOCAL_LLM_ROLE_ID` / `_SECRET_ID` | `ai/*`; exact paths in defaults | every AI role in this repo |
+
+Each pair is derived from the domain name (upper-cased, non-alphanumerics ->
+`_`) -- one formula, not a literal per domain that could drift from it, and
+the same resolution order as the `ansible-proxmox-apps` copy of this role.
+The legacy `<DOMAIN>_VAULT_ROLE_ID` / `_SECRET_ID` pair (this role's
+pre-rotation shape) is tried second, so an unmigrated converge wrapper keeps
+working.
 
 String path entries use `openbao_secrets_kv_mount`. A mapping with `mount` and
 `path` selects another KV mount through the same native `vault_kv2_get` module;
@@ -158,12 +166,12 @@ then it skips cleanly like any other unconfigured domain, and
 `ai_default_model` falls back to its static literal.
 
 `hermes` is path-exact-only future scaffolding: `HERMES_VAULT_ROLE_ID`/
-`_SECRET_ID` are already provisioned as a real AppRole + policy server-side,
-but every `hermes_agent` credential under `ai/hermes` still reads through
+`_SECRET_ID` (or the new `OPENBAO_APPROLE_HERMES_ROLE_ID`/`_SECRET_ID`) are
+already provisioned as a real AppRole + policy server-side, but every
+`hermes_agent` credential under `ai/hermes` still reads through
 `local-llm`'s broader grant (its `inventory/group_vars/hermes_agent_group.yml`
 overrides) — nothing currently resolves via `bao_hermes_secrets`. Migrate one
-field at a time by pointing its group_vars override here once
-`HERMES_VAULT_ROLE_ID`/`_SECRET_ID` land in Doppler.
+field at a time by pointing its group_vars override here.
 
 All readable path keys for a domain are merged flat into that domain's
 `bao_<domain>_secrets`, keyed by the field name, so a consumer default reads
@@ -174,7 +182,8 @@ All readable path keys for a domain are merged flat into that domain's
 | Env var | Purpose |
 | --- | --- |
 | `BAO_ADDR` | OpenBao ingress URL (`https://openbao.<subdomain>`). Unset ⇒ skip everything. |
-| `<DOMAIN>_VAULT_ROLE_ID` / `_SECRET_ID` | That domain's own AppRole credentials. Unset ⇒ skip just that domain. |
+| `OPENBAO_APPROLE_<DOMAIN>_ROLE_ID` / `_SECRET_ID` | That domain's own AppRole credentials. Unset ⇒ skip just that domain. |
+| `<DOMAIN>_VAULT_ROLE_ID` / `_SECRET_ID` | Legacy fallback for the row above, tried second. Unset ⇒ skip just that domain. |
 | `HERMES_WRITE_BAO_TOKEN` | Ephemeral `hermes-write` token for a missing Hermes API key; never falls back to `BAO_TOKEN`. |
 
 On macOS these arrive in the ambient environment via `doppler run`; on Linux
