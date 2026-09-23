@@ -118,6 +118,20 @@ jobs:
           PY_COLORS: "1"
           ANSIBLE_FORCE_COLOR: "1"
           MOLECULE_SCENARIO: ${{ matrix.scenario }}
+          # community.docker's docker_container module (used by molecule_plugins'
+          # vendored destroy.yml) defaults its API client read-timeout to 60s
+          # (community.docker doc_fragments/_docker.py) -- exactly the value in
+          # "Error removing container (read timeout=60)" (Vikunja #3428). The
+          # runner's Docker daemon occasionally takes longer than that to answer
+          # a single container-removal call under load; the very next attempt
+          # (molecule's own retry, or a second `destroy` in the test_sequence)
+          # then succeeds immediately, so the underlying removal was never
+          # actually stuck -- only the first HTTP call's wait was too short.
+          # community.docker reads this from DOCKER_TIMEOUT when the module
+          # option isn't set in the task, so raising it here fixes every
+          # scenario's destroy step at once, not just the one that happened to
+          # be flaky this run.
+          DOCKER_TIMEOUT: "180"
           # Only the secret the scenarios reference (verified against
           # molecule/*/molecule.yml provisioner.env):
           #   qdrant      -> QDRANT_API_KEY
