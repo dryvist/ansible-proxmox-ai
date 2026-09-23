@@ -9,20 +9,41 @@
 # yet. A silently empty domain used to flow straight into consumer templates
 # and overwrite live credentials with blanks.
 
+# The env-var shape is derived from the domain name, not stored per-domain:
+# it is the SAME OPENBAO_APPROLE_<NAME>_{ROLE,SECRET}_ID convention every
+# other AppRole credential helper in this estate uses, and the same
+# resolution order as the ansible-proxmox-apps copy of this role.
+# `<NAME>_VAULT_{ROLE,SECRET}_ID` (this role's pre-existing shape) is tried
+# second, so a converge wrapper that has not been migrated yet keeps
+# working; drop the fallback once every consumer's env is confirmed
+# rewritten to the new names.
 - name: Resolve role_id/secret_id from env for {{ openbao_domain.name }}
   ansible.builtin.set_fact:
-    openbao_secrets_domain_role_id: "{{ lookup('env', openbao_domain.role_id_env) | default('', true) }}"
-    openbao_secrets_domain_secret_id: "{{ lookup('env', openbao_domain.secret_id_env) | default('', true) }}"
+    openbao_secrets_domain_env_new_prefix: >-
+      OPENBAO_APPROLE_{{ openbao_domain.name | upper | regex_replace('[^A-Z0-9]', '_') }}
+    openbao_secrets_domain_env_legacy_prefix: >-
+      {{ openbao_domain.name | upper | regex_replace('[^A-Z0-9]', '_') }}_VAULT
+  no_log: true
+
+- name: Resolve role_id/secret_id values, new name first then legacy for {{ openbao_domain.name }}
+  ansible.builtin.set_fact:
+    openbao_secrets_domain_role_id: >-
+      {{ lookup('env', openbao_secrets_domain_env_new_prefix ~ '_ROLE_ID')
+         | default(lookup('env', openbao_secrets_domain_env_legacy_prefix ~ '_ROLE_ID'), true) }}
+    openbao_secrets_domain_secret_id: >-
+      {{ lookup('env', openbao_secrets_domain_env_new_prefix ~ '_SECRET_ID')
+         | default(lookup('env', openbao_secrets_domain_env_legacy_prefix ~ '_SECRET_ID'), true) }}
   no_log: true
 
 - name: Fail on missing credentials for the required domain {{ openbao_domain.name }}
   ansible.builtin.fail:
     msg: >-
-      {{ openbao_domain.role_id_env }} / {{ openbao_domain.secret_id_env }}
-      are not both set, so the {{ openbao_domain.name }} domain would resolve
-      EMPTY. Refusing to continue: consumers render these values into live
-      config, and an empty value overwrites a working credential. Supply both
-      envs, or add '{{ openbao_domain.name }}' to
+      Neither {{ openbao_secrets_domain_env_new_prefix }}_ROLE_ID/_SECRET_ID
+      nor the legacy {{ openbao_secrets_domain_env_legacy_prefix }}_ROLE_ID/
+      _SECRET_ID are both set, so the {{ openbao_domain.name }} domain would
+      resolve EMPTY. Refusing to continue: consumers render these values into
+      live config, and an empty value overwrites a working credential.
+      Supply one pair, or add '{{ openbao_domain.name }}' to
       openbao_secrets_optional_domains to declare this domain deliberately
       unprovisioned.
   when:
@@ -34,8 +55,9 @@
 - name: Report a deliberately optional, unprovisioned domain {{ openbao_domain.name }}
   ansible.builtin.debug:
     msg: >-
-      {{ openbao_domain.role_id_env }} / {{ openbao_domain.secret_id_env }}
-      not both set, and {{ openbao_domain.name }} is listed in
+      Neither {{ openbao_secrets_domain_env_new_prefix }}_ROLE_ID/_SECRET_ID
+      nor the legacy {{ openbao_secrets_domain_env_legacy_prefix }}_ROLE_ID/
+      _SECRET_ID are both set, and {{ openbao_domain.name }} is listed in
       openbao_secrets_optional_domains — skipping this domain by explicit
       declaration. Its consumers must tolerate absent values.
   when:
