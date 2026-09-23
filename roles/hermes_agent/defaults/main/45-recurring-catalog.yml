@@ -144,6 +144,58 @@ hermes_agent_github_cache_stats_cron_prompt: >-
   size limit yourself — that is a human/coder decision; you only observe
   and report.
 
+# --- Model-routing landscape review: read-only, no profile needed --------
+# Was a live-only `hermes cron create` job (not declared here), which is why
+# it had no failure_deliver override and tripped
+# cron_reconcile.yml's "Assert every scheduled cron job carries a
+# failure_deliver override" the moment that check shipped. Every job that
+# goes through reconcile_direct_cron.yml gets hermes_agent_cron_failure_deliver
+# in its create argv automatically — the fix here is simply bringing the job
+# under this catalog so it goes through that path at all.
+hermes_agent_model_routing_review_enabled: true
+hermes_agent_model_routing_review_cron_name: model-routing-review
+hermes_agent_model_routing_review_cron_schedule: "0 10 * * 1"
+hermes_agent_model_routing_review_cron_prompt: >-
+  You are reviewing two model routing resources that the operator asked you
+  to track: (1) awesome-model-routing
+  (https://github.com/yenanjing/awesome-model-routing), an auto-refreshing
+  curated list across 8 categories (routers, gateways, proxies, inference
+  engines, orchestration, API management, cost optimization, research) —
+  ignore its daily bot star-count refreshes, see Baseline method below; (2)
+  claude-code-router (https://github.com/musistudio/claude-code-router), a
+  local model gateway/control plane for coding agents supporting Claude
+  Code, Codex, Grok CLI, Kimi CLI, Kilo Code, OpenCode, Pi, ZCode, and
+  WorkBuddy, with provider management, model routing with
+  conditions/retries/fallbacks, tool extensions, observability, and an
+  AgentClaw relay.
+
+
+  Baseline method (do this, don't trust any numbers already in this
+  prompt): 1) recall memory key "model-routing-review-last" (last run's
+  reported baseline line: repo count + CCR stars + latest release tag); if
+  absent this is your first run, so just save a baseline and reply exactly
+  [SILENT]. 2) Fetch the README at today's HEAD and at the commit from
+  roughly 7 days ago; diff the repo slugs extracted from the github.com
+  links in both versions — additions/removals are real changes, star-count
+  deltas are not. 3) List claude-code-router releases newer than the
+  recorded latest tag. 4) End your report with the updated baseline line:
+  baseline: N repos | CCR stars | CCR latest tag+date. Save it back to
+  "model-routing-review-last".
+
+
+  Task: check both repos for changes since the last review. Report any new
+  repos added to awesome-model-routing (with stars), any new releases or
+  major changes to claude-code-router, and any notable new projects in the
+  routing space worth flagging. If nothing changed, reply with exactly
+  [SILENT]. If there are changes, highlight the top 2-3 most interesting
+  ones and why they matter.
+
+
+  ABSOLUTE SCOPE LIMIT: this is a tracking/reminder job, not an engineering
+  task. Do not attempt to deploy, configure, or modify any of these tools —
+  only report what changed and whether it is worth the operator's
+  attention.
+
 # Reassembled into hermes_agent_direct_cron_jobs by
 # 43-direct-cron-jobs-core.yml's concatenation.
 hermes_agent_direct_cron_jobs_recurring_catalog:
@@ -203,6 +255,16 @@ hermes_agent_direct_cron_jobs_recurring_catalog:
     enabled: >-
       {{ hermes_agent_github_cache_stats_enabled | bool
          and hermes_agent_github_read_token | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  - name: "{{ hermes_agent_model_routing_review_cron_name }}"
+    schedule: "{{ hermes_agent_model_routing_review_cron_schedule }}"
+    prompt_var: hermes_agent_model_routing_review_cron_prompt
+    skill: ""
+    deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    enabled: >-
+      {{ hermes_agent_model_routing_review_enabled | bool
          and hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
