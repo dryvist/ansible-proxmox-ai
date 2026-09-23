@@ -43,6 +43,20 @@
 _llm_router_key_monthly_budget: >-
   {{ 7.0 if (llm_router_db_host | default('') | trim | length > 0) else 0 }}
 
+# Every name a call to hermes_brain_model can land on: the entry point
+# itself plus its whole fallback chain, single-sourced from the same var
+# config.yaml.j2 renders the entry's own fallback list from. Unfiltered —
+# llm_router_enforce_fallback_model_access re-checks the key on EVERY hop,
+# not only the ones config.yaml.j2 gives their own top-level entry, so a
+# key missing any chain member is refused the moment the walk reaches it.
+# None of these names is a servable id, a stable alias, or a seeded role
+# (hermes_agent's own entries always route through hermes_brain_model, never
+# any of these directly), so none of the other three scope-all members ever
+# picked them up on their own — 59-key-scopes.yml widens a key holding the
+# entry point to the rest of this set, the same way it widens a role.
+_llm_router_directly_callable_ladder_names: >-
+  {{ (llm_router_hermes_router_ids + (llm_router_hermes_default_fallback_chain | list)) | unique | list }}
+
 # Role names (55-roles.yml) ADDED so a full-scope key can actually call
 # `fast`/`subagent`/etc — those are DB-seeded model_groups distinct from the
 # alias map above, and a key whose models list omits a name that role
@@ -53,7 +67,8 @@ _llm_router_key_scope_all: >-
   {{ (llm_router_servable_models
       + (llm_router_model_group_aliases | list)
       + (llm_router_hermes_agents | list)
-      + (llm_router_role_deployments | map(attribute='role') | list)) | unique | list }}
+      + (llm_router_role_deployments | map(attribute='role') | list)
+      + _llm_router_directly_callable_ladder_names) | unique | list }}
 
 # One key per Hermes operating profile (roles/hermes_agent
 # defaults/main/150-fleet-health-profiles.yml `hermes_agent_profiles`), plus
@@ -71,14 +86,18 @@ _llm_router_hermes_profile_names: >-
 # `default` gets the full human chat scope — it is the cross-domain/board-meta/
 # write-bearing catch-all profile. Every named profile is bounded to
 # cheap/embed the same way langgraph is below: none of splunk-admin/
-# homelab-admin/github-maint carry a lead-tier job.
+# homelab-admin/github-maint carry a lead-tier job. Every profile's own
+# config.yaml.j2 `model.default` still renders hermes_brain_model, so every
+# profile's key — named or default — must reach that one name directly,
+# regardless of scope.
 _llm_router_hermes_profile_keys: >-
   {%- set _items = [] -%}
   {%- for _name in _llm_router_hermes_profile_names -%}
   {%- set _discard = _items.append({
         'alias': 'hermes-' ~ _name,
         'value': bao_apps_secrets.get('hermes_' ~ (_name | replace('-', '_')) ~ '_llm_router_key', ''),
-        'models': (_llm_router_key_scope_all if _name == 'default' else ['cheap', 'embed']),
+        'models': (_llm_router_key_scope_all if _name == 'default'
+                   else (['cheap', 'embed', hermes_brain_model] | unique | list)),
         'monthly_budget': _llm_router_key_monthly_budget,
       }) -%}
   {%- endfor -%}
