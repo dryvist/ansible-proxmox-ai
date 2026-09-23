@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.55.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.54.0...v0.55.0) (2026-09-23)
+
+
+### Features
+
+* **hermes_agent:** add Vikunja/Zammad priority ranking to daily-summary ([#902](https://github.com/dryvist/ansible-proxmox-ai/issues/902)) ([e08e47f](https://github.com/dryvist/ansible-proxmox-ai/commit/e08e47fecb2248fe6ede4ff8a6d67d8bcfaf865d))
+* **openbao_secrets:** add the opencode leaf to the local-llm domain ([#893](https://github.com/dryvist/ansible-proxmox-ai/issues/893)) ([7f677cd](https://github.com/dryvist/ansible-proxmox-ai/commit/7f677cd44b61a2daa0578f99f67fb79fa07f1f5c))
+
+
+### Bug Fixes
+
+* **agentgateway_docker:** resolve the Vikunja MCP read token field name ([14b1f8f](https://github.com/dryvist/ansible-proxmox-ai/commit/14b1f8fe78bdeaf519137b1e792af55443fd92c3))
+* **agentgateway_docker:** resolve the Vikunja MCP read token's actual field name ([5218eae](https://github.com/dryvist/ansible-proxmox-ai/commit/5218eae71b91e55165a41adb502396c58f356aae))
+* **ci:** raise Docker API client timeout for Molecule destroy ([#903](https://github.com/dryvist/ansible-proxmox-ai/issues/903)) ([1e071e7](https://github.com/dryvist/ansible-proxmox-ai/commit/1e071e76b5270c0cbda754d0c157f8e9ad847fe4))
+* **hermes_agent:** enable user lingering for restart-safe cron dispatch ([29c0724](https://github.com/dryvist/ansible-proxmox-ai/commit/29c07248e6b30d7d94379748e383a93f64516105))
+* **hermes_agent:** enable user lingering for restart-safe cron dispatch ([1db11cc](https://github.com/dryvist/ansible-proxmox-ai/commit/1db11cc133acd310e692dc3d5c239570029616ca))
+* **hermes_agent:** follow the github skill's upstream category move ([#897](https://github.com/dryvist/ansible-proxmox-ai/issues/897)) ([c5bf477](https://github.com/dryvist/ansible-proxmox-ai/commit/c5bf477a3bec203508ff699cb271771ca850f8a8))
+* **llm_router:** send x-opencode-session on OpenCode Go deployments ([#899](https://github.com/dryvist/ansible-proxmox-ai/issues/899)) ([55986a7](https://github.com/dryvist/ansible-proxmox-ai/commit/55986a7b8df3a33c8ffdfed113b8db859e0fb926))
+* **llm_router:** stop a skipped free-route deployment from consuming an order slot ([#892](https://github.com/dryvist/ansible-proxmox-ai/issues/892)) ([5753dca](https://github.com/dryvist/ansible-proxmox-ai/commit/5753dca37fc65ae09afb0898ac31d34e9d571987))
+* **openbao_secrets:** trim ai/mcp/vikunja comment under the 4000-token budget ([#905](https://github.com/dryvist/ansible-proxmox-ai/issues/905)) ([fd91667](https://github.com/dryvist/ansible-proxmox-ai/commit/fd91667d8b356c5b11711f4b1d93c15944ebc477))
+
 ## [0.54.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.53.0...v0.54.0) (2026-09-23)
 
 
