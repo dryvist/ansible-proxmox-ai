@@ -3,12 +3,12 @@
 # (defaults/main/45-database.yml, rendered by templates/general-settings.yaml.j2).
 #
 # LiteLLM's own default (10, litellm/proxy/_types.py) is a PER-PROCESS Prisma
-# client pool, so the real ceiling on the shared postgres-ai cluster is that
-# number times every process that opens one. This pins the derivation —
-# llm_router_pg_max_connections / (router-group size x llm_router_num_workers)
-# — against a synthetic 3-router group, rather than the literal 33 the current
-# topology happens to produce, so a change to either input is caught here
-# instead of only by Postgres refusing a connection at some later moment.
+# client pool, so the fleet's real draw is that number times every process
+# that opens one. This pins the derivation — llm_router_pg_connection_budget
+# / (router-group size x llm_router_num_workers) — against a synthetic
+# 3-router group, rather than the literal 10 the current topology happens to
+# produce, so a change to either input is caught here instead of only by
+# Postgres refusing a connection at some later moment.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_db_connection_pool_limit.yml -i localhost, -c local
@@ -69,11 +69,11 @@
         quiet: true
         that:
           - _config.general_settings.database_connection_pool_limit
-            == ((llm_router_pg_max_connections / (3 * llm_router_num_workers)) | int)
+            == ((llm_router_pg_connection_budget / (3 * llm_router_num_workers)) | int)
         fail_msg: >-
           general_settings.database_connection_pool_limit is
           {{ _config.general_settings.database_connection_pool_limit | default('(absent)') }},
-          expected llm_router_pg_max_connections ({{ llm_router_pg_max_connections }})
+          expected llm_router_pg_connection_budget ({{ llm_router_pg_connection_budget }})
           divided across 3 router instances x llm_router_num_workers
           ({{ llm_router_num_workers }}) worker(s) each. A literal here instead of
           this derivation is exactly the kind of second source of truth that
@@ -99,12 +99,12 @@
             quiet: true
             that:
               - _config_no_group.general_settings.database_connection_pool_limit
-                == ((llm_router_pg_max_connections / llm_router_num_workers) | int)
+                == ((llm_router_pg_connection_budget / llm_router_num_workers) | int)
             fail_msg: >-
               With no router group loaded, database_connection_pool_limit is
               {{ _config_no_group.general_settings.database_connection_pool_limit
                  | default('(absent)') }}; expected the guarded 1-instance
-              fallback ({{ (llm_router_pg_max_connections / llm_router_num_workers) | int }}).
+              fallback ({{ (llm_router_pg_connection_budget / llm_router_num_workers) | int }}).
             success_msg: >-
               An empty router group is guarded to 1 instance, never a
               ZeroDivisionError.
