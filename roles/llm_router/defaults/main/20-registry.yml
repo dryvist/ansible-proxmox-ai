@@ -139,6 +139,11 @@ _llm_router_vllm_max_input_tokens_by_model: >-
 # Names owned by enabled registry entries after applying an optional route_group.
 # Multiple provider deployments may intentionally share one route group.
 #
+# `free` / `free-zdrless` is the same sharing mechanism under a boolean
+# instead of a string: any entry marked `in_free_route: true`
+# (model-list-free.yaml.j2) contributes `free` or `free-zdrless` by its
+# own zero_data_retention, never re-typed.
+#
 # stable_aliases are deliberately NOT folded in here. An alias renders into
 # router_settings.model_group_alias and never becomes a model_list entry, so it
 # can never appear among the rendered names this set is diffed against —
@@ -148,5 +153,11 @@ llm_router_registry_enabled_route_names: >-
   {%- set ns = namespace(names=[]) -%}
   {%- for m in llm_router_registry_enabled -%}
   {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] -%}
+  {%- if m.in_free_route | default(false) -%}
+  {%- set _free_name = 'free' if (m.zero_data_retention | default(true)) else 'free-zdrless' -%}
+  {%- if _free_name not in ns.names -%}
+  {%- set ns.names = ns.names + [_free_name] -%}
+  {%- endif -%}
+  {%- endif -%}
   {%- endfor -%}
   {{ ns.names | unique | list }}

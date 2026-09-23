@@ -80,15 +80,27 @@
 # absent from this fact and the "unseeded keys" computation below mints them
 # fresh in the same play. Skipped when nothing was deleted — the first read
 # above is already current.
+#
+# Registers onto a TEMP var, never straight onto llm_router_existing_keys: a
+# skipped task still overwrites its register: target with a {skipped: true}
+# stub that carries no `.json`, which silently emptied every alias match
+# below on every ordinary (no-rotation) converge. set_fact does not share
+# that failure mode — when its own when: is false it does nothing at all —
+# so the next task only replaces the first read when a rotation actually ran.
 - name: Re-read the live keys when a rotation delete ran
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/key/list?page=1&size=100&return_full_object=true"
     headers:
       Authorization: "Bearer {{ llm_router_master_key }}"
     timeout: "{{ llm_router_seed_request_timeout }}"
-  register: llm_router_existing_keys
+  register: _llm_router_existing_keys_after_rotation
   when: (llm_router_rotate_key_aliases | default([]) | length) > 0
   no_log: true
+
+- name: Keep the first read when no rotation ran
+  ansible.builtin.set_fact:
+    llm_router_existing_keys: "{{ _llm_router_existing_keys_after_rotation }}"
+  when: (llm_router_rotate_key_aliases | default([]) | length) > 0
 
 # CREATE, idempotently. seed-keys.yml used to pre-compute an "unseeded"
 # subset from the /key/list read above and mint only that subset — fragile,
@@ -182,13 +194,21 @@
   no_log: true
 
 
-# RECONCILE, union only, the model names a live key lacks. Keys are minted
-# once, so a name added to a seed entry's list after the mint (a new role in
-# 55-roles.yml, a new servable model) never reaches an existing key and every
-# request to it 403s. Sending the git list outright would erase a name an
-# operator added in the Admin UI, so the update is the UNION of live and
-# seeded: names are only ever added, never removed. A key whose live list
-# already carries every seeded name is left untouched.
+# RECONCILE. Union by default, same reason as ever: keys are minted once, so
+# a name added to a seed entry's list after the mint (a new role in
+# 55-roles.yml, a new servable model) never reaches an existing key and
+# every request to it 403s, and sending the git list outright would erase a
+# name an operator added in the Admin UI.
+#
+# A key marked `models_authoritative: true` (hindsight, 56-virtual-keys.yml)
+# is the deliberate exception: it gets the seeded list VERBATIM, a REPLACE
+# rather than a union, because for THAT key the seed is the whole allowlist,
+# not a floor — a name granted before the free-only boundary landed
+# (`cheap`, the primary model, the `no-default-models` stopgap) must
+# actually be revoked, not linger forever alongside the new one. The `when:`
+# below fires such a key on drift in EITHER direction (seeded names live
+# lacks, OR live names seeded no longer lists) — a narrowing has to reach
+# the live key too, not only a widening.
 - name: Grant seeded model names to live keys that lack them
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/key/update"
@@ -198,7 +218,9 @@
     body_format: json
     body:
       key: "{{ item.value }}"
-      models: "{{ (_llm_router_live_models + item.models) | unique | list }}"
+      models: >-
+        {{ item.models if (item.models_authoritative | default(false))
+           else (_llm_router_live_models + item.models) | unique | list }}
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
   loop: >-
@@ -206,7 +228,10 @@
        | rejectattr('value', 'equalto', '')
        | selectattr('alias', 'in', _llm_router_live_key_aliases) | list }}
   loop_control:
-    label: "{{ item.alias }} +{{ item.models | difference(_llm_router_live_models) | join(', ') }}"
+    label: >-
+      {{ item.alias }}
+      {{ '=' ~ item.models if (item.models_authoritative | default(false))
+         else '+' ~ (item.models | difference(_llm_router_live_models) | join(', ')) }}
   vars:
     _llm_router_live_key_aliases: >-
       {{ llm_router_existing_keys.json['keys'] | default([])
@@ -216,5 +241,8 @@
       {{ llm_router_existing_keys.json['keys'] | default([])
          | selectattr('key_alias', 'equalto', item.alias)
          | map(attribute='models', default=[]) | first | default([]) }}
-  when: item.models | difference(_llm_router_live_models) | length > 0
+  when: >-
+    (item.models | difference(_llm_router_live_models) | length > 0)
+    or ((item.models_authoritative | default(false))
+        and (_llm_router_live_models | difference(item.models) | length > 0))
   no_log: true

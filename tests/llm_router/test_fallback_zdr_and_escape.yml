@@ -127,7 +127,8 @@
         # deployment's own id and either grouping name it may be reached by,
         # plus every alias, which inherits its target's window, plus the
         # embed/ocr DB role names (58-review-roles.yml
-        # llm_router_cross_modality_fail_fast_names), which inherit their
+        # llm_router_cross_modality_fail_fast_names) and review-local
+        # (llm_router_local_only_fail_fast_names), which inherit their
         # own target's window the same way an alias does.
         _window_by_name: >-
           {%- set ns = namespace(pairs=[]) -%}
@@ -146,13 +147,32 @@
           {%- set ns.pairs = ns.pairs + [{'n': alias, 'w': tw}] -%}
           {%- endif -%}
           {%- endfor -%}
-          {%- for role_name, target in {'embed': llm_router_embedding_model, 'ocr': llm_router_ocr_model}.items() -%}
+          {%- for role_name, target in {'embed': llm_router_embedding_model, 'ocr': llm_router_ocr_model,
+                                        'review-local': llm_router_routine_model}.items() -%}
           {%- if ns.pairs | selectattr('n', 'equalto', role_name) | list | length == 0 -%}
           {%- set tw = (ns.pairs | selectattr('n', 'equalto', target)
                         | map(attribute='w') | list | first) | default(0) -%}
           {%- set ns.pairs = ns.pairs + [{'n': role_name, 'w': tw}] -%}
           {%- endif -%}
           {%- endfor -%}
+          {#- `free` / `free-zdrless`: two standalone model groups split
+              by zero_data_retention, each windowed to its own widest
+              member. -#}
+          {%- set _free_entries = llm_router_registry_enabled
+                | selectattr('in_free_route', 'defined') | selectattr('in_free_route') | list -%}
+          {%- set _free_zdr_windows = (_free_entries | selectattr('zero_data_retention', 'undefined') | list
+                + (_free_entries | selectattr('zero_data_retention', 'defined')
+                   | selectattr('zero_data_retention') | list))
+                | map(attribute='context_window') | list -%}
+          {%- set _free_zdrless_windows = _free_entries
+                | selectattr('zero_data_retention', 'defined') | rejectattr('zero_data_retention')
+                | map(attribute='context_window') | list -%}
+          {%- if _free_zdr_windows | length > 0 -%}
+          {%- set ns.pairs = ns.pairs + [{'n': 'free', 'w': _free_zdr_windows | max}] -%}
+          {%- endif -%}
+          {%- if _free_zdrless_windows | length > 0 -%}
+          {%- set ns.pairs = ns.pairs + [{'n': 'free-zdrless', 'w': _free_zdrless_windows | max}] -%}
+          {%- endif -%}
           {{ dict(ns.pairs | map(attribute='n') | zip(ns.pairs | map(attribute='w'))) }}
         _names_without_window: >-
           {%- set ns = namespace(bad=[]) -%}

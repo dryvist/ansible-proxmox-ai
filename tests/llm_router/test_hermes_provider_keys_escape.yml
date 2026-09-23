@@ -1,0 +1,170 @@
+---
+# The context-window-escape assertions that used to close
+# test_hermes_provider_keys.yml's single assert task, split out when the
+# `free` group's addition to _expected_cwf_keys pushed that file over the
+# repo's per-file token budget. Per .token-limits.yaml the remedy is a split
+# along a real seam, never a raised budget — the seam here is the same one
+# test_fallback_entry_points.yml/test_fallback_zdr_and_escape.yml already
+# uses: chain MEMBERSHIP (still in test_hermes_provider_keys.yml) versus
+# context-window ESCAPE-MAP completeness (here), over the same fixture.
+
+- name: Verify the OpenRouter-only fixture's context-window escape map is complete
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Configure the shared budget store
+      ansible.builtin.set_fact:
+        llm_router_redis_host: redis.example.test
+        llm_router_redis_password: test-only-not-a-real-password
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Seed only the OpenRouter provider credential
+      ansible.builtin.set_fact:
+        bao_local_llm_secrets:
+          OPENROUTER_API_KEY: test-openrouter-provider-key
+          OPENCODE_API_KEY: "   "
+          GEMINI_API_KEY: "   "
+          DASHSCOPE_API_KEY: "   "
+          OPENAI_API_KEY: "   "
+          ZAI_API_KEY: "   "
+
+    - name: Re-evaluate the Hermes cloud projections
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
+
+    - name: Render the provider-scoped config and environment
+      ansible.builtin.set_fact:
+        _config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+
+    - name: Every group that can raise ContextWindowExceeded has an escape entry
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # Asserted as a SET of keys built from the registry PROJECTIONS and
+          # the rendered alias map — never a typed literal, and never the
+          # escape-groups var the template renders from. A literal described
+          # what the map WAS and could not notice what it was MISSING; the var
+          # would only prove the template copied itself. This composition is
+          # the policy: local legs, the auto-router groups, every servable id,
+          # every advertised alias.
+          - _cwf_keys | sort == _expected_cwf_keys | sort
+          # ANTI-VACUITY: the expected set must hold a local leg, a router
+          # group, the primary and at least one alias, or a hollowed registry
+          # passes this over a near-empty set.
+          - _expected_cwf_keys | length > 3
+          - llm_router_primary_model in _expected_cwf_keys
+          - (_config.router_settings.model_group_alias | list) | length > 0
+          # The primary itself must be keyed. Five cron jobs died of exactly its
+          # absence, one exceeding the served window by 482 tokens.
+          - "'hermes-default' in _cwf_keys"
+          # Every escape target is drawn from this provider's groups and
+          # nothing else -- EXCEPT fast/subagent, excluded here on purpose,
+          # checked separately below. A SUBSET check, not exact-match: a
+          # chain member's own tail can be a narrower slice of
+          # _openrouter_groups (e.g. hermes-cloud-free -> just :free).
+          - >-
+            _config.router_settings.context_window_fallbacks
+            | rejectattr('fast', 'defined') | rejectattr('subagent', 'defined')
+            | map('dict2items') | flatten | map(attribute='value') | flatten
+            | unique | difference(_openrouter_groups) | length == 0
+          # fast/subagent no longer escape to `long` (55-roles.yml): with only
+          # the free key present their chain has no external rung, so neither
+          # is keyed, and `long` sits in no role's chain.
+          - >-
+            _config.router_settings.context_window_fallbacks
+            | selectattr('fast', 'defined') | list | length == 0
+          - >-
+            _config.router_settings.context_window_fallbacks
+            | selectattr('subagent', 'defined') | list | length == 0
+          - >-
+            llm_router_role_deployments | map(attribute='fallbacks') | flatten
+            | select('equalto', llm_router_model_group_aliases.long) | list | length == 0
+        fail_msg: >-
+          The context-window escape map must key exactly the local legs, the
+          auto-router groups, every servable id, and every advertised alias --
+          got {{ _cwf_keys | sort }}, expected {{ _expected_cwf_keys | sort }}.
+      vars:
+        # The general openrouter tier's `:free` entries share OPENROUTER_API_KEY
+        # too (llm_router_openrouter_free_groups, 35-hermes-cloud.yml) and are
+        # this fixture's only cloud provider group, alongside the hermes-cloud
+        # one — same registry-derived composition
+        # test_hermes_provider_keys.yml's chain-membership assert uses.
+        _openrouter_groups: >-
+          {%- set ns = namespace(g=[]) -%}
+          {%- for m in llm_router_model_registry | selectattr('enabled')
+                       | selectattr('tier', 'equalto', 'hermes-cloud')
+                       | selectattr('credential_env', 'equalto', 'OPENROUTER_API_KEY') -%}
+          {%- set g = m.fallback_group | default(m.route_group) -%}
+          {%- if g not in ns.g -%}{%- set ns.g = ns.g + [g] -%}{%- endif -%}
+          {%- endfor -%}
+          {%- for m in llm_router_model_registry | selectattr('enabled')
+                       | selectattr('tier', 'equalto', 'openrouter')
+                       | selectattr('client_model_id', 'match', '.*:free$')
+                       | selectattr('credential_env', 'equalto', 'OPENROUTER_API_KEY') -%}
+          {%- if m.client_model_id not in ns.g -%}{%- set ns.g = ns.g + [m.client_model_id] -%}{%- endif -%}
+          {%- if m.in_free_route | default(false)
+                and (m.zero_data_retention | default(true)) == false
+                and 'free-zdrless' not in ns.g -%}
+          {%- set ns.g = ns.g + ['free-zdrless'] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.g }}
+        _cwf_keys: >-
+          {{ _config.router_settings.context_window_fallbacks | default([])
+             | map('dict2items') | flatten | map(attribute='key') | list }}
+        # PLUS `free`: an unconditional entry pointing at the wider
+        # `free-zdrless`, which carries no entry of its own here.
+        _expected_cwf_keys: >-
+          {{ (llm_router_local_fallback_groups
+              + (llm_router_hermes_virtual_models
+                 | map(attribute='client_model_id') | list)
+              + llm_router_servable_models
+              + (_config.router_settings.model_group_alias | list)
+              + ['free']
+              + llm_router_long_context_escape_roles
+              + _roles_with_external
+              + llm_router_chain_groups_with_own_tail)
+             | unique | list }}
+        # Roles with an external rung are keyed too (test_local_first_by_order.yml).
+        _roles_with_external: >-
+          {%- set out = [] -%}
+          {%- set _local = llm_router_local_fallback_groups + [llm_router_primary_model]
+                           + llm_router_servable_models -%}
+          {%- for d in llm_router_role_deployments
+                if d.role not in llm_router_long_context_escape_roles
+                and d.fallbacks | difference(_local) | length > 0 -%}
+          {%- set _ = out.append(d.role) -%}
+          {%- endfor -%}
+          {{ out }}

@@ -42,6 +42,51 @@ llm_router_db_password: >-
 # idle lifetime below any such timeout makes the client recycle first.
 llm_router_db_max_idle_connection_lifetime: 60
 
+# The ROUTER FLEET's share of the shared postgres-ai cluster this role's
+# database lives on (top of this file) — never the cluster's whole
+# max_connections. That cluster also backs Hindsight and its own replication,
+# and deriving from the full ceiling would hand the routers all of it (a prior
+# draft of this var did exactly that: 100 / 3 instances = 33 each, 99 total).
+# 30 is today's ALREADY-IN-EFFECT total, not a new allowance: LiteLLM's own
+# per-process pool default (10, proxy/_types.py) times today's 3 router
+# instances. Fixing the total here rather than deriving from the cluster
+# ceiling means a future router bump SHRINKS each instance's share
+# (30 / 4 = 7) instead of growing the fleet's total draw on a cluster it does
+# not own outright.
+llm_router_pg_connection_budget: 30
+
+# Uvicorn worker processes per router instance. Its only consumer today is the
+# pool-limit math below, which is why it lives here rather than a process-
+# topology file of its own. LiteLLM's own --num_workers CLI default
+# (DEFAULT_NUM_WORKERS_LITELLM_PROXY, litellm/constants.py, pinned 1.102.0) is
+# 1, and litellm.service.j2 has never passed a --num_workers flag, so 1 is the
+# actual current behaviour made explicit rather than a new choice. Wired into
+# the unit below so a future bump here is the one place that changes it.
+llm_router_num_workers: 1
+
+# How many llm_router_group members exist. groups[], not a hand-typed count:
+# a literal would drift the moment a router is added or removed without
+# someone remembering to bump it here too — the GPU rung's max_parallel_requests
+# hit exactly this before it moved to hostvars (test_gpu_rung_admission_matches_backend.yml).
+# Guarded to 1 so a context with no router group loaded (an isolated unit test
+# that never add_hosts one) still renders a real number instead of dividing by
+# zero.
+_llm_router_instance_count: "{{ (groups['llm_router_group'] | default([]) | length) or 1 }}"
+
+# general_settings.database_connection_pool_limit. LiteLLM's own default (10,
+# proxy/_types.py, "default connection pool for prisma client") is PER
+# PROCESS, so the fleet's real draw is that number times every process that
+# opens one — every worker, on every router instance. Deriving from the
+# fixed budget above rather than leaving this at the LiteLLM default means
+# the PER-INSTANCE limit shrinks automatically as the fleet grows
+# (30 / 3 instances / 1 worker = 10, unchanged from today's default; a 4th
+# router drops it to 7 per instance without anyone touching this line), so
+# the total the fleet can ever hold open stays 30 regardless of how many
+# instances or workers exist.
+llm_router_db_connection_pool_limit: >-
+  {{ (llm_router_pg_connection_budget / (_llm_router_instance_count * llm_router_num_workers))
+     | int }}
+
 # Database-backed model storage, for ROLE DEPLOYMENTS ONLY.
 #
 # store_model_in_db is INDEPENDENT of adaptive routing. Adaptive routing needs
@@ -139,10 +184,10 @@ llm_router_disable_error_logs: false
 
 # Retention, which is what makes the two settings above affordable.
 #
-# 30 days: the serving-share metric is reported weekly (README
-# "Observability"), so a month holds four reports plus the month-over-month
-# comparison, and nothing reads a spend row older than that. Raising it is a
-# storage decision, not a correctness one.
+# 7 days: the serving-share metric is reported weekly (README
+# "Observability"), so one window holds exactly one report, and nothing reads
+# a spend row older than that. Raising it is a storage decision, not a
+# correctness one.
 #
 # Row cost is BOUNDED, which is what makes a time-based window safe to reason
 # about. The bounds, so the next person can redo the arithmetic for their own
@@ -156,13 +201,10 @@ llm_router_disable_error_logs: false
 #     request. Tracebacks are NOT suppressed by default; the opt-out is an
 #     environment variable, not a setting here.
 #   - The table carries four indexes, so add roughly half again on top.
-# Multiply by the arrival rate and by 30 days. Raising the window multiplies
-# that total linearly and nothing else. At this fabric's current arrival rate
-# and refusal share that lands the full 30-day window in the low hundreds of
-# megabytes, worst case under half a gigabyte — a rounding error against the
-# volume, but confirm the free space before raising the window, because the
-# volume is shared and this role cannot see it.
-llm_router_spend_logs_retention_period: 30d
+# Multiply by the arrival rate and by the window. Confirm the free space
+# before raising the window, because the volume is shared and this role
+# cannot see it.
+llm_router_spend_logs_retention_period: 7d
 # Cleanup cadence. LiteLLM defaults this to 1d when absent; it is declared so
 # the decision is visible in a diff, like store_model_in_db above. The job only
 # schedules at all when the period above is set.
