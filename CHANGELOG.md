@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.54.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.53.0...v0.54.0) (2026-09-23)
+
+
+### Features
+
+* **llm_router:** add a local-only review-local role that never falls back ([#889](https://github.com/dryvist/ansible-proxmox-ai/issues/889)) ([bdabad2](https://github.com/dryvist/ansible-proxmox-ai/commit/bdabad26c0c9272cb5d6f72533ff41a273eb08bb))
+* **llm_router:** register a litellm-local virtual key ([#884](https://github.com/dryvist/ansible-proxmox-ai/issues/884)) ([ce62edf](https://github.com/dryvist/ansible-proxmox-ai/commit/ce62edf127ad7a011164da3bee91225198d86b9f))
+* **llm_router:** session-id deployment affinity + derived DB pool limit ([#891](https://github.com/dryvist/ansible-proxmox-ai/issues/891)) ([abd3a3d](https://github.com/dryvist/ansible-proxmox-ai/commit/abd3a3dbc2996dd809a0a2c8676598be53b2a193))
+
+
+### Bug Fixes
+
+* **hermes_agent:** fetch the release-tag checkout by explicit refspec ([#885](https://github.com/dryvist/ansible-proxmox-ai/issues/885)) ([30117a8](https://github.com/dryvist/ansible-proxmox-ai/commit/30117a875c69bf66b3544f30f03cba1fc5139c1b))
+* **hermes_agent:** make codex_runner's vars public to the same play ([#890](https://github.com/dryvist/ansible-proxmox-ai/issues/890)) ([66a12dd](https://github.com/dryvist/ansible-proxmox-ai/commit/66a12dd73d9fa550c2bd5d902f00e554a54c406b))
+* **isolation:** convert unreachable to a rescuable failure in isolated plays ([#883](https://github.com/dryvist/ansible-proxmox-ai/issues/883)) ([fe2d67a](https://github.com/dryvist/ansible-proxmox-ai/commit/fe2d67ad251c3e473c332748129b6461b9932b91))
+* **isolation:** gather facts inside the block, not before it ([#881](https://github.com/dryvist/ansible-proxmox-ai/issues/881)) ([2a0d496](https://github.com/dryvist/ansible-proxmox-ai/commit/2a0d496a8d2ec3e6af2fd0ab88a1c8de0f052abe))
+* **llm_router,hindsight_docker:** scope hindsight to the free / free-zdrless model groups ([#879](https://github.com/dryvist/ansible-proxmox-ai/issues/879)) ([1809399](https://github.com/dryvist/ansible-proxmox-ai/commit/1809399e775ff0f8913e6ed1b1bd7daa6812e3d8))
+* **llm_router:** bridge hermes_agent_profiles onto llm-router hosts ([#882](https://github.com/dryvist/ansible-proxmox-ai/issues/882)) ([143d8dd](https://github.com/dryvist/ansible-proxmox-ai/commit/143d8dd82ef87e76ac91cb3a118930b049755e5e))
+* **llm_router:** keep hindsight virtual key at no model access ([de441f5](https://github.com/dryvist/ansible-proxmox-ai/commit/de441f57a033e6e4f1ca19ce282356f155727b9f))
+* **llm_router:** keep hindsight virtual key at no model access ([57d36a7](https://github.com/dryvist/ansible-proxmox-ai/commit/57d36a7d4eeb94c92c9bf28a0d51a911ae59868c))
+* **llm_router:** match litellm's syslog lines by $programname, not $!_SYSTEMD_UNIT ([#878](https://github.com/dryvist/ansible-proxmox-ai/issues/878)) ([676db09](https://github.com/dryvist/ansible-proxmox-ai/commit/676db09aafad0a9de1b7ae399179d1135869e841))
+* **llm_router:** scope every full and Hermes-profile key to reach hermes-default ([#888](https://github.com/dryvist/ansible-proxmox-ai/issues/888)) ([e024fe5](https://github.com/dryvist/ansible-proxmox-ai/commit/e024fe5ac873ce83984d95e9bc4ec806312530c8))
+* **llm_router:** shorten spend-log retention from 30d to 7d ([#880](https://github.com/dryvist/ansible-proxmox-ai/issues/880)) ([7e7be61](https://github.com/dryvist/ansible-proxmox-ai/commit/7e7be619e41a79a92c8d8bf43ba547daad5957f9))
+* **llm_router:** stop the rotation re-read from clobbering existing keys ([#886](https://github.com/dryvist/ansible-proxmox-ai/issues/886)) ([2420607](https://github.com/dryvist/ansible-proxmox-ai/commit/24206079e123afdec2bf4077ab3da4327b464f90))
+
 ## [0.53.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.52.1...v0.53.0) (2026-09-21)
 
 
