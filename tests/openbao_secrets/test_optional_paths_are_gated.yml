@@ -120,6 +120,45 @@
         _compose: "{{ lookup('file', _gateway_role_dir ~ '/templates/docker-compose.yml.j2') }}"
         _config: "{{ lookup('file', _gateway_role_dir ~ '/templates/config.yaml.j2') }}"
 
+    # ai/mcp/vikunja is NOT optional (always populated by ansible-proxmox-apps'
+    # vikunja role on every converge — see the local-llm domain comment), so it
+    # is deliberately absent from _gated_optional_paths above. What broke it
+    # instead: the domain path itself was missing (this fact never carried any
+    # Vikunja field) stacked with agentgateway_docker reading the wrong field
+    # name (VIKUNJA_MCP_TOKEN, never published, instead of the vikunja role's
+    # actual VIKUNJA_MCP_TOKEN_RO). Both are pinned here so either regressing
+    # independently fails this test.
+    # Declared as a bare string in 10-domains.yml (same shape as its
+    # ai/mcp/splunk and ai/mcp/zammad neighbors), not a mapping — a plain
+    # membership check is the right assertion for this entry's own shape.
+    - name: Assert ai/mcp/vikunja is a declared local-llm domain path
+      ansible.builtin.assert:
+        quiet: true
+        that: "'ai/mcp/vikunja' in _local_llm_paths"
+        fail_msg: >-
+          ai/mcp/vikunja is missing from the local-llm domain — the
+          bao_local_llm_secrets fact never carries VIKUNJA_MCP_TOKEN_RO
+          regardless of what agentgateway_docker reads it as.
+      vars:
+        _local_llm_paths: >-
+          {{ (openbao_secrets_domains | selectattr('name', 'equalto', 'local-llm') | first).paths }}
+
+    - name: Assert the Vikunja read token resolves the RO field, not the bare name
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - agentgateway_docker_vikunja_read_token == 'ro-token-under-test'
+        fail_msg: >-
+          agentgateway_docker_vikunja_read_token resolved
+          "{{ agentgateway_docker_vikunja_read_token }}" — the vikunja role
+          publishes VIKUNJA_MCP_TOKEN_RO (never the bare VIKUNJA_MCP_TOKEN),
+          so a field-name regression here silently leaves the sidecar and the
+          /vikunja route permanently inert even with a live secret.
+      vars:
+        bao_local_llm_secrets:
+          VIKUNJA_MCP_TOKEN_RO: ro-token-under-test
+          VIKUNJA_MCP_TOKEN: wrong-field-under-test
+
 # The virtual-key gate, asserted on the RENDER of 56-virtual-keys.yml rather
 # than on a restatement of it, in both directions. A second play so the router
 # defaults (which outrank play vars once include_vars binds them) cannot leak
