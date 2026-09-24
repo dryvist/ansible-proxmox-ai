@@ -1,0 +1,68 @@
+---
+# Split out of verify.yml to stay under the repo's per-file token budget (the
+# timeout-wrap comment/logic below pushed verify.yml over 4000 tokens) — same
+# reason playbooks/site.yml splits out playbooks/telemetry.yml. Included from
+# within verify.yml's block, so its shared rescue still covers a failure here.
+
+- name: Gate — Browser Use Chromium CDP service is active
+  ansible.builtin.systemd:
+    name: hermes-browser-use-chromium
+  register: hermes_agent_browser_use_chromium_state
+  until: hermes_agent_browser_use_chromium_state.status.ActiveState | default('') == 'active'
+  retries: 5
+  delay: 2
+
+# Unbounded before this: a hung CDP session or a slow page load had nothing
+# to stop it, and Semaphore's own job cap then killed the WHOLE converge
+# instead of just this one gate, with the rescue's "task output above" left
+# pointing at nothing. `timeout` is the same coreutils idiom already used
+# for the profile cron tick (hermes_agent_profile_cron_tick_timeout) — its
+# own var here since this bounds an unrelated probe, not that tick.
+- name: Gate — Browser Use reads Cribl global-secrets documentation
+  ansible.builtin.shell: |
+    set -o pipefail
+    timeout {{ hermes_agent_verify_browser_use_timeout }} \
+      {{ hermes_agent_install_dir }}/venv/bin/browser-use <<'PY'
+    new_tab("https://docs.cribl.io/stream/global-secrets-add-use/")
+    wait_for_load()
+    text = js("document.body.innerText")
+    assert "Global secrets" in text
+    assert "<secretFolderId>/<globalSecretId>" in text
+    for line in text.splitlines():
+        if "Global secrets" in line or "<secretFolderId>/<globalSecretId>" in line:
+            print(line.strip())
+    PY
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      if [ "$rc" -eq 124 ]; then
+        echo "browser-use did not finish within" \
+          "{{ hermes_agent_verify_browser_use_timeout }} (gate timeout) --" \
+          "inspect hermes-browser-use-chromium and" \
+          "{{ hermes_agent_browser_use_cdp_url }}" >&2
+      fi
+      exit "$rc"
+    fi
+  args:
+    executable: /bin/bash
+  environment:
+    HOME: "{{ hermes_agent_home }}"
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+    BROWSER_USE_HOME: "{{ hermes_agent_browser_use_home }}"
+    BH_HOME: "{{ hermes_agent_browser_use_home }}"
+    BH_CHROME_PATH: "{{ hermes_agent_chromium_executable }}"
+    BU_CDP_URL: "{{ hermes_agent_browser_use_cdp_url }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_browser_use_cribl_probe
+  changed_when: false
+
+- name: Gate — Browser Use returned the expected Cribl reference syntax
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - "'Global secrets' in hermes_agent_browser_use_cribl_probe.stdout"
+      - "'<secretFolderId>/<globalSecretId>' in hermes_agent_browser_use_cribl_probe.stdout"
+    fail_msg: >-
+      Browser Use could not retrieve the public Cribl global-secrets guide
+      through the local CDP browser. Inspect hermes-browser-use-chromium,
+      {{ hermes_agent_browser_use_cdp_url }}, and the CLI output above.
