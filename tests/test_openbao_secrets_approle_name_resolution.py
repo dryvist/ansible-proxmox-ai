@@ -27,8 +27,8 @@ TASKS = (
 
 DERIVE_PREFIXES = "Resolve role_id/secret_id from env for {{ openbao_domain.name }}"
 RESOLVE_VALUES = (
-    "Resolve role_id/secret_id values, new name first then legacy for "
-    "{{ openbao_domain.name }}"
+    "Resolve role_id/secret_id values, new name, then legacy, then the "
+    "operator pair for {{ openbao_domain.name }}"
 )
 
 
@@ -49,10 +49,15 @@ class ApproleNameResolution(unittest.TestCase):
         cls.derive = cls.tasks[DERIVE_PREFIXES]["ansible.builtin.set_fact"]
         cls.resolve = cls.tasks[RESOLVE_VALUES]["ansible.builtin.set_fact"]
 
-    def _resolve(self, domain_name, env):
+    def _resolve(self, domain_name, env, operator_domains=()):
         """env: mapping of env-var name -> value, standing in for the real
         process environment. Ansible's `lookup('env', X)` on an unset var
-        returns '' , never Undefined -- mirror that exactly."""
+        returns '' , never Undefined -- mirror that exactly.
+
+        operator_domains: stands in for openbao_secrets_operator_domains
+        (defaults/main/10-domains.yml) -- empty unless a test is exercising
+        the operator-pair fallback, so every pre-existing test keeps its
+        original meaning regardless of that list's real contents."""
         jinja_env = Environment()
         jinja_env.globals["lookup"] = (
             lambda kind, name: env.get(name, "") if kind == "env" else ""
@@ -61,7 +66,10 @@ class ApproleNameResolution(unittest.TestCase):
         jinja_env.filters["regex_replace"] = (
             lambda value, pattern, repl: re.sub(pattern, repl, str(value))
         )
-        variables: dict[str, Any] = {"openbao_domain": {"name": domain_name}}
+        variables: dict[str, Any] = {
+            "openbao_domain": {"name": domain_name},
+            "openbao_secrets_operator_domains": list(operator_domains),
+        }
 
         # Every value below is already a full `{{ ... }}`-wrapped string in
         # the source YAML (this role's set_fact convention) -- rendering it
@@ -131,6 +139,44 @@ class ApproleNameResolution(unittest.TestCase):
             "ai-public", {"OPENBAO_APPROLE_AI_PUBLIC_ROLE_ID": "ai-public-role"}
         )
         self.assertEqual(role_id, "ai-public-role")
+
+    def test_operator_pair_resolves_for_a_listed_domain_with_neither_pair_set(self):
+        role_id, secret_id = self._resolve(
+            "apps",
+            {
+                "OPERATOR_VAULT_ROLE_ID": "operator-role",
+                "OPERATOR_VAULT_SECRET_ID": "operator-secret",
+            },
+            operator_domains=("apps",),
+        )
+        self.assertEqual((role_id, secret_id), ("operator-role", "operator-secret"))
+
+    def test_the_domain_pair_wins_over_the_operator_pair(self):
+        role_id, secret_id = self._resolve(
+            "apps",
+            {
+                "OPENBAO_APPROLE_APPS_ROLE_ID": "new-role",
+                "OPENBAO_APPROLE_APPS_SECRET_ID": "new-secret",
+                "OPERATOR_VAULT_ROLE_ID": "operator-role",
+                "OPERATOR_VAULT_SECRET_ID": "operator-secret",
+            },
+            operator_domains=("apps",),
+        )
+        self.assertEqual((role_id, secret_id), ("new-role", "new-secret"))
+
+    def test_the_operator_pair_never_leaks_to_an_unlisted_domain(self):
+        # The operator identity's policies cover only the domains named in
+        # openbao_secrets_operator_domains -- an unlisted domain must not
+        # pick up its credentials just because they happen to be set.
+        role_id, secret_id = self._resolve(
+            "apps",
+            {
+                "OPERATOR_VAULT_ROLE_ID": "operator-role",
+                "OPERATOR_VAULT_SECRET_ID": "operator-secret",
+            },
+            operator_domains=(),
+        )
+        self.assertEqual((role_id, secret_id), ("", ""))
 
 
 if __name__ == "__main__":
