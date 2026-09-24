@@ -1,0 +1,56 @@
+---
+# Logs in to the Dify console, re-asserting the admin password natively when
+# the account exists but no longer matches dify_docker_admin_password (setup
+# runs once, so a stack recreated against an already-provisioned database can
+# carry a password from whenever it was first created).
+- name: Log in to Dify console for model-provider provisioning
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ dify_docker_web_port }}/console/api/login"
+    method: POST
+    body_format: json
+    body:
+      email: "{{ dify_docker_admin_email }}"
+      password: "{{ dify_docker_admin_password }}"
+    status_code: [200, 401]
+  register: dify_docker_console_login
+  changed_when: false
+  no_log: true
+
+# Re-assert the account the same way #914 re-asserts the database role
+# password: with Dify's own command, over the container's local socket, the
+# new value fed on stdin so it never appears in argv or process listings.
+- name: Re-assert the Dify admin password natively when the login was refused
+  ansible.builtin.command:
+    cmd: docker compose exec -T api flask reset-password
+    chdir: "{{ dify_docker_data_dir }}"
+    stdin: |
+      {{ dify_docker_admin_email }}
+      {{ dify_docker_admin_password }}
+      {{ dify_docker_admin_password }}
+  when: dify_docker_console_login.status | default(200) == 401
+  changed_when: true
+  no_log: true
+
+- name: Retry the console login after the password reset
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ dify_docker_web_port }}/console/api/login"
+    method: POST
+    body_format: json
+    body:
+      email: "{{ dify_docker_admin_email }}"
+      password: "{{ dify_docker_admin_password }}"
+    status_code: 200
+  register: dify_docker_console_login_retry
+  when: dify_docker_console_login.status | default(200) == 401
+  changed_when: false
+  no_log: true
+
+# ansible.builtin.uri registers a {skipped: true} placeholder for a task
+# whose `when` is false, overwriting the earlier result — so the retry keeps
+# its own variable and this only replaces dify_docker_console_login when a
+# retry actually ran.
+- name: Use the retried login result when a reset happened
+  ansible.builtin.set_fact:
+    dify_docker_console_login: "{{ dify_docker_console_login_retry }}"
+  when: dify_docker_console_login.status | default(200) == 401
+  no_log: true
