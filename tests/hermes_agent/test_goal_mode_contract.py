@@ -53,12 +53,6 @@ def test_reviewer_prompt_carries_no_leftover_self_perpetuation() -> None:
 def test_hermes_inference_paths_use_the_declared_alias() -> None:
     defaults = role_defaults(ROLE_ROOT)
     group_vars = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all.yml").read_text())
-    hindsight_group_vars = yaml.safe_load(
-        (REPO_ROOT / "inventory/group_vars/hindsight_group.yml").read_text()
-    )
-    hindsight_compose = (
-        REPO_ROOT / "roles/hindsight_docker/templates/docker-compose.yml.j2"
-    ).read_text()
     registry = load_registry()
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
     environment = template_text(ROLE_ROOT, "hermes-env.j2")
@@ -84,8 +78,11 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert defaults["hermes_agent_model"] == "{{ hermes_brain_model }}"
     assert defaults["hermes_agent_compression_model"] == "{{ hermes_brain_model }}"
     assert defaults["hermes_agent_memory_llm_model"] == "{{ hermes_brain_model }}"
-    assert hindsight_group_vars["hindsight_docker_llm_model"] == "{{ hermes_brain_model }}"
-    assert 'HINDSIGHT_API_LLM_MODEL: "{{ hindsight_docker_llm_model }}"' in hindsight_compose
+    # Hindsight is NOT one of Hermes's own inference paths: it authenticates
+    # with its own narrowly-scoped router key (models: [free, free-zdrless]),
+    # which cannot call hermes_brain_model at all — see
+    # tests/hindsight_docker/test_model_var_confined_to_key_scope.yml for its
+    # actual contract.
     assert defaults["hermes_agent_model_max_tokens"] == 8192
     assert defaults["hermes_agent_context_compression_threshold"] == 0.75
     assert defaults["hermes_agent_stream_stale_timeout"] == 900
