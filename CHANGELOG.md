@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.56.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.55.0...v0.56.0) (2026-09-24)
+
+
+### Features
+
+* **dify:** re-assert the database role password on converge ([#914](https://github.com/dryvist/ansible-proxmox-ai/issues/914)) ([7649fe4](https://github.com/dryvist/ansible-proxmox-ai/commit/7649fe484556e7df49afaebb5bdaa065d656295b))
+* enable community.general.opentelemetry callback for converge tracing ([#929](https://github.com/dryvist/ansible-proxmox-ai/issues/929)) ([2494e54](https://github.com/dryvist/ansible-proxmox-ai/commit/2494e547093b46ce29a0751e8ff45071d31cf973))
+* **llm_router:** scoped router keys for agentgateway, dify, llamaindex ([#911](https://github.com/dryvist/ansible-proxmox-ai/issues/911)) ([ee8683d](https://github.com/dryvist/ansible-proxmox-ai/commit/ee8683d7b592358c6f42a8c6ada09df247ad8b52))
+* **openbao_secrets:** accept an operator AppRole pair as the last fallback ([#910](https://github.com/dryvist/ansible-proxmox-ai/issues/910)) ([6eef10e](https://github.com/dryvist/ansible-proxmox-ai/commit/6eef10ee5661724d39feb395666444e74802a67c))
+
+
+### Bug Fixes
+
+* **agentgateway_docker,llamaindex:** no_log on secret-rendering templates ([#920](https://github.com/dryvist/ansible-proxmox-ai/issues/920)) ([5d5fa9c](https://github.com/dryvist/ansible-proxmox-ai/commit/5d5fa9c4460dcf9bab8efed0a9a07e54d5081d83))
+* **dify_docker:** re-assert the admin password on a refused console login ([#918](https://github.com/dryvist/ansible-proxmox-ai/issues/918)) ([f925344](https://github.com/dryvist/ansible-proxmox-ai/commit/f9253449666c7590c806f5ad9be7bf48020382a1))
+* **hermes_agent:** bound the Browser Use verification gate with a timeout ([#919](https://github.com/dryvist/ansible-proxmox-ai/issues/919)) ([10c8c34](https://github.com/dryvist/ansible-proxmox-ai/commit/10c8c341a616ae225405c104952700916be92771))
+* **hermes_agent:** normalize a stale single-branch tag fetch refspec ([#912](https://github.com/dryvist/ansible-proxmox-ai/issues/912)) ([abec5e3](https://github.com/dryvist/ansible-proxmox-ai/commit/abec5e3b22dbf259f7024ec98b14991ab1226ddf))
+* **hermes_agent:** scope model-routing-review to the donna identity ([#915](https://github.com/dryvist/ansible-proxmox-ai/issues/915)) ([88a9d17](https://github.com/dryvist/ansible-proxmox-ai/commit/88a9d17004b3cc114a304c031efe21fa70f7f865))
+* **hindsight_docker:** stop pointing the base model var at hermes-default ([4402a0f](https://github.com/dryvist/ansible-proxmox-ai/commit/4402a0fbfde518ce83c9140356627c6b2bb25d6b))
+* **hindsight_docker:** stop pointing the base model var at hermes-default ([1a2ecb5](https://github.com/dryvist/ansible-proxmox-ai/commit/1a2ecb5a397af48d93d4e322e79424336a9a7585))
+* **langfuse_docker:** disable OIDC login instead of failing when the client secret is unset ([#921](https://github.com/dryvist/ansible-proxmox-ai/issues/921)) ([fa9525e](https://github.com/dryvist/ansible-proxmox-ai/commit/fa9525eefcc20fb61dc0fefa2812968dab2d4f32))
+* **llm_router:** disable the withdrawn hermes-cloud-free rung ([#908](https://github.com/dryvist/ansible-proxmox-ai/issues/908)) ([759bcac](https://github.com/dryvist/ansible-proxmox-ai/commit/759bcacc350f0fac64501873322b8be00c3422ee))
+* **openbao_secrets:** resolve OPENBAO_APPROLE_&lt;domain&gt; names first ([#909](https://github.com/dryvist/ansible-proxmox-ai/issues/909)) ([bee983f](https://github.com/dryvist/ansible-proxmox-ai/commit/bee983febac6d7e0c8df85acd6ba66015d856e18))
+* **openbao_secrets:** update approle test to the current task name and cover the operator-pair tier ([#917](https://github.com/dryvist/ansible-proxmox-ai/issues/917)) ([0906941](https://github.com/dryvist/ansible-proxmox-ai/commit/09069412a412da58672d35cc68db5d8e75b858bf))
+* **redis:** no_log on the config-render task ([#923](https://github.com/dryvist/ansible-proxmox-ai/issues/923)) ([68bdf73](https://github.com/dryvist/ansible-proxmox-ai/commit/68bdf7326ea9c0a39082dbcebdf9363f9b6a6764))
+
 ## [0.55.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.54.0...v0.55.0) (2026-09-23)
 
 
