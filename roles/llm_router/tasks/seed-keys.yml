@@ -49,15 +49,68 @@
     timeout: "{{ llm_router_seed_request_timeout }}"
   register: llm_router_existing_keys
 
+# AUTO-DETECT a stale value, before the operator-driven rotate list below is
+# consumed. llm_router_rotate_key_aliases (below) exists for the case an
+# operator KNOWS a value changed; this covers the case nobody remembered to
+# list it there. A live alias whose CURRENT OpenBao value 404s against
+# /key/info means the stored value no longer matches whatever the proxy
+# actually minted — the generate step never touches an existing alias and
+# the reconcile steps look the key up BY VALUE, so a drifted value would
+# otherwise orphan the key forever with no error anywhere. Read-only (GET),
+# so this costs nothing on every ordinary converge where nothing drifted.
+- name: Probe each live alias's current OpenBao value against the proxy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/info?key={{ item.value }}"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: [200, 404]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: >-
+    {{ llm_router_virtual_keys
+       | rejectattr('value', 'equalto', '')
+       | selectattr('alias', 'in', _llm_router_live_key_aliases) | list }}
+  loop_control:
+    label: "{{ item.alias }}"
+  vars:
+    _llm_router_live_key_aliases: >-
+      {{ llm_router_existing_keys.json['keys'] | default([])
+         | selectattr('key_alias', 'defined')
+         | map(attribute='key_alias') | select('string') | list }}
+  register: _llm_router_key_info_probe
+  no_log: true
+
+- name: Compute which live aliases hold a stale OpenBao value
+  ansible.builtin.set_fact:
+    _llm_router_stale_key_aliases: >-
+      {{ _llm_router_key_info_probe.results | default([])
+         | selectattr('status', 'equalto', 404)
+         | map(attribute='item.alias') | list }}
+
+- name: Report auto-detected stale key aliases (names only, never the value)
+  ansible.builtin.debug:
+    msg: >-
+      Auto-detected stale virtual key(s) — the OpenBao value no longer
+      matches what the proxy minted, deleting and re-minting:
+      {{ _llm_router_stale_key_aliases | join(', ') }}
+  when: _llm_router_stale_key_aliases | length > 0
+
+- name: Fold auto-detected stale aliases into the rotation list
+  ansible.builtin.set_fact:
+    llm_router_rotate_key_aliases: >-
+      {{ (llm_router_rotate_key_aliases | default([]) + _llm_router_stale_key_aliases)
+         | unique | list }}
+
 # ROTATION. Once minted, a key's `key` value is a LiteLLM primary identifier —
 # there is no "update the value" endpoint — so rotation is delete-then-mint,
-# never an in-place PATCH. Off by default (empty list, no-op on every ordinary
-# converge): an operator names the aliases to rotate in
+# never an in-place PATCH. This list is now fed two ways: the auto-detected
+# stale aliases folded in above, and an operator naming an alias by hand in
 # llm_router_rotate_key_aliases right after the OpenBao value has actually
 # changed (each key family's own generate play, e.g.
 # ansible-proxmox-apps roles/openbao seed_generated_app_secret.yml with
 # openbao_seed_rotate_fields set — see that file's header for the matching
-# apps-side switch). Deleting here, before "unseeded keys" is computed below,
+# apps-side switch) for the case a probe above can't reach (the proxy down,
+# a network partition). Empty on every ordinary converge where nothing
+# drifted. Deleting here, before "unseeded keys" is computed below,
 # is what makes the very next task on this same run re-mint the same alias
 # with the value bao_apps_secrets now holds — one converge, no manual step
 # in between. `key_aliases` (not `keys`/token) so this never needs the old
