@@ -98,6 +98,33 @@
              | selectattr('endpoint', 'equalto', llm_router_probe_model_list_urls.openrouter)
              | list }}
 
+    - name: A credential on a non-first row of a mixed-credential group still marks it probeable
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # The openrouter endpoint's rows are NOT all the same credential:
+          # the hermes-cloud tier's two openrouter rows (OPENROUTER_HERMES_KEY)
+          # sort before the general free-route rows (OPENROUTER_API_KEY) in
+          # registry order, and only OPENROUTER_API_KEY is seeded above (see
+          # the play's bao_local_llm_secrets). 52-probe.yml used to take only
+          # the group's FIRST row (an OPENROUTER_HERMES_KEY one here) as the
+          # credential representative for the whole group, so this exact
+          # shape read as uncredentialed despite a real key being seeded for
+          # a later row -- pin the fix: has_credential is true if ANY row
+          # resolves, and the reported credential_env is the one that does.
+          - _openrouter[0].has_credential
+          - _openrouter[0].credential_env == 'OPENROUTER_API_KEY'
+        fail_msg: >-
+          A mixed-credential group must be probeable off any resolving row,
+          not only its first; got {{ _openrouter }}.
+        success_msg: >-
+          The seeded credential on a later row still marks the group probeable.
+      vars:
+        _openrouter: >-
+          {{ llm_router_remote_probes
+             | selectattr('endpoint', 'equalto', llm_router_probe_model_list_urls.openrouter)
+             | list }}
+
     - name: Ids no catalog listing can return are excluded from the plan
       ansible.builtin.assert:
         quiet: true

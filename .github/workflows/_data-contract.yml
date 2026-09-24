@@ -145,19 +145,43 @@ jobs:
           ansible-playbook tests/phoenix_docker/test_compose_render.yml
           -i localhost, -c local
 
+      - name: Verify Hindsight model vars are single-sourced and key-scoped
+        run: >-
+          ansible-playbook tests/hindsight_docker/test_model_var_confined_to_key_scope.yml
+          -i localhost, -c local
+
+      - name: Verify dify_docker database password re-assert
+        run: >-
+          ansible-playbook tests/dify_docker/test_db_password.yml
+          -i localhost, -c local
+
+      # A login refused with 401 means the account's stored password drifted
+      # from dify_docker_admin_password (setup only runs once, so a stack
+      # recreated against an already-provisioned database can carry a
+      # password from whenever it was first created). Stubs the console login
+      # and the docker CLI — standing up real Dify isn't practical in CI —
+      # and proves the real task file: a successful login never touches the
+      # account, a 401 gets one native reset then one retry.
+      - name: Verify dify_docker login/password-reset contract
+        run: >-
+          ansible-playbook tests/dify_docker/test_admin_password_reset.yml
+          -i localhost, -c local
+
       - name: Verify agent_guest residual deny contract
         run: >-
           ansible-playbook tests/agent_guest/test_residual_deny_contract.yml
           -i localhost, -c local
 
-      # The hermes_agent self-checks render the role's Jinja templates and assert
-      # the emitted contract. They were runnable-but-unrun until now, which made
-      # them decorative; running them here is what stops them rotting. It must be
-      # pytest and not a `python3 <file>` loop: two of these files have no
-      # __main__ block, so running them as scripts collects nothing and exits 0 —
-      # a green light for tests that never ran.
+      # assert_hardening.yml pass and fail paths; no packages or live router.
+      - name: Verify llamaindex hardening checks fail closed
+        run: >-
+          ansible-playbook tests/llamaindex/test_hardening.yml
+          -i localhost, -c local
+
+      # Every test under tests/; llm_router/ runs in _llm-router-contract.yml;
+      # qdrant_llamaindex/ needs live Qdrant + Ollama.
       - name: Run role self-checks
-        run: python -m pytest tests/hermes_agent/ tests/llama_cpp/ -q
+        run: python -m pytest tests/ -q --ignore=tests/llm_router --ignore=tests/qdrant_llamaindex
 
   # The llm_router role's contract checks, in their own file: that list only
   # grows and outgrew this file's token budget. Its result reaches the Merge

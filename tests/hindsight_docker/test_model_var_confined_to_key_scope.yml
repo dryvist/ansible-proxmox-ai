@@ -1,0 +1,73 @@
+---
+# Pins the hindsight virtual key's model scope: the router key hindsight
+# authenticates with is scoped to exactly ["free", "free-zdrless"] (confirmed
+# live via /key/list), never a fabric-wide alias like hermes-default. Every
+# Hindsight LLM model env var must render from the one retain-route source,
+# not a second literal or ai_default_model (the general fabric brain, which
+# this key cannot call) — that split is what silently sent reflect and
+# consolidation calls to a model the key was refused for.
+#
+# Run (from the REPO ROOT — roles_path is cwd-relative in ansible.cfg):
+#   ansible-playbook tests/hindsight_docker/test_model_var_confined_to_key_scope.yml -i localhost, -c local
+- name: Verify every Hindsight model env var is single-sourced and key-scoped
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_become: false
+    _template: "{{ playbook_dir }}/../../roles/hindsight_docker/templates/docker-compose.yml.j2"
+    # The hindsight virtual key's actual models list (llm_router's
+    # 56-virtual-keys.yml `hindsight` entry) — a change here must be a
+    # deliberate edit to both places, never a silent drift.
+    _key_scoped_models:
+      - free
+      - free-zdrless
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../roles/hindsight_docker/defaults/main.yml"
+
+    # Fixture values for everything the template needs besides the model
+    # vars under test — never real credentials or infrastructure.
+    - name: Override the tofu/secret-derived values with fixtures
+      ansible.builtin.set_fact:
+        hindsight_docker_db_password: fixture-db-password
+        hindsight_docker_llm_api_key: fixture-llm-api-key
+        hindsight_docker_cp_access_key: fixture-cp-access-key
+        tofu_data:
+          domain: example.invalid
+          constants:
+            memory_ports:
+              hindsight_api: 38888
+              hindsight_cp: 39999
+            service_ports:
+              postgres_default: 35432
+
+    - name: Render the compose template with the role defaults as shipped
+      ansible.builtin.set_fact:
+        _rendered: "{{ lookup('template', _template) | from_yaml }}"
+
+    - name: The base and retain model env vars are the SAME single source
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - hindsight_docker_llm_model == hindsight_docker_retain_llm_model
+          - _rendered.services.hindsight.environment.HINDSIGHT_API_LLM_MODEL
+            == _rendered.services.hindsight.environment.HINDSIGHT_API_RETAIN_LLM_MODEL
+        fail_msg: >-
+          HINDSIGHT_API_LLM_MODEL ({{ _rendered.services.hindsight.environment.HINDSIGHT_API_LLM_MODEL }})
+          and HINDSIGHT_API_RETAIN_LLM_MODEL
+          ({{ _rendered.services.hindsight.environment.HINDSIGHT_API_RETAIN_LLM_MODEL }})
+          diverged — reflect/consolidation (which fall back to the base var)
+          would call a different model than retain does.
+
+    - name: Neither rendered model env var escapes the hindsight key's scope
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _rendered.services.hindsight.environment.HINDSIGHT_API_LLM_MODEL in _key_scoped_models
+          - _rendered.services.hindsight.environment.HINDSIGHT_API_RETAIN_LLM_MODEL in _key_scoped_models
+        fail_msg: >-
+          A Hindsight model env var resolved to a name outside
+          {{ _key_scoped_models }} — the hindsight router key cannot call it
+          and every such request is refused (this is the hermes-default
+          regression this test exists to catch).

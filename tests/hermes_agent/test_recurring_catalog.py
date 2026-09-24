@@ -68,6 +68,18 @@ def test_router_capacity_digest_reads_the_log_platform_not_the_host():
     assert "read it from the log platform (never the host)" in prompt.lower()
 
 
+def test_model_routing_review_is_in_the_reassembled_catalog_with_a_five_field_schedule():
+    _job("hermes_agent_model_routing_review_cron_name")  # raises if missing
+    schedule = DEFAULTS["hermes_agent_model_routing_review_cron_schedule"]
+    assert len(schedule.split()) == 5, schedule
+
+
+def test_model_routing_review_stays_observe_only():
+    prompt = DEFAULTS["hermes_agent_model_routing_review_cron_prompt"]
+    assert "ABSOLUTE SCOPE LIMIT" in prompt
+    assert "Do not attempt to deploy, configure, or modify any of these tools" in prompt
+
+
 def test_daily_status_prompt_appends_the_kanban_summary():
     assert "hermes_agent_daily_status_kanban_summary" in PROMPT_CATALOG_TASKS
     summary = DEFAULTS["hermes_agent_daily_status_kanban_summary"]
