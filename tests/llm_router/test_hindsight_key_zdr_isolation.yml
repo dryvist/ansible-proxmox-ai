@@ -1,0 +1,135 @@
+---
+# Hindsight's memory content must never reach a model that retains prompts
+# (zero_data_retention: false). The hindsight key is scoped to `free` only
+# (56-virtual-keys.yml) and `free`'s own fallback + context_window_fallbacks
+# entries are both empty (config.yaml.j2), so this walks the RENDERED
+# fallback graph outward from the key's own declared scope and proves no
+# reachable model_group is backed by a zero_data_retention: false registry
+# entry. Generic over future edits: it does not hand-assume `free-zdrless`
+# is the only such name, it derives every ZDR-false group from the registry
+# the same way model-list-free.yaml.j2 names the standalone group.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_hindsight_key_zdr_isolation.yml -i localhost, -c local
+- name: Verify the hindsight key can never reach a zero_data_retention:false deployment
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      hindsight_llm_router_key: sk-fixture-hindsight
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: test-openrouter-provider-key
+      OPENCODE_API_KEY: test-opencode-provider-key
+      OPENAI_API_KEY: test-openai-provider-key
+      ZAI_API_KEY: test-zai-provider-key
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Render the fully credentialed config
+      ansible.builtin.set_fact:
+        _config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+
+    - name: The hindsight key is scoped to exactly `free`
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _hindsight_key.models == ['free']
+        fail_msg: >-
+          Expected the hindsight key scoped to exactly ['free'], got
+          {{ _hindsight_key.models }} — any wider scope risks reaching a
+          zero_data_retention: false deployment.
+        success_msg: "hindsight key models: {{ _hindsight_key.models }}"
+      vars:
+        _hindsight_key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'hindsight') | first }}"
+
+    - name: No group reachable from the hindsight key's own scope is a ZDR-false deployment
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _zdr_false_group_names | length > 0
+          - _reachable_zdr_false | length == 0
+        fail_msg: >-
+          The hindsight key can reach {{ _reachable_zdr_false }} —
+          zero_data_retention: false group(s) — via the rendered fallback
+          graph {{ _reachable }}. Fix: config.yaml.j2's fallbacks /
+          context_window_fallbacks entries for {{ _hindsight_key.models }}
+          must not target a ZDR-false group, directly or transitively.
+        success_msg: >-
+          The hindsight key's scope ({{ _hindsight_key.models }}) reaches
+          only {{ _reachable }}, none of it zero_data_retention: false
+          ({{ _zdr_false_group_names }}).
+      vars:
+        _hindsight_key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'hindsight') | first }}"
+        # Every group name backed EXCLUSIVELY by zero_data_retention: false
+        # registry entries — derived the same way model-list-free.yaml.j2
+        # names the standalone free-zdrless group, generalized so a future
+        # ZDR-false rung elsewhere in the fabric is caught the same way.
+        _zdr_false_group_names: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for m in llm_router_registry_enabled -%}
+          {%- if (m.zero_data_retention is defined) and not m.zero_data_retention -%}
+          {%- set g = 'free-zdrless' if (m.in_free_route | default(false))
+                else (m.fallback_group | default(m.route_group, true) | default(m.client_model_id, true)) -%}
+          {%- if g not in ns.names -%}
+          {%- set ns.names = ns.names + [g] -%}
+          {%- endif -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.names | unique | list }}
+        _fallbacks_by_key: >-
+          {{ dict(_config.router_settings.fallbacks
+                  | map('dict2items') | flatten | map(attribute='key')
+                  | zip(_config.router_settings.fallbacks
+                        | map('dict2items') | flatten | map(attribute='value'))) }}
+        _cwf_by_key: >-
+          {{ dict((_config.router_settings.context_window_fallbacks | default([]))
+                  | map('dict2items') | flatten | map(attribute='key')
+                  | zip((_config.router_settings.context_window_fallbacks | default([]))
+                        | map('dict2items') | flatten | map(attribute='value'))) }}
+        # BFS over both rendered fallback maps, starting from the key's own
+        # declared models. Bounded to the same 12-hop depth ceiling
+        # assert-fallback-chain.yml already caps the widest chain at.
+        _reachable: >-
+          {%- set ns = namespace(seen=_hindsight_key.models | list, frontier=_hindsight_key.models | list) -%}
+          {%- for _ in range(0, 12) -%}
+          {%- set _next = [] -%}
+          {%- for name in ns.frontier -%}
+          {%- for target in (_fallbacks_by_key[name] | default([])) + (_cwf_by_key[name] | default([])) -%}
+          {%- if target not in ns.seen -%}
+          {%- set ns.seen = ns.seen + [target] -%}
+          {%- set _next = _next + [target] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {%- set ns.frontier = _next -%}
+          {%- endfor -%}
+          {{ ns.seen }}
+        _reachable_zdr_false: "{{ _reachable | intersect(_zdr_false_group_names) }}"
