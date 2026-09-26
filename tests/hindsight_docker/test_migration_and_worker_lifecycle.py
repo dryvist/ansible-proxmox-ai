@@ -107,25 +107,46 @@ def test_decommission_task_extracts_worker_ids_and_diffs_against_inventory() -> 
     assert decommission["loop"] == "{{ hindsight_docker_stale_worker_ids | default([]) }}"
 
 
-def test_site_yml_wires_both_lifecycle_tasks_via_include_role_before_the_isolated_block() -> None:
-    # include_role (not import_tasks) is load-bearing: it is what makes the
-    # role's own defaults/main.yml (image tag, db_url, the backup-confirm
-    # var) resolve before these fire in pre_tasks, ahead of `tasks:` where
-    # the role is otherwise entered.
+def test_site_yml_imports_the_hindsight_play() -> None:
+    # The play itself was split into playbooks/hindsight.yml to keep site.yml
+    # under its token budget (.token-limits.yaml) — same pattern already
+    # used there for agents.yml, llm-serving.yml, and phoenix.yml.
     site = yaml.safe_load(SITE_YML.read_text())
-    hindsight_play = next(p for p in site if p.get("name") == "Configure Hindsight agent-memory service")
+    hindsight_entry = next(p for p in site if p.get("name") == "Configure Hindsight agent-memory service")
+    assert hindsight_entry["import_playbook"] == "hindsight.yml"
+
+
+def test_site_yml_wires_both_lifecycle_tasks_before_the_isolated_block() -> None:
+    hindsight_play = yaml.safe_load((REPO_ROOT / "playbooks/hindsight.yml").read_text())[0]
     assert hindsight_play["max_fail_percentage"] == 0
     pre_task_names = [t["name"] for t in hindsight_play["pre_tasks"]]
-    assert "Run the Hindsight database migration once, before any replica redeploys" in pre_task_names
-    assert "Decommission Hindsight worker ids no longer present in inventory" in pre_task_names
-    migration_pre_task = next(
-        t for t in hindsight_play["pre_tasks"] if t["name"].startswith("Run the Hindsight database migration")
-    )
-    assert migration_pre_task["ansible.builtin.include_role"]["tasks_from"] == "run_db_migration.yml"
-    # Both lifecycle tasks precede the role's normal (rescue-wrapped) entry.
+    gates_task = next(t for t in hindsight_play["pre_tasks"] if t["name"].startswith("Run Hindsight"))
+    assert gates_task["ansible.builtin.import_tasks"] == "tasks/hindsight_lifecycle_gates.yml"
+    # Precedes the role's normal (rescue-wrapped) entry, after the pool gate.
     pool_gate_index = pre_task_names.index("Gate on pool-member reachability")
-    migration_index = pre_task_names.index("Run the Hindsight database migration once, before any replica redeploys")
-    assert pool_gate_index < migration_index
+    gates_index = pre_task_names.index(gates_task["name"])
+    assert pool_gate_index < gates_index
+
+
+def test_lifecycle_gates_file_uses_include_role_so_role_defaults_resolve() -> None:
+    # include_role (not import_tasks on the role's raw task path) is
+    # load-bearing: it is what makes the role's own defaults/main.yml (image
+    # tag, db_url, the backup-confirm var) resolve before these fire in
+    # pre_tasks, ahead of `tasks:` where the role is otherwise entered.
+    gates = yaml.safe_load((REPO_ROOT / "playbooks/tasks/hindsight_lifecycle_gates.yml").read_text())
+    names = [t["name"] for t in gates]
+    assert "Run the Hindsight database migration once, before any replica redeploys" in names
+    assert "Decommission Hindsight worker ids no longer present in inventory" in names
+    migration = next(t for t in gates if t["name"].startswith("Run the Hindsight database migration"))
+    assert migration["ansible.builtin.include_role"] == {
+        "name": "hindsight_docker",
+        "tasks_from": "run_db_migration.yml",
+    }
+    decommission = next(t for t in gates if t["name"].startswith("Decommission Hindsight worker ids"))
+    assert decommission["ansible.builtin.include_role"] == {
+        "name": "hindsight_docker",
+        "tasks_from": "decommission_stale_workers.yml",
+    }
 
 
 if __name__ == "__main__":
