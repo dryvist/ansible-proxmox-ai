@@ -29,3 +29,52 @@ _llm_registry_light:
     # entry is tier: light, not large, and `servable: true` here would break
     # the invariant in roles/llm_router/tasks/assert.yml that every servable
     # model is a large-tier entry with a real context_window.
+
+  # Embedder/reranker CPU failover for llm-models.d/30-local-gpu.yml's
+  # vllm-tier bge-m3/bge-reranker-v2-m3 (the 4080). NOT llm_cpu_9b_group —
+  # that group's tag has no guest in the desired state today, so it is empty
+  # and cannot serve anything. llm_fast_group (tags llm-fast/llm-light)
+  # already carries the read-only shared models mount and runs on different
+  # nodes from the 4080.
+  #
+  # SAME client_model_id as the vllm-tier entries, deliberately — one model,
+  # one client name, failover expressed as order within the shared
+  # model_name (tests/llm_router/test_local_first_by_order.yml), never a
+  # second name for the same weights. context_window is the SAME LITERAL
+  # value as the vllm-tier entries in llm-models.d/30-local-gpu.yml — same
+  # GGUF, same ctx — kept as a literal rather than a shared var because the
+  # registry is pure data (no Jinja, no cross-file references) so
+  # scripts/generate_servable_aliases.py and
+  # tests/llm_router/test_registry_retype_scan.py can parse every
+  # llm-models.d/*.yml file with a bare yaml.safe_load(). A shared top-level
+  # var here previously broke both of those (they assume every top-level key
+  # maps to a list of entries; the var's own scalar value did not).
+  #
+  # max_input_tokens for THIS tier's rendered deployment is projected in
+  # roles/llm_router/templates/model-list-light.yaml.j2 from the same
+  # _llm_router_vllm_max_input_tokens_by_model map the vllm tier itself uses
+  # (roles/llm_router/defaults/main/20-registry.yml), keyed by
+  # client_model_id — not a separate light-tier derivation, and not the raw
+  # context_window: the vllm tier's number is capped by the 4080's prefill
+  # throughput within the admission budget, and every deployment sharing this
+  # model_name must advertise the SAME number or assert-registry-render-parity.yml's
+  # window checks correctly refuse it (verified locally: reusing the id
+  # without this projection failed WINDOW ADVERTISED BY SOME MEMBERS ONLY /
+  # NARROW DEPLOYMENT PREFERRED). No `embedding: true` — that field is the
+  # sole, currently-singular selector for the existing `embed` role
+  # (roles/llm_router/defaults/main/55-roles.yml), and a second true value
+  # anywhere in the registry would make its `| first` result order-dependent.
+  # No `rerank` role exists yet.
+  - client_model_id: bge-m3
+    upstream_model_id: bge-m3
+    provider: openai
+    tier: light
+    enabled: true
+    context_window: 8192
+
+  - client_model_id: bge-reranker-v2-m3
+    upstream_model_id: bge-reranker-v2-m3
+    provider: openai
+    tier: light
+    enabled: true
+    context_window: 8192

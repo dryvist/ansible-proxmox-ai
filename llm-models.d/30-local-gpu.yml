@@ -1,6 +1,7 @@
 ---
 # The NVIDIA guest, and the Hermes fallback rung over the same backend.
 # One slice of the model registry; see llm-models.d/README.md.
+
 _llm_registry_local_gpu:
   # ── NVIDIA GPU tier ─────────────────────────────────────────────────────────
   # Tier key stays `vllm` (names the ROUTER TIER/URL, not the engine) — this
@@ -69,6 +70,83 @@ _llm_registry_local_gpu:
       # degrade beyond a single stream. Both point the same way: one request
       # at a time.
       caveats: [serial-lane, tool-calls-degrade-above-one-stream]
+
+  # Embedder + reranker, same card, same --models-preset router process as
+  # the two entries above (llama_cpp_models in
+  # inventory/group_vars/llm_vllm_group.yml), and the SAME client_model_id as
+  # the CPU-failover pair in llm-models.d/20-light.yml — one model, one
+  # client name, failover expressed as order within that name (the repo's
+  # existing local-first pattern, tests/llm_router/test_local_first_by_order.yml),
+  # never a second name. `context_window` is NOT optional here despite
+  # neither model having a chat context to advertise:
+  # roles/llm_router/defaults/main/20-registry.yml's
+  # _llm_router_vllm_max_input_tokens_by_model iterates every vllm-tier entry
+  # unconditionally and reads m.context_window with no default, so omitting it
+  # breaks model-list.yaml.j2's render for the WHOLE vllm tier, not just these
+  # two.
+  #
+  # context_window is a PLAIN LITERAL, not a shared Jinja var, on purpose: the
+  # registry (llm-models.d/) is pure data — no Jinja, no cross-file
+  # references — so scripts/generate_servable_aliases.py and
+  # tests/llm_router/test_registry_retype_scan.py can parse every file with a
+  # bare yaml.safe_load() and no Ansible context (docs/LLM_MODELS_SCHEMA.md's
+  # own header states this). A prior version of this file hoisted the value
+  # into a shared top-level var and referenced it from both this file and
+  # llm-models.d/20-light.yml — that broke both of those raw-YAML tools,
+  # which assume every top-level key maps to a LIST of entries
+  # ("TypeError: 'int' object is not iterable" on the shared var's own
+  # scalar value). The "one base var" pattern still applies to CONSUMER-side
+  # derivation, which runs under Ansible and can read this value back out of
+  # the built registry — see inventory/group_vars/llm_fast_group.yml's
+  # `_llama_cpp_light_embedding_ctx_size` (`llm_router_model_registry |
+  # selectattr('client_model_id', 'equalto', 'bge-m3') | first).context_window`) —
+  # just not inside llm-models.d/ itself. The light-tier entry
+  # (llm-models.d/20-light.yml) carries the identical literal for the same
+  # reason: same GGUF, same ctx, so the two values must be kept in sync by
+  # eye across two files rather than by a shared variable the registry format
+  # can't allow.
+  #
+  # `stream_timeout` is mandatory too, same reason and same value as the
+  # qwen3.8-27b/qwen3-coder-30b entries above:
+  # tests/llm_router/test_gpu_rung_admission_matches_backend.yml asserts
+  # every vllm/hermes-local-tier entry carries the admission budget here, not
+  # a literal — its rejectattr crashes outright (not a normal fail) on an
+  # entry missing the key, verified locally
+  # (`ansible-playbook tests/llm_router/test_gpu_rung_admission_matches_backend.yml
+  # -i localhost, -c local`, the exact command
+  # .github/workflows/_llm-router-contract.yml runs) before this field was
+  # added.
+  #
+  # Deliberately NOT setting `embedding: true` on bge-m3: that field is the
+  # sole selector for the existing singular `embed` role
+  # (roles/llm_router/defaults/main/55-roles.yml llm_router_embedding_model,
+  # `selectattr('embedding') | ... | first` over the WHOLE enabled registry).
+  # A second `embedding: true` entry would make that selector's result
+  # order-dependent instead of the deterministic singleton it is today. No
+  # `rerank` role exists yet either. Both models are reachable only by their
+  # own client_model_id until a role/alias is added on purpose — same
+  # reasoning as the light-tier embeddings entry's own comment on
+  # stable_aliases (llm-models.d/20-light.yml).
+  - client_model_id: bge-m3
+    upstream_model_id: bge-m3
+    provider: openai
+    tier: vllm
+    enabled: true
+    # BAAI/bge-m3's own 8192 max sequence length; the consuming service's own
+    # 8192 default input-truncation cap. Must match llm-models.d/20-light.yml's
+    # bge-m3 entry byte-for-byte (see the comment above).
+    context_window: 8192
+    stream_timeout: "{{ llm_router_admission_budget_seconds }}"
+
+  - client_model_id: bge-reranker-v2-m3
+    upstream_model_id: bge-reranker-v2-m3
+    provider: openai
+    tier: vllm
+    enabled: true
+    # BAAI/bge-reranker-v2-m3's own 8192 architectural max_length. Must match
+    # llm-models.d/20-light.yml's bge-reranker-v2-m3 entry byte-for-byte.
+    context_window: 8192
+    stream_timeout: "{{ llm_router_admission_budget_seconds }}"
 
   # Local backup rung in the Hermes chain, same backend as the vllm entry.
   # tier: hermes-local, NOT vllm — load-bearing: the cloud projection drops
