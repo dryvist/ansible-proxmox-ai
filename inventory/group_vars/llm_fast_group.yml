@@ -17,6 +17,16 @@ llama_cpp_parallel: 1
 # tier once, here, rather than the guard inferring it from group membership.
 llama_cpp_registry_tier: light
 
+# Resident-model cap for router mode, raised from the role default of 1 to
+# the honest count of what's declared below (4) — not a guess. The role
+# default already under-counted this group even before the two new entries:
+# defaults/main/00-core.yml's own comment claims the original pair
+# ("qwen3-4b" + "embeddings") "stay loaded together", but at the inherited
+# cap of 1 the second load would evict the first — tasks/verify-residency.yml
+# (gated on llama_cpp_service_enabled, so it only runs on llm-light; llm-fast
+# stays frozen) is what actually proves 4 fit rather than asserting it.
+llama_cpp_models_max: 4
+
 # Restart the llama-server service on failure (Phase 9 systemd restart policy).
 systemd_restart_policy_services:
   - llama-server
@@ -30,3 +40,85 @@ systemd_restart_policy_services:
 syslog_forwarder_program_routes:
   - program: llama-server
     port: "{{ tofu_data.constants.ai_log_routing.homelab_llm.port | default(10323) }}"
+
+# Same one-base-var derivation as llm_vllm_group.yml's embedding/reranker
+# entries, and for the same reason: the registry's context_window is the
+# single source both this CPU-failover rung and the GPU rung (and, once
+# wired, roles/hindsight_docker's HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS)
+# read, so the families can never drift to different numbers.
+# Served under their OWN name, not the vllm-tier's bare `bge-m3` /
+# `bge-reranker-v2-m3` — see llm-models.d/20-light.yml's identical comment
+# for why: sharing a model_name with the vllm-tier entries broke
+# assert-registry-render-parity.yml locally (the light tier has no
+# max_input_tokens projection to match vllm's), so this rung serves its own
+# name until the router-alias work (deferred, after L0a-2) links the two.
+_llama_cpp_light_embedding_model_id: bge-m3-light
+_llama_cpp_light_reranker_model_id: bge-reranker-v2-m3-light
+
+_llama_cpp_light_embedding_ctx_size: >-
+  {{ (llm_router_model_registry
+      | selectattr('client_model_id', 'equalto', _llama_cpp_light_embedding_model_id)
+      | first).context_window }}
+_llama_cpp_light_reranker_ctx_size: >-
+  {{ (llm_router_model_registry
+      | selectattr('client_model_id', 'equalto', _llama_cpp_light_reranker_model_id)
+      | first).context_window }}
+
+# Full override of defaults/main/00-core.yml's llama_cpp_models (Ansible
+# lists replace, they do not merge) — the light tier's original pair plus the
+# CPU-failover embedder/reranker for the 4080's vllm-tier bge-m3/
+# bge-reranker-v2-m3 (llm-models.d/30-local-gpu.yml). Moved here from
+# llm_cpu_9b_group.yml: that group's tag has no guest in the desired state
+# today (empty group), so it could never serve a failover for anything.
+# llm_fast_group (llm-fast GPU + llm-light CPU) already carries the
+# read-only shared models mount and runs on different nodes from the 4080.
+llama_cpp_models:
+  - name: qwen3-4b
+    aliases: []
+    hf_repo: "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF"
+    gguf: "Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    param_billions: 4
+    embeddings: false
+
+  - name: embeddings
+    aliases: [nomic-embed-text-v1.5]
+    hf_repo: "nomic-ai/nomic-embed-text-v1.5-GGUF"
+    gguf: "nomic-embed-text-v1.5.Q4_K_M.gguf"
+    param_billions: 0.137
+    embeddings: true
+
+  # CPU failover rung for llm_vllm_group's GPU entries — the SAME GGUF pair,
+  # served under its own name (bge-m3-light) for now; see the registry
+  # entry's comment (llm-models.d/20-light.yml) for why it isn't the same
+  # model_name yet. Must stay byte-identical regardless: the embedding
+  # dimension is locked once a caller writes its first vector, so a failover
+  # rung serving a different embedder would silently return dimension-
+  # mismatched or wrong vectors rather than just running slower. ctx_size
+  # matches the GPU side for the same reason — once the alias links them, a
+  # different window would make the two rungs behave differently even
+  # though a caller is meant to treat them as interchangeable.
+  - name: "{{ _llama_cpp_light_embedding_model_id }}"
+    aliases: []
+    hf_repo: gpustack/bge-m3-GGUF
+    gguf: bge-m3-Q8_0.gguf
+    param_billions: 0.568
+    embeddings: true
+    # See llm_vllm_group.yml's identical field: BAAI/bge-m3's own GGUF
+    # default is CLS pooling, not the embeddings branch's `mean` default.
+    pooling: cls
+    # Registry-derived, not a literal — see llm_vllm_group.yml's identical
+    # field for the vendor citations (BAAI/bge-m3's own 8192 max sequence
+    # length; the consuming service's own 8192 default input-truncation cap).
+    ctx_size: "{{ _llama_cpp_light_embedding_ctx_size }}"
+
+  - name: "{{ _llama_cpp_light_reranker_model_id }}"
+    aliases: []
+    hf_repo: gpustack/bge-reranker-v2-m3-GGUF
+    gguf: bge-reranker-v2-m3-Q8_0.gguf
+    param_billions: 0.568
+    embeddings: false
+    rerank: true
+    # Registry-derived — see llm_vllm_group.yml's identical field for the
+    # vendor citation (BAAI/bge-reranker-v2-m3's own 8192 architectural
+    # max_length).
+    ctx_size: "{{ _llama_cpp_light_reranker_ctx_size }}"

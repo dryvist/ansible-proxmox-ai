@@ -3,32 +3,6 @@
 
 llama_cpp_registry_tier: cpu-9b
 
-# Resident-model cap for router mode, raised from the role default of 1 —
-# same reason as llm_vllm_group.yml: at the default, each call to a
-# different model on this host evicts and reloads from the read-only mount
-# (a disk read plus re-init), not just a memory-pressure question. RAM here
-# is not the tight constraint the GPU card's VRAM is, so all three models
-# below fit with room to spare; `tasks/main.yml`'s residency check still
-# proves it rather than assuming it.
-llama_cpp_models_max: 3
-
-# Same one-base-var derivation as llm_vllm_group.yml's embedding/reranker
-# entries, and for the same reason: the registry's context_window is the
-# single source both the GPU rung and (once wired) roles/hindsight_docker's
-# HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS read, so the two families can
-# never drift to different numbers.
-_llama_cpp_cpu9b_embedding_model_id: bge-m3
-_llama_cpp_cpu9b_reranker_model_id: bge-reranker-v2-m3
-
-_llama_cpp_cpu9b_embedding_ctx_size: >-
-  {{ (llm_router_model_registry
-      | selectattr('client_model_id', 'equalto', _llama_cpp_cpu9b_embedding_model_id)
-      | first).context_window }}
-_llama_cpp_cpu9b_reranker_ctx_size: >-
-  {{ (llm_router_model_registry
-      | selectattr('client_model_id', 'equalto', _llama_cpp_cpu9b_reranker_model_id)
-      | first).context_window }}
-
 llama_cpp_models:
   - name: qwen3.5-9b
     aliases: []
@@ -37,37 +11,3 @@ llama_cpp_models:
     param_billions: 9
     ctx_size: 8192
     embeddings: false
-
-  # Embedder/reranker failover rung — the SAME GGUF pair as llm_vllm_group's
-  # GPU entries. Must stay byte-identical to that pair: the embedding
-  # dimension is locked once a caller writes its first vector, so a failover
-  # rung serving a different embedder would silently return dimension-
-  # mismatched or wrong vectors rather than just running slower. ctx_size
-  # matches the GPU side for the same reason — a different window would make
-  # the two rungs behave differently even though a caller is meant to treat
-  # them as interchangeable.
-  - name: "{{ _llama_cpp_cpu9b_embedding_model_id }}"
-    aliases: []
-    hf_repo: gpustack/bge-m3-GGUF
-    gguf: bge-m3-Q8_0.gguf
-    param_billions: 0.568
-    embeddings: true
-    # See llm_vllm_group.yml's identical field: BAAI/bge-m3's own GGUF
-    # default is CLS pooling, not the embeddings branch's `mean` default.
-    pooling: cls
-    # Registry-derived, not a literal — see llm_vllm_group.yml's identical
-    # field for the vendor citations (BAAI/bge-m3's own 8192 max sequence
-    # length; the consuming service's own 8192 default input-truncation cap).
-    ctx_size: "{{ _llama_cpp_cpu9b_embedding_ctx_size }}"
-
-  - name: "{{ _llama_cpp_cpu9b_reranker_model_id }}"
-    aliases: []
-    hf_repo: gpustack/bge-reranker-v2-m3-GGUF
-    gguf: bge-reranker-v2-m3-Q8_0.gguf
-    param_billions: 0.568
-    embeddings: false
-    rerank: true
-    # Registry-derived — see llm_vllm_group.yml's identical field for the
-    # vendor citation (BAAI/bge-reranker-v2-m3's own 8192 architectural
-    # max_length).
-    ctx_size: "{{ _llama_cpp_cpu9b_reranker_ctx_size }}"

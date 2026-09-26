@@ -72,15 +72,29 @@ _llm_registry_local_gpu:
 
   # Embedder + reranker, same card, same --models-preset router process as
   # the two entries above (llama_cpp_models in
-  # inventory/group_vars/llm_vllm_group.yml). Minimal fields only —
-  # `context_window` is NOT optional here despite neither model having a chat
-  # context to advertise: roles/llm_router/defaults/main/20-registry.yml's
+  # inventory/group_vars/llm_vllm_group.yml). `context_window` is NOT
+  # optional here despite neither model having a chat context to advertise:
+  # roles/llm_router/defaults/main/20-registry.yml's
   # _llm_router_vllm_max_input_tokens_by_model iterates every vllm-tier entry
   # unconditionally and reads m.context_window with no default, so omitting it
   # breaks model-list.yaml.j2's render for the WHOLE vllm tier, not just these
-  # two. Matches the ctx_size on the guest's llama_cpp_models entries — GPU
-  # and CPU rungs (llm_cpu_9b_group.yml) serve the same GGUF at the same
-  # window on purpose, since a caller treats them as interchangeable.
+  # two. Matches the ctx_size on the guest's llama_cpp_models entries — the
+  # CPU-failover rung (inventory/group_vars/llm_fast_group.yml, served under
+  # its own name bge-m3-light/bge-reranker-v2-m3-light — see that file's
+  # comment for why not the same name yet) serves the same GGUF at the same
+  # window on purpose, since a caller is meant to eventually treat them as
+  # interchangeable once the router-alias work links them.
+  #
+  # `stream_timeout` is mandatory too, same reason and same value as the
+  # qwen3.8-27b/qwen3-coder-30b entries above:
+  # tests/llm_router/test_gpu_rung_admission_matches_backend.yml asserts
+  # every vllm/hermes-local-tier entry carries the admission budget here, not
+  # a literal — its rejectattr crashes outright (not a normal fail) on an
+  # entry missing the key, verified locally
+  # (`ansible-playbook tests/llm_router/test_gpu_rung_admission_matches_backend.yml
+  # -i localhost, -c local`, the exact command
+  # .github/workflows/_llm-router-contract.yml runs) before this field was
+  # added.
   #
   # Deliberately NOT setting `embedding: true` on bge-m3: that field is the
   # sole selector for the existing singular `embed` role
@@ -98,6 +112,7 @@ _llm_registry_local_gpu:
     tier: vllm
     enabled: true
     context_window: 8192
+    stream_timeout: "{{ llm_router_admission_budget_seconds }}"
 
   - client_model_id: bge-reranker-v2-m3
     upstream_model_id: bge-reranker-v2-m3
@@ -105,6 +120,7 @@ _llm_registry_local_gpu:
     tier: vllm
     enabled: true
     context_window: 8192
+    stream_timeout: "{{ llm_router_admission_budget_seconds }}"
 
   # Local backup rung in the Hermes chain, same backend as the vllm entry.
   # tier: hermes-local, NOT vllm — load-bearing: the cloud projection drops
