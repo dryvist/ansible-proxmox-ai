@@ -140,10 +140,26 @@ llama_cpp_models_max: 3
 # every selectattr lookup and both llama_cpp_models `name:` fields reference
 # these vars rather than re-typing the id a second time in this file.
 _llama_cpp_vllm_dense_model_id: qwen3.8-27b
+_llama_cpp_vllm_embedding_model_id: bge-m3
+_llama_cpp_vllm_reranker_model_id: bge-reranker-v2-m3
 
 llama_cpp_ctx_size: >-
   {{ (llm_router_model_registry
       | selectattr('client_model_id', 'equalto', _llama_cpp_vllm_dense_model_id)
+      | first).context_window }}
+
+# Same derivation as llama_cpp_ctx_size above, one per model: the registry's
+# context_window is the one base var, never re-typed as a second literal here.
+# roles/hindsight_docker's own HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS reads
+# the SAME bge-m3 registry entry this way (llm-models.d/30-local-gpu.yml) — see
+# that role's defaults once it wires it — so the two can never drift apart.
+_llama_cpp_vllm_embedding_ctx_size: >-
+  {{ (llm_router_model_registry
+      | selectattr('client_model_id', 'equalto', _llama_cpp_vllm_embedding_model_id)
+      | first).context_window }}
+_llama_cpp_vllm_reranker_ctx_size: >-
+  {{ (llm_router_model_registry
+      | selectattr('client_model_id', 'equalto', _llama_cpp_vllm_reranker_model_id)
       | first).context_window }}
 
 llama_cpp_models:
@@ -175,7 +191,7 @@ llama_cpp_models:
   # these two resident alongside the dense chat model rather than evicting
   # it on every call; `tasks/main.yml`'s residency check proves that holds
   # on this card.
-  - name: bge-m3
+  - name: "{{ _llama_cpp_vllm_embedding_model_id }}"
     aliases: []
     hf_repo: gpustack/bge-m3-GGUF
     gguf: bge-m3-Q8_0.gguf
@@ -189,9 +205,10 @@ llama_cpp_models:
     # answers wrong-pooled vectors when this is left at the embeddings
     # branch's `mean` default. Do not remove this override.
     pooling: cls
-    # 8192 is BAAI/bge-m3's own trained max sequence length (model card,
-    # https://huggingface.co/BAAI/bge-m3) and also the default of the
-    # consuming service's own input-truncation cap
+    # Registry-derived (_llama_cpp_vllm_embedding_ctx_size above), never a
+    # second literal here. The value is BAAI/bge-m3's own trained max
+    # sequence length (model card, https://huggingface.co/BAAI/bge-m3), also
+    # the default of the consuming service's own input-truncation cap
     # (HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS, default 8192 — Hindsight
     # docs, https://hindsight.vectorize.io/developer/configuration,
     # "Embeddings Configuration"): the caller truncates to this many tokens
@@ -203,9 +220,9 @@ llama_cpp_models:
     # approximate tokenizer, not bge-m3's real one, so a pathological input
     # could still exceed this by some margin — a residual risk in the
     # caller, not something a bigger ctx_size here can close.
-    ctx_size: 8192
+    ctx_size: "{{ _llama_cpp_vllm_embedding_ctx_size }}"
 
-  - name: bge-reranker-v2-m3
+  - name: "{{ _llama_cpp_vllm_reranker_model_id }}"
     aliases: []
     hf_repo: gpustack/bge-reranker-v2-m3-GGUF
     gguf: bge-reranker-v2-m3-Q8_0.gguf
@@ -213,14 +230,15 @@ llama_cpp_models:
     param_billions: 0.568
     embeddings: false
     rerank: true
-    # Same 8192 ceiling as bge-m3 above, same reason: BAAI/bge-reranker-v2-m3's
-    # own model card (https://huggingface.co/BAAI/bge-reranker-v2-m3) gives
-    # its architectural max_length as 8192 (it recommends 1024 for best
-    # ranking quality, which is a quality tuning knob, not a serving limit —
-    # unrelated to what ctx_size must cover to avoid a 500). Whatever this
-    # reranks was already embedding-truncated to the same 8192-token ceiling
-    # above to have been stored and recalled at all.
-    ctx_size: 8192
+    # Registry-derived (_llama_cpp_vllm_reranker_ctx_size above), same reason
+    # as bge-m3: BAAI/bge-reranker-v2-m3's own model card
+    # (https://huggingface.co/BAAI/bge-reranker-v2-m3) gives its architectural
+    # max_length as 8192 (it recommends 1024 for best ranking quality, which
+    # is a quality tuning knob, not a serving limit — unrelated to what
+    # ctx_size must cover to avoid a 500). Whatever this reranks was already
+    # embedding-truncated to the bge-m3 ceiling above to have been stored and
+    # recalled at all.
+    ctx_size: "{{ _llama_cpp_vllm_reranker_ctx_size }}"
 
   # The coding rung (registry qwen3-coder-30b, disabled) returns here in the
   # same change that lands its GGUF on the shared model store: hf_repo
