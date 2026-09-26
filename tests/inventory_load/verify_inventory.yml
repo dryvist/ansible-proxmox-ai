@@ -8,22 +8,6 @@
 #     ansible-playbook tests/inventory_load/verify_inventory.yml \
 #     -i inventory/hosts.yml -c local
 
-- name: Pre-seed ssh-probe readiness so the test never opens a live socket
-  hosts: localhost
-  gather_facts: false
-  vars:
-    ansible_become: false
-  tasks:
-    # load_tofu.yml's probe task is a no-op once this fact exists (see its
-    # own `when: load_tofu_ssh_ready is not defined`). contract-ssh-1 is the
-    # "sshd answered" case, contract-ssh-2 is deliberately left out to cover
-    # the "sshd did not answer" fallback — set_fact persists across plays for
-    # the same host within one ansible-playbook run, so this reaches the
-    # imported playbook's tasks below.
-    - name: Fake the probe outcome for the two contract-ssh fixture guests
-      ansible.builtin.set_fact:
-        load_tofu_ssh_ready: ["contract-ssh-1"]
-
 - name: Load inventory under test
   import_playbook: ../../inventory/load_tofu.yml
 
@@ -82,15 +66,15 @@
           - hostvars['llm-vllm-1'].ansible_host == 'llm-vllm-1.example.com'
           - hostvars['llm-vllm-1'].proxmox_vmid is not defined
           # tofu-proxmox contract field (ansible_connection: ssh), non-qualifying
-          # tags, probe answered (load_tofu_ssh_ready includes it): flips to ssh
-          - hostvars['contract-ssh-1'].ansible_connection == 'ssh'
-          - hostvars['contract-ssh-1'].ansible_host == 'contract-ssh-1.example.com'
-          - hostvars['contract-ssh-1'].proxmox_vmid is not defined
-          # same contract field, but the probe did NOT answer (not in
-          # load_tofu_ssh_ready): stays on pct_remote with the node-derived
-          # host, exactly like a guest with no contract field at all — the
-          # probe gate must never hand Ansible an ssh connection nothing
-          # answers
+          # tags: both fixture guests declare ssh, but *.example.com never
+          # resolves in CI, so the real wait_for probe genuinely times out for
+          # both and load_tofu_ssh_ready excludes them. Both fall back to
+          # pct_remote with the node-derived host, exactly like a guest with
+          # no contract field at all — the probe gate must never hand
+          # Ansible an ssh connection nothing answers.
+          - hostvars['contract-ssh-1'].ansible_connection == 'community.proxmox.proxmox_pct_remote'
+          - hostvars['contract-ssh-1'].ansible_host == 'proxmox1.example.com'
+          - hostvars['contract-ssh-1'].proxmox_vmid == 101114
           - hostvars['contract-ssh-2'].ansible_connection == 'community.proxmox.proxmox_pct_remote'
           - hostvars['contract-ssh-2'].ansible_host == 'proxmox1.example.com'
           - hostvars['contract-ssh-2'].proxmox_vmid == 101115

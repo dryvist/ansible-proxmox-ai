@@ -1,0 +1,196 @@
+---
+# Regression test for inventory/load_tofu/add_lxc_hosts.yml's
+# `load_tofu_ssh_ready` selection expression, which must not choke when a
+# result in the list lacks a `failed` key entirely, and must still keep
+# every not-failed item (skipped ones included, by design — see that
+# file's own comment) while dropping any genuinely failed one.
+#
+# Runs a REAL ansible.builtin.wait_for loop (register + loop + per-item
+# when — the same shape the production task uses) for the "succeeded" and
+# "did not answer" cases, rather than hand-typing those two. Empirically,
+# on this repo's pinned ansible-core, a plain per-item `when:`-skip result
+# DOES carry `failed: false` (verified directly against this ansible-core
+# with both a mixed skip/probe loop and an all-items-skipped loop) — so
+# whatever specific condition drops the key in production was not
+# reproduced by a live wait_for skip alone. The fix is written to be safe
+# regardless of the exact trigger (Jinja's own `map(..., default=...)`,
+# not an assumption about which real-world case causes it), and this test
+# proves that directly by adding one genuinely keyless result — the one
+# shape a live module call could not be made to produce here — alongside
+# the two real ones.
+#
+# The exact `load_tofu_ssh_ready` expression is extracted live from
+# add_lxc_hosts.yml (never hand-copied), so this test cannot silently
+# drift from what actually ships. A literal copy of the OLD, pre-fix
+# expression is kept ONLY to prove it genuinely breaks on this data —
+# regression proof that this test would have caught the original bug.
+#
+# Run locally:
+#   ansible-playbook tests/inventory_load/test_ssh_probe_result_selection.yml \
+#     -i inventory/hosts.yml -c local
+
+- name: Verify load_tofu_ssh_ready selects only a real, successful probe
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_become: false
+    _add_lxc_hosts_file: "{{ playbook_dir }}/../../inventory/load_tofu/add_lxc_hosts.yml"
+    _ssh_ready_task_name: >-
+      Record which contract-declared-ssh containers actually answered
+  tasks:
+    - name: Make a real, present path to probe against
+      ansible.builtin.tempfile:
+        state: file
+      register: _present_probe_target
+
+    - name: Compute a real, guaranteed-absent path alongside it
+      ansible.builtin.set_fact:
+        _absent_probe_target: "{{ _present_probe_target.path }}.does-not-exist"
+
+    # Same shape as the production task (register + loop + per-item
+    # when): one item the `when:` skips outright — mirrors a non-ssh guest
+    # never reaching the probe at all — one whose path exists (a real
+    # "answered" probe), one whose path never appears (a real "did not
+    # answer" probe, caught by ignore_errors like the production task).
+    - name: Probe three synthetic items exactly like the production task does
+      ansible.builtin.wait_for:
+        path: "{{ item.value.path }}"
+        state: present
+        timeout: 1
+      loop:
+        - {key: skip-me, value: {probe: false, path: ''}}
+        - {key: answers, value: {probe: true, path: "{{ _present_probe_target.path }}"}}
+        - {key: silent, value: {probe: true, path: "{{ _absent_probe_target }}"}}
+      loop_control:
+        label: "{{ item.key }}"
+      register: load_tofu_ssh_probe
+      ignore_errors: true
+      changed_when: false
+      when: item.value.probe
+
+    # The one shape a live module call could not be coaxed into producing
+    # on this ansible-core (see the file header): a result with no
+    # `failed` key at all. Appended by hand so the fix is proven against
+    # the exact edge case it exists for, not just the two real shapes
+    # above (which the old expression already handled fine).
+    - name: Append a genuinely keyless result to the real probe results
+      ansible.builtin.set_fact:
+        load_tofu_ssh_probe:
+          results: >-
+            {{ load_tofu_ssh_probe.results
+               + [{'item': {'key': 'keyless-skip'}, 'skipped': true,
+                   'changed': false, 'ansible_loop_var': 'item'}] }}
+
+    - name: Sanity check the fixture actually has a keyless, an ok, and a failed result
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - load_tofu_ssh_probe.results | length == 4
+          - >-
+            load_tofu_ssh_probe.results
+            | rejectattr('failed', 'defined') | list | length == 1
+          - >-
+            load_tofu_ssh_probe.results
+            | selectattr('failed', 'defined') | rejectattr('failed') | list | length == 2
+          - >-
+            load_tofu_ssh_probe.results
+            | selectattr('failed', 'defined') | selectattr('failed') | list | length == 1
+        fail_msg: >-
+          Expected exactly one keyless, two not-failed (skip-me + answers),
+          one failed result — this test's own fixture is broken, not the
+          code under test.
+
+    - name: Extract the real, committed selection expression from add_lxc_hosts.yml
+      ansible.builtin.set_fact:
+        _selection_expr: >-
+          {{ (lookup('ansible.builtin.file', _add_lxc_hosts_file) | from_yaml
+              | selectattr('name', 'equalto', _ssh_ready_task_name) | first)
+             ['ansible.builtin.set_fact']['load_tofu_ssh_ready'] }}
+
+    - name: The real expression must exist and must not be the old broken one
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'zip' in _selection_expr"
+        fail_msg: >-
+          Could not find the load_tofu_ssh_ready expression in
+          add_lxc_hosts.yml under the task name {{ _ssh_ready_task_name }}
+          — this test's extraction is stale, fix the task name/lookup.
+
+    # A string held in a variable is not re-templated just by referencing
+    # it again (confirmed empirically on this ansible-core: {{ _selection_expr }}
+    # yields the literal unrendered text) — writing it out and rendering it
+    # as a real template file is the native way to force a second Jinja
+    # pass. `from_yaml` turns the rendered text ("['answers']") back into
+    # an actual list.
+    - name: Write the extracted expression to a temp template file
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .j2
+      register: _expr_template_file
+
+    - name: Persist the extracted expression as a renderable template
+      ansible.builtin.copy:
+        dest: "{{ _expr_template_file.path }}"
+        content: "{{ _selection_expr }}"
+        mode: '0600'
+
+    - name: Render the real, live expression against the real probe results
+      ansible.builtin.set_fact:
+        load_tofu_ssh_ready: >-
+          {{ lookup('ansible.builtin.template', _expr_template_file.path) | from_yaml }}
+
+    - name: Assert the fixed expression keeps every not-failed item and drops the failed one
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # skip-me and keyless-skip are harmless noise (see add_lxc_hosts.yml's
+          # own comment) — kept, same as the pre-fix design's intent, just
+          # no longer crashing on the keyless one. 'silent' (the failed
+          # probe) must never appear.
+          - load_tofu_ssh_ready | sort == ['answers', 'keyless-skip', 'skip-me']
+        fail_msg: >-
+          Expected load_tofu_ssh_ready to contain exactly answers,
+          keyless-skip and skip-me (not 'silent'), got
+          {{ load_tofu_ssh_ready }}.
+
+    # Regression proof: kept ONLY to demonstrate this test would have
+    # caught the original bug. Never update this to match a future fix —
+    # if it ever stops failing, ansible-core's handling of a missing
+    # `failed` key has changed again and this whole test needs a fresh
+    # look, not a quiet edit here. Uses an explicit flag rather than
+    # trusting rescue alone: rescue also runs if the guard task below
+    # fires, so without the flag a "did not raise" bug in the OLD
+    # expression would be silently swallowed as if it were the expected
+    # failure.
+    - name: Prove the OLD (pre-fix) expression genuinely breaks on this data
+      block:
+        - name: Render the pre-fix expression (expected to raise)
+          ansible.builtin.set_fact:
+            _old_result: >-
+              {{ load_tofu_ssh_probe.results | default([])
+                 | rejectattr('failed')
+                 | map(attribute='item') | map(attribute='key') | list }}
+
+        - name: Mark that the old expression did NOT raise (this would be a bug)
+          ansible.builtin.set_fact:
+            _old_expression_did_not_raise: true
+      rescue:
+        - name: Mark that the old expression raised, as expected
+          ansible.builtin.set_fact:
+            _old_expression_did_not_raise: false
+
+    - name: Assert the old expression genuinely failed on this data
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not (_old_expression_did_not_raise | default(false))
+        fail_msg: >-
+          The pre-fix load_tofu_ssh_ready expression rendered WITHOUT
+          error against a result carrying no 'failed' key at all — this
+          regression test no longer proves anything, because
+          ansible-core's behavior for a missing 'failed' key must have
+          changed again since this test was written.
+        success_msg: >-
+          Regression coverage confirmed: the pre-fix expression fails on
+          this exact ansible-core against a genuinely keyless result.
