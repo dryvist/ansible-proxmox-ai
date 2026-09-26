@@ -38,6 +38,12 @@ hindsight_docker_db_user: hindsight
 hindsight_docker_db_password: >-
   {{ bao_apps_secrets.hindsight_db_password
      | mandatory('hindsight_db_password was not supplied to this role') }}
+# Single source for the DSN: the compose template and the one-shot migration
+# command (tasks/run_db_migration.yml) both interpolate this rather than
+# each rebuilding the connection string from the parts above.
+hindsight_docker_db_url: >-
+  postgresql://{{ hindsight_docker_db_user }}:{{ hindsight_docker_db_password }}@{{
+  hindsight_docker_db_host }}:{{ hindsight_docker_db_port }}/{{ hindsight_docker_db_name }}
 
 # --- LLM (fact extraction / reflection) --------------------------------------
 # The SAME shared route the hindsight virtual key is scoped to (`free`,
@@ -82,6 +88,52 @@ hindsight_docker_cp_access_key: >-
 # orphan previously-claimed tasks across restarts. inventory_hostname is
 # stable per LXC, which is exactly what upstream requires.
 hindsight_docker_worker_id: "{{ inventory_hostname }}"
+
+# Decommission worker ids that own claimed-but-orphaned processing tasks and
+# no longer have a matching host in hindsight_group (a removed/renamed guest).
+# Runs once per converge, before any replica is redeployed, via
+# tasks/decommission_stale_workers.yml (imported from playbooks/site.yml
+# pre_tasks so a failure here is fatal to the whole rolling play, matching
+# max_fail_percentage: 0 — a role-tasks failure would instead be swallowed by
+# site.yml's per-replica isolation rescue).
+hindsight_docker_decommission_stale_workers: true
+
+# --- Database migrations (0.10.0 made this explicit; upstream default is
+# HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP=true) ------------------------------
+# Startup-time migrations race every replica against the same schema change
+# on a serial:1 rollout — replica 2 can start mid-migration against a
+# half-applied schema. Migrations instead run exactly once, from
+# tasks/run_db_migration.yml (pre_tasks, same fatal-on-failure reasoning as
+# the worker decommission above), using the NEW image before any replica is
+# redeployed with it.
+hindsight_docker_run_migrations_on_startup: false
+
+# This repo has no reachable signal for pgBackRest backup freshness on
+# postgres-ai-1 — that role (and its pgbackrest.yml / pg-backup.timer) lives
+# in ansible-proxmox-apps and exposes no cross-repo age check or trigger
+# today (Vikunja follow-up: add one, project 43 proxmox). The migration gate
+# therefore fails closed on an explicit human confirmation rather than
+# guessing at backup age: set to true (e.g.
+# `-e hindsight_docker_migration_backup_confirmed=true`) only after
+# confirming a recent full backup exists (`pgbackrest info` on
+# postgres-ai-1) or triggering one via the existing pg-backup.timer /
+# pgbackrest-backup@.timer units.
+hindsight_docker_migration_backup_confirmed: false
+
+# --- Explicit operation timeouts (0.10.0 wall-clock LLM deadline,
+# vectorize-io/hindsight#4784) ------------------------------------------------
+# Upstream's own defaults (retain 3600s / consolidation 7200s) are loose
+# enough that a wedged worker slot still isn't reclaimed on any timescale a
+# real hang actually happens on (vectorize-io/hindsight#4581) — set explicit
+# ceilings here, each well under an hour, rather than inherit the loose
+# default. Values are budget, not measurement: this fabric's LLM calls run
+# against local/router models with the existing per-request timeouts
+# (hindsight_docker_llm_base_url), so these are outer wall-clock backstops,
+# not the expected steady-state duration.
+hindsight_docker_retain_wall_timeout: 300
+hindsight_docker_consolidation_wall_timeout: 900
+hindsight_docker_reflect_wall_timeout: 120
+hindsight_docker_refresh_mental_model_wall_timeout: 120
 
 # Local ONNX embeddings (bundled BGE model) — no external embedding dependency.
 hindsight_docker_embeddings_provider: local

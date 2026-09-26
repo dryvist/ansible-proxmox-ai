@@ -1,0 +1,51 @@
+---
+# Hindsight 0.10.0 made startup migrations opt-out
+# (HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP, default true) rather than the only
+# path. On a serial:1 rolling pool that default races every replica against
+# the same schema change — replica 2 can start against a half-applied schema
+# while replica 1 is still migrating it. This runs the migration exactly
+# once, up front, using the target image, before any replica is redeployed
+# with HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP=false.
+#
+# Imported from playbooks/site.yml `pre_tasks` (not from tasks/main.yml)
+# deliberately: that play wraps tasks/main.yml in a block/rescue that records
+# a failed replica as an "isolated failure" and lets the rollout continue
+# (playbooks/tasks/record_isolated_failure.yml). A migration failure must
+# never be treated that way — pre_tasks sits outside that rescue, so its
+# failure is fatal to the whole play, and max_fail_percentage: 0 on a
+# serial:1 play stops the rollout before any replica sees the new image.
+
+- name: Refuse to run the Hindsight DB migration without a confirmed fresh backup
+  ansible.builtin.assert:
+    that:
+      - hindsight_docker_migration_backup_confirmed | bool
+    fail_msg: >-
+      hindsight_docker_migration_backup_confirmed is false. This repo has no
+      reachable signal for pgBackRest backup freshness on
+      {{ hindsight_docker_db_host }} — that role (pgbackrest.yml,
+      pg-backup.timer) lives in ansible-proxmox-apps and exposes no
+      cross-repo age check or trigger today. Confirm a recent full backup
+      (`pgbackrest info` on the postgres primary) or trigger one via the
+      existing pg-backup.timer / pgbackrest-backup@.timer units, then re-run
+      with -e hindsight_docker_migration_backup_confirmed=true. To skip this
+      migration entirely (NOT recommended before a schema-changing image
+      bump), set hindsight_docker_run_migrations_on_startup back to true and
+      let the API migrate itself on startup instead.
+    quiet: true
+  run_once: true
+
+- name: Run the Hindsight database migration once, using the target image
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network=host
+      - -e
+      - HINDSIGHT_API_DATABASE_URL={{ hindsight_docker_db_url }}
+      - "{{ hindsight_docker_image }}"
+      - hindsight-admin
+      - run-db-migration
+  run_once: true
+  changed_when: true
+  no_log: true

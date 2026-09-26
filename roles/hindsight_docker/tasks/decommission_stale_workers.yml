@@ -1,0 +1,69 @@
+---
+# Release processing tasks claimed by a worker id (== inventory_hostname,
+# see hindsight_docker_worker_id) that no longer has a matching host in
+# hindsight_group — a removed/renamed guest, whose claimed-but-orphaned
+# tasks would otherwise never be reclaimed (vectorize-io/hindsight#4762).
+# `hindsight-admin decommission-workers` (plural) releases EVERY worker's
+# tasks unconditionally, including live ones, so it is never used here —
+# only the singular, per-id `decommission-worker` command, scoped to ids
+# this play can prove are stale.
+#
+# Imported from playbooks/site.yml `pre_tasks`, same fatal-on-failure
+# reasoning as tasks/run_db_migration.yml: a failure here must stop the
+# rollout, not be swallowed by the per-replica isolation rescue in
+# tasks/main.yml's caller.
+#
+# `worker-status`'s only machine-readable-ish output is a "Worker: <id> (N
+# task(s))" line per worker with claimed tasks (read from
+# hindsight_api/admin/cli.py at the pinned image's source, not assumed) — a
+# worker with zero claimed tasks never appears at all, so this can only ever
+# decommission a worker that both (a) has orphaned tasks and (b) is absent
+# from inventory. That is exactly the failure mode being closed; a
+# decommissioned-but-idle worker with nothing claimed needs no action.
+
+- name: List Hindsight workers with claimed processing tasks
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network=host
+      - -e
+      - HINDSIGHT_API_DATABASE_URL={{ hindsight_docker_db_url }}
+      - "{{ hindsight_docker_image }}"
+      - hindsight-admin
+      - worker-status
+  register: hindsight_docker_worker_status
+  run_once: true
+  changed_when: false
+  no_log: true
+  when: hindsight_docker_decommission_stale_workers | bool
+
+- name: Determine worker ids with no matching host in hindsight_group
+  ansible.builtin.set_fact:
+    hindsight_docker_stale_worker_ids: >-
+      {{ (hindsight_docker_worker_status.stdout | default('')
+          | regex_findall('^Worker: (\S+) ', multiline=True))
+         | difference(groups['hindsight_group']) }}
+  run_once: true
+  when: hindsight_docker_decommission_stale_workers | bool
+
+- name: Decommission worker ids no longer present in inventory
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network=host
+      - -e
+      - HINDSIGHT_API_DATABASE_URL={{ hindsight_docker_db_url }}
+      - "{{ hindsight_docker_image }}"
+      - hindsight-admin
+      - decommission-worker
+      - "{{ item }}"
+      - --yes
+  loop: "{{ hindsight_docker_stale_worker_ids | default([]) }}"
+  run_once: true
+  changed_when: true
+  no_log: true
+  when: hindsight_docker_decommission_stale_workers | bool

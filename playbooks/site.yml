@@ -123,6 +123,22 @@
       ansible.builtin.import_tasks: tasks/pool_member_gate.yml
     - name: Load the fabric model registry
       ansible.builtin.import_tasks: tasks/load_fabric_registry.yml
+    # The next two run via include_role (not import_tasks) so the role's own
+    # defaults/main.yml (image tag, DB URL, the backup-confirm gate) are
+    # loaded before these fire — pre_tasks runs before the `tasks:` block's
+    # include_role below, so defaults are not otherwise in scope yet.
+    # Deliberately OUTSIDE the block/rescue in `tasks:`: a failure here must
+    # be fatal to the whole play (max_fail_percentage: 0 stops the rollout
+    # before any replica sees the new image), not recorded as one replica's
+    # isolated failure the way a tasks/main.yml failure is.
+    - name: Run the Hindsight database migration once, before any replica redeploys
+      ansible.builtin.include_role:
+        name: hindsight_docker
+        tasks_from: run_db_migration.yml
+    - name: Decommission Hindsight worker ids no longer present in inventory
+      ansible.builtin.include_role:
+        name: hindsight_docker
+        tasks_from: decommission_stale_workers.yml
   tags:
     - hindsight_docker
     - memory
