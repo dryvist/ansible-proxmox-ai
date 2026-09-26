@@ -72,13 +72,31 @@ def test_defaults_derive_db_url_from_the_same_parts_the_template_used_to_inline(
         assert part in defaults_source.split("hindsight_docker_db_url:")[1].split("\n\n")[0]
 
 
-def test_migration_task_gates_on_an_explicit_backup_confirmation() -> None:
+def test_migration_task_takes_an_automated_pre_migration_backup() -> None:
+    # No human confirmation gate: every converge takes its own fresh backup
+    # via the vendored `hindsight-admin backup` command, then refuses to
+    # migrate unless that backup file actually exists and is non-empty.
     tasks = _load_role_tasks("run_db_migration.yml")
     names = [t["name"] for t in tasks]
-    assert "Refuse to run the Hindsight DB migration without a confirmed fresh backup" in names
-    gate = next(t for t in tasks if "Refuse to run" in t["name"])
-    assert gate["ansible.builtin.assert"]["that"] == ["hindsight_docker_migration_backup_confirmed | bool"]
+    assert "Take a pre-migration database backup" in names
+    assert "Assert the pre-migration backup succeeded" in names
+
+    backup = next(t for t in tasks if t["name"] == "Take a pre-migration database backup")
+    argv = backup["ansible.builtin.command"]["argv"]
+    assert argv[-3:] == ["hindsight-admin", "backup", "/backup/pre-migration.zip"]
+    assert any("HINDSIGHT_API_DATABASE_URL={{ hindsight_docker_db_url }}" == a for a in argv)
+    assert "{{ hindsight_docker_migration_backup_dir }}:/backup" in argv
+    assert backup.get("run_once") is True
+
+    gate = next(t for t in tasks if t["name"] == "Assert the pre-migration backup succeeded")
+    assert gate["ansible.builtin.assert"]["that"] == [
+        "hindsight_docker_premigration_backup_stat.stat.exists",
+        "hindsight_docker_premigration_backup_stat.stat.size > 0",
+    ]
     assert gate.get("run_once") is True
+
+    # The migration task itself must come after the backup gate, not before.
+    assert names.index(gate["name"]) < names.index("Run the Hindsight database migration once, using the target image")
 
 
 def test_migration_task_runs_against_the_target_image_using_the_shared_db_url() -> None:
@@ -131,7 +149,7 @@ def test_site_yml_wires_both_lifecycle_tasks_before_the_isolated_block() -> None
 def test_lifecycle_gates_file_uses_include_role_so_role_defaults_resolve() -> None:
     # include_role (not import_tasks on the role's raw task path) is
     # load-bearing: it is what makes the role's own defaults/main.yml (image
-    # tag, db_url, the backup-confirm var) resolve before these fire in
+    # tag, db_url, the pre-migration backup dir) resolve before these fire in
     # pre_tasks, ahead of `tasks:` where the role is otherwise entered.
     gates = yaml.safe_load((REPO_ROOT / "playbooks/tasks/hindsight_lifecycle_gates.yml").read_text())
     names = [t["name"] for t in gates]

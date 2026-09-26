@@ -23,13 +23,12 @@
     hindsight_docker_llm_base_url: "http://127.0.0.1:9/v1"  # never called during converge
     hindsight_docker_llm_model: ai-default
     hindsight_docker_worker_id: hindsight-test
-    # Production leaves this false and runs the migration once, out-of-band,
-    # from playbooks/site.yml pre_tasks (roles/hindsight_docker/tasks/
-    # run_db_migration.yml) before the serial rollout. This scenario
-    # converges the role directly against a fresh pgvector container and
-    # never runs that pre_tasks step, so the schema would otherwise never
-    # get created and /health would never turn green.
-    hindsight_docker_run_migrations_on_startup: true
+    # Matches production (false): the migration runs explicitly, once, from
+    # tasks/run_db_migration.yml — see the task below that calls it via
+    # include_role/tasks_from before the role itself is included, exercising
+    # the real pre-migration-backup + migration tasks against the fresh
+    # pgvector container instead of letting the API self-migrate on startup.
+    hindsight_docker_run_migrations_on_startup: false
     # The production cold-start ceiling (10 min) is sized for HuggingFace model
     # downloads + a real fabric-router LLM verify; the scenario has neither, so
     # keep the readiness gate short to fail fast on a genuinely broken converge.
@@ -70,6 +69,13 @@
         --format {% raw %}'{{ (index .IPAM.Config 0).Gateway }}'{% endraw %}
       register: hindsight_molecule_bridge_gw
       changed_when: false
+
+    - name: Run the real pre-migration-backup + migration tasks against the fresh database
+      ansible.builtin.include_role:
+        name: hindsight_docker
+        tasks_from: run_db_migration.yml
+      vars:
+        hindsight_docker_db_host: "{{ hindsight_molecule_bridge_gw.stdout | trim }}"
 
     - name: Converge hindsight with container-log capture on failure
       block:

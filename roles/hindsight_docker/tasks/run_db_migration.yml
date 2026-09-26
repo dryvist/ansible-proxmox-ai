@@ -14,23 +14,58 @@
 # never be treated that way — pre_tasks sits outside that rescue, so its
 # failure is fatal to the whole play, and max_fail_percentage: 0 on a
 # serial:1 play stops the rollout before any replica sees the new image.
+#
+# The pre-migration backup below uses the vendored `hindsight-admin backup`
+# command (confirmed present at 0.10.1: vectorize-io/hindsight
+# hindsight-api-slim/hindsight_api/admin/cli.py) rather than a human
+# confirmation gate — every converge takes its own fresh backup immediately
+# before migrating, no operator step required. A fixed filename is
+# deliberate: this is an immediate abort-safety net for THIS migration
+# attempt, not a retained history (durable backup ownership is pgBackRest, in
+# ansible-proxmox-apps) — each run's backup only needs to outlive that run's
+# migration.
 
-- name: Refuse to run the Hindsight DB migration without a confirmed fresh backup
+- name: Ensure the pre-migration backup directory exists
+  ansible.builtin.file:
+    path: "{{ hindsight_docker_migration_backup_dir }}"
+    state: directory
+    mode: "0700"
+  run_once: true
+
+- name: Take a pre-migration database backup
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network=host
+      - -e
+      - HINDSIGHT_API_DATABASE_URL={{ hindsight_docker_db_url }}
+      - -v
+      - "{{ hindsight_docker_migration_backup_dir }}:/backup"
+      - "{{ hindsight_docker_image }}"
+      - hindsight-admin
+      - backup
+      - /backup/pre-migration.zip
+  run_once: true
+  changed_when: true
+  no_log: true
+
+- name: Refuse to migrate unless the pre-migration backup file is present and non-empty
+  ansible.builtin.stat:
+    path: "{{ hindsight_docker_migration_backup_dir }}/pre-migration.zip"
+  register: hindsight_docker_premigration_backup_stat
+  run_once: true
+
+- name: Assert the pre-migration backup succeeded
   ansible.builtin.assert:
     that:
-      - hindsight_docker_migration_backup_confirmed | bool
+      - hindsight_docker_premigration_backup_stat.stat.exists
+      - hindsight_docker_premigration_backup_stat.stat.size > 0
     fail_msg: >-
-      hindsight_docker_migration_backup_confirmed is false. This repo has no
-      reachable signal for pgBackRest backup freshness on
-      {{ hindsight_docker_db_host }} — that role (pgbackrest.yml,
-      pg-backup.timer) lives in ansible-proxmox-apps and exposes no
-      cross-repo age check or trigger today. Confirm a recent full backup
-      (`pgbackrest info` on the postgres primary) or trigger one via the
-      existing pg-backup.timer / pgbackrest-backup@.timer units, then re-run
-      with -e hindsight_docker_migration_backup_confirmed=true. To skip this
-      migration entirely (NOT recommended before a schema-changing image
-      bump), set hindsight_docker_run_migrations_on_startup back to true and
-      let the API migrate itself on startup instead.
+      hindsight-admin backup did not produce a usable file at
+      {{ hindsight_docker_migration_backup_dir }}/pre-migration.zip. Refusing
+      to run the schema migration without one.
     quiet: true
   run_once: true
 
