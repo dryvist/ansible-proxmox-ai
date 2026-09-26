@@ -75,15 +75,19 @@
       until: hindsight_verify_health.status == 200
 
     # The converge playbook runs tasks/run_db_migration.yml explicitly (real
-    # migration path, not the startup-migration override) before including
-    # the role — confirm it left a non-empty pre-migration backup behind.
+    # migration path, not the startup-migration override) against a freshly
+    # started pgvector container with no pre-existing schema — confirm the
+    # backup was correctly skipped rather than taken against nothing.
     - name: Stat the pre-migration backup produced by run_db_migration.yml
       ansible.builtin.stat:
         path: "{{ hindsight_docker_data_dir }}/pre-migration-backups/pre-migration.zip"
       register: hindsight_premigration_backup_stat
 
-    - name: Assert the pre-migration backup exists and is non-empty
+    - name: Assert no pre-migration backup was taken against a schema-less database
       ansible.builtin.assert:
         that:
-          - hindsight_premigration_backup_stat.stat.exists
-          - hindsight_premigration_backup_stat.stat.size > 0
+          - not hindsight_premigration_backup_stat.stat.exists
+        fail_msg: >-
+          A pre-migration backup file exists, but this scenario's pgvector
+          container starts with no pre-existing schema — run_db_migration.yml
+          should have skipped the backup entirely.
