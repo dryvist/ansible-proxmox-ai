@@ -102,25 +102,59 @@ def test_migration_task_takes_an_automated_pre_migration_backup() -> None:
     assert names.index(gate["name"]) < names.index("Run the Hindsight database migration once, using the target image")
 
 
-def test_backup_tolerates_a_schema_less_first_deploy_but_nothing_else() -> None:
-    # A first-ever deploy has no schema yet, so hindsight-admin backup fails
-    # with UndefinedTableError (nothing to read) — that specific case is
-    # tolerated, since run-db-migration is about to create the schema from
-    # scratch; any other backup failure must still fail the play, and the
-    # file-exists gate must not run at all when there was nothing to back up.
+def test_schema_probe_positively_detects_a_first_deploy() -> None:
+    # A first-ever deploy has no schema yet, so there is nothing to back up
+    # before run-db-migration creates it. Detected positively by probing for
+    # Alembic's own tracker table — not by pattern-matching a backup failure
+    # message, which would also swallow a real partially-broken schema.
     tasks = _load_role_tasks("run_db_migration.yml")
-    backup = next(t for t in tasks if t["name"] == "Take a pre-migration database backup")
-    assert backup["register"] == "hindsight_docker_premigration_backup"
-    assert backup["failed_when"] == (
-        "hindsight_docker_premigration_backup.rc != 0 and "
-        "'UndefinedTableError' not in hindsight_docker_premigration_backup.stderr"
+
+    probe = next(t for t in tasks if t["name"].startswith("Probe whether the Alembic"))
+    argv = probe["ansible.builtin.command"]["argv"]
+    assert argv[-1] == "SELECT to_regclass('public.alembic_version') IS NOT NULL"
+    assert not any("hindsight_docker_db_password" in a for a in argv)
+    assert probe["environment"] == {"PGPASSWORD": "{{ hindsight_docker_db_password }}"}
+    assert probe.get("run_once") is True
+    # An inconclusive probe (bad rc, or output that isn't a clean t/f) must
+    # fail the play — never silently fall through to "no schema" and skip a
+    # backup that may have been needed.
+    assert probe["failed_when"] == (
+        "hindsight_docker_schema_probe.rc != 0 "
+        "or (hindsight_docker_schema_probe.stdout | default('') | trim) not in ['t', 'f']"
     )
 
-    stat_task = next(t for t in tasks if t["name"].startswith("Refuse to migrate unless"))
-    assert stat_task["when"] == "hindsight_docker_premigration_backup.rc == 0"
+    fact_task = next(t for t in tasks if t["name"] == "Record whether an existing schema was found")
+    expr = fact_task["ansible.builtin.set_fact"]["hindsight_docker_schema_exists"]
 
-    gate = next(t for t in tasks if t["name"] == "Assert the pre-migration backup succeeded")
-    assert gate["when"] == "hindsight_docker_premigration_backup.rc == 0"
+    # Behavioral, not just structural: actually evaluate the Jinja expression
+    # the role runs, for both probe outcomes.
+    import jinja2
+
+    jinja_env = jinja2.Environment()
+    template = jinja_env.from_string(expr)
+    render = lambda stdout: template.render(hindsight_docker_schema_probe={"stdout": stdout})  # noqa: E731
+    assert render("t") == "True"  # tracker present -> existing schema
+    assert render("f") == "False"  # tracker absent -> first deploy
+
+
+def test_backup_runs_only_when_a_schema_exists_and_any_failure_is_fatal() -> None:
+    tasks = _load_role_tasks("run_db_migration.yml")
+
+    backup = next(t for t in tasks if t["name"] == "Take a pre-migration database backup")
+    assert backup["when"] == "hindsight_docker_schema_exists"
+    # No failed_when override: a real backup failure (schema present, write
+    # error, connection drop, anything) uses ansible.builtin.command's
+    # default behavior and fails the play — the stderr-tolerance this once
+    # had is gone entirely.
+    assert "failed_when" not in backup
+    assert "register" not in backup
+
+    for name in (
+        "Refuse to migrate unless the pre-migration backup file is present and non-empty",
+        "Assert the pre-migration backup succeeded",
+    ):
+        gated = next(t for t in tasks if t["name"] == name)
+        assert gated["when"] == "hindsight_docker_schema_exists"
 
 
 def test_migration_task_runs_against_the_target_image_using_the_shared_db_url() -> None:

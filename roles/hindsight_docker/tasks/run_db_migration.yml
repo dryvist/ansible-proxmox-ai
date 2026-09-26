@@ -20,17 +20,67 @@
 # (root, under become) — matching the same non-root/bind-mount conflict
 # the compose template's cache volume comment already documents.
 #
-# A first-ever deploy has no schema yet — hindsight-admin backup fails
-# with UndefinedTableError against a schema-less database, since it has
-# nothing to read. That specific failure is tolerated (there is nothing
-# to back up before a migration that is about to create the schema from
-# scratch); any other backup failure still fails the play.
+# A first-ever deploy has no schema yet, so there is nothing to back up
+# before run-db-migration creates it from scratch. This is detected
+# positively — probing for Alembic's own `alembic_version` tracker table
+# (the table run-db-migration itself creates and stamps; confirmed at
+# both the v0.9.0 and v0.10.1 vendor tags, same table, no version_table
+# override) — rather than by pattern-matching a backup failure message,
+# so a real partially-broken schema (some tables present, others missing)
+# still takes a backup and still fails the play like any other backup
+# failure, instead of being silently skipped.
 
 - name: Ensure the pre-migration backup directory exists
   ansible.builtin.file:
     path: "{{ hindsight_docker_migration_backup_dir }}"
     state: directory
     mode: "0700"
+  run_once: true
+
+- name: Install the database client used to probe for an existing schema
+  ansible.builtin.apt:
+    name: postgresql-client
+    state: present
+  run_once: true
+
+- name: Probe whether the Alembic migration tracker table already exists
+  ansible.builtin.command:
+    argv:
+      - psql
+      - >-
+        postgresql://{{ hindsight_docker_db_user }}@{{ hindsight_docker_db_host }}:{{
+        hindsight_docker_db_port }}/{{ hindsight_docker_db_name }}
+      - -tAc
+      - "SELECT to_regclass('public.alembic_version') IS NOT NULL"
+  environment:
+    # The password never rides argv (visible in /proc/*/cmdline, ps, and
+    # audit logs for the probe's lifetime); PGPASSWORD is psql's own
+    # env-var credential path.
+    PGPASSWORD: "{{ hindsight_docker_db_password }}"
+  register: hindsight_docker_schema_probe
+  run_once: true
+  changed_when: false
+  # An inconclusive probe (connection error, unexpected output) must fail
+  # the play rather than silently fall through to "no schema, skip the
+  # backup" — that would make a transient probe failure indistinguishable
+  # from a genuinely fresh database and skip a backup that was needed.
+  failed_when: >-
+    hindsight_docker_schema_probe.rc != 0
+    or (hindsight_docker_schema_probe.stdout | default('') | trim) not in ['t', 'f']
+
+- name: Record whether an existing schema was found
+  ansible.builtin.set_fact:
+    hindsight_docker_schema_exists: "{{ (hindsight_docker_schema_probe.stdout | trim) == 't' }}"
+  run_once: true
+
+- name: Report the pre-migration backup decision
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Existing schema found (alembic_version present) — taking a
+      pre-migration backup.'
+      if hindsight_docker_schema_exists
+      else 'No existing schema (alembic_version absent) — first deploy,
+      nothing to back up before run-db-migration creates it.' }}
   run_once: true
 
 - name: Take a pre-migration database backup
@@ -52,19 +102,16 @@
       - /backup/pre-migration.zip
   environment:
     HINDSIGHT_API_DATABASE_URL: "{{ hindsight_docker_db_url }}"
-  register: hindsight_docker_premigration_backup
   run_once: true
-  changed_when: hindsight_docker_premigration_backup.rc == 0
-  failed_when: >-
-    hindsight_docker_premigration_backup.rc != 0 and
-    'UndefinedTableError' not in hindsight_docker_premigration_backup.stderr
+  changed_when: true
+  when: hindsight_docker_schema_exists
 
 - name: Refuse to migrate unless the pre-migration backup file is present and non-empty
   ansible.builtin.stat:
     path: "{{ hindsight_docker_migration_backup_dir }}/pre-migration.zip"
   register: hindsight_docker_premigration_backup_stat
   run_once: true
-  when: hindsight_docker_premigration_backup.rc == 0
+  when: hindsight_docker_schema_exists
 
 - name: Assert the pre-migration backup succeeded
   ansible.builtin.assert:
@@ -76,7 +123,7 @@
       {{ hindsight_docker_migration_backup_dir }}/pre-migration.zip.
     quiet: true
   run_once: true
-  when: hindsight_docker_premigration_backup.rc == 0
+  when: hindsight_docker_schema_exists
 
 - name: Run the Hindsight database migration once, using the target image
   ansible.builtin.command:
