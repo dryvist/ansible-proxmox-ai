@@ -193,9 +193,13 @@ def test_stale_worker_filter_renders_from_the_real_task_expression() -> None:
 def test_site_yml_imports_the_hindsight_play() -> None:
     # The play itself was split into playbooks/hindsight.yml to keep site.yml
     # under its token budget (.token-limits.yaml) — same pattern already
-    # used there for agents.yml, llm-serving.yml, and phoenix.yml.
+    # used there for agents.yml, llm-serving.yml, and phoenix.yml. The
+    # imported file also holds the hindsight_bank_dr logical-DR play
+    # (a separate lane), hence the combined play name here.
     site = yaml.safe_load(SITE_YML.read_text())
-    hindsight_entry = next(p for p in site if p.get("name") == "Configure Hindsight agent-memory service")
+    hindsight_entry = next(
+        p for p in site if p.get("name") == "Configure Hindsight (agent-memory service + logical DR)"
+    )
     assert hindsight_entry["import_playbook"] == "hindsight.yml"
 
 
@@ -235,7 +239,11 @@ def test_decommission_runs_from_its_own_final_play_not_serial_one() -> None:
     # non-serial play that runs after every batch of the rolling play above
     # has redeployed and passed its health check.
     hindsight_plays = yaml.safe_load(HINDSIGHT_PLAYBOOK.read_text())
-    assert len(hindsight_plays) == 2
+    # 3 plays: the rolling hindsight_docker redeploy, this decommission
+    # sweep, and (a separate lane's) hindsight_bank_dr logical-DR play —
+    # order matters for the two asserted below, the third is out of scope
+    # for this test file.
+    assert len(hindsight_plays) == 3
     decommission_play = hindsight_plays[1]
     assert decommission_play["hosts"] == "hindsight_group"
     assert "serial" not in decommission_play
