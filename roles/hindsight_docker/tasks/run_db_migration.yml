@@ -29,6 +29,21 @@
 # so a real partially-broken schema (some tables present, others missing)
 # still takes a backup and still fails the play like any other backup
 # failure, instead of being silently skipped.
+#
+# Both the backup and the migration are additionally gated on a migration
+# actually being pending, so a converge against an already-migrated
+# database changes nothing: the database's current revision (queried from
+# alembic_version once a schema exists) is compared against the image's
+# target head revision, read from the vendored `alembic` CLI (bundled in
+# the image alongside `hindsight-admin`; confirmed at both the v0.9.0 and
+# v0.10.1 tags) via `alembic heads` against a one-line generated config —
+# no database connection needed for that side. A migration is pending
+# when there is no schema yet, or the current revision differs from the
+# head. The migration task's own changed_when additionally derives from
+# Alembic's own log output (confirmed at the pinned v0.9.0 tag: a real
+# upgrade logs "Running upgrade <rev> -> <rev>, ..." per revision to
+# stderr; a no-op run logs none), so it reports accurately even if
+# nothing above ever puts it in that position.
 
 - name: Ensure the pre-migration backup directory exists
   ansible.builtin.file:
@@ -73,14 +88,84 @@
     hindsight_docker_schema_exists: "{{ (hindsight_docker_schema_probe.stdout | trim) == 't' }}"
   run_once: true
 
-- name: Report the pre-migration backup decision
+- name: Probe the database's current Alembic revision
+  ansible.builtin.command:
+    argv:
+      - psql
+      - >-
+        postgresql://{{ hindsight_docker_db_user }}@{{ hindsight_docker_db_host }}:{{
+        hindsight_docker_db_port }}/{{ hindsight_docker_db_name }}
+      - -tAc
+      - "SELECT version_num FROM public.alembic_version"
+  environment:
+    PGPASSWORD: "{{ hindsight_docker_db_password }}"
+  register: hindsight_docker_current_revision_probe
+  run_once: true
+  when: hindsight_docker_schema_exists
+  changed_when: false
+  # Same fail-closed discipline as the existence probe above: a connection
+  # error or a tracker table with anything other than exactly one row
+  # must fail the play, not be read as "no current revision".
+  failed_when: >-
+    hindsight_docker_current_revision_probe.rc != 0
+    or (hindsight_docker_current_revision_probe.stdout_lines | default([]) | length) != 1
+
+- name: Generate the alembic config used to read the image's target head revision
+  ansible.builtin.copy:
+    dest: "{{ hindsight_docker_migration_backup_dir }}/alembic-heads.ini"
+    content: |
+      [alembic]
+      script_location = {{ hindsight_docker_alembic_script_location }}
+    mode: "0644"
+  run_once: true
+
+- name: Determine the target head revision from the image
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network=host
+      - -v
+      - "{{ hindsight_docker_migration_backup_dir }}/alembic-heads.ini:/tmp/alembic-heads.ini:ro"
+      - "{{ hindsight_docker_image }}"
+      - alembic
+      - -c
+      - /tmp/alembic-heads.ini
+      - heads
+  register: hindsight_docker_head_revision_probe
+  run_once: true
+  changed_when: false
+  # Fails closed the same way: a bad exit, or anything other than exactly
+  # one head line (none, or an unexpected branched-history multi-head
+  # tree), must not be silently read as "no migration pending".
+  failed_when: >-
+    hindsight_docker_head_revision_probe.rc != 0
+    or (hindsight_docker_head_revision_probe.stdout_lines | default([]) | length) != 1
+
+- name: Record the image's target head revision
+  ansible.builtin.set_fact:
+    hindsight_docker_target_head_revision: "{{ (hindsight_docker_head_revision_probe.stdout | trim).split(' ')[0] }}"
+  run_once: true
+
+- name: Determine whether a migration is pending
+  ansible.builtin.set_fact:
+    hindsight_docker_migration_pending: >-
+      {{ not hindsight_docker_schema_exists
+      or (hindsight_docker_current_revision_probe.stdout | trim) != hindsight_docker_target_head_revision }}
+  run_once: true
+
+- name: Report the migration decision
   ansible.builtin.debug:
     msg: >-
-      {{ 'Existing schema found (alembic_version present) — taking a
-      pre-migration backup.'
-      if hindsight_docker_schema_exists
-      else 'No existing schema (alembic_version absent) — first deploy,
-      nothing to back up before run-db-migration creates it.' }}
+      {{ 'No existing schema (alembic_version absent) — first deploy,
+      nothing to back up before run-db-migration creates it.'
+      if not hindsight_docker_schema_exists
+      else ('Database already at the target head revision (' ~ hindsight_docker_target_head_revision
+      ~ ') — nothing to migrate.'
+      if not hindsight_docker_migration_pending
+      else 'Migration pending (current ' ~ (hindsight_docker_current_revision_probe.stdout | trim)
+      ~ ', target ' ~ hindsight_docker_target_head_revision ~ ') — taking a pre-migration backup.') }}
   run_once: true
 
 - name: Take a pre-migration database backup
@@ -104,14 +189,14 @@
     HINDSIGHT_API_DATABASE_URL: "{{ hindsight_docker_db_url }}"
   run_once: true
   changed_when: true
-  when: hindsight_docker_schema_exists
+  when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
 
 - name: Refuse to migrate unless the pre-migration backup file is present and non-empty
   ansible.builtin.stat:
     path: "{{ hindsight_docker_migration_backup_dir }}/pre-migration.zip"
   register: hindsight_docker_premigration_backup_stat
   run_once: true
-  when: hindsight_docker_schema_exists
+  when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
 
 - name: Assert the pre-migration backup succeeded
   ansible.builtin.assert:
@@ -123,7 +208,7 @@
       {{ hindsight_docker_migration_backup_dir }}/pre-migration.zip.
     quiet: true
   run_once: true
-  when: hindsight_docker_schema_exists
+  when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
 
 - name: Run the Hindsight database migration once, using the target image
   ansible.builtin.command:
@@ -142,5 +227,7 @@
   environment:
     HINDSIGHT_API_DATABASE_URL: "{{ hindsight_docker_db_url }}"
     HINDSIGHT_API_VECTOR_EXTENSION: "{{ hindsight_docker_vector_extension }}"
+  register: hindsight_docker_migration_result
   run_once: true
-  changed_when: true
+  when: hindsight_docker_migration_pending
+  changed_when: "'Running upgrade' in hindsight_docker_migration_result.stderr"
