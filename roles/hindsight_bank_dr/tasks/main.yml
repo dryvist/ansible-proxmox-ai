@@ -4,18 +4,14 @@
 # like roles/postgres's pg-backup.{sh,service,timer} — no scripts embedded in
 # playbook YAML.
 
-- name: Assert the RustFS S3 credentials are set
-  ansible.builtin.assert:
-    that:
-      - hindsight_bank_dr_s3_endpoint | length > 0
-      - hindsight_bank_dr_s3_access_key_id | length > 0
-      - hindsight_bank_dr_s3_secret_access_key | length > 0
-    fail_msg: >-
-      Hindsight bank export/drill are enabled but the RustFS S3
-      endpoint/credentials are unset. Set HINDSIGHT_BANK_DR_S3_ENDPOINT,
-      HINDSIGHT_BANK_DR_S3_ACCESS_KEY_ID, and
-      HINDSIGHT_BANK_DR_S3_SECRET_ACCESS_KEY.
-    quiet: true
+- name: Assert the RustFS S3 credentials rendered into the env file are present
+  ansible.builtin.include_tasks: "{{ role_path }}/../openbao_secrets/tasks/assert_nonempty.yml"
+  vars:
+    openbao_secrets_assert_context: the hindsight-bank-dr EnvironmentFile
+    openbao_secrets_assert_names:
+      - hindsight_bank_dr_s3_endpoint
+      - hindsight_bank_dr_s3_access_key_id
+      - hindsight_bank_dr_s3_secret_access_key
 
 - name: Install awscli and jq for the export/drill scripts
   ansible.builtin.apt:
@@ -50,6 +46,18 @@
     group: root
     mode: "0700"
   no_log: true
+
+- name: Render the RustFS S3 credentials into a root-only EnvironmentFile
+  ansible.builtin.template:
+    src: hindsight-bank-dr.env.j2
+    dest: /etc/hindsight-bank-dr.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  # No restart/notify needed: both jobs are oneshot units invoked by a timer,
+  # never running continuously, so the next scheduled run simply reads
+  # whatever this file currently holds.
 
 - name: Deploy the export systemd units
   ansible.builtin.template:

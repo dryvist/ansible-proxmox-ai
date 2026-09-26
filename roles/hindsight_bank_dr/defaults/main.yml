@@ -16,8 +16,8 @@
 # this role never edits (lane boundary — L1 owns that role). It only shells
 # into the ALREADY RUNNING container via `docker exec`/`docker cp`, so it
 # needs no image tag of its own and no compose change.
-hindsight_bank_dr_container_name: "{{ hindsight_docker_container_name | default('hindsight') }}"
-hindsight_bank_dr_api_port: "{{ hindsight_docker_api_port | default(8888) }}"
+hindsight_bank_dr_container_name: "{{ hindsight_docker_container_name }}"
+hindsight_bank_dr_api_port: "{{ hindsight_docker_api_port }}"
 
 # Staging directory for a run's local zip files (never left populated across
 # runs — each script clears its own tree before and after).
@@ -30,20 +30,30 @@ hindsight_bank_dr_staging_dir: /var/lib/hindsight-bank-dr
 hindsight_bank_dr_s3_bucket: hindsight-bank-exports
 hindsight_bank_dr_s3_prefix: banks
 
-# Injection-agnostic env vars, same shape as ansible-proxmox-apps roles/postgres's
-# postgres_backup_s3_* (see that role's defaults/main/02-pgbackrest.yml): on-site
-# RustFS write access is root creds today for every existing consumer of this
-# store (pgBackRest's repo1 included) — true per-bucket RustFS IAM scoping is a
-# known estate-wide gap, not something this lane invents unilaterally. This
-# stays on the same convention so a future scoped-key migration only has to
-# change where these env vars are populated, never the consumer.
-hindsight_bank_dr_s3_endpoint: "{{ lookup('env', 'HINDSIGHT_BANK_DR_S3_ENDPOINT') | default('', true) }}"
+# Scoped RustFS credentials for THIS bucket only — never a root/admin key
+# (secrets-separation.md "Object storage": two scoped keys per bucket, ro/rw;
+# an account-wide admin key is break-glass only and never stored where a
+# service can read it). roles/postgres's pgBackRest still reads a root key via
+# env var for its own bucket; that is an existing violation this role does not
+# copy. The `hindsight-bank-exports` rw key is generated at source in OpenBao
+# by roles/object_storage's per-bucket RustFS user provisioning and fetched
+# here the same way roles/hindsight_docker reads its own secrets: once, into
+# the bao_apps_secrets fact (Phase 0 pre-fetch in site.yml), never via
+# lookup('env', ...).
+# TODO: field names below are placeholders pending the exact OpenBao KV field
+# names for the hindsight-bank-exports rw key, to be confirmed once
+# object_storage's per-bucket RustFS user PR is up.
+hindsight_bank_dr_s3_endpoint: >-
+  {{ bao_apps_secrets.hindsight_bank_exports_s3_endpoint
+     | mandatory('hindsight_bank_exports_s3_endpoint is not seeded: run apps openbao provisioning') }}
 hindsight_bank_dr_s3_region: >-
-  {{ lookup('env', 'HINDSIGHT_BANK_DR_S3_REGION') | default('us-east-1', true) }}
+  {{ bao_apps_secrets.hindsight_bank_exports_s3_region | default('us-east-1', true) }}
 hindsight_bank_dr_s3_access_key_id: >-
-  {{ lookup('env', 'HINDSIGHT_BANK_DR_S3_ACCESS_KEY_ID') | default('', true) }}
+  {{ bao_apps_secrets.hindsight_bank_exports_rw_access_key_id
+     | mandatory('hindsight_bank_exports_rw_access_key_id is not seeded: run apps openbao provisioning') }}
 hindsight_bank_dr_s3_secret_access_key: >-
-  {{ lookup('env', 'HINDSIGHT_BANK_DR_S3_SECRET_ACCESS_KEY') | default('', true) }}
+  {{ bao_apps_secrets.hindsight_bank_exports_rw_secret_access_key
+     | mandatory('hindsight_bank_exports_rw_secret_access_key is not seeded: run apps openbao provisioning') }}
 
 # Retention: prune date-prefixed export objects older than this many days,
 # SCRIPT-SIDE (aws s3 rm), mirroring roles/postgres's pg-backup.sh find-based
@@ -64,8 +74,7 @@ hindsight_bank_dr_retention_days: 14
 # this bucket's name to object_storage_default_buckets (done in this lane's
 # other repo) makes it ELIGIBLE for that mechanism; actually enabling the copy
 # needs a scoped B2 application-key pair this session cannot provision (a
-# human-wrapped OpenBao write) — see SD/lane-L4x.md for the exact bucket name
-# and secrets-external/ path to mint.
+# human-wrapped OpenBao write).
 
 # --- Nightly export schedule -------------------------------------------------
 hindsight_bank_dr_export_on_calendar: "*-*-* 03:15:00"

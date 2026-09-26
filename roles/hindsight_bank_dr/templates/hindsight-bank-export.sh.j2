@@ -27,10 +27,10 @@ on_exit() {
 }
 trap on_exit EXIT
 
-export AWS_ACCESS_KEY_ID="{{ hindsight_bank_dr_s3_access_key_id }}"
-export AWS_SECRET_ACCESS_KEY="{{ hindsight_bank_dr_s3_secret_access_key }}"
-export AWS_DEFAULT_REGION="{{ hindsight_bank_dr_s3_region }}"
-S3_ENDPOINT="{{ hindsight_bank_dr_s3_endpoint }}"
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION / S3_ENDPOINT
+# arrive as real process environment variables via the unit's
+# EnvironmentFile= (see hindsight-bank-dr.env.j2) — never baked into this
+# rendered script, so the credential never lands in a checked-in artifact.
 
 mkdir -p "$STAGING"
 rm -f "${STAGING:?}"/*.zip 2>/dev/null || true
@@ -52,6 +52,7 @@ while :; do
   # script comes from jq instead of an array-length expansion.
   FETCHED=$(echo "$PAGE" | jq -r '.banks | length')
   if [ "$FETCHED" -eq 0 ]; then break; fi
+  mapfile -t PAGE_IDS < <(echo "$PAGE" | jq -r '.banks[].bank_id')
   BANK_IDS+=("${PAGE_IDS[@]}")
   BANK_TOTAL=$((BANK_TOTAL + FETCHED))
   TOTAL=$(echo "$PAGE" | jq -r '.total')
@@ -92,7 +93,11 @@ done
 
 END_EPOCH=$(date +%s)
 RESULT="pass"
-[ "$FAILED" -eq 0 ] || RESULT="fail"
+# Pass requires both zero failures AND every enumerated bank actually
+# uploaded — a script that silently walks an empty BANK_IDS (e.g. a
+# regression in the enumeration step above) must not report success just
+# because nothing failed.
+[ "$FAILED" -eq 0 ] && [ "$EXPORTED" -eq "$BANK_TOTAL" ] || RESULT="fail"
 FAILED_JOINED="$(IFS=,; echo "${FAILED_BANKS[*]:-}")"
 
 # One structured JSON line to stdout -> journald (SyslogIdentifier below)
@@ -102,4 +107,4 @@ printf '{"event":"hindsight_bank_export","result":"%s","banks_total":%d,"exporte
   "$RESULT" "$BANK_TOTAL" "$EXPORTED" "$FAILED" "$FAILED_JOINED" \
   "$((END_EPOCH - START_EPOCH))" "$BUCKET" "$DATE_STAMP"
 
-[ "$FAILED" -eq 0 ]
+[ "$RESULT" = "pass" ]
