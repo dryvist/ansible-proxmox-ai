@@ -27,6 +27,7 @@ DEFAULT_CONTEXT = {
     "hindsight_docker_db_url": (
         "postgresql://hindsight:test-db-password@postgres-ai-1.example.test:5432/hindsight"
     ),
+    "hindsight_docker_vector_extension": "pgvector",
     "hindsight_docker_llm_base_url": "https://llm.example.test/v1",
     "hindsight_docker_llm_model": "fixture-primary-model",
     "hindsight_docker_llm_api_key": "sk-hindsight-test",

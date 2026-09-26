@@ -109,9 +109,23 @@ def test_migration_task_runs_against_the_target_image_using_the_shared_db_url() 
     assert argv[-2:] == ["hindsight-admin", "run-db-migration"]
     assert "{{ hindsight_docker_image }}" in argv
     assert "HINDSIGHT_API_DATABASE_URL" in argv
+    assert "HINDSIGHT_API_VECTOR_EXTENSION" in argv
     assert not any("hindsight_docker_db_url" in a for a in argv)
-    assert migrate["environment"] == {"HINDSIGHT_API_DATABASE_URL": "{{ hindsight_docker_db_url }}"}
+    assert migrate["environment"] == {
+        "HINDSIGHT_API_DATABASE_URL": "{{ hindsight_docker_db_url }}",
+        "HINDSIGHT_API_VECTOR_EXTENSION": "{{ hindsight_docker_vector_extension }}",
+    }
     assert migrate.get("run_once") is True
+
+
+def test_compose_template_sources_vector_extension_from_the_shared_var() -> None:
+    # run-db-migration reconciles vector/text-search indexes against
+    # HINDSIGHT_API_VECTOR_EXTENSION — a literal here and a different literal
+    # (or var) in the migration task would silently disagree.
+    template_source = (ROLE_ROOT / "templates/docker-compose.yml.j2").read_text()
+    assert "HINDSIGHT_API_VECTOR_EXTENSION: \"{{ hindsight_docker_vector_extension }}\"" in template_source
+    rendered = render()
+    assert env_line(rendered, "HINDSIGHT_API_VECTOR_EXTENSION").endswith('"pgvector"')
 
 
 def test_decommission_task_extracts_worker_ids_and_diffs_against_inventory() -> None:
