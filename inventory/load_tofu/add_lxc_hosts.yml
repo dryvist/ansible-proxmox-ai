@@ -39,32 +39,15 @@
            )
          | length == 0
 
-# Every container the probe task's `when:` skipped (not a contract-ssh
-# candidate) shows up in these results too. This used to read
-# `rejectattr('failed')` directly, which raises the moment ANY result in
-# the list lacks a `failed` key at all, rather than treating a missing key
-# as falsy — confirmed live: a per-item `when:`-skip result can lack
-# `failed` entirely on this ansible-core (test_ssh_probe_result_selection.yml
-# reproduces the exact shape; a plain per-item skip was NOT enough to
-# trigger it on its own here, so the precise trigger in production is
-# unconfirmed — the fix below is written to be safe regardless of *why* an
-# item might lack the key). `map(attribute='failed', default=false)` is
-# Jinja's own documented mechanism for exactly this ("value to use if the
-# mapped expression evaluates to undefined for any item"), paired by index
-# with the parallel key list via `zip` since `map`/`rejectattr` alone
-# cannot express "default this one attribute, then filter on it" in one
-# pass. Skipped containers are still KEPT in the result (same as before
-# this fix) rather than filtered out — harmless, unchanged from the
-# original design: container_ssh below only ever consults this list for a
-# container that IS an unprobed contract-ssh candidate, and every such
-# container had a REAL probe run above.
+# Ready means the probe actually ran and reported failed: false — a skipped
+# item or one with no `failed` key at all is NOT ready (fail safe).
 - name: Record which contract-declared-ssh containers actually answered
   ansible.builtin.set_fact:
     load_tofu_ssh_ready: >-
-      {%- set _results = load_tofu_ssh_probe.results | default([]) -%}
-      {%- set _keys = _results | map(attribute='item') | map(attribute='key') | list -%}
-      {%- set _failed = _results | map(attribute='failed', default=false) | list -%}
-      {{ _keys | zip(_failed) | rejectattr(1) | map(attribute=0) | list }}
+      {{ load_tofu_ssh_probe.results | default([])
+         | selectattr('skipped', 'undefined')
+         | selectattr('failed', 'defined') | rejectattr('failed')
+         | map(attribute='item.key') | list }}
   when: load_tofu_ssh_ready is not defined
 
 - name: Warn about contract-declared-ssh containers whose sshd did not answer
