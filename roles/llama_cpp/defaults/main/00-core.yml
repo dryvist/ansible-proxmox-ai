@@ -185,30 +185,47 @@ llama_cpp_models_max: 1
 # 14B model and violates the ABSOLUTE >=14B rule above. Do not re-add it here.
 #
 # `name:` on each entry is still a literal, deliberately — it is the JOIN KEY
-# between this file's backend facts (hf_repo, gguf, param_billions) and the
-# registry's own data, and llm-models.d/ is pure data on purpose (no
-# host/port/URL literals, no backend facts — docs/LLM_MODELS_SCHEMA.md), so it
-# cannot own the join key on this side. A lookup that selects a registry entry
-# by this same literal and returns it right back (e.g. `selectattr(...,
-# 'equalto', 'qwen3-4b') | first).client_model_id`) is NOT single-sourcing —
-# it is circular, adds a converge-time dependency on the registry for zero
-# de-duplication, and still re-types the literal, just inside the selector.
-# What the registry genuinely owns here is enforced separately, by the
-# converge-time assert below (tasks/guards.yml): every name here must resolve
-# to a registered client_model_id, so a rename in the registry fails loud
+# between this file's per-deployment serving facts (param_billions, pooling,
+# rerank, ctx_size) and the registry's own data, and llm-models.d/ is pure
+# data on purpose (no host/port/URL literals, no backend facts —
+# docs/LLM_MODELS_SCHEMA.md), so it cannot own the join key on this side. A
+# lookup that selects a registry entry by this same literal and returns it
+# right back is NOT single-sourcing — it is circular and still re-types the
+# literal, just inside the selector. tasks/guards.yml asserts every name here
+# resolves to a registered client_model_id, so a registry rename fails loud
 # instead of silently drifting.
 #
+# hf_repo/gguf are a DIFFERENT join, against a DIFFERENT single source:
+# dryvist.homelab.llm_model_catalog's llm_model_catalog_models (dryvist/
+# homelab-contracts) — the same GGUF catalog ansible-proxmox's
+# llm_model_store_seed role downloads these files from. Join key is
+# _llama_cpp_*_catalog_name below — usually the served name, but not always
+# (embeddings' catalog identity is nomic-embed-text-v1.5, not "embeddings"),
+# hence its own variable. guards.yml asserts every catalog_name in
+# llama_cpp_catalog_lookup_names resolves before any entry dereferences it —
+# same loud-failure reasoning. param_billions stays a literal: no such field
+# in the catalog.
 _llama_cpp_light_general_model_id: qwen3-4b
 _llama_cpp_light_embeddings_model_id: embeddings
 
-# `nomic-embed-text-v1.5`: an extra llama-swap alias on the embeddings entry
-# for third-party clients that default to this well-known embedding model
-# name. Nothing IN THIS REPO requests it (the only local embeddings consumer,
-# roles/llamaindex, requests `embeddings`), but a repo grep cannot see an
-# external/third-party consumer, and this fabric has a specific scar for
-# removing a serving-side alias on repo-local evidence alone (2026-07-28: every
-# consumer alias pointed at something the serving host did not serve — see
-# roles/llm_router/defaults/main/50-servable.yml). Kept for that reason.
+# Extra llama-swap alias on the embeddings entry for third-party clients that
+# default to this well-known embedding model name — kept even though no
+# in-repo consumer requests it (see 2026-07-28 scar,
+# roles/llm_router/defaults/main/50-servable.yml: an alias removed on
+# repo-local evidence alone broke an external consumer). Also this entry's
+# catalog identity (comment above) — one var, two jobs.
+_llama_cpp_light_embeddings_catalog_name: nomic-embed-text-v1.5
+
+# Catalog `name`s this file's llama_cpp_models sources hf_repo/gguf from
+# (tasks/guards.yml). A group overriding llama_cpp_models overrides this too.
+llama_cpp_catalog_lookup_names:
+  - "{{ _llama_cpp_light_general_model_id }}"
+  - "{{ _llama_cpp_light_embeddings_catalog_name }}"
+
+_llama_cpp_light_general_catalog: >-
+  {{ llm_model_catalog_models | selectattr('name', 'equalto', _llama_cpp_light_general_model_id) | first }}
+_llama_cpp_light_embeddings_catalog: >-
+  {{ llm_model_catalog_models | selectattr('name', 'equalto', _llama_cpp_light_embeddings_catalog_name) | first }}
 
 # Optional per-entry speculative-decode fields (unset on every entry below, on
 # purpose — see the TODO(benchmarking) note in 10-cache-specdecode.yml):
@@ -218,14 +235,14 @@ _llama_cpp_light_embeddings_model_id: embeddings
 llama_cpp_models:
   - name: "{{ _llama_cpp_light_general_model_id }}"
     aliases: []
-    hf_repo: "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF"
-    gguf: "Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    hf_repo: "{{ _llama_cpp_light_general_catalog.hf_repo }}"
+    gguf: "{{ _llama_cpp_light_general_catalog.gguf }}"
     param_billions: 4
     embeddings: false
   - name: "{{ _llama_cpp_light_embeddings_model_id }}"
-    aliases: [nomic-embed-text-v1.5]
-    hf_repo: "nomic-ai/nomic-embed-text-v1.5-GGUF"
-    gguf: "nomic-embed-text-v1.5.Q4_K_M.gguf"
+    aliases: ["{{ _llama_cpp_light_embeddings_catalog_name }}"]
+    hf_repo: "{{ _llama_cpp_light_embeddings_catalog.hf_repo }}"
+    gguf: "{{ _llama_cpp_light_embeddings_catalog.gguf }}"
     param_billions: 0.137
     embeddings: true
 

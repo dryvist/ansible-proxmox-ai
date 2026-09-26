@@ -61,6 +61,28 @@ _llama_cpp_light_reranker_ctx_size: >-
       | selectattr('client_model_id', 'equalto', _llama_cpp_light_reranker_model_id)
       | first).context_window }}
 
+# hf_repo/gguf for this group's own bge-m3/bge-reranker-v2-m3 entries, sourced
+# from the shared dryvist.homelab.llm_model_catalog the same way
+# defaults/main/00-core.yml sources its qwen3-4b/embeddings pair (see that
+# file's comment for the full reasoning). The qwen3-4b/embeddings entries
+# below reuse the role-default _llama_cpp_light_general_catalog/
+# _llama_cpp_light_embeddings_catalog directly — no override needed since
+# this file doesn't change those two models' identity.
+_llama_cpp_light_embedding_catalog: >-
+  {{ llm_model_catalog_models | selectattr('name', 'equalto', _llama_cpp_light_embedding_model_id) | first }}
+_llama_cpp_light_reranker_catalog: >-
+  {{ llm_model_catalog_models | selectattr('name', 'equalto', _llama_cpp_light_reranker_model_id) | first }}
+
+# Every catalog `name` this group's llama_cpp_models entries source hf_repo/
+# gguf from (see tasks/guards.yml) — overrides the role default's 2-item list
+# with this group's full 4-item set, since this group also overrides
+# llama_cpp_models itself.
+llama_cpp_catalog_lookup_names:
+  - "{{ _llama_cpp_light_general_model_id }}"
+  - "{{ _llama_cpp_light_embeddings_catalog_name }}"
+  - "{{ _llama_cpp_light_embedding_model_id }}"
+  - "{{ _llama_cpp_light_reranker_model_id }}"
+
 # Full override of defaults/main/00-core.yml's llama_cpp_models (Ansible
 # lists replace, they do not merge) — the light tier's original pair plus the
 # CPU-failover embedder/reranker for the 4080's vllm-tier bge-m3/
@@ -72,15 +94,15 @@ _llama_cpp_light_reranker_ctx_size: >-
 llama_cpp_models:
   - name: qwen3-4b
     aliases: []
-    hf_repo: "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF"
-    gguf: "Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+    hf_repo: "{{ _llama_cpp_light_general_catalog.hf_repo }}"
+    gguf: "{{ _llama_cpp_light_general_catalog.gguf }}"
     param_billions: 4
     embeddings: false
 
   - name: embeddings
     aliases: [nomic-embed-text-v1.5]
-    hf_repo: "nomic-ai/nomic-embed-text-v1.5-GGUF"
-    gguf: "nomic-embed-text-v1.5.Q4_K_M.gguf"
+    hf_repo: "{{ _llama_cpp_light_embeddings_catalog.hf_repo }}"
+    gguf: "{{ _llama_cpp_light_embeddings_catalog.gguf }}"
     param_billions: 0.137
     embeddings: true
 
@@ -95,8 +117,8 @@ llama_cpp_models:
   # though a caller is meant to treat them as interchangeable.
   - name: "{{ _llama_cpp_light_embedding_model_id }}"
     aliases: []
-    hf_repo: gpustack/bge-m3-GGUF
-    gguf: bge-m3-Q8_0.gguf
+    hf_repo: "{{ _llama_cpp_light_embedding_catalog.hf_repo }}"
+    gguf: "{{ _llama_cpp_light_embedding_catalog.gguf }}"
     param_billions: 0.568
     embeddings: true
     # See llm_vllm_group.yml's identical field: BAAI/bge-m3's own GGUF
@@ -109,8 +131,8 @@ llama_cpp_models:
 
   - name: "{{ _llama_cpp_light_reranker_model_id }}"
     aliases: []
-    hf_repo: gpustack/bge-reranker-v2-m3-GGUF
-    gguf: bge-reranker-v2-m3-Q8_0.gguf
+    hf_repo: "{{ _llama_cpp_light_reranker_catalog.hf_repo }}"
+    gguf: "{{ _llama_cpp_light_reranker_catalog.gguf }}"
     param_billions: 0.568
     embeddings: false
     rerank: true

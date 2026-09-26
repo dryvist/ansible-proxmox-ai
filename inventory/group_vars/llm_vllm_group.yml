@@ -131,17 +131,28 @@ llama_cpp_prefill_tokens_per_second: 120
 # all of them at once — see that task for what "loudly" means here.
 llama_cpp_models_max: 3
 
-# The two registry client_model_ids served here, named ONCE. Still literals,
-# deliberately — this is the JOIN KEY between this file's backend facts
-# (hf_repo, gguf, param_billions, which llm-models.d/ deliberately does not
-# carry — see roles/llama_cpp/defaults/main/00-core.yml for why) and the registry's
-# own data, and a join key necessarily appears on both sides of the join. What
-# the registry genuinely owns here is the context_window, derived below —
-# every selectattr lookup and both llama_cpp_models `name:` fields reference
-# these vars rather than re-typing the id a second time in this file.
+# The three registry client_model_ids served here, named ONCE — the JOIN KEY
+# to the registry's context_window (derived below) and, by the same names,
+# to the shared catalog's hf_repo/gguf (00-core.yml has the full reasoning;
+# guards.yml asserts membership). Also this group's catalog lookup key
+# (below): served name == catalog identity here, unlike llm_fast_group.yml's
+# "embeddings" entry. param_billions stays a literal per entry: the catalog
+# has no such field.
 _llama_cpp_vllm_dense_model_id: qwen3.8-27b
 _llama_cpp_vllm_embedding_model_id: bge-m3
 _llama_cpp_vllm_reranker_model_id: bge-reranker-v2-m3
+
+llama_cpp_catalog_lookup_names:
+  - "{{ _llama_cpp_vllm_dense_model_id }}"
+  - "{{ _llama_cpp_vllm_embedding_model_id }}"
+  - "{{ _llama_cpp_vllm_reranker_model_id }}"
+
+_llama_cpp_vllm_dense_catalog: >-
+  {{ llm_model_catalog_models | selectattr('name', 'equalto', _llama_cpp_vllm_dense_model_id) | first }}
+_llama_cpp_vllm_embedding_catalog: >-
+  {{ llm_model_catalog_models | selectattr('name', 'equalto', _llama_cpp_vllm_embedding_model_id) | first }}
+_llama_cpp_vllm_reranker_catalog: >-
+  {{ llm_model_catalog_models | selectattr('name', 'equalto', _llama_cpp_vllm_reranker_model_id) | first }}
 
 llama_cpp_ctx_size: >-
   {{ (llm_router_model_registry
@@ -168,17 +179,12 @@ llama_cpp_models:
   # router mode actually serves under — independent of the GGUF filename,
   # unlike a plain --models-dir scan (which derives the id from the filename
   # itself; verified against common/preset.cpp at the pinned release). This
-  # is also the JOIN KEY between this file's backend facts (hf_repo, gguf,
-  # param_billions, which llm-models.d/ deliberately does not carry — see
-  # roles/llama_cpp/defaults/main/00-core.yml) and the registry's own data —
-  # roles/llm_router's registry entry (llm-models.d/30-local-gpu.yml,
-  # upstream_model_id) must equal it, or every request 404s.
+  # is also the JOIN KEY to the registry entry (must match, or every request
+  # 404s) and, separately, to the shared catalog's hf_repo/gguf (above).
   - name: "{{ _llama_cpp_vllm_dense_model_id }}"
     aliases: []
-    hf_repo: unsloth/Qwen3.8-27B-GGUF
-    # Unsloth Dynamic v3 (imatrix). Filename verified against the repo's file
-    # listing — the `UD-` prefix is part of the name, not a variant suffix.
-    gguf: Qwen3.8-27B-UD-IQ3_XXS.gguf
+    hf_repo: "{{ _llama_cpp_vllm_dense_catalog.hf_repo }}"
+    gguf: "{{ _llama_cpp_vllm_dense_catalog.gguf }}"
     param_billions: 27.78
     embeddings: false
 
@@ -193,8 +199,8 @@ llama_cpp_models:
   # on this card.
   - name: "{{ _llama_cpp_vllm_embedding_model_id }}"
     aliases: []
-    hf_repo: gpustack/bge-m3-GGUF
-    gguf: bge-m3-Q8_0.gguf
+    hf_repo: "{{ _llama_cpp_vllm_embedding_catalog.hf_repo }}"
+    gguf: "{{ _llama_cpp_vllm_embedding_catalog.gguf }}"
     # 568M params (XLM-RoBERTa-large backbone) — confirmed via BAAI/bge-m3's
     # own model card and the arXiv paper (M3-Embedding).
     param_billions: 0.568
@@ -224,8 +230,8 @@ llama_cpp_models:
 
   - name: "{{ _llama_cpp_vllm_reranker_model_id }}"
     aliases: []
-    hf_repo: gpustack/bge-reranker-v2-m3-GGUF
-    gguf: bge-reranker-v2-m3-Q8_0.gguf
+    hf_repo: "{{ _llama_cpp_vllm_reranker_catalog.hf_repo }}"
+    gguf: "{{ _llama_cpp_vllm_reranker_catalog.gguf }}"
     # Same XLM-RoBERTa-large backbone as bge-m3 above, 568M params.
     param_billions: 0.568
     embeddings: false

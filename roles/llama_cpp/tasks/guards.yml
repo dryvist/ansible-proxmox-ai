@@ -125,6 +125,37 @@
       {{ llm_router_registry_enabled | selectattr('tier', 'equalto', llama_cpp_registry_tier)
          | map(attribute='client_model_id') | list }}
 
+# --- Shared model catalog membership ------------------------------------------
+# defaults/main/00-core.yml sources hf_repo/gguf for its own entries from
+# dryvist.homelab.llm_model_catalog's llm_model_catalog_models by name (see
+# that file's comment for why this is a THIRD, separate single source from
+# the registry above). A group overriding llama_cpp_models the same way
+# overrides llama_cpp_catalog_lookup_names alongside it, naming every catalog
+# `name` its entries actually reference. A group whose llama_cpp_models
+# entries carry hf_repo/gguf as plain literals (no catalog lookup) leaves
+# this list empty, and llm_model_catalog_models need not even be loaded in
+# its play (defaulted to `[]` below) — checked either way so an entry adds a
+# catalog dependency by editing two things that must agree, never one.
+- name: Assert every catalog-sourced model name exists in the shared catalog
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - (llama_cpp_catalog_lookup_names | difference(_llama_cpp_catalog_names)) | length == 0
+    fail_msg: >-
+      llama_cpp_catalog_lookup_names names a model the shared catalog
+      (dryvist.homelab.llm_model_catalog, llm_model_catalog_models) does not
+      declare: {{ llama_cpp_catalog_lookup_names | difference(_llama_cpp_catalog_names) }}.
+      Every llama_cpp_models entry sourcing hf_repo/gguf from the catalog
+      needs its lookup key both listed here and present in the catalog, or
+      the entry's Jinja lookup crashes with no guard message instead of this
+      one. Either add the model to the catalog, or drop this name from
+      llama_cpp_catalog_lookup_names if the entry no longer needs it.
+    success_msg: >-
+      Every catalog-sourced model name in llama_cpp_catalog_lookup_names
+      exists in the shared catalog ({{ llama_cpp_catalog_lookup_names | join(', ') }}).
+  vars:
+    _llama_cpp_catalog_names: "{{ (llm_model_catalog_models | default([])) | map(attribute='name') | list }}"
+
 - name: Assert every enabled registry entry for this tier is actually served
   ansible.builtin.assert:
     that:
