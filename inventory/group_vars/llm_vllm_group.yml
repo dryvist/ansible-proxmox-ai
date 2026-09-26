@@ -119,19 +119,58 @@ llama_cpp_parallel: 1
 # source bench used a different harness, not this router's own access log.
 llama_cpp_prefill_tokens_per_second: 120
 
-# The two registry client_model_ids served here, named ONCE. Still literals,
-# deliberately — this is the JOIN KEY between this file's backend facts
-# (hf_repo, gguf, param_billions, which llm-models.d/ deliberately does not
-# carry — see roles/llama_cpp/defaults/main/00-core.yml for why) and the registry's
-# own data, and a join key necessarily appears on both sides of the join. What
-# the registry genuinely owns here is the context_window, derived below —
-# every selectattr lookup and both llama_cpp_models `name:` fields reference
-# these vars rather than re-typing the id a second time in this file.
+# Resident-model cap for router mode, raised from the role default of 1.
+# A recall call needs the embedder and the reranker back to back, and a
+# retain call needs the chat model too — at the default of 1, each of those
+# calls evicts and reloads a different model from the read-only mount, which
+# costs a disk read plus re-init on every single request, not just extra
+# VRAM pressure. Set to the number of models actually declared below so all
+# of them stay resident together instead of trading places on every call.
+# `tasks/main.yml`'s residency-verification step (after each present model is
+# loaded once) fails the converge loudly if this guest cannot actually hold
+# all of them at once — see that task for what "loudly" means here.
+llama_cpp_models_max: 3
+
+# The three registry client_model_ids served here, named ONCE — the JOIN KEY
+# to the registry's context_window (derived below) and, by the same names,
+# to the shared catalog's hf_repo/gguf (00-core.yml has the full reasoning;
+# guards.yml asserts membership). Also this group's catalog lookup key
+# (below): served name == catalog identity here, unlike llm_fast_group.yml's
+# "embeddings" entry. param_billions stays a literal per entry: the catalog
+# has no such field.
 _llama_cpp_vllm_dense_model_id: qwen3.8-27b
+_llama_cpp_vllm_embedding_model_id: bge-m3
+_llama_cpp_vllm_reranker_model_id: bge-reranker-v2-m3
+
+llama_cpp_catalog_lookup_names:
+  - "{{ _llama_cpp_vllm_dense_model_id }}"
+  - "{{ _llama_cpp_vllm_embedding_model_id }}"
+  - "{{ _llama_cpp_vllm_reranker_model_id }}"
+
+_llama_cpp_vllm_dense_catalog: >-
+  {{ llm_model_catalog_models | selectattr('name', 'equalto', _llama_cpp_vllm_dense_model_id) | first }}
+_llama_cpp_vllm_embedding_catalog: >-
+  {{ llm_model_catalog_models | selectattr('name', 'equalto', _llama_cpp_vllm_embedding_model_id) | first }}
+_llama_cpp_vllm_reranker_catalog: >-
+  {{ llm_model_catalog_models | selectattr('name', 'equalto', _llama_cpp_vllm_reranker_model_id) | first }}
 
 llama_cpp_ctx_size: >-
   {{ (llm_router_model_registry
       | selectattr('client_model_id', 'equalto', _llama_cpp_vllm_dense_model_id)
+      | first).context_window }}
+
+# Same derivation as llama_cpp_ctx_size above, one per model: the registry's
+# context_window is the one base var, never re-typed as a second literal here.
+# roles/hindsight_docker's own HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS reads
+# the SAME bge-m3 registry entry this way (llm-models.d/30-local-gpu.yml) — see
+# that role's defaults once it wires it — so the two can never drift apart.
+_llama_cpp_vllm_embedding_ctx_size: >-
+  {{ (llm_router_model_registry
+      | selectattr('client_model_id', 'equalto', _llama_cpp_vllm_embedding_model_id)
+      | first).context_window }}
+_llama_cpp_vllm_reranker_ctx_size: >-
+  {{ (llm_router_model_registry
+      | selectattr('client_model_id', 'equalto', _llama_cpp_vllm_reranker_model_id)
       | first).context_window }}
 
 llama_cpp_models:
@@ -140,19 +179,72 @@ llama_cpp_models:
   # router mode actually serves under — independent of the GGUF filename,
   # unlike a plain --models-dir scan (which derives the id from the filename
   # itself; verified against common/preset.cpp at the pinned release). This
-  # is also the JOIN KEY between this file's backend facts (hf_repo, gguf,
-  # param_billions, which llm-models.d/ deliberately does not carry — see
-  # roles/llama_cpp/defaults/main/00-core.yml) and the registry's own data —
-  # roles/llm_router's registry entry (llm-models.d/30-local-gpu.yml,
-  # upstream_model_id) must equal it, or every request 404s.
+  # is also the JOIN KEY to the registry entry (must match, or every request
+  # 404s) and, separately, to the shared catalog's hf_repo/gguf (above).
   - name: "{{ _llama_cpp_vllm_dense_model_id }}"
     aliases: []
-    hf_repo: unsloth/Qwen3.8-27B-GGUF
-    # Unsloth Dynamic v3 (imatrix). Filename verified against the repo's file
-    # listing — the `UD-` prefix is part of the name, not a variant suffix.
-    gguf: Qwen3.8-27B-UD-IQ3_XXS.gguf
+    hf_repo: "{{ _llama_cpp_vllm_dense_catalog.hf_repo }}"
+    gguf: "{{ _llama_cpp_vllm_dense_catalog.gguf }}"
     param_billions: 27.78
     embeddings: false
+
+  # Embedder + reranker pair. The SAME GGUF pair is also declared on
+  # llm_cpu_9b_group as a failover rung, and it must stay that way: once a
+  # caller writes its first vector with this embedder, the stored embedding
+  # dimension is locked, so a failover rung serving a different embedder
+  # would silently return dimension-mismatched or wrong vectors instead of
+  # just answering slower. `llama_cpp_models_max` above is sized to keep
+  # these two resident alongside the dense chat model rather than evicting
+  # it on every call; `tasks/main.yml`'s residency check proves that holds
+  # on this card.
+  - name: "{{ _llama_cpp_vllm_embedding_model_id }}"
+    aliases: []
+    hf_repo: "{{ _llama_cpp_vllm_embedding_catalog.hf_repo }}"
+    gguf: "{{ _llama_cpp_vllm_embedding_catalog.gguf }}"
+    # 568M params (XLM-RoBERTa-large backbone) — confirmed via BAAI/bge-m3's
+    # own model card and the arXiv paper (M3-Embedding).
+    param_billions: 0.568
+    embeddings: true
+    # BAAI/bge-m3 ships CLS pooling as its own GGUF default
+    # (bert.pooling_type=2) — verified locally: llama-server logs "model
+    # default pooling_type is [2], but [1] was specified" and silently
+    # answers wrong-pooled vectors when this is left at the embeddings
+    # branch's `mean` default. Do not remove this override.
+    pooling: cls
+    # Registry-derived (_llama_cpp_vllm_embedding_ctx_size above), never a
+    # second literal here. The value is BAAI/bge-m3's own trained max
+    # sequence length (model card, https://huggingface.co/BAAI/bge-m3), also
+    # the default of the consuming service's own input-truncation cap
+    # (HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS, default 8192 — Hindsight
+    # docs, https://hindsight.vectorize.io/developer/configuration,
+    # "Embeddings Configuration"): the caller truncates to this many tokens
+    # of its OWN tokenizer before calling this backend, so anything this
+    # backend ever receives is already bounded at the same figure. llama-
+    # server 500s an input larger than ctx/batch rather than truncating it
+    # itself, so this must cover the real ceiling, not a typical case. Note
+    # the same source's own caveat: its truncation count uses an
+    # approximate tokenizer, not bge-m3's real one, so a pathological input
+    # could still exceed this by some margin — a residual risk in the
+    # caller, not something a bigger ctx_size here can close.
+    ctx_size: "{{ _llama_cpp_vllm_embedding_ctx_size }}"
+
+  - name: "{{ _llama_cpp_vllm_reranker_model_id }}"
+    aliases: []
+    hf_repo: "{{ _llama_cpp_vllm_reranker_catalog.hf_repo }}"
+    gguf: "{{ _llama_cpp_vllm_reranker_catalog.gguf }}"
+    # Same XLM-RoBERTa-large backbone as bge-m3 above, 568M params.
+    param_billions: 0.568
+    embeddings: false
+    rerank: true
+    # Registry-derived (_llama_cpp_vllm_reranker_ctx_size above), same reason
+    # as bge-m3: BAAI/bge-reranker-v2-m3's own model card
+    # (https://huggingface.co/BAAI/bge-reranker-v2-m3) gives its architectural
+    # max_length as 8192 (it recommends 1024 for best ranking quality, which
+    # is a quality tuning knob, not a serving limit — unrelated to what
+    # ctx_size must cover to avoid a 500). Whatever this reranks was already
+    # embedding-truncated to the bge-m3 ceiling above to have been stored and
+    # recalled at all.
+    ctx_size: "{{ _llama_cpp_vllm_reranker_ctx_size }}"
 
   # The coding rung (registry qwen3-coder-30b, disabled) returns here in the
   # same change that lands its GGUF on the shared model store: hf_repo

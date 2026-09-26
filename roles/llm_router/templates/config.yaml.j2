@@ -46,10 +46,12 @@ router_settings:
 {% for _name in llm_router_local_only_fail_fast_names %}
     - {{ _name | to_json }}: []
 {% endfor %}
-  # `free` falls over to `free-zdrless` only — its ONLY rung, never local
-  # or paid, never the other direction, and never a member of the
-  # 8-segment Hermes ladder above.
-    - free: [free-zdrless]
+  # `free` fails fast, same as embed/ocr/free-zdrless above: NO caller of
+  # `free` may reach `free-zdrless` (a zero_data_retention: false rung) —
+  # the hindsight key is the only consumer and must never leak memory
+  # content to a prompt-retaining model. Never local or paid either, and
+  # never a member of the 8-segment Hermes ladder above.
+    - free: []
 {% if llm_router_context_window_wider_groups | length > 0 %}
     # ENTRY POINTS. hermes-default is not the only name a caller uses: every
     # servable id and every alias above is called directly, and a name with no
@@ -83,16 +85,16 @@ router_settings:
   # no map at all falls through to it — so a partial map is worse than none
   # (see 35-hermes-cloud.yml for the mechanism and the derivation).
   #
-  # PLUS `free` -> `free-zdrless`: free-zdrless is the wider of the two,
-  # so an oversize request to `free` escapes there; free-zdrless itself
-  # carries no entry here, same as embed/ocr.
+  # PLUS `free`: an oversize request re-raises rather than escaping to
+  # `free-zdrless` (wider, but zero_data_retention: false) — same fail-fast
+  # treatment as embed/ocr, which also carry no reachable target.
   context_window_fallbacks:
 {% for entry in llm_router_context_window_fallbacks %}
 {% for group, targets in entry.items() %}
     - {{ group }}: {{ targets | to_json }}
 {% endfor %}
 {% endfor %}
-    - free: [free-zdrless]
+    - free: []
 {% endif %}
   # Derived (35-hermes-cloud.yml) from the distinct target names in the whole
   # map, not from one chain's length and not from a fixed 1. It bounds rung

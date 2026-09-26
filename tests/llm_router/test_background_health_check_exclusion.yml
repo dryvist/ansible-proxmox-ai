@@ -78,9 +78,20 @@
         _swap_backed_names: >-
           {{ (llm_router_large_models | map(attribute='client_model_id') | list)
              + (llm_router_light_models | map(attribute='client_model_id') | list) }}
+        # A model_name can be shared between the vllm tier and the light tier
+        # on purpose (llm-models.d/20-light.yml's CPU-failover pattern: same
+        # client_model_id, GPU-vs-CPU order within the name) — so selecting by
+        # model_name alone can also catch that name's vllm-backed instance,
+        # which correctly does NOT set the flag (see "stays probeable" below:
+        # the vLLM guest is a single dedicated deployment with nothing to swap
+        # or evict). Excluding entries whose api_base is the vllm base URL
+        # keeps this check scoped to the swap-backed instance(s) of a shared
+        # name, not every instance of it.
         _swap_backed_entries: >-
           {{ _config.model_list
-             | selectattr('model_name', 'in', _swap_backed_names) | list }}
+             | selectattr('model_name', 'in', _swap_backed_names)
+             | rejectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url)
+             | list }}
         _unexcluded_swap_backed: >-
           {{ _swap_backed_entries
              | rejectattr('model_info.disable_background_health_check', 'defined')
@@ -107,8 +118,16 @@
           probeable.
       vars:
         _vllm_names: "{{ llm_router_vllm_models | map(attribute='client_model_id') | list }}"
+        # Scoped to entries actually calling the vllm api_base, not just
+        # sharing a vllm model_name: a name can also carry a light-tier
+        # instance (the CPU-failover pattern above), and that instance
+        # legitimately DOES set the flag — it isn't the vLLM deployment this
+        # check is about.
         _vllm_entries: >-
-          {{ _config.model_list | selectattr('model_name', 'in', _vllm_names) | list }}
+          {{ _config.model_list
+             | selectattr('model_name', 'in', _vllm_names)
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url)
+             | list }}
         _excluded_vllm: >-
           {{ _vllm_entries
              | selectattr('model_info.disable_background_health_check', 'defined')

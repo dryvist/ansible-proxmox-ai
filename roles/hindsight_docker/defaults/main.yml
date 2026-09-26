@@ -27,6 +27,12 @@ hindsight_docker_cp_port: >-
 
 # --- Database (dedicated ai-VLAN Postgres cluster) --------------------------
 # Primary's FQDN by name, never an address; DB/user/database all `hindsight`.
+# Direct connection, not through a pooler: upstream has a known bug
+# (a failed run-db-migration can leave its Postgres advisory lock held for
+# hours behind a connection pooler, with no timeout and no log line) that
+# only bites a pooled front-end — a direct connection releases the
+# session-scoped lock as soon as the migration's --rm container exits. A
+# future move to a pooled Postgres front-end would need to re-check this.
 hindsight_docker_db_host: "postgres-ai-1.{{ tofu_data.domain }}"
 hindsight_docker_db_port: >-
   {{ tofu_data['constants']['service_ports']['postgres_default']
@@ -38,6 +44,18 @@ hindsight_docker_db_user: hindsight
 hindsight_docker_db_password: >-
   {{ bao_apps_secrets.hindsight_db_password
      | mandatory('hindsight_db_password was not supplied to this role') }}
+# Single source for the DSN: the compose template and the one-shot migration
+# command (tasks/run_db_migration.yml) both interpolate this rather than
+# each rebuilding the connection string from the parts above.
+hindsight_docker_db_url: >-
+  postgresql://{{ hindsight_docker_db_user }}:{{ hindsight_docker_db_password }}@{{
+  hindsight_docker_db_host }}:{{ hindsight_docker_db_port }}/{{ hindsight_docker_db_name }}
+
+# Single source for the vector backend: the compose template and the
+# one-shot migration command (tasks/run_db_migration.yml, which reconciles
+# indexes against this value) both interpolate this rather than each
+# setting it separately.
+hindsight_docker_vector_extension: pgvector
 
 # --- LLM (fact extraction / reflection) --------------------------------------
 # The SAME shared route the hindsight virtual key is scoped to (`free`,
@@ -83,6 +101,59 @@ hindsight_docker_cp_access_key: >-
 # stable per LXC, which is exactly what upstream requires.
 hindsight_docker_worker_id: "{{ inventory_hostname }}"
 
+# Upstream ships no separate worker-heartbeat/lease interval to derive this
+# from (confirmed: no such setting in hindsight_api/admin/cli.py at the
+# pinned tag). Derived instead from this role's own measured per-operation
+# wall-clock ceilings below — doubled as margin — since a worker's claimed
+# task still unchanged well past twice the slowest operation's own ceiling
+# cannot be a live worker still legitimately running it. Used by
+# filter_plugins/hindsight_stale_workers.py via decommission_stale_workers.yml.
+hindsight_docker_worker_dead_threshold_seconds: >-
+  {{ ([hindsight_docker_retain_wall_timeout, hindsight_docker_consolidation_wall_timeout,
+       hindsight_docker_reflect_wall_timeout, hindsight_docker_refresh_mental_model_wall_timeout] | max)
+     * 2 }}
+
+# --- Database migrations (0.10.0 made this explicit; upstream default is
+# HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP=true) ------------------------------
+# Startup-time migrations race every replica against the same schema change
+# on a serial:1 rollout — replica 2 can start mid-migration against a
+# half-applied schema. Migrations instead run exactly once, from
+# tasks/run_db_migration.yml, using the NEW image before any replica is
+# redeployed with it.
+hindsight_docker_run_migrations_on_startup: false
+
+# Directory for the pre-migration backup tasks/run_db_migration.yml takes
+# via `hindsight-admin backup` immediately before every migration.
+hindsight_docker_migration_backup_dir: "{{ hindsight_docker_data_dir }}/pre-migration-backups"
+
+# Where the image installs its Alembic script directory — confirmed
+# identical at the v0.9.0 and v0.10.1 vendor tags. tasks/run_db_migration.yml
+# mounts a one-line generated alembic.ini pointing here so the vendored
+# `alembic` CLI (bundled in the image alongside `hindsight-admin`, no
+# separate install) can report the target head revision without a database
+# connection.
+hindsight_docker_alembic_script_location: /app/api/hindsight_api/alembic
+
+# Explicit operation wall-clock ceilings, below upstream's loose defaults
+# (retain 3600s / consolidation 7200s). retain and consolidation are set
+# from measured p99 operation duration over a 7-day window, plus margin;
+# reflect and refresh_mental_model have no measured duration data yet and
+# keep a conservative fixed value.
+hindsight_docker_retain_wall_timeout: 720
+hindsight_docker_consolidation_wall_timeout: 2400
+hindsight_docker_reflect_wall_timeout: 120
+hindsight_docker_refresh_mental_model_wall_timeout: 120
+
+# Wall-clock ceilings (async/poll) for tasks/run_db_migration.yml's own
+# one-shot backup and migration commands, so a hang (stuck disk, wedged
+# migration) fails loudly instead of blocking a serial:1 rollout forever.
+# Migration: ~15x margin over a measured ~39s fresh-schema migration in CI
+# (job 108368335106, 2026-09-26). Backup: the command has not yet completed
+# in any CI run against a non-trivial schema, so this ceiling is provisional
+# pending real measured production-scale timing.
+hindsight_docker_backup_wall_timeout_seconds: 300
+hindsight_docker_migration_wall_timeout_seconds: 600
+
 # Local ONNX embeddings (bundled BGE model) — no external embedding dependency.
 hindsight_docker_embeddings_provider: local
 
@@ -90,6 +161,11 @@ hindsight_docker_embeddings_provider: local
 # (see the compose template comment). Only flip to false for a single-replica
 # deployment that wants SSE streaming.
 hindsight_docker_mcp_stateless: true
+
+# --- Observability: OTLP traces -----------------------------------------------
+# OTLP/HTTP trace endpoint shared by the AI-orchestration services.
+hindsight_docker_otel_endpoint: "{{ ai_orchestration_otel_endpoint }}"
+hindsight_docker_otel_service_name: hindsight
 
 # Cold-start budget for the readiness gate. A fresh guest must download the
 # local embeddings + reranker models and verify the LLM connection (which

@@ -3,19 +3,42 @@
 # section per present, guard-checked model (llama_cpp_models_present) — the
 # section name IS the id the router serves and IS the registry's
 # client_model_id (llm-models.d/), never the GGUF filename. Per-model
-# ctx-size and chat-vs-embeddings flags live here so a guest mixing model
-# kinds (a chat model and an embeddings model) still gets the right flags for
-# each, unlike a plain --models-dir directory scan.
+# ctx-size and chat/embeddings/rerank flags live here so a guest mixing model
+# kinds (e.g. a chat model, an embeddings model and a reranker) still gets
+# the right flags for each, unlike a plain --models-dir directory scan.
 {% for m in llama_cpp_models_present %}
 [{{ m.name }}]
 model = {{ llama_cpp_models_dir }}/{{ m.gguf }}
 ctx-size = {{ m.ctx_size | default(llama_cpp_ctx_size) }}
 {% if m.embeddings %}
 embeddings = true
-pooling = mean
+{# Per-model override, default mean: nomic-embed-text-v1.5 wants mean
+   pooling, but that is a property of THAT model, not embeddings in
+   general — BAAI/bge-m3 ships CLS pooling as its own GGUF default
+   (bert.pooling_type=2) and forcing mean here silently computes the wrong
+   sentence vector (llama-server warns "model default pooling_type is [2],
+   but [1] was specified" and answers anyway; verified locally against the
+   real bge-m3-Q8_0.gguf on this release). Set `pooling: cls` on a model
+   entry that needs it rather than leaving this default unconditional. #}
+pooling = {{ m.pooling | default('mean') }}
 {# Non-causal embedding inputs must fit in ONE physical batch; the
    llama-server default (512) silently caps inputs far below ctx-size and
    500s anything larger. Match the batch to the context window. #}
+batch-size = {{ m.ctx_size | default(llama_cpp_ctx_size) }}
+ubatch-size = {{ m.ctx_size | default(llama_cpp_ctx_size) }}
+{% elif m.rerank | default(false) %}
+{# Reranking reuses the embedding-extraction code path internally, so
+   --embedding must be on too (llama-server --help: "restrict to only
+   support embedding use case"), plus --rerank to gate the endpoint and
+   --pooling rank to attach the classifier head. Verified locally end to
+   end against the real bge-reranker-v2-m3-Q8_0.gguf on this release:
+   POST /rerank and /v1/rerank both scored a 3-document set in the
+   expected relevance order. #}
+embeddings = true
+rerank = true
+pooling = rank
+{# Same one-physical-batch requirement as the embeddings branch above —
+   a reranker scores (query, document) pairs in a single non-causal pass. #}
 batch-size = {{ m.ctx_size | default(llama_cpp_ctx_size) }}
 ubatch-size = {{ m.ctx_size | default(llama_cpp_ctx_size) }}
 {% else %}

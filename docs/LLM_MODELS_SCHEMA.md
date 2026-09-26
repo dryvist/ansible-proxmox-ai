@@ -75,7 +75,18 @@ Optional:
                       and compresses its requests to death (outage
                       2026-07-08). Advertising the NATIVE window is the
                       opposite failure: sessions grow past the serving ceiling
-                      and die mid-stream instead of compacting.
+                      and die mid-stream instead of compacting. A light-tier
+                      entry that shares its client_model_id with a vllm-tier
+                      entry (the CPU-failover pattern under `tier` above) also
+                      carries this field, but its OWN rendered
+                      model_info.max_input_tokens is projected from the
+                      vllm-tier sibling's admission-budget-capped window
+                      (roles/llm_router/defaults/main/20-registry.yml's
+                      `_llm_router_vllm_max_input_tokens_by_model`,
+                      model-list-light.yaml.j2's `light_window` macro), not
+                      recomputed from its own context_window value — every
+                      deployment sharing a model_name must advertise the same
+                      number or the render-parity guard refuses it.
   servable            The serving host will actually answer for this id.
                       DISTINCT FROM `enabled`, and conflating them is a real
                       outage: the serving host serves only the models its own

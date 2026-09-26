@@ -23,6 +23,13 @@
     hindsight_docker_llm_base_url: "http://127.0.0.1:9/v1"  # never called during converge
     hindsight_docker_llm_model: ai-default
     hindsight_docker_worker_id: hindsight-test
+    ai_orchestration_otel_endpoint: "http://127.0.0.1:9/molecule-fixture"  # never called during converge
+    # Matches production (false): the migration runs explicitly, once, from
+    # tasks/run_db_migration.yml — see the task below that calls it via
+    # include_role/tasks_from before the role itself is included, exercising
+    # the real pre-migration-backup + migration tasks against the fresh
+    # pgvector container instead of letting the API self-migrate on startup.
+    hindsight_docker_run_migrations_on_startup: false
     # The production cold-start ceiling (10 min) is sized for HuggingFace model
     # downloads + a real fabric-router LLM verify; the scenario has neither, so
     # keep the readiness gate short to fail fast on a genuinely broken converge.
@@ -64,6 +71,13 @@
       register: hindsight_molecule_bridge_gw
       changed_when: false
 
+    - name: Run the real pre-migration-backup + migration tasks against the fresh database
+      ansible.builtin.include_role:
+        name: hindsight_docker
+        tasks_from: run_db_migration.yml
+      vars:
+        hindsight_docker_db_host: "{{ hindsight_molecule_bridge_gw.stdout | trim }}"
+
     - name: Converge hindsight with container-log capture on failure
       block:
         - name: Include hindsight_docker role
@@ -93,3 +107,18 @@
               container logs:
               {{ hindsight_molecule_logs.stdout | default('') }}
               {{ hindsight_molecule_logs.stderr | default('') }}
+
+    # S6: runs the real decommission task file (playbooks/hindsight.yml's
+    # own second play, not re-typed here) against the live container this
+    # scenario just deployed. No task was ever claimed during this converge
+    # (no LLM calls are made — see hindsight_docker_llm_base_url above), so
+    # worker-status reports zero workers and this proves the wiring/ordering
+    # (role defaults resolve, groups['hindsight_group'] is populated, the
+    # dead-signal filter runs against a live hindsight-admin CLI) without
+    # decommissioning anything real.
+    - name: Run the stale-worker decommission task for real (single host, nothing claimed, nothing stale)
+      ansible.builtin.include_role:
+        name: hindsight_docker
+        tasks_from: decommission_stale_workers.yml
+      vars:
+        hindsight_docker_db_host: "{{ hindsight_molecule_bridge_gw.stdout | trim }}"

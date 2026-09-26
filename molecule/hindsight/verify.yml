@@ -12,6 +12,19 @@
     hindsight_docker_api_port: 8888
 
   tasks:
+    # Reads only hindsight_docker_image out of the role's own defaults (the
+    # same Renovate-managed pin run_db_migration.yml uses), rather than
+    # include_vars-ing the whole file: that file also defines
+    # hindsight_docker_api_port (tofu_data-dependent), which would outrank
+    # and break this play's own `vars: hindsight_docker_api_port: 8888`
+    # override used by the health-check task below.
+    - name: Load hindsight_docker role defaults (image tag)
+      ansible.builtin.set_fact:
+        hindsight_docker_image: "{{ _hindsight_docker_defaults.hindsight_docker_image }}"
+      vars:
+        _hindsight_docker_defaults: >-
+          {{ lookup('file', playbook_dir + '/../../roles/hindsight_docker/defaults/main.yml') | from_yaml }}
+
     - name: Stat the rendered docker-compose file
       ansible.builtin.stat:
         path: "{{ hindsight_docker_data_dir }}/docker-compose.yml"
@@ -73,3 +86,89 @@
       delay: 10
       register: hindsight_verify_health
       until: hindsight_verify_health.status == 200
+
+    # prepare.yml seeds the pgvector database one revision behind the image's
+    # head (production's real steady state, not an empty database) before
+    # converge ever runs, so the converge playbook's call to
+    # tasks/run_db_migration.yml exercises the real backup+migrate path —
+    # confirm both actually happened. The filename carries the from->to
+    # revisions plus a timestamp (S2), computed during converge and not
+    # available here (facts don't persist across Molecule's separate
+    # per-stage ansible-playbook invocations), so it's found by pattern.
+    - name: Find the pre-migration backup produced by run_db_migration.yml
+      ansible.builtin.find:
+        paths: "{{ hindsight_docker_data_dir }}/pre-migration-backups"
+        patterns: "pre-migration-*.zip"
+      register: hindsight_premigration_backup_find
+
+    - name: Assert exactly one pre-migration backup exists and is non-empty
+      ansible.builtin.assert:
+        that:
+          - hindsight_premigration_backup_find.matched == 1
+          - hindsight_premigration_backup_find.files[0].size > 0
+        fail_msg: >-
+          Expected exactly one pre-migration-*.zip backup; found
+          {{ hindsight_premigration_backup_find.matched }}.
+
+    - name: Verify the pre-migration backup archive is a valid, restorable zip
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -m
+          - zipfile
+          - -t
+          - "{{ hindsight_premigration_backup_find.files[0].path }}"
+      changed_when: false
+
+    # run_db_migration.yml's own head-revision probe already generated this
+    # config file (into the same directory as the backup) — reused here
+    # rather than regenerated.
+    - name: Determine the image's target head revision (verification)
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - --network=host
+          - -v
+          - "{{ hindsight_docker_data_dir }}/pre-migration-backups/alembic-heads.ini:/tmp/alembic-heads.ini:ro"
+          - "{{ hindsight_docker_image }}"
+          - alembic
+          - -c
+          - /tmp/alembic-heads.ini
+          - heads
+      register: hindsight_verify_head_probe
+      changed_when: false
+
+    # Same bridge-gateway address prepare.yml and run_db_migration.yml both
+    # use to reach the seed Postgres, re-derived fresh (facts don't persist
+    # across Molecule's separate per-stage ansible-playbook invocations).
+    - name: Discover the Docker bridge gateway (verification)
+      ansible.builtin.command: >-
+        docker network inspect bridge
+        --format {% raw %}'{{ (index .IPAM.Config 0).Gateway }}'{% endraw %}
+      register: hindsight_verify_bridge_gw
+      changed_when: false
+
+    - name: Query the database's current Alembic revision (verification)
+      ansible.builtin.command:
+        argv:
+          - psql
+          - "postgresql://hindsight@{{ hindsight_verify_bridge_gw.stdout | trim }}:5432/hindsight"
+          - -tAc
+          - "SELECT version_num FROM public.alembic_version"
+      environment:
+        PGPASSWORD: molecule-test-password
+      register: hindsight_verify_current_revision
+      changed_when: false
+
+    - name: Assert the database's current revision matches the image's target head
+      ansible.builtin.assert:
+        that:
+          - >-
+            (hindsight_verify_current_revision.stdout | trim) ==
+            (hindsight_verify_head_probe.stdout | trim).split(' ')[0]
+        fail_msg: >-
+          Database is at revision {{ hindsight_verify_current_revision.stdout | trim }},
+          but the image's head is {{ (hindsight_verify_head_probe.stdout | trim).split(' ')[0] }} —
+          run_db_migration.yml did not migrate all the way to head.
