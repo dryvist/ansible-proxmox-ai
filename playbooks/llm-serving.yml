@@ -198,6 +198,37 @@
               {{ ansible_failed_result.msg | default(ansible_failed_task.name | default('task failed')) }}.
               Remaining pool members keep their previous config.
 
+# Virtual keys, their budgets, and caller-facing roles — its own run_once
+# play, not a task inside the rolling converge above: seed-consumers.yml
+# writes to the pool's SHARED database (every member's proxy reads the same
+# Postgres-backed key store), so running it once per serial:1 member sent
+# the same /key/generate and /key/update calls three times per converge.
+# run_once: true against llm_router_group still executes on one real pool
+# member over its normal connection, so the 127.0.0.1 URLs in
+# seed-consumers.yml's tasks stay correct unchanged. Contract:
+# tests/llm_router/test_seed_key_route_model_reconcile.yml.
+- name: Seed llm_router virtual keys, budgets, and caller-facing roles
+  hosts: llm_router_group
+  become: true
+  gather_facts: false
+  run_once: true
+  tags:
+    - llm_router
+    - llm
+    - ai
+  tasks:
+    - name: Converge the llm_router consumer seeding (isolated — failure does not abort downstream plays)
+      block:
+        - name: Include the llm_router consumer-seeding tasks
+          ansible.builtin.include_role:
+            name: llm_router
+            tasks_from: seed-consumers.yml
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: llm_router_seed_consumers
+
 - name: Configure the CPU LLM pool scaler
   hosts: llm_router_group
   become: true
