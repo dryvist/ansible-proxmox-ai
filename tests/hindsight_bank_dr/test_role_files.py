@@ -12,7 +12,9 @@ from pathlib import Path
 import jinja2
 import yaml
 
-ROLE = Path(__file__).resolve().parent.parent.parent / "roles" / "hindsight_bank_dr"
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+ROLE = REPO_ROOT / "roles" / "hindsight_bank_dr"
+HINDSIGHT_PLAYBOOK = REPO_ROOT / "playbooks" / "hindsight.yml"
 
 # Defaults whose YAML value is itself unrendered Jinja (env lookups, a
 # cross-role default) are dropped here -- plain jinja2.Environment has neither
@@ -108,6 +110,25 @@ def test_export_and_drill_units_declare_their_schedule():
     for service in (export_service, drill_service):
         assert "Type=oneshot" in service
         assert "SyslogIdentifier={{ hindsight_bank_dr_syslog_identifier }}" in service
+
+
+def test_bank_dr_play_targets_exactly_one_replica():
+    """Every replica in hindsight_group shares the same ai-VLAN Postgres
+    backend, so a nightly export of every bank must run from exactly one
+    of them. Widening this play's `hosts` to the whole group would
+    duplicate each export N times and race the retention prune / drill
+    scratch-bank cleanup against itself -- see the play's own comment
+    header in playbooks/hindsight.yml.
+    """
+    plays = yaml.safe_load(HINDSIGHT_PLAYBOOK.read_text())
+    dr_play = next(
+        p for p in plays if p.get("name") == "Configure Hindsight logical DR (bank export + restore drill)"
+    )
+    assert dr_play["hosts"] == "hindsight_group[0]", (
+        f"hindsight_bank_dr play must target exactly one replica via an indexed "
+        f"host pattern, got hosts={dr_play['hosts']!r} -- this must never widen "
+        f"to the whole hindsight_group"
+    )
 
 
 def test_defaults_never_hardcode_the_hindsight_image_or_a_literal_version():
