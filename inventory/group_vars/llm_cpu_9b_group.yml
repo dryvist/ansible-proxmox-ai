@@ -3,6 +3,15 @@
 
 llama_cpp_registry_tier: cpu-9b
 
+# Resident-model cap for router mode, raised from the role default of 1 —
+# same reason as llm_vllm_group.yml: at the default, each call to a
+# different model on this host evicts and reloads from the read-only mount
+# (a disk read plus re-init), not just a memory-pressure question. RAM here
+# is not the tight constraint the GPU card's VRAM is, so all three models
+# below fit with room to spare; `tasks/main.yml`'s residency check still
+# proves it rather than assuming it.
+llama_cpp_models_max: 3
+
 llama_cpp_models:
   - name: qwen3.5-9b
     aliases: []
@@ -12,18 +21,14 @@ llama_cpp_models:
     ctx_size: 8192
     embeddings: false
 
-  # Hindsight fabric embedder/reranker failover rung — the SAME GGUF as
-  # llm_vllm_group's GPU entries below (bake-off decision, SD/lane-L6-bakeoff.md).
-  # Must stay byte-identical to the GPU pair: the embedding dimension is
-  # locked once Hindsight writes its first vector, so a CPU failover serving
-  # a different embedder than the GPU rung would silently corrupt recall
-  # rather than just running slower. ctx_size matches the GPU side (2048) for
-  # the same reason — a wider CPU window would behave differently across the
-  # two rungs a caller is meant to treat as interchangeable. RAM is not the
-  # GPU's VRAM-headroom constraint, so this pool member has ample room for
-  # both alongside qwen3.5-9b; llama_cpp_models_max stays at the role default
-  # of 1 (defaults/main/00-core.yml) and llama-server's own router-mode swap
-  # covers all three on demand.
+  # Embedder/reranker failover rung — the SAME GGUF pair as llm_vllm_group's
+  # GPU entries. Must stay byte-identical to that pair: the embedding
+  # dimension is locked once a caller writes its first vector, so a failover
+  # rung serving a different embedder would silently return dimension-
+  # mismatched or wrong vectors rather than just running slower. ctx_size
+  # matches the GPU side for the same reason — a different window would make
+  # the two rungs behave differently even though a caller is meant to treat
+  # them as interchangeable.
   - name: bge-m3
     aliases: []
     hf_repo: gpustack/bge-m3-GGUF
@@ -33,7 +38,10 @@ llama_cpp_models:
     # See llm_vllm_group.yml's identical field: BAAI/bge-m3's own GGUF
     # default is CLS pooling, not the embeddings branch's `mean` default.
     pooling: cls
-    ctx_size: 2048
+    # See llm_vllm_group.yml's identical field for the vendor citations
+    # (BAAI/bge-m3's own 8192 max sequence length; the consuming service's
+    # own 8192 default input-truncation cap).
+    ctx_size: 8192
 
   - name: bge-reranker-v2-m3
     aliases: []
@@ -42,4 +50,6 @@ llama_cpp_models:
     param_billions: 0.568
     embeddings: false
     rerank: true
-    ctx_size: 2048
+    # See llm_vllm_group.yml's identical field for the vendor citation
+    # (BAAI/bge-reranker-v2-m3's own 8192 architectural max_length).
+    ctx_size: 8192

@@ -119,6 +119,18 @@ llama_cpp_parallel: 1
 # source bench used a different harness, not this router's own access log.
 llama_cpp_prefill_tokens_per_second: 120
 
+# Resident-model cap for router mode, raised from the role default of 1.
+# A recall call needs the embedder and the reranker back to back, and a
+# retain call needs the chat model too — at the default of 1, each of those
+# calls evicts and reloads a different model from the read-only mount, which
+# costs a disk read plus re-init on every single request, not just extra
+# VRAM pressure. Set to the number of models actually declared below so all
+# of them stay resident together instead of trading places on every call.
+# `tasks/main.yml`'s residency-verification step (after each present model is
+# loaded once) fails the converge loudly if this guest cannot actually hold
+# all of them at once — see that task for what "loudly" means here.
+llama_cpp_models_max: 3
+
 # The two registry client_model_ids served here, named ONCE. Still literals,
 # deliberately — this is the JOIN KEY between this file's backend facts
 # (hf_repo, gguf, param_billions, which llm-models.d/ deliberately does not
@@ -154,24 +166,15 @@ llama_cpp_models:
     param_billions: 27.78
     embeddings: false
 
-  # Hindsight fabric embedder/reranker (bake-off decision, SD/lane-L6-bakeoff.md:
-  # recall@5 0.9407 vs baseline 0.9037, both stronger than the alternatives
-  # tested). Same GGUF is also declared on llm_cpu_9b_group as the failover
-  # rung — see that file for why the pair must match. `--models-max` on this
-  # guest stays at the role default of 1 (defaults/main/00-core.yml), so these
-  # two share the card's single resident slot with the dense chat model above
-  # via llama-server's own on-demand router-mode swap — deliberately NOT
-  # raised to keep all three co-resident: the measured headroom above (2307
-  # MiB free at ctx 32768) predates these two models entirely, Q8_0 weights
-  # alone are already ~1.2 GiB combined, and this PR has no live host access
-  # to re-measure. Raise llama_cpp_models_max here only behind a fresh
-  # nvidia-smi measurement with all three loaded.
-  #
-  # ctx_size 2048 is a conservative placeholder for the same reason (no live
-  # VRAM measurement this PR) — bge-m3 supports up to 8192 natively and
-  # Hindsight's own chunks are typically far smaller than either number.
-  # Raise it only behind a fresh measurement, per the card's own convention
-  # above (see "IF IT DOES NOT FIT").
+  # Embedder + reranker pair. The SAME GGUF pair is also declared on
+  # llm_cpu_9b_group as a failover rung, and it must stay that way: once a
+  # caller writes its first vector with this embedder, the stored embedding
+  # dimension is locked, so a failover rung serving a different embedder
+  # would silently return dimension-mismatched or wrong vectors instead of
+  # just answering slower. `llama_cpp_models_max` above is sized to keep
+  # these two resident alongside the dense chat model rather than evicting
+  # it on every call; `tasks/main.yml`'s residency check proves that holds
+  # on this card.
   - name: bge-m3
     aliases: []
     hf_repo: gpustack/bge-m3-GGUF
@@ -186,7 +189,21 @@ llama_cpp_models:
     # answers wrong-pooled vectors when this is left at the embeddings
     # branch's `mean` default. Do not remove this override.
     pooling: cls
-    ctx_size: 2048
+    # 8192 is BAAI/bge-m3's own trained max sequence length (model card,
+    # https://huggingface.co/BAAI/bge-m3) and also the default of the
+    # consuming service's own input-truncation cap
+    # (HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS, default 8192 — Hindsight
+    # docs, https://hindsight.vectorize.io/developer/configuration,
+    # "Embeddings Configuration"): the caller truncates to this many tokens
+    # of its OWN tokenizer before calling this backend, so anything this
+    # backend ever receives is already bounded at the same figure. llama-
+    # server 500s an input larger than ctx/batch rather than truncating it
+    # itself, so this must cover the real ceiling, not a typical case. Note
+    # the same source's own caveat: its truncation count uses an
+    # approximate tokenizer, not bge-m3's real one, so a pathological input
+    # could still exceed this by some margin — a residual risk in the
+    # caller, not something a bigger ctx_size here can close.
+    ctx_size: 8192
 
   - name: bge-reranker-v2-m3
     aliases: []
@@ -196,7 +213,14 @@ llama_cpp_models:
     param_billions: 0.568
     embeddings: false
     rerank: true
-    ctx_size: 2048
+    # Same 8192 ceiling as bge-m3 above, same reason: BAAI/bge-reranker-v2-m3's
+    # own model card (https://huggingface.co/BAAI/bge-reranker-v2-m3) gives
+    # its architectural max_length as 8192 (it recommends 1024 for best
+    # ranking quality, which is a quality tuning knob, not a serving limit —
+    # unrelated to what ctx_size must cover to avoid a 500). Whatever this
+    # reranks was already embedding-truncated to the same 8192-token ceiling
+    # above to have been stored and recalled at all.
+    ctx_size: 8192
 
   # The coding rung (registry qwen3-coder-30b, disabled) returns here in the
   # same change that lands its GGUF on the shared model store: hf_repo

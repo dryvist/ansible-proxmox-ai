@@ -100,7 +100,7 @@ def test_embeddings_section_carries_embeddings_flags_and_no_chat_flags():
 
 
 def test_embeddings_section_honors_pooling_override():
-    # Regression guard for the Hindsight bake-off's BAAI/bge-m3, whose own
+    # Regression guard for BAAI/bge-m3, whose own
     # GGUF metadata is bert.pooling_type=2 (CLS) — leaving this branch's
     # `pooling` unconditionally at "mean" silently computes the wrong
     # sentence vector for that model (llama-server only warns, it still

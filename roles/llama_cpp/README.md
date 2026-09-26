@@ -42,14 +42,20 @@ Ordering: `tofu-proxmox` (LXC shell) → `ansible-proxmox` (GPU passthrough) →
   nodes (resolved at runtime via `stat`), so the server can open `/dev/kfd` +
   `/dev/dri` regardless of how host GIDs map to container group names (same idiom as
   `roles/ollama`).
-- Never downloads or writes model weights. Each declared GGUF is checked for
-  presence in `llama_cpp_models_dir` (populated out of band from shared model
-  storage; the role asserts the mount is read-only); absent ones are reported.
+- Never downloads or writes model weights. Each declared GGUF must already be
+  present in `llama_cpp_models_dir` (populated out of band from shared model
+  storage; the role asserts the mount is read-only) — the converge fails
+  loudly, naming the missing file, rather than silently serving fewer models
+  than declared.
 - Renders `llama_cpp_config_file` (a `--models-preset` INI, one section per
-  present model — `templates/llama-cpp-models.ini.j2`) and a systemd unit
+  declared model — `templates/llama-cpp-models.ini.j2`) and a systemd unit
   running `llama-server` directly in router mode against it, listening on
   `service_ports.llm_fast_api`. Restart-on-failure is applied by the shared
   `systemd_restart_policy` role via `group_vars/llm_fast_group.yml`.
+- After the service is up, loads every declared model once and confirms it is
+  still resident afterward (`tasks/verify-residency.yml`) — fails loudly if
+  `llama_cpp_models_max` or a host's VRAM/RAM does not actually cover the
+  declared set at its configured `ctx_size`.
 
 ## Models
 
