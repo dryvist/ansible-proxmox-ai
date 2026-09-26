@@ -140,24 +140,20 @@
           {{ ns.seen }}
         _reachable_zdr_false: "{{ _reachable | intersect(_zdr_false_group_names) }}"
 
-    - name: At least one local rung is reachable from the hindsight key's scope
+    - name: At least 2 rungs are reachable, and at least one is not the GPU
       ansible.builtin.assert:
         quiet: true
         that:
-          - _reachable | intersect(_local_group_names) | length > 0
+          - _reachable | length >= 2
+          - (_reachable | reject('equalto', llm_router_hermes_local_4080_id) | list | length) > 0
         fail_msg: >-
           Expected the hindsight key's reachable set ({{ _reachable }}) to
-          include at least one local rung ({{ _local_group_names }}) —
-          background-local (55-roles.yml) should resolve to the 4080.
-        success_msg: >-
-          Local rung(s) reachable: {{ _reachable | intersect(_local_group_names) }}
+          have at least 2 rungs with at least one that is not the 4080
+          ({{ llm_router_hermes_local_4080_id }}) — background-local
+          (55-roles.yml) must not be a single point of failure.
+        success_msg: "Reachable rungs: {{ _reachable }}"
       vars:
         _hindsight_key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'hindsight') | first }}"
-        # llm_router_primary_model is deliberately excluded — see the comment
-        # on the background-local role (55-roles.yml): it carries its own
-        # independent fallback chain reaching zero_data_retention: false
-        # rungs, so it must never be a name this key can reach.
-        _local_group_names: "{{ [llm_router_hermes_local_4080_id] }}"
         _fallbacks_by_key: >-
           {{ dict(_config.router_settings.fallbacks
                   | map('dict2items') | flatten | map(attribute='key')

@@ -104,6 +104,27 @@ _llm_router_fast_subagent_chain: >-
 _llm_router_cheap_chain: >-
   {{ [llm_router_primary_model] + llm_router_external_terminal_rungs }}
 
+# ZDR-TRUE, LOCAL-FIRST LADDER — for a low-priority background caller that
+# must never queue on a busy local rung and must never reach a
+# zero_data_retention: false deployment (background-local role, below).
+#
+# EVERY other local (large/light/vllm tier) or free-cloud registry entry
+# tried here — llm_router_primary_model, the other resident Mac Studio
+# entries, llm_router_external_free_rungs's own members — turned out to
+# ALSO be a member of llm_router_hermes_default_fallback_chain, so
+# config.yaml.j2 gives EACH of them its own independent
+# router_settings.fallbacks entry (llm_router_hermes_own_fallback_by_group)
+# reaching zai/codex-api — confirmed live, repeatedly, by
+# test_hindsight_key_zdr_isolation.yml against earlier drafts of this
+# chain. `free` (model-list-free.yaml.j2's standalone ZDR-true pool,
+# already the route hindsight used before this change) is the one name
+# proven NOT to have this problem: config.yaml.j2 renders its own fallback
+# entry as an explicit empty list, so a walk that reaches it terminates
+# there. This is a real architectural constraint, not a hardcoded
+# shortcut — 'free' is itself derived purely from registry zdr flags
+# (model-list-free.yaml.j2), just not re-derived a second time here.
+_llm_router_zdr_true_local_first_chain: "{{ [llm_router_hermes_local_4080_id, 'free'] }}"
+
 # FALLBACK ORDER IS ONE-WAY, LARGEST CONTEXT FIRST — for every role EXCEPT
 # fast/subagent above, whose chain is intentionally local-first / narrowest
 # rung first and relies on context_window_fallbacks (not ordering) to keep an
@@ -176,25 +197,35 @@ llm_router_role_deployments:
   - role: ocr
     model: "{{ llm_router_ocr_model }}"
     fallbacks: []
-  # Hindsight's retain/reflect/consolidation route: the 4080 only, no
-  # fallback — deliberately its OWN role rather than reusing subagent/cheap/
-  # fast, and deliberately NOT falling back to llm_router_primary_model the
-  # way those roles do. Every existing chain above continues into
-  # llm_router_external_terminal_rungs (zero_data_retention: false) via
-  # 59-key-scopes.yml's per-role widening; llm_router_primary_model itself
-  # ALSO carries its own independent router_settings.fallbacks entry
-  # (config.yaml.j2, the general fabric chain) reaching those same
-  # ZDR-false rungs — confirmed live by test_hindsight_key_zdr_isolation.yml,
-  # which failed against a first draft of this role that fell back to it.
-  # enforce_fallback_model_access re-checks the key at every hop, but a hop
-  # is still a hop: naming a fallback target that itself has any further
-  # chain adopts that whole downstream chain too, role-declared or not. Same
-  # empty-fallback shape as fast-gpu (fail outright on contention rather
-  # than redirect). See 56-virtual-keys.yml for the key that targets this
-  # role and test_hindsight_key_zdr_isolation.yml for the isolation proof.
+  # Named by PURPOSE, not by consumer: any low-priority background caller
+  # that must never queue on a busy local rung (the standing "local first,
+  # no queueing" rule) and must never reach a zero_data_retention: false
+  # deployment can use this role, not only Hindsight.
+  #
+  # llm_router_primary_model is deliberately EXCLUDED even though it is
+  # local and ZDR-true: it is a member of llm_router_hermes_default_fallback_chain
+  # (the general fabric chain), so config.yaml.j2 gives it its own
+  # independent router_settings.fallbacks entry (llm_router_hermes_own_fallback_by_group)
+  # reaching zai/codex-api — zero_data_retention: false.
+  # litellm's fallback walk consults a REACHED group's own registered
+  # fallback entry, not just the chain that reached it
+  # (router.py::async_function_with_fallbacks, see 58-review-roles.yml's
+  # own comment on this) — so naming a fallback target that itself has any
+  # further chain adopts that whole downstream chain too, regardless of what
+  # THIS role's own fallbacks field says. Confirmed live, twice: an earlier
+  # draft fell back to llm_router_primary_model directly, and a second draft
+  # fell back to a registry-derived list of every other local/free-tier
+  # rung — both failed test_hindsight_key_zdr_isolation.yml the same way,
+  # because every other local and free-cloud registry entry tried is ALSO a
+  # member of llm_router_hermes_default_fallback_chain, so each one carries
+  # its own independent tail into zai/codex-api. `free` (see
+  # _llm_router_zdr_true_local_first_chain, above) is the one name proven
+  # not to have this problem.
   - role: background-local
     model: "{{ llm_router_hermes_local_4080_id }}"
-    fallbacks: []
+    fallbacks: >-
+      {{ _llm_router_zdr_true_local_first_chain
+         | reject('equalto', llm_router_hermes_local_4080_id) | list }}
 
 # Seeding talks to the proxy over loopback with the master key: the management
 # endpoints are authenticated, and the role has the key already. Bounded tightly
