@@ -143,6 +143,26 @@ def test_stale_worker_filter_keeps_present_and_live_absent_decommissions_only_de
     assert stale == ["absent-and-dead"]  # only the absent AND dead id
 
 
+def test_stale_worker_filter_parses_multi_day_last_update_ages() -> None:
+    # S-new-1: str(timedelta) embeds its own ", " at >=1 day ("1 day, ..."
+    # singular, "N days, ..." plural), so a \S+ token regex silently misses
+    # every task 24h or older, reading it as fresh (age 0) instead of dead.
+    # Covers under-1-day, both day forms, and microseconds-present.
+    sample = (
+        "Processing tasks across 3 worker(s):\n\n"
+        "Worker: dead-under-a-day (1 task(s))\n"
+        "  aaaaaaaa  retain               bank=demo  running=5:00:00  last_update=5:00:00 ago\n\n"
+        "Worker: dead-one-day-singular (1 task(s))\n"
+        "  bbbbbbbb  retain               bank=demo  running=1 day, 0:00:00"
+        "  last_update=1 day, 0:00:00 ago\n\n"
+        "Worker: dead-multi-day-with-micros (1 task(s))\n"
+        "  cccccccc  retain               bank=demo  running=3 days, 1:02:03.456789"
+        "  last_update=3 days, 1:02:03.456789 ago\n\n"
+    )
+    stale = hindsight_stale_worker_ids(sample, [], dead_threshold_seconds=4800)
+    assert set(stale) == {"dead-under-a-day", "dead-one-day-singular", "dead-multi-day-with-micros"}
+
+
 def test_stale_worker_filter_renders_from_the_real_task_expression() -> None:
     # Literal render of the YAML task's own Jinja expression (not a re-typed
     # copy), with the filter registered exactly as Ansible would load it.

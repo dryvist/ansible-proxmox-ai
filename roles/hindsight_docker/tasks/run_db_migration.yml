@@ -62,6 +62,20 @@
 # connection-error message from any of them can echo the DSN; each is
 # followed by an explicit rc-only assertion so a real failure still
 # surfaces without depending on the withheld output.
+#
+# The whole drain -> backup -> verify -> migrate sequence below is wrapped
+# in block/rescue: a pre_tasks failure here is fatal to the whole play (see
+# hindsight_lifecycle_gates.yml's header), and with nothing to bring a
+# stopped replica back up, that would leave the entire pool down on any
+# backup/integrity/migration failure — worse than the single-host failure
+# this whole file exists to make safe. The rescue re-reads the database's
+# actual current revision via the vendored `alembic ... current` (not a
+# guess): unchanged (or the migration never started) restarts every
+# drained replica on its own current image, as-is; changed (partially or
+# fully) never restarts an old image against a schema it may not
+# understand — the pool is left down on purpose, and the failure message
+# names the pre-migration backup to restore from. Either branch re-raises
+# via `ansible.builtin.fail`, so the play still fails either way.
 
 - name: Ensure the pre-migration backup directory exists
   ansible.builtin.file:
@@ -186,163 +200,5 @@
       ~ ', target ' ~ hindsight_docker_target_head_revision ~ ') — taking a pre-migration backup.') }}
   run_once: true
 
-- name: Check whether each replica has already been deployed at least once
-  ansible.builtin.stat:
-    path: "{{ hindsight_docker_data_dir }}/docker-compose.yml"
-  loop: "{{ groups['hindsight_group'] }}"
-  delegate_to: "{{ item }}"
-  loop_control:
-    label: "{{ item }}"
-  register: hindsight_docker_compose_exists_check
-  run_once: true
-  when: hindsight_docker_migration_pending
-
-- name: Stop the Hindsight containers on every already-deployed replica before a pending migration
-  community.docker.docker_compose_v2:
-    project_src: "{{ hindsight_docker_data_dir }}"
-    state: stopped
-  loop: "{{ hindsight_docker_compose_exists_check.results | default([]) }}"
-  loop_control:
-    loop_var: hindsight_docker_replica_check
-    label: "{{ hindsight_docker_replica_check.item | default('') }}"
-  delegate_to: "{{ hindsight_docker_replica_check.item }}"
-  run_once: true
-  # A replica with no compose project yet has nothing running to stop —
-  # true on Molecule's scaffold (this runs before the role's own first-ever
-  # deploy) and, in production, on any host that has never been deployed
-  # despite an existing schema.
-  when: >-
-    hindsight_docker_migration_pending
-    and (hindsight_docker_replica_check.stat.exists | default(false))
-
-- name: Compute the pre-migration backup filename from the current and target revisions
-  ansible.builtin.set_fact:
-    # Timestamped AND revision-tagged so a second migration never overwrites
-    # the previous one's backup. Off-host copy and retention are out of
-    # scope here — a separate backup/export process is responsible for
-    # copying this file off the guest and pruning old ones.
-    # now(), not ansible_date_time: this play runs with gather_facts: false
-    # (the role uses no host facts), and now() needs no fact gathering.
-    hindsight_docker_premigration_backup_filename: >-
-      pre-migration-{{ hindsight_docker_current_revision_probe.stdout | trim }}-to-{{
-      hindsight_docker_target_head_revision }}-{{ now(utc=true, fmt='%Y%m%dT%H%M%S') }}.zip
-  run_once: true
-  when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
-
-- name: Take a pre-migration database backup
-  ansible.builtin.command:
-    argv:
-      - docker
-      - run
-      - --rm
-      - --network=host
-      - --user
-      - root
-      - -e
-      - HINDSIGHT_API_DATABASE_URL
-      - -v
-      - "{{ hindsight_docker_migration_backup_dir }}:/backup"
-      - "{{ hindsight_docker_image }}"
-      - hindsight-admin
-      - backup
-      - "/backup/{{ hindsight_docker_premigration_backup_filename }}"
-  environment:
-    HINDSIGHT_API_DATABASE_URL: "{{ hindsight_docker_db_url }}"
-  register: hindsight_docker_backup_result
-  run_once: true
-  changed_when: true
-  failed_when: false
-  no_log: true
-  # Sized with margin over measured CI timing (see the migration task's own
-  # timeout below); the backup command itself has not yet completed in any
-  # CI run against a non-trivial schema, so this ceiling is provisional
-  # pending real measured production-scale timing.
-  async: "{{ hindsight_docker_backup_wall_timeout_seconds }}"
-  poll: 5
-  when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
-
-- name: Fail loudly if the pre-migration backup command did not exit cleanly
-  ansible.builtin.assert:
-    that:
-      - hindsight_docker_backup_result.rc | default(-1) == 0
-      - not (hindsight_docker_backup_result.failed | default(false))
-    fail_msg: >-
-      hindsight-admin backup exited abnormally
-      (rc={{ hindsight_docker_backup_result.rc | default('unknown') }});
-      output withheld (no_log) because it may include the database DSN.
-    quiet: true
-  run_once: true
-  when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
-
-- name: Refuse to migrate unless the pre-migration backup file is present and non-empty
-  ansible.builtin.stat:
-    path: "{{ hindsight_docker_migration_backup_dir }}/{{ hindsight_docker_premigration_backup_filename }}"
-  register: hindsight_docker_premigration_backup_stat
-  run_once: true
-  when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
-
-- name: Assert the pre-migration backup succeeded
-  ansible.builtin.assert:
-    that:
-      - hindsight_docker_premigration_backup_stat.stat.exists
-      - hindsight_docker_premigration_backup_stat.stat.size > 0
-    fail_msg: >-
-      hindsight-admin backup did not produce a usable file at
-      {{ hindsight_docker_migration_backup_dir }}/{{ hindsight_docker_premigration_backup_filename }}.
-    quiet: true
-  run_once: true
-  when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
-
-- name: Verify the pre-migration backup archive is a valid, restorable zip
-  ansible.builtin.command:
-    argv:
-      - python3
-      - -m
-      - zipfile
-      - -t
-      - "{{ hindsight_docker_migration_backup_dir }}/{{ hindsight_docker_premigration_backup_filename }}"
-  changed_when: false
-  run_once: true
-  when: hindsight_docker_schema_exists and hindsight_docker_migration_pending
-
-- name: Run the Hindsight database migration once, using the target image
-  ansible.builtin.command:
-    argv:
-      - docker
-      - run
-      - --rm
-      - --network=host
-      - -e
-      - HINDSIGHT_API_DATABASE_URL
-      - -e
-      - HINDSIGHT_API_VECTOR_EXTENSION
-      - "{{ hindsight_docker_image }}"
-      - hindsight-admin
-      - run-db-migration
-  environment:
-    HINDSIGHT_API_DATABASE_URL: "{{ hindsight_docker_db_url }}"
-    HINDSIGHT_API_VECTOR_EXTENSION: "{{ hindsight_docker_vector_extension }}"
-  register: hindsight_docker_migration_result
-  run_once: true
-  when: hindsight_docker_migration_pending
-  changed_when: "'Running upgrade' in hindsight_docker_migration_result.stderr"
-  failed_when: false
-  no_log: true
-  # 600s vs. a measured ~39s fresh-schema migration in CI (job 108368335106,
-  # 2026-09-26) — ~15x margin for a larger production dataset. Raise if a
-  # real migration run ever needs longer.
-  async: "{{ hindsight_docker_migration_wall_timeout_seconds }}"
-  poll: 5
-
-- name: Fail loudly if the database migration did not exit cleanly
-  ansible.builtin.assert:
-    that:
-      - hindsight_docker_migration_result.rc | default(-1) == 0
-      - not (hindsight_docker_migration_result.failed | default(false))
-    fail_msg: >-
-      hindsight-admin run-db-migration exited abnormally
-      (rc={{ hindsight_docker_migration_result.rc | default('unknown') }});
-      output withheld (no_log) because it may include the database DSN.
-    quiet: true
-  run_once: true
-  when: hindsight_docker_migration_pending
+- name: Drain, back up, verify, and migrate (recoverable on failure)
+  ansible.builtin.import_tasks: run_db_migration_drain_and_migrate.yml

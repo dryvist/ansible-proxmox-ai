@@ -23,6 +23,11 @@ def _load_role_tasks(name: str) -> list[dict]:
     return yaml.safe_load((ROLE_ROOT / "tasks" / name).read_text())
 
 
+def _load_drain_tasks() -> list[dict]:
+    doc = _load_role_tasks("run_db_migration_drain_and_migrate.yml")
+    return doc[0]["block"]
+
+
 def test_schema_probe_positively_detects_a_first_deploy() -> None:
     # A first-ever deploy has no schema yet, so there is nothing to back up
     # before run-db-migration creates it. Detected positively by probing for
@@ -156,7 +161,7 @@ def test_migration_changed_when_reflects_whether_alembic_actually_upgraded() -> 
     # confirmed at the pinned v0.9.0 tag: a real upgrade logs "Running
     # upgrade <rev> -> <rev>, ..." per revision to stderr, a no-op run logs
     # none. Evaluated with the real Jinja expression, not a string match.
-    tasks = _load_role_tasks("run_db_migration.yml")
+    tasks = _load_drain_tasks()
     migrate = next(t for t in tasks if "Run the Hindsight database migration" in t["name"])
     assert migrate["register"] == "hindsight_docker_migration_result"
 
@@ -172,7 +177,7 @@ def test_migration_changed_when_reflects_whether_alembic_actually_upgraded() -> 
 
 
 def test_migration_task_runs_against_the_target_image_using_the_shared_db_url() -> None:
-    tasks = _load_role_tasks("run_db_migration.yml")
+    tasks = _load_drain_tasks()
     migrate = next(t for t in tasks if "Run the Hindsight database migration" in t["name"])
     argv = migrate["ansible.builtin.command"]["argv"]
     assert argv[-2:] == ["hindsight-admin", "run-db-migration"]

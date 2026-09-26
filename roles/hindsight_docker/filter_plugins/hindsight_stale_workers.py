@@ -30,7 +30,10 @@ from __future__ import annotations
 import re
 
 _WORKER_BLOCK_RE = re.compile(r"Worker: (\S+) \(\d+ task\(s\)\)\n((?:  .+\n)+)")
-_LAST_UPDATE_RE = re.compile(r"last_update=(\S+) ago")
+# Non-greedy .+?: str(timedelta) at >=1 day embeds its own ", " ("1 day,
+# 3:04:05" / "2 days, 3:04:05"), so a \S+ token match silently misses every
+# task 24h or older (S-new-1) — stop only at the literal " ago" suffix.
+_LAST_UPDATE_RE = re.compile(r"last_update=(.+?) ago")
 _TIMEDELTA_RE = re.compile(r"^(?:(\d+) days?, )?(\d+):(\d{2}):(\d{2})")
 
 
@@ -79,7 +82,24 @@ def _demo() -> None:
     inventory = ["alive-present", "present-but-stale"]
     got = hindsight_stale_worker_ids(sample, inventory, dead_threshold_seconds=4800)
     assert got == ["dead-absent"], got
-    print(f"ok: stale={got}")
+
+    # S-new-1: str(timedelta) embeds its own ", " at >=1 day — both the
+    # singular ("1 day, ...") and plural ("N days, ...") forms, plus
+    # microseconds, must still parse instead of being silently read as 0.
+    day_sample = (
+        "Processing tasks across 2 worker(s):\n\n"
+        "Worker: dead-one-day (1 task(s))\n"
+        "  e5f6a7b8  retain               bank=demo  running=1 day, 0:00:00  last_update=1 day, 0:00:00 ago\n\n"
+        "Worker: dead-two-days (1 task(s))\n"
+        "  f6a7b8c9  retain               bank=demo  running=2 days, 3:04:05.123456"
+        "  last_update=2 days, 3:04:05.123456 ago\n\n"
+    )
+    got_days = hindsight_stale_worker_ids(day_sample, [], dead_threshold_seconds=4800)
+    assert set(got_days) == {"dead-one-day", "dead-two-days"}, got_days
+    assert _timedelta_str_to_seconds("1 day, 0:00:00") == 86400
+    assert _timedelta_str_to_seconds("2 days, 3:04:05.123456") == 2 * 86400 + 3 * 3600 + 4 * 60 + 5
+
+    print(f"ok: stale={got}, stale_days={got_days}")
 
 
 if __name__ == "__main__":

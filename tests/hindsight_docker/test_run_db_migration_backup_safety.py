@@ -1,9 +1,11 @@
-"""roles/hindsight_docker/tasks/run_db_migration.yml: the pre-migration
-backup itself (integrity, naming, timeout) and the whole-fleet drain before a
-pending migration — split out of test_run_db_migration_pending.py, which
-covers the pending/probe/changed_when side, to stay under
-.token-limits.yaml's per-file budget. Parses the role task YAML directly and
-evaluates its Jinja expressions — no live Ansible run, no Docker.
+"""roles/hindsight_docker/tasks/run_db_migration_drain_and_migrate.yml: the
+pre-migration backup itself (integrity, naming, timeout) and the
+whole-fleet drain before a pending migration — split out of
+test_run_db_migration_pending.py, which covers the pending/probe/
+changed_when side, to stay under .token-limits.yaml's per-file budget.
+Parses the role task YAML directly and evaluates its Jinja expressions —
+no live Ansible run, no Docker. The rescue-selection logic (B2: restart on
+failure) has its own tests in test_run_db_migration_rescue.py.
 """
 
 from __future__ import annotations
@@ -20,13 +22,21 @@ def _load_role_tasks(name: str) -> list[dict]:
     return yaml.safe_load((ROLE_ROOT / "tasks" / name).read_text())
 
 
+def _load_drain_tasks() -> list[dict]:
+    # run_db_migration.yml's drain/backup/verify/migrate sequence is its own
+    # file (token budget) and its own block: (B2 rescue) — this unwraps it
+    # back to a flat task list so existing name-based lookups keep working.
+    doc = _load_role_tasks("run_db_migration_drain_and_migrate.yml")
+    return doc[0]["block"]
+
+
 def test_migration_task_takes_an_automated_pre_migration_backup() -> None:
     # No human confirmation gate: every converge takes its own fresh backup
     # via the vendored `hindsight-admin backup` command, then refuses to
     # migrate unless that backup file actually exists, is non-empty, and is
     # a valid zip (S1/S2: filename carries the from->to revisions plus a
     # timestamp so a second migration never overwrites the first backup).
-    tasks = _load_role_tasks("run_db_migration.yml")
+    tasks = _load_drain_tasks()
     names = [t["name"] for t in tasks]
     assert "Take a pre-migration database backup" in names
     assert "Assert the pre-migration backup succeeded" in names
@@ -82,7 +92,7 @@ def test_migration_task_takes_an_automated_pre_migration_backup() -> None:
 
 
 def test_backup_filename_carries_from_to_revisions_and_a_timestamp() -> None:
-    tasks = _load_role_tasks("run_db_migration.yml")
+    tasks = _load_drain_tasks()
     filename_fact = next(
         t for t in tasks if t["name"] == "Compute the pre-migration backup filename from the current and target revisions"
     )
@@ -94,7 +104,7 @@ def test_backup_filename_carries_from_to_revisions_and_a_timestamp() -> None:
 
 
 def test_backup_runs_only_when_a_schema_exists_and_a_migration_is_pending() -> None:
-    tasks = _load_role_tasks("run_db_migration.yml")
+    tasks = _load_drain_tasks()
 
     backup = next(t for t in tasks if t["name"] == "Take a pre-migration database backup")
     # Schema alone isn't enough: an already-migrated database must take no
@@ -127,7 +137,7 @@ def test_all_already_deployed_replicas_stop_before_a_pending_migration() -> None
     # backup/migrate, regardless of which single batch/host is currently
     # converging. A host with no compose project yet (first-ever deploy) is
     # skipped: nothing is running there to stop.
-    tasks = _load_role_tasks("run_db_migration.yml")
+    tasks = _load_drain_tasks()
     check_task = next(t for t in tasks if t["name"].startswith("Check whether each replica"))
     assert check_task["ansible.builtin.stat"] == {"path": "{{ hindsight_docker_data_dir }}/docker-compose.yml"}
     assert check_task["loop"] == "{{ groups['hindsight_group'] }}"
