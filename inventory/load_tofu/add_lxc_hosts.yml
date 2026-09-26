@@ -1,0 +1,358 @@
+---
+# Extracted from inventory/load_tofu.yml to stay under the org token-limits
+# gate: container connection selection and the tag -> group mapping, both
+# bulky and this file's concern alone. Imported via import_tasks into the
+# parent play, so every fact it already set (tofu_data,
+# _llm_cpu_pool_tags, ...) is visible here without re-resolving anything.
+
+# Safety gate for the tofu-proxmox contract's ansible_connection field
+# ONLY — the tag allowlist below (tofu_ssh_container) is unconditional and
+# never probed: those guests are already live in production over ssh
+# specifically because pct exec is broken for them, so a transient sshd
+# hiccup here must never fall them back into that bug. A container newly
+# declaring the contract field is checked for a listening sshd before its
+# connection is flipped; a caller (a test) that pre-sets
+# load_tofu_ssh_ready skips the live probe entirely.
+- name: Probe SSH readiness for containers declaring the contract's ssh connection
+  ansible.builtin.wait_for:
+    host: "{{ item.value.fqdn | default(item.value.ip, true) }}"
+    port: 22
+    timeout: 5
+    state: started
+  delegate_to: localhost
+  loop: "{{ tofu_data.containers | default({}) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: load_tofu_ssh_probe
+  ignore_errors: true
+  changed_when: false
+  when:
+    - load_tofu_ssh_ready is not defined
+    - tofu_data.containers is defined
+    - tofu_data.containers | length > 0
+    - item.value.ansible_connection | default('') == 'ssh'
+    - (item.value.tags | default([]))
+         | intersect(
+             ['hermes-agent', 'llm-router', 'llm-redis', 'llm-vllm',
+              'llm-fast', 'open-webui', 'herdr', 'langfuse', 'phoenix']
+             + (_llm_cpu_pool_tags | default([]))
+           )
+         | length == 0
+
+# Every container the probe task's `when:` skipped (not a contract-ssh
+# candidate) shows up here too — a skipped result has no `failed` key, so
+# rejectattr('failed') keeps it. Harmless: container_ssh below only ever
+# consults this list for a container that IS an unprobed contract-ssh
+# candidate, and every such container had a REAL probe run above.
+- name: Record which contract-declared-ssh containers actually answered
+  ansible.builtin.set_fact:
+    load_tofu_ssh_ready: >-
+      {{ load_tofu_ssh_probe.results | default([])
+         | rejectattr('failed')
+         | map(attribute='item') | map(attribute='key') | list }}
+  when: load_tofu_ssh_ready is not defined
+
+- name: Warn about contract-declared-ssh containers whose sshd did not answer
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.key }} declares ansible_connection=ssh but port 22 on
+      {{ item.value.fqdn | default(item.value.ip, true) }} did not answer
+      within the probe timeout — falling back to
+      community.proxmox.proxmox_pct_remote for this run.
+  loop: "{{ tofu_data.containers | default({}) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - tofu_data.containers is defined
+    - item.value.ansible_connection | default('') == 'ssh'
+    - (item.value.tags | default([]))
+         | intersect(
+             ['hermes-agent', 'llm-router', 'llm-redis', 'llm-vllm',
+              'llm-fast', 'open-webui', 'herdr', 'langfuse', 'phoenix']
+             + (_llm_cpu_pool_tags | default([]))
+           )
+         | length == 0
+    - item.key not in (load_tofu_ssh_ready | default([]))
+
+- name: Add AI LXC containers to inventory (proxmox_pct_remote connection)
+  ansible.builtin.add_host:
+    name: "{{ item.key }}"
+    groups: >-
+      {{
+        ['lxc_containers', 'all'] +
+        (
+          ['qdrant_group']
+          if 'vectordb' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['hindsight_group']
+          if 'hindsight' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['llamaindex_group']
+          if 'rag' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['ollama_group']
+          if 'ollama' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['open_webui_group']
+          if 'open-webui' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['hermes_agent_group']
+          if (item.value.tags | default([])) | intersect(['hermes-agent', 'hermes-donna'])
+          else []
+        ) +
+        (
+          ['llm_fast_group']
+          if 'llm-fast' in (item.value.tags | default([]))
+          and 'llm-vllm' not in (item.value.tags | default([]))
+          and (item.value.tags | default([])) | intersect(_llm_cpu_pool_tags | default([])) | length == 0
+          else []
+        ) +
+        (
+          ['llm_cpu_pool_group']
+          if (item.value.tags | default([]))
+             | intersect(_llm_cpu_pool_tags | default([]))
+             | length > 0
+          else []
+        ) +
+        (
+          ['llm_cpu_moe_group']
+          if _llm_cpu_moe_tag is defined
+          and _llm_cpu_moe_tag in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['llm_cpu_9b_group']
+          if _llm_cpu_9b_tag is defined
+          and _llm_cpu_9b_tag in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['llm_vllm_group']
+          if 'llm-vllm' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['llm_router_group']
+          if 'llm-router' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['llm_redis_group']
+          if 'llm-redis' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['dify_group']
+          if 'dify' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['langflow_group']
+          if 'langflow' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['langgraph_group']
+          if 'langgraph' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['agent_exec_group']
+          if 'agent-exec' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['langfuse_group']
+          if 'langfuse' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['phoenix_group']
+          if 'phoenix' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['clickhouse_group']
+          if 'clickhouse' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['agentgateway_group']
+          if 'agentgateway' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['docling_serve_group']
+          if 'docling-serve' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['ai_orchestration_group']
+          if 'ai-orchestration' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['ai_runner_group']
+          if 'ai-runner' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['ai_agent_pool_group']
+          if 'ai-proxied' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['squid_group']
+          if 'squid' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['hermes_ui_group']
+          if 'hermes-ui' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['herdr_group']
+          if 'herdr' in (item.value.tags | default([]))
+          and not (item.value.tags | default([]))
+              | intersect(['herdr-ui'])
+          else []
+        ) +
+        (
+          ['herdr_ui_group']
+          if 'herdr-ui' in (item.value.tags | default([]))
+          else []
+        )
+      }}
+    # Omitted (not a plain 0/null) for an ssh-connected guest: pct exec
+    # never runs for it, so the vmid has no consumer. Checked repo-wide —
+    # nothing here reads add_host's proxmox_vmid.
+    proxmox_vmid: "{{ omit if container_ssh else item.value.vmid }}"
+    # Per-node management FQDN, DERIVED — never a hand-pinned global host.
+    # A guest reaches its own node at {node-role}.{domain}; those names
+    # resolve internally while the bare cluster member name does not. The
+    # nodes-map lookup corrects a legacy bare node key to its role, and
+    # falls back to the node value itself when the map omits the key
+    # (e.g. the generic test-fixture node key).
+    #
+    # A guest is ssh-connected (container_ssh, defined below) via EITHER
+    # of two independent paths, which now compose rather than compete:
+    #
+    # 1. tofu_ssh_container: the tag allowlist below. Converges over
+    #    direct ssh because pct exec on PVE 9.2.4 closes the channel mid
+    #    module-upload (large stdin), failing every play at Gathering
+    #    Facts with the misleading "Channel closed.". Membership requires
+    #    sshd in the guest, the SSH client-CA (root login, `ansible`
+    #    principal), and the guest's host key in the pinned
+    #    SSH_KNOWN_HOSTS set. This is the pre-existing production
+    #    mechanism; guests on it are unaffected by path 2 below.
+    # 2. item.value.ansible_connection == 'ssh': the tofu-proxmox
+    #    contract's own per-container field (dryvist/tofu-proxmox#1188),
+    #    set once an operator flips a specific container in
+    #    deployment.json — the "real fix" path 1's comment refers to.
+    #    Gated on a controller-side port-22 probe (load_tofu_ssh_ready,
+    #    set above) before the flip takes effect: an operator can declare
+    #    the field before sshd is actually ready in the guest, and this
+    #    run falls back to pct_remote with a warning rather than handing
+    #    Ansible a connection nothing answers. Path 1 above is NEVER
+    #    probed or gated this way.
+    #
+    # Either path prefers `fqdn` (the contract's always-populated stable
+    # DNS name) over `ip`, which is only an FQDN for DHCP guests and a
+    # raw, less stable address for static ones. `fqdn | default(ip)`
+    # keeps working against a pre-contract inventory that has no `fqdn`
+    # field yet.
+    ansible_host: >-
+      {{ (item.value.fqdn | default(item.value.ip, true)) if container_ssh
+         else (tofu_data.nodes[item.value.node] | default({})).role
+              | default(item.value.node, true) ~ '.' ~ tofu_data.domain }}
+    # The else branch cannot just echo item.value.ansible_connection: a
+    # contract-declared guest whose probe failed still has the literal
+    # value 'ssh' on that field (container_ssh is what says "not ready"),
+    # so echoing it verbatim would hand Ansible the very connection the
+    # probe just proved nothing answers. Force the pct_remote default
+    # explicitly whenever container_ssh said no.
+    ansible_connection: >-
+      {{ 'ssh' if container_ssh
+         else (item.value.ansible_connection
+               if item.value.ansible_connection != 'ssh'
+               else 'community.proxmox.proxmox_pct_remote') }}
+    ansible_user: root
+    ansible_ssh_private_key_file: "{{ lookup('env', 'PROXMOX_SSH_KEY_PATH') }}"
+    # NOTE: no `hostname:` here — add_host treats it as an alias of `name`
+    # and silently consumes it (it never becomes a hostvar). The hostname
+    # fact is set for every guest by the propagate task at the bottom.
+    container_ip: "{{ item.value.ip }}"
+    # DHCP-first guests (tofu contract): `ip` carries the FQDN (DNS-first),
+    # `reserved_ip` the DHCP-reservation address an A record must point at.
+    # Static guests carry reserved_ip = null (or pre-contract inventories
+    # omit it entirely) — both normalize to '' here.
+    container_reserved_ip: "{{ item.value.reserved_ip | default('', true) }}"
+    # tofu-proxmox's per-container shared models mount path
+    # (containers[*].models_mount_path) — empty string when this guest has
+    # none. The llama_cpp role derives llama_cpp_models_dir from this
+    # instead of a hardcoded default, so the two can never disagree.
+    container_models_mount_path: "{{ item.value.models_mount_path | default('', true) }}"
+    host_tags: "{{ item.value.tags | default([]) }}"
+    # Which Hermes agent this guest runs. The deployment.json tag is the
+    # single source of truth; roles/hermes_agent/defaults derives
+    # hermes_agent_id from this, and every shared-service handle (Slack app
+    # + channels, OpenBao domain, Vikunja project, memory bank, OTel name)
+    # derives from that in turn.
+    #
+    # Deliberately a SEPARATE name from hermes_agent_id, and this indirection
+    # is load-bearing: recover-hermes-queue pulls the seeded-cron list by
+    # loading the whole role defaults file through `vars_files`, and play
+    # vars_files OUTRANKS inventory host/group vars. Setting the identity
+    # under its own name — one the defaults file never defines — is what
+    # keeps those plays from silently reverting every guest to the first
+    # agent and reconciling it with the first agent's credentials.
+    hermes_agent_identity: >-
+      {{ 'donna' if 'hermes-donna' in (item.value.tags | default([]))
+         else 'hermes' }}
+  vars:
+    # Derived from tags, per-item, rather than a hand-maintained name
+    # list: 'hermes-agent' covers every Hermes agent guest (hermes-donna
+    # guests carry both tags — see hermes_agent_identity above),
+    # 'llm-router' covers every LLM router guest, and 'llm-redis' the
+    # spend store those routers count in.
+    #
+    # This list is an ALLOWLIST of guests moved off the pct-exec path, not
+    # a statement that pct exec works for the rest. It does not: on current
+    # PVE 9.2.x, fact gathering fails with "Channel closed." for every
+    # guest still on that connection, and succeeds only for guests already
+    # flipped to ssh here. Members are added one at a time as each is
+    # confirmed to have sshd and CA trust. Inverting the default to ssh is
+    # the real fix and is tracked separately.
+    tofu_ssh_container: >-
+      {{ (item.value.tags | default([]))
+         | intersect(
+             ['hermes-agent', 'llm-router', 'llm-redis', 'llm-vllm',
+              'llm-fast', 'open-webui', 'herdr', 'langfuse', 'phoenix']
+             + (_llm_cpu_pool_tags | default([]))
+           )
+         | length > 0 }}
+    # Contract path (2 above), gated on the probe recorded in
+    # load_tofu_ssh_ready — never on tofu_ssh_container guests, which
+    # take path 1 unconditionally regardless of probe outcome.
+    _contract_ssh: >-
+      {{ (not tofu_ssh_container)
+         and item.value.ansible_connection == 'ssh'
+         and item.key in (load_tofu_ssh_ready | default([])) }}
+    # The two activation paths described above, OR'd together.
+    container_ssh: "{{ tofu_ssh_container or _contract_ssh }}"
+  loop: "{{ tofu_data.containers | dict2items }}"
+  changed_when: false
+  when:
+    - tofu_data.containers is defined
+    - tofu_data.containers | length > 0
