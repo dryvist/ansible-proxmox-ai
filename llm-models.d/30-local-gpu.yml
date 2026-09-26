@@ -1,6 +1,17 @@
 ---
 # The NVIDIA guest, and the Hermes fallback rung over the same backend.
 # One slice of the model registry; see llm-models.d/README.md.
+
+# ONE base var per model, read by both this file's vllm-tier bge-m3/
+# bge-reranker-v2-m3 entries below AND llm-models.d/20-light.yml's
+# CPU-failover pair sharing their client_model_id — same GGUF, same ctx, so
+# one number from one variable rather than two independently-typed 8192
+# literals that could drift. `include_vars: dir:` loads every llm-models.d/
+# file into one shared vars pool, and Jinja resolves these lazily, so
+# cross-file reference here is safe regardless of file load order.
+_llm_registry_bge_m3_context_window: 8192
+_llm_registry_bge_reranker_v2_m3_context_window: 8192
+
 _llm_registry_local_gpu:
   # ── NVIDIA GPU tier ─────────────────────────────────────────────────────────
   # Tier key stays `vllm` (names the ROUTER TIER/URL, not the engine) — this
@@ -72,18 +83,24 @@ _llm_registry_local_gpu:
 
   # Embedder + reranker, same card, same --models-preset router process as
   # the two entries above (llama_cpp_models in
-  # inventory/group_vars/llm_vllm_group.yml). `context_window` is NOT
-  # optional here despite neither model having a chat context to advertise:
+  # inventory/group_vars/llm_vllm_group.yml), and the SAME client_model_id as
+  # the CPU-failover pair in llm-models.d/20-light.yml — one model, one
+  # client name, failover expressed as order within that name (the repo's
+  # existing local-first pattern, tests/llm_router/test_local_first_by_order.yml),
+  # never a second name. `context_window` is NOT optional here despite
+  # neither model having a chat context to advertise:
   # roles/llm_router/defaults/main/20-registry.yml's
   # _llm_router_vllm_max_input_tokens_by_model iterates every vllm-tier entry
   # unconditionally and reads m.context_window with no default, so omitting it
   # breaks model-list.yaml.j2's render for the WHOLE vllm tier, not just these
-  # two. Matches the ctx_size on the guest's llama_cpp_models entries — the
-  # CPU-failover rung (inventory/group_vars/llm_fast_group.yml, served under
-  # its own name bge-m3-light/bge-reranker-v2-m3-light — see that file's
-  # comment for why not the same name yet) serves the same GGUF at the same
-  # window on purpose, since a caller is meant to eventually treat them as
-  # interchangeable once the router-alias work links them.
+  # two.
+  #
+  # ONE base var per model for context_window (_llm_registry_bge_m3_context_window /
+  # _llm_registry_bge_reranker_v2_m3_context_window, defined once, right here,
+  # ahead of both uses): the light-tier entry (llm-models.d/20-light.yml)
+  # reads the SAME var rather than a second, independently-typed 8192 — same
+  # GGUF, same ctx, one number, one variable, never two literals that could
+  # drift.
   #
   # `stream_timeout` is mandatory too, same reason and same value as the
   # qwen3.8-27b/qwen3-coder-30b entries above:
@@ -111,7 +128,7 @@ _llm_registry_local_gpu:
     provider: openai
     tier: vllm
     enabled: true
-    context_window: 8192
+    context_window: "{{ _llm_registry_bge_m3_context_window }}"
     stream_timeout: "{{ llm_router_admission_budget_seconds }}"
 
   - client_model_id: bge-reranker-v2-m3
@@ -119,7 +136,7 @@ _llm_registry_local_gpu:
     provider: openai
     tier: vllm
     enabled: true
-    context_window: 8192
+    context_window: "{{ _llm_registry_bge_reranker_v2_m3_context_window }}"
     stream_timeout: "{{ llm_router_admission_budget_seconds }}"
 
   # Local backup rung in the Hermes chain, same backend as the vllm entry.

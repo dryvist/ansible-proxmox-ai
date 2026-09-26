@@ -45,15 +45,12 @@ syslog_forwarder_program_routes:
 # entries, and for the same reason: the registry's context_window is the
 # single source both this CPU-failover rung and the GPU rung (and, once
 # wired, roles/hindsight_docker's HINDSIGHT_API_EMBEDDINGS_MAX_INPUT_TOKENS)
-# read, so the families can never drift to different numbers.
-# Served under their OWN name, not the vllm-tier's bare `bge-m3` /
-# `bge-reranker-v2-m3` — see llm-models.d/20-light.yml's identical comment
-# for why: sharing a model_name with the vllm-tier entries broke
-# assert-registry-render-parity.yml locally (the light tier has no
-# max_input_tokens projection to match vllm's), so this rung serves its own
-# name until the router-alias work (deferred, after L0a-2) links the two.
-_llama_cpp_light_embedding_model_id: bge-m3-light
-_llama_cpp_light_reranker_model_id: bge-reranker-v2-m3-light
+# read, so the families can never drift to different numbers. SAME
+# client_model_id as the vllm-tier entries on purpose — one model, one
+# client name, failover expressed as order within that shared name
+# (llm-models.d/20-light.yml has the full reasoning).
+_llama_cpp_light_embedding_model_id: bge-m3
+_llama_cpp_light_reranker_model_id: bge-reranker-v2-m3
 
 _llama_cpp_light_embedding_ctx_size: >-
   {{ (llm_router_model_registry
@@ -88,13 +85,12 @@ llama_cpp_models:
     embeddings: true
 
   # CPU failover rung for llm_vllm_group's GPU entries — the SAME GGUF pair,
-  # served under its own name (bge-m3-light) for now; see the registry
-  # entry's comment (llm-models.d/20-light.yml) for why it isn't the same
-  # model_name yet. Must stay byte-identical regardless: the embedding
-  # dimension is locked once a caller writes its first vector, so a failover
-  # rung serving a different embedder would silently return dimension-
-  # mismatched or wrong vectors rather than just running slower. ctx_size
-  # matches the GPU side for the same reason — once the alias links them, a
+  # served under the SAME client_model_id (see llm-models.d/20-light.yml for
+  # why that's correct here, not a collision to avoid). Must stay
+  # byte-identical: the embedding dimension is locked once a caller writes
+  # its first vector, so a failover rung serving a different embedder would
+  # silently return dimension-mismatched or wrong vectors rather than just
+  # running slower. ctx_size matches the GPU side for the same reason — a
   # different window would make the two rungs behave differently even
   # though a caller is meant to treat them as interchangeable.
   - name: "{{ _llama_cpp_light_embedding_model_id }}"

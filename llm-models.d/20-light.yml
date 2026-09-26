@@ -37,37 +37,40 @@ _llm_registry_light:
   # already carries the read-only shared models mount and runs on different
   # nodes from the 4080.
   #
-  # DELIBERATELY a DIFFERENT client_model_id than the vllm-tier entries, not
-  # the same one — tried that first and it failed
-  # assert-registry-render-parity.yml locally (WINDOW ADVERTISED BY SOME
-  # MEMBERS ONLY / NARROW DEPLOYMENT PREFERRED): the vllm tier's
-  # max_input_tokens comes from
-  # roles/llm_router/defaults/main/20-registry.yml's
-  # _llm_router_vllm_max_input_tokens_by_model, which projects ONLY vllm-tier
-  # entries — the light tier has no equivalent projection, so a shared
-  # model_name would carry one deployment advertising a window and one not,
-  # which the parity guard correctly refuses. Making the two rungs share one
-  # caller-facing name (with the window projection extended to cover light
-  # too) is the "router aliases" step, deferred until after L0a-2 — until
-  # then this is served under its own name, reachable only by its own
-  # client_model_id, same GGUF/quant/context_window as the vllm-tier pair so
-  # the served embedding dimension is identical whenever the alias does land
-  # (llama_cpp_models in inventory/group_vars/llm_fast_group.yml). No
-  # `embedding: true` — that field is the sole, currently-singular selector
-  # for the existing `embed` role
+  # SAME client_model_id as the vllm-tier entries, deliberately — one model,
+  # one client name, failover expressed as order within the shared
+  # model_name (tests/llm_router/test_local_first_by_order.yml), never a
+  # second name for the same weights. context_window reads the SAME base var
+  # the vllm-tier entries use (llm-models.d/30-local-gpu.yml,
+  # _llm_registry_bge_m3_context_window /
+  # _llm_registry_bge_reranker_v2_m3_context_window) — same GGUF, same ctx,
+  # one number.
+  #
+  # max_input_tokens for THIS tier's rendered deployment is projected in
+  # roles/llm_router/templates/model-list-light.yaml.j2 from the same
+  # _llm_router_vllm_max_input_tokens_by_model map the vllm tier itself uses
+  # (roles/llm_router/defaults/main/20-registry.yml), keyed by
+  # client_model_id — not a separate light-tier derivation, and not the raw
+  # context_window: the vllm tier's number is capped by the 4080's prefill
+  # throughput within the admission budget, and every deployment sharing this
+  # model_name must advertise the SAME number or assert-registry-render-parity.yml's
+  # window checks correctly refuse it (verified locally: reusing the id
+  # without this projection failed WINDOW ADVERTISED BY SOME MEMBERS ONLY /
+  # NARROW DEPLOYMENT PREFERRED). No `embedding: true` — that field is the
+  # sole, currently-singular selector for the existing `embed` role
   # (roles/llm_router/defaults/main/55-roles.yml), and a second true value
   # anywhere in the registry would make its `| first` result order-dependent.
   # No `rerank` role exists yet.
-  - client_model_id: bge-m3-light
-    upstream_model_id: bge-m3-light
+  - client_model_id: bge-m3
+    upstream_model_id: bge-m3
     provider: openai
     tier: light
     enabled: true
-    context_window: 8192
+    context_window: "{{ _llm_registry_bge_m3_context_window }}"
 
-  - client_model_id: bge-reranker-v2-m3-light
-    upstream_model_id: bge-reranker-v2-m3-light
+  - client_model_id: bge-reranker-v2-m3
+    upstream_model_id: bge-reranker-v2-m3
     provider: openai
     tier: light
     enabled: true
-    context_window: 8192
+    context_window: "{{ _llm_registry_bge_reranker_v2_m3_context_window }}"
