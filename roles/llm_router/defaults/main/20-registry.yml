@@ -119,18 +119,37 @@ llm_router_hermes_local_models: >-
 
 # The SAME prefill-derived cap model-list.yaml.j2 applies to every
 # vllm/hermes-local deployment ("SMALLER of the context window and what this
-# card can prefill in the admission budget") — computed ONCE here so a role
-# pointed at the same backend (55-roles.yml _llm_router_role_model_info) can
-# never advertise a bigger window than the physical deployment does. Falls
-# back to the raw context_window with no vllm host inventoried, same as the
-# template's own no-inventory fallback.
+# card can prefill inside the first-byte budget") — computed ONCE here so a
+# role pointed at the same backend (55-roles.yml _llm_router_role_model_info)
+# can never advertise a bigger window than the physical deployment does.
+# Falls back to the raw context_window with no vllm host inventoried, same as
+# the template's own no-inventory fallback.
+#
+# The multiplier is llm_router_local_stream_timeout_seconds (the generic
+# local-rung first-byte/TTFT budget, 40-routing.yml — its own comment reasons
+# through this exact prefill math: "90 keeps prompts up to roughly the
+# 10k-token class local"), NEVER llm_router_admission_budget_seconds. The two
+# are different physical budgets that happen to share a unit: admission_budget
+# is the busy-slot no-queueing/retry-handoff window (tightened 15->4 by #871
+# for the "no queueing" rule and also reused, deliberately, as THIS
+# deployment's own litellm_params.stream_timeout in llm-models.d/
+# 30-local-gpu.yml — a residual cross-process-collision bound, tested by
+# test_gpu_rung_admission_matches_backend.yml). Pre-call sizing is a different
+# question — "how large a prompt can this card prefill before a caller gives
+# up waiting for a first token" — and reusing admission_budget_seconds here
+# silently rode #871's 15->4 drop, shrinking every vllm/hermes-local rung's
+# advertised window to 480 tokens (120 tok/s x 4s) and routing every
+# non-trivial prompt, including a routine ~850-token CI review call, past the
+# free local rung straight to the paid cloud terminal (dryvist/ai-workflows
+# #445, 2026-09-26) — a units mismatch between two same-shaped variables, not
+# a bad number in either one.
 _llm_router_vllm_max_input_tokens_by_model: >-
   {%- set ns = namespace(out={}) -%}
   {%- set _vllm_hosts = groups['llm_vllm_group'] | default([]) -%}
   {%- for m in llm_router_vllm_models + llm_router_hermes_local_models -%}
   {%- set _cap = ([m.context_window,
         hostvars[_vllm_hosts[0]].llama_cpp_prefill_tokens_per_second | int
-          * llm_router_admission_budget_seconds | int] | min)
+          * llm_router_local_stream_timeout_seconds | int] | min)
         if (_vllm_hosts | length > 0) else m.context_window -%}
   {%- set ns.out = ns.out | combine({m.client_model_id: _cap}) -%}
   {%- endfor -%}
