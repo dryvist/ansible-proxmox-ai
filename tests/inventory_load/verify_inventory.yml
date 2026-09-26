@@ -33,7 +33,7 @@
           - "'dify' in groups['ai_orchestration_group']"
           - "'squid' in groups['squid_group']"
           - "'hermes-ui' in groups['hermes_ui_group']"
-          - groups['lxc_containers'] | length == 12
+          - groups['lxc_containers'] | length == 14
         fail_msg: "tag -> group mapping in inventory/load_tofu.yml is broken"
 
     - name: Assert tofu_data was propagated to a dynamic host
@@ -56,9 +56,20 @@
           # ssh-override guest: llm-router-1 (of the llm-router-1/2/3 set)
           - hostvars['llm-router-1'].ansible_host == 'llm-router-1.example.com'
           - hostvars['llm-router-1'].ansible_connection == 'ssh'
-          # non-override guest: pct-exec-via-node stays the default
+          # non-override guest: pct-exec-via-node stays the default, and it
+          # keeps its proxmox_vmid (regression: only ssh-connected guests omit it)
           - hostvars['qdrant'].ansible_host == 'proxmox1.example.com'
           - hostvars['qdrant'].ansible_connection == 'community.proxmox.proxmox_pct_remote'
+          - hostvars['qdrant'].proxmox_vmid == 101101
+          # tag-allowlist guest with a distinct fqdn: fqdn wins over the raw ip
+          - hostvars['llm-vllm-1'].ansible_connection == 'ssh'
+          - hostvars['llm-vllm-1'].ansible_host == 'llm-vllm-1.example.com'
+          - hostvars['llm-vllm-1'].proxmox_vmid is not defined
+          # tofu-proxmox contract field (ansible_connection: ssh), non-qualifying
+          # tags: the tag allowlist is not the only path onto ssh any more
+          - hostvars['contract-ssh-1'].ansible_connection == 'ssh'
+          - hostvars['contract-ssh-1'].ansible_host == 'contract-ssh-1.example.com'
+          - hostvars['contract-ssh-1'].proxmox_vmid is not defined
         fail_msg: "per-host facts (hostname/ansible_host/container_*) are wrong"
 
     - name: Assert the tofu-published models mount path fact

@@ -242,7 +242,10 @@
               else []
             )
           }}
-        proxmox_vmid: "{{ item.value.vmid }}"
+        # Omitted (not a plain 0/null) for an ssh-connected guest: pct exec
+        # never runs for it, so the vmid has no consumer. Checked repo-wide —
+        # nothing here reads add_host's proxmox_vmid.
+        proxmox_vmid: "{{ omit if container_ssh else item.value.vmid }}"
         # Per-node management FQDN, DERIVED — never a hand-pinned global host.
         # A guest reaches its own node at {node-role}.{domain}; those names
         # resolve internally while the bare cluster member name does not. The
@@ -250,19 +253,33 @@
         # falls back to the node value itself when the map omits the key
         # (e.g. the generic test-fixture node key).
         #
-        # Guests where tofu_ssh_container is true converge over direct ssh to their
-        # own FQDN (the contract's `ip` field) instead of pct-exec-via-node:
-        # pct exec on PVE 9.2.4 closes the channel mid module-upload (large
-        # stdin), failing every play at Gathering Facts with the misleading
-        # "Channel closed.". Membership requires sshd in the guest, the SSH
-        # client-CA (root login, `ansible` principal), and the guest's host
-        # key in the pinned SSH_KNOWN_HOSTS set.
+        # A guest is ssh-connected (container_ssh, defined below) via EITHER
+        # of two independent paths, which now compose rather than compete:
+        #
+        # 1. tofu_ssh_container: the tag allowlist below. Converges over
+        #    direct ssh because pct exec on PVE 9.2.4 closes the channel mid
+        #    module-upload (large stdin), failing every play at Gathering
+        #    Facts with the misleading "Channel closed.". Membership requires
+        #    sshd in the guest, the SSH client-CA (root login, `ansible`
+        #    principal), and the guest's host key in the pinned
+        #    SSH_KNOWN_HOSTS set. This is the pre-existing production
+        #    mechanism; guests on it are unaffected by path 2 below.
+        # 2. item.value.ansible_connection == 'ssh': the tofu-proxmox
+        #    contract's own per-container field (dryvist/tofu-proxmox#1188),
+        #    set once an operator flips a specific container in
+        #    deployment.json — the "real fix" path 1's comment refers to.
+        #
+        # Either path prefers `fqdn` (the contract's always-populated stable
+        # DNS name) over `ip`, which is only an FQDN for DHCP guests and a
+        # raw, less stable address for static ones. `fqdn | default(ip)`
+        # keeps working against a pre-contract inventory that has no `fqdn`
+        # field yet.
         ansible_host: >-
-          {{ item.value.ip if tofu_ssh_container
+          {{ (item.value.fqdn | default(item.value.ip, true)) if container_ssh
              else (tofu_data.nodes[item.value.node] | default({})).role
                   | default(item.value.node, true) ~ '.' ~ tofu_data.domain }}
         ansible_connection: >-
-          {{ 'ssh' if tofu_ssh_container
+          {{ 'ssh' if container_ssh
              else item.value.ansible_connection }}
         ansible_user: root
         ansible_ssh_private_key_file: "{{ lookup('env', 'PROXMOX_SSH_KEY_PATH') }}"
@@ -319,6 +336,8 @@
                  + (_llm_cpu_pool_tags | default([]))
                )
              | length > 0 }}
+        # The two activation paths described above, OR'd together.
+        container_ssh: "{{ tofu_ssh_container or item.value.ansible_connection == 'ssh' }}"
       loop: "{{ tofu_data.containers | dict2items }}"
       changed_when: false
       when:
