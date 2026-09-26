@@ -39,17 +39,15 @@
            )
          | length == 0
 
-# Every container the probe task's `when:` skipped (not a contract-ssh
-# candidate) shows up here too — a skipped result has no `failed` key, so
-# rejectattr('failed') keeps it. Harmless: container_ssh below only ever
-# consults this list for a container that IS an unprobed contract-ssh
-# candidate, and every such container had a REAL probe run above.
+# Ready means the probe actually ran and reported failed: false — a skipped
+# item or one with no `failed` key at all is NOT ready (fail safe).
 - name: Record which contract-declared-ssh containers actually answered
   ansible.builtin.set_fact:
     load_tofu_ssh_ready: >-
       {{ load_tofu_ssh_probe.results | default([])
-         | rejectattr('failed')
-         | map(attribute='item') | map(attribute='key') | list }}
+         | selectattr('skipped', 'undefined')
+         | selectattr('failed', 'defined') | rejectattr('failed')
+         | map(attribute='item.key') | list }}
   when: load_tofu_ssh_ready is not defined
 
 - name: Warn about contract-declared-ssh containers whose sshd did not answer
