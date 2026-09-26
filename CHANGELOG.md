@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.57.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.57.0...v0.57.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* **inventory:** guard load_tofu_ssh_ready against a missing failed key ([#945](https://github.com/dryvist/ansible-proxmox-ai/issues/945)) ([0da1e97](https://github.com/dryvist/ansible-proxmox-ai/commit/0da1e9712f991b3740367d85e6b59c5aff66564e))
+
 ## [0.57.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.56.0...v0.57.0) (2026-09-26)
 
 
