@@ -104,6 +104,12 @@ _llm_router_fast_subagent_chain: >-
 _llm_router_cheap_chain: >-
   {{ [llm_router_primary_model] + llm_router_external_terminal_rungs }}
 
+# ONE variable for every local-only-no-fallback role's target (`review-local`
+# below, `local` for Hindsight's memory-LLM calls) — the resident full-context
+# studio model, same id `judge` uses. A single source so the two roles cannot
+# drift onto different local backends.
+_llm_router_local_only_model: "{{ llm_router_routine_model }}"
+
 # FALLBACK ORDER IS ONE-WAY, LARGEST CONTEXT FIRST — for every role EXCEPT
 # fast/subagent above, whose chain is intentionally local-first / narrowest
 # rung first and relies on context_window_fallbacks (not ordering) to keep an
@@ -161,11 +167,19 @@ llm_router_role_deployments:
     model: "{{ llm_router_hermes_local_4080_id }}"
     fallbacks: "{{ _llm_router_review_private_chain }}"
   # Local-only review: no fallbacks, no default ladder. Targets the resident
-  # full-context studio model directly (same id `judge` uses) rather than the
-  # 4080 — an exact empty fallbacks entry (58-review-roles.yml) keeps it off
-  # default_fallbacks even when the local backend is down.
+  # full-context studio model directly rather than the 4080 — an exact empty
+  # fallbacks entry (58-review-roles.yml) keeps it off default_fallbacks even
+  # when the local backend is down.
   - role: review-local
-    model: "{{ llm_router_routine_model }}"
+    model: "{{ _llm_router_local_only_model }}"
+    fallbacks: []
+  # Generic local-only route: any caller that must never reach a hosted
+  # deployment, local backend up or down — currently Hindsight's memory-LLM
+  # calls (roles/hindsight_docker/defaults/main.yml
+  # hindsight_docker_retain_llm_model). Same target and same exact-empty
+  # fallbacks entry (58-review-roles.yml) as review-local above.
+  - role: local
+    model: "{{ _llm_router_local_only_model }}"
     fallbacks: []
   # embed/ocr have no same-modality external rung (no cloud embeddings, no
   # cloud OCR in the registry): bounded by the same admission figures as

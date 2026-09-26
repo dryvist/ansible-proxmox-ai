@@ -1,13 +1,14 @@
 ---
 # Hindsight's memory content must never reach a model that retains prompts
-# (zero_data_retention: false). The hindsight key is scoped to `free` only
-# (56-virtual-keys.yml) and `free`'s own fallback + context_window_fallbacks
-# entries are both empty (config.yaml.j2), so this walks the RENDERED
-# fallback graph outward from the key's own declared scope and proves no
-# reachable model_group is backed by a zero_data_retention: false registry
-# entry. Generic over future edits: it does not hand-assume `free-zdrless`
-# is the only such name, it derives every ZDR-false group from the registry
-# the same way model-list-free.yaml.j2 names the standalone group.
+# (zero_data_retention: false). The hindsight key is scoped to `local` only
+# (56-virtual-keys.yml) and `local`'s own fallback entry is empty
+# (config.yaml.j2, llm_router_local_only_fail_fast_names), so this walks the
+# RENDERED fallback graph outward from the key's own declared scope and
+# proves no reachable model_group is backed by a zero_data_retention: false
+# registry entry. Generic over future edits: it does not hand-assume
+# `free-zdrless` is the only such name, it derives every ZDR-false group from
+# the registry the same way model-list-free.yaml.j2 names the standalone
+# group.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_hindsight_key_zdr_isolation.yml -i localhost, -c local
@@ -57,13 +58,19 @@
         _config: >-
           {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
 
-    - name: The hindsight key is scoped to exactly `free`
+    - name: The hindsight key is scoped to exactly `local`
       ansible.builtin.assert:
         quiet: true
         that:
-          - _hindsight_key.models == ['free']
+          # 59-key-scopes.yml deliberately does NOT widen a local-only-
+          # fail-fast role (llm_router_local_only_fail_fast_names) to its
+          # own target model: that model is independently servable and so
+          # carries its OWN non-fail-fast entry-point chain — widening to it
+          # would defeat this exact isolation. The declared ['local'] stays
+          # exactly ['local'].
+          - _hindsight_key.models == ['local']
         fail_msg: >-
-          Expected the hindsight key scoped to exactly ['free'], got
+          Expected the hindsight key scoped to exactly ['local'], got
           {{ _hindsight_key.models }} — any wider scope risks reaching a
           zero_data_retention: false deployment.
         success_msg: "hindsight key models: {{ _hindsight_key.models }}"

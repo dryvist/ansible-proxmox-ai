@@ -22,7 +22,19 @@ llm_router_virtual_keys: >-
   {%- set ns.models = ns.models + _llm_router_directly_callable_ladder_names -%}
   {%- endif -%}
   {%- for d in llm_router_role_deployments if d.role in k.models -%}
-  {%- set ns.models = ns.models + [d.model] + (d.fallbacks | list) -%}
+  {#- A local-only-fail-fast role's own target (58-review-roles.yml
+      llm_router_local_only_fail_fast_names) is deliberately NOT added here:
+      d.model is independently servable (50-servable.yml), so it is ALSO its
+      own entry point in config.yaml.j2's entry-points loop — one with the
+      FULL external chain, not this role's fail-fast []. Widening the key to
+      that name would authorize calling it directly, defeating the fail-fast
+      contract the role exists to provide (caught live by
+      test_hindsight_key_zdr_isolation.yml). fallbacks is always [] for
+      these roles, so nothing is lost by skipping the widening. -#}
+  {%- if d.role not in llm_router_local_only_fail_fast_names -%}
+  {%- set ns.models = ns.models + [d.model] -%}
+  {%- endif -%}
+  {%- set ns.models = ns.models + (d.fallbacks | list) -%}
   {%- endfor -%}
   {%- set _ = out.append(k | combine({'models': ns.models | unique | list})) -%}
   {%- endfor -%}
