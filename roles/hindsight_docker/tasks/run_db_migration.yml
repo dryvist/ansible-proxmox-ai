@@ -76,6 +76,34 @@
 # understand — the pool is left down on purpose, and the failure message
 # names the pre-migration backup to restore from. Either branch re-raises
 # via `ansible.builtin.fail`, so the play still fails either way.
+#
+# Known gap: Ansible's own documentation states that block `rescue:` does
+# not trigger on an unreachable-host error. The stop/restart tasks below
+# are `delegate_to`-looped across every host in the group, so a replica
+# that goes unreachable mid-loop (not a command failure — a genuine
+# connectivity loss) skips this whole recovery path: any replica already
+# stopped by that point stays stopped, with no restart attempt at all.
+# This is a generic Ansible limitation surfaced by drain now spanning
+# multiple hosts, not a defect in the recovery logic itself, and fixing
+# it (e.g. `ignore_unreachable` plus explicit per-host error tracking) is
+# a bigger design change than this fix; tracked as separate follow-up
+# work rather than solved here.
+#
+# The unchanged/changed split above assumes a failed migration rolls back
+# cleanly to the pre-attempt revision (the vendor's alembic env.py runs
+# every pending revision inside one wrapping transaction). That does not
+# universally hold: grepping every revision script under
+# hindsight_api/alembic/versions/ at the pinned image tag (v0.9.0) found
+# 11 revisions that use `op.get_context().autocommit_block()` for
+# `CREATE INDEX CONCURRENTLY` (which Postgres refuses inside a
+# transaction) — those statements commit outside the wrapping
+# transaction regardless of whether the overall migration later fails.
+# The ones inspected build defensively (an invalid-leftover sweep plus
+# `IF NOT EXISTS` before each CONCURRENTLY build), so a retry after a
+# failure in one of these is expected to be safe, but this recovery
+# logic's binary revision comparison cannot by itself detect "an index
+# was left behind outside the transaction" the way it detects a changed
+# `alembic_version`.
 
 - name: Ensure the pre-migration backup directory exists
   ansible.builtin.file:

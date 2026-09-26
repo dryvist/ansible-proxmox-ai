@@ -50,7 +50,11 @@ def test_migrate_fail_with_unchanged_revision_restarts() -> None:
     assert (
         _render_unchanged(
             hindsight_docker_migration_attempted=True,
-            hindsight_docker_recovery_revision_probe={"rc": 0, "stdout": "b3e8d1c6f4a9"},
+            hindsight_docker_recovery_revision_probe={
+                "rc": 0,
+                "stdout": "b3e8d1c6f4a9",
+                "stdout_lines": ["b3e8d1c6f4a9"],
+            },
             hindsight_docker_current_revision_probe={"stdout": "b3e8d1c6f4a9"},
         )
         is True
@@ -63,7 +67,30 @@ def test_migrate_fail_with_advanced_revision_never_restarts() -> None:
     assert (
         _render_unchanged(
             hindsight_docker_migration_attempted=True,
-            hindsight_docker_recovery_revision_probe={"rc": 0, "stdout": "c9f1a2b3d4e5"},
+            hindsight_docker_recovery_revision_probe={
+                "rc": 0,
+                "stdout": "c9f1a2b3d4e5",
+                "stdout_lines": ["c9f1a2b3d4e5"],
+            },
+            hindsight_docker_current_revision_probe={"stdout": "b3e8d1c6f4a9"},
+        )
+        is False
+    )
+
+
+def test_recovery_probe_multi_head_output_is_treated_as_changed_never_guessed_safe() -> None:
+    # R3 should-fix: every sibling probe in this role fails closed on
+    # anything but exactly one output line; the recovery probe hadn't. A
+    # branched/multi-head post-failure schema prints more than one line
+    # from `alembic current` — must never be silently read as a match.
+    assert (
+        _render_unchanged(
+            hindsight_docker_migration_attempted=True,
+            hindsight_docker_recovery_revision_probe={
+                "rc": 0,
+                "stdout": "b3e8d1c6f4a9",
+                "stdout_lines": ["b3e8d1c6f4a9", "c9f1a2b3d4e5 (effective head)"],
+            },
             hindsight_docker_current_revision_probe={"stdout": "b3e8d1c6f4a9"},
         )
         is False
@@ -117,6 +144,11 @@ def test_rescue_always_re_raises_so_the_play_still_fails() -> None:
     )
     assert "restarted on its current image" in unchanged_msg
     assert "Restore from pre-migration-a1-to-b2-20260101T000000.zip in /backup" in changed_msg
+    # R3 should-fix: name the actual vendor recovery tool and the automated
+    # re-run, never "manually" — this repo never touches a live guest by hand.
+    assert "hindsight-admin restore" in changed_msg
+    assert "manually" not in changed_msg
+    assert "re-run this playbook" in changed_msg
 
 
 if __name__ == "__main__":

@@ -201,12 +201,16 @@
       ansible.builtin.set_fact:
         # The only case treated as definitely safe: migration never even
         # started (drain/backup/integrity failed first). Any failure to
-        # cleanly re-read the current revision (bad rc, or output that
-        # doesn't exactly match the pre-attempt revision) is treated as
-        # "changed" — a restart is never guessed to be safe.
+        # cleanly re-read the current revision (bad rc, output that isn't
+        # exactly one line — e.g. a branched multi-head schema, the same
+        # stdout_lines == 1 fail-closed check every sibling probe in this
+        # role already applies — or a line that doesn't exactly match the
+        # pre-attempt revision) is treated as "changed" — a restart is
+        # never guessed to be safe.
         hindsight_docker_schema_unchanged: >-
           {{ not hindsight_docker_migration_attempted
           or (hindsight_docker_recovery_revision_probe.rc | default(1) == 0
+          and (hindsight_docker_recovery_revision_probe.stdout_lines | default([]) | length) == 1
           and (hindsight_docker_recovery_revision_probe.stdout | default('') | trim).split(' ')[0]
           == (hindsight_docker_current_revision_probe.stdout | default('__unreadable__') | trim)) }}
       run_once: true
@@ -236,5 +240,6 @@
           are deliberately left stopped rather than served against a schema their current
           image may not understand. Restore from '
           ~ (hindsight_docker_premigration_backup_filename | default('the pre-migration backup'))
-          ~ ' in ' ~ hindsight_docker_migration_backup_dir ~ ', then redeploy manually.' }}
+          ~ ' in ' ~ hindsight_docker_migration_backup_dir ~ " using `hindsight-admin restore`,"
+          ~ ' then re-run this playbook to redeploy.' }}
       run_once: true
