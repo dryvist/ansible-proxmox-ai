@@ -34,6 +34,13 @@ DEFAULT_CONTEXT = {
     "llama_cpp_models_present": [
         {"name": "fixture-chat", "aliases": [], "gguf": "fixture-chat.gguf", "embeddings": False, "ctx_size": 32768},
         {"name": "fixture-embeddings", "aliases": [], "gguf": "fixture-embeddings.gguf", "embeddings": True},
+        {
+            "name": "fixture-embeddings-cls",
+            "aliases": [],
+            "gguf": "fixture-embeddings-cls.gguf",
+            "embeddings": True,
+            "pooling": "cls",
+        },
     ],
 }
 
@@ -66,7 +73,7 @@ def test_template_exists():
 
 def test_renders_valid_ini_with_one_section_per_present_model():
     parser = _parse(render())
-    assert set(parser.sections()) == {"fixture-chat", "fixture-embeddings"}
+    assert set(parser.sections()) == {"fixture-chat", "fixture-embeddings", "fixture-embeddings-cls"}
 
 
 def test_every_section_model_path_resolves_under_the_configured_mount():
@@ -90,3 +97,15 @@ def test_embeddings_section_carries_embeddings_flags_and_no_chat_flags():
     parser = _parse(render())
     assert parser.get("fixture-embeddings", "pooling") == "mean"
     assert not parser.has_option("fixture-embeddings", "cache-reuse")
+
+
+def test_embeddings_section_honors_pooling_override():
+    # Regression guard for the Hindsight bake-off's BAAI/bge-m3, whose own
+    # GGUF metadata is bert.pooling_type=2 (CLS) — leaving this branch's
+    # `pooling` unconditionally at "mean" silently computes the wrong
+    # sentence vector for that model (llama-server only warns, it still
+    # answers 200; verified live against the real bge-m3-Q8_0.gguf). A model
+    # entry with no override still gets "mean" (test above), so this only
+    # has to prove the override itself takes effect.
+    parser = _parse(render())
+    assert parser.get("fixture-embeddings-cls", "pooling") == "cls"

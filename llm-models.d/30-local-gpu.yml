@@ -70,6 +70,43 @@ _llm_registry_local_gpu:
       # at a time.
       caveats: [serial-lane, tool-calls-degrade-above-one-stream]
 
+  # Hindsight L6: bake-off-selected embedder + reranker, same card, same
+  # --models-preset router process as the two entries above (llama_cpp_models
+  # in inventory/group_vars/llm_vllm_group.yml). Minimal fields only —
+  # `context_window` is NOT optional here despite neither model having a chat
+  # context to advertise: roles/llm_router/defaults/main/20-registry.yml's
+  # _llm_router_vllm_max_input_tokens_by_model iterates every vllm-tier entry
+  # unconditionally and reads m.context_window with no default, so omitting it
+  # breaks model-list.yaml.j2's render for the WHOLE vllm tier, not just these
+  # two. Matches the ctx_size already set on the guest's llama_cpp_models
+  # entries (byte-identical GPU/CPU rungs; see llm_cpu_9b_group.yml).
+  #
+  # Deliberately NOT setting `embedding: true` on bge-m3: that field is the
+  # sole selector for the existing singular `embed` role
+  # (roles/llm_router/defaults/main/55-roles.yml llm_router_embedding_model,
+  # `selectattr('embedding') | ... | first` over the WHOLE enabled registry).
+  # A second `embedding: true` entry would make that selector's result
+  # order-dependent instead of the deterministic singleton it is today —
+  # exactly the kind of accidental router-alias/role change this PR must not
+  # make. No `rerank` role exists yet either. Both models are reachable only
+  # by their own client_model_id until the Hindsight lane's LiteLLM aliasing
+  # step (blocked on L0a-2) adds `embed`/`rerank` roles pointed at these ids on
+  # purpose. Same reasoning as the light-tier embeddings entry's own comment
+  # on stable_aliases (llm-models.d/20-light.yml).
+  - client_model_id: bge-m3
+    upstream_model_id: bge-m3
+    provider: openai
+    tier: vllm
+    enabled: true
+    context_window: 2048
+
+  - client_model_id: bge-reranker-v2-m3
+    upstream_model_id: bge-reranker-v2-m3
+    provider: openai
+    tier: vllm
+    enabled: true
+    context_window: 2048
+
   # Local backup rung in the Hermes chain, same backend as the vllm entry.
   # tier: hermes-local, NOT vllm — load-bearing: the cloud projection drops
   # entries with no credential, and a local leg has none. Details: docs/LLM_MODELS_REGISTRY_NOTES.md.
