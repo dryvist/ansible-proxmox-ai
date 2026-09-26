@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.58.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.57.1...v0.58.0) (2026-09-26)
+
+
+### Features
+
+* **hindsight_bank_dr:** nightly logical bank export + restore drill ([#940](https://github.com/dryvist/ansible-proxmox-ai/issues/940)) ([251947b](https://github.com/dryvist/ansible-proxmox-ai/commit/251947b505cf6528bae4196d1399b38ced41caf7))
+* **hindsight_docker:** add 0.10.1 migration and worker lifecycle readiness ([#935](https://github.com/dryvist/ansible-proxmox-ai/issues/935)) ([be5d6c6](https://github.com/dryvist/ansible-proxmox-ai/commit/be5d6c6fcb4fb4f6af324039202a07eec29e2980))
+* **llama_cpp:** serve embedder/reranker on GPU + CPU pool ([#944](https://github.com/dryvist/ansible-proxmox-ai/issues/944)) ([d43e315](https://github.com/dryvist/ansible-proxmox-ai/commit/d43e3156c5fd1aebe31ee1ee480d5dcaf88431c5))
+
+
+### Bug Fixes
+
+* **llm_router:** derive vllm prefill-window cap from the local-rung first-byte budget ([#955](https://github.com/dryvist/ansible-proxmox-ai/issues/955)) ([2f1272f](https://github.com/dryvist/ansible-proxmox-ai/commit/2f1272f01b4272d9115badd0bfc927bef95f6207))
+
+
+### Performance
+
+* **llm_router:** run consumer seeding once per converge ([#949](https://github.com/dryvist/ansible-proxmox-ai/issues/949)) ([9d053c3](https://github.com/dryvist/ansible-proxmox-ai/commit/9d053c3808497d9677e69ce08b0722f521a56377))
+
 ## [0.57.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.57.0...v0.57.1) (2026-09-26)
 
 
