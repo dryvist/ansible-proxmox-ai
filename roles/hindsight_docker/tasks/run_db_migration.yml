@@ -1,29 +1,16 @@
 ---
-# Hindsight 0.10.0 made startup migrations opt-out
-# (HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP, default true) rather than the only
-# path. On a serial:1 rolling pool that default races every replica against
-# the same schema change — replica 2 can start against a half-applied schema
-# while replica 1 is still migrating it. This runs the migration exactly
-# once, up front, using the target image, before any replica is redeployed
-# with HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP=false.
+# Runs the Hindsight database migration exactly once, using the target
+# image, before any replica is redeployed with
+# HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP=false. Imported from
+# playbooks/hindsight.yml pre_tasks (not tasks/main.yml), so a failure here
+# is fatal to the whole play rather than recorded as one replica's isolated
+# failure.
 #
-# Imported from playbooks/site.yml `pre_tasks` (not from tasks/main.yml)
-# deliberately: that play wraps tasks/main.yml in a block/rescue that records
-# a failed replica as an "isolated failure" and lets the rollout continue
-# (playbooks/tasks/record_isolated_failure.yml). A migration failure must
-# never be treated that way — pre_tasks sits outside that rescue, so its
-# failure is fatal to the whole play, and max_fail_percentage: 0 on a
-# serial:1 play stops the rollout before any replica sees the new image.
-#
-# The pre-migration backup below uses the vendored `hindsight-admin backup`
-# command (confirmed present at 0.10.1: vectorize-io/hindsight
-# hindsight-api-slim/hindsight_api/admin/cli.py) rather than a human
-# confirmation gate — every converge takes its own fresh backup immediately
-# before migrating, no operator step required. A fixed filename is
-# deliberate: this is an immediate abort-safety net for THIS migration
-# attempt, not a retained history (durable backup ownership is pgBackRest, in
-# ansible-proxmox-apps) — each run's backup only needs to outlive that run's
-# migration.
+# Takes its own pre-migration backup via the vendored `hindsight-admin
+# backup` command and refuses to migrate unless that file exists and is
+# non-empty — no human confirmation step. HINDSIGHT_API_DATABASE_URL is
+# passed via `environment:` and a bare `-e` (no inline value), so the DSN
+# never appears in argv/`ps` output on the host.
 
 - name: Ensure the pre-migration backup directory exists
   ansible.builtin.file:
@@ -40,16 +27,17 @@
       - --rm
       - --network=host
       - -e
-      - HINDSIGHT_API_DATABASE_URL={{ hindsight_docker_db_url }}
+      - HINDSIGHT_API_DATABASE_URL
       - -v
       - "{{ hindsight_docker_migration_backup_dir }}:/backup"
       - "{{ hindsight_docker_image }}"
       - hindsight-admin
       - backup
       - /backup/pre-migration.zip
+  environment:
+    HINDSIGHT_API_DATABASE_URL: "{{ hindsight_docker_db_url }}"
   run_once: true
   changed_when: true
-  no_log: true
 
 - name: Refuse to migrate unless the pre-migration backup file is present and non-empty
   ansible.builtin.stat:
@@ -64,8 +52,7 @@
       - hindsight_docker_premigration_backup_stat.stat.size > 0
     fail_msg: >-
       hindsight-admin backup did not produce a usable file at
-      {{ hindsight_docker_migration_backup_dir }}/pre-migration.zip. Refusing
-      to run the schema migration without one.
+      {{ hindsight_docker_migration_backup_dir }}/pre-migration.zip.
     quiet: true
   run_once: true
 
@@ -77,10 +64,11 @@
       - --rm
       - --network=host
       - -e
-      - HINDSIGHT_API_DATABASE_URL={{ hindsight_docker_db_url }}
+      - HINDSIGHT_API_DATABASE_URL
       - "{{ hindsight_docker_image }}"
       - hindsight-admin
       - run-db-migration
+  environment:
+    HINDSIGHT_API_DATABASE_URL: "{{ hindsight_docker_db_url }}"
   run_once: true
   changed_when: true
-  no_log: true

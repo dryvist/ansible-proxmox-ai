@@ -30,16 +30,15 @@ def test_migrations_on_startup_defaults_off_in_compose() -> None:
 
 def test_wall_clock_timeouts_render_explicitly_and_below_upstream_defaults() -> None:
     rendered = render()
-    # Upstream loose defaults are 3600 / 7200 / 300 — every value here must be
-    # explicit and strictly under the retain/consolidation ceiling that issue
-    # #4581 found too loose to protect a wedged worker slot.
-    assert env_line(rendered, "HINDSIGHT_API_RETAIN_WALL_TIMEOUT").endswith('"300"')
-    assert env_line(rendered, "HINDSIGHT_API_CONSOLIDATION_WALL_TIMEOUT").endswith('"900"')
+    # Upstream loose defaults are 3600 (retain) / 7200 (consolidation) —
+    # every value here must render explicitly and stay strictly under them.
+    assert env_line(rendered, "HINDSIGHT_API_RETAIN_WALL_TIMEOUT").endswith('"720"')
+    assert env_line(rendered, "HINDSIGHT_API_CONSOLIDATION_WALL_TIMEOUT").endswith('"2400"')
     assert env_line(rendered, "HINDSIGHT_API_REFLECT_WALL_TIMEOUT").endswith('"120"')
     assert env_line(rendered, "HINDSIGHT_API_REFRESH_MENTAL_MODEL_WALL_TIMEOUT").endswith('"120"')
     for name, value in (
-        ("HINDSIGHT_API_RETAIN_WALL_TIMEOUT", 300),
-        ("HINDSIGHT_API_CONSOLIDATION_WALL_TIMEOUT", 900),
+        ("HINDSIGHT_API_RETAIN_WALL_TIMEOUT", 720),
+        ("HINDSIGHT_API_CONSOLIDATION_WALL_TIMEOUT", 2400),
     ):
         assert value < 3600 if "RETAIN" in name else value < 7200
 
@@ -84,7 +83,11 @@ def test_migration_task_takes_an_automated_pre_migration_backup() -> None:
     backup = next(t for t in tasks if t["name"] == "Take a pre-migration database backup")
     argv = backup["ansible.builtin.command"]["argv"]
     assert argv[-3:] == ["hindsight-admin", "backup", "/backup/pre-migration.zip"]
-    assert any("HINDSIGHT_API_DATABASE_URL={{ hindsight_docker_db_url }}" == a for a in argv)
+    # Bare -e (no inline value): the DSN is passed via `environment:`, never
+    # argv, so it never appears in `ps` output on the host.
+    assert "HINDSIGHT_API_DATABASE_URL" in argv
+    assert not any("hindsight_docker_db_url" in a for a in argv)
+    assert backup["environment"] == {"HINDSIGHT_API_DATABASE_URL": "{{ hindsight_docker_db_url }}"}
     assert "{{ hindsight_docker_migration_backup_dir }}:/backup" in argv
     assert backup.get("run_once") is True
 
@@ -105,9 +108,10 @@ def test_migration_task_runs_against_the_target_image_using_the_shared_db_url() 
     argv = migrate["ansible.builtin.command"]["argv"]
     assert argv[-2:] == ["hindsight-admin", "run-db-migration"]
     assert "{{ hindsight_docker_image }}" in argv
-    assert any("HINDSIGHT_API_DATABASE_URL={{ hindsight_docker_db_url }}" == a for a in argv)
+    assert "HINDSIGHT_API_DATABASE_URL" in argv
+    assert not any("hindsight_docker_db_url" in a for a in argv)
+    assert migrate["environment"] == {"HINDSIGHT_API_DATABASE_URL": "{{ hindsight_docker_db_url }}"}
     assert migrate.get("run_once") is True
-    assert migrate.get("no_log") is True
 
 
 def test_decommission_task_extracts_worker_ids_and_diffs_against_inventory() -> None:
@@ -117,11 +121,20 @@ def test_decommission_task_extracts_worker_ids_and_diffs_against_inventory() -> 
     assert "regex_findall('^Worker: (\\S+) '" in expr
     assert "difference(groups['hindsight_group'])" in expr
 
+    listing = next(t for t in tasks if t["name"].startswith("List Hindsight workers"))
+    list_argv = listing["ansible.builtin.command"]["argv"]
+    assert "HINDSIGHT_API_DATABASE_URL" in list_argv
+    assert not any("hindsight_docker_db_url" in a for a in list_argv)
+    assert listing["environment"] == {"HINDSIGHT_API_DATABASE_URL": "{{ hindsight_docker_db_url }}"}
+
     decommission = next(t for t in tasks if t["name"].startswith("Decommission worker ids"))
     argv = decommission["ansible.builtin.command"]["argv"]
     # Singular, per-id decommission-worker only — decommission-workers
     # (plural) releases every worker unconditionally, including live ones.
     assert argv[-3:] == ["decommission-worker", "{{ item }}", "--yes"]
+    assert "HINDSIGHT_API_DATABASE_URL" in argv
+    assert not any("hindsight_docker_db_url" in a for a in argv)
+    assert decommission["environment"] == {"HINDSIGHT_API_DATABASE_URL": "{{ hindsight_docker_db_url }}"}
     assert decommission["loop"] == "{{ hindsight_docker_stale_worker_ids | default([]) }}"
 
 

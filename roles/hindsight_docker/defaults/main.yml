@@ -89,48 +89,26 @@ hindsight_docker_cp_access_key: >-
 # stable per LXC, which is exactly what upstream requires.
 hindsight_docker_worker_id: "{{ inventory_hostname }}"
 
-# Decommission worker ids that own claimed-but-orphaned processing tasks and
-# no longer have a matching host in hindsight_group (a removed/renamed guest).
-# Runs once per converge, before any replica is redeployed, via
-# tasks/decommission_stale_workers.yml (imported from playbooks/site.yml
-# pre_tasks so a failure here is fatal to the whole rolling play, matching
-# max_fail_percentage: 0 — a role-tasks failure would instead be swallowed by
-# site.yml's per-replica isolation rescue).
-hindsight_docker_decommission_stale_workers: true
-
 # --- Database migrations (0.10.0 made this explicit; upstream default is
 # HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP=true) ------------------------------
 # Startup-time migrations race every replica against the same schema change
 # on a serial:1 rollout — replica 2 can start mid-migration against a
 # half-applied schema. Migrations instead run exactly once, from
-# tasks/run_db_migration.yml (pre_tasks, same fatal-on-failure reasoning as
-# the worker decommission above), using the NEW image before any replica is
+# tasks/run_db_migration.yml, using the NEW image before any replica is
 # redeployed with it.
 hindsight_docker_run_migrations_on_startup: false
 
-# Pre-migration backup: rather than gate the migration on a human confirming
-# pgBackRest freshness (this repo has no reachable signal for that — the
-# pgbackrest.yml / pg-backup.timer role lives in ansible-proxmox-apps and
-# exposes no cross-repo age check today, Vikunja follow-up: project 43
-# proxmox), tasks/run_db_migration.yml takes its own fresh backup via the
-# vendored `hindsight-admin backup` command (confirmed present at 0.10.1:
-# vectorize-io/hindsight hindsight-api-slim/hindsight_api/admin/cli.py)
-# immediately before migrating, every converge, with no human step. The zip
-# lands under this directory on the guest's own persistent data volume.
+# Directory for the pre-migration backup tasks/run_db_migration.yml takes
+# via `hindsight-admin backup` immediately before every migration.
 hindsight_docker_migration_backup_dir: "{{ hindsight_docker_data_dir }}/pre-migration-backups"
 
-# --- Explicit operation timeouts (0.10.0 wall-clock LLM deadline,
-# vectorize-io/hindsight#4784) ------------------------------------------------
-# Upstream's own defaults (retain 3600s / consolidation 7200s) are loose
-# enough that a wedged worker slot still isn't reclaimed on any timescale a
-# real hang actually happens on (vectorize-io/hindsight#4581) — set explicit
-# ceilings here, each well under an hour, rather than inherit the loose
-# default. Values are budget, not measurement: this fabric's LLM calls run
-# against local/router models with the existing per-request timeouts
-# (hindsight_docker_llm_base_url), so these are outer wall-clock backstops,
-# not the expected steady-state duration.
-hindsight_docker_retain_wall_timeout: 300
-hindsight_docker_consolidation_wall_timeout: 900
+# Explicit operation wall-clock ceilings, below upstream's loose defaults
+# (retain 3600s / consolidation 7200s). retain and consolidation are set
+# from measured p99 operation duration over a 7-day window, plus margin;
+# reflect and refresh_mental_model have no measured duration data yet and
+# keep a conservative fixed value.
+hindsight_docker_retain_wall_timeout: 720
+hindsight_docker_consolidation_wall_timeout: 2400
 hindsight_docker_reflect_wall_timeout: 120
 hindsight_docker_refresh_mental_model_wall_timeout: 120
 
