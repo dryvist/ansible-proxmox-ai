@@ -6,7 +6,9 @@
 # hindsight.<domain>; state lives in the ai-VLAN Postgres cluster. serial: 1
 # keeps the converge rolling so the pool always has a healthy member. The role
 # reads its own ports from tofu_data.constants.memory_ports and uses no host
-# facts, so gather_facts stays off like qdrant.
+# facts, so gather_facts stays off like qdrant. A second, non-serial play
+# below decommissions stale worker ids only after every replica above has
+# redeployed and passed its health check.
 
 - name: Configure Hindsight agent-memory service
   hosts: hindsight_group
@@ -23,7 +25,7 @@
       ansible.builtin.import_tasks: tasks/pool_member_gate.yml
     - name: Load the fabric model registry
       ansible.builtin.import_tasks: tasks/load_fabric_registry.yml
-    - name: Run Hindsight database-migration and worker-decommission gates
+    - name: Run the Hindsight database-migration gate
       ansible.builtin.import_tasks: tasks/hindsight_lifecycle_gates.yml
   tags:
     - hindsight_docker
@@ -40,3 +42,22 @@
           ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
           vars:
             _isolated_play_name: hindsight_docker
+
+# No serial: this must see every currently-inventoried host from the
+# batch-by-batch play above already redeployed and healthy before it runs,
+# never race a single batch's own pre_tasks — see the comment header on
+# roles/hindsight_docker/tasks/decommission_stale_workers.yml for the
+# same-batch inventory-rename failure a pre_tasks placement caused.
+- name: Decommission stale Hindsight worker ids after every replica has redeployed
+  hosts: hindsight_group
+  become: true
+  gather_facts: false
+  tags:
+    - hindsight_docker
+    - memory
+    - ai
+  tasks:
+    - name: Decommission Hindsight worker ids no longer present in inventory
+      ansible.builtin.include_role:
+        name: hindsight_docker
+        tasks_from: decommission_stale_workers.yml

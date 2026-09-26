@@ -1,9 +1,20 @@
 ---
 # Releases processing tasks claimed by a worker id (== inventory_hostname,
-# see hindsight_docker_worker_id) that no longer has a matching host in
-# hindsight_group. Imported from playbooks/hindsight.yml pre_tasks, so a
-# failure here is fatal to the whole play rather than recorded as one
-# replica's isolated failure.
+# see hindsight_docker_worker_id) that is BOTH absent from hindsight_group
+# AND shows a positive dead signal from Hindsight itself — inventory absence
+# alone is never enough. Imported from a dedicated final play in
+# playbooks/hindsight.yml that runs after every batch of the main rolling
+# play has redeployed and passed its health check (not from that rolling
+# play's own pre_tasks): with serial: 1, run_once there only dedupes within
+# one single-host batch, so a pre_tasks placement fired on every batch, and
+# on the very batch whose own host had just been renamed in inventory it
+# could decommission that host's own still-live, not-yet-redeployed
+# container moments before the redeploy that would have renamed it safely.
+#
+# The dead-signal computation (hindsight_stale_worker_ids, filter_plugins/)
+# parses worker-status's per-task `last_update_ago` — the exact field
+# upstream's own docs name for spotting a dead worker; see that file's
+# header for why no separate heartbeat/lease field exists to use instead.
 #
 # Uses the singular, per-id `decommission-worker` command only —
 # `decommission-workers` (plural) releases every worker unconditionally,
@@ -13,7 +24,9 @@
 # so this can only decommission a worker that both has orphaned tasks and
 # is absent from inventory. HINDSIGHT_API_DATABASE_URL is passed via
 # `environment:` and a bare `-e` (no inline value), so the DSN never
-# appears in argv/`ps` output on the host.
+# appears in argv/`ps` output on the host. no_log is set on every command
+# here because a connection-error message can echo the DSN; each is
+# followed by an explicit rc-only assertion so a real failure still surfaces.
 
 - name: List Hindsight workers with claimed processing tasks
   ansible.builtin.command:
@@ -32,13 +45,25 @@
   register: hindsight_docker_worker_status
   run_once: true
   changed_when: false
+  failed_when: false
+  no_log: true
 
-- name: Determine worker ids with no matching host in hindsight_group
+- name: Fail loudly if listing Hindsight workers did not exit cleanly
+  ansible.builtin.assert:
+    that:
+      - hindsight_docker_worker_status.rc == 0
+    fail_msg: >-
+      hindsight-admin worker-status exited abnormally
+      (rc={{ hindsight_docker_worker_status.rc }}); output withheld
+      (no_log) because it may include the database DSN.
+    quiet: true
+  run_once: true
+
+- name: Determine worker ids absent from inventory with a positive dead signal
   ansible.builtin.set_fact:
     hindsight_docker_stale_worker_ids: >-
-      {{ (hindsight_docker_worker_status.stdout | default('')
-          | regex_findall('^Worker: (\S+) ', multiline=True))
-         | difference(groups['hindsight_group']) }}
+      {{ hindsight_docker_worker_status.stdout | default('')
+         | hindsight_stale_worker_ids(groups['hindsight_group'], hindsight_docker_worker_dead_threshold_seconds) }}
   run_once: true
 
 - name: Decommission worker ids no longer present in inventory
@@ -58,5 +83,22 @@
   environment:
     HINDSIGHT_API_DATABASE_URL: "{{ hindsight_docker_db_url }}"
   loop: "{{ hindsight_docker_stale_worker_ids | default([]) }}"
+  register: hindsight_docker_decommission_result
   run_once: true
   changed_when: true
+  failed_when: false
+  no_log: true
+
+- name: Fail loudly if any decommission attempt did not exit cleanly
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+    fail_msg: >-
+      hindsight-admin decommission-worker failed for a stale worker id
+      (rc={{ item.rc }}); output withheld (no_log) because it may include
+      the database DSN.
+    quiet: true
+  loop: "{{ hindsight_docker_decommission_result.results | default([]) }}"
+  loop_control:
+    label: "rc={{ item.rc | default('skipped') }}"
+  run_once: true

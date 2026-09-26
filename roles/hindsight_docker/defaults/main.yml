@@ -27,6 +27,12 @@ hindsight_docker_cp_port: >-
 
 # --- Database (dedicated ai-VLAN Postgres cluster) --------------------------
 # Primary's FQDN by name, never an address; DB/user/database all `hindsight`.
+# Direct connection, not through a pooler: upstream has a known bug
+# (a failed run-db-migration can leave its Postgres advisory lock held for
+# hours behind a connection pooler, with no timeout and no log line) that
+# only bites a pooled front-end — a direct connection releases the
+# session-scoped lock as soon as the migration's --rm container exits. A
+# future move to a pooled Postgres front-end would need to re-check this.
 hindsight_docker_db_host: "postgres-ai-1.{{ tofu_data.domain }}"
 hindsight_docker_db_port: >-
   {{ tofu_data['constants']['service_ports']['postgres_default']
@@ -95,6 +101,18 @@ hindsight_docker_cp_access_key: >-
 # stable per LXC, which is exactly what upstream requires.
 hindsight_docker_worker_id: "{{ inventory_hostname }}"
 
+# Upstream ships no separate worker-heartbeat/lease interval to derive this
+# from (confirmed: no such setting in hindsight_api/admin/cli.py at the
+# pinned tag). Derived instead from this role's own measured per-operation
+# wall-clock ceilings below — doubled as margin — since a worker's claimed
+# task still unchanged well past twice the slowest operation's own ceiling
+# cannot be a live worker still legitimately running it. Used by
+# filter_plugins/hindsight_stale_workers.py via decommission_stale_workers.yml.
+hindsight_docker_worker_dead_threshold_seconds: >-
+  {{ ([hindsight_docker_retain_wall_timeout, hindsight_docker_consolidation_wall_timeout,
+       hindsight_docker_reflect_wall_timeout, hindsight_docker_refresh_mental_model_wall_timeout] | max)
+     * 2 }}
+
 # --- Database migrations (0.10.0 made this explicit; upstream default is
 # HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP=true) ------------------------------
 # Startup-time migrations race every replica against the same schema change
@@ -125,6 +143,16 @@ hindsight_docker_retain_wall_timeout: 720
 hindsight_docker_consolidation_wall_timeout: 2400
 hindsight_docker_reflect_wall_timeout: 120
 hindsight_docker_refresh_mental_model_wall_timeout: 120
+
+# Wall-clock ceilings (async/poll) for tasks/run_db_migration.yml's own
+# one-shot backup and migration commands, so a hang (stuck disk, wedged
+# migration) fails loudly instead of blocking a serial:1 rollout forever.
+# Migration: ~15x margin over a measured ~39s fresh-schema migration in CI
+# (job 108368335106, 2026-09-26). Backup: the command has not yet completed
+# in any CI run against a non-trivial schema, so this ceiling is provisional
+# pending real measured production-scale timing.
+hindsight_docker_backup_wall_timeout_seconds: 300
+hindsight_docker_migration_wall_timeout_seconds: 600
 
 # Local ONNX embeddings (bundled BGE model) — no external embedding dependency.
 hindsight_docker_embeddings_provider: local

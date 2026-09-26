@@ -91,17 +91,34 @@
     # head (production's real steady state, not an empty database) before
     # converge ever runs, so the converge playbook's call to
     # tasks/run_db_migration.yml exercises the real backup+migrate path —
-    # confirm both actually happened.
-    - name: Stat the pre-migration backup produced by run_db_migration.yml
-      ansible.builtin.stat:
-        path: "{{ hindsight_docker_data_dir }}/pre-migration-backups/pre-migration.zip"
-      register: hindsight_premigration_backup_stat
+    # confirm both actually happened. The filename carries the from->to
+    # revisions plus a timestamp (S2), computed during converge and not
+    # available here (facts don't persist across Molecule's separate
+    # per-stage ansible-playbook invocations), so it's found by pattern.
+    - name: Find the pre-migration backup produced by run_db_migration.yml
+      ansible.builtin.find:
+        paths: "{{ hindsight_docker_data_dir }}/pre-migration-backups"
+        patterns: "pre-migration-*.zip"
+      register: hindsight_premigration_backup_find
 
-    - name: Assert the pre-migration backup exists and is non-empty
+    - name: Assert exactly one pre-migration backup exists and is non-empty
       ansible.builtin.assert:
         that:
-          - hindsight_premigration_backup_stat.stat.exists
-          - hindsight_premigration_backup_stat.stat.size > 0
+          - hindsight_premigration_backup_find.matched == 1
+          - hindsight_premigration_backup_find.files[0].size > 0
+        fail_msg: >-
+          Expected exactly one pre-migration-*.zip backup; found
+          {{ hindsight_premigration_backup_find.matched }}.
+
+    - name: Verify the pre-migration backup archive is a valid, restorable zip
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -m
+          - zipfile
+          - -t
+          - "{{ hindsight_premigration_backup_find.files[0].path }}"
+      changed_when: false
 
     # run_db_migration.yml's own head-revision probe already generated this
     # config file (into the same directory as the backup) — reused here

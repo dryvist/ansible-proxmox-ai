@@ -1,10 +1,12 @@
-"""roles/hindsight_docker/tasks/run_db_migration.yml: the pre-migration
-backup and the migration itself must both run only when a migration is
-actually pending (no schema yet, or the database's current Alembic revision
-differs from the image's target head) — split out of
-test_migration_and_worker_lifecycle.py to stay under .token-limits.yaml's
-per-file budget. Parses the role task YAML directly and evaluates its Jinja
-expressions — no live Ansible run, no Docker.
+"""roles/hindsight_docker/tasks/run_db_migration.yml: the migration itself
+must run only when actually pending (no schema yet, or the database's
+current Alembic revision differs from the image's target head), and the
+head/current-revision probes it depends on. The backup itself (integrity,
+naming, timeout) and the whole-fleet drain live in
+test_run_db_migration_backup_safety.py — split out (this file was itself
+split out of test_migration_and_worker_lifecycle.py earlier) to stay under
+.token-limits.yaml's per-file budget. Parses the role task YAML directly and
+evaluates its Jinja expressions — no live Ansible run, no Docker.
 """
 
 from __future__ import annotations
@@ -19,37 +21,6 @@ ROLE_ROOT = REPO_ROOT / "roles/hindsight_docker"
 
 def _load_role_tasks(name: str) -> list[dict]:
     return yaml.safe_load((ROLE_ROOT / "tasks" / name).read_text())
-
-
-def test_migration_task_takes_an_automated_pre_migration_backup() -> None:
-    # No human confirmation gate: every converge takes its own fresh backup
-    # via the vendored `hindsight-admin backup` command, then refuses to
-    # migrate unless that backup file actually exists and is non-empty.
-    tasks = _load_role_tasks("run_db_migration.yml")
-    names = [t["name"] for t in tasks]
-    assert "Take a pre-migration database backup" in names
-    assert "Assert the pre-migration backup succeeded" in names
-
-    backup = next(t for t in tasks if t["name"] == "Take a pre-migration database backup")
-    argv = backup["ansible.builtin.command"]["argv"]
-    assert argv[-3:] == ["hindsight-admin", "backup", "/backup/pre-migration.zip"]
-    # Bare -e (no inline value): the DSN is passed via `environment:`, never
-    # argv, so it never appears in `ps` output on the host.
-    assert "HINDSIGHT_API_DATABASE_URL" in argv
-    assert not any("hindsight_docker_db_url" in a for a in argv)
-    assert backup["environment"] == {"HINDSIGHT_API_DATABASE_URL": "{{ hindsight_docker_db_url }}"}
-    assert "{{ hindsight_docker_migration_backup_dir }}:/backup" in argv
-    assert backup.get("run_once") is True
-
-    gate = next(t for t in tasks if t["name"] == "Assert the pre-migration backup succeeded")
-    assert gate["ansible.builtin.assert"]["that"] == [
-        "hindsight_docker_premigration_backup_stat.stat.exists",
-        "hindsight_docker_premigration_backup_stat.stat.size > 0",
-    ]
-    assert gate.get("run_once") is True
-
-    # The migration task itself must come after the backup gate, not before.
-    assert names.index(gate["name"]) < names.index("Run the Hindsight database migration once, using the target image")
 
 
 def test_schema_probe_positively_detects_a_first_deploy() -> None:
@@ -85,33 +56,6 @@ def test_schema_probe_positively_detects_a_first_deploy() -> None:
     render = lambda stdout: template.render(hindsight_docker_schema_probe={"stdout": stdout})  # noqa: E731
     assert render("t") == "True"  # tracker present -> existing schema
     assert render("f") == "False"  # tracker absent -> first deploy
-
-
-def test_backup_runs_only_when_a_schema_exists_and_a_migration_is_pending() -> None:
-    tasks = _load_role_tasks("run_db_migration.yml")
-
-    backup = next(t for t in tasks if t["name"] == "Take a pre-migration database backup")
-    # Schema alone isn't enough: an already-migrated database must take no
-    # backup either, or the second Molecule converge (idempotence) reports
-    # this task as changed for work that accomplishes nothing.
-    assert backup["when"] == "hindsight_docker_schema_exists and hindsight_docker_migration_pending"
-    # No failed_when override: a real backup failure (schema present, write
-    # error, connection drop, anything) uses ansible.builtin.command's
-    # default behavior and fails the play — the stderr-tolerance this once
-    # had is gone entirely.
-    assert "failed_when" not in backup
-    assert "register" not in backup
-    # No Molecule-specific tag: idempotence passes on its own merit because
-    # the gate above is genuinely false on an already-migrated database, not
-    # because the task is hidden from the idempotence pass.
-    assert "tags" not in backup
-
-    for name in (
-        "Refuse to migrate unless the pre-migration backup file is present and non-empty",
-        "Assert the pre-migration backup succeeded",
-    ):
-        gated = next(t for t in tasks if t["name"] == name)
-        assert gated["when"] == "hindsight_docker_schema_exists and hindsight_docker_migration_pending"
 
 
 def test_migration_pending_probes_use_the_vendored_alembic_cli_no_script() -> None:
@@ -245,6 +189,20 @@ def test_migration_task_runs_against_the_target_image_using_the_shared_db_url() 
     # non-idempotent for a run-db-migration invocation that would have been
     # a real no-op anyway.
     assert migrate["when"] == "hindsight_docker_migration_pending"
+    # S3/S4: bounded, and output withheld (DSN in a connection error) behind
+    # a dedicated rc-only follow-up assert.
+    assert migrate["no_log"] is True
+    assert migrate["failed_when"] is False
+    assert migrate["async"] == "{{ hindsight_docker_migration_wall_timeout_seconds }}"
+    assert migrate["poll"] == 5
+
+    tasks_by_name = {t["name"]: t for t in tasks}
+    migration_gate = tasks_by_name["Fail loudly if the database migration did not exit cleanly"]
+    assert migration_gate["ansible.builtin.assert"]["that"] == [
+        "hindsight_docker_migration_result.rc | default(-1) == 0",
+        "not (hindsight_docker_migration_result.failed | default(false))",
+    ]
+    assert migration_gate["when"] == "hindsight_docker_migration_pending"
 
 
 if __name__ == "__main__":

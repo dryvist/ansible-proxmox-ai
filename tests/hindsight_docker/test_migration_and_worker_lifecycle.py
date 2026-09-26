@@ -11,6 +11,7 @@ no live Ansible run, no Docker. What each covers is stated on the test.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import yaml
@@ -20,6 +21,10 @@ from _compose_render import DEFAULT_CONTEXT, env_line, render
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles/hindsight_docker"
 SITE_YML = REPO_ROOT / "playbooks/site.yml"
+HINDSIGHT_PLAYBOOK = REPO_ROOT / "playbooks/hindsight.yml"
+
+sys.path.insert(0, str(ROLE_ROOT / "filter_plugins"))
+from hindsight_stale_workers import hindsight_stale_worker_ids  # noqa: E402
 
 
 def _load_role_tasks(name: str) -> list[dict]:
@@ -84,18 +89,22 @@ def test_compose_template_sources_vector_extension_from_the_shared_var() -> None
     assert env_line(rendered, "HINDSIGHT_API_VECTOR_EXTENSION").endswith('"pgvector"')
 
 
-def test_decommission_task_extracts_worker_ids_and_diffs_against_inventory() -> None:
+def test_decommission_task_uses_the_dead_signal_filter_and_diffs_against_inventory() -> None:
     tasks = _load_role_tasks("decommission_stale_workers.yml")
     fact = next(t for t in tasks if t["name"].startswith("Determine worker ids"))
     expr = fact["ansible.builtin.set_fact"]["hindsight_docker_stale_worker_ids"]
-    assert "regex_findall('^Worker: (\\S+) '" in expr
-    assert "difference(groups['hindsight_group'])" in expr
+    assert "hindsight_stale_worker_ids(groups['hindsight_group']" in expr
+    assert "hindsight_docker_worker_dead_threshold_seconds" in expr
 
     listing = next(t for t in tasks if t["name"].startswith("List Hindsight workers"))
     list_argv = listing["ansible.builtin.command"]["argv"]
     assert "HINDSIGHT_API_DATABASE_URL" in list_argv
     assert not any("hindsight_docker_db_url" in a for a in list_argv)
     assert listing["environment"] == {"HINDSIGHT_API_DATABASE_URL": "{{ hindsight_docker_db_url }}"}
+    # S4: output can carry the DSN on a connection error, so it's withheld —
+    # a follow-up rc-only assert keeps a real failure visible regardless.
+    assert listing["no_log"] is True
+    assert listing["failed_when"] is False
 
     decommission = next(t for t in tasks if t["name"].startswith("Decommission worker ids"))
     argv = decommission["ansible.builtin.command"]["argv"]
@@ -106,6 +115,59 @@ def test_decommission_task_extracts_worker_ids_and_diffs_against_inventory() -> 
     assert not any("hindsight_docker_db_url" in a for a in argv)
     assert decommission["environment"] == {"HINDSIGHT_API_DATABASE_URL": "{{ hindsight_docker_db_url }}"}
     assert decommission["loop"] == "{{ hindsight_docker_stale_worker_ids | default([]) }}"
+    assert decommission["no_log"] is True
+    assert decommission["failed_when"] is False
+
+    follow_up = next(t for t in tasks if t["name"].startswith("Fail loudly if any decommission"))
+    assert follow_up["ansible.builtin.assert"]["that"] == ["item.rc == 0"]
+    assert follow_up["loop"] == "{{ hindsight_docker_decommission_result.results | default([]) }}"
+
+
+def test_stale_worker_filter_keeps_present_and_live_absent_decommissions_only_dead_absent() -> None:
+    # B1/S6: the actual decommission logic, evaluated against sample
+    # worker-status text and a sample inventory group — not just structure.
+    sample = (
+        "Processing tasks across 3 worker(s):\n\n"
+        "Worker: present-and-stale (1 task(s))\n"
+        "  aaaaaaaa  reflect              bank=demo  running=5:00:00  last_update=5:00:00 ago\n\n"
+        "Worker: absent-but-fresh (1 task(s))\n"
+        "  bbbbbbbb  retain               bank=demo  running=0:05:00  last_update=0:05:00 ago\n\n"
+        "Worker: absent-and-dead (1 task(s))\n"
+        "  cccccccc  consolidation        bank=demo  running=2:10:00  last_update=2:10:00 ago\n\n"
+    )
+    inventory_group = ["present-and-stale"]
+    threshold_seconds = 4800  # 80 minutes
+
+    stale = hindsight_stale_worker_ids(sample, inventory_group, threshold_seconds)
+
+    assert stale == ["absent-and-dead"]  # only the absent AND dead id
+
+
+def test_stale_worker_filter_renders_from_the_real_task_expression() -> None:
+    # Literal render of the YAML task's own Jinja expression (not a re-typed
+    # copy), with the filter registered exactly as Ansible would load it.
+    import jinja2
+
+    tasks = _load_role_tasks("decommission_stale_workers.yml")
+    fact = next(t for t in tasks if t["name"].startswith("Determine worker ids"))
+    expr = fact["ansible.builtin.set_fact"]["hindsight_docker_stale_worker_ids"]
+
+    env = jinja2.Environment()
+    env.filters["hindsight_stale_worker_ids"] = hindsight_stale_worker_ids
+    template = env.from_string(expr)
+
+    rendered = template.render(
+        hindsight_docker_worker_status={
+            "stdout": (
+                "Processing tasks across 1 worker(s):\n\n"
+                "Worker: absent-and-dead (1 task(s))\n"
+                "  cccccccc  consolidation        bank=demo  running=2:10:00  last_update=2:10:00 ago\n\n"
+            )
+        },
+        groups={"hindsight_group": []},
+        hindsight_docker_worker_dead_threshold_seconds=4800,
+    )
+    assert rendered == "['absent-and-dead']"
 
 
 def test_site_yml_imports_the_hindsight_play() -> None:
@@ -117,11 +179,13 @@ def test_site_yml_imports_the_hindsight_play() -> None:
     assert hindsight_entry["import_playbook"] == "hindsight.yml"
 
 
-def test_site_yml_wires_both_lifecycle_tasks_before_the_isolated_block() -> None:
-    hindsight_play = yaml.safe_load((REPO_ROOT / "playbooks/hindsight.yml").read_text())[0]
-    assert hindsight_play["max_fail_percentage"] == 0
-    pre_task_names = [t["name"] for t in hindsight_play["pre_tasks"]]
-    gates_task = next(t for t in hindsight_play["pre_tasks"] if t["name"].startswith("Run Hindsight"))
+def test_site_yml_wires_the_migration_gate_before_the_isolated_block() -> None:
+    hindsight_plays = yaml.safe_load(HINDSIGHT_PLAYBOOK.read_text())
+    rolling_play = hindsight_plays[0]
+    assert rolling_play["max_fail_percentage"] == 0
+    assert rolling_play["serial"] == 1
+    pre_task_names = [t["name"] for t in rolling_play["pre_tasks"]]
+    gates_task = next(t for t in rolling_play["pre_tasks"] if t["name"].startswith("Run the Hindsight"))
     assert gates_task["ansible.builtin.import_tasks"] == "tasks/hindsight_lifecycle_gates.yml"
     # Precedes the role's normal (rescue-wrapped) entry, after the pool gate.
     pool_gate_index = pre_task_names.index("Gate on pool-member reachability")
@@ -132,19 +196,35 @@ def test_site_yml_wires_both_lifecycle_tasks_before_the_isolated_block() -> None
 def test_lifecycle_gates_file_uses_include_role_so_role_defaults_resolve() -> None:
     # include_role (not import_tasks on the role's raw task path) is
     # load-bearing: it is what makes the role's own defaults/main.yml (image
-    # tag, db_url, the pre-migration backup dir) resolve before these fire in
-    # pre_tasks, ahead of `tasks:` where the role is otherwise entered.
+    # tag, db_url, the pre-migration backup dir) resolve before this fires
+    # in pre_tasks, ahead of `tasks:` where the role is otherwise entered.
     gates = yaml.safe_load((REPO_ROOT / "playbooks/tasks/hindsight_lifecycle_gates.yml").read_text())
     names = [t["name"] for t in gates]
     assert "Run the Hindsight database migration once, before any replica redeploys" in names
-    assert "Decommission Hindsight worker ids no longer present in inventory" in names
+    assert "Decommission Hindsight worker ids no longer present in inventory" not in names
     migration = next(t for t in gates if t["name"].startswith("Run the Hindsight database migration"))
     assert migration["ansible.builtin.include_role"] == {
         "name": "hindsight_docker",
         "tasks_from": "run_db_migration.yml",
     }
-    decommission = next(t for t in gates if t["name"].startswith("Decommission Hindsight worker ids"))
-    assert decommission["ansible.builtin.include_role"] == {
+
+
+def test_decommission_runs_from_its_own_final_play_not_serial_one() -> None:
+    # B1: a per-batch pre_tasks placement (serial: 1) let the decommission
+    # gate race a same-batch inventory rename. It now lives in a SEPARATE,
+    # non-serial play that runs after every batch of the rolling play above
+    # has redeployed and passed its health check.
+    hindsight_plays = yaml.safe_load(HINDSIGHT_PLAYBOOK.read_text())
+    assert len(hindsight_plays) == 2
+    decommission_play = hindsight_plays[1]
+    assert decommission_play["hosts"] == "hindsight_group"
+    assert "serial" not in decommission_play
+    task_names = [t["name"] for t in decommission_play["tasks"]]
+    assert "Decommission Hindsight worker ids no longer present in inventory" in task_names
+    decommission_task = next(
+        t for t in decommission_play["tasks"] if t["name"].startswith("Decommission Hindsight worker ids")
+    )
+    assert decommission_task["ansible.builtin.include_role"] == {
         "name": "hindsight_docker",
         "tasks_from": "decommission_stale_workers.yml",
     }
