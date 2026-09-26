@@ -30,6 +30,11 @@
     #     even though nothing was ADDED, only removed.
     #   - live-only: a live key with no matching llm_router_virtual_keys
     #     entry at all — never a candidate, current behavior preserved.
+    #   - null-models: a live record whose `models` key is PRESENT but JSON
+    #     null — the null-vs-missing gap: default(...) alone only
+    #     substitutes for a MISSING key, so an unguarded null here used to
+    #     raise in the difference() call below instead of being treated as [].
+    #   - null-routes: same null-vs-missing gap, for `allowed_routes` instead.
     llm_router_existing_keys:
       json:
         keys:
@@ -43,6 +48,11 @@
             models: [cheap, stale-model]
           - key_alias: live-only
             models: [cheap]
+          - key_alias: null-models
+            models: null
+          - key_alias: null-routes
+            models: [cheap]
+            allowed_routes: null
 
     llm_router_virtual_keys:
       - alias: steady
@@ -59,6 +69,13 @@
         value: "sk-{{ 'd' * 20 }}"
         models: [cheap]
         models_authoritative: true
+      - alias: null-models
+        value: "sk-{{ 'e' * 20 }}"
+        models: [cheap]
+      - alias: null-routes
+        value: "sk-{{ 'f' * 20 }}"
+        models: [cheap]
+        allowed_routes: ["/metrics"]
 
     # Hand-set, not extracted: this helper's own expression already has
     # dedicated coverage in test_seed_key_live_aliases.yml. Every live
@@ -69,6 +86,8 @@
       - malformed-live
       - authoritative-narrow
       - live-only
+      - null-models
+      - null-routes
 
   tasks:
     - name: Extract the real, committed diff expression from seed-keys.yml
@@ -84,6 +103,8 @@
         that:
           - "\"map(attribute='allowed_routes', default=none)\" in _diff_expr"
           - "\"map(attribute='models', default=[])\" in _diff_expr"
+          - "\"default(none, true)\" in _diff_expr"
+          - "\"default([], true)\" in _diff_expr"
         fail_msg: >-
           Could not find the fail-safe attribute lookups in seed-keys.yml
           under the task name {{ _diff_task_name }} — this test's
@@ -112,14 +133,14 @@
         # warning (removed in 2.23), not a no-op.
         _llm_router_key_updates: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
 
-    - name: Assert only the three genuinely-changed keys are updated, each exactly once
+    - name: Assert only the five genuinely-changed keys are updated, each exactly once
       ansible.builtin.assert:
         quiet: true
         that:
           - _llm_router_key_updates | map(attribute='alias') | sort
-            == ['authoritative-narrow', 'malformed-live', 'widened-routes']
+            == ['authoritative-narrow', 'malformed-live', 'null-models', 'null-routes', 'widened-routes']
         fail_msg: >-
-          Expected exactly the three changed aliases, got
+          Expected exactly the five changed aliases, got
           {{ _llm_router_key_updates | map(attribute='alias') | list }}.
           steady must be absent (nothing differs); live-only must be absent
           (no seed entry names it — current behavior preserved).
@@ -153,11 +174,31 @@
       vars:
         _narrowed: "{{ _llm_router_key_updates | selectattr('alias', 'equalto', 'authoritative-narrow') | first }}"
 
+    - name: Assert a live `models` value of explicit JSON null is treated the same as missing
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'allowed_routes' not in _null_models.body"
+          - _null_models.body.models == ['cheap']
+        fail_msg: "null-models body: {{ _null_models.body }}"
+      vars:
+        _null_models: "{{ _llm_router_key_updates | selectattr('alias', 'equalto', 'null-models') | first }}"
+
+    - name: Assert a live `allowed_routes` value of explicit JSON null is treated the same as missing
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _null_routes.body.allowed_routes == ['/metrics']
+          - _null_routes.body.models == ['cheap']
+        fail_msg: "null-routes body: {{ _null_routes.body }}"
+      vars:
+        _null_routes: "{{ _llm_router_key_updates | selectattr('alias', 'equalto', 'null-routes') | first }}"
+
     - name: A second render against a fixture with nothing left to change updates zero keys
       ansible.builtin.set_fact:
         _llm_router_key_updates_second_run: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
       vars:
-        # The live snapshot AFTER the three updates above would have landed:
+        # The live snapshot AFTER the five updates above would have landed:
         # every seed entry now matches live on both fields.
         llm_router_existing_keys:
           json:
@@ -173,6 +214,11 @@
                 models: [cheap]
               - key_alias: live-only
                 models: [cheap]
+              - key_alias: null-models
+                models: [cheap]
+              - key_alias: null-routes
+                models: [cheap]
+                allowed_routes: ["/metrics"]
 
     - name: Assert the idempotent second run finds nothing left to change
       ansible.builtin.assert:

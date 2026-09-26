@@ -196,12 +196,16 @@
       {%- for _k in (llm_router_virtual_keys
                      | rejectattr('value', 'equalto', '')
                      | selectattr('alias', 'in', _llm_router_live_key_aliases) | list) -%}
+      {#- The outer default()'s `, true` form also fires on a live record whose
+         allowed_routes/models key is PRESENT but JSON null (map(attribute=...,
+         default=...) only substitutes for a MISSING key), so null compares the
+         same as missing instead of crashing the difference() calls below. -#}
       {%- set _live_routes = (llm_router_existing_keys.json['keys'] | default([])
               | selectattr('key_alias', 'equalto', _k.alias)
-              | map(attribute='allowed_routes', default=none) | first | default(none)) -%}
+              | map(attribute='allowed_routes', default=none) | first | default(none, true)) -%}
       {%- set _live_models = (llm_router_existing_keys.json['keys'] | default([])
               | selectattr('key_alias', 'equalto', _k.alias)
-              | map(attribute='models', default=[]) | first | default([])) -%}
+              | map(attribute='models', default=[]) | first | default([], true)) -%}
       {%- set _authoritative = _k.models_authoritative | default(false) -%}
       {%- set _models_target = _k.models if _authoritative else ((_live_models + _k.models) | unique | list) -%}
       {%- set _models_changed = (_k.models | difference(_live_models) | length > 0)
