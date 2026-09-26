@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.57.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.57.0...v0.57.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* **inventory:** guard load_tofu_ssh_ready against a missing failed key ([#945](https://github.com/dryvist/ansible-proxmox-ai/issues/945)) ([0da1e97](https://github.com/dryvist/ansible-proxmox-ai/commit/0da1e9712f991b3740367d85e6b59c5aff66564e))
+
+## [0.57.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.56.0...v0.57.0) (2026-09-26)
+
+
+### Features
+
+* **hindsight_docker:** OTLP traces + webhook env vars ([#936](https://github.com/dryvist/ansible-proxmox-ai/issues/936)) ([bb0284d](https://github.com/dryvist/ansible-proxmox-ai/commit/bb0284de2a8282dec16eadefc3f4663402f4d067))
+* **inventory:** compose tofu_ssh_container with the tofu-proxmox ansible_connection field ([#934](https://github.com/dryvist/ansible-proxmox-ai/issues/934)) ([380c4c0](https://github.com/dryvist/ansible-proxmox-ai/commit/380c4c0e5de65888c4d42b24944fb5ab56a13e52))
+
+
+### Bug Fixes
+
+* **agentgateway_docker:** run the Vikunja MCP sidecar stateful ([#933](https://github.com/dryvist/ansible-proxmox-ai/issues/933)) ([4a5c251](https://github.com/dryvist/ansible-proxmox-ai/commit/4a5c2518e01bbbef0520fdc7802a15d4beaeed35))
+* **ci:** raise Molecule Docker API client timeout to 300s ([187a233](https://github.com/dryvist/ansible-proxmox-ai/commit/187a23312ae4d51511e362958a8ad4b660562d10))
+* **ci:** skip Molecule final destroy on ephemeral CI runner ([09f5726](https://github.com/dryvist/ansible-proxmox-ai/commit/09f572694b876e373edb5265ab74b2719f775554))
+* **ci:** skip Molecule's final destroy on the ephemeral CI runner ([778d04d](https://github.com/dryvist/ansible-proxmox-ai/commit/778d04db36fa41e8aa45cb3777b51387092c4a7f))
+* **llm_router:** stop hindsight route from reaching a ZDR-false model ([#937](https://github.com/dryvist/ansible-proxmox-ai/issues/937)) ([b795209](https://github.com/dryvist/ansible-proxmox-ai/commit/b79520942b247b6468529220c94ff3f9dda60939))
+
 ## [0.56.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.55.0...v0.56.0) (2026-09-24)
 
 
