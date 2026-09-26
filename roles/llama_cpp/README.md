@@ -62,8 +62,16 @@ Ordering: `tofu-proxmox` (LXC shell) → `ansible-proxmox` (GPU passthrough) →
 section name (== `model_name`/registry `client_model_id`) is the id the
 router serves — unlike a plain `--models-dir` scan, it does not depend on the
 GGUF filename, and each section carries its own ctx-size and
-chat-vs-embeddings flags, so mixing a chat model and an embeddings model on
-one guest still gets the right flags for each.
+chat/embeddings/rerank flags, so mixing model kinds on one guest still gets
+the right flags for each.
+
+A `llama_cpp_models` entry can also set `rerank: true` (a reranking model —
+`embeddings = true` + `rerank = true` + `pooling = rank`) and `pooling:
+<mean|cls|last|none>` (overrides the embeddings branch's default of `mean`
+for a model whose own GGUF wants something else, e.g. BAAI/bge-m3's CLS
+pooling) — see the field doc in `defaults/main/00-core.yml`. This host
+(`llm-fast`) does not use either; the `llm_vllm_group` and `llm_cpu_9b_group`
+group_vars do, for the estate's embedding/reranker pair.
 
 ## GPU backend
 

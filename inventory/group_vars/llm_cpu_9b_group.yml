@@ -11,3 +11,35 @@ llama_cpp_models:
     param_billions: 9
     ctx_size: 8192
     embeddings: false
+
+  # Hindsight fabric embedder/reranker failover rung — the SAME GGUF as
+  # llm_vllm_group's GPU entries below (bake-off decision, SD/lane-L6-bakeoff.md).
+  # Must stay byte-identical to the GPU pair: the embedding dimension is
+  # locked once Hindsight writes its first vector, so a CPU failover serving
+  # a different embedder than the GPU rung would silently corrupt recall
+  # rather than just running slower. ctx_size matches the GPU side (2048) for
+  # the same reason — a wider CPU window would behave differently across the
+  # two rungs a caller is meant to treat as interchangeable. RAM is not the
+  # GPU's VRAM-headroom constraint, so this pool member has ample room for
+  # both alongside qwen3.5-9b; llama_cpp_models_max stays at the role default
+  # of 1 (defaults/main/00-core.yml) and llama-server's own router-mode swap
+  # covers all three on demand.
+  - name: bge-m3
+    aliases: []
+    hf_repo: gpustack/bge-m3-GGUF
+    gguf: bge-m3-Q8_0.gguf
+    param_billions: 0.568
+    embeddings: true
+    # See llm_vllm_group.yml's identical field: BAAI/bge-m3's own GGUF
+    # default is CLS pooling, not the embeddings branch's `mean` default.
+    pooling: cls
+    ctx_size: 2048
+
+  - name: bge-reranker-v2-m3
+    aliases: []
+    hf_repo: gpustack/bge-reranker-v2-m3-GGUF
+    gguf: bge-reranker-v2-m3-Q8_0.gguf
+    param_billions: 0.568
+    embeddings: false
+    rerank: true
+    ctx_size: 2048

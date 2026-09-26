@@ -154,6 +154,50 @@ llama_cpp_models:
     param_billions: 27.78
     embeddings: false
 
+  # Hindsight fabric embedder/reranker (bake-off decision, SD/lane-L6-bakeoff.md:
+  # recall@5 0.9407 vs baseline 0.9037, both stronger than the alternatives
+  # tested). Same GGUF is also declared on llm_cpu_9b_group as the failover
+  # rung — see that file for why the pair must match. `--models-max` on this
+  # guest stays at the role default of 1 (defaults/main/00-core.yml), so these
+  # two share the card's single resident slot with the dense chat model above
+  # via llama-server's own on-demand router-mode swap — deliberately NOT
+  # raised to keep all three co-resident: the measured headroom above (2307
+  # MiB free at ctx 32768) predates these two models entirely, Q8_0 weights
+  # alone are already ~1.2 GiB combined, and this PR has no live host access
+  # to re-measure. Raise llama_cpp_models_max here only behind a fresh
+  # nvidia-smi measurement with all three loaded.
+  #
+  # ctx_size 2048 is a conservative placeholder for the same reason (no live
+  # VRAM measurement this PR) — bge-m3 supports up to 8192 natively and
+  # Hindsight's own chunks are typically far smaller than either number.
+  # Raise it only behind a fresh measurement, per the card's own convention
+  # above (see "IF IT DOES NOT FIT").
+  - name: bge-m3
+    aliases: []
+    hf_repo: gpustack/bge-m3-GGUF
+    gguf: bge-m3-Q8_0.gguf
+    # 568M params (XLM-RoBERTa-large backbone) — confirmed via BAAI/bge-m3's
+    # own model card and the arXiv paper (M3-Embedding).
+    param_billions: 0.568
+    embeddings: true
+    # BAAI/bge-m3 ships CLS pooling as its own GGUF default
+    # (bert.pooling_type=2) — verified locally: llama-server logs "model
+    # default pooling_type is [2], but [1] was specified" and silently
+    # answers wrong-pooled vectors when this is left at the embeddings
+    # branch's `mean` default. Do not remove this override.
+    pooling: cls
+    ctx_size: 2048
+
+  - name: bge-reranker-v2-m3
+    aliases: []
+    hf_repo: gpustack/bge-reranker-v2-m3-GGUF
+    gguf: bge-reranker-v2-m3-Q8_0.gguf
+    # Same XLM-RoBERTa-large backbone as bge-m3 above, 568M params.
+    param_billions: 0.568
+    embeddings: false
+    rerank: true
+    ctx_size: 2048
+
   # The coding rung (registry qwen3-coder-30b, disabled) returns here in the
   # same change that lands its GGUF on the shared model store: hf_repo
   # unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF, UD-IQ3_XXS, 11.97 GiB, its
