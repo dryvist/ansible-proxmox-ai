@@ -141,11 +141,20 @@
               + llm_router_role_deployments | map(attribute='fallbacks') | flatten) | unique | list }}
         _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
         _private: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}"
-        # Every key x role it names: the chain must be a subset of the key's models.
+        # Every key x role it names: the chain must be a subset of the key's
+        # models. EXCEPT llm_router_local_only_fail_fast_names
+        # (58-review-roles.yml): 59-key-scopes.yml deliberately does not
+        # widen those roles onto their own d.model, because that model is
+        # independently servable and so carries its OWN non-fail-fast
+        # entry-point chain (config.yaml.j2) — widening to it would grant
+        # exactly the external reach the role exists to deny (caught live by
+        # test_hindsight_key_zdr_isolation.yml). d.fallbacks is always []
+        # for these roles, so there is nothing else to cover anyway.
         _uncovered: >-
           {%- set out = [] -%}
           {%- for k in llm_router_virtual_keys -%}
-          {%- for d in llm_router_role_deployments if d.role in k.models -%}
+          {%- for d in llm_router_role_deployments
+                if d.role in k.models and d.role not in llm_router_local_only_fail_fast_names -%}
           {%- if ([d.model] + d.fallbacks) | difference(k.models) | length > 0 -%}
           {%- set _ = out.append(k.alias ~ ':' ~ d.role) -%}
           {%- endif -%}
