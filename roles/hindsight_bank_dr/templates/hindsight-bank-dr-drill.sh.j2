@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Scheduled logical-restore drill: download the latest export for one bank,
+# import it into a throwaway scratch bank, prove the restored data is actually
+# there and queryable, time every step, then delete the scratch bank. Emits
+# one structured JSON result line so an alert can key on drill age/failure
+# (a failed run also fails this systemd unit, which OnFailure=ntfy-unit-failure
+# pages on once the unit name is added to ntfy_unit_failure_services — see
+# SD/lane-L4x.md).
+set -euo pipefail
+
+CONTAINER="{{ hindsight_bank_dr_container_name }}"
+API_PORT="{{ hindsight_bank_dr_api_port }}"
+BASE_URL="http://127.0.0.1:${API_PORT}/v1/default"
+BUCKET="{{ hindsight_bank_dr_s3_bucket }}"
+PREFIX="{{ hindsight_bank_dr_s3_prefix }}"
+STAGING="{{ hindsight_bank_dr_staging_dir }}/drill"
+SCRATCH_PREFIX="{{ hindsight_bank_dr_drill_scratch_bank_prefix }}"
+RECALL_QUERY="{{ hindsight_bank_dr_drill_recall_query }}"
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+SCRATCH_BANK="${SCRATCH_PREFIX}-${RUN_ID}"
+
+HC="{{ hindsight_bank_dr_drill_healthcheck_url }}"
+ping_hc() { [ -n "$HC" ] && curl -fsS -m 10 --retry 3 -o /dev/null "$1" >/dev/null 2>&1 || true; }
+
+RESULT="fail"
+IMPORT_SECONDS=0
+RECALL_SECONDS=0
+NODES_RESTORED=0
+DOCS_RESTORED=0
+ERROR=""
+
+cleanup_scratch_bank() {
+  curl -fsS -o /dev/null -X DELETE "${BASE_URL}/banks/${SCRATCH_BANK}" 2>/dev/null || true
+}
+
+on_exit() {
+  local rc=$?
+  cleanup_scratch_bank
+  rm -rf "${STAGING:?}"
+  if [ "$rc" -eq 0 ] && [ "$RESULT" = "pass" ]; then
+    ping_hc "$HC"
+  else
+    RESULT="fail"
+    ping_hc "$HC/fail"
+  fi
+  printf '{"event":"hindsight_dr_drill","result":"%s","bank":"%s","scratch_bank":"%s","import_seconds":%s,"recall_seconds":%s,"nodes_restored":%s,"documents_restored":%s,"error":"%s","run_id":"%s"}\n' \
+    "$RESULT" "${DRILL_BANK:-}" "$SCRATCH_BANK" "$IMPORT_SECONDS" "$RECALL_SECONDS" \
+    "$NODES_RESTORED" "$DOCS_RESTORED" "$ERROR" "$RUN_ID"
+  [ "$rc" -eq 0 ] && [ "$RESULT" = "pass" ]
+}
+trap on_exit EXIT
+
+export AWS_ACCESS_KEY_ID="{{ hindsight_bank_dr_s3_access_key_id }}"
+export AWS_SECRET_ACCESS_KEY="{{ hindsight_bank_dr_s3_secret_access_key }}"
+export AWS_DEFAULT_REGION="{{ hindsight_bank_dr_s3_region }}"
+S3_ENDPOINT="{{ hindsight_bank_dr_s3_endpoint }}"
+
+mkdir -p "$STAGING"
+
+# Pick the bank to drill: the configured one, or (empty) the most recently
+# written bank per GET /v1/default/banks?limit=1 — hindsight_api's own default
+# ordering is last_write_at descending, so element 0 of an unfiltered,
+# unordered-override call is already "most recent".
+DRILL_BANK="{{ hindsight_bank_dr_drill_bank }}"
+if [ -z "$DRILL_BANK" ]; then
+  DRILL_BANK=$(curl -fsS "${BASE_URL}/banks?limit=1&offset=0" | jq -r '.banks[0].bank_id // empty')
+fi
+if [ -z "$DRILL_BANK" ]; then
+  ERROR="no bank available to drill (bank list empty)"
+  exit 1
+fi
+
+# Latest export date-prefix for that bank.
+LATEST_DATE=$(aws --endpoint-url "$S3_ENDPOINT" s3 ls "s3://${BUCKET}/${PREFIX}/" \
+  | awk '{print $2}' | tr -d '/' | sort | tail -n1)
+if [ -z "$LATEST_DATE" ]; then
+  ERROR="no export date-prefix found under s3://${BUCKET}/${PREFIX}/"
+  exit 1
+fi
+
+ARCHIVE="${STAGING}/${DRILL_BANK}.zip"
+if ! aws --endpoint-url "$S3_ENDPOINT" s3 cp \
+    "s3://${BUCKET}/${PREFIX}/${LATEST_DATE}/${DRILL_BANK}.zip" "$ARCHIVE"; then
+  ERROR="no export found for bank '${DRILL_BANK}' at ${LATEST_DATE}"
+  exit 1
+fi
+
+# Self-heal: a scratch bank from a crashed prior run would make import-bank
+# refuse (it never merges into an existing bank) — clear it first.
+cleanup_scratch_bank
+
+docker cp "$ARCHIVE" "${CONTAINER}:/tmp/dr-drill-import.zip"
+
+IMPORT_START=$(date +%s)
+if ! docker exec "$CONTAINER" hindsight-admin import-bank \
+    --archive /tmp/dr-drill-import.zip --target-bank "$SCRATCH_BANK"; then
+  ERROR="hindsight-admin import-bank failed"
+  exit 1
+fi
+IMPORT_SECONDS=$(( $(date +%s) - IMPORT_START ))
+docker exec "$CONTAINER" rm -f /tmp/dr-drill-import.zip 2>/dev/null || true
+
+# Gate: the restored bank must actually hold data and answer its stats
+# endpoint (GET /v1/default/banks/{bank_id}/stats -> total_nodes,
+# total_documents — same fields the vendor CLI's own `bank stats` reads).
+STATS=$(curl -fsS "${BASE_URL}/banks/${SCRATCH_BANK}/stats")
+NODES_RESTORED=$(echo "$STATS" | jq -r '.total_nodes // 0')
+DOCS_RESTORED=$(echo "$STATS" | jq -r '.total_documents // 0')
+if [ "${NODES_RESTORED:-0}" -le 0 ] 2>/dev/null; then
+  ERROR="restored bank has 0 memory units — import did not actually restore data"
+  exit 1
+fi
+
+# Recall check: advisory (reported, and any transport/HTTP failure fails the
+# drill), but pass/fail is gated on the stats check above — this repo does not
+# pin RecallResponse's own field shape.
+if [ -n "$RECALL_QUERY" ]; then
+  RECALL_START=$(date +%s)
+  if ! curl -fsS -o /dev/null -X POST "${BASE_URL}/banks/${SCRATCH_BANK}/memories/recall" \
+      -H 'Content-Type: application/json' \
+      -d "$(jq -n --arg q "$RECALL_QUERY" '{query:$q}')"; then
+    ERROR="recall request failed against the restored scratch bank"
+    exit 1
+  fi
+  RECALL_SECONDS=$(( $(date +%s) - RECALL_START ))
+fi
+
+RESULT="pass"

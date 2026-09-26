@@ -140,6 +140,37 @@
             _isolated_play_name: hindsight_docker
 
 # =============================================================================
+# Phase 1c: Hindsight logical DR (nightly bank export + restore drill)
+# Every replica in hindsight_group shares the same ai-VLAN Postgres backend,
+# so a nightly export of every bank needs to run from exactly ONE replica —
+# running it from all of them would just duplicate the same export N times
+# and race the retention prune / drill scratch-bank against itself. hosts:
+# hindsight_group[0] pins it to the pool's first inventory member, same
+# pattern index syntax used nowhere else yet in this file but native to
+# Ansible host patterns (no extra role logic to pick a "leader").
+# =============================================================================
+
+- name: Configure Hindsight logical DR (bank export + restore drill)
+  hosts: hindsight_group[0]
+  become: true
+  gather_facts: false
+  tags:
+    - hindsight_bank_dr
+    - memory
+    - ai
+  tasks:
+    - name: Converge hindsight_bank_dr (isolated — failure does not abort downstream plays)
+      block:
+        - name: Include hindsight_bank_dr role
+          ansible.builtin.include_role:
+            name: hindsight_bank_dr
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: hindsight_bank_dr
+
+# =============================================================================
 # Phase 2: Local LLM — Ollama inference (AMD ROCm) + Open WebUI chat
 # Ollama serves models on the ai VLAN; Open WebUI is the chat front-end,
 # fronted by Traefik at https://llm.<subdomain>. Ollama stays internal.
