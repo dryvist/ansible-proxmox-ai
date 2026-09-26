@@ -1,50 +1,31 @@
 ---
-# PREFILL-BUDGET FLOOR. Regression guard for dryvist/ai-workflows#445
-# (2026-09-26): _llm_router_vllm_max_input_tokens_by_model
-# (defaults/main/20-registry.yml) derives every vllm/hermes-local
-# deployment's advertised max_input_tokens from
-# llama_cpp_prefill_tokens_per_second x llm_router_local_stream_timeout_seconds
-# — NEVER llm_router_admission_budget_seconds, a differently-scoped,
-# deliberately much tighter busy-slot/no-queueing budget (currently 4s) that
-# this cap once rode by mistake, shrinking the `cheap` role's local rung to
-# 480 tokens and routing a routine ~850-token CI review prompt straight past
-# it to the paid, budget-capped cloud terminal.
-#
-# The floor below is a smaller, independent number than either budget: it
-# only proves the derived cap is still large enough for a routine CI prompt,
-# without pinning it to whichever of the two budgets currently feeds it — so
-# THIS assert, not just a code review, catches a future re-wire back onto the
-# wrong one.
-- name: Assert the vllm/hermes-local prefill-derived window clears a sane CI-prompt floor
+# Every vllm/hermes-local deployment's prefill-derived max_input_tokens
+# (_llm_router_vllm_max_input_tokens_by_model, defaults/main/20-registry.yml)
+# must be at or above llm_router_prefill_window_floor_tokens
+# (defaults/main/20-registry.yml).
+- name: Assert the vllm/hermes-local prefill-derived window clears the configured floor
   ansible.builtin.assert:
     quiet: true
     that:
       - _llm_router_prefill_floor_violations | length == 0
     fail_msg: >-
       vllm/hermes-local deployment(s) advertise a prefill-derived
-      max_input_tokens below the {{ _llm_router_prefill_floor_tokens }}-token
-      floor: {{ _llm_router_prefill_floor_violations }}. This is almost always
-      the multiplier in _llm_router_vllm_max_input_tokens_by_model
-      (defaults/main/20-registry.yml) reading
-      llm_router_admission_budget_seconds ({{ llm_router_admission_budget_seconds }}s
-      — the busy-slot no-queueing budget) instead of
-      llm_router_local_stream_timeout_seconds
-      ({{ llm_router_local_stream_timeout_seconds }}s — the local-rung
-      first-byte budget this cap is actually meant to fit inside).
+      max_input_tokens below llm_router_prefill_window_floor_tokens
+      ({{ llm_router_prefill_window_floor_tokens }}):
+      {{ _llm_router_prefill_floor_violations }}. The multiplier in
+      _llm_router_vllm_max_input_tokens_by_model
+      (defaults/main/20-registry.yml) must be
+      llm_router_local_stream_timeout_seconds, never
+      llm_router_admission_budget_seconds.
     success_msg: >-
-      Every vllm/hermes-local prefill-derived window clears the
-      {{ _llm_router_prefill_floor_tokens }}-token floor.
+      Every vllm/hermes-local prefill-derived window is at or above
+      llm_router_prefill_window_floor_tokens
+      ({{ llm_router_prefill_window_floor_tokens }}).
   vars:
-    # A routine multi-file CI review prompt (dryvist/ai-workflows#445's
-    # 850-token gate call, rounded up with headroom) — well below the
-    # measured-safe ~10k-token class 40-routing.yml's own comment derives
-    # from the SAME base var, and well above what a retry/admission-scoped
-    # budget could plausibly produce (4s x 120 tok/s = 480).
-    _llm_router_prefill_floor_tokens: 2048
     _llm_router_prefill_floor_violations: >-
       {%- set ns = namespace(bad=[]) -%}
       {%- for id, cap in _llm_router_vllm_max_input_tokens_by_model.items() -%}
-      {%- if cap | int < _llm_router_prefill_floor_tokens -%}
+      {%- if cap | int < llm_router_prefill_window_floor_tokens | int -%}
       {%- set ns.bad = ns.bad + [id ~ '=' ~ cap] -%}
       {%- endif -%}
       {%- endfor -%}

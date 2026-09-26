@@ -277,39 +277,37 @@
           {{ _incident_prompt_tokens }}-token incident prompt: pre-call
           checks skip this rung for it.
 
-    # dryvist/ai-workflows#445 (2026-09-26): the SAME cap collapsed to 480
-    # tokens (120 tok/s x the 4s admission budget) when
-    # _llm_router_vllm_max_input_tokens_by_model read
-    # llm_router_admission_budget_seconds instead of
-    # llm_router_local_stream_timeout_seconds — small enough to reject a
-    # routine ~850-token CI review prompt and push every `cheap`-role call
-    # onto the paid cloud terminal, which was separately over budget. This
-    # host fixture's prefill rate (120 tok/s) x llm_router_admission_budget_seconds
-    # (4s) is exactly 480, so this proves the fix by construction: the
-    # rendered cap must NOT equal that product, and must clear a routine
-    # CI-sized prompt.
-    - name: The vLLM tier's max_input_tokens is not derived from the admission budget
+    # The vLLM tier's max_input_tokens must be
+    # llama_cpp_prefill_tokens_per_second x
+    # llm_router_local_stream_timeout_seconds, never
+    # llama_cpp_prefill_tokens_per_second x
+    # llm_router_admission_budget_seconds, and must clear
+    # llm_router_prefill_window_floor_tokens (defaults/main/20-registry.yml).
+    - name: The vLLM tier's max_input_tokens is derived from the local-rung first-byte budget
       ansible.builtin.assert:
         quiet: true
         that:
           - _vllm | length > 0
           - (_vllm[0].model_info.max_input_tokens | int) != _admission_budget_derived_cap
-          - (_vllm[0].model_info.max_input_tokens | int) >= _ci_review_prompt_tokens
+          - (_vllm[0].model_info.max_input_tokens | int) >= (llm_router_prefill_window_floor_tokens | int)
         fail_msg: >-
           The vLLM tier's rendered max_input_tokens
           ({{ (_vllm[0].model_info.max_input_tokens | default('undefined')) }})
-          matches the admission-budget-derived figure
-          ({{ _admission_budget_derived_cap }}) and/or is below a routine
-          {{ _ci_review_prompt_tokens }}-token CI review prompt —
-          dryvist/ai-workflows#445, unfixed: the busy-slot no-queueing budget
-          (llm_router_admission_budget_seconds) is feeding the prefill-window
-          cap instead of llm_router_local_stream_timeout_seconds.
+          matches llama_cpp_prefill_tokens_per_second x
+          llm_router_admission_budget_seconds
+          ({{ _admission_budget_derived_cap }}) and/or is below
+          llm_router_prefill_window_floor_tokens
+          ({{ llm_router_prefill_window_floor_tokens }}). The multiplier in
+          _llm_router_vllm_max_input_tokens_by_model
+          (defaults/main/20-registry.yml) must be
+          llm_router_local_stream_timeout_seconds, never
+          llm_router_admission_budget_seconds.
         success_msg: >-
           The vLLM tier's max_input_tokens
-          ({{ _vllm[0].model_info.max_input_tokens }}) is derived from the
-          local-rung first-byte budget, not the admission budget, and clears
-          a routine {{ _ci_review_prompt_tokens }}-token CI review prompt.
+          ({{ _vllm[0].model_info.max_input_tokens }}) is derived from
+          llm_router_local_stream_timeout_seconds and clears
+          llm_router_prefill_window_floor_tokens
+          ({{ llm_router_prefill_window_floor_tokens }}).
       vars:
         _admission_budget_derived_cap: >-
           {{ 120 * (llm_router_admission_budget_seconds | int) }}
-        _ci_review_prompt_tokens: 850
