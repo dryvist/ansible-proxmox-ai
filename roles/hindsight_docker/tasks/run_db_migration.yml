@@ -19,6 +19,12 @@
 # created, since that directory is owned by whichever user ran this play
 # (root, under become) — matching the same non-root/bind-mount conflict
 # the compose template's cache volume comment already documents.
+#
+# A first-ever deploy has no schema yet — hindsight-admin backup fails
+# with UndefinedTableError against a schema-less database, since it has
+# nothing to read. That specific failure is tolerated (there is nothing
+# to back up before a migration that is about to create the schema from
+# scratch); any other backup failure still fails the play.
 
 - name: Ensure the pre-migration backup directory exists
   ansible.builtin.file:
@@ -46,14 +52,19 @@
       - /backup/pre-migration.zip
   environment:
     HINDSIGHT_API_DATABASE_URL: "{{ hindsight_docker_db_url }}"
+  register: hindsight_docker_premigration_backup
   run_once: true
-  changed_when: true
+  changed_when: hindsight_docker_premigration_backup.rc == 0
+  failed_when: >-
+    hindsight_docker_premigration_backup.rc != 0 and
+    'UndefinedTableError' not in hindsight_docker_premigration_backup.stderr
 
 - name: Refuse to migrate unless the pre-migration backup file is present and non-empty
   ansible.builtin.stat:
     path: "{{ hindsight_docker_migration_backup_dir }}/pre-migration.zip"
   register: hindsight_docker_premigration_backup_stat
   run_once: true
+  when: hindsight_docker_premigration_backup.rc == 0
 
 - name: Assert the pre-migration backup succeeded
   ansible.builtin.assert:
@@ -65,6 +76,7 @@
       {{ hindsight_docker_migration_backup_dir }}/pre-migration.zip.
     quiet: true
   run_once: true
+  when: hindsight_docker_premigration_backup.rc == 0
 
 - name: Run the Hindsight database migration once, using the target image
   ansible.builtin.command:

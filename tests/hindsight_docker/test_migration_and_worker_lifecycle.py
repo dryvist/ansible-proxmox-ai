@@ -102,6 +102,27 @@ def test_migration_task_takes_an_automated_pre_migration_backup() -> None:
     assert names.index(gate["name"]) < names.index("Run the Hindsight database migration once, using the target image")
 
 
+def test_backup_tolerates_a_schema_less_first_deploy_but_nothing_else() -> None:
+    # A first-ever deploy has no schema yet, so hindsight-admin backup fails
+    # with UndefinedTableError (nothing to read) — that specific case is
+    # tolerated, since run-db-migration is about to create the schema from
+    # scratch; any other backup failure must still fail the play, and the
+    # file-exists gate must not run at all when there was nothing to back up.
+    tasks = _load_role_tasks("run_db_migration.yml")
+    backup = next(t for t in tasks if t["name"] == "Take a pre-migration database backup")
+    assert backup["register"] == "hindsight_docker_premigration_backup"
+    assert backup["failed_when"] == (
+        "hindsight_docker_premigration_backup.rc != 0 and "
+        "'UndefinedTableError' not in hindsight_docker_premigration_backup.stderr"
+    )
+
+    stat_task = next(t for t in tasks if t["name"].startswith("Refuse to migrate unless"))
+    assert stat_task["when"] == "hindsight_docker_premigration_backup.rc == 0"
+
+    gate = next(t for t in tasks if t["name"] == "Assert the pre-migration backup succeeded")
+    assert gate["when"] == "hindsight_docker_premigration_backup.rc == 0"
+
+
 def test_migration_task_runs_against_the_target_image_using_the_shared_db_url() -> None:
     tasks = _load_role_tasks("run_db_migration.yml")
     migrate = next(t for t in tasks if "Run the Hindsight database migration" in t["name"])
