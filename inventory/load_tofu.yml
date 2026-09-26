@@ -82,6 +82,75 @@
         _llm_cpu_pool_tags: "{{ tofu_data.constants.llm_cpu_scaler.pool_tags }}"
       when: tofu_data.constants.llm_cpu_scaler is defined
 
+    # Safety gate for the tofu-proxmox contract's ansible_connection field
+    # ONLY — the tag allowlist below (tofu_ssh_container) is unconditional and
+    # never probed: those guests are already live in production over ssh
+    # specifically because pct exec is broken for them, so a transient sshd
+    # hiccup here must never fall them back into that bug. A container newly
+    # declaring the contract field is checked for a listening sshd before its
+    # connection is flipped; a caller (a test) that pre-sets
+    # load_tofu_ssh_ready skips the live probe entirely.
+    - name: Probe SSH readiness for containers declaring the contract's ssh connection
+      ansible.builtin.wait_for:
+        host: "{{ item.value.fqdn | default(item.value.ip, true) }}"
+        port: 22
+        timeout: 5
+        state: started
+      delegate_to: localhost
+      loop: "{{ tofu_data.containers | default({}) | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      register: load_tofu_ssh_probe
+      ignore_errors: true
+      changed_when: false
+      when:
+        - load_tofu_ssh_ready is not defined
+        - tofu_data.containers is defined
+        - tofu_data.containers | length > 0
+        - item.value.ansible_connection | default('') == 'ssh'
+        - (item.value.tags | default([]))
+             | intersect(
+                 ['hermes-agent', 'llm-router', 'llm-redis', 'llm-vllm',
+                  'llm-fast', 'open-webui', 'herdr', 'langfuse', 'phoenix']
+                 + (_llm_cpu_pool_tags | default([]))
+               )
+             | length == 0
+
+    # Every container the probe task's `when:` skipped (not a contract-ssh
+    # candidate) shows up here too — a skipped result has no `failed` key, so
+    # rejectattr('failed') keeps it. Harmless: container_ssh below only ever
+    # consults this list for a container that IS an unprobed contract-ssh
+    # candidate, and every such container had a REAL probe run above.
+    - name: Record which contract-declared-ssh containers actually answered
+      ansible.builtin.set_fact:
+        load_tofu_ssh_ready: >-
+          {{ load_tofu_ssh_probe.results | default([])
+             | rejectattr('failed')
+             | map(attribute='item') | map(attribute='key') | list }}
+      when: load_tofu_ssh_ready is not defined
+
+    - name: Warn about contract-declared-ssh containers whose sshd did not answer
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.key }} declares ansible_connection=ssh but port 22 on
+          {{ item.value.fqdn | default(item.value.ip, true) }} did not answer
+          within the probe timeout — falling back to
+          community.proxmox.proxmox_pct_remote for this run.
+      loop: "{{ tofu_data.containers | default({}) | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      when:
+        - tofu_data.containers is defined
+        - item.value.ansible_connection | default('') == 'ssh'
+        - (item.value.tags | default([]))
+             | intersect(
+                 ['hermes-agent', 'llm-router', 'llm-redis', 'llm-vllm',
+                  'llm-fast', 'open-webui', 'herdr', 'langfuse', 'phoenix']
+                 + (_llm_cpu_pool_tags | default([]))
+               )
+             | length == 0
+        - item.key not in (load_tofu_ssh_ready | default([]))
+
     - name: Add AI LXC containers to inventory (proxmox_pct_remote connection)
       ansible.builtin.add_host:
         name: "{{ item.key }}"
@@ -268,6 +337,12 @@
         #    contract's own per-container field (dryvist/tofu-proxmox#1188),
         #    set once an operator flips a specific container in
         #    deployment.json — the "real fix" path 1's comment refers to.
+        #    Gated on a controller-side port-22 probe (load_tofu_ssh_ready,
+        #    set above) before the flip takes effect: an operator can declare
+        #    the field before sshd is actually ready in the guest, and this
+        #    run falls back to pct_remote with a warning rather than handing
+        #    Ansible a connection nothing answers. Path 1 above is NEVER
+        #    probed or gated this way.
         #
         # Either path prefers `fqdn` (the contract's always-populated stable
         # DNS name) over `ip`, which is only an FQDN for DHCP guests and a
@@ -278,9 +353,17 @@
           {{ (item.value.fqdn | default(item.value.ip, true)) if container_ssh
              else (tofu_data.nodes[item.value.node] | default({})).role
                   | default(item.value.node, true) ~ '.' ~ tofu_data.domain }}
+        # The else branch cannot just echo item.value.ansible_connection: a
+        # contract-declared guest whose probe failed still has the literal
+        # value 'ssh' on that field (container_ssh is what says "not ready"),
+        # so echoing it verbatim would hand Ansible the very connection the
+        # probe just proved nothing answers. Force the pct_remote default
+        # explicitly whenever container_ssh said no.
         ansible_connection: >-
           {{ 'ssh' if container_ssh
-             else item.value.ansible_connection }}
+             else (item.value.ansible_connection
+                   if item.value.ansible_connection != 'ssh'
+                   else 'community.proxmox.proxmox_pct_remote') }}
         ansible_user: root
         ansible_ssh_private_key_file: "{{ lookup('env', 'PROXMOX_SSH_KEY_PATH') }}"
         # NOTE: no `hostname:` here — add_host treats it as an alias of `name`
@@ -336,8 +419,15 @@
                  + (_llm_cpu_pool_tags | default([]))
                )
              | length > 0 }}
+        # Contract path (2 above), gated on the probe recorded in
+        # load_tofu_ssh_ready — never on tofu_ssh_container guests, which
+        # take path 1 unconditionally regardless of probe outcome.
+        _contract_ssh: >-
+          {{ (not tofu_ssh_container)
+             and item.value.ansible_connection == 'ssh'
+             and item.key in (load_tofu_ssh_ready | default([])) }}
         # The two activation paths described above, OR'd together.
-        container_ssh: "{{ tofu_ssh_container or item.value.ansible_connection == 'ssh' }}"
+        container_ssh: "{{ tofu_ssh_container or _contract_ssh }}"
       loop: "{{ tofu_data.containers | dict2items }}"
       changed_when: false
       when:
