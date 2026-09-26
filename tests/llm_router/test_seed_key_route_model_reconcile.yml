@@ -1,0 +1,230 @@
+---
+# Regression/contract test for seed-keys.yml's combined route/model diff
+# (`_llm_router_key_updates`), which replaced two separate per-attribute
+# /key/update loops with one computed list of {alias, body} entries — one
+# call per key that actually changed, carrying every changed field.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_seed_key_route_model_reconcile.yml -i localhost, -c local
+
+- name: The combined route/model diff updates only the keys that actually changed
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _seed_keys_file: "{{ _role_dir }}/tasks/seed-keys.yml"
+    _diff_task_name: "Compute the route/model update each live key still needs, if any"
+
+    # One /key/list?...&return_full_object=true snapshot covering every case
+    # this test exercises:
+    #   - steady: live already matches the seed on both fields -> no update.
+    #   - widened-routes: seed's allowed_routes differs from live -> one
+    #     update carrying BOTH allowed_routes and models (the unchanged
+    #     field rides along in the same body).
+    #   - malformed-live: a live record with neither allowed_routes nor
+    #     models at all — the rejectattr trap. The diff must not crash on
+    #     it, and must treat the missing fields as none/[] (fail safe),
+    #     the same class of missing-key bug fixed in #945.
+    #   - authoritative-narrow: a models_authoritative seed whose live list
+    #     carries a name the seed no longer does — must be flagged changed
+    #     even though nothing was ADDED, only removed.
+    #   - live-only: a live key with no matching llm_router_virtual_keys
+    #     entry at all — never a candidate, current behavior preserved.
+    #   - null-models: a live record whose `models` key is PRESENT but JSON
+    #     null — the null-vs-missing gap: default(...) alone only
+    #     substitutes for a MISSING key, so an unguarded null here used to
+    #     raise in the difference() call below instead of being treated as [].
+    #   - null-routes: same null-vs-missing gap, for `allowed_routes` instead.
+    llm_router_existing_keys:
+      json:
+        keys:
+          - key_alias: steady
+            models: [cheap]
+          - key_alias: widened-routes
+            models: [cheap]
+            allowed_routes: ["/metrics"]
+          - key_alias: malformed-live
+          - key_alias: authoritative-narrow
+            models: [cheap, stale-model]
+          - key_alias: live-only
+            models: [cheap]
+          - key_alias: null-models
+            models: null
+          - key_alias: null-routes
+            models: [cheap]
+            allowed_routes: null
+
+    llm_router_virtual_keys:
+      - alias: steady
+        value: "sk-{{ 'a' * 20 }}"
+        models: [cheap]
+      - alias: widened-routes
+        value: "sk-{{ 'b' * 20 }}"
+        models: [cheap]
+        allowed_routes: ["/metrics", "/metrics/"]
+      - alias: malformed-live
+        value: "sk-{{ 'c' * 20 }}"
+        models: [cheap, embed]
+      - alias: authoritative-narrow
+        value: "sk-{{ 'd' * 20 }}"
+        models: [cheap]
+        models_authoritative: true
+      - alias: null-models
+        value: "sk-{{ 'e' * 20 }}"
+        models: [cheap]
+      - alias: null-routes
+        value: "sk-{{ 'f' * 20 }}"
+        models: [cheap]
+        allowed_routes: ["/metrics"]
+
+    # Hand-set, not extracted: this helper's own expression already has
+    # dedicated coverage in test_seed_key_live_aliases.yml. Every live
+    # key_alias belongs here, matching what a real /key/list read returns.
+    _llm_router_live_key_aliases:
+      - steady
+      - widened-routes
+      - malformed-live
+      - authoritative-narrow
+      - live-only
+      - null-models
+      - null-routes
+
+  tasks:
+    - name: Extract the real, committed diff expression from seed-keys.yml
+      ansible.builtin.set_fact:
+        _diff_expr: >-
+          {{ (lookup('ansible.builtin.file', _seed_keys_file) | from_yaml
+              | selectattr('name', 'equalto', _diff_task_name) | first)
+             ['ansible.builtin.set_fact']['_llm_router_key_updates'] }}
+
+    - name: The real expression must exist and must guard every attribute lookup with a default
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "\"map(attribute='allowed_routes', default=none)\" in _diff_expr"
+          - "\"map(attribute='models', default=[])\" in _diff_expr"
+          - "\"default(none, true)\" in _diff_expr"
+          - "\"default([], true)\" in _diff_expr"
+        fail_msg: >-
+          Could not find the fail-safe attribute lookups in seed-keys.yml
+          under the task name {{ _diff_task_name }} — this test's
+          extraction is stale, fix the task name/lookup.
+
+    # Same "write to a real template file, render, from_yaml" technique as
+    # tests/inventory_load/test_ssh_probe_result_selection.yml: a string
+    # held in a variable is not re-templated just by referencing it again.
+    - name: Persist the extracted expression as a renderable template
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .j2
+      register: _diff_template_file
+
+    - name: Write the extracted expression to the temp template
+      ansible.builtin.copy:
+        dest: "{{ _diff_template_file.path }}"
+        content: "{{ _diff_expr }}"
+        mode: "0600"
+
+    - name: Render the real, live expression against the fixture above
+      ansible.builtin.set_fact:
+        # No | from_yaml: on this ansible-core the template lookup already
+        # returns the rendered expression's native type (a list here), and
+        # piping an already-native value through from_yaml is a deprecation
+        # warning (removed in 2.23), not a no-op.
+        _llm_router_key_updates: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
+
+    - name: Assert only the five genuinely-changed keys are updated, each exactly once
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_key_updates | map(attribute='alias') | sort
+            == ['authoritative-narrow', 'malformed-live', 'null-models', 'null-routes', 'widened-routes']
+        fail_msg: >-
+          Expected exactly the five changed aliases, got
+          {{ _llm_router_key_updates | map(attribute='alias') | list }}.
+          steady must be absent (nothing differs); live-only must be absent
+          (no seed entry names it — current behavior preserved).
+
+    - name: Assert the route-changed key's body carries BOTH fields in one call
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _widened.body.allowed_routes == ['/metrics', '/metrics/']
+          - _widened.body.models == ['cheap']
+        fail_msg: "widened-routes body: {{ _widened.body }}"
+      vars:
+        _widened: "{{ _llm_router_key_updates | selectattr('alias', 'equalto', 'widened-routes') | first }}"
+
+    - name: Assert a live record missing both fields entirely is treated as none/[] rather than raising
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'allowed_routes' not in _malformed.body"
+          - _malformed.body.models == ['cheap', 'embed']
+        fail_msg: "malformed-live body: {{ _malformed.body }}"
+      vars:
+        _malformed: "{{ _llm_router_key_updates | selectattr('alias', 'equalto', 'malformed-live') | first }}"
+
+    - name: Assert an authoritative key is flagged changed on a pure narrowing (name removed, none added)
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _narrowed.body.models == ['cheap']
+        fail_msg: "authoritative-narrow body: {{ _narrowed.body }}"
+      vars:
+        _narrowed: "{{ _llm_router_key_updates | selectattr('alias', 'equalto', 'authoritative-narrow') | first }}"
+
+    - name: Assert a live `models` value of explicit JSON null is treated the same as missing
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'allowed_routes' not in _null_models.body"
+          - _null_models.body.models == ['cheap']
+        fail_msg: "null-models body: {{ _null_models.body }}"
+      vars:
+        _null_models: "{{ _llm_router_key_updates | selectattr('alias', 'equalto', 'null-models') | first }}"
+
+    - name: Assert a live `allowed_routes` value of explicit JSON null is treated the same as missing
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _null_routes.body.allowed_routes == ['/metrics']
+          - _null_routes.body.models == ['cheap']
+        fail_msg: "null-routes body: {{ _null_routes.body }}"
+      vars:
+        _null_routes: "{{ _llm_router_key_updates | selectattr('alias', 'equalto', 'null-routes') | first }}"
+
+    - name: A second render against a fixture with nothing left to change updates zero keys
+      ansible.builtin.set_fact:
+        _llm_router_key_updates_second_run: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
+      vars:
+        # The live snapshot AFTER the five updates above would have landed:
+        # every seed entry now matches live on both fields.
+        llm_router_existing_keys:
+          json:
+            keys:
+              - key_alias: steady
+                models: [cheap]
+              - key_alias: widened-routes
+                models: [cheap]
+                allowed_routes: ["/metrics", "/metrics/"]
+              - key_alias: malformed-live
+                models: [cheap, embed]
+              - key_alias: authoritative-narrow
+                models: [cheap]
+              - key_alias: live-only
+                models: [cheap]
+              - key_alias: null-models
+                models: [cheap]
+              - key_alias: null-routes
+                models: [cheap]
+                allowed_routes: ["/metrics"]
+
+    - name: Assert the idempotent second run finds nothing left to change
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_key_updates_second_run == []
+        fail_msg: >-
+          Expected changed=0 on a converged fixture, got
+          {{ _llm_router_key_updates_second_run }}.

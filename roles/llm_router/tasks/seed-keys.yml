@@ -157,92 +157,86 @@
       (_llm_router_key_generate_result.json.error.message | default(''))
   no_log: true
 
-# RECONCILE allowed_routes on a key that already exists. Keys are minted once
-# and otherwise left alone, so a route allowlist added to a seed entry after
-# the key was minted never reaches the proxy — the key keeps 401ing on the
-# route the allowlist names. Only keys whose seed declares allowed_routes and
-# whose live record differs are touched; models and budgets stay as they are.
-- name: Grant seeded route allowlists to live keys that lack them
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ llm_router_api_port }}/key/update"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ llm_router_master_key }}"
-    body_format: json
-    body:
-      key: "{{ item.value }}"
-      allowed_routes: "{{ item.allowed_routes }}"
-    status_code: [200, 201]
-    timeout: "{{ llm_router_seed_request_timeout }}"
-  loop: >-
-    {{ llm_router_virtual_keys
-       | rejectattr('value', 'equalto', '')
-       | selectattr('allowed_routes', 'defined')
-       | selectattr('alias', 'in', _llm_router_live_key_aliases) | list }}
-  loop_control:
-    label: "{{ item.alias }} -> {{ item.allowed_routes | join(', ') }}"
-  vars:
-    _llm_router_live_key_aliases: >-
-      {{ llm_router_existing_keys.json['keys'] | default([])
-         | selectattr('key_alias', 'defined')
-         | map(attribute='key_alias') | select('string') | list }}
-    _llm_router_live_routes: >-
-      {{ llm_router_existing_keys.json['keys'] | default([])
-         | selectattr('key_alias', 'equalto', item.alias)
-         | map(attribute='allowed_routes', default=none) | first | default(none) }}
-  when: (_llm_router_live_routes | default(none)) != item.allowed_routes
-  no_log: true
-
-
-# RECONCILE. Union by default, same reason as ever: keys are minted once, so
-# a name added to a seed entry's list after the mint (a new role in
-# 55-roles.yml, a new servable model) never reaches an existing key and
-# every request to it 403s, and sending the git list outright would erase a
-# name an operator added in the Admin UI.
+# RECONCILE allowed_routes and model names on keys that already exist. Keys
+# are minted once and otherwise left alone, so a route allowlist or a model
+# name added to a seed entry after the key was minted never reaches the proxy
+# on its own — the key keeps 401ing on the route, or 403ing on the model, the
+# seed entry now names.
+#
+# Models are UNIONED with the live list by default (only ever added, never
+# removed, so an operator's Admin UI edit survives) — same reason as ever: a
+# name added to a seed entry's list after the mint (a new role in
+# 55-roles.yml, a new servable model) never reaches an existing key on its
+# own, and sending the git list outright would erase a name an operator
+# added in the Admin UI.
 #
 # A key marked `models_authoritative: true` (hindsight, 56-virtual-keys.yml)
 # is the deliberate exception: it gets the seeded list VERBATIM, a REPLACE
 # rather than a union, because for THAT key the seed is the whole allowlist,
 # not a floor — a name granted before the free-only boundary landed
 # (`cheap`, the primary model, the `no-default-models` stopgap) must
-# actually be revoked, not linger forever alongside the new one. The `when:`
-# below fires such a key on drift in EITHER direction (seeded names live
+# actually be revoked, not linger forever alongside the new one. Such a key
+# is flagged as changed on drift in EITHER direction (seeded names live
 # lacks, OR live names seeded no longer lists) — a narrowing has to reach
 # the live key too, not only a widening.
-- name: Grant seeded model names to live keys that lack them
+#
+# Routes are replaced outright with the seed value, same as before, and only
+# for a key that declares allowed_routes at all.
+#
+# Computed as one list of {alias, body} entries so a key needing either
+# change gets exactly one /key/update call carrying both fields, instead of
+# one call per field — the diff itself runs once, in Jinja, against the
+# single /key/list read above; a key whose live record already matches the
+# seed on both fields contributes nothing, so a steady-state converge sends
+# no calls here at all.
+- name: Compute the route/model update each live key still needs, if any
+  ansible.builtin.set_fact:
+    _llm_router_key_updates: >-
+      {%- set _out = [] -%}
+      {%- for _k in (llm_router_virtual_keys
+                     | rejectattr('value', 'equalto', '')
+                     | selectattr('alias', 'in', _llm_router_live_key_aliases) | list) -%}
+      {#- The outer default()'s `, true` form also fires on a live record whose
+         allowed_routes/models key is PRESENT but JSON null (map(attribute=...,
+         default=...) only substitutes for a MISSING key), so null compares the
+         same as missing instead of crashing the difference() calls below. -#}
+      {%- set _live_routes = (llm_router_existing_keys.json['keys'] | default([])
+              | selectattr('key_alias', 'equalto', _k.alias)
+              | map(attribute='allowed_routes', default=none) | first | default(none, true)) -%}
+      {%- set _live_models = (llm_router_existing_keys.json['keys'] | default([])
+              | selectattr('key_alias', 'equalto', _k.alias)
+              | map(attribute='models', default=[]) | first | default([], true)) -%}
+      {%- set _authoritative = _k.models_authoritative | default(false) -%}
+      {%- set _models_target = _k.models if _authoritative else ((_live_models + _k.models) | unique | list) -%}
+      {%- set _models_changed = (_k.models | difference(_live_models) | length > 0)
+            or (_authoritative and (_live_models | difference(_k.models) | length > 0)) -%}
+      {%- set _routes_changed = (_k.allowed_routes is defined) and (_live_routes != _k.allowed_routes) -%}
+      {%- if _models_changed or _routes_changed -%}
+      {%- set _body = {'key': _k.value, 'models': _models_target} -%}
+      {%- set _body = (_body | combine({'allowed_routes': _k.allowed_routes}))
+            if (_k.allowed_routes is defined) else _body -%}
+      {%- set _discard = _out.append({'alias': _k.alias, 'body': _body}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ _out }}
+  vars:
+    _llm_router_live_key_aliases: >-
+      {{ llm_router_existing_keys.json['keys'] | default([])
+         | selectattr('key_alias', 'defined')
+         | map(attribute='key_alias') | select('string') | list }}
+  no_log: true
+
+- name: Reconcile route allowlists and model names for live keys that changed
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/key/update"
     method: POST
     headers:
       Authorization: "Bearer {{ llm_router_master_key }}"
     body_format: json
-    body:
-      key: "{{ item.value }}"
-      models: >-
-        {{ item.models if (item.models_authoritative | default(false))
-           else (_llm_router_live_models + item.models) | unique | list }}
+    body: "{{ item.body }}"
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
-  loop: >-
-    {{ llm_router_virtual_keys
-       | rejectattr('value', 'equalto', '')
-       | selectattr('alias', 'in', _llm_router_live_key_aliases) | list }}
+  loop: "{{ _llm_router_key_updates }}"
   loop_control:
-    label: >-
-      {{ item.alias }}
-      {{ '=' ~ item.models if (item.models_authoritative | default(false))
-         else '+' ~ (item.models | difference(_llm_router_live_models) | join(', ')) }}
-  vars:
-    _llm_router_live_key_aliases: >-
-      {{ llm_router_existing_keys.json['keys'] | default([])
-         | selectattr('key_alias', 'defined')
-         | map(attribute='key_alias') | select('string') | list }}
-    _llm_router_live_models: >-
-      {{ llm_router_existing_keys.json['keys'] | default([])
-         | selectattr('key_alias', 'equalto', item.alias)
-         | map(attribute='models', default=[]) | first | default([]) }}
-  when: >-
-    (item.models | difference(_llm_router_live_models) | length > 0)
-    or ((item.models_authoritative | default(false))
-        and (_llm_router_live_models | difference(item.models) | length > 0))
+    label: "{{ item.alias }}"
   no_log: true
