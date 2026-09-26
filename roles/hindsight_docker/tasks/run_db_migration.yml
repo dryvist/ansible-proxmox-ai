@@ -1,0 +1,232 @@
+---
+# Runs the Hindsight database migration exactly once, using the target
+# image, before any replica is redeployed with
+# HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP=false. Imported from
+# playbooks/hindsight.yml pre_tasks (not tasks/main.yml), so a failure here
+# is fatal to the whole play rather than recorded as one replica's isolated
+# failure.
+#
+# Takes its own pre-migration backup via the vendored `hindsight-admin
+# backup` command and refuses to migrate unless that file exists, is
+# non-empty, AND is a valid, restorable zip archive — no human confirmation
+# step. HINDSIGHT_API_DATABASE_URL and HINDSIGHT_API_VECTOR_EXTENSION are
+# passed via `environment:` and a bare `-e` (no inline value): the DSN never
+# appears in argv/`ps` output on the host, and the vector extension matches
+# the compose template's own value (run-db-migration reconciles indexes
+# against it).
+#
+# The backup container runs as root (--user root): the image's default
+# user can't write into a bind-mounted host directory that Ansible just
+# created, since that directory is owned by whichever user ran this play
+# (root, under become) — matching the same non-root/bind-mount conflict
+# the compose template's cache volume comment already documents.
+#
+# A first-ever deploy has no schema yet, so there is nothing to back up
+# before run-db-migration creates it from scratch. This is detected
+# positively — probing for Alembic's own `alembic_version` tracker table
+# (the table run-db-migration itself creates and stamps; confirmed at
+# both the v0.9.0 and v0.10.1 vendor tags, same table, no version_table
+# override) — rather than by pattern-matching a backup failure message,
+# so a real partially-broken schema (some tables present, others missing)
+# still takes a backup and still fails the play like any other backup
+# failure, instead of being silently skipped.
+#
+# Both the backup and the migration are additionally gated on a migration
+# actually being pending, so a converge against an already-migrated
+# database changes nothing: the database's current revision (queried from
+# alembic_version once a schema exists) is compared against the image's
+# target head revision, read from the vendored `alembic` CLI (bundled in
+# the image alongside `hindsight-admin`; confirmed at both the v0.9.0 and
+# v0.10.1 tags) via `alembic heads` against a one-line generated config —
+# no database connection needed for that side. A migration is pending
+# when there is no schema yet, or the current revision differs from the
+# head. The migration task's own changed_when additionally derives from
+# Alembic's own log output (confirmed at the pinned v0.9.0 tag: a real
+# upgrade logs "Running upgrade <rev> -> <rev>, ..." per revision to
+# stderr; a no-op run logs none), so it reports accurately even if
+# nothing above ever puts it in that position.
+#
+# When a migration IS pending, every replica's API/worker containers are
+# stopped first (delegate_to looped over the whole group, so this fires
+# regardless of which batch/host is currently converging) so an old
+# replica never keeps serving against the migrated schema for the rest of
+# a serial:1 rollout — a brief planned outage is accepted in exchange.
+# Direct connection, not a pooler: this role connects straight to
+# hindsight_docker_db_host (defaults/main.yml), so a failed
+# run-db-migration's session-scoped advisory lock releases as soon as the
+# --rm container exits, not exposed to the pooled-connection wedge
+# upstream has documented elsewhere.
+#
+# The backup, migration, and worker-status/decommission commands
+# (decommission_stale_workers.yml) all set no_log: true, since a
+# connection-error message from any of them can echo the DSN; each is
+# followed by an explicit rc-only assertion so a real failure still
+# surfaces without depending on the withheld output.
+#
+# The whole drain -> backup -> verify -> migrate sequence below is wrapped
+# in block/rescue: a pre_tasks failure here is fatal to the whole play (see
+# hindsight_lifecycle_gates.yml's header), and with nothing to bring a
+# stopped replica back up, that would leave the entire pool down on any
+# backup/integrity/migration failure — worse than the single-host failure
+# this whole file exists to make safe. The rescue re-reads the database's
+# actual current revision via the vendored `alembic ... current` (not a
+# guess): unchanged (or the migration never started) restarts every
+# drained replica on its own current image, as-is; changed (partially or
+# fully) never restarts an old image against a schema it may not
+# understand — the pool is left down on purpose, and the failure message
+# names the pre-migration backup to restore from. Either branch re-raises
+# via `ansible.builtin.fail`, so the play still fails either way.
+#
+# Known gap: Ansible's own documentation states that block `rescue:` does
+# not trigger on an unreachable-host error. The stop/restart tasks below
+# are `delegate_to`-looped across every host in the group, so a replica
+# that goes unreachable mid-loop (not a command failure — a genuine
+# connectivity loss) skips this whole recovery path: any replica already
+# stopped by that point stays stopped, with no restart attempt at all.
+# This is a generic Ansible limitation surfaced by drain now spanning
+# multiple hosts, not a defect in the recovery logic itself, and fixing
+# it (e.g. `ignore_unreachable` plus explicit per-host error tracking) is
+# a bigger design change than this fix; tracked as separate follow-up
+# work rather than solved here.
+#
+# The unchanged/changed split above assumes a failed migration rolls back
+# cleanly to the pre-attempt revision (the vendor's alembic env.py runs
+# every pending revision inside one wrapping transaction). That does not
+# universally hold: grepping every revision script under
+# hindsight_api/alembic/versions/ at the pinned image tag (v0.9.0) found
+# 11 revisions that use `op.get_context().autocommit_block()` for
+# `CREATE INDEX CONCURRENTLY` (which Postgres refuses inside a
+# transaction) — those statements commit outside the wrapping
+# transaction regardless of whether the overall migration later fails.
+# The ones inspected build defensively (an invalid-leftover sweep plus
+# `IF NOT EXISTS` before each CONCURRENTLY build), so a retry after a
+# failure in one of these is expected to be safe, but this recovery
+# logic's binary revision comparison cannot by itself detect "an index
+# was left behind outside the transaction" the way it detects a changed
+# `alembic_version`.
+
+- name: Ensure the pre-migration backup directory exists
+  ansible.builtin.file:
+    path: "{{ hindsight_docker_migration_backup_dir }}"
+    state: directory
+    mode: "0700"
+  run_once: true
+
+- name: Install the database client used to probe for an existing schema
+  ansible.builtin.apt:
+    name: postgresql-client
+    state: present
+  run_once: true
+
+- name: Probe whether the Alembic migration tracker table already exists
+  ansible.builtin.command:
+    argv:
+      - psql
+      - >-
+        postgresql://{{ hindsight_docker_db_user }}@{{ hindsight_docker_db_host }}:{{
+        hindsight_docker_db_port }}/{{ hindsight_docker_db_name }}
+      - -tAc
+      - "SELECT to_regclass('public.alembic_version') IS NOT NULL"
+  environment:
+    # The password never rides argv (visible in /proc/*/cmdline, ps, and
+    # audit logs for the probe's lifetime); PGPASSWORD is psql's own
+    # env-var credential path.
+    PGPASSWORD: "{{ hindsight_docker_db_password }}"
+  register: hindsight_docker_schema_probe
+  run_once: true
+  changed_when: false
+  # An inconclusive probe (connection error, unexpected output) must fail
+  # the play rather than silently fall through to "no schema, skip the
+  # backup" — that would make a transient probe failure indistinguishable
+  # from a genuinely fresh database and skip a backup that was needed.
+  failed_when: >-
+    hindsight_docker_schema_probe.rc != 0
+    or (hindsight_docker_schema_probe.stdout | default('') | trim) not in ['t', 'f']
+
+- name: Record whether an existing schema was found
+  ansible.builtin.set_fact:
+    hindsight_docker_schema_exists: "{{ (hindsight_docker_schema_probe.stdout | trim) == 't' }}"
+  run_once: true
+
+- name: Probe the database's current Alembic revision
+  ansible.builtin.command:
+    argv:
+      - psql
+      - >-
+        postgresql://{{ hindsight_docker_db_user }}@{{ hindsight_docker_db_host }}:{{
+        hindsight_docker_db_port }}/{{ hindsight_docker_db_name }}
+      - -tAc
+      - "SELECT version_num FROM public.alembic_version"
+  environment:
+    PGPASSWORD: "{{ hindsight_docker_db_password }}"
+  register: hindsight_docker_current_revision_probe
+  run_once: true
+  when: hindsight_docker_schema_exists
+  changed_when: false
+  # Same fail-closed discipline as the existence probe above: a connection
+  # error or a tracker table with anything other than exactly one row
+  # must fail the play, not be read as "no current revision".
+  failed_when: >-
+    hindsight_docker_current_revision_probe.rc != 0
+    or (hindsight_docker_current_revision_probe.stdout_lines | default([]) | length) != 1
+
+- name: Generate the alembic config used to read the image's target head revision
+  ansible.builtin.copy:
+    dest: "{{ hindsight_docker_migration_backup_dir }}/alembic-heads.ini"
+    content: |
+      [alembic]
+      script_location = {{ hindsight_docker_alembic_script_location }}
+    mode: "0644"
+  run_once: true
+
+- name: Determine the target head revision from the image
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --network=host
+      - -v
+      - "{{ hindsight_docker_migration_backup_dir }}/alembic-heads.ini:/tmp/alembic-heads.ini:ro"
+      - "{{ hindsight_docker_image }}"
+      - alembic
+      - -c
+      - /tmp/alembic-heads.ini
+      - heads
+  register: hindsight_docker_head_revision_probe
+  run_once: true
+  changed_when: false
+  # Fails closed the same way: a bad exit, or anything other than exactly
+  # one head line (none, or an unexpected branched-history multi-head
+  # tree), must not be silently read as "no migration pending".
+  failed_when: >-
+    hindsight_docker_head_revision_probe.rc != 0
+    or (hindsight_docker_head_revision_probe.stdout_lines | default([]) | length) != 1
+
+- name: Record the image's target head revision
+  ansible.builtin.set_fact:
+    hindsight_docker_target_head_revision: "{{ (hindsight_docker_head_revision_probe.stdout | trim).split(' ')[0] }}"
+  run_once: true
+
+- name: Determine whether a migration is pending
+  ansible.builtin.set_fact:
+    hindsight_docker_migration_pending: >-
+      {{ not hindsight_docker_schema_exists
+      or (hindsight_docker_current_revision_probe.stdout | trim) != hindsight_docker_target_head_revision }}
+  run_once: true
+
+- name: Report the migration decision
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'No existing schema (alembic_version absent) — first deploy,
+      nothing to back up before run-db-migration creates it.'
+      if not hindsight_docker_schema_exists
+      else ('Database already at the target head revision (' ~ hindsight_docker_target_head_revision
+      ~ ') — nothing to migrate.'
+      if not hindsight_docker_migration_pending
+      else 'Migration pending (current ' ~ (hindsight_docker_current_revision_probe.stdout | trim)
+      ~ ', target ' ~ hindsight_docker_target_head_revision ~ ') — taking a pre-migration backup.') }}
+  run_once: true
+
+- name: Drain, back up, verify, and migrate (recoverable on failure)
+  ansible.builtin.import_tasks: run_db_migration_drain_and_migrate.yml
