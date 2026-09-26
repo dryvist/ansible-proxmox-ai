@@ -1,9 +1,12 @@
 ---
 # Hindsight's memory content must never reach a model that retains prompts
-# (zero_data_retention: false). The hindsight key is scoped to `free` only
-# (56-virtual-keys.yml) and `free`'s own fallback + context_window_fallbacks
-# entries are both empty (config.yaml.j2), so this walks the RENDERED
-# fallback graph outward from the key's own declared scope and proves no
+# (zero_data_retention: false). The hindsight key is scoped to the dedicated
+# `background-local` role only (55-roles.yml / 56-virtual-keys.yml), whose
+# own fallback chain stops at the Mac Studio and never continues into a
+# ZDR-false rung. 59-key-scopes.yml's per-role widening means the key's
+# EFFECTIVE scope (llm_router_virtual_keys, what this test walks) already
+# includes that role's model + fallback targets before any BFS step runs;
+# this walks the RENDERED fallback graph outward from there and proves no
 # reachable model_group is backed by a zero_data_retention: false registry
 # entry. Generic over future edits: it does not hand-assume `free-zdrless`
 # is the only such name, it derives every ZDR-false group from the registry
@@ -57,18 +60,21 @@
         _config: >-
           {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
 
-    - name: The hindsight key is scoped to exactly `free`
+    - name: The hindsight key DECLARES exactly the `background-local` role
       ansible.builtin.assert:
         quiet: true
         that:
-          - _hindsight_key.models == ['free']
+          - _hindsight_key_declared.models == ['background-local']
         fail_msg: >-
-          Expected the hindsight key scoped to exactly ['free'], got
-          {{ _hindsight_key.models }} — any wider scope risks reaching a
-          zero_data_retention: false deployment.
-        success_msg: "hindsight key models: {{ _hindsight_key.models }}"
+          Expected the hindsight key's own declared scope to be exactly
+          ['background-local'], got {{ _hindsight_key_declared.models }} —
+          any wider declared scope risks reaching a zero_data_retention:
+          false deployment once 59-key-scopes.yml widens it.
+        success_msg: "hindsight key declared models: {{ _hindsight_key_declared.models }}"
       vars:
-        _hindsight_key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'hindsight') | first }}"
+        _hindsight_key_declared: >-
+          {{ _llm_router_declared_virtual_keys
+             | selectattr('alias', 'equalto', 'hindsight') | first }}
 
     - name: No group reachable from the hindsight key's own scope is a ZDR-false deployment
       ansible.builtin.assert:
@@ -133,3 +139,47 @@
           {%- endfor -%}
           {{ ns.seen }}
         _reachable_zdr_false: "{{ _reachable | intersect(_zdr_false_group_names) }}"
+
+    - name: At least one local rung is reachable from the hindsight key's scope
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _reachable | intersect(_local_group_names) | length > 0
+        fail_msg: >-
+          Expected the hindsight key's reachable set ({{ _reachable }}) to
+          include at least one local rung ({{ _local_group_names }}) —
+          background-local (55-roles.yml) should resolve to the 4080.
+        success_msg: >-
+          Local rung(s) reachable: {{ _reachable | intersect(_local_group_names) }}
+      vars:
+        _hindsight_key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'hindsight') | first }}"
+        # llm_router_primary_model is deliberately excluded — see the comment
+        # on the background-local role (55-roles.yml): it carries its own
+        # independent fallback chain reaching zero_data_retention: false
+        # rungs, so it must never be a name this key can reach.
+        _local_group_names: "{{ [llm_router_hermes_local_4080_id] }}"
+        _fallbacks_by_key: >-
+          {{ dict(_config.router_settings.fallbacks
+                  | map('dict2items') | flatten | map(attribute='key')
+                  | zip(_config.router_settings.fallbacks
+                        | map('dict2items') | flatten | map(attribute='value'))) }}
+        _cwf_by_key: >-
+          {{ dict((_config.router_settings.context_window_fallbacks | default([]))
+                  | map('dict2items') | flatten | map(attribute='key')
+                  | zip((_config.router_settings.context_window_fallbacks | default([]))
+                        | map('dict2items') | flatten | map(attribute='value'))) }}
+        _reachable: >-
+          {%- set ns = namespace(seen=_hindsight_key.models | list, frontier=_hindsight_key.models | list) -%}
+          {%- for _ in range(0, 12) -%}
+          {%- set _next = [] -%}
+          {%- for name in ns.frontier -%}
+          {%- for target in (_fallbacks_by_key[name] | default([])) + (_cwf_by_key[name] | default([])) -%}
+          {%- if target not in ns.seen -%}
+          {%- set ns.seen = ns.seen + [target] -%}
+          {%- set _next = _next + [target] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {%- set ns.frontier = _next -%}
+          {%- endfor -%}
+          {{ ns.seen }}
