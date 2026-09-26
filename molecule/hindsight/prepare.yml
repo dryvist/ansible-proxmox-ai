@@ -59,3 +59,121 @@
             "storage-driver": "vfs"
           }
         mode: "0644"
+
+    # Everything below seeds a pgvector database at a schema one revision
+    # behind the target image's head — production's real steady state — so
+    # converge exercises tasks/run_db_migration.yml's actual backup+migrate
+    # path instead of the schema-less first-deploy path. Runs once here
+    # (prepare is not repeated for the idempotence re-converge), so the
+    # second converge sees the database already at head and takes no
+    # further action.
+    - name: Bootstrap Docker (same role hindsight_docker's meta dependency uses)
+      ansible.builtin.include_role:
+        name: docker_engine
+      vars:
+        docker_engine_configure_daemon_json: true
+        docker_engine_storage_driver: vfs
+
+    # Reads only hindsight_docker_image and
+    # hindsight_docker_alembic_script_location out of the role's own
+    # defaults (the same Renovate-managed pin run_db_migration.yml uses),
+    # rather than include_vars-ing the whole file: that file also defines
+    # tofu_data/OpenBao-dependent vars this play never sets, and
+    # include_vars would outrank this play's own var overrides for any
+    # name the two files happen to share.
+    - name: Load hindsight_docker role defaults (image tag, alembic script location)
+      ansible.builtin.set_fact:
+        hindsight_docker_image: "{{ _hindsight_docker_defaults.hindsight_docker_image }}"
+        hindsight_docker_alembic_script_location: "{{ _hindsight_docker_defaults.hindsight_docker_alembic_script_location }}"
+      vars:
+        _hindsight_docker_defaults: >-
+          {{ lookup('file', playbook_dir + '/../../roles/hindsight_docker/defaults/main.yml') | from_yaml }}
+
+    - name: Check whether the pgvector Postgres is already running
+      ansible.builtin.command: docker ps -q --filter name=hindsight-postgres --filter status=running
+      register: hindsight_molecule_pg_running
+      changed_when: false
+
+    - name: Start a pgvector Postgres for the API to persist into
+      ansible.builtin.command: >-
+        docker run -d --name hindsight-postgres --restart unless-stopped
+        -p 5432:5432
+        -e POSTGRES_USER=hindsight
+        -e POSTGRES_PASSWORD=molecule-test-password
+        -e POSTGRES_DB=hindsight
+        pgvector/pgvector:pg17
+      when: hindsight_molecule_pg_running.stdout == ''
+      changed_when: true
+
+    - name: Wait for the seed Postgres to accept connections
+      ansible.builtin.command: docker exec hindsight-postgres pg_isready -U hindsight
+      register: hindsight_molecule_pg_ready
+      until: hindsight_molecule_pg_ready.rc == 0
+      retries: 15
+      delay: 2
+      changed_when: false
+
+    - name: Discover the Docker bridge gateway (compose -> host-published ports)
+      ansible.builtin.command: >-
+        docker network inspect bridge
+        --format {% raw %}'{{ (index .IPAM.Config 0).Gateway }}'{% endraw %}
+      register: hindsight_molecule_bridge_gw
+      changed_when: false
+
+    - name: Generate the alembic config used to seed a behind-head schema
+      ansible.builtin.copy:
+        dest: /tmp/molecule-alembic-seed.ini
+        content: |
+          [alembic]
+          script_location = {{ hindsight_docker_alembic_script_location }}
+        mode: "0644"
+
+    - name: Seed the schema at the image's head revision
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - --network=host
+          - -e
+          - HINDSIGHT_API_DATABASE_URL
+          - -v
+          - /tmp/molecule-alembic-seed.ini:/tmp/alembic-seed.ini:ro
+          - "{{ hindsight_docker_image }}"
+          - alembic
+          - -c
+          - /tmp/alembic-seed.ini
+          - upgrade
+          - head
+      environment:
+        HINDSIGHT_API_DATABASE_URL: >-
+          postgresql://hindsight:molecule-test-password@{{
+          hindsight_molecule_bridge_gw.stdout | trim }}:5432/hindsight
+      changed_when: true
+
+    # Relative identifier ("-1" = one revision back from current), per
+    # Alembic's own documented syntax for downgrade/upgrade targets — never a
+    # hard-coded revision id, so this tracks whatever the pinned image's
+    # newest migration actually is.
+    - name: Step the seeded schema back one revision, behind head
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - --network=host
+          - -e
+          - HINDSIGHT_API_DATABASE_URL
+          - -v
+          - /tmp/molecule-alembic-seed.ini:/tmp/alembic-seed.ini:ro
+          - "{{ hindsight_docker_image }}"
+          - alembic
+          - -c
+          - /tmp/alembic-seed.ini
+          - downgrade
+          - "-1"
+      environment:
+        HINDSIGHT_API_DATABASE_URL: >-
+          postgresql://hindsight:molecule-test-password@{{
+          hindsight_molecule_bridge_gw.stdout | trim }}:5432/hindsight
+      changed_when: true
