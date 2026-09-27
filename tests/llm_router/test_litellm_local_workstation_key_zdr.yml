@@ -1,0 +1,72 @@
+---
+# Owns ONE contract: the zdr_only litellm-local-workstation key holds no
+# group backed by a zero_data_retention: false registry entry, while still
+# holding the local head of its own roles' chains.
+#
+# enforce_fallback_model_access re-checks the calling key on every fallback
+# hop, so the key's `models` list IS the boundary: a rung it does not hold is
+# refused, never reached.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_litellm_local_workstation_key_zdr.yml -i localhost, -c local
+- name: Verify the litellm-local-workstation key reaches no ZDR-false group
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: test-openrouter-provider-key
+      OPENCODE_API_KEY: test-opencode-provider-key
+      OPENAI_API_KEY: test-openai-provider-key
+      ZAI_API_KEY: test-zai-provider-key
+    bao_apps_secrets:
+      litellm_local_workstation_llm_router_key: sk-fixture-litellm-local-workstation
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: goal-judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: The key keeps its chains' ZDR rungs and drops every ZDR-false one
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # Non-vacuous: the registry really does carry ZDR-false groups, and
+          # the unfiltered chain really does reach one of them.
+          - llm_router_zdr_false_group_names | length > 0
+          - _unfiltered | intersect(llm_router_zdr_false_group_names) | length > 0
+          - _key.models | intersect(llm_router_zdr_false_group_names) | length == 0
+          - _fast.model in _key.models
+          - "'subagent' in _key.models"
+          - _key.models_authoritative
+        fail_msg: >-
+          litellm-local-workstation={{ _key.models }}
+          zdr_false={{ llm_router_zdr_false_group_names }}
+        success_msg: "litellm-local-workstation={{ _key.models }}"
+      vars:
+        _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'litellm-local-workstation') | first }}"
+        _fast: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'fast') | first }}"
+        _unfiltered: "{{ [_fast.model] + (_fast.fallbacks | list) }}"
