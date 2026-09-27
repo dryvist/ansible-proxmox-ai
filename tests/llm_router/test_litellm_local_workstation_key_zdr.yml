@@ -70,3 +70,20 @@
         _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'litellm-local-workstation') | first }}"
         _fast: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'fast') | first }}"
         _unfiltered: "{{ [_fast.model] + (_fast.fallbacks | list) }}"
+
+    # NEGATIVE CONTROL: the same key with zdr_only off must reach a ZDR-false
+    # group. Proves the filter, not the chain, is what keeps them out.
+    - name: Drop zdr_only from the workstation key
+      ansible.builtin.set_fact:
+        _llm_router_workstation_virtual_keys: >-
+          {{ _llm_router_workstation_virtual_keys
+             | map('combine', {'zdr_only': false}) | list }}
+
+    - name: Without zdr_only the key reaches a ZDR-false group
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _key.models | intersect(llm_router_zdr_false_group_names) | length > 0
+        fail_msg: "without zdr_only the key still holds no ZDR-false group: {{ _key.models }}"
+      vars:
+        _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'litellm-local-workstation') | first }}"
