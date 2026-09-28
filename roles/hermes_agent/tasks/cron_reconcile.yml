@@ -218,12 +218,8 @@
     - hermes_agent_retire_splunk_auto_ssh_burst | bool
     - hermes_agent_retired_splunk_auto_ssh_burst_cron_name in (hermes_agent_active_cron_list.stdout | default(''))
 
-# Retire direct crons another job now covers 1-for-1: the 3 *-v2 crons the
-# reframe duplicates under a bare name (zammad-review, github-monitor,
-# daily-summary) and the pulse the service pulse replaced. disable-don't-delete:
-# enabled: false in hermes_agent_direct_cron_jobs stops reconcile from
-# re-creating them; only this pause stops the ones already on the guest.
-- name: Pause the direct crons another job replaces 1-for-1 (disable-don't-delete)
+# The 3 *-v2 crons the reframe duplicates under a bare name.
+- name: Pause the direct crons the reframe replaced 1-for-1
   ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ item }}"
   environment:
     HERMES_HOME: "{{ hermes_agent_hermes_home }}"
@@ -234,31 +230,18 @@
     - zammad-incident-review-v2
     - github-org-triage-v2
     - daily-operator-summary-v2
-    - demo-pulse
   when: item in (hermes_agent_active_cron_list.stdout | default(''))
 
-# Retire the 8 direct crons whose prompt/skill exceeds the 1800s wall clock.
-# disable-don't-delete: enabled:false in hermes_agent_direct_cron_jobs stops
-# reconcile from re-creating them; only this pause stops the ones already on
-# the guest.
-- name: Pause the direct crons that exceed the wall clock (disable-don't-delete)
+# enabled: false in defaults stops reconcile re-creating a job; this pause
+# stops the copy already on the guest (disable-don't-delete).
+- name: Pause the direct crons declared disabled
   ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ item.name }}"
   environment:
     HERMES_HOME: "{{ hermes_agent_hermes_home }}"
   become: true
   become_user: "{{ hermes_agent_user }}"
   changed_when: true
-  loop:
-    - { name: "{{ hermes_agent_nightly_wiki_cron_name }}" }
-    - { name: "{{ hermes_agent_zammad_review_cron_name }}" }
-    - { name: "{{ hermes_agent_splunk_triage_cron_name }}" }
-    - { name: "{{ hermes_agent_splunk_security_cron_name }}" }
-    - { name: "{{ hermes_agent_anomaly_hunt_cron_name }}" }
-    - { name: "{{ hermes_agent_kanban_reviewer_job }}" }
-    - { name: "{{ hermes_agent_backlog_sweep_cron_name }}" }
-    - { name: "{{ hermes_agent_repo_scorecard_cron_name }}" }
-  loop_control:
-    label: "{{ item.name }}"
+  loop: "{{ hermes_agent_direct_cron_jobs | selectattr('enabled', 'defined') | rejectattr('enabled') | list }}"
   when: item.name in (hermes_agent_active_cron_list.stdout | default(''))
 
 # Wired-memory-ceiling trajectory watch (see defaults/main/102-wired-trajectory.yml
