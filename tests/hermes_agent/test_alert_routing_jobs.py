@@ -30,19 +30,17 @@ from _alert_routing_shared import (
     _deliver_targets,
     _direct_deliver,
     _direct_job,
-    _ENV,
     _resolve,
 )
 
 
 # --- per-job routing: the recurring fleet is not one undifferentiated tier ----
 #
-# Outcome-based split routing (channel_when_healthy) and terse_when_healthy
-# are restored as PROMPT TEXT, not a hermes_agent_direct_cron_jobs field
-# `--deliver` can express: `--deliver` is one fixed target (the breaking-run
-# destination, issues, checked below), and the shared reporting footer
-# (templates/direct-cron-footer.md.j2, appended to every job's prompt by
-# reconcile_direct_cron.yml) instructs the model to self-route to
+# Outcome-based split routing (channel_when_healthy) is PROMPT TEXT, not a
+# hermes_agent_direct_cron_jobs field `--deliver` can express: `--deliver` is
+# one fixed target (the breaking-run destination, issues, checked below), and
+# the catalog's quiet-when-healthy reporting footer (appended to that job's
+# prompt by reconcile_direct_cron.yml) instructs the model to self-route to
 # channel_when_healthy via `hermes send` + a trailing [SILENT] on an
 # all-clear run, so --deliver does not also post it.
 
@@ -59,7 +57,6 @@ def test_the_fabric_status_job_carries_the_outcome_split() -> None:
     job = _direct_job("hermes_agent_daily_status_cron_name")
     assert "channel_when_healthy" in job
     assert job["channel_when_healthy"] == "slack:{{ hermes_agent_slack_noise_channel }}"
-    assert job.get("terse_when_healthy") is True
     # No other job carries the split — it was one card's behaviour, not a
     # general one.
     others = [j for j in DEFAULTS["hermes_agent_direct_cron_jobs"]
@@ -67,24 +64,17 @@ def test_the_fabric_status_job_carries_the_outcome_split() -> None:
     assert others == [], [j.get("name") for j in others]
 
 
-def test_the_shared_footer_renders_the_outcome_split_and_the_default_case() -> None:
-    """The footer template itself, not just the data feeding it — pins that
-    the self-send + [SILENT] branch and the evidence contract are both
-    actually present in the rendered text, for a job with the split and one
-    without."""
-    footer = (ROLE / "templates" / "direct-cron-footer.md.j2").read_text()
-    split = _ENV.from_string(footer).render(
-        item={"channel_when_healthy": "slack:C_NOISE", "terse_when_healthy": True},
-        deliver="slack:C_ISSUES", ansible_managed="TEST",
-    )
-    default = _ENV.from_string(footer).render(item={}, deliver="slack:C_ALL", ansible_managed="TEST")
-    assert "hermes send --to slack:C_NOISE" in split
-    assert "[SILENT]" in split
-    assert "All systems operational" in split
-    assert "do not call `hermes send` yourself" in default
-    for rendered in (split, default):
-        assert "EVIDENCE CONTRACT" in rendered
-        assert "do NOT invent a result" in rendered
+def test_the_footer_task_picks_the_catalog_footer_by_outcome_split() -> None:
+    """The footer text lives in the prompt catalog, not in this role. Pins
+    that the append task loads the quiet-when-healthy catalog footer for a
+    job with channel_when_healthy and the plain one otherwise, and fills the
+    two envsubst variables those footers declare."""
+    task = (ROLE / "tasks" / "reconcile_direct_cron.yml").read_text()
+    assert "hermes-direct-cron-footer-quiet.md' if item.channel_when_healthy is defined" in task
+    assert "else 'hermes-direct-cron-footer.md'" in task
+    assert "replace('${DELIVER}', hermes_agent_direct_deliver)" in task
+    assert "replace('${CHANNEL_WHEN_HEALTHY}', item.channel_when_healthy | default(''))" in task
+    assert not (ROLE / "templates" / "direct-cron-footer.md.j2").exists()
 
 
 def test_scouting_jobs_report_to_the_noise_channel() -> None:

@@ -46,20 +46,21 @@ itself — not assumed):
   separate native script timeout.
 - **`max_retries`** — no `cron create` equivalent. Not restored; an accepted,
   documented loss.
-- **Outcome-based delivery split** (`channel_when_healthy` /
-  `terse_when_healthy`, one job: `homelab-ai-fabric-status`) — `--deliver`
-  takes exactly one fixed target. Restored as **prompt text**: the shared
-  reporting footer instructs the model to self-route via the terminal command
-  `hermes send` when the run is a genuine all-clear, ending with `[SILENT]` so
-  `--deliver` does not also post it.
+- **Outcome-based delivery split** (`channel_when_healthy`, one job:
+  `homelab-ai-fabric-status`) — `--deliver` takes exactly one fixed target.
+  Restored as **prompt text**: the catalog's quiet-when-healthy reporting
+  footer instructs the model to self-route, as one "All systems operational"
+  line, via the terminal command `hermes send` when the run is a genuine
+  all-clear, ending with `[SILENT]` so `--deliver` does not also post it.
 
 None of these were silently dropped.
 
 **Every direct-cron job posts a full report, not a sentence**, and every one
-carries the anti-fabrication evidence contract — both restored as a shared
-Jinja prompt-text footer (`templates/direct-cron-footer.md.j2`, appended to
-every job's prompt in `reconcile_direct_cron.yml`), the same distinction that
-made the original enqueuer-footer design acceptable: data, not a script.
+carries the anti-fabrication evidence contract — both live in the pinned
+prompt catalog (`hermes-direct-cron-footer.md` and its quiet-when-healthy
+variant, appended to every job's prompt in `reconcile_direct_cron.yml` with
+`${DELIVER}` and `${CHANNEL_WHEN_HEALTHY}` filled in), the same distinction
+that made the original enqueuer-footer design acceptable: data, not a script.
 check that guarantees new prompt text keeps doing so.
 
 | Variable | Default | Meaning |

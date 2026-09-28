@@ -62,12 +62,13 @@ is false is never created — the role runs inert, never errors.
 `homelab-ai-fabric-status` splits its report by outcome (all-clear to the
 noise channel, a break to issues) — restored as **prompt text**, not a
 `--deliver` flag: `--deliver` (`#hermes-issues`, the default/breaking-run
-destination) takes exactly one fixed target, so the shared reporting footer
-(`templates/direct-cron-footer.md.j2`, appended to every direct-cron job's
-prompt) instructs the model to self-route to the noise channel via the
-terminal command `hermes send` when the run is a genuine all-clear, ending
-with `[SILENT]` so `--deliver` does not ALSO post it. `terse_when_healthy`
-(one-line "All systems operational" on that branch) is restored the same way.
+destination) takes exactly one fixed target, so the catalog's
+quiet-when-healthy reporting footer (`hermes-direct-cron-footer-quiet.md`,
+appended to that job's prompt; every other job gets
+`hermes-direct-cron-footer.md`) instructs the model to self-route to the
+noise channel, as one "All systems operational" line, via the terminal
+command `hermes send` when the run is a genuine all-clear, ending with
+`[SILENT]` so `--deliver` does not ALSO post it.
 
 `docs-sync` was initially kept as the one surviving Kanban card, with a
 **per-run** (not stable) idempotency key to solve the enqueuer's archive

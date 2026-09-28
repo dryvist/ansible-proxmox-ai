@@ -10,8 +10,8 @@
 # catalog) OR prompt_var (name of an already-resolved var, inline or
 # catalog-preloaded — same lookup('vars', ...) pattern the retired kanban card
 # table used), skill (may be ""), enabled, an optional deliver override
-# (defaults to the shared digest channel), and optional channel_when_healthy /
-# terse_when_healthy (outcome-based routing — see direct-cron-footer.md.j2).
+# (defaults to the shared digest channel), and optional channel_when_healthy
+# (outcome-based routing: the catalog's quiet-when-healthy footer is appended).
 # A job runs here only if it is enabled AND belongs to THIS agent identity.
 # Both halves matter and they are not interchangeable: `enabled: false` alone
 # has never removed anything (every task below is gated on it, so a disabled
@@ -38,8 +38,13 @@
              ~ item.prompt_file, rstrip=false))
           | regex_replace('(?s)^---\n.*?\n---\n', '') | trim)
          ~ '\n\n' ~
-         (lookup('template', role_path ~ '/templates/direct-cron-footer.md.j2',
-                 template_vars={'item': item, 'deliver': hermes_agent_direct_deliver}) | trim) }}
+         (lookup('ansible.builtin.file', hermes_agent_prompts_path ~ '/'
+             ~ ('hermes-direct-cron-footer-quiet.md' if item.channel_when_healthy is defined
+                else 'hermes-direct-cron-footer.md'), rstrip=false)
+          | regex_replace('(?s)^---\n.*?\n---\n', '')
+          | replace('${DELIVER}', hermes_agent_direct_deliver)
+          | replace('${CHANNEL_WHEN_HEALTHY}', item.channel_when_healthy | default(''))
+          | trim) }}
   when: hermes_agent_direct_wanted | bool
 
 # --workdir is not cosmetic: read from the pinned hermes-agent v2026.8.3
