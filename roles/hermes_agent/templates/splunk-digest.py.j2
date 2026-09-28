@@ -55,6 +55,8 @@ STALENESS_MIN = {{ hermes_agent_splunk_digest_staleness_minutes }}
 # to anything other than -24h, and verify the new number against the REST API
 # rather than assuming the argument took effect.
 EARLIEST = "{{ hermes_agent_splunk_digest_window }}"
+ROW_LIMIT = 10000  # rows the MCP may return; the guard above fails loudly past it
+
 # Same span, phrased for prose ("the 24h window" rather than "the -24h window").
 WINDOW = EARLIEST.lstrip("-")
 # Inventory + liveness via tstats metadata ONLY — never index=* over raw events.
@@ -151,7 +153,10 @@ async def run_tstats(url, token):
             streamable_http_client(url, http_client=http) as (r, w, *_):
         async with ClientSession(r, w) as s:
             await s.initialize()
-            res = await s.call_tool("splunk_run_query", {"query": TSTATS_QUERY, "earliest": EARLIEST})
+            # The MCP names the window `earliest_time` and caps rows at `row_limit`
+            # (default 100): a capped table reads as missing indexes/hosts.
+            res = await s.call_tool("splunk_run_query", {"query": TSTATS_QUERY, "earliest_time": EARLIEST,
+                                                        "latest_time": "now", "row_limit": ROW_LIMIT})
             if getattr(res, "is_error", False):
                 raise RuntimeError("splunk_run_query returned is_error=true")
             data = res.structured_content
@@ -161,6 +166,8 @@ async def run_tstats(url, token):
                     data = json.loads(res.content[0].text)
                 else:
                     raise RuntimeError("no structured_content and no text content")
+            if data.get("truncated"):
+                raise RuntimeError(f"splunk_run_query truncated: {data.get('total_rows')} rows > {ROW_LIMIT}")
             return data.get("results", [])
 
 
