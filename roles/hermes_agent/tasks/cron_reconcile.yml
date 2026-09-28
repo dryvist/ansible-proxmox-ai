@@ -237,6 +237,30 @@
     - demo-pulse
   when: item in (hermes_agent_active_cron_list.stdout | default(''))
 
+# Retire the 8 direct crons whose prompt/skill exceeds the 1800s wall clock.
+# disable-don't-delete: enabled:false in hermes_agent_direct_cron_jobs stops
+# reconcile from re-creating them; only this pause stops the ones already on
+# the guest.
+- name: Pause the direct crons that exceed the wall clock (disable-don't-delete)
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ item.name }}"
+  environment:
+    HERMES_HOME: "{{ hermes_agent_hermes_home }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  changed_when: true
+  loop:
+    - { name: "{{ hermes_agent_nightly_wiki_cron_name }}" }
+    - { name: "{{ hermes_agent_zammad_review_cron_name }}" }
+    - { name: "{{ hermes_agent_splunk_triage_cron_name }}" }
+    - { name: "{{ hermes_agent_splunk_security_cron_name }}" }
+    - { name: "{{ hermes_agent_anomaly_hunt_cron_name }}" }
+    - { name: "{{ hermes_agent_kanban_reviewer_job }}" }
+    - { name: "{{ hermes_agent_backlog_sweep_cron_name }}" }
+    - { name: "{{ hermes_agent_repo_scorecard_cron_name }}" }
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name in (hermes_agent_active_cron_list.stdout | default(''))
+
 # Wired-memory-ceiling trajectory watch (see defaults/main/102-wired-trajectory.yml
 # for the full precondition). hermes_agent_wired_trajectory_enabled is false
 # until index=mac_perf is confirmed carrying macos-wired-memory events AND that

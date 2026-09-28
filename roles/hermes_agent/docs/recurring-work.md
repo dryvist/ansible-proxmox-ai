@@ -23,6 +23,12 @@ is actually for: ad-hoc work, and the follow-up cards these cron jobs
 themselves file via `kanban_create` (`review`'s gap follow-ups,
 `anomaly-hunt`'s findings, `ai-news`'s actionable items).
 
+**Paused (wall clock).** `hermes-nightly-wiki`, `zammad-review`,
+`splunk-triage`, `splunk-security`, `anomaly-hunt`, `review`, `backlog-sweep`
+and `repo-scorecard` each exceed the 1800s wall clock — `enabled: false` in
+`hermes_agent_direct_cron_jobs` plus a `cron pause` task
+(`tasks/cron_reconcile.yml`) disable them without deleting the definitions.
+
 **Real semantics `hermes cron create` cannot express natively** (verified
 against the live CLI's `--help` and, for profile, against `cron/scheduler.py`
 itself — not assumed):
