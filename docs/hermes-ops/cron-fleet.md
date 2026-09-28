@@ -35,17 +35,19 @@ All 18 pre-reframe cards, docs-sync included, are now direct-cron jobs — see
 | Job | Schedule (UTC) | Deliver |
 | --- | --- | --- |
 | `homelab-ai-fabric-status` | `4 8-22 * * *` | `#hermes-issues` |
-| `hermes-nightly-wiki` | `0 2 * * *` | `#hermes-all` |
+| `hermes-nightly-wiki` | `0 2 * * *` | `#hermes-all` (paused, wall clock) |
 | `daily-summary` | `0 12 * * *` | `#hermes-all` |
-| `zammad-review` | `41 */2 * * *` | `#hermes-all` |
-| `splunk-triage` | `7 * * * *` | `#hermes-all` |
-| `splunk-security` | `22 */6 * * *` | `#hermes-all` |
+| `zammad-review` | `41 */2 * * *` | `#hermes-all` (paused, wall clock) |
+| `splunk-triage` | `7 * * * *` | `#hermes-all` (paused, wall clock) |
+| `splunk-security` | `22 */6 * * *` | `#hermes-all` (paused, wall clock) |
 | `splunk-parsing` | `37 2 * * *` | `#hermes-all` |
 | `splunk-deepdive` | `11 3 * * *` | `#hermes-all` |
 | `github-triage` | `26 */6 * * *` | `#hermes-all` |
 | `bot-pr-triage` | `43 */6 * * *` | `#hermes-all` |
-| `review` | `0 */8 * * *` | `#hermes-all` |
-| `anomaly-hunt` | `13 */12 * * *` | `#hermes-all` |
+| `review` | `0 */8 * * *` | `#hermes-all` (paused, wall clock) |
+| `anomaly-hunt` | `13 */12 * * *` | `#hermes-all` (paused, wall clock) |
+| `backlog-sweep` | `41 */4 * * *` | `#hermes-all` (paused, wall clock) |
+| `repo-scorecard` | `19 9 * * 1` (weekly) | `#hermes-all` (paused, wall clock) |
 | `docs-study` | `43 5 * * *` | `#hermes-all` |
 | `ai-news` | `19 0,12,16,19 * * *` | `#hermes-noise` |
 | `daily-innovation` | `47 6 * * *` | `#hermes-noise` |
