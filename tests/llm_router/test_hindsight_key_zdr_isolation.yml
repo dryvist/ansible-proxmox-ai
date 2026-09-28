@@ -1,7 +1,8 @@
 ---
 # Hindsight's memory content must never reach a model that retains prompts
-# (zero_data_retention: false). The hindsight key is scoped to `free` only
-# (56-virtual-keys.yml) and `free`'s own fallback + context_window_fallbacks
+# (zero_data_retention: false). The hindsight key is scoped to exactly the
+# inventory's hindsight_retain_model
+# (56-virtual-keys.yml) and that model's fallback + context_window_fallbacks
 # entries are both empty (config.yaml.j2), so this walks the RENDERED
 # fallback graph outward from the key's own declared scope and proves no
 # reachable model_group is backed by a zero_data_retention: false registry
@@ -42,6 +43,7 @@
     ai_ingress_response_header_timeout_seconds: 120
     hermes_brain_model: hermes-default
     hermes_goal_judge_model: goal-judge
+    hindsight_retain_model: qwen3-4b
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
@@ -57,13 +59,13 @@
         _config: >-
           {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
 
-    - name: The hindsight key is scoped to exactly `free`
+    - name: The hindsight key is scoped to exactly the inventory's retain model
       ansible.builtin.assert:
         quiet: true
         that:
-          - _hindsight_key.models == ['free']
+          - _hindsight_key.models == [hindsight_retain_model]
         fail_msg: >-
-          Expected the hindsight key scoped to exactly ['free'], got
+          Expected the hindsight key scoped to exactly [{{ hindsight_retain_model }}], got
           {{ _hindsight_key.models }} — any wider scope risks reaching a
           zero_data_retention: false deployment.
         success_msg: "hindsight key models: {{ _hindsight_key.models }}"

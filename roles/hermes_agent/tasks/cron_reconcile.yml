@@ -1,12 +1,9 @@
 ---
-# 27 agentic direct-deliver crons (Phase 5 originals + all 18 converted from
-# Kanban recurrence, native-cron redesign, including docs-sync — see the PR
-# for the assignee/max_runtime/max_retries/outcome-split gap report): every
-# recurring report/sweep/digest
-# workload. The Slack channel is never hardcoded: skip the whole fleet with a
-# loud warning when NEITHER the shared digest channel NOR the general Slack
-# capability gate is satisfied (most converted entries carry their own
-# `deliver:` and do not depend on the shared digest channel at all).
+# The agentic direct-deliver cron fleet (every recurring report/sweep/digest
+# workload, docs-sync included). The Slack channel is never hardcoded: skip
+# the whole fleet with a loud warning when NEITHER the shared digest channel
+# NOR the general Slack capability gate is satisfied (most entries carry their
+# own `deliver:` and do not depend on the shared digest channel).
 - name: Warn when Slack is not configured (direct-deliver crons skipped)
   ansible.builtin.debug:
     msg: >-
@@ -218,12 +215,8 @@
     - hermes_agent_retire_splunk_auto_ssh_burst | bool
     - hermes_agent_retired_splunk_auto_ssh_burst_cron_name in (hermes_agent_active_cron_list.stdout | default(''))
 
-# Retire the 3 *-v2 direct crons the reframe now duplicates 1-for-1 under a
-# bare name (zammad-review, github-monitor, daily-summary — same topic, same
-# recall/save prompt content, same schedule). disable-don't-delete: enabled:
-# false in hermes_agent_direct_cron_jobs stops reconcile from re-creating them;
-# only this pause stops the ones already on the guest.
-- name: Pause the *-v2 crons the reframe replaces 1-for-1 (disable-don't-delete)
+# The 3 *-v2 crons the reframe duplicates under a bare name.
+- name: Pause the direct crons the reframe replaced 1-for-1
   ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ item }}"
   environment:
     HERMES_HOME: "{{ hermes_agent_hermes_home }}"
@@ -235,6 +228,21 @@
     - github-org-triage-v2
     - daily-operator-summary-v2
   when: item in (hermes_agent_active_cron_list.stdout | default(''))
+
+# enabled: false in defaults stops reconcile re-creating a job; this pause
+# stops the copy already on the guest (disable-don't-delete).
+- name: Pause the direct crons declared disabled
+  ansible.builtin.command: "{{ hermes_agent_bin }} cron pause {{ item.name }}"
+  environment:
+    HERMES_HOME: "{{ item.hermes_home | default(hermes_agent_hermes_home) }}"
+  become: true
+  become_user: "{{ hermes_agent_user }}"
+  register: hermes_agent_pause_disabled
+  changed_when: hermes_agent_pause_disabled.rc == 0
+  failed_when: hermes_agent_pause_disabled.rc != 0 and 'not found' not in hermes_agent_pause_disabled.stdout
+  loop: "{{ hermes_agent_direct_cron_jobs | selectattr('enabled', 'defined') | rejectattr('enabled') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 # Wired-memory-ceiling trajectory watch (see defaults/main/102-wired-trajectory.yml
 # for the full precondition). hermes_agent_wired_trajectory_enabled is false

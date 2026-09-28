@@ -308,5 +308,3 @@ def test_installed_source_postconditions_hold_only_for_the_patched_sources() -> 
             kanban_dispatch_source=kanban_dispatch_source.replace(stale_reclaim_source, ""),
         )
     )
-
-

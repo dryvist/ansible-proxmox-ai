@@ -1,0 +1,73 @@
+---
+# --- Service pulse and Splunk license audit -----------------------------------
+# Two direct crons whose bodies live in the pinned ai-llm-prompts catalog
+# (hermes_agent_prompts_flake_ref) and are loaded by tasks/prompt_catalog.yml.
+# Both keep their state in Hindsight between runs (baselines, flaky list,
+# ingest curve, lessons), so the prompt text itself never carries a number.
+#
+# service-pulse: hourly at :20, one report to #hermes-all with real counts and
+# the delta against the recalled baseline. The catalog body names no endpoint;
+# the list below is appended at load time, the same way the fabric-status job
+# gets hermes_agent_daily_status_endpoints.
+hermes_agent_service_pulse_enabled: true
+hermes_agent_service_pulse_cron_name: service-pulse
+hermes_agent_service_pulse_cron_schedule: "20 * * * *"
+hermes_agent_service_pulse_cron_prompt_file: hermes-service-pulse.md
+hermes_agent_service_pulse_endpoints: |
+  PROBE EXACTLY THESE, AND NOTHING ELSE. Every address you need is listed here.
+  Do not guess, infer, complete, or recall a hostname or port from anywhere else.
+
+    LLM router readiness   https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/health/readiness
+    tracing service        https://langfuse.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/api/public/health
+    Splunk tool route      https://mcp.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/splunk
+    own gateway            https://hermes-api.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/health
+    memory service         https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/health
+    open incidents (count) https://zammad.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/api/v1/tickets/search
+                           ?query=state.name:open&only_total_count=true (one URL: join the two lines)
+    high incidents (count) https://zammad.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/api/v1/tickets/search
+                           ?query=state.name:open%20AND%20priority.name:%223%20high%22&only_total_count=true
+                           (one URL: join the two lines)
+    both with header "Authorization: Token token=${ZAMMAD_API_TOKEN}"; each answers {"total_count": N}
+    and nothing else, so read the number and never fetch the tickets themselves.
+
+# splunk-license: every two hours at :01 (a minute no other agentic job uses),
+# under the Splunk admin profile so the findings share that profile's memory
+# bank. Alerts only on a real signal or a projection over the learned threshold.
+hermes_agent_splunk_license_enabled: true
+hermes_agent_splunk_license_cron_name: splunk-license
+hermes_agent_splunk_license_cron_schedule: "1 */2 * * *"
+hermes_agent_splunk_license_cron_prompt_file: hermes-splunk-license.md
+
+# The two jobs, appended to hermes_agent_direct_cron_jobs by
+# 43-direct-cron-jobs-core.yml. Both prompt vars are set by prompt_catalog.yml.
+hermes_agent_direct_cron_jobs_service_pulse:
+  - name: "{{ hermes_agent_service_pulse_cron_name }}"
+    schedule: "{{ hermes_agent_service_pulse_cron_schedule }}"
+    prompt_var: hermes_agent_service_pulse_cron_prompt
+    skill: ""
+    deliver: "slack:{{ hermes_agent_slack_hermes_all_channel }}"
+    enabled: >-
+      {{ hermes_agent_service_pulse_enabled | bool
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  - name: "{{ hermes_agent_splunk_license_cron_name }}"
+    schedule: "{{ hermes_agent_splunk_license_cron_schedule }}"
+    prompt_var: hermes_agent_splunk_license_cron_prompt
+    skill: dryvist/splunk-monitor
+    deliver: >-
+      slack:{{ hermes_agent_slack_splunk_channel
+               | default(hermes_agent_slack_hermes_all_channel, true) }}
+    hermes_home: "{{ hermes_agent_hermes_home }}/profiles/splunk-admin"
+    enabled: >-
+      {{ hermes_agent_splunk_license_enabled | bool
+         and hermes_agent_splunk_monitor_enabled | bool
+         and hermes_agent_splunk_mcp_url | length > 0
+         and hermes_agent_slack_bot_token | length > 0
+         and hermes_agent_slack_app_token | length > 0
+         and hermes_agent_slack_home_channel | length > 0 }}
+  # Withdrawn: the pulse above replaced it. enabled:false makes
+  # reconcile_direct_cron.yml remove it wherever it is still installed.
+  - name: demo-pulse
+    schedule: "20 14-22 * * 1-3"
+    enabled: false
