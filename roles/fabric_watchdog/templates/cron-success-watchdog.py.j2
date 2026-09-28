@@ -75,6 +75,14 @@ CEILING_MINUTES = {{ fabric_watchdog_success_ceiling_minutes }}
 # counting would let three stores at four stale jobs each post twelve separate
 # pages while every store stayed under its own roll-up.
 FLEET_ROLLUP_AT = {{ fabric_watchdog_success_fleet_rollup_at }}
+# Flap suppression. A job that alerts and recovers FLAP_ALERTS times inside
+# FLAP_WINDOW_MINUTES is not news any more: post ONE "flapping, muted" line and
+# stay silent for it until it has gone FLAP_QUIET_MINUTES without being overdue.
+# The alert clock keeps running underneath, so a job that stops flapping and
+# simply dies re-alerts normally once the mute expires.
+FLAP_ALERTS = {{ fabric_watchdog_success_flap_alerts }}
+FLAP_WINDOW_MINUTES = {{ fabric_watchdog_success_flap_window_minutes }}
+FLAP_QUIET_MINUTES = {{ fabric_watchdog_success_flap_quiet_minutes }}
 # A paused store explains its own silence, so absence alerts are suppressed
 # there. Past this long, the pause itself is the thing to report: an
 # indefinitely stopped store is once again silence nobody has accounted for.
@@ -397,14 +405,42 @@ def evaluate(stores: list, state: dict, now: float) -> tuple[list, list, list]:
             record["alerted_at_ok"] = record["last_ok"]
         recovered_by_success = record["alerted"] and record["last_ok"] > record["alerted_at_ok"]
 
+        # Flap bookkeeping: remember when each alert fired; forget old ones.
+        window = FLAP_WINDOW_MINUTES * 60
+        record["flap_alerts"] = [t for t in record.get("flap_alerts", []) if now - t < window]
+        if overdue:
+            record["last_overdue"] = now
+        muted = record.get("muted_at") is not None
+        if muted and now - record.get("last_overdue", now) > FLAP_QUIET_MINUTES * 60:
+            record.pop("muted_at", None)
+            record["flap_alerts"] = []
+            muted = False
+            log(f"{name}: UNMUTED (stable for {FLAP_QUIET_MINUTES}m)")
+
         if overdue and not record["alerted"]:
             record["alerted"] = True
             record["alerted_at_ok"] = record["last_ok"]
-            stale.append(f"{name} ({detail})")
-            log(f"{name}: STALE -> alerting; {detail}")
+            record["flap_alerts"].append(now)
+            if muted:
+                log(f"{name}: STALE -> muted (flapping); {detail}")
+            elif len(record["flap_alerts"]) >= FLAP_ALERTS:
+                record["muted_at"] = now
+                stale.append(
+                    f"{name} is FLAPPING ({len(record['flap_alerts'])} alerts in "
+                    f"{FLAP_WINDOW_MINUTES}m) — muted until it stays stable for "
+                    f"{FLAP_QUIET_MINUTES}m; the job's schedule or the job itself is wrong, "
+                    f"not the watchdog"
+                )
+                log(f"{name}: FLAPPING -> muted; {detail}")
+            else:
+                stale.append(f"{name} ({detail})")
+                log(f"{name}: STALE -> alerting; {detail}")
         elif recovered_by_success:
             record["alerted"] = False
             record.pop("alerted_at_ok", None)
+            if muted:
+                log(f"{name}: RECOVERED while muted (not posted); {detail}")
+                continue
             # Carries `detail` for the same reason the stale message does. The
             # all-clear used to post the bare name while the numbers behind it
             # went only to the log, so a false recovery was indistinguishable in

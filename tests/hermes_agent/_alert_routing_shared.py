@@ -117,7 +117,7 @@ def _deliver_targets(pattern: str, ctx: Mapping[str, object], text: str) -> str:
 # prompt itself and delivers straight to Slack via one fixed `deliver:` per job
 # (tasks/reconcile_direct_cron.yml). hermes_agent_kanban_cards no longer
 # exists. `--deliver` cannot express a per-outcome split itself, but the split
-# is restored as shared prompt text (templates/direct-cron-footer.md.j2) —
+# is restored as shared prompt text (the catalog's direct-cron footers) —
 # see the outcome-split tests in test_alert_routing_jobs.py.
 
 
