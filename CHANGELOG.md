@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.59.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.58.0...v0.59.0) (2026-10-02)
+
+
+### Features
+
+* **hermes_agent:** demo-pulse and splunk-license crons; mute flapping watchdog jobs ([#961](https://github.com/dryvist/ansible-proxmox-ai/issues/961)) ([ca07d86](https://github.com/dryvist/ansible-proxmox-ai/commit/ca07d864a289a3fc24e45e910892a029d82ded93))
+* **llm_router:** add a zdr_only key option and the litellm-local-workstation key ([#959](https://github.com/dryvist/ansible-proxmox-ai/issues/959)) ([433929d](https://github.com/dryvist/ansible-proxmox-ai/commit/433929db27d8fab4dbfc5d4da4d990b356ad94d3))
+
+
+### Bug Fixes
+
+* **agentgateway:** healthcheck the memory MCP sidecar and order the gateway after it ([#981](https://github.com/dryvist/ansible-proxmox-ai/issues/981)) ([5807331](https://github.com/dryvist/ansible-proxmox-ai/commit/5807331ee966697164b691fa845d70d4c7e6fac5))
+* **ci:** authenticate installer checksum fetches ([#987](https://github.com/dryvist/ansible-proxmox-ai/issues/987)) ([fe26d87](https://github.com/dryvist/ansible-proxmox-ai/commit/fe26d87a2900e68106694d12c779456ec553c403))
+* **hermes_agent:** accept the two-stream transport tuple in the Splunk scripts ([#971](https://github.com/dryvist/ansible-proxmox-ai/issues/971)) ([b90b57c](https://github.com/dryvist/ansible-proxmox-ai/commit/b90b57cd37d54ca6e848e716f53b048e2013d294))
+* **hermes_agent:** hand the Splunk scripts' bearer header to the mcp 2.x transport through an httpx client ([#968](https://github.com/dryvist/ansible-proxmox-ai/issues/968)) ([a44900b](https://github.com/dryvist/ansible-proxmox-ai/commit/a44900b98471741ef4418267b513044a76a19870))
+* **hermes_agent:** keep the Splunk MCP row limit within the tool maximum ([7f128c5](https://github.com/dryvist/ansible-proxmox-ai/commit/7f128c5448bb64b7407bbd4a146380b62498a0b4))
+* **hermes_agent:** keep the Splunk MCP row limit within the tool maximum ([853311b](https://github.com/dryvist/ansible-proxmox-ai/commit/853311bd204b0d5d0932879b4311a3766a630b49))
+* **hermes_agent:** pause disabled crons inside their own profile home ([4c4cb69](https://github.com/dryvist/ansible-proxmox-ai/commit/4c4cb69f52e000607ce77cf7e7f6f14510eadd82))
+* **hermes_agent:** pause disabled crons inside their own profile home ([ca1a34c](https://github.com/dryvist/ansible-proxmox-ai/commit/ca1a34ceaf67602670c31f81e93003ba3852a9c3))
+* **hermes_agent:** pause eight direct crons that exceed the wall clock ([72aac18](https://github.com/dryvist/ansible-proxmox-ai/commit/72aac18e88da3a8c47a57004849a9e0a90ba3807))
+* **hermes_agent:** pause eight direct crons that exceed the wall clock ([0c4bf59](https://github.com/dryvist/ansible-proxmox-ai/commit/0c4bf59dc965b08d9a4b112a6badfe558ef412a4))
+* **hermes_agent:** pause every direct cron declared disabled ([9c58ca3](https://github.com/dryvist/ansible-proxmox-ai/commit/9c58ca363241f568cf30f0e6b1d05024ea6b9f2c))
+* **hermes_agent:** read mcp 2.x snake_case fields on the Splunk tool results ([2476414](https://github.com/dryvist/ansible-proxmox-ai/commit/247641469165e605b566eac217d044b23b2d6313))
+* **hermes_agent:** read mcp 2.x snake_case fields on the Splunk tool results ([1001d95](https://github.com/dryvist/ansible-proxmox-ai/commit/1001d95d24c94574a6b3677c2ce3612b43c05e1c))
+* **hermes_agent:** request the full result set from the Splunk MCP ([f3c28bf](https://github.com/dryvist/ansible-proxmox-ai/commit/f3c28bfcc02e4a44d38cd3b817acce64fdd4ffc3))
+* **hermes_agent:** request the full result set from the Splunk MCP ([864bcbb](https://github.com/dryvist/ansible-proxmox-ai/commit/864bcbbf33551498625f9bd0213bb749cde4d591))
+* **hermes_agent:** service pulse reads incident counts, not the ticket dump ([#969](https://github.com/dryvist/ansible-proxmox-ai/issues/969)) ([7870849](https://github.com/dryvist/ansible-proxmox-ai/commit/787084953ca01fd271787a044e7f2f0dbcce5a54))
+* **hindsight_docker:** retain on the inventory-selected local model ([#963](https://github.com/dryvist/ansible-proxmox-ai/issues/963)) ([2a82df3](https://github.com/dryvist/ansible-proxmox-ai/commit/2a82df3b17593b9ee9329f6990a811c9f5212652))
+* **hindsight:** retain on the interim-brain alias ([9915315](https://github.com/dryvist/ansible-proxmox-ai/commit/99153159c635b5a19b4a2cd296b0faae949cf684))
+* **hindsight:** retain on the interim-brain alias ([6ad51fc](https://github.com/dryvist/ansible-proxmox-ai/commit/6ad51fc6058e3acd96628815e12df8f24943d596))
+* **inventory:** give the light model an 8k context on both halves ([#970](https://github.com/dryvist/ansible-proxmox-ai/issues/970)) ([5cc9fc6](https://github.com/dryvist/ansible-proxmox-ai/commit/5cc9fc6f57fb67ed555705534d857bb40024de6f))
+* **llm_router:** fail fast for every empty-fallback role, not only review-local ([#982](https://github.com/dryvist/ansible-proxmox-ai/issues/982)) ([d9a62e3](https://github.com/dryvist/ansible-proxmox-ai/commit/d9a62e364bacf1d0fe7951e351b266d008afb3a6))
+* **mcp:** serve MCP protocol 2025-11-25 on the vikunja route ([225adde](https://github.com/dryvist/ansible-proxmox-ai/commit/225addea816da88ea2c2092dbf82ab26677428ff))
+* **mcp:** serve MCP protocol 2025-11-25 on the vikunja route ([5debe0a](https://github.com/dryvist/ansible-proxmox-ai/commit/5debe0a55fd27d44e58cebfa012629b5f491f025))
+* strip trailing blank line pre-commit flagged ([6366288](https://github.com/dryvist/ansible-proxmox-ai/commit/6366288389f76b63231d65df74710b77bdc0b056))
+* **tests:** define hindsight_retain_model in the workstation-key ZDR contract test ([#988](https://github.com/dryvist/ansible-proxmox-ai/issues/988)) ([77cd3d2](https://github.com/dryvist/ansible-proxmox-ai/commit/77cd3d2779ba1b4167d38bec496c4ab54388d363))
+
 ## [0.58.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.57.1...v0.58.0) (2026-09-26)
 
 
