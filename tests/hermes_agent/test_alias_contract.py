@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import yaml
 
-from _registry import REPO_ROOT, backend_for_alias, backend_for_role, load_registry
+from _registry import REPO_ROOT, backend_for_role, load_registry
 from _role_files import role_defaults
 
 
@@ -22,8 +22,8 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     router_config = (REPO_ROOT / "roles/llm_router/templates/config.yaml.j2").read_text()
 
     hermes_backend = backend_for_role(registry, "primary")
-    judge_alias = group_vars["hermes_goal_judge_model"]
-    judge_backend = backend_for_alias(registry, judge_alias)
+    # The judge is a router role backed by the routine tier, not a git alias.
+    judge_backend = backend_for_role(registry, "routine")
     assert judge_backend != hermes_backend
 
     # Physical aliases belong to the entries they point at. The Hermes brain
@@ -69,7 +69,7 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     # break, so a new consumer-facing name still lands here as a reviewed edit.
     assert aliases, "no static alias loaded; nothing below is checked"
     assert len(aliases) == 8
-    assert aliases[judge_alias] == judge_backend
+    assert judge_backend in aliases.values()
     # The brain is reached by alias too (the judge does not share it, above).
     assert hermes_backend in aliases.values()
     # The document tier is reached by image content parts, not by a selector

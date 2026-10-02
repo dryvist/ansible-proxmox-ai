@@ -139,16 +139,18 @@ llm_router_studio_lock_model_ids: >-
 # concurrency (a busy primary now also holds off an idle routine/small/ocr
 # call) for one lock to reason about, matching the operator's stated
 # "never wait on a busy local rung" priority over throughput. Capacity is
-# read from the registry's own fact (never a new literal) and asserted
-# uniform below; split into one lock per model id (or a counting semaphore
-# above capacity 1) if that tradeoff ever measures worse than the wait it
-# replaces.
+# read from the registry's own fact (never a new literal). The models no
+# longer share one concurrency (the role map gives the routine model two
+# slots and the primary one), so the shared lock takes the MOST CONSTRAINED
+# value — a single-element list — and admits no more than the tightest gated
+# model; split into one lock per model id (or a counting semaphore) if that
+# tradeoff ever measures worse than the wait it replaces.
 llm_router_studio_lock_capacity: >-
-  {{ (llm_router_registry_enabled
-      | selectattr('tier', 'equalto', 'large')
-      | selectattr('serving_role', 'defined')
-      | selectattr('serving_role', 'in', ['primary', 'routine', 'small', 'ocr'])
-      | map(attribute='max_parallel_requests') | unique | list) }}
+  {{ [(llm_router_registry_enabled
+       | selectattr('tier', 'equalto', 'large')
+       | selectattr('serving_role', 'defined')
+       | selectattr('serving_role', 'in', ['primary', 'routine', 'small', 'ocr'])
+       | map(attribute='max_parallel_requests') | min)] }}
 
 llm_router_studio_lock_key: "subagent:studio:lock"
 

@@ -16,7 +16,9 @@
 # thereby granted the rest of a chain it was never scoped to call directly.
 #
 # A key marked `zdr_only: true` then has every group backed by a
-# zero_data_retention: false registry entry removed from that widened list.
+# zero_data_retention: false registry entry removed from that widened list,
+# and so has every terminal rung with no asserted ZDR flag
+# (llm_router_zdr_unasserted_terminal_rungs, below).
 # enforce_fallback_model_access re-checks the key on every hop, so a chain
 # rung the key does not hold is refused, never reached: the key, not the
 # caller, guarantees its traffic only lands on ZDR backends.
@@ -31,7 +33,8 @@ llm_router_virtual_keys: >-
   {%- set ns.models = ns.models + [d.model] + (d.fallbacks | list) -%}
   {%- endfor -%}
   {%- if k.zdr_only | default(false) -%}
-  {%- set ns.models = ns.models | reject('in', llm_router_zdr_false_group_names) | list -%}
+  {%- set _stripped = llm_router_zdr_false_group_names + llm_router_zdr_unasserted_terminal_rungs -%}
+  {%- set ns.models = ns.models | reject('in', _stripped) | list -%}
   {%- endif -%}
   {%- set _ = out.append(k | combine({'models': ns.models | unique | list})) -%}
   {%- endfor -%}
@@ -50,3 +53,30 @@ llm_router_zdr_false_group_names: >-
         else (m.fallback_group | default(m.route_group, true) | default(m.client_model_id, true))] -%}
   {%- endfor -%}
   {{ ns.names | unique | list }}
+
+# Every group name whose registry entries ALL carry an asserted ZDR flag: an
+# explicit `zero_data_retention: true`, or an OpenRouter-provider entry that
+# leaves it unset (config.yaml.j2 renders `zdr: true` into every such request,
+# model-list.yaml.j2). Any other external entry — a provider with no
+# request-level ZDR control and no explicit flag, or an explicit false — is
+# unasserted, and so is every group it belongs to. Names are spelled the way
+# the rendered model list spells them (client id, route group, fallback group).
+llm_router_zdr_asserted_group_names: >-
+  {%- set ns = namespace(ok=[], bad=[]) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- set _names = [m.client_model_id] + ([m.route_group] if m.route_group is defined else [])
+        + ([m.fallback_group] if m.fallback_group is defined else []) -%}
+  {%- if (m.zero_data_retention if m.zero_data_retention is defined else m.provider == 'openrouter') -%}
+  {%- set ns.ok = ns.ok + _names -%}
+  {%- else -%}
+  {%- set ns.bad = ns.bad + _names -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.ok | difference(ns.bad) | unique | list }}
+
+# The terminal rungs (58-review-roles.yml) no ZDR flag is asserted for: a
+# provider with no request-level ZDR control and no explicit flag. A zdr_only
+# key never holds them, the same as the explicit-false groups above.
+llm_router_zdr_unasserted_terminal_rungs: >-
+  {{ llm_router_external_terminal_rungs
+     | reject('in', llm_router_zdr_asserted_group_names) | list }}

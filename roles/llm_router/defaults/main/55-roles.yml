@@ -35,9 +35,7 @@
 
 # The OCR entry, selected the same way as primary/routine/small in 50-servable.yml.
 llm_router_ocr_model: >-
-  {{ llm_router_registry_enabled | selectattr('serving_role', 'defined')
-     | selectattr('serving_role', 'equalto', 'ocr')
-     | map(attribute='client_model_id') | first }}
+  {{ llm_roles.models[llm_roles.roles.ocr.model].id }}
 # The embedding entry. Selected by its `embedding` flag because that is the
 # field the template already keys the embedding render off, and because the
 # registry is the only place a model id is spelled.
@@ -142,10 +140,20 @@ llm_router_role_deployments:
     model: "{{ llm_router_hermes_local_4080_id }}"
     fallbacks: []
   # The judge, cross-family to the primary on purpose — the same model the
-  # `goal-judge` alias resolves to today.
+  # `goal-judge` synonym alias resolves to. Egress `none` in the role map:
+  # nothing it judges leaves the Mac serving tier, so no fallback rung.
   - role: judge
     model: "{{ llm_router_routine_model }}"
-    fallbacks: "{{ [llm_router_small_model] + llm_router_external_terminal_rungs }}"
+    fallbacks: []
+  # Screen-recorder pipes: the home-lab GPU first, then the Studio's fast
+  # model, and nothing beyond (egress `estate` in the role map, no cloud rung).
+  # The router never stores a recorder prompt body: message logging is off on
+  # this role's deployment (seed-roles.yml merges `litellm_params`).
+  - role: recorder
+    model: "{{ llm_router_hermes_local_4080_id }}"
+    fallbacks: "{{ [llm_router_routine_model] }}"
+    litellm_params:
+      turn_off_message_logging: true
   # Trivial background chores and every CI review. The GPU rung first — the
   # fastest local model, and a busy slot hands over at once (57-subagent-lock
   # lists this role, so contention redirects instead of waiting) — then the
