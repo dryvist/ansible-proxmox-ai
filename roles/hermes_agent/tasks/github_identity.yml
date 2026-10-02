@@ -1,0 +1,81 @@
+---
+# GitHub identity: OpenBao-minted installation tokens behind a gh wrapper.
+# Inert unless hermes_agent_github_identity_enabled.
+- name: Assert the GitHub identity AppRole credentials are present
+  ansible.builtin.assert:
+    that:
+      - hermes_agent_github_identity_role_id | length > 0
+      - hermes_agent_github_identity_secret_id | length > 0
+      - hermes_agent_github_identity_bao_addr | length > 0
+      - "'review' in hermes_agent_github_identity_sets"
+    fail_msg: >-
+      hermes_agent_github_identity_enabled is true but
+      hermes_agent_github_identity_role_id (env HERMES_GITHUB_VAULT_ROLE_ID),
+      hermes_agent_github_identity_secret_id (env HERMES_GITHUB_VAULT_SECRET_ID)
+      or hermes_agent_github_identity_bao_addr is empty, or the `review` set is
+      missing. Supply the `hermes` AppRole credentials or leave the flag false.
+    quiet: true
+  no_log: true
+  when: hermes_agent_github_identity_enabled | bool
+
+- name: Install the GitHub CLI
+  ansible.builtin.apt:
+    name: gh
+    state: present
+  when: hermes_agent_github_identity_enabled | bool
+
+- name: Deploy the GitHub token helper
+  ansible.builtin.copy:
+    src: hermes-gh-token.py
+    dest: "{{ hermes_agent_github_identity_helper_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: hermes_agent_github_identity_enabled | bool
+
+- name: Deploy the GitHub token helper credentials (root-only)
+  ansible.builtin.template:
+    src: hermes-gh-token.env.j2
+    dest: "{{ hermes_agent_github_identity_env_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: hermes_agent_github_identity_enabled | bool
+
+- name: Deploy the gh wrapper
+  ansible.builtin.template:
+    src: hermes-gh-shim.sh.j2
+    dest: "{{ hermes_agent_github_identity_shim_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: hermes_agent_github_identity_enabled | bool
+
+- name: Deploy the GitHub token refresh units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - hermes-gh-token.service
+    - hermes-gh-token.timer
+  when: hermes_agent_github_identity_enabled | bool
+
+- name: Mint the GitHub tokens once and start the refresh timer
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: started
+    enabled: "{{ item.endswith('.timer') }}"
+    daemon_reload: true
+  loop:
+    - hermes-gh-token.service
+    - hermes-gh-token.timer
+  when: hermes_agent_github_identity_enabled | bool
+
+- name: Remove the retired GitHub App private key
+  ansible.builtin.file:
+    path: "{{ hermes_agent_hermes_home }}/github-app.pem"
+    state: absent

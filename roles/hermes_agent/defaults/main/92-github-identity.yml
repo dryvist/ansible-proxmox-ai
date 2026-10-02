@@ -1,0 +1,40 @@
+---
+# --- GitHub identity: per-call installation tokens from OpenBao -------------
+# A root timer (hermes-gh-token.timer) logs in with the `hermes` AppRole, mints
+# one installation token per permission set from the GitHub secrets mount, and
+# writes each to <token_dir>/<key> (0600, service user). A `gh` wrapper earlier
+# on PATH exports GH_TOKEN from that file on every call, so a long-lived
+# gateway always hands gh a token minted within the last refresh interval.
+#
+# Off by default: enabling requires the AppRole role_id + secret_id (see the
+# assert in tasks/github_identity.yml).
+hermes_agent_github_identity_enabled: false
+
+# Bot slug of the GitHub App the tokens belong to; exported to the gateway as
+# HERMES_GITHUB_APP_SLUG (skills compare it against `<slug>[bot]`).
+hermes_agent_github_app_slug: jacobs-hermes-agent
+
+hermes_agent_github_identity_mount: github-hermes
+# key (selected by HERMES_GH_TOKEN_SET) -> OpenBao permission set name.
+# `review` is the default set; only jobs that export HERMES_GH_TOKEN_SET=author
+# get the author set.
+hermes_agent_github_identity_sets:
+  review: hermes-review
+  author: hermes-author
+
+# Installation tokens live 60 minutes; refreshing every 20 keeps every token
+# handed to gh valid for at least 40.
+hermes_agent_github_identity_refresh_interval: 20min
+hermes_agent_github_identity_token_dir: /run/hermes-gh
+hermes_agent_github_identity_env_path: /etc/hermes-gh-token.env
+hermes_agent_github_identity_helper_path: /usr/local/libexec/hermes-gh-token
+hermes_agent_github_identity_shim_path: /usr/local/bin/gh
+hermes_agent_github_identity_real_gh: /usr/bin/gh
+
+hermes_agent_github_identity_bao_addr: >-
+  {{ hostvars['localhost'].openbao_secrets_active_addr
+     | default(lookup('env', 'BAO_ADDR'), true) }}
+hermes_agent_github_identity_role_id: >-
+  {{ lookup('env', 'HERMES_GITHUB_VAULT_ROLE_ID') | default('', true) }}
+hermes_agent_github_identity_secret_id: >-
+  {{ lookup('env', 'HERMES_GITHUB_VAULT_SECRET_ID') | default('', true) }}

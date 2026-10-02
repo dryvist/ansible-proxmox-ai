@@ -30,15 +30,19 @@ de-dup, secret redaction, and absolute privacy routing (sensitive → docs-starl
 only). **No-merge** is guaranteed by the org ruleset (human review + signatures,
 the App is not a bypass actor), not by the token scope.
 
-App creds are delivered from OpenBao `secret/ai/hermes` (`bao_local_llm_secrets`)
-with an env fallback; the PEM is written to `{{ hermes_agent_hermes_home }}/github-app.pem`
-(`0600`, `no_log`). The role stays inert until the creds are set.
+GitHub access uses installation tokens minted from the OpenBao GitHub mount
+(`hermes_agent_github_identity_mount`, sets in `hermes_agent_github_identity_sets`).
+`hermes-gh-token.timer` (root) logs in with the `hermes` AppRole and writes one
+token file per set under `hermes_agent_github_identity_token_dir` (0600, service
+user); `/usr/local/bin/gh` exports `GH_TOKEN` from the file selected by
+`HERMES_GH_TOKEN_SET` (default `review`) on every call. No PEM is stored on the guest.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `hermes_agent_github_app_id` | `""` | GitHub App ID (bao/env) |
-| `hermes_agent_github_app_installation_id` | `""` | App installation ID (bao/env) |
-| `hermes_agent_github_app_private_key` | `""` | App PEM (bao/env; written to a 0600 file) |
+| `hermes_agent_github_identity_enabled` | `false` | Deploy helper, wrapper and timer |
+| `hermes_agent_github_identity_role_id` | env `HERMES_GITHUB_VAULT_ROLE_ID` | `hermes` AppRole role_id |
+| `hermes_agent_github_identity_secret_id` | env `HERMES_GITHUB_VAULT_SECRET_ID` | `hermes` AppRole secret_id (root-only file) |
+| `hermes_agent_github_app_slug` | `jacobs-hermes-agent` | Exported as `HERMES_GITHUB_APP_SLUG` |
 
 Helper unit tests live with the skill in
 [nix-hermes](https://github.com/dryvist/nix-hermes)
