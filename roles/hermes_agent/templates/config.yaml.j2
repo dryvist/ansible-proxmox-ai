@@ -230,14 +230,37 @@ platforms:
   # never lands in this 0640 file. The `inbound` route is a zero-LLM demo of the
   # inter-agent trigger path: a signed POST to https://hermes.<sub>/webhooks/inbound
   # relays its rendered payload straight to Slack (deliver_only skips the agent).
-  # It inherits the global secret (no per-route secret). Real agent-triggering
-  # routes are added per concrete producer later — scaffolding a paid agent run
-  # with no producer is YAGNI.
+  # It inherits the global secret (no per-route secret).
+  # With hermes_agent_github_route_enabled the `github` route replaces it:
+  # signed pull_request events (/webhooks/github) that pass the filters below
+  # wake one agent run per PR (coalesced) with the review skill loaded. The
+  # skill posts its own review through gh; the run's final text is only logged.
   webhook:
     enabled: true
     extra:
       port: {{ hermes_agent_webhook_port }}
-{% if _slack_on %}
+{% if hermes_agent_github_route_enabled | bool %}
+      routes:
+        github:
+          events: ["pull_request"]
+          filters:
+            - field: repository.owner.login
+              equals: {{ hermes_agent_github_route_org | to_json }}
+            - field: action
+              in: {{ hermes_agent_github_route_actions | to_json }}
+            - field: pull_request.draft
+              not_equals: true
+            - field: sender.login
+              not_equals: {{ hermes_agent_github_route_bot_login | to_json }}
+          script: {{ hermes_agent_github_route_script_name | to_json }}
+          coalesce:
+            key: "{repository.full_name}#{pull_request.number}"
+            window_seconds: {{ hermes_agent_github_route_coalesce_window }}
+            max_wait_seconds: {{ hermes_agent_github_route_coalesce_max_wait }}
+          skills: {{ hermes_agent_github_route_skills | to_json }}
+          toolsets: {{ hermes_agent_github_route_toolsets | to_json }}
+          deliver: log
+{% elif _slack_on %}
       routes:
         inbound:
           deliver: slack
