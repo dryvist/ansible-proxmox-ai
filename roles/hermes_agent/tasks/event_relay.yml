@@ -1,0 +1,79 @@
+---
+# hermes-event-relay: queue -> local webhook receiver. Inert unless
+# hermes_agent_event_relay_enabled.
+- name: Assert the event relay inputs are present
+  ansible.builtin.assert:
+    that:
+      - hermes_agent_event_relay_queue_service | length > 0
+      - hermes_agent_event_relay_queue_url | length > 0
+      - hermes_agent_event_relay_queue_region | length > 0
+      - hermes_agent_event_relay_access_key_id | length > 0
+      - hermes_agent_event_relay_secret_access_key | length > 0
+      - hermes_agent_webhook_secret | length > 0
+    fail_msg: >-
+      hermes_agent_event_relay_enabled is true but a queue input
+      (HERMES_EVENT_RELAY_QUEUE_SERVICE, _QUEUE_URL, _QUEUE_REGION,
+      _ACCESS_KEY_ID, _SECRET_ACCESS_KEY) or hermes_agent_webhook_secret is
+      empty. Supply them or leave the flag false.
+    quiet: true
+  no_log: true
+  when: hermes_agent_event_relay_enabled | bool
+
+- name: Create the event relay venv with its queue client
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_uv_bin }} venv --allow-existing --python /usr/bin/python3 {{ hermes_agent_event_relay_venv }}
+  register: hermes_agent_event_relay_venv_create
+  changed_when: "'Creating' in hermes_agent_event_relay_venv_create.stderr"
+  when: hermes_agent_event_relay_enabled | bool
+
+- name: Install the queue client into the event relay venv
+  ansible.builtin.command:
+    cmd: >-
+      {{ hermes_agent_uv_bin }} pip install
+      --python {{ hermes_agent_event_relay_venv }}/bin/python boto3
+  register: hermes_agent_event_relay_pip
+  changed_when: >-
+    'Installed' in hermes_agent_event_relay_pip.stderr
+    or 'Uninstalled' in hermes_agent_event_relay_pip.stderr
+  notify: Restart hermes-event-relay
+  when: hermes_agent_event_relay_enabled | bool
+
+- name: Deploy the event relay script
+  ansible.builtin.copy:
+    src: hermes-event-relay.py
+    dest: "{{ hermes_agent_event_relay_script_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart hermes-event-relay
+  when: hermes_agent_event_relay_enabled | bool
+
+- name: Deploy the event relay inputs (root-only)
+  ansible.builtin.template:
+    src: hermes-event-relay.env.j2
+    dest: "{{ hermes_agent_event_relay_env_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart hermes-event-relay
+  when: hermes_agent_event_relay_enabled | bool
+
+- name: Deploy the event relay unit
+  ansible.builtin.template:
+    src: hermes-event-relay.service.j2
+    dest: /etc/systemd/system/hermes-event-relay.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart hermes-event-relay
+  when: hermes_agent_event_relay_enabled | bool
+
+- name: Enable and start the event relay
+  ansible.builtin.systemd:
+    name: hermes-event-relay
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: hermes_agent_event_relay_enabled | bool
