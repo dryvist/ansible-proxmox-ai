@@ -59,11 +59,18 @@
     # decoupled 2026-07-19). Both must be tuned entries with a real
     # context_window or their consumer compresses to death. De-duped so a
     # converge where they point at the same id doesn't double-list.
+    # The goal judge is a router ROLE (`judge`) rather than a git alias, so its
+    # backing model resolves through the role deployments; a name that is
+    # neither falls through unchanged and fails the safe-set check below.
+    _llm_router_goal_judge_role_target: >-
+      {{ llm_router_role_deployments
+         | selectattr('role', 'equalto', hermes_goal_judge_model)
+         | map(attribute='model') | list | first | default(hermes_goal_judge_model) }}
     _llm_router_required_safe_models: >-
       {{ [ai_default_model,
           llm_router_primary_model,
           llm_router_routine_model,
-          llm_router_model_group_aliases.get(hermes_goal_judge_model, hermes_goal_judge_model)]
+          llm_router_model_group_aliases.get(hermes_goal_judge_model, _llm_router_goal_judge_role_target)]
          | unique }}
 
 - name: Assert every consumer alias points at a model the serving host will actually serve
@@ -198,6 +205,15 @@
 # variable comparison) but before the render-parity check below.
 - name: Assert every advertised backend hostname resolves
   ansible.builtin.import_tasks: assert-endpoint-dns.yml
+
+# The registry against the canonical model-role map, and every role chain
+# against its egress value. Own files so a test can import exactly one assert
+# and prove its failure path.
+- name: Assert the registry serves exactly what the role map names
+  ansible.builtin.import_tasks: assert-llm-roles.yml
+
+- name: Assert every role chain respects its egress value
+  ansible.builtin.import_tasks: assert-egress.yml
 
 # Registry/render parity. LAST, deliberately: it renders the whole config
 # template, so every cheaper assert above should have already rejected a bad

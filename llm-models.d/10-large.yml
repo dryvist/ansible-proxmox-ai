@@ -67,74 +67,47 @@ _llm_registry_large:
       caveats: [long-prefill]
       measured: { tok_s: 17.7, date: 2026-08-30, source: mlx-benchmarks }
 
-  # THE ROUTINE TIER — second warm model, resident beside the primary; also
-  # the universal judge since 2026-08-15. docs/LLM_MODELS_REGISTRY_NOTES.md.
-  - client_model_id: mlx-community/Qwen3.6-35B-A3B-4bit
-    upstream_model_id: mlx-community/Qwen3.6-35B-A3B-4bit
-    provider: openai
-    tier: large
-    enabled: true
-    context_window: 65536
-    servable: true
-    # Mirrors this host's effectiveConcurrency (nix-ai) as of 2026-09-02:
-    # every resident large-tier worker runs --decode-concurrency 1
-    # --prompt-concurrency 1 (roles/llm_router/defaults/main/60-ops.yml).
-    max_parallel_requests: 1
-    serving_role: routine
-    stable_aliases:
-      - goal-judge
-    # `judge` is deliberately NOT added here yet: llm_router_role_deployments
-    # (55-roles.yml) already seeds a live DB role named `judge` pointing at
-    # this same entry, and unlike `lead`/`ocr` this collision is NOT purely
-    # cosmetic to fix — "judge" (and cheap/embed/ocr, tried in the same A5
-    # pass) also collides with common-word literals throughout
-    # tests/hermes_agent/*.py (goal-mode cron fixtures, assignee defaults)
-    # that have nothing to do with this registry, discovered via
-    # test_registry_retype_scan.py exploding on the attempt. Fixing that is a
-    # cross-cutting rename sweep outside this PR's scope — see the PR body
-    # and Vikunja follow-up.
-    hints:
-      speed: fast
-      quality: strong
-      best_for: [summarize, extract, classify, judge, tool-calling]
-      measured: { tok_s: 56.0, date: 2026-09-01, source: mlx-benchmarks }
-
-  # THE SMALL TIER — on-demand 9B, trivial-task tier an hourly note-capture
-  # pipe calls by id (held goal-judge until 2026-08-15). docs/LLM_MODELS_REGISTRY_NOTES.md.
-  - client_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
-    upstream_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
+  # THE ROUTINE TIER — second warm model, resident beside the primary (c=2).
+  # It backs the `fast`, `cheap`, `small`, `judge` and `recorder` roles of the
+  # canonical role map (dryvist.homelab.llm_roles); the converge-time assert in
+  # tasks/assert-llm-roles.yml holds this entry to that map.
+  - client_model_id: mlx-community/MiMo-V2.6-Distill-Qwen-9B-OptiQ-4bit
+    upstream_model_id: mlx-community/MiMo-V2.6-Distill-Qwen-9B-OptiQ-4bit
     provider: openai
     tier: large
     enabled: true
     context_window: 32768
     servable: true
-    # Mirrors this host's effectiveConcurrency (nix-ai) as of 2026-09-02:
-    # every resident large-tier worker runs --decode-concurrency 1
-    # --prompt-concurrency 1 (roles/llm_router/defaults/main/60-ops.yml).
-    max_parallel_requests: 1
-    serving_role: small
-    # `fast` and `cheap` are deliberately NOT added here yet. The
-    # tests/hermes_agent job-name collision `fast` originally had is fixed
-    # (renamed to "watchdog-fast"), but a SECOND, unrelated collision
-    # surfaced once it entered the protected alias set:
-    # tests/llm_router/test_registry_hints_projection.yml's own
-    # `_hint_speeds: [fast, medium, slow]` vocabulary fixture (hints.speed,
-    # a different field, same word) — genuinely unavoidable without renaming
-    # that vocabulary. `cheap` collides the same way `judge`/`embed`/`ocr`
-    # do (common words in tests/hermes_agent/*.py unrelated to this
-    # registry). All four deferred together; see the A5 PR body.
-    # `subagent` retargets onto THIS entry at the role_deployments layer
-    # (55-roles.yml — same target as `cheap`, was a dedicated ≥1M-context
-    # OpenRouter entry, now `long`, llm-models.d/50-openrouter.yml) but is
-    # not added as a stable_alias yet either, for the same reason.
+    # Mirrors llm_roles.models.<this>.concurrency, which the Mac worker is
+    # launched with.
+    max_parallel_requests: 2
+    serving_role: routine
+    stable_aliases:
+      # Synonym kept for one release; the judge is the `judge` role now.
+      - goal-judge
     hints:
       speed: fast
       quality: routine
-      best_for: [classify, extract, short-summary]
-      # The 32k window above is enforced pre-call: a large transcript is
-      # refused here rather than truncated. Send it a slice, not a session.
+      best_for: [classify, extract, short-summary, judge]
+      # The 32k window is enforced pre-call: a large transcript is refused
+      # here rather than truncated. Send it a slice, not a session.
       caveats: [small-window]
-      measured: { tok_s: 68.5, date: 2026-07-11, source: mlx-benchmarks }
+
+  # Retired from the Mac serving set by the canonical role map; kept disabled
+  # so the id stays catalogued until the synonym release ends.
+  - client_model_id: mlx-community/Qwen3.6-35B-A3B-4bit
+    upstream_model_id: mlx-community/Qwen3.6-35B-A3B-4bit
+    provider: openai
+    tier: large
+    enabled: false
+    context_window: 65536
+
+  - client_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
+    upstream_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
+    provider: openai
+    tier: large
+    enabled: false
+    context_window: 32768
 
   - client_model_id: mlx-community/Unlimited-OCR-bf16
     upstream_model_id: mlx-community/Unlimited-OCR-bf16

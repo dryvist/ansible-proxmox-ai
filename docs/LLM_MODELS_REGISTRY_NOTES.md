@@ -53,6 +53,22 @@ the worker actually admits. Before changing it, confirm from the worker's own
 command line what window the running process was started with, then set this to
 that number. If they now agree at 131,072, this note goes away with the edit.
 
+## The canonical role map (`dryvist.homelab.llm_roles`)
+
+Which models the Macs serve, each model's concurrency and each role's egress
+(`none`, `estate`, `zdr`, `any`) come from the shared role map, loaded as
+`llm_roles` by `tasks/registry.yml`. The `llm_router_primary_model`,
+`_routine_model`, `_small_model` and `_ocr_model` selectors read it
+(roles `best`, `fast`, `small`, `ocr`). The Mac entries in `llm-models.d/`
+stay plain data, and `tasks/assert-llm-roles.yml` fails the converge when they
+differ from the map. `tasks/assert-egress.yml` fails it when a role chain
+reaches past its egress value: `none` is Mac-local rungs, `estate` adds the
+home-lab serving tiers, `zdr` adds rungs with an asserted ZDR flag (or rungs a
+`zdr_only` key holding the role never carries). The `recorder` role is
+`estate`: the GPU rung, then the Studio fast model, message logging off.
+`goal-judge` remains a synonym alias for one release; the judge is the `judge`
+role. The two sections below describe the retired Qwen models and are history.
+
 ## The routine tier (`mlx-community/Qwen3.6-35B-A3B-4bit`)
 
 The second warm model, resident beside the primary rather than swapping

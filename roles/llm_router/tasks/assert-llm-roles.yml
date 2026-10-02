@@ -1,0 +1,68 @@
+---
+# The registry against the canonical model-role map (`llm_roles`, loaded by
+# tasks/registry.yml from dryvist.homelab.llm_roles).
+#
+# The Mac entries in llm-models.d/ stay plain data — the alias generator, the
+# retype scan and the Hermes tests read them without Ansible — so the map is
+# ENFORCED against them rather than generating them. Without this a map edit
+# (a new resident model, a concurrency change) would reach the Macs and leave
+# the router advertising a registry that no longer matches what they serve.
+#
+# Fails the converge when:
+#   - a model the map names is not an enabled, servable large-tier entry;
+#   - that entry's max_parallel_requests differs from the map's concurrency;
+#   - the servable set differs from the server class's resident + swap models;
+#   - a role names a model the map does not define.
+
+- name: Assert the registry serves exactly what the role map names
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_roles_unmatched | length == 0
+      - _llm_roles_concurrency_drift | length == 0
+      - _llm_roles_servable_extra | length == 0
+      - _llm_roles_servable_missing | length == 0
+      - _llm_roles_dangling | length == 0
+    fail_msg: >-
+      The registry and the role map (dryvist.homelab.llm_roles) disagree.
+      Map models with no enabled servable large-tier entry:
+      {{ _llm_roles_unmatched | join(', ') }}.
+      Entries whose max_parallel_requests differs from the map's concurrency:
+      {{ _llm_roles_concurrency_drift | join(', ') }}.
+      Servable entries the server class does not serve:
+      {{ _llm_roles_servable_extra | join(', ') }}.
+      Models the server class serves with no servable entry:
+      {{ _llm_roles_servable_missing | join(', ') }}.
+      Roles naming a model the map does not define:
+      {{ _llm_roles_dangling | join(', ') }}.
+      Edit llm-models.d/10-large.yml to match the map; the map is the source.
+    success_msg: >-
+      Registry matches the role map ({{ llm_roles.models | length }} models,
+      {{ llm_roles.roles | length }} roles).
+  vars:
+    _llm_roles_servable_ids: >-
+      {{ (llm_roles.hosts.server.resident + llm_roles.hosts.server.swap)
+         | map('extract', llm_roles.models) | map(attribute='id') | unique | list }}
+    _llm_roles_entries: >-
+      {{ llm_router_large_models | selectattr('servable', 'defined')
+         | selectattr('servable') | list }}
+    _llm_roles_unmatched: >-
+      {{ llm_roles.models.values() | map(attribute='id')
+         | difference(_llm_roles_entries | map(attribute='client_model_id') | list) | list }}
+    _llm_roles_concurrency_drift: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- for m in llm_roles.models.values() -%}
+      {%- for e in _llm_roles_entries
+            if e.client_model_id == m.id
+               and (e.max_parallel_requests | default(none)) != m.concurrency -%}
+      {%- set ns.out = ns.out + [m.id] -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.out }}
+    _llm_roles_servable_extra: >-
+      {{ llm_router_servable_models | difference(_llm_roles_servable_ids) | list }}
+    _llm_roles_servable_missing: >-
+      {{ _llm_roles_servable_ids | difference(llm_router_servable_models) | list }}
+    _llm_roles_dangling: >-
+      {{ llm_roles.roles.values() | map(attribute='model') | reject('none')
+         | difference(llm_roles.models.keys() | list) | list }}
