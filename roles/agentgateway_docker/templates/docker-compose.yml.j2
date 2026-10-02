@@ -26,6 +26,17 @@ services:
       - "{{ agentgateway_docker_metrics_port }}:{{ agentgateway_docker_metrics_port }}"
     volumes:
       - "{{ agentgateway_docker_data_dir }}/config.yaml:/config.yaml:ro"
+{% if agentgateway_docker_qdrant_mcp_enabled | bool
+      and agentgateway_docker_qdrant_api_key | length > 0 %}
+    # Start after the memory sidecar answers MCP so the gateway's first /memory
+    # request does not land in the sidecar's startup window (uvx resolve +
+    # embedding-model load). required: false keeps the gateway (every other
+    # route) starting even if the sidecar never becomes healthy.
+    depends_on:
+      mcp-qdrant:
+        condition: service_healthy
+        required: false
+{% endif %}
 {% if agentgateway_docker_vikunja_mcp_enabled | bool
       and agentgateway_docker_vikunja_read_token | length > 0 %}
 
@@ -99,6 +110,28 @@ services:
       QDRANT_URL: "{{ agentgateway_docker_qdrant_url }}"
       QDRANT_API_KEY: "{{ agentgateway_docker_qdrant_api_key }}"
       COLLECTION_NAME: "{{ agentgateway_docker_qdrant_mcp_collection }}"
+    # mcp-server-qdrant builds its embedding model in the server constructor,
+    # before it listens, so the port opening means the model is loaded. Healthy
+    # = a real MCP initialize round-trip succeeds, not just a TCP accept. The
+    # long start_period covers the first uvx resolve + model download.
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import json, urllib.request as u
+          u.urlopen(u.Request(
+              "http://localhost:{{ agentgateway_docker_qdrant_mcp_port }}/mcp/",
+              data=json.dumps(dict(jsonrpc="2.0", id=1, method="initialize", params=dict(
+                  protocolVersion="2025-03-26", capabilities={},
+                  clientInfo=dict(name="healthcheck", version="1")))).encode(),
+              headers={"Content-Type": "application/json",
+                       "Accept": "application/json, text/event-stream"}), timeout=5)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
     volumes:
       # Cache the uvx-resolved package + fastembed model across restarts.
       - mcp_qdrant_cache:/root/.cache

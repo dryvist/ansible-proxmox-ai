@@ -118,6 +118,16 @@
 # into a single rewrite of that helper (tracked separately) rather than kept
 # as two patches that would both try to edit it.
 
+# Both patches below target the BUNDLED provider path
+# (plugins/memory/hindsight/__init__.py under hermes_agent_install_dir), which
+# stops existing once hermes_agent_version bumps to the release that replaces
+# it with the catalog plugin (vectorize-io/hindsight, subdir
+# hindsight-integrations/hermes, pinned by that hermes-agent tag's own
+# plugin-catalog/hindsight.yaml — no separate Renovate tracking needed for the
+# plugin ref, it travels with hermes_agent_version). At that point both tasks
+# must be DELETED, not re-pathed: read at the catalog plugin's v1.0.1 source
+# (sha 176f8c2de1369f569c489b831d143b78128b5535) before doing either.
+#
 # Auto-recall (the per-turn prefetch injected into context before the model
 # sees a message) swallows every failure at DEBUG and returns "" — recall
 # silently degrades to "no memories" with no signal distinguishable from
@@ -148,6 +158,18 @@
 # textually-identical join(timeout=3.0) at shutdown is deliberately left
 # alone; extending drain-on-shutdown isn't the fix and isn't user-facing.
 # See hermes_agent_hindsight_prefetch_timeout_seconds for the full writeup.
+#
+# DO NOT carry this patch forward onto the catalog plugin. Read at v1.0.1
+# (sha 176f8c2de1369f569c489b831d143b78128b5535): __init__.py still hardcodes
+# self._join_prefetch(3.0, log=True) at the same call site, and the plugin's
+# only prefetch-related config keys (prefetch_waits_for_retain,
+# prefetch_retain_drain_timeout) gate a different wait — whether prefetch
+# blocks for the just-completed retain to become recall-visible — not this
+# join. No config key exposes the join timeout itself (upstream:
+# NousResearch/hermes-agent#4664). Delete this task and
+# hermes_agent_hindsight_prefetch_timeout_seconds when hermes_agent_version
+# bumps past the bundled-provider cutover; do not re-patch the catalog
+# plugin's copy to keep the override alive.
 - name: Patch Hindsight prefetch join timeout off the hardcoded 3.0s
   # Rewritten: upstream refactored the debug-message-plus-join shape this
   # used to anchor on into a shared helper, _join_prefetch(self, timeout,

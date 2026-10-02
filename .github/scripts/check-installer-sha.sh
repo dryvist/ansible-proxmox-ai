@@ -34,6 +34,11 @@ trap "rm -rf '$workdir'" EXIT
 
 fail=0
 
+# Authenticated requests get their own rate-limit quota; anonymous fetches from
+# shared runners are throttled with 429. Local runs without a token stay anonymous.
+auth=()
+[[ -n "${GITHUB_TOKEN:-}" ]] && auth=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+
 for pin in "${PINS[@]}"; do
   IFS='|' read -r file version_var sha_var url_tmpl <<<"$pin"
 
@@ -62,7 +67,7 @@ for pin in "${PINS[@]}"; do
   # server sent and every check fails with a plausible-looking mismatch.
   tmp="${workdir}/$(basename "$file").installer"
 
-  if ! curl -fsSL --max-time 30 --retry 3 --retry-delay 2 -o "$tmp" "$url"; then
+  if ! curl -fsSL ${auth[@]+"${auth[@]}"} --max-time 30 --retry 3 --retry-delay 2 -o "$tmp" "$url"; then
     echo "FAIL ${version_var}=${version}: cannot fetch ${url}" >&2
     echo "     A version whose installer does not exist is not a version to pin." >&2
     fail=1
