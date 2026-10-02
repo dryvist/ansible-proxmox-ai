@@ -35,17 +35,19 @@ All 18 pre-reframe cards, docs-sync included, are now direct-cron jobs — see
 | Job | Schedule (UTC) | Deliver |
 | --- | --- | --- |
 | `homelab-ai-fabric-status` | `4 8-22 * * *` | `#hermes-issues` |
-| `hermes-nightly-wiki` | `0 2 * * *` | `#hermes-all` |
+| `hermes-nightly-wiki` | `0 2 * * *` | `#hermes-all` (paused, wall clock) |
 | `daily-summary` | `0 12 * * *` | `#hermes-all` |
-| `zammad-review` | `41 */2 * * *` | `#hermes-all` |
-| `splunk-triage` | `7 * * * *` | `#hermes-all` |
-| `splunk-security` | `22 */6 * * *` | `#hermes-all` |
+| `zammad-review` | `41 */2 * * *` | `#hermes-all` (paused, wall clock) |
+| `splunk-triage` | `7 * * * *` | `#hermes-all` (paused, wall clock) |
+| `splunk-security` | `22 */6 * * *` | `#hermes-all` (paused, wall clock) |
 | `splunk-parsing` | `37 2 * * *` | `#hermes-all` |
 | `splunk-deepdive` | `11 3 * * *` | `#hermes-all` |
 | `github-triage` | `26 */6 * * *` | `#hermes-all` |
 | `bot-pr-triage` | `43 */6 * * *` | `#hermes-all` |
-| `review` | `0 */8 * * *` | `#hermes-all` |
-| `anomaly-hunt` | `13 */12 * * *` | `#hermes-all` |
+| `review` | `0 */8 * * *` | `#hermes-all` (paused, wall clock) |
+| `anomaly-hunt` | `13 */12 * * *` | `#hermes-all` (paused, wall clock) |
+| `backlog-sweep` | `41 */4 * * *` | `#hermes-all` (paused, wall clock) |
+| `repo-scorecard` | `19 9 * * 1` (weekly) | `#hermes-all` (paused, wall clock) |
 | `docs-study` | `43 5 * * *` | `#hermes-all` |
 | `ai-news` | `19 0,12,16,19 * * *` | `#hermes-noise` |
 | `daily-innovation` | `47 6 * * *` | `#hermes-noise` |
@@ -62,12 +64,13 @@ is false is never created — the role runs inert, never errors.
 `homelab-ai-fabric-status` splits its report by outcome (all-clear to the
 noise channel, a break to issues) — restored as **prompt text**, not a
 `--deliver` flag: `--deliver` (`#hermes-issues`, the default/breaking-run
-destination) takes exactly one fixed target, so the shared reporting footer
-(`templates/direct-cron-footer.md.j2`, appended to every direct-cron job's
-prompt) instructs the model to self-route to the noise channel via the
-terminal command `hermes send` when the run is a genuine all-clear, ending
-with `[SILENT]` so `--deliver` does not ALSO post it. `terse_when_healthy`
-(one-line "All systems operational" on that branch) is restored the same way.
+destination) takes exactly one fixed target, so the catalog's
+quiet-when-healthy reporting footer (`hermes-direct-cron-footer-quiet.md`,
+appended to that job's prompt; every other job gets
+`hermes-direct-cron-footer.md`) instructs the model to self-route to the
+noise channel, as one "All systems operational" line, via the terminal
+command `hermes send` when the run is a genuine all-clear, ending with
+`[SILENT]` so `--deliver` does not ALSO post it.
 
 `docs-sync` was initially kept as the one surviving Kanban card, with a
 **per-run** (not stable) idempotency key to solve the enqueuer's archive

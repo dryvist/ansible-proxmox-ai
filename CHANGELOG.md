@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.58.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.57.1...v0.58.0) (2026-09-26)
+
+
+### Features
+
+* **hindsight_bank_dr:** nightly logical bank export + restore drill ([#940](https://github.com/dryvist/ansible-proxmox-ai/issues/940)) ([251947b](https://github.com/dryvist/ansible-proxmox-ai/commit/251947b505cf6528bae4196d1399b38ced41caf7))
+* **hindsight_docker:** add 0.10.1 migration and worker lifecycle readiness ([#935](https://github.com/dryvist/ansible-proxmox-ai/issues/935)) ([be5d6c6](https://github.com/dryvist/ansible-proxmox-ai/commit/be5d6c6fcb4fb4f6af324039202a07eec29e2980))
+* **llama_cpp:** serve embedder/reranker on GPU + CPU pool ([#944](https://github.com/dryvist/ansible-proxmox-ai/issues/944)) ([d43e315](https://github.com/dryvist/ansible-proxmox-ai/commit/d43e3156c5fd1aebe31ee1ee480d5dcaf88431c5))
+
+
+### Bug Fixes
+
+* **llm_router:** derive vllm prefill-window cap from the local-rung first-byte budget ([#955](https://github.com/dryvist/ansible-proxmox-ai/issues/955)) ([2f1272f](https://github.com/dryvist/ansible-proxmox-ai/commit/2f1272f01b4272d9115badd0bfc927bef95f6207))
+
+
+### Performance
+
+* **llm_router:** run consumer seeding once per converge ([#949](https://github.com/dryvist/ansible-proxmox-ai/issues/949)) ([9d053c3](https://github.com/dryvist/ansible-proxmox-ai/commit/9d053c3808497d9677e69ce08b0722f521a56377))
+
+## [0.57.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.57.0...v0.57.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* **inventory:** guard load_tofu_ssh_ready against a missing failed key ([#945](https://github.com/dryvist/ansible-proxmox-ai/issues/945)) ([0da1e97](https://github.com/dryvist/ansible-proxmox-ai/commit/0da1e9712f991b3740367d85e6b59c5aff66564e))
+
+## [0.57.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.56.0...v0.57.0) (2026-09-26)
+
+
+### Features
+
+* **hindsight_docker:** OTLP traces + webhook env vars ([#936](https://github.com/dryvist/ansible-proxmox-ai/issues/936)) ([bb0284d](https://github.com/dryvist/ansible-proxmox-ai/commit/bb0284de2a8282dec16eadefc3f4663402f4d067))
+* **inventory:** compose tofu_ssh_container with the tofu-proxmox ansible_connection field ([#934](https://github.com/dryvist/ansible-proxmox-ai/issues/934)) ([380c4c0](https://github.com/dryvist/ansible-proxmox-ai/commit/380c4c0e5de65888c4d42b24944fb5ab56a13e52))
+
+
+### Bug Fixes
+
+* **agentgateway_docker:** run the Vikunja MCP sidecar stateful ([#933](https://github.com/dryvist/ansible-proxmox-ai/issues/933)) ([4a5c251](https://github.com/dryvist/ansible-proxmox-ai/commit/4a5c2518e01bbbef0520fdc7802a15d4beaeed35))
+* **ci:** raise Molecule Docker API client timeout to 300s ([187a233](https://github.com/dryvist/ansible-proxmox-ai/commit/187a23312ae4d51511e362958a8ad4b660562d10))
+* **ci:** skip Molecule final destroy on ephemeral CI runner ([09f5726](https://github.com/dryvist/ansible-proxmox-ai/commit/09f572694b876e373edb5265ab74b2719f775554))
+* **ci:** skip Molecule's final destroy on the ephemeral CI runner ([778d04d](https://github.com/dryvist/ansible-proxmox-ai/commit/778d04db36fa41e8aa45cb3777b51387092c4a7f))
+* **llm_router:** stop hindsight route from reaching a ZDR-false model ([#937](https://github.com/dryvist/ansible-proxmox-ai/issues/937)) ([b795209](https://github.com/dryvist/ansible-proxmox-ai/commit/b79520942b247b6468529220c94ff3f9dda60939))
+
 ## [0.56.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.55.0...v0.56.0) (2026-09-24)
 
 

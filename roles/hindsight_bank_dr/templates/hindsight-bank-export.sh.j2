@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Nightly logical export of EVERY Hindsight bank (enumerated live — never a
+# hardcoded list) to the dedicated RustFS bucket, date-prefixed. Uses
+# `hindsight-admin export-bank` inside the already-running container (no
+# embeddings in the archive, so it is portable across an embedding-model
+# change — see the vendor's hindsight_api/admin/cli.py).
+set -euo pipefail
+
+CONTAINER="{{ hindsight_bank_dr_container_name }}"
+API_PORT="{{ hindsight_bank_dr_api_port }}"
+BUCKET="{{ hindsight_bank_dr_s3_bucket }}"
+PREFIX="{{ hindsight_bank_dr_s3_prefix }}"
+STAGING="{{ hindsight_bank_dr_staging_dir }}/export"
+RETENTION_DAYS="{{ hindsight_bank_dr_retention_days }}"
+DATE_STAMP="$(date -u +%Y-%m-%d)"
+START_EPOCH=$(date +%s)
+
+# Optional healthchecks.io deadman ping (same pattern as roles/postgres's
+# pg-backup.sh): "<url>" on exit 0, "<url>/fail" on any other exit.
+HC="{{ hindsight_bank_dr_export_healthcheck_url }}"
+ping_hc() { [ -n "$HC" ] && curl -fsS -m 10 --retry 3 -o /dev/null "$1" >/dev/null 2>&1 || true; }
+on_exit() {
+  local rc=$?
+  if [ "$rc" -eq 0 ]; then ping_hc "$HC"; else ping_hc "$HC/fail"; fi
+  exit "$rc"
+}
+trap on_exit EXIT
+
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION / S3_ENDPOINT
+# arrive as real process environment variables via the unit's
+# EnvironmentFile= (see hindsight-bank-dr.env.j2) — never baked into this
+# rendered script, so the credential never lands in a checked-in artifact.
+
+mkdir -p "$STAGING"
+rm -f "${STAGING:?}"/*.zip 2>/dev/null || true
+
+# Enumerate every bank live via the same REST call the vendor CLI's own
+# `bank list` uses (hindsight-cli src/api.rs list_agents): page
+# GET /v1/default/banks?limit=&offset= until every bank has been seen. Never a
+# hardcoded bank list, so a bank created after this role was written is still
+# exported the same night.
+declare -a BANK_IDS=()
+BANK_TOTAL=0
+OFFSET=0
+LIMIT=100
+while :; do
+  PAGE=$(curl -fsS "http://127.0.0.1:${API_PORT}/v1/default/banks?limit=${LIMIT}&offset=${OFFSET}")
+  # Bash's array-length expansion opens with the same two characters Jinja
+  # uses to open a comment, which the templating engine that renders this
+  # file misparses as an unterminated comment -- so every count in this
+  # script comes from jq instead of an array-length expansion.
+  FETCHED=$(echo "$PAGE" | jq -r '.banks | length')
+  if [ "$FETCHED" -eq 0 ]; then break; fi
+  mapfile -t PAGE_IDS < <(echo "$PAGE" | jq -r '.banks[].bank_id')
+  BANK_IDS+=("${PAGE_IDS[@]}")
+  BANK_TOTAL=$((BANK_TOTAL + FETCHED))
+  TOTAL=$(echo "$PAGE" | jq -r '.total')
+  OFFSET=$((OFFSET + FETCHED))
+  if [ "$OFFSET" -ge "$TOTAL" ]; then break; fi
+done
+
+EXPORTED=0
+FAILED=0
+declare -a FAILED_BANKS=()
+
+for BANK in "${BANK_IDS[@]:-}"; do
+  [ -n "$BANK" ] || continue
+  ZIP="${BANK}.zip"
+  if docker exec "$CONTAINER" hindsight-admin export-bank --bank "$BANK" --output "/tmp/${ZIP}" \
+    && docker cp "${CONTAINER}:/tmp/${ZIP}" "${STAGING}/${ZIP}" \
+    && aws --endpoint-url "$S3_ENDPOINT" s3 cp "${STAGING}/${ZIP}" \
+         "s3://${BUCKET}/${PREFIX}/${DATE_STAMP}/${ZIP}"; then
+    EXPORTED=$((EXPORTED + 1))
+  else
+    FAILED=$((FAILED + 1))
+    FAILED_BANKS+=("$BANK")
+  fi
+  docker exec "$CONTAINER" rm -f "/tmp/${ZIP}" 2>/dev/null || true
+  rm -f "${STAGING}/${ZIP}"
+done
+
+# Retention: delete date prefixes older than the window. Script-side prune
+# (see defaults/main.yml for why this repo's bucket lifecycle template can't
+# do it), same idiom as roles/postgres's pg-backup.sh find -mtime prune.
+CUTOFF="$(date -u -d "-${RETENTION_DAYS} days" +%Y-%m-%d)"
+for OLD_PREFIX in $(aws --endpoint-url "$S3_ENDPOINT" s3 ls "s3://${BUCKET}/${PREFIX}/" \
+    | awk '{print $2}' | tr -d '/'); do
+  if [[ "$OLD_PREFIX" < "$CUTOFF" ]]; then
+    aws --endpoint-url "$S3_ENDPOINT" s3 rm --recursive "s3://${BUCKET}/${PREFIX}/${OLD_PREFIX}/"
+  fi
+done
+
+END_EPOCH=$(date +%s)
+RESULT="pass"
+# Pass requires both zero failures AND every enumerated bank actually
+# uploaded — a script that silently walks an empty BANK_IDS (e.g. a
+# regression in the enumeration step above) must not report success just
+# because nothing failed.
+[ "$FAILED" -eq 0 ] && [ "$EXPORTED" -eq "$BANK_TOTAL" ] || RESULT="fail"
+FAILED_JOINED="$(IFS=,; echo "${FAILED_BANKS[*]:-}")"
+
+# One structured JSON line to stdout -> journald (SyslogIdentifier below)
+# -> the same rsyslog/Cribl route the hindsight container's own logs already
+# use, so an alert can key on export age/failure without a new log pipeline.
+printf '{"event":"hindsight_bank_export","result":"%s","banks_total":%d,"exported":%d,"failed":%d,"failed_banks":"%s","duration_seconds":%d,"bucket":"%s","date":"%s"}\n' \
+  "$RESULT" "$BANK_TOTAL" "$EXPORTED" "$FAILED" "$FAILED_JOINED" \
+  "$((END_EPOCH - START_EPOCH))" "$BUCKET" "$DATE_STAMP"
+
+[ "$RESULT" = "pass" ]

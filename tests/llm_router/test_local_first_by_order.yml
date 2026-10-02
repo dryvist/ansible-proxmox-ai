@@ -39,6 +39,7 @@
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
     hermes_brain_model: hermes-default
+    hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: goal-judge
     bao_local_llm_secrets:
       OPENROUTER_API_KEY: sk-or-fixture
@@ -141,12 +142,15 @@
               + llm_router_role_deployments | map(attribute='fallbacks') | flatten) | unique | list }}
         _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
         _private: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}"
-        # Every key x role it names: the chain must be a subset of the key's models.
+        # Every key x role it names: the chain must be a subset of the key's
+        # models — minus, for a zdr_only key, the ZDR-false groups that
+        # 59-key-scopes.yml removes on purpose.
         _uncovered: >-
           {%- set out = [] -%}
           {%- for k in llm_router_virtual_keys -%}
+          {%- set _excluded = llm_router_zdr_false_group_names if (k.zdr_only | default(false)) else [] -%}
           {%- for d in llm_router_role_deployments if d.role in k.models -%}
-          {%- if ([d.model] + d.fallbacks) | difference(k.models) | length > 0 -%}
+          {%- if ([d.model] + d.fallbacks) | reject('in', _excluded) | difference(k.models) | length > 0 -%}
           {%- set _ = out.append(k.alias ~ ':' ~ d.role) -%}
           {%- endif -%}
           {%- endfor -%}

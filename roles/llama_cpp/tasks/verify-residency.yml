@@ -1,0 +1,61 @@
+---
+# Included from tasks/main.yml, after the service is verified listening. Its
+# own file so a change here does not also churn main.yml's diff, same reason
+# guards.yml is separate.
+#
+# Router mode loads a model on its first request, not at process start
+# (upstream tools/server/README.md, "By default, the model will be loaded
+# automatically if it's not loaded"), so nothing is resident yet immediately
+# after the checks above. `--models-max` caps how many stay resident
+# together; a host whose declared set does not actually fit inside that cap
+# (or inside the card's real VRAM/RAM, independent of the cap) evicts an
+# earlier model the moment a later one is requested — silently, since the
+# router keeps answering, just with fewer models than declared. Load every
+# declared model once here, in order, then read residency back and fail
+# loudly if an earlier one was evicted to make room for a later one — the
+# only direct proof that this host's llama_cpp_models_max and ctx_size
+# choices actually fit together (upstream: "POST /models/load", "GET
+# /models").
+- name: Load every declared model once so residency can be checked
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llama_cpp_api_port }}/models/load"
+    method: POST
+    body_format: json
+    body:
+      model: "{{ item.name }}"
+  loop: "{{ llama_cpp_models_present }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: llama_cpp_service_enabled
+
+- name: Read back which models are actually resident
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llama_cpp_api_port }}/models?reload=1"
+    return_content: true
+  register: llama_cpp_models_status
+  when: llama_cpp_service_enabled
+
+- name: Assert every declared model fits and stayed resident together
+  ansible.builtin.assert:
+    that:
+      - (llama_cpp_models_present | map(attribute='name') | list
+         | difference(_llama_cpp_resident_model_ids)) | length == 0
+    fail_msg: >-
+      {{ llama_cpp_models_present | map(attribute='name') | list
+         | difference(_llama_cpp_resident_model_ids) }} did not stay resident
+      after every declared model on this host was loaded once —
+      llama_cpp_models_max ({{ llama_cpp_models_max }}) or this host's
+      VRAM/RAM does not actually cover the declared set at its configured
+      ctx_size. Do not raise llama_cpp_models_max to paper over this without
+      checking the card/host's free memory first (nvidia-smi on a GPU guest);
+      the fix is to lower ctx_size, drop a model, or confirm there is
+      genuinely enough room and only then raise the cap.
+    success_msg: >-
+      All {{ llama_cpp_models_present | length }} declared model(s) stayed
+      resident together.
+  vars:
+    _llama_cpp_resident_model_ids: >-
+      {{ (llama_cpp_models_status.json.data | default([]))
+         | selectattr('status.value', 'equalto', 'loaded')
+         | map(attribute='id') | list }}
+  when: llama_cpp_service_enabled

@@ -1,0 +1,101 @@
+---
+# The consumer-seeding play (virtual keys, budgets, caller-facing roles)
+# gates on pool-member reachability the same way the rolling router play
+# does, so run_once selection cannot land on a member the gate already
+# knows is down — and a total-outage failure fails the run instead of
+# silently seeding nothing (#949 review, BLOCKER).
+#
+# Structural only, like test_syslog_route_outside_rolling_play.yml: this
+# parses the committed playbooks/llm-serving.yml rather than executing it
+# against real hosts (there are none in CI). "Seeding cannot run on a host
+# the gate failed" is proven structurally too: pre_tasks always finish —
+# including every end_host call — before Ansible even starts a play's
+# tasks: list, so a task placed in tasks: (never pre_tasks:) can only ever
+# run on a host the gate let through.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_seed_play_reachability_gate.yml -i localhost, -c local
+
+- name: Verify the consumer-seeding play gates on reachability before run_once selection
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _plays: "{{ lookup('file', playbook_dir ~ '/../../playbooks/llm-serving.yml') | from_yaml }}"
+    _names: "{{ _plays | map(attribute='name') | list }}"
+    _router_name: "Configure the LiteLLM router (fabric front door)"
+    _seed_name: "Seed llm_router virtual keys, budgets, and caller-facing roles"
+    _seed: "{{ _plays | selectattr('name', 'equalto', _seed_name) | list }}"
+    _seed_idx: "{{ _names.index(_seed[0].name) if _seed | length == 1 else -1 }}"
+    _seed_pre_tasks: "{{ _seed[0].pre_tasks | default([]) if _seed | length == 1 else [] }}"
+    # Bracket notation, not selectattr('ansible.builtin.import_tasks', ...):
+    # a dotted selectattr/map(attribute=...) name is a NESTED lookup
+    # (item.ansible.builtin.import_tasks), not a literal dict key — the same
+    # reason test_syslog_route_outside_rolling_play.yml bracket-indexes
+    # ['ansible.builtin.include_role'] instead of selecting on it.
+    _gate_pre_task: >-
+      {{ _seed_pre_tasks
+         | selectattr('name', 'equalto', 'Gate on pool-member reachability')
+         | list }}
+    _seed_task: "{{ _seed[0].tasks[0] if _seed | length == 1 else {} }}"
+    _seed_task_names: "{{ _seed[0].tasks | map(attribute='name') | list if _seed | length == 1 else [] }}"
+  tasks:
+    - name: The seed play exists exactly once, after the rolling router play, and no longer carries play-level run_once
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _seed | length == 1
+          - _seed_idx | int > _names.index(_router_name)
+          - not (_seed[0].run_once | default(false))
+        fail_msg: "seed play: {{ _seed }}"
+
+    - name: The seed play's pre_tasks import the shared reachability gate
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _gate_pre_task | length == 1
+          - _gate_pre_task[0]['ansible.builtin.import_tasks'] | default('') == 'tasks/pool_member_gate.yml'
+        fail_msg: >-
+          playbooks/llm-serving.yml's "{{ _seed_name }}" play has no
+          pool_member_gate.yml pre_tasks import — run_once selection could
+          land on a member the rolling play already end_host'd as
+          unreachable.
+
+    - name: Consumer seeding runs only in tasks (never pre_tasks), so a gated-out host can never reach it
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _seed_pre_tasks | map('string') | select('search', 'seed-consumers') | list | length == 0
+          - _seed_task_names | select('search', 'seeding') | list | length == 1
+          - _seed_task.block[0]['ansible.builtin.include_role']['tasks_from'] | default('') == 'seed-consumers.yml'
+        fail_msg: "seed play tasks: {{ _seed[0].tasks }}"
+
+    - name: The seeding task itself is run_once, so it lands on exactly one gate-surviving member
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _seed_task.run_once | default(false) | bool
+        fail_msg: "seed task: {{ _seed_task }}"
+
+- name: Verify a total reachability-gate failure fails the run instead of silently seeding nothing
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _plays: "{{ lookup('file', playbook_dir ~ '/../../playbooks/llm-serving.yml') | from_yaml }}"
+    _names: "{{ _plays | map(attribute='name') | list }}"
+    _seed_idx: "{{ _names.index('Seed llm_router virtual keys, budgets, and caller-facing roles') }}"
+    _gate_check_play: "{{ _plays[_seed_idx | int + 1] }}"
+    _gate_check_task: "{{ _gate_check_play.tasks[0] | default({}) }}"
+  tasks:
+    - name: A localhost play immediately after seeding records a loud failure when the whole pool failed the gate
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _gate_check_play.hosts == 'localhost'
+          - "'site_isolated_failures' in (_gate_check_task | string)"
+          - "'llm_router_group' in (_gate_check_task['when'] | string)"
+          - "'pool_member_probe' in (_gate_check_task['when'] | string)"
+          - "'pong' in (_gate_check_task['when'] | string)"
+        fail_msg: >-
+          Expected a localhost play right after the seed play that sets
+          site_isolated_failures when no llm_router_group member's
+          pool_member_probe reports 'pong' — got: {{ _gate_check_play }}

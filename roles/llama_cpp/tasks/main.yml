@@ -185,10 +185,15 @@
 # --- Model presence -----------------------------------------------------------
 # This guest never downloads model weights: it is told where they are and how
 # to load them. The models directory is populated out of band (a read-only
-# mount of shared model storage), so a declared GGUF that is not there yet is
-# reported and left out of llama_cpp_models_present — and therefore out of
-# the rendered --models-preset (templates/llama-cpp-models.ini.j2), not
-# fetched and not a failure.
+# mount of shared model storage) — there is no seed job in this repo that
+# lands a GGUF there for you, and nothing else re-checks a declared entry
+# against that mount. A declared-but-absent GGUF used to be reported and
+# quietly left out of llama_cpp_models_present (and so out of the rendered
+# --models-preset) rather than failing: guards.yml above only checks the
+# name against the registry, not the file against the mount, so that combo
+# let a registry-enabled model converge "successfully" while 404ing at the
+# backend for every caller — fail here instead, loudly, naming exactly which
+# GGUF is missing and where it needs to land.
 - name: Check which declared model GGUFs are present
   ansible.builtin.stat:
     path: "{{ llama_cpp_models_dir }}/{{ item.gguf }}"
@@ -198,20 +203,24 @@
     label: "{{ item.name }} ({{ item.gguf }})"
   register: llama_cpp_gguf_stat
 
-- name: Serve only the models whose GGUF is present
-  ansible.builtin.set_fact:
-    llama_cpp_models_present: >-
-      {{ llama_cpp_gguf_stat.results | selectattr('stat.exists') | map(attribute='item') | list }}
+- name: Assert every declared model's GGUF is present on the shared mount
+  ansible.builtin.assert:
+    that:
+      - llama_cpp_gguf_stat.results | rejectattr('stat.exists') | list | length == 0
+    fail_msg: >-
+      {{ llama_cpp_gguf_stat.results | rejectattr('stat.exists')
+         | map(attribute='item.name') | list }} are declared in
+      llama_cpp_models (llama_cpp_registry_tier {{ llama_cpp_registry_tier }})
+      but their GGUF is missing from {{ llama_cpp_models_dir }}. This guest
+      never downloads weights itself — land the missing GGUF(s) on the
+      shared model mount (hf_repo/gguf on each entry names the source), or
+      remove the entry here and disable its llm-models.d/ registry entry
+      until the mount has it.
+    success_msg: "Every declared model's GGUF is present on the shared mount."
 
-- name: Report declared models whose GGUF is absent
-  ansible.builtin.debug:
-    msg: >-
-      {{ item.item.name }} is declared but {{ llama_cpp_models_dir }}/{{ item.item.gguf }}
-      is not present on this guest; it is left out of the rendered
-      --models-preset until the model storage provides it.
-  loop: "{{ llama_cpp_gguf_stat.results | rejectattr('stat.exists') | list }}"
-  loop_control:
-    label: "{{ item.item.name }} ({{ item.item.gguf }})"
+- name: Serve every declared model (presence already asserted above)
+  ansible.builtin.set_fact:
+    llama_cpp_models_present: "{{ llama_cpp_models }}"
 
 # --- Never a local, writable model copy ---------------------------------------
 # --models-dir points straight at this mount (the unit below); a converge that
@@ -317,4 +326,10 @@
     host: 127.0.0.1
     port: "{{ llama_cpp_api_port }}"
     timeout: 60
+  when: llama_cpp_service_enabled
+
+# Proves the declared set actually fits together resident at once — see that
+# file for why a passing service+port check above is not enough on its own.
+- name: Verify every declared model fits and stays resident together
+  ansible.builtin.include_tasks: verify-residency.yml
   when: llama_cpp_service_enabled

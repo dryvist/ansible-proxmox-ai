@@ -9,6 +9,21 @@
 {% if m.hints is defined %}{{ "\n" }}      hints: {{ m.hints | to_json }}{% endif %}
 {%- endmacro %}
 {% macro litellm_model(m) %}{{ m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id) }}{% endmacro %}
+{# Light-tier window projection. GENERIC, not a bge-m3 special case: any
+   light-tier entry whose client_model_id ALSO owns a vllm-tier entry (the
+   only way it lands in _llm_router_vllm_max_input_tokens_by_model,
+   defaults/main/20-registry.yml) is a CPU-failover rung sharing that same
+   model_name, and every deployment sharing a model_name must advertise the
+   SAME max_input_tokens or assert-registry-render-parity.yml's window
+   checks correctly refuse it (a mismatched or missing window on one member
+   is exactly the hazard those checks exist to catch). A light-tier entry
+   with no vllm-tier counterpart (qwen3-4b, embeddings) keeps advertising
+   no window at all, unchanged. #}
+{% macro light_window(m) -%}
+{% if m.client_model_id in _llm_router_vllm_max_input_tokens_by_model %}
+{{ "\n" }}      max_input_tokens: {{ _llm_router_vllm_max_input_tokens_by_model[m.client_model_id] }}
+{%- endif %}
+{%- endmacro %}
 {# Admission bounds every LOCAL rung carries (defaults/main/40-routing.yml,
    "ADMISSION BUDGET"): the first-byte bound is the capacity signal, the
    retry count is the whole retry budget; an entry may declare tighter

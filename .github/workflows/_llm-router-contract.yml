@@ -43,6 +43,7 @@ jobs:
           # at the per-file token budget.
           - tests/llm_router/test_review_key_scopes.yml # CI review keys widen past their role name
           - tests/llm_router/test_litellm_local_key_scope.yml # litellm-local key widens past its two roles
+          - tests/llm_router/test_litellm_local_workstation_key_zdr.yml # zdr_only key: no ZDR-false group
           - tests/llm_router/test_callbacks_render_as_list.yml # callbacks parse as a list, not a block scalar
           # process-recovery + rolling-converge
           - tests/llm_router/test_service_restart_policy.yml tests/llm_router/test_syslog_route_outside_rolling_play.yml
@@ -51,6 +52,7 @@ jobs:
           - tests/llm_router/test_fallback_entry_points.yml # fallback entry-point contract
           - tests/llm_router/test_credential_placeholder_rejected.yml # placeholder value never credentials a rung
           - tests/llm_router/test_fallback_zdr_and_escape.yml # ZDR-ladder purity + escape coverage
+          - tests/llm_router/test_hindsight_key_zdr_isolation.yml # hindsight key can never reach a ZDR-false deployment
           - tests/llm_router/test_fallback_depth_budget.yml # fallback depth-budget contract
           - tests/llm_router/test_external_rung_own_fallback.yml # external rungs never recover to local
           - tests/llm_router/test_fallback_model_access_enforced.yml # per-fallback-target key re-check is on
@@ -102,8 +104,12 @@ jobs:
           - tests/llm_router/test_seed_key_format_assert.yml # seed-key format guard fails loud before /key/generate
           # live-alias expression matches the full-object /key/list response
           - tests/llm_router/test_seed_key_live_aliases.yml
+          # combined route/model diff updates only genuinely-changed keys
+          - tests/llm_router/test_seed_key_route_model_reconcile.yml
           # rotation re-read must not clobber the prior live-key read on skip
           - tests/llm_router/test_seed_keys_rotation_reread_preserves_existing.yml
+          # consumer-seeding play gates run_once selection on pool reachability
+          - tests/llm_router/test_seed_play_reachability_gate.yml
           # fast-gpu is gated by the 4080 session lock, not redirected
           - tests/llm_router/test_subagent_lock_gated_models.yml
           # studio gate composition: gated ids, role names, overflow map
@@ -113,6 +119,7 @@ jobs:
           # embed/embeddings/ocr never fall through to the chat ladder
           - tests/llm_router/test_cross_modality_fail_fast.yml
           - tests/llm_router/test_review_local.yml # review-local targets the resident model with no fallbacks
+          - tests/llm_router/test_local_only_no_hosted_fallback.yml # empty-fallback roles never reach a hosted rung
 
     # Static placeholders for the required-environment inputs the llm_router
     # role reads. No workflow context or untrusted input is interpolated here.
@@ -183,7 +190,7 @@ jobs:
 
     services:
       redis:
-        image: redis:8-alpine
+        image: redis:8-alpine@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0
         ports:
           - 6379:6379
         options: >-

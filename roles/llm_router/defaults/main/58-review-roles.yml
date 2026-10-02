@@ -29,20 +29,30 @@ llm_router_default_fallbacks: "{{ llm_router_external_terminal_rungs }}"
 # ladder above — cross-modality errors an embedding/OCR failure has no
 # business paying for, at chat-ladder latency and, for codex-api, spend.
 #
-# PLUS `free-zdrless`, the terminal half of the standalone `free` ->
+# PLUS `free-zdrless`, the ZDR-false half of the standalone `free` /
 # `free-zdrless` pair (model-list-free.yaml.j2): it fails fast the same
-# way embed/ocr do. `free` is NOT in this set — its own entry
-# (config.yaml.j2) is real and non-empty, pointing at free-zdrless.
+# way embed/ocr do. `free` is NOT in this set — it renders its own
+# explicit empty entry directly in config.yaml.j2 (never reachable from
+# `free-zdrless`, by design: the hindsight key that calls `free` must
+# never reach a zero_data_retention: false rung).
 llm_router_cross_modality_fail_fast_names: >-
   {{ ['embed', 'ocr', 'free-zdrless'] + [llm_router_embedding_model] }}
 
-# `review-local`, same short-circuit mechanism as the cross-modality names
-# above but a different reason: it is not another modality, it is a caller
-# that explicitly wants NO external rung ever, local backend up or down. A
-# separate list rather than folding it into the cross-modality one, so each
-# name's rendered comment states its own reason.
-llm_router_local_only_fail_fast_names:
-  - review-local
+# Every role seeded with an empty fallback list (55-roles.yml) — `review-local`,
+# `fast-gpu` — is a caller that explicitly wants NO external rung ever, local
+# backend up or down. Same short-circuit mechanism as the cross-modality
+# names above, but a different reason: not another modality. Derived from the
+# role rows rather than typed, so a new empty-fallback role can never be left
+# on default_fallbacks (the DB record alone does not stop it: LiteLLM consults
+# default_fallbacks for any name with no exact `fallbacks` key). A separate
+# list from the cross-modality one, so each name's rendered comment states its
+# own reason.
+llm_router_local_only_fail_fast_names: >-
+  {{ llm_router_role_deployments
+     | selectattr('fallbacks', 'equalto', [])
+     | map(attribute='role')
+     | reject('in', llm_router_cross_modality_fail_fast_names)
+     | list }}
 
 # ONE variable for the whole shared external continuation (2026-09-20
 # operator decision, 35-hermes-cloud.yml): the Z.ai pair, the ZDR paid

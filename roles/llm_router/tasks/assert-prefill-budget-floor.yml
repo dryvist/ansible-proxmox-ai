@@ -1,0 +1,32 @@
+---
+# Every vllm/hermes-local deployment's prefill-derived max_input_tokens
+# (_llm_router_vllm_max_input_tokens_by_model, defaults/main/20-registry.yml)
+# must be at or above llm_router_prefill_window_floor_tokens
+# (defaults/main/20-registry.yml).
+- name: Assert the vllm/hermes-local prefill-derived window clears the configured floor
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_prefill_floor_violations | length == 0
+    fail_msg: >-
+      vllm/hermes-local deployment(s) advertise a prefill-derived
+      max_input_tokens below llm_router_prefill_window_floor_tokens
+      ({{ llm_router_prefill_window_floor_tokens }}):
+      {{ _llm_router_prefill_floor_violations }}. The multiplier in
+      _llm_router_vllm_max_input_tokens_by_model
+      (defaults/main/20-registry.yml) must be
+      llm_router_local_stream_timeout_seconds, never
+      llm_router_admission_budget_seconds.
+    success_msg: >-
+      Every vllm/hermes-local prefill-derived window is at or above
+      llm_router_prefill_window_floor_tokens
+      ({{ llm_router_prefill_window_floor_tokens }}).
+  vars:
+    _llm_router_prefill_floor_violations: >-
+      {%- set ns = namespace(bad=[]) -%}
+      {%- for id, cap in _llm_router_vllm_max_input_tokens_by_model.items() -%}
+      {%- if cap | int < llm_router_prefill_window_floor_tokens | int -%}
+      {%- set ns.bad = ns.bad + [id ~ '=' ~ cap] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.bad }}

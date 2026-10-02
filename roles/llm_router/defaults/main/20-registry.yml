@@ -118,19 +118,32 @@ llm_router_hermes_local_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-local') | list }}
 
 # The SAME prefill-derived cap model-list.yaml.j2 applies to every
-# vllm/hermes-local deployment ("SMALLER of the context window and what this
-# card can prefill in the admission budget") — computed ONCE here so a role
-# pointed at the same backend (55-roles.yml _llm_router_role_model_info) can
-# never advertise a bigger window than the physical deployment does. Falls
-# back to the raw context_window with no vllm host inventoried, same as the
-# template's own no-inventory fallback.
+# vllm/hermes-local deployment: the smaller of the context window and what
+# this card can prefill inside the local-rung first-byte budget — computed
+# ONCE here so a role pointed at the same backend (55-roles.yml
+# _llm_router_role_model_info) can never advertise a bigger window than the
+# physical deployment does. Falls back to the raw context_window with no vllm
+# host inventoried, same as the template's own no-inventory fallback.
+#
+# The multiplier is llm_router_local_stream_timeout_seconds (the local-rung
+# first-byte/TTFT budget, 40-routing.yml), never
+# llm_router_admission_budget_seconds (the busy-slot no-queueing/retry-handoff
+# budget) — the two bound different things. llm-models.d/30-local-gpu.yml's
+# own litellm_params.stream_timeout for this same deployment stays on
+# llm_router_admission_budget_seconds, a separate bound tested by
+# test_gpu_rung_admission_matches_backend.yml.
+#
+# llm_router_prefill_window_floor_tokens (below) is the minimum every entry
+# here must clear; roles/llm_router/tasks/assert-prefill-budget-floor.yml
+# enforces it.
+llm_router_prefill_window_floor_tokens: 2048
 _llm_router_vllm_max_input_tokens_by_model: >-
   {%- set ns = namespace(out={}) -%}
   {%- set _vllm_hosts = groups['llm_vllm_group'] | default([]) -%}
   {%- for m in llm_router_vllm_models + llm_router_hermes_local_models -%}
   {%- set _cap = ([m.context_window,
         hostvars[_vllm_hosts[0]].llama_cpp_prefill_tokens_per_second | int
-          * llm_router_admission_budget_seconds | int] | min)
+          * llm_router_local_stream_timeout_seconds | int] | min)
         if (_vllm_hosts | length > 0) else m.context_window -%}
   {%- set ns.out = ns.out | combine({m.client_model_id: _cap}) -%}
   {%- endfor -%}

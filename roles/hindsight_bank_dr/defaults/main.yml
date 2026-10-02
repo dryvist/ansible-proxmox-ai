@@ -1,0 +1,132 @@
+---
+# Hindsight LOGICAL DR: nightly bank-level export to object storage (portable,
+# embedding-independent) plus a scheduled restore drill. This is the "prove a
+# bank's own export/import round-trip works" tier, separate from the ai-VLAN
+# Postgres PITR tier (pgBackRest, ansible-proxmox-apps roles/postgres) that
+# another lane owns.
+#
+# `hindsight-admin export-bank` (the vendor's hindsight_api/admin/cli.py)
+# writes NO embeddings into the archive — its own docstring: "no
+# embeddings — regenerated on import" — and `import-bank` re-embeds every fact
+# under the TARGET instance's configured embedding model. That is what makes
+# this export portable across an embedding-model change, which the Postgres
+# byte-level PITR tier is not.
+#
+# Runs on the same hindsight-tagged host(s) as roles/hindsight_docker, which
+# this role never edits (lane boundary — L1 owns that role). It only shells
+# into the ALREADY RUNNING container via `docker exec`/`docker cp`, so it
+# needs no image tag of its own and no compose change.
+hindsight_bank_dr_container_name: "{{ hindsight_docker_container_name }}"
+hindsight_bank_dr_api_port: "{{ hindsight_docker_api_port }}"
+
+# Staging directory for a run's local zip files (never left populated across
+# runs — each script clears its own tree before and after).
+hindsight_bank_dr_staging_dir: /var/lib/hindsight-bank-dr
+
+# --- RustFS (on-site) target --------------------------------------------------
+# One dedicated bucket for this workload — never a shared prefix (the estate's
+# "one bucket per workload" object-storage doctrine). Declared in
+# ansible-proxmox-apps' object_storage_default_buckets, not here.
+hindsight_bank_dr_s3_bucket: hindsight-bank-exports
+hindsight_bank_dr_s3_prefix: banks
+
+# Scoped RustFS credentials for THIS bucket only — never a root/admin key
+# (secrets-separation.md "Object storage": two scoped keys per bucket, ro/rw;
+# an account-wide admin key is break-glass only and never stored where a
+# service can read it). roles/postgres's pgBackRest still reads a root key via
+# env var for its own bucket; that is an existing violation this role does not
+# copy.
+#
+# The `hindsight-bank-exports` rw key (this role only ever writes/reads its
+# own bucket, so it needs rw, never ro) is generated at source in OpenBao by
+# ansible-proxmox-apps roles/object_storage's per-bucket RustFS IAM
+# provisioning (PR #2200), at path secret/rustfs/hindsight-bank-exports/rw.
+# The ratified secret-path convention stores all four S3 credential fields
+# together at that one path: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+# AWS_REGION, AWS_ENDPOINT_URL (the vendor's own S3-credential names — the
+# org's secret-path convention keeps the ro/rw distinction in the PATH, not
+# the field name). That path is OUTSIDE the `apps` OpenBao domain
+# bao_apps_secrets reads (a different KV subtree, fetched via the shared
+# ansible-converge identity, same route object_storage's own iam.yml uses)
+# so this role reads it directly in tasks/fetch_s3_secret.yml rather than
+# through that domain fetch.
+#
+# Each field is mapped to its own named variable at the read site — never a
+# blind-exported secret dict (operator ruling 2026-07-27) — so all four
+# hindsight_bank_dr_s3_* variables (access key, secret key, region, and
+# endpoint) are set by that task file's `set_fact`, never declared as
+# static defaults here.
+
+# OpenBao connection for reading the rw credential above: the SAME shared
+# ansible-converge identity ansible-proxmox-apps roles/object_storage's
+# per-bucket IAM feature uses (never a new identity) — env-var names and
+# fallback order copied from that role's object_storage_iam_bao_* verbatim.
+hindsight_bank_dr_bao_addr: "{{ lookup('env', 'BAO_ADDR') | default('', true) }}"
+hindsight_bank_dr_bao_role_id: >-
+  {{ lookup('env', 'CONVERGE_ROLE_ID')
+     | default(lookup('env', 'OPENBAO_APPROLE_ANSIBLE_ROLE_ID'), true) }}
+hindsight_bank_dr_bao_secret_id: >-
+  {{ lookup('env', 'CONVERGE_SECRET_ID')
+     | default(lookup('env', 'OPENBAO_APPROLE_ANSIBLE_SECRET_ID'), true) }}
+hindsight_bank_dr_bao_validate_certs: true
+hindsight_bank_dr_bao_kv_mount: secret
+hindsight_bank_dr_bao_kv_path: rustfs/hindsight-bank-exports/rw
+
+# Retention: prune date-prefixed export objects older than this many days,
+# SCRIPT-SIDE (aws s3 rm), mirroring roles/postgres's pg-backup.sh find-based
+# prune rather than a bucket lifecycle Expiration rule. This repo's RustFS
+# lifecycle template (object_storage/templates/lifecycle.json.j2) only expires
+# NONCURRENT versions — an anti-deletion safety net for a key overwritten in
+# place — and this bucket writes a brand-new date-prefixed key every night, so
+# no key here ever becomes noncurrent on its own; only a script-side prune
+# reclaims space. Versioning stays on for the bucket as the accidental-delete
+# safety net; this prune is deliberate, planned deletion of an old date.
+hindsight_bank_dr_retention_days: 14
+
+# --- Off-site (Backblaze B2) ---------------------------------------------------
+# Deliberately NOT wired here. ansible-proxmox-apps' object_storage role
+# already has a generic RustFS -> S3-compatible offsite-copy mechanism
+# (object_storage_offsite_enabled + object_storage_offsite_buckets), off by
+# default and populated by the private inventory, never by role code. Adding
+# this bucket's name to object_storage_default_buckets (done in this lane's
+# other repo) makes it ELIGIBLE for that mechanism; actually enabling the copy
+# needs a scoped B2 application-key pair this session cannot provision (a
+# human-wrapped OpenBao write).
+
+# --- Nightly export schedule -------------------------------------------------
+hindsight_bank_dr_export_on_calendar: "*-*-* 03:15:00"
+hindsight_bank_dr_export_randomized_delay_sec: 900
+
+# --- Restore-drill schedule + target ------------------------------------------
+# Weekly, not nightly: the drill imports a full bank archive (re-embedding
+# every fact) into a scratch bank, which is the more expensive of the two jobs.
+hindsight_bank_dr_drill_on_calendar: "Sun *-*-* 04:00:00"
+hindsight_bank_dr_drill_randomized_delay_sec: 900
+
+# Bank to drill. Empty = auto-pick the most-recently-written bank from
+# GET /v1/default/banks (sorted last_write_at desc — hindsight_api's own
+# ordering), so the drill has something to prove against even before a fixed
+# bank naming convention lands. Set to a specific bank id (e.g. "estate") once
+# one exists and should be the standing drill target.
+hindsight_bank_dr_drill_bank: ""
+hindsight_bank_dr_drill_scratch_bank_prefix: dr-drill-scratch
+
+# Optional recall check against the restored scratch bank. Advisory: it is
+# reported in the structured result line and any non-2xx fails the drill, but
+# the pass/fail GATE is the bank stats endpoint (total_nodes > 0 restored and
+# queryable) — this repo does not pin the recall response's own field shape.
+hindsight_bank_dr_drill_recall_query: ""
+
+# Optional healthchecks.io deadman pings, same shape as
+# postgres_backup_healthcheck_url / the object_storage offsite equivalent:
+# "<url>" pinged on success, "<url>/fail" on failure. Empty = no-op.
+hindsight_bank_dr_export_healthcheck_url: ""
+hindsight_bank_dr_drill_healthcheck_url: ""
+
+# journald SyslogIdentifier for both units. Deliberately the SAME tag the
+# hindsight_docker container's own journald log driver already uses
+# ("hindsight") so these two jobs ride whatever journald -> rsyslog -> Cribl
+# route the private inventory already wires for that tag (index=hindsight per
+# the fabric program's L0 ingestion fix) instead of this lane inventing a
+# second dedicated syslog port + Cribl route for two small jobs.
+hindsight_bank_dr_syslog_identifier: hindsight

@@ -1,0 +1,102 @@
+---
+# Hindsight logical DR: nightly bank export + scheduled restore drill. Both
+# jobs are plain scripts run by a systemd oneshot service on a timer, exactly
+# like roles/postgres's pg-backup.{sh,service,timer} — no scripts embedded in
+# playbook YAML.
+
+- name: Read the hindsight-bank-exports rw credential from OpenBao
+  ansible.builtin.include_tasks: fetch_s3_secret.yml
+
+- name: Assert the RustFS S3 credentials rendered into the env file are present
+  ansible.builtin.include_tasks: "{{ role_path }}/../openbao_secrets/tasks/assert_nonempty.yml"
+  vars:
+    openbao_secrets_assert_context: the hindsight-bank-dr EnvironmentFile
+    openbao_secrets_assert_names:
+      - hindsight_bank_dr_s3_endpoint
+      - hindsight_bank_dr_s3_region
+      - hindsight_bank_dr_s3_access_key_id
+      - hindsight_bank_dr_s3_secret_access_key
+
+- name: Install awscli and jq for the export/drill scripts
+  ansible.builtin.apt:
+    name:
+      - awscli
+      - jq
+    state: present
+    update_cache: true
+
+- name: Create the export/drill staging directory
+  ansible.builtin.file:
+    path: "{{ hindsight_bank_dr_staging_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Deploy the nightly bank-export script
+  ansible.builtin.template:
+    src: hindsight-bank-export.sh.j2
+    dest: /usr/local/bin/hindsight-bank-export.sh
+    owner: root
+    group: root
+    mode: "0700"
+  no_log: true
+
+- name: Deploy the bank restore-drill script
+  ansible.builtin.template:
+    src: hindsight-bank-dr-drill.sh.j2
+    dest: /usr/local/bin/hindsight-bank-dr-drill.sh
+    owner: root
+    group: root
+    mode: "0700"
+  no_log: true
+
+- name: Render the RustFS S3 credentials into a root-only EnvironmentFile
+  ansible.builtin.template:
+    src: hindsight-bank-dr.env.j2
+    dest: /etc/hindsight-bank-dr.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  # No restart/notify needed: both jobs are oneshot units invoked by a timer,
+  # never running continuously, so the next scheduled run simply reads
+  # whatever this file currently holds.
+
+- name: Deploy the export systemd units
+  ansible.builtin.template:
+    src: "hindsight-bank-export.{{ item }}.j2"
+    dest: "/etc/systemd/system/hindsight-bank-export.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - service
+    - timer
+  register: hindsight_bank_dr_export_units
+
+- name: Deploy the restore-drill systemd units
+  ansible.builtin.template:
+    src: "hindsight-bank-dr-drill.{{ item }}.j2"
+    dest: "/etc/systemd/system/hindsight-bank-dr-drill.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - service
+    - timer
+  register: hindsight_bank_dr_drill_units
+
+- name: Enable and start the bank-export timer
+  ansible.builtin.systemd_service:
+    name: hindsight-bank-export.timer
+    state: started
+    enabled: true
+    daemon_reload: "{{ hindsight_bank_dr_export_units.changed }}"
+
+- name: Enable and start the restore-drill timer
+  ansible.builtin.systemd_service:
+    name: hindsight-bank-dr-drill.timer
+    state: started
+    enabled: true
+    daemon_reload: "{{ hindsight_bank_dr_drill_units.changed }}"

@@ -20,10 +20,14 @@
   become: true
   gather_facts: false
   # The served model names come from the registry, not a role default
-  # (llama_cpp_models in roles/llama_cpp/defaults/main/00-core.yml).
+  # (llama_cpp_models in roles/llama_cpp/defaults/main/00-core.yml). hf_repo/
+  # gguf for those same models come from the shared catalog (see
+  # inventory/group_vars/llm_fast_group.yml, llama_cpp_catalog_lookup_names).
   pre_tasks:
     - name: Load the fabric model registry
       ansible.builtin.import_tasks: tasks/load_fabric_registry.yml
+    - name: Load the shared model catalog
+      ansible.builtin.import_tasks: tasks/load_model_catalog.yml
   tags:
     - llama_cpp
     - llm
@@ -48,9 +52,14 @@
   hosts: llm_cpu_pool_group
   become: true
   gather_facts: false
+  # hf_repo/gguf for both tiers' models come from the shared catalog (see
+  # inventory/group_vars/llm_cpu_9b_group.yml / llm_cpu_moe_group.yml,
+  # llama_cpp_catalog_lookup_names) — same loader as the fast/vllm plays.
   pre_tasks:
     - name: Load the fabric model registry
       ansible.builtin.import_tasks: tasks/load_fabric_registry.yml
+    - name: Load the shared model catalog
+      ansible.builtin.import_tasks: tasks/load_model_catalog.yml
   tags:
     - llama_cpp
     - llm
@@ -94,13 +103,17 @@
   # SAME way the llm_router converge and fabric_watchdog load it, so the path is
   # never hand-rolled. public: true is required: without it the registry is in
   # scope only for the included tasks, and llama_cpp_ctx_size then resolves
-  # undefined when the role renders the --models-preset.
+  # undefined when the role renders the --models-preset. The shared model
+  # catalog (hf_repo/gguf) is loaded the same way — see
+  # inventory/group_vars/llm_vllm_group.yml, llama_cpp_catalog_lookup_names.
   pre_tasks:
     - name: Load the fabric model registry
       ansible.builtin.include_role:
         name: llm_router
         tasks_from: registry.yml
         public: true
+    - name: Load the shared model catalog
+      ansible.builtin.import_tasks: tasks/load_model_catalog.yml
   tags:
     - llama_cpp
     - llm
@@ -197,6 +210,76 @@
               llm_router failed on {{ inventory_hostname }}:
               {{ ansible_failed_result.msg | default(ansible_failed_task.name | default('task failed')) }}.
               Remaining pool members keep their previous config.
+
+# Virtual keys, their budgets, and caller-facing roles — its own run_once
+# play, not a task inside the rolling converge above: seed-consumers.yml
+# writes to the pool's SHARED database (every member's proxy reads the same
+# Postgres-backed key store), so running it once per serial:1 member sent
+# the same /key/generate and /key/update calls three times per converge.
+# Gates on pool-member reachability the same way the rolling play above
+# does, via pre_tasks rather than a play-level run_once, so the gate's ping
+# still runs per host: run_once only covers the seeding task itself, never
+# the gate, so a member the rolling play already end_host'd for being down
+# cannot become this play's run_once pick. If every member fails the gate,
+# the tail play below records a loud, run-failing message instead of
+# silently seeding nothing. run_once: true on the seeding task still
+# executes on one real pool member over its normal connection, so the
+# 127.0.0.1 URLs in seed-consumers.yml's tasks stay correct unchanged.
+# Contract: tests/llm_router/test_seed_key_route_model_reconcile.yml and
+# tests/llm_router/test_seed_play_reachability_gate.yml.
+- name: Seed llm_router virtual keys, budgets, and caller-facing roles
+  hosts: llm_router_group
+  become: true
+  gather_facts: false
+  pre_tasks:
+    - name: Gate on pool-member reachability
+      ansible.builtin.import_tasks: tasks/pool_member_gate.yml
+  tags:
+    - llm_router
+    - llm
+    - ai
+  tasks:
+    - name: Converge the llm_router consumer seeding (isolated — failure does not abort downstream plays)
+      run_once: true
+      block:
+        - name: Include the llm_router consumer-seeding tasks
+          ansible.builtin.include_role:
+            name: llm_router
+            tasks_from: seed-consumers.yml
+      rescue:
+        - name: Record isolated failure and continue
+          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
+          vars:
+            _isolated_play_name: llm_router_seed_consumers
+
+# If the gate above end_host'd every member, the tasks: play above never ran
+# (zero hosts left to run them) — and a play with zero hosts is not itself a
+# failure, so the run would otherwise carry on as if seeding had nothing to
+# do. Catch that here, from localhost, which the gate's end_host never
+# touches: every original pool member's pool_member_probe (registered by the
+# gate before any end_host fires) stays readable in hostvars regardless of
+# how many members got end_host'd, so this can tell "every member was down"
+# apart from "seeding ran and finished".
+- name: Fail loudly if the whole llm_router pool failed the reachability gate
+  hosts: localhost
+  gather_facts: false
+  tags:
+    - llm_router
+    - llm
+    - ai
+  tasks:
+    - name: Record an isolated failure when consumer seeding had no reachable pool member to run on
+      ansible.builtin.set_fact:
+        site_isolated_failures: >-
+          {{ (site_isolated_failures | default([])) +
+             ['llm_router_seed_consumers: every llm_router_group member failed the reachability gate' ~
+              ' — seeding did not run'] }}
+      when: >-
+        (groups['llm_router_group']
+         | map('extract', hostvars, 'pool_member_probe')
+         | selectattr('ping', 'defined')
+         | selectattr('ping', 'equalto', 'pong')
+         | list | length) == 0
 
 - name: Configure the CPU LLM pool scaler
   hosts: llm_router_group
