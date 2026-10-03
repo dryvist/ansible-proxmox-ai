@@ -17,14 +17,16 @@ FILTER = types.SimpleNamespace(
 )
 
 
-def render(enabled: bool) -> dict:
+def render(private: bool, public: bool = False, public_profile: str = "") -> dict:
     env = Environment(autoescape=False)  # noqa: S701
     env.filters["to_json"] = json.dumps
     env.filters["bool"] = bool
     d = role_defaults(ROLE)
     ctx = {k: v for k, v in d.items() if k.startswith("hermes_agent_github_route_")}
     ctx.update(
-        hermes_agent_github_route_enabled=enabled,
+        hermes_agent_github_route_private_enabled=private,
+        hermes_agent_github_route_public_enabled=public,
+        hermes_agent_github_route_public_profile=public_profile,
         hermes_agent_github_route_bot_login="example-bot[bot]",
         hermes_agent_slack_bot_token="xoxb",
         hermes_agent_slack_reply_in_thread=False,
@@ -41,9 +43,18 @@ def test_disabled_keeps_inbound_demo():
     assert list(render(False)) == ["inbound"]
 
 
+def test_routes_split_by_visibility():
+    assert list(render(True)) == ["github-private"]
+    both = render(True, True, "pr-public")
+    assert list(both) == ["github-private", "github-public"]
+    assert both["github-public"]["profile"] == "pr-public"
+    assert "profile" not in both["github-private"]
+    vis = {n: {f["field"]: f for f in r["filters"]}["repository.private"]["equals"] for n, r in both.items()}
+    assert vis == {"github-private": True, "github-public": False}
+
+
 def test_github_route_shape():
-    route = render(True)["github"]
-    assert list(render(True)) == ["github"]
+    route = render(True)["github-private"]
     assert route["events"] == ["pull_request"]
     assert route["deliver"] == "log"
     assert "deliver_only" not in route and "cron_job" not in route and "prompt" not in route
