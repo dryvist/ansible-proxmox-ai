@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+{{ ansible_managed | comment }}
+"""Replay missed github-{private,public} webhook pull_request events.
+
+`--no-agent --script` cron: STDOUT (one summary line) is delivered verbatim;
+a non-zero exit is reported as an error alert. No LLM in this path at all.
+
+For each enabled trust boundary, lists open, non-draft PRs in the configured
+GitHub org via the `gh` wrapper (HERMES_TRUST_BOUNDARY + HERMES_GH_TOKEN_SET
+pin the installation token and the target boundary), drops cross-repo (fork)
+PRs and anything already reviewed by this bot at its current head SHA, builds
+a minimal `pull_request` webhook payload, signs it with the shared webhook
+HMAC secret, and POSTs it to the local github-<boundary> route with a
+delivery id stable per (repo, PR, head SHA) — deliberate, so Hermes's 1h
+idempotency cache dedupes a replay against a delivery that already landed.
+
+Any `gh` failure, bad JSON from `gh`, a failed POST, or a missing webhook
+secret while a route is enabled is FATAL (non-zero exit): this never reports
+"nothing to do" when a call actually failed.
+"""
+import hashlib
+import hmac
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+# --- config (rendered from roles/hermes_agent/defaults/main/93-pr-reconcile.yml) ---
+# hermes_agent_github_route_{org,*_enabled,*_name} and hermes_agent_github_app_slug
+# belong to the (separately landing) GitHub identity/webhook-route changes; the
+# `default(..., true)` fallback keeps this script inert (both routes read as
+# disabled) until that work merges and an operator turns a route on.
+ORG = "{{ hermes_agent_github_route_org | default('dryvist', true) }}"
+APP_SLUG = "{{ hermes_agent_github_app_slug | default('', true) }}"
+BOT_LOGIN = (APP_SLUG + "[bot]") if APP_SLUG else ""
+ENV_PATH = "{{ hermes_agent_hermes_home }}/.env"
+WEBHOOK_URL = "http://127.0.0.1:{{ hermes_agent_webhook_port }}/webhooks/{name}"
+# Built as Python literals field-by-field, not one dict rendered through
+# `to_json`: JSON's lowercase true/false is not valid Python syntax, and a
+# Jinja boolean's own string form ("True"/"False") already is.
+ROUTES = {
+    "public": {
+        "enabled": {{ hermes_agent_github_route_public_enabled | default(false, true) | bool }},
+        "name": "{{ hermes_agent_github_route_public_name | default('github-public', true) }}",
+    },
+    "private": {
+        "enabled": {{ hermes_agent_github_route_private_enabled | default(false, true) | bool }},
+        "name": "{{ hermes_agent_github_route_private_name | default('github-private', true) }}",
+    },
+}
+CAP = {{ hermes_agent_pr_reconcile_cap }}
+REVIEW_MARKER_PREFIX = "<!-- hermes-review sha="
+
+
+class ReconcileError(RuntimeError):
+    """A real failure — never swallowed into a silent 'nothing to do'."""
+
+
+def load_env(path):
+    """Parse KEY=VALUE lines. Values may be quoted."""
+    env = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip().strip('"').strip("'")
+    except OSError as e:
+        raise ReconcileError(f"cannot read {path}: {e}") from e
+    return env
+
+
+def gh(args, boundary, token_set="review"):
+    """Run `gh` through the trust-boundary/token-set wrapper. Raises on any failure."""
+    env = dict(os.environ)
+    env["HERMES_TRUST_BOUNDARY"] = boundary
+    env["HERMES_GH_TOKEN_SET"] = token_set
+    try:
+        run = subprocess.run(
+            ["gh", *args], env=env, capture_output=True, text=True, timeout=60, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise ReconcileError(f"gh {' '.join(args)} failed to run: {e}") from e
+    if run.returncode != 0:
+        raise ReconcileError(f"gh {' '.join(args)} exited {run.returncode}: {run.stderr.strip()[:300]}")
+    return run.stdout
+
+
+def gh_json(args, boundary, token_set="review"):
+    out = gh(args, boundary, token_set)
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError as e:
+        raise ReconcileError(f"gh {' '.join(args)} returned invalid JSON: {e}") from e
+
+
+def open_prs(boundary):
+    """Every open, non-draft PR in ORG visible to this boundary's review token."""
+    visibility = "is:private" if boundary == "private" else "is:public"
+    query = f"org:{ORG} is:pr is:open draft:false {visibility}"
+    out = gh(
+        ["api", "search/issues", "-f", f"q={query}", "--jq",
+         r'.items[] | "\(.number) \(.repository_url)"'],
+        boundary,
+    )
+    prs = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        number_s, repo_url = line.split(" ", 1)
+        owner, repo = repo_url.rsplit("/", 2)[-2:]
+        prs.append((f"{owner}/{repo}", int(number_s)))
+    return prs
+
+
+def same_repo(pr):
+    """True unless the PR's head repo differs from its base repo (a fork)."""
+    head_repo = (pr.get("head") or {}).get("repo")
+    base_repo = (pr.get("base") or {}).get("repo") or {}
+    return bool(head_repo) and head_repo.get("full_name") == base_repo.get("full_name")
+
+
+def already_reviewed(repo, number, head_sha, boundary):
+    reviews = gh_json(["api", f"repos/{repo}/pulls/{number}/reviews"], boundary)
+    marker = f"{REVIEW_MARKER_PREFIX}{head_sha} -->"
+    return any(
+        (r.get("user") or {}).get("login") == BOT_LOGIN and (r.get("body") or "").startswith(marker)
+        for r in reviews
+    )
+
+
+def sign(secret, body):
+    return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+def build_payload(repo, pr):
+    base_repo = pr.get("base", {}).get("repo") or {}
+    return {
+        "action": "synchronize",
+        "repository": {
+            "full_name": repo,
+            "private": base_repo.get("private", False),
+            "owner": {"login": repo.split("/", 1)[0]},
+        },
+        "pull_request": {
+            "number": pr["number"],
+            "head": {"sha": pr["head"]["sha"], "repo": {"full_name": pr["head"]["repo"]["full_name"]}},
+            "base": {"ref": pr["base"]["ref"]},
+            "draft": pr.get("draft", False),
+            "user": {"login": (pr.get("user") or {}).get("login", "")},
+        },
+        "sender": {"login": (pr.get("user") or {}).get("login", "")},
+    }
+
+
+def post(route_name, secret, payload):
+    body = json.dumps(payload).encode()
+    full_name = payload["repository"]["full_name"].replace("/", "-")
+    number = payload["pull_request"]["number"]
+    sha = payload["pull_request"]["head"]["sha"][:12]
+    delivery = f"reconcile-{full_name}-{number}-{sha}"
+    req = urllib.request.Request(
+        WEBHOOK_URL.format(name=route_name),
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-GitHub-Event": "pull_request",
+            "X-GitHub-Delivery": delivery,
+            "X-Hub-Signature-256": sign(secret, body),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+    except (urllib.error.URLError, OSError) as e:
+        raise ReconcileError(f"POST to {route_name} failed: {e}") from e
+
+
+def main():
+    active = {b: r for b, r in ROUTES.items() if r["enabled"]}
+    if not active:
+        print("pr-reconcile: no github route enabled, nothing to do")
+        return 0
+
+    env = load_env(ENV_PATH)
+    secret = env.get("WEBHOOK_SECRET", "")
+    if not secret:
+        raise ReconcileError("WEBHOOK_SECRET is empty but a github route is enabled")
+
+    sent = 0
+    skipped = 0
+    for boundary, route in active.items():
+        if sent >= CAP:
+            break
+        for repo, number in open_prs(boundary):
+            if sent >= CAP:
+                break
+            detail = gh_json(["api", f"repos/{repo}/pulls/{number}"], boundary)
+            if not same_repo(detail):
+                continue
+            head_sha = detail["head"]["sha"]
+            if already_reviewed(repo, number, head_sha, boundary):
+                skipped += 1
+                continue
+            post(route["name"], secret, build_payload(repo, detail))
+            sent += 1
+
+    print(f"pr-reconcile: replayed {sent} PR(s), {skipped} already reviewed at head, cap {CAP}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except ReconcileError as e:
+        print(f"pr-reconcile: FAILED: {e}")
+        sys.exit(1)

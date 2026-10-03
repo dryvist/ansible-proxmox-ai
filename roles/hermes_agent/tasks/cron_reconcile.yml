@@ -112,6 +112,38 @@
     loop_var: triage_job
     label: "{{ triage_job.name }}"
 
+# PR reconcile: replays any github-{private,public} webhook pull_request
+# event the live route may have missed. Same --no-agent --script contract as
+# the digests above (no model, stdout is the delivered line); ownership is
+# the ops identity like every other script-fed job here.
+- name: Reconcile the PR-reconcile cron
+  ansible.builtin.include_tasks: reconcile_enqueuer_cron.yml
+  vars:
+    item:
+      name: "{{ hermes_agent_pr_reconcile_cron_name }}"
+      schedule: "{{ hermes_agent_pr_reconcile_cron_schedule }}"
+      script: "{{ hermes_agent_pr_reconcile_script_name }}"
+      deliver: local
+      enabled: >-
+        {{ hermes_agent_pr_reconcile_enabled | bool
+           and hermes_agent_ops_workload_enabled | bool }}
+
+# Repo crawl: MONITOR-MODE (agentic, script attached without --no-agent) —
+# reconcile_direct_cron.yml's optional `script` field. The pre-check script
+# decides per tick whether to wake the agent; when it does, the repo-crawl
+# skill triages the findings it wrote out.
+- name: Reconcile the repo-crawl cron
+  ansible.builtin.include_tasks: reconcile_direct_cron.yml
+  vars:
+    item:
+      name: "{{ hermes_agent_repo_crawl_cron_name }}"
+      schedule: "{{ hermes_agent_repo_crawl_cron_schedule }}"
+      prompt_var: hermes_agent_repo_crawl_cron_prompt
+      skill: "{{ hermes_agent_repo_crawl_skill }}"
+      script: "{{ hermes_agent_repo_crawl_script_name }}"
+      deliver: log
+      enabled: "{{ hermes_agent_repo_crawl_enabled | bool }}"
+
 # Retire the hand-created LLM digest direct cron the script-fed digest replaces:
 # pause it (disable-don't-delete) so the two never double-post. `cron list` shows
 # only ENABLED jobs, so this is a clean no-op once the job is paused.
