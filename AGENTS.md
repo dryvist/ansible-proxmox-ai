@@ -23,7 +23,7 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
   **Registry rule (hard): every model name, alias, tier and enabled/servable
   state is written ONCE, in the repo-root `llm-models.d/` registry. The role's
   defaults and templates are projections of it — never add a model id, alias or
-  OpenBao key field to `roles/llm_router/` (or anywhere else); add or edit a
+  secret key field to `roles/llm_router/` (or anywhere else); add or edit a
   registry entry. `tests/llm_router/test_registry_retype_scan.py` fails the
   build when a registry value is re-typed anywhere in the role, its tests or
   the playbooks (the only literal it accepts is one the inventory itself
@@ -109,15 +109,12 @@ API-key lookups). Neither defines or owns the inventory schema itself.
 
 ## Secrets Management
 
-**Runtime injection**: Doppler (`doppler run --`)
+**Runtime injection**: environment variables, loaded from a `.env` file
 **At-rest encryption**: SOPS + age
 
 **Roles are injection-agnostic.** Every role reads a secret as plain
-`lookup('env', 'KEY')` (with an OpenBao-first, env-fallback pattern in
-group_vars where applicable) and doesn't know or care where the value came
-from — never bake a specific backend (OpenBao, Doppler, SOPS) into a role
-default. The secrets architecture itself (which store holds what, per-domain
-RBAC) is documented on the docs site, not here.
+`lookup('env', 'KEY')` and doesn't know or care where the value came from —
+never bake a specific secrets backend into a role default.
 
 ## Deploy orchestration
 
@@ -135,41 +132,38 @@ silently ignores the other section of `requirements.yml` and still exits zero.
 
 ### Commands
 
-`scripts/run-ansible.sh` mints a short-lived SSH certificate from the OpenBao
+`scripts/run-ansible.sh` mints a short-lived SSH certificate from the SSH
 CA (`ssh-certificate-authority` ADR) when `SECRET_STORE_ADDR` +
 `SSH_SIGNER_ROLE_ID`/`_SECRET_ID` + `SSH_CA_MOUNT` + `SSH_SIGNER_ROLE` are
-ambient (the older AppRole names still work as a fallback), then runs the
-playbook — the same signing token also satisfies `inventory_resolve`'s
-`BAO_TOKEN` requirement, so no separate token is needed. Falls back verbatim
+set, then runs the playbook — the same signing token also serves the
+inventory resolver, so no separate token is needed. Falls back verbatim
 to the static `PROXMOX_SSH_KEY_PATH` flow when that env is absent. See
 [SSH certificate access](https://docs.jacobpevans.com/d/runbooks/ssh-certificate-access).
 
-Converges run through Semaphore, the execution plane. Its template wrapper
-loads the run environment from OpenBao before the playbook starts. Playbooks
-read plain environment variables and are independent of the secrets manager:
-`.env`, Doppler, OpenBao or any other injector behaves identically.
-`scripts/run-ansible.sh` remains the runner the wrapper calls and the
-break-glass path from a workstation.
+Playbooks read plain environment variables. Load them from a `.env` file
+before running; any other way of setting the same variables behaves
+identically.
 
 ```bash
-# Converge everything from a workstation (the injector supplies BAO_ADDR +
-# the ansible-converge and local-llm AppRole creds, PROXMOX_SUBDOMAIN,
-# PROXMOX_SSH_KEY_PATH, ...)
-doppler run -- scripts/run-ansible.sh playbooks/site.yml -i inventory/hosts.yml --forks 25
+# Load the environment (.env supplies the signer variables above,
+# PROXMOX_SUBDOMAIN, PROXMOX_SSH_KEY_PATH, ...)
+set -a; . ./.env; set +a
+
+# Converge everything
+scripts/run-ansible.sh playbooks/site.yml -i inventory/hosts.yml --forks 25
 
 # Scoped converge — --limit MUST include localhost (the inventory loader runs
 # on localhost via add_host; without it no hosts are added and every play
 # reports "no hosts matched")
-doppler run -- scripts/run-ansible.sh playbooks/site.yml -i inventory/hosts.yml \
+scripts/run-ansible.sh playbooks/site.yml -i inventory/hosts.yml \
   --tags llm_router --limit llm_router_group,localhost --forks 25
 
 # Lint
 ansible-lint
 ```
 
-The OpenBao secrets pre-fetch play is tagged `always`, so scoped `--tags`
-runs get their secrets automatically — no `--tags openbao_secrets,<role>`
-pairing is needed (unlike ansible-proxmox-apps).
+The secrets pre-fetch play is tagged `always`, so scoped `--tags` runs get
+their secrets automatically — no extra tag pairing is needed.
 
 `scripts/run-ansible.sh` also refuses to converge from a checkout that is
 behind its tracked branch — a stale checkout deploys old content and still
