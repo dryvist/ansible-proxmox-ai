@@ -222,66 +222,7 @@ platforms:
     reply_in_thread: {{ hermes_agent_slack_reply_in_thread | to_json }}
     cron_continuable_surface: {{ hermes_agent_slack_cron_continuable_surface }}
 {% endif %}
-{% if _webhook_on %}
-  # Inbound webhook receiver (event-driven agent trigger). `enabled` + the global
-  # HMAC secret + port arrive via .env (WEBHOOK_ENABLED/SECRET/PORT), injected by
-  # gateway/config.py's env bridge — which merges those keys and preserves the
-  # `routes` declared here. Keeping the secret in .env (0600, no_log) means it
-  # never lands in this 0640 file. The `inbound` route is a zero-LLM demo of the
-  # inter-agent trigger path: a signed POST to https://hermes.<sub>/webhooks/inbound
-  # relays its rendered payload straight to Slack (deliver_only skips the agent).
-  # It inherits the global secret (no per-route secret).
-  # The enabled github-private / github-public routes replace it: signed
-  # pull_request events (/webhooks/<name>) whose repository.private matches the
-  # entry and that pass the filters below wake one agent run per PR (coalesced)
-  # with the review skill loaded. The skill posts its own review through gh;
-  # the run's final text is only logged.
-  webhook:
-    enabled: true
-    extra:
-      port: {{ hermes_agent_webhook_port }}
-{% set _gh_routes = ([{'name': hermes_agent_github_route_private_name, 'private': true,
-                        'profile': hermes_agent_github_route_private_profile}]
-                       if hermes_agent_github_route_private_enabled | bool else [])
-                    + ([{'name': hermes_agent_github_route_public_name, 'private': false,
-                         'profile': hermes_agent_github_route_public_profile}]
-                       if hermes_agent_github_route_public_enabled | bool else []) %}
-{% if _gh_routes | length > 0 %}
-      routes:
-{% for r in _gh_routes %}
-        {{ r.name }}:
-          events: ["pull_request"]
-{% if r.profile | default('') %}
-          profile: {{ r.profile | to_json }}
-{% endif %}
-          filters:
-            - field: repository.private
-              equals: {{ r.private | to_json }}
-            - field: repository.owner.login
-              equals: {{ hermes_agent_github_route_org | to_json }}
-            - field: action
-              in: {{ hermes_agent_github_route_actions | to_json }}
-            - field: pull_request.draft
-              not_equals: true
-            - field: sender.login
-              not_equals: {{ hermes_agent_github_route_bot_login | to_json }}
-          script: {{ hermes_agent_github_route_script_name | to_json }}
-          coalesce:
-            key: "{repository.full_name}#{pull_request.number}"
-            window_seconds: {{ hermes_agent_github_route_coalesce_window }}
-            max_wait_seconds: {{ hermes_agent_github_route_coalesce_max_wait }}
-          skills: {{ hermes_agent_github_route_skills | to_json }}
-          toolsets: {{ hermes_agent_github_route_toolsets | to_json }}
-          deliver: log
-{% endfor %}
-{% elif _slack_on %}
-      routes:
-        inbound:
-          deliver: slack
-          deliver_only: true
-          prompt: {{ hermes_agent_webhook_prompt | to_json }}
-{% endif %}
-{% endif %}
+{% include 'config-webhook.yaml.j2' %}
 {% endif %}
 {% set _mcp_splunk = (hermes_agent_splunk_mcp_enabled | bool) and (hermes_agent_splunk_mcp_url | length > 0) %}
 {# Context7's hosted MCP serves unauthenticated requests (verified: keyless

@@ -5,7 +5,7 @@ import types
 from pathlib import Path
 
 import yaml
-from jinja2 import Environment
+from jinja2 import Environment, FileSystemLoader
 
 from _role_files import role_defaults
 
@@ -18,7 +18,7 @@ FILTER = types.SimpleNamespace(
 
 
 def render(private: bool, public: bool = False, public_profile: str = "") -> dict:
-    env = Environment(autoescape=False)  # noqa: S701
+    env = Environment(autoescape=False, loader=FileSystemLoader(ROLE / "templates"))  # noqa: S701
     env.filters["to_json"] = json.dumps
     env.filters["bool"] = bool
     d = role_defaults(ROLE)
