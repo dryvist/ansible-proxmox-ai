@@ -30,15 +30,26 @@ de-dup, secret redaction, and absolute privacy routing (sensitive → docs-starl
 only). **No-merge** is guaranteed by the org ruleset (human review + signatures,
 the App is not a bypass actor), not by the token scope.
 
-App creds are delivered from OpenBao `secret/ai/hermes` (`bao_local_llm_secrets`)
-with an env fallback; the PEM is written to `{{ hermes_agent_hermes_home }}/github-app.pem`
-(`0600`, `no_log`). The role stays inert until the creds are set.
+GitHub access uses installation tokens minted from the OpenBao GitHub mount
+(`hermes_agent_github_identity_mount`), one AppRole per trust boundary
+(`public`, `private`). `hermes-gh-token.timer` (root) writes one token file per
+`<set>-<boundary>` under `hermes_agent_github_identity_token_dir` (0600, service
+user). `/usr/local/bin/gh` (`files/hermes-gh.py`) picks the file from
+`HERMES_GH_TOKEN_SET` (default `review`) and `HERMES_TRUST_BOUNDARY`, refuses a
+target repository outside that boundary, and refuses a write to a public
+repository whose outgoing text matches a private address, an internal domain
+suffix, a private repository name, a secret path or a token shape. No PEM is
+stored on the guest.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `hermes_agent_github_app_id` | `""` | GitHub App ID (bao/env) |
-| `hermes_agent_github_app_installation_id` | `""` | App installation ID (bao/env) |
-| `hermes_agent_github_app_private_key` | `""` | App PEM (bao/env; written to a 0600 file) |
+| `hermes_agent_github_identity_enabled` | `false` | Deploy helper, wrapper and timer |
+| `hermes_agent_github_identity_approles` | env `HERMES_GITHUB_{PUBLIC,PRIVATE}_VAULT_{ROLE,SECRET}_ID` | Per-boundary AppRole credentials (root-only file) |
+| `hermes_agent_github_identity_sets` | `review`/`author` x `public`/`private` | Permission set names |
+| `hermes_agent_github_trust_boundary_default` | `private` | Exported to the gateway as `HERMES_TRUST_BOUNDARY` |
+| `hermes_agent_github_guard_internal_suffixes` | env `PROXMOX_SUBDOMAIN` + `HERMES_GH_GUARD_INTERNAL_SUFFIXES` | Outbound gate domain list |
+| `hermes_agent_github_guard_private_repos` | env `HERMES_GH_GUARD_PRIVATE_REPOS` | Outbound gate repository list |
+| `hermes_agent_github_app_slug` | `jacobs-hermes-agent` | Exported as `HERMES_GITHUB_APP_SLUG` |
 
 Helper unit tests live with the skill in
 [nix-hermes](https://github.com/dryvist/nix-hermes)

@@ -1,0 +1,80 @@
+---
+# Every role chain against its `egress` value in the canonical role map
+# (`llm_roles.roles.<role>.egress`). Same shape as 59-key-scopes.yml: the
+# policy is data, the chain is derived, and the converge refuses a chain that
+# reaches further than the policy allows.
+#
+# A chain is the role's target plus its fallbacks (llm_router_role_deployments).
+# Each rung is classified from the registry entries that carry its name:
+#
+#   none    Mac-local serving rungs only (tier large)
+#   estate  home-lab rungs only: the Mac tier plus the GPU/CPU serving tiers
+#   zdr     estate, plus any rung whose registry entries ALL assert ZDR
+#           (llm_router_zdr_asserted_group_names, 59-key-scopes.yml). The
+#           shared terminal rungs include providers with no ZDR assertion, so
+#           a rung beyond that set is also accepted when the role is held by a
+#           zdr_only key that does not hold the rung (the key, not the chain,
+#           is what keeps that traffic ZDR); a zdr role no zdr_only key holds
+#           gets the strict check.
+#   any     no restriction
+#
+# A rung no registry entry carries is unclassified and fails every value but
+# `any`: an unknown name must never read as local. Roles whose map model is
+# null (embed — served by the home-lab embedding tier, never a Mac model) and
+# names with no role deployment (the git aliases) have no chain here and are
+# skipped.
+
+- name: Assert every role chain respects its egress value
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _egress_violations | length == 0
+    fail_msg: >-
+      Role chain(s) reach past their egress value in the role map
+      (dryvist.homelab.llm_roles): {{ _egress_violations | join('; ') }}.
+      Remove the rung from the chain (55-roles.yml) or change the role's
+      egress in the role map.
+    success_msg: >-
+      {{ _egress_checked | length }} role chains respect their egress values
+      ({{ _egress_checked | join(', ') }}).
+  vars:
+    _egress_mac_tiers: [large]
+    _egress_estate_tiers: [large, vllm, hermes-local, light, cpu-moe, cpu-9b]
+    _egress_roles: >-
+      {%- set ns = namespace(out={}) -%}
+      {%- for name, r in llm_roles.roles.items() if r.model is not none -%}
+      {%- set _ = ns.out.update({name: r.egress}) -%}
+      {%- endfor -%}
+      {{ ns.out }}
+    _egress_checked: >-
+      {{ llm_router_role_deployments | map(attribute='role')
+         | select('in', _egress_roles.keys() | list) | list }}
+    _egress_violations: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- for d in llm_router_role_deployments if d.role in _egress_roles -%}
+      {%- set egress = _egress_roles[d.role] -%}
+      {%- for rung in [d.model] + (d.fallbacks | list) -%}
+      {%- set tiers = [] -%}
+      {%- for e in llm_router_registry_enabled
+            if rung in ([e.client_model_id] + ([e.route_group] if e.route_group is defined else [])
+                        + ([e.fallback_group] if e.fallback_group is defined else [])) -%}
+      {%- set _ = tiers.append(e.tier) -%}
+      {%- endfor -%}
+      {%- set in_estate = tiers | length > 0 and tiers | difference(_egress_estate_tiers) | length == 0 -%}
+      {%- set in_mac = tiers | length > 0 and tiers | difference(_egress_mac_tiers) | length == 0 -%}
+      {%- set kept = namespace(held=false, stripped=true) -%}
+      {%- for k in llm_router_virtual_keys if (k.zdr_only | default(false)) and d.role in k.models -%}
+      {%- set kept.held = true -%}
+      {%- if rung in k.models -%}{%- set kept.stripped = false -%}{%- endif -%}
+      {%- endfor -%}
+      {%- if egress == 'none' and not in_mac -%}
+      {%- set ns.out = ns.out + [d.role ~ ' (none) -> ' ~ rung] -%}
+      {%- elif egress == 'estate' and not in_estate -%}
+      {%- set ns.out = ns.out + [d.role ~ ' (estate) -> ' ~ rung] -%}
+      {%- elif egress == 'zdr' and not (in_estate or rung in llm_router_zdr_asserted_group_names
+                                        or (kept.held and kept.stripped)) -%}
+      {%- set ns.out = ns.out + [d.role ~ ' (zdr) -> ' ~ rung] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.out }}

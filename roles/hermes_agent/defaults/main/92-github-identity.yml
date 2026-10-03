@@ -1,0 +1,63 @@
+---
+# --- GitHub identity: per-call installation tokens from OpenBao -------------
+# A root timer (hermes-gh-token.timer) logs in with one AppRole per trust
+# boundary, mints an installation token per permission set from the GitHub
+# secrets mount, and writes each to <token_dir>/<set>-<boundary> (0600,
+# service user). The `gh` wrapper (files/hermes-gh.py) earlier on PATH picks
+# the token per call from HERMES_TRUST_BOUNDARY + HERMES_GH_TOKEN_SET, refuses
+# targets outside the caller's boundary, and gates writes to public repos.
+#
+# Off by default: enabling requires both AppRoles' role_id + secret_id and the
+# guard lists (see the assert in tasks/github_identity.yml).
+hermes_agent_github_identity_enabled: false
+
+# Bot slug of the GitHub App the tokens belong to (no `[bot]` suffix); exported
+# to the gateway as HERMES_GITHUB_APP_SLUG.
+hermes_agent_github_app_slug: jacobs-hermes-agent
+
+# Boundary exported to the gateway as HERMES_TRUST_BOUNDARY; per-route
+# boundaries need per-profile env.
+hermes_agent_github_trust_boundary_default: private
+
+hermes_agent_github_identity_mount: github-hermes
+# HERMES_GH_TOKEN_SET value -> boundary -> OpenBao permission set.
+hermes_agent_github_identity_sets:
+  review:
+    public: hermes-review-public
+    private: hermes-review-private
+  author:
+    public: hermes-author-public
+    private: hermes-author-private
+
+# One AppRole per boundary; each can mint only its own boundary's sets.
+hermes_agent_github_identity_approles:
+  public:
+    role_id: "{{ lookup('env', 'HERMES_GITHUB_PUBLIC_VAULT_ROLE_ID') | default('', true) }}"
+    secret_id: "{{ lookup('env', 'HERMES_GITHUB_PUBLIC_VAULT_SECRET_ID') | default('', true) }}"
+  private:
+    role_id: "{{ lookup('env', 'HERMES_GITHUB_PRIVATE_VAULT_ROLE_ID') | default('', true) }}"
+    secret_id: "{{ lookup('env', 'HERMES_GITHUB_PRIVATE_VAULT_SECRET_ID') | default('', true) }}"
+
+# Outbound gate lists for writes to public repos. Values come from the
+# environment; nothing estate-specific is committed here.
+hermes_agent_github_guard_internal_suffixes: >-
+  {{ ([lookup('env', 'PROXMOX_SUBDOMAIN')]
+      + lookup('env', 'HERMES_GH_GUARD_INTERNAL_SUFFIXES').split(','))
+     | map('trim') | select | unique | list }}
+hermes_agent_github_guard_private_repos: >-
+  {{ lookup('env', 'HERMES_GH_GUARD_PRIVATE_REPOS').split(',')
+     | map('trim') | select | unique | list }}
+
+# Installation tokens live 60 minutes; refreshing every 20 keeps every token
+# handed to gh valid for at least 40.
+hermes_agent_github_identity_refresh_interval: 20min
+hermes_agent_github_identity_token_dir: /run/hermes-gh
+hermes_agent_github_identity_env_path: /etc/hermes-gh-token.env
+hermes_agent_github_identity_helper_path: /usr/local/libexec/hermes-gh-token
+hermes_agent_github_identity_shim_path: /usr/local/bin/gh
+hermes_agent_github_identity_real_gh: /usr/bin/gh
+hermes_agent_github_identity_git: /usr/bin/git
+
+hermes_agent_github_identity_bao_addr: >-
+  {{ hostvars['localhost'].openbao_secrets_active_addr
+     | default(lookup('env', 'BAO_ADDR'), true) }}

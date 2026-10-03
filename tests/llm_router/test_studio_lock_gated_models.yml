@@ -46,7 +46,7 @@
     ai_ingress_response_header_timeout_seconds: 120
     hermes_brain_model: hermes-default
     hindsight_retain_model: qwen3-4b
-    hermes_goal_judge_model: goal-judge
+    hermes_goal_judge_model: judge
   tasks:
     - name: Load the role defaults and registry the way the converge does
       ansible.builtin.import_tasks: tasks/parity_setup.yml
@@ -84,10 +84,8 @@
           {{ llm_router_studio_lock_capacity }} — the studio gate shares ONE
           lock across primary/routine/small/ocr (fast_subagent_lock.py.j2's
           module docstring documents this as a deliberate simplification),
-          which only holds together while every one of those ids declares
-          the SAME max_parallel_requests. They disagree now — split the
-          shared lock into one per id (or a counting semaphore) before this
-          can pass again.
+          which takes the single most constrained max_parallel_requests of
+          those ids; more than one value here means the derivation broke.
 
     - name: Every 4080-redirect role plus judge is in the studio gate's role names
       ansible.builtin.assert:
@@ -117,10 +115,12 @@
           - llm_router_studio_role_overflow_targets['fast'] == llm_router_external_terminal_rungs[0]
           - llm_router_studio_role_overflow_targets['subagent'] == llm_router_external_terminal_rungs[0]
           - llm_router_studio_role_overflow_targets['cheap'] == llm_router_external_terminal_rungs[0]
-          - llm_router_studio_role_overflow_targets['judge'] == llm_router_external_terminal_rungs[0]
           # ANTI-VACUITY: a role with no non-local rung must be ABSENT from
           # the map (fast-gpu is not even a studio-gated role name above,
-          # so it can never appear here regardless).
+          # so it can never appear here regardless). judge is one: its egress
+          # is `none` in the role map, so it queues on the Router's own
+          # semaphore instead of leaving the Mac tier.
+          - "'judge' not in llm_router_studio_role_overflow_targets"
           - "'fast-gpu' not in llm_router_studio_role_overflow_targets"
           - "'embed' not in llm_router_studio_role_overflow_targets"
           - "'ocr' not in llm_router_studio_role_overflow_targets"
