@@ -1,0 +1,106 @@
+---
+# Mint the untrusted-tier JWT (qdrant_docker_untrusted_access, signed with the
+# Qdrant API key) and merge it into KV field qdrant_docker_untrusted_jwt_field
+# of secret qdrant_docker_untrusted_jwt_kv_path: read, skip when the stored
+# value already matches, else a check-and-set write that keeps every sibling
+# field. Runs on the controller; the guest is never handed the credentials.
+
+- name: Require the untrusted tier to exclude the trusted collection
+  ansible.builtin.assert:
+    that:
+      - qdrant_docker_trusted_collection not in (qdrant_docker_untrusted_access | map(attribute='collection') | list)
+    fail_msg: "qdrant_docker_untrusted_access must not grant {{ qdrant_docker_trusted_collection }}"
+    quiet: true
+
+- name: Require the publish connection settings
+  ansible.builtin.assert:
+    that:
+      - qdrant_docker_bao_addr | length > 0
+      - qdrant_docker_bao_role_id | length > 0
+      - qdrant_docker_bao_secret_id | length > 0
+    fail_msg: >-
+      qdrant_docker_bao_addr, qdrant_docker_bao_role_id and
+      qdrant_docker_bao_secret_id must be non-empty when
+      qdrant_docker_publish_untrusted_jwt is true.
+    quiet: true
+
+- name: Publish the untrusted-tier token
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+    qdrant_docker_untrusted_jwt: "{{ qdrant_docker_api_key | qdrant_jwt(qdrant_docker_untrusted_access) }}"
+  no_log: true
+  block:
+    - name: Log in with the converge identity
+      community.hashi_vault.vault_login:
+        url: "{{ qdrant_docker_bao_addr }}"
+        auth_method: approle
+        role_id: "{{ qdrant_docker_bao_role_id }}"
+        secret_id: "{{ qdrant_docker_bao_secret_id }}"
+        validate_certs: "{{ qdrant_docker_bao_validate_certs }}"
+      register: qdrant_docker_bao_login
+      check_mode: false
+      changed_when: false
+
+    - name: Read the current secret
+      community.hashi_vault.vault_kv2_get:
+        url: "{{ qdrant_docker_bao_addr }}"
+        auth_method: token
+        token: "{{ qdrant_docker_bao_login.login.auth.client_token }}"
+        engine_mount_point: "{{ qdrant_docker_untrusted_jwt_kv_mount }}"
+        path: "{{ qdrant_docker_untrusted_jwt_kv_path }}"
+        validate_certs: "{{ qdrant_docker_bao_validate_certs }}"
+      register: qdrant_docker_current
+      check_mode: false
+      failed_when: false
+
+    # Only a missing path may be written from scratch. Any other failure (a
+    # denial included) reads as an empty secret and would drop the siblings.
+    - name: Fail unless the read succeeded or the path is simply absent
+      ansible.builtin.fail:
+        msg: >-
+          Reading {{ qdrant_docker_untrusted_jwt_kv_mount }}/{{ qdrant_docker_untrusted_jwt_kv_path }}
+          failed: {{ qdrant_docker_current.msg }}
+      when:
+        - qdrant_docker_current.msg is defined
+        - qdrant_docker_current.msg is not search('^Invalid or missing path')
+      no_log: false
+
+    - name: Merge the token into the secret
+      community.hashi_vault.vault_kv2_write:
+        url: "{{ qdrant_docker_bao_addr }}"
+        auth_method: token
+        token: "{{ qdrant_docker_bao_login.login.auth.client_token }}"
+        engine_mount_point: "{{ qdrant_docker_untrusted_jwt_kv_mount }}"
+        path: "{{ qdrant_docker_untrusted_jwt_kv_path }}"
+        cas: "{{ qdrant_docker_current.metadata.version | default(0) | int }}"
+        data: >-
+          {{ qdrant_docker_current.secret | default({})
+             | combine({qdrant_docker_untrusted_jwt_field: qdrant_docker_untrusted_jwt}) }}
+        validate_certs: "{{ qdrant_docker_bao_validate_certs }}"
+      when: >-
+        (qdrant_docker_current.secret | default({})).get(qdrant_docker_untrusted_jwt_field, '')
+        != qdrant_docker_untrusted_jwt
+
+  always:
+    - name: Revoke the login token
+      community.hashi_vault.vault_write:
+        url: "{{ qdrant_docker_bao_addr }}"
+        auth_method: token
+        token: "{{ qdrant_docker_bao_login.login.auth.client_token }}"
+        path: auth/token/revoke-self
+        data: {}
+        validate_certs: "{{ qdrant_docker_bao_validate_certs }}"
+      when:
+        - qdrant_docker_bao_login is defined
+        - qdrant_docker_bao_login.login is defined
+      register: qdrant_docker_bao_revoke
+      ignore_errors: true
+      changed_when: false
+
+    # The token expires on its own TTL; a failed revoke is reported, not fatal.
+    - name: Report a login token that was not revoked
+      ansible.builtin.debug:
+        msg: "Revoking the publish login token failed; it stays valid until its TTL expires."
+      when: qdrant_docker_bao_revoke is failed
