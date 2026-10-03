@@ -61,11 +61,13 @@ def checkout(repo, boundary, dest):
     gh(["repo", "clone", repo, dest, "--", "--depth", "1"], boundary)
 
 
-def run_detect(dest):
+def detect_argv(dest, repo):
+    return [sys.executable, DETECT_SCRIPT, "--repo", dest, "--repo-name", repo]
+
+
+def run_detect(dest, repo):
     try:
-        run = subprocess.run(
-            [sys.executable, DETECT_SCRIPT, dest], capture_output=True, text=True, timeout=600, check=False
-        )
+        run = subprocess.run(detect_argv(dest, repo), capture_output=True, text=True, timeout=600, check=False)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise CrawlError(f"detect.py failed to run against {dest}: {e}") from e
     if run.returncode != 0:
@@ -109,19 +111,17 @@ def save_state(state):
 
 def open_pr_count():
     """Open PRs authored by this bot, org-wide, across both boundaries. 0 if
-    the GitHub identity has not landed yet (no app slug to search for)."""
+    the GitHub identity has not landed yet (no app slug to search for). A
+    failed search raises: the cap must fail closed, never count as zero."""
     if not APP_SLUG:
         return 0
     total = 0
     for boundary in ("public", "private"):
-        try:
-            out = gh(
-                ["search", "prs", "--author", f"app/{APP_SLUG}", "--state", "open",
-                 "--json", "number", "--jq", "length"],
-                boundary, token_set="review",
-            )
-        except CrawlError:
-            continue
+        out = gh(
+            ["search", "prs", "--author", f"app/{APP_SLUG}", "--state", "open",
+             "--json", "number", "--jq", "length"],
+            boundary, token_set="review",
+        )
         total += int(out.strip() or "0")
     return total
 
@@ -149,7 +149,7 @@ def main():
         dest = f"{CRAWL_DIR}/{repo.replace('/', '__')}"
         try:
             checkout(repo, boundary, dest)
-            for finding in run_detect(dest):
+            for finding in run_detect(dest, repo):
                 h = finding_hash(finding)
                 if h in seen:
                     continue
@@ -159,9 +159,6 @@ def main():
                 new_findings.append(finding)
         except CrawlError as e:
             failures.append(f"{repo}: {e}")
-
-    state["seen"] = sorted(seen)
-    save_state(state)
 
     if failures:
         for msg in failures:
@@ -173,11 +170,20 @@ def main():
         gate(False)
         return 0
 
-    open_prs = open_pr_count()
+    try:
+        open_prs = open_pr_count()
+    except CrawlError as e:
+        print(f"open PR count unavailable: {e}", file=sys.stderr)
+        gate(False)
+        return 1
     if open_prs >= MAX_OPEN_PRS:
         gate(False, {"new_findings": len(new_findings), "open_prs": open_prs, "reason": "pr-queue-full"})
         return 0
 
+    # Findings count as seen only once the agent is woken for them, so a full
+    # queue or a failed run leaves them to surface again next time.
+    state["seen"] = sorted(seen)
+    save_state(state)
     os.makedirs(CRAWL_DIR, exist_ok=True)
     with open(FINDINGS_PATH, "w") as f:
         json.dump(new_findings, f)
