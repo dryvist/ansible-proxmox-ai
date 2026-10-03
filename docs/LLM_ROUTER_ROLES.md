@@ -56,7 +56,7 @@ defeat the caller's own sequencing.
 
 ## Swap a role
 
-In the Admin UI at `/ui` (sign-in from `UI_USERNAME` / `UI_PASSWORD`): **Models**
+In the Admin UI at `/ui` (Authelia SSO sign-in): **Models**
 → the role's row → change its target, or **Settings → Fallbacks** → reorder.
 Effective immediately; no restart, no converge, no git diff.
 
