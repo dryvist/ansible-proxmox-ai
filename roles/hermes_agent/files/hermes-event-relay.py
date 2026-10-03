@@ -7,10 +7,15 @@ relay base64-decodes body_b64, signs those exact bytes with HMAC-SHA256 and
 POSTs them to RELAY_TARGET_BASE/<route> with X-GitHub-Event, X-GitHub-Delivery
 and X-Hub-Signature-256. The route is RELAY_ROUTE_PRIVATE when the payload's
 repository.private is true, RELAY_ROUTE_PUBLIC when false; a payload without
-that boolean is treated as malformed. A message is deleted only after a 2xx response (which
-includes the receiver's `duplicate` answer); anything else, including a
-malformed envelope, is left for the queue's redrive policy. One JSON log line
-per message, plus a periodic stats line and an optional dead-man ping.
+that boolean is treated as malformed. A message is deleted only after a 2xx
+response (which includes the receiver's `duplicate` answer); anything else,
+including a malformed envelope, is left for the queue's redrive policy. One
+JSON log line per message, plus a periodic stats line and an optional dead-man
+ping.
+
+Queue credentials are short-lived: the relay logs in to OpenBao with an
+AppRole, reads RELAY_BAO_CREDS_PATH (an assumed-role credential endpoint),
+revokes its OpenBao token, and repeats before the lease ends.
 """
 
 from __future__ import annotations
@@ -24,19 +29,34 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from typing import Callable
 
 REQUIRED = (
     "RELAY_QUEUE_SERVICE",
     "RELAY_QUEUE_URL",
     "RELAY_QUEUE_REGION",
-    "RELAY_ACCESS_KEY_ID",
-    "RELAY_SECRET_ACCESS_KEY",
+    "RELAY_BAO_ADDR",
+    "RELAY_BAO_ROLE_ID",
+    "RELAY_BAO_SECRET_ID",
+    "RELAY_BAO_CREDS_PATH",
     "RELAY_WEBHOOK_SECRET",
     "RELAY_TARGET_BASE",
     "RELAY_ROUTE_PUBLIC",
     "RELAY_ROUTE_PRIVATE",
 )
+
+
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+
+def checked_url(url: str) -> str:
+    """Allow https anywhere and http only to the loopback receiver."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in LOOPBACK):
+        return url
+    raise ValueError(f"refusing URL scheme/host: {parts.scheme}://{parts.hostname}")
 
 
 def _field(env: dict, name: str) -> str:
@@ -88,18 +108,69 @@ def should_delete(status: int | None) -> bool:
 
 
 def forward(url: str, secret: str, event: str, delivery: str, raw: bytes) -> tuple[int | None, str]:
-    req = urllib.request.Request(url, data=raw, method="POST")
+    req = urllib.request.Request(checked_url(url), data=raw, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("X-GitHub-Event", event)
     req.add_header("X-GitHub-Delivery", delivery)
     req.add_header("X-Hub-Signature-256", sign(secret, raw))
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - local receiver from config
+        with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.status, resp.read(200).decode(errors="replace")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read(200).decode(errors="replace")
-    except (urllib.error.URLError, TimeoutError) as exc:
+    except OSError as exc:
         return None, type(exc).__name__
+
+
+def bao_post(url: str, body: dict | None, token: str | None = None) -> dict:
+    """POST (or GET when body is None) to OpenBao and return the JSON reply."""
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(checked_url(url), data=data, method="GET" if body is None else "POST")
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("X-Vault-Token", token)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        raw = resp.read()
+    return json.loads(raw) if raw else {}
+
+
+class StsCredentials:
+    """Short-lived queue credentials read from OpenBao, refreshed before expiry."""
+
+    def __init__(self, cfg: dict, http: Callable[..., dict] = bao_post,
+                 clock: Callable[[], float] = time.monotonic, margin: float = 300):
+        self.cfg, self.http, self.clock, self.margin = cfg, http, clock, margin
+        self.creds: dict[str, str] = {}
+        self.expires = 0.0
+
+    def needs_refresh(self) -> bool:
+        return not self.creds or self.clock() >= self.expires - self.margin
+
+    def refresh(self) -> dict[str, str]:
+        addr = self.cfg["RELAY_BAO_ADDR"].rstrip("/")
+        login = self.http(f"{addr}/v1/auth/approle/login",
+                          {"role_id": self.cfg["RELAY_BAO_ROLE_ID"], "secret_id": self.cfg["RELAY_BAO_SECRET_ID"]})
+        token = (login.get("auth") or {}).get("client_token")
+        if not token:
+            raise ValueError("AppRole login returned no client_token")
+        try:
+            reply = self.http(f"{addr}/v1/{self.cfg['RELAY_BAO_CREDS_PATH']}", None, token)
+        finally:
+            try:
+                self.http(f"{addr}/v1/auth/token/revoke-self", {}, token)
+            except OSError as exc:
+                log(msg="revoke_failed", error=type(exc).__name__)
+        data = reply.get("data") or {}
+        session = data.get("session_token") or data.get("security_token")
+        if not (data.get("access_key") and data.get("secret_key") and session):
+            raise ValueError("credential reply is missing access_key/secret_key/session token")
+        lease = int(reply.get("lease_duration") or 0)
+        if lease <= self.margin:
+            raise ValueError(f"credential lease {lease}s is not longer than the refresh margin")
+        self.creds = {"aws_access_key_id": data["access_key"], "aws_secret_access_key": data["secret_key"],
+                      "aws_session_token": session}
+        self.expires = self.clock() + lease
+        return self.creds
 
 
 def log(**fields) -> None:
@@ -133,8 +204,8 @@ def ping(url: str) -> None:
     if not url:
         return
     try:
-        urllib.request.urlopen(url, timeout=10).close()  # noqa: S310 - dead-man URL from config
-    except (urllib.error.URLError, TimeoutError) as exc:
+        urllib.request.urlopen(checked_url(url), timeout=10).close()
+    except (OSError, ValueError) as exc:
         log(msg="ping_failed", error=type(exc).__name__)
 
 
@@ -149,17 +220,18 @@ def main() -> int:
     stats_every = int(os.environ.get("RELAY_STATS_SECONDS", "300"))
 
     import boto3  # deferred: the pure helpers above are tested without it
+    from botocore.exceptions import BotoCoreError, ClientError
 
-    client = boto3.client(
-        cfg["RELAY_QUEUE_SERVICE"],
-        region_name=cfg["RELAY_QUEUE_REGION"],
-        aws_access_key_id=cfg["RELAY_ACCESS_KEY_ID"],
-        aws_secret_access_key=cfg["RELAY_SECRET_ACCESS_KEY"],
-    )
+    sts = StsCredentials(cfg)
+    client = None
     counts = {"relayed": 0, "kept": 0, "max_age_s": 0}
     next_stats = time.monotonic()
     while True:
         try:
+            if client is None or sts.needs_refresh():
+                client = boto3.client(cfg["RELAY_QUEUE_SERVICE"], region_name=cfg["RELAY_QUEUE_REGION"],
+                                      **sts.refresh())
+                log(msg="credentials_refreshed")
             resp = client.receive_message(
                 QueueUrl=cfg["RELAY_QUEUE_URL"],
                 MaxNumberOfMessages=10,
@@ -181,8 +253,11 @@ def main() -> int:
                 ping(hc_url)
                 counts = {"relayed": 0, "kept": 0, "max_age_s": 0}
                 next_stats = time.monotonic() + stats_every
-        except Exception as exc:  # noqa: BLE001 - keep polling; systemd restarts only on crash
+        except (BotoCoreError, ClientError, OSError, ValueError) as exc:
+            # Queue/OpenBao transport or reply errors: retry. Anything else crashes
+            # and systemd restarts the unit.
             log(msg="poll_error", error=type(exc).__name__)
+            client = None
             time.sleep(10)
 
 

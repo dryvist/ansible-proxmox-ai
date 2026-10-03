@@ -83,3 +83,92 @@ def test_handle_keeps_on_error_and_poison(capsys):
     assert called == ["d-1"]
     lines = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
     assert [x["msg"] for x in lines] == ["relayed", "poison"]
+
+
+# --- short-lived queue credentials -------------------------------------------
+
+BAO_CFG = {"RELAY_BAO_ADDR": "https://bao.example.test/", "RELAY_BAO_ROLE_ID": "rid",
+           "RELAY_BAO_SECRET_ID": "sid", "RELAY_BAO_CREDS_PATH": "aws/sts/example-role"}
+
+
+class FakeBao:
+    def __init__(self, lease=900, data=None):
+        self.calls, self.lease, self.n = [], lease, 0
+        self.data = data
+
+    def __call__(self, url, body, token=None):
+        self.calls.append((url, body, token))
+        if url.endswith("/auth/approle/login"):
+            return {"auth": {"client_token": "bao-tok"}}
+        if url.endswith("/revoke-self"):
+            return {}
+        self.n += 1
+        data = self.data if self.data is not None else {
+            "access_key": f"AK{self.n}", "secret_key": "sk", "security_token": "st"}
+        return {"lease_duration": self.lease, "data": data}
+
+
+class Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_credentials_refresh_before_expiry():
+    bao, clock = FakeBao(lease=900), Clock()
+    sts = MOD.StsCredentials(BAO_CFG, http=bao, clock=clock, margin=300)
+    assert sts.needs_refresh()
+    creds = sts.refresh()
+    assert creds == {"aws_access_key_id": "AK1", "aws_secret_access_key": "sk", "aws_session_token": "st"}
+    assert [c[0] for c in bao.calls] == [
+        "https://bao.example.test/v1/auth/approle/login",
+        "https://bao.example.test/v1/aws/sts/example-role",
+        "https://bao.example.test/v1/auth/token/revoke-self",
+    ]
+    assert bao.calls[1][1] is None and bao.calls[1][2] == "bao-tok"
+    clock.t += 599
+    assert not sts.needs_refresh()
+    clock.t += 1  # 600s in: 300s margin before the 900s lease ends
+    assert sts.needs_refresh()
+    assert sts.refresh()["aws_access_key_id"] == "AK2"
+
+
+def test_credentials_reject_incomplete_or_short_lease():
+    with pytest.raises(ValueError):
+        MOD.StsCredentials(BAO_CFG, http=FakeBao(data={"access_key": "a", "secret_key": "s"})).refresh()
+    with pytest.raises(ValueError):
+        MOD.StsCredentials(BAO_CFG, http=FakeBao(lease=120), margin=300).refresh()
+
+
+def test_failed_read_still_revokes():
+    calls = []
+
+    def http(url, body, token=None):
+        calls.append(url)
+        if url.endswith("/login"):
+            return {"auth": {"client_token": "t"}}
+        if url.endswith("/revoke-self"):
+            return {}
+        raise OSError("down")
+
+    with pytest.raises(OSError):
+        MOD.StsCredentials(BAO_CFG, http=http).refresh()
+    assert calls[-1].endswith("/auth/token/revoke-self")
+
+
+@pytest.mark.parametrize("url,ok", [
+    ("https://bao.example.test/v1/x", True),
+    ("http://127.0.0.1:8644/webhooks/github-public", True),
+    ("http://localhost:1/x", True),
+    ("http://bao.example.test/v1/x", False),
+    ("file:///etc/passwd", False),
+    ("ftp://example.test/", False),
+])
+def test_checked_url(url, ok):
+    if ok:
+        assert MOD.checked_url(url) == url
+    else:
+        with pytest.raises(ValueError):
+            MOD.checked_url(url)
