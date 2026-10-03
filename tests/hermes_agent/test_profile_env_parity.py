@@ -53,9 +53,7 @@ _DEFAULT_STORE_ONLY_KEYS = {
     "OTEL_SERVICE_NAME",
     # Local-embedded memory daemon: one per gateway, not one per profile.
     "HINDSIGHT_LLM_API_KEY",
-    # The signed-commit App key path and the Browser Use CLI wiring — the
-    # profile template deliberately carries neither.
-    "GITHUB_APP_PRIVATE_KEY_PATH",
+    # The Browser Use CLI wiring — the profile template deliberately omits it.
     "BROWSER_INACTIVITY_TIMEOUT",
     "BROWSER_USE_HOME",
     "BH_HOME",
