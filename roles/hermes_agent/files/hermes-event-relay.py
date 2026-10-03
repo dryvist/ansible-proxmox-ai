@@ -4,10 +4,11 @@ webhook receiver.
 
 Each message body is JSON {"event", "delivery", "headers", "body_b64"}. The
 relay base64-decodes body_b64, signs those exact bytes with HMAC-SHA256 and
-POSTs them to RELAY_TARGET_BASE/<route> with X-GitHub-Event, X-GitHub-Delivery
-and X-Hub-Signature-256. The route is RELAY_ROUTE_PRIVATE when the payload's
-repository.private is true, RELAY_ROUTE_PUBLIC when false; a payload without
-that boolean is treated as malformed. A message is deleted only after a 2xx
+POSTs them to <base>/<route> with X-GitHub-Event, X-GitHub-Delivery and
+X-Hub-Signature-256. The route is RELAY_ROUTE_PRIVATE (base RELAY_TARGET_BASE)
+when the payload's repository.private is true, RELAY_ROUTE_PUBLIC (base
+RELAY_TARGET_BASE_PUBLIC, defaulting to RELAY_TARGET_BASE) when false; a payload
+without that boolean is treated as malformed. A message is deleted only after a 2xx
 response (which includes the receiver's `duplicate` answer); anything else,
 including a malformed envelope, is left for the queue's redrive policy. One
 JSON log line per message, plus a periodic stats line and an optional dead-man
@@ -95,7 +96,8 @@ def target_url(raw: bytes, cfg: dict) -> str:
     if not isinstance(private, bool):
         raise ValueError("repository.private missing")
     route = cfg["RELAY_ROUTE_PRIVATE"] if private else cfg["RELAY_ROUTE_PUBLIC"]
-    return f"{cfg['RELAY_TARGET_BASE'].rstrip('/')}/{route}"
+    base = cfg["RELAY_TARGET_BASE"] if private else cfg.get("RELAY_TARGET_BASE_PUBLIC") or cfg["RELAY_TARGET_BASE"]
+    return f"{base.rstrip('/')}/{route}"
 
 
 def sign(secret: str, raw: bytes) -> str:
@@ -215,6 +217,7 @@ def main() -> int:
         print(f"hermes-event-relay: missing env: {' '.join(missing)}", file=sys.stderr)
         return 2
     cfg = {k: os.environ[k] for k in REQUIRED}
+    cfg["RELAY_TARGET_BASE_PUBLIC"] = os.environ.get("RELAY_TARGET_BASE_PUBLIC", "")
     dlq_url = os.environ.get("RELAY_DLQ_URL", "")
     hc_url = os.environ.get("RELAY_HEALTHCHECK_URL", "")
     stats_every = int(os.environ.get("RELAY_STATS_SECONDS", "300"))

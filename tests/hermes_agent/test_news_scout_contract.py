@@ -143,12 +143,7 @@ def test_the_seed_is_public_safe() -> None:
 
 # test_the_news_card_is_the_canary_lift_off_the_pause_list DELETED
 # (native-cron reframe): hermes_agent_kanban_paused_jobs is gone, and with it
-# the differential activation it recorded. ai-news and daily-innovation are
-# now both plain hermes_agent_direct_cron_jobs entries sharing the exact same
-# `enabled: *cron_slack_gate` anchor (Slack creds present) — verified by
-# reading defaults/main.yml directly. Neither is throttled relative to the
-# other any more; there is no "canary" or "still paused" distinction left to
-# pin.
+# the differential activation it recorded.
 #
 # test_every_scheduled_news_run_gets_a_distinct_dedup_slot DELETED: slot_stamp
 # and interval_hours-keyed idempotency slotting lived only in
@@ -157,15 +152,35 @@ def test_the_seed_is_public_safe() -> None:
 # checksum-marker create/remove), not a per-fire slot suffix, so two of its
 # scheduled hours colliding on a slot key is not a class of bug that exists
 # in the new design.
+#
+# ai-news and daily-innovation (and app-seeding) used to share the exact same
+# `enabled: *cron_slack_gate` anchor. Paused 2026-10-02 (low value): each now
+# ANDs its own capability flag (hermes_agent_ai_news_enabled /
+# hermes_agent_daily_innovation_enabled, 140-work-supply-cards-b.yml, both
+# default false) onto the same Slack-credential gate, so pausing one can never
+# silently re-enable or disable a sibling.
 
 
-def test_ai_news_and_daily_innovation_share_the_same_activation_gate() -> None:
-    """Confirms the shape asserted above by comment: both are enabled purely
-    on Slack-credential presence, with no separate throttle between them."""
+def test_ai_news_and_daily_innovation_share_the_same_slack_gate_suffix() -> None:
+    """Each job still gates on the same Slack-credential presence as the
+    other direct-cron jobs — only the capability flag in front of it is now
+    distinct per job (see the paused-by-default comment above)."""
     direct = {j["name"]: j for j in DEFAULTS["hermes_agent_direct_cron_jobs"]}
     ai_news = direct["{{ hermes_agent_ai_news_cron_name }}"]
     innovation = direct["{{ hermes_agent_daily_innovation_cron_name }}"]
-    assert ai_news["enabled"] == innovation["enabled"]
+    slack_gate_tokens = (
+        "hermes_agent_slack_bot_token", "hermes_agent_slack_app_token", "hermes_agent_slack_home_channel",
+    )
+    for job in (ai_news, innovation):
+        for token in slack_gate_tokens:
+            assert token in job["enabled"]
+    assert "hermes_agent_ai_news_enabled" in ai_news["enabled"]
+    assert "hermes_agent_daily_innovation_enabled" in innovation["enabled"]
+
+
+def test_ai_news_is_paused_by_default() -> None:
+    """2026-10-02: low value relative to the rest of the fleet."""
+    assert DEFAULTS["hermes_agent_ai_news_enabled"] is False
 
 
 def test_the_news_schedule_matches_the_operators_day() -> None:

@@ -76,6 +76,19 @@
           - _seed_task.run_once | default(false) | bool
         fail_msg: "seed task: {{ _seed_task }}"
 
+    - name: --skip-tags llm_router_rolling drops the rolling converge but keeps seeding, which loads its own inputs
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _plays | selectattr('tags', 'defined') | selectattr('tags', 'contains', 'llm_router_rolling')
+            | map(attribute='name') | list == [_router_name]
+          - _seed_pre_tasks | map(attribute='name')
+            | select('equalto', "Load Hermes' operating-profile list") | list | length == 1
+          - "'registry.yml' in lookup('file', playbook_dir ~ '/../../roles/llm_router/tasks/seed-consumers.yml')"
+        fail_msg: >-
+          llm_router_rolling must tag the rolling play alone, and the seed play
+          must load the Hermes profiles and the registry itself.
+
 - name: Verify a total reachability-gate failure fails the run instead of silently seeding nothing
   hosts: localhost
   gather_facts: false

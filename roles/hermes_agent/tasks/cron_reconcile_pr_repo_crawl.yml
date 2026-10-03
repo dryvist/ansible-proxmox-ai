@@ -1,0 +1,58 @@
+---
+# Split out of cron_reconcile.yml (token budget).
+#
+# The script-fed Splunk triage digests: same --no-agent --script contract as
+# the status digest in cron_reconcile.yml. Their stdout (numbers each script
+# gathered itself) is delivered verbatim — no model in the fact path, so no
+# tool-call markup to leak and nothing to fabricate. include_tasks re-scopes
+# `item` per iteration, so the loop var is built into a fresh dict rather than
+# passed through.
+- name: Reconcile the script-fed Splunk triage crons
+  ansible.builtin.include_tasks: reconcile_enqueuer_cron.yml
+  vars:
+    item:
+      name: "{{ triage_job.name }}"
+      schedule: "{{ triage_job.schedule }}"
+      script: "{{ triage_job.name }}.py"
+      deliver: "slack:{{ hermes_agent_triage_channel }}"
+      enabled: >-
+        {{ hermes_agent_triage_enabled | bool
+           and hermes_agent_ops_workload_enabled | bool }}
+  loop: "{{ hermes_agent_triage_jobs }}"
+  loop_control:
+    loop_var: triage_job
+    label: "{{ triage_job.name }}"
+
+# Two more new workload crons, both off by default.
+#
+# PR reconcile: replays any github-{private,public} webhook pull_request
+# event the live route may have missed. Same --no-agent --script contract as
+# the digests in cron_reconcile.yml (no model, stdout is the delivered line);
+# ownership is the ops identity like every other script-fed job there.
+- name: Reconcile the PR-reconcile cron
+  ansible.builtin.include_tasks: reconcile_enqueuer_cron.yml
+  vars:
+    item:
+      name: "{{ hermes_agent_pr_reconcile_cron_name }}"
+      schedule: "{{ hermes_agent_pr_reconcile_cron_schedule }}"
+      script: "{{ hermes_agent_pr_reconcile_script_name }}"
+      deliver: local
+      enabled: >-
+        {{ hermes_agent_pr_reconcile_enabled | bool
+           and hermes_agent_ops_workload_enabled | bool }}
+
+# Repo crawl: MONITOR-MODE (agentic, script attached without --no-agent) —
+# reconcile_direct_cron.yml's optional `script` field. The pre-check script
+# decides per tick whether to wake the agent; when it does, the repo-crawl
+# skill triages the findings it wrote out.
+- name: Reconcile the repo-crawl cron
+  ansible.builtin.include_tasks: reconcile_direct_cron.yml
+  vars:
+    item:
+      name: "{{ hermes_agent_repo_crawl_cron_name }}"
+      schedule: "{{ hermes_agent_repo_crawl_cron_schedule }}"
+      prompt_var: hermes_agent_repo_crawl_cron_prompt
+      skill: "{{ hermes_agent_repo_crawl_skill }}"
+      script: "{{ hermes_agent_repo_crawl_script_name }}"
+      deliver: log
+      enabled: "{{ hermes_agent_repo_crawl_enabled | bool }}"

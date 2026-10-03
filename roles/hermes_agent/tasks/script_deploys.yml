@@ -148,16 +148,58 @@
     group: "{{ hermes_agent_user }}"
     mode: "0750"
 
-- name: Assert the public github route is bound to a profile
+# PR-reconcile: a `--no-agent --script` cron replaying missed github webhook
+# pull_request deliveries. Deployed regardless of the enable flag
+# (disable-don't-delete), same as every script above.
+- name: Deploy the PR-reconcile script
+  ansible.builtin.template:
+    src: hermes-pr-reconcile.py.j2
+    dest: "{{ hermes_agent_hermes_home }}/scripts/{{ hermes_agent_pr_reconcile_script_name }}"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+
+# Repo-crawl: the monitor-mode pre-check script (agentic cron, --script without
+# --no-agent). Also deployed unconditionally.
+- name: Deploy the repo-crawl pre-check script
+  ansible.builtin.template:
+    src: hermes-repo-crawl.py.j2
+    dest: "{{ hermes_agent_hermes_home }}/scripts/{{ hermes_agent_repo_crawl_script_name }}"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+
+# markdownlint-cli2 is the one tool the repo-crawl skill's detect.py needs on
+# PATH (check D6) that this guest does not otherwise install. Gated on the
+# cron flag itself, unlike the scripts above: unlike a harmless unreferenced
+# script, a Node.js + npm install is real guest footprint not worth paying for
+# on every hermes_agent guest when the feature is off.
+- name: Install Node.js and npm (markdownlint-cli2 runtime)
+  ansible.builtin.apt:
+    name: [nodejs, npm]
+    state: present
+  when: hermes_agent_repo_crawl_enabled | bool
+
+- name: Install markdownlint-cli2, pinned (repo-crawl detect.py check D6)
+  community.general.npm:
+    name: markdownlint-cli2
+    version: "{{ hermes_agent_markdownlint_cli2_version }}"
+    global: true
+  when: hermes_agent_repo_crawl_enabled | bool
+
+- name: Assert the public github gateway inputs
   ansible.builtin.assert:
     that:
-      - hermes_agent_github_route_public_profile | length > 0
+      - hermes_agent_github_public_gateway_model | length > 0
+      - hermes_agent_github_public_gateway_profile | length > 0
+      - hermes_agent_webhook_secret | length > 0
     fail_msg: >-
       hermes_agent_github_route_public_enabled requires
-      hermes_agent_github_route_public_profile (a profile whose env sets
-      HERMES_TRUST_BOUNDARY=public); without it public-route runs would use
-      the gateway's default boundary and model.
+      hermes_agent_github_public_gateway_model, a non-empty profile directory
+      name and hermes_agent_webhook_secret: the public route is served by its
+      own gateway, which has no default model.
     quiet: true
+  no_log: true
   when: hermes_agent_github_route_public_enabled | bool
 
 # Script filter for the github webhook routes (drops fork PRs).

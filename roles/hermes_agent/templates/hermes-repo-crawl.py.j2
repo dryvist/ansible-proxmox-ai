@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+{{ ansible_managed | comment }}
+"""Monitor-mode pre-check for the daily repo-crawl cron (--script, NOT
+--no-agent): shallow-checks out each allowlisted repo, runs the nix-hermes
+bundle's dryvist/repo-crawl detector, drops findings already seen (by hash,
+in STATE_PATH), and decides whether to wake the agent at all.
+
+Contract (upstream `wakeAgent` gate): the FINAL stdout line is a JSON object,
+either `{"wakeAgent": false}` or `{"wakeAgent": true, "context": {...}}`. The
+agent is woken only when there is at least one genuinely new finding AND the
+bot does not already have too many open PRs org-wide — piling more findings
+onto an already-busy review queue helps no one. New findings are written to
+FINDINGS_PATH for the job's prompt to read; the agent run itself is expected
+to use the author GH token set (see the cron's own prompt for why this script
+cannot set that directly).
+
+A detector or clone failure is never silently reported as "no findings": it
+is printed to stderr, the run exits non-zero, and the gate still prints
+{"wakeAgent": false} first so a hard failure never triggers an agent run on
+bad data.
+"""
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+HERMES_HOME = "{{ hermes_agent_hermes_home }}"
+DETECT_SCRIPT = f"{HERMES_HOME}/skills/dryvist/repo-crawl/scripts/detect.py"
+CRAWL_DIR = f"{HERMES_HOME}/data/repo-crawl"
+STATE_PATH = f"{CRAWL_DIR}/state.json"
+FINDINGS_PATH = f"{CRAWL_DIR}/findings.json"
+REPOS = {{ hermes_agent_repo_crawl_repos | to_json }}
+APP_SLUG = "{{ hermes_agent_github_app_slug | default('', true) }}"
+MAX_OPEN_PRS = {{ hermes_agent_repo_crawl_max_open_prs }}
+
+
+class CrawlError(RuntimeError):
+    """A real failure — never swallowed into a silent 'no findings'."""
+
+
+def gh(args, boundary, token_set="author"):
+    env = dict(os.environ)
+    env["HERMES_TRUST_BOUNDARY"] = boundary
+    env["HERMES_GH_TOKEN_SET"] = token_set
+    try:
+        run = subprocess.run(
+            ["gh", *args], env=env, capture_output=True, text=True, timeout=120, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise CrawlError(f"gh {' '.join(args)} failed to run: {e}") from e
+    if run.returncode != 0:
+        raise CrawlError(f"gh {' '.join(args)} exited {run.returncode}: {run.stderr.strip()[:300]}")
+    return run.stdout
+
+
+def checkout(repo, boundary, dest):
+    shutil.rmtree(dest, ignore_errors=True)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    gh(["repo", "clone", repo, dest, "--", "--depth", "1"], boundary)
+
+
+def detect_argv(dest, repo):
+    return [sys.executable, DETECT_SCRIPT, "--repo", dest, "--repo-name", repo]
+
+
+def run_detect(dest, repo):
+    try:
+        run = subprocess.run(detect_argv(dest, repo), capture_output=True, text=True, timeout=600, check=False)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise CrawlError(f"detect.py failed to run against {dest}: {e}") from e
+    if run.returncode != 0:
+        raise CrawlError(f"detect.py exited {run.returncode} against {dest}: {run.stderr.strip()[:500]}")
+    findings = []
+    for line in run.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            findings.append(json.loads(line))
+        except json.JSONDecodeError as e:
+            raise CrawlError(f"detect.py emitted non-JSON line against {dest}: {e}") from e
+    return findings
+
+
+def finding_hash(finding):
+    if finding.get("id"):
+        return str(finding["id"])
+    canonical = json.dumps(finding, sort_keys=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def load_state():
+    try:
+        with open(STATE_PATH) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"seen": []}
+    except json.JSONDecodeError:
+        return {"seen": []}
+
+
+def save_state(state):
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, STATE_PATH)
+
+
+def open_pr_count():
+    """Open PRs authored by this bot, org-wide, across both boundaries. 0 if
+    the GitHub identity has not landed yet (no app slug to search for). A
+    failed search raises: the cap must fail closed, never count as zero."""
+    if not APP_SLUG:
+        return 0
+    total = 0
+    for boundary in ("public", "private"):
+        out = gh(
+            ["search", "prs", "--author", f"app/{APP_SLUG}", "--state", "open",
+             "--json", "number", "--jq", "length"],
+            boundary, token_set="review",
+        )
+        total += int(out.strip() or "0")
+    return total
+
+
+def gate(wake, context=None):
+    payload = {"wakeAgent": wake}
+    if context is not None:
+        payload["context"] = context
+    print(json.dumps(payload))
+
+
+def main():
+    if not REPOS:
+        gate(False)
+        return 0
+
+    state = load_state()
+    seen = set(state.get("seen", []))
+    new_findings = []
+    failures = []
+
+    for entry in REPOS:
+        repo = entry["repo"]
+        boundary = entry.get("boundary", "public")
+        dest = f"{CRAWL_DIR}/{repo.replace('/', '__')}"
+        try:
+            checkout(repo, boundary, dest)
+            for finding in run_detect(dest, repo):
+                h = finding_hash(finding)
+                if h in seen:
+                    continue
+                seen.add(h)
+                finding["repo"] = repo
+                finding["hash"] = h
+                new_findings.append(finding)
+        except CrawlError as e:
+            failures.append(f"{repo}: {e}")
+
+    if failures:
+        for msg in failures:
+            print(msg, file=sys.stderr)
+        gate(False)
+        return 1
+
+    if not new_findings:
+        gate(False)
+        return 0
+
+    try:
+        open_prs = open_pr_count()
+    except CrawlError as e:
+        print(f"open PR count unavailable: {e}", file=sys.stderr)
+        gate(False)
+        return 1
+    if open_prs >= MAX_OPEN_PRS:
+        gate(False, {"new_findings": len(new_findings), "open_prs": open_prs, "reason": "pr-queue-full"})
+        return 0
+
+    # Findings count as seen only once the agent is woken for them, so a full
+    # queue or a failed run leaves them to surface again next time.
+    state["seen"] = sorted(seen)
+    save_state(state)
+    os.makedirs(CRAWL_DIR, exist_ok=True)
+    with open(FINDINGS_PATH, "w") as f:
+        json.dump(new_findings, f)
+    gate(True, {"new_findings": len(new_findings), "open_prs": open_prs})
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
