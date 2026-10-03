@@ -10,10 +10,11 @@
 # per job, with nobody getting one clean "the brain is down" signal.
 #
 # Fix: probe the brain end-to-end; on a DEBOUNCED transition, `hermes cron
-# pause`/`resume` the role-seeded fleet and alert EXACTLY ONCE per edge (Slack DM
-# + urgent ntfy). Paused jobs don't fire, so a brain outage stops producing spam
-# instead of amplifying it. Pausing loses no coverage a run would otherwise
-# achieve — the brain is down either way — it just makes the gap visible once.
+# pause`/`resume` the role-seeded fleet and alert EXACTLY ONCE per edge via the
+# shared ntfy alert hub. Paused jobs don't fire, so a brain outage stops
+# producing spam instead of amplifying it. Pausing loses no coverage a run
+# would otherwise achieve — the brain is down either way — it just makes the
+# gap visible once.
 set -uo pipefail
 
 # --- Rendered config ---------------------------------------------------------
@@ -37,6 +38,7 @@ BUSY_GRACE_PROBES="{{ hermes_agent_brain_watchdog_busy_grace_probes }}"
 # 1 = converge a paused fleet back to running whenever the brain is healthy.
 RECONCILE_PAUSED="{{ 1 if hermes_agent_brain_watchdog_reconcile_paused else 0 }}"
 NTFY_URL="{{ hermes_agent_brain_watchdog_ntfy_url }}"
+NTFY_TOKEN="{{ hermes_agent_ntfy_publish_token }}"
 # External deadman OK-ping target (silent-Mac / LXC-down backstop). Full ping URL
 # from the environment; empty = no-op. See defaults + hc_ping below.
 HEALTHCHECK_URL="{{ hermes_agent_brain_watchdog_healthcheck_url }}"
@@ -69,16 +71,9 @@ SEEDED_JOBS=(
 )
 
 # Secrets arrive via the systemd unit's EnvironmentFile (the same $HERMES_HOME/.env
-# the gateway loads): HERMES_AGENT_MODEL_API_KEY (probe auth), SLACK_BOT_TOKEN +
-# SLACK_ALLOWED_USERS (DM alert). Defaulted empty so `set -u` is safe when unset.
+# the gateway loads): HERMES_AGENT_MODEL_API_KEY (probe auth). Defaulted empty
+# so `set -u` is safe when unset.
 API_KEY="${HERMES_AGENT_MODEL_API_KEY:-}"
-SLACK_TOKEN="${SLACK_BOT_TOKEN:-}"
-SLACK_USER="${SLACK_ALLOWED_USERS:-}"
-# Channel for brain up/down transitions. The brain being unreachable is Hermes
-# itself not working, so this belongs in the issues channel rather than only in
-# a DM, where it is invisible to anyone reading the channels. Same knob name and
-# fallback order fabric_watchdog already uses. Empty keeps the DM-only path.
-SLACK_ALERT_CHANNEL="${SLACK_ALERT_CHANNEL:-}"
 
 # --- Probe: a tiny real completion, mirroring what the crons actually do ------
 # THREE states, not two: up | busy | down. Busy is the one that matters — see
@@ -183,44 +178,33 @@ cron_do() {
   done
 }
 
-# --- Alerting: one Slack DM + one urgent ntfy per transition -----------------
-# Messages are kept JSON-safe (no double quotes / backslashes) so the Slack body
-# can be built with printf — the guest has no jq, and adding one for two strings
-# is not worth a dependency (ponytail).
-slack_post() {
-  local text="$1" channel
-  # Channel wins when set; else the first member id, i.e. channel=<user id> DMs
-  # them. Requires a token either way, but only requires SLACK_USER when there
-  # is no channel to fall back from.
-  channel="${SLACK_ALERT_CHANNEL:-${SLACK_USER%%,*}}"
-  [[ -n "${SLACK_TOKEN}" && -n "${channel}" ]] || return 0
-  curl -fsS --max-time 10 -X POST https://slack.com/api/chat.postMessage \
-    -H "Authorization: Bearer ${SLACK_TOKEN}" \
-    -H "Content-Type: application/json; charset=utf-8" \
-    --data "$(printf '{"channel":"%s","text":"%s"}' "${channel}" "${text}")" \
-    >/dev/null 2>&1 || true
-}
-
+# --- Alerting: one ntfy hub push per transition -------------------------------
 ntfy_push() {
   local kind="$1" text="$2" prio tags title
   [[ -n "${NTFY_URL}" ]] || return 0
   if [[ "${kind}" == "down" ]]; then
-    prio="urgent"; tags="rotating_light"; title="{{ hermes_agent_id }} brain down"
+    prio="high"; tags="rotating_light"; title="{{ hermes_agent_id }} brain down"
   else
     prio="default"; tags="white_check_mark"; title="{{ hermes_agent_id }} brain recovered"
   fi
-  curl -fsS --max-time 8 -H "Title: ${title}" -H "Priority: ${prio}" \
-    -H "Tags: ${tags}" -d "${text}" "${NTFY_URL}" >/dev/null 2>&1 || true
+  if [[ -n "${NTFY_TOKEN}" ]]; then
+    curl -fsS --max-time 8 -H "Title: ${title}" -H "Priority: ${prio}" \
+      -H "Tags: ${tags}" -H "Authorization: Bearer ${NTFY_TOKEN}" \
+      -d "${text}" "${NTFY_URL}" >/dev/null 2>&1 || true
+  else
+    curl -fsS --max-time 8 -H "Title: ${title}" -H "Priority: ${prio}" \
+      -H "Tags: ${tags}" -d "${text}" "${NTFY_URL}" >/dev/null 2>&1 || true
+  fi
 }
 
 # --- External deadman OK-ping ------------------------------------------------
-# The ntfy + Slack paths above only page on a DETECTED brain outage, and they run
-# ON this LXC: a powered-off LXC, a masked timer, or a wedged systemd silences
-# them with no page. So every healthy probe pings an external healthchecks-style
+# The ntfy hub push above only pages on a DETECTED brain outage, and it runs ON
+# this LXC: a powered-off LXC, a masked timer, or a wedged systemd silences it
+# with no page. So every healthy probe pings an external healthchecks-style
 # deadman. When the ping STOPS — this host gone, timer dead, or the brain
 # unreachable (which includes a silent Mac serving host) — the external service
 # pages on its own. Empty URL = no-op. ponytail: OK-ping only, no /fail; a
-# detected-down is already paged by ntfy/Slack, and the deadman exists for the
+# detected-down is already paged by the ntfy hub, and the deadman exists for the
 # SILENT/absence case those pages structurally cannot cover.
 hc_ping() {
   [[ -n "${HEALTHCHECK_URL}" ]] || return 0
@@ -236,7 +220,6 @@ alert() {
     msg=":white_check_mark: {{ hermes_agent_display_name }} brain recovered at ${now} -- resume verified succeeded=${CRON_SUCCEEDED} failed=${CRON_FAILED} desired=${JOB_COUNT}; Slack delivery still requires queue verification."
   fi
   logger -t hermes-brain-watchdog "${msg}"
-  slack_post "${msg}"
   ntfy_push "${kind}" "${msg}"
 }
 
@@ -276,7 +259,6 @@ maybe_escalate_sustained_flap() {
     mins=$(( elapsed / 60 ))
     msg=":rotating_light: {{ hermes_agent_display_name }} brain UNSTABLE for ~${mins} min and still flapping (${flap_count} coalesced flaps) -- ${MODEL} via ${BASE_URL}. Seeded crons pause during down phases but resume into brief-recovery windows; probable serving-stack wedge, needs operator attention (INC-17083 class)."
     logger -t hermes-brain-watchdog "${msg}"
-    slack_post "${msg}"
     ntfy_push down "${msg}"
     printf '%s\n' "$(( now_epoch + SUSTAINED_FLAP_REARM ))" > "${SUSTAINED_REARM_FILE}"
   fi
@@ -344,7 +326,6 @@ flap_summary_check() {
     since="$(cat "${FLAP_SINCE_FILE}" 2>/dev/null || echo unknown)"
     msg=":large_yellow_circle: {{ hermes_agent_display_name }} brain was unstable since ${since} (${flap_count} additional flap(s) after the initial recovery) -- stabilized at $(date -u +%Y-%m-%dT%H:%M:%SZ)."
     logger -t hermes-brain-watchdog "${msg}"
-    slack_post "${msg}"
     ntfy_push up "${msg}"
   fi
   rm -f "${FLAP_COOLDOWN_FILE}" "${FLAP_COUNT_FILE}" "${FLAP_SINCE_FILE}" \
@@ -373,7 +354,7 @@ flap_summary_check() {
 # timer or persist the matching state, otherwise reconciliation will resume the
 # fleet.
 #
-# Silent by design (logger only, no Slack/ntfy): this is repair, not an
+# Silent by design (logger only, no ntfy): this is repair, not an
 # incident, and paging on it would re-create the noise this watchdog exists to
 # suppress.
 reconcile_fleet() {

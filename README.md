@@ -76,8 +76,7 @@ molecule test -s qdrant
 
 - `fabric_watchdog` — 2-minute systemd timer on the Hermes guest probing the
   MCP fabric + LLM front door from Hermes's own network path; alerts once per
-  up/down transition over Slack. Deliberately Slack-only, not ntfy/Prometheus:
-  those run on the observability node, so they can't report that node's own loss.
+  up/down transition to the shared ntfy alert hub.
 
 ## Deploy orchestration (follow-up)
 

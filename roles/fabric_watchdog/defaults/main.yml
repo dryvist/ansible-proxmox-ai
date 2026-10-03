@@ -3,10 +3,9 @@
 # outages (2026-07-24 incident: the fabric was down for hours and the only
 # signal was Slack going quiet). Runs on the Hermes guest so probes traverse
 # exactly the path Hermes uses (VLAN -> Traefik -> pool). Alerts EXACTLY ONCE
-# per up/down transition via Slack, reusing the same EnvironmentFile mechanism
-# as the hermes brain-watchdog (SLACK_BOT_TOKEN + SLACK_ALLOWED_USERS DM, or
-# SLACK_ALERT_CHANNEL when set). Deliberately NOT ntfy/prometheus-backed —
-# both live on the node whose loss this watchdog exists to catch.
+# per up/down transition, published to the shared ntfy alert hub (see
+# fabric_watchdog_ntfy_url below), which fans out to Slack and Zammad on its
+# own.
 fabric_watchdog_interval: "2min"
 fabric_watchdog_probe_timeout: 8
 # Hysteresis before an edge is committed and alerted. Transition-only alerting
@@ -66,23 +65,17 @@ fabric_watchdog_success_pause_alert_minutes: 240
 
 fabric_watchdog_user: hermes
 fabric_watchdog_group: hermes
-# Same .env the hermes gateway + brain-watchdog load (SLACK_* secrets).
-fabric_watchdog_env_file: "{{ hermes_agent_hermes_home | default('/var/lib/hermes/.hermes') }}/.env"
 
-# Alert destination. That .env does not define SLACK_ALERT_CHANNEL, so without
-# this the script silently falls back to DMing the first SLACK_ALLOWED_USERS
-# entry — a destination that moves whenever that list is reordered.
-#
-# These probes report on Hermes' OWN fabric (the MCP proxy and LLM front door it
-# depends on), so a DOWN/recovered transition is Hermes being non-functional, not
-# a homelab finding — it belongs in the issues channel. Over the 13-day audit
-# these flaps were 86 messages in the work channel, several of them recoveries
-# with no matching DOWN. Falls back to the digest channel when unset, then to the
-# DM, so an unconfigured id changes nothing.
-fabric_watchdog_alert_channel: >-
-  {{ hermes_agent_slack_issues_channel
-     | default(hermes_agent_digest_slack_channel, true)
-     | default('', true) }}
+# Alert hub. Same FQDN-first ntfy pattern as hermes_agent_brain_watchdog_ntfy_url
+# (ansible-proxmox-ai's hermes_agent role) and ai_runner_ntfy_url — PROXMOX_
+# SUBDOMAIN plus a topic name, never a raw full-URL secret read straight from
+# the environment.
+fabric_watchdog_ntfy_topic: "ai"
+fabric_watchdog_ntfy_url: >-
+  https://ntfy.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/{{ fabric_watchdog_ntfy_topic }}
+# Optional bearer token for the hub. Empty for now — auth is not enforced by
+# the hub yet.
+fabric_watchdog_ntfy_token: ""
 
 # Probed endpoints. ok_codes are space-separated HTTP codes counted as UP:
 # the MCP proxy answers 406 (protocol negotiation rejection) to a plain GET
