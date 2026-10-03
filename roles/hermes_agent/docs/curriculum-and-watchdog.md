@@ -80,10 +80,9 @@ This watchdog closes both gaps with a small `systemd` timer
    touched), confirm each job's new state by
    reading `hermes cron list --all` back rather than trusting the command's exit
    code, and alert
-   **exactly once** per edge to **both** a Slack DM (the operator, same place the
-   spam was) and an **urgent ntfy** push (the `keystone` feed other homelab
-   outages page on). Paused jobs don't fire, so the outage stops producing spam
-   instead of amplifying it.
+   **exactly once** per edge via an **ntfy** push to the `keystone` feed other
+   homelab outages page on. Paused jobs don't fire, so the outage stops
+   producing spam instead of amplifying it.
 4. **Flap coalescing** — debounce alone doesn't stop a genuinely *unstable*
    backend from alerting on every edge (confirmed live: a 31h-unstable backend
    produced dozens of up/down DM pairs). Completing the first down/up cycle
@@ -117,7 +116,8 @@ proxy this repo doesn't otherwise need.
 | `hermes_agent_brain_watchdog_down_after` | `3` | Consecutive fails → pause + alert |
 | `hermes_agent_brain_watchdog_up_after` | `2` | Consecutive oks → resume + alert |
 | `hermes_agent_brain_watchdog_flap_cooldown_seconds` | `3600` | Post-cycle window that coalesces further edges into one summary |
-| `hermes_agent_brain_watchdog_ntfy_topic` | `keystone` | ntfy topic for the urgent page |
+| `hermes_agent_brain_watchdog_ntfy_topic` | `keystone` | ntfy topic for the page |
+| `hermes_agent_ntfy_publish_token` | `''` | Optional bearer token for the ntfy hub; shared by every hermes_agent ntfy publisher |
 | `hermes_agent_brain_watchdog_healthcheck_url` | `''` (env `DEADMAN_HC_URL_HERMES_BRAIN`) | External deadman OK-ping target; empty = ping skipped |
 
 ## Telling a watchdog pause from a human pause
@@ -139,14 +139,14 @@ state:
 - **The audit trail**: every watchdog-driven edge is logged with
   `logger -t hermes-brain-watchdog`, so `journalctl -t hermes-brain-watchdog`
   gives an exact "down at ${time}" / "up at ${time}" history alongside the
-  Slack DM + ntfy page it already sent. A human pause instead shows up in the
+  ntfy page it already sent. A human pause instead shows up in the
   Ansible/Terrakube run history for whichever playbook ran.
 
 ## Watchdog self-monitoring ("who watches the watchdog")
 
-The watchdog's ntfy + Slack alerts only fire when its *probe* detects the brain
-down, and they run **on this LXC** — so a powered-off LXC, a masked timer, or a
-wedged systemd silences them with no page. Two mechanisms cover that blind spot,
+The watchdog's ntfy alert only fires when its *probe* detects the brain
+down, and it runs **on this LXC** — so a powered-off LXC, a masked timer, or a
+wedged systemd silences it with no page. Two mechanisms cover that blind spot,
 one external and one same-repo.
 
 **External deadman (the real absence detector).** On every healthy probe the

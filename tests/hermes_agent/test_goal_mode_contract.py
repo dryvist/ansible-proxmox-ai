@@ -3,7 +3,7 @@ from __future__ import annotations
 import yaml
 
 from conftest import REPO_ROOT, ROLE_ROOT, _task, role_defaults
-from _registry import backend_for_alias, backend_for_role, load_registry
+from _registry import backend_for_role, load_registry
 from _role_files import template_text
 from _cron_pool_ceiling_shared import (
     router_request_timeout_seconds,
@@ -69,11 +69,12 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # when the judge moved to a resident backend to escape the small tier's
     # cold load, and deriving from serving_role here would have silently kept
     # asserting the old wiring.
-    judge_backend = backend_for_alias(registry, group_vars["hermes_goal_judge_model"])
+    # `judge` is a router role backed by the routine tier, not a git alias.
+    judge_backend = backend_for_role(registry, "routine")
     assert group_vars["hermes_brain_model"] == hermes_alias
     # The judge rides its own alias now — a judge on the worker's model is
     # self-preference bias, and the two serialize against one serving slot.
-    assert group_vars["hermes_goal_judge_model"] == "goal-judge"
+    assert group_vars["hermes_goal_judge_model"] == "judge"
     assert judge_backend != hermes_backend
     assert defaults["hermes_agent_model"] == "{{ hermes_brain_model }}"
     assert defaults["hermes_agent_compression_model"] == "{{ hermes_brain_model }}"

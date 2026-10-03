@@ -35,9 +35,7 @@
 
 # The OCR entry, selected the same way as primary/routine/small in 50-servable.yml.
 llm_router_ocr_model: >-
-  {{ llm_router_registry_enabled | selectattr('serving_role', 'defined')
-     | selectattr('serving_role', 'equalto', 'ocr')
-     | map(attribute='client_model_id') | first }}
+  {{ llm_roles.models[llm_roles.roles.ocr.model].id }}
 # The embedding entry. Selected by its `embedding` flag because that is the
 # field the template already keys the embedding render off, and because the
 # registry is the only place a model id is spelled.
@@ -45,14 +43,8 @@ llm_router_embedding_model: >-
   {{ llm_router_registry_enabled | selectattr('embedding', 'defined')
      | selectattr('embedding') | map(attribute='client_model_id') | first }}
 
-# A5 (2026-09-12):
-#
-# `lead` is RETIRED as a DB role entirely (no entry below any more): it
-# always targeted the exact same model `best` does, so it is now a pure git
-# alias instead (llm-models.d/10-large.yml) — a naming-transport change
-# only, zero functional difference for a caller of either name.
-#
-# SUPERSEDES the A5 note (2026-09-12): `subagent` no longer targets `long`
+# `lead` is a pure git alias of `best` (llm-models.d/10-large.yml), not a DB
+# role. `subagent` no longer targets `long`
 # directly. `subagent` and the new `fast` role (Codex's own `--profile fast`
 # and nix-ai's aliases.nix already reference this name; the router never had
 # one before) now share ONE chain instead: try the 4080 (hermes-local-4080,
@@ -141,11 +133,20 @@ llm_router_role_deployments:
   - role: fast-gpu
     model: "{{ llm_router_hermes_local_4080_id }}"
     fallbacks: []
-  # The judge, cross-family to the primary on purpose — the same model the
-  # `goal-judge` alias resolves to today.
+  # The judge, cross-family to the primary on purpose (the `goal-judge` alias
+  # target). Egress `estate`: the Studio, then the 4080, no cloud rung.
   - role: judge
     model: "{{ llm_router_routine_model }}"
-    fallbacks: "{{ [llm_router_small_model] + llm_router_external_terminal_rungs }}"
+    fallbacks: "{{ [llm_router_hermes_local_4080_id] }}"
+  # Screen-recorder pipes: the home-lab GPU first, then the Studio's fast
+  # model, and nothing beyond (egress `estate` in the role map, no cloud rung).
+  # The router never stores a recorder prompt body: message logging is off on
+  # this role's deployment (seed-roles.yml merges `litellm_params`).
+  - role: recorder
+    model: "{{ llm_router_hermes_local_4080_id }}"
+    fallbacks: "{{ [llm_router_routine_model] }}"
+    litellm_params:
+      turn_off_message_logging: true
   # Trivial background chores and every CI review. The GPU rung first — the
   # fastest local model, and a busy slot hands over at once (57-subagent-lock
   # lists this role, so contention redirects instead of waiting) — then the

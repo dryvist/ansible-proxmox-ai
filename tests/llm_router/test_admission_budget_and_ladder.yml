@@ -40,7 +40,7 @@
     ai_ingress_response_header_timeout_seconds: 120
     hermes_brain_model: hermes-default
     hindsight_retain_model: qwen3-4b
-    hermes_goal_judge_model: goal-judge
+    hermes_goal_judge_model: judge
     # Every external credential the registry gates on, so every terminal
     # rung renders.
     bao_local_llm_secrets:
@@ -153,9 +153,19 @@
         success_msg: "{{ item.role }}: {{ item.model }} -> {{ item.fallbacks | join(' -> ') }}"
       loop: >-
         {{ llm_router_role_deployments
-           | selectattr('role', 'in', ['fast', 'subagent', 'cheap', 'judge']) | list }}
+           | selectattr('role', 'in', ['fast', 'subagent', 'cheap']) | list }}
       loop_control:
         label: "{{ item.role }}"
+
+    # judge carries egress `estate` in the role map (dryvist.homelab.llm_roles):
+    # its ladder is the Studio then the 4080, with no external rung.
+    - name: The judge ladder carries no external rung
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _judge.fallbacks == [llm_router_hermes_local_4080_id]
+      vars:
+        _judge: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'judge') | first }}"
 
     - name: The terminal rungs are distinct deployments and every one renders
       ansible.builtin.assert:

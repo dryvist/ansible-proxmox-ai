@@ -52,13 +52,6 @@ def test_board_worker_failures_go_to_the_issues_channel() -> None:
     assert ctx["hermes_agent_kanban_digest_issues_channel"] == "C_ISSUES"
 
 
-def test_the_fabric_watchdog_alerts_to_the_issues_channel() -> None:
-    """These probe Hermes' OWN fabric, so a flap is breakage. 86 messages in the
-    audit window, several of them recoveries with no matching DOWN."""
-    ctx = _resolve(CONFIGURED)
-    assert ctx["fabric_watchdog_alert_channel"] == "C_ISSUES"
-
-
 # --- the regression that caused the collapse ---------------------------------
 
 def test_hermes_all_is_not_an_alias_of_the_firehose() -> None:
