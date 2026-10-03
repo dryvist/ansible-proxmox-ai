@@ -136,8 +136,9 @@ silently ignores the other section of `requirements.yml` and still exits zero.
 ### Commands
 
 `scripts/run-ansible.sh` mints a short-lived SSH certificate from the OpenBao
-CA (`ssh-certificate-authority` ADR) when `BAO_ADDR` +
-`OPENBAO_APPROLE_ANSIBLE_ROLE_ID`/`_SECRET_ID` are ambient, then runs the
+CA (`ssh-certificate-authority` ADR) when `SECRET_STORE_ADDR` +
+`SSH_SIGNER_ROLE_ID`/`_SECRET_ID` + `SSH_CA_MOUNT` + `SSH_SIGNER_ROLE` are
+ambient (the older AppRole names still work as a fallback), then runs the
 playbook — the same signing token also satisfies `inventory_resolve`'s
 `BAO_TOKEN` requirement, so no separate token is needed. Falls back verbatim
 to the static `PROXMOX_SSH_KEY_PATH` flow when that env is absent. See

@@ -94,6 +94,55 @@ class RunAnsibleIdentityContract(RunnerSandboxBase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(child_role_id_file.read_text(encoding="utf-8").strip(), "ans-role")
 
+    # --- generic signer names (read first, legacy names are the fallback) --
+
+    GENERIC = {
+        "SECRET_STORE_ADDR": "https://store.example.invalid",
+        "SSH_SIGNER_ROLE_ID": "gen-role",
+        "SSH_SIGNER_SECRET_ID": "gen-secret",
+        "SSH_CA_MOUNT": "gen-mount",
+        "SSH_SIGNER_ROLE": "gen-sign",
+    }
+
+    def test_generic_names_alone_sign_with_supplied_mount_and_role(self):
+        self.curl_log = Path(self.tmp.name) / "curl.log"
+        self._write_fake_curl()
+        self._write_recap("localhost")
+        result = self._run_with_bao(dict(self.GENERIC), legacy_addr=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("authenticated as: signer", result.stdout)
+        log = self.curl_log.read_text(encoding="utf-8")
+        self.assertIn("https://store.example.invalid/v1/gen-mount/sign/gen-sign", log)
+        self.assertIn('"role_id":"gen-role"', log)
+
+    def test_generic_names_win_over_legacy_names(self):
+        self.curl_log = Path(self.tmp.name) / "curl.log"
+        self._write_fake_curl()
+        self._write_recap("localhost")
+        result = self._run_with_bao(
+            {
+                **self.GENERIC,
+                "OPENBAO_APPROLE_SEMAPHORE_ROLE_ID": "sem-role",
+                "OPENBAO_APPROLE_SEMAPHORE_SECRET_ID": "sem-secret",
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        log = self.curl_log.read_text(encoding="utf-8")
+        self.assertIn("https://store.example.invalid/v1/gen-mount/sign/gen-sign", log)
+        self.assertNotIn("sem-role", log)
+        self.assertNotIn("bao.example.invalid", log)
+
+    def test_generic_names_without_mount_refuse(self):
+        self.curl_log = Path(self.tmp.name) / "curl.log"
+        self._write_fake_curl()
+        env = dict(self.GENERIC)
+        del env["SSH_CA_MOUNT"]
+        result = self._run_with_bao(env, legacy_addr=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SSH_CA_MOUNT or SSH_SIGNER_ROLE is not", result.stderr)
+        self._assert_playbook_not_called()
+        self.assertFalse(self.curl_log.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

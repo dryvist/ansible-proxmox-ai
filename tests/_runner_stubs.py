@@ -156,15 +156,25 @@ class RunnerSandboxBase(unittest.TestCase):
             """,
         )
 
-    def _run_with_bao(self, env_extra, allow_stale=False):
+    def _run_with_bao(self, env_extra, allow_stale=False, legacy_addr=True):
         env = os.environ.copy()
         env["PATH"] = f"{self.bin}{os.pathsep}{env['PATH']}"
-        env.pop("PROXMOX_SSH_KEY_PATH", None)
-        env.pop("SSH_KNOWN_HOSTS", None)
+        for var in (
+            "PROXMOX_SSH_KEY_PATH",
+            "SSH_KNOWN_HOSTS",
+            "BAO_ADDR",
+            "SECRET_STORE_ADDR",
+            "SSH_SIGNER_ROLE_ID",
+            "SSH_SIGNER_SECRET_ID",
+            "SSH_CA_MOUNT",
+            "SSH_SIGNER_ROLE",
+        ):
+            env.pop(var, None)
         env["FAKE_CALLED_LOG"] = str(self.called_log)
         env["FAKE_RECAP_FILE"] = str(self.recap_file)
         env["FAKE_CURL_LOG"] = str(self.curl_log)
-        env["BAO_ADDR"] = "https://bao.example.invalid"
+        if legacy_addr:
+            env["BAO_ADDR"] = "https://bao.example.invalid"
         env.update(env_extra)
         if allow_stale:
             env["ALLOW_STALE_CHECKOUT"] = "1"
