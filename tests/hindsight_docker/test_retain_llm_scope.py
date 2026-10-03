@@ -33,6 +33,13 @@ def test_retain_scope_does_not_retry_into_a_busy_local_slot() -> None:
     assert '"1"' in env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_MAX_RETRIES")
 
 
+def test_base_scope_is_bounded_like_retain() -> None:
+    rendered = render()
+    assert '"1"' in env_line(rendered, "HINDSIGHT_API_LLM_MAX_CONCURRENT")
+    assert '"1"' in env_line(rendered, "HINDSIGHT_API_LLM_MAX_RETRIES")
+    assert '"1"' in env_line(rendered, "HINDSIGHT_API_CONSOLIDATION_LLM_PARALLELISM")
+
+
 def test_no_master_key_variable_reaches_the_compose_render() -> None:
     # The template only ever interpolates hindsight_docker_llm_api_key.
     assert "ai_orchestration_model_api_key" not in TEMPLATE_PATH.read_text()
