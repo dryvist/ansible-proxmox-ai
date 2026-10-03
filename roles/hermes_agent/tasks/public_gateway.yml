@@ -1,0 +1,96 @@
+---
+# Standalone gateway for the github-public route (see
+# defaults/main/52-github-public-gateway.yml). Deployed and started only while
+# hermes_agent_github_route_public_enabled; stopped and disabled otherwise,
+# leaving its files in place (disable-don't-delete). The bundle path is resolved
+# by the skills deploy earlier in the play.
+- name: Create the public-review gateway directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+  loop:
+    - "{{ hermes_agent_hermes_home }}/profiles"
+    - "{{ hermes_agent_github_public_gateway_home }}"
+    - "{{ hermes_agent_github_public_gateway_home }}/scripts"
+    - "{{ hermes_agent_github_public_gateway_home }}/skills"
+    - "{{ hermes_agent_github_public_gateway_home }}/skills/dryvist"
+  when: hermes_agent_github_route_public_enabled | bool
+
+- name: Deploy the public-review gateway config.yaml
+  ansible.builtin.template:
+    src: config-public-gateway.yaml.j2
+    dest: "{{ hermes_agent_github_public_gateway_home }}/config.yaml"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+  notify: Restart hermes-gateway-public
+  when: hermes_agent_github_route_public_enabled | bool
+
+- name: Deploy the public-review gateway secrets (.env)
+  ansible.builtin.template:
+    src: hermes-env-public-gateway.j2
+    dest: "{{ hermes_agent_github_public_gateway_home }}/.env"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart hermes-gateway-public
+  when: hermes_agent_github_route_public_enabled | bool
+
+- name: Deploy the route filter script for the public-review gateway
+  ansible.builtin.copy:
+    src: github-route-same-repo.py
+    dest: "{{ hermes_agent_github_public_gateway_home }}/scripts/{{ hermes_agent_github_route_script_name }}"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0750"
+  notify: Restart hermes-gateway-public
+  when: hermes_agent_github_route_public_enabled | bool
+
+- name: Deploy the review skill for the public-review gateway
+  ansible.builtin.copy:
+    src: "{{ hermes_agent_bundle_path }}/skills/dryvist/{{ hermes_agent_github_public_gateway_skill }}/"
+    dest: "{{ hermes_agent_github_public_gateway_home }}/skills/dryvist/{{ hermes_agent_github_public_gateway_skill }}/"
+    owner: "{{ hermes_agent_user }}"
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+    directory_mode: "0750"
+  notify: Restart hermes-gateway-public
+  when: hermes_agent_github_route_public_enabled | bool
+
+- name: Deploy the public-review gateway systemd unit
+  ansible.builtin.template:
+    src: hermes-gateway-public.service.j2
+    dest: "/etc/systemd/system/{{ hermes_agent_github_public_gateway_service }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart hermes-gateway-public
+  when: hermes_agent_github_route_public_enabled | bool
+
+- name: Enable and start the public-review gateway
+  ansible.builtin.systemd:
+    name: "{{ hermes_agent_github_public_gateway_service }}"
+    state: started
+    enabled: true
+    daemon_reload: true
+  when: hermes_agent_github_route_public_enabled | bool
+
+- name: Check for a retained public-review gateway unit
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ hermes_agent_github_public_gateway_service }}.service"
+  register: hermes_agent_github_public_gateway_unit
+  when: not (hermes_agent_github_route_public_enabled | bool)
+
+- name: Stop and disable the retained public-review gateway
+  ansible.builtin.systemd:
+    name: "{{ hermes_agent_github_public_gateway_service }}"
+    state: stopped
+    enabled: false
+    daemon_reload: true
+  when:
+    - not (hermes_agent_github_route_public_enabled | bool)
+    - hermes_agent_github_public_gateway_unit.stat.exists | default(false)

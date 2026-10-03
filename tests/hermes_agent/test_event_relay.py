@@ -48,6 +48,21 @@ def test_target_url_by_visibility():
             MOD.target_url(body, CFG)
 
 
+def test_public_events_use_the_public_base_and_private_the_default():
+    cfg = {**CFG, "RELAY_TARGET_BASE": "http://127.0.0.1:8644/webhooks",
+           "RELAY_TARGET_BASE_PUBLIC": "http://127.0.0.1:8645/webhooks/"}
+    assert MOD.target_url(RAW, cfg) == "http://127.0.0.1:8645/webhooks/github-public"
+    private = MOD.target_url(b'{"repository":{"private":true}}', cfg)
+    assert private == "http://127.0.0.1:8644/webhooks/github-private"
+
+
+def test_public_base_is_optional_and_still_loopback_checked():
+    assert MOD.target_url(RAW, {**CFG, "RELAY_TARGET_BASE_PUBLIC": ""}) == "http://127.0.0.1:1/webhooks/github-public"
+    remote = MOD.target_url(RAW, {**CFG, "RELAY_TARGET_BASE_PUBLIC": "http://gw.example.test/webhooks"})
+    with pytest.raises(ValueError):
+        MOD.forward(remote, "s3cret", "pull_request", "d-1", RAW)
+
+
 def test_sign_matches_github_format():
     want = "sha256=" + hmac.new(b"s3cret", RAW, hashlib.sha256).hexdigest()
     assert MOD.sign("s3cret", RAW) == want

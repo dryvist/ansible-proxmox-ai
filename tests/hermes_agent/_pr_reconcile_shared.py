@@ -24,6 +24,7 @@ DEFAULT_CTX = {
     "hermes_agent_github_app_slug": "jacobs-hermes-agent",
     "hermes_agent_hermes_home": "/tmp/hermes-pr-reconcile-test-home",
     "hermes_agent_webhook_port": 8644,
+    "hermes_agent_github_public_gateway_port": 8645,
     "hermes_agent_github_route_public_enabled": True,
     "hermes_agent_github_route_public_name": "github-public",
     "hermes_agent_github_route_private_enabled": True,

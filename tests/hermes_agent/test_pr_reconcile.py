@@ -20,12 +20,38 @@ def test_routes_reflect_enabled_flags():
         hermes_agent_github_route_private_enabled=False,
     )
     assert both_off.ROUTES == {
-        "public": {"enabled": False, "name": "github-public"},
-        "private": {"enabled": False, "name": "github-private"},
+        "public": {"enabled": False, "name": "github-public",
+                   "url": "http://127.0.0.1:8645/webhooks/{name}"},
+        "private": {"enabled": False, "name": "github-private",
+                    "url": "http://127.0.0.1:8644/webhooks/{name}"},
     }
     both_on = load_module()
     assert both_on.ROUTES["public"]["enabled"] is True
     assert both_on.ROUTES["private"]["enabled"] is True
+
+
+@pytest.mark.parametrize("boundary,url", [
+    ("public", "http://127.0.0.1:8645/webhooks/github-public"),
+    ("private", "http://127.0.0.1:8644/webhooks/github-private"),
+])
+def test_each_route_posts_to_the_gateway_serving_it(monkeypatch, boundary, url):
+    mod = load_module()
+    seen = []
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self):
+            return b""
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda req, timeout: seen.append(req.full_url) or Resp())
+    payload = {"repository": {"full_name": "o/r"}, "pull_request": {"number": 1, "head": {"sha": "a" * 40}}}
+    mod.post(mod.ROUTES[boundary], "s", payload)
+    assert seen == [url]
 
 
 def test_nothing_to_do_when_no_route_enabled(monkeypatch):
