@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.60.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.59.2...v0.60.0) (2026-10-03)
+
+
+### Features
+
+* **hermes_agent:** add pr-reconcile and repo-crawl crons ([#1006](https://github.com/dryvist/ansible-proxmox-ai/issues/1006)) ([f11e4c2](https://github.com/dryvist/ansible-proxmox-ai/commit/f11e4c2042279edc2c0d2052fb92b722218ab71d))
+* **hermes_agent:** serve the public github route from its own gateway ([#1019](https://github.com/dryvist/ansible-proxmox-ai/issues/1019)) ([ff03cc2](https://github.com/dryvist/ansible-proxmox-ai/commit/ff03cc277667a0b97e12bc4d1826f2a67fcd5c35))
+
+
+### Bug Fixes
+
+* **hermes_agent:** load the review skill on the github routes and gate private PR review on credentials ([#1018](https://github.com/dryvist/ansible-proxmox-ai/issues/1018)) ([e370047](https://github.com/dryvist/ansible-proxmox-ai/commit/e37004787105af9e7821d4dba5e0a2c81087aca4))
+* **llm_router:** let consumer seeding run without the rolling converge ([#1017](https://github.com/dryvist/ansible-proxmox-ai/issues/1017)) ([e45840a](https://github.com/dryvist/ansible-proxmox-ai/commit/e45840a036fbf277c3cb2efefaed4fa86006b177))
+
 ## [0.59.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.59.1...v0.59.2) (2026-10-03)
 
 
