@@ -132,9 +132,10 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
 
 def test_group_vars_reads_canonical_zammad_mcp_pair() -> None:
     group_vars = (REPO_ROOT / "inventory/group_vars/hermes_agent_group.yml").read_text()
-    assert "bao_local_llm_secrets.ZAMMAD_MCP_URL" in group_vars
-    assert "bao_local_llm_secrets.ZAMMAD_MCP_TOKEN" in group_vars
-    assert "bao_local_llm_secrets.ZAMMAD_API_TOKEN" not in group_vars
+    assert "hermes_agent_mcp_bao.ZAMMAD_MCP_URL" in group_vars
+    assert "hermes_agent_mcp_bao.ZAMMAD_MCP_TOKEN" in group_vars
+    assert "_secrets.ZAMMAD_API_TOKEN" not in group_vars
+    assert "_bao.ZAMMAD_API_TOKEN" not in group_vars
     assert "ZAMMAD_MCP_URL | regex_replace('/api/v1/?$', '')" in group_vars
     assert "else lookup('env', 'ZAMMAD_URL')" in group_vars
 
