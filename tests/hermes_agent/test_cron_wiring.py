@@ -10,7 +10,7 @@ from _role_files import role_tasks_text
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "roles" / "hermes_agent"
-CRON_RECONCILE = yaml.safe_load((ROLE / "tasks" / "cron_reconcile.yml").read_text())
+CRON_RECONCILE = yaml.safe_load((ROLE / "tasks" / "cron_reconcile_pr_repo_crawl.yml").read_text())
 
 
 def _task(name):
