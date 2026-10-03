@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.59.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.59.1...v0.59.2) (2026-10-03)
+
+
+### Bug Fixes
+
+* **llm_router:** overflow judge role onto its 4080 rung when studio is busy ([#1011](https://github.com/dryvist/ansible-proxmox-ai/issues/1011)) ([58402df](https://github.com/dryvist/ansible-proxmox-ai/commit/58402df46dcc453393bbd89b90712b40b162d542))
+
 ## [0.59.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.59.0...v0.59.1) (2026-10-03)
 
 
