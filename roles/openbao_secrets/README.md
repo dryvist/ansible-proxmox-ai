@@ -165,13 +165,11 @@ must stay narrowly read-only on non-secret data — never local-llm's broader
 then it skips cleanly like any other unconfigured domain, and
 `ai_default_model` falls back to its static literal.
 
-`hermes` is path-exact-only future scaffolding: `HERMES_VAULT_ROLE_ID`/
-`_SECRET_ID` (or the new `OPENBAO_APPROLE_HERMES_ROLE_ID`/`_SECRET_ID`) are
-already provisioned as a real AppRole + policy server-side, but every
-`hermes_agent` credential under `ai/hermes` still reads through
-`local-llm`'s broader grant (its `inventory/group_vars/hermes_agent_group.yml`
-overrides) — nothing currently resolves via `bao_hermes_secrets`. Migrate one
-field at a time by pointing its group_vars override here.
+`hermes` is Hermes' own path-exact domain (`ai/hermes`, `ai/mcp/splunk`,
+`ai/mcp/zammad`). `inventory/group_vars/hermes_agent_group.yml` reads it through
+`hermes_agent_bao`; while the domain is unfetched, Hermes keeps `local-llm` as
+the layer underneath, and once it resolves Hermes reads nothing from
+`local-llm`.
 
 All readable path keys for a domain are merged flat into that domain's
 `bao_<domain>_secrets`, keyed by the field name, so a consumer default reads
