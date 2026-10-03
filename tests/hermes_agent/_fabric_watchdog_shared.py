@@ -47,6 +47,8 @@ FIXTURE_CONFIG = {
     "FLAP_ALERTS": 3,
     "FLAP_WINDOW_MINUTES": 360,
     "FLAP_QUIET_MINUTES": 120,
+    "NTFY_URL": "",
+    "NTFY_TOKEN": "",
 }
 
 

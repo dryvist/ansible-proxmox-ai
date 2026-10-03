@@ -151,7 +151,6 @@ def test_unset_channels_reproduce_todays_routing_exactly() -> None:
     match = re.search(DIRECT, DIRECT_TASKS)
     assert match, "the direct-cron default deliver expression moved"
     assert "slack:" + ctx[match.group(1)] == "slack:C_DIGEST"
-    assert ctx["fabric_watchdog_alert_channel"] == "C_DIGEST"
 
 
 def test_an_unset_issues_channel_disables_the_board_split() -> None:

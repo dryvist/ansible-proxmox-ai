@@ -3,7 +3,7 @@
 # canonical role map (dryvist.homelab.llm_roles), and the registry matches the
 # map. Positive: the shipped chains pass, and `recorder` holds home-lab rungs
 # only with message logging off. Negative: a recorder chain with a cloud rung,
-# a judge chain with a home-lab rung, and a registry whose concurrency drifts
+# a judge chain with a cloud rung, and a registry whose concurrency drifts
 # from the map each fail the converge-time asserts.
 #
 # Run (from the REPO ROOT):
@@ -37,12 +37,15 @@
         that:
           - _recorder.litellm_params.turn_off_message_logging
           - _recorder.fallbacks == [llm_router_routine_model]
+          - _judge.model == llm_router_routine_model
+          - _judge.fallbacks == [llm_router_hermes_local_4080_id]
           - _recorder.model == llm_router_hermes_local_4080_id
           - "'recorder' in _workstation_key.models"
           - llm_router_zdr_asserted_group_names | intersect(llm_router_zdr_false_group_names) | length == 0
           - "'hermes-cloud-openrouter' in llm_router_zdr_asserted_group_names"
           - llm_router_zdr_unasserted_terminal_rungs | intersect(llm_router_zdr_asserted_group_names) | length == 0
       vars:
+        _judge: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'judge') | first }}"
         _recorder: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'recorder') | first }}"
         _workstation_key: >-
           {{ llm_router_virtual_keys
@@ -70,27 +73,27 @@
             that:
               - "'recorder (estate)' in ansible_failed_result.msg"
 
-    # NEGATIVE: an `none` role may not reach the home lab (the 4080).
-    - name: Add the home-lab GPU to the judge chain
+    # NEGATIVE: an `estate` role may not reach a cloud rung.
+    - name: Add a cloud rung to the judge chain
       ansible.builtin.set_fact:
         llm_router_role_deployments: >-
           {{ (llm_router_role_deployments | rejectattr('role', 'equalto', 'judge') | list)
              + [{'role': 'judge', 'model': llm_router_routine_model,
-                 'fallbacks': [llm_router_hermes_local_4080_id]}] }}
+                 'fallbacks': [llm_router_hermes_local_4080_id, llm_router_zdr_false_group_names | first]}] }}
 
-    - name: The home-lab rung on a none role is refused
+    - name: The cloud rung on the judge role is refused
       block:
         - name: Run the egress assert
           ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-egress.yml"
         - name: Fail if the assert let it through
           ansible.builtin.fail:
-            msg: a judge chain with a home-lab rung passed the egress assert
+            msg: a judge chain with a cloud rung passed the egress assert
       rescue:
         - name: The failure names the judge rung
           ansible.builtin.assert:
             quiet: true
             that:
-              - "'judge (none)' in ansible_failed_result.msg"
+              - "'judge (estate)' in ansible_failed_result.msg"
 
     # NEGATIVE: registry concurrency drifting from the map fails.
     - name: Drift the routine entry's concurrency from the map
