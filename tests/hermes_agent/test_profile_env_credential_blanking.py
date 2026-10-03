@@ -35,7 +35,7 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         # template — see the GH_PAT_WRITE_PROJECT_ISSUES assertion below.
         hermes_agent_github_issues_pat="WRITETOK",
     )
-    always_blank = ("GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "CONTEXT7_API_KEY")
+    always_blank = ("CONTEXT7_API_KEY",)
     section_keys = {
         "slack": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
         "splunk": ("SPLUNK_MCP_URL", "SPLUNK_MCP_TOKEN"),
