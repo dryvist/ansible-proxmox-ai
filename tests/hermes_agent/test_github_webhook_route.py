@@ -1,5 +1,6 @@
 """Contract for the `github` webhook route in config.yaml.j2 and its script filter."""
 import json
+import re
 import runpy
 import types
 from pathlib import Path
@@ -7,6 +8,7 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from _pr_reconcile_shared import load_module
 from _role_files import role_defaults
 
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
@@ -60,13 +62,11 @@ def test_github_route_shape():
     route = render(True)["github-private"]
     assert route["events"] == ["pull_request"]
     assert route["deliver"] == "log"
-    assert "deliver_only" not in route and "cron_job" not in route and "prompt" not in route
-    assert route["coalesce"] == {
-        "key": "{repository.full_name}#{pull_request.number}",
-        "window_seconds": 60,
-        "max_wait_seconds": 300,
-    }
-    assert route["skills"] == ["pr-review"]
+    assert "deliver_only" not in route and "cron_job" not in route
+    assert route["prompt"] == (
+        "Review pull request #{pull_request.number} in {repository.full_name} at head commit {pull_request.head.sha}."
+    )
+    assert route["skills"] == ["dryvist-pr-review"]
     assert route["toolsets"] == ["terminal", "web"]
     filters = {f["field"]: f for f in route["filters"]}
     assert filters["repository.owner.login"]["equals"] == "dryvist"
@@ -84,3 +84,19 @@ def test_same_repo_filter():
     deleted = {"repository": {"full_name": "o/r"}, "pull_request": {"head": {"repo": None}}}
     assert not FILTER.same_repo(deleted)
     assert not FILTER.same_repo({})
+
+
+def test_prompt_fields_resolve_in_the_reconcile_payload():
+    """Every {dotted.path} in the route prompt exists in the reconciler's
+    synthetic event, so replayed and live deliveries render the same prompt."""
+    pr = {
+        "number": 7,
+        "head": {"sha": "abc", "repo": {"full_name": "o/r"}},
+        "base": {"ref": "develop", "repo": {"full_name": "o/r", "private": True}},
+    }
+    payload = load_module().build_payload("o/r", pr)
+    for path in re.findall(r"\{([a-z_.]+)\}", render(True)["github-private"]["prompt"]):
+        value = payload
+        for part in path.split("."):
+            value = value[part]
+        assert value not in (None, "")
