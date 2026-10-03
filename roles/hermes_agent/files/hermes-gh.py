@@ -233,7 +233,6 @@ def main() -> int:
     if stdin:
         return subprocess.run([cfg["real_gh"], *argv], env=env, input=stdin, check=False).returncode  # noqa: S603
     os.execve(cfg["real_gh"], [cfg["real_gh"], *argv], env)
-    return 0
 
 
 if __name__ == "__main__":
