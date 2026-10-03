@@ -5,9 +5,10 @@
    unset or unknown refuses.
 2. The target repository is taken from -R/--repo, an `api repos/<o>/<r>` path,
    a GraphQL repositoryNameWithOwner, a github.com URL argument, or the cwd's
-   origin remote. Its visibility is looked up with the boundary's review token;
-   a repository on the other side, or one whose visibility cannot be read, is
-   refused. A write with no resolvable target is refused.
+   origin remote (read with the configured git binary). Its visibility is
+   looked up with the boundary's review token; a repository on the other side,
+   or one whose visibility cannot be read, is refused. A write with no
+   resolvable target is refused.
 3. A write to a public repository has its outgoing text (arguments, body/input
    files, stdin, decoded commit file contents) scanned; any rule hit refuses.
 4. Otherwise the real gh runs with GH_TOKEN from <token_dir>/<set>-<boundary>,
@@ -213,14 +214,14 @@ def main() -> int:
     env.pop("GITHUB_TOKEN", None)
 
     def visibility(repo: str, key: str) -> bool | None:
-        run = subprocess.run(  # noqa: S603 - fixed binary from config
+        run = subprocess.run(
             [cfg["real_gh"], "api", f"repos/{repo}", "--jq", ".private"],
             env={**env, "GH_TOKEN": _read_token(cfg, key)}, capture_output=True, text=True, check=False)
         out = run.stdout.strip()
         return {"true": True, "false": False}.get(out) if run.returncode == 0 else None
 
-    origin = subprocess.run(  # noqa: S603,S607 - read-only git query
-        ["git", "config", "--get", "remote.origin.url"], capture_output=True, text=True, check=False
+    origin = subprocess.run(
+        [cfg["real_git"], "config", "--get", "remote.origin.url"], capture_output=True, text=True, check=False
     ).stdout.strip() or None
     try:
         key = decide(argv, env, stdin, cfg, origin, visibility)
@@ -231,7 +232,7 @@ def main() -> int:
         print(f"gh: refused ({exc.rule}): {exc}", file=sys.stderr)
         return 3
     if stdin:
-        return subprocess.run([cfg["real_gh"], *argv], env=env, input=stdin, check=False).returncode  # noqa: S603
+        return subprocess.run([cfg["real_gh"], *argv], env=env, input=stdin, check=False).returncode
     os.execve(cfg["real_gh"], [cfg["real_gh"], *argv], env)
 
 

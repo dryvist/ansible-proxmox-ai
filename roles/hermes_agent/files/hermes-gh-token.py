@@ -17,17 +17,20 @@ import os
 import pwd
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
 
 REQUIRED = ("BAO_ADDR", "GH_TOKEN_MOUNT", "GH_TOKEN_SETS", "GH_TOKEN_DIR", "GH_TOKEN_OWNER")
 
 
 def post(url: str, body: dict, token: str | None = None) -> dict:
+    if urllib.parse.urlsplit(url).scheme != "https":
+        raise ValueError("OpenBao URL must be https")
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST")
     req.add_header("Content-Type", "application/json")
     if token:
         req.add_header("X-Vault-Token", token)
-    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 - fixed https base from config
+    with urllib.request.urlopen(req, timeout=15) as resp:
         raw = resp.read()
     return json.loads(raw) if raw else {}
 
@@ -66,7 +69,7 @@ def mint_boundary(addr: str, mount: str, role_id: str, secret_id: str,
     finally:
         try:
             http(f"{addr}/v1/auth/token/revoke-self", {}, bao)
-        except Exception as exc:  # noqa: BLE001 - revoke is best effort; TTL still bounds the token
+        except (OSError, ValueError) as exc:  # revoke is best effort; the token TTL still bounds it
             print(f"hermes-gh-token: revoke-self failed: {type(exc).__name__}", file=sys.stderr)
 
 
@@ -101,7 +104,7 @@ def main() -> int:
             tokens = mint_boundary(os.environ["BAO_ADDR"], os.environ["GH_TOKEN_MOUNT"],
                                    os.environ[f"HERMES_BAO_ROLE_ID_{b.upper()}"],
                                    os.environ[f"HERMES_BAO_SECRET_ID_{b.upper()}"], sets)
-        except Exception as exc:  # noqa: BLE001 - one boundary failing must not stop the other
+        except (OSError, ValueError, RuntimeError) as exc:  # one boundary failing must not stop the other
             print(f"hermes-gh-token: {b}: {type(exc).__name__}: {exc}", file=sys.stderr)
             failed.append(b)
             continue

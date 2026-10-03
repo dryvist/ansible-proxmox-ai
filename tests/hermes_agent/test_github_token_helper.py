@@ -82,3 +82,9 @@ def test_main_requires_per_boundary_credentials(monkeypatch, capsys):
     monkeypatch.delenv("HERMES_BAO_SECRET_ID_PUBLIC", raising=False)
     assert MOD.main() == 2
     assert "HERMES_BAO_ROLE_ID_PUBLIC" in capsys.readouterr().err
+
+
+def test_post_refuses_non_https():
+    for url in ("http://bao.example.test/v1/x", "file:///etc/shadow"):
+        with pytest.raises(ValueError):
+            MOD.post(url, {})
