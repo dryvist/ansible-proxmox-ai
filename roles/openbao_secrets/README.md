@@ -166,7 +166,7 @@ then it skips cleanly like any other unconfigured domain, and
 `ai_default_model` falls back to its static literal.
 
 `hermes` is Hermes' own path-exact domain (`ai/hermes`, `ai/mcp/splunk`,
-`ai/mcp/zammad`). `inventory/group_vars/hermes_agent_group.yml` reads it through
+`ai/mcp/zammad`, `secrets-external/ai/saas/context7`). The group vars read it through
 `hermes_agent_bao`; while the domain is unfetched, Hermes keeps `local-llm` as
 the layer underneath, and once it resolves Hermes reads nothing from
 `local-llm`.
