@@ -181,6 +181,14 @@ def test_the_raw_probe_result_is_persisted_before_the_busy_grace_escalation() ->
     )
 
 
+def test_alerts_publish_to_the_ntfy_hub_not_slack() -> None:
+    """Every transition alert goes through the shared ntfy hub; none of them
+    post straight to Slack any more."""
+    assert "hermes_agent_brain_watchdog_ntfy_url" in WATCHDOG
+    assert "slack.com" not in WATCHDOG
+    assert "slack_post" not in WATCHDOG
+
+
 if __name__ == "__main__":
     for _name, _fn in sorted(globals().items()):
         if _name.startswith("test_") and callable(_fn):

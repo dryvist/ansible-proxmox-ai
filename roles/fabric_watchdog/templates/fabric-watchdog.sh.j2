@@ -2,7 +2,7 @@
 # {{ ansible_managed }}
 #
 # Fabric watchdog: probe each configured endpoint; on a DEBOUNCED up/down
-# transition, post one Slack message.
+# transition, publish one message to the shared ntfy alert hub.
 #
 # Transition-only alerting was NOT enough on its own. The original design
 # assumed "a 2-min cadence with transition-only alerts is already quiet, and the
@@ -14,27 +14,26 @@
 #
 # Hysteresis matches the brain watchdog: an edge needs DOWN_AFTER/UP_AFTER
 # consecutive identical observations before it is committed and alerted.
-# Secrets come from the systemd unit's EnvironmentFile.
 set -uo pipefail
 
 STATE_DIR="{{ fabric_watchdog_state_dir }}"
 TIMEOUT="{{ fabric_watchdog_probe_timeout }}"
 DOWN_AFTER="{{ fabric_watchdog_down_after }}"
 UP_AFTER="{{ fabric_watchdog_up_after }}"
-SLACK_TOKEN="${SLACK_BOT_TOKEN:-}"
-SLACK_USER="${SLACK_ALLOWED_USERS:-}"
-# Channel wins when provided; else DM the first allowed user (brain-watchdog
-# convention — channel=<user id> DMs them).
-SLACK_CHANNEL="${SLACK_ALERT_CHANNEL:-${SLACK_USER%%,*}}"
+NTFY_URL="{{ fabric_watchdog_ntfy_url }}"
+NTFY_TOKEN="{{ fabric_watchdog_ntfy_token }}"
 
-slack_post() {
-  local text="$1"
-  [[ -n "${SLACK_TOKEN}" && -n "${SLACK_CHANNEL}" ]] || return 0
-  curl -fsS --max-time 10 -X POST https://slack.com/api/chat.postMessage \
-    -H "Authorization: Bearer ${SLACK_TOKEN}" \
-    -H "Content-Type: application/json; charset=utf-8" \
-    --data "$(printf '{"channel":"%s","text":"%s"}' "${SLACK_CHANNEL}" "${text}")" \
-    >/dev/null 2>&1 || true
+ntfy_push() {
+  local title="$1" text="$2" prio="$3" tags="$4"
+  [[ -n "${NTFY_URL}" ]] || return 0
+  if [[ -n "${NTFY_TOKEN}" ]]; then
+    curl -fsS --max-time 10 -H "Title: ${title}" -H "Priority: ${prio}" \
+      -H "Tags: ${tags}" -H "Authorization: Bearer ${NTFY_TOKEN}" \
+      -d "${text}" "${NTFY_URL}" >/dev/null 2>&1 || true
+  else
+    curl -fsS --max-time 10 -H "Title: ${title}" -H "Priority: ${prio}" \
+      -H "Tags: ${tags}" -d "${text}" "${NTFY_URL}" >/dev/null 2>&1 || true
+  fi
 }
 
 mkdir -p "${STATE_DIR}"
@@ -83,15 +82,15 @@ if [[ "${state}" != "${prev}" ]]; then
   if (( streak >= needed )); then
     if [[ "${state}" == "down" ]]; then
 {% if t.cmd is defined %}
-      slack_post ":rotating_light: fabric watchdog: {{ t.name }} DOWN — probe exited ${code} (expected one of: {{ t.ok_codes }}) — ${detail}"
+      ntfy_push "fabric watchdog: {{ t.name }} DOWN" "probe exited ${code} (expected one of: {{ t.ok_codes }}) — ${detail}" high rotating_light
 {% else %}
-      slack_post ":rotating_light: fabric watchdog: {{ t.name }} DOWN — {{ t.url }} returned HTTP ${code} (expected one of: {{ t.ok_codes }})"
+      ntfy_push "fabric watchdog: {{ t.name }} DOWN" "{{ t.url }} returned HTTP ${code} (expected one of: {{ t.ok_codes }})" high rotating_light
 {% endif %}
     else
 {% if t.cmd is defined %}
-      slack_post ":white_check_mark: fabric watchdog: {{ t.name }} recovered — probe exited ${code} — ${detail}"
+      ntfy_push "fabric watchdog: {{ t.name }} recovered" "probe exited ${code} — ${detail}" default white_check_mark
 {% else %}
-      slack_post ":white_check_mark: fabric watchdog: {{ t.name }} recovered — {{ t.url }} returned HTTP ${code}"
+      ntfy_push "fabric watchdog: {{ t.name }} recovered" "{{ t.url }} returned HTTP ${code}" default white_check_mark
 {% endif %}
     fi
     printf '%s\n' "${state}" > "${STATE_DIR}/{{ t.name }}.state"

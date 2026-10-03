@@ -9,8 +9,7 @@ messages in the work channel, several recoveries with no matching DOWN.
 These tests pin the hysteresis that fixed it, and pin that it stays honest: a
 debounce is only legitimate while it still commits a SUSTAINED edge.
 
-Lives under tests/hermes_agent/ because fabric_watchdog runs on the Hermes guest
-and shares that role's Slack EnvironmentFile (see test_alert_routing.py).
+Lives under tests/hermes_agent/ because fabric_watchdog runs on the Hermes guest.
 """
 
 from __future__ import annotations
@@ -21,6 +20,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "roles" / "fabric_watchdog"
 SCRIPT = (ROLE / "templates" / "fabric-watchdog.sh.j2").read_text()
+CRON_SUCCESS_SCRIPT = (ROLE / "templates" / "cron-success-watchdog.py.j2").read_text()
 DEFAULTS = (ROLE / "defaults" / "main.yml").read_text()
 
 
@@ -64,6 +64,15 @@ def test_debounce_is_never_reduced_to_the_undebounced_behaviour() -> None:
     up_after = _int_var("fabric_watchdog_up_after")
     assert down_after >= 2, "down_after=1 is the un-debounced behaviour this role was fixed for"
     assert up_after >= 2, "up_after=1 lets a single lucky probe declare recovery"
+
+
+def test_alerts_publish_to_the_ntfy_hub_not_slack() -> None:
+    """Every alert this role sends goes through the shared ntfy hub; none of
+    them post straight to Slack any more."""
+    for rendered in (SCRIPT, CRON_SUCCESS_SCRIPT):
+        assert "fabric_watchdog_ntfy_url" in rendered
+        assert "slack.com" not in rendered
+        assert "slack_post" not in rendered
 
 
 def test_debounce_still_pages_within_a_useful_window() -> None:

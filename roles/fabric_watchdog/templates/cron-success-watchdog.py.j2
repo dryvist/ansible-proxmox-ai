@@ -33,7 +33,7 @@ of the newest `last_run_at` it has ever OBSERVED carrying `last_status == "ok"`.
 That memory is the last-success timestamp, and it stops advancing the moment a
 job stops succeeding, however loudly it keeps failing.
 
-Runs as a child of fabric-watchdog.sh, inheriting the same Slack environment.
+Runs as a child of fabric-watchdog.sh, inheriting the same ntfy hub config.
 """
 
 from __future__ import annotations
@@ -92,11 +92,8 @@ PAUSE_ALERT_MINUTES = {{ fabric_watchdog_success_pause_alert_minutes }}
 # Either way an older file is discarded rather than migrated.
 STATE_SCHEMA = 3
 
-SLACK_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
-SLACK_CHANNEL = (
-    os.environ.get("SLACK_ALERT_CHANNEL")
-    or os.environ.get("SLACK_ALLOWED_USERS", "").split(",")[0]
-).strip()
+NTFY_URL = "{{ fabric_watchdog_ntfy_url }}"
+NTFY_TOKEN = "{{ fabric_watchdog_ntfy_token }}"
 
 
 def log(message: str) -> None:
@@ -110,19 +107,14 @@ def log(message: str) -> None:
     print(f"cron-success-watchdog: {message}", flush=True)
 
 
-def slack_post(text: str) -> None:
-    if not (SLACK_TOKEN and SLACK_CHANNEL):
-        log(f"WOULD ALERT (no Slack token/channel configured): {text}")
+def ntfy(title: str, text: str, priority: str = "default", tags: str = "robot") -> None:
+    if not NTFY_URL:
+        log(f"WOULD ALERT (no ntfy hub configured): {text}")
         return
-    body = json.dumps({"channel": SLACK_CHANNEL, "text": text}).encode()
-    request = urllib.request.Request(
-        "https://slack.com/api/chat.postMessage",
-        data=body,
-        headers={
-            "Authorization": f"Bearer {SLACK_TOKEN}",
-            "Content-Type": "application/json; charset=utf-8",
-        },
-    )
+    headers = {"Title": title, "Priority": priority, "Tags": tags}
+    if NTFY_TOKEN:
+        headers["Authorization"] = f"Bearer {NTFY_TOKEN}"
+    request = urllib.request.Request(NTFY_URL, data=text.encode(), headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             response.read()
@@ -493,31 +485,41 @@ def main() -> int:
     save_state(state)
 
     if len(stale) >= FLEET_ROLLUP_AT:
-        slack_post(
-            f":rotating_light: scheduled-work watchdog: {len(stale)} jobs have STOPPED "
-            f"SUCCEEDING — no successful run within each job's own threshold. "
-            f"Affected: {', '.join(stale)}"
+        ntfy(
+            "cron-success-watchdog: fleet STALE",
+            f"{len(stale)} jobs have STOPPED SUCCEEDING — no successful run within "
+            f"each job's own threshold. Affected: {', '.join(stale)}",
+            priority="high", tags="rotating_light",
         )
     else:
         for entry in stale:
-            slack_post(
-                f":rotating_light: scheduled-work watchdog: {entry} has produced no "
-                f"successful run. Errors alone would not surface this."
+            ntfy(
+                "cron-success-watchdog: job STALE",
+                f"{entry} has produced no successful run. Errors alone would not "
+                f"surface this.",
+                priority="high", tags="rotating_light",
             )
     for name in recovered:
-        slack_post(f":white_check_mark: scheduled-work watchdog: {name} is succeeding again")
+        ntfy(
+            "cron-success-watchdog: recovered",
+            f"{name} is succeeding again",
+            priority="default", tags="white_check_mark",
+        )
     for entry in paused_long:
-        slack_post(
-            f":warning: scheduled-work watchdog: store {entry} has been paused this "
-            f"long. Absence alerts there are suppressed, so nothing in it is being "
-            f"watched — resume it or confirm the pause is intended."
+        ntfy(
+            "cron-success-watchdog: store paused too long",
+            f"store {entry} has been paused this long. Absence alerts there are "
+            f"suppressed, so nothing in it is being watched — resume it or confirm "
+            f"the pause is intended.",
+            priority="high", tags="warning",
         )
     for entry in waited:
-        slack_post(
-            f":hourglass_flowing_sand: scheduled-work watchdog: {entry} waited "
-            f"longer than its own scheduling period before starting. Not "
-            f"necessarily a failure yet — if it recurs, something is holding "
-            f"the store's single-threaded cron pool."
+        ntfy(
+            "cron-success-watchdog: slot wait",
+            f"{entry} waited longer than its own scheduling period before "
+            f"starting. Not necessarily a failure yet — if it recurs, something is "
+            f"holding the store's single-threaded cron pool.",
+            priority="default", tags="hourglass_flowing_sand",
         )
 
     log(

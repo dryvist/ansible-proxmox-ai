@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.59.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.59.0...v0.59.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* **hermes_agent:** pin hermes-agent to v2026.9.11 and hold Renovate bumps ([e2b0fe6](https://github.com/dryvist/ansible-proxmox-ai/commit/e2b0fe608bc83c85411581d007f733e59743c5c4))
+* **hermes_agent:** pin hermes-agent to v2026.9.11 and hold Renovate bumps ([b07270a](https://github.com/dryvist/ansible-proxmox-ai/commit/b07270a466cdb566cc15b8ce79921ddae8e09e5a))
+
 ## [0.59.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.58.0...v0.59.0) (2026-10-02)
 
 

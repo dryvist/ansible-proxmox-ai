@@ -37,7 +37,6 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 
-import yaml
 from jinja2 import Environment
 
 from _role_files import role_defaults, role_tasks_text
@@ -45,9 +44,6 @@ from _role_files import role_defaults, role_tasks_text
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE = REPO_ROOT / "roles" / "hermes_agent"
 DEFAULTS = role_defaults(ROLE)
-FABRIC_DEFAULTS = yaml.safe_load(
-    (REPO_ROOT / "roles" / "fabric_watchdog" / "defaults" / "main.yml").read_text()
-)
 MAIN_TASKS = role_tasks_text(ROLE)
 DIRECT_TASKS = (ROLE / "tasks" / "reconcile_direct_cron.yml").read_text()
 
@@ -88,12 +84,8 @@ def _resolve(env_overrides: dict[str, str]) -> dict[str, str]:
 
     # hermes_agent_id leads: every channel name below derives its env-var name
     # from it, so it has to be in the context before the first channel renders.
-    names = (
-        ["hermes_agent_id"]
-        + [k for k in DEFAULTS if "channel" in k]
-        + ["fabric_watchdog_alert_channel"]
-    )
-    source = {**DEFAULTS, "fabric_watchdog_alert_channel": FABRIC_DEFAULTS["fabric_watchdog_alert_channel"]}
+    names = ["hermes_agent_id"] + [k for k in DEFAULTS if "channel" in k]
+    source = DEFAULTS
     ctx: dict[str, str] = {}
     for _ in range(4):  # a few passes is plenty for this shallow dependency graph
         for name in names:

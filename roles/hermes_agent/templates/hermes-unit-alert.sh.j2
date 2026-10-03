@@ -15,12 +15,19 @@ set -uo pipefail
 
 UNIT="${1:-unknown}"
 NTFY_URL="{{ hermes_agent_brain_watchdog_ntfy_url }}"
+NTFY_TOKEN="{{ hermes_agent_ntfy_publish_token }}"
 HOST="$(hostname)"
 MSG=":rotating_light: ${UNIT} failed on ${HOST} and systemd has STOPPED restarting it (start-rate limit hit). It is down until manually reset: systemctl reset-failed ${UNIT} && systemctl start ${UNIT}. journalctl -u ${UNIT} for the cause."
 
 logger -t hermes-unit-alert "${MSG}"
 
 [[ -n "${NTFY_URL}" ]] || exit 0
-curl -fsS --max-time 8 -H "Title: ${UNIT} stopped restarting" -H "Priority: urgent" \
-  -H "Tags: rotating_light,skull" -d "${MSG}" "${NTFY_URL}" > /dev/null 2>&1 || true
+if [[ -n "${NTFY_TOKEN}" ]]; then
+  curl -fsS --max-time 8 -H "Title: ${UNIT} stopped restarting" -H "Priority: urgent" \
+    -H "Tags: rotating_light,skull" -H "Authorization: Bearer ${NTFY_TOKEN}" \
+    -d "${MSG}" "${NTFY_URL}" > /dev/null 2>&1 || true
+else
+  curl -fsS --max-time 8 -H "Title: ${UNIT} stopped restarting" -H "Priority: urgent" \
+    -H "Tags: rotating_light,skull" -d "${MSG}" "${NTFY_URL}" > /dev/null 2>&1 || true
+fi
 exit 0
