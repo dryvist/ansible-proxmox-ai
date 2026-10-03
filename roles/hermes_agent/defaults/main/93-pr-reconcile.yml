@@ -1,0 +1,21 @@
+---
+# --- PR reconcile: replay missed webhook pull_request events ----------------
+# The github-private/github-public webhook routes (hermes_agent_github_route_*,
+# landing separately) wake the review skill on a LIVE webhook delivery. A
+# delivery can be missed entirely (adapter restart, a route flipped on after a
+# PR was already open, a dropped POST) with no native retry. This
+# `--no-agent --script` cron re-derives the same event every 30 minutes for
+# any open, non-draft, same-org, same-repo PR that has not yet been reviewed
+# at its current head SHA, and replays it through the same local webhook route
+# so the existing coalesce/dedupe path treats it identically to a live
+# delivery. Off by default; every route feeding it
+# (hermes_agent_github_route_{private,public}_enabled) is also off until its
+# own change lands, so this is inert even once enabled.
+hermes_agent_pr_reconcile_enabled: false
+hermes_agent_pr_reconcile_cron_name: pr-reconcile
+hermes_agent_pr_reconcile_cron_schedule: "*/30 * * * *"
+hermes_agent_pr_reconcile_script_name: hermes-pr-reconcile.py
+# Per-run ceiling on replayed deliveries, across both boundaries combined — a
+# backlog after an extended outage is worked down over several runs rather
+# than flooding the gateway's coalesce window in one tick.
+hermes_agent_pr_reconcile_cap: 10
