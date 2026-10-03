@@ -155,32 +155,28 @@ llm_router_studio_lock_capacity: >-
 llm_router_studio_lock_key: "subagent:studio:lock"
 
 # Role calls that redirect around studio contention instead of queuing on the
-# Router's own semaphore. `judge` is ADDED here (never part of the 4080 gate
-# — its primary target is the routine studio id directly, it never touches
-# the 4080 at all) alongside the five roles the 4080 gate already redirects,
-# since every one of them can land on the studio: the five either overflow
-# there from the 4080 gate (ROLE_REDIRECT_TARGET = llm_router_primary_model),
-# or (judge) target it directly.
+# Router's own semaphore: the five roles the 4080 gate already redirects, since
+# each can overflow onto the studio from that gate (ROLE_REDIRECT_TARGET =
+# llm_router_primary_model). `judge` is absent: its chain is the routine studio
+# id alone (55-roles.yml), so it has nothing to redirect onto and queues.
 llm_router_studio_lock_role_names:
   - fast
   - subagent
   - cheap
   - review-oss
   - review-private
-  - judge
 
 # Per-role first NON-LOCAL rung to redirect onto when the studio is busy —
 # "local" meaning either lock's own gated set, so a role whose chain visits
-# the 4080 then the studio (fast/subagent/cheap/review-oss/review-private) or
-# the studio directly (judge, via its routine/small pair) skips straight to
-# the first rung neither lock covers: review-oss -> its Z.ai pair,
-# review-private -> its first Codex rung, fast/subagent/cheap -> the shared
-# external terminal rungs. A role whose chain has no such rung (judge: the
-# studio pair, then the 4080) falls back to its first rung outside the studio
-# gate — the 4080 for judge. A role with NO rung outside the studio gate at
-# all (fast-gpu, embed, ocr) is simply absent from this map — fast-gpu never
-# reaches the studio gate (its chain is `[]`, the 4080 alone), and embed/ocr
-# aren't in llm_router_studio_lock_role_names, so the callback's fallback for
+# the 4080 then the studio (fast/subagent/cheap/review-oss/review-private)
+# skips straight to the first rung neither lock covers: review-oss -> its Z.ai
+# pair, review-private -> its first Codex rung, fast/subagent/cheap -> the
+# shared external terminal rungs. A role whose chain has no such rung falls
+# back to its first rung outside the studio gate. A role with NO rung outside
+# the studio gate at all (fast-gpu, embed, ocr, judge) is simply absent from
+# this map — fast-gpu never reaches the studio gate (its chain is `[]`, the
+# 4080 alone), and embed/ocr/judge aren't in
+# llm_router_studio_lock_role_names, so the callback's fallback for
 # "role gated but nothing to redirect to" (queue, today's behaviour) never
 # actually fires for any role currently listed; kept as a defensive no-op in
 # the callback rather than an assumption a future role addition could
