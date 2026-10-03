@@ -7,12 +7,11 @@ and dirty files without touching real repo state. ansible-playbook and
 """
 
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import textwrap
 import unittest
-
+from pathlib import Path
 
 REAL_ROOT = Path(__file__).resolve().parents[1]
 RUNNER_SRC = (REAL_ROOT / "scripts" / "run-ansible.sh").read_text(encoding="utf-8")
@@ -28,6 +27,7 @@ class RunnerSandboxBase(unittest.TestCase):
         self.bin.mkdir()
         self.called_log = root / "ansible-playbook.called"
         self.recap_file = root / "recap.txt"
+        self.curl_log = root / "curl.log"
 
         subprocess.run(["git", "init", "--bare", "-q", str(self.origin)], check=True)
         subprocess.run(
@@ -156,15 +156,25 @@ class RunnerSandboxBase(unittest.TestCase):
             """,
         )
 
-    def _run_with_bao(self, env_extra, allow_stale=False):
+    def _run_with_bao(self, env_extra, allow_stale=False, legacy_addr=True):
         env = os.environ.copy()
         env["PATH"] = f"{self.bin}{os.pathsep}{env['PATH']}"
-        env.pop("PROXMOX_SSH_KEY_PATH", None)
-        env.pop("SSH_KNOWN_HOSTS", None)
+        for var in (
+            "PROXMOX_SSH_KEY_PATH",
+            "SSH_KNOWN_HOSTS",
+            "BAO_ADDR",
+            "SECRET_STORE_ADDR",
+            "SSH_SIGNER_ROLE_ID",
+            "SSH_SIGNER_SECRET_ID",
+            "SSH_CA_MOUNT",
+            "SSH_SIGNER_ROLE",
+        ):
+            env.pop(var, None)
         env["FAKE_CALLED_LOG"] = str(self.called_log)
         env["FAKE_RECAP_FILE"] = str(self.recap_file)
         env["FAKE_CURL_LOG"] = str(self.curl_log)
-        env["BAO_ADDR"] = "https://bao.example.invalid"
+        if legacy_addr:
+            env["BAO_ADDR"] = "https://bao.example.invalid"
         env.update(env_extra)
         if allow_stale:
             env["ALLOW_STALE_CHECKOUT"] = "1"
