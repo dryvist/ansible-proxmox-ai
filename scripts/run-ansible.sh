@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Ansible runner — prefers a short-lived SSH certificate from the OpenBao CA
 # (ssh-certificate-authority ADR) over the shared static key, then runs the
-# playbook. Load the signer env first (e.g. from .env): SECRET_STORE_ADDR,
-# SSH_SIGNER_ROLE_ID/SSH_SIGNER_SECRET_ID, SSH_CA_MOUNT and SSH_SIGNER_ROLE.
+# playbook. Reads SECRET_STORE_ADDR, SSH_SIGNER_ROLE_ID/SSH_SIGNER_SECRET_ID,
+# SSH_CA_MOUNT and SSH_SIGNER_ROLE from the environment.
 #   scripts/run-ansible.sh playbooks/site.yml [args...]
 # Without those env vars the static PROXMOX_SSH_KEY_PATH flow is unchanged.
 set -euo pipefail

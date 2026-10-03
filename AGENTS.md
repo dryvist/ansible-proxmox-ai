@@ -109,7 +109,6 @@ API-key lookups). Neither defines or owns the inventory schema itself.
 
 ## Secrets Management
 
-**Runtime injection**: environment variables, loaded from a `.env` file
 **At-rest encryption**: SOPS + age
 
 **Roles are injection-agnostic.** Every role reads a secret as plain
@@ -140,16 +139,11 @@ inventory resolver, so no separate token is needed. Falls back verbatim
 to the static `PROXMOX_SSH_KEY_PATH` flow when that env is absent. See
 [SSH certificate access](https://docs.jacobpevans.com/d/runbooks/ssh-certificate-access).
 
-Playbooks read plain environment variables. Load them from a `.env` file
-before running; any other way of setting the same variables behaves
-identically.
+Playbooks read plain environment variables.
 
 ```bash
-# Load the environment (.env supplies the signer variables above,
-# PROXMOX_SUBDOMAIN, PROXMOX_SSH_KEY_PATH, ...)
-set -a; . ./.env; set +a
-
-# Converge everything
+# Converge everything (reads the signer variables above, PROXMOX_SUBDOMAIN,
+# PROXMOX_SSH_KEY_PATH, ... from the environment)
 scripts/run-ansible.sh playbooks/site.yml -i inventory/hosts.yml --forks 25
 
 # Scoped converge — --limit MUST include localhost (the inventory loader runs
