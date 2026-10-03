@@ -9,15 +9,22 @@ actually sends. See test_run_ansible_runner.py for the converge guards
 (stale-checkout, dirty-tree, zero-host --limit) that share this sandbox.
 """
 
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 from _runner_stubs import RunnerSandboxBase
+
+GENERIC = {
+    "SECRET_STORE_ADDR": "https://store.example.invalid",
+    "SSH_SIGNER_ROLE_ID": "gen-role",
+    "SSH_SIGNER_SECRET_ID": "gen-secret",
+    "SSH_CA_MOUNT": "gen-mount",
+    "SSH_SIGNER_ROLE": "gen-sign",
+}
 
 
 class RunAnsibleIdentityContract(RunnerSandboxBase):
     def test_semaphore_pair_preferred_when_both_present(self):
-        self.curl_log = Path(self.tmp.name) / "curl.log"
         self._write_fake_curl()
         self._write_recap("localhost")
         result = self._run_with_bao(
@@ -38,7 +45,6 @@ class RunAnsibleIdentityContract(RunnerSandboxBase):
         self.assertNotIn("ans-role", log)
 
     def test_ansible_pair_fallback_warns_and_signs_automation_ansible(self):
-        self.curl_log = Path(self.tmp.name) / "curl.log"
         self._write_fake_curl()
         self._write_recap("localhost")
         result = self._run_with_bao(
@@ -57,7 +63,6 @@ class RunAnsibleIdentityContract(RunnerSandboxBase):
         self.assertIn("/sign/automation-ansible", log)
 
     def test_semaphore_login_failure_falls_back_to_ansible_pair(self):
-        self.curl_log = Path(self.tmp.name) / "curl.log"
         self._write_fake_curl()
         self._write_recap("localhost")
         result = self._run_with_bao(
@@ -77,7 +82,6 @@ class RunAnsibleIdentityContract(RunnerSandboxBase):
         self.assertIn('"role_id":"ans-role"', log)
 
     def test_ansible_playbook_inherits_the_winning_role_id(self):
-        self.curl_log = Path(self.tmp.name) / "curl.log"
         self._write_fake_curl()
         self._write_recap("localhost")
         child_role_id_file = Path(self.tmp.name) / "child-role-id"
@@ -96,19 +100,11 @@ class RunAnsibleIdentityContract(RunnerSandboxBase):
 
     # --- generic signer names (read first, legacy names are the fallback) --
 
-    GENERIC = {
-        "SECRET_STORE_ADDR": "https://store.example.invalid",
-        "SSH_SIGNER_ROLE_ID": "gen-role",
-        "SSH_SIGNER_SECRET_ID": "gen-secret",
-        "SSH_CA_MOUNT": "gen-mount",
-        "SSH_SIGNER_ROLE": "gen-sign",
-    }
 
     def test_generic_names_alone_sign_with_supplied_mount_and_role(self):
-        self.curl_log = Path(self.tmp.name) / "curl.log"
         self._write_fake_curl()
         self._write_recap("localhost")
-        result = self._run_with_bao(dict(self.GENERIC), legacy_addr=False)
+        result = self._run_with_bao(dict(GENERIC), legacy_addr=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("authenticated as: signer", result.stdout)
         log = self.curl_log.read_text(encoding="utf-8")
@@ -116,12 +112,11 @@ class RunAnsibleIdentityContract(RunnerSandboxBase):
         self.assertIn('"role_id":"gen-role"', log)
 
     def test_generic_names_win_over_legacy_names(self):
-        self.curl_log = Path(self.tmp.name) / "curl.log"
         self._write_fake_curl()
         self._write_recap("localhost")
         result = self._run_with_bao(
             {
-                **self.GENERIC,
+                **GENERIC,
                 "OPENBAO_APPROLE_SEMAPHORE_ROLE_ID": "sem-role",
                 "OPENBAO_APPROLE_SEMAPHORE_SECRET_ID": "sem-secret",
             }
@@ -133,9 +128,8 @@ class RunAnsibleIdentityContract(RunnerSandboxBase):
         self.assertNotIn("bao.example.invalid", log)
 
     def test_generic_names_without_mount_refuse(self):
-        self.curl_log = Path(self.tmp.name) / "curl.log"
         self._write_fake_curl()
-        env = dict(self.GENERIC)
+        env = dict(GENERIC)
         del env["SSH_CA_MOUNT"]
         result = self._run_with_bao(env, legacy_addr=False)
         self.assertNotEqual(result.returncode, 0)

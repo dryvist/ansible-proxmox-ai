@@ -7,12 +7,11 @@ and dirty files without touching real repo state. ansible-playbook and
 """
 
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import textwrap
 import unittest
-
+from pathlib import Path
 
 REAL_ROOT = Path(__file__).resolve().parents[1]
 RUNNER_SRC = (REAL_ROOT / "scripts" / "run-ansible.sh").read_text(encoding="utf-8")
@@ -28,6 +27,7 @@ class RunnerSandboxBase(unittest.TestCase):
         self.bin.mkdir()
         self.called_log = root / "ansible-playbook.called"
         self.recap_file = root / "recap.txt"
+        self.curl_log = root / "curl.log"
 
         subprocess.run(["git", "init", "--bare", "-q", str(self.origin)], check=True)
         subprocess.run(
