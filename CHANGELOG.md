@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.61.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.60.0...v0.61.0) (2026-10-03)
+
+
+### Features
+
+* **hermes_agent:** reply in Slack threads and continue cron runs in their threads ([96bc919](https://github.com/dryvist/ansible-proxmox-ai/commit/96bc919fb8e2bc287eefd778a05ea88947ae0c50))
+* **hermes_agent:** reply in Slack threads and continue cron runs in their threads ([35cbe2a](https://github.com/dryvist/ansible-proxmox-ai/commit/35cbe2a613f664f31dc3899560837b803ff4adf5))
+
+
+### Bug Fixes
+
+* **llm_router:** grant the workstation key the judge role ([2833878](https://github.com/dryvist/ansible-proxmox-ai/commit/2833878bddc6eb26f68e81fbe568da75cfb350c6))
+* **llm_router:** grant the workstation key the judge role ([11d96c6](https://github.com/dryvist/ansible-proxmox-ai/commit/11d96c69b516355a07a7a533353b058aed99717a))
+
 ## [0.60.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.59.2...v0.60.0) (2026-10-03)
 
 
