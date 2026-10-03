@@ -4,16 +4,23 @@
 - name: Assert the GitHub identity AppRole credentials are present
   ansible.builtin.assert:
     that:
-      - hermes_agent_github_identity_role_id | length > 0
-      - hermes_agent_github_identity_secret_id | length > 0
       - hermes_agent_github_identity_bao_addr | length > 0
+      - hermes_agent_github_identity_approles.public.role_id | length > 0
+      - hermes_agent_github_identity_approles.public.secret_id | length > 0
+      - hermes_agent_github_identity_approles.private.role_id | length > 0
+      - hermes_agent_github_identity_approles.private.secret_id | length > 0
       - "'review' in hermes_agent_github_identity_sets"
+      - hermes_agent_github_trust_boundary_default in ['public', 'private']
+      - hermes_agent_github_guard_internal_suffixes | length > 0
+      - hermes_agent_github_guard_private_repos | length > 0
     fail_msg: >-
-      hermes_agent_github_identity_enabled is true but
-      hermes_agent_github_identity_role_id (env HERMES_GITHUB_VAULT_ROLE_ID),
-      hermes_agent_github_identity_secret_id (env HERMES_GITHUB_VAULT_SECRET_ID)
-      or hermes_agent_github_identity_bao_addr is empty, or the `review` set is
-      missing. Supply the `hermes` AppRole credentials or leave the flag false.
+      hermes_agent_github_identity_enabled is true but an input is missing:
+      the public/private AppRole credentials (env
+      HERMES_GITHUB_{PUBLIC,PRIVATE}_VAULT_{ROLE,SECRET}_ID),
+      hermes_agent_github_identity_bao_addr, the `review` set, a valid
+      hermes_agent_github_trust_boundary_default, or the outbound guard lists
+      (env HERMES_GH_GUARD_INTERNAL_SUFFIXES / HERMES_GH_GUARD_PRIVATE_REPOS).
+      Supply them or leave the flag false.
     quiet: true
   no_log: true
   when: hermes_agent_github_identity_enabled | bool
@@ -43,9 +50,23 @@
   no_log: true
   when: hermes_agent_github_identity_enabled | bool
 
+- name: Deploy the gh wrapper configuration
+  ansible.builtin.copy:
+    content: >-
+      {{ {'real_gh': hermes_agent_github_identity_real_gh,
+          'token_dir': hermes_agent_github_identity_token_dir,
+          'sets': hermes_agent_github_identity_sets,
+          'deny_suffixes': hermes_agent_github_guard_internal_suffixes,
+          'private_repos': hermes_agent_github_guard_private_repos} | to_nice_json }}
+    dest: /etc/hermes-gh.json
+    owner: root
+    group: "{{ hermes_agent_user }}"
+    mode: "0640"
+  when: hermes_agent_github_identity_enabled | bool
+
 - name: Deploy the gh wrapper
-  ansible.builtin.template:
-    src: hermes-gh-shim.sh.j2
+  ansible.builtin.copy:
+    src: hermes-gh.py
     dest: "{{ hermes_agent_github_identity_shim_path }}"
     owner: root
     group: root
