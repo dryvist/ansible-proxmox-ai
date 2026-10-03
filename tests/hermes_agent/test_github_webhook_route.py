@@ -19,7 +19,7 @@ FILTER = types.SimpleNamespace(
 )
 
 
-def render(private: bool, public: bool = False, public_profile: str = "") -> dict:
+def render(private: bool, public: bool = False) -> dict:
     env = Environment(
         autoescape=select_autoescape(default=False, default_for_string=False),
         loader=FileSystemLoader(ROLE / "templates"),
@@ -31,7 +31,6 @@ def render(private: bool, public: bool = False, public_profile: str = "") -> dic
     ctx.update(
         hermes_agent_github_route_private_enabled=private,
         hermes_agent_github_route_public_enabled=public,
-        hermes_agent_github_route_public_profile=public_profile,
         hermes_agent_github_route_bot_login="example-bot[bot]",
         hermes_agent_slack_bot_token="xoxb",
         hermes_agent_slack_reply_in_thread=False,
@@ -48,14 +47,17 @@ def test_disabled_keeps_inbound_demo():
     assert list(render(False)) == ["inbound"]
 
 
-def test_routes_split_by_visibility():
+def test_default_gateway_renders_only_the_private_route():
     assert list(render(True)) == ["github-private"]
-    both = render(True, True, "pr-public")
-    assert list(both) == ["github-private", "github-public"]
-    assert both["github-public"]["profile"] == "pr-public"
+    both = render(True, True)
+    assert list(both) == ["github-private"]
     assert "profile" not in both["github-private"]
-    vis = {n: {f["field"]: f for f in r["filters"]}["repository.private"]["equals"] for n, r in both.items()}
-    assert vis == {"github-private": True, "github-public": False}
+    filters = {f["field"]: f for f in both["github-private"]["filters"]}
+    assert filters["repository.private"]["equals"] is True
+
+
+def test_public_route_alone_leaves_the_default_gateway_on_the_demo_route():
+    assert list(render(False, True)) == ["inbound"]
 
 
 def test_github_route_shape():

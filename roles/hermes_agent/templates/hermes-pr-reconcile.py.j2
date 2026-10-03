@@ -36,7 +36,8 @@ ORG = "{{ hermes_agent_github_route_org | default('dryvist', true) }}"
 APP_SLUG = "{{ hermes_agent_github_app_slug | default('', true) }}"
 BOT_LOGIN = (APP_SLUG + "[bot]") if APP_SLUG else ""
 ENV_PATH = "{{ hermes_agent_hermes_home }}/.env"
-WEBHOOK_URL = "http://127.0.0.1:{{ hermes_agent_webhook_port }}/webhooks/{name}"
+# Each route is posted to the gateway that serves it: github-public to the
+# public-review gateway's receiver, github-private to the default one.
 # Built as Python literals field-by-field, not one dict rendered through
 # `to_json`: JSON's lowercase true/false is not valid Python syntax, and a
 # Jinja boolean's own string form ("True"/"False") already is.
@@ -44,10 +45,12 @@ ROUTES = {
     "public": {
         "enabled": {{ hermes_agent_github_route_public_enabled | default(false, true) | bool }},
         "name": "{{ hermes_agent_github_route_public_name | default('github-public', true) }}",
+        "url": "http://127.0.0.1:{{ hermes_agent_github_public_gateway_port | default(8645, true) }}/webhooks/{name}",
     },
     "private": {
         "enabled": {{ hermes_agent_github_route_private_enabled | default(false, true) | bool }},
         "name": "{{ hermes_agent_github_route_private_name | default('github-private', true) }}",
+        "url": "http://127.0.0.1:{{ hermes_agent_webhook_port }}/webhooks/{name}",
     },
 }
 CAP = {{ hermes_agent_pr_reconcile_cap }}
@@ -158,14 +161,14 @@ def build_payload(repo, pr):
     }
 
 
-def post(route_name, secret, payload):
+def post(route, secret, payload):
     body = json.dumps(payload).encode()
     full_name = payload["repository"]["full_name"].replace("/", "-")
     number = payload["pull_request"]["number"]
     sha = payload["pull_request"]["head"]["sha"][:12]
     delivery = f"reconcile-{full_name}-{number}-{sha}"
     req = urllib.request.Request(
-        WEBHOOK_URL.format(name=route_name),
+        route["url"].format(name=route["name"]),
         data=body,
         headers={
             "Content-Type": "application/json",
@@ -179,7 +182,7 @@ def post(route_name, secret, payload):
         with urllib.request.urlopen(req, timeout=30) as resp:
             resp.read()
     except (urllib.error.URLError, OSError) as e:
-        raise ReconcileError(f"POST to {route_name} failed: {e}") from e
+        raise ReconcileError(f"POST to {route['name']} failed: {e}") from e
 
 
 def main():
@@ -208,7 +211,7 @@ def main():
             if already_reviewed(repo, number, head_sha, boundary):
                 skipped += 1
                 continue
-            post(route["name"], secret, build_payload(repo, detail))
+            post(route, secret, build_payload(repo, detail))
             sent += 1
 
     print(f"pr-reconcile: replayed {sent} PR(s), {skipped} already reviewed at head, cap {CAP}")
