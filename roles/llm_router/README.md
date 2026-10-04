@@ -136,6 +136,8 @@ Why `redis_port` renders as a literal int rather than `os.environ/`, and why
 `fail_closed_budget_enforcement` is deliberately absent — moved to
 [`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md#redis-spend-tracking-details).
 
+Other uses: [`LLM_ROUTER_REDIS.md`](../../docs/LLM_ROUTER_REDIS.md).
+
 ## Model role aliases
 
 Each physical backend has exactly one `model_list` deployment. Stable

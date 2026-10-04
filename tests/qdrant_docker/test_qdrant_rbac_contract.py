@@ -109,15 +109,44 @@ def test_the_one_secret_field_is_fetched_exactly_once() -> None:
     assert paths.count("ai/qdrant") == 1
 
 
-def test_qdrant_config_enables_jwt_rbac_and_leaves_the_key_out_of_the_file() -> None:
+def _render_config(enabled: bool) -> dict[str, Any]:
     template = (ROLES / "qdrant_docker" / "templates" / "config.yaml.j2").read_text()
-    loaded = yaml.safe_load(template)
+    env = jinja2.Environment(undefined=jinja2.StrictUndefined, trim_blocks=True)
+    env.filters["bool"] = bool
+    loaded = yaml.safe_load(env.from_string(template).render(qdrant_docker_jwt_rbac_enabled=enabled))
     assert isinstance(loaded, dict)
-    service = loaded["service"]
+    return loaded
+
+
+def _main_task(name: str) -> dict[str, Any]:
+    tasks = yaml.safe_load((ROLES / "qdrant_docker" / "tasks" / "main.yml").read_text())
+    return next(t for t in tasks if t.get("name") == name)
+
+
+def test_jwt_rbac_is_off_by_default() -> None:
+    assert _defaults("qdrant_docker")["qdrant_docker_jwt_rbac_enabled"] is False
+
+
+def test_config_without_opt_in_has_no_jwt_rbac() -> None:
+    assert "jwt_rbac" not in _render_config(False)["service"]
+
+
+def test_config_with_opt_in_enables_jwt_rbac_and_leaves_the_key_out_of_the_file() -> None:
+    service = _render_config(True)["service"]
     assert service["jwt_rbac"] is True
     assert "api_key" not in service
     compose = (ROLES / "qdrant_docker" / "templates" / "docker-compose.yml.j2").read_text()
     assert 'QDRANT__SERVICE__API_KEY: "{{ qdrant_docker_api_key }}"' in compose
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Ensure the untrusted-tier collections exist", "Publish the untrusted-tier access token"],
+)
+def test_collections_and_token_require_the_opt_in(name: str) -> None:
+    when = _main_task(name).get("when")
+    conditions = when if isinstance(when, list) else [when]
+    assert "qdrant_docker_jwt_rbac_enabled | bool" in conditions
 
 
 def test_collection_names_are_exact() -> None:

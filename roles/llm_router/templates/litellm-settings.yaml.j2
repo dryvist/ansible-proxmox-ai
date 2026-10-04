@@ -35,3 +35,24 @@ litellm_settings:
   # Open WebUI's picker and Hermes both read that listing.
   check_provider_endpoint: true
 {% endif %}
+{% if llm_router_redis_host | length > 0 %}
+  # Response cache in the shared store, OPT-IN per request (`cache: {use-cache:
+  # true}`), so no caller's behaviour changes unless it asks. The cache's Redis
+  # client also becomes the proxy's coordination store: key/team/user rate
+  # limits, spend counters, the database spend buffer and the shared health
+  # check all count across every router instead of per router. Every Redis
+  # error falls back to in-memory per-router state; no request is refused for
+  # the store being down.
+  cache: true
+  cache_params:
+    type: redis
+    host: os.environ/LLM_ROUTER_REDIS_HOST
+    port: {{ llm_router_redis_port }}
+    password: os.environ/LLM_ROUTER_REDIS_PASSWORD
+    mode: default_off
+    ttl: {{ llm_router_response_cache_ttl }}
+  # Virtual-key lookups shared across routers, so a revoked or changed key
+  # takes effect on every router at once. Store down: lookups fall back to the
+  # database.
+  enable_redis_auth_cache: true
+{% endif %}
