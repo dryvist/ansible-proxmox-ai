@@ -137,6 +137,18 @@ PATCHED_CRON_DELIVERY_SOURCE = (
         "Deliver a self-declared cron failure through the failure lane",
         "    for_failure=not d.success,\n",
     )
+    + _apply_runtime_patch(
+        "Route unresolved_origin through the failure lane for a declared failure",
+        "    d.unresolved_origin = (\n"
+        '        _normalize_deliver_value(_delivery_lane_value(job, for_failure=not d.success)) == "origin"\n'
+        "        and not _resolve_delivery_targets(job, for_failure=not d.success)\n"
+        "    )\n",
+    )
+    + _apply_runtime_patch(
+        "Route the run-ledger classification through the failure lane for a declared failure",
+        "        normalized_deliver=_normalize_deliver_value(_delivery_lane_value(job,\n"
+        "            for_failure=not d.success)),\n",
+    )
 )
 # cron/scheduler.py carries the opt-in goal-mode runner too, and
 # patches_verify.yml asserts on all of it against ONE source string — so this
