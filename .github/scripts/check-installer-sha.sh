@@ -23,7 +23,7 @@ FIX=0
 # upstream ref carries a prefix puts that prefix in the template — the variable
 # itself stays bare so a version bump can write it cleanly.
 readonly PINS=(
-  "roles/hermes_agent/defaults/main/10-installer-and-bundles.yml|hermes_agent_version|hermes_agent_installer_sha256|https://raw.githubusercontent.com/NousResearch/hermes-agent/v%s/scripts/install.sh"
+  "roles/hermes_agent/defaults/main/10-installer-and-bundles.yml|hermes_agent_version|hermes_agent_installer_sha256|https://api.github.com/repos/NousResearch/hermes-agent/contents/scripts/install.sh?ref=v%s"
 )
 
 # One workdir for the whole run, removed once. A trap set inside the loop would
@@ -66,8 +66,10 @@ for pin in "${PINS[@]}"; do
   # strips trailing newlines, so `$(curl ...)` hashes different bytes than the
   # server sent and every check fails with a plausible-looking mismatch.
   tmp="${workdir}/$(basename "$file").installer"
+  accept=()
+  [[ "$url" == https://api.github.com/* ]] && accept=(-H 'Accept: application/vnd.github.raw')
 
-  if ! curl -fsSL ${auth[@]+"${auth[@]}"} --max-time 30 --retry 3 --retry-delay 2 -o "$tmp" "$url"; then
+  if ! curl -fsSL ${auth[@]+"${auth[@]}"} ${accept[@]+"${accept[@]}"} --max-time 30 --retry 3 --retry-delay 2 -o "$tmp" "$url"; then
     echo "FAIL ${version_var}=${version}: cannot fetch ${url}" >&2
     echo "     A version whose installer does not exist is not a version to pin." >&2
     fail=1
