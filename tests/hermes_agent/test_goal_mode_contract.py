@@ -145,3 +145,13 @@ def test_prompt_catalog_build_keeps_a_gc_root() -> None:
     command = build_task["ansible.builtin.command"]["cmd"]
     assert "--out-link /tmp/hermes-agent-prompts" in command
     assert "--no-link" not in command
+
+
+def test_every_named_profile_gets_the_kanban_lifecycle_contract() -> None:
+    profiles_task = (ROLE_ROOT / "tasks" / "profiles.yml").read_text()
+    contract = (ROLE_ROOT / "templates" / "soul-kanban-lifecycle.md.j2").read_text()
+
+    assert "soul-kanban-lifecycle.md.j2" in profiles_task
+    assert "kanban_complete" in contract
+    assert "kanban_block(kind=needs_input" in contract
+    assert "never use it to end a Kanban task" in contract
