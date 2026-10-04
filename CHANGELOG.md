@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.63.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.62.0...v0.63.0) (2026-10-04)
+
+
+### Features
+
+* **llm_router:** back every Redis-capable feature with the shared store ([98743a6](https://github.com/dryvist/ansible-proxmox-ai/commit/98743a609642b2f682d980cc734cd5e5aee0b40e))
+
+
+### Bug Fixes
+
+* **llm_router:** remove the subagent lock callback ([d75aaf3](https://github.com/dryvist/ansible-proxmox-ai/commit/d75aaf30bf43bdf388600950ec785e217e169b0b))
+* **llm_router:** remove the subagent lock callback ([f81c542](https://github.com/dryvist/ansible-proxmox-ai/commit/f81c5424487643ad64669b4ac71b906ab49e28be))
+
 ## [0.62.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.61.0...v0.62.0) (2026-10-04)
 
 
