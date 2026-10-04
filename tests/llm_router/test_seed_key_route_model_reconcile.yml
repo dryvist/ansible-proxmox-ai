@@ -13,6 +13,7 @@
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     _seed_keys_file: "{{ _role_dir }}/tasks/seed-keys.yml"
+    _create_task_name: "Create the caller keys that have a seeded value (an existing alias is not a failure)"
     _diff_task_name: "Compute the route/model update each live key still needs, if any"
     llm_router_seed_mode: rebuild
 
@@ -98,6 +99,21 @@
       - null-routes
 
   tasks:
+    - name: Extract the real create-only permission payload from seed-keys.yml
+      ansible.builtin.set_fact:
+        _create_key_body: >-
+          {{ (lookup('ansible.builtin.file', _seed_keys_file) | from_yaml
+              | selectattr('name', 'equalto', _create_task_name) | first)
+             ['ansible.builtin.uri']['body'] }}
+
+    - name: MCP permissions are passed on key creation only
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'object_permission' in _create_key_body"
+          - "'item.object_permission' in _create_key_body.object_permission"
+        fail_msg: "seed-keys.yml must pass each declared object_permission on initial key creation."
+
     - name: Extract the real, committed diff expression from seed-keys.yml
       ansible.builtin.set_fact:
         _diff_expr: >-
@@ -113,6 +129,7 @@
           - "\"map(attribute='models', default=[])\" in _diff_expr"
           - "\"default(none, true)\" in _diff_expr"
           - "\"default([], true)\" in _diff_expr"
+          - "'object_permission' not in _diff_expr"
         fail_msg: >-
           Could not find the fail-safe attribute lookups in seed-keys.yml
           under the task name {{ _diff_task_name }} — this test's
@@ -182,6 +199,7 @@
           - _widened.body.models == ['cheap']
           - _widened.body.metadata.tags == ['ui-edited']
           - "'router_settings' not in _widened.body"
+          - "'object_permission' not in _widened.body"
         fail_msg: "widened-routes body: {{ _widened.body }}"
       vars:
         _widened: "{{ _llm_router_key_updates | selectattr('alias', 'equalto', 'widened-routes') | first }}"

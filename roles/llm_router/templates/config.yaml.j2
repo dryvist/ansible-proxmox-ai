@@ -32,8 +32,9 @@ router_settings:
   # Only credential-backed provider groups render here, so no dead route or
   # duplicate local attempt is advertised.
   fallbacks:
-    - hermes-default: {{ llm_router_hermes_default_fallback_chain | to_json }}
-{% for _group in llm_router_hermes_default_fallback_chain if not _group.startswith('hermes-local') %}
+    - hermes-default: {{ llm_router_hermes_default_fallback_chain
+                          | reject('equalto', llm_router_d1_auto_initial_group) | list | to_json }}
+{% for _group in llm_router_hermes_default_fallback_chain %}
     - {{ _group }}: {{ llm_router_hermes_own_fallback_by_group[_group] | to_json }}
 {% endfor %}
   # Explicit empty chains for embed/embeddings/ocr, PLUS `free-zdrless`:
@@ -55,23 +56,21 @@ router_settings:
     # ENTRY POINTS. hermes-default is not the only name a caller uses: every
     # servable id and every alias above is called directly, and a name with no
     # key here makes a failure arriving that way terminal. Each targets the
-    # SAME six-segment ladder hermes-default uses (35-hermes-cloud.yml /
-    # 36-hermes-cloud-segments.yml), minus itself — an entry that IS one of
+  # SAME D1 ladder hermes-default uses, minus itself — an entry that IS one of
     # the chain's own rungs (e.g. `best`, a servable id) must not target
     # itself, which would either no-op or cycle depending on how litellm
     # resolves a self-referential fallback. Never hermes-default's OWN name,
     # so an escalated call cannot re-enter the chain that named it.
     #
-    # A ZDR entry point (llm_router_zdr_entry_point_names, 37-fallback-
-    # entry-points.yml) additionally drops llm_router_openrouter_free_groups
-    # — the free segment — from its OWN ladder: an alias
-    # whose target promises zero data retention must never fall through to a
-    # rung that makes no such promise. hermes-default's own chain above is
-    # untouched; it is the general-purpose dispatcher of last resort.
+  # A ZDR entry point additionally drops every rung without explicit ZDR
+  # evidence, including the free and retains classes.
 {% for _name in llm_router_entry_point_names %}
 {% set _chain = llm_router_hermes_default_fallback_chain | reject('equalto', _name) | list %}
+{% if llm_router_model_group_aliases.get(_name, _name) == 'hermes-default' %}
+{% set _chain = _chain | reject('equalto', llm_router_d1_auto_initial_group) | list %}
+{% endif %}
 {% if _name in llm_router_zdr_entry_point_names %}
-{% set _chain = _chain | reject('in', llm_router_openrouter_free_groups) | list %}
+{% set _chain = _chain | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list %}
 {% endif %}
     - {{ _name | to_json }}: {{ _chain | to_json }}
 {% endfor %}

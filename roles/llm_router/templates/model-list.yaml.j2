@@ -49,11 +49,11 @@ model_list:
       complexity_router_config:
         classifier_type: heuristic
         tiers:
-          SIMPLE: {{ llm_router_routine_model }}
-          MEDIUM: {{ llm_router_routine_model }}
-          COMPLEX: {{ llm_router_primary_model }}
-          REASONING: {{ llm_router_primary_model }}
-        default_model: {{ llm_router_primary_model }}
+          SIMPLE: {{ llm_router_d1_auto_simple_group | to_json }}
+          MEDIUM: {{ llm_router_d1_auto_medium_group | to_json }}
+          COMPLEX: {{ llm_router_d1_auto_complex_group | to_json }}
+          REASONING: {{ llm_router_d1_auto_reasoning_group | to_json }}
+        default_model: {{ llm_router_d1_auto_initial_group }}
     model_info:
       allow_fail_open: true
       mode: chat
@@ -192,8 +192,8 @@ model_list:
       input_cost_per_token: {{ m.input_cost_per_token | default(0) }}
       output_cost_per_token: {{ m.output_cost_per_token | default(0) }}
       max_tokens: {{ m.max_output_tokens }}
-      rpm: {{ llm_router_hermes_cloud_rpm }}
-      tpm: {{ llm_router_hermes_cloud_tpm }}
+      rpm: {{ m.rpm | default(llm_router_hermes_cloud_rpm) }}
+      tpm: {{ m.tpm | default(llm_router_hermes_cloud_tpm) }}
       max_parallel_requests: {{ llm_router_hermes_cloud_max_parallel_requests }}
       # Per-entry bound, else the tier default — which is sized for long LOCAL
       # generations and is far too generous for a cloud rung. num_retries is 0,
@@ -215,7 +215,10 @@ model_list:
       reasoning_effort: {{ m.reasoning_effort }}
 {% endif %}
       order: 1
-{% if m.monthly_budget is defined and (m.api_base | default('')) not in llm_router_flat_rate_api_bases %}
+{% if m.max_budget is defined and (m.api_base | default('')) not in llm_router_flat_rate_api_bases %}
+      max_budget: {{ m.max_budget }}
+      budget_duration: {{ m.budget_duration }}
+{% elif m.monthly_budget is defined and (m.api_base | default('')) not in llm_router_flat_rate_api_bases %}
       # Absent on hermes-cloud-free: nothing to bound, and a rendered ceiling
       # with no spend behind it would be dishonest. See assert-budget-backing.yml.
       # Also absent on a flat-rate api_base (33-zai.yml

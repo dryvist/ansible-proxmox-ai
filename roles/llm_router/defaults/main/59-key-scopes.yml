@@ -1,23 +1,28 @@
 ---
-# A key scoped to a ROLE must also reach every group that role's chain walks:
-# the proxy checks the key's model list for the fallback target too, so a key
-# holding only `review-private` is refused the moment the 4080 hands over.
-# Derived from llm_router_role_deployments, never listed: a chain edit widens
-# the keys with it. seed-keys.yml mints and reconciles from this list.
+# A key scoped to a ROLE must also reach every group that role's chain walks.
+# Consumer keys may declare allowed_classes; those add only the catalog-backed
+# rungs in those classes, and role chains are reduced to the same class set.
 #
-# A key DECLARING hermes_brain_model's entry point gets the same treatment,
-# widened to _llm_router_directly_callable_ladder_names (56-virtual-keys.yml)
-# rather than a role's model + fallbacks — a named Hermes profile key that
-# only ever names the entry point still needs the whole chain, since a
-# request through it walks every hop the same as the full-scope key does.
-# Checked against the key's OWN declared list, before role-widening below —
-# a key that only reaches the entry point transitively, as one rung of a
-# role's own chain (e.g. review-private's own last-resort fallback), is not
-# thereby granted the rest of a chain it was never scoped to call directly.
+# An entry-point key gets its own allowed class rungs; a key that only reaches
+# an entry point transitively through a role is not widened to unrelated rungs.
 #
 # Deployment tags follow the registry tier and privacy evidence. Local tiers
 # are ZDR by construction; every other deployment needs an explicit registry
 # assertion to carry `zdr`. An absent field is never a ZDR assertion.
+# Aggregate after every declaration file has loaded. `56-virtual-keys.yml`
+# precedes the split workstation declarations alphabetically, so placing this
+# here avoids an order-dependent undefined value in include_vars dir.
+_llm_router_declared_virtual_keys: >-
+  {{ _llm_router_static_virtual_keys + _llm_router_workstation_virtual_keys
+     + _llm_router_hermes_profile_keys }}
+
+# Names are declared before their OpenBao sources exist, but the create loop
+# sees only enabled keys. This projection drives the contract and report.
+llm_router_disabled_virtual_keys: >-
+  {{ _llm_router_declared_virtual_keys
+     | selectattr('enabled', 'defined')
+     | rejectattr('enabled', 'truthy') | map(attribute='alias') | list }}
+
 llm_router_local_registry_tiers: [large, light, vllm, hermes-local, cpu-moe, cpu-9b]
 llm_router_deployment_class_by_model: >-
   {%- set ns = namespace(classes={}) -%}
@@ -40,7 +45,7 @@ llm_router_deployment_tags_by_model: >-
   {%- for m in llm_router_registry_enabled -%}
   {%- set _class = llm_router_deployment_class_by_model[m.client_model_id] -%}
   {%- set _tags = [_class] -%}
-  {%- if _class == 'local' or m.zero_data_retention | default(false) -%}
+  {%- if _class == 'local' or (_class != 'free' and m.zero_data_retention | default(false)) -%}
   {%- set _tags = _tags + ['zdr'] -%}
   {%- elif _class in ['sub', 'free'] -%}
   {%- set _tags = _tags + ['retains'] -%}
@@ -54,15 +59,32 @@ llm_router_deployment_tags_by_model: >-
 # enforce_fallback_model_access remains the second layer on the model list.
 llm_router_virtual_keys: >-
   {%- set out = [] -%}
-  {%- for k in _llm_router_declared_virtual_keys -%}
-  {%- set ns = namespace(models=k.models | list) -%}
-  {%- if k.models | select('in', _llm_router_directly_callable_ladder_names) | list | length > 0 -%}
-  {%- set ns.models = ns.models + _llm_router_directly_callable_ladder_names -%}
-  {%- endif -%}
+  {%- for k in _llm_router_declared_virtual_keys
+       if k.enabled is not defined or k.enabled | bool -%}
+  {%- set _classes = k.allowed_classes | default([]) -%}
+  {%- set _zdr_only = '&zdr' in (k.tags | default([])) -%}
+  {%- set _rungs = namespace(models=[]) -%}
+  {%- for _class in _classes -%}
+  {%- set _class_rungs = (llm_router_d1_zdr_rungs_by_class[_class]
+                           if _zdr_only and _class in ['sub', 'local', 'paid-zdr']
+                           else [] if _zdr_only
+                           else llm_router_d1_rungs_by_class[_class]) -%}
+  {%- set _rungs.models = _rungs.models + _class_rungs -%}
+  {%- endfor -%}
+  {%- set ns = namespace(models=(k.models | list) + (_rungs.models if _classes | length > 0 else [])) -%}
   {%- for d in llm_router_role_deployments if d.role in k.models -%}
   {%- set ns.models = ns.models + [d.model] + (d.fallbacks | list) -%}
   {%- endfor -%}
-  {%- if '&zdr' in (k.tags | default([])) -%}
+  {%- set _filtered = [] -%}
+  {%- for _name in ns.models | unique | list -%}
+  {%- set _name_class = llm_router_d1_group_class_by_name.get(_name) -%}
+  {%- if (not _classes or _name_class is none or _name_class in _classes)
+        and (not _zdr_only or _name not in llm_router_zdr_unasserted_terminal_rungs) -%}
+  {%- set _discard = _filtered.append(_name) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- set ns.models = _filtered -%}
+  {%- if _zdr_only -%}
   {%- set _stripped = llm_router_zdr_unasserted_terminal_rungs -%}
   {%- set ns.models = ns.models | reject('in', _stripped) | list -%}
   {%- endif -%}
@@ -94,7 +116,8 @@ llm_router_zdr_asserted_group_names: >-
   {%- set _names = [m.client_model_id] + ([m.route_group] if m.route_group is defined else [])
         + ([m.fallback_group] if m.fallback_group is defined else [])
         + (['free', 'free-zdrless'] if (m.in_free_route | default(false)) else []) -%}
-  {%- if (m.tier in llm_router_local_registry_tiers or m.zero_data_retention | default(false))
+  {%- if (m.tier in llm_router_local_registry_tiers or m.tier == 'hermes-router'
+          or m.zero_data_retention | default(false))
         and llm_router_deployment_class_by_model[m.client_model_id] != 'free' -%}
   {%- set ns.ok = ns.ok + _names -%}
   {%- else -%}

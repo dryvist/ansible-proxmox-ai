@@ -6,9 +6,8 @@
 #     admission budget, asserted as the PRODUCT so a retry bump cannot widen
 #     it, and its first-byte bound sits below the ingress cut (the declared
 #     constant, never a literal);
-#   * every chat role's ladder ends in the external terminal rungs, free
-#     first, then metered, and default_fallbacks carries the same list; the
-#     terminal rungs are present whenever their credential resolves.
+#   * entry roles and model aliases share the D1 class order: subscription,
+#     local, paid ZDR, free, then retaining deployments (Z.ai last).
 #
 # Rendered twice: no external credential at all (the ladder must still be a
 # list, even if empty of externals), and every credential present.
@@ -130,27 +129,27 @@
                _local | map(attribute='litellm_params.num_retries') | max] | max)
              * (_config.router_settings.retry_after | int) }}
 
-    # The free rungs (provider parameter/data-policy filters, agentic gate,
-    # daily cap — measured on the log platform) sit in NO ladder; every chat
-    # ladder ends in the subscription rung then the paid rungs.
-    - name: Every chat role's ladder carries the terminal rungs, subscription before paid, no free rung
+    - name: Entry roles and the default router share D1's ordered class ladder
       ansible.builtin.assert:
         quiet: true
         that:
           - llm_router_external_free_rungs | length >= 1
           - llm_router_external_paid_rungs | length >= 1
           - llm_router_external_terminal_rungs | length >= 2
-          - llm_router_external_terminal_rungs | difference(item.fallbacks) | length == 0
-          - llm_router_external_free_rungs | intersect(item.fallbacks) | length == 0
+          - item.model == 'hermes-default'
+          - item.fallbacks == (llm_router_d1_ladder_groups | reject('equalto', llm_router_d1_auto_initial_group) | list)
           - >-
-            item.fallbacks.index(llm_router_external_subscription_rungs | first)
-            < item.fallbacks.index(llm_router_external_paid_rungs | first)
-          - _config.router_settings.default_fallbacks == llm_router_external_terminal_rungs
-          - llm_router_external_free_rungs | intersect(_config.router_settings.default_fallbacks) | length == 0
+            llm_router_d1_ladder_groups.index(llm_router_d1_rungs_by_class['sub'] | first)
+            < llm_router_d1_ladder_groups.index(llm_router_d1_rungs_by_class['local'] | first)
+          - _config.router_settings.default_fallbacks == llm_router_d1_ladder_groups
+          - >-
+            llm_router_zai_groups | length == 0 or
+            (llm_router_d1_rungs_by_class['retains'] | last) ==
+            (llm_router_zai_groups | last)
         fail_msg: >-
-          {{ item.role }}: {{ item.fallbacks }} does not carry
-          {{ llm_router_external_terminal_rungs }} subscription-before-paid with no free rung
-        success_msg: "{{ item.role }}: {{ item.model }} -> {{ item.fallbacks | join(' -> ') }}"
+          {{ item.role }}: {{ item.model }} -> {{ item.fallbacks }}
+          differs from D1 {{ llm_router_d1_ladder_groups }}
+        success_msg: "{{ item.role }}: {{ item.model }} -> D1 ladder"
       loop: >-
         {{ llm_router_role_deployments
            | selectattr('role', 'in', ['fast', 'subagent', 'cheap']) | list }}

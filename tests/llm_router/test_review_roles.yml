@@ -128,40 +128,34 @@
     # enforce_fallback_model_access prunes each key's own reach). Still true:
     # no OTHER role_deployment carries it, and default_fallbacks /
     # llm_router_external_terminal_rungs never do.
-    - name: No OTHER role carries a Z.ai deployment; the terminal/default ladders still never do
+    - name: Ordinary roles share D1's final Z.ai rung; private review remains isolated
       ansible.builtin.assert:
         quiet: true
         that:
-          - >-
-            llm_router_role_deployments | rejectattr('role', 'equalto', 'review-oss')
-            | map(attribute='fallbacks') | flatten | intersect(llm_router_zai_groups) | length == 0
-          - _config.router_settings.default_fallbacks | intersect(llm_router_zai_groups) | length == 0
-          - llm_router_external_terminal_rungs | intersect(llm_router_zai_groups) | length == 0
-          - llm_router_hermes_cloud_fallback_groups | intersect(llm_router_zai_groups) | length > 0
-
-    - name: Every public role's non-empty chain ends in a terminal rung; review-private is the only cloud exception
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          # selectattr('fallbacks') keeps only the roles whose chain is
-          # non-empty (fast-gpu/embed/ocr deliberately render []; see
-          # 55-roles.yml for why those must fail outright, not escape).
-          # review-private is excluded by name, not by shape: its own last
-          # rung (codex-api) already sits in external_terminal_rungs, so the
-          # exclusion here documents the RULE (no third-party cloud rung),
-          # not merely today's arithmetic. recorder and judge are the other exceptions: their
-          # `estate` egress ends their chain on a home-lab rung.
           - >-
             llm_router_role_deployments
-            | rejectattr('role', 'in', ['review-private', 'recorder', 'judge'])
-            | selectattr('fallbacks')
-            | map(attribute='fallbacks') | map('last') | list
-            | difference(llm_router_external_terminal_rungs) | length == 0
+            | selectattr('role', 'in', ['fast', 'subagent', 'cheap'])
+            | map(attribute='fallbacks') | map('last') | unique | list
+            == [llm_router_zai_groups[-1]]
+          - _config.router_settings.default_fallbacks == llm_router_d1_ladder_groups
+          - llm_router_external_terminal_rungs | intersect(llm_router_zai_groups) | length == 0
+          - llm_router_hermes_cloud_fallback_groups | intersect(llm_router_zai_groups) | length > 0
+          - llm_router_zai_groups | intersect(_private.fallbacks) | length == 0
         fail_msg: >-
-          a public role's chain dead-ends outside llm_router_external_terminal_rungs:
-          {{ llm_router_role_deployments | rejectattr('role', 'in', ['review-private', 'recorder', 'judge'])
-             | selectattr('fallbacks') | map(attribute='fallbacks') | map('last') | list
-             | difference(llm_router_external_terminal_rungs) }}
+          ordinary roles/defaults/private={{ _config.router_settings.default_fallbacks }}
+          /{{ _private.fallbacks }}
+
+    - name: Review roles retain their specific public and private tails
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _public.fallbacks[-1] in llm_router_external_terminal_rungs
+          - _private.model == llm_router_hermes_local_4080_id
+          - _private.fallbacks == [llm_router_primary_model, 'codex-subscription', 'codex-api']
+          - llm_router_external_free_rungs | intersect(_private.fallbacks) | length == 0
+          - llm_router_zai_groups | intersect(_private.fallbacks) | length == 0
+        fail_msg: >-
+          review-oss={{ _public.fallbacks }}, private={{ _private.fallbacks }}
 
     - name: Private review is local rungs then the Codex rungs and nothing else
       ansible.builtin.assert:
@@ -186,6 +180,15 @@
           - _chatgpt[0].litellm_params.stream_timeout | int <= llm_router_admission_budget_seconds | int
           - _chatgpt[0].litellm_params.num_retries | int == 0
           - _chatgpt[0].model_info.mode == 'responses'
+          - _chatgpt_entry.rpm is defined
+          - _chatgpt[0].litellm_params.rpm | int == _chatgpt_entry.rpm | int
+          - _chatgpt[0].litellm_params.tpm | int == _chatgpt_entry.tpm | int
+          - _chatgpt[0].litellm_params.input_cost_per_token | float == _chatgpt_entry.input_cost_per_token | float
+          - _chatgpt[0].litellm_params.output_cost_per_token | float == _chatgpt_entry.output_cost_per_token | float
+          - _chatgpt[0].litellm_params.max_budget | float == _chatgpt_entry.max_budget | float
+          - _chatgpt[0].litellm_params.budget_duration == _chatgpt_entry.budget_duration
+          - _chatgpt_entry.budget_duration == '1d'
+          - "'codex-subscription' in llm_router_hermes_cloud_budgeted_groups"
           - _openai | length == 1
           - _openai[0].litellm_params.model == 'openai/' ~ llm_router_chatgpt_model
           - _openai[0].litellm_params.api_key == 'os.environ/OPENAI_API_KEY'
@@ -199,6 +202,9 @@
           - llm_router_external_free_rungs | intersect(llm_router_external_terminal_rungs) | length == 0
       vars:
         _chatgpt: "{{ _config.model_list | selectattr('model_name', 'equalto', 'codex-subscription') | list }}"
+        _chatgpt_entry: >-
+          {{ llm_router_registry_enabled
+             | selectattr('provider', 'equalto', 'chatgpt') | first }}
         _openai: >-
           {{ _config.model_list | selectattr('model_name', 'equalto', 'codex-api')
              | selectattr('litellm_params.model', 'match', '^openai/gpt') | list }}

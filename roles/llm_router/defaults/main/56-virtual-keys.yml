@@ -91,18 +91,49 @@ _llm_router_hermes_profile_names: >-
 # config.yaml.j2 `model.default` still renders hermes_brain_model, so every
 # profile's key — named or default — must reach that one name directly,
 # regardless of scope.
+_llm_router_consumer_classes_all: [sub, local, paid-zdr, free, retains]
+_llm_router_consumer_classes_standard: [sub, local, paid-zdr, free]
+_llm_router_consumer_classes_zdr: [sub, local, paid-zdr]
+_llm_router_trusted_hub_servers:
+  - context7
+  - grep
+  - docs
+  - splunk
+  - vikunja_ro
+  - nautobot
+  - memory
+  - hindsight
+  - vikunja
+  - zammad
+_llm_router_hermes_profile_object_permissions:
+  default:
+    mcp_servers: [context7, grep, docs, splunk, vikunja_ro]
+  splunk-admin:
+    mcp_servers: [docs, splunk]
+  homelab-admin:
+    mcp_servers: [docs, vikunja_ro, nautobot]
+  github-maint:
+    mcp_servers: [grep, docs]
+
 _llm_router_hermes_profile_keys: >-
   {%- set _items = [] -%}
   {%- for _name in _llm_router_hermes_profile_names -%}
+  {%- set _field = 'hermes_' ~ (_name | replace('-', '_'))
+     ~ '_llm_router_key' -%}
+  {%- set _value = (bao_apps_secrets | default({})).get(_field, '') -%}
   {%- set _profile = {
         'alias': 'hermes-' ~ _name,
-        'value': bao_apps_secrets.get('hermes_' ~ (_name | replace('-', '_')) ~ '_llm_router_key', ''),
-        'models': (_llm_router_key_scope_all if _name == 'default'
-                   else (['cheap', 'embed', hermes_brain_model] | unique | list)),
+        'value': _value,
+        'enabled': (_value | string | length > 0),
+        'allowed_classes': _llm_router_consumer_classes_all,
+        'models': ['auto', hermes_brain_model],
+        'object_permission': _llm_router_hermes_profile_object_permissions.get(
+          _name, {'mcp_servers': []}),
         'monthly_budget': _llm_router_key_monthly_budget,
       } -%}
   {%- if hermes_agent_identity | default('hermes') == 'donna' -%}
-  {%- set _profile = _profile | combine({'tags': ['&zdr', '!free'],
+  {%- set _profile = _profile | combine({'allowed_classes': _llm_router_consumer_classes_zdr,
+        'tags': ['&zdr', '!free', '!retains'],
         'router_settings': {'enable_tag_filtering': true}}) -%}
   {%- endif -%}
   {%- set _discard = _items.append(_profile) -%}
@@ -168,7 +199,7 @@ _llm_router_static_virtual_keys:
   - alias: hindsight
     value: "{{ bao_apps_secrets.hindsight_llm_router_key | default('', true) }}"
     models: "{{ [hindsight_retain_model] }}"
-    tags: ['&zdr', '!free']
+    tags: ['&zdr', '!free', '!retains']
     router_settings:
       enable_tag_filtering: true
     rpm_limit: 60
@@ -225,7 +256,17 @@ _llm_router_static_virtual_keys:
   # same no-op-until-seeded contract as every entry above.
   - alias: opencode
     value: "{{ bao_apps_secrets.opencode_llm_router_key | default('', true) }}"
-    models: "{{ _llm_router_key_scope_all }}"
+    # The router source already exists, but the sandbox consumer's OpenBao
+    # fields do not. Stay disabled until the peer provisions that path with
+    # this same value; never mint a second OpenCode key.
+    enabled: >-
+      {{ (bao_apps_secrets | default({})).get('opencode_llm_router_key', '') | string | length > 0
+         and (bao_apps_secrets | default({})).get('OPENCODE_ROUTER_KEY', '')
+             == (bao_apps_secrets | default({})).get('opencode_llm_router_key', '') }}
+    allowed_classes: "{{ _llm_router_consumer_classes_all }}"
+    models: ['auto', "{{ hermes_brain_model }}", fast, subagent]
+    object_permission:
+      mcp_access_groups: [hub-public]
     monthly_budget: "{{ _llm_router_key_monthly_budget }}"
   - alias: raycast
     value: "{{ bao_apps_secrets.raycast_llm_router_key | default('', true) }}"
@@ -233,7 +274,13 @@ _llm_router_static_virtual_keys:
     monthly_budget: "{{ _llm_router_key_monthly_budget }}"
   - alias: codex
     value: "{{ bao_apps_secrets.codex_llm_router_key | default('', true) }}"
-    models: "{{ _llm_router_key_scope_all }}"
+    enabled: "{{ (bao_apps_secrets | default({})).get('codex_llm_router_key', '') | string | length > 0 }}"
+    allowed_classes: "{{ _llm_router_consumer_classes_standard }}"
+    models: ['auto', "{{ hermes_brain_model }}", fast, subagent]
+    object_permission:
+      mcp_servers: "{{ _llm_router_trusted_hub_servers }}"
+      agents: [hermes-private, hermes-public]
+      mcp_tool_search_enabled: true
     monthly_budget: "{{ _llm_router_key_monthly_budget }}"
   - alias: cursor
     value: "{{ bao_apps_secrets.cursor_llm_router_key | default('', true) }}"
@@ -246,20 +293,77 @@ _llm_router_static_virtual_keys:
   # this role only mints and exposes the value.
   - alias: claude-code
     value: "{{ bao_apps_secrets.claude_code_llm_router_key | default('', true) }}"
-    models: "{{ _llm_router_key_scope_all }}"
+    enabled: "{{ (bao_apps_secrets | default({})).get('claude_code_llm_router_key', '') | string | length > 0 }}"
+    allowed_classes: "{{ _llm_router_consumer_classes_standard }}"
+    models: ['auto', "{{ hermes_brain_model }}", fast, subagent]
+    object_permission:
+      mcp_servers: "{{ _llm_router_trusted_hub_servers }}"
+      agents: [hermes-private, hermes-public]
+    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+  - alias: agy
+    value: "{{ (bao_apps_secrets | default({})).get('agy_llm_router_key', '') }}"
+    enabled: "{{ (bao_apps_secrets | default({})).get('agy_llm_router_key', '') | string | length > 0 }}"
+    allowed_classes: "{{ _llm_router_consumer_classes_standard }}"
+    models: ['auto', "{{ hermes_brain_model }}", fast, subagent]
+    object_permission:
+      mcp_servers: "{{ _llm_router_trusted_hub_servers }}"
+      agents: [hermes-private, hermes-public]
+      mcp_tool_search_enabled: true
+    monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+  - alias: judge
+    value: "{{ (bao_apps_secrets | default({})).get('judge_llm_router_key', '') }}"
+    enabled: "{{ (bao_apps_secrets | default({})).get('judge_llm_router_key', '') | string | length > 0 }}"
+    allowed_classes: [local]
+    models: ['judge']
+    tags: ['&zdr', '!free', '!retains', '&local']
+    router_settings:
+      enable_tag_filtering: true
+  - alias: recorder
+    value: "{{ (bao_apps_secrets | default({})).get('recorder_llm_router_key', '') }}"
+    enabled: "{{ (bao_apps_secrets | default({})).get('recorder_llm_router_key', '') | string | length > 0 }}"
+    allowed_classes: [local]
+    models: ['recorder']
+    tags: ['&zdr', '!free', '!retains', '&local']
+    router_settings:
+      enable_tag_filtering: true
+  - alias: hermes-private
+    value: "{{ (bao_apps_secrets | default({})).get('hermes_private_llm_router_key', '') }}"
+    enabled: "{{ (bao_apps_secrets | default({})).get('hermes_private_llm_router_key', '') | string | length > 0 }}"
+    allowed_classes: "{{ _llm_router_consumer_classes_zdr }}"
+    models: ['auto', "{{ hermes_brain_model }}"]
+    tags: ['&zdr', '!free', '!retains']
+    object_permission:
+      mcp_servers: [context7, grep, docs, splunk, vikunja_ro, nautobot, memory, vikunja, zammad]
+    router_settings:
+      enable_tag_filtering: true
+  - alias: donna
+    value: "{{ (bao_apps_secrets | default({})).get('donna_llm_router_key', '') }}"
+    enabled: "{{ (bao_apps_secrets | default({})).get('donna_llm_router_key', '') | string | length > 0 }}"
+    allowed_classes: "{{ _llm_router_consumer_classes_zdr }}"
+    models: ['auto', "{{ hermes_brain_model }}"]
+    tags: ['&zdr', '!free', '!retains']
+    object_permission:
+      mcp_servers: [context7, grep, docs, splunk, vikunja_ro]
+    router_settings:
+      enable_tag_filtering: true
+  - alias: zcode
+    value: "{{ (bao_apps_secrets | default({})).get('zcode_llm_router_key', '') }}"
+    enabled: >-
+      {{ (bao_apps_secrets | default({})).get('zcode_llm_router_key', '') | string | length > 0
+         and (bao_apps_secrets | default({})).get('ZCODE_ROUTER_KEY', '')
+             == (bao_apps_secrets | default({})).get('zcode_llm_router_key', '') }}
+    allowed_classes: "{{ _llm_router_consumer_classes_all }}"
+    models: ['auto', "{{ hermes_brain_model }}"]
+    object_permission:
+      mcp_access_groups: [hub-public]
     monthly_budget: "{{ _llm_router_key_monthly_budget }}"
   # Local proxy; 59-key-scopes.yml widens these roles to their fallback chains.
   - alias: litellm-local
     value: "{{ bao_apps_secrets.litellm_local_llm_router_key | default('', true) }}"
     models: "{{ ['fast', 'fast-gpu'] }}"
-    tags: ['&zdr', '!free']
+    tags: ['&zdr', '!free', '!retains']
     router_settings:
       enable_tag_filtering: true
-
-# 59-key-scopes.yml widens each key's `models` to its roles' chains.
-_llm_router_declared_virtual_keys: >-
-  {{ _llm_router_static_virtual_keys + _llm_router_workstation_virtual_keys
-     + _llm_router_hermes_profile_keys }}
 
 # On-demand rotation switch for tasks/seed-keys.yml: empty on every ordinary
 # converge. Names the alias(es) above whose live key should be deleted and

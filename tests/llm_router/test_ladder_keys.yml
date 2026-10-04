@@ -1,0 +1,406 @@
+---
+- name: Verify D1 class order, per-hop ZDR filtering, and one consumer key each
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    hermes_agent_profiles:
+      - name: splunk-admin
+      - name: homelab-admin
+      - name: github-maint
+    bao_local_llm_secrets:
+      CHATGPT_LOGIN_FILE: /dev/null
+      DASHSCOPE_API_KEY: fixture-dashscope
+      GEMINI_API_KEY: fixture-gemini
+      OPENAI_API_KEY: fixture-openai
+      OPENCODE_API_KEY: fixture-opencode
+      OPENROUTER_API_KEY: fixture-openrouter
+      OPENROUTER_HERMES_KEY: fixture-hermes-openrouter
+      ZAI_API_KEY: fixture-zai
+    bao_apps_secrets:
+      claude_code_llm_router_key: fixture-claude-code
+      codex_llm_router_key: fixture-codex
+      hermes_default_llm_router_key: fixture-hermes-default
+      hermes_splunk_admin_llm_router_key: fixture-hermes-splunk
+      hermes_homelab_admin_llm_router_key: fixture-hermes-homelab
+      hermes_github_maint_llm_router_key: fixture-hermes-github
+      hindsight_llm_router_key: fixture-hindsight
+      litellm_local_llm_router_key: fixture-local
+      litellm_local_workstation_llm_router_key: fixture-workstation
+      opencode_llm_router_key: fixture-opencode
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: fixture-large-bearer
+    llm_router_llm_fast_base_url: http://localhost:10434/v1
+    llm_router_llm_light_base_url: http://localhost:10434/v1
+    llm_router_llm_large_base_url: http://localhost:11434/v1
+    llm_router_llm_vllm_base_url: http://localhost:10434/v1
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_agent_identity: hermes
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: judge
+    hindsight_retain_model: qwen3-4b
+  tasks:
+    - name: Load role defaults and catalog-derived registry
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Resolve the registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Model a node that holds a ChatGPT login
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: true
+
+    - name: Render the credentialed router contract
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _target_aliases: >-
+          {{ ['claude-code', 'codex', 'agy', 'judge', 'recorder', 'hermes-private', 'donna',
+              'zcode', 'opencode'] + (_llm_router_hermes_profile_names
+              | map('regex_replace', '^', 'hermes-') | list) }}
+        _enabled_target_aliases: >-
+          {{ ['claude-code', 'codex'] + (_llm_router_hermes_profile_names
+              | map('regex_replace', '^', 'hermes-') | list) }}
+
+    - name: The rendered router follows one D1 class order
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_d1_class_order == ['sub', 'local', 'paid-zdr', 'free', 'retains']
+          - >-
+            llm_router_d1_ladder_groups ==
+            (llm_router_d1_rungs_by_class['sub']
+             + llm_router_d1_rungs_by_class['local']
+             + llm_router_d1_rungs_by_class['paid-zdr']
+             + llm_router_d1_rungs_by_class['free']
+             + llm_router_d1_rungs_by_class['retains']) | unique | list
+          - _config.router_settings.default_fallbacks == llm_router_d1_ladder_groups
+          - _config.router_settings.model_group_alias.auto == 'hermes-default'
+          - >-
+            _hermes_fallback ==
+            (llm_router_d1_ladder_groups
+             | reject('equalto', llm_router_d1_auto_initial_group) | list)
+          - _auto_targets | unique | length >= 3
+          - _auto_tier_classes['SIMPLE'] == 'sub'
+          - _auto_tier_classes['MEDIUM'] == 'local'
+          - _auto_tier_classes['COMPLEX'] == 'paid-zdr'
+          - _auto_tier_classes['REASONING'] == 'paid-zdr'
+          - _auto_tier_classes.values() | reject('in', ['sub', 'local', 'paid-zdr']) | list | length == 0
+          - _auto_default == llm_router_d1_auto_initial_group
+          - _auto.litellm_params.complexity_router_config.classifier_type == 'heuristic'
+          - _llm_router_role_params['hermes-default'].complexity_router_config.classifier_type == 'heuristic'
+          - _llm_router_role_params['hermes-default'].complexity_router_config.tiers == llm_router_d1_auto_router_tiers
+          - >-
+            _llm_router_role_params['hermes-default']
+            .complexity_router_config.default_model
+            == llm_router_d1_auto_initial_group
+          - _d1_entry_roles | length == 3
+          - _d1_entry_roles | map(attribute='model') | unique | list == ['hermes-default']
+          - llm_router_d1_rungs_by_class['retains'] | last == llm_router_zai_groups | last
+          - >-
+            llm_router_d1_ladder_groups.index(
+              llm_router_d1_rungs_by_class['free'] | first)
+            < llm_router_d1_ladder_groups.index(
+              llm_router_d1_rungs_by_class['retains'] | first)
+          - _sub_rows | length > 0
+          - _bad_non_zdr_subscriptions | length == 0
+          - _all_rung_groups | difference(_config.model_list | map(attribute='model_name') | list) | length == 0
+        fail_msg: "D1 rung order or rendered target coverage failed."
+        success_msg: "Class order is sub → local → paid-zdr → free → retains; Z.ai is last."
+      vars:
+        _auto: "{{ _config.model_list | selectattr('model_name', 'equalto', 'hermes-default') | first }}"
+        _auto_targets: "{{ _auto.litellm_params.complexity_router_config.tiers.values() | list }}"
+        _auto_tier_classes: >-
+          {{ dict(_auto.litellm_params.complexity_router_config.tiers.items()
+                  | map('first')
+                  | zip(_auto.litellm_params.complexity_router_config.tiers.values()
+                       | map('extract', llm_router_d1_group_class_by_name))) }}
+        _auto_default: "{{ _auto.litellm_params.complexity_router_config.default_model }}"
+        _d1_entry_roles: >-
+          {{ llm_router_role_deployments
+             | selectattr('role', 'in', ['fast', 'subagent', 'cheap']) | list }}
+        _hermes_fallback: >-
+          {{ _config.router_settings.fallbacks
+             | selectattr('hermes-default', 'defined')
+             | map(attribute='hermes-default') | first }}
+        _all_rung_groups: "{{ llm_router_d1_ladder_groups }}"
+        _sub_rows: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.tags', 'defined')
+             | selectattr('litellm_params.tags', 'contains', 'sub') | list }}
+        _bad_non_zdr_subscriptions: >-
+          {{ _sub_rows
+             | rejectattr('litellm_params.tags', 'contains', 'zdr')
+             | rejectattr('litellm_params.tags', 'contains', 'retains') | list }}
+
+    - name: Every consumer is declared once with its table class scope
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _declared_target_aliases | sort == _target_aliases | sort
+          - _declared_target_aliases | length == _target_aliases | length
+          - _active_target_aliases | sort == _enabled_target_aliases | sort
+          - _active_target_aliases | length == _enabled_target_aliases | length
+          - >-
+            llm_router_disabled_virtual_keys | intersect(_target_aliases) | sort
+            == ['agy', 'donna', 'hermes-private', 'judge', 'opencode',
+                'recorder', 'zcode']
+          - _class_scope_mismatches | length == 0
+          - _class_model_mismatches | length == 0
+          - _strict_tag_mismatches | length == 0
+          - _mcp_permission_mismatches | length == 0
+        fail_msg: >-
+          Consumer declarations={{ _class_scope_mismatches }}, model scope={{ _class_model_mismatches }},
+          MCP scope={{ _mcp_permission_mismatches }}.
+        success_msg: "Each enabled target consumer has one key; the seven unprovisioned sources remain disabled."
+      vars:
+        _declared_target_aliases: >-
+          {{ _llm_router_declared_virtual_keys | selectattr('alias', 'in', _target_aliases)
+             | map(attribute='alias') | list }}
+        _active_target_aliases: >-
+          {{ llm_router_virtual_keys | selectattr('alias', 'in', _target_aliases)
+             | map(attribute='alias') | list }}
+        _class_scope_mismatches: >-
+          {%- set _standard = ['sub', 'local', 'paid-zdr', 'free'] -%}
+          {%- set _all = ['sub', 'local', 'paid-zdr', 'free', 'retains'] -%}
+          {%- set _zdr = ['sub', 'local', 'paid-zdr'] -%}
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for _key in _llm_router_declared_virtual_keys
+                if _key.alias in _target_aliases -%}
+          {%- set _want = _standard if _key.alias in ['claude-code', 'codex', 'agy']
+                else ['local'] if _key.alias in ['judge', 'recorder']
+                else _zdr if _key.alias in ['hermes-private', 'donna']
+                else _all -%}
+          {%- if _key.allowed_classes | list != _want -%}
+          {%- set ns.rows = ns.rows + [_key.alias] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+        _class_model_mismatches: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for _key in llm_router_virtual_keys
+                if _key.alias in _target_aliases and _key.allowed_classes is defined -%}
+          {%- for _name in _key.models -%}
+          {%- set _class = llm_router_d1_group_class_by_name.get(_name) -%}
+          {%- if _class is not none and _class not in _key.allowed_classes -%}
+          {%- set ns.rows = ns.rows + [_key.alias ~ ':' ~ _name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+        _strict_tag_mismatches: >-
+          {%- set _specs = [
+                {'alias': 'judge', 'tags': ['&zdr', '!free', '!retains', '&local']},
+                {'alias': 'recorder', 'tags': ['&zdr', '!free', '!retains', '&local']},
+                {'alias': 'hermes-private', 'tags': ['&zdr', '!free', '!retains']},
+                {'alias': 'donna', 'tags': ['&zdr', '!free', '!retains']}] -%}
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for _spec in _specs -%}
+          {%- set _key = _llm_router_declared_virtual_keys
+                | selectattr('alias', 'equalto', _spec.alias) | first -%}
+          {%- if _spec.tags | difference(_key.tags | default([])) | length > 0
+                or not (_key.router_settings.enable_tag_filtering | default(false) | bool) -%}
+          {%- set ns.rows = ns.rows + [_spec.alias] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+        _expected_mcp_permissions:
+          claude-code:
+            mcp_servers: [context7, grep, docs, splunk, vikunja_ro, nautobot, memory, hindsight, vikunja, zammad]
+            agents: [hermes-private, hermes-public]
+          codex:
+            mcp_servers: [context7, grep, docs, splunk, vikunja_ro, nautobot, memory, hindsight, vikunja, zammad]
+            agents: [hermes-private, hermes-public]
+            mcp_tool_search_enabled: true
+          agy:
+            mcp_servers: [context7, grep, docs, splunk, vikunja_ro, nautobot, memory, hindsight, vikunja, zammad]
+            agents: [hermes-private, hermes-public]
+            mcp_tool_search_enabled: true
+          judge: {}
+          recorder: {}
+          hermes-default:
+            mcp_servers: [context7, grep, docs, splunk, vikunja_ro]
+          hermes-splunk-admin:
+            mcp_servers: [docs, splunk]
+          hermes-homelab-admin:
+            mcp_servers: [docs, vikunja_ro, nautobot]
+          hermes-github-maint:
+            mcp_servers: [grep, docs]
+          hermes-private:
+            mcp_servers: [context7, grep, docs, splunk, vikunja_ro, nautobot, memory, vikunja, zammad]
+          donna:
+            mcp_servers: [context7, grep, docs, splunk, vikunja_ro]
+          zcode:
+            mcp_access_groups: [hub-public]
+          opencode:
+            mcp_access_groups: [hub-public]
+        _mcp_permission_mismatches: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for _alias in _target_aliases -%}
+          {%- set _key = _llm_router_declared_virtual_keys
+                | selectattr('alias', 'equalto', _alias) | first -%}
+          {%- set _expected = _expected_mcp_permissions.get(_alias, {}) -%}
+          {%- if _key.object_permission | default({}) != _expected -%}
+          {%- set ns.rows = ns.rows + [_alias] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+
+    - name: OpenCode and ZCode wait for the matching sandbox source fields
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'opencode' in llm_router_disabled_virtual_keys"
+          - "'zcode' in llm_router_disabled_virtual_keys"
+          - _source_gate_aliases | sort == ['opencode', 'zcode']
+        fail_msg: "A sandbox key must remain disabled until its own delivery field exists."
+        success_msg: "OpenCode and ZCode stay disabled while their sandbox fields are absent."
+      vars:
+        _source_gate_aliases: >-
+          {{ _llm_router_declared_virtual_keys
+             | selectattr('alias', 'in', ['opencode', 'zcode'])
+             | rejectattr('enabled', 'truthy') | map(attribute='alias') | list }}
+
+    - name: Model the peer-provisioned sandbox fields with the existing consumer values
+      ansible.builtin.set_fact:
+        bao_apps_secrets: >-
+          {{ (bao_apps_secrets | default({})) | combine({
+            'zcode_llm_router_key': 'fixture-zcode',
+            'ZCODE_ROUTER_KEY': 'fixture-zcode',
+            'OPENCODE_ROUTER_KEY': 'fixture-opencode'}) }}
+
+    - name: Matching sandbox fields enable exactly their existing router keys
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _enabled_delivery_aliases | sort == ['opencode', 'zcode']
+          - _delivery_values['opencode'] == bao_apps_secrets['OPENCODE_ROUTER_KEY']
+          - _delivery_values['zcode'] == bao_apps_secrets['ZCODE_ROUTER_KEY']
+          - _delivery_values['opencode'] != _delivery_values['zcode']
+        fail_msg: "Sandbox delivery must reuse its matching per-consumer key value."
+        success_msg: "Each sandbox delivery field activates only its matching consumer key."
+      vars:
+        _enabled_delivery_aliases: >-
+          {{ llm_router_virtual_keys | selectattr('alias', 'in', ['opencode', 'zcode'])
+             | map(attribute='alias') | list }}
+        _delivery_values: >-
+          {{ dict(llm_router_virtual_keys | selectattr('alias', 'in', ['opencode', 'zcode'])
+             | map(attribute='alias') | zip(llm_router_virtual_keys
+             | selectattr('alias', 'in', ['opencode', 'zcode']) | map(attribute='value'))) }}
+
+    - name: Every enabled ZDR-only key rejects retaining and free deployments on each hop
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _zdr_keys | length >= 2
+          - _zdr_filter_mismatches | length == 0
+          - _bad_zdr_keys | length == 0
+          - _zdr_deployment_targets | difference(_deployment_group_names) | length == 0
+          - _zdr_untagged_router_rows | length == 0
+          - _zdr_tag_admitted_unsafe_rows | length == 0
+          - >-
+            (llm_router_d1_rungs_by_class['free']
+             + llm_router_d1_rungs_by_class['retains'])
+            | difference(llm_router_zdr_unasserted_terminal_rungs) | length == 0
+        fail_msg: >-
+          ZDR keys can reach an unsafe rung: {{ _bad_zdr_keys }};
+          missing rendered groups={{ _zdr_deployment_targets
+          | difference(_deployment_group_names) }};
+          nested routers={{ _nested_auto_routers | map(attribute='model_name') | list }};
+          nested targets={{ _nested_auto_targets }}.
+        success_msg: "ZDR keys cannot reach free or retaining deployments."
+      vars:
+        _zdr_keys: >-
+          {{ llm_router_virtual_keys | selectattr('tags', 'defined')
+             | selectattr('tags', 'contains', '&zdr') | list }}
+        _zdr_filter_mismatches: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for _key in _zdr_keys -%}
+          {%- if '!free' not in _key.tags or '!retains' not in _key.tags
+                or not (_key.router_settings.enable_tag_filtering | default(false) | bool) -%}
+          {%- set ns.rows = ns.rows + [_key.alias] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+        _auto: "{{ _config.model_list | selectattr('model_name', 'equalto', 'hermes-default') | first }}"
+        _hermes_fallback: >-
+          {{ _config.router_settings.fallbacks | selectattr('hermes-default', 'defined')
+             | map(attribute='hermes-default') | first }}
+        _zdr_router_targets: >-
+          {{ (_auto.litellm_params.complexity_router_config.tiers.values() | list)
+             + [_auto.litellm_params.complexity_router_config.default_model]
+             + _hermes_fallback }}
+        _deployment_group_names: >-
+          {{ _config.model_list | rejectattr('litellm_params.complexity_router_config', 'defined')
+             | map(attribute='model_name') | unique | list }}
+        _nested_auto_routers: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'in', _zdr_router_targets)
+             | selectattr('litellm_params.complexity_router_config', 'defined') | list }}
+        _nested_auto_targets: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for _row in _nested_auto_routers -%}
+          {%- set _router = _row.litellm_params.complexity_router_config -%}
+          {%- set _tiers = _router.tiers | default({}) -%}
+          {%- set _default = [_router.default_model]
+                if _router.default_model is defined else [] -%}
+          {%- set ns.names = ns.names + (_tiers.values() | list)
+                + _default -%}
+          {%- endfor -%}
+          {{ ns.names | unique | list }}
+        _nested_auto_router_names: "{{ _nested_auto_routers | map(attribute='model_name') | list }}"
+        _zdr_deployment_targets: >-
+          {{ (_zdr_router_targets | difference(_nested_auto_router_names)
+              + _nested_auto_targets) | unique | list }}
+        _zdr_untagged_router_rows: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'in', _zdr_deployment_targets)
+             | rejectattr('litellm_params.complexity_router_config', 'defined')
+             | rejectattr('litellm_params.tags', 'defined') | list }}
+        _zdr_tag_admitted_unsafe_rows: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for _key in _zdr_keys -%}
+          {%- set _required = _key.tags | select('match', '^&')
+                | map('regex_replace', '^&', '') | list -%}
+          {%- set _forbidden = _key.tags | select('match', '^!')
+                | map('regex_replace', '^!', '') | list -%}
+          {%- for _row in _config.model_list
+                if _row.model_name in _zdr_deployment_targets
+                   and _row.litellm_params.complexity_router_config is not defined -%}
+          {%- set _tags = _row.litellm_params.tags | default([]) -%}
+          {%- set _class = llm_router_d1_group_class_by_name.get(_row.model_name, 'unknown') -%}
+          {%- set _admitted = (_required | difference(_tags) | length == 0)
+                and (_forbidden | intersect(_tags) | length == 0) -%}
+          {%- if _admitted and (_class in ['free', 'retains'] or 'zdr' not in _tags) -%}
+          {%- set ns.rows = ns.rows + [_key.alias ~ ':' ~ _row.model_name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+        _bad_zdr_keys: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for _key in _zdr_keys -%}
+          {%- set _unsafe = _key.models | intersect(llm_router_zdr_unasserted_terminal_rungs) -%}
+          {%- if '!free' not in _key.tags or '!retains' not in _key.tags
+                or not (_key.router_settings.enable_tag_filtering | default(false) | bool)
+                or _unsafe | length > 0 -%}
+          {%- set ns.rows = ns.rows + [_key.alias] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}

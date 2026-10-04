@@ -44,25 +44,9 @@ llm_router_embedding_model: >-
      | selectattr('embedding') | map(attribute='client_model_id') | first }}
 
 # `lead` is a pure git alias of `best` (llm-models.d/10-large.yml), not a DB
-# role. `subagent` no longer targets `long`
-# directly. `subagent` and the new `fast` role (Codex's own `--profile fast`
-# and nix-ai's aliases.nix already reference this name; the router never had
-# one before) now share ONE chain instead: try the 4080 (hermes-local-4080),
-# then the Mac Studio's own resident brain,
-# then the fastest ZDR-compliant free cloud rung, then the first (registry-
-# order) paid cloud rung, with `long` kept as the terminal rung — NOT
-# dropped, moved.
-#
-# `long`'s >200k-context escape hatch (nix-ai's Claude Code subagent tier)
-# is preserved two ways: it is still the LAST fallback tried on an ordinary
-# failure (busy/timeout/etc, walked in the order above), and
-# 37-fallback-entry-points.yml SEPARATELY maps both role names straight to
-# it via context_window_fallbacks for a request too large for the chain's
-# first (narrower) rung — evaluated against "fast"/"subagent"'s own
-# advertised window BEFORE any chain walk begins, so that depth-0 case does
-# not depend on walking the ordinary list at all. Two different failure
-# modes (busy vs. too-large), two different mechanisms; see that file's
-# comment for the credential-gating this map needs.
+# role. `fast`, `subagent` and `cheap` seed from the first available D1 rung
+# and share its single ordered tail. The role rows remain first-seed only; the
+# Admin UI owns existing rows after creation.
 #
 # `fast-gpu` (below) is a THIRD, narrower role for a caller that wants to
 # address "just the 4080" directly without naming its physical model id
@@ -76,27 +60,19 @@ llm_router_embedding_model: >-
 # subagent is still NOT a git alias itself, for the same common-word-
 # collision reason `judge`/`cheap`/`embed`/`ocr` are deferred
 # (test_registry_retype_scan.py).
-# The roles whose OVERSIZED request escapes straight to `long` via
-# context_window_fallbacks (37-fallback-entry-points.yml). fast/subagent only:
-# `cheap` shares the GPU-first ladder but must never
-# reach `long`, so it is deliberately absent here.
+# The role names whose oversized requests escape via context_window_fallbacks.
 llm_router_long_context_escape_roles: []
 
-# fast/subagent: the 4080 (their target), the Mac Studio's resident brain,
-# the external terminal rungs above, and `long` kept as the last rung it
-# always was. cheap stops at the terminal rungs (never `long`).
-# No `long` (the OpenRouter-hosted Z.ai rung) behind private harness
-# traffic: an oversize request escapes to the chain's own external rungs via
-# context_window_fallbacks (37-fallback-entry-points.yml) instead.
+# Every ordinary entry role shares D1's class order. Each role starts at its
+# first available rung, and its fallback list is exactly the remaining tail.
 _llm_router_fast_subagent_chain: >-
-  {{ [llm_router_primary_model] + llm_router_external_terminal_rungs }}
+  {{ llm_router_d1_ladder_groups
+     | reject('equalto', llm_router_d1_auto_initial_group) | list }}
 _llm_router_cheap_chain: >-
-  {{ [llm_router_primary_model] + llm_router_external_terminal_rungs }}
+  {{ _llm_router_fast_subagent_chain }}
 
-# FALLBACK ORDER IS ONE-WAY, LARGEST CONTEXT FIRST — for every role EXCEPT
-# fast/subagent above, whose chain is intentionally local-first / narrowest
-# rung first and relies on context_window_fallbacks (not ordering) to keep an
-# oversize request from being poisoned. See the note above the chain var.
+# Each class rung uses its catalog-backed context limit. The explicit context
+# escape rules below remain the guard for any narrower local model.
 #
 # A fallback that serves a smaller context than the model it replaces does not
 # degrade a caller, it poisons one: the request is silently truncated and the
@@ -105,25 +81,17 @@ _llm_router_cheap_chain: >-
 # behind a million-token model is not a safety net, it is a dead rung that
 # turns into a hard failure exactly when the fallback was supposed to help.
 #
-# UNVERIFIED, no live proxy this PR: whether a DB-role's own `/fallback`
-# record draws on the SAME router_settings.max_fallbacks depth budget the
-# config-rendered chains do (37-fallback-entry-points.yml). If it does, this
-# 4-rung chain could in principle be truncated before reaching `long` under
-# the worst case of every earlier rung failing — every role deployment before
-# this PR only ever carried 0 or 1 fallbacks, so that interaction has never
-# been exercised. Confirm live before relying on the terminal rung under load.
+# Existing database rows remain untouched by the seed; this applies to new
+# roles only until the Admin UI edits them.
 llm_router_role_deployments:
-  # Local-first: try the 4080 before anything else. See the note above
-  # _llm_router_fast_subagent_chain for why this no longer targets `long`
-  # directly and how the >200k escape hatch stays reachable.
   - role: subagent
-    model: "{{ llm_router_hermes_local_4080_id }}"
+    model: hermes-default
     fallbacks: "{{ _llm_router_fast_subagent_chain }}"
   # Same chain, second name — both Codex's `--profile fast` and this
   # project's own `subagent` naming already have external callers expecting
   # them; see the note above _llm_router_fast_subagent_chain.
   - role: fast
-    model: "{{ llm_router_hermes_local_4080_id }}"
+    model: hermes-default
     fallbacks: "{{ _llm_router_fast_subagent_chain }}"
   # Just the 4080, no fallback — see the note above _llm_router_fast_subagent_chain
   # for why this must fail outright rather than redirecting anywhere.
@@ -154,7 +122,7 @@ llm_router_role_deployments:
   # above, walked by the router's own fallbacks. A role that refuses is the
   # standing rule inverted.
   - role: cheap
-    model: "{{ llm_router_hermes_local_4080_id }}"
+    model: hermes-default
     fallbacks: "{{ _llm_router_cheap_chain }}"
   - role: review-oss
     model: "{{ llm_router_hermes_local_4080_id }}"
@@ -214,6 +182,14 @@ _llm_router_role_params: >-
         'api_base': llm_router_llm_large_base_url,
         'api_key': 'os.environ/LLM_LARGE_BEARER_TOKEN',
         'use_chat_completions_api': true}}) -%}
+  {%- elif m.tier == 'hermes-router' -%}
+  {%- set _router = {
+        'classifier_type': 'heuristic',
+        'tiers': llm_router_d1_auto_router_tiers,
+        'default_model': llm_router_d1_auto_initial_group} -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'complexity_router_config': _router}}) -%}
   {%- elif m.tier == 'light' -%}
   {%- set _ = ns.params.update({m.client_model_id: {
         'model': upstream,
@@ -239,8 +215,10 @@ _llm_router_role_params: >-
         'use_chat_completions_api': true}}) -%}
   {%- endif -%}
   {%- if m.client_model_id in ns.params -%}
+  {%- if m.tier != 'hermes-router' -%}
   {%- set _ = ns.params[m.client_model_id].update({
         'tags': llm_router_deployment_tags_by_model[m.client_model_id]}) -%}
+  {%- endif -%}
   {%- for k in ['num_retries', 'request_timeout', 'stream_timeout'] if m[k] is defined -%}
   {%- set _ = ns.params[m.client_model_id].update({('timeout' if k == 'request_timeout' else k): m[k]}) -%}
   {%- endfor -%}

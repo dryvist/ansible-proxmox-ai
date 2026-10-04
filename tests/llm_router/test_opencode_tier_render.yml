@@ -102,6 +102,8 @@
           # nothing while still reporting green.
           - llm_router_opencode_models | length > 0
           - _rendered_shape == _registry_shape
+          - _rendered_limits == _registry_limits
+          - _free_limits == _registry_limits
           # The hints projection, which no other fixture reaches on this tier.
           # Counted against the registry rather than asserted per entry: every
           # entry here declares hints, so an exact count is the strongest form
@@ -113,6 +115,7 @@
           The subscription tier does not project one deployment per upstream at
           the tier's order and the entry's registered window, with its hints.
           rendered={{ _rendered_shape }} expected={{ _registry_shape }}
+          limits={{ _rendered_limits }} expected={{ _registry_limits }}
           hinted={{ _hinted | length }} of {{ llm_router_opencode_models | length }}.
         success_msg: >-
           {{ _rendered_shape | length }} subscription deployments render, one per
@@ -154,6 +157,37 @@
           {%- set ns.rows = ns.rows + [[m.client_model_id,
                 llm_router_opencode_default_order | int,
                 m.context_window | int]] -%}
+          {%- endfor -%}
+          {{ ns.rows | sort }}
+        # Both model-list projections use the same per-model caps from the
+        # catalog; the second is the standalone free group alias.
+        _opencode_free_deployments: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'equalto', 'free')
+             | selectattr('litellm_params.api_base', 'defined')
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_opencode_base_url)
+             | list }}
+        _registry_limits: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for m in llm_router_opencode_models -%}
+          {%- set ns.rows = ns.rows + [[m.rpm | int, m.tpm | int,
+                m.max_parallel_requests | int]] -%}
+          {%- endfor -%}
+          {{ ns.rows | sort }}
+        _rendered_limits: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for d in _opencode_deployments -%}
+          {%- set ns.rows = ns.rows + [[d.litellm_params.rpm | int,
+                d.litellm_params.tpm | int,
+                d.litellm_params.max_parallel_requests | int]] -%}
+          {%- endfor -%}
+          {{ ns.rows | sort }}
+        _free_limits: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for d in _opencode_free_deployments -%}
+          {%- set ns.rows = ns.rows + [[d.litellm_params.rpm | int,
+                d.litellm_params.tpm | int,
+                d.litellm_params.max_parallel_requests | int]] -%}
           {%- endfor -%}
           {{ ns.rows | sort }}
         _hinted: >-
