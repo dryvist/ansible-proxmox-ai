@@ -1,0 +1,101 @@
+---
+# The shared assertion inputs are materialized once, without changing their
+# values or native list/dict shapes.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_assertion_inputs_materialized.yml -i localhost, -c local
+
+- name: Verify router assertion inputs retain their values when materialized
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _group_vars_dir: "{{ playbook_dir }}/../../inventory/group_vars"
+    _role_defaults_dir: "{{ playbook_dir }}/../../roles/llm_router/defaults/main"
+    bao_ai_public_secrets: {}
+    bao_apps_secrets: {}
+    bao_local_llm_secrets: {}
+    hermes_agent_profiles:
+      - name: splunk-admin
+      - name: homelab-admin
+      - name: github-maint
+  tasks:
+    - name: Load shared and router group vars as they ship
+      ansible.builtin.include_vars:
+        file: "{{ item }}"
+      loop:
+        - "{{ _group_vars_dir }}/all.yml"
+        - "{{ _group_vars_dir }}/llm_router_group.yml"
+
+    - name: Load the router defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_defaults_dir }}"
+
+    - name: Load the same registry and role map as the router converge
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+        public: true
+
+    - name: Model a router with its per-node subscription login
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: true
+
+    - name: Capture the lazy values before materialization
+      ansible.builtin.set_fact:
+        _llm_router_assertion_inputs_before:
+          registry_enabled: "{{ llm_router_registry_enabled }}"
+          role_deployments: "{{ llm_router_role_deployments }}"
+          servable_models: "{{ llm_router_servable_models }}"
+          hermes_router_ids: "{{ llm_router_hermes_router_ids }}"
+          long_context_alias_ids: "{{ llm_router_long_context_alias_ids }}"
+          credentialed_cloud_models: "{{ llm_router_hermes_cloud_models_credentialed }}"
+          fallback_chain: "{{ llm_router_hermes_default_fallback_chain }}"
+          zdr_asserted_group_names: "{{ llm_router_zdr_asserted_group_names }}"
+          model_group_aliases: "{{ llm_router_model_group_aliases }}"
+          directly_callable_ladder_names: "{{ _llm_router_directly_callable_ladder_names }}"
+          key_scope_all: "{{ _llm_router_key_scope_all }}"
+          virtual_keys: "{{ llm_router_virtual_keys }}"
+      no_log: true
+
+    - name: Materialize the router assertion inputs
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assertion-inputs.yml
+
+    - name: Run the contracts that consume the cached projections
+      ansible.builtin.import_tasks: >-
+        {{ playbook_dir }}/../../roles/llm_router/tasks/assert-hermes-profile-key-brain-model.yml
+    - name: Validate the cached fallback chain
+      ansible.builtin.import_tasks: "{{ playbook_dir }}/../../roles/llm_router/tasks/assert-fallback-chain.yml"
+    - name: Validate the cached key and provider budgets
+      ansible.builtin.import_tasks: "{{ playbook_dir }}/../../roles/llm_router/tasks/assert-budget-backing.yml"
+    - name: Validate the cached egress projection
+      ansible.builtin.import_tasks: "{{ playbook_dir }}/../../roles/llm_router/tasks/assert-egress.yml"
+
+    - name: Confirm materialization preserves every assertion input
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_assertion_inputs_before.registry_enabled == llm_router_registry_enabled
+          - _llm_router_assertion_inputs_before.role_deployments == llm_router_role_deployments
+          - _llm_router_assertion_inputs_before.servable_models == llm_router_servable_models
+          - _llm_router_assertion_inputs_before.hermes_router_ids == llm_router_hermes_router_ids
+          - _llm_router_assertion_inputs_before.long_context_alias_ids == llm_router_long_context_alias_ids
+          - _llm_router_assertion_inputs_before.credentialed_cloud_models == llm_router_hermes_cloud_models_credentialed
+          - _llm_router_assertion_inputs_before.fallback_chain == llm_router_hermes_default_fallback_chain
+          - _llm_router_assertion_inputs_before.zdr_asserted_group_names == llm_router_zdr_asserted_group_names
+          - _llm_router_assertion_inputs_before.model_group_aliases == llm_router_model_group_aliases
+          - >-
+            _llm_router_assertion_inputs_before.directly_callable_ladder_names
+            == _llm_router_directly_callable_ladder_names
+          - _llm_router_assertion_inputs_before.key_scope_all == _llm_router_key_scope_all
+          - _llm_router_assertion_inputs_before.virtual_keys == llm_router_virtual_keys
+          - llm_router_registry_enabled | type_debug == 'list'
+          - llm_router_role_deployments | type_debug == 'list'
+          - llm_router_model_group_aliases | type_debug == 'dict'
+          - llm_router_virtual_keys | type_debug == 'list'
+          - "'codex-subscription' in llm_router_hermes_default_fallback_chain"
+        fail_msg: >-
+          Materializing router assertion inputs changed a value or native data
+          shape; see roles/llm_router/tasks/assertion-inputs.yml.
+        success_msg: Router assertion inputs keep their values and native types.
