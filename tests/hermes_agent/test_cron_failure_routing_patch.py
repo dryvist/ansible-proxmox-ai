@@ -62,7 +62,9 @@ def test_ledger_patch_matches_wrapped_or_inline_for_failure_argument() -> None:
         if task.get("name")
         == "Route the run-ledger classification through the failure lane for a declared failure"
     )
-    assert r"\s*for_failure=not d\.success" in ledger["ansible.builtin.replace"]["regexp"]
+    regexp = ledger["ansible.builtin.replace"]["regexp"]
+    assert "(?x)" in regexp
+    assert r"\s*for_failure=not\x20d\.success" in regexp
 
 
 def test_cron_failure_routing_verifies_every_replacement() -> None:
