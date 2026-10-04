@@ -52,8 +52,8 @@ itself — not assumed):
   separate native script timeout.
 - **`max_retries`** — no `cron create` equivalent. Not restored; an accepted,
   documented loss.
-- **Outcome-based delivery split** (`channel_when_healthy`, used by status and
-  release-watch jobs) — `--deliver` takes exactly one fixed target. The quiet
+- **Outcome-based delivery split** (`channel_when_healthy`, used by the status
+  job) — `--deliver` takes exactly one fixed target. The quiet
   footer ends with bare `[SILENT]` when the healthy destination equals the
   delivery destination; no separate healthy post or heartbeat is sent.
 
@@ -73,7 +73,6 @@ check that guarantees new prompt text keeps doing so.
 | `hermes_agent_slack_hermes_all_channel` | home channel id | default delivery channel for the agent's work reports |
 | `hermes_agent_slack_splunk_channel` | work channel | destination for new Splunk findings |
 | `hermes_agent_cron_failure_deliver` | local when unset | native destination for failed cron runs |
-| `hermes_agent_slack_releases_channel` | empty | destination for the daily release digest |
 | `hermes_agent_superseded_kanban_enqueuer_cron_names` | — | the retired per-card `<job>-enqueue` crons + the old safety net, removed at converge |
 
 ## Master board digest (`kanban-digest`)

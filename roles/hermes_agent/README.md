@@ -62,13 +62,11 @@ covers the role's configuration surface; that doc covers running it.
 
 | Destination | Messages |
 | --- | --- |
-| Agent home | Interactive replies and actionable work from Hermes or Donna |
+| Agent home | Interactive replies, actionable work, and Hermes release digest |
 | Splunk findings | New findings from Splunk analysis jobs; otherwise `[SILENT]` |
 | Alert destination | Hermes and Donna cron failures, once per failure streak, using native failure delivery |
-| Release digest destination | Published release digest |
 | Healthy or unchanged run | Bare `[SILENT]`; no heartbeat is sent |
 
-Each agent resolves its own home channel. Splunk, alert, and release
-destinations are independently configurable; the release watch stays disabled
-until its destination is set, and the alert destination must
-include each app that uses native failure delivery.
+Each agent resolves its own home channel. Splunk and alert destinations are
+independently configurable, and the alert destination must include each app
+that uses native failure delivery.
