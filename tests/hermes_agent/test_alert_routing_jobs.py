@@ -52,11 +52,11 @@ def test_the_fabric_status_job_carries_the_outcome_split() -> None:
     ctx = _resolve(CONFIGURED)
     assert _direct_deliver("hermes_agent_daily_status_cron_name", ctx) == "slack:C_HOME"
     assert ctx["hermes_agent_slack_noise_channel"] == ctx["hermes_agent_slack_hermes_all_channel"]
-    # No other job carries the split — it was one card's behaviour, not a
-    # general one.
+    # The only other split is release-watch: its healthy and finding output
+    # share the release destination, so the quiet footer suppresses all-clear.
     others = [j for j in DEFAULTS["hermes_agent_direct_cron_jobs"]
               if j is not job and "channel_when_healthy" in j]
-    assert others == [], [j.get("name") for j in others]
+    assert [j.get("name") for j in others] == ["{{ hermes_agent_release_watch_cron_name }}"]
 
 
 def test_the_footer_task_picks_the_catalog_footer_by_outcome_split() -> None:
@@ -101,6 +101,14 @@ def test_splunk_findings_and_anomaly_hunt_route_by_reader() -> None:
                 "hermes_agent_splunk_parsing_cron_name", "hermes_agent_splunk_deepdive_cron_name"):
         assert _direct_deliver(var, ctx) == "slack:C_SPLUNK", var
     assert _direct_deliver("hermes_agent_anomaly_hunt_cron_name", ctx) == "slack:C_HOME"
+
+
+def test_release_watch_uses_its_release_destination_and_stays_quiet_when_healthy() -> None:
+    ctx = _resolve(CONFIGURED)
+    job = _direct_job("hermes_agent_release_watch_cron_name")
+    assert _direct_deliver("hermes_agent_release_watch_cron_name", ctx) == "slack:C_RELEASES"
+    assert job["channel_when_healthy"] == job["deliver"]
+    assert ctx["hermes_agent_slack_releases_channel"] == "C_RELEASES"
 
 
 def test_the_fabric_status_card_is_told_its_endpoints_instead_of_guessing() -> None:

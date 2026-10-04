@@ -69,11 +69,11 @@ check that guarantees new prompt text keeps doing so.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `hermes_agent_direct_cron_jobs` | — | the plain-cron job table (name, schedule, prompt var, skill, deliver target) — every recurring workload, 27 entries |
+| `hermes_agent_direct_cron_jobs` | — | the plain-cron job table (name, schedule, prompt var, skill, deliver target) — every recurring workload, 28 entries |
 | `hermes_agent_slack_hermes_all_channel` | home channel id | default delivery channel for the agent's work reports |
 | `hermes_agent_slack_splunk_channel` | work channel | destination for new Splunk findings |
 | `hermes_agent_cron_failure_deliver` | local when unset | native destination for failed cron runs |
-| release digest destination | configured channel | destination for the daily release digest |
+| `hermes_agent_slack_releases_channel` | empty | destination for the daily release digest |
 | `hermes_agent_superseded_kanban_enqueuer_cron_names` | — | the retired per-card `<job>-enqueue` crons + the old safety net, removed at converge |
 
 ## Master board digest (`kanban-digest`)

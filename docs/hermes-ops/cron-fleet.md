@@ -52,6 +52,7 @@ All 18 pre-reframe cards, docs-sync included, are now direct-cron jobs — see
 | `ai-news` | `19 0,12,16,19 * * *` | Agent home |
 | `daily-innovation` | `47 6 * * *` | Agent home |
 | `app-seeding` | `53 7 * * *` | Agent home |
+| `release-watch` | `17 12 * * *` | Release digest destination |
 | `fleet-health` | `3 10 * * 1` (weekly) | Agent home |
 | `docs-sync` | `13 8 * * 1` (weekly) | Agent home |
 | `self-audit` | `29 3,15 * * *` | Agent home |
@@ -62,8 +63,8 @@ token, app token and home channel; the `splunk-*` jobs also require
 is false is never created — the role runs inert, never errors.
 
 The home destination is resolved for each agent identity. Splunk-analysis
-findings use the configured Splunk destination, and release digests use their
-configured release destination. Hermes execution failures use the native
+findings use the configured Splunk destination, and the release digest uses
+its configured release destination. Hermes execution failures use the native
 `--failure-deliver` target; a failed cron posts once at the start of a failure
 streak, and the failure rollup posts when its contents change. A healthy,
 unchanged, or no-change run ends with bare `[SILENT]`. No destination receives

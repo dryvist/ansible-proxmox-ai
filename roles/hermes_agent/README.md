@@ -69,5 +69,6 @@ covers the role's configuration surface; that doc covers running it.
 | Healthy or unchanged run | Bare `[SILENT]`; no heartbeat is sent |
 
 Each agent resolves its own home channel. Splunk, alert, and release
-destinations are independently configurable; the alert destination must
+destinations are independently configurable; the release watch stays disabled
+until its destination is set, and the alert destination must
 include each app that uses native failure delivery.
