@@ -1,0 +1,59 @@
+---
+# Create the untrusted-tier collections (qdrant_docker_untrusted_collections)
+# when absent, with the vector parameters of the trusted collection. The
+# trusted collection is created by its writer, never here; until it exists
+# there is nothing to mirror, so creation waits for the next run.
+#
+# no_log: every request carries the admin API key in a header.
+
+- name: Read the trusted collection
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ qdrant_docker_http_port }}/collections/{{ qdrant_docker_trusted_collection }}"
+    headers:
+      api-key: "{{ qdrant_docker_api_key }}"
+    status_code: [200, 404]
+  register: qdrant_docker_trusted_info
+  changed_when: false
+  no_log: true
+
+- name: Report that the untrusted collections wait for the trusted collection
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: collection {{ qdrant_docker_trusted_collection }} does not exist
+      yet, so its vector parameters cannot be mirrored. Not created:
+      {{ qdrant_docker_untrusted_collections | join(', ') }}.
+  when: qdrant_docker_trusted_info.status == 404
+
+- name: Create the missing untrusted-tier collections
+  when: qdrant_docker_trusted_info.status == 200
+  vars:
+    qdrant_docker_trusted_params: "{{ qdrant_docker_trusted_info.json.result.config.params }}"
+  block:
+    - name: Look up the untrusted-tier collections
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ qdrant_docker_http_port }}/collections/{{ item }}"
+        headers:
+          api-key: "{{ qdrant_docker_api_key }}"
+        status_code: [200, 404]
+      loop: "{{ qdrant_docker_untrusted_collections }}"
+      register: qdrant_docker_collection_lookup
+      changed_when: false
+      no_log: true
+
+    - name: Create each absent untrusted-tier collection
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ qdrant_docker_http_port }}/collections/{{ item }}"
+        method: PUT
+        headers:
+          api-key: "{{ qdrant_docker_api_key }}"
+        body_format: json
+        body: >-
+          {{ {'vectors': qdrant_docker_trusted_params.vectors}
+             | combine({'sparse_vectors': qdrant_docker_trusted_params.sparse_vectors}
+                       if qdrant_docker_trusted_params.sparse_vectors is defined else {}) }}
+        status_code: 200
+      changed_when: true
+      loop: >-
+        {{ qdrant_docker_collection_lookup.results
+           | selectattr('status', 'equalto', 404) | map(attribute='item') | list }}
+      no_log: true

@@ -2,5 +2,48 @@
 qdrant_docker_image: "qdrant/qdrant:v1.18.3"
 qdrant_docker_container_name: qdrant
 qdrant_docker_data_dir: /opt/qdrant
-qdrant_docker_api_key: "{{ lookup('env', 'QDRANT_API_KEY') }}"
+# The one Qdrant API key: ai/qdrant QDRANT_API_KEY in the local-llm secret
+# domain, the same fact the agentgateway memory sidecar and llamaindex read.
+qdrant_docker_api_key: >-
+  {{ (bao_local_llm_secrets | default({}))['QDRANT_API_KEY']
+     | mandatory('QDRANT_API_KEY must be set in the environment') }}
 qdrant_docker_storage_driver: "fuse-overlayfs"
+
+# =============================================================================
+# Collections. The trusted collection is created by its writer (the memory MCP
+# sidecar); this role creates the two untrusted-tier collections with the
+# trusted collection's vector parameters.
+# =============================================================================
+qdrant_docker_trusted_collection: agent_memories
+qdrant_docker_shared_collection: agent_memories_shared
+qdrant_docker_scratch_collection: agent_scratch_untrusted
+qdrant_docker_untrusted_collections:
+  - "{{ qdrant_docker_shared_collection }}"
+  - "{{ qdrant_docker_scratch_collection }}"
+
+# Collection-level access of the untrusted-tier JWT: read-only on the shared
+# collection, read-write on the scratch collection, nothing else.
+qdrant_docker_untrusted_access:
+  - collection: "{{ qdrant_docker_shared_collection }}"
+    access: r
+  - collection: "{{ qdrant_docker_scratch_collection }}"
+    access: rw
+
+# Enable JWT RBAC and create the untrusted-tier collections.
+qdrant_docker_jwt_rbac_enabled: false
+# Mint the untrusted-tier JWT and merge it into this KV field.
+qdrant_docker_publish_untrusted_jwt: false
+qdrant_docker_untrusted_jwt_kv_mount: secret
+qdrant_docker_untrusted_jwt_kv_path: apps/open-llm
+qdrant_docker_untrusted_jwt_field: QDRANT_UNTRUSTED_JWT
+# Shared converge identity (same env names as hindsight_bank_dr).
+qdrant_docker_bao_addr: >-
+  {{ hostvars['localhost'].openbao_secrets_active_addr | default('', true)
+     or lookup('env', 'BAO_ADDR') }}
+qdrant_docker_bao_role_id: >-
+  {{ lookup('env', 'CONVERGE_ROLE_ID')
+     | default(lookup('env', 'OPENBAO_APPROLE_ANSIBLE_ROLE_ID'), true) }}
+qdrant_docker_bao_secret_id: >-
+  {{ lookup('env', 'CONVERGE_SECRET_ID')
+     | default(lookup('env', 'OPENBAO_APPROLE_ANSIBLE_SECRET_ID'), true) }}
+qdrant_docker_bao_validate_certs: true

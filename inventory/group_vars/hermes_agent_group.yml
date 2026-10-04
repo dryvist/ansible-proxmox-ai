@@ -10,38 +10,44 @@ systemd_restart_policy_services:
 # against the reading agent's own secrets, not a hardcoded one.
 #
 # `hermes_agent_bao` is that view: the identity's OWN least-privilege domain
-# (ai/<id>, one AppRole per agent) layered over the broad local-llm ai/* grant.
-# The broad grant is included ONLY for the pre-existing `hermes` identity, whose
-# fields are still read through it — see roles/openbao_secrets/defaults, where
-# the per-identity domain is marked NOT YET CONSUMED. A second agent must never
-# inherit it: local-llm can read ai/hermes, so a blanket fallback would hand the
-# new agent the first agent's Slack, Vikunja and GitHub credentials.
+# (one AppRole per agent). A second agent must never inherit the broad
+# local-llm ai/* grant: it can read ai/hermes, so a blanket fallback would hand
+# the new agent the first agent's Slack, Vikunja and GitHub credentials.
 #
-# Both layers are empty when OpenBao is skipped, so every consumer below still
-# falls through to its env fallback exactly as before. The day the per-identity
-# role_id/secret_id land in Doppler, that domain starts resolving and wins the
-# combine — the migration completes with no further edit here.
+# The `hermes` identity keeps the local-llm layer underneath only while its own
+# `hermes` domain was not fetched this run. Once that domain resolves, Hermes
+# reads nothing from local-llm. Both layers are empty when OpenBao is skipped,
+# so every consumer below falls through to its env fallback.
+hermes_agent_bao_local_llm_layer: >-
+  {{ 'hermes' not in (openbao_secrets_by_domain | default({})) }}
 hermes_agent_bao: >-
-  {{ (bao_local_llm_secrets if hermes_agent_id == 'hermes' else {})
+  {{ (bao_local_llm_secrets
+      if (hermes_agent_id == 'hermes' and (hermes_agent_bao_local_llm_layer | bool))
+      else {})
      | combine((openbao_secrets_by_domain | default({})).get(hermes_agent_id, {})) }}
+
+# Shared MCP client fields (secret/ai/mcp/*, Context7). Hermes reads them through
+# its own view; every other identity keeps the local-llm read.
+hermes_agent_mcp_bao: >-
+  {{ hermes_agent_bao if hermes_agent_id == 'hermes' else bao_local_llm_secrets }}
 
 # Field names: the ones carrying an agent prefix derive it from the identity, so
 # `hermes` reads exactly the field it reads today. Unprefixed fields stay bare —
 # the KV path (ai/<id>) already scopes them, and repeating the identity inside a
 # path that names it would be redundant.
 
-# Shared Splunk MCP client token (read/search access). Bao-first (local-llm
-# domain, secret/ai/mcp/splunk), env fallback — empty until the creds are
+# Shared Splunk MCP client token (read/search access). Bao-first
+# (secret/ai/mcp/splunk), env fallback — empty until the creds are
 # seeded. The URL is the shared agentgateway /splunk route (non-secret, built
 # from PROXMOX_SUBDOMAIN in the role defaults), same posture as context7/qdrant,
 # so only the token is sourced here.
 hermes_agent_splunk_mcp_token: >-
-  {{ bao_local_llm_secrets.SPLUNK_MCP_TOKEN
+  {{ hermes_agent_mcp_bao.SPLUNK_MCP_TOKEN
      | default(lookup('env', 'SPLUNK_MCP_TOKEN'), true) }}
 
 # Context7 MCP key (current library docs on demand). Bao-first, env fallback.
 hermes_agent_context7_api_key: >-
-  {{ bao_local_llm_secrets.CONTEXT7_API_KEY
+  {{ hermes_agent_mcp_bao.CONTEXT7_API_KEY
      | default(lookup('env', 'CONTEXT7_API_KEY'), true) }}
 
 # Self-hosted Firecrawl key, read from the identity's OWN domain
@@ -69,8 +75,8 @@ hermes_agent_webhook_secret: >-
   {{ hermes_agent_bao.WEBHOOK_SECRET
      | default(lookup('env', 'WEBHOOK_SECRET'), true) }}
 
-# Inbound job-submission API bearer key. Bao-first (local-llm domain,
-# secret/ai/hermes), env fallback. Unlike the webhook secret, this key has
+# Inbound job-submission API bearer key. Bao-first
+# (secret/ai/hermes), env fallback. Unlike the webhook secret, this key has
 # external consumers by design (any sanctioned submitter dials
 # https://hermes-api.<sub> with it), so it lives in the shared engine — seeded
 # programmatically, never hand-typed. Empty disables the platform (see defaults).
@@ -82,15 +88,15 @@ hermes_agent_api_server_key: >-
 # published at secret/ai/mcp/zammad; legacy environment names remain only as a
 # local fallback. Empty disables the integration until Zammad is deployed.
 hermes_agent_zammad_url: >-
-  {{ (bao_local_llm_secrets.ZAMMAD_MCP_URL | regex_replace('/api/v1/?$', ''))
-     if (bao_local_llm_secrets.ZAMMAD_MCP_URL | default('', true))
+  {{ (hermes_agent_mcp_bao.ZAMMAD_MCP_URL | regex_replace('/api/v1/?$', ''))
+     if (hermes_agent_mcp_bao.ZAMMAD_MCP_URL | default('', true))
      else lookup('env', 'ZAMMAD_URL') }}
 hermes_agent_zammad_api_token: >-
-  {{ bao_local_llm_secrets.ZAMMAD_MCP_TOKEN
+  {{ hermes_agent_mcp_bao.ZAMMAD_MCP_TOKEN
      | default(lookup('env', 'ZAMMAD_API_TOKEN'), true) }}
 
 # GitHub issues + org projects PAT (read/write Issues in all repos, read/write
-# Projects v2 in the dryvist org). Bao-first (local-llm domain, secret/ai/hermes),
+# Projects v2 in the dryvist org). Bao-first (secret/ai/hermes),
 # env fallback — empty until the token is present. See the dryvist/github-issues
 # skill for usage.
 # --- GitHub credentials: ops identities ONLY ---------------------------------
@@ -107,8 +113,8 @@ hermes_agent_github_issues_pat: >-
 
 # Read-only GitHub security-alert token for the bot-PR triage job (reads
 # code-scanning + Dependabot alerts + PR files across all repos). Separate from
-# the issues PAT (which supplies the label write). Bao-first (local-llm domain,
-# secret/ai/hermes), env fallback — empty until seeded.
+# the issues PAT (which supplies the label write). Bao-first
+# (secret/ai/hermes), env fallback — empty until seeded.
 hermes_agent_github_alerts_token: >-
   {{ (hermes_agent_bao.GH_TOKEN_SECURITY_ALERTS_READ
       | default(lookup('env', 'GH_TOKEN_SECURITY_ALERTS_READ'), true))
@@ -116,7 +122,7 @@ hermes_agent_github_alerts_token: >-
 
 # Read-only GitHub token for the github-maint profile (issues, pull requests,
 # contents, metadata across the dryvist org — no write scope of any kind).
-# Bao-first (local-llm domain, secret/ai/hermes), env fallback — empty until
+# Bao-first (secret/ai/hermes), env fallback — empty until
 # seeded, which leaves the github-maint cron inert.
 hermes_agent_github_read_token: >-
   {{ (hermes_agent_bao.GH_TOKEN_ORG_READ
@@ -124,7 +130,7 @@ hermes_agent_github_read_token: >-
      if (hermes_agent_ops_workload_enabled | bool) else '' }}
 
 # Codex CLI auth (ChatGPT-OAuth ~/.codex/auth.json) for the isolated
-# codex-runner user. Bao-first (local-llm domain, secret/ai/hermes), env
+# codex-runner user. Bao-first (secret/ai/hermes), env
 # fallback — empty until an operator seeds it. Create-only on the guest: this
 # is only a bootstrap snapshot, and Codex's guest-side refresh takes over after
 # first login (see roles/codex_runner/README.md).
@@ -151,7 +157,7 @@ codex_runner_auth_json: >-
 hermes_agent_vikunja_bridge_enabled: >-
   {{ (hermes_agent_identity | default('hermes')) in ['hermes', 'donna'] }}
 
-# WRITE-scoped Vikunja API token. Bao-first (local-llm domain, secret/ai/hermes),
+# WRITE-scoped Vikunja API token. Bao-first (secret/ai/hermes),
 # env fallback — same shape as every credential above. DISTINCT from the
 # VIKUNJA_API_TOKEN on that same path, which is ai_runner's queue credential for
 # a different guest with a different scope; sharing one would hand each the

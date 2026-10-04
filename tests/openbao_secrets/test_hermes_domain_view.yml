@@ -1,0 +1,113 @@
+---
+# Contract for the Hermes OpenBao view (inventory/group_vars/hermes_agent_group.yml).
+# Once the `hermes` domain is fetched, nothing Hermes renders may come from the
+# local-llm domain. The negative case proves the check can fail: with the
+# `hermes` domain absent, the local-llm layer is present and detected.
+#
+#   ansible-playbook tests/openbao_secrets/test_hermes_domain_view.yml \
+#     -i inventory/hosts.yml -c local
+- name: Verify the Hermes OpenBao view sources nothing from local-llm once its own domain resolves
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../../inventory/group_vars/hermes_agent_group.yml
+    - ../../roles/openbao_secrets/defaults/main/00-connection.yml
+    - ../../roles/openbao_secrets/defaults/main/10-domains.yml
+  vars:
+    hermes_agent_ops_workload_enabled: true
+    # Every field the group vars read from OpenBao, plus one Hermes never reads
+    # (the router master key) to catch a wholesale local-llm merge.
+    _fields:
+      - SPLUNK_MCP_TOKEN
+      - CONTEXT7_API_KEY
+      - ZAMMAD_MCP_URL
+      - ZAMMAD_MCP_TOKEN
+      - FIRECRAWL_API_KEY
+      - WEBHOOK_SECRET
+      - HERMES_API_SERVER_KEY
+      - GH_PAT_WRITE_PROJECT_ISSUES
+      - GH_TOKEN_SECURITY_ALERTS_READ
+      - GH_TOKEN_ORG_READ
+      - CODEX_AUTH_JSON
+      - HERMES_VIKUNJA_API_TOKEN
+      - LLM_ROUTER_MASTER_KEY
+    _local_llm: "{{ dict(_fields | zip(_fields | map('regex_replace', '^', 'local-llm:'))) }}"
+    _own: "{{ dict(_fields[:-1] | zip(_fields[:-1] | map('regex_replace', '^', 'own:'))) }}"
+    _consumers:
+      - hermes_agent_splunk_mcp_token
+      - hermes_agent_context7_api_key
+      - hermes_agent_firecrawl_api_key
+      - hermes_agent_webhook_secret
+      - hermes_agent_api_server_key
+      - hermes_agent_zammad_url
+      - hermes_agent_zammad_api_token
+      - hermes_agent_github_issues_pat
+      - hermes_agent_github_alerts_token
+      - hermes_agent_github_read_token
+      - codex_runner_auth_json
+      - hermes_agent_vikunja_bridge_token
+    _expected_hermes_paths:
+      - ai/hermes
+      - ai/mcp/splunk
+      - ai/mcp/zammad
+      - {mount: secrets-external, path: ai/saas/context7}
+  tasks:
+    - name: Assert Hermes reads only its own domain once that domain is fetched
+      vars:
+        hermes_agent_id: hermes
+        bao_local_llm_secrets: "{{ _local_llm }}"
+        openbao_secrets_by_domain: {local-llm: "{{ _local_llm }}", hermes: "{{ _own }}"}
+        _rendered: "{{ query('vars', *_consumers) }}"
+      ansible.builtin.assert:
+        that:
+          - not (hermes_agent_bao_local_llm_layer | bool)
+          - hermes_agent_bao.values() | select('search', '^local-llm:') | list == []
+          - "'LLM_ROUTER_MASTER_KEY' not in hermes_agent_bao"
+          - _rendered | select('search', 'local-llm:') | list == []
+          - hermes_agent_vikunja_bridge_token == 'own:HERMES_VIKUNJA_API_TOKEN'
+          - hermes_agent_splunk_mcp_token == 'own:SPLUNK_MCP_TOKEN'
+          - hermes_agent_context7_api_key == 'own:CONTEXT7_API_KEY'
+          - hermes_agent_zammad_api_token == 'own:ZAMMAD_MCP_TOKEN'
+        fail_msg: >-
+          With the hermes domain fetched, Hermes rendered local-llm values:
+          {{ _rendered | select('search', 'local-llm:') | list }}
+          (view keys {{ hermes_agent_bao.keys() | list }}).
+
+    # Negative: the same assertions must fail when the local-llm layer is
+    # present, or the case above proves nothing.
+    - name: Assert the local-llm layer is present and detected while the hermes domain is absent
+      vars:
+        hermes_agent_id: hermes
+        bao_local_llm_secrets: "{{ _local_llm }}"
+        openbao_secrets_by_domain: {local-llm: "{{ _local_llm }}"}
+        _rendered: "{{ query('vars', *_consumers) }}"
+      ansible.builtin.assert:
+        that:
+          - hermes_agent_bao_local_llm_layer | bool
+          - hermes_agent_bao.LLM_ROUTER_MASTER_KEY == 'local-llm:LLM_ROUTER_MASTER_KEY'
+          - _rendered | select('search', 'local-llm:') | list | length > 0
+          - hermes_agent_splunk_mcp_token == 'local-llm:SPLUNK_MCP_TOKEN'
+        fail_msg: The local-llm layer was not visible to the detection; the positive case is vacuous.
+
+    - name: Assert a second identity never inherits local-llm through its own view
+      vars:
+        hermes_agent_id: donna
+        bao_local_llm_secrets: "{{ _local_llm }}"
+        openbao_secrets_by_domain: {local-llm: "{{ _local_llm }}", donna: "{{ _own }}"}
+      ansible.builtin.assert:
+        that:
+          - hermes_agent_bao.values() | select('search', '^local-llm:') | list == []
+          - hermes_agent_bao.WEBHOOK_SECRET == 'own:WEBHOOK_SECRET'
+        fail_msg: donna's view carries local-llm values.
+
+    - name: Assert the hermes domain declares exactly the paths Hermes reads
+      vars:
+        _declared: >-
+          {{ (openbao_secrets_domains | selectattr('name', 'equalto', 'hermes') | first).paths }}
+      ansible.builtin.assert:
+        that:
+          - _declared == _expected_hermes_paths
+        fail_msg: >-
+          The hermes domain declares {{ _declared }}; it must be exactly
+          {{ _expected_hermes_paths }} (the policy grants these exact paths).

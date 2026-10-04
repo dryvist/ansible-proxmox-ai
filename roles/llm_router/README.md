@@ -220,17 +220,15 @@ no login on a node the rung is not rendered there.
 
 ## Admin UI SSO
 
-`/ui` signs in via Authelia through LiteLLM's generic-OIDC environment. The
-block renders only when the client secret resolves; env contract:
-`defaults/main/65-oidc.yml`. Redirect target: `<PROXY_BASE_URL>/sso/callback`.
-`PROXY_ADMIN_ID` is the operator email, matching the APPS authelia role's
-`authelia_admin_email`.
-
-The secret is bao-first (`secret/apps/authelia`) with `LITELLM_OIDC_CLIENT_SECRET`
-env fallback, non-mandatory: until seeded the block stays absent and the
-converge stays green with SSO off. `UI_USERNAME`/`UI_PASSWORD` remain the
-`/fallback/login` break-glass. Boards link the router at `/ui` via the ingress
-`url_path`, not the API root.
+`/ui` signs in only via Authelia (LiteLLM generic OIDC; env contract
+`defaults/main/65-oidc.yml`, redirect `<PROXY_BASE_URL>/sso/callback`).
+`PROXY_ADMIN_ID` is the operator email (APPS authelia `authelia_admin_email`).
+With the client secret resolved (bao `secret/apps/authelia`, env fallback
+`LITELLM_OIDC_CLIENT_SECRET`), the env block renders and `general_settings`
+sets `disable_env_credential_login` and
+`disable_password_login_when_sso_enabled`; without it, none of these render.
+API bearer auth is unaffected; on a UI lockout the master key still works over
+the API. Boards link the router at `/ui` via the ingress `url_path`.
 
 ## Observability
 

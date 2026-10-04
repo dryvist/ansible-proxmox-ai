@@ -81,25 +81,15 @@ agentgateway_docker_mcp_targets:
   # Keyless tier; add a backendAuth key via OpenBao if rate limits bite.
   - name: context7
     host: "https://mcp.context7.com/mcp"
-  # Hindsight agent memory — the service's built-in MCP endpoint, dialed via
-  # the Traefik load-balanced pool hostname (NOT a single replica) so the
-  # gateway inherits the pool's health-based failover across the two
-  # stateless replicas. Multi-bank endpoint (/mcp/) so each caller addresses
-  # its own bank; keyless inside the default-deny firewall (valid wildcard
-  # TLS at the pool, so no tls_insecure).
-  - name: hindsight
-    host: >-
-      https://hindsight.{{ lookup('env', 'PROXMOX_SUBDOMAIN')
-      or undef('PROXMOX_SUBDOMAIN required (Doppler)') }}/mcp/
 
 # =============================================================================
 # Qdrant MCP sidecar — the official mcp-server-qdrant, run as a second compose
-# service on this LXC so agents get vector-memory tools (qdrant-store /
-# qdrant-find) through the same governed /memory capability route. The
-# SIDECAR holds
-# the Qdrant API key; callers need no credential (same keyless posture as the
-# context7 route). Container-to-container over the compose network — no host
-# port, no new tofu constant, no DNS record.
+# service on this LXC so agents get the read-only vector-memory tool
+# (qdrant-find) through the governed /memory capability route. The route takes
+# no client credential, so the sidecar runs with QDRANT_READ_ONLY and never
+# registers qdrant-store. The SIDECAR holds the Qdrant API key.
+# Container-to-container over the compose network — no host port, no new tofu
+# constant, no DNS record.
 #
 # Upstream publishes no container image, so the pinned uv base image runs the
 # pinned PyPI release via uvx (Renovate tracks both pins).
@@ -122,9 +112,8 @@ agentgateway_docker_qdrant_url: >-
   http://{{ hostvars['localhost']['tofu_data']['containers']['qdrant']['ip'] }}:{{
   hostvars['localhost']['tofu_data']['constants']['vector_db_ports']['qdrant_http']
   | mandatory('tofu_data.constants.vector_db_ports.qdrant_http missing — regenerate tofu_inventory.json') }}
-# Bao-first (ai/qdrant → QDRANT_API_KEY, when the site play publishes
-# bao_local_llm_secrets to this host), controller-env fallback (Doppler) —
-# identical resolution to qdrant_docker itself.
+# ai/qdrant QDRANT_API_KEY from bao_local_llm_secrets — the same fact
+# qdrant_docker and llamaindex read.
 agentgateway_docker_qdrant_api_key: >-
   {{ (bao_local_llm_secrets | default({}))['QDRANT_API_KEY']
      | mandatory('QDRANT_API_KEY must be set in the environment') }}

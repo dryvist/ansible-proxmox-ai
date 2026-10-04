@@ -87,7 +87,7 @@
           which takes the single most constrained max_parallel_requests of
           those ids; more than one value here means the derivation broke.
 
-    - name: Every 4080-redirect role plus judge is in the studio gate's role names
+    - name: Every 4080-redirect role is in the studio gate's role names
       ansible.builtin.assert:
         quiet: true
         that:
@@ -96,15 +96,15 @@
           - "'cheap' in llm_router_studio_lock_role_names"
           - "'review-oss' in llm_router_studio_lock_role_names"
           - "'review-private' in llm_router_studio_lock_role_names"
-          - "'judge' in llm_router_studio_lock_role_names"
-          # ANTI-VACUITY: fast-gpu/embed/ocr must NOT be — none of them has a
-          # non-local rung to redirect to, so gating them here would either
-          # queue anyway (embed/ocr) or defeat fast-gpu's own fallback
+          # ANTI-VACUITY: fast-gpu/embed/ocr/judge must NOT be — none of them
+          # has a non-local rung to redirect to, so gating them here would
+          # either queue anyway (embed/ocr/judge) or defeat fast-gpu's own fallback
           # sequencing (55-roles.yml explains why fast-gpu must fail
           # outright, never redirect).
           - "'fast-gpu' not in llm_router_studio_lock_role_names"
           - "'embed' not in llm_router_studio_lock_role_names"
           - "'ocr' not in llm_router_studio_lock_role_names"
+          - "'judge' not in llm_router_studio_lock_role_names"
 
     - name: Each role's overflow target is its own chain's first non-local rung
       ansible.builtin.assert:
@@ -117,11 +117,9 @@
           - llm_router_studio_role_overflow_targets['cheap'] == llm_router_external_terminal_rungs[0]
           # ANTI-VACUITY: a role with no non-local rung must be ABSENT from
           # the map (fast-gpu is not even a studio-gated role name above,
-          # so it can never appear here regardless). judge has no external
-          # rung (egress estate), so it overflows onto its 4080 rung instead
-          # of queuing on the Router's own semaphore.
-          - llm_router_studio_role_overflow_targets['judge'] == llm_router_hermes_local_4080_id
-          - llm_router_studio_role_overflow_targets['judge'] not in llm_router_studio_lock_model_ids
+          # so it can never appear here regardless; nor can judge, whose chain
+          # is the routine studio id alone).
+          - "'judge' not in llm_router_studio_role_overflow_targets"
           - "'fast-gpu' not in llm_router_studio_role_overflow_targets"
           - "'embed' not in llm_router_studio_role_overflow_targets"
           - "'ocr' not in llm_router_studio_role_overflow_targets"
@@ -179,7 +177,7 @@
           - >-
             _callback_source is search('STUDIO_GATED_MODELS = frozenset\\(\\[[^\\]]*"'
             ~ llm_router_primary_model ~ '"[^\\]]*\\]\\)')
-          - _callback_source is search('STUDIO_ROLE_NAMES = frozenset\\(\\[[^\\]]*"judge"[^\\]]*\\]\\)')
+          - _callback_source is search('STUDIO_ROLE_NAMES = frozenset\\(\\[[^\\]]*"review-private"[^\\]]*\\]\\)')
           - "_callback_source is search('\"review-oss\": \"' ~ llm_router_zai_groups[0] ~ '\"')"
           - >-
             _callback_source is search('STUDIO_DIRECT_OVERFLOW = \\{[^}]*"hermes-default": "'
