@@ -4,6 +4,11 @@ Deploys the RAG indexer: a Python venv running `index_docs.py` on a systemd
 timer, embedding the configured sources (`llamaindex_sources`) through the
 fabric router and building a single Qdrant collection.
 
+The `llamaindex-index.service` journal records are forwarded by rsyslog over
+the dedicated `llamaindex` Cribl Stream input to Splunk's `llm` index. The
+listener port comes from the published `tofu_data.constants.ai_log_routing`
+map; the role does not guess a port when that contract is absent.
+
 ## Installation
 
 Ships with this repo; no external install. Wired into `playbooks/site.yml`
