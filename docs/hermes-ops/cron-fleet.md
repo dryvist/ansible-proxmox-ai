@@ -34,43 +34,40 @@ All 18 pre-reframe cards, docs-sync included, are now direct-cron jobs — see
 
 | Job | Schedule (UTC) | Deliver |
 | --- | --- | --- |
-| `homelab-ai-fabric-status` | `4 8-22 * * *` | `#hermes` |
-| `hermes-nightly-wiki` | `0 2 * * *` | `#hermes` (paused, wall clock) |
-| `daily-summary` | `0 12 * * *` | `#hermes` |
-| `zammad-review` | `41 */2 * * *` | `#hermes` (paused, wall clock) |
-| `splunk-triage` | `7 * * * *` | `#hermes` (paused, wall clock) |
-| `splunk-security` | `22 */6 * * *` | `#hermes` (paused, wall clock) |
-| `splunk-parsing` | `37 2 * * *` | `#hermes` |
-| `splunk-deepdive` | `11 3 * * *` | `#hermes` |
-| `github-triage` | `26 */6 * * *` | `#hermes` |
-| `bot-pr-triage` | `43 */6 * * *` | `#hermes` |
-| `review` | `0 */8 * * *` | `#hermes` (paused, wall clock) |
-| `anomaly-hunt` | `13 */12 * * *` | `#hermes` (paused, wall clock) |
-| `backlog-sweep` | `41 */4 * * *` | `#hermes` (paused, wall clock) |
-| `repo-scorecard` | `19 9 * * 1` (weekly) | `#hermes` (paused, wall clock) |
-| `docs-study` | `43 5 * * *` | `#hermes` |
-| `ai-news` | `19 0,12,16,19 * * *` | `#hermes` |
-| `daily-innovation` | `47 6 * * *` | `#hermes` |
-| `app-seeding` | `53 7 * * *` | `#hermes` |
-| `fleet-health` | `3 10 * * 1` (weekly) | `#hermes` |
-| `docs-sync` | `13 8 * * 1` (weekly) | `#hermes` |
-| `self-audit` | `29 3,15 * * *` | `#hermes` |
+| `homelab-ai-fabric-status` | `4 8-22 * * *` | Agent home; silent when healthy |
+| `hermes-nightly-wiki` | `0 2 * * *` | Agent home (paused, wall clock) |
+| `daily-summary` | `0 12 * * *` | Agent home |
+| `zammad-review` | `41 */2 * * *` | Agent home (paused, wall clock) |
+| `splunk-triage` | `7 * * * *` | Splunk findings (paused, wall clock) |
+| `splunk-security` | `22 */6 * * *` | Splunk findings (paused, wall clock) |
+| `splunk-parsing` | `37 2 * * *` | Splunk findings |
+| `splunk-deepdive` | `11 3 * * *` | Splunk findings |
+| `github-triage` | `26 */6 * * *` | Agent home |
+| `bot-pr-triage` | `43 */6 * * *` | Agent home |
+| `review` | `0 */8 * * *` | Agent home (paused, wall clock) |
+| `anomaly-hunt` | `13 */12 * * *` | Agent home (paused, wall clock) |
+| `backlog-sweep` | `41 */4 * * *` | Agent home (paused, wall clock) |
+| `repo-scorecard` | `19 9 * * 1` (weekly) | Agent home (paused, wall clock) |
+| `docs-study` | `43 5 * * *` | Agent home |
+| `ai-news` | `19 0,12,16,19 * * *` | Agent home |
+| `daily-innovation` | `47 6 * * *` | Agent home |
+| `app-seeding` | `53 7 * * *` | Agent home |
+| `fleet-health` | `3 10 * * 1` (weekly) | Agent home |
+| `docs-sync` | `13 8 * * 1` (weekly) | Agent home |
+| `self-audit` | `29 3,15 * * *` | Agent home |
 
 Every job is additionally **capability-gated**: all require the Slack bot
 token, app token and home channel; the `splunk-*` jobs also require
 `hermes_agent_splunk_monitor_enabled` and the Splunk MCP URL. A job whose gate
 is false is never created — the role runs inert, never errors.
 
-`homelab-ai-fabric-status` splits its report by outcome (all-clear to the
-noise channel, a break to issues) — restored as **prompt text**, not a
-`--deliver` flag: `--deliver` (`#hermes`, the default/breaking-run
-destination) takes exactly one fixed target, so the catalog's
-quiet-when-healthy reporting footer (`hermes-direct-cron-footer-quiet.md`,
-appended to that job's prompt; every other job gets
-`hermes-direct-cron-footer.md`) instructs the model to self-route to the
-noise channel, as one "All systems operational" line, via the terminal
-command `hermes send` when the run is a genuine all-clear, ending with
-`[SILENT]` so `--deliver` does not ALSO post it.
+The home destination is resolved for each agent identity. Splunk-analysis
+findings use the configured Splunk destination, and release digests use their
+configured release destination. Hermes execution failures use the native
+`--failure-deliver` target; a failed cron posts once at the start of a failure
+streak, and the failure rollup posts when its contents change. A healthy,
+unchanged, or no-change run ends with bare `[SILENT]`. No destination receives
+a heartbeat.
 
 `docs-sync` was initially kept as the one surviving Kanban card, with a
 **per-run** (not stable) idempotency key to solve the enqueuer's archive
@@ -116,15 +113,12 @@ so a guest converged mid-migration does not double-fire.
 
 Upstream wraps every delivered run in a `Cronjob Response:` header and a
 "To stop or manage this job" footer; the role turns that off
-(`cron.wrap_response: false` in `config.yaml`). A failed run is routed to the
-issues channel by `_cron_route` (`tasks/patches_retry_and_markup.yml`), and
-repeated failures follow an escalate-then-quiet ladder there: the 1st, 3rd
-and 10th failure in a row post, then every 50th. Every failure is still
-recorded in the job store (`failure_streak`, `last_status`); only the Slack
-post is gated, and a success resets the streak so the next failure posts
-again. A script-fed cron that declares its own failure with the
-`[ISSUES]` marker is never gated — its runner streak is zero because the
-script exited 0 — so those scripts own their own once-per-transition logic.
+(`cron.wrap_response: false` in `config.yaml`). The native
+`--failure-deliver` setting sends Hermes execution failures to the configured
+alert destination. A failure posts once at the start of its consecutive
+failure streak; success resets the streak. Script-fed failures declared with
+`[ISSUES]` use the same first-failure rule, and the rollup has no unchanged-set
+heartbeat.
 
 ## Script crons (`--no-agent --script`)
 
@@ -134,32 +128,27 @@ stdout is delivered verbatim.
 
 | Cron | Schedule (UTC) | Script | Delivery |
 | --- | --- | --- | --- |
-| `splunk-status-digest` | `52 7-23 * * *` | `splunk-digest.py` | `slack:<hermes-all>` |
-| `kanban-digest` | `9 * * * *` | `kanban-digest.py` | `slack:<digest>` |
-| `splunk-error-digest` | `37 * * * *` | `splunk-error-digest.py` | `slack:<digest>` |
-| `splunk-security-digest` | `22 */6 * * *` | `splunk-security-digest.py` | `slack:<digest>` |
-| `cron-failure-rollup` | `7 * * * *` | `cron-failure-rollup.py` | `slack:<issues>` |
+| `splunk-status-digest` | `52 7-23 * * *` | `splunk-digest.py` | Splunk findings |
+| `kanban-digest` | `9 * * * *` | `kanban-digest.py` | Agent home |
+| `splunk-error-digest` | `37 * * * *` | `splunk-error-digest.py` | Splunk findings |
+| `splunk-security-digest` | `22 */6 * * *` | `splunk-security-digest.py` | Splunk findings |
+| `cron-failure-rollup` | `7 * * * *` | `cron-failure-rollup.py` | Alert destination |
 
-`splunk-status-digest` runs on waking hours only, and a fully quiet run goes
-`[SILENT]` unless `HEARTBEAT_HOURS` (module constant, currently 6) has elapsed
-since the last real post. A CRITICAL finding is exempt and posts every run.
-The older "hourly heartbeat, never `[SILENT]`" law is **superseded** — see the
-`hermes_agent` role README for both decisions.
+`splunk-status-digest` runs on waking hours only. A fully quiet run goes
+`[SILENT]`; new findings and active critical conditions still post.
 
 `cron-failure-rollup` reads every store's `jobs.json` and posts one message
 naming each job whose last run failed, grouped by cause (wall-clock, budget,
-auth, upstream-5xx, ...). It reposts only when the failing set changes or
-`hermes_agent_cron_failure_rollup_heartbeat_hours` (default 6) has elapsed,
-and posts one all-clear when the set empties.
+auth, upstream-5xx, ...). It reposts only when the failing set changes and
+posts one all-clear when the set empties.
 
 `kanban-digest` is the master board report: it reads `kanban.db` read-only and
 says what every card did since its own previous run. It is deliberately
 excluded from `hermes_agent_seeded_cron_names` because it is what tells you the
 board is wedged. It ticks hourly (`hermes_agent_kanban_digest_interval_minutes`,
 60). A run with **nothing** to report (no completion, failure, retry or
-overrun) goes `[SILENT]` until `hermes_agent_kanban_digest_heartbeat_hours`
-(default 24) has elapsed since the last delivered post — the same gate
-`splunk-status-digest` carries. Real board activity is never gated by it.
+overrun) goes `[SILENT]` with no heartbeat. Real board activity and degraded
+reads remain visible.
 Every delivered post carries a stuck line — cards unsettled for more than 48
 hours, by status, with the age of the oldest — so a blocked pile is read as
 "44 blocked, oldest 9d" rather than a count that never changes. The

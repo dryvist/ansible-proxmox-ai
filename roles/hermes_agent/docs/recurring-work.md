@@ -52,12 +52,10 @@ itself — not assumed):
   separate native script timeout.
 - **`max_retries`** — no `cron create` equivalent. Not restored; an accepted,
   documented loss.
-- **Outcome-based delivery split** (`channel_when_healthy`, one job:
-  `homelab-ai-fabric-status`) — `--deliver` takes exactly one fixed target.
-  Restored as **prompt text**: the catalog's quiet-when-healthy reporting
-  footer instructs the model to self-route, as one "All systems operational"
-  line, via the terminal command `hermes send` when the run is a genuine
-  all-clear, ending with `[SILENT]` so `--deliver` does not also post it.
+- **Outcome-based delivery split** (`channel_when_healthy`, used by status and
+  release-watch jobs) — `--deliver` takes exactly one fixed target. The quiet
+  footer ends with bare `[SILENT]` when the healthy destination equals the
+  delivery destination; no separate healthy post or heartbeat is sent.
 
 None of these were silently dropped.
 
@@ -72,7 +70,10 @@ check that guarantees new prompt text keeps doing so.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `hermes_agent_direct_cron_jobs` | — | the plain-cron job table (name, schedule, prompt var, skill, deliver target) — every recurring workload, 27 entries |
-| `hermes_agent_slack_hermes_all_channel` | firehose channel id | default delivery channel for jobs' completion **report** |
+| `hermes_agent_slack_hermes_all_channel` | home channel id | default delivery channel for the agent's work reports |
+| `hermes_agent_slack_splunk_channel` | work channel | destination for new Splunk findings |
+| `hermes_agent_cron_failure_deliver` | local when unset | native destination for failed cron runs |
+| release digest destination | configured channel | destination for the daily release digest |
 | `hermes_agent_superseded_kanban_enqueuer_cron_names` | — | the retired per-card `<job>-enqueue` crons + the old safety net, removed at converge |
 
 ## Master board digest (`kanban-digest`)
@@ -101,28 +102,14 @@ digests' state. Missing or corrupt degrades to one scheduling interval and
 **says so** in the post; a broken read is delivered as an explicit `FAILED` line,
 never as silence (an empty post would read as a healthy board).
 
-**Quiet runs are heartbeat-gated** (operator decision, 2026-07-28). A run with
-no completion, failure, retry or overrun to report goes `[SILENT]` unless
-`hermes_agent_kanban_digest_heartbeat_hours` has elapsed since the last
-*delivered* post. At the 15-minute cadence the quiet branch was firing ~90 times
-a day with byte-identical board counts, which is the noise this removes; the
-rule is **never post a message whose entire content is "nothing happened"**
-unless the heartbeat interval has passed. Two invariants make that safe:
-
-- **Real activity is never gated.** The check runs only on the fully-quiet
-  branch, so a failure, an overrun or a completion posts immediately, every run.
-- **Unknown or future-dated last-post counts as DUE.** Erring towards posting is
-  the only safe direction — a suppressed heartbeat is indistinguishable from a
-  dead cron, which is exactly what this digest exists to announce.
-
-A suppressed run still **advances its window** (it did cover that window) but
-does **not** advance `last_post_epoch`, or every quiet run would reset its own
-heartbeat clock and the heartbeat would never fire.
+**Quiet runs stay silent.** A run with no completion, failure, retry, overrun,
+or degraded read to report returns `[SILENT]`; it never sends a periodic
+heartbeat. Real activity and degraded reads remain visible on the work surface.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `hermes_agent_kanban_digest_interval_minutes` | `15` | the only place the cadence is written; schedule and fallback derive from it. Steady state hourly |
-| `hermes_agent_kanban_digest_heartbeat_hours` | `6` | quiet-post ceiling; `0` restores "post every run" |
+| `hermes_agent_kanban_digest_heartbeat_hours` | `0` | quiet-post ceiling; zero disables heartbeat posts |
 | `hermes_agent_kanban_digest_cron_schedule` | derived | never set by hand |
 | `hermes_agent_kanban_digest_channel` | `hermes_agent_digest_slack_channel` | delivery surface; never a literal id |
 | `hermes_agent_kanban_digest_enabled` | derived | Slack bot + app tokens + channel set. No Splunk or brain dependency |

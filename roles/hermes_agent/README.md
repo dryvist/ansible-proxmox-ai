@@ -57,3 +57,17 @@ does not configure a Browser Use Cloud provider or credential.
 See also [docs/HERMES_OPS.md](../../docs/HERMES_OPS.md) for the operations
 runbook (cron fleet, memory, credentials, serving self-heal) — this README
 covers the role's configuration surface; that doc covers running it.
+
+## Slack delivery
+
+| Destination | Messages |
+| --- | --- |
+| Agent home | Interactive replies and actionable work from Hermes or Donna |
+| Splunk findings | New findings from Splunk analysis jobs; otherwise `[SILENT]` |
+| Alert destination | Hermes and Donna cron failures, once per failure streak, using native failure delivery |
+| Release digest destination | Published release digest |
+| Healthy or unchanged run | Bare `[SILENT]`; no heartbeat is sent |
+
+Each agent resolves its own home channel. Splunk, alert, and release
+destinations are independently configurable; the alert destination must
+include each app that uses native failure delivery.

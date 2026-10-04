@@ -47,9 +47,12 @@ DIRECT_TASKS = (ROLE / "tasks" / "reconcile_direct_cron.yml").read_text()
 
 _ENV = Environment(autoescape=False)
 
-# The agent's one channel.
+# Work and routine reports use home; failures and Splunk findings have their
+# own configured destinations.
 CONFIGURED = {
     "SLACK_HERMES_HOME_CHANNEL": "C_HOME",
+    "SLACK_HERMES_ISSUES_CHANNEL": "C_ALERTS",
+    "SLACK_HERMES_SPLUNK_CHANNEL": "C_SPLUNK",
 }
 
 
