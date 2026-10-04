@@ -3,7 +3,7 @@ literal-id contracts.
 
 Split from test_alert_routing.py to stay under the token budget — see
 _alert_routing_shared.py for the shared resolve/deliver-target helpers,
-test_alert_routing_channels.py for the four-way channel contract, and
+test_alert_routing_channels.py for the one-channel contract, and
 test_alert_routing_helper.py for the runtime cron-route helper this leaves
 behind.
 
@@ -36,32 +36,25 @@ from _alert_routing_shared import (
 
 # --- per-job routing: the recurring fleet is not one undifferentiated tier ----
 #
-# Outcome-based split routing (channel_when_healthy) is PROMPT TEXT, not a
-# hermes_agent_direct_cron_jobs field `--deliver` can express: `--deliver` is
-# one fixed target (the breaking-run destination, issues, checked below), and
-# the catalog's quiet-when-healthy reporting footer (appended to that job's
-# prompt by reconcile_direct_cron.yml) instructs the model to self-route to
-# channel_when_healthy via `hermes send` + a trailing [SILENT] on an
-# all-clear run, so --deliver does not also post it.
+# `--deliver` carries findings to the agent's home channel. When
+# `channel_when_healthy` is that same destination, the catalog's quiet footer
+# must end with bare [SILENT] and leave the channel empty.
 
-def test_the_fabric_status_job_deliver_is_the_breaking_run_channel() -> None:
-    """`--deliver` (issues) is the default/breaking-run destination; the
-    all-clear destination (noise) is on the item as channel_when_healthy and
-    is only reachable via the prompt footer's self-send branch, not --deliver
-    itself — see test_the_fabric_status_job_carries_the_outcome_split below."""
+def test_the_fabric_status_job_deliver_is_the_home_work_channel() -> None:
     ctx = _resolve(CONFIGURED)
-    assert _direct_deliver("hermes_agent_daily_status_cron_name", ctx) == "slack:C_ISSUES"
+    assert _direct_deliver("hermes_agent_daily_status_cron_name", ctx) == "slack:C_HOME"
 
 
 def test_the_fabric_status_job_carries_the_outcome_split() -> None:
     job = _direct_job("hermes_agent_daily_status_cron_name")
     assert "channel_when_healthy" in job
     assert job["channel_when_healthy"] == "slack:{{ hermes_agent_slack_noise_channel }}"
-    # No other job carries the split — it was one card's behaviour, not a
-    # general one.
+    ctx = _resolve(CONFIGURED)
+    assert _direct_deliver("hermes_agent_daily_status_cron_name", ctx) == "slack:C_HOME"
+    assert ctx["hermes_agent_slack_noise_channel"] == ctx["hermes_agent_slack_hermes_all_channel"]
     others = [j for j in DEFAULTS["hermes_agent_direct_cron_jobs"]
               if j is not job and "channel_when_healthy" in j]
-    assert others == [], [j.get("name") for j in others]
+    assert others == []
 
 
 def test_the_footer_task_picks_the_catalog_footer_by_outcome_split() -> None:
@@ -77,34 +70,42 @@ def test_the_footer_task_picks_the_catalog_footer_by_outcome_split() -> None:
     assert not (ROLE / "templates" / "direct-cron-footer.md.j2").exists()
 
 
-def test_scouting_jobs_report_to_the_noise_channel() -> None:
+def test_scouting_jobs_report_to_the_home_channel() -> None:
     """~28% of the audited corpus was low-urgency polling. These two are its
     recurring source: reading material on a fixed cadence, never an observation
     that something changed."""
     ctx = _resolve(CONFIGURED)
     for var in ("hermes_agent_ai_news_cron_name", "hermes_agent_daily_innovation_cron_name"):
-        assert _direct_deliver(var, ctx) == "slack:C_NOISE", var
+        assert _direct_deliver(var, ctx) == "slack:C_HOME", var
 
 
-def test_the_former_kanban_cards_still_report_to_the_work_channel() -> None:
+def test_the_former_kanban_cards_report_to_the_home_channel() -> None:
     """Docs-site study and docs-sync were Kanban cards before the reframe
     (18/18 to cron); they are now direct-cron jobs but keep the same
     destination. Splunk triage was also one of them, but its domain-channel
     fix (below) moved it off the work channel onto the Splunk digest one."""
     ctx = _resolve(CONFIGURED)
     for var in ("hermes_agent_docs_study_cron_name", "hermes_agent_docs_sync_cron_name"):
-        assert _direct_deliver(var, ctx) == "slack:C_ALL", var
+        assert _direct_deliver(var, ctx) == "slack:C_HOME", var
 
 
-def test_agentic_splunk_domain_crons_report_to_the_splunk_channel() -> None:
+def test_splunk_findings_and_anomaly_hunt_route_by_reader() -> None:
     """splunk-triage/security/parsing/deepdive and anomaly-hunt share the Splunk
     digest domain with the script-fed splunk-status/error/security digests
-    (100-splunk.yml) — they must land on the same channel, not the work log."""
+    (100-splunk.yml). The anomaly hunt is an operator-facing finding, so it
+    stays with the regular work reports."""
     ctx = _resolve(CONFIGURED)
     for var in ("hermes_agent_splunk_triage_cron_name", "hermes_agent_splunk_security_cron_name",
-                "hermes_agent_splunk_parsing_cron_name", "hermes_agent_splunk_deepdive_cron_name",
-                "hermes_agent_anomaly_hunt_cron_name"):
+                "hermes_agent_splunk_parsing_cron_name", "hermes_agent_splunk_deepdive_cron_name"):
         assert _direct_deliver(var, ctx) == "slack:C_SPLUNK", var
+    assert _direct_deliver("hermes_agent_anomaly_hunt_cron_name", ctx) == "slack:C_HOME"
+
+
+def test_release_watch_uses_the_agent_home_channel() -> None:
+    ctx = _resolve(CONFIGURED)
+    job = _direct_job("hermes_agent_release_watch_cron_name")
+    assert _direct_deliver("hermes_agent_release_watch_cron_name", ctx) == "slack:C_HOME"
+    assert "channel_when_healthy" not in job
 
 
 def test_the_fabric_status_card_is_told_its_endpoints_instead_of_guessing() -> None:
@@ -141,16 +142,15 @@ def test_the_fabric_status_card_is_told_its_endpoints_instead_of_guessing() -> N
 
 # --- inertness: an unconfigured id must change nothing ------------------------
 
-def test_unset_channels_reproduce_todays_routing_exactly() -> None:
-    """Every new var defaults empty and falls back. An operator who deploys this
-    without setting anything must see byte-identical behaviour, not 'close'."""
+def test_an_unset_home_channel_leaves_every_route_empty() -> None:
+    """No home channel means no Slack target anywhere, never a stray id."""
     ctx = _resolve({})
-    assert _deliver_targets(SPLUNK_STATUS, ctx, MAIN_TASKS) == "slack:C_FIRE"
-    assert _deliver_targets(TRIAGE, ctx, MAIN_TASKS) == "slack:C_DIGEST"
-    assert _deliver_targets(KANBAN, ctx, MAIN_TASKS) == "slack:C_FIRE"
+    assert _deliver_targets(SPLUNK_STATUS, ctx, MAIN_TASKS) == "slack:"
+    assert _deliver_targets(TRIAGE, ctx, MAIN_TASKS) == "slack:"
+    assert _deliver_targets(KANBAN, ctx, MAIN_TASKS) == "slack:"
     match = re.search(DIRECT, DIRECT_TASKS)
     assert match, "the direct-cron default deliver expression moved"
-    assert "slack:" + ctx[match.group(1)] == "slack:C_DIGEST"
+    assert ctx[match.group(1)] == ""
 
 
 def test_an_unset_issues_channel_disables_the_board_split() -> None:
@@ -167,11 +167,11 @@ def test_every_channel_id_is_env_sourced_and_never_a_literal() -> None:
             continue
         assert not re.search(r"\bC0[A-Z0-9]{8,}\b", tpl), \
             f"{name} carries a literal Slack channel id"
-    for var in ("hermes_agent_slack_issues_channel",
-                "hermes_agent_slack_noise_channel",
-                "hermes_agent_slack_splunk_channel",
-                "hermes_agent_slack_hermes_all_channel"):
-        assert "lookup('env'" in str(DEFAULTS[var]), f"{var} must be env-sourced"
+    assert "lookup('env'" in str(DEFAULTS["hermes_agent_slack_home_channel"])
+    assert "hermes_agent_slack_home_channel" in str(DEFAULTS["hermes_agent_slack_noise_channel"])
+    assert "hermes_agent_slack_home_channel" in str(DEFAULTS["hermes_agent_slack_hermes_all_channel"])
+    assert "lookup('env'" in str(DEFAULTS["hermes_agent_slack_issues_channel"])
+    assert "lookup('env'" in str(DEFAULTS["hermes_agent_slack_splunk_channel"])
 
 
 def test_the_dead_composite_deliver_layer_is_gone() -> None:

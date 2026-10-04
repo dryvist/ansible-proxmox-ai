@@ -75,21 +75,20 @@ def test_job_entry_is_present_and_correctly_shaped():
     assert _render(job["schedule"]) == DEFAULTS["hermes_agent_self_audit_cron_schedule"]
     assert _render(job["prompt_file"]) == "hermes-self-audit.md"
     assert _render(job["skill"]) == "dryvist/self-audit"
-    # Findings belong on the issues channel, not hermes-all — this job's whole
-    # point is defects, so a healthy run is [SILENT] and an unhealthy one pages.
-    assert "issues_channel" in job["deliver"]
+    # Findings are routine work; scheduler failures use native failure routing.
+    assert "hermes_all_channel" in job["deliver"]
 
 
 def test_enabled_gate_requires_its_inputs():
     """The gate must demand every capability the run needs: Splunk MCP (own-error
-    sweep), Slack tokens (read-back + delivery), and a non-empty issues channel
+    sweep), Slack tokens (read-back + delivery), and a non-empty home channel
     (its fixed deliver target). Zammad is deliberately absent — the skill
     degrades gracefully without it."""
     gate = _self_audit_job()["enabled"]
     for needle in ("hermes_agent_splunk_mcp_url",
                    "hermes_agent_slack_bot_token",
                    "hermes_agent_slack_app_token",
-                   "hermes_agent_slack_issues_channel"):
+                   "hermes_agent_slack_home_channel"):
         assert needle in gate, f"enabled gate does not require {needle}"
 
 

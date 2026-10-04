@@ -1,5 +1,4 @@
-"""Self-check for the master Kanban digest: heartbeat gating and the
-interval-variable / quiet-run contracts.
+"""Self-check for the master Kanban digest's silent quiet-run contract.
 
 Split from test_kanban_digest.py to stay under the token budget — see
 _kanban_digest_shared.py for the loaded template/board fixtures,
@@ -7,8 +6,7 @@ test_kanban_digest_completion.py for the completion/retry/overrun/degraded-
 state contracts, and test_kanban_digest_routing.py for the worker-failure
 routing contract this leaves behind.
 
-- Never post a message whose whole content is "nothing happened": a quiet run
-  is silent until the heartbeat elapses, then posts once and says why it is rare.
+- Quiet runs never post a heartbeat.
 - Genuinely nothing happened prints an explicit line naming the board, never
   an empty post.
 - The schedule and the script's fallback window come from the ONE interval
@@ -46,14 +44,10 @@ def test_a_quiet_run_is_silent_when_the_heartbeat_has_not_elapsed():
                   due=False) == DIGEST.SILENT
 
 
-def test_a_quiet_run_still_posts_once_the_heartbeat_elapses():
-    """The heartbeat itself is not a work-log entry: it goes to the noise
-    channel (heartbeat_text), never to #hermes-all (text stays SILENT)."""
+def test_a_quiet_run_never_posts_a_heartbeat():
     tasks = [{"id": "t_q", "title": "Waiting", "status": "ready"}]
     assert digest(tasks, [], due=True) == DIGEST.SILENT
-    text = heartbeat(tasks, [], due=True)
-    assert "No board activity" in text
-    assert "heartbeat" in text, "the heartbeat post must say why it is rare"
+    assert heartbeat(tasks, [], due=True) == ""
 
 
 def test_real_board_activity_is_never_heartbeat_suppressed():
@@ -78,12 +72,10 @@ def test_real_board_activity_is_never_heartbeat_suppressed():
     assert overrun != DIGEST.SILENT and "Overrunning" in overrun
 
 
-def test_heartbeat_is_due_when_the_last_post_is_unknown_or_stale():
-    """Erring towards posting is the only safe direction — a suppressed heartbeat
-    is indistinguishable from a dead cron, which is what this digest announces."""
-    assert DIGEST.heartbeat_due(NOW, None), "unknown last post must post"
-    assert DIGEST.heartbeat_due(NOW, NOW - DIGEST.HEARTBEAT_HOURS * 3600), "exactly due"
-    assert DIGEST.heartbeat_due(NOW, NOW + 99999), "a future last-post is a clock step"
+def test_heartbeat_is_disabled_for_unknown_or_stale_state():
+    assert not DIGEST.heartbeat_due(NOW, None)
+    assert not DIGEST.heartbeat_due(NOW, NOW - 86400)
+    assert not DIGEST.heartbeat_due(NOW, NOW + 99999)
     assert not DIGEST.heartbeat_due(NOW, NOW - 60), "one minute ago is not due"
 
 
@@ -98,7 +90,7 @@ def test_a_suppressed_run_advances_the_window_but_not_the_last_post():
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         assert mod.main() == 0
-    assert buf.getvalue().strip() != mod.SILENT, "no state file means the heartbeat is due"
+    assert "no usable state file" in buf.getvalue(), "a degraded read remains visible"
     first_run, first_post, _ = mod.load_state()
     assert first_post is not None
 
@@ -113,7 +105,7 @@ def test_a_suppressed_run_advances_the_window_but_not_the_last_post():
 
 def test_the_heartbeat_ceiling_is_configurable_not_a_literal():
     defaults = role_defaults(DEFAULTS_PATH)
-    assert defaults["hermes_agent_kanban_digest_heartbeat_hours"] == 24
+    assert defaults["hermes_agent_kanban_digest_heartbeat_hours"] == 0
     source = TEMPLATE_PATH.read_text()
     assert "HEARTBEAT_HOURS = {{ hermes_agent_kanban_digest_heartbeat_hours }}" in source
     assert re.search(r"^\s*HEARTBEAT_HOURS\s*=\s*\d", source, re.M) is None
@@ -122,10 +114,9 @@ def test_the_heartbeat_ceiling_is_configurable_not_a_literal():
 # --- nothing happened is stated, not implied ----------------------------------
 
 def test_quiet_run_names_the_board_rather_than_posting_nothing():
-    text = heartbeat([{"id": "t_hh", "title": "Waiting", "status": "ready"}], [])
-    assert "No board activity" in text
-    assert "1 ready" in text, "the quiet line must name what it searched"
-    assert text.splitlines()[0].startswith("*Kanban Board Digest*")
+    tasks = [{"id": "t_hh", "title": "Waiting", "status": "ready"}]
+    assert digest(tasks, []) == DIGEST.SILENT
+    assert heartbeat(tasks, []) == ""
 
 
 def test_runs_outside_the_window_are_not_reported():
@@ -133,7 +124,7 @@ def test_runs_outside_the_window_are_not_reported():
     runs = [{"id": 1, "task_id": "t_ii", "outcome": "completed", "ended_at": NOW - 4000,
              "summary": "old news"}]
     assert "old news" not in digest([task], runs)
-    assert "No board activity" in heartbeat([task], runs)
+    assert heartbeat([task], runs) == ""
 
 
 def test_a_section_over_the_cap_says_how_many_it_hid():
@@ -182,8 +173,8 @@ def test_the_digest_channels_are_never_literal_ids():
         assert not re.search(r"\bC0[A-Z0-9]{8,}\b", channel), \
             f"{var} carries a literal Slack channel id"
 
-    # The work log is #hermes-all, not the shared digest surface: that alias is
-    # what collapsed every tier onto one channel.
+    # The work log follows the agent home channel; separate healthy posts are
+    # disabled, so no noise destination receives heartbeats.
     assert "hermes_agent_slack_hermes_all_channel" in \
         defaults["hermes_agent_kanban_digest_channel"]
     assert "hermes_agent_slack_issues_channel" in \

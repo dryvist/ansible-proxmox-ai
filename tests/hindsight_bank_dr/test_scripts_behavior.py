@@ -32,6 +32,7 @@ CONTEXT = {
     "ansible_managed": "Ansible managed",
     "hindsight_bank_dr_container_name": "hindsight",
     "hindsight_bank_dr_api_port": 8888,
+    "hindsight_bank_dr_api_key": "fixture-hindsight-api-key",
     "hindsight_bank_dr_s3_endpoint": "http://127.0.0.1:9000",
     "hindsight_bank_dr_s3_region": "us-east-1",
     "hindsight_bank_dr_s3_access_key_id": "AKIAEXAMPLE",
@@ -53,6 +54,28 @@ def _render_script(name: str, dest: Path, staging_dir: Path) -> Path:
 
 
 def _write_stub(bindir: Path, name: str, body: str) -> None:
+    if name == "curl":
+        body = """\
+ARGS=("$@")
+API_CALL=false
+AUTH_HEADER=
+for ((i = 0; i < ${#ARGS[@]}; i++)); do
+  case "${ARGS[$i]}" in
+    http://127.0.0.1:*) API_CALL=true ;;
+    -H)
+      HEADER_ARG="${ARGS[$((i + 1))]}"
+      if [[ "$HEADER_ARG" == @* ]]; then
+        AUTH_HEADER="$(cat "${HEADER_ARG#@}")"
+      fi
+      ;;
+  esac
+done
+if [[ "$API_CALL" == true && "$AUTH_HEADER" != "Authorization: Bearer $HINDSIGHT_API_KEY" ]]; then
+  echo "Hindsight REST call did not carry its bearer key" >&2
+  exit 90
+fi
+set -- "${ARGS[@]}"
+""" + body
     path = bindir / name
     path.write_text(f"#!/usr/bin/env bash\n{body}\n")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -80,6 +103,7 @@ _ENV_FILE_VARS = {
     "AWS_SECRET_ACCESS_KEY": "secretexample",  # noqa: S105 -- test fixture
     "AWS_DEFAULT_REGION": "us-east-1",
     "S3_ENDPOINT": "http://127.0.0.1:9000",
+    "HINDSIGHT_API_KEY": "fixture-hindsight-api-key",
 }
 
 

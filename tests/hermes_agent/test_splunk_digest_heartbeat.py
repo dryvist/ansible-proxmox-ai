@@ -1,5 +1,4 @@
-"""Self-check for the hourly Splunk digest's heartbeat restatement and
-persistent-failure suppression contracts.
+"""Self-check for silent healthy runs and persistent-failure suppression.
 
 Split from test_splunk_digest_deltas.py to stay under the token budget — see
 _splunk_digest_shared.py for the loaded template/state fixtures and
@@ -11,14 +10,11 @@ under pytest. Plain asserts, no fixtures, no framework.
 """
 import datetime as dt
 
-from _splunk_digest_shared import BASE, DIGEST, at, scale, step
+from _splunk_digest_shared import BASE, DIGEST, TEMPLATE, at, scale, step
 
 
 def quiet_state():
-    """Drive the digest to a genuinely quiet state, the same way
-    test_heartbeat_gate_silences_a_repeat_quiet_run_then_posts_once_it_elapses
-    does: baseline table, a growth finding, then the "flat" finding. After this
-    a further run with identical data has nothing novel to say."""
+    """Record a baseline and finding, then reach a quiet unchanged state."""
     grown = scale(BASE, "os", 1.6)
     _, s0 = step(BASE, None, 0)
     _, s1 = step(grown, s0, 1)
@@ -26,40 +22,16 @@ def quiet_state():
     return grown, s2
 
 
-def test_the_heartbeat_restates_what_is_still_holding_not_just_a_count():
-    """On a quiet day the heartbeat is the ONLY post. A bare "N finding(s) still
-    hold" leaves an operator scrolling back with no idea which N — the exact
-    unreadability this digest exists to fix. It must restate them."""
+def test_a_fully_quiet_digest_never_posts_a_heartbeat():
     grown, state = quiet_state()
-    held = [e["t"] for e in DIGEST.load_ledger_entries(state, "2026-07-24") if e.get("t")]
-    assert held, "the quiet state should carry ledgered findings with text"
-
-    beat, _ = step(grown, state, at(2) + dt.timedelta(hours=DIGEST.HEARTBEAT_HOURS + 1))
-    assert "Nothing new to report" in beat, beat
-    assert "Still holding from earlier today" in beat, beat
-    # Each ledgered finding's own text comes back, not a tally of them.
-    for text in held[: DIGEST.HEARTBEAT_MAX_RESTATED]:
-        assert text in beat, f"heartbeat dropped a still-holding finding: {text!r}"
+    assert "HEARTBEAT_HOURS" not in TEMPLATE
+    for hour in (3, 9, 21):
+        text, state = step(grown, state, at(2) + dt.timedelta(hours=hour))
+        assert text == DIGEST.SILENT
 
 
-def test_the_heartbeat_never_truncates_silently():
-    """A capped list that does not say it was capped reads as "that is
-    everything", which is worse than a long post."""
-    grown, state = quiet_state()
-    over = DIGEST.HEARTBEAT_MAX_RESTATED + 5
-    state["ledger"]["keys"] = [{"k": f"synthetic:{i}", "t": f"finding number {i}"}
-                               for i in range(over)] + state["ledger"]["keys"]
-
-    beat, _ = step(grown, state, at(2) + dt.timedelta(hours=DIGEST.HEARTBEAT_HOURS + 1))
-    shown = beat.count("finding number ")
-    assert shown == DIGEST.HEARTBEAT_MAX_RESTATED, f"restated {shown}, expected the cap"
-    assert "more not shown" in beat, beat
-
-
-def test_an_older_state_file_degrades_the_heartbeat_rather_than_crashing():
-    """The ledger used to be a bare list of key strings. A state file written by
-    the previous version must not take the digest down; it loses that day's
-    restatement detail and nothing else."""
+def test_an_older_state_file_still_reads_without_a_quiet_post():
+    """The ledger's older key-only shape remains readable on a quiet run."""
     day = "2026-07-24"
     grown, state = quiet_state()
     # Rewrite the ledger into the OLD shape, keys only.
@@ -67,14 +39,8 @@ def test_an_older_state_file_degrades_the_heartbeat_rather_than_crashing():
     assert DIGEST.load_ledger(state, day) == state["ledger"]["keys"], \
         "the accessor must still read a pre-2026-07-29 ledger"
 
-    beat, _ = step(grown, state, at(2) + dt.timedelta(hours=DIGEST.HEARTBEAT_HOURS + 1))
-    assert "Nothing new to report" in beat, beat
-    assert "Still holding from earlier today" not in beat, \
-        "with no stored text there is nothing to restate"
-    # Asserted on the schema-specific sentence, NOT the bare word "predates" —
-    # that also appears in the unrelated no-baseline notice, so a looser
-    # assertion would pass without the branch under test ever running.
-    assert "their text predates" in beat, beat
+    text, _ = step(grown, state, at(2) + dt.timedelta(hours=12))
+    assert text == DIGEST.SILENT
 
 
 def test_a_persistent_failure_is_reported_once_not_every_run():
