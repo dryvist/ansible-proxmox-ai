@@ -176,34 +176,13 @@ hermes_agent_slack_home_channel_name: >-
   {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_HOME_CHANNEL_NAME')
      | default(lookup('env', 'SLACK_HOME_CHANNEL_NAME'), true) | default('', true) }}
 
-# 4-channel Slack routing (operator decision 2026-07-31). The previous 3-tier
-# scheme collapsed: firehose, digest and hermes_all all resolved to ONE id, so
-# every emitter landed in the same channel. A 13-day audit of 1084 messages
-# found ~52% of that channel was Hermes reporting its own breakage and ~28% was
-# null-result polling, leaving ~10-17% actual work.
-#
-# The discriminator is the OBSERVATION PATH, never a keyword. Hermes reporting a
-# failure it observed is work (#hermes-all / #hermes-splunk); Hermes failing to
-# observe is breakage (#hermes-issues). Keyword routing on "error"/"litellm"
-# would misroute the most valuable posts in the corpus — Splunk-observed
-# litellm errors on the llm-routers are findings, produced by a job that worked.
-#
-#   #hermes-all     real thinking, work, and findings
-#   #hermes-issues  Hermes itself not functional
-#   #hermes-splunk  the Splunk digest domain
-#   #hermes-noise   "no change since" / heartbeat polls
-#
-# Every id is an env lookup fed by Doppler at converge time — never hardcoded.
-# Each defaults EMPTY and falls back to prior behaviour, so an unset var leaves
-# routing exactly as it was rather than silently emptying a channel.
-# Same identity-prefixed-wins, unprefixed-fallback pattern as above.
-hermes_agent_slack_firehose_channel: >-
-  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_FIREHOSE_CHANNEL')
-     | default(lookup('env', 'SLACK_FIREHOSE_CHANNEL'), true) | default('', true) }}
-hermes_agent_slack_issues_channel: >-
-  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_ISSUES_CHANNEL') | default('', true) }}
-hermes_agent_slack_noise_channel: >-
-  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_NOISE_CHANNEL') | default('', true) }}
+# One Slack channel per agent: work, failures, and the Splunk digests all
+# post to the home channel. Polls with nothing new stay silent, and repeated
+# failures are rate-limited at the source (patches_retry_and_markup.yml,
+# 112-cron-failure-rollup.yml), so no output needs a channel of its own.
+hermes_agent_slack_firehose_channel: "{{ hermes_agent_slack_home_channel }}"
+hermes_agent_slack_issues_channel: "{{ hermes_agent_slack_home_channel }}"
+hermes_agent_slack_noise_channel: "{{ hermes_agent_slack_home_channel }}"
 
 # The prefix a script-fed cron prints to declare that its OWN observation path
 # failed. Those scripts deliberately exit 0 and print their failure so it gets

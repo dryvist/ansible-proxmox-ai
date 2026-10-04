@@ -6,12 +6,10 @@ A 13-day audit of 1084 messages (2026-07-18..07-31) found the work channel was
 and hermes_all ids all resolved to ONE channel, and hermes_all was defined as an
 alias of the firehose, so no config change could separate them.
 
-These tests pin the four-way contract that replaced it:
-
-    #hermes-all     real thinking, work, and findings
-    #hermes-issues  Hermes itself not functional
-    #hermes-splunk  the Splunk digest domain
-    #hermes-noise   "no change since" / heartbeat polls
+These tests pin the one-channel contract that replaced it: every Hermes
+emitter posts to the agent's home channel, and noise is controlled at the
+source (silent no-change polls, first-failure-only posting) rather than by
+splitting output across channels.
 
 Two things this file deliberately does NOT do.
 
@@ -49,12 +47,9 @@ DIRECT_TASKS = (ROLE / "tasks" / "reconcile_direct_cron.yml").read_text()
 
 _ENV = Environment(autoescape=False)
 
-# The four channels, plus the two legacy ids they were collapsed onto.
+# The agent's one channel.
 CONFIGURED = {
-    "SLACK_HERMES_ALL_CHANNEL": "C_ALL",
-    "SLACK_HERMES_ISSUES_CHANNEL": "C_ISSUES",
-    "SLACK_HERMES_SPLUNK_CHANNEL": "C_SPLUNK",
-    "SLACK_HERMES_NOISE_CHANNEL": "C_NOISE",
+    "SLACK_HERMES_HOME_CHANNEL": "C_HOME",
 }
 
 

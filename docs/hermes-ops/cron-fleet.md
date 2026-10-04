@@ -34,27 +34,27 @@ All 18 pre-reframe cards, docs-sync included, are now direct-cron jobs — see
 
 | Job | Schedule (UTC) | Deliver |
 | --- | --- | --- |
-| `homelab-ai-fabric-status` | `4 8-22 * * *` | `#hermes-issues` |
-| `hermes-nightly-wiki` | `0 2 * * *` | `#hermes-all` (paused, wall clock) |
-| `daily-summary` | `0 12 * * *` | `#hermes-all` |
-| `zammad-review` | `41 */2 * * *` | `#hermes-all` (paused, wall clock) |
-| `splunk-triage` | `7 * * * *` | `#hermes-all` (paused, wall clock) |
-| `splunk-security` | `22 */6 * * *` | `#hermes-all` (paused, wall clock) |
-| `splunk-parsing` | `37 2 * * *` | `#hermes-all` |
-| `splunk-deepdive` | `11 3 * * *` | `#hermes-all` |
-| `github-triage` | `26 */6 * * *` | `#hermes-all` |
-| `bot-pr-triage` | `43 */6 * * *` | `#hermes-all` |
-| `review` | `0 */8 * * *` | `#hermes-all` (paused, wall clock) |
-| `anomaly-hunt` | `13 */12 * * *` | `#hermes-all` (paused, wall clock) |
-| `backlog-sweep` | `41 */4 * * *` | `#hermes-all` (paused, wall clock) |
-| `repo-scorecard` | `19 9 * * 1` (weekly) | `#hermes-all` (paused, wall clock) |
-| `docs-study` | `43 5 * * *` | `#hermes-all` |
-| `ai-news` | `19 0,12,16,19 * * *` | `#hermes-noise` |
-| `daily-innovation` | `47 6 * * *` | `#hermes-noise` |
-| `app-seeding` | `53 7 * * *` | `#hermes-all` |
-| `fleet-health` | `3 10 * * 1` (weekly) | `#hermes-all` |
-| `docs-sync` | `13 8 * * 1` (weekly) | `#hermes-all` |
-| `self-audit` | `29 3,15 * * *` | `#hermes-issues` |
+| `homelab-ai-fabric-status` | `4 8-22 * * *` | `#hermes` |
+| `hermes-nightly-wiki` | `0 2 * * *` | `#hermes` (paused, wall clock) |
+| `daily-summary` | `0 12 * * *` | `#hermes` |
+| `zammad-review` | `41 */2 * * *` | `#hermes` (paused, wall clock) |
+| `splunk-triage` | `7 * * * *` | `#hermes` (paused, wall clock) |
+| `splunk-security` | `22 */6 * * *` | `#hermes` (paused, wall clock) |
+| `splunk-parsing` | `37 2 * * *` | `#hermes` |
+| `splunk-deepdive` | `11 3 * * *` | `#hermes` |
+| `github-triage` | `26 */6 * * *` | `#hermes` |
+| `bot-pr-triage` | `43 */6 * * *` | `#hermes` |
+| `review` | `0 */8 * * *` | `#hermes` (paused, wall clock) |
+| `anomaly-hunt` | `13 */12 * * *` | `#hermes` (paused, wall clock) |
+| `backlog-sweep` | `41 */4 * * *` | `#hermes` (paused, wall clock) |
+| `repo-scorecard` | `19 9 * * 1` (weekly) | `#hermes` (paused, wall clock) |
+| `docs-study` | `43 5 * * *` | `#hermes` |
+| `ai-news` | `19 0,12,16,19 * * *` | `#hermes` |
+| `daily-innovation` | `47 6 * * *` | `#hermes` |
+| `app-seeding` | `53 7 * * *` | `#hermes` |
+| `fleet-health` | `3 10 * * 1` (weekly) | `#hermes` |
+| `docs-sync` | `13 8 * * 1` (weekly) | `#hermes` |
+| `self-audit` | `29 3,15 * * *` | `#hermes` |
 
 Every job is additionally **capability-gated**: all require the Slack bot
 token, app token and home channel; the `splunk-*` jobs also require
@@ -63,7 +63,7 @@ is false is never created — the role runs inert, never errors.
 
 `homelab-ai-fabric-status` splits its report by outcome (all-clear to the
 noise channel, a break to issues) — restored as **prompt text**, not a
-`--deliver` flag: `--deliver` (`#hermes-issues`, the default/breaking-run
+`--deliver` flag: `--deliver` (`#hermes`, the default/breaking-run
 destination) takes exactly one fixed target, so the catalog's
 quiet-when-healthy reporting footer (`hermes-direct-cron-footer-quiet.md`,
 appended to that job's prompt; every other job gets

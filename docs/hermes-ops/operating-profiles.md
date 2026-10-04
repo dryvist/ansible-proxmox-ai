@@ -21,13 +21,13 @@ sops exec-env secrets.enc.yaml 'doppler run -- \
 # On the guest, as the hermes user:
 hermes profile list   # both profiles present
 hermes kanban create 'profile smoke' --assignee splunk-admin \
-  --body 'Post one line "splunk-admin profile smoke OK" to #hermes-all, then kanban_complete.' \
+  --body 'Post one line "splunk-admin profile smoke OK" to #hermes, then kanban_complete.' \
   --idempotency-key "profile-smoke-$(date -u +%Y-%m-%d)"
 ```
 
 Confirm in order: (1) `kanban runs` shows the card dispatched with
 `assignee=splunk-admin`, not `skipped_nonspawnable`; (2) the Slack post
-arrives in #hermes-all; (3) the run's log shows the Splunk MCP resolving
+arrives in #hermes; (3) the run's log shows the Splunk MCP resolving
 (no "MCP server unavailable" for `splunk`). Repeat with `--assignee
 homelab-admin` and a Zammad-shaped ask to cover the second profile.
 
