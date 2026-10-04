@@ -7,10 +7,10 @@
 # the UI" and defaults/main/45-database.yml for the litellm-source facts this
 # rests on.
 #
-# The last two plays pin the SAME gate on tasks/seed-roles.yml's role-layer
-# reconcile: `initial` treats a role as stale only when its model target
-# moved; `rebuild` treats every live, catalogued role as stale, re-pushing
-# current litellm_params and fallbacks onto all of them
+# The role-layer reconcile also refreshes a same-target role when its
+# catalog-derived model_info drifts. The final play checks that an unchanged
+# contract stays untouched, a changed context window is selected for
+# replacement, and `rebuild` still selects every live, catalogued role.
 # (docs/LLM_ROUTER_SETTINGS_SEED_MODE.md -> "Same contract elsewhere").
 #
 # Run (from the REPO ROOT):
@@ -207,102 +207,6 @@
         _budgets_body: >-
           {{ (_budgets_source.content | b64decode).split('body:')[1].split('status_code:')[0] }}
 
-- name: Seed-roles.yml's stale-roles fact leaves an on-target role alone in initial mode, re-stales it in rebuild mode
-  hosts: localhost
-  gather_facts: false
-  tasks:
-    # set_fact, not play/task `vars:` — a prior play in this file
-    # (`include_vars: dir: defaults/main`) already set the REAL
-    # llm_router_role_deployments/_llm_router_role_params etc. as host facts,
-    # and facts outrank play/task vars in Ansible's precedence order (the
-    # same trap documented above, "The seed gate protects an existing row
-    # only in initial mode"). Without set_fact this test would silently
-    # exercise the shipped 55-roles.yml data instead of this fixture.
-    - name: Fix a fake proxy state — one role, already on its declared target
-      ansible.builtin.set_fact:
-        llm_router_role_deployments:
-          - role: judge
-            model: routine-model
-            fallbacks: [small-model]
-        _llm_router_live_models: [judge, routine-model, small-model]
-        _llm_router_role_params:
-          routine-model: {model: "upstream/routine"}
-        llm_router_existing_models:
-          json:
-            data:
-              - model_name: judge
-                litellm_params: {model: "upstream/routine"}
-                model_info: {id: judge-db-id}
-
-    # Mirrors tasks/seed-roles.yml's _llm_router_stale_roles set_fact
-    # expression exactly (same convention as
-    # test_retire_role_deployments_db_only.yml) rather than running the role
-    # against a live proxy.
-    - name: Compute which roles the real expression sees as on-target
-      ansible.builtin.set_fact:
-        _llm_router_roles_on_target: >-
-          {{ llm_router_existing_models.json.data | default([])
-             | selectattr('litellm_params.model', 'defined')
-             | selectattr('litellm_params.model', 'in',
-                          llm_router_role_deployments | map(attribute='model')
-                          | map('extract', _llm_router_role_params)
-                          | map(attribute='model') | list)
-             | map(attribute='model_name') | list }}
-
-    - name: Initial mode -> the on-target role is NOT stale (UI-owned, left alone)
-      block:
-        - name: Set llm_router_seed_mode=initial and compute the stale-roles expression
-          ansible.builtin.set_fact:
-            llm_router_seed_mode: initial
-        - name: Compute _llm_router_stale_roles per the real expression
-          ansible.builtin.set_fact:
-            _llm_router_stale_roles: >-
-              {{ (llm_router_role_deployments
-                  | selectattr('role', 'in', _llm_router_live_models)
-                  | selectattr('model', 'in', _llm_router_live_models) | list)
-                 if llm_router_seed_mode == 'rebuild'
-                 else (llm_router_role_deployments
-                       | selectattr('role', 'in', _llm_router_live_models)
-                       | selectattr('model', 'in', _llm_router_live_models)
-                       | rejectattr('role', 'in', _llm_router_roles_on_target) | list) }}
-        - name: Assert the on-target role is untouched
-          ansible.builtin.assert:
-            quiet: true
-            that:
-              - _llm_router_stale_roles == []
-            fail_msg: >-
-              initial mode marked an on-target role stale — it would be
-              deleted/recreated even though nothing moved, which is exactly
-              the "converge undoes a UI edit" regression llm_router_seed_mode
-              exists to prevent.
-
-    - name: Rebuild mode -> the SAME on-target role IS treated as stale (full re-seed)
-      block:
-        - name: Set llm_router_seed_mode=rebuild and compute the stale-roles expression
-          ansible.builtin.set_fact:
-            llm_router_seed_mode: rebuild
-        - name: Compute _llm_router_stale_roles per the real expression
-          ansible.builtin.set_fact:
-            _llm_router_stale_roles: >-
-              {{ (llm_router_role_deployments
-                  | selectattr('role', 'in', _llm_router_live_models)
-                  | selectattr('model', 'in', _llm_router_live_models) | list)
-                 if llm_router_seed_mode == 'rebuild'
-                 else (llm_router_role_deployments
-                       | selectattr('role', 'in', _llm_router_live_models)
-                       | selectattr('model', 'in', _llm_router_live_models)
-                       | rejectattr('role', 'in', _llm_router_roles_on_target) | list) }}
-        - name: Assert the on-target role is re-staled anyway
-          ansible.builtin.assert:
-            quiet: true
-            that:
-              - _llm_router_stale_roles | map(attribute='role') | list == ['judge']
-            fail_msg: >-
-              rebuild mode did not mark the on-target role stale —
-              llm_router_seed_mode: rebuild would leave an existing role's
-              litellm_params (timeout/window clamps) and fallback list
-              unrefreshed, the exact gap this PR closes.
-
 - name: Tasks/seed-roles.yml's stale-roles fact actually branches on llm_router_seed_mode
   hosts: localhost
   gather_facts: false
@@ -320,6 +224,7 @@
         that:
           - "\"llm_router_seed_mode == 'rebuild'\" in _text"
           - "'_llm_router_stale_roles' in _text"
+          - "'_llm_router_roles_on_catalog_contract' in _text"
         fail_msg: >-
           tasks/seed-roles.yml's _llm_router_stale_roles fact no longer
           branches on llm_router_seed_mode — rebuild would stop widening the
@@ -327,3 +232,150 @@
           initial-only stale-target reconciliation.
       vars:
         _text: "{{ _seed_roles_source.content | b64decode }}"
+
+- name: Same-target role context drift is detected from the catalog projection
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Load the registry the way the router role does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+        public: true
+
+    - name: Select the catalog's local role target
+      ansible.builtin.set_fact:
+        _llm_router_test_model: "{{ llm_router_hermes_local_4080_id }}"
+
+    # Expected context values come from the registry projection; the test
+    # does not duplicate a model limit.
+    - name: Set the matching proxy role
+      ansible.builtin.set_fact:
+        llm_router_seed_mode: initial
+        llm_router_role_deployments:
+          - role: judge
+            model: "{{ _llm_router_test_model }}"
+            fallbacks: []
+        _llm_router_live_models: [judge, "{{ _llm_router_test_model }}"]
+        llm_router_existing_models:
+          json:
+            data:
+              - model_name: judge
+                litellm_params:
+                  model: "{{ _llm_router_role_params[_llm_router_test_model].model }}"
+                model_info: >-
+                  {{ _llm_router_role_model_info[_llm_router_test_model]
+                     | combine({'id': 'judge-db-id'}) }}
+
+    - name: Compute stale roles with the same catalog contract projection
+      ansible.builtin.set_fact:
+        _llm_router_stale_roles: >-
+          {{ (llm_router_role_deployments
+              | selectattr('role', 'in', _llm_router_live_models)
+              | selectattr('model', 'in', _llm_router_live_models) | list)
+             if llm_router_seed_mode == 'rebuild'
+             else (llm_router_role_deployments
+                   | selectattr('role', 'in', _llm_router_live_models)
+                   | selectattr('model', 'in', _llm_router_live_models)
+                   | rejectattr('role', 'in', _llm_router_roles_on_catalog_contract) | list) }}
+      vars:
+        _llm_router_roles_on_catalog_contract: >-
+          {%- set ns = namespace(roles=[]) -%}
+          {%- for role in llm_router_role_deployments
+               if role.role in _llm_router_live_models
+               and role.model in _llm_router_live_models -%}
+          {%- set _existing = llm_router_existing_models.json.data | default([])
+               | selectattr('model_name', 'equalto', role.role) | first | default({}) -%}
+          {%- set _actual_params = _existing.litellm_params | default({}) -%}
+          {%- set _actual_info = _existing.model_info | default({}) -%}
+          {%- set _expected_info = _llm_router_role_model_info[role.model] -%}
+          {%- if (_actual_params.model | default('')) == _llm_router_role_params[role.model].model
+               and (_actual_info.mode | default('')) == (_expected_info.mode | default(''))
+               and (_actual_info.max_input_tokens | default(-1) | int)
+                   == (_expected_info.max_input_tokens | default(-1) | int)
+               and (_actual_info.max_tokens | default(-1) | int)
+                   == (_expected_info.max_tokens | default(-1) | int) -%}
+          {%- set ns.roles = ns.roles + [role.role] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.roles }}
+
+    - name: Assert an unchanged target and matching model_info stay untouched
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_stale_roles == []
+
+    - name: Change only the advertised max_input_tokens from the catalog value
+      ansible.builtin.set_fact:
+        llm_router_existing_models:
+          json:
+            data:
+              - model_name: judge
+                litellm_params:
+                  model: "{{ _llm_router_role_params[_llm_router_test_model].model }}"
+                model_info: >-
+                  {{ _llm_router_role_model_info[_llm_router_test_model]
+                     | combine({
+                         'id': 'judge-db-id',
+                         'max_input_tokens':
+                           (_llm_router_role_model_info[_llm_router_test_model].max_input_tokens | int) - 1
+                       }) }}
+
+    - name: Recompute stale roles after the model_info drift
+      ansible.builtin.set_fact:
+        _llm_router_stale_roles: >-
+          {{ (llm_router_role_deployments
+              | selectattr('role', 'in', _llm_router_live_models)
+              | selectattr('model', 'in', _llm_router_live_models) | list)
+             if llm_router_seed_mode == 'rebuild'
+             else (llm_router_role_deployments
+                   | selectattr('role', 'in', _llm_router_live_models)
+                   | selectattr('model', 'in', _llm_router_live_models)
+                   | rejectattr('role', 'in', _llm_router_roles_on_catalog_contract) | list) }}
+      vars:
+        _llm_router_roles_on_catalog_contract: >-
+          {%- set ns = namespace(roles=[]) -%}
+          {%- for role in llm_router_role_deployments
+               if role.role in _llm_router_live_models
+               and role.model in _llm_router_live_models -%}
+          {%- set _existing = llm_router_existing_models.json.data | default([])
+               | selectattr('model_name', 'equalto', role.role) | first | default({}) -%}
+          {%- set _actual_params = _existing.litellm_params | default({}) -%}
+          {%- set _actual_info = _existing.model_info | default({}) -%}
+          {%- set _expected_info = _llm_router_role_model_info[role.model] -%}
+          {%- if (_actual_params.model | default('')) == _llm_router_role_params[role.model].model
+               and (_actual_info.mode | default('')) == (_expected_info.mode | default(''))
+               and (_actual_info.max_input_tokens | default(-1) | int)
+                   == (_expected_info.max_input_tokens | default(-1) | int)
+               and (_actual_info.max_tokens | default(-1) | int)
+                   == (_expected_info.max_tokens | default(-1) | int) -%}
+          {%- set ns.roles = ns.roles + [role.role] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.roles }}
+
+    - name: Assert the same-target role is replaced when catalog context changes
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_stale_roles | map(attribute='role') | list == ['judge']
+
+    - name: Switch to rebuild mode
+      ansible.builtin.set_fact:
+        llm_router_seed_mode: rebuild
+
+    - name: Rebuild mode selects every live catalogued role
+      ansible.builtin.set_fact:
+        _llm_router_stale_roles: >-
+          {{ (llm_router_role_deployments
+              | selectattr('role', 'in', _llm_router_live_models)
+              | selectattr('model', 'in', _llm_router_live_models) | list)
+             if llm_router_seed_mode == 'rebuild'
+             else [] }}
+
+    - name: Assert rebuild mode still re-seeds the role
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_stale_roles | map(attribute='role') | list == ['judge']
