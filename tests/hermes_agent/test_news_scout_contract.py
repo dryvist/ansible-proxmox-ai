@@ -176,6 +176,7 @@ def test_ai_news_and_daily_innovation_share_the_same_slack_gate_suffix() -> None
             assert token in job["enabled"]
     assert "hermes_agent_ai_news_enabled" in ai_news["enabled"]
     assert "hermes_agent_daily_innovation_enabled" in innovation["enabled"]
+    assert "hermes_agent_wiki_enabled" in innovation["enabled"]
 
 
 def test_ai_news_is_paused_by_default() -> None:
@@ -202,6 +203,19 @@ def test_the_innovation_card_reads_the_scouts_finds() -> None:
     is the proposal vehicle, so it must consult the scout's trail."""
     p = DEFAULTS["hermes_agent_daily_innovation_cron_prompt"]
     assert '"ai-news-last"' in p and "ai-news-interests.md" in p
+
+
+def test_innovation_log_writes_use_the_locked_append_helper() -> None:
+    p = DEFAULTS["hermes_agent_daily_innovation_cron_prompt"]
+    assert "innovation-log-append.py" in p
+    assert "{{ hermes_agent_hermes_home }}/scripts/innovation-log-append.py" in p
+    assert "quoted here-document" in p
+    assert "Never edit or rewrite the log directly" in p
+    assert "if the helper fails, stop and report the failure" in p
+    assert "Deploy the innovation-log append helper" in MAIN_TASKS
+    assert MAIN_TASKS.index("Deploy the innovation-log append helper") < MAIN_TASKS.index(
+        "Direct cron | Decide agent ownership"
+    )
 
 
 if __name__ == "__main__":
