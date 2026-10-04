@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.64.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.64.0...v0.64.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* **hermes_agent:** require Slack connection settings ([cc506f4](https://github.com/dryvist/ansible-proxmox-ai/commit/cc506f41cb99e22640b94a297dbb614ff5ac5e22))
+* **hermes_agent:** require Slack connection settings ([c547fb5](https://github.com/dryvist/ansible-proxmox-ai/commit/c547fb5847eb9995fc3f763dd51e18718c0dfafa))
+
 ## [0.64.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.63.0...v0.64.0) (2026-10-04)
 
 
