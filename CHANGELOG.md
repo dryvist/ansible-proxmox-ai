@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.63.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.62.0...v0.63.0) (2026-10-04)
+
+
+### Features
+
+* **llm_router:** back every Redis-capable feature with the shared store ([98743a6](https://github.com/dryvist/ansible-proxmox-ai/commit/98743a609642b2f682d980cc734cd5e5aee0b40e))
+
+
+### Bug Fixes
+
+* **llm_router:** remove the subagent lock callback ([d75aaf3](https://github.com/dryvist/ansible-proxmox-ai/commit/d75aaf30bf43bdf388600950ec785e217e169b0b))
+* **llm_router:** remove the subagent lock callback ([f81c542](https://github.com/dryvist/ansible-proxmox-ai/commit/f81c5424487643ad64669b4ac71b906ab49e28be))
+
+## [0.62.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.61.0...v0.62.0) (2026-10-04)
+
+
+### Features
+
+* **hermes_agent:** select dedicated domain inputs ([#1030](https://github.com/dryvist/ansible-proxmox-ai/issues/1030)) ([34cf1d7](https://github.com/dryvist/ansible-proxmox-ai/commit/34cf1d728bf5fd96ea5bb4d1e66ed69faecbd263))
+* **llm_router:** make Authelia SSO the only admin UI sign-in ([b7b1eb6](https://github.com/dryvist/ansible-proxmox-ai/commit/b7b1eb6e527536fd87a15131cab9bf63fcfad0b8))
+* **llm_router:** make Authelia SSO the only admin UI sign-in ([0b295cf](https://github.com/dryvist/ansible-proxmox-ai/commit/0b295cfbd875f9ba8c304b5c445175dd9caaf620))
+* **qdrant_docker:** single-source API key, JWT RBAC and untrusted-tier collections ([4d62180](https://github.com/dryvist/ansible-proxmox-ai/commit/4d621808ea3730c2d0ce3195e0830af10c92f237))
+* **qdrant_docker:** single-source API key, JWT RBAC and untrusted-tier collections ([6ba2055](https://github.com/dryvist/ansible-proxmox-ai/commit/6ba2055a0f85eab04986e6af7e9d5ab4ed049514))
+
+
+### Bug Fixes
+
+* **agentgateway_docker:** drop the hindsight route and serve memory read-only ([4cc352d](https://github.com/dryvist/ansible-proxmox-ai/commit/4cc352d9cba60b8d60a2ba1a4678a42d11dae3ba))
+* **agentgateway_docker:** drop the hindsight route and serve memory read-only ([e96193e](https://github.com/dryvist/ansible-proxmox-ai/commit/e96193e987fa474bffb73f27e3c401bb46273e9c))
+* **hindsight_docker:** bound base-scope LLM concurrency and retries ([#1034](https://github.com/dryvist/ansible-proxmox-ai/issues/1034)) ([d5bde77](https://github.com/dryvist/ansible-proxmox-ai/commit/d5bde7743e3073212db6caf715d726653b986f55))
+* **llm_router:** drop per-deployment budget on the OpenRouter paid rung ([758bed0](https://github.com/dryvist/ansible-proxmox-ai/commit/758bed0c29d9a4ff6219b26a8f065be2c82aec81))
+* **llm_router:** drop per-deployment budget on the OpenRouter paid rung ([c09333a](https://github.com/dryvist/ansible-proxmox-ai/commit/c09333a0de3db201a0dad1bb16ff473cbeee1364))
+* **llm_router:** keep the judge role local only with thinking off ([#1033](https://github.com/dryvist/ansible-proxmox-ai/issues/1033)) ([8d0d8c9](https://github.com/dryvist/ansible-proxmox-ai/commit/8d0d8c9f0c74087dbd916184025e90c674ecdcfc))
+* **qdrant_docker:** apply pending restarts before the health check ([567c5f5](https://github.com/dryvist/ansible-proxmox-ai/commit/567c5f528ea750f4b7f033827dcd28b33dcdc76c))
+* **qdrant_docker:** gate JWT RBAC and untrusted collections behind an opt-in flag ([#1036](https://github.com/dryvist/ansible-proxmox-ai/issues/1036)) ([0cc0564](https://github.com/dryvist/ansible-proxmox-ai/commit/0cc056494368a48e7b9bb6edb5360aefdb8c1ca7))
+
 ## [0.61.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.60.0...v0.61.0) (2026-10-03)
 
 

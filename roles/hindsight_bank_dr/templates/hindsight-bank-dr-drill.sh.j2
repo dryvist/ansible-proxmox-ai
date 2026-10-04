@@ -10,6 +10,10 @@
 # OnFailure= hook never could.
 set -euo pipefail
 
+api_curl() {
+  curl -fsS -H @<(printf 'Authorization: Bearer %s\n' "$HINDSIGHT_API_KEY") "$@"
+}
+
 CONTAINER="{{ hindsight_bank_dr_container_name }}"
 API_PORT="{{ hindsight_bank_dr_api_port }}"
 BASE_URL="http://127.0.0.1:${API_PORT}/v1/default"
@@ -32,7 +36,7 @@ DOCS_RESTORED=0
 ERROR=""
 
 cleanup_scratch_bank() {
-  curl -fsS -o /dev/null -X DELETE "${BASE_URL}/banks/${SCRATCH_BANK}" 2>/dev/null || true
+  api_curl -o /dev/null -X DELETE "${BASE_URL}/banks/${SCRATCH_BANK}" 2>/dev/null || true
 }
 
 on_exit() {
@@ -65,7 +69,7 @@ mkdir -p "$STAGING"
 # unordered-override call is already "most recent".
 DRILL_BANK="{{ hindsight_bank_dr_drill_bank }}"
 if [ -z "$DRILL_BANK" ]; then
-  DRILL_BANK=$(curl -fsS "${BASE_URL}/banks?limit=1&offset=0" | jq -r '.banks[0].bank_id // empty')
+  DRILL_BANK=$(api_curl "${BASE_URL}/banks?limit=1&offset=0" | jq -r '.banks[0].bank_id // empty')
 fi
 if [ -z "$DRILL_BANK" ]; then
   ERROR="no bank available to drill (bank list empty)"
@@ -105,7 +109,7 @@ docker exec "$CONTAINER" rm -f /tmp/dr-drill-import.zip 2>/dev/null || true
 # Gate: the restored bank must actually hold data and answer its stats
 # endpoint (GET /v1/default/banks/{bank_id}/stats -> total_nodes,
 # total_documents — same fields the vendor CLI's own `bank stats` reads).
-STATS=$(curl -fsS "${BASE_URL}/banks/${SCRATCH_BANK}/stats")
+STATS=$(api_curl "${BASE_URL}/banks/${SCRATCH_BANK}/stats")
 NODES_RESTORED=$(echo "$STATS" | jq -r '.total_nodes // 0')
 DOCS_RESTORED=$(echo "$STATS" | jq -r '.total_documents // 0')
 if [ "${NODES_RESTORED:-0}" -le 0 ] 2>/dev/null; then
@@ -118,7 +122,7 @@ fi
 # pin RecallResponse's own field shape.
 if [ -n "$RECALL_QUERY" ]; then
   RECALL_START=$(date +%s)
-  if ! curl -fsS -o /dev/null -X POST "${BASE_URL}/banks/${SCRATCH_BANK}/memories/recall" \
+  if ! api_curl -o /dev/null -X POST "${BASE_URL}/banks/${SCRATCH_BANK}/memories/recall" \
       -H 'Content-Type: application/json' \
       -d "$(jq -n --arg q "$RECALL_QUERY" '{query:$q}')"; then
     ERROR="recall request failed against the restored scratch bank"
