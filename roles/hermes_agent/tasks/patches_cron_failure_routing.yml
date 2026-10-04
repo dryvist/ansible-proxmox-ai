@@ -33,38 +33,45 @@
     quiet: true
     that:
       - >-
-        (hermes_agent_cron_failure_routing_source_text | regex_search(
-        '(?m)^([ \\t]*)\\(\\n'
-        ~ '[ \\t]*deliver_content, d\\.blocked_config, _silent_alert, d\\.incident_acked, d\\.failure_incident_id,\\n'
-        ~ '[ \\t]*\\) = _compose_run_delivery\\(\\n'
-        ~ '[ \\t]*job, success=d\\.success, error=d\\.error, final_response=final_response,\\n'
-        ~ '[ \\t]*output_file=output_file\\)$'
-        )) is not none
-        or 'job, deliver_content, _cron_declared_failure = _cron_route(job, deliver_content)'
-        in hermes_agent_cron_failure_routing_source_text
-      - >-
-        (hermes_agent_cron_failure_routing_source_text | regex_search(
-        '(?m)^([ \\t]*)for_failure=not d\\.success,$'
-        )) is not none
-        or 'for_failure=not d.success or _cron_declared_failure,'
-        in hermes_agent_cron_failure_routing_source_text
-      - >-
-        (hermes_agent_cron_failure_routing_source_text | regex_search(
-        '(?m)^([ \\t]*)d\\.unresolved_origin = \\(\\n'
-        ~ '[ \\t]*_normalize_deliver_value\\(_delivery_lane_value\\(job,'
-        ~ ' for_failure=not d\\.success\\)\\) == "origin"\\n'
-        ~ '[ \\t]*and not _resolve_delivery_targets\\(job, for_failure=not d\\.success\\)\\n'
-        ~ '[ \\t]*\\)$'
-        )) is not none
-        or 'job, for_failure=not d.success or _cron_declared_failure)) == "origin"'
-        in hermes_agent_cron_failure_routing_source_text
-      - >-
-        (hermes_agent_cron_failure_routing_source_text | regex_search(
-        '(?m)^([ \\t]*)normalized_deliver=_normalize_deliver_value\\(_delivery_lane_value\\(job,\\s*'
-        ~ 'for_failure=not d\\.success\\)\\),$'
-        )) is not none
-        or 'for_failure=not d.success or getattr(d, "declared_failure", False))),'
-        in hermes_agent_cron_failure_routing_source_text
+        (
+          (hermes_agent_cron_failure_routing_source_text | regex_search(
+          '(?m)^([ \\t]*)\\(\\n'
+          ~ '[ \\t]*deliver_content, d\\.blocked_config, _silent_alert, d\\.incident_acked, d\\.failure_incident_id,\\n'
+          ~ '[ \\t]*\\) = _compose_run_delivery\\(\\n'
+          ~ '[ \\t]*job, success=d\\.success, error=d\\.error, final_response=final_response,\\n'
+          ~ '[ \\t]*output_file=output_file\\)$'
+          )) is not none
+          and (hermes_agent_cron_failure_routing_source_text | regex_search(
+          '(?m)^([ \\t]*)for_failure=not d\\.success,$'
+          )) is not none
+          and (hermes_agent_cron_failure_routing_source_text | regex_search(
+          '(?m)^([ \\t]*)d\\.unresolved_origin = \\(\\n'
+          ~ '[ \\t]*_normalize_deliver_value\\(_delivery_lane_value\\(job,'
+          ~ ' for_failure=not d\\.success\\)\\) == "origin"\\n'
+          ~ '[ \\t]*and not _resolve_delivery_targets\\(job, for_failure=not d\\.success\\)\\n'
+          ~ '[ \\t]*\\)$'
+          )) is not none
+          and (hermes_agent_cron_failure_routing_source_text | regex_search(
+          '(?m)^([ \\t]*)normalized_deliver=_normalize_deliver_value\\(_delivery_lane_value\\(job,\\s*'
+          ~ 'for_failure=not d\\.success\\)\\),$'
+          )) is not none
+          and 'job, deliver_content, _cron_declared_failure = _cron_route(job, deliver_content)'
+          not in hermes_agent_cron_failure_routing_source_text
+          and 'd.declared_failure = _cron_declared_failure'
+          not in hermes_agent_cron_failure_routing_source_text
+        ) or (
+          'job, deliver_content, _cron_declared_failure = _cron_route(job, deliver_content)'
+          in hermes_agent_cron_failure_routing_source_text
+          and 'd.declared_failure = _cron_declared_failure'
+          in hermes_agent_cron_failure_routing_source_text
+          and 'for_failure=not d.success or _cron_declared_failure,'
+          in hermes_agent_cron_failure_routing_source_text
+          and 'job, for_failure=not d.success or _cron_declared_failure)) == "origin"'
+          in hermes_agent_cron_failure_routing_source_text
+          and 'for_failure=not d.success or getattr(d, "declared_failure", False))),'
+          in hermes_agent_cron_failure_routing_source_text
+        )
+      - "'def _cron_route(' in hermes_agent_cron_failure_routing_source_text"
     fail_msg: >-
       Hermes cron scheduler no longer matches all expected failure-routing
       anchors. The converge stops before applying any routing substitutions;
