@@ -152,12 +152,6 @@ hermes_agent_github_read_token: >-
      if ((hermes_agent_ops_workload_enabled | bool)
          and (hermes_agent_github_org_tokens_enabled | bool)) else '' }}
 
-# Hermes identities use per-repository GitHub App tokens instead of tokens
-# with dryvist-wide issue, alert, or contents access. Keep this identity-scoped
-# so a later assistant can opt into its own grant without widening either one.
-hermes_agent_github_org_tokens_enabled: >-
-  {{ hermes_agent_identity | default('hermes') not in ['hermes', 'hermes-private'] }}
-
 # Codex CLI auth (ChatGPT-OAuth ~/.codex/auth.json) for the isolated
 # codex-runner user. Bao-first (secret/ai/hermes), env
 # fallback — empty until an operator seeds it. Create-only on the guest: this
@@ -201,81 +195,3 @@ hermes_agent_vikunja_bridge_enabled: >-
 hermes_agent_vikunja_bridge_token: >-
   {{ hermes_agent_bao[hermes_agent_env_prefix ~ '_VIKUNJA_API_TOKEN']
      | default(lookup('env', hermes_agent_env_prefix ~ '_VIKUNJA_API_TOKEN'), true) }}
-
-# --- Per-instance GitHub App boundaries --------------------------------------
-# The original instance receives only public permission sets. Private Hermes
-# uses separate public-read and private review/author AppRoles. Env names are
-# instance-prefixed so a shared converge shell cannot cross-load either ID.
-hermes_agent_github_vault_env_prefix: >-
-  {{ 'HERMES_PRIVATE_' if (hermes_agent_identity | default('hermes')) == 'hermes-private' else 'HERMES_' }}
-hermes_agent_github_guard_env_prefix: >-
-  {{ 'HERMES_PRIVATE_' if (hermes_agent_identity | default('hermes')) == 'hermes-private' else 'HERMES_' }}
-hermes_agent_github_identity_approles:
-  public:
-    role_id: >-
-      {{ lookup('env', hermes_agent_github_vault_env_prefix ~ 'GITHUB_PUBLIC_VAULT_ROLE_ID')
-         | default('', true) }}
-    secret_id: >-
-      {{ lookup('env', hermes_agent_github_vault_env_prefix ~ 'GITHUB_PUBLIC_VAULT_SECRET_ID')
-         | default('', true) }}
-  private:
-    role_id: >-
-      {{ lookup('env', hermes_agent_github_vault_env_prefix ~ 'GITHUB_PRIVATE_VAULT_ROLE_ID')
-         | default('', true) if (hermes_agent_identity | default('hermes')) == 'hermes-private' else '' }}
-    secret_id: >-
-      {{ lookup('env', hermes_agent_github_vault_env_prefix ~ 'GITHUB_PRIVATE_VAULT_SECRET_ID')
-         | default('', true) if (hermes_agent_identity | default('hermes')) == 'hermes-private' else '' }}
-hermes_agent_github_identity_sets: >-
-  {{ {'review': {'public': ('hermes-read-public'
-                            if (hermes_agent_identity | default('hermes')) == 'hermes-private'
-                            else 'hermes-review-public')}}
-     | combine(
-         {'review': {'private': 'hermes-review-private'},
-          'author': {'private': 'hermes-author-private'}}
-         if (hermes_agent_identity | default('hermes')) == 'hermes-private'
-         else {},
-         recursive=true) }}
-hermes_agent_github_trust_boundary_default: >-
-  {{ 'private' if (hermes_agent_identity | default('hermes')) == 'hermes-private' else 'public' }}
-hermes_agent_github_guard_internal_suffixes: >-
-  {{ (([lookup('env', 'PROXMOX_SUBDOMAIN')]
-       + lookup('env', hermes_agent_github_guard_env_prefix ~ 'GH_GUARD_INTERNAL_SUFFIXES')
-           .split(',')) | map('trim') | select | unique | list)
-     if (hermes_agent_identity | default('hermes')) == 'hermes-private' else [] }}
-hermes_agent_github_guard_public_repos: >-
-  {{ lookup('env', hermes_agent_github_guard_env_prefix ~ 'GH_GUARD_PUBLIC_REPOS')
-     .split(',') | map('trim') | select | unique | list }}
-hermes_agent_github_guard_private_repos: >-
-  {{ (lookup('env', hermes_agent_github_guard_env_prefix ~ 'GH_GUARD_PRIVATE_REPOS')
-      .split(',') | map('trim') | select | unique | list)
-     if (hermes_agent_identity | default('hermes')) == 'hermes-private' else [] }}
-hermes_agent_pr_review_ready: >-
-  {{ (hermes_agent_identity | default('hermes')) in ['hermes', 'hermes-private']
-     and hermes_agent_github_identity_approles.public.role_id | length > 0
-     and hermes_agent_github_identity_approles.public.secret_id | length > 0
-     and hermes_agent_github_guard_public_repos | length > 0
-     and ((hermes_agent_identity | default('hermes')) != 'hermes-private'
-          or (hermes_agent_github_identity_approles.private.role_id | length > 0
-              and hermes_agent_github_identity_approles.private.secret_id | length > 0
-              and hermes_agent_github_guard_internal_suffixes | length > 0
-              and hermes_agent_github_guard_private_repos | length > 0)) }}
-hermes_agent_github_identity_enabled: "{{ hermes_agent_pr_review_ready | bool }}"
-hermes_agent_github_route_public_enabled: "{{ hermes_agent_pr_review_ready | bool }}"
-hermes_agent_github_route_private_enabled: >-
-  {{ (hermes_agent_identity | default('hermes')) == 'hermes-private'
-     and hermes_agent_pr_review_ready | bool }}
-hermes_agent_pr_reconcile_enabled: >-
-  {{ (hermes_agent_identity | default('hermes')) == 'hermes-private'
-     and hermes_agent_pr_review_ready | bool }}
-hermes_agent_repo_crawl_enabled: "{{ hermes_agent_pr_review_ready | bool }}"
-hermes_agent_repo_crawl_repos: >-
-  {%- set ns = namespace(repos=[]) -%}
-  {%- for repo in hermes_agent_github_guard_public_repos -%}
-  {%- set ns.repos = ns.repos + [{'repo': repo, 'boundary': 'public'}] -%}
-  {%- endfor -%}
-  {%- if (hermes_agent_identity | default('hermes')) == 'hermes-private' -%}
-  {%- for repo in hermes_agent_github_guard_private_repos -%}
-  {%- set ns.repos = ns.repos + [{'repo': repo, 'boundary': 'private'}] -%}
-  {%- endfor -%}
-  {%- endif -%}
-  {{ ns.repos }}
