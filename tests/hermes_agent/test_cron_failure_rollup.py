@@ -93,6 +93,18 @@ def test_an_unchanged_set_reposts_only_after_the_heartbeat():
     assert MOD.decide([("default", "a", 1, "budget")], state, NOW + 3600)[0] is not None
 
 
+def test_a_zero_heartbeat_never_reposts_an_unchanged_set():
+    failing = [("default", "a", 1, "auth")]
+    _, state = MOD.decide(failing, {}, NOW)
+    module_globals = MOD.decide.__globals__
+    saved = module_globals["HEARTBEAT_HOURS"]
+    module_globals["HEARTBEAT_HOURS"] = 0
+    try:
+        assert MOD.decide(failing, state, NOW + 30 * 24 * 3600)[0] is None
+    finally:
+        module_globals["HEARTBEAT_HOURS"] = saved
+
+
 def test_the_all_clear_posts_once_when_the_set_empties():
     _, state = MOD.decide([("default", "a", 1, "auth")], {}, NOW)
     text, state = MOD.decide([], state, NOW + 3600)

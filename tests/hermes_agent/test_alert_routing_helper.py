@@ -121,19 +121,11 @@ def test_the_first_declared_failure_stays_on_the_ladder() -> None:
 
 def test_a_declared_failure_off_the_ladder_is_recorded_but_not_posted() -> None:
     mod = _load_route_helper()
-    for streak_before in (1, 3, 4, 8, 10, 30, 48):
+    for streak_before in (1, 2, 3, 9, 49, 99):
         routed, content, declared = _declared(mod, streak_before)
         assert declared is True, streak_before
         assert routed["failure_deliver"] == "local", streak_before
         assert "HTTP 502" in content
-
-
-def test_the_ladder_rungs_and_every_fiftieth_declared_failure_stay_on() -> None:
-    mod = _load_route_helper()
-    for streak_before in (2, 9, 49, 99):  # this run is the 3rd, 10th, 50th, 100th
-        routed, _, declared = _declared(mod, streak_before)
-        assert declared is True, streak_before
-        assert "failure_deliver" not in routed, streak_before
 
 
 def test_a_missing_or_garbage_streak_counts_as_the_first_failure() -> None:

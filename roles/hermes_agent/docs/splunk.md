@@ -79,22 +79,11 @@ the `[SILENT]` marker suppresses delivery entirely, so a normal sweep costs zero
 notifications. Findings are written to memory (baselines + open issues, for
 dedup), and durable knowledge is captured as `llm-wiki` pages (RAG).
 
-**Routing (3-tier, 2026-07-18; see `docs/HERMES_OPS.md` for the newer 4-channel
-scheme, 2026-07-31):** Slack output is split by audience, not by
-job. The **firehose channel** (`SLACK_FIREHOSE_CHANNEL` →
-`hermes_agent_firehose_deliver`) receives every verbose routine report —
-`github-triage`, `homelab-ai-fabric-status` (now 24/7), and the
-`zammad-review` working report, posted every run in full, plus the
-script-fed `splunk-status-digest` cron (posts on anything critical or novel,
-and otherwise at least once every `HEARTBEAT_HOURS` — see "Delta discipline"
-below; the LLM `splunk-digest` card this described is removed, 2026-08-01).
-The **home
-channel** is the curated operator surface: the once-daily `daily-summary`
-rollup (delta-only, no tables, ≤15 lines) and nothing routine. **DMs stay
-urgent-only**: anomaly alerts (`slack:<member-id>`, silent-unless-anomaly) and
-newly appeared Zammad incidents. The quiet deep-dive research run still saves
-locally only (`--deliver local`). With no firehose channel configured, firehose
-jobs fall back to the home channel (the original single-channel behavior).
+**Routing:** Interactive replies and actionable reports go to each agent's
+home channel. The dedicated Splunk-analysis jobs and script-fed Splunk digests
+use the Splunk findings destination; healthy and no-change runs end with
+`[SILENT]`. Hermes job failures use native cron failure delivery. Splunk
+analysis jobs stay silent unless they find something new.
 
 **Zammad review (`zammad-review`, every 2h):** proactively reads open
 incidents across ALL queues, proves finished ones complete (resolving them
@@ -102,34 +91,22 @@ with evidence — not recommending), enriches open ones with genuinely new
 findings, and DMs the operator about incidents that appeared since its last
 run. Gated on the Zammad URL + token alongside the Slack gates.
 
-**Delta discipline (own state, not double-reported).** `splunk-triage`'s DM
+**Delta discipline (own state, not double-reported).** `splunk-triage`'s report
 recalls its OWN last-posted findings from memory (key `splunk-triage-last`)
 before alerting and stays silent when its top finding is already covered
 there — the DM is for genuinely NEW or ESCALATING findings only. (Until
 2026-08-01 it recalled the LLM `splunk-digest` card's key instead; once that
 card was removed the recall was a dangling read that always found nothing —
 fixed in the `ai-llm-prompts` catalog, guarded at converge time.) The
-script-fed status digest posts the real
-per-index volumes plus their delta against the previous run whenever anything
-is CRITICAL or genuinely novel anywhere in its escalation ladder (index, host,
-then sourcetype/composition), exactly as before. **Heartbeat gate (operator
-decision, 2026-07-26):** a run with nothing critical and nothing novel now
-goes `[SILENT]` unless `HEARTBEAT_HOURS` (a module constant in
-`splunk-digest.py.j2`, currently 6) has elapsed since the last real post — the
-prior rule posted a "Health state unchanged" boilerplate line on every single
-quiet hour (38 of 40 runs carried zero information in one UTC day). A CRITICAL
-finding is exempt and always posts, every run, for as long as it holds, so an
-ingest anomaly is never delayed or hidden by this gate; the fingerprint still
-labels whether the health picture moved, the heartbeat clock only decides
-whether a *quiet* state gets restated.
+script-fed status digest posts new findings and newly active critical
+conditions; the same finding stays silent while it remains active. Fully quiet
+runs go `[SILENT]` without a heartbeat.
 
 **Waking hours (2026-07-26).** The status digest runs `52 7-23 * * *` — 17
 runs/day, not 24. Overnight posts were read the next morning anyway, so the
 job simply does not run between 00:00 and 06:59. The two mechanisms are
-independent: the *schedule* decides whether a run happens, `HEARTBEAT_HOURS`
-decides whether a quiet run says anything. The first run after the gap
-(07:52) is always ≥ `HEARTBEAT_HOURS` past the last post, so the morning
-always opens with a real state report. A CRITICAL condition starting after
+independent: the *schedule* decides whether a run happens, and the novelty
+state decides whether a quiet run says anything. A CRITICAL condition starting after
 23:52 is not surfaced by this job until 07:52 — accepted deliberately: the
 digest is a status surface, and urgent alerting is `splunk-triage`'s
 silent-unless-anomaly DM path, which keeps its own unchanged schedule.

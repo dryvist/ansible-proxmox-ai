@@ -29,7 +29,7 @@ FIXTURE_CONFIG = {
     "STATE_PATH": str(TMP / "kanban-digest.json"),
     "TITLE": "Kanban Board Digest",
     "INTERVAL_MIN": 15,
-    "HEARTBEAT_HOURS": 6,
+    "HEARTBEAT_HOURS": 0,
     "ISSUES_CHANNEL": "C_ISSUES",
     "NOISE_CHANNEL": "C_NOISE",
     # Deliberately absent: send_to_issues must report failure, not raise, so the
@@ -123,21 +123,19 @@ def now_dt():
     return dt.datetime.fromtimestamp(NOW, dt.timezone.utc)
 
 
-def digest(tasks, runs, since=NOW - 900, note="", due=True):
-    """The work-log post only — what #hermes-all receives. SILENT on the
-    quiet-but-due branch: that text now goes to the noise channel instead
-    (see heartbeat() below), never to the work log."""
+def digest(tasks, runs, since=NOW - 900, note="", due=False):
+    """The work-log post; quiet runs stay silent."""
     text, _, _ = DIGEST.build_digest(*board(tasks, runs), now_dt(), since, note, due)
     return text
 
 
-def heartbeat(tasks, runs, since=NOW - 900, note="", due=True):
-    """The heartbeat post only — what the noise channel receives."""
+def heartbeat(tasks, runs, since=NOW - 900, note="", due=False):
+    """The quiet-run post, which is disabled by the production default."""
     _, _, heartbeat_text = DIGEST.build_digest(*board(tasks, runs), now_dt(), since, note, due)
     return heartbeat_text
 
 
-def digest_split(tasks, runs, since=NOW - 900, note="", due=True):
+def digest_split(tasks, runs, since=NOW - 900, note="", due=False):
     """(work_log_text, issues_text) with failure routing enabled."""
     text, issues_text, _ = DIGEST.build_digest(*board(tasks, runs), now_dt(), since, note, due,
                                                split_failures=True)
