@@ -210,27 +210,21 @@ llm_router_hermes_narrow_legs_last: true
 # so segments stay independently orderable; add the segment rather than
 # re-sorting, and the property survives a later change to any other segment.
 # EIGHT SEGMENTS: local_wide -> opencode_sub -> or_zdr_paid -> local_narrow ->
-# free_sub -> zai_overflow -> free_zdrless -> shared_terminal. Still pure
-# concatenation, never a re-sort.
+# free_sub -> free_zdrless -> shared_terminal -> zai_overflow. Z.ai is last.
 #
 # OPERATOR DECISION (2026-09-20): every rendered chain ends in a guaranteed
 # final fallback — ai #845's enforce_fallback_model_access prunes each
 # caller KEY down to what it may use, so rendering these last two segments
 # widely costs a pruned key nothing:
-#   * zai_overflow (llm_router_zai_groups, 33-zai.yml) — ZDR-true by
-#     omission, so BEFORE free_zdrless. No longer review-oss-exclusive.
+#   * zai_overflow (llm_router_zai_groups, 33-zai.yml) — explicit ZDR source,
+#     placed last in the public Hermes fallback order.
 #   * shared_terminal (llm_router_shared_external_continuation,
-#     58-review-roles.yml — one variable, so a future rung change to the
-#     continuation is a single edit) — the same subscription/API-key
-#     terminal every role_deployment chain already ends in, appended AFTER
-#     free_zdrless since codex-subscription/codex-api set
-#     zero_data_retention: false, same "sits last" class. The var also
-#     repeats llm_router_zai_groups and llm_router_hermes_cloud_paid_groups
-#     (both already placed earlier above); the trailing `| unique | list`
-#     collapses those back to their first occurrence, so the render is
-#     unchanged — only codex-subscription/codex-api actually land at the
-#     tail. Both carry `hermes_chain: false` (llm-models.d/40-hermes-cloud.yml)
-#     to stay out of or_zdr_paid above.
+#     58-review-roles.yml) — the same subscription/API-key terminal every
+#     role_deployment chain already ends in. The public Hermes chain places
+#     these after free/retaining rungs and before its final Z.ai pair. Its
+#     variable repeats paid groups (already placed above), collapsed by the
+#     trailing `| unique | list`; codex-subscription/codex-api land here and
+#     both carry `hermes_chain: false` to stay out of or_zdr_paid.
 #
 # or_zdr_paid + free_sub together are exactly
 # llm_router_hermes_cloud_only_fallback_groups's membership (the paid/free
@@ -246,17 +240,17 @@ llm_router_hermes_cloud_fallback_groups: >-
       + llm_router_hermes_cloud_paid_groups
       + llm_router_hermes_local_narrow_groups
       + llm_router_hermes_cloud_free_groups
-      + llm_router_zai_groups
       + llm_router_openrouter_free_groups
-      + llm_router_shared_external_continuation) | unique | list }}
+      + (llm_router_shared_external_continuation | reject('in', llm_router_zai_groups) | list)
+      + llm_router_zai_groups) | unique | list }}
   {%- else -%}
   {{ (llm_router_local_fallback_groups
       + llm_router_opencode_fallback_groups
       + llm_router_hermes_cloud_paid_groups
       + llm_router_hermes_cloud_free_groups
-      + llm_router_zai_groups
       + llm_router_openrouter_free_groups
-      + llm_router_shared_external_continuation) | unique | list }}
+      + (llm_router_shared_external_continuation | reject('in', llm_router_zai_groups) | list)
+      + llm_router_zai_groups) | unique | list }}
   {%- endif -%}
 
 # The full post-primary Hermes chain: local legs then cloud groups, in

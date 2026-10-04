@@ -46,7 +46,7 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
         return (
             entry.get("tier") == "openrouter"
             and (entry.get("context_window") or 0) >= 1_000_000
-            and entry.get("zero_data_retention", True) is not False
+            and entry.get("zero_data_retention", False) is True
         )
 
     aliases = {
