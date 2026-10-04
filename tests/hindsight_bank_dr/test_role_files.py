@@ -110,6 +110,18 @@ def test_export_and_drill_units_declare_their_schedule():
     for service in (export_service, drill_service):
         assert "Type=oneshot" in service
         assert "SyslogIdentifier={{ hindsight_bank_dr_syslog_identifier }}" in service
+        assert "EnvironmentFile=/etc/hindsight-bank-dr.env" in service
+
+    env_template = (ROLE / "templates" / "hindsight-bank-dr.env.j2").read_text()
+    assert "HINDSIGHT_API_KEY={{ hindsight_bank_dr_api_key }}" in env_template
+
+
+def test_export_and_drill_api_calls_use_bearer_auth_without_argv_secrets():
+    for name in ("hindsight-bank-export.sh.j2", "hindsight-bank-dr-drill.sh.j2"):
+        script = (ROLE / "templates" / name).read_text()
+        assert "api_curl()" in script
+        assert "-H @<(printf 'Authorization: Bearer %s\\n' \"$HINDSIGHT_API_KEY\")" in script
+        assert "curl -H \"Authorization: Bearer $HINDSIGHT_API_KEY\"" not in script
 
 
 def test_bank_dr_play_targets_exactly_one_replica():
@@ -129,6 +141,7 @@ def test_bank_dr_play_targets_exactly_one_replica():
         f"host pattern, got hosts={dr_play['hosts']!r} -- this must never widen "
         f"to the whole hindsight_group"
     )
+    assert "hindsight_docker" in dr_play["tags"]
 
 
 def test_defaults_never_hardcode_the_hindsight_image_or_a_literal_version():
