@@ -4,7 +4,9 @@
 # reads must render (client id/secret, the three /api/oidc/* endpoints, the
 # proxy base URL the /sso/callback redirect hangs off, the email claim
 # attribute, the scope, and the admin identity); with no secret anywhere, the
-# whole block must be honestly absent rather than half-configured.
+# whole block must be honestly absent rather than half-configured. The
+# general_settings keys that make SSO the only UI sign-in follow the same
+# condition.
 #
 # Both plays also pin the bao-first SHAPE of the secret default itself: the
 # value must come from bao_apps_secrets with an env fallback, never a literal
@@ -57,9 +59,23 @@
         bao_apps_secrets:
           authelia_oidc_litellm_client_secret: dummy-render-check
 
-    - name: Render the real env file
+    - name: Render the real env file and general settings
       ansible.builtin.set_fact:
         _env: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+        _gs: "{{ lookup('template', _role_dir ~ '/templates/general-settings.yaml.j2') | from_yaml }}"
+
+    - name: SSO is the only UI sign-in
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _gs.general_settings.disable_env_credential_login is true
+          - _gs.general_settings.disable_password_login_when_sso_enabled is true
+          - _env is search('(?m)^AUTO_REDIRECT_UI_LOGIN_TO_SSO=true$')
+          - _env is not search('(?m)^UI_(USERNAME|PASSWORD)=')
+        fail_msg: >-
+          SSO renders but password login to the UI is still reachable.
+          Real general_settings:\n{{ _gs.general_settings }}
+        success_msg: SSO enabled turns UI password login off.
 
     - name: The generic-OIDC block renders exactly the lines LiteLLM reads
       ansible.builtin.assert:
@@ -135,9 +151,22 @@
         bao_local_llm_secrets: {}
         bao_apps_secrets: {}
 
-    - name: Render the real env file
+    - name: Render the real env file and general settings
       ansible.builtin.set_fact:
         _env: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+        _gs: "{{ lookup('template', _role_dir ~ '/templates/general-settings.yaml.j2') | from_yaml }}"
+
+    - name: Password login is not disabled while SSO is absent
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'disable_env_credential_login' not in _gs.general_settings"
+          - "'disable_password_login_when_sso_enabled' not in _gs.general_settings"
+          - _env is not search('(?m)^AUTO_REDIRECT_UI_LOGIN_TO_SSO=')
+        fail_msg: >-
+          With no SSO configured the UI must keep a sign-in path.
+          Real general_settings:\n{{ _gs.general_settings }}
+        success_msg: No SSO, so UI password login stays available.
 
     - name: No OIDC or proxy line renders when the secret never resolved
       ansible.builtin.assert:
