@@ -1,0 +1,21 @@
+{{ ansible_managed | comment }}
+# Forward the LlamaIndex systemd unit to its dedicated Cribl Stream input:
+# journald -> rsyslog -> syslog.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}:{{ llamaindex_syslog_port }}
+# -> HAProxy -> Cribl Stream -> Splunk index=llm, sourcetype=llamaindex:app.
+
+ruleset(name="llamaindex") {
+  action(type="omfwd"
+         target="{{ llamaindex_syslog_host }}"
+         port="{{ llamaindex_syslog_port }}"
+         protocol="tcp"
+         queue.type="LinkedList"
+         queue.filename="llamaindex_fwd"
+         queue.maxDiskSpace="{{ llamaindex_syslog_queue_max_disk_space }}"
+         queue.saveOnShutdown="on"
+         action.resumeRetryCount="-1")
+  stop
+}
+
+if ($!_SYSTEMD_UNIT == 'llamaindex-index.service') then {
+  call llamaindex
+}
