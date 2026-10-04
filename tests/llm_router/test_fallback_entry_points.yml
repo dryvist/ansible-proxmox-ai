@@ -120,12 +120,10 @@
 
     # THE EXACT-MATCH CASE the subset check above cannot catch: a rung
     # dropped from an entry point's own chain still passes "every target is
-    # IN the six-segment ladder" (a subset relation), so EVERY rendered
-    # alias — never a specific name typed here, the registry is the sole
-    # spelling — gets pinned to hold the WHOLE ladder, in the exact order,
-    # minus only its own name. A ZDR alias is held to a shorter exact chain:
-    # its own target strips llm_router_openrouter_free_groups (see
-    # config.yaml.j2), so the expected chain here strips it too.
+    # IN the D1 ladder" (a subset relation), so EVERY rendered alias gets
+    # pinned to the exact ordered tail for its entry point. Strict ZDR aliases
+    # lose every unasserted rung, and aliases to the auto-router also skip its
+    # initial rung (see config.yaml.j2).
     - name: Every alias carries the full segmented ladder, in order, minus itself
       ansible.builtin.assert:
         quiet: true
@@ -134,10 +132,8 @@
           - _rendered_aliases | length > 0
           - _mismatched_aliases | length == 0
         fail_msg: >-
-          Alias fallback target(s) must equal the six-segment ladder
-          (35-hermes-cloud.yml / 36-hermes-cloud-segments.yml) exactly, minus
-          the alias's own name (and, for a ZDR alias, minus the ZDR-less free
-          rungs too). Mismatched: {{ _mismatched_aliases }}.
+          Alias fallback target(s) must equal the D1 class ladder tail for
+          their entry point. Mismatched: {{ _mismatched_aliases }}.
         success_msg: >-
           All {{ _rendered_aliases | length }} aliases carry the full
           segmented ladder in order.
@@ -158,10 +154,14 @@
           {%- for alias in _rendered_aliases -%}
           {%- set _expected = llm_router_hermes_default_fallback_chain | reject('equalto', alias) | list -%}
           {%- if alias in llm_router_zdr_entry_point_names -%}
-          {%- set _expected = _expected | reject('in', llm_router_openrouter_free_groups) | list -%}
+          {%- set _expected = _expected | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list -%}
+          {%- endif -%}
+          {%- if llm_router_model_group_aliases.get(alias, alias) == 'hermes-default' -%}
+          {%- set _expected = _expected | reject('equalto', llm_router_d1_auto_initial_group) | list -%}
           {%- endif -%}
           {%- if (_fallbacks_by_key[alias] | default([])) != _expected -%}
-          {%- set ns.bad = ns.bad + [alias] -%}
+          {%- set ns.bad = ns.bad + [alias ~ ': expected=' ~ (_expected | string)
+                ~ ', actual=' ~ ((_fallbacks_by_key[alias] | default([])) | string)] -%}
           {%- endif -%}
           {%- endfor -%}
           {{ ns.bad }}

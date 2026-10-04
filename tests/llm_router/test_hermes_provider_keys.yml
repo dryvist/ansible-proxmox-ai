@@ -36,9 +36,7 @@
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
     # Registry-derived expectations, built from llm_router_model_registry
-    # directly (tier + credential_env) rather than from the credentialed
-    # projection the render uses — so an assert on the chain compares the
-    # render against the registry, not against its own input.
+    # directly rather than from the credentialed projection the render uses.
     _local_groups: >-
       {%- set ns = namespace(g=[]) -%}
       {%- for m in llm_router_model_registry | selectattr('enabled')
@@ -47,25 +45,13 @@
       {%- if g not in ns.g -%}{%- set ns.g = ns.g + [g] -%}{%- endif -%}
       {%- endfor -%}
       {{ ns.g }}
-    # The general openrouter tier's `:free` entries share OPENROUTER_API_KEY
-    # too (llm_router_openrouter_free_groups, 35-hermes-cloud.yml) and are now
-    # part of the same one-credential-one-provider-group contract this task
-    # tests, so they belong in this set alongside the hermes-cloud one.
+    # Every OpenRouter rung shares OPENROUTER_API_KEY. Build the expected set
+    # from the catalog's D1 classes, retaining class order independently of
+    # the credentialed ladder projection this play asserts.
     _openrouter_groups: >-
-      {%- set ns = namespace(g=[]) -%}
-      {%- for m in llm_router_model_registry | selectattr('enabled')
-                   | selectattr('tier', 'equalto', 'hermes-cloud')
-                   | selectattr('credential_env', 'equalto', 'OPENROUTER_API_KEY') -%}
-      {%- set g = m.fallback_group | default(m.route_group) -%}
-      {%- if g not in ns.g -%}{%- set ns.g = ns.g + [g] -%}{%- endif -%}
-      {%- endfor -%}
-      {%- for m in llm_router_model_registry | selectattr('enabled')
-                   | selectattr('tier', 'equalto', 'openrouter')
-                   | selectattr('client_model_id', 'match', '.*:free$')
-                   | selectattr('credential_env', 'equalto', 'OPENROUTER_API_KEY') -%}
-      {%- if m.client_model_id not in ns.g -%}{%- set ns.g = ns.g + [m.client_model_id] -%}{%- endif -%}
-      {%- endfor -%}
-      {{ ns.g }}
+      {{ llm_router_d1_rungs_by_class['paid-zdr']
+         + llm_router_d1_rungs_by_class['free']
+         + llm_router_d1_rungs_by_class['retains'] }}
     openbao_secrets_kv_mount: test-kv
     openbao_secrets_ai_api_key_mount: test-external
     openbao_secrets_ai_api_key_path_prefix: test/provider-keys
@@ -132,6 +118,11 @@
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
 
+    - name: Restore the non-secret render fixture after loading role defaults
+      ansible.builtin.set_fact:
+        llm_router_master_key: sk-test-master
+        llm_router_llm_large_bearer: test-bearer-token
+
     - name: Configure the shared budget store
       ansible.builtin.set_fact:
         llm_router_redis_host: redis.example.test
@@ -179,23 +170,12 @@
         quiet: true
         that:
           - llm_router_hermes_default_fallback_chain == _expected_chain
-          - _fallback_chain == _expected_chain
-          # THE TRIPWIRE, now as counts sourced from the registry rather than
-          # a typed list: one cloud group behind this credential (the general
-          # tier's :free rung — hermes-cloud-free, the hermes-cloud tier's own
-          # rung under this key, is now disabled, upstream withdrew its model;
-          # hermes-cloud-openrouter sits behind its own OPENROUTER_HERMES_KEY,
-          # see below), one local leg, ordered local-then-free (the free
-          # segment sits AFTER local_narrow in the six-segment chain,
-          # 35-hermes-cloud.yml). A rung added under this credential, or a
-          # local leg added, must be reviewed here.
-          - _openrouter_groups | length == 1
+          - _fallback_chain == _expected_rendered_chain
+          # The catalog must keep more than the free endpoint under the
+          # provider key, so newly declared paid-ZDR rungs remain represented.
+          - _openrouter_groups | length > 1
           - _local_groups | length == 1
-          # Local precedes both free segments unconditionally in the six-
-          # segment order (35-hermes-cloud.yml) — with no opencode/paid
-          # credential seeded here, the local leg (narrow or wide) is always
-          # the very first thing in the chain, in both policy states.
-          - _fallback_chain | first in _local_groups
+          - llm_router_d1_auto_initial_group in _local_groups
           - (_config.router_settings.model_group_alias | list) | length > 0
           # hermes-cloud-openrouter (kimi-k2.6, glm-5.2) stays dark: its
           # credential is OPENROUTER_HERMES_KEY, absent from this fixture.
@@ -213,6 +193,8 @@
         # The class order is asserted in test_ladder_keys.yml. This fixture
         # isolates credential membership for the OpenRouter provider.
         _expected_chain: "{{ _local_groups + _openrouter_groups }}"
+        _expected_rendered_chain: >-
+          {{ _expected_chain | reject('equalto', llm_router_d1_auto_initial_group) | list }}
         _fallback_chain: >-
           {{ _config.router_settings.fallbacks
              | selectattr('hermes-default', 'defined')

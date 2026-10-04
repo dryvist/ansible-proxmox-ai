@@ -40,6 +40,11 @@
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
 
+    - name: Restore the non-secret render fixture after loading role defaults
+      ansible.builtin.set_fact:
+        llm_router_master_key: sk-test-master
+        llm_router_llm_large_bearer: test-bearer-token
+
     - name: Configure the shared budget store
       ansible.builtin.set_fact:
         llm_router_redis_host: redis.example.test
@@ -90,58 +95,28 @@
           # The primary itself must be keyed. Five cron jobs died of exactly its
           # absence, one exceeding the served window by 482 tokens.
           - "'hermes-default' in _cwf_keys"
-          # Every escape target is drawn from this provider's groups and
-          # nothing else -- EXCEPT fast/subagent, excluded here on purpose,
-          # checked separately below. A SUBSET check, not exact-match: a
-          # chain member's own tail can be a narrower slice of
-          # _openrouter_groups (e.g. hermes-cloud-free -> just :free).
+          # Every escape target is drawn from the local legs and the groups
+          # backed by this provider credential. A chain member's own tail can
+          # be a narrower slice of those groups.
           - >-
             _config.router_settings.context_window_fallbacks
-            | rejectattr('fast', 'defined') | rejectattr('subagent', 'defined')
             | map('dict2items') | flatten | map(attribute='value') | flatten
-            | unique | difference(_openrouter_groups) | length == 0
-          # fast/subagent no longer escape to `long` (55-roles.yml): with only
-          # the free key present their chain has no external rung, so neither
-          # is keyed, and `long` sits in no role's chain.
-          - >-
-            _config.router_settings.context_window_fallbacks
-            | selectattr('fast', 'defined') | list | length == 0
-          - >-
-            _config.router_settings.context_window_fallbacks
-            | selectattr('subagent', 'defined') | list | length == 0
-          - >-
-            llm_router_role_deployments | map(attribute='fallbacks') | flatten
-            | select('equalto', llm_router_model_group_aliases.long) | list | length == 0
+            | unique
+            | difference(llm_router_local_fallback_groups + _openrouter_groups)
+            | length == 0
+          - llm_router_model_group_aliases.long in llm_router_d1_rungs_by_class['paid-zdr']
         fail_msg: >-
           The context-window escape map must key exactly the local legs, the
           auto-router groups, every servable id, and every advertised alias --
           got {{ _cwf_keys | sort }}, expected {{ _expected_cwf_keys | sort }}.
       vars:
-        # The general openrouter tier's `:free` entries share OPENROUTER_API_KEY
-        # too (llm_router_openrouter_free_groups, 35-hermes-cloud.yml) and are
-        # this fixture's only cloud provider group, alongside the hermes-cloud
-        # one — same registry-derived composition
-        # test_hermes_provider_keys.yml's chain-membership assert uses.
+        # One OpenRouter credential supplies every credentialed paid, free,
+        # and retaining group in this fixture; the ladder contract verifies
+        # their catalog-derived order separately.
         _openrouter_groups: >-
-          {%- set ns = namespace(g=[]) -%}
-          {%- for m in llm_router_model_registry | selectattr('enabled')
-                       | selectattr('tier', 'equalto', 'hermes-cloud')
-                       | selectattr('credential_env', 'equalto', 'OPENROUTER_API_KEY') -%}
-          {%- set g = m.fallback_group | default(m.route_group) -%}
-          {%- if g not in ns.g -%}{%- set ns.g = ns.g + [g] -%}{%- endif -%}
-          {%- endfor -%}
-          {%- for m in llm_router_model_registry | selectattr('enabled')
-                       | selectattr('tier', 'equalto', 'openrouter')
-                       | selectattr('client_model_id', 'match', '.*:free$')
-                       | selectattr('credential_env', 'equalto', 'OPENROUTER_API_KEY') -%}
-          {%- if m.client_model_id not in ns.g -%}{%- set ns.g = ns.g + [m.client_model_id] -%}{%- endif -%}
-          {%- if m.in_free_route | default(false)
-                and (m.zero_data_retention | default(false)) == false
-                and 'free-zdrless' not in ns.g -%}
-          {%- set ns.g = ns.g + ['free-zdrless'] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.g }}
+          {{ llm_router_d1_rungs_by_class['paid-zdr']
+             + llm_router_d1_rungs_by_class['free']
+             + llm_router_d1_rungs_by_class['retains'] }}
         _cwf_keys: >-
           {{ _config.router_settings.context_window_fallbacks | default([])
              | map('dict2items') | flatten | map(attribute='key') | list }}

@@ -76,7 +76,7 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     # The count and every target's servability are what a stray alias would
     # break, so a new consumer-facing name still lands here as a reviewed edit.
     assert aliases, "no static alias loaded; nothing below is checked"
-    assert len(aliases) == 8
+    assert len(aliases) == 9
     assert judge_backend in aliases.values()
     # The brain is reached by alias too; during a parked-routine bridge the
     # judge shares this active backend until the serving host is rebuilt.
