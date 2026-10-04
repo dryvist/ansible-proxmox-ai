@@ -1,5 +1,5 @@
 ---
-# Regression/contract test for seed-keys.yml's combined route/model diff
+# Regression/contract test for seed-keys.yml's rebuild-mode key diff
 # (`_llm_router_key_updates`), which replaced two separate per-attribute
 # /key/update loops with one computed list of {alias, body} entries — one
 # call per key that actually changed, carrying every changed field.
@@ -14,6 +14,7 @@
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     _seed_keys_file: "{{ _role_dir }}/tasks/seed-keys.yml"
     _diff_task_name: "Compute the route/model update each live key still needs, if any"
+    llm_router_seed_mode: rebuild
 
     # One /key/list?...&return_full_object=true snapshot covering every case
     # this test exercises:
@@ -131,6 +132,27 @@
         dest: "{{ _diff_template_file.path }}"
         content: "{{ _diff_expr }}"
         mode: "0600"
+
+    - name: Set initial mode before rendering the real update expression
+      ansible.builtin.set_fact:
+        llm_router_seed_mode: initial
+
+    - name: Render the expression in initial mode
+      ansible.builtin.set_fact:
+        _llm_router_initial_key_updates: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
+
+    - name: Initial mode leaves every existing key untouched
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_initial_key_updates == []
+        fail_msg: >-
+          initial mode computed updates for existing keys:
+          {{ _llm_router_initial_key_updates | map(attribute='alias') | list }}.
+
+    - name: Set explicit rebuild mode for the detailed reconciliation fixtures
+      ansible.builtin.set_fact:
+        llm_router_seed_mode: rebuild
 
     - name: Render the real, live expression against the fixture above
       ansible.builtin.set_fact:

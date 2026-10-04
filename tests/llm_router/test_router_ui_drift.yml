@@ -1,0 +1,203 @@
+---
+# Exercises the same comparator used by the end-of-seeding drift check with
+# sanitized API fixtures. No router or notification endpoint is called here.
+- name: One key flag and one router setting produce one message each
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_drift_key_git_file: roles/llm_router/defaults/main/56-virtual-keys.yml
+    _llm_router_drift_expected_keys:
+      - alias: drift-fixture-key
+        git_file: roles/llm_router/defaults/main/56-virtual-keys.yml
+        flags:
+          rpm_limit: 60
+    _llm_router_drift_live_keys:
+      - alias: drift-fixture-key
+        flags:
+          rpm_limit: 45
+        key: fixture-value-must-not-be-in-a-message
+    _llm_router_drift_expected_settings:
+      - name: router setting
+        git_file: roles/llm_router/templates/config.yaml.j2
+        expected:
+          routing_strategy: simple-shuffle
+        live:
+          routing_strategy: lowest_cost
+      - name: UI setting
+        git_file: roles/llm_router/defaults/main/75-ui-settings.yml
+        expected:
+          enable_chat_ui: true
+        live:
+          enable_chat_ui: true
+  tasks:
+    - name: Use the production comparator
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-compare.yml"
+
+    - name: Emit exactly two sanitized messages with the corresponding Git files
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_messages | length == 2
+          - _llm_router_drift_messages | map(attribute='item') | list ==
+            ['key alias drift-fixture-key flags rpm_limit', 'router setting routing_strategy']
+          - _llm_router_drift_messages | selectattr('git_file', 'equalto',
+            'roles/llm_router/defaults/main/56-virtual-keys.yml') | list | length == 1
+          - _llm_router_drift_messages | selectattr('git_file', 'equalto',
+            'roles/llm_router/templates/config.yaml.j2') | list | length == 1
+          - "'fixture-value-must-not-be-in-a-message' not in (_llm_router_drift_messages | to_json)"
+          - _llm_router_drift_messages | selectattr('text', 'search', 'drift-fixture-key') | list | length == 1
+          - _llm_router_drift_messages | selectattr('text', 'search', 'routing_strategy') | list | length == 1
+        fail_msg: >-
+          Expected one key-flag message and one router-setting message with their Git files,
+          and no key value in either message; got {{ _llm_router_drift_messages | map(attribute='item') | list }}.
+
+- name: A UI setting edit names its defaults file
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_drift_key_git_file: roles/llm_router/defaults/main/56-virtual-keys.yml
+    _llm_router_drift_expected_keys: []
+    _llm_router_drift_live_keys: []
+    _llm_router_drift_expected_settings:
+      - name: router setting
+        git_file: roles/llm_router/templates/config.yaml.j2
+        expected:
+          routing_strategy: simple-shuffle
+        live:
+          routing_strategy: simple-shuffle
+      - name: UI setting
+        git_file: roles/llm_router/defaults/main/75-ui-settings.yml
+        expected:
+          enable_chat_ui: true
+        live:
+          enable_chat_ui: false
+  tasks:
+    - name: Use the production comparator
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-compare.yml"
+
+    - name: Emit one UI setting message with the UI baseline file
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_messages | length == 1
+          - _llm_router_drift_messages[0].item == 'UI setting enable_chat_ui'
+          - _llm_router_drift_messages[0].git_file == 'roles/llm_router/defaults/main/75-ui-settings.yml'
+        fail_msg: >-
+          Expected one Chat UI message pointing at the UI defaults file, got
+          {{ _llm_router_drift_messages | map(attribute='item') | list }}.
+
+- name: A live-only router setting is reported against the rendered config
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_drift_key_git_file: roles/llm_router/defaults/main/56-virtual-keys.yml
+    _llm_router_drift_expected_keys: []
+    _llm_router_drift_live_keys: []
+    _llm_router_drift_expected_settings:
+      - name: router setting
+        git_file: roles/llm_router/templates/config.yaml.j2
+        expected:
+          routing_strategy: simple-shuffle
+        live:
+          routing_strategy: simple-shuffle
+          ui_added_limit: 17
+  tasks:
+    - name: Use the production comparator
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-compare.yml"
+
+    - name: Name the Git file for the undeclared live setting
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_messages | length == 1
+          - _llm_router_drift_messages[0].item == 'router setting ui_added_limit'
+          - _llm_router_drift_messages[0].git_file == 'roles/llm_router/templates/config.yaml.j2'
+        fail_msg: >-
+          Expected the live-only setting to point at the rendered config,
+          got {{ _llm_router_drift_messages | map(attribute='item') | list }}.
+
+- name: A clean live fixture produces no messages
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_drift_key_git_file: roles/llm_router/defaults/main/56-virtual-keys.yml
+    _llm_router_drift_expected_keys:
+      - alias: clean-fixture-key
+        git_file: roles/llm_router/defaults/main/56-virtual-keys.yml
+        flags:
+          rpm_limit: 60
+    _llm_router_drift_live_keys:
+      - alias: clean-fixture-key
+        flags:
+          rpm_limit: 60
+    _llm_router_drift_expected_settings:
+      - name: router setting
+        git_file: roles/llm_router/templates/config.yaml.j2
+        expected:
+          routing_strategy: simple-shuffle
+        live:
+          routing_strategy: simple-shuffle
+      - name: UI setting
+        git_file: roles/llm_router/defaults/main/75-ui-settings.yml
+        expected:
+          enable_chat_ui: true
+        live:
+          enable_chat_ui: true
+  tasks:
+    - name: Use the production comparator
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-compare.yml"
+
+    - name: Keep a clean fixture silent
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_messages == []
+        fail_msg: >-
+          A clean UI and key fixture must produce no messages, got
+          {{ _llm_router_drift_messages | map(attribute='item') | list }}.
+
+- name: The router check reads router and UI state and notifies only through the existing alert URL
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _playbook: "{{ playbook_dir }}/../../playbooks/llm-serving.yml"
+  tasks:
+    - name: Read the drift task and playbook wiring
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ _role_dir }}/tasks/drift-check.yml"
+        - "{{ _playbook }}"
+      register: _sources
+
+    - name: Pin the safe read paths, notification route, and end-of-seeding placement
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'method: GET' in _drift_text"
+          - "'/key/list?' in _drift_text"
+          - "'/router/settings' in _drift_text"
+          - "'/get/ui_settings' in _drift_text"
+          - "'return_full_object=true' in _drift_text"
+          - "'llm_router_alert_webhook_url' in _drift_text"
+          - "'?template=yes&message=%7B%7B.text%7D%7D' in _drift_text"
+          - "'method: POST' in _drift_text"
+          - "'/key/update' not in _drift_text"
+          - "'/config/update' not in _drift_text"
+          - "'/update/ui_settings' not in _drift_text"
+          - _seed_offset != -1
+          - _drift_offset > _seed_offset
+          - "'run_once: true' in _playbook_text[_drift_offset - 150:_drift_offset]"
+        fail_msg: >-
+          Drift checking must be a final per-pool read after key/role seeding and may post only
+          to the existing alert URL.
+      vars:
+        _drift_text: "{{ _sources.results[0].content | b64decode }}"
+        _playbook_text: "{{ _sources.results[1].content | b64decode }}"
+        _seed_offset: "{{ _playbook_text.find('tasks_from: seed-consumers.yml') }}"
+        _drift_offset: "{{ _playbook_text.find('tasks_from: drift-check.yml') }}"

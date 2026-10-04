@@ -27,3 +27,35 @@
         fail_msg: "14.0/week produced {{ _daily_from }}/day, expected 4.0"
       vars:
         _weekly: 14.0
+
+- name: Initial mode does not resync budget or rate-limit flags on existing keys
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_seed_mode: initial
+    llm_router_virtual_keys:
+      - alias: fixture
+        value: sk-fixture-value
+        monthly_budget: 14.0
+        rpm_limit: 60
+    llm_router_existing_keys:
+      json:
+        keys:
+          - key_alias: fixture
+            max_budget: 14.0
+            rpm_limit: 60
+  tasks:
+    - name: Load the production budget resync tasks
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/reconcile-key-budgets.yml"
+
+    - name: Keep both rebuild-only update lists empty in initial mode
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_budgeted_keys == []
+          - _llm_router_rate_limited_keys == []
+        fail_msg: >-
+          initial mode queued existing key flags for resync:
+          budgets={{ _llm_router_budgeted_keys | map(attribute='alias') | list }};
+          rates={{ _llm_router_rate_limited_keys | map(attribute='alias') | list }}.
