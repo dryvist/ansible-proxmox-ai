@@ -15,13 +15,43 @@
 # role's own chain (e.g. review-private's own last-resort fallback), is not
 # thereby granted the rest of a chain it was never scoped to call directly.
 #
-# A key marked `zdr_only: true` then has every group backed by a
-# zero_data_retention: false registry entry removed from that widened list,
-# and so has every terminal rung with no asserted ZDR flag
-# (llm_router_zdr_unasserted_terminal_rungs, below).
-# enforce_fallback_model_access re-checks the key on every hop, so a chain
-# rung the key does not hold is refused, never reached: the key, not the
-# caller, guarantees its traffic only lands on ZDR backends.
+# Deployment tags follow the registry tier and privacy evidence. Local tiers
+# are ZDR by construction; every other deployment needs an explicit registry
+# assertion to carry `zdr`. An absent field is never a ZDR assertion.
+llm_router_local_registry_tiers: [large, light, vllm, hermes-local, cpu-moe, cpu-9b]
+llm_router_deployment_class_by_model: >-
+  {%- set ns = namespace(classes={}) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- set _class = 'local' if m.tier in llm_router_local_registry_tiers
+        else 'sub' if (m.subscription | default(false) or m.tier == 'opencode')
+        else 'free' if (m.in_free_route | default(false)
+                        or m.client_model_id.endswith(':free'))
+        else 'paid-zdr' if (m.zero_data_retention | default(false))
+        else 'retains' -%}
+  {%- set _ = ns.classes.update({m.client_model_id: _class}) -%}
+  {%- endfor -%}
+  {{ ns.classes }}
+
+# The first tag is the deployment's single class. `zdr` is evidence, separate
+# from cost class; non-ZDR subscription/free deployments also carry `retains`
+# so a negative tag constraint can reject them without changing that class.
+llm_router_deployment_tags_by_model: >-
+  {%- set ns = namespace(tags={}) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- set _class = llm_router_deployment_class_by_model[m.client_model_id] -%}
+  {%- set _tags = [_class] -%}
+  {%- if _class == 'local' or m.zero_data_retention | default(false) -%}
+  {%- set _tags = _tags + ['zdr'] -%}
+  {%- elif _class in ['sub', 'free'] -%}
+  {%- set _tags = _tags + ['retains'] -%}
+  {%- endif -%}
+  {%- set _ = ns.tags.update({m.client_model_id: _tags}) -%}
+  {%- endfor -%}
+  {{ ns.tags }}
+
+# A key whose tags require `&zdr` is narrowed to groups that have no retaining
+# or free member. LiteLLM applies the inherited tag constraint on every hop;
+# enforce_fallback_model_access remains the second layer on the model list.
 llm_router_virtual_keys: >-
   {%- set out = [] -%}
   {%- for k in _llm_router_declared_virtual_keys -%}
@@ -32,8 +62,8 @@ llm_router_virtual_keys: >-
   {%- for d in llm_router_role_deployments if d.role in k.models -%}
   {%- set ns.models = ns.models + [d.model] + (d.fallbacks | list) -%}
   {%- endfor -%}
-  {%- if k.zdr_only | default(false) -%}
-  {%- set _stripped = llm_router_zdr_false_group_names + llm_router_zdr_unasserted_terminal_rungs -%}
+  {%- if '&zdr' in (k.tags | default([])) -%}
+  {%- set _stripped = llm_router_zdr_unasserted_terminal_rungs -%}
   {%- set ns.models = ns.models | reject('in', _stripped) | list -%}
   {%- endif -%}
   {%- set _ = out.append(k | combine({'models': ns.models | unique | list})) -%}
@@ -54,19 +84,18 @@ llm_router_zdr_false_group_names: >-
   {%- endfor -%}
   {{ ns.names | unique | list }}
 
-# Every group name whose registry entries ALL carry an asserted ZDR flag: an
-# explicit `zero_data_retention: true`, or an OpenRouter-provider entry that
-# leaves it unset (config.yaml.j2 renders `zdr: true` into every such request,
-# model-list.yaml.j2). Any other external entry — a provider with no
-# request-level ZDR control and no explicit flag, or an explicit false — is
-# unasserted, and so is every group it belongs to. Names are spelled the way
-# the rendered model list spells them (client id, route group, fallback group).
+# Every group name whose entries are local or explicitly ZDR and are not in
+# the free class. Any missing or false cloud assertion is retaining. Names are
+# spelled the way the rendered model list spells them (client id, route group,
+# fallback group).
 llm_router_zdr_asserted_group_names: >-
   {%- set ns = namespace(ok=[], bad=[]) -%}
   {%- for m in llm_router_registry_enabled -%}
   {%- set _names = [m.client_model_id] + ([m.route_group] if m.route_group is defined else [])
-        + ([m.fallback_group] if m.fallback_group is defined else []) -%}
-  {%- if (m.zero_data_retention if m.zero_data_retention is defined else m.provider == 'openrouter') -%}
+        + ([m.fallback_group] if m.fallback_group is defined else [])
+        + (['free', 'free-zdrless'] if (m.in_free_route | default(false)) else []) -%}
+  {%- if (m.tier in llm_router_local_registry_tiers or m.zero_data_retention | default(false))
+        and llm_router_deployment_class_by_model[m.client_model_id] != 'free' -%}
   {%- set ns.ok = ns.ok + _names -%}
   {%- else -%}
   {%- set ns.bad = ns.bad + _names -%}
@@ -74,9 +103,19 @@ llm_router_zdr_asserted_group_names: >-
   {%- endfor -%}
   {{ ns.ok | difference(ns.bad) | unique | list }}
 
-# The terminal rungs (58-review-roles.yml) no ZDR flag is asserted for: a
-# provider with no request-level ZDR control and no explicit flag. A zdr_only
-# key never holds them, the same as the explicit-false groups above.
+# All registry/fallback names that are not safe for a ZDR-only key, including
+# free-class names even when a free provider has a ZDR assertion.
 llm_router_zdr_unasserted_terminal_rungs: >-
-  {{ llm_router_external_terminal_rungs
-     | reject('in', llm_router_zdr_asserted_group_names) | list }}
+  {%- set ns = namespace(names=llm_router_external_terminal_rungs | list) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- set _names = [m.client_model_id] + ([m.route_group] if m.route_group is defined else [])
+        + ([m.fallback_group] if m.fallback_group is defined else []) -%}
+  {%- if (m.tier not in llm_router_local_registry_tiers and not (m.zero_data_retention | default(false)))
+        or llm_router_deployment_class_by_model[m.client_model_id] == 'free' -%}
+  {%- set ns.names = ns.names + _names -%}
+  {%- endif -%}
+  {%- if m.in_free_route | default(false) -%}
+  {%- set ns.names = ns.names + ['free', 'free-zdrless'] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.names | reject('in', llm_router_zdr_asserted_group_names) | unique | list }}

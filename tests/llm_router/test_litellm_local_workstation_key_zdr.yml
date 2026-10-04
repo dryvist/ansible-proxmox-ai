@@ -1,7 +1,7 @@
 ---
-# Owns ONE contract: the zdr_only litellm-local-workstation key holds no
-# group backed by a zero_data_retention: false registry entry, while still
-# holding the local head of its own roles' chains.
+# Owns ONE contract: the &zdr litellm-local-workstation key holds no
+# retaining or free deployment while still holding the local head of its own
+# roles' chains.
 #
 # enforce_fallback_model_access re-checks the calling key on every fallback
 # hop, so the key's `models` list IS the boundary: a rung it does not hold is
@@ -9,7 +9,7 @@
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_litellm_local_workstation_key_zdr.yml -i localhost, -c local
-- name: Verify the litellm-local-workstation key reaches no ZDR-false group
+- name: Verify the litellm-local-workstation key reaches no retaining/free group
   hosts: localhost
   gather_facts: false
   vars:
@@ -51,15 +51,18 @@
         name: llm_router
         tasks_from: registry.yml
 
-    - name: The key keeps its chains' ZDR rungs and drops every ZDR-false one
+    - name: The key is tag-filtered and drops retaining/free rungs
       ansible.builtin.assert:
         quiet: true
         that:
-          # Non-vacuous: the registry really does carry ZDR-false groups, and
+          # Non-vacuous: the registry really does carry unsafe groups, and
           # the unfiltered chain really does reach one of them.
           - llm_router_zdr_false_group_names | length > 0
           - _unfiltered | intersect(llm_router_zdr_false_group_names) | length > 0
-          - _key.models | intersect(llm_router_zdr_false_group_names) | length == 0
+          - "'&zdr' in _key.tags"
+          - "'!free' in _key.tags"
+          - _key.router_settings.enable_tag_filtering | bool
+          - _key.models | intersect(llm_router_zdr_unasserted_terminal_rungs) | length == 0
           - _fast.model in _key.models
           - "'subagent' in _key.models"
           # The goal judge is called through this key. Both its role name and
@@ -71,7 +74,7 @@
           - _key.models_authoritative
         fail_msg: >-
           litellm-local-workstation={{ _key.models }}
-          zdr_false={{ llm_router_zdr_false_group_names }}
+          unsafe={{ llm_router_zdr_unasserted_terminal_rungs }}
         success_msg: "litellm-local-workstation={{ _key.models }}"
       vars:
         _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'litellm-local-workstation') | first }}"
@@ -79,19 +82,18 @@
         _judge: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'judge') | first }}"
         _unfiltered: "{{ [_fast.model] + (_fast.fallbacks | list) }}"
 
-    # NEGATIVE CONTROL: the same key with zdr_only off must reach a ZDR-false
-    # group. Proves the filter, not the chain, is what keeps them out.
-    - name: Drop zdr_only from the workstation key
+    # NEGATIVE CONTROL: removing the tag constraint must restore unsafe rungs.
+    - name: Drop the ZDR tag constraint from the workstation key
       ansible.builtin.set_fact:
         _llm_router_workstation_virtual_keys: >-
           {{ _llm_router_workstation_virtual_keys
-             | map('combine', {'zdr_only': false}) | list }}
+             | map('combine', {'tags': []}) | list }}
 
-    - name: Without zdr_only the key reaches a ZDR-false group
+    - name: Without the ZDR tag constraint the key reaches a retaining or free group
       ansible.builtin.assert:
         quiet: true
         that:
-          - _key.models | intersect(llm_router_zdr_false_group_names) | length > 0
-        fail_msg: "without zdr_only the key still holds no ZDR-false group: {{ _key.models }}"
+          - _key.models | intersect(llm_router_zdr_unasserted_terminal_rungs) | length > 0
+        fail_msg: "without the ZDR tag constraint the key still holds no unsafe group: {{ _key.models }}"
       vars:
         _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'litellm-local-workstation') | first }}"

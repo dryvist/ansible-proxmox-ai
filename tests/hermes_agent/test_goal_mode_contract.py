@@ -81,7 +81,7 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     assert defaults["hermes_agent_memory_llm_model"] == "{{ hermes_brain_model }}"
     # Hindsight is NOT one of Hermes's own inference paths: it authenticates
     # with its own narrowly-scoped router key (models: [free], never
-    # free-zdrless — zero_data_retention: false), which cannot call
+    # free-zdrless — a retaining class), which cannot call
     # hermes_brain_model at all — see
     # tests/hindsight_docker/test_model_var_confined_to_key_scope.yml for its
     # actual contract.

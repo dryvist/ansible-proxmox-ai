@@ -1,0 +1,123 @@
+---
+- name: Verify ZDR-only key tags and create-only seeding
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets:
+      CHATGPT_LOGIN_FILE: /dev/null
+      DASHSCOPE_API_KEY: fixture-dashscope
+      GEMINI_API_KEY: fixture-gemini
+      OPENAI_API_KEY: fixture-openai
+      OPENCODE_API_KEY: fixture-opencode
+      OPENROUTER_API_KEY: fixture-openrouter
+      OPENROUTER_HERMES_KEY: fixture-hermes-openrouter
+      ZAI_API_KEY: fixture-zai
+    bao_apps_secrets:
+      hindsight_llm_router_key: sk-fixture-hindsight
+      litellm_local_llm_router_key: sk-fixture-litellm-local
+      litellm_local_workstation_llm_router_key: sk-fixture-workstation
+      hermes_default_llm_router_key: sk-fixture-hermes-private
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: fixture-large-bearer
+    llm_router_llm_fast_base_url: http://localhost:10434/v1
+    llm_router_llm_light_base_url: http://localhost:10434/v1
+    llm_router_llm_large_base_url: http://localhost:11434/v1
+    llm_router_llm_vllm_base_url: http://localhost:10434/v1
+    hermes_agent_identity: donna
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: judge
+    hindsight_retain_model: qwen3-4b
+    _seed_keys_file: "{{ _role_dir }}/tasks/seed-keys.yml"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Render the fully credentialed config
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: The ZDR-only key aliases carry per-hop tag filtering and cannot list unsafe rungs
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_seed_mode == 'initial'
+          - _zdr_keys | length == 4
+          - >-
+            _zdr_keys | map(attribute='alias') | sort
+            == ['hermes-default', 'hindsight', 'litellm-local', 'litellm-local-workstation']
+          - _bad_keys | length == 0
+        fail_msg: "ZDR key constraints drifted: {{ _bad_keys }}"
+        success_msg: "All four ZDR-only keys require ZDR, exclude free, and enable tag filtering."
+      vars:
+        _zdr_keys: >-
+          {%- set ns = namespace(keys=[]) -%}
+          {%- for k in llm_router_virtual_keys if '&zdr' in (k.tags | default([])) -%}
+          {%- set ns.keys = ns.keys + [k] -%}
+          {%- endfor -%}
+          {{ ns.keys }}
+        _bad_keys: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for k in _zdr_keys -%}
+          {%- set _unsafe = k.models | intersect(llm_router_zdr_unasserted_terminal_rungs) -%}
+          {%- if '!free' not in (k.tags | default([]))
+                or not (k.router_settings.enable_tag_filtering | default(false) | bool)
+                or (_unsafe | length > 0) -%}
+          {%- set ns.rows = ns.rows + [k.alias ~ ':' ~ (_unsafe | string)] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+
+    - name: Read the create and reconcile key request definitions
+      ansible.builtin.set_fact:
+        _create_metadata_source: >-
+          {{ (lookup('file', _seed_keys_file) | from_yaml
+              | selectattr('name', 'search', 'Create the caller keys')
+              | first)['ansible.builtin.uri']['body']['metadata'] }}
+        _create_router_settings_source: >-
+          {{ (lookup('file', _seed_keys_file) | from_yaml
+              | selectattr('name', 'search', 'Create the caller keys')
+              | first)['ansible.builtin.uri']['body']['router_settings'] }}
+        _reconcile_expression: >-
+          {{ (lookup('file', _seed_keys_file) | from_yaml
+              | selectattr('name', 'equalto', 'Compute the route/model update each live key still needs, if any')
+              | first)['ansible.builtin.set_fact']['_llm_router_key_updates'] }}
+        _update_body_source: >-
+          {{ (lookup('file', _seed_keys_file) | from_yaml
+              | selectattr('name', 'search', 'Reconcile route allowlists')
+              | first)['ansible.builtin.uri']['body'] }}
+
+    - name: The create body carries filters; reconciliation leaves them to the UI
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'item.tags' in _create_metadata_source"
+          - "'item.router_settings | default(omit)' in _create_router_settings_source"
+          - "'item.tags' not in _reconcile_expression"
+          - "'router_settings' not in _reconcile_expression"
+          - "'router_settings' not in _update_body_source"
+        fail_msg: >-
+          create metadata={{ _create_metadata_source }}, create settings={{ _create_router_settings_source }},
+          reconcile={{ _reconcile_expression }}, update body={{ _update_body_source }}
+        success_msg: "Tags and filtering settings seed at creation and do not overwrite live key edits."

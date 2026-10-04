@@ -1,0 +1,115 @@
+---
+- name: Verify every rendered deployment has class and retention tags
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets:
+      CHATGPT_LOGIN_FILE: /dev/null
+      DASHSCOPE_API_KEY: fixture-dashscope
+      GEMINI_API_KEY: fixture-gemini
+      OPENAI_API_KEY: fixture-openai
+      OPENCODE_API_KEY: fixture-opencode
+      OPENROUTER_API_KEY: fixture-openrouter
+      OPENROUTER_HERMES_KEY: fixture-hermes-openrouter
+      ZAI_API_KEY: fixture-zai
+    bao_apps_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: fixture-large-bearer
+    llm_router_llm_fast_base_url: http://localhost:10434/v1
+    llm_router_llm_light_base_url: http://localhost:10434/v1
+    llm_router_llm_large_base_url: http://localhost:11434/v1
+    llm_router_llm_vllm_base_url: http://localhost:10434/v1
+    llm_router_large_passthrough_enabled: true
+    llm_router_openrouter_wildcard_enabled: true
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: judge
+    hindsight_retain_model: qwen3-4b
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Render the fully credentialed model list
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Check every physical deployment's class, ZDR evidence, and fail-open setting
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _deployment_rows | length > 0
+          - _bad_deployments | length == 0
+          - _bad_zdr_evidence | length == 0
+        fail_msg: >-
+          deployment tags={{ _bad_deployments }}, ZDR evidence mismatches={{ _bad_zdr_evidence }}
+        success_msg: >-
+          {{ _deployment_rows | length }} deployments have one class, no default tag,
+          fail-open enabled, and ZDR only with explicit registry evidence or a local class.
+      vars:
+        _class_names: [sub, local, paid-zdr, free, retains]
+        # Auto-router rows select from deployments and intentionally carry no
+        # tags themselves; each selected tier is checked in the next contract.
+        _deployment_rows: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.model', 'defined')
+             | rejectattr('litellm_params.complexity_router_config', 'defined') | list }}
+        _bad_deployments: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for d in _deployment_rows -%}
+          {%- set _tags = d.litellm_params.tags | default([]) -%}
+          {%- set _class = _tags | first | default('') -%}
+          {%- if _class not in _class_names
+                or (_tags | difference(['zdr', 'retains', _class]) | length > 0)
+                or ('retains' in _tags and _class not in ['sub', 'free', 'retains'])
+                or 'default' in _tags
+                or d.model_info.allow_fail_open | default(false) != true -%}
+          {%- set ns.rows = ns.rows + [d.model_name ~ ':' ~ (_tags | string)] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+        _bad_zdr_evidence: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for d in _deployment_rows -%}
+          {%- set _tags = d.litellm_params.tags | default([]) -%}
+          {%- set _matches = namespace(entries=[]) -%}
+          {%- for m in llm_router_registry_enabled -%}
+          {%- set _litellm_model = m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id) -%}
+          {%- if d.litellm_params.model == _litellm_model -%}
+          {%- set _matches.entries = _matches.entries + [m] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- if 'zdr' in _tags and 'local' not in _tags
+                and (_matches.entries | length == 0 or (_matches.entries | selectattr('zero_data_retention', 'defined')
+                    | selectattr('zero_data_retention') | list | length != _matches.entries | length)) -%}
+          {%- set ns.rows = ns.rows + [d.model_name ~ ':' ~ (_tags | string)] -%}
+          {%- elif 'local' in _tags and 'zdr' not in _tags -%}
+          {%- set ns.rows = ns.rows + [d.model_name ~ ':' ~ (_tags | string)] -%}
+          {%- elif _matches.entries | length > 0 and 'local' not in _tags
+                and (_matches.entries | selectattr('zero_data_retention', 'defined')
+                    | selectattr('zero_data_retention') | list | length != _matches.entries | length)
+                and 'retains' not in _tags -%}
+          {%- set ns.rows = ns.rows + [d.model_name ~ ':' ~ (_tags | string)] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}

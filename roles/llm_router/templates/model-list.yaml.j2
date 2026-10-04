@@ -55,6 +55,7 @@ model_list:
           REASONING: {{ llm_router_primary_model }}
         default_model: {{ llm_router_primary_model }}
     model_info:
+      allow_fail_open: true
       mode: chat
       max_input_tokens: {{ m.context_window }}
       max_tokens: {{ m.max_output_tokens }}{{ delegation_hints(m) }}
@@ -74,6 +75,7 @@ model_list:
           REASONING: {{ m.agentic_model }}
         default_model: {{ m.agentic_model }}
     model_info:
+      allow_fail_open: true
       mode: chat
       max_input_tokens: {{ m.context_window }}
       max_output_tokens: {{ m.max_output_tokens }}
@@ -86,6 +88,7 @@ model_list:
   - model_name: {{ m.client_model_id }}
     litellm_params:
       model: {{ litellm_model(m) }}
+      tags: {{ llm_router_deployment_tags_by_model[m.client_model_id] | to_json }}
       api_base: {{ llm_router_llm_large_base_url }}
       api_key: os.environ/LLM_LARGE_BEARER_TOKEN
       # /v1/responses -> /chat/completions bridge. None of these backends serve
@@ -109,6 +112,7 @@ model_list:
 {% endfor %}
 {% endif %}
     model_info:
+      allow_fail_open: true
       disable_background_health_check: true
 {% if m.context_window is defined %}
       # Explicit because these backend ids are absent from LiteLLM's catalog.
@@ -121,6 +125,7 @@ model_list:
   - model_name: {{ m.client_model_id }}
     litellm_params:
       model: {{ litellm_model(m) }}
+      tags: {{ llm_router_deployment_tags_by_model[m.client_model_id] | to_json }}
       api_base: {{ llm_router_llm_large_standby_base_url }}
       api_key: os.environ/LLM_LARGE_STANDBY_BEARER_TOKEN
       # /v1/responses -> /chat/completions bridge. None of these backends serve
@@ -140,6 +145,7 @@ model_list:
 {% endfor %}
 {% endif %}
     model_info:
+      allow_fail_open: true
       disable_background_health_check: true
 {% if m.context_window is defined %}
       max_input_tokens: {{ m.context_window }}
@@ -153,12 +159,15 @@ model_list:
   - model_name: "*"
     litellm_params:
       model: openai/*
+      tags: [local, zdr]
       api_base: {{ llm_router_llm_large_base_url }}
       api_key: os.environ/LLM_LARGE_BEARER_TOKEN
 {% if llm_router_passthrough_max_parallel_requests | int > 0 %}
       # This tier has an independent admission cap.
       max_parallel_requests: {{ llm_router_passthrough_max_parallel_requests }}
 {% endif %}
+    model_info:
+      allow_fail_open: true
 {% endif %}
 {% include 'model-list-opencode.yaml.j2' %}
 {% include 'model-list-zai.yaml.j2' %}
@@ -171,6 +180,7 @@ model_list:
   - model_name: {{ m.route_group }}
     litellm_params:
       model: {{ litellm_model(m) }}
+      tags: {{ llm_router_deployment_tags_by_model[m.client_model_id] | to_json }}
 {% if m.provider != 'chatgpt' %}
       api_key: os.environ/{{ m.credential_env }}
 {% endif %}
@@ -224,11 +234,11 @@ model_list:
           require_parameters: true
           allow_fallbacks: true
           data_collection: deny
-          # Defaults true; see the free preset's entry in llm-models.yml for
-          # the one case where an entry sets zero_data_retention: false.
-          zdr: {{ m.zero_data_retention | default(true) | bool | lower }}
+          # Only registry entries with provider evidence enable ZDR routing.
+          zdr: {{ m.zero_data_retention | default(false) | bool | lower }}
 {% endif %}
     model_info:
+      allow_fail_open: true
       mode: {{ m.mode | default('chat') }}
       # Same rationale as the OpenRouter tier above: a real call already
       # proves liveness or hands over at once (num_retries above), so a
@@ -248,6 +258,7 @@ model_list:
   - model_name: "openrouter/*"
     litellm_params:
       model: openrouter/*
+      tags: [retains]
       api_key: os.environ/OPENROUTER_API_KEY
       order: {{ llm_router_openrouter_default_order }}
       rpm: {{ llm_router_openrouter_rpm }}
@@ -258,7 +269,9 @@ model_list:
         provider:
           sort: price
           data_collection: deny
-          zdr: true
+          zdr: false
+    model_info:
+      allow_fail_open: true
 {% endif %}
 {% endif %}
 {% include 'model-list-light.yaml.j2' %}
@@ -271,6 +284,7 @@ model_list:
   - model_name: {{ m.client_model_id }}
     litellm_params:
       model: {{ litellm_model(m) }}
+      tags: {{ llm_router_deployment_tags_by_model[m.client_model_id] | to_json }}
       api_base: {{ llm_router_llm_vllm_base_url }}
       api_key: {{ llm_router_light_api_key }}
       # /v1/responses -> /chat/completions bridge. None of these backends serve
@@ -287,6 +301,7 @@ model_list:
 {{ local_bounds(m) }}
 {% if m.embedding | default(false) or m.context_window is defined or m.allowed_fails is defined or m.cooldown_time is defined or m.hints is defined %}
     model_info:
+      allow_fail_open: true
 {% if m.embedding | default(false) %}
       mode: embedding
 {% elif m.context_window is defined %}
