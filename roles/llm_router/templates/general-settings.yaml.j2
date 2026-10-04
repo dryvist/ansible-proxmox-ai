@@ -3,6 +3,14 @@ general_settings:
   # Rationale: defaults/main/37-fallback-entry-points.yml. Unconditional —
   # not gated on llm_router_db_host below.
   enforce_fallback_model_access: {{ llm_router_enforce_fallback_model_access | to_json }}
+{% if llm_router_oidc_enabled | bool %}
+  # Admin UI sign-in is SSO only (65-oidc.yml). Neither setting affects API
+  # bearer auth: virtual keys and the master key keep working. Gated on the
+  # same condition as the GENERIC_* env block, so the UI is never left with
+  # no sign-in path.
+  disable_env_credential_login: true
+  disable_password_login_when_sso_enabled: true
+{% endif %}
 {% if llm_router_db_host | length > 0 %}
   # Adaptive-router state. Gated on the same condition as DATABASE_URL in the
   # EnvironmentFile, so config and env cannot separate. os.environ/ because the
@@ -11,6 +19,12 @@ general_settings:
   # Rationale: defaults/main/45-database.yml (llm_router_db_connection_pool_limit).
   database_connection_pool_limit: {{ llm_router_db_connection_pool_limit }}
   store_model_in_db: {{ llm_router_store_model_in_db | to_json }}
+{% if llm_router_redis_host | length > 0 %}
+  # Spend writes go to the shared store first; one router holds the store's
+  # lock and commits them to the database. Store down: spend stays queued in
+  # memory and the database write waits; requests are unaffected.
+  use_redis_transaction_buffer: true
+{% endif %}
   disable_spend_logs: {{ llm_router_disable_spend_logs | to_json }}
   disable_error_logs: {{ llm_router_disable_error_logs | to_json }}
 {% if not llm_router_disable_spend_logs | bool %}
@@ -37,6 +51,11 @@ general_settings:
 {% if llm_router_background_health_checks %}
   health_check_interval: {{ llm_router_health_check_interval }}
   health_check_skip_disabled_background_models: true
+{% if llm_router_redis_host | length > 0 %}
+  # One router runs each health check and the others read its result from the
+  # shared store. Store down: each router checks on its own.
+  use_shared_health_check: true
+{% endif %}
 {% endif %}
 {% if llm_router_alert_webhook_url | trim | length > 0 %}
   # No generic "webhook" alert type in this pinned release (verified against

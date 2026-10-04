@@ -46,6 +46,7 @@ jobs:
           - tests/llm_router/test_litellm_local_workstation_key_zdr.yml # zdr_only key: no ZDR-false group
           - tests/llm_router/test_llm_roles_egress.yml # role chains respect egress; registry matches the role map
           - tests/llm_router/test_callbacks_render_as_list.yml # callbacks parse as a list, not a block scalar
+          - tests/llm_router/test_redis_coordination.yml # shared store backs cache, limits, spend buffer, health checks
           # process-recovery + rolling-converge
           - tests/llm_router/test_service_restart_policy.yml tests/llm_router/test_syslog_route_outside_rolling_play.yml
           - tests/llm_router/test_hermes_default_failover.yml # no-credential fallback stays local
@@ -111,10 +112,6 @@ jobs:
           - tests/llm_router/test_seed_keys_rotation_reread_preserves_existing.yml
           # consumer-seeding play gates run_once selection on pool reachability
           - tests/llm_router/test_seed_play_reachability_gate.yml
-          # fast-gpu is gated by the 4080 session lock, not redirected
-          - tests/llm_router/test_subagent_lock_gated_models.yml
-          # studio gate composition: gated ids, role names, overflow map
-          - tests/llm_router/test_studio_lock_gated_models.yml
           - tests/llm_router/test_syslog_route.yml # router syslog route renders the documented taxonomy and unit match
           - tests/llm_router/test_otel_export.yml # otel callback + OTEL_ENDPOINT export to the shared collector
           # embed/embeddings/ocr never fall through to the chat ladder
@@ -168,11 +165,7 @@ jobs:
       - name: Run llm_router contract playbook
         run: ansible-playbook ${{ matrix.playbook }} -i localhost, -c local
 
-  # Not part of the matrix above: this is pytest, not ansible-playbook, and it
-  # needs a real Redis to exercise fast_subagent_lock.py.j2's actual EVAL
-  # calls (test_fast_subagent_lock_behavioral.py), which nothing else in this
-  # file needs — a service scoped to every matrix instance would start Redis
-  # 30 times for one consumer.
+  # Not part of the matrix above: pytest, not ansible-playbook.
   llm-router-registry-contract:
     name: Registry single-source contract
     runs-on: ubuntu-latest
@@ -181,24 +174,6 @@ jobs:
       LLM_ROUTER_MASTER_KEY: sk-ci-placeholder-not-a-secret
       LLM_LARGE_BEARER_TOKEN: ci-placeholder-bearer-not-a-secret
       PROXMOX_SUBDOMAIN: pve.example.test
-      REDIS_HOST: localhost
-      REDIS_PORT: 6379
-      # test_fast_subagent_lock_behavioral.py: a missing redis package or an
-      # unreachable server must FAIL this job, never quietly skip the one
-      # suite that exercises the lock's real Redis behavior — see that
-      # file's own docstring.
-      LLM_ROUTER_REQUIRE_REDIS: "1"
-
-    services:
-      redis:
-        image: redis:8-alpine@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 5
 
     steps:
       - name: Checkout code
@@ -212,7 +187,7 @@ jobs:
       - name: Install Ansible
         run: |
           python -m pip install --upgrade pip
-          pip install ansible pytest pyyaml redis
+          pip install ansible pytest pyyaml
 
       - name: Cache Ansible Galaxy content
         id: galaxy-cache

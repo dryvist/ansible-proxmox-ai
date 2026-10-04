@@ -50,13 +50,12 @@ for the full reasoning, including what is still unverified.
 For a caller that wants to address "just the 4080" directly without naming
 its physical model id, and build its own fallback sequence around that one
 call (e.g. try `fast-gpu`, then its own local model, then the full `fast`
-chain above as a catch-all). Contention fails outright, never redirects —
-see `defaults/main/57-subagent-lock.yml` for why a redirect here would
-defeat the caller's own sequencing.
+chain above as a catch-all). Contention fails outright, never redirects, so
+the caller's own sequencing runs.
 
 ## Swap a role
 
-In the Admin UI at `/ui` (sign-in from `UI_USERNAME` / `UI_PASSWORD`): **Models**
+In the Admin UI at `/ui` (Authelia SSO sign-in): **Models**
 → the role's row → change its target, or **Settings → Fallbacks** → reorder.
 Effective immediately; no restart, no converge, no git diff.
 

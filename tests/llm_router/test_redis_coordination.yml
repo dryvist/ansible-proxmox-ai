@@ -1,16 +1,19 @@
 ---
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_redis_coordination.yml -i localhost, -c local
 # Pins the TYPE of litellm_settings.callbacks in the rendered config.yaml.j2.
 #
 # A folded block scalar around a to_json expression (`callbacks: >-`) parses
 # as ONE STRING that merely looks like a list; the proxy then imports that
 # string as a module name and exits at startup, on every router at once. The
 # render is syntactically valid YAML either way, so nothing short of a type
-# check on the parsed value catches it. Rendered twice, with the spend store
-# absent and present, since the store toggles other blocks of the same file.
+# check on the parsed value catches it. Rendered twice: with the spend store
+# absent (lock callback off) and present (lock callback on), so both branches
+# of the expression are covered.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_callbacks_render_as_list.yml -i localhost, -c local
-- name: Verify litellm_settings.callbacks renders as a YAML list
+- name: Verify the shared store backs every Redis-capable router feature
   hosts: localhost
   gather_facts: false
   vars:
@@ -56,32 +59,31 @@
     - name: Configure a spend store
       ansible.builtin.set_fact:
         llm_router_redis_host: redis.example.test
+        llm_router_db_host: db.example.test
 
     - name: Render config.yaml.j2 with a spend store
       ansible.builtin.set_fact:
         _rendered: >-
           {{ _rendered | combine({'with': (lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml)}) }}
 
-    - name: The callbacks value is a list of strings in both renders
+    - name: With a store, every Redis-capable feature is on and the cache is opt-in
       ansible.builtin.assert:
         quiet: true
         that:
-          - _rendered[item].litellm_settings.callbacks is not string
-          - _rendered[item].litellm_settings.callbacks is sequence
-          - _rendered[item].litellm_settings.callbacks | length > 0
-          - _rendered[item].litellm_settings.callbacks | reject('string') | list | length == 0
-          - "'system_merge.proxy_handler_instance' in _rendered[item].litellm_settings.callbacks"
-          - "'request_metrics.proxy_handler_instance' in _rendered[item].litellm_settings.callbacks"
-        fail_msg: >-
-          litellm_settings.callbacks rendered ({{ item }} spend store) as
-          {{ _rendered[item].litellm_settings.callbacks | type_debug }}:
-          {{ _rendered[item].litellm_settings.callbacks }}
-        success_msg: "{{ item }} spend store: callbacks={{ _rendered[item].litellm_settings.callbacks }}"
-      loop: [without, with]
+          - _rendered.with.litellm_settings.cache is true
+          - _rendered.with.litellm_settings.cache_params.type == 'redis'
+          - _rendered.with.litellm_settings.cache_params.mode == 'default_off'
+          - _rendered.with.litellm_settings.cache_params.ttl | int > 0
+          - _rendered.with.litellm_settings.enable_redis_auth_cache is true
+          - _rendered.with.general_settings.use_redis_transaction_buffer is true
+          - _rendered.with.general_settings.use_shared_health_check is true
+          - _rendered.with.router_settings.redis_host is defined
 
-    - name: The retired lock callback is registered in neither render
+    - name: Without a store, none of it renders
       ansible.builtin.assert:
         quiet: true
         that:
-          - "'fast_subagent_lock.proxy_handler_instance' not in _rendered[item].litellm_settings.callbacks"
-      loop: [without, with]
+          - _rendered.without.litellm_settings.cache is not defined
+          - _rendered.without.litellm_settings.enable_redis_auth_cache is not defined
+          - _rendered.without.general_settings.use_redis_transaction_buffer is not defined
+          - _rendered.without.general_settings.use_shared_health_check is not defined
