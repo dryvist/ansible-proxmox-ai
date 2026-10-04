@@ -1,0 +1,122 @@
+---
+- name: Verify auto-router tiers resolve to tagged deployments and public Hermes ends in Z.ai
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets:
+      CHATGPT_LOGIN_FILE: /dev/null
+      DASHSCOPE_API_KEY: fixture-dashscope
+      GEMINI_API_KEY: fixture-gemini
+      OPENAI_API_KEY: fixture-openai
+      OPENCODE_API_KEY: fixture-opencode
+      OPENROUTER_API_KEY: fixture-openrouter
+      OPENROUTER_HERMES_KEY: fixture-hermes-openrouter
+      ZAI_API_KEY: fixture-zai
+    bao_apps_secrets:
+      hermes_default_llm_router_key: sk-fixture-hermes-public
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: fixture-large-bearer
+    llm_router_llm_fast_base_url: http://localhost:10434/v1
+    llm_router_llm_light_base_url: http://localhost:10434/v1
+    llm_router_llm_large_base_url: http://localhost:11434/v1
+    llm_router_llm_vllm_base_url: http://localhost:10434/v1
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_agent_identity: hermes
+    hermes_brain_model: hermes-default
+    hermes_goal_judge_model: judge
+    hindsight_retain_model: qwen3-4b
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Render the fully credentialed config
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Every auto-router target resolves to class-tagged deployments
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _router_targets | length > 0
+          - _missing_targets | length == 0
+          - _untagged_targets | length == 0
+        fail_msg: "auto-router missing targets={{ _missing_targets }}, untagged={{ _untagged_targets }}"
+        success_msg: "All auto-router tiers and defaults resolve to rendered deployments with a class tag."
+      vars:
+        _deployment_rows: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.model', 'defined')
+             | rejectattr('litellm_params.complexity_router_config', 'defined') | list }}
+        _auto_routers: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.complexity_router_config', 'defined') | list }}
+        _router_targets: >-
+          {%- set ns = namespace(targets=[]) -%}
+          {%- for r in _auto_routers -%}
+          {%- set _router = r.litellm_params.complexity_router_config | default({}) -%}
+          {%- set _tiers = _router.tiers | default({}) -%}
+          {%- set ns.targets = ns.targets + (_tiers.values() | list) -%}
+          {%- set _default = _router.default_model | default(none) -%}
+          {%- if _default is not none -%}
+          {%- set ns.targets = ns.targets + [_default] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.targets | unique | list }}
+        _missing_targets: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for name in _router_targets -%}
+          {%- if _deployment_rows | selectattr('model_name', 'equalto', name) | list | length == 0 -%}
+          {%- set ns.names = ns.names + [name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.names }}
+        _untagged_targets: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for name in _router_targets -%}
+          {%- set _rows = _deployment_rows | selectattr('model_name', 'equalto', name) | list -%}
+          {%- if _rows | length > 0 and (_rows | rejectattr('litellm_params.tags', 'defined') | list | length > 0) -%}
+          {%- set ns.names = ns.names + [name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.names }}
+
+    - name: The public Hermes key is unfiltered and its ladder ends with Z.ai
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _public_key.tags is not defined
+          - _fallback == llm_router_hermes_default_fallback_chain
+          - _fallback | length > 0
+          - _fallback[-1] == llm_router_zai_groups[-1]
+          - llm_router_hermes_default_fallback_chain | difference(_public_key.models) | length == 0
+        fail_msg: >-
+          public tags={{ _public_key.tags | default([]) }} fallback={{ _fallback }}
+          zai={{ llm_router_zai_groups }}
+        success_msg: "Public Hermes retains every class in its scope and places Z.ai last in its fallback order."
+      vars:
+        _public_key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'hermes-default') | first }}"
+        _fallback: >-
+          {{ _config.router_settings.fallbacks
+             | selectattr('hermes-default', 'defined')
+             | map(attribute='hermes-default') | first }}

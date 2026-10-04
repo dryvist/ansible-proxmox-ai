@@ -130,8 +130,9 @@ llm_router_role_deployments:
   - role: fast-gpu
     model: "{{ llm_router_hermes_local_4080_id }}"
     fallbacks: []
-  # The judge (`goal-judge` target), cross-family to the primary. Local only;
-  # thinking off so a one-word verdict fits 4 tokens.
+  # The judge uses the routine model while it is servable; a parked routine
+  # model temporarily resolves to the active primary. Local only; thinking is
+  # off so a one-word verdict fits 4 tokens.
   - role: judge
     model: "{{ llm_router_routine_model }}"
     fallbacks: []
@@ -238,6 +239,8 @@ _llm_router_role_params: >-
         'use_chat_completions_api': true}}) -%}
   {%- endif -%}
   {%- if m.client_model_id in ns.params -%}
+  {%- set _ = ns.params[m.client_model_id].update({
+        'tags': llm_router_deployment_tags_by_model[m.client_model_id]}) -%}
   {%- for k in ['num_retries', 'request_timeout', 'stream_timeout'] if m[k] is defined -%}
   {%- set _ = ns.params[m.client_model_id].update({('timeout' if k == 'request_timeout' else k): m[k]}) -%}
   {%- endfor -%}
@@ -262,16 +265,17 @@ _llm_router_role_model_info: >-
   {%- set ns = namespace(info={}) -%}
   {%- for m in llm_router_registry_enabled -%}
   {%- if m.embedding | default(false) -%}
-  {%- set _ = ns.info.update({m.client_model_id: {'mode': 'embedding'}}) -%}
+  {%- set _ = ns.info.update({m.client_model_id: {'mode': 'embedding', 'allow_fail_open': true}}) -%}
   {%- elif m.context_window is defined -%}
   {%- set _ = ns.info.update({m.client_model_id: {
         'mode': 'chat',
+        'allow_fail_open': true,
         'max_input_tokens': _llm_router_vllm_max_input_tokens_by_model[m.client_model_id]
                              if m.client_model_id in _llm_router_vllm_max_input_tokens_by_model
                              else m.context_window,
         'max_tokens': m.max_output_tokens | default(m.context_window)}}) -%}
   {%- else -%}
-  {%- set _ = ns.info.update({m.client_model_id: {'mode': 'chat'}}) -%}
+  {%- set _ = ns.info.update({m.client_model_id: {'mode': 'chat', 'allow_fail_open': true}}) -%}
   {%- endif -%}
   {%- endfor -%}
   {{ ns.info }}

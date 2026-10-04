@@ -11,7 +11,13 @@ from __future__ import annotations
 
 import yaml
 
-from _registry import REPO_ROOT, backend_for_role, load_registry
+from _registry import (
+    REPO_ROOT,
+    backend_for_role,
+    effective_backend_for_role,
+    load_registry,
+    role_is_parked,
+)
 from _role_files import role_defaults
 
 
@@ -22,9 +28,11 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     router_config = (REPO_ROOT / "roles/llm_router/templates/config.yaml.j2").read_text()
 
     hermes_backend = backend_for_role(registry, "primary")
-    # The judge is a router role backed by the routine tier, not a git alias.
-    judge_backend = backend_for_role(registry, "routine")
-    assert judge_backend != hermes_backend
+    # The judge uses the routine model while it is active. During its explicit
+    # parked state, the router sends the role to the active primary instead.
+    routine_parked = role_is_parked(registry, "routine")
+    judge_backend = effective_backend_for_role(registry, "routine")
+    assert (judge_backend == hermes_backend) is routine_parked
 
     # Physical aliases belong to the entries they point at. The Hermes brain
     # selector is intentionally not one of them: it is a native LiteLLM
@@ -46,7 +54,7 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
         return (
             entry.get("tier") == "openrouter"
             and (entry.get("context_window") or 0) >= 1_000_000
-            and entry.get("zero_data_retention", True) is not False
+            and entry.get("zero_data_retention", False) is True
         )
 
     aliases = {
@@ -70,7 +78,8 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     assert aliases, "no static alias loaded; nothing below is checked"
     assert len(aliases) == 8
     assert judge_backend in aliases.values()
-    # The brain is reached by alias too (the judge does not share it, above).
+    # The brain is reached by alias too; during a parked-routine bridge the
+    # judge shares this active backend until the serving host is rebuilt.
     assert hermes_backend in aliases.values()
     # The document tier is reached by image content parts, not by a selector
     # var, so it has no hermes_* binding to assert — only that a name a human

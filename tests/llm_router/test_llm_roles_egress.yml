@@ -31,6 +31,17 @@
       ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/{{ item }}"
       loop: [assert-llm-roles.yml, assert-egress.yml]
 
+    - name: A parked fast model falls back to an active local model
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_routine_model == llm_router_primary_model
+          - llm_router_small_model == llm_router_primary_model
+          - _mapped_fast_model not in llm_router_servable_models
+      vars:
+        _mapped_fast_model: "{{ llm_roles.models[llm_roles.roles.fast.model].id }}"
+      when: _mapped_fast_model not in llm_router_servable_models
+
     - name: The recorder holds home-lab rungs only, no cloud rung, no message logging
       ansible.builtin.assert:
         quiet: true
@@ -115,3 +126,25 @@
             quiet: true
             that:
               - "'max_parallel_requests differs' in ansible_failed_result.msg"
+
+    # NEGATIVE: a disabled map model must carry the explicit standby marker.
+    - name: Remove the parked marker
+      ansible.builtin.set_fact:
+        llm_router_model_registry: >-
+          {{ llm_router_model_registry | map('combine', {'standby': false}) | list }}
+
+    - name: An unmarked disabled map model is refused
+      block:
+        - name: Run the role-map assert
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-llm-roles.yml"
+        - name: Fail if the assert let the unmarked state through
+          ansible.builtin.fail:
+            msg: disabled map model without standby marker passed the role-map assert
+      rescue:
+        - name: The failure names the unmatched model
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - _mapped_fast_model in ansible_failed_result.msg
+          vars:
+            _mapped_fast_model: "{{ llm_roles.models[llm_roles.roles.fast.model].id }}"

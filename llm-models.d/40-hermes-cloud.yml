@@ -10,10 +10,9 @@ _llm_registry_hermes_cloud:
   # breakage was invisible here. context_window is the EFFECTIVE SERVING window
   # advertised to callers, not the upstream's real (larger) one.
   #
-  # NO zero_data_retention OVERRIDE, deliberately: this upstream satisfies the
-  # strict default the role renders for every other entry. Verified 2026-09-11
-  # by calling it under that exact policy — provider training denied AND zero
-  # retention required — with 10 of 10 attempts served. The old entry's
+  # Explicitly mirrors the OpenRouter request-level ZDR policy below. Verified
+  # 2026-09-11 by calling it under that exact policy — provider training denied
+  # AND zero retention required — with 10 of 10 attempts served. The old entry's
   # free-tier-retains-prompts caveat is gone for the same reason: it described
   # the previous upstream and would now overstate the exposure, and a caveat
   # that overstates is still a wrong caveat.
@@ -41,6 +40,8 @@ _llm_registry_hermes_cloud:
     max_output_tokens: 8192
     credential_env: OPENROUTER_API_KEY
     key_field: OPENROUTER_API_KEY
+    # OpenRouter request-level `zdr: true` (provider routing).
+    zero_data_retention: true
     # Sized from a MEASURED full-length generation: 8192 output tokens in 58 s
     # on 2026-09-11. This BOUNDS THE ATTEMPT; it does not promise the
     # generation — a slower draw from the same upstream is meant to fail over
@@ -168,6 +169,8 @@ _llm_registry_hermes_cloud:
     output_cost_per_token: 0.00000341
     credential_env: OPENROUTER_HERMES_KEY
     key_field: OPENROUTER_HERMES_KEY
+    # OpenRouter request-level `zdr: true` (provider routing).
+    zero_data_retention: true
 
   - client_model_id: hermes-cloud-openrouter-glm-5.2
     upstream_model_id: z-ai/glm-5.2
@@ -182,6 +185,8 @@ _llm_registry_hermes_cloud:
     output_cost_per_token: 0.000002297
     credential_env: OPENROUTER_HERMES_KEY
     key_field: OPENROUTER_HERMES_KEY
+    # OpenRouter request-level `zdr: true` (provider routing).
+    zero_data_retention: true
 
   # SUBSCRIPTION RUNG: LiteLLM's native chatgpt/ provider (OAuth device-code
   # login per router node into CHATGPT_TOKEN_DIR; the converge never touches
@@ -219,7 +224,8 @@ _llm_registry_hermes_cloud:
     # picked up explicitly instead, once, as the shared terminal segment
     # every chain ends in (35-hermes-cloud.yml llm_router_hermes_cloud_
     # fallback_groups, via llm_router_external_subscription_rungs,
-    # 58-review-roles.yml). No ZDR claim, so it sits after free_zdrless.
+    # 58-review-roles.yml). It carries the retaining marker, so it sits after
+    # the free segment.
     hermes_chain: false
     request_timeout: 300
     # First-byte bound: a node whose login needs the device-code flow blocks
@@ -233,8 +239,8 @@ _llm_registry_hermes_cloud:
   # own API-key endpoint, deliberately LAST in the paid segment so every
   # cheaper metered rung is tried first. Renders only when its credential
   # resolves (roles/openbao_secrets 10-domains.yml declares the path). This
-  # upstream makes no ZDR claim; it is the rung that is guaranteed to answer,
-  # not a ZDR one, and sits behind every ZDR rung for that reason.
+  # upstream carries the retaining marker; it is the rung guaranteed to
+  # answer and sits behind every ZDR rung for that reason.
   - client_model_id: codex-api-model
     upstream_model_id: "{{ llm_router_chatgpt_model }}"
     litellm_model_name: "openai/{{ llm_router_chatgpt_model }}"

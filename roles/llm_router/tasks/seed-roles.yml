@@ -22,13 +22,12 @@
 # that's the rolling converge play that just started it, or the later
 # run_once seeding play reusing an already-serving member (llm-serving.yml).
 #
-# One exception to "does nothing to one that already exists" in `initial`
-# mode: a role whose MODEL TARGET moved (the stale-reconcile path near the
-# end of this file) also gets its fallback order re-seeded, since
-# /model/delete + /model/new replace the deployment but carry no fallback
-# record with it. That still only fires on a real target change, never on a
-# steady-state converge, so a UI-edited fallback order on an unchanged role
-# is still untouched — in `initial` mode.
+# Exceptions to "does nothing to one that already exists" in `initial` mode:
+# a role whose model target or catalog-derived model_info changed is recreated
+# so callers see the current model contract. Its fallback order is re-seeded,
+# since /model/delete + /model/new replace the deployment but carry no fallback
+# record with it. An unchanged target and model_info leave the role and its
+# UI-edited fallback order alone.
 
 - name: Assert every role targets a model the catalog describes
   ansible.builtin.assert:
@@ -173,15 +172,13 @@
     - item.item.fallbacks | select('in', _llm_router_live_models) | list | length > 0
   no_log: true
 
-# RECONCILE an existing role whose target has moved in the registry (`initial`
-# mode), or EVERY existing role unconditionally (`rebuild` mode — see the
-# file header). Seeding only ever creates, so in `initial` mode a role
-# pointed at a model that was later repointed or retired keeps answering
-# from the stale target forever — the subagent role sat on a withdrawn
-# stealth model this way, 404ing on every call while the registry had
-# already been corrected. `rebuild` widens this same loop to every role so a
-# DR reset also re-pushes current litellm_params and fallbacks onto roles
-# whose target never moved.
+# RECONCILE an existing role whose target or catalog-derived model_info has
+# drifted in `initial` mode, or EVERY existing role unconditionally (`rebuild`
+# mode — see the file header). A same-target role can still advertise a stale
+# max_input_tokens after its catalog window changes; comparing the small public
+# model_info contract catches that drift without rewriting a steady-state role.
+# `rebuild` widens this same loop to every role so a DR reset also re-pushes
+# current litellm_params and fallbacks onto roles whose contract never moved.
 #
 # Delete-then-create rather than /model/update, deliberately. 55-roles.yml
 # records the measured trap: /model/update writes the new litellm_params and
@@ -191,7 +188,7 @@
 # same-window special case to get wrong.
 #
 # Idempotent by construction: in `initial` mode the loop is empty unless a
-# live role's model string actually differs from the registry's, so a
+# live role's target or advertised model_info differs from the catalog, so a
 # steady-state converge changes nothing; in `rebuild` mode it always covers
 # every live, catalogued role, by design.
 
@@ -205,16 +202,28 @@
          else (llm_router_role_deployments
                | selectattr('role', 'in', _llm_router_live_models)
                | selectattr('model', 'in', _llm_router_live_models)
-               | rejectattr('role', 'in', _llm_router_roles_on_target) | list) }}
+               | rejectattr('role', 'in', _llm_router_roles_on_catalog_contract) | list) }}
   vars:
-    _llm_router_roles_on_target: >-
-      {{ llm_router_existing_models.json.data | default([])
-         | selectattr('litellm_params.model', 'defined')
-         | selectattr('litellm_params.model', 'in',
-                      llm_router_role_deployments | map(attribute='model')
-                      | map('extract', _llm_router_role_params)
-                      | map(attribute='model') | list)
-         | map(attribute='model_name') | list }}
+    _llm_router_roles_on_catalog_contract: >-
+      {%- set ns = namespace(roles=[]) -%}
+      {%- for role in llm_router_role_deployments
+           if role.role in _llm_router_live_models
+           and role.model in _llm_router_live_models -%}
+      {%- set _existing = llm_router_existing_models.json.data | default([])
+           | selectattr('model_name', 'equalto', role.role) | first | default({}) -%}
+      {%- set _actual_params = _existing.litellm_params | default({}) -%}
+      {%- set _actual_info = _existing.model_info | default({}) -%}
+      {%- set _expected_info = _llm_router_role_model_info[role.model] -%}
+      {%- if (_actual_params.model | default('')) == _llm_router_role_params[role.model].model
+           and (_actual_info.mode | default('')) == (_expected_info.mode | default(''))
+           and (_actual_info.max_input_tokens | default(-1) | int)
+               == (_expected_info.max_input_tokens | default(-1) | int)
+           and (_actual_info.max_tokens | default(-1) | int)
+               == (_expected_info.max_tokens | default(-1) | int) -%}
+      {%- set ns.roles = ns.roles + [role.role] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.roles }}
 
 - name: Retire the stale role deployment
   ansible.builtin.uri:

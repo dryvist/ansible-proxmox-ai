@@ -1,5 +1,6 @@
 {# Standalone `free` / `free-zdrless` model groups; membership from
-   `in_free_route`, split by zero_data_retention. Split out of
+   `in_free_route`, split by ZDR evidence (OpenCode subscription entries
+   remain in `free`). Split out of
    model-list.yaml.j2 per .token-limits.yaml (real seam, never a raised
    budget); included by it, so `litellm_model` resolves from that context.
    Two model_names, not one, because assert-registry-render-parity.yml's
@@ -19,6 +20,7 @@
   - model_name: {{ model_name }}
     litellm_params:
       model: {{ litellm_model(m) }}
+      tags: {{ llm_router_deployment_tags_by_model[m.client_model_id] | to_json }}
 {% if m.tier == 'opencode' %}
       # provider: openai is an OpenAI-compatible wire protocol at a non-default endpoint.
       api_base: {{ m.api_base | default(llm_router_opencode_base_url) }}
@@ -41,6 +43,7 @@
       max_parallel_requests: {{ llm_router_openrouter_max_parallel_requests }}
 {% endif %}
     model_info:
+      allow_fail_open: true
       disable_background_health_check: true
       max_input_tokens: {{ m.context_window }}
 {% if m.max_output_tokens is defined %}
@@ -51,12 +54,10 @@
 {% endif %}
 {% endmacro %}
 {% set _free_entries = llm_router_registry_enabled | selectattr('in_free_route', 'defined') | selectattr('in_free_route') | list %}
-{# `free`: ZDR-true members, OpenCode Go tier first, order from the attributes. #}
+{# `free`: ZDR-true members and OpenCode Go, ordered from the attributes. #}
 {% set _free_opencode = _free_entries | selectattr('tier', 'equalto', 'opencode') | list %}
 {% set _free_zdr_other = (_free_entries | rejectattr('tier', 'equalto', 'opencode')
-     | selectattr('zero_data_retention', 'undefined') | list)
-     + (_free_entries | rejectattr('tier', 'equalto', 'opencode')
-        | selectattr('zero_data_retention', 'defined') | selectattr('zero_data_retention') | list) %}
+     | selectattr('zero_data_retention', 'defined') | selectattr('zero_data_retention') | list) %}
 {# Credentialed only: filtered BEFORE the loop, not skipped inside it, so a
    missing credential never consumes an order slot that the next rendered
    deployment then silently inherits. #}
@@ -65,8 +66,12 @@
 {% for m in _free_zdr_ordered %}
 {{ _free_deployment(m, 'free', loop.index) }}
 {% endfor %}
-{# `free-zdrless`: the ZDR-false members, the terminal half `free`'s own fallback entry points at. #}
-{% set _free_zdrless = _free_entries | selectattr('zero_data_retention', 'defined') | rejectattr('zero_data_retention')
+{# `free-zdrless`: non-subscription members without explicit ZDR evidence. #}
+{% set _free_zdrless = (_free_entries | rejectattr('tier', 'equalto', 'opencode')
+     | selectattr('zero_data_retention', 'undefined') | list)
+     + (_free_entries | rejectattr('tier', 'equalto', 'opencode')
+        | selectattr('zero_data_retention', 'defined') | rejectattr('zero_data_retention') | list) %}
+{% set _free_zdrless = _free_zdrless
      | selectattr('credential_env', 'in', llm_router_resolved_credentials.keys() | list) | list %}
 {% for m in _free_zdrless %}
 {{ _free_deployment(m, 'free-zdrless', loop.index) }}

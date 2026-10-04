@@ -105,17 +105,36 @@
           {{ llm_router_large_models
              | selectattr('client_model_id', 'equalto', llm_router_primary_model) | list }}
 
-    - name: The judge does not share the worker's model
-      # Same-model judging is self-preference bias by construction, and it made
-      # worker and judge contend for one serving slot.
+    - name: The judge stays cross-family while the routine model is active
       ansible.builtin.assert:
         quiet: true
         that:
           - llm_router_routine_model != llm_router_primary_model
           - (llm_router_role_deployments | selectattr('role', 'equalto', hermes_goal_judge_model)
              | map(attribute='model') | first) != llm_router_primary_model
-        fail_msg: "the judge role must not resolve to the same model as hermes-default"
         success_msg: "judge is cross-family to the worker"
+      vars:
+        _mapped_fast_model: "{{ llm_roles.models[llm_roles.roles.fast.model].id }}"
+      when: _mapped_fast_model in llm_router_servable_models
+
+    - name: The parked routine role uses the active primary
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_routine_model == llm_router_primary_model
+          - (llm_router_role_deployments | selectattr('role', 'equalto', hermes_goal_judge_model)
+             | map(attribute='model') | first) == llm_router_primary_model
+          - _mapped_fast_model in _parked_routine | map(attribute='client_model_id') | list
+        fail_msg: "the parked routine role must resolve through the active primary"
+        success_msg: "parked routine role uses the active primary until its host is rebuilt"
+      vars:
+        _mapped_fast_model: "{{ llm_roles.models[llm_roles.roles.fast.model].id }}"
+        _parked_routine: >-
+          {{ llm_router_model_registry
+             | selectattr('client_model_id', 'equalto', _mapped_fast_model)
+             | selectattr('enabled', 'equalto', false)
+             | selectattr('standby', 'defined') | selectattr('standby') | list }}
+      when: _mapped_fast_model not in llm_router_servable_models
 
     - name: Every per-caller virtual key scopes only names the router advertises
       # WHY THIS EXISTS. A key's `models` list is an allowlist enforced by the
