@@ -48,15 +48,28 @@ DEFAULT_CONTEXT = {
     "hindsight_docker_mcp_stateless": True,
     "hindsight_docker_worker_id": "hindsight-1",
     "hindsight_docker_cp_access_key": "test-cp-key",
+    "hindsight_docker_api_key": "test-hindsight-api-key",
 }
 
 
-def render(context: dict | None = None) -> str:
-    env = jinja2.Environment(trim_blocks=True, lstrip_blocks=False)
+def render(
+    context: dict | None = None,
+    *,
+    include_api_key: bool = True,
+    strict: bool = False,
+) -> str:
+    env = jinja2.Environment(
+        trim_blocks=True,
+        lstrip_blocks=False,
+        undefined=jinja2.StrictUndefined if strict else jinja2.Undefined,
+    )
     env.filters["string"] = str
     env.filters["lower"] = str.lower
     template = env.from_string(TEMPLATE_PATH.read_text())
-    return template.render(**{**DEFAULT_CONTEXT, **(context or {})})
+    render_context = {**DEFAULT_CONTEXT, **(context or {})}
+    if not include_api_key:
+        render_context.pop("hindsight_docker_api_key", None)
+    return template.render(**render_context)
 
 
 def env_line(rendered: str, key: str) -> str:

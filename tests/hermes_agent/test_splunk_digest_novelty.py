@@ -1,4 +1,4 @@
-"""Self-check for the hourly Splunk digest's per-day novelty gate + deltas.
+"""Self-check for the hourly Splunk digest's finding-only delivery + deltas.
 
 Split from test_splunk_digest_deltas.py to stay under the token budget — see
 _splunk_digest_shared.py for the loaded template/state fixtures and
@@ -7,10 +7,9 @@ persistent-failure contracts this leaves behind.
 
 Two contracts, both enforced here:
 
-1. Per-day novelty — routine information may be presented ONCE per UTC day. A
-   later run with nothing genuinely new must escalate its search (host level, then
-   sourcetype/composition) rather than re-present it or emit boilerplate. Critical
-   conditions are exempt and repeat every run while they hold.
+1. Finding-only delivery — unchanged results stay silent. A later run with a
+   new lower-level finding escalates its search (host, then sourcetype and
+   composition); an active finding does not repeat until it clears.
 2. Never fabricate — deltas are computed, an absent baseline says so, ingest
    silence is always explicit, and the fact path is one tstats call with no LLM.
 
@@ -34,16 +33,12 @@ from _splunk_digest_shared import (
 )
 
 
-def test_first_run_of_a_day_posts_the_full_baseline_table():
+def test_first_run_records_a_baseline_without_a_status_post():
     text, state = step(BASE, None, 0)
 
-    assert "First digest of 2026-07-24" in text
-    assert "1,200,000" in text, "the day's baseline table must carry real volumes"
-    assert "400,000" in text and "50,000" in text
-    assert "no baseline" in text, "delta cells must say why a delta is missing"
-    assert "No prior baseline" in text
+    assert text == DIGEST.SILENT
     assert state["ledger"]["day"] == "2026-07-24"
-    assert "table:2026-07-24" in ledger_keys(state)
+    assert ledger_keys(state) == []
     assert state["by_index"]["os"] == {
         "vol": 1_200_000, "hosts": 2,
         "host_vol": {"host-a": 1_000_000, "host-b": 200_000},
@@ -68,82 +63,71 @@ def test_a_routine_finding_already_posted_today_is_suppressed():
         "a routine finding already presented today must be suppressed"
 
 
-def test_a_persisting_critical_condition_repeats_every_run():
+def test_a_critical_condition_posts_once_until_a_successful_run_clears_it():
     dark = {i: h for i, h in BASE.items() if i != "network"}
     first, s0 = step(dark, None, 0)
     second, s1 = step(dark, s0, 1)
     third, _ = step(dark, s1, 2)
 
-    for run, text in enumerate((first, second, third)):
-        assert "INGEST SILENCE: index=network" in text, \
-            f"run {run}: a persisting critical condition must repeat, never be ledgered"
-        assert "Critical — repeats every run" in text
-    assert not any(k.startswith("crit:") for k in ledger_keys(s1)), \
-        "critical findings must never enter the day ledger"
+    assert "INGEST SILENCE: index=network" in first
+    assert second == third == DIGEST.SILENT
+    assert any(k.startswith("crit:") for k in ledger_keys(s1))
 
 
 def test_an_exhausted_routine_search_escalates_before_it_gives_up():
     _, s0 = step(BASE, None, 0)
 
-    # Identical data: the only index-level news is that everything is flat.
+    # Identical data is not a finding and stays silent.
     flat, s1 = step(BASE, s0, 1)
-    assert "byte-identical" in flat and "index level" in flat
+    assert flat == DIGEST.SILENT
 
     # Still identical, but one host's newest event is now 3h old -> host tier.
     escalated, s2 = step(with_stale_host(2, "host-b", hours=3), s1, 2)
     assert "host level" in escalated and "nothing new at index level" in escalated
     assert "host host-b" in escalated and "3.0 h old" in escalated
 
-    # Nothing left anywhere, and the heartbeat ceiling has elapsed since the
-    # last real post (hour 2): an honest, specific line — never bare
-    # boilerplate, and never silent once the heartbeat is due.
+    # Once the stale-host finding has been reported, an unchanged follow-up is
+    # silent regardless of elapsed time.
     exhausted, _ = step(with_stale_host(9, "host-b", hours=3), s2, 9)
-    assert "Nothing new to report" in exhausted
-    assert "Searched 3 index(es), 4 host(s) and 3 index/sourcetype pair(s)" in exhausted
-    assert "no critical condition is active" in exhausted
-    assert "New today" not in exhausted
+    assert exhausted == DIGEST.SILENT
 
 
-def test_heartbeat_gate_silences_a_repeat_quiet_run_then_posts_once_it_elapses():
-    """The fully-quiet case only posts once per HEARTBEAT_HOURS; a real ingest
-    anomaly is always CRITICAL and can never be silenced by this gate."""
-    _, s0 = step(BASE, None, 0)                 # real post: the day's table
+def test_fully_quiet_runs_remain_silent_without_a_heartbeat():
+    """Quiet runs stay silent regardless of elapsed time; findings still post."""
+    baseline, s0 = step(BASE, None, 0)
+    assert baseline == DIGEST.SILENT
     grown = scale(BASE, "os", 1.6)
     _, s1 = step(grown, s0, 1)                  # real post: the +60% finding
-    flat, s2 = step(grown, s1, 2)               # real post: first "flat" finding
-    assert "byte-identical" in flat
+    flat, s2 = step(grown, s1, 2)
+    assert flat == DIGEST.SILENT
 
     soon, s3 = step(grown, s2, 3)
     assert soon == DIGEST.SILENT, \
-        "1h after the last real post (well under the 6h ceiling), a repeat quiet run must stay silent"
-    assert s3["last_post_iso"] == s2["last_post_iso"], "a silent run must not reset the heartbeat clock"
+        "an unchanged finding must stay silent"
+    assert s3["last_post_iso"] == s2["last_post_iso"], "a silent run must not advance delivery state"
     assert s3["by_index"]["os"]["vol"] == s2["by_index"]["os"]["vol"], \
         "tracking state keeps updating on a silent run — only delivery is suppressed"
 
-    later_when = at(2) + dt.timedelta(hours=DIGEST.HEARTBEAT_HOURS + 1)
+    later_when = at(2) + dt.timedelta(days=1)
     later, s4 = step(grown, s3, later_when)
-    assert "Nothing new to report" in later, "once the heartbeat ceiling elapses, a quiet run posts again"
-    assert "heartbeat" in later.lower()
-    assert s4["last_post_iso"] != s3["last_post_iso"], "a real heartbeat post must advance the clock"
+    assert later == DIGEST.SILENT, "a healthy no-change run must not post a baseline or heartbeat"
+    assert s4["last_post_iso"] == s3["last_post_iso"]
 
 
-def test_critical_findings_bypass_the_heartbeat_gate_even_minutes_after_the_last_post():
+def test_critical_findings_post_when_new_and_stay_silent_while_unchanged():
     dark = {i: h for i, h in BASE.items() if i != "network"}
     first, s0 = step(dark, None, 0)
     assert "INGEST SILENCE: index=network" in first
 
-    # 5 minutes later — nowhere near the 6h heartbeat ceiling — a persisting
-    # critical condition must still post, never fall back to the gate above.
+    # A persisting critical condition is already known and does not repeat.
     soon_after = at(0) + dt.timedelta(minutes=5)
     second, _ = step(dark, s0, soon_after)
-    assert second != DIGEST.SILENT
-    assert "INGEST SILENCE: index=network" in second
-    assert "Critical — repeats every run" in second
+    assert second == DIGEST.SILENT
 
 
 def test_composition_tier_is_reached_when_index_and_host_tiers_are_spent():
     _, s0 = step(BASE, None, 0)
-    _, s1 = step(BASE, s0, 1)          # spends the flat finding
+    _, s1 = step(BASE, s0, 1)
 
     # A new sourcetype inside an index whose total is unchanged: invisible above
     # the composition tier, so only an escalated search can find it.
@@ -156,17 +140,15 @@ def test_composition_tier_is_reached_when_index_and_host_tiers_are_spent():
     assert "sourcetype auditd newly present in index=os" in text
 
 
-def test_the_day_boundary_resets_the_ledger():
+def test_the_day_boundary_does_not_repeat_a_still_active_finding():
     _, s0 = step(BASE, None, 0)
-    _, s1 = step(BASE, s0, 23)
-    assert "table:2026-07-24" in ledger_keys(s1)
+    moved = scale(BASE, "os", 1.45)
+    first, s1 = step(moved, s0, 1)
+    assert "index=os volume up 45%" in first
 
-    next_day, s2 = step(BASE, s1, at(0, day=25))
+    next_day, s2 = step(moved, s1, at(0, day=25))
     assert s2["ledger"]["day"] == "2026-07-25"
-    assert "table:2026-07-25" in ledger_keys(s2)
-    assert not any(k.endswith("2026-07-24") for k in ledger_keys(s2)), \
-        "yesterday's keys must not survive the boundary"
-    assert "First digest of 2026-07-25" in next_day, "a new day re-presents the baseline table"
+    assert next_day == DIGEST.SILENT
 
 
 def test_old_schema_state_file_is_treated_as_no_baseline_not_a_crash():
@@ -180,8 +162,7 @@ def test_old_schema_state_file_is_treated_as_no_baseline_not_a_crash():
     assert DIGEST.load_ledger(state, "2026-07-24") == [], "an older schema carries no ledger"
 
     text, payload = step(BASE, state, 0)
-    assert "No prior baseline" in text
-    assert "1,200,000" in text, "an unusable baseline must not suppress the real numbers"
+    assert text == DIGEST.SILENT, "an unusable baseline initializes state without a status post"
 
     DIGEST.save_state(payload)
     upgraded = DIGEST.load_state()
@@ -190,14 +171,15 @@ def test_old_schema_state_file_is_treated_as_no_baseline_not_a_crash():
     assert not list(Path(STATE_DIR).glob("*.tmp")), "atomic write must leave no temp file"
 
 
-def test_four_consecutive_hourly_bodies_are_all_different():
-    bodies, state, spec = [], None, BASE
-    for hour in range(4):
-        text, state = step(spec, state, hour)
-        bodies.append(text)
-        if hour == 0:
-            spec = scale(spec, "os", 1.6)
-    assert len(set(bodies)) == 4, "no two hourly posts in a day may be identical"
+def test_unchanged_findings_are_silent_across_consecutive_runs():
+    baseline, state = step(BASE, None, 0)
+    assert baseline == DIGEST.SILENT
+    moved = scale(BASE, "os", 1.6)
+    first, state = step(moved, state, 1)
+    assert first != DIGEST.SILENT
+    for hour in (2, 3, 4):
+        text, state = step(moved, state, hour)
+        assert text == DIGEST.SILENT
 
 
 def test_a_fleet_drop_is_critical_but_one_host_leaving_is_routine():
@@ -211,7 +193,7 @@ def test_a_fleet_drop_is_critical_but_one_host_leaving_is_routine():
     shrunk = {"os": {f"host-{n}": {"syslog": 1000} for n in range(4)}}
     drop, _ = step(shrunk, w0, 1)
     assert "HOST FLEET DROP: 4 host(s)" in drop
-    assert "Critical — repeats every run" in drop
+    assert "New critical findings" in drop
 
 
 def test_ingest_silence_and_fail_loud_contracts_are_preserved():

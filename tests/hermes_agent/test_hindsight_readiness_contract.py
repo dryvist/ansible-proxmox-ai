@@ -12,7 +12,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from jinja2 import Environment
+import jinja2
+from jinja2 import Environment, StrictUndefined, Undefined
 import yaml
 
 from _role_files import role_defaults, role_tasks
@@ -31,17 +32,27 @@ def _verify_task(name: str) -> dict:
     return next(task for task in tasks[0]["block"] if task.get("name") == name)
 
 
-def _render_hindsight_config(agent_id: str) -> dict:
+def _render_hindsight_config(agent_id: str, *, include_api_key: bool = True) -> dict:
     source = (ROLE_ROOT / "templates" / "hindsight-config.json.j2").read_text()
-    env = Environment(autoescape=False)
+    env = Environment(autoescape=False, undefined=StrictUndefined)
     env.filters["to_json"] = json.dumps
-    env.filters["mandatory"] = lambda value, _message: value
-    rendered = env.from_string(source).render(
-        ansible_managed="managed",
-        hermes_agent_memory_mode="local_external",
-        hermes_agent_memory_api_url="https://hindsight.example.test",
-        hermes_agent_memory_bank_id=agent_id,
-    )
+
+    def mandatory(value, message):
+        if isinstance(value, Undefined) or not str(value).strip():
+            raise ValueError(message)
+        return value
+
+    env.filters["mandatory"] = mandatory
+    context = {
+        "ansible_managed": "managed",
+        "hermes_agent_memory_mode": "local_external",
+        "hermes_agent_memory_api_url": "https://hindsight.example.test",
+        "hermes_agent_memory_api_key": "fixture-hindsight-api-key",
+        "hermes_agent_memory_bank_id": agent_id,
+    }
+    if not include_api_key:
+        context.pop("hermes_agent_memory_api_key")
+    rendered = env.from_string(source).render(**context)
     return json.loads(rendered)
 
 
@@ -67,6 +78,7 @@ def test_hindsight_readiness_probe_is_read_only_and_uses_rendered_agent_config()
     assert "from hindsight_client import Hindsight" in source
     assert "hindsight/config.json" in source
     assert "client.arecall(" in source
+    assert 'api_key=config["api_key"]' in source
     assert "bank_id=config[\"bank_id\"]" in source
     assert "retain" not in source.lower()
 
@@ -79,6 +91,15 @@ def test_agents_share_hindsight_service_but_not_memory_banks() -> None:
     assert defaults["hermes_agent_memory_bank_id"] == "{{ hermes_agent_id }}"
     assert hermes["mode"] == donna["mode"] == "local_external"
     assert hermes["api_url"] == donna["api_url"]
+    assert hermes["api_key"] == donna["api_key"] == "fixture-hindsight-api-key"
     assert hermes["bank_id"] == "hermes"
     assert donna["bank_id"] == "donna"
     assert hermes["bank_id"] != donna["bank_id"]
+
+
+def test_local_external_hindsight_config_requires_api_key() -> None:
+    try:
+        _render_hindsight_config("hermes", include_api_key=False)
+    except (jinja2.UndefinedError, ValueError):
+        return
+    raise AssertionError("Hermes Hindsight config rendered without an API key")

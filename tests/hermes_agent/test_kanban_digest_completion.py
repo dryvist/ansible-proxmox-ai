@@ -130,8 +130,8 @@ def test_running_card_without_a_recorded_max_runtime_is_not_judged():
     runs = [{"id": 1, "task_id": "t_ff", "outcome": None, "started_at": NOW - 99999}]
     text = digest([task], runs)
     assert "Overrunning" not in text, "no limit recorded means no claim to make"
-    assert text == DIGEST.SILENT, "no work-log content, so the noise heartbeat covers it"
-    assert "No board activity" in heartbeat([task], runs)
+    assert text == DIGEST.SILENT, "no board activity stays silent"
+    assert heartbeat([task], runs) == ""
 
 
 def test_overrun_uses_the_current_attempts_start_not_the_first():
@@ -167,10 +167,9 @@ def test_a_future_timestamp_is_not_trusted():
     assert since == NOW and not note, "a valid state file is used as-is"
 
 
-def test_the_fallback_note_reaches_the_post():
-    """No board activity here, so the note lands in the heartbeat text, not
-    the (SILENT) work log — see test_kanban_digest_heartbeat.py."""
-    text = heartbeat([], [], note="no usable state file — reporting the last 15 min instead")
+def test_the_fallback_note_reaches_the_work_post():
+    """A degraded read remains visible even though quiet runs are silent."""
+    text = digest([], [], note="no usable state file — reporting the last 15 min instead")
     assert "no usable state file" in text
 
 

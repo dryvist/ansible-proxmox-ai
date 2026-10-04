@@ -256,10 +256,11 @@ def load_counters():
 def heartbeat_due(now_epoch, last_post_epoch):
     """Has the quiet-post ceiling elapsed?
 
-    Unknown or future-dated last post => DUE. Erring towards posting is the only
-    safe direction: a suppressed heartbeat is indistinguishable from a dead cron,
-    which is the exact failure this digest exists to announce.
+    A zero ceiling disables quiet-run posts. Otherwise, an unknown or
+    future-dated last post is due so corrupted state cannot hide a broken digest.
     """
+    if HEARTBEAT_HOURS <= 0:
+        return False
     if last_post_epoch is None:
         return True
     elapsed_h = (now_epoch - last_post_epoch) / 3600.0
@@ -603,6 +604,8 @@ def build_digest(run_rows, running_rows, board, now, since, note, due=True,
     (heartbeat_text), same split shape as the failure peel.
     """
     now_epoch = now.timestamp()
+    if HEARTBEAT_HOURS <= 0:
+        due = False
     span = fmt_dur(now_epoch - since)
     by_task = group_runs(run_rows)
     done = completed_lines(by_task)
@@ -627,11 +630,14 @@ def build_digest(run_rows, running_rows, board, now, since, note, due=True,
     # NEVER post a message whose entire content is "nothing happened" unless the
     # heartbeat interval has elapsed. Decided before any text is built so the
     # quiet path cannot leak a header-only post.
-    if not (done or failed or overrun) and not due:
+    if not (done or failed or overrun) and not due and not note:
         return SILENT, issues_text, ""
 
     header = (f"*{TITLE}* — {now.strftime('%Y-%m-%d %H:%M UTC')} "
               f"(since {dt.datetime.fromtimestamp(since, dt.timezone.utc).strftime('%H:%M UTC')}, {span})")
+
+    if not (done or failed or overrun) and note:
+        return f"{header}\n:information_source: {note}.", issues_text, ""
 
     if not (done or failed or overrun):
         # Fully-quiet-but-due: this is the heartbeat itself, not a work-log

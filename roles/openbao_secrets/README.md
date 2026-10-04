@@ -100,13 +100,8 @@ it from a pre-fetch play — no Galaxy install needed:
 
 ## Usage
 
-Set `BAO_ADDR` plus each domain's `OPENBAO_APPROLE_<DOMAIN>_ROLE_ID` /
-`_SECRET_ID` (see [Inputs (env)](#inputs-env)), then run through the normal
-wrapper:
-
-```sh
-doppler run -- ansible-playbook playbooks/site.yml --tags openbao_secrets
-```
+Run break-glass `site.yml --tags openbao_secrets` as a Semaphore task on the
+execution plane. Never copy its `local-llm` AppRole pair to a workstation.
 
 Any domain whose credentials aren't set simply falls back to env/SOPS for its
 consumer roles — see [Wiring](#wiring) for how the pre-fetch play publishes
@@ -128,11 +123,11 @@ server-side quorum HA needs a fourth node and is out of scope.
 
 | Domain | AppRole env vars | KV paths | Consumers |
 | --- | --- | --- | --- |
-| `apps` | `OPENBAO_APPROLE_APPS_ROLE_ID` / `_SECRET_ID` | `apps/hindsight` | `hindsight_docker` |
+| `apps` | `OPENBAO_APPROLE_APPS_ROLE_ID` / `_SECRET_ID` | `apps/hindsight` | `hindsight_docker`, `hermes_agent`, `hindsight_bank_dr` |
 | `ai-public` | `OPENBAO_APPROLE_AI_PUBLIC_ROLE_ID` / `_SECRET_ID` | `ai/public/brain` (non-secret) | `ai_default_model` + brain-sync timers (below) |
 | `ai-runner` | `OPENBAO_APPROLE_AI_RUNNER_ROLE_ID` / `_SECRET_ID` | dispatch and provider credentials | job-runner guests (`ai_runner`, `agent_guest`) |
-| `hermes` | `OPENBAO_APPROLE_HERMES_ROLE_ID` / `_SECRET_ID` | `ai/hermes` (path-exact) | none yet — see below |
-| `local-llm` | `OPENBAO_APPROLE_LOCAL_LLM_ROLE_ID` / `_SECRET_ID` | `ai/*`; exact paths in defaults | every AI role in this repo |
+| `hermes` | `OPENBAO_APPROLE_HERMES_ROLE_ID` / `_SECRET_ID` | `ai/hermes` and Hermes integration paths | `hermes_agent` |
+| `local-llm` | `OPENBAO_APPROLE_LOCAL_LLM_ROLE_ID` / `_SECRET_ID` | `ai/*`; exact paths in defaults | LLM roles and configured fallbacks |
 
 Each pair is derived from the domain name (upper-cased, non-alphanumerics ->
 `_`) -- one formula, not a literal per domain that could drift from it, and
@@ -184,9 +179,8 @@ All readable path keys for a domain are merged flat into that domain's
 | `<DOMAIN>_VAULT_ROLE_ID` / `_SECRET_ID` | Legacy fallback for the row above, tried second. Unset ⇒ skip just that domain. |
 | `HERMES_WRITE_BAO_TOKEN` | Ephemeral `hermes-write` token for a missing Hermes API key; never falls back to `BAO_TOKEN`. |
 
-On macOS these arrive in the ambient environment via `doppler run`; on Linux
-guests, from a root-only systemd credential / `0600` EnvironmentFile. See
-`tofu-proxmox` `docs/SECRETS_HIERARCHY.md`.
+Semaphore supplies the required AppRole inputs on the execution plane. Do not
+copy the plane's `local-llm` pair to a workstation.
 
 ### Hermes API key bootstrap
 
@@ -199,49 +193,8 @@ whitespace-only but the fallback is valid, the role publishes that validated
 fallback into the controller's `local-llm` accumulator so every consumer sees
 the same value under identical strict semantics.
 
-For that one converge, use the approved human `ai-admin` unlock procedure to
-authenticate the native `bao` CLI, then mint and pass an ephemeral,
-nonrenewable token carrying only `hermes-write`:
-
-```sh
-hermes_seed_api_key() {
-  hermes_seed_status=0
-
-  HERMES_WRITE_BAO_TOKEN="$(
-    bao token create \
-      -policy=hermes-write \
-      -ttl=10m \
-      -explicit-max-ttl=10m \
-      -renewable=false \
-      -orphan \
-      -field=token
-  )" || hermes_seed_status=$?
-
-  if [ "$hermes_seed_status" -eq 0 ]; then
-    export HERMES_WRITE_BAO_TOKEN || hermes_seed_status=$?
-  fi
-  if [ "$hermes_seed_status" -eq 0 ]; then
-    bao token revoke -self || hermes_seed_status=$?
-  fi
-  if [ "$hermes_seed_status" -eq 0 ]; then
-    unset BAO_TOKEN || hermes_seed_status=$?
-  fi
-  if [ "$hermes_seed_status" -eq 0 ]; then
-    doppler run -- ansible-playbook -i inventory/hosts.yml playbooks/site.yml \
-      --tags openbao_secrets --limit localhost,hermes_agent_group \
-      || hermes_seed_status=$?
-  fi
-
-  unset HERMES_WRITE_BAO_TOKEN BAO_TOKEN || {
-    hermes_seed_cleanup_status=$?
-    [ "$hermes_seed_status" -ne 0 ] \
-      || hermes_seed_status=$hermes_seed_cleanup_status
-  }
-  return "$hermes_seed_status"
-}
-
-hermes_seed_api_key
-```
+Seed a missing key through the approved human `ai-admin` unlock and a Semaphore
+converge on the execution plane. Never copy its AppRole pair to a workstation.
 
 The `hermes-write` policy is limited to the Hermes secret document by
 `dryvist/ansible-proxmox-apps` commit `80b3c458`. The role
