@@ -163,17 +163,15 @@
         _probe_offset: "{{ _text.find('import_tasks: probe-router-settings.yml') }}"
         _sync_offset: "{{ _text.find('import_tasks: sync-router-settings.yml') }}"
 
-- name: Model deployments and key model scopes already stay first-seed-only, unconditionally
+- name: Existing key fields reconcile only in explicit rebuild mode
   hosts: localhost
   gather_facts: false
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
   tasks:
-    # These already satisfy the operator directive's "creates missing keys,
-    # never rewrites an existing key's model scope/budget" — this pins that
-    # so a future edit to either file can't silently regress it back to a
-    # rewrite. seed-roles.yml's own first-seed contract is pinned separately
-    # by its own tests; only the "never removes" half is re-asserted here.
+    # D3 makes existing key flags UI-owned in the default initial mode. Pin
+    # that both key update paths are disabled unless an explicit rebuild is
+    # selected. seed-roles.yml has separate first-seed contract tests.
     - name: Read seed-keys.yml
       ansible.builtin.slurp:
         src: "{{ _role_dir }}/tasks/seed-keys.yml"
@@ -184,20 +182,21 @@
         src: "{{ _role_dir }}/tasks/reconcile-key-budgets.yml"
       register: _budgets_source
 
-    - name: Assert key model scope is union-only and budget updates never touch models
+    - name: Assert key updates are gated to rebuild mode and budgets never touch models
       ansible.builtin.assert:
         quiet: true
         that:
           - "'_live_models + _k.models) | unique' in _keys_text"
+          - "\"llm_router_seed_mode == 'rebuild'\" in _keys_text"
+          - "\"when: llm_router_seed_mode == 'rebuild'\" in _keys_text"
+          - "\"llm_router_seed_mode == 'rebuild'\" in _budgets_text"
           - "'models' not in _budgets_body"
         fail_msg: >-
-          Either seed-keys.yml stopped unioning model scope onto an existing
-          key (a Admin-UI-added model would be dropped) or
-          reconcile-key-budgets.yml's /key/update body started sending
-          `models` (its every-converge budget resync would overwrite an
-          Admin-UI model-scope edit).
+          An existing virtual key may be updated outside explicit rebuild
+          mode, or the budget request body now includes models.
       vars:
         _keys_text: "{{ _seed_keys_source.content | b64decode }}"
+        _budgets_text: "{{ _budgets_source.content | b64decode }}"
         # Only the /key/update request body, not the whole file (whose
         # comments legitimately discuss `models`) — from the `body:` key
         # of the resync task down to its `status_code:` line.

@@ -1,0 +1,22 @@
+---
+- name: Add a notification for each drifted rendered setting
+  ansible.builtin.set_fact:
+    _llm_router_drift_messages: >-
+      {{ _llm_router_drift_messages +
+         ([{
+           'item': _llm_router_drift_setting.name ~ ' ' ~ item,
+           'git_file': _llm_router_drift_setting.git_file,
+           'text': 'LiteLLM router drift: ' ~ _llm_router_drift_setting.name ~
+             ' ' ~ item ~ ' differs from the Git baseline. Back-port the UI edit to ' ~
+             _llm_router_drift_setting.git_file ~ '.'
+         }] if item not in _llm_router_drift_setting.expected
+             or item not in _llm_router_drift_setting.live
+             or _llm_router_drift_setting.live.get(item, none)
+                != _llm_router_drift_setting.expected.get(item, none)
+         else []) }}
+  loop: >-
+    {{ (_llm_router_drift_setting.expected.keys() | list
+        + _llm_router_drift_setting.live.keys() | list) | unique | sort }}
+  loop_control:
+    label: "{{ _llm_router_drift_setting.name }} {{ item }}"
+  no_log: true

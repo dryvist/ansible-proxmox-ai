@@ -1,0 +1,74 @@
+---
+# This comparator accepts sanitized key aliases/flags and setting maps. The
+# API token fields never enter the comparison or any notification text.
+- name: Start with no drift notifications
+  ansible.builtin.set_fact:
+    _llm_router_drift_messages: []
+  no_log: true
+
+- name: Add one notification per key alias whose flags drifted
+  ansible.builtin.set_fact:
+    _llm_router_drift_messages: >-
+      {{ _llm_router_drift_messages +
+         ([{
+           'item': 'key alias ' ~ item.alias ~ ' flags ' ~ (_llm_router_drift_changed_flags | join(', ')),
+           'git_file': item.git_file,
+           'text': 'LiteLLM router drift: key alias ' ~ item.alias ~ ' differs in flag(s) ' ~
+             (_llm_router_drift_changed_flags | join(', ')) ~ '. Back-port the UI edit to ' ~
+             item.git_file ~ '.'
+         }] if _llm_router_drift_changed_flags | length > 0 else []) }}
+  loop: "{{ _llm_router_drift_expected_keys }}"
+  loop_control:
+    label: "key alias {{ item.alias }}"
+  vars:
+    _llm_router_drift_live_key: >-
+      {{ (_llm_router_drift_live_keys
+          | selectattr('alias', 'equalto', item.alias) | list | first)
+         | default({'flags': {}}, true) }}
+    _llm_router_drift_changed_flags: >-
+      {%- set ns = namespace(names=[]) -%}
+      {%- for flag, baseline in item.flags.items() -%}
+      {%- set live = _llm_router_drift_live_key.flags.get(flag, none) -%}
+      {%- if flag in ['models', 'allowed_routes', 'metadata_tags'] -%}
+      {%- set baseline_value = baseline | default([], true) | sort -%}
+      {%- set live_value = live | default([], true) | sort -%}
+      {%- elif flag in ['max_budget', 'rpm_limit', 'tpm_limit'] -%}
+      {%- set baseline_value = (baseline | float) if baseline is not none else none -%}
+      {%- set live_value = (live | float) if live is not none else none -%}
+      {%- elif flag == 'budget_limits' -%}
+      {%- set baseline_value = baseline | default([], true) | sort(attribute='budget_duration') -%}
+      {%- set live_value = live | default([], true) | sort(attribute='budget_duration') -%}
+      {%- else -%}
+      {%- set baseline_value = baseline -%}
+      {%- set live_value = live -%}
+      {%- endif -%}
+      {%- if baseline_value != live_value -%}
+      {%- set ns.names = ns.names + [flag] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.names }}
+  no_log: true
+
+- name: Add one notification per live alias absent from the Git baseline
+  ansible.builtin.set_fact:
+    _llm_router_drift_messages: >-
+      {{ _llm_router_drift_messages +
+         ([{
+           'item': 'untracked key alias ' ~ item.alias,
+           'git_file': llm_router_drift_key_git_file,
+           'text': 'LiteLLM router drift: key alias ' ~ item.alias ~
+             ' is absent from the Git baseline. Back-port its declaration to ' ~
+             llm_router_drift_key_git_file ~ '.'
+         }] if item.alias not in _llm_router_drift_expected_keys | map(attribute='alias') | list
+         else []) }}
+  loop: "{{ _llm_router_drift_live_keys }}"
+  loop_control:
+    label: "key alias {{ item.alias }}"
+  no_log: true
+
+- name: Compare router and UI settings with their Git baselines
+  ansible.builtin.include_tasks: drift-compare-settings.yml
+  loop: "{{ _llm_router_drift_expected_settings }}"
+  loop_control:
+    loop_var: _llm_router_drift_setting
+    label: "{{ _llm_router_drift_setting.name }}"
