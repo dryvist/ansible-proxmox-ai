@@ -8,8 +8,12 @@
 # (a new resident model, a concurrency change) would reach the Macs and leave
 # the router advertising a registry that no longer matches what they serve.
 #
+# A disabled large-tier entry marked `standby: true` is a deliberate temporary
+# park while the serving host catches up with its declared resident set. It
+# remains catalogued but is removed from the active servable projection.
+#
 # Fails the converge when:
-#   - a model the map names is not an enabled, servable large-tier entry;
+#   - a mapped model has neither an enabled, servable entry nor a parked entry;
 #   - that entry's max_parallel_requests differs from the map's concurrency;
 #   - the servable set differs from the server class's resident + swap models;
 #   - a role names a model the map does not define.
@@ -25,7 +29,7 @@
       - _llm_roles_dangling | length == 0
     fail_msg: >-
       The registry and the role map (dryvist.homelab.llm_roles) disagree.
-      Map models with no enabled servable large-tier entry:
+      Map models with neither an enabled servable nor a parked large-tier entry:
       {{ _llm_roles_unmatched | join(', ') }}.
       Entries whose max_parallel_requests differs from the map's concurrency:
       {{ _llm_roles_concurrency_drift | join(', ') }}.
@@ -46,13 +50,20 @@
     _llm_roles_entries: >-
       {{ llm_router_large_models | selectattr('servable', 'defined')
          | selectattr('servable') | list }}
+    _llm_roles_parked_entries: >-
+      {{ llm_router_model_registry | selectattr('tier', 'equalto', 'large')
+         | selectattr('enabled', 'equalto', false)
+         | selectattr('standby', 'defined') | selectattr('standby') | list }}
+    _llm_roles_known_entries: "{{ _llm_roles_entries + _llm_roles_parked_entries }}"
+    _llm_roles_parked_ids: >-
+      {{ _llm_roles_parked_entries | map(attribute='client_model_id') | list }}
     _llm_roles_unmatched: >-
       {{ llm_roles.models.values() | map(attribute='id')
-         | difference(_llm_roles_entries | map(attribute='client_model_id') | list) | list }}
+         | difference(_llm_roles_known_entries | map(attribute='client_model_id') | list) | list }}
     _llm_roles_concurrency_drift: >-
       {%- set ns = namespace(out=[]) -%}
       {%- for m in llm_roles.models.values() -%}
-      {%- for e in _llm_roles_entries
+      {%- for e in _llm_roles_known_entries
             if e.client_model_id == m.id
                and (e.max_parallel_requests | default(none)) != m.concurrency -%}
       {%- set ns.out = ns.out + [m.id] -%}
@@ -62,7 +73,8 @@
     _llm_roles_servable_extra: >-
       {{ llm_router_servable_models | difference(_llm_roles_servable_ids) | list }}
     _llm_roles_servable_missing: >-
-      {{ _llm_roles_servable_ids | difference(llm_router_servable_models) | list }}
+      {{ _llm_roles_servable_ids
+         | difference(llm_router_servable_models + _llm_roles_parked_ids) | list }}
     _llm_roles_dangling: >-
       {{ llm_roles.roles.values() | map(attribute='model') | reject('none')
          | difference(llm_roles.models.keys() | list) | list }}
