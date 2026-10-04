@@ -158,7 +158,14 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     # the drift this indirection exists to prevent, so it fails the build rather
     # than waiting for a live 404. Values only — the defaults' prose may of
     # course still discuss the tiers.
-    router_defaults_values = yaml.dump(router_defaults, allow_unicode=True)
+    def _leaf_values(value: object) -> list[object]:
+        if isinstance(value, dict):
+            return [leaf for child in value.values() for leaf in _leaf_values(child)]
+        if isinstance(value, list):
+            return [leaf for child in value for leaf in _leaf_values(child)]
+        return [value]
+
+    router_defaults_values = _leaf_values(router_defaults)
     for entry in registry:
         for field in ("client_model_id", "upstream_model_id", "key_field"):
             if field in entry:
