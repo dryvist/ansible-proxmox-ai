@@ -48,16 +48,16 @@
     # Shared by both directions of the allowlist-parity check below (rendered
     # ⊆ registry and registry ⊆ rendered) — hoisted to a play var instead of
     # duplicated per-task now that both need the identical expression.
-    # `free` / `free-zdrless`: a second registration split by
-    # zero_data_retention. OpenCode Go members are provider: openai, so
-    # never reach this check.
+    # `free` / `free-zdrless`: a second registration split by explicit
+    # zero_data_retention evidence. Missing and false fields are retaining.
+    # OpenCode Go members are provider: openai, so never reach this check.
     _registry_or: >-
       {%- set ns = namespace(names=[]) -%}
       {%- for m in llm_router_registry_enabled
             | selectattr('provider', 'equalto', 'openrouter') -%}
       {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] -%}
       {%- if m.in_free_route | default(false) -%}
-      {%- set _free_name = 'free' if (m.zero_data_retention | default(true)) else 'free-zdrless' -%}
+      {%- set _free_name = 'free' if (m.zero_data_retention | default(false)) else 'free-zdrless' -%}
       {%- if _free_name not in ns.names -%}
       {%- set ns.names = ns.names + [_free_name] -%}
       {%- endif -%}
@@ -110,7 +110,7 @@
     # "no EXTERNAL wildcard without guards" not "no wildcard". External =
     # api_base outside this role's own known-internal endpoints — the
     # LARGE-tier bare "*" is exempt (targets the local gate).
-    - name: Every external-provider wildcard carries its egress guards
+    - name: The external-provider wildcard carries its retaining class and egress guards
       ansible.builtin.assert:
         quiet: true
         that:
@@ -118,7 +118,7 @@
         fail_msg: >-
           External-provider wildcard(s) {{ _unguarded_external_wildcards
             | map(attribute='model_name') | list }} are missing a required
-          guard (data_collection: deny, zdr: true, non-zero rpm/tpm/
+            guard (data_collection: deny, zdr: false, non-zero rpm/tpm/
           max_parallel_requests) — exposes the whole catalog with no ceiling.
         success_msg: >-
           {{ _external_wildcards | length }} external-provider wildcard(s)
@@ -158,7 +158,7 @@
                 | list)
              + (_external_wildcards
                 | selectattr('litellm_params.extra_body.provider.zdr', 'defined')
-                | rejectattr('litellm_params.extra_body.provider.zdr', 'equalto', true)
+                | rejectattr('litellm_params.extra_body.provider.zdr', 'equalto', false)
                 | list)
              + (_external_wildcards
                 | rejectattr('litellm_params.rpm', 'defined')
@@ -304,8 +304,8 @@
           - _zdr_mismatches | length == 0
         fail_msg: >-
           Rendered zdr does not match the registry for {{ _zdr_mismatches }}.
-          zero_data_retention: false must be honoured (ZDR would exclude the
-          upstream it exists to reach); every other entry must render zdr: true.
+          zero_data_retention must be explicit: a missing value and false both
+          render zdr: false.
         success_msg: >-
           all {{ _zdr_checked | length }} guarded egress deployment(s) render
           the zdr flag their registry entry declares
@@ -318,7 +318,7 @@
                 | selectattr('provider', 'equalto', 'openrouter') -%}
           {%- set ns.d = ns.d | combine({
                 (m.route_group | default(m.client_model_id)):
-                  (m.zero_data_retention | default(true) | bool)}) -%}
+                  (m.zero_data_retention | default(false) | bool)}) -%}
           {%- endfor -%}
           {{ ns.d }}
         # Only rendered provider-guard deployments; wildcards covered above.

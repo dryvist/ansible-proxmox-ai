@@ -79,12 +79,46 @@ def registry_values(root: Path) -> dict[str, set[str]]:
                 is_alias_bearing = entry.get("servable") or (
                     entry.get("tier") == "openrouter"
                     and (entry.get("context_window") or 0) >= 1_000_000
-                    and entry.get("zero_data_retention", True) is not False
+                    and entry.get("zero_data_retention", False) is True
                 )
                 if is_alias_bearing:
                     for alias in entry.get("stable_aliases") or []:
                         values.setdefault(str(alias), set()).add("alias")
     return values
+
+
+def test_zdr_true_registry_entries_name_the_provider_source() -> None:
+    """An explicit ZDR claim must carry its source next to the field."""
+    source_comment = "OpenRouter request-level `zdr: true` (provider routing)"
+    registry_files = sorted((REPO_ROOT / "llm-models.d").glob("*.yml"))
+    assert registry_files
+    for path in registry_files:
+        lines = path.read_text().splitlines()
+        for index, line in enumerate(lines):
+            if re.match(r"^\s*zero_data_retention:\s*true\s*$", line):
+                nearby = lines[max(0, index - 2) : index]
+                assert any(source_comment in candidate for candidate in nearby), (
+                    f"{path.relative_to(REPO_ROOT)}:{index + 1} has no provider source comment"
+                )
+
+
+def test_virtual_key_tags_are_create_only() -> None:
+    """New key metadata receives tags; reconcile preserves UI edits."""
+    seed_file = REPO_ROOT / "roles/llm_router/tasks/seed-keys.yml"
+    tasks = yaml.load(seed_file.read_text(), Loader=_Permissive)
+    by_name = {task.get("name"): task for task in tasks}
+    create = by_name["Create the caller keys that have a seeded value (an existing alias is not a failure)"]
+    create_body = create["ansible.builtin.uri"]["body"]
+    assert "item.router_settings" in create_body["router_settings"]
+    assert "item.tags" in create_body["metadata"]
+
+    compute = by_name["Compute the route/model update each live key still needs, if any"]
+    reconcile_expr = compute["ansible.builtin.set_fact"]["_llm_router_key_updates"]
+    assert "item.tags" not in reconcile_expr
+    assert "router_settings" not in reconcile_expr
+
+    update = by_name["Reconcile route allowlists and model names for live keys that changed"]
+    assert update["ansible.builtin.uri"]["body"] == "{{ item.body }}"
 
 
 def _scalars(node, path=()):

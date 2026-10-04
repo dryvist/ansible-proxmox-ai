@@ -93,13 +93,18 @@ _llm_router_hermes_profile_names: >-
 _llm_router_hermes_profile_keys: >-
   {%- set _items = [] -%}
   {%- for _name in _llm_router_hermes_profile_names -%}
-  {%- set _discard = _items.append({
+  {%- set _profile = {
         'alias': 'hermes-' ~ _name,
         'value': bao_apps_secrets.get('hermes_' ~ (_name | replace('-', '_')) ~ '_llm_router_key', ''),
         'models': (_llm_router_key_scope_all if _name == 'default'
                    else (['cheap', 'embed', hermes_brain_model] | unique | list)),
         'monthly_budget': _llm_router_key_monthly_budget,
-      }) -%}
+      } -%}
+  {%- if hermes_agent_identity | default('hermes') == 'donna' -%}
+  {%- set _profile = _profile | combine({'tags': ['&zdr', '!free'],
+        'router_settings': {'enable_tag_filtering': true}}) -%}
+  {%- endif -%}
+  {%- set _discard = _items.append(_profile) -%}
   {%- endfor -%}
   {{ _items }}
 
@@ -162,6 +167,9 @@ _llm_router_static_virtual_keys:
   - alias: hindsight
     value: "{{ bao_apps_secrets.hindsight_llm_router_key | default('', true) }}"
     models: "{{ [hindsight_retain_model] }}"
+    tags: ['&zdr', '!free']
+    router_settings:
+      enable_tag_filtering: true
     rpm_limit: 60
     models_authoritative: true
   # The metrics scraper. /metrics is authenticated by default and this proxy
@@ -239,15 +247,15 @@ _llm_router_static_virtual_keys:
     value: "{{ bao_apps_secrets.claude_code_llm_router_key | default('', true) }}"
     models: "{{ _llm_router_key_scope_all }}"
     monthly_budget: "{{ _llm_router_key_monthly_budget }}"
-  # A workstation's local proxy, scoped to only the two roles it ever
-  # requests — 59-key-scopes.yml widens this to their rendered fallback
-  # chains the same way it does for every other role-scoped key here.
+  # Local proxy; 59-key-scopes.yml widens these roles to their fallback chains.
   - alias: litellm-local
     value: "{{ bao_apps_secrets.litellm_local_llm_router_key | default('', true) }}"
     models: "{{ ['fast', 'fast-gpu'] }}"
+    tags: ['&zdr', '!free']
+    router_settings:
+      enable_tag_filtering: true
 
-# The declared list; llm_router_virtual_keys (59-key-scopes.yml) widens each
-# key's `models` with every group in its roles' chains.
+# 59-key-scopes.yml widens each key's `models` to its roles' chains.
 _llm_router_declared_virtual_keys: >-
   {{ _llm_router_static_virtual_keys + _llm_router_workstation_virtual_keys
      + _llm_router_hermes_profile_keys }}
