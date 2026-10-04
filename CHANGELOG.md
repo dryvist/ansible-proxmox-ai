@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.64.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.63.0...v0.64.0) (2026-10-04)
+
+
+### Features
+
+* **hermes_agent:** add daily release-watch cron ([#1040](https://github.com/dryvist/ansible-proxmox-ai/issues/1040)) ([1c68333](https://github.com/dryvist/ansible-proxmox-ai/commit/1c68333ef7c095c31107ad41ac916c9eeffe233c))
+* **hermes_agent:** post every Slack output to the agent's home channel ([#1037](https://github.com/dryvist/ansible-proxmox-ai/issues/1037)) ([2cf158d](https://github.com/dryvist/ansible-proxmox-ai/commit/2cf158df774e56b589c30d94b2164d5bbc6e7f32))
+* **hindsight:** require API keys for service clients ([#1046](https://github.com/dryvist/ansible-proxmox-ai/issues/1046)) ([db0a512](https://github.com/dryvist/ansible-proxmox-ai/commit/db0a512daa71d49b92ee13361c0bd40f99d48ec9))
+* **llm_router:** add Chat UI drift baseline ([#1054](https://github.com/dryvist/ansible-proxmox-ai/issues/1054)) ([e0ec451](https://github.com/dryvist/ansible-proxmox-ai/commit/e0ec451a251129778620d30af99c3be7fa78491b))
+
+
+### Performance
+
+* **llm_router:** cache assertion projections ([#1055](https://github.com/dryvist/ansible-proxmox-ai/issues/1055)) ([3cfb4d6](https://github.com/dryvist/ansible-proxmox-ai/commit/3cfb4d65f92f4ad7c3878b069e332658b33e118f))
+
 ## [0.63.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.62.0...v0.63.0) (2026-10-04)
 
 
