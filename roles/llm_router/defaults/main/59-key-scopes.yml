@@ -81,12 +81,18 @@ llm_router_virtual_keys: >-
         if k.alias != 'benchmark' or llm_router_gpu_models | length > 0 -%}
   {%- set ns = namespace(models=k.models | list) -%}
   {%- if k.models | select('in', _llm_router_directly_callable_ladder_names) | list | length > 0 -%}
-  {%- set ns.models = ns.models + _llm_router_directly_callable_ladder_names -%}
+  {%- set _ladder = _llm_router_private_zdr_model_scope
+        if '&zdr' in (k.tags | default([]))
+        else _llm_router_directly_callable_ladder_names -%}
+  {%- set ns.models = ns.models + _ladder -%}
   {%- endif -%}
   {%- for d in llm_router_role_deployments if d.role in k.models -%}
   {%- set ns.models = ns.models + [d.model] + (d.fallbacks | list) -%}
   {%- endfor -%}
-  {%- if '&zdr' in (k.tags | default([])) -%}
+  {%- if k.zdr_only | default(false) -%}
+  {%- set _stripped = llm_router_zdr_false_group_names + llm_router_zdr_unasserted_terminal_rungs -%}
+  {%- set ns.models = ns.models | reject('in', _stripped) | list -%}
+  {%- elif '&zdr' in (k.tags | default([])) -%}
   {%- set _stripped = llm_router_zdr_unasserted_terminal_rungs -%}
   {%- set ns.models = ns.models | reject('in', _stripped) | list -%}
   {%- endif -%}
@@ -131,6 +137,31 @@ llm_router_zdr_asserted_group_names: >-
   {%- endif -%}
   {%- endfor -%}
   {{ ns.ok | difference(ns.bad) | unique | list }}
+
+# Groups a private Hermes key may name or reach. Keep the original Hermes
+# entrypoint, in-estate models, and registry groups whose every deployment has
+# asserted ZDR. Exclude free and retaining classes even when a free provider
+# accepts an OpenRouter `zdr:true` request.
+_llm_router_private_zdr_model_scope: >-
+  {%- set ns = namespace(names=[hermes_brain_model]) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- set _tags = llm_router_deployment_tags_by_model[m.client_model_id] -%}
+  {%- if 'zdr' in _tags and 'free' not in _tags and 'retains' not in _tags -%}
+  {%- set ns.names = ns.names + [m.client_model_id] -%}
+  {%- if m.route_group is defined
+        and (m.tier in llm_router_local_registry_tiers or m.route_group in llm_router_zdr_asserted_group_names) -%}
+  {%- set ns.names = ns.names + [m.route_group] -%}
+  {%- endif -%}
+  {%- if m.fallback_group is defined
+        and (m.tier in llm_router_local_registry_tiers or m.fallback_group in llm_router_zdr_asserted_group_names) -%}
+  {%- set ns.names = ns.names + [m.fallback_group] -%}
+  {%- endif -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.names | unique
+     | reject('in', llm_router_zdr_false_group_names
+                    + llm_router_zdr_unasserted_terminal_rungs)
+     | list }}
 
 # All registry/fallback names that are not safe for a ZDR-only key, including
 # free-class names even when a free provider has a ZDR assertion.

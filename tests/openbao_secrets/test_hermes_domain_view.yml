@@ -12,6 +12,7 @@
   gather_facts: false
   vars_files:
     - ../../inventory/group_vars/hermes_agent_group.yml
+    - ../../roles/hermes_agent/defaults/main/00-identity.yml
     - ../../roles/openbao_secrets/defaults/main/00-connection.yml
     - ../../roles/openbao_secrets/defaults/main/10-domains.yml
   vars:
@@ -101,6 +102,27 @@
           - hermes_agent_bao.WEBHOOK_SECRET == 'own:WEBHOOK_SECRET'
         fail_msg: donna's view carries local-llm values.
 
+    - name: Assert private Hermes uses its own view for Slack and shared Splunk access
+      vars:
+        hermes_agent_id: hermes-private
+        hermes_agent_env_prefix: HERMES_PRIVATE
+        bao_local_llm_secrets: "{{ _local_llm }}"
+        openbao_secrets_by_domain:
+          local-llm: "{{ _local_llm }}"
+          hermes-private: >-
+            {{ _own | combine({'HERMES_PRIVATE_API_SERVER_KEY': 'private-api-key',
+                               'SPLUNK_MCP_TOKEN': 'private-splunk-token',
+                               'SLACK_HERMES_PRIVATE_BOT_TOKEN': 'private-bot-token',
+                               'SLACK_HERMES_PRIVATE_APP_TOKEN': 'private-app-token'}) }}
+      ansible.builtin.assert:
+        that:
+          - hermes_agent_bao.values() | select('search', '^local-llm:') | list == []
+          - hermes_agent_slack_bot_token == 'private-bot-token'
+          - hermes_agent_slack_app_token == 'private-app-token'
+          - hermes_agent_splunk_mcp_token == 'private-splunk-token'
+          - hermes_agent_api_server_key == 'private-api-key'
+        fail_msg: private Hermes read another identity's OpenBao values.
+
     - name: Assert the hermes domain declares exactly the paths Hermes reads
       vars:
         _declared: >-
@@ -111,3 +133,14 @@
         fail_msg: >-
           The hermes domain declares {{ _declared }}; it must be exactly
           {{ _expected_hermes_paths }} (the policy grants these exact paths).
+
+    - name: Assert the private identity has only its own domain and the shared read-only Splunk route
+      vars:
+        _declared: >-
+          {{ (openbao_secrets_domains | selectattr('name', 'equalto', 'hermes-private') | first).paths }}
+      ansible.builtin.assert:
+        that:
+          - _declared == ['ai/hermes-private', 'ai/mcp/splunk']
+        fail_msg: >-
+          hermes-private declares {{ _declared }}; expected only its own KV path
+          and the gateway's shared read-only Splunk route credential.

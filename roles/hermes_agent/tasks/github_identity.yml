@@ -5,24 +5,35 @@
   ansible.builtin.assert:
     that:
       - hermes_agent_github_identity_bao_addr | length > 0
-      - hermes_agent_github_identity_approles.public.role_id | length > 0
-      - hermes_agent_github_identity_approles.public.secret_id | length > 0
-      - hermes_agent_github_identity_approles.private.role_id | length > 0
-      - hermes_agent_github_identity_approles.private.secret_id | length > 0
       - "'review' in hermes_agent_github_identity_sets"
+      - _hermes_agent_github_missing_approles | length == 0
       - hermes_agent_github_trust_boundary_default in ['public', 'private']
-      - hermes_agent_github_guard_internal_suffixes | length > 0
-      - hermes_agent_github_guard_private_repos | length > 0
+      - hermes_agent_github_guard_public_repos | length > 0
+      - >-
+        hermes_agent_id != 'hermes-private'
+        or (hermes_agent_github_guard_internal_suffixes | length > 0
+            and hermes_agent_github_guard_private_repos | length > 0)
     fail_msg: >-
       hermes_agent_github_identity_enabled is true but an input is missing:
-      the public/private AppRole credentials (env
-      HERMES_GITHUB_{PUBLIC,PRIVATE}_VAULT_{ROLE,SECRET}_ID),
-      hermes_agent_github_identity_bao_addr, the `review` set, a valid
-      hermes_agent_github_trust_boundary_default, or the outbound guard lists
-      (env HERMES_GH_GUARD_INTERNAL_SUFFIXES / HERMES_GH_GUARD_PRIVATE_REPOS).
+      a required AppRole credential for the configured boundary, hermes_agent_github_identity_bao_addr,
+      the `review` set, a valid
+      hermes_agent_github_trust_boundary_default, or the repo lists and private
+      write guards for this identity.
       Supply them or leave the flag false.
     quiet: true
   no_log: true
+  vars:
+    _hermes_agent_github_missing_approles: >-
+      {%- set ns = namespace(missing=[]) -%}
+      {%- for mapping in hermes_agent_github_identity_sets.values() -%}
+      {%- for boundary in mapping.keys() -%}
+      {%- if hermes_agent_github_identity_approles[boundary].role_id | length == 0
+            or hermes_agent_github_identity_approles[boundary].secret_id | length == 0 -%}
+      {%- set ns.missing = ns.missing + [boundary] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.missing | unique | list }}
   when: hermes_agent_github_identity_enabled | bool
 
 - name: Install the GitHub CLI
