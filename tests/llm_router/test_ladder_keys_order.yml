@@ -1,0 +1,81 @@
+---
+- name: Verify the rendered D1 order and heuristic router targets
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ladder_keys_fixture.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Prepare role-backed rendered contract
+      ansible.builtin.import_tasks: tasks/prepare_ladder_keys.yml
+    - name: The rendered router follows one D1 class order
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_d1_class_order == ['sub', 'local', 'paid-zdr', 'free', 'retains']
+          - >-
+            llm_router_d1_ladder_groups ==
+            (llm_router_d1_rungs_by_class['sub']
+             + llm_router_d1_rungs_by_class['local']
+             + llm_router_d1_rungs_by_class['paid-zdr']
+             + llm_router_d1_rungs_by_class['free']
+             + llm_router_d1_rungs_by_class['retains']) | unique | list
+          - _config.router_settings.default_fallbacks == llm_router_d1_ladder_groups
+          - _config.router_settings.model_group_alias.auto == 'hermes-default'
+          - >-
+            _hermes_fallback ==
+            (llm_router_d1_ladder_groups
+             | reject('equalto', llm_router_d1_auto_initial_group) | list)
+          - _auto_targets | unique | length >= 3
+          - _auto_tier_classes['SIMPLE'] == 'sub'
+          - _auto_tier_classes['MEDIUM'] == 'local'
+          - _auto_tier_classes['COMPLEX'] == 'paid-zdr'
+          - _auto_tier_classes['REASONING'] == 'paid-zdr'
+          - _auto_tier_classes.values() | reject('in', ['sub', 'local', 'paid-zdr']) | list | length == 0
+          - _auto_default == llm_router_d1_auto_initial_group
+          - _auto.litellm_params.complexity_router_config.classifier_type == 'heuristic'
+          - _llm_router_role_params['hermes-default'].complexity_router_config.classifier_type == 'heuristic'
+          - _llm_router_role_params['hermes-default'].complexity_router_config.tiers == llm_router_d1_auto_router_tiers
+          - >-
+            _llm_router_role_params['hermes-default']
+            .complexity_router_config.default_model
+            == llm_router_d1_auto_initial_group
+          - _d1_entry_roles | length == 3
+          - _d1_entry_roles | map(attribute='model') | unique | list == ['hermes-default']
+          - llm_router_d1_rungs_by_class['retains'] | last == llm_router_zai_groups | last
+          - >-
+            llm_router_d1_ladder_groups.index(
+              llm_router_d1_rungs_by_class['free'] | first)
+            < llm_router_d1_ladder_groups.index(
+              llm_router_d1_rungs_by_class['retains'] | first)
+          - _sub_rows | length > 0
+          - _bad_non_zdr_subscriptions | length == 0
+          - _all_rung_groups | difference(_config.model_list | map(attribute='model_name') | list) | length == 0
+        fail_msg: "D1 rung order or rendered target coverage failed."
+        success_msg: "Class order is sub → local → paid-zdr → free → retains; Z.ai is last."
+      vars:
+        _auto: "{{ _config.model_list | selectattr('model_name', 'equalto', 'hermes-default') | first }}"
+        _auto_targets: "{{ _auto.litellm_params.complexity_router_config.tiers.values() | list }}"
+        _auto_tier_classes: >-
+          {{ dict(_auto.litellm_params.complexity_router_config.tiers.items()
+                  | map('first')
+                  | zip(_auto.litellm_params.complexity_router_config.tiers.values()
+                       | map('extract', llm_router_d1_group_class_by_name))) }}
+        _auto_default: "{{ _auto.litellm_params.complexity_router_config.default_model }}"
+        _d1_entry_roles: >-
+          {{ llm_router_role_deployments
+             | selectattr('role', 'in', ['fast', 'subagent', 'cheap']) | list }}
+        _hermes_fallback: >-
+          {{ _config.router_settings.fallbacks
+             | selectattr('hermes-default', 'defined')
+             | map(attribute='hermes-default') | first }}
+        _all_rung_groups: "{{ llm_router_d1_ladder_groups }}"
+        _sub_rows: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.tags', 'defined')
+             | selectattr('litellm_params.tags', 'contains', 'sub') | list }}
+        _bad_non_zdr_subscriptions: >-
+          {{ _sub_rows
+             | rejectattr('litellm_params.tags', 'contains', 'zdr')
+             | rejectattr('litellm_params.tags', 'contains', 'retains') | list }}

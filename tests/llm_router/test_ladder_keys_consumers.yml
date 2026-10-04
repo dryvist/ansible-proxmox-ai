@@ -1,0 +1,165 @@
+---
+- name: Verify the consumer key declarations and scopes
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ladder_keys_fixture.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Prepare role-backed rendered contract
+      ansible.builtin.import_tasks: tasks/prepare_ladder_keys.yml
+    - name: Every consumer is declared once with its table class scope
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _declared_target_aliases | sort == _target_aliases | sort
+          - _declared_target_aliases | length == _target_aliases | length
+          - _active_target_aliases | sort == _enabled_target_aliases | sort
+          - _active_target_aliases | length == _enabled_target_aliases | length
+          - >-
+            llm_router_disabled_virtual_keys | intersect(_target_aliases) | sort
+            == ['agy', 'donna', 'hermes-private', 'judge', 'opencode',
+                'recorder', 'zcode']
+          - _class_scope_mismatches | length == 0
+          - _class_model_mismatches | length == 0
+          - _strict_tag_mismatches | length == 0
+          - _mcp_permission_mismatches | length == 0
+        fail_msg: >-
+          Consumer declarations={{ _class_scope_mismatches }}, model scope={{ _class_model_mismatches }},
+          MCP scope={{ _mcp_permission_mismatches }}.
+        success_msg: "Each enabled target consumer has one key; the seven unprovisioned sources remain disabled."
+      vars:
+        _declared_target_aliases: >-
+          {{ _llm_router_declared_virtual_keys | selectattr('alias', 'in', _target_aliases)
+             | map(attribute='alias') | list }}
+        _active_target_aliases: >-
+          {{ llm_router_virtual_keys | selectattr('alias', 'in', _target_aliases)
+             | map(attribute='alias') | list }}
+        _class_scope_mismatches: >-
+          {%- set _standard = ['sub', 'local', 'paid-zdr', 'free'] -%}
+          {%- set _all = ['sub', 'local', 'paid-zdr', 'free', 'retains'] -%}
+          {%- set _zdr = ['sub', 'local', 'paid-zdr'] -%}
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for _key in _llm_router_declared_virtual_keys
+                if _key.alias in _target_aliases -%}
+          {%- set _want = _standard if _key.alias in ['claude-code', 'codex', 'agy']
+                else ['local'] if _key.alias in ['judge', 'recorder']
+                else _zdr if _key.alias in ['hermes-private', 'donna']
+                else _all -%}
+          {%- if _key.allowed_classes | list != _want -%}
+          {%- set ns.rows = ns.rows + [_key.alias] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+        _class_model_mismatches: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for _key in llm_router_virtual_keys
+                if _key.alias in _target_aliases and _key.allowed_classes is defined -%}
+          {%- for _name in _key.models -%}
+          {%- set _class = llm_router_d1_group_class_by_name.get(_name) -%}
+          {%- if _class is not none and _class not in _key.allowed_classes -%}
+          {%- set ns.rows = ns.rows + [_key.alias ~ ':' ~ _name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+        _strict_tag_mismatches: >-
+          {%- set _specs = [
+                {'alias': 'judge', 'tags': ['&zdr', '!free', '!retains', '&local']},
+                {'alias': 'recorder', 'tags': ['&zdr', '!free', '!retains', '&local']},
+                {'alias': 'hermes-private', 'tags': ['&zdr', '!free', '!retains']},
+                {'alias': 'donna', 'tags': ['&zdr', '!free', '!retains']}] -%}
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for _spec in _specs -%}
+          {%- set _key = _llm_router_declared_virtual_keys
+                | selectattr('alias', 'equalto', _spec.alias) | first -%}
+          {%- if _spec.tags | difference(_key.tags | default([])) | length > 0
+                or not (_key.router_settings.enable_tag_filtering | default(false) | bool) -%}
+          {%- set ns.rows = ns.rows + [_spec.alias] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+        _expected_mcp_permissions:
+          claude-code:
+            mcp_servers: [context7, grep, docs, splunk, vikunja_ro, nautobot, memory, hindsight, vikunja, zammad]
+            agents: [hermes-private, hermes-public]
+          codex:
+            mcp_servers: [context7, grep, docs, splunk, vikunja_ro, nautobot, memory, hindsight, vikunja, zammad]
+            agents: [hermes-private, hermes-public]
+            mcp_tool_search_enabled: true
+          agy:
+            mcp_servers: [context7, grep, docs, splunk, vikunja_ro, nautobot, memory, hindsight, vikunja, zammad]
+            agents: [hermes-private, hermes-public]
+            mcp_tool_search_enabled: true
+          judge: {}
+          recorder: {}
+          hermes-default:
+            mcp_servers: [context7, grep, docs, splunk, vikunja_ro]
+          hermes-splunk-admin:
+            mcp_servers: [docs, splunk]
+          hermes-homelab-admin:
+            mcp_servers: [docs, vikunja_ro, nautobot]
+          hermes-github-maint:
+            mcp_servers: [grep, docs]
+          hermes-private:
+            mcp_servers: [context7, grep, docs, splunk, vikunja_ro, nautobot, memory, vikunja, zammad]
+          donna:
+            mcp_servers: [context7, grep, docs, splunk, vikunja_ro]
+          zcode:
+            mcp_access_groups: [hub-public]
+          opencode:
+            mcp_access_groups: [hub-public]
+        _mcp_permission_mismatches: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for _alias in _target_aliases -%}
+          {%- set _key = _llm_router_declared_virtual_keys
+                | selectattr('alias', 'equalto', _alias) | first -%}
+          {%- set _expected = _expected_mcp_permissions.get(_alias, {}) -%}
+          {%- if _key.object_permission | default({}) != _expected -%}
+          {%- set ns.rows = ns.rows + [_alias] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+
+    - name: OpenCode and ZCode wait for the matching sandbox source fields
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'opencode' in llm_router_disabled_virtual_keys"
+          - "'zcode' in llm_router_disabled_virtual_keys"
+          - _source_gate_aliases | sort == ['opencode', 'zcode']
+        fail_msg: "A sandbox key must remain disabled until its own delivery field exists."
+        success_msg: "OpenCode and ZCode stay disabled while their sandbox fields are absent."
+      vars:
+        _source_gate_aliases: >-
+          {{ _llm_router_declared_virtual_keys
+             | selectattr('alias', 'in', ['opencode', 'zcode'])
+             | rejectattr('enabled', 'truthy') | map(attribute='alias') | list }}
+
+    - name: Model the peer-provisioned sandbox fields with the existing consumer values
+      ansible.builtin.set_fact:
+        bao_apps_secrets: >-
+          {{ (bao_apps_secrets | default({})) | combine({
+            'zcode_llm_router_key': 'fixture-zcode',
+            'ZCODE_ROUTER_KEY': 'fixture-zcode',
+            'OPENCODE_ROUTER_KEY': 'fixture-opencode'}) }}
+
+    - name: Matching sandbox fields enable exactly their existing router keys
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _enabled_delivery_aliases | sort == ['opencode', 'zcode']
+          - _delivery_values['opencode'] == bao_apps_secrets['OPENCODE_ROUTER_KEY']
+          - _delivery_values['zcode'] == bao_apps_secrets['ZCODE_ROUTER_KEY']
+          - _delivery_values['opencode'] != _delivery_values['zcode']
+        fail_msg: "Sandbox delivery must reuse its matching per-consumer key value."
+        success_msg: "Each sandbox delivery field activates only its matching consumer key."
+      vars:
+        _enabled_delivery_aliases: >-
+          {{ llm_router_virtual_keys | selectattr('alias', 'in', ['opencode', 'zcode'])
+             | map(attribute='alias') | list }}
+        _delivery_values: >-
+          {{ dict(llm_router_virtual_keys | selectattr('alias', 'in', ['opencode', 'zcode'])
+             | map(attribute='alias') | zip(llm_router_virtual_keys
+             | selectattr('alias', 'in', ['opencode', 'zcode']) | map(attribute='value'))) }}
