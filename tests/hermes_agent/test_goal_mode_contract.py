@@ -3,7 +3,12 @@ from __future__ import annotations
 import yaml
 
 from conftest import REPO_ROOT, ROLE_ROOT, _task, role_defaults
-from _registry import backend_for_role, load_registry
+from _registry import (
+    backend_for_role,
+    effective_backend_for_role,
+    load_registry,
+    role_is_parked,
+)
 from _role_files import template_text
 from _cron_pool_ceiling_shared import (
     router_request_timeout_seconds,
@@ -69,13 +74,15 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # when the judge moved to a resident backend to escape the small tier's
     # cold load, and deriving from serving_role here would have silently kept
     # asserting the old wiring.
-    # `judge` is a router role backed by the routine tier, not a git alias.
-    judge_backend = backend_for_role(registry, "routine")
+    # `judge` uses the routine tier when active. A deliberately parked routine
+    # model uses the active primary until the serving host is rebuilt.
+    routine_parked = role_is_parked(registry, "routine")
+    judge_backend = effective_backend_for_role(registry, "routine")
     assert group_vars["hermes_brain_model"] == hermes_alias
-    # The judge rides its own alias now — a judge on the worker's model is
-    # self-preference bias, and the two serialize against one serving slot.
+    # The judge normally rides its distinct routine model. During the explicit
+    # parked state it shares the active primary until the serving host is rebuilt.
     assert group_vars["hermes_goal_judge_model"] == "judge"
-    assert judge_backend != hermes_backend
+    assert (judge_backend == hermes_backend) is routine_parked
     assert defaults["hermes_agent_model"] == "{{ hermes_brain_model }}"
     assert defaults["hermes_agent_compression_model"] == "{{ hermes_brain_model }}"
     assert defaults["hermes_agent_memory_llm_model"] == "{{ hermes_brain_model }}"
@@ -113,16 +120,9 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
         in environment
     )
     assert defaults["hermes_agent_brain_sync_enabled"] is False
-    # Reads the alias, not the worker model. This was pinned to
-    # hermes_agent_model until 2026-08-15 for a measured reason — `goal-judge`
-    # resolved to a swap-class backend whose ~79s cold load exceeded the judge
-    # timeout — and the stated precondition for flipping it was a residency fix
-    # in the serving host, which landed with maxResidentWorkers = 2. The judge
-    # backend is now pinned resident, so the cold-load case cannot occur.
-    #
-    # Pinning it back to the worker model reintroduces self-preference bias
-    # AND makes judge and worker share one model; do not do it without
-    # re-measuring what changed.
+    # The judge reads the router's `judge` role. While the routine model is
+    # explicitly parked, that role follows the active primary; the rebuild gate
+    # restores the distinct routine backend before this temporary state ends.
     assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_goal_judge_model }}"
     assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == 150
     assert "goal_judge:" in config
