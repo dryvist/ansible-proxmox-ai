@@ -51,6 +51,97 @@
       {%- endfor -%}
       {{ ns.entries }}
 
+- name: Load the shared model catalog
+  ansible.builtin.include_role:
+    name: dryvist.homelab.llm_model_catalog
+    public: true
+
+- name: Project model limits from the shared catalog
+  ansible.builtin.set_fact:
+    _llm_router_catalog_projection: >-
+      {%- set ns = namespace(entries=[], errors=[]) -%}
+      {%- for model in llm_router_model_registry -%}
+      {%- set matches = namespace(entries=[]) -%}
+      {%- for candidate in llm_model_catalog_models -%}
+      {%- if candidate.name == model.client_model_id
+            or model.client_model_id in (candidate.aliases | default([]))
+            or candidate.name in (model.aliases | default([])) -%}
+      {%- set matches.entries = matches.entries + [candidate] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- if matches.entries | length == 0 -%}
+      {%- for candidate in llm_model_catalog_models -%}
+      {%- if candidate.name == model.upstream_model_id
+            or model.upstream_model_id in (candidate.aliases | default([])) -%}
+      {%- set matches.entries = matches.entries + [candidate] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {%- if matches.entries | length != 1 -%}
+      {%- set ns.errors = ns.errors + [
+        model.client_model_id ~ ': expected one catalog entry, found '
+        ~ (matches.entries | length | string)
+      ] -%}
+      {%- else -%}
+      {%- set source = matches.entries[0] -%}
+      {%- set target_name = source.catalog_model | default(source.name) -%}
+      {%- set targets = llm_model_catalog_models | selectattr('name', 'equalto', target_name) | list -%}
+      {%- if targets | length != 1 -%}
+      {%- set ns.errors = ns.errors + [
+        model.client_model_id ~ ': catalog target ' ~ target_name
+        ~ ' is missing or ambiguous'
+      ] -%}
+      {%- else -%}
+      {%- set target = targets[0] -%}
+      {%- set profile_name = model.catalog_profile | default('') -%}
+      {%- set profiles = target.profiles | default({}) -%}
+      {%- if profile_name and profile_name not in profiles -%}
+      {%- set ns.errors = ns.errors + [
+        model.client_model_id ~ ': catalog profile ' ~ profile_name
+        ~ ' is missing from ' ~ target.name
+      ] -%}
+      {%- else -%}
+      {%- set profile = profiles.get(profile_name, {}) -%}
+      {%- set limits = namespace(values={}) -%}
+      {%- for field in [
+            'context_window', 'max_output_tokens', 'max_parallel_requests',
+            'request_timeout', 'stream_timeout', 'max_queue_size', 'queue_size',
+            'num_retries', 'allowed_fails', 'cooldown_time'
+          ] -%}
+      {%- if profile[field] is defined -%}
+      {%- set _ = limits.values.update({field: profile[field]}) -%}
+      {%- elif target[field] is defined -%}
+      {%- set _ = limits.values.update({field: target[field]}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set projected = limits.values | combine({
+        'catalog_model_name': target.name,
+        'catalog_profile_name': profile_name
+      }) -%}
+      {%- set ns.entries = ns.entries + [model | combine(projected)] -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ {'entries': ns.entries, 'errors': ns.errors} | to_json }}
+
+- name: Assert every registry model resolves to one catalog entry
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - (_llm_router_catalog_projection | from_json).errors | length == 0
+    fail_msg: >-
+      Every router model must resolve to one homelab-contracts catalog entry
+      and that entry's catalog_model target must exist:
+      {{ (_llm_router_catalog_projection | from_json).errors }}
+    success_msg: >-
+      Every router model resolves to the shared catalog; model limits are
+      projected from the catalog before rendering.
+
+- name: Replace the raw registry with its catalog limit projection
+  ansible.builtin.set_fact:
+    llm_router_model_registry: "{{ (_llm_router_catalog_projection | from_json).entries }}"
+
 - name: Assert the registry loaded and is non-empty
   ansible.builtin.assert:
     quiet: true
