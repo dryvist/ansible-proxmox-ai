@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.64.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.64.1...v0.64.2) (2026-10-04)
+
+
+### Bug Fixes
+
+* **hermes_agent:** require terminal Kanban outcomes ([e3cd3d6](https://github.com/dryvist/ansible-proxmox-ai/commit/e3cd3d64c08147b82c5e21a63114f203619680be))
+* **hermes_agent:** require terminal Kanban outcomes ([26b90ee](https://github.com/dryvist/ansible-proxmox-ai/commit/26b90ee1b6600b050ef494c94ec99af4278c4483))
+
 ## [0.64.1](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.64.0...v0.64.1) (2026-10-04)
 
 
