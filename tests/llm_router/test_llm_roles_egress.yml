@@ -106,8 +106,24 @@
             that:
               - "'judge (estate)' in ansible_failed_result.msg"
 
-    # NEGATIVE: registry concurrency drifting from the map fails.
-    - name: Drift the routine entry's concurrency from the map
+    # NEGATIVE: when the map declares concurrency, registry drift fails.
+    - name: Select a mapped large model with declared registry concurrency
+      ansible.builtin.set_fact:
+        _concurrency_test_model_id: "{{ llm_roles.models[llm_roles.roles.best.model].id }}"
+        _concurrency_test_value: >-
+          {{ (llm_router_large_models
+              | selectattr('client_model_id', 'equalto', llm_roles.models[llm_roles.roles.best.model].id)
+              | first).max_parallel_requests }}
+
+    - name: Give the role-map fixture its declared concurrency
+      ansible.builtin.set_fact:
+        llm_roles: >-
+          {{ llm_roles | combine({'models': llm_roles.models | combine({
+               llm_roles.roles.best.model: llm_roles.models[llm_roles.roles.best.model]
+               | combine({'concurrency': _concurrency_test_value})
+             })}) }}
+
+    - name: Drift the mapped entry's concurrency from the map
       ansible.builtin.set_fact:
         llm_router_large_models: >-
           {{ llm_router_large_models

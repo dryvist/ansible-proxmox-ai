@@ -92,6 +92,26 @@
       {%- endfor -%}
       {{ ns.out }}
 
+- name: Classify the Pro6000 model-listing probe
+  ansible.builtin.set_fact:
+    _llm_router_gpu_probe:
+      state: >-
+        {{ 'not_deployed' if llm_router_gpu_models | default([]) | length == 0
+           else ('verified'
+                 if ((_llm_router_gpu_models_response | default({}, true)).status
+                     | default(0) | int) == 200
+                 else ('rejected'
+                       if ((_llm_router_gpu_models_response | default({}, true)).status
+                           | default(0) | int) in [401, 403]
+                       else ('not_found'
+                             if ((_llm_router_gpu_models_response | default({}, true)).status
+                                 | default(0) | int) == 404
+                             else 'unreachable'))) }}
+      status: "{{ (_llm_router_gpu_models_response | default({}, true)).status | default(0) | int }}"
+      ids: >-
+        {{ ((_llm_router_gpu_models_response | default({}, true)).json | default({}, true)).get('data', [])
+           | map(attribute='id') | list }}
+
 # A machine-readable verdict, not only a printed one. The debug below renders
 # from it, and tests/llm_router/test_servable_probe.yml asserts on it — which is
 # what makes "skipped because unreachable" provable as a SKIP rather than
@@ -131,6 +151,7 @@
         {{ _llm_router_uncredentialed | map(attribute='endpoint') | list
            | difference(_llm_router_absent_groups) }}
       unsupported: "{{ llm_router_probe_unsupported_tiers }}"
+      gpu: "{{ _llm_router_gpu_probe.state }}"
   vars:
     # Both id forms, because the registry's client-facing id and the id the
     # backend knows are the same value on the large tier and may differ on
@@ -204,6 +225,10 @@
         template rendered no deployment for them at all:
         {{ _llm_router_probe_report.not_deployed | join(', ') | default('none', true) }}
       - >-
+        Pro6000 model listing: {{ _llm_router_probe_report.gpu }}
+        (HTTP {{ _llm_router_gpu_probe.status }}); expected model ids are checked
+        when the endpoint responds.
+      - >-
         Remote endpoints NOT CHECKED, no credential resolved (the deployment
         exists, the probe could not reach past the credential):
         {{ _llm_router_probe_report.no_credential | join(', ') | default('none', true) }}
@@ -211,6 +236,27 @@
         Tiers with no model listing this role can parse:
         {{ _llm_router_probe_report.unsupported | join(', ') | default('none', true) }}
   changed_when: false
+
+- name: Assert the Pro6000 guest lists every enabled registry model
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_gpu_unserved | length == 0
+      - _llm_router_gpu_unregistered | length == 0
+    fail_msg: >-
+      Pro6000 model listing disagrees with llm-models.d/60-gpu-pro6000.yml:
+      missing upstream id(s) {{ _llm_router_gpu_unserved }}; unregistered
+      listed id(s) {{ _llm_router_gpu_unregistered }}.
+    success_msg: >-
+      The Pro6000 model listing contains exactly the enabled GPU registry ids.
+  when: _llm_router_gpu_probe.state == 'verified'
+  vars:
+    _llm_router_gpu_expected_ids: >-
+      {{ llm_router_gpu_models | default([]) | map(attribute='upstream_model_id') | list }}
+    _llm_router_gpu_unserved: >-
+      {{ _llm_router_gpu_expected_ids | difference(_llm_router_gpu_probe.ids) }}
+    _llm_router_gpu_unregistered: >-
+      {{ _llm_router_gpu_probe.ids | difference(_llm_router_gpu_expected_ids) }}
 
 - name: Assert the serving gate serves exactly the models the registry claims
   ansible.builtin.assert:

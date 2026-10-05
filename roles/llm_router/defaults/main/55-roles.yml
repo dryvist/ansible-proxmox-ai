@@ -16,8 +16,9 @@
 # re-typed and a role can only point at something the catalog actually
 # describes — the seed task asserts exactly that before it writes anything.
 #
-# TWO THINGS TO KNOW BEFORE RETARGETING A ROLE ON A RUNNING PROXY (measured
-# 2026-08-24, litellm 1.97.0):
+# TWO THINGS TO KNOW BEFORE RETARGETING A ROLE ON A RUNNING PROXY. The
+# behaviors were measured live 2026-08-24 on litellm 1.97.0; this repo now pins
+# 1.102.0 (00-identity.yml), so verify migration behavior after package upgrades.
 #
 # 1. Changing the target ACROSS a context-window difference means DELETING the
 #    deployment and creating it again, not updating it. `/model/update` writes
@@ -113,12 +114,14 @@ _llm_router_cheap_chain: >-
 # this PR only ever carried 0 or 1 fallbacks, so that interaction has never
 # been exercised. Confirm live before relying on the terminal rung under load.
 llm_router_role_deployments:
-  # Local-first: try the 4080 before anything else. See the note above
-  # _llm_router_fast_subagent_chain for why this no longer targets `long`
-  # directly and how the >200k escape hatch stays reachable.
+  # Try the Pro6000 medium profile first only when the profile switch is on;
+  # otherwise its projection resolves to today's 4080 tier. The inventory
+  # group alone never activates profiles. Keep the established fallback chain.
   - role: subagent
-    model: "{{ llm_router_hermes_local_4080_id }}"
-    fallbacks: "{{ _llm_router_fast_subagent_chain }}"
+    model: "{{ llm_router_gpu_medium_b_model }}"
+    fallbacks: >-
+      {{ ([llm_router_hermes_local_4080_id] + _llm_router_fast_subagent_chain)
+         | reject('equalto', llm_router_gpu_medium_b_model) | unique | list }}
   # Same chain, second name — both Codex's `--profile fast` and this
   # project's own `subagent` naming already have external callers expecting
   # them; see the note above _llm_router_fast_subagent_chain.
@@ -130,12 +133,11 @@ llm_router_role_deployments:
   - role: fast-gpu
     model: "{{ llm_router_hermes_local_4080_id }}"
     fallbacks: []
-  # The judge uses the routine model while it is servable; a parked routine
-  # model temporarily resolves to the active primary. Local only; thinking is
-  # off so a one-word verdict fits 4 tokens.
+  # Use the smallest Pro6000 profile only when the profile switch is on, then
+  # today's routine model. Thinking stays off for short verdicts.
   - role: judge
-    model: "{{ llm_router_routine_model }}"
-    fallbacks: []
+    model: "{{ llm_router_gpu_small_model }}"
+    fallbacks: "{{ [llm_router_routine_model] | reject('equalto', llm_router_gpu_small_model) | list }}"
     litellm_params:
       extra_body:
         chat_template_kwargs:
@@ -237,6 +239,12 @@ _llm_router_role_params: >-
         'api_base': llm_router_llm_vllm_base_url,
         'api_key': llm_router_light_api_key,
         'use_chat_completions_api': true}}) -%}
+  {%- elif m.tier == 'gpu' -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'api_base': llm_router_llm_gpu_base_url,
+        'api_key': llm_router_light_api_key,
+        'use_chat_completions_api': true}}) -%}
   {%- endif -%}
   {%- if m.client_model_id in ns.params -%}
   {%- set _ = ns.params[m.client_model_id].update({
@@ -244,7 +252,7 @@ _llm_router_role_params: >-
   {%- for k in ['num_retries', 'request_timeout', 'stream_timeout'] if m[k] is defined -%}
   {%- set _ = ns.params[m.client_model_id].update({('timeout' if k == 'request_timeout' else k): m[k]}) -%}
   {%- endfor -%}
-  {%- if m.tier in ['large', 'light', 'vllm', 'hermes-local'] -%}
+  {%- if m.tier in ['large', 'light', 'vllm', 'gpu', 'hermes-local'] -%}
   {%- set _p = ns.params[m.client_model_id] -%}
   {%- set _ = _p.update({
         'num_retries': [_p.num_retries | default(llm_router_local_num_retries),

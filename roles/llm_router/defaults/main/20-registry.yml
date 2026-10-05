@@ -16,22 +16,36 @@
 # needs these vars (tests, CI) loads the same dir; nothing re-types a model id.
 llm_router_registry_dir: "{{ role_path | dirname | dirname }}/llm-models.d"
 
+# One fail-closed switch for the unprovisioned Pro6000 profiles. A later
+# profile-switch change may flip this only after the serving host is ready.
+llm_router_gpu_profiles_enabled: false
+
 llm_router_model_registry: >-
   {{ _llm_registry_large + _llm_registry_light + _llm_registry_cpu_pool
-     + _llm_registry_local_gpu + _llm_registry_opencode + _llm_registry_hermes_cloud
+     + _llm_registry_local_gpu + _llm_registry_gpu_pro6000
+     + _llm_registry_opencode + _llm_registry_hermes_cloud
      + _llm_registry_openrouter + _llm_registry_zai }}
 
-# Only enabled entries reach the rendered config or any derived contract.
+# Only active entries reach the rendered config or any derived contract. The
+# GPU candidates are registry-disabled until the single switch above is true;
+# the projection activates the whole candidate set together.
 # cpu-moe / cpu-9b also require inventory-backed api_base URLs — without them
 # the template renders nothing and registry/render parity fails loudly.
 llm_router_registry_enabled: >-
   {%- set ns = namespace(out=[]) -%}
   {%- set backends = llm_router_cpu_pool_backend_urls_by_tier | default({}) -%}
-  {%- for m in (llm_router_model_registry | selectattr('enabled') | list) -%}
+  {%- for m in llm_router_model_registry -%}
+  {%- if m.tier == 'gpu' -%}
+  {%- if llm_router_gpu_profiles_enabled | bool
+       and (groups['llm_gpu_group'] | default([]) | length) > 0 -%}
+  {%- set ns.out = ns.out + [m | combine({'enabled': true, 'servable': true})] -%}
+  {%- endif -%}
+  {%- elif m.enabled -%}
   {%- if m.tier in ['cpu-moe', 'cpu-9b']
        and (backends[m.tier] | default([]) | length) == 0 -%}
   {%- else -%}
   {%- set ns.out = ns.out + [m] -%}
+  {%- endif -%}
   {%- endif -%}
   {%- endfor -%}
   {{ ns.out }}
@@ -107,6 +121,20 @@ llm_router_cpu_9b_models: >-
 # would advertise a standby that does not exist.
 llm_router_vllm_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | list }}
+# Pro6000: separate physical GPU serving tier. It is inventory-gated like the
+# CPU pool so this proxy never advertises a backend without a tofu-tagged host.
+llm_router_gpu_models: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'gpu') | list }}
+llm_router_gpu_models_by_profile: >-
+  {%- set ns = namespace(out={}) -%}
+  {%- for m in llm_router_gpu_models -%}
+  {%- set _ = ns.out.update({m.profile: m.client_model_id}) -%}
+  {%- endfor -%}
+  {{ ns.out }}
+llm_router_gpu_small_model: "{{ llm_router_gpu_models_by_profile.get('small', llm_router_routine_model) }}"
+llm_router_gpu_medium_a_model: "{{ llm_router_gpu_models_by_profile.get('medium-a', llm_router_primary_model) }}"
+llm_router_gpu_medium_b_model: "{{ llm_router_gpu_models_by_profile.get('medium-b', llm_router_hermes_local_4080_id) }}"
+llm_router_gpu_max_model: "{{ llm_router_gpu_models_by_profile.get('max', llm_router_primary_model) }}"
 # hermes-local: a Hermes-fallback-chain rung over a tier's backend that is
 # ALSO reachable directly under its own tier/id (e.g. the 4080 vllm guest).
 # Rendered alongside that physical tier (same api_base/api_key — see

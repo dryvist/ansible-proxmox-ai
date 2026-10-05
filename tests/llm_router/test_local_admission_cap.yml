@@ -184,10 +184,10 @@
     # At 1 that is 3 against a 2-slot backend — a deliberate 1-over overcommit,
     # because no integer makes three independent semaphores sum to 2. At 2 it
     # would be 6, which is the original defect with extra steps.
-    # A6: per-model registry values can now diverge from the tier-wide
-    # default, so the pool-ceiling bound is checked against EVERY distinct
-    # value the large tier declares (the default itself, plus each entry's
-    # own max_parallel_requests), not the default alone.
+    # Per-model registry values can diverge from the tier-wide default. Check
+    # every distinct value against the role-map concurrency ceiling where it
+    # exists, falling back to the configured cap for maps with no concurrency
+    # metadata.
     - name: No local admission cap, tier default or per-model, exceeds the pool bound
       ansible.builtin.assert:
         quiet: true
@@ -206,6 +206,12 @@
           Tier default and every per-model large-tier cap are each <= 1
           (pool ceiling 3 per model against a 1-slot backend).
       vars:
+        _pool_bound: >-
+          {{ (llm_roles.models.values()
+              | selectattr('concurrency', 'defined')
+              | map(attribute='concurrency') | map('int') | list)
+             | default([llm_router_local_max_parallel_requests | int], true)
+             | max }}
         _large_tier_values: >-
           {{ llm_router_registry_enabled
              | selectattr('tier', 'equalto', 'large')
@@ -213,7 +219,7 @@
              | map(attribute='max_parallel_requests') | map('int') | unique | list }}
         _over_bound: >-
           {{ ([llm_router_local_max_parallel_requests | int] + _large_tier_values)
-             | select('gt', llm_roles.models.values() | map(attribute='concurrency') | max) | list }}
+             | select('gt', _pool_bound | int) | list }}
 
     - name: The passthrough wildcard is capped independently when enabled
       # Separate knob on purpose: LiteLLM keys the semaphore per DEPLOYMENT and
