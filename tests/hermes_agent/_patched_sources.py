@@ -23,6 +23,7 @@ from _pinned_sources import (
     PINNED_CRON_TIMEOUT_SOURCE,
 )
 from _pinned_sources_worker import (
+    PINNED_HINDSIGHT_FAILURE_SOURCE,
     PINNED_HINDSIGHT_PREFETCH_SOURCE,
     PINNED_JUDGE_AVAILABLE_SOURCE,
     PINNED_JUDGE_CALL_SOURCE,
@@ -62,7 +63,7 @@ def _apply_runtime_patch(name: str, source: str) -> str:
         source,
         flags=re.MULTILINE,
     )
-    assert count == 1
+    assert count == 1, f"{name}: expected one replacement, found {count}"
     return patched
 
 
@@ -192,9 +193,28 @@ PATCHED_CRON_DELIVERY_SOURCE += (
     + PATCHED_CRON_TIMEOUT_SOURCE
 )
 PATCHED_HINDSIGHT_PREFETCH_SOURCE = _apply_runtime_patch(
-    "Patch Hermes auto-recall prefetch failure to log at warning, not debug",
+    "Keep failed Hindsight recall best effort without a duplicate debug log",
     PINNED_HINDSIGHT_PREFETCH_SOURCE,
 )
+PATCHED_HINDSIGHT_FAILURE_SOURCE = PINNED_HINDSIGHT_FAILURE_SOURCE
+for _hindsight_failure_task_name in (
+    "Report Hindsight operation failures through the provider status hook",
+    "Label Hindsight recall API failures",
+    "Label Hindsight reflect API failures",
+    "Label Hindsight retain API failures",
+    "Label Hindsight retain-status API failures",
+    "Report unhandled Hindsight writer failures once",
+    "Report server-side Hindsight retain failures after acceptance",
+    "Update Hindsight retain-timeout documentation for error reporting",
+    "Report unresolved Hindsight retain operations at the prefetch deadline",
+    "Report Hindsight session-switch flush failures once",
+    "Return request identifiers for Hindsight tool failures",
+    "Keep failed Hindsight recall best effort without a duplicate debug log",
+    "Return the queued Hindsight failure marker with prefetch context",
+):
+    PATCHED_HINDSIGHT_FAILURE_SOURCE = _apply_runtime_patch(
+        _hindsight_failure_task_name, PATCHED_HINDSIGHT_FAILURE_SOURCE
+    )
 # Current upstream dropped the line entirely — also a passing state, since the
 # assertion is now "the debug form is absent".
 UPSTREAM_HINDSIGHT_PREFETCH_LINE_REMOVED = ""
