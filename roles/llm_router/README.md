@@ -217,24 +217,9 @@ GPU profiles and intentionally has no budget, so repeated benchmark runs do not
 consume a caller's monthly ceiling. It seeds only when its OpenBao value and
 the GPU profile switch are both enabled.
 
-## MCP tools
-
-The router starts pinned stdio MCP packages with service credentials supplied
-through its root-only systemd environment file. The selected stdio servers do
-not support per-user OAuth delegation, so credentials are shared at the server
-process and virtual-key permissions control which callers can reach each
-server. Every managed key defaults to no MCP servers; only Hermes profile keys
-receive the Zammad and Slack grants. Server allowlists expose only ticket
-search/read and public-channel list/history/thread tools.
-
-The Slack preflight checks that the existing bot grant includes all required
-read scopes and derives the workspace ID from `auth.test`.
-Zammad service token and URL come from the existing OpenBao domain data. Check
-both service credentials and their service-side access before enabling the
-gateway.
-
-The package pins match the shared MCP catalog: Zammad MCP `1.1.0`, the MCP SDK
-bound `mcp<2`, and Slack MCP `2025.4.25`.
+MCP server IDs, tool allowlists, caller grants, OpenBao sources, and the OAuth
+boundary are documented in
+[LLM_ROUTER_MCP_GATEWAY.md](../../docs/LLM_ROUTER_MCP_GATEWAY.md).
 
 ## Subscription rung (chatgpt/ provider)
 

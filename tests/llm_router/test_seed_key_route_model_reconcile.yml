@@ -1,5 +1,5 @@
 ---
-# Regression/contract test for seed-keys.yml's key diff (`_llm_router_key_updates`):
+# Regression/contract test for reconcile-seeded-key-policy.yml's key diff:
 # MCP permissions reconcile in every mode, while other policy fields remain
 # rebuild-only, with one computed {alias, body} update per changed key.
 #
@@ -11,7 +11,7 @@
   gather_facts: false
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    _seed_keys_file: "{{ _role_dir }}/tasks/seed-keys.yml"
+    _seed_keys_file: "{{ _role_dir }}/tasks/reconcile-seeded-key-policy.yml"
     _diff_task_name: "Compute the key policy update each live key still needs, if any"
     llm_router_seed_mode: rebuild
     llm_router_mcp_default_object_permission:
@@ -114,7 +114,7 @@
       - mcp-reader
 
   tasks:
-    - name: Extract the real, committed diff expression from seed-keys.yml
+    - name: Extract the real, committed diff expression from the policy task
       ansible.builtin.set_fact:
         _diff_expr: >-
           {{ (lookup('ansible.builtin.file', _seed_keys_file) | from_yaml
@@ -132,9 +132,18 @@
           - "'object_permission' in _diff_expr"
           - "'_permission_changed' in _diff_expr"
         fail_msg: >-
-          Could not find the fail-safe attribute lookups in seed-keys.yml
+          Could not find the fail-safe attribute lookups in the policy task
           under the task name {{ _diff_task_name }} — this test's
           extraction is stale, fix the task name/lookup.
+
+    - name: Confirm seed-keys imports the policy reconciler
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            'reconcile-seeded-key-policy.yml' in
+            lookup('ansible.builtin.file', _role_dir ~ '/tasks/seed-keys.yml')
+        fail_msg: The seed task no longer imports its caller policy reconciler.
 
     # Same "write to a real template file, render, from_yaml" technique as
     # tests/inventory_load/test_ssh_probe_result_selection.yml: a string
