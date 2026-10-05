@@ -1,26 +1,82 @@
 ---
-- name: Load the Pro6000 registry entries
+- name: Load Pro6000 profile references
   ansible.builtin.include_vars:
     file: "{{ llm_gpu_serving_registry_file }}"
 
-- name: Index registry entries by profile
+- name: Load campaign model artifacts
+  ansible.builtin.include_vars:
+    file: "{{ llm_gpu_serving_artifact_registry_file }}"
+
+- name: Index campaign model artifacts by stable id
+  ansible.builtin.set_fact:
+    llm_gpu_serving_artifacts_by_id: >-
+      {{ dict(_llm_model_artifacts | map(attribute='artifact_id')
+              | zip(_llm_model_artifacts)) }}
+
+- name: Assert model artifacts and repositories are registered exactly once
+  ansible.builtin.assert:
+    that:
+      - _llm_model_artifacts | length > 0
+      - llm_gpu_serving_artifacts_by_id | length == _llm_model_artifacts | length
+      - (_llm_model_artifacts | map(attribute='hf_repo') | unique | list | length) == _llm_model_artifacts | length
+    fail_msg: "llm-models.d/65-gpu-pro6000-artifacts.yml must contain unique artifact ids and HF repositories."
+    quiet: true
+
+- name: Validate model artifact metadata
+  ansible.builtin.assert:
+    that:
+      - item.artifact_id | length > 0
+      - item.hf_repo | length > 0
+      - item.include_globs | length > 0
+      - item.format | length > 0
+      - item.quantization | length > 0
+      - item.engines | length > 0
+      - item.use in ['serving', 'benchmark-only']
+      - item.engines | difference(['vllm', 'llama_cpp', 'mlx_lm']) | length == 0
+      - item.model_size is not defined or item.model_size | length > 0
+      - item.context_window_tokens is not defined or item.context_window_tokens | int > 0
+      - >-
+        item.required_artifact_ids | default([])
+        | difference(_llm_model_artifacts | map(attribute='artifact_id') | list)
+        | length == 0
+      - item.artifact_id not in (item.required_artifact_ids | default([]))
+      - >-
+        (item.required_artifact_ids | default([]) | unique | length)
+        == (item.required_artifact_ids | default([]) | length)
+    fail_msg: "llm-models.d/65-gpu-pro6000-artifacts.yml contains invalid or duplicate artifact metadata."
+    quiet: true
+  loop: "{{ _llm_model_artifacts }}"
+  loop_control:
+    label: "{{ item.artifact_id }}"
+
+- name: Index serving profiles with their model artifacts
   ansible.builtin.set_fact:
     llm_gpu_serving_registry_by_profile: >-
-      {{ dict(_llm_registry_gpu_pro6000 | map(attribute='profile') | zip(_llm_registry_gpu_pro6000)) }}
+      {%- set ns = namespace(by_profile={}) -%}
+      {%- for profile in _llm_registry_gpu_pro6000 -%}
+      {%- set artifact = llm_gpu_serving_artifacts_by_id.get(profile.artifact_id) -%}
+      {%- if artifact is not none -%}
+      {%- set _ = ns.by_profile.update({profile.profile: profile | combine({
+            'artifact': artifact, 'upstream_model_id': artifact.hf_repo
+          })}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.by_profile }}
 
-- name: Assert each serving profile has exactly one registry entry
+- name: Assert each serving profile resolves to exactly one artifact
   ansible.builtin.assert:
     that:
       - llm_gpu_serving_registry_by_profile | length == _llm_registry_gpu_pro6000 | length
       - llm_gpu_serving_registry_by_profile.keys() | list | sort == llm_profiles.keys() | list | sort
+      - item.value.artifact_id in llm_gpu_serving_artifacts_by_id
       - >-
-        (_llm_registry_gpu_pro6000
-         | rejectattr('upstream_model_id', 'defined') | list | length) == 0
-      - >-
-        (_llm_registry_gpu_pro6000
-         | selectattr('upstream_model_id', 'defined')
-         | selectattr('upstream_model_id', 'equalto', '') | list | length) == 0
+        not (llm_profiles[item.key].enabled | default(true))
+        or (item.value.artifact.use == 'serving'
+            and llm_profiles[item.key].engine in item.value.artifact.engines)
     fail_msg: >-
-      llm-models.d/60-gpu-pro6000.yml must contain exactly one upstream model id
-      for every llm_profiles entry.
+      Every GPU serving profile must reference exactly one serving artifact with
+      matching engine support in llm-models.d/65-gpu-pro6000-artifacts.yml.
     quiet: true
+  loop: "{{ llm_gpu_serving_registry_by_profile | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"

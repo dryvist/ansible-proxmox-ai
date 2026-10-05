@@ -61,10 +61,17 @@ def registry_values(root: Path) -> dict[str, set[str]]:
     """Every registry value -> the kinds it occurs as ({client, upstream, alias})."""
     values: dict[str, set[str]] = {}
     for slice_file in sorted((root / "llm-models.d").glob("*.yml")):
-        for entries in yaml.safe_load(slice_file.read_text()).values():
+        for name, entries in yaml.safe_load(slice_file.read_text()).items():
+            if name == "_llm_model_artifacts":
+                for artifact in entries:
+                    values.setdefault(str(artifact["hf_repo"]), set()).add("upstream")
+                continue
             for entry in entries:
+                if "client_model_id" not in entry:
+                    continue
                 values.setdefault(str(entry["client_model_id"]), set()).add("client")
-                values.setdefault(str(entry["upstream_model_id"]), set()).add("upstream")
+                if "upstream_model_id" in entry:
+                    values.setdefault(str(entry["upstream_model_id"]), set()).add("upstream")
                 # A stable_alias counts as an "alias" value on a servable
                 # entry (unchanged) or a >=1M-context OpenRouter entry not
                 # opted out of ZDR (A5's `long` carve-out,
