@@ -7,6 +7,7 @@ from typing import Any
 import yaml
 from jinja2 import Environment, FileSystemLoader
 from _role_files import role_defaults, role_tasks_text, template_text
+from _cron_pool_ceiling_shared import wall_timeout_seconds
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -23,6 +24,7 @@ _RENDER_CONTEXT: dict[str, Any] = {
     "hermes_agent_memory_provider": "hindsight",
     "hermes_agent_log_level": "DEBUG",
     "hermes_agent_max_turns": 90,
+    "hermes_agent_cron_wall_timeout_seconds": wall_timeout_seconds(),
     "hermes_agent_context_compression_enabled": True,
     "hermes_agent_context_compression_threshold": 0.75,
     "hermes_agent_compression_model": "hermes-default",
@@ -267,6 +269,7 @@ def test_profile_config_template_renders_scoped_mcp_only() -> None:
 
         assert parsed["model"]["provider"] == defaults["hermes_agent_model_provider"]
         assert parsed["kanban"] == {"dispatch_in_gateway": False}
+        assert parsed["agent"]["run_budget_seconds"] == wall_timeout_seconds()
         assert "dashboard" not in parsed
         assert "platforms" not in parsed
         assert "platform_toolsets" not in parsed
