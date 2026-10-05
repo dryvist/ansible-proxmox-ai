@@ -95,7 +95,15 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # hermes_brain_model at all — see
     # tests/hindsight_docker/test_model_var_confined_to_key_scope.yml for its
     # actual contract.
-    assert defaults["hermes_agent_model_max_tokens"] == 8192
+    brain_catalog_entry = defaults["hermes_agent_brain_catalog_entry"]
+    assert "llm_model_catalog_models" in brain_catalog_entry
+    assert "hermes_brain_model" in brain_catalog_entry
+    assert defaults["hermes_agent_model_context_length"] == (
+        "{{ hermes_agent_brain_catalog_entry.context_window }}"
+    )
+    assert defaults["hermes_agent_model_max_tokens"] == (
+        "{{ hermes_agent_brain_catalog_entry.max_output_tokens }}"
+    )
     assert defaults["hermes_agent_context_compression_threshold"] == 0.75
     assert defaults["hermes_agent_stream_stale_timeout"] == 900
     # The non-stream stale bound tracks the streaming one rather than carrying
@@ -127,7 +135,12 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # explicitly parked, that role follows the active primary; the rebuild gate
     # restores the distinct routine backend before this temporary state ends.
     assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_goal_judge_model }}"
-    assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == 150
+    judge_catalog_entry = defaults["hermes_agent_goal_judge_catalog_entry"]
+    assert "llm_model_catalog_models" in judge_catalog_entry
+    assert "hermes_goal_judge_model" in judge_catalog_entry
+    assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == (
+        "{{ hermes_agent_goal_judge_catalog_entry.goal_judge_timeout_seconds }}"
+    )
     assert "goal_judge:" in config
     assert "run_budget_seconds: {{ hermes_agent_cron_wall_timeout_seconds }}" in config
     assert "model: {{ hermes_agent_kanban_goal_judge_model | to_json }}" in config
