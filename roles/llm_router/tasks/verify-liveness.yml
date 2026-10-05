@@ -14,10 +14,38 @@
 # "NO MORE HOSTS LEFT") and as the handler that gates the router-settings DB sync
 # on a restarted proxy actually being back up — one declaration, not a copy.
 - name: Verify the LiteLLM liveness endpoint answers
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ llm_router_api_port }}/health/liveliness"
-    status_code: 200
-  register: llm_router_liveness
-  until: llm_router_liveness.status == 200
-  retries: "{{ llm_router_liveness_retries }}"
-  delay: "{{ llm_router_liveness_delay }}"
+  block:
+    - name: Wait for the LiteLLM liveness endpoint
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ llm_router_api_port }}/health/liveliness"
+        status_code: 200
+        # The module default is 30 seconds per socket operation. Bound each
+        # attempt so 40 retries cannot run past Semaphore's 900-second rail.
+        timeout: 2
+      register: llm_router_liveness
+      until: llm_router_liveness.status | default(0) == 200
+      retries: "{{ llm_router_liveness_retries }}"
+      delay: "{{ llm_router_liveness_delay }}"
+  rescue:
+    - name: Read the recent LiteLLM service journal after liveness failure
+      ansible.builtin.command:
+        argv:
+          - journalctl
+          - --unit
+          - "{{ llm_router_service }}"
+          - --since
+          - "10 minutes ago"
+          - --lines
+          - "40"
+          - --no-pager
+      register: llm_router_liveness_journal
+      changed_when: false
+      failed_when: false
+
+    - name: Fail with the liveness result and service journal
+      ansible.builtin.fail:
+        msg: >-
+          LiteLLM liveness failed on {{ inventory_hostname }} after
+          {{ llm_router_liveness_retries }} attempts.
+          Probe result={{ llm_router_liveness.msg | default('no response details') }}.
+          Recent service journal={{ llm_router_liveness_journal.stdout | default('unavailable') }}
