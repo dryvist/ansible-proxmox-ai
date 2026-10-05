@@ -195,13 +195,13 @@
           - llm_router_local_max_parallel_requests | int >= 1
           - _over_bound | length == 0
         fail_msg: >-
-          Cap(s) over the role map's highest concurrency declared: {{ _over_bound }}. Three pool members each
+          Cap(s) over the shared catalog's highest concurrency declared: {{ _over_bound }}. Three pool members each
           hold an independent in-process semaphore, so the backend sees 3x
           whichever model's cap this is. Raising it is not a capacity
           improvement — it restores the unbuffered flood this cap exists to
           stop. If a model's host effectiveConcurrency has genuinely
-          increased, update its registry entry WITH the measurement that
-          justifies it, and re-derive this bound alongside it.
+          increased, update its shared catalog entry WITH the measurement
+          that justifies it, and re-derive this bound alongside it.
         success_msg: >-
           Tier default and every per-model large-tier cap are each <= 1
           (pool ceiling 3 per model against a 1-slot backend).
@@ -213,7 +213,9 @@
              | map(attribute='max_parallel_requests') | map('int') | unique | list }}
         _over_bound: >-
           {{ ([llm_router_local_max_parallel_requests | int] + _large_tier_values)
-             | select('gt', llm_roles.models.values() | map(attribute='concurrency') | max) | list }}
+             | select('gt', llm_roles.models.values() | map(attribute='id')
+                     | map('extract', llm_router_catalog_concurrency_by_id)
+                     | map('int') | max) | list }}
 
     - name: The passthrough wildcard is capped independently when enabled
       # Separate knob on purpose: LiteLLM keys the semaphore per DEPLOYMENT and
