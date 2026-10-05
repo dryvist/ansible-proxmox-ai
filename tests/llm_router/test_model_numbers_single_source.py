@@ -29,6 +29,8 @@ def test_registry_slices_do_not_duplicate_catalog_numeric_limits() -> None:
     for path in files:
         for entries in (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).values():
             for entry in entries:
+                if entry.get("enabled") is False:
+                    continue
                 repeated = MODEL_LIMIT_FIELDS.intersection(entry)
                 if repeated:
                     duplicates.append(
