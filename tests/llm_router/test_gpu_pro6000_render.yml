@@ -91,13 +91,8 @@
             (_llm_router_hermes_profile_keys | map(attribute='models') | flatten
              | intersect(_gpu_ids) | length) == 0
           - >-
-            (llm_router_routine_model == llm_router_primary_model
-             or _routine_aliases | length > 0)
-          - >-
-            llm_router_hermes_gpu_fast_target
-            in (_primary_aliases if llm_router_routine_model == llm_router_primary_model
-                else _routine_aliases)
-          - llm_router_hermes_gpu_medium_target in _primary_aliases
+            llm_router_hermes_gpu_fast_target == llm_router_routine_model
+          - llm_router_hermes_gpu_medium_target == llm_router_primary_model
           - _hermes_router.litellm_params.complexity_router_config.default_model == llm_router_hermes_gpu_medium_target
           - _hermes_router.litellm_params.complexity_router_config.tiers.SIMPLE == llm_router_hermes_gpu_fast_target
           - _hermes_router.litellm_params.complexity_router_config.tiers.MEDIUM == llm_router_hermes_gpu_fast_target
@@ -118,14 +113,6 @@
       vars:
         _hermes_router: >-
           {{ _config.model_list | selectattr('model_name', 'equalto', hermes_brain_model) | first }}
-        _primary_aliases: >-
-          {{ llm_router_model_group_aliases | dict2items
-             | selectattr('value', 'equalto', llm_router_primary_model)
-             | map(attribute='key') | list }}
-        _routine_aliases: >-
-          {{ llm_router_model_group_aliases | dict2items
-             | selectattr('value', 'equalto', llm_router_routine_model)
-             | map(attribute='key') | list }}
         _hermes_profile_scopes: >-
           {{ _llm_router_hermes_profile_keys | map(attribute='models')
              | flatten | unique | list }}
@@ -243,6 +230,8 @@
           - _gpu_ids | difference(_hermes_profile_scopes) | length == 0
           - _gpu_aliases | length == 2
           - _gpu_aliases | difference(_hermes_profile_scopes) | length == 0
+          - llm_router_model_group_aliases['local-fast'] == llm_router_gpu_small_model
+          - llm_router_model_group_aliases['local-medium'] == llm_router_gpu_medium_a_model
           - >-
             _config.model_list | selectattr('model_name', 'in', _gpu_aliases)
             | list | length == 0
@@ -251,23 +240,23 @@
           {{ _llm_router_hermes_profile_keys | map(attribute='models')
              | flatten | unique | list }}
 
-    - name: Hermes default selects the registry aliases and retains its cloud fallback chain
+    - name: Hermes complexity router targets physical profiles and retains its fallback chain
       ansible.builtin.assert:
         quiet: true
         that:
           - >-
             _hermes_router.litellm_params.complexity_router_config.tiers.SIMPLE
-            == llm_router_hermes_gpu_fast_target
+            == llm_router_gpu_small_model
           - >-
             _hermes_router.litellm_params.complexity_router_config.tiers.MEDIUM
-            == llm_router_hermes_gpu_fast_target
+            == llm_router_gpu_small_model
           - >-
             _hermes_router.litellm_params.complexity_router_config.tiers.COMPLEX
-            == llm_router_hermes_gpu_medium_target
+            == llm_router_gpu_medium_a_model
           - >-
             _hermes_router.litellm_params.complexity_router_config.tiers.REASONING
-            == llm_router_hermes_gpu_medium_target
-          - _hermes_router.litellm_params.complexity_router_config.default_model == llm_router_hermes_gpu_medium_target
+            == llm_router_gpu_medium_a_model
+          - _hermes_router.litellm_params.complexity_router_config.default_model == llm_router_gpu_medium_a_model
           - llm_router_hermes_cloud_only_fallback_groups | length > 0
           - >-
             llm_router_hermes_cloud_only_fallback_groups

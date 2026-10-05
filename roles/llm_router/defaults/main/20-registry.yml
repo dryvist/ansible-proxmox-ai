@@ -144,31 +144,13 @@ llm_router_gpu_small_model: "{{ llm_router_gpu_models_by_profile.get('small', ll
 llm_router_gpu_medium_a_model: "{{ llm_router_gpu_models_by_profile.get('medium-a', llm_router_primary_model) }}"
 llm_router_gpu_medium_b_model: "{{ llm_router_gpu_models_by_profile.get('medium-b', llm_router_hermes_local_4080_id) }}"
 llm_router_gpu_max_model: "{{ llm_router_gpu_models_by_profile.get('max', llm_router_primary_model) }}"
-# Hermes still needs a routable name for the currently served Mac primary when
-# the GPU profiles are off. Reuse the existing local alias selection when it
-# targets that primary; otherwise derive a stable alias from the same registry.
-llm_router_hermes_primary_alias: >-
-  {%- set _aliases = llm_router_model_group_aliases | dict2items
-        | selectattr('value', 'equalto', llm_router_primary_model)
-        | map(attribute='key') | list -%}
-  {{ (hindsight_retain_model | default('', true))
-     if (hindsight_retain_model | default('', true)) in _aliases
-     else (_aliases | first) }}
-llm_router_hermes_routine_alias: >-
-  {%- set _aliases = llm_router_model_group_aliases | dict2items
-        | selectattr('value', 'equalto', llm_router_routine_model)
-        | map(attribute='key') | list -%}
-  {{ (hindsight_retain_model | default('', true))
-     if (hindsight_retain_model | default('', true)) in _aliases
-     else (_aliases | first | default(llm_router_hermes_primary_alias)) }}
-# Hermes keeps its current local brain targets until the inventory-backed GPU
-# profile switch is enabled. Once active, its cheap/routine and complex routes
-# use registry-owned aliases over the existing physical entries; no deployment
-# is duplicated and hermes-default's fallback chain remains the same.
+# The complexity router targets tagged physical deployments. Stable aliases are
+# for callers that select a profile directly; LiteLLM's auto-router needs each
+# tier target to resolve to a tagged model-list entry.
 llm_router_hermes_gpu_fast_target: >-
-  {{ llm_router_gpu_model_aliases_by_profile.get('small', llm_router_hermes_routine_alias) }}
+  {{ llm_router_gpu_models_by_profile.get('small', llm_router_routine_model) }}
 llm_router_hermes_gpu_medium_target: >-
-  {{ llm_router_gpu_model_aliases_by_profile.get('medium-a', llm_router_hermes_primary_alias) }}
+  {{ llm_router_gpu_models_by_profile.get('medium-a', llm_router_primary_model) }}
 # hermes-local: a Hermes-fallback-chain rung over a tier's backend that is
 # ALSO reachable directly under its own tier/id (e.g. the 4080 vllm guest).
 # Rendered alongside that physical tier (same api_base/api_key — see
