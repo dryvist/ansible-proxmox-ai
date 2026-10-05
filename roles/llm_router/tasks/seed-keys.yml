@@ -131,6 +131,7 @@
       key: "{{ item.value }}"
       key_alias: "{{ item.alias }}"
       models: "{{ item.models }}"
+      object_permission: "{{ item.object_permission | default(llm_router_mcp_default_object_permission) }}"
       # Attribution contract (docs/LLM_KEY_ATTRIBUTION_CONTRACT.md): every key
       # carries at minimum `app` (its own alias, so no per-entry edit is ever
       # needed to keep this in sync) and `tier` (derived, never hand-listed —
@@ -177,9 +178,11 @@
       (_llm_router_key_generate_result.json.error.message | default(''))
   no_log: true
 
-# REBUILD-ONLY reconciliation of allowed_routes, model names, and attribution
-# metadata. In `initial` mode an existing key is UI-owned: these differences
-# are reported by drift-check.yml and never written back during a converge.
+# MCP server access is Git-owned in every mode because it is a security
+# boundary: existing keys are narrowed or granted their declared server list
+# on every converge. In `initial` mode, models, routes, and attribution
+# metadata remain UI-owned and are only reported by drift-check.yml. `rebuild`
+# explicitly reconciles those other fields too.
 #
 # In rebuild mode models are UNIONED with the live list by default (only ever
 # added, never removed, so an operator's Admin UI edit survives) — same reason: a
@@ -199,15 +202,14 @@
 # the live key too, not only a widening.
 #
 # In rebuild mode routes are replaced outright with the seed value, and only
-# for a key that declares allowed_routes at all.
+# for a key that declares allowed_routes at all. Object permissions are always
+# replaced with the seeded value.
 #
 # Computed as one list of {alias, body} entries in `rebuild` mode so a key
-# needing either change gets exactly one /key/update call carrying both fields,
-# instead of one call per field — the diff itself runs once, in Jinja, against
-# single /key/list read above; a key whose live record already matches the
-# seed on both fields contributes nothing, so a steady-state converge sends
-# no calls here at all.
-- name: Compute the route/model update each live key still needs, if any
+# needing a change gets exactly one /key/update call carrying its changed
+# policy fields — the diff itself runs once, in Jinja, against the single
+# /key/list read above.
+- name: Compute the key policy update each live key still needs, if any
   ansible.builtin.set_fact:
     _llm_router_key_updates: >-
       {%- set _out = [] -%}
@@ -232,6 +234,11 @@
       {%- set _live_metadata = (llm_router_existing_keys.json['keys'] | default([])
               | selectattr('key_alias', 'equalto', _k.alias)
               | map(attribute='metadata', default={}) | first | default({}, true)) -%}
+      {%- set _live_permission = (llm_router_existing_keys.json['keys'] | default([])
+              | selectattr('key_alias', 'equalto', _k.alias)
+              | map(attribute='object_permission', default={}) | first | default({}, true)) -%}
+      {%- set _permission_target = _k.object_permission
+              | default(llm_router_mcp_default_object_permission) -%}
       {%- set _metadata_target = (_k.metadata | default({})) | combine({
               'app': _k.alias,
               'tier': (_k.tier | default('local' if (_k.monthly_budget | default(0) | float == 0) else 'subscription')),
@@ -241,12 +248,16 @@
          about must survive a reconcile untouched, so "changed" means the
          seeded fields alone differ from what's already live. -#}
       {%- set _metadata_changed = (_live_metadata | combine(_metadata_target)) != _live_metadata -%}
-      {%- if llm_router_seed_mode == 'rebuild'
-            and (_models_changed or _routes_changed or _metadata_changed) -%}
-      {%- set _body = {'key': _k.value, 'models': _models_target} -%}
+      {%- set _permission_changed = _live_permission != _permission_target -%}
+      {%- set _rebuild_fields_changed = (_models_changed or _routes_changed or _metadata_changed) -%}
+      {%- if _permission_changed or (llm_router_seed_mode == 'rebuild' and _rebuild_fields_changed) -%}
+      {%- set _body = {'key': _k.value, 'object_permission': _permission_target} -%}
+      {%- if llm_router_seed_mode == 'rebuild' -%}
+      {%- set _body = _body | combine({'models': _models_target}) -%}
       {%- set _body = (_body | combine({'allowed_routes': _k.allowed_routes}))
             if (_k.allowed_routes is defined) else _body -%}
       {%- set _body = _body | combine({'metadata': (_live_metadata | combine(_metadata_target, recursive=true))}) -%}
+      {%- endif -%}
       {%- set _discard = _out.append({'alias': _k.alias, 'body': _body}) -%}
       {%- endif -%}
       {%- endfor -%}
@@ -258,7 +269,7 @@
          | map(attribute='key_alias') | select('string') | list }}
   no_log: true
 
-- name: Reconcile route allowlists and model names for live keys that changed
+- name: Reconcile caller policy for live keys that changed
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/key/update"
     method: POST
@@ -271,5 +282,4 @@
   loop: "{{ _llm_router_key_updates }}"
   loop_control:
     label: "{{ item.alias }}"
-  when: llm_router_seed_mode == 'rebuild'
   no_log: true

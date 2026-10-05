@@ -1,0 +1,234 @@
+---
+- name: Render the pinned MCP servers with least-privilege tools
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+    bao_local_llm_secrets:
+      ZAMMAD_MCP_URL: test-zammad-url
+      ZAMMAD_MCP_TOKEN: test-zammad-token
+      SLACK_BOT_TOKEN: test-slack-token
+  tasks:
+    - name: Load the router defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Render only the MCP server block from the production template
+      ansible.builtin.set_fact:
+        _mcp_servers: >-
+          {{ lookup('ansible.builtin.template', _role_dir ~ '/templates/mcp-servers.yaml.j2')
+             | from_yaml }}
+        _environment_template: "{{ lookup('ansible.builtin.file', _role_dir ~ '/templates/litellm.env.j2') }}"
+        _config_template: "{{ lookup('ansible.builtin.file', _role_dir ~ '/templates/config.yaml.j2') }}"
+        _main_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/main.yml') | from_yaml }}"
+        _resolve_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/resolve-slack-team.yml') | from_yaml }}"
+        _verify_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/verify-mcp-tools.yml') | from_yaml }}"
+      no_log: true
+
+    - name: Keep credentials in the OpenBao projection and root-only unit environment
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_mcp_zammad_url == 'test-zammad-url'
+          - llm_router_mcp_zammad_http_token == 'test-zammad-token'
+          - llm_router_mcp_slack_bot_token == 'test-slack-token'
+          - "'LLM_ROUTER_ZAMMAD_URL=' in _environment_template"
+          - "'LLM_ROUTER_ZAMMAD_HTTP_TOKEN=' in _environment_template"
+          - "'LLM_ROUTER_SLACK_BOT_TOKEN=' in _environment_template"
+          - "'LITELLM_ENABLE_MCP_STDIO=true' in _environment_template"
+          - "'LITELLM_ENABLE_MCP_STDIO' not in _config_template"
+          - "'test-zammad-token' not in (_mcp_servers | to_json)"
+          - "'test-slack-token' not in (_mcp_servers | to_json)"
+        fail_msg: The MCP credentials or stdio switch escaped their process environment boundary.
+      no_log: true
+
+    - name: Restrict server tools and package versions at the proxy boundary
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _mcp_servers.mcp_servers.zammad.transport == 'stdio'
+          - _mcp_servers.mcp_servers.zammad.command == (llm_router_venv ~ '/bin/uvx')
+          - _mcp_servers.mcp_servers.zammad.args[0] == '--with'
+          - _mcp_servers.mcp_servers.zammad.server_id == llm_router_mcp_zammad_server_id
+          - _mcp_servers.mcp_servers.zammad.allow_all_keys == false
+          - _mcp_servers.mcp_servers.zammad.allowed_tools == ['zammad_search_tickets', 'zammad_get_ticket']
+          - _mcp_servers.mcp_servers.zammad.env.ZAMMAD_URL == 'os.environ/LLM_ROUTER_ZAMMAD_URL'
+          - _mcp_servers.mcp_servers.zammad.env.ZAMMAD_HTTP_TOKEN == 'os.environ/LLM_ROUTER_ZAMMAD_HTTP_TOKEN'
+          - "'v1.1.0' in _mcp_servers.mcp_servers.zammad.args | join(' ')"
+          - "'mcp<2' in _mcp_servers.mcp_servers.zammad.args"
+          - _mcp_servers.mcp_servers.slack.transport == 'stdio'
+          - _mcp_servers.mcp_servers.slack.server_id == llm_router_mcp_slack_server_id
+          - _mcp_servers.mcp_servers.slack.allow_all_keys == false
+          - >-
+            _mcp_servers.mcp_servers.slack.allowed_tools
+            == ['slack_list_channels', 'slack_get_channel_history', 'slack_get_thread_replies']
+          - _mcp_servers.mcp_servers.slack.env.SLACK_BOT_TOKEN == 'os.environ/LLM_ROUTER_SLACK_BOT_TOKEN'
+          - _mcp_servers.mcp_servers.slack.env.SLACK_TEAM_ID == 'os.environ/LLM_ROUTER_SLACK_TEAM_ID'
+          - _mcp_servers.mcp_servers.slack.args == ['--yes', '@modelcontextprotocol/server-slack@2025.4.25']
+        fail_msg: MCP server config did not match the pinned, read-only contract.
+
+    - name: Keep the env file root-only and scope-check Slack credentials without logging them
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _env_task['ansible.builtin.template'].owner == 'root'
+          - _env_task['ansible.builtin.template'].group == 'root'
+          - _env_task['ansible.builtin.template'].mode == '0600'
+          - _auth_task.no_log == true
+          - _scope_task.no_log == true
+          - "'channels:read' in (_scope_task['ansible.builtin.assert'].that | to_json)"
+          - "'channels:history' in (_scope_task['ansible.builtin.assert'].that | to_json)"
+          - "'x_oauth_scopes' in (_scope_task['ansible.builtin.assert'].that | to_json)"
+          - "'== [' not in (_scope_task['ansible.builtin.assert'].that | to_json)"
+        fail_msg: The deployment credential boundary or Slack scope preflight changed.
+      vars:
+        _env_task: >-
+          {{ _main_tasks | selectattr('name', 'equalto', 'Deploy the LiteLLM secrets env file') | first }}
+        _auth_task: >-
+          {{ _resolve_tasks | selectattr('name', 'equalto',
+             'Call Slack auth.test with the OpenBao bot token') | first }}
+        _scope_task: >-
+          {{ _resolve_tasks | selectattr('name', 'equalto', 'Require a successful Slack identity response') | first }}
+
+    - name: Verify the post-restart MCP tools/list probes fail closed without logging responses
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _zammad_check['ansible.builtin.uri'].get('method', 'GET') == 'GET'
+          - "'/mcp-rest/tools/list?server_id=' in _zammad_check['ansible.builtin.uri'].url"
+          - "'llm_router_mcp_zammad_server_id' in _zammad_check['ansible.builtin.uri'].url"
+          - _zammad_check.no_log == true
+          - "'llm_router_mcp_zammad_allowed_tools' in (_zammad_check.until | to_json)"
+          - "'json.tools' in (_zammad_check.until | to_json)"
+          - _slack_check['ansible.builtin.uri'].get('method', 'GET') == 'GET'
+          - "'/mcp-rest/tools/list?server_id=' in _slack_check['ansible.builtin.uri'].url"
+          - "'llm_router_mcp_slack_server_id' in _slack_check['ansible.builtin.uri'].url"
+          - _slack_check.no_log == true
+          - "'llm_router_mcp_slack_allowed_tools' in (_slack_check.until | to_json)"
+          - "'json.tools' in (_slack_check.until | to_json)"
+        fail_msg: The restart-time MCP tools/list check stopped enforcing the exact read-only tool contract.
+      vars:
+        _zammad_check: >-
+          {{ _verify_tasks | selectattr('name', 'equalto',
+             'Verify the Zammad MCP server exposes exactly its configured tools') | first }}
+        _slack_check: >-
+          {{ _verify_tasks | selectattr('name', 'equalto',
+             'Verify the Slack MCP server exposes exactly its configured tools') | first }}
+
+- name: Default-deny router keys and grant MCP access only to Hermes profiles
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets: {}
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: ""
+    llm_router_subdomain: ""
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_agent_profiles:
+      - name: review
+    hermes_brain_model: brain
+    hermes_agent_identity: hermes
+    llm_router_external_terminal_rungs: []
+    llm_router_zdr_unasserted_terminal_rungs: []
+    _llm_router_key_scope_all: [cheap]
+    _llm_router_directly_callable_ladder_names: []
+  tasks:
+    - name: Load the role defaults including MCP and key projections
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry and role projections used by the key defaults
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Evaluate the production Hermes profile key projection
+      ansible.builtin.set_fact:
+        _hermes_profile_keys: "{{ _llm_router_hermes_profile_keys }}"
+      no_log: true
+
+    - name: Add a non-Hermes key to the production key-scope projection fixture
+      ansible.builtin.set_fact:
+        _llm_router_declared_virtual_keys: >-
+          {{ _hermes_profile_keys + [{'alias': 'non-mcp', 'value': '', 'models': ['cheap']}] }}
+      no_log: true
+
+    - name: Load the production scope projection
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/59-key-scopes.yml"
+
+    - name: Render the production caller key scopes
+      ansible.builtin.set_fact:
+        _projected_keys: "{{ llm_router_virtual_keys }}"
+      no_log: true
+
+    - name: Assert only Hermes profiles receive the server grants
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _hermes_profile_keys | map(attribute='alias') | sort == ['hermes-default', 'hermes-review']
+          - >-
+            (_projected_keys | selectattr('alias', 'equalto', 'non-mcp') | first).object_permission
+            == {'mcp_servers': ['no-mcp-servers']}
+          - >-
+            (_projected_keys | selectattr('alias', 'match', '^hermes-')
+            | map(attribute='object_permission') | unique | list)
+            == [{'mcp_servers': ['zammad', 'slack']}]
+          - "'mcp_tool_permissions' not in (_projected_keys | to_json)"
+        fail_msg: >-
+          Expected default deny for non-Hermes keys and server-only grants for
+          Hermes profile keys.
+
+- name: Compare MCP caller permissions as part of existing drift checks
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_drift_key_git_file: roles/llm_router/defaults/main/56-virtual-keys.yml
+    _llm_router_drift_expected_keys:
+      - alias: mcp-drift-key
+        git_file: roles/llm_router/defaults/main/56-virtual-keys.yml
+        flags:
+          object_permission: {mcp_servers: [no-mcp-servers]}
+    _llm_router_drift_live_keys:
+      - alias: mcp-drift-key
+        flags:
+          object_permission: {mcp_servers: [slack]}
+    _llm_router_drift_expected_settings:
+      - name: router setting
+        git_file: roles/llm_router/templates/config.yaml.j2
+        expected:
+          routing_strategy: simple-shuffle
+        live:
+          routing_strategy: simple-shuffle
+  tasks:
+    - name: Use the production drift comparator
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-compare.yml"
+
+    - name: Report only the drifted permission flag
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_messages | length == 1
+          - _llm_router_drift_messages[0].item == 'key alias mcp-drift-key flags object_permission'
+          - _llm_router_drift_messages[0].git_file == 'roles/llm_router/defaults/main/56-virtual-keys.yml'
+        fail_msg: MCP permission drift did not use the standard sanitized key notification.

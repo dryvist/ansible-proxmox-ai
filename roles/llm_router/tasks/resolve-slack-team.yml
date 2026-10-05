@@ -1,0 +1,40 @@
+---
+# The official Slack MCP package requires the workspace id as well as its bot
+# token. Resolve it from the bot's read-only auth.test response rather than
+# storing a second value in OpenBao. The token and response can identify the
+# workspace, so every task that handles them is censored.
+- name: Call Slack auth.test with the OpenBao bot token
+  ansible.builtin.uri:
+    url: https://slack.com/api/auth.test
+    method: POST
+    headers:
+      Authorization: "Bearer {{ llm_router_mcp_slack_bot_token }}"
+    status_code: [200]
+    timeout: 20
+  register: _llm_router_slack_auth_test
+  changed_when: false
+  no_log: true
+
+- name: Require a successful Slack identity response
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_slack_auth_test.json.ok | default(false) | bool
+      - _llm_router_slack_auth_test.json.team_id | default('') | trim | length > 0
+      - >-
+        'channels:history' in
+        ((_llm_router_slack_auth_test.x_oauth_scopes | default('', true)).split(',')
+        | map('trim') | reject('equalto', '') | list)
+      - >-
+        'channels:read' in
+        ((_llm_router_slack_auth_test.x_oauth_scopes | default('', true)).split(',')
+        | map('trim') | reject('equalto', '') | list)
+    fail_msg: >-
+      Slack bot authentication failed or its grant lacks a scope required for
+      public-channel discovery and history.
+  no_log: true
+
+- name: Keep the workspace id only in the in-memory host fact
+  ansible.builtin.set_fact:
+    llm_router_slack_team_id: "{{ _llm_router_slack_auth_test.json.team_id }}"
+  no_log: true
