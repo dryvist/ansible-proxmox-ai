@@ -8,6 +8,9 @@ so the backend topology is swappable with no app change.
 
 ## Installation
 
+The role installs the pinned proxy extra litellm[proxy]==1.104.0; release-specific
+behavior is verified against that pin.
+
 Ships with the `ansible-proxmox-apps` repo; no external install. Wired into
 `playbooks/site.yml` against `llm_router_group` (guests tagged `llm-router` in the
 tofu inventory). Tools come from the repo's Nix dev shell (`direnv allow`).

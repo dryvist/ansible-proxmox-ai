@@ -35,7 +35,7 @@ def test_citing_docs_name_the_current_pin():
     offenders = []
     for path in CITING_FILES:
         text = path.read_text()
-        versions = set(re.findall(r"litellm==(\d+\.\d+\.\d+)", text))
+        versions = set(re.findall(r"litellm(?:\[proxy\])?==(\d+\.\d+\.\d+)", text))
         if not versions:
             offenders.append(f"{path}: no litellm==X.Y.Z citation found")
         elif versions != {pinned}:
