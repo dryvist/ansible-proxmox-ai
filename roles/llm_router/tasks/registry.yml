@@ -42,3 +42,47 @@
   ansible.builtin.include_role:
     name: dryvist.homelab.llm_roles
     public: true
+
+- name: Load shared model catalog data
+  ansible.builtin.include_role:
+    name: dryvist.homelab.llm_model_catalog
+    public: true
+
+- name: Index catalog concurrency by model name and alias
+  ansible.builtin.set_fact:
+    llm_router_catalog_concurrency_by_id: >-
+      {%- set ns = namespace(by_id={}) -%}
+      {%- for entry in llm_model_catalog_models
+            if entry.max_parallel_requests is defined -%}
+      {%- for key in [entry.name] + (entry.aliases | default([])) -%}
+      {%- set ns.by_id = ns.by_id | combine({key: entry.max_parallel_requests}) -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.by_id }}
+
+- name: Assert every role-map model has catalog concurrency
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_roles.models.values() | map(attribute='id')
+        | difference(llm_router_catalog_concurrency_by_id.keys() | list)
+        | length == 0
+    fail_msg: >-
+      Every role-map model must have a max_parallel_requests value in the
+      shared catalog.
+
+- name: Project catalog concurrency onto router entries
+  ansible.builtin.set_fact:
+    llm_router_model_registry: >-
+      {%- set ns = namespace(entries=[]) -%}
+      {%- for model in llm_router_model_registry -%}
+      {%- set concurrency = llm_router_catalog_concurrency_by_id.get(model.client_model_id) -%}
+      {%- if concurrency is not none -%}
+      {%- set ns.entries = ns.entries + [
+            model | combine({'max_parallel_requests': concurrency})
+          ] -%}
+      {%- else -%}
+      {%- set ns.entries = ns.entries + [model] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.entries }}
