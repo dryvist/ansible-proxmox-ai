@@ -32,7 +32,9 @@ def _verify_task(name: str) -> dict:
     return next(task for task in tasks[0]["block"] if task.get("name") == name)
 
 
-def _render_hindsight_config(agent_id: str, *, include_api_key: bool = True) -> dict:
+def _render_hindsight_config(
+    agent_id: str, *, mode: str = "local_external", include_api_key: bool = True
+) -> dict:
     source = (ROLE_ROOT / "templates" / "hindsight-config.json.j2").read_text()
     env = Environment(autoescape=False, undefined=StrictUndefined)
     env.filters["to_json"] = json.dumps
@@ -45,10 +47,12 @@ def _render_hindsight_config(agent_id: str, *, include_api_key: bool = True) -> 
     env.filters["mandatory"] = mandatory
     context = {
         "ansible_managed": "managed",
-        "hermes_agent_memory_mode": "local_external",
+        "hermes_agent_memory_mode": mode,
         "hermes_agent_memory_api_url": "https://hindsight.example.test",
         "hermes_agent_memory_api_key": "fixture-hindsight-api-key",
         "hermes_agent_memory_bank_id": agent_id,
+        "hermes_agent_model_base_url": "https://llm.example.test/v1",
+        "hermes_agent_memory_llm_model": "fixture-model",
     }
     if not include_api_key:
         context.pop("hermes_agent_memory_api_key")
@@ -95,6 +99,11 @@ def test_agents_share_hindsight_service_but_not_memory_banks() -> None:
     assert hermes["bank_id"] == "hermes"
     assert donna["bank_id"] == "donna"
     assert hermes["bank_id"] != donna["bank_id"]
+
+
+def test_hindsight_config_enables_current_turn_recall_in_both_modes() -> None:
+    assert _render_hindsight_config("hermes", mode="local_external")["recall_sync"] is True
+    assert _render_hindsight_config("hermes", mode="local_embedded")["recall_sync"] is True
 
 
 def test_local_external_hindsight_config_requires_api_key() -> None:
