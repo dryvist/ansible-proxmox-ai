@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.66.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.65.0...v0.66.0) (2026-10-05)
+
+
+### Features
+
+* **llm-router:** add Pro6000 GPU tier, inactive until host serves ([fc918e2](https://github.com/dryvist/ansible-proxmox-ai/commit/fc918e2bff1166a7e26c4c67dba23dc981911a96))
+
 ## [0.65.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.64.2...v0.65.0) (2026-10-05)
 
 
