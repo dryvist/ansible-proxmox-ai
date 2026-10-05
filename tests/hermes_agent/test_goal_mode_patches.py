@@ -76,12 +76,14 @@ def test_goal_judge_availability_probe_logs_both_declines() -> None:
     assert all("goal judge unavailable" in str(call[0]) for call in warnings)
 
 
-def test_hindsight_prefetch_patch_logs_at_warning() -> None:
+def test_hindsight_recall_failure_keeps_best_effort_result_after_central_logging() -> None:
     patched = _apply_runtime_patch(
-        "Patch Hermes auto-recall prefetch failure to log at warning, not debug",
+        "Keep failed Hindsight recall best effort without a duplicate debug log",
         PINNED_HINDSIGHT_PREFETCH_SOURCE,
     )
-    assert 'logger.warning("Hindsight recall failed: %s", e, exc_info=True)' in patched
+    assert "if not getattr(e, \"hindsight_request_id\", None):" in patched
+    assert 'self._report_hindsight_failure("recall", e)' in patched
+    assert 'return "", 0' in patched
     assert "logger.debug" not in patched
 
 
