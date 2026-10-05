@@ -80,22 +80,9 @@ llama_cpp_max_param_billions: 31
 # IF IT DOES NOT FIT: step the QUANT down to UD-Q2_K_XL (10.68 GB) and record
 # the measurement that forced it. Do NOT cut this context to hide an OOM — that
 # turns a capability loss into an invisible one.
-# THE SERIAL LANE. One slot, deliberately: this card cannot batch, so serial is
-# the permanent design here and batched throughput is the other lane's job.
-#
-# Mechanically it is also the only setting that works. The KV cache is one
-# unified buffer of ctx_size shared across every slot, so the auto-chosen 4
-# slots did not buy concurrency — three concurrent ~24k requests need ~72k
-# against a 32768 buffer and ALL THREE failed with "Context size has been
-# exceeded" (measured; the same request serially returns 200). Two slots would
-# only move that cliff, not remove it. At one slot, this SAME value is also
-# what caps the router's own max_parallel_requests for this deployment
-# (roles/llm_router templates, hostvars-derived) — LiteLLM raises a 429 the
-# instant a second concurrent request would exceed it, so the reject moved
-# from llama-swap's concurrencyLimit to the router, not away. Residual: that
-# cap is per LiteLLM process and the pool runs three, so a cross-process
-# collision still queues in llama-server itself — bounded by this rung's own
-# stream_timeout override, see the registry entry below.
+# The KV cache is shared across slots; this setting bounds local concurrency.
+# The same value caps each router process. Cross-process requests can still
+# queue in llama-server until this rung's stream timeout.
 llama_cpp_parallel: >-
   {{ (llm_model_catalog_models
       | selectattr('name', 'in', llama_cpp_catalog_lookup_names)
