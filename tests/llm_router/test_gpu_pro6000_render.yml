@@ -27,6 +27,7 @@
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
     hermes_brain_model: "{{ llm_router_hermes_router_ids | first }}"
+    llm_active_profile: medium-a
     hindsight_retain_model: "{{ llm_router_light_models | map(attribute='client_model_id') | first }}"
     hermes_goal_judge_model: judge
   tasks:
@@ -159,6 +160,7 @@
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
     hermes_brain_model: "{{ llm_router_hermes_router_ids | first }}"
+    llm_active_profile: medium-a
     hindsight_retain_model: "{{ llm_router_light_models | map(attribute='client_model_id') | first }}"
     hermes_goal_judge_model: judge
   tasks:
@@ -216,17 +218,16 @@
           {{ _config.model_list | selectattr('model_name', 'in',
                llm_router_gpu_models | map(attribute='client_model_id') | list) | list }}
         _gpu_aliases: >-
-          {{ llm_router_model_group_aliases | dict2items
-             | selectattr('value', 'in',
-                 llm_router_gpu_models | map(attribute='client_model_id') | list)
-             | map(attribute='key') | list }}
+          {{ llm_router_gpu_profile_aliases }}
 
-    - name: Assert every profile renders with registry-owned limits and zero cost
+    - name: Assert the selected profile renders with registry-owned limits and zero cost
       ansible.builtin.assert:
         quiet: true
         that:
-          - _gpu_rendered | length == 4
-          - _gpu_ids | length == 4
+          - _gpu_rendered | length == 1
+          - _gpu_ids | length == 1
+          - _gpu_ids == [llm_router_gpu_medium_a_model]
+          - _gpu_rendered[0].model_info.profile == llm_active_profile
           - item.model_info.profile == _registry_entry.profile
           - item.model_info.max_input_tokens | int == _registry_entry.context_window | int
           - item.litellm_params.input_cost_per_token | float == 0
@@ -256,8 +257,8 @@
              | map(attribute='key') | list | first)
           - _production_hermes_brain_model in _gpu_aliases
           - _production_hermes_brain_model in _hermes_profile_scopes
-          - llm_router_model_group_aliases['local-fast'] == llm_router_gpu_small_model
           - llm_router_model_group_aliases['local-medium'] == llm_router_gpu_medium_a_model
+          - "'local-fast' not in llm_router_model_group_aliases"
           - >-
             _config.model_list | selectattr('model_name', 'in', _gpu_aliases)
             | list | length == 0
@@ -288,16 +289,21 @@
             llm_router_hermes_cloud_only_fallback_groups
             | difference(_fallback_by_name[hermes_brain_model]) | length == 0
           - _fallback_by_name[hermes_brain_model] == llm_router_hermes_default_fallback_chain
-          - _gpu_aliases | difference(_fallback_by_name.keys() | list) | length == 0
-          - _gpu_aliases | difference(_context_fallback_by_name.keys() | list) | length == 0
+          - _active_gpu_aliases | length == 1
+          - _active_gpu_aliases | difference(_fallback_by_name.keys() | list) | length == 0
+          - _active_gpu_aliases | difference(_context_fallback_by_name.keys() | list) | length == 0
           - >-
-            _gpu_aliases | select('in', _fallback_by_name)
+            _active_gpu_aliases | select('in', _fallback_by_name)
             | map('extract', _fallback_by_name)
             | select('equalto', _expected_alias_chain)
-            | list | length == _gpu_aliases | length
+            | list | length == _active_gpu_aliases | length
       vars:
         _hermes_router: >-
           {{ _config.model_list | selectattr('model_name', 'equalto', hermes_brain_model) | first }}
+        _active_gpu_aliases: >-
+          {{ llm_router_model_group_aliases | dict2items
+             | selectattr('value', 'in', _gpu_ids)
+             | map(attribute='key') | list }}
         _fallback_by_name: >-
           {{ dict(_config.router_settings.fallbacks | map('dict2items') | flatten
                   | map(attribute='key') | zip(_config.router_settings.fallbacks
@@ -314,10 +320,11 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - _judge.model == llm_router_gpu_small_model
-          - llm_router_routine_model in _judge.fallbacks
+          - _judge.model == llm_router_routine_model
+          - _judge.fallbacks | length == 0
           - _subagent.model == llm_router_gpu_medium_b_model
-          - llm_router_hermes_local_4080_id in _subagent.fallbacks
+          - _subagent.model == llm_router_hermes_local_4080_id
+          - llm_router_hermes_local_4080_id not in _subagent.fallbacks
       vars:
         _judge: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'judge') | first }}"
         _subagent: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'subagent') | first }}"
@@ -331,3 +338,16 @@
           - "'&zdr' in _benchmark.tags"
       vars:
         _benchmark: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'benchmark') | first }}"
+
+    - name: Select the small profile for the registry projection check
+      ansible.builtin.set_fact:
+        llm_active_profile: small
+
+    - name: Project only the 9B profile when the fast profile is selected
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_gpu_models | length == 1
+          - llm_router_gpu_models[0].profile == llm_active_profile
+          - llm_router_model_group_aliases['local-fast'] == llm_router_gpu_small_model
+          - "'local-medium' not in llm_router_model_group_aliases"

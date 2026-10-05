@@ -28,8 +28,9 @@ llm_router_model_registry: >-
      + _llm_registry_openrouter + _llm_registry_zai }}
 
 # Only active entries reach the rendered config or any derived contract. The
-# GPU candidates are registry-disabled until the single switch above is true;
-# the projection activates the whole candidate set together.
+# GPU candidates stay hidden until the single switch above is true; when active,
+# the projection includes only llm_active_profile because one endpoint serves
+# one selected profile at a time.
 # cpu-moe / cpu-9b also require inventory-backed api_base URLs — without them
 # the template renders nothing and registry/render parity fails loudly.
 llm_router_registry_enabled: >-
@@ -38,7 +39,8 @@ llm_router_registry_enabled: >-
   {%- for m in llm_router_model_registry -%}
   {%- if m.tier == 'gpu' -%}
   {%- if llm_router_gpu_profiles_enabled | bool
-       and (groups['llm_gpu_group'] | default([]) | length) > 0 -%}
+       and (groups['llm_gpu_group'] | default([]) | length) > 0
+       and m.profile == (llm_active_profile | default('')) -%}
   {%- set ns.out = ns.out + [m | combine({'enabled': true, 'servable': true})] -%}
   {%- endif -%}
   {%- elif m.enabled -%}
@@ -126,6 +128,12 @@ llm_router_vllm_models: >-
 # CPU pool so this proxy never advertises a backend without a tofu-tagged host.
 llm_router_gpu_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'gpu') | list }}
+llm_router_gpu_profile_aliases: >-
+  {%- set ns = namespace(out=[]) -%}
+  {%- for m in llm_router_model_registry | selectattr('tier', 'equalto', 'gpu') | list -%}
+  {%- set ns.out = ns.out + (m.stable_aliases | default([])) -%}
+  {%- endfor -%}
+  {{ ns.out }}
 llm_router_gpu_models_by_profile: >-
   {%- set ns = namespace(out={}) -%}
   {%- for m in llm_router_gpu_models -%}
