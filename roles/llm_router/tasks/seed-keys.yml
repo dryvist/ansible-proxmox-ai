@@ -1,6 +1,7 @@
 ---
-# FIRST SEED ONLY, same contract as seed-roles.yml: creates a virtual key when
-# the proxy has none by that alias, and never touches one that exists.
+# In `initial` mode, seed a virtual key only when it is absent and never
+# reconcile an existing key. The explicit `rebuild` mode may reconcile the
+# Git-declared fields; normal converges leave UI edits in place for drift-check.
 #
 # The router does not MINT these. /key/generate accepts a caller-supplied value,
 # so each key is registered with a value generated at the consumer's own tier
@@ -176,14 +177,12 @@
       (_llm_router_key_generate_result.json.error.message | default(''))
   no_log: true
 
-# RECONCILE allowed_routes and model names on keys that already exist. Keys
-# are minted once and otherwise left alone, so a route allowlist or a model
-# name added to a seed entry after the key was minted never reaches the proxy
-# on its own — the key keeps 401ing on the route, or 403ing on the model, the
-# seed entry now names.
+# REBUILD-ONLY reconciliation of allowed_routes, model names, and attribution
+# metadata. In `initial` mode an existing key is UI-owned: these differences
+# are reported by drift-check.yml and never written back during a converge.
 #
-# Models are UNIONED with the live list by default (only ever added, never
-# removed, so an operator's Admin UI edit survives) — same reason as ever: a
+# In rebuild mode models are UNIONED with the live list by default (only ever
+# added, never removed, so an operator's Admin UI edit survives) — same reason: a
 # name added to a seed entry's list after the mint (a new role in
 # 55-roles.yml, a new servable model) never reaches an existing key on its
 # own, and sending the git list outright would erase a name an operator
@@ -199,12 +198,12 @@
 # lacks, OR live names seeded no longer lists) — a narrowing has to reach
 # the live key too, not only a widening.
 #
-# Routes are replaced outright with the seed value, same as before, and only
+# In rebuild mode routes are replaced outright with the seed value, and only
 # for a key that declares allowed_routes at all.
 #
-# Computed as one list of {alias, body} entries so a key needing either
-# change gets exactly one /key/update call carrying both fields, instead of
-# one call per field — the diff itself runs once, in Jinja, against the
+# Computed as one list of {alias, body} entries in `rebuild` mode so a key
+# needing either change gets exactly one /key/update call carrying both fields,
+# instead of one call per field — the diff itself runs once, in Jinja, against
 # single /key/list read above; a key whose live record already matches the
 # seed on both fields contributes nothing, so a steady-state converge sends
 # no calls here at all.
@@ -242,7 +241,8 @@
          about must survive a reconcile untouched, so "changed" means the
          seeded fields alone differ from what's already live. -#}
       {%- set _metadata_changed = (_live_metadata | combine(_metadata_target)) != _live_metadata -%}
-      {%- if _models_changed or _routes_changed or _metadata_changed -%}
+      {%- if llm_router_seed_mode == 'rebuild'
+            and (_models_changed or _routes_changed or _metadata_changed) -%}
       {%- set _body = {'key': _k.value, 'models': _models_target} -%}
       {%- set _body = (_body | combine({'allowed_routes': _k.allowed_routes}))
             if (_k.allowed_routes is defined) else _body -%}
@@ -271,4 +271,5 @@
   loop: "{{ _llm_router_key_updates }}"
   loop_control:
     label: "{{ item.alias }}"
+  when: llm_router_seed_mode == 'rebuild'
   no_log: true

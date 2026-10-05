@@ -34,6 +34,24 @@ Both model call paths feed that search. The worker emits `model=` and
 call site and emits the same two fields in the same units and format, so judge
 timing is measurable in the same query rather than invisible.
 
+## Hindsight operation failures
+
+The bundled Hindsight provider emits one prompt-safe ERROR for a failed recall
+or retain operation with `request_id=`, `operation=`,
+`hindsight_failure_count=1`, and `hindsight_degraded=true`. Hermes' existing
+rsyslog route forwards these records through Cribl to `index=hermes`; no new
+input or pipeline is needed. Count failures by operation with:
+
+```spl
+index=hermes "hindsight_failure_count=1"
+| rex field=_raw "operation=(?<hindsight_operation>\S+)"
+| stats count by hindsight_operation
+```
+
+Auto-recall preserves the provider's best-effort contract, then includes a
+`[HINDSIGHT_MEMORY_DEGRADED ...]` marker in the next prefetch context when a
+failure occurred. Direct memory-tool errors include the same request id.
+
 ## Splunk search access
 
 Registers the **Splunk MCP Server** (Splunkbase 7931, deployed by `ansible-splunk`)

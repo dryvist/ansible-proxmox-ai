@@ -1,15 +1,11 @@
 ---
-# Runs on EVERY converge, not just first-seed — unlike seed-keys.yml, which
-# only mints a key the first time it is absent. A key's `monthly_budget` here
-# can change after the key already exists (this PR moves several from unset
-# to 14.0), and seed-keys.yml's "never touch a key that exists" contract would
-# otherwise strand every already-minted key on its original budget forever.
+# Reconciles key budgets only in the explicit `rebuild` mode. In `initial`
+# mode, key flags are UI-owned after the first mint; drift-check.yml reports
+# any difference against the Git baseline without writing to the live key.
 #
 # Sends ONLY max_budget/budget_duration, never `models` or `key_alias` — an
-# operator may have hand-edited a key's model list in the Admin UI, and
-# resending the git-declared list on every converge would silently overwrite
-# that edit. Budget is the one field this role owns end to end, since nothing
-# else sets it.
+# operator may have hand-edited any key field in the Admin UI, and normal
+# converges must not overwrite that edit.
 #
 # /key/update takes the actual key VALUE in its `key` field (LiteLLM hashes it
 # server-side to find the row), the same shape /key/generate takes — so this
@@ -18,11 +14,12 @@
 # declared is skipped too rather than sent an update that would clear an
 # existing budget it never claimed to own.
 
-- name: Compute the budgeted keys to reconcile on every converge
+- name: Compute the budgeted keys to reconcile in rebuild mode
   ansible.builtin.set_fact:
     _llm_router_budgeted_keys: >-
       {%- set _out = [] -%}
-      {%- for _k in (llm_router_virtual_keys | rejectattr('value', 'equalto', '') | list) -%}
+      {%- for _k in (llm_router_virtual_keys | rejectattr('value', 'equalto', '') | list)
+                    if llm_router_seed_mode == 'rebuild' -%}
       {%- if (_k.monthly_budget | default(0) | float) > 0 -%}
       {%- set _discard = _out.append(_k) -%}
       {%- endif -%}
@@ -34,7 +31,7 @@
 # registered earlier in this same play (seed-consumers.yml runs it first) —
 # read again here, not re-fetched, so changed_when below reflects the
 # pre-this-play state including anything seed-keys.yml just minted.
-- name: Resync max_budget/budget_duration on every budgeted key
+- name: Resync max_budget/budget_duration on budgeted keys in rebuild mode
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/key/update"
     method: POST
@@ -77,19 +74,18 @@
       {{ dict(_named | map(attribute='key_alias') | zip(_named)) }}
   no_log: true
 
-# Same contract, for rpm_limit: seed-keys.yml only sets it at first mint, so
-# a limit added (or changed) on an already-minted key — e.g. hindsight's
-# background retain loop hot-looping against no rate cap — would otherwise
-# never reach the live key.
-- name: Compute the rate-limited keys to reconcile on every converge
+# In rebuild mode, resync rpm_limit too; initial mode leaves any live value
+# untouched and lets drift-check.yml report a mismatch.
+- name: Compute the rate-limited keys to reconcile in rebuild mode
   ansible.builtin.set_fact:
     _llm_router_rate_limited_keys: >-
-      {{ llm_router_virtual_keys
-         | rejectattr('value', 'equalto', '')
-         | selectattr('rpm_limit', 'defined') | list }}
+      {{ (llm_router_virtual_keys
+          | rejectattr('value', 'equalto', '')
+          | selectattr('rpm_limit', 'defined') | list)
+         if llm_router_seed_mode == 'rebuild' else [] }}
   no_log: true
 
-- name: Resync rpm_limit on every rate-limited key
+- name: Resync rpm_limit on rate-limited keys in rebuild mode
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/key/update"
     method: POST
