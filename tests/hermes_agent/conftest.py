@@ -303,6 +303,9 @@ def _goal_runner_namespace() -> dict[str, Any]:
     assert "{{" not in block, "block gained Jinja; render it before exec"
     namespace: dict[str, Any] = {
         "os": __import__("os"),
+        "json": __import__("json"),
+        "time": __import__("time"),
+        "_hermes_cron_wall_timeout_limit": lambda: None,
         "logger": logging.getLogger("test.cron.goal"),
     }
     exec(compile(block, "cron-goal-block", "exec"), namespace)  # noqa: S102
@@ -324,6 +327,7 @@ class _StubAgent:
         self.turns = 0
         self.histories: list[Any] = []
         self.task_ids: list[Any] = []
+        self.run_budget_seconds = None
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
         self.turns += 1
