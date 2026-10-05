@@ -11,10 +11,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
 PROFILE_DEFAULTS = ROLE_ROOT / "defaults/main/10-profiles.yml"
 UNIT_TEMPLATE = ROLE_ROOT / "templates/llm-gpu-serving.service.j2"
+REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
 
 
 def _profiles() -> dict:
     return yaml.safe_load(PROFILE_DEFAULTS.read_text(encoding="utf-8"))["llm_profiles"]
+
+
+def _registry_profiles() -> dict:
+    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
+    return {entry["profile"]: entry for entry in entries}
 
 
 def _comment_filter(text: str) -> str:
@@ -29,6 +35,7 @@ def _render(profile_name: str, profile: dict) -> str:
         **profile,
         "port": env.from_string(str(profile["port"])).render(llm_gpu_serving_api_port=10434),
     }
+    registry_model = _registry_profiles()[profile_name]
     return env.from_string(UNIT_TEMPLATE.read_text(encoding="utf-8")).render(
         ansible_managed="Managed by Ansible",
         ansible_facts={"default_ipv4": {"address": "LISTEN_ADDRESS"}},
@@ -41,7 +48,8 @@ def _render(profile_name: str, profile: dict) -> str:
         llm_gpu_serving_llamacpp_server_bin="/opt/llm-gpu-serving/llama.cpp/llama-server",
         llm_gpu_serving_profile_name=profile_name,
         llm_gpu_serving_profile=resolved_profile,
-        llm_gpu_serving_profile_model_dir=f"/cache/{resolved_profile['model_id']}",
+        llm_gpu_serving_profile_registry_model=registry_model,
+        llm_gpu_serving_profile_model_dir=f"/cache/{registry_model['upstream_model_id']}",
     )
 
 
@@ -55,7 +63,6 @@ def test_four_named_profiles_carry_the_serving_contract():
     assert list(profiles) == ["small", "medium-a", "medium-b", "max"]
     required = {
         "engine",
-        "model_id",
         "quant",
         "linear_backend",
         "moe_backend",
@@ -65,18 +72,22 @@ def test_four_named_profiles_carry_the_serving_contract():
         "enable_auto_tool_choice",
         "tool_call_parser",
         "reasoning_parser",
-        "served_model_name",
         "port",
     }
     assert all(required <= profile.keys() for profile in profiles.values())
+    assert set(_registry_profiles()) == set(profiles)
+    assert all("model_id" not in profile and "served_model_name" not in profile for profile in profiles.values())
     assert [profiles[name]["max_num_seqs"] for name in ("medium-a", "medium-b", "max")] == [8, 4, 1]
 
 
 def test_each_vllm_profile_renders_its_runtime_flags():
     profiles = _profiles()
+    registry_profiles = _registry_profiles()
     for name, profile in profiles.items():
         exec_start = _exec_start(_render(name, profile))
-        assert f"vllm serve /cache/{profile['model_id']}" in exec_start
+        registry_model_id = registry_profiles[name]["upstream_model_id"]
+        assert f"vllm serve /cache/{registry_model_id}" in exec_start
+        assert f"--served-model-name {registry_model_id}" in exec_start
         assert "--port 10434" in exec_start
         assert f"--max-model-len {profile['max_model_len']}" in exec_start
         assert f"--max-num-seqs {profile['max_num_seqs']}" in exec_start
@@ -115,4 +126,4 @@ def test_cache_sync_is_scoped_to_the_active_profile_and_reports_itemized_changes
     assert "--out-format=%i %n%L" in cache_task["ansible.builtin.command"]["argv"]
     assert "stdout | length > 0" in cache_task["changed_when"]
     path_task = next(task for task in tasks if task.get("name") == "Resolve active profile model paths")
-    assert "llm_profiles[llm_active_profile]" in path_task["ansible.builtin.set_fact"]["llm_gpu_serving_active_model_source"]
+    assert "llm_gpu_serving_active_registry_model.upstream_model_id" in path_task["ansible.builtin.set_fact"]["llm_gpu_serving_active_model_source"]
