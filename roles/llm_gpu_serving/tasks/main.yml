@@ -100,15 +100,52 @@
   loop:
     - path: "{{ llm_gpu_serving_data_dir }}"
     - path: "{{ llm_gpu_serving_install_dir }}"
+    - path: "{{ llm_gpu_serving_uv_cache_dir }}"
+    - path: "{{ llm_gpu_serving_uv_python_install_dir }}"
+    - path: "{{ llm_gpu_serving_uv_tool_dir }}"
+    - path: "{{ llm_gpu_serving_uv_tool_bin_dir }}"
   loop_control:
     label: "{{ item.path }}"
 
-- name: Install uv
+- name: Read the installed uv version
+  ansible.builtin.command:
+    argv:
+      - "{{ llm_gpu_serving_uv_bin }}"
+      - --version
+  register: llm_gpu_serving_uv_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Install the pinned uv version
   ansible.builtin.shell:
-    cmd: "set -o pipefail && curl -LsSf {{ llm_gpu_serving_uv_install_url }} | env UV_INSTALL_DIR=/usr/local/bin sh"
-    creates: "{{ llm_gpu_serving_uv_bin }}"
+    cmd: >-
+      set -o pipefail && curl --proto '=https' --tlsv1.2 -LsSf
+      {{ llm_gpu_serving_uv_install_url | quote }}
+      | env UV_INSTALL_DIR={{ llm_gpu_serving_uv_bin | dirname | quote }} UV_NO_MODIFY_PATH=1 sh
   args:
     executable: /bin/bash
+  changed_when: true
+  when: >-
+    (llm_gpu_serving_uv_version_check.stdout | default(''))
+    != ('uv ' ~ llm_gpu_serving_uv_version)
+
+- name: Install the pinned Hugging Face CLI in the model cache
+  ansible.builtin.command:
+    argv:
+      - "{{ llm_gpu_serving_uv_bin }}"
+      - tool
+      - install
+      - --python
+      - "{{ llm_gpu_serving_python }}"
+      - "huggingface_hub=={{ llm_gpu_serving_huggingface_hub_version }}"
+  become: true
+  become_user: "{{ llm_gpu_serving_user }}"
+  environment: "{{ llm_gpu_serving_uv_environment }}"
+  register: llm_gpu_serving_hf_cli_install
+  changed_when: >-
+    'Installed' in (llm_gpu_serving_hf_cli_install.stdout ~ llm_gpu_serving_hf_cli_install.stderr) or
+    'Uninstalled' in (llm_gpu_serving_hf_cli_install.stdout ~ llm_gpu_serving_hf_cli_install.stderr) or
+    'Prepared' in (llm_gpu_serving_hf_cli_install.stdout ~ llm_gpu_serving_hf_cli_install.stderr)
 
 - name: Create the vLLM virtual environment
   ansible.builtin.command:
@@ -121,6 +158,7 @@
     creates: "{{ llm_gpu_serving_venv }}/bin/python"
   become: true
   become_user: "{{ llm_gpu_serving_user }}"
+  environment: "{{ llm_gpu_serving_uv_environment }}"
 
 - name: Install the pinned vLLM build with SM120 b12x kernels
   ansible.builtin.command:
@@ -133,6 +171,7 @@
       - "vllm[b12x]=={{ llm_gpu_serving_vllm_version }}"
   become: true
   become_user: "{{ llm_gpu_serving_user }}"
+  environment: "{{ llm_gpu_serving_uv_environment }}"
   register: llm_gpu_serving_vllm_install
   changed_when: >-
     'Installed' in llm_gpu_serving_vllm_install.stderr or
