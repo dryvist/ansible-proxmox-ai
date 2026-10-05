@@ -127,3 +127,34 @@ def test_cache_sync_is_scoped_to_the_active_profile_and_reports_itemized_changes
     assert "stdout | length > 0" in cache_task["changed_when"]
     path_task = next(task for task in tasks if task.get("name") == "Resolve active profile model paths")
     assert "llm_gpu_serving_active_registry_model.upstream_model_id" in path_task["ansible.builtin.set_fact"]["llm_gpu_serving_active_model_source"]
+
+
+def test_hf_cli_and_uv_are_pinned_and_store_tools_on_the_tofu_cache_mount():
+    core_defaults = ROLE_ROOT / "defaults/main/00-core.yml"
+    defaults = yaml.safe_load(core_defaults.read_text(encoding="utf-8"))
+    tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+
+    uv_check = next(task for task in tasks if task.get("name") == "Read the installed uv version")
+    uv_install = next(task for task in tasks if task.get("name") == "Install the pinned uv version")
+    hf_install = next(task for task in tasks if task.get("name") == "Install the pinned Hugging Face CLI in the model cache")
+    venv_create = next(task for task in tasks if task.get("name") == "Create the vLLM virtual environment")
+    vllm_install = next(task for task in tasks if task.get("name") == "Install the pinned vLLM build with SM120 b12x kernels")
+
+    assert "datasource=github-releases depName=astral-sh/uv" in core_defaults.read_text(encoding="utf-8")
+    assert "datasource=pypi depName=huggingface-hub" in core_defaults.read_text(encoding="utf-8")
+    assert uv_check["ansible.builtin.command"]["argv"][0] == "{{ llm_gpu_serving_uv_bin }}"
+    assert "{{ llm_gpu_serving_uv_version }}" in defaults["llm_gpu_serving_uv_install_url"]
+    assert "llm_gpu_serving_uv_bin | dirname" in uv_install["ansible.builtin.shell"]["cmd"]
+    assert hf_install["ansible.builtin.command"]["argv"][-1] == (
+        "huggingface_hub=={{ llm_gpu_serving_huggingface_hub_version }}"
+    )
+    assert hf_install["environment"] == "{{ llm_gpu_serving_uv_environment }}"
+    assert venv_create["environment"] == "{{ llm_gpu_serving_uv_environment }}"
+    assert vllm_install["environment"] == "{{ llm_gpu_serving_uv_environment }}"
+    for key in (
+        "llm_gpu_serving_uv_cache_dir",
+        "llm_gpu_serving_uv_python_install_dir",
+        "llm_gpu_serving_uv_tool_dir",
+        "llm_gpu_serving_uv_tool_bin_dir",
+    ):
+        assert defaults[key].startswith("{{ llm_gpu_serving_model_cache_mount_path }}")

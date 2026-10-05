@@ -14,7 +14,8 @@ not create the mount points.
 
 ## What it does
 
-- Installs uv and creates a dedicated Python virtual environment.
+- Installs a Renovate-pinned uv binary and creates a dedicated Python virtual environment.
+- Installs the Renovate-pinned `hf` CLI with uv under the tofu-provisioned model cache; uv's package, Python, and tool caches use that same mount.
 - Installs the Renovate-pinned vLLM version with the `b12x` extra for SM120
   kernel support.
 - Resolves a recent llama.cpp release and installs its Linux x64 CUDA archive
@@ -48,5 +49,7 @@ Select the active entry with `llm_active_profile`.
 | `llm_profiles` | Per-profile engine and serving settings |
 | `llm_gpu_serving_model_origin_mount_path` | Read-only model source mount from tofu inventory |
 | `llm_gpu_serving_model_cache_mount_path` | Writable local model cache mount from tofu inventory |
+| `llm_gpu_serving_uv_version` | Pinned uv installer version, tracked by Renovate |
+| `llm_gpu_serving_huggingface_hub_version` | Pinned Hugging Face CLI package version, tracked by Renovate |
 | `llm_gpu_serving_vllm_version` | Pinned vLLM package version, tracked by Renovate |
 | `llm_gpu_serving_api_port` | Shared listener port from `tofu_data.constants.service_ports.llm_fast_api` |
