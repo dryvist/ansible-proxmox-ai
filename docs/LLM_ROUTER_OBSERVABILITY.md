@@ -25,20 +25,18 @@ without a database attached, which is why the metric below is defined
 against this table and not against traces. The settings that arm it, and the
 reasoning for each: `roles/llm_router/defaults/main/45-database.yml`.
 
-When the Langfuse project key pair is present, the router uses LiteLLM's
-`langfuse_otel` preset as its only trace exporter. The pinned LiteLLM release
-includes this callback; it sends directly to the configured Langfuse host.
-Without the key pair, no trace callback is enabled. The generic `otel` callback
-and the older `langfuse` callback are not enabled alongside it. In particular,
-there is no second route through the shared collector, which already fans out
-to Langfuse and would duplicate each trace there.
+The router uses LiteLLM's `otel` callback with `OTEL_EXPORTER=otlp_http` and the
+configured `ai_orchestration_otel_endpoint`. The collector routes traces to its
+configured destinations. `callback_settings.otel.message_logging` is false,
+so prompts and completions are not attached to traces. The Prometheus callback
+remains a separate path for routing counters.
 
-The 2026-09-13 `#777` change removed the generic callback while
-"consolidating on the current path (Prometheus fallback counters, LITELLM_LOG)."
-This branch retains that routing instrumentation and adds one direct Langfuse
-trace path. The rendered config establishes the intended path; live trace
-delivery remains an external observation. **Do not use traces as a measurement
-source until delivery is checked live.**
+LiteLLM Prometheus counters carry registry-derived tier and billing-class
+labels alongside model and provider. The existing remote-write pipeline sends
+those counters to the configured Prometheus and Splunk destinations. The
+rendered settings establish the intended routes; live trace and counter
+delivery remain external observations. **Do not use traces as a token
+measurement source; use the counters and verify their delivery live.**
 
 ## Per-request event in the log platform (`event=llm_request`)
 
