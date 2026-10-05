@@ -235,17 +235,8 @@ log prints `Sign in with ChatGPT using device code:` with the verify URL and
 code — complete it on that node and the provider refreshes thereafter. With
 no login on a node the rung is not rendered there.
 
-## Admin UI SSO
-
-`/ui` signs in only via Authelia (LiteLLM generic OIDC; env contract
-`defaults/main/65-oidc.yml`, redirect `<PROXY_BASE_URL>/sso/callback`).
-`PROXY_ADMIN_ID` is the operator email (APPS authelia `authelia_admin_email`).
-With the client secret resolved (bao `secret/apps/authelia`, env fallback
-`LITELLM_OIDC_CLIENT_SECRET`), the env block renders and `general_settings`
-sets `disable_env_credential_login` and
-`disable_password_login_when_sso_enabled`; without it, none of these render.
-API bearer auth is unaffected; on a UI lockout the master key still works over
-the API. Boards link the router at `/ui` via the ingress `url_path`.
+The Admin UI's SSO contract and API lockout path are documented in
+[LLM_ROUTER_ADMIN_UI.md](../../docs/LLM_ROUTER_ADMIN_UI.md).
 
 ## Observability
 
