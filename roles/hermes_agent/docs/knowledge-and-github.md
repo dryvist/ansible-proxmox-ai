@@ -69,23 +69,21 @@ byte-copies the result into `$HERMES_HOME` — the guest never needs nix.
 Renovate bumps the pin on each nix-hermes release; edit skills/persona there,
 never in this role.
 
-## GitHub issues & projects
+## GitHub issues
 
-Delivers a fine-grained PAT (`GH_PAT_WRITE_PROJECT_ISSUES`) into `.env` giving
-Hermes **read/write Issues across all repos** and **read/write Projects (v2) in
-the `dryvist` org** — for triaging, creating and updating issues and managing
-project boards. It is deliberately least-privilege: **not** for code commits (that
-is the signed `docs-pr` / GitHub App path) and **not** for merges. Bao-first
-(`secret/ai/hermes`, `bao_local_llm_secrets`) with an env fallback; empty until the
-token is set. The bundled `dryvist/github-issues` skill documents the REST (issues)
-and GraphQL (Projects v2) calls and the usage guardrails.
+Default-profile scheduled work uses the existing `hermes-gh` wrapper. The root
+timer mints short-lived installation tokens from the guest's existing OpenBao
+AppRoles and writes them to mode-0600 files under `/run/hermes-gh`. The wrapper
+selects a token for each `gh api` call, checks the public/private repository
+boundary, and applies the configured outgoing-content gate to public writes.
+The role-local `hermes_agent/github-issues-api` skill uses that wrapper. This path
+does not support organization Projects v2 mutations.
+
+The `github-maint` profile remains read-only and receives
+`hermes_agent_github_read_token` under the `GH_PAT_WRITE_PROJECT_ISSUES` key
+because the bundled read-only skill expects that name. Its API scope prevents
+issue and repository writes. Other profiles receive an empty value.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `hermes_agent_github_issues_pat` | `""` | issues + org-projects PAT (bao/env) |
 | `hermes_agent_github_read_token` | `""` | read-only org token for `github-maint` (bao/env) |
-
-The `github-maint` profile gets `hermes_agent_github_read_token` under the same
-`GH_PAT_WRITE_PROJECT_ISSUES` key instead — the key is what the skill reads, the
-value is what carries the scope. Every other profile renders the key blank, so
-the read/write PAT above never leaves the default profile.

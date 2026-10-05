@@ -6,7 +6,7 @@ from typing import Any
 
 import yaml
 from jinja2 import Environment, FileSystemLoader
-from _role_files import role_defaults, role_tasks_text, template_text
+from _role_files import role_defaults, role_tasks, role_tasks_text, template_text
 from _cron_pool_ceiling_shared import wall_timeout_seconds
 
 
@@ -224,8 +224,7 @@ def test_github_maint_cron_runs_in_its_own_profile_behind_the_read_token() -> No
     Two things carry it: the job must point HERMES_HOME at the github-maint
     profile (whose .env holds the read-only token and blanks everything else),
     and it must stay disabled until that token is actually seeded. Drop either
-    and the job silently becomes an ordinary default-profile job holding the
-    read/write PAT — which is exactly what it exists not to be.
+    and the job silently becomes an ordinary default-profile job.
     """
     defaults = _defaults()
     jobs = {
@@ -239,9 +238,44 @@ def test_github_maint_cron_runs_in_its_own_profile_behind_the_read_token() -> No
     assert defaults["hermes_agent_github_read_token"] == ""
 
     # Least-shared tier: the read token belongs in one profile's .env, not in
-    # the default profile's, which already holds the broader write PAT.
+    # the default profile's .env.
     default_env = template_text(ROLE_ROOT, "hermes-env.j2")
     assert "hermes_agent_github_read_token" not in default_env
+
+
+def test_default_profile_has_no_static_write_github_token() -> None:
+    defaults = _defaults()
+    default_env = template_text(ROLE_ROOT, "hermes-env.j2")
+    group_vars = (REPO_ROOT / "inventory" / "group_vars" / "hermes_agent_group.yml").read_text()
+
+    assert "hermes_agent_github_issues_pat" not in defaults
+    assert "hermes_agent_github_issues_pat" not in group_vars
+    assert not any(line.startswith("GH_PAT_WRITE_PROJECT_ISSUES=") for line in default_env.splitlines())
+
+
+def test_default_issue_crons_use_the_short_lived_github_identity() -> None:
+    jobs = {entry["name"]: entry for entry in _defaults()["hermes_agent_direct_cron_jobs"]}
+    for name in (
+        "{{ hermes_agent_github_monitor_cron_name }}",
+        "{{ hermes_agent_bot_pr_triage_cron_name }}",
+        "{{ hermes_agent_docs_study_cron_name }}",
+        "{{ hermes_agent_secrets_audit_cron_name }}",
+        "{{ hermes_agent_daily_innovation_cron_name }}",
+        "{{ hermes_agent_app_seeding_cron_name }}",
+    ):
+        job = jobs[name]
+        assert job["skill"] == "hermes_agent/github-issues-api"
+        assert "hermes_agent_github_identity_enabled | bool" in job["enabled"]
+
+    skill_task = next(
+        task for task in role_tasks(ROLE_ROOT)
+        if task["name"] == "Deploy the Hermes GitHub issue API skill"
+    )
+    copy = skill_task["ansible.builtin.copy"]
+    assert copy["src"] == "github-issues-api/"
+    assert copy["dest"].endswith("/skills/hermes_agent/github-issues-api/")
+    skill = (ROLE_ROOT / "files" / "github-issues-api" / "SKILL.md").read_text()
+    assert "HERMES_GH_TOKEN_SET=author" in skill
 
 
 def test_every_profile_cron_store_gets_its_own_tick_trigger() -> None:

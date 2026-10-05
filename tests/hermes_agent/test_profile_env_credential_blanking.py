@@ -31,9 +31,6 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         hermes_agent_wiki_enabled=True,
         hermes_agent_wiki_path="/var/lib/hermes/wiki",
         hermes_agent_github_read_token="READTOK",
-        # Rendered into the context but wired to NOTHING in the profile
-        # template — see the GH_PAT_WRITE_PROJECT_ISSUES assertion below.
-        hermes_agent_github_issues_pat="WRITETOK",
     )
     always_blank = ("CONTEXT7_API_KEY",)
     section_keys = {
@@ -74,12 +71,7 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         assert values["WIKI_PATH"] == "/var/lib/hermes/wiki", (
             f"{profile['name']}: WIKI_PATH must be set whenever hermes_agent_wiki_enabled is true"
         )
-        # The read-only contract, asserted on the VALUE rather than the key:
-        # GH_PAT_WRITE_PROJECT_ISSUES is the variable the bundled
-        # dryvist/github-issues skill authenticates with, so a github-granted
-        # profile has to render it — but it must carry the read-only token.
-        # If it ever rendered the default profile's read/write PAT instead,
-        # every "read-only" claim on that profile would be prompt-deep only.
-        assert values["GH_PAT_WRITE_PROJECT_ISSUES"] != "WRITETOK", (
-            f"{profile['name']}: the read/write issues PAT must never reach a profile .env"
+        expected_github_token = "READTOK" if "github" in profile["env"] else ""
+        assert values["GH_PAT_WRITE_PROJECT_ISSUES"] == expected_github_token, (
+            f"{profile['name']}: only the read-only GitHub token may reach a github-granted profile"
         )
