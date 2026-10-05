@@ -62,7 +62,6 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
     environment = template_text(ROLE_ROOT, "hermes-env.j2")
 
-    hermes_alias = "hermes-default"
     # Physical ids live in ONE place — the repo-root llm-models.d/ registry —
     # and the router's selector vars are projections of it. Pinning literals
     # here is what let all four aliases drift to unroutable models at once
@@ -78,7 +77,11 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # model uses the active primary until the serving host is rebuilt.
     routine_parked = role_is_parked(registry, "routine")
     judge_backend = effective_backend_for_role(registry, "routine")
-    assert group_vars["hermes_brain_model"] == hermes_alias
+    hermes_selector = group_vars["hermes_brain_model"]
+    assert "llm_router_gpu_profiles_enabled" in hermes_selector
+    assert "llm_router_model_group_aliases" in hermes_selector
+    assert "llm_router_hermes_gpu_medium_target" in hermes_selector
+    assert "hermes-default" in hermes_selector
     # The judge normally rides its distinct routine model. During the explicit
     # parked state it shares the active primary until the serving host is rebuilt.
     assert group_vars["hermes_goal_judge_model"] == "judge"

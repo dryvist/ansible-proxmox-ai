@@ -55,6 +55,15 @@
         llm_router_llm_vllm_base_url: "http://localhost:10434/v1"
         llm_router_llm_gpu_base_url: "http://localhost:10434/v1"
 
+    - name: Load the production Hermes selector without replacing test fixtures
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/all.yml"
+        name: _production_group_vars
+
+    - name: Evaluate the production Hermes selector with profiles inactive
+      ansible.builtin.set_fact:
+        _production_hermes_brain_model: "{{ _production_group_vars.hermes_brain_model }}"
+
     - name: Re-evaluate credentialed cloud projections for the config render
       ansible.builtin.include_vars:
         file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
@@ -82,6 +91,7 @@
         quiet: true
         that:
           - llm_router_gpu_profiles_enabled is false
+          - _production_hermes_brain_model == 'hermes-default'
           - llm_router_gpu_models | length == 0
           - llm_router_gpu_servable_models | length == 0
           - _config.model_list | selectattr('model_name', 'in', _gpu_ids) | list | length == 0
@@ -177,6 +187,15 @@
         llm_router_llm_vllm_base_url: "http://localhost:10434/v1"
         llm_router_llm_gpu_base_url: "http://localhost:10434/v1"
 
+    - name: Load the production Hermes selector without replacing test fixtures
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/all.yml"
+        name: _production_group_vars
+
+    - name: Evaluate the production Hermes selector with profiles enabled
+      ansible.builtin.set_fact:
+        _production_hermes_brain_model: "{{ _production_group_vars.hermes_brain_model }}"
+
     - name: Re-evaluate credentialed cloud projections for the config render
       ansible.builtin.include_vars:
         file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
@@ -230,6 +249,13 @@
           - _gpu_ids | difference(_hermes_profile_scopes) | length == 0
           - _gpu_aliases | length == 2
           - _gpu_aliases | difference(_hermes_profile_scopes) | length == 0
+          - >-
+            _production_hermes_brain_model ==
+            (llm_router_model_group_aliases | dict2items
+             | selectattr('value', 'equalto', llm_router_hermes_gpu_medium_target)
+             | map(attribute='key') | list | first)
+          - _production_hermes_brain_model in _gpu_aliases
+          - _production_hermes_brain_model in _hermes_profile_scopes
           - llm_router_model_group_aliases['local-fast'] == llm_router_gpu_small_model
           - llm_router_model_group_aliases['local-medium'] == llm_router_gpu_medium_a_model
           - >-
