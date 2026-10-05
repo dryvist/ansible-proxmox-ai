@@ -47,6 +47,10 @@ Common edits:
 | Repoint a role (`subagent`, `lead`, ...) | the Admin UI — not this file |
 | Retire a model | `enabled: false` (or delete the entry) |
 
+## Prompt management
+
+See [prompt ownership and removal criteria](../../docs/LLM_ROUTER_PROMPTS.md).
+
 ## Tiers (one proxy, multiple backends)
 
 The router projects each physical backend once and exposes stable consumer
@@ -90,6 +94,15 @@ unhealthy: a merely-busy single GPU must not be cooled out of rotation the way
 a real failure would be. Its `num_retries: 0` is the same idea — a
 single-instance local leg is only ever accepting or rejecting, never worth
 retrying, since a retry just re-queues behind the same busy box.
+
+## Retry and cooldown policy
+
+`num_retries: 0`; default `retry_policy`: rate limit `0`, timeout `0`. Local
+failures fall back; multi-member cloud groups retry 429s twice to reach another
+member. `allowed_fails: 2` parks a failing member; `cooldown_time: 30s` delays
+re-probes. Per-error allowances are `1000` for rate limits, to avoid cooling
+healthy busy members, and `100` for timeouts, to park sustained failure storms.
+Source: `defaults/main/40-routing.yml`.
 
 ## OpenRouter wildcard passthrough
 
@@ -176,7 +189,8 @@ Roles and Virtual Keys already enforce it:
 - **`initial`** (default) — the converge seeds `router_settings` into the
   database only the first time, when no row exists yet
   (`tasks/probe-router-settings.yml`, a read-only `psql` check —
-  litellm 1.102.0's `/config/list` never returns this section). Once a row
+  confirmed against 1.102.0; recheck the endpoint after the 1.104.0 proxy
+  refactor). Once a row
   exists, a converge leaves it alone; `tasks/sync-router-settings.yml` is
   skipped.
 - **`rebuild`** — DR / from-scratch reset. Every converge re-pushes the
@@ -185,10 +199,9 @@ Roles and Virtual Keys already enforce it:
   Set it for one converge to restore the git-declared state, then set it
   back to `initial`.
 
-Facts this rests on, verified against the pinned `litellm==1.102.0` wheel
-(never guessed) — the startup merge direction, the UI's actual write path,
-and how an edit propagates to the rest of the pool without a restart — moved
-to
+The historical startup merge, UI write, and cross-pool propagation facts were
+verified against LiteLLM 1.102.0; 1.104.0 refactored proxy internals, so
+revalidate those details before relying on them. They are documented in
 [`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md).
 
 ## Virtual keys (`defaults/main/56-virtual-keys.yml`)
