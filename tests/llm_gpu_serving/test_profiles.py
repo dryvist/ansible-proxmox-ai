@@ -60,7 +60,7 @@ def _render(profile_name: str, profile: dict) -> str:
         llm_gpu_serving_profile_name=profile_name,
         llm_gpu_serving_profile=resolved_profile,
         llm_gpu_serving_profile_registry_model=registry_model,
-        llm_gpu_serving_profile_model_dir=f"/cache/{registry_model['artifact']['hf_repo']}",
+        llm_gpu_serving_profile_model_dir=f"/cache/models/{registry_model['artifact']['hf_repo']}",
     )
 
 
@@ -101,9 +101,36 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     artifact_file = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))
     artifacts = artifact_file["_llm_model_artifacts"]
     artifact_ids = [artifact["artifact_id"] for artifact in artifacts]
-    hf_repos = [artifact["hf_repo"] for artifact in artifacts]
     assert len(artifact_ids) == len(set(artifact_ids))
-    assert len(hf_repos) == len(set(hf_repos))
+    model_store = [artifact for artifact in artifacts if artifact.get("model_store") is True]
+    assert len(model_store) == 20
+    assert {artifact["model_store_profile"] for artifact in model_store} == {
+        "small",
+        "medium-a",
+        "medium-b",
+        "max",
+    }
+    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 289_195_631_019
+    assert all(len(artifact["revision"]) == 40 for artifact in model_store)
+    assert all(set(artifact["revision"]) <= set("0123456789abcdef") for artifact in model_store)
+    assert {artifact["artifact_id"] for artifact in model_store if artifact.get("model_size")} == {
+        "qwen35-9b-nvfp4",
+        "qwen38-27b-nvfp4",
+        "qwen38-27b-ud-iq3-xxs",
+        "flash-next-iq3-s",
+    }
+    repositories = {artifact["hf_repo"] for artifact in model_store}
+    for repository in repositories:
+        entries = [artifact for artifact in model_store if artifact["hf_repo"] == repository]
+        assert len({artifact["revision"] for artifact in entries}) == 1
+        selectors = [selector for artifact in entries for selector in artifact["include_globs"]]
+        assert len(selectors) == len(set(selectors))
+        if len(entries) > 1:
+            assert all(not any(character in selector for character in "*?[") for selector in selectors)
+
+    assert any(artifact["format"] == "GGUF" and "llama_cpp" in artifact["engines"] for artifact in model_store)
+    assert any(artifact["format"] == "safetensors" and "vllm" in artifact["engines"] for artifact in model_store)
+    assert any(artifact["format"] == "MLX" and "mlx_lm" in artifact["engines"] for artifact in model_store)
 
     required = {
         "artifact_id",
@@ -131,6 +158,7 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     )
 
     profiles = _registry_profiles()
+    assert profiles["small"]["artifact_id"] == "qwen35-9b-nvfp4"
     assert {name: model["artifact"]["use"] for name, model in profiles.items()} == {
         "small": "serving",
         "medium-a": "serving",
@@ -143,6 +171,21 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     assert profiles["medium-a"]["artifact"]["engines"] == ["vllm"]
     assert profiles["medium-b"]["artifact"]["format"] == "GGUF"
     assert profiles["max"]["artifact"]["format"] == "GGUF"
+
+
+def test_model_store_writer_group_comes_from_declared_gpu_mount_access():
+    inventory_tasks = yaml.safe_load(
+        (REPO_ROOT / "inventory/load_tofu/add_lxc_hosts.yml").read_text(encoding="utf-8")
+    )
+    add_host = next(
+        task["ansible.builtin.add_host"]
+        for task in inventory_tasks
+        if task.get("name", "").startswith("Add AI LXC containers to inventory")
+    )
+    assert "llm_model_store_writer_group" in add_host["groups"]
+    assert "models_origin_mount_path" in add_host["groups"]
+    assert "models_origin_mount_read_only" in add_host["groups"]
+    assert "container_models_origin_mount_path" in str(add_host["container_models_origin_mount_path"])
 
 
 def test_registry_artifact_engine_check_uses_the_runtime_profile():
@@ -167,7 +210,7 @@ def test_each_vllm_profile_renders_its_runtime_flags():
         artifact = registry_profiles[name]["artifact"]
         tool_parser = artifact.get("tool_call_parser", profile["tool_call_parser"])
         reasoning_parser = artifact.get("reasoning_parser", profile["reasoning_parser"])
-        assert f"vllm serve /cache/{registry_model_id}" in exec_start
+        assert f"vllm serve /cache/models/{registry_model_id}" in exec_start
         assert f"--served-model-name {registry_model_id}" in exec_start
         assert "--port 10434" in exec_start
         assert f"--max-model-len {profile['max_model_len']}" in exec_start
@@ -212,7 +255,7 @@ def test_llama_cpp_profile_renders_its_release_binary_command():
     exec_start = _exec_start(_render("medium-b", profile))
     artifact = _registry_profiles()["medium-b"]["artifact"]
     assert exec_start.startswith("/opt/llm-gpu-serving/llama.cpp/llama-server")
-    assert f"--model /cache/{artifact['hf_repo']}/{artifact['include_globs'][0]}" in exec_start
+    assert f"--model /cache/models/{artifact['hf_repo']}/{artifact['include_globs'][0]}" in exec_start
     assert "--port 10434" in exec_start
     assert f"--parallel {profile['max_num_seqs']}" in exec_start
     assert "Environment=LD_LIBRARY_PATH=/opt/llm-gpu-serving/llama.cpp" in _render("medium-b", profile)
@@ -249,48 +292,76 @@ def test_hf_cli_and_uv_are_pinned_and_store_tools_on_the_tofu_cache_mount():
         assert defaults[key].startswith("{{ llm_gpu_serving_model_cache_mount_path }}")
 
 
-def test_hf_download_is_scoped_to_artifact_globs_in_the_local_cache():
+def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     main_tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
     cache_tasks = yaml.safe_load((ROLE_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8"))
+    verify_tasks = yaml.safe_load(
+        (ROLE_ROOT / "tasks/verify-model-store-origin-repo.yml").read_text(encoding="utf-8")
+    )
+    seed_playbook = yaml.safe_load((REPO_ROOT / "playbooks/llm-model-store-seed.yml").read_text(encoding="utf-8"))[0]
     artifacts = yaml.safe_load((REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml").read_text(encoding="utf-8"))[
         "_llm_model_artifacts"
     ]
     include = next(task for task in main_tasks if task.get("name", "").startswith("Cache the active profile"))
-    preview = next(task for task in cache_tasks if task.get("name", "").startswith("Preview each registered artifact"))
+    preview = next(
+        task
+        for task in cache_tasks
+        if task.get("name", "").startswith("Preview each registered artifact")
+    )
     download = next(
         task
         for task in cache_tasks
-        if task.get("name", "").startswith("Download only the registered artifact")
+        if task.get("name", "").startswith("Download only the registered pinned artifact")
+    )
+    pull = next(
+        task
+        for task in cache_tasks
+        if task.get("name", "").startswith("Copy the registered artifact from the shared origin")
+    )
+    verify_local = next(
+        task
+        for task in cache_tasks
+        if task.get("name", "").startswith("Verify the copied artifact")
     )
     notify = next(task for task in cache_tasks if task.get("name", "").startswith("Notify serving handlers"))
     assert include["ansible.builtin.include_tasks"] == "cache-sync.yml"
     assert "llm_gpu_serving_active_artifact.required_artifact_ids" in include["loop"]
     assert include["loop_control"]["loop_var"] == "llm_gpu_serving_cache_sync_artifact_id"
     assert include["vars"]["llm_gpu_serving_cache_sync_notify_service"] is True
-    artifact_by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
-    assert artifact_by_id["flash-next-nvfp4"]["required_artifact_ids"] == ["flash-next-ple-nvfp4"]
-    assert artifact_by_id["flash-next-ple-nvfp4"]["include_globs"] == [
-        "worker_image_quant.py",
-        "ple_layer_quant.py",
-        "connector_mrv2.py",
-        "ples_nvfp4/*",
-    ]
     assert "llm_gpu_serving_cache_sync_artifact.hf_repo" in preview["ansible.builtin.command"]["argv"]
+    assert "llm_gpu_serving_cache_sync_artifact.revision" in preview["ansible.builtin.command"]["argv"]
     assert "llm_gpu_serving_cache_sync_artifact.include_globs" in preview["loop"]
     assert "--dry-run" in preview["ansible.builtin.command"]["argv"]
     assert preview["changed_when"] is False
     assert "llm_gpu_serving_cache_sync_artifact.hf_repo" in download["ansible.builtin.command"]["argv"]
-    assert "llm_gpu_serving_cache_sync_destination" in download["ansible.builtin.command"]["argv"]
+    assert "llm_gpu_serving_cache_sync_artifact.revision" in download["ansible.builtin.command"]["argv"]
+    assert "llm_gpu_serving_cache_sync_origin_directory" in download["ansible.builtin.command"]["argv"]
     assert "llm_gpu_serving_cache_sync_previews.results[ansible_loop.index0]" in download["changed_when"]
     assert download["become_user"] == "{{ llm_gpu_serving_user }}"
     assert download["loop"] == "{{ llm_gpu_serving_cache_sync_artifact.include_globs }}"
     assert "--local-dir" in download["ansible.builtin.command"]["argv"]
+    assert "not llm_gpu_serving_model_origin_mount_read_only" in str(
+        next(task for task in cache_tasks if task.get("name", "").startswith("Assert the requested artifact"))["ansible.builtin.assert"]["that"]
+    )
+    assert "nvidia-smi" in str(
+        next(task for task in cache_tasks if task.get("name", "").startswith("Read compute applications"))["ansible.builtin.command"]["argv"]
+    )
+    assert "stdout | trim | length == 0" in str(
+        next(task for task in cache_tasks if task.get("name", "").startswith("Require an idle GPU"))["ansible.builtin.assert"]["that"]
+    )
+    assert pull["ansible.builtin.copy"]["remote_src"] is True
+    assert "llm_gpu_serving_cache_sync_origin_directory" in pull["ansible.builtin.copy"]["src"]
+    assert "llm_gpu_serving_cache_sync_local_directory" in pull["ansible.builtin.copy"]["dest"]
+    assert verify_local["ansible.builtin.command"]["argv"]
+    assert any(task.get("name", "").startswith("Verify checksums") for task in verify_tasks)
+    assert seed_playbook["hosts"] == "llm_model_store_writer_group"
+    assert "llm_model_store_seed_artifacts" in seed_playbook["tasks"][0]["loop"]
     assert "notify" not in download
-    assert "llm_gpu_serving_model_cache_mount_path" in (ROLE_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8")
     assert notify["when"] == [
         "not ansible_check_mode",
+        "(llm_gpu_serving_cache_sync_mode | default('pull')) == 'pull'",
         "llm_gpu_serving_cache_sync_notify_service | default(false) | bool",
-        "llm_gpu_serving_cache_sync_download.changed | default(false)",
+        "llm_gpu_serving_cache_sync_copy.changed | default(false)",
     ]
     assert notify["notify"] == [
         "Stop every other GPU serving profile before switching",

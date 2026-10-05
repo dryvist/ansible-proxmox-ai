@@ -1,0 +1,87 @@
+---
+- name: Populate the registered model origin from the GPU store writer
+  hosts: llm_model_store_writer_group
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Require exactly one writable GPU model-origin target
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - container_models_origin_mount_path | default('', true) | length > 0
+          - not (container_models_origin_mount_read_only | default(true, true) | bool)
+        fail_msg: >-
+          Model-store seeding requires one GPU guest with a declared writable
+          model-origin mount.
+        quiet: true
+
+    - name: Inspect the declared model-origin mount before model downloads
+      ansible.builtin.stat:
+        path: "{{ container_models_origin_mount_path }}"
+      register: llm_model_store_seed_origin_mount
+
+    - name: Require the declared model-origin mount to exist
+      ansible.builtin.assert:
+        that:
+          - llm_model_store_seed_origin_mount.stat.exists
+          - llm_model_store_seed_origin_mount.stat.isdir
+        fail_msg: "Model-store seeding requires the declared origin mount to exist as a directory."
+        quiet: true
+
+    - name: Load model-store artifact metadata
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../llm-models.d/65-gpu-pro6000-artifacts.yml"
+
+    - name: Select the registry-declared model-store artifacts
+      ansible.builtin.set_fact:
+        llm_model_store_seed_artifacts: >-
+          {{ _llm_model_artifacts
+             | selectattr('model_store', 'defined')
+             | selectattr('model_store', 'equalto', true)
+             | list }}
+
+    - name: Require the complete model-store profile and engine coverage
+      ansible.builtin.assert:
+        that:
+          - llm_model_store_seed_artifacts | length >= 20
+          - >-
+            (llm_model_store_seed_artifacts | map(attribute='model_store_profile') | unique | list | sort)
+            == ['max', 'medium-a', 'medium-b', 'small']
+          - "'GGUF' in (llm_model_store_seed_artifacts | map(attribute='format') | list)"
+          - "'safetensors' in (llm_model_store_seed_artifacts | map(attribute='format') | list)"
+          - "'MLX' in (llm_model_store_seed_artifacts | map(attribute='format') | list)"
+        fail_msg: >-
+          The artifact registry must cover all four profiles and the GGUF,
+          safetensors, and MLX formats before the model origin is populated.
+        quiet: true
+
+  tasks:
+    - name: Download each pinned model-store artifact through the serving role
+      ansible.builtin.include_role:
+        name: llm_gpu_serving
+        tasks_from: cache-sync.yml
+      loop: "{{ llm_model_store_seed_artifacts | map(attribute='artifact_id') | list }}"
+      loop_control:
+        loop_var: llm_model_store_seed_artifact_id
+        label: "{{ llm_model_store_seed_artifact_id }}"
+      vars:
+        llm_gpu_serving_cache_sync_artifact_id: "{{ llm_model_store_seed_artifact_id }}"
+        llm_gpu_serving_cache_sync_mode: download
+        llm_gpu_serving_cache_sync_notify_service: false
+
+    - name: Verify each distinct pinned model-store repository
+      ansible.builtin.include_role:
+        name: llm_gpu_serving
+        tasks_from: verify-model-store-origin-repo.yml
+      loop: "{{ llm_model_store_seed_artifacts | map(attribute='hf_repo') | unique | list }}"
+      loop_control:
+        loop_var: llm_gpu_serving_model_store_verify_repo
+        label: "{{ llm_gpu_serving_model_store_verify_repo }}"
+
+    - name: Report completed model-store artifact and repository counts
+      ansible.builtin.debug:
+        msg:
+          artifact_count: "{{ llm_model_store_seed_artifacts | length }}"
+          repository_count: "{{ llm_model_store_seed_artifacts | map(attribute='hf_repo') | unique | list | length }}"

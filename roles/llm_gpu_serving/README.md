@@ -7,8 +7,8 @@ the shared API listener.
 
 ## Installation
 
-A selected target supplies a writable local model-cache directory. The role
-validates that directory and does not create a missing mount point.
+A selected target supplies a writable local cache and a declared model-origin
+mount. The role validates both and does not create a missing mount point.
 
 ## What it does
 
@@ -18,12 +18,15 @@ validates that directory and does not create a missing mount point.
   kernel support.
 - Resolves a recent llama.cpp release and installs its Linux x64 CUDA archive
   using the same release metadata and archive-layout checks as `llama_cpp`.
-- Uses a pinned Hugging Face CLI and `hf download --dry-run` to download only
-  the active profile's artifact repositories and registered include globs into
-  the writable local cache. The preview makes repeated runs idempotent. Campaign
-  playbooks can include the `llm_gpu_serving` role with
-  `tasks_from: cache-sync.yml` and an artifact ID without rendering or changing
-  service units.
+- Seeds `model_store: true` artifacts from `llm-models.d/65-gpu-pro6000-artifacts.yml`
+  into the declared origin with immutable Hub revisions. The seed playbook
+  checks for running GPU compute applications before each download and verifies
+  every populated repository with Hub checksums.
+- Pulls the active profile's registered repository from the origin into the
+  writable local cache under `models/`, verifies the pinned revision, and then
+  lets the engine use that local path. Campaign playbooks can include the
+  `llm_gpu_serving` role with `tasks_from: cache-sync.yml` and an artifact ID
+  without rendering or changing service units.
 - Renders one systemd unit for each enabled profile. On a profile change, handlers
   stop and disable the other units before starting and enabling the selected
   unit. Existing units for profiles later disabled in defaults are stopped,
@@ -47,13 +50,13 @@ and API port. The selected artifact supplies model-specific parsers when
 present. Select the active entry with `llm_active_profile`. `medium-b` and `max`
 are disabled campaign candidates and are not rendered as vLLM units.
 
-The reusable cache-sync task accepts `llm_gpu_serving_cache_sync_artifact_id`,
-resolves its repository and include globs from the artifact registry, and
-derives its destination beneath the writable cache directory supplied through
-the role variable.
-Callers that only need to stage a campaign artifact leave
+The reusable cache-sync task accepts `llm_gpu_serving_cache_sync_artifact_id`
+and resolves its repository, revision, and include globs from the artifact
+registry. Its default `pull` mode copies from the origin to the local cache;
+`llm_gpu_serving_cache_sync_mode: download` is used by the seed playbook to
+populate the origin. Callers that only stage a campaign artifact leave
 `llm_gpu_serving_cache_sync_notify_service` unset; the normal role sets it to
-`true` so newly downloaded active model files restart serving.
+`true` so changed local model files restart serving.
 
 ## Key variables
 
@@ -62,6 +65,7 @@ Callers that only need to stage a campaign artifact leave
 | `llm_active_profile` | Profile whose unit is enabled and running |
 | `llm_profiles` | Per-profile engine and serving settings |
 | `llm_gpu_serving_model_cache_mount_path` | Writable local model-cache directory supplied for the target |
+| `llm_gpu_serving_model_origin_mount_path` | Declared shared origin mount supplied for the target |
 | `llm_gpu_serving_uv_version` | Pinned uv installer version, tracked by Renovate |
 | `llm_gpu_serving_huggingface_hub_version` | Pinned Hugging Face CLI package version, tracked by Renovate |
 | `llm_gpu_serving_vllm_version` | Pinned vLLM package version, tracked by Renovate |
