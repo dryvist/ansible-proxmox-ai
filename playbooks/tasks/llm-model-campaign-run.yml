@@ -1,0 +1,23 @@
+---
+- name: Resolve the surveyed axes for this recipe row
+  ansible.builtin.set_fact:
+    _llm_campaign_context_axis: >-
+      {{ _llm_campaign_contexts if 'context_list' in _llm_campaign_run.dimensions else [0] }}
+    _llm_campaign_concurrency_axis: >-
+      {{ _llm_campaign_concurrencies if 'concurrency_list' in _llm_campaign_run.dimensions else [1] }}
+
+- name: Run the row for each requested context, concurrency, and repetition
+  ansible.builtin.include_tasks: llm-model-campaign-cell.yml
+  loop: >-
+    {{ query('community.general.cartesian', _llm_campaign_context_axis,
+             _llm_campaign_concurrency_axis,
+             range(1, _llm_campaign_run.repetitions | int + 1) | list) }}
+  loop_control:
+    loop_var: _llm_campaign_cell
+    label: >-
+      {{ _llm_campaign_run.name }}:context={{ _llm_campaign_cell[0] }}
+      :concurrency={{ _llm_campaign_cell[1] }}:repeat={{ _llm_campaign_cell[2] }}
+  vars:
+    _llm_campaign_context_value: "{{ _llm_campaign_cell[0] | int }}"
+    _llm_campaign_concurrency_value: "{{ _llm_campaign_cell[1] | int }}"
+    _llm_campaign_repetition_value: "{{ _llm_campaign_cell[2] | int }}"

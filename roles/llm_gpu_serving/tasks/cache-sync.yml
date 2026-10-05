@@ -1,0 +1,121 @@
+---
+- name: Validate the requested cache-sync artifact reference
+  ansible.builtin.assert:
+    that:
+      - llm_gpu_serving_cache_sync_artifact_id is defined
+      - llm_gpu_serving_cache_sync_artifact_id | string | length > 0
+    fail_msg: "Set llm_gpu_serving_cache_sync_artifact_id to a registered artifact id."
+    quiet: true
+
+- name: Load registered artifacts for cache sync
+  ansible.builtin.include_vars:
+    file: "{{ llm_gpu_serving_artifact_registry_file }}"
+
+- name: Resolve the requested cache-sync artifact
+  ansible.builtin.set_fact:
+    llm_gpu_serving_cache_sync_artifact: >-
+      {{ _llm_model_artifacts
+         | selectattr('artifact_id', 'equalto', llm_gpu_serving_cache_sync_artifact_id)
+         | first | default({}) }}
+
+- name: Assert the requested artifact is registered and has download metadata
+  ansible.builtin.assert:
+    that:
+      - llm_gpu_serving_cache_sync_artifact | length > 0
+      - llm_gpu_serving_cache_sync_artifact.hf_repo | length > 0
+      - llm_gpu_serving_cache_sync_artifact.include_globs | length > 0
+      - llm_gpu_serving_model_cache_mount_path | length > 0
+    fail_msg: >-
+      The requested model artifact must exist in llm-models.d and the writable
+      writable cache path must be supplied for the target.
+    quiet: true
+
+- name: Inspect the writable local model cache mount
+  ansible.builtin.stat:
+    path: "{{ llm_gpu_serving_model_cache_mount_path }}"
+  register: llm_gpu_serving_cache_sync_mount_stat
+
+- name: Assert the writable local model cache mount exists
+  ansible.builtin.assert:
+    that:
+      - llm_gpu_serving_cache_sync_mount_stat.stat.exists
+      - llm_gpu_serving_cache_sync_mount_stat.stat.isdir
+    fail_msg: >-
+      The writable target cache path must already exist as a directory before
+      a model artifact can be cached.
+    quiet: true
+
+- name: Inspect the pinned Hugging Face CLI for artifact cache sync
+  ansible.builtin.stat:
+    path: "{{ llm_gpu_serving_hf_bin }}"
+  register: llm_gpu_serving_cache_sync_hf_bin_stat
+
+- name: Assert the pinned Hugging Face CLI is installed
+  ansible.builtin.assert:
+    that:
+      - llm_gpu_serving_cache_sync_hf_bin_stat.stat.exists
+      - llm_gpu_serving_cache_sync_hf_bin_stat.stat.isreg
+    fail_msg: >-
+      Install the role's pinned Hugging Face CLI before including cache-sync.yml.
+      This task file does not converge the serving or CLI installation state.
+    quiet: true
+
+- name: Resolve the registered artifact destination under the writable cache mount
+  ansible.builtin.set_fact:
+    llm_gpu_serving_cache_sync_destination: >-
+      {{ llm_gpu_serving_model_cache_mount_path }}/{{ llm_gpu_serving_cache_sync_artifact.hf_repo }}
+
+- name: Create the registered artifact directory in the writable local cache
+  ansible.builtin.file:
+    path: "{{ llm_gpu_serving_cache_sync_destination }}"
+    state: directory
+    owner: "{{ llm_gpu_serving_user }}"
+    group: "{{ llm_gpu_serving_group }}"
+    mode: "0750"
+
+- name: Preview each registered artifact include with hf download
+  ansible.builtin.command:
+    argv: >-
+      {{ [llm_gpu_serving_hf_bin, 'download', llm_gpu_serving_cache_sync_artifact.hf_repo,
+          '--include', item, '--local-dir', llm_gpu_serving_cache_sync_destination,
+          '--dry-run'] }}
+  environment:
+    HF_HOME: "{{ llm_gpu_serving_hf_home }}"
+  become: true
+  become_user: "{{ llm_gpu_serving_user }}"
+  loop: "{{ llm_gpu_serving_cache_sync_artifact.include_globs }}"
+  loop_control:
+    label: "{{ llm_gpu_serving_cache_sync_artifact.artifact_id }}:{{ item }}"
+  register: llm_gpu_serving_cache_sync_previews
+  changed_when: false
+
+- name: Download only the registered artifact includes
+  ansible.builtin.command:
+    argv: >-
+      {{ [llm_gpu_serving_hf_bin, 'download', llm_gpu_serving_cache_sync_artifact.hf_repo,
+          '--include', item, '--local-dir', llm_gpu_serving_cache_sync_destination] }}
+  environment:
+    HF_HOME: "{{ llm_gpu_serving_hf_home }}"
+  become: true
+  become_user: "{{ llm_gpu_serving_user }}"
+  loop: "{{ llm_gpu_serving_cache_sync_artifact.include_globs }}"
+  loop_control:
+    label: "{{ llm_gpu_serving_cache_sync_artifact.artifact_id }}:{{ item }}"
+    extended: true
+  register: llm_gpu_serving_cache_sync_download
+  when: not ansible_check_mode
+  changed_when: >-
+    'Will download 0 files' not in
+    llm_gpu_serving_cache_sync_previews.results[ansible_loop.index0].stdout
+
+- name: Notify serving handlers only when active model files changed
+  ansible.builtin.debug:
+    msg: "The active model artifact changed in the writable cache."
+  when:
+    - not ansible_check_mode
+    - llm_gpu_serving_cache_sync_notify_service | default(false) | bool
+    - llm_gpu_serving_cache_sync_download.changed | default(false)
+  changed_when: true
+  notify:
+    - Stop every other GPU serving profile before switching
+    - Start the active GPU serving profile

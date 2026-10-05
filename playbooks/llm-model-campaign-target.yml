@@ -1,0 +1,301 @@
+---
+- name: Execute the selected model campaign on one inventory machine
+  hosts: "{{ machine | default('localhost') }}"
+  gather_facts: true
+  any_errors_fatal: true
+  vars:
+    _llm_campaign: "{{ hostvars['localhost']._llm_campaign_config }}"
+    _llm_campaign_model: "{{ hostvars['localhost']._llm_campaign_model }}"
+    _llm_campaign_checkout: "{{ hostvars['localhost']._llm_campaign_checkout }}"
+    _llm_campaign_workdir: "{{ hostvars['localhost']._llm_campaign_workdir }}"
+    _llm_campaign_contexts: "{{ hostvars['localhost']._llm_campaign_contexts }}"
+    _llm_campaign_concurrencies: "{{ hostvars['localhost']._llm_campaign_concurrencies }}"
+    _llm_campaign_port: 443
+    _llm_campaign_cache_root: "{{ hostvars['localhost']._llm_campaign_cache_root }}"
+    _llm_campaign_model_path: "{{ _llm_campaign_cache_root }}/{{ _llm_campaign_model.hf_repo }}"
+    _llm_campaign_endpoint_root: "{{ hostvars['localhost']._llm_campaign_endpoint_origin }}"
+  pre_tasks:
+    - name: Require exactly one selected host present in the published inventory
+      ansible.builtin.assert:
+        that:
+          - machine is defined
+          - ansible_play_hosts_all | length == 1
+          - inventory_hostname == machine
+          - _llm_campaign_cache_root | length > 0
+          - _llm_campaign_port | int > 0
+        fail_msg: >-
+          The selected inventory alias must resolve to one target with its
+          benchmark endpoint and writable model cache parameters.
+        quiet: true
+
+    - name: Inspect the writable target model cache
+      ansible.builtin.stat:
+        path: "{{ _llm_campaign_cache_root }}"
+      register: _llm_campaign_cache_stat
+
+    - name: Read the serving role's unit prefix for its startup-capacity check
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../roles/llm_gpu_serving/defaults/main/00-core.yml"
+        name: _llm_campaign_role_defaults
+
+    - name: Require the target-provisioned writable model cache
+      ansible.builtin.assert:
+        that:
+          - _llm_campaign_cache_stat.stat.exists
+          - _llm_campaign_cache_stat.stat.isdir
+        fail_msg: "The target's writable model cache parameter must resolve to an existing directory."
+        quiet: true
+
+    - name: Require target system facts for the published envelope
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution | default('') | length > 0
+          - ansible_facts.distribution_version | default('') | length > 0
+          - ansible_facts.processor | default([]) | length > 0
+          - ansible_facts.memtotal_mb | default(0) | int > 0
+        fail_msg: >-
+          The selected target must provide operating-system, processor, and
+          memory facts before a result envelope can be produced.
+        quiet: true
+
+    - name: Verify the declared power cap against the target GPU or platform
+      block:
+        - name: Read the target GPU power limit
+          ansible.builtin.command:
+            argv:
+              - nvidia-smi
+              - --query-gpu=name,memory.total,driver_version,power.limit
+              - --format=csv,noheader,nounits
+          register: _llm_campaign_power_limit
+          changed_when: false
+          failed_when: false
+
+        - name: Read the target operating system for an uncapped MLX host
+          ansible.builtin.command:
+            argv: [uname, -s]
+          register: _llm_campaign_system_name
+          changed_when: false
+          when: _llm_campaign_power_limit.rc != 0
+
+        - name: Assert the survey cap matches target telemetry
+          ansible.builtin.assert:
+            that:
+              - >-
+                (_llm_campaign_power_limit.rc == 0
+                 and _llm_campaign_power_limit.stdout_lines | length > 0
+                 and _llm_campaign_power_limit.stdout_lines | map('split', ',') | map('length') | min == 4
+                 and _llm_campaign_power_limit.stdout_lines
+                     | map('split', ',') | map('last') | map('trim')
+                     | map('float') | map('round', 2) | unique | list
+                     == [power_cap_w | float | round(2)])
+                or
+                (engine == 'mlx_lm'
+                 and _llm_campaign_power_limit.rc != 0
+                 and _llm_campaign_system_name.stdout | trim == 'Darwin'
+                 and power_cap_w | float == 0)
+            fail_msg: >-
+              Survey power_cap_w must equal every NVIDIA GPU's reported limit;
+              an uncapped value of zero is accepted only for an MLX target
+              whose inventory-backed platform is Darwin.
+            quiet: true
+
+        - name: Record target GPU metadata for the existing envelope converter
+          ansible.builtin.set_fact:
+            _llm_campaign_gpu_metadata: >-
+              {{ _llm_campaign_power_limit.stdout_lines[0].split(',')
+                 | map('trim') | list }}
+          when: _llm_campaign_power_limit.rc == 0
+
+    - name: Verify the live endpoint advertises the selected registry model
+      ansible.builtin.uri:
+        url: "{{ _llm_campaign_endpoint_root }}/v1/models"
+        method: GET
+        status_code: 200
+        return_content: true
+      delegate_to: localhost
+      register: _llm_campaign_models_response
+
+    - name: Require the live endpoint model ID to match the selected artifact
+      ansible.builtin.assert:
+        that:
+          - >-
+            _llm_campaign_models_response.json.data
+            | selectattr('id', 'equalto', _llm_campaign_model.hf_repo)
+            | list | length == 1
+        fail_msg: >-
+          The selected model artifact is not the exact model currently served
+          by the inventory-backed endpoint.
+        quiet: true
+
+    - name: Inspect the selected serving profile's rendered service command
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - show
+          - --property=ExecStart
+          - --value
+          - >-
+            {{ _llm_campaign_role_defaults.llm_gpu_serving_unit_prefix
+               ~ '-' ~ _llm_campaign_model.serving_profile ~ '.service' }}
+      register: _llm_campaign_service_command
+      changed_when: false
+      when:
+        - engine in ['vllm', 'llama_cpp']
+        - _llm_campaign_model.serving_profile is defined
+
+    - name: Require the selected engine and survey axes to match the live serving unit
+      ansible.builtin.assert:
+        that:
+          - >-
+            (engine == 'vllm'
+             and _llm_campaign_service_command.stdout is search('vllm serve')
+             and _llm_campaign_service_command.stdout
+                 | regex_search('--max-model-len[ =]+([0-9]+)', '\\1') | first | int
+                 >= _llm_campaign_contexts | max +
+                    (_llm_campaign.run | map(attribute='output_tokens') | map('int') | max))
+            or
+            (engine == 'llama_cpp'
+             and _llm_campaign_service_command.stdout is search('llama-server')
+             and _llm_campaign_service_command.stdout
+                 | regex_search('--ctx-size[ =]+([0-9]+)', '\\1') | first | int
+                 >= _llm_campaign_contexts | max +
+                    (_llm_campaign.run | map(attribute='output_tokens') | map('int') | max))
+        fail_msg: >-
+          The running service engine and context limit must cover the selected
+          registry model and every survey context before benchmarking.
+        quiet: true
+      when:
+        - engine in ['vllm', 'llama_cpp']
+        - _llm_campaign_model.serving_profile is defined
+
+    - name: Check every configured executable before cache changes or benchmarks
+      ansible.builtin.include_tasks: tasks/llm-model-campaign-preflight-tool.yml
+      loop: "{{ _llm_campaign.run }}"
+      loop_control:
+        loop_var: _llm_campaign_run
+        label: "{{ _llm_campaign_run.executable }}"
+
+    - name: Check every context and concurrency cell before any benchmark runs
+      ansible.builtin.include_tasks: tasks/llm-model-campaign-preflight-cells.yml
+      loop: "{{ _llm_campaign.run }}"
+      loop_control:
+        loop_var: _llm_campaign_run
+        label: "{{ _llm_campaign_run.name }}"
+
+    - name: Read the selected vLLM profile startup log for live KV capacity
+      ansible.builtin.command:
+        argv:
+          - journalctl
+          - --unit
+          - >-
+            {{ _llm_campaign_role_defaults.llm_gpu_serving_unit_prefix }}-
+            {{ _llm_campaign_model.serving_profile }}.service
+          - --since
+          - 6 hours ago
+          - --no-pager
+          - --output
+          - cat
+      register: _llm_campaign_vllm_log
+      changed_when: false
+      when: engine == 'vllm'
+
+    - name: Require startup KV capacity and validate all vLLM reservations
+      ansible.builtin.include_tasks: tasks/llm-model-campaign-preflight-kv.yml
+      loop: "{{ _llm_campaign.run }}"
+      loop_control:
+        loop_var: _llm_campaign_run
+        label: "{{ _llm_campaign_run.name }}"
+      when: engine == 'vllm'
+
+    - name: Resolve a single GGUF file when the selected artifact is GGUF
+      ansible.builtin.find:
+        paths: "{{ _llm_campaign_model_path }}"
+        patterns: "*.gguf"
+        recurse: true
+        file_type: file
+      register: _llm_campaign_gguf_files
+      when: _llm_campaign_model.format == 'GGUF'
+
+    - name: Require one downloaded GGUF file for llama.cpp recipes
+      ansible.builtin.assert:
+        that:
+          - _llm_campaign_gguf_files.matched == 1
+        fail_msg: "The registered GGUF include must resolve to exactly one local file."
+        quiet: true
+      when: _llm_campaign_model.format == 'GGUF'
+
+    - name: Set the selected model path for tool-native invocations
+      ansible.builtin.set_fact:
+        _llm_campaign_artifact_path: >-
+          {{ _llm_campaign_gguf_files.files[0].path
+             if _llm_campaign_model.format == 'GGUF'
+             else _llm_campaign_model_path }}
+
+    - name: Inspect the selected MLX model in the target cache
+      ansible.builtin.stat:
+        path: "{{ _llm_campaign_model_path }}"
+      register: _llm_campaign_mlx_model_stat
+      when: engine == 'mlx_lm'
+
+    - name: Require the selected MLX model in the target cache
+      ansible.builtin.assert:
+        that:
+          - _llm_campaign_mlx_model_stat.stat.exists
+          - _llm_campaign_mlx_model_stat.stat.isdir
+        fail_msg: "The selected MLX registry model must already exist in the target cache."
+        quiet: true
+      when: engine == 'mlx_lm'
+
+    - name: Create the target-cache benchmark results directory
+      ansible.builtin.file:
+        path: "{{ _llm_campaign_cache_root }}/benchmark-results"
+        state: directory
+        mode: "0750"
+
+    - name: Allocate a unique results directory under the target cache
+      ansible.builtin.tempfile:
+        path: "{{ _llm_campaign_cache_root }}/benchmark-results"
+        state: directory
+        prefix: llm-model-campaign-
+      register: _llm_campaign_target_results
+
+    - name: Create the controller results directory
+      ansible.builtin.file:
+        path: "{{ _llm_campaign_workdir }}/results"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+
+  tasks:
+    - name: Download only the selected registry artifact into the target cache
+      ansible.builtin.include_role:
+        name: llm_gpu_serving
+        tasks_from: cache-sync.yml
+      loop: >-
+        {{ [_llm_campaign_model.artifact_id]
+           + (_llm_campaign_model.required_artifact_ids | default([])) }}
+      loop_control:
+        loop_var: _llm_campaign_cache_artifact_id
+        label: "{{ _llm_campaign_cache_artifact_id }}"
+      vars:
+        llm_gpu_serving_cache_sync_artifact_id: "{{ _llm_campaign_cache_artifact_id }}"
+        llm_gpu_serving_cache_sync_notify_service: false
+        llm_gpu_serving_model_cache_mount_path: "{{ _llm_campaign_cache_root }}"
+        llm_gpu_serving_hf_home: "{{ _llm_campaign_cache_root }}/.hf-home"
+      when: engine != 'mlx_lm'
+
+    - name: Run each recipe row and its requested parameter cells
+      ansible.builtin.include_tasks: tasks/llm-model-campaign-run.yml
+      loop: "{{ _llm_campaign.run }}"
+      loop_control:
+        loop_var: _llm_campaign_run
+        label: "{{ _llm_campaign_run.name }}"
+
+  post_tasks:
+    - name: Remove the controller's temporary config and raw-output workspace
+      ansible.builtin.file:
+        path: "{{ _llm_campaign_workdir }}"
+        state: absent
+      delegate_to: localhost
+      run_once: true
+      when: _llm_campaign_workdir is defined

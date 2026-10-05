@@ -1,0 +1,38 @@
+---
+- name: Convert the supported tool output to its versioned result envelope
+  ansible.builtin.command:
+    argv: >-
+      {{ ['uv', 'run', 'mlx-bench-publish', _llm_campaign_converter_file.path,
+          '--kind', _llm_campaign_run.converter.kind,
+          '--suite', _llm_campaign_run.converter.suite,
+          '--model', _llm_campaign_model.hf_repo,
+          '--hostname', 'benchmark-target',
+          '--serving-stack', engine,
+          '--serving-model', _llm_campaign_model.hf_repo,
+          '--serving-port', _llm_campaign_port | string,
+          '--concurrency', _llm_campaign_concurrency_value | string,
+          '--tag', 'campaign=rtx-pro-6000',
+          '--tag', 'model_size=' ~ model_size,
+          '--tag', 'engine=' ~ engine,
+          '--tag', 'context_tokens=' ~ _llm_campaign_context_value | string,
+          '--tag', 'power_cap_w=' ~ power_cap_w | string]
+         + (['--tag', 'repetition=' ~ _llm_campaign_repetition_value | string]) }}
+    chdir: "{{ _llm_campaign_checkout }}"
+  delegate_to: localhost
+  environment:
+    MLX_BENCH_ENGINE_NAME: "{{ engine }}"
+    MLX_BENCH_SYSTEM_OS: >-
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}
+    MLX_BENCH_SYSTEM_CHIP: >-
+      {{ ansible_facts.processor | last | default(ansible_facts.architecture, true) }}
+    MLX_BENCH_SYSTEM_MEMORY_GB: >-
+      {{ ((ansible_facts.memtotal_mb | int + 512) // 1024) | string }}
+    MLX_BENCH_GPU_MODEL: >-
+      {{ _llm_campaign_gpu_metadata[0] if _llm_campaign_gpu_metadata is defined else '' }}
+    MLX_BENCH_GPU_VRAM_GB: >-
+      {{ (_llm_campaign_gpu_metadata[1] | float / 1024) | round(1)
+         if _llm_campaign_gpu_metadata is defined else '' }}
+    MLX_BENCH_GPU_DRIVER: >-
+      {{ _llm_campaign_gpu_metadata[2] if _llm_campaign_gpu_metadata is defined else '' }}
+    MLX_BENCH_POWER_LIMIT_W: "{{ power_cap_w if power_cap_w | float > 0 else '' }}"
+  changed_when: true
