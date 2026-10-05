@@ -41,20 +41,29 @@ For each undone, unassigned task carrying this guest's `AI_RUNNER_PROFILE_LABEL`
 
 - assigns the task to itself (claim),
 - reads `agent` / `model` from the description front-matter (a leading
-  `---`-delimited `key: value` block), the rest is the prompt,
-- runs `claude -p <prompt> --dangerously-skip-permissions --model <model>` (or
-  `codex exec` for `agent: codex`) with a hard `JOB_TIMEOUT_SECONDS` ceiling,
+  `---`-delimited `key: value` block), plus optional `effort`, the rest is the prompt,
+- runs Claude with `--dangerously-skip-permissions`, or Codex with
+  `--dangerously-bypass-approvals-and-sandbox`; both receive the requested model
+  and Codex receives `model_reasoning_effort` when `effort` is set. Jobs have a
+  hard `JOB_TIMEOUT_SECONDS` ceiling,
 - posts the output as a task comment, marks the task done, pushes an ntfy alert.
 
-Queue a job by creating a task in the AI Jobs project with a description like:
+Queue a Codex job by creating a task in the AI Jobs project with the
+`profile:ai-github` label and a description like:
 
 ```text
 ---
-agent: claude
-model: claude-sonnet-5
+agent: codex
+model: <model-id>
+effort: xhigh
 ---
-Summarize the open PRs in dryvist/homelab and comment the top risk on each.
+Describe the coding-agent task here.
 ```
+
+Codex reads trace telemetry from `~/.codex/config.toml`. The role configures
+OTLP/HTTP protobuf to the declared HTTPS ingress and disables the separate
+metrics exporter. The worker does not add GitHub credentials; repo writes use
+the workstation's short-lived credential path.
 
 ## Secrets
 
@@ -74,12 +83,9 @@ tier (WS7A spec). Empty tokens leave the worker idle rather than failing.
 | `ai_runner_poll_interval_seconds` / `ai_runner_job_timeout_seconds` | poll + kill timings |
 | `ai_runner_ntfy_topic` | result-push topic |
 
-## Not yet live-validated
+## Runtime verification
 
-- The exact Vikunja v1 endpoint bodies (assignee/comment) are validated on
-  first converge — this phase ships no converge.
-- The pinned `claude-code` version floor is a placeholder; reconcile against the
-  current published CLI before the first real converge.
-- Per-guest CIDR-bound OpenBao AppRole + policy for the `ai-runner` domain must
-  be provisioned in `ansible-proxmox-apps` `roles/openbao` (the server side);
-  this role only consumes it.
+Record the current live state after each converge: guest status, installed CLI
+versions, credential-presence checks, one bounded headless Codex job, and the
+trace observation found in the existing sinks. Do not include secret values,
+prompt text, hostnames, or IPs in this file.
