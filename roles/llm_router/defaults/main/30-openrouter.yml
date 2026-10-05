@@ -122,23 +122,25 @@ llm_router_openrouter_wildcard_enabled: true
 # authoritative database" and return 503 when spend can be verified against
 # neither Redis nor the database.
 #
-# The DATABASE PREMISE HAS CHANGED and the conclusion has not. This proxy now
-# carries Postgres (defaults/main/45-database.yml) for adaptive-routing state
-# and role deployments, so "has no database" is no longer why this setting is
-# absent. What still holds is the other half: the proxy ISSUES NO VIRTUAL KEYS,
-# so there are no key/team/user/org budgets for this setting to enforce. It
-# would be inert — claiming a control that does not exist, precisely the defect
-# the earlier removal was fixing — or, if it engaged, a 503 generator on the
-# fabric's only front door.
+# The DATABASE PREMISE HAS CHANGED and the conclusion has not. This proxy
+# carries Postgres and issues budgeted virtual keys; the benchmark key is the
+# intentional unbudgeted exception. Fail-closed mode remains off because it
+# turns a simultaneous Redis/database accounting outage into 503s at the
+# fabric's only front door. Budget enforcement otherwise uses the available
+# store and its normal fallback behavior.
 #
-# Revisit this ONLY together with issuing virtual keys, not on the strength of
-# the database alone. Attaching Postgres did not make this setting real, and
-# neither did adding Redis.
+# Revisit this only if fail-closed budget enforcement becomes an explicit
+# availability tradeoff, not as a side effect of adding another key.
 #
 # Empty by default: the cap is only rendered when a store is configured, so a
 # deployment without one gets no budget rather than a dishonest one.
 llm_router_redis_host: ""
 llm_router_redis_port: "{{ tofu_data.constants.service_ports.redis_default }}"
+# Separate LiteLLM's router budget/cooldown client from its cache/spend client.
+# The fast-subagent lock callback was retired on develop; this change adds no
+# lock client or key and does not alter its former semantics.
+llm_router_redis_db: 1
+llm_router_cache_redis_db: 2
 llm_router_redis_password: >-
   {{ bao_local_llm_secrets.LLM_ROUTER_REDIS_PASSWORD
      | mandatory('LLM_ROUTER_REDIS_PASSWORD must be set in the environment') }}

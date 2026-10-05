@@ -1,4 +1,7 @@
 ---
+- name: Load the registry model identity for each GPU profile
+  ansible.builtin.include_tasks: load-registry.yml
+
 - name: Validate the active GPU serving profile
   ansible.builtin.assert:
     that:
@@ -41,7 +44,7 @@
   ansible.builtin.assert:
     that:
       - item.value.engine in ['vllm', 'llama_cpp']
-      - item.value.model_id | length > 0
+      - item.key in llm_gpu_serving_registry_by_profile
       - item.value.quant in ['bf16', 'fp8', 'nvfp4']
       - item.value.linear_backend in ['auto', 'b12x']
       - item.value.moe_backend in ['auto', 'b12x']
@@ -51,7 +54,6 @@
       - item.value.gpu_memory_utilization | float <= 1
       - not item.value.enable_auto_tool_choice or item.value.tool_call_parser | length > 0
       - item.value.reasoning_parser | length > 0
-      - item.value.served_model_name | length > 0
       - item.value.port | int > 0
       - item.value.engine != 'llama_cpp' or item.value.gguf_file | length > 0
     fail_msg: "GPU serving profile {{ item.key }} is incomplete or invalid."
@@ -223,12 +225,16 @@
         path: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
         state: absent
 
+- name: Resolve the active profile's registry model
+  ansible.builtin.set_fact:
+    llm_gpu_serving_active_registry_model: "{{ llm_gpu_serving_registry_by_profile[llm_active_profile] }}"
+
 - name: Resolve active profile model paths
   ansible.builtin.set_fact:
     llm_gpu_serving_active_model_source: >-
-      {{ llm_gpu_serving_model_origin_mount_path }}/{{ llm_profiles[llm_active_profile].model_id }}
+      {{ llm_gpu_serving_model_origin_mount_path }}/{{ llm_gpu_serving_active_registry_model.upstream_model_id }}
     llm_gpu_serving_active_model_cache: >-
-      {{ llm_gpu_serving_model_cache_mount_path }}/{{ llm_profiles[llm_active_profile].model_id }}
+      {{ llm_gpu_serving_model_cache_mount_path }}/{{ llm_gpu_serving_active_registry_model.upstream_model_id }}
     llm_gpu_serving_health_host: >-
       {{ llm_gpu_serving_listen_host | default(ansible_facts.default_ipv4.address) }}
 

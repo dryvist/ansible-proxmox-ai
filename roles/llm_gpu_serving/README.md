@@ -29,15 +29,16 @@ not create the mount points.
 ## Profiles
 
 `llm_profiles` defines four provisional entries: `small`,
-`medium-a`, `medium-b`, and `max`. Their model ids are placeholders. The
-benchmark campaign finalises model ids, quantization, context length, backend
-and parser selection, memory utilization, and stream counts before production
-use.
+`medium-a`, `medium-b`, and `max`. Each profile joins to its model in
+`llm-models.d/60-gpu-pro6000.yml`; that registry is the only source for model
+ids and served names. The benchmark campaign finalises those registry entries,
+quantization, context length, backend and parser selection, memory utilization,
+and stream counts before production use.
 
-Each entry carries its engine, model id, quantization and kernel backends, max
-model length, max sequences, GPU memory utilization, automatic tool-choice
-flag, tool-call and reasoning parsers, served model name, API port, and optional
-llama.cpp GGUF filename. Select the active entry with `llm_active_profile`.
+Each entry carries its engine, quantization and kernel backends, max model
+length, max sequences, GPU memory utilization, automatic tool-choice flag,
+tool-call and reasoning parsers, API port, and optional llama.cpp GGUF filename.
+Select the active entry with `llm_active_profile`.
 
 ## Key variables
 

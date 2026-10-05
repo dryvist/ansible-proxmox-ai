@@ -1,6 +1,6 @@
 ---
 # --- THE SERVABLE SET + consumer aliases (projected from the registry) --------
-# The serving host holds a bounded set of models warm (nix-ai
+# The Mac large-tier serving host holds a bounded set of models warm (nix-ai
 # llama-swap-topology.nix, sized by maxResidentWorkers — TWO since 2026-08-14,
 # one deliberate and one routine), plus a small evictable swap tier beside them.
 # Every other catalogued model is deliberately demoted to `disabledModels`, and
@@ -16,15 +16,17 @@
 # (Hermes was answered by a model nobody selected); nix-ai#1441 removed that
 # graft and the 404s surfaced.
 #
-# So a serving-side change is recorded in ONE place — the registry's `servable`
-# and `serving_role` fields — every selector and alias below derives from it, and
-# llm_router_servable_models feeds the assert that refuses a converge if any
-# alias or fallback target escapes the set. Repointing the serving host means
-# moving `serving_role: primary` to another registry entry and nothing else.
+# Serving-side changes are recorded in ONE place — the registry's `servable`
+# flag and, for the Mac tier, its `serving_role`. GPU profiles use their own
+# inventory-backed `/models` probe. Selectors and aliases derive from those
+# registry entries; `llm_router_all_servable_models` feeds the alias assert.
+# Repointing the Mac primary means moving `serving_role: primary` to another
+# registry entry and nothing else.
 #
 # `servable` is NOT `enabled`: enabled means the router offers the id at all
-# (every large-tier entry is), servable means the backend will actually answer
-# for it (only the role-bearing entries are). Conflating the two is what
+# (every enabled entry is), servable means the selected backend is expected to
+# answer for it. The Mac tier uses `serving_role`; GPU profiles are a separate
+# inventory-backed class. Conflating the two is what
 # produces a 404 instead of an answer. Counts are deliberately not written here
 # — a number in a comment is the first thing to go stale.
 #
@@ -50,12 +52,20 @@ llm_router_routine_model: >-
   {{ _model if _model in llm_router_servable_models else llm_router_primary_model }}
 llm_router_servable_models: >-
   {{ llm_router_registry_enabled | selectattr('servable', 'defined')
+     | selectattr('servable') | selectattr('tier', 'equalto', 'large')
+     | map(attribute='client_model_id') | list }}
+# The Pro6000 is served by its own inventory-backed endpoint, not the Mac
+# large-tier gate. Keep its checked set separate and combine only for routing.
+llm_router_gpu_servable_models: >-
+  {{ llm_router_gpu_models | selectattr('servable', 'defined')
      | selectattr('servable') | map(attribute='client_model_id') | list }}
+llm_router_all_servable_models: >-
+  {{ (llm_router_servable_models + llm_router_gpu_servable_models) | unique | list }}
 
 # Stable consumer role names, from each registry entry's `stable_aliases`.
 # Aliases carry no deployment configuration; each points to exactly one physical
 # model_list entry — and, by construction, only ever at the entry that declared
-# it, which is always a member of the servable set above.
+# it, which is always a member of the combined large/GPU servable set above.
 #
 # The hermes-router tier's enabled entries, with a real context window —
 # the SOLE derivation of this carve-out. tasks/assert.yml (both asserts) and
@@ -66,8 +76,9 @@ llm_router_hermes_router_ids: >-
      | selectattr('context_window', 'defined') | rejectattr('context_window', 'none')
      | map(attribute='client_model_id') | list }}
 
-# The ≥1M-context OpenRouter entry A5's `long` alias targets. Only an explicit
-# zero_data_retention assertion qualifies; a missing field is retaining.
+# OpenRouter candidates for long-context requests and the retained legacy
+# fallback. Only an explicit zero_data_retention assertion qualifies; a missing
+# field is retaining.
 llm_router_long_context_alias_ids: >-
   {%- set _candidates = llm_router_registry_enabled
         | selectattr('tier', 'equalto', 'openrouter')
@@ -92,18 +103,9 @@ llm_router_long_context_alias_ids: >-
 # corrupt llm_router_servable_models and the verify-servable probe
 # (2026-07-28).
 #
-# `judge`/`cheap`/`embed`/`ocr` are deliberately NOT admitted here — they
-# stay DB-only roles (55-roles.yml). A5 (2026-09-12) tried moving all six
-# legacy role names into this projection at once; test_registry_retype_scan.py
-# caught that four of them collide with unrelated common-word literals
-# throughout tests/hermes_agent/*.py (goal-mode cron fixtures, kanban
-# assignee defaults) and, for `ocr`, with llm_router_ocr_model's own
-# selectattr('serving_role', 'equalto', 'ocr') (55-roles.yml). `lead` and
-# `subagent` had no such collision and are handled directly instead: `lead`
-# is a pure naming swap for `best`'s own target (its role_deployments entry
-# is simply removed, 55-roles.yml), and `subagent` retargets onto the small
-# tier at the role_deployments layer without becoming a git alias yet. The
-# other four are deferred to a follow-up; see the A5 PR body.
+# `judge`/`cheap`/`embed`/`ocr` remain database-seeded roles. GPU profiles are
+# excluded from every projection until the profile switch activates them, so
+# the current `best`, `lead`, and `long` aliases keep their working targets.
 llm_router_alias_pairs: >-
   {{ ((llm_router_registry_enabled | selectattr('servable', 'defined')
        | selectattr('servable') | list)
@@ -129,13 +131,13 @@ llm_router_model_group_aliases: >-
 # see config.yaml.j2's model_info.disable_background_health_check on those
 # deployments.
 #
-# Verified against the pinned litellm==1.97.0 tag (00-identity.yml): per-
-# deployment exclusion via model_info.disable_background_health_check ships in
-# that release (litellm/proxy/proxy_server.py's _run_background_health_check
-# filters on it unconditionally; health_check_skip_disabled_background_models
-# extends the same exclusion to an on-demand GET /health call). That makes it
-# safe to turn ON for the tiers that don't swap: the dedicated vLLM guest (one
-# fixed model, nothing to evict) and the credential-gated cloud legs
-# (OpenRouter, Hermes cloud fallbacks — remote SaaS, no local slot to occupy).
+# Per-deployment exclusion via model_info.disable_background_health_check was
+# verified against litellm 1.97.0 (litellm/proxy/proxy_server.py's
+# _run_background_health_check filters on it; health_check_skip_disabled_*
+# extends the exclusion to on-demand GET /health). Recheck that contract when
+# advancing the current 1.102.0 pin. The GPU profiles also disable active probes
+# because loading several heavy models can churn memory; it is safe to turn ON
+# for tiers that do not swap: the dedicated vLLM guest and credential-gated
+# remote SaaS legs.
 llm_router_background_health_checks: true
 llm_router_health_check_interval: 300

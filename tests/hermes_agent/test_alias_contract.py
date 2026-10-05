@@ -77,20 +77,20 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     # break, so a new consumer-facing name still lands here as a reviewed edit.
     assert aliases, "no static alias loaded; nothing below is checked"
     assert len(aliases) == 8
-    assert judge_backend in aliases.values()
-    # The brain is reached by alias too; during a parked-routine bridge the
-    # judge shares this active backend until the serving host is rebuilt.
+    # Judge and subagent remain database-seeded roles, selected from the
+    # registry-derived GPU profile projection rather than static aliases.
+    seeded_roles = {item["role"]: item for item in router_defaults["llm_router_role_deployments"]}
+    assert "llm_router_gpu_small_model" in seeded_roles["judge"]["model"]
+    assert "llm_router_gpu_medium_b_model" in seeded_roles["subagent"]["model"]
+    # The brain is reached by alias too; routine-role placement is independent.
     assert hermes_backend in aliases.values()
     # The document tier is reached by image content parts, not by a selector
     # var, so it has no hermes_* binding to assert — only that a name a human
     # picks in the model list resolves to the vision entry.
     assert backend_for_role(registry, "ocr") in aliases.values()
     # A role is a caller-facing name, so an accidental one is as costly as an
-    # accidental static alias. A5 (2026-09-12): zero today — `subagent` is a
-    # DB role with NO stable_alias of its own (it targets the same physical
-    # entry `long` does, via llm_router_model_group_aliases.long, not via a
-    # second alias declaration); `judge`/`cheap`/`embed`/`ocr` are still
-    # DB-only roles but likewise carry no stable_alias yet.
+    # accidental static alias. `subagent` and `judge` stay DB roles and carry
+    # no stable_alias of their own.
     assert len(db_role_aliases) == 0
     assert set(db_role_aliases.values()) & set(aliases.values()) == set()
 
@@ -117,24 +117,27 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     # enabled (the router offers it), only these are servable (the backend
     # answers for it). Conflating them yields a 404, not an answer.
     #
-    # The contract is a BICONDITIONAL — servable if and only if the entry names
-    # a serving_role — and BOTH sides derive from the registry. This used to
-    # name the expected ids through by_role["primary"]/["small"], which held
-    # only while the serving host ran exactly one warm model: since 2026-08-14
-    # it holds two, and a second servable model with no role to name it would
-    # have failed a true statement. Deriving keeps the check real rather than
-    # loosening it — flipping `servable` on a dead entry, or dropping it from a
-    # live one, still fails here.
+    # Mac serving-role entries and inventory-backed GPU profiles are distinct
+    # servable classes. A GPU profile has no Mac serving_role by design.
     expected_servable = [
         entry["client_model_id"]
         for entry in registry
-        if entry.get("enabled") and "serving_role" in entry
+        if entry.get("enabled") and ("serving_role" in entry or entry.get("tier") == "gpu")
     ]
     assert [
         entry["client_model_id"] for entry in registry if entry.get("servable")
     ] == expected_servable
     assert hermes_backend in expected_servable
-    assert judge_backend in expected_servable
+    assert all(
+        entry.get("serving_role")
+        for entry in registry
+        if entry.get("servable") and entry.get("tier") == "large"
+    )
+    assert all(
+        entry.get("profile") and "serving_role" not in entry
+        for entry in registry
+        if entry.get("servable") and entry.get("tier") == "gpu"
+    )
     # And so must every static alias target, or an alias is a 404 with a name
     # — except the local complexity router and the long-context carve-out,
     # each admitted above for the same reason llm_router_alias_pairs admits

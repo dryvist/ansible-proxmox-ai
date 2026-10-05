@@ -1,0 +1,48 @@
+---
+# BEFORE the asserts, deliberately: a converge the probe fails should still show
+# what was and was not checked, and a debug task after a failing assert never
+# runs.
+- name: Report what the servable probe checked, skipped, and could not check
+  ansible.builtin.debug:
+    msg:
+      - >-
+        Serving gate: {{ _llm_router_probe_report.gate }}
+        (HTTP {{ _llm_router_gate_probe.status }}) —
+        {{ ('compared ' ~ (llm_router_servable_models | length) ~ ' servable registry entr(ies) against '
+            ~ (_llm_router_probe_report.gate_ids | length) ~ ' served id(s): '
+            ~ (_llm_router_probe_report.gate_ids | join(', ')))
+           if _llm_router_probe_report.gate == 'verified'
+           else 'NOT CHECKED, so the registry claim that ['
+                ~ (llm_router_servable_models | join(', ')) ~ '] is served stands unverified' }}
+      - "Remote endpoints verified: {{ _llm_router_probe_report.verified | join(', ') | default('none', true) }}"
+      - >-
+        Remote endpoints NOT CHECKED, credential refused (401/403):
+        {{ _llm_router_probe_report.rejected | join(', ') | default('none', true) }}
+      - >-
+        Remote endpoints NOT CHECKED, unreachable:
+        {{ _llm_router_probe_report.unreachable | join(', ') | default('none', true) }}
+      - >-
+        Remote endpoints NOT CHECKED, reached but no listing at that path (404 —
+        a wrong URL in the endpoint map, not an outage):
+        {{ _llm_router_probe_report.not_found | join(', ') | default('none', true) }}
+      - >-
+        Served by the gate but DISABLED or standby in the registry (expected
+        while the weights remain on the host; the registry keeps them out of
+        the router):
+        {{ _llm_router_probe_report.listed_disabled | join(', ') | default('none', true) }}
+      - >-
+        Remote tiers NOT DEPLOYED on this proxy — no credential, so the
+        template rendered no deployment for them at all:
+        {{ _llm_router_probe_report.not_deployed | join(', ') | default('none', true) }}
+      - >-
+        Pro6000 model listing: {{ _llm_router_probe_report.gpu }}
+        (HTTP {{ _llm_router_gpu_probe.status }}); expected model ids are checked
+        when the endpoint responds.
+      - >-
+        Remote endpoints NOT CHECKED, no credential resolved (the deployment
+        exists, the probe could not reach past the credential):
+        {{ _llm_router_probe_report.no_credential | join(', ') | default('none', true) }}
+      - >-
+        Tiers with no model listing this role can parse:
+        {{ _llm_router_probe_report.unsupported | join(', ') | default('none', true) }}
+  changed_when: false
