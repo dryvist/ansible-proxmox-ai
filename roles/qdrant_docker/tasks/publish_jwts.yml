@@ -1,0 +1,182 @@
+---
+# Mint the enabled collection-scoped JWTs with the Qdrant API key, publish them
+# by check-and-set while preserving sibling fields, and hand the memory token
+# to later plays in this run. OpenBao writes run on the controller; the memory
+# token reaches only its runtime sidecar.
+
+- name: Require the untrusted tier to exclude the trusted collection
+  ansible.builtin.assert:
+    that:
+      - qdrant_docker_trusted_collection not in (qdrant_docker_untrusted_access | map(attribute='collection') | list)
+    fail_msg: "qdrant_docker_untrusted_access must not grant {{ qdrant_docker_trusted_collection }}"
+    quiet: true
+  when: qdrant_docker_publish_untrusted_jwt | bool
+
+- name: Require the memory MCP JWT to grant only the trusted collection
+  ansible.builtin.assert:
+    that:
+      - qdrant_docker_memory_mcp_access | length == 1
+      - qdrant_docker_memory_mcp_access[0].collection == qdrant_docker_trusted_collection
+      - qdrant_docker_memory_mcp_access[0].access == 'rw'
+    fail_msg: "qdrant_docker_memory_mcp_access must grant read-write only on the trusted collection"
+    quiet: true
+  when: qdrant_docker_publish_memory_mcp_jwt | bool
+
+- name: Require the publish connection settings
+  ansible.builtin.assert:
+    that:
+      - qdrant_docker_bao_addr | length > 0
+      - qdrant_docker_bao_role_id | length > 0
+      - qdrant_docker_bao_secret_id | length > 0
+    fail_msg: >-
+      qdrant_docker_bao_addr, qdrant_docker_bao_role_id and
+      qdrant_docker_bao_secret_id must be non-empty when a scoped JWT is
+      published.
+    quiet: true
+
+- name: Publish the enabled Qdrant scoped JWTs
+  delegate_to: localhost
+  become: false
+  vars:
+    ansible_become: false
+    qdrant_docker_untrusted_jwt: "{{ qdrant_docker_api_key | qdrant_jwt(qdrant_docker_untrusted_access) }}"
+    qdrant_docker_memory_mcp_jwt: "{{ qdrant_docker_api_key | qdrant_jwt(qdrant_docker_memory_mcp_access) }}"
+  no_log: true
+  block:
+    - name: Log in with the converge identity
+      community.hashi_vault.vault_login:
+        url: "{{ qdrant_docker_bao_addr }}"
+        auth_method: approle
+        role_id: "{{ qdrant_docker_bao_role_id }}"
+        secret_id: "{{ qdrant_docker_bao_secret_id }}"
+        validate_certs: "{{ qdrant_docker_bao_validate_certs }}"
+      register: qdrant_docker_bao_login
+      check_mode: false
+      changed_when: false
+
+    - name: Read the current secret
+      community.hashi_vault.vault_kv2_get:
+        url: "{{ qdrant_docker_bao_addr }}"
+        auth_method: token
+        token: "{{ qdrant_docker_bao_login.login.auth.client_token }}"
+        engine_mount_point: "{{ qdrant_docker_untrusted_jwt_kv_mount }}"
+        path: "{{ qdrant_docker_untrusted_jwt_kv_path }}"
+        validate_certs: "{{ qdrant_docker_bao_validate_certs }}"
+      register: qdrant_docker_current
+      check_mode: false
+      failed_when: false
+      when: qdrant_docker_publish_untrusted_jwt | bool
+
+    # Only a missing path may be written from scratch. Any other failure (a
+    # denial included) reads as an empty secret and would drop the siblings.
+    - name: Fail unless the read succeeded or the path is simply absent
+      ansible.builtin.fail:
+        msg: >-
+          Reading {{ qdrant_docker_untrusted_jwt_kv_mount }}/{{ qdrant_docker_untrusted_jwt_kv_path }}
+          failed: {{ qdrant_docker_current.msg }}
+      when:
+        - qdrant_docker_publish_untrusted_jwt | bool
+        - qdrant_docker_current.msg is defined
+        - qdrant_docker_current.msg is not search('^Invalid or missing path')
+
+    - name: Merge the token into the secret
+      community.hashi_vault.vault_kv2_write:
+        url: "{{ qdrant_docker_bao_addr }}"
+        auth_method: token
+        token: "{{ qdrant_docker_bao_login.login.auth.client_token }}"
+        engine_mount_point: "{{ qdrant_docker_untrusted_jwt_kv_mount }}"
+        path: "{{ qdrant_docker_untrusted_jwt_kv_path }}"
+        cas: "{{ qdrant_docker_current.metadata.version | default(0) | int }}"
+        data: >-
+          {{ qdrant_docker_current.secret | default({})
+             | combine({qdrant_docker_untrusted_jwt_field: qdrant_docker_untrusted_jwt}) }}
+        validate_certs: "{{ qdrant_docker_bao_validate_certs }}"
+      when: >-
+        qdrant_docker_publish_untrusted_jwt | bool and
+        (qdrant_docker_current.secret | default({})).get(qdrant_docker_untrusted_jwt_field, '')
+        != qdrant_docker_untrusted_jwt
+
+    - name: Read the current memory MCP secret
+      community.hashi_vault.vault_kv2_get:
+        url: "{{ qdrant_docker_bao_addr }}"
+        auth_method: token
+        token: "{{ qdrant_docker_bao_login.login.auth.client_token }}"
+        engine_mount_point: "{{ qdrant_docker_memory_mcp_jwt_kv_mount }}"
+        path: "{{ qdrant_docker_memory_mcp_jwt_kv_path }}"
+        validate_certs: "{{ qdrant_docker_bao_validate_certs }}"
+      register: qdrant_docker_memory_mcp_current
+      check_mode: false
+      failed_when: false
+      when: qdrant_docker_publish_memory_mcp_jwt | bool
+
+    - name: Fail unless the memory MCP secret read succeeded or the path is absent
+      ansible.builtin.fail:
+        msg: >-
+          Reading {{ qdrant_docker_memory_mcp_jwt_kv_mount }}/{{ qdrant_docker_memory_mcp_jwt_kv_path }}
+          failed for a reason other than a missing path.
+      when:
+        - qdrant_docker_publish_memory_mcp_jwt | bool
+        - qdrant_docker_memory_mcp_current.msg is defined
+        - qdrant_docker_memory_mcp_current.msg is not search('^Invalid or missing path')
+
+    - name: Merge the memory MCP token into its dedicated secret
+      community.hashi_vault.vault_kv2_write:
+        url: "{{ qdrant_docker_bao_addr }}"
+        auth_method: token
+        token: "{{ qdrant_docker_bao_login.login.auth.client_token }}"
+        engine_mount_point: "{{ qdrant_docker_memory_mcp_jwt_kv_mount }}"
+        path: "{{ qdrant_docker_memory_mcp_jwt_kv_path }}"
+        cas: "{{ qdrant_docker_memory_mcp_current.metadata.version | default(0) | int }}"
+        data: >-
+          {{ qdrant_docker_memory_mcp_current.secret | default({})
+             | combine({qdrant_docker_memory_mcp_jwt_field: qdrant_docker_memory_mcp_jwt}) }}
+        validate_certs: "{{ qdrant_docker_bao_validate_certs }}"
+      when: >-
+        qdrant_docker_publish_memory_mcp_jwt | bool and
+        (qdrant_docker_memory_mcp_current.secret | default({})).get(qdrant_docker_memory_mcp_jwt_field, '')
+        != qdrant_docker_memory_mcp_jwt
+
+    - name: Read back the memory MCP token
+      community.hashi_vault.vault_kv2_get:
+        url: "{{ qdrant_docker_bao_addr }}"
+        auth_method: token
+        token: "{{ qdrant_docker_bao_login.login.auth.client_token }}"
+        engine_mount_point: "{{ qdrant_docker_memory_mcp_jwt_kv_mount }}"
+        path: "{{ qdrant_docker_memory_mcp_jwt_kv_path }}"
+        validate_certs: "{{ qdrant_docker_bao_validate_certs }}"
+      register: qdrant_docker_memory_mcp_readback
+      changed_when: false
+      when: qdrant_docker_publish_memory_mcp_jwt | bool
+
+    - name: Verify and publish the read-back token to later plays
+      ansible.builtin.set_fact:
+        qdrant_docker_memory_mcp_jwt: >-
+          {{ qdrant_docker_memory_mcp_readback.secret[
+               qdrant_docker_memory_mcp_jwt_field] }}
+      delegate_to: localhost
+      delegate_facts: true
+      when:
+        - qdrant_docker_publish_memory_mcp_jwt | bool
+        - qdrant_docker_memory_mcp_readback.secret[qdrant_docker_memory_mcp_jwt_field] == qdrant_docker_memory_mcp_jwt
+
+  always:
+    - name: Revoke the login token
+      community.hashi_vault.vault_write:
+        url: "{{ qdrant_docker_bao_addr }}"
+        auth_method: token
+        token: "{{ qdrant_docker_bao_login.login.auth.client_token }}"
+        path: auth/token/revoke-self
+        data: {}
+        validate_certs: "{{ qdrant_docker_bao_validate_certs }}"
+      when:
+        - qdrant_docker_bao_login is defined
+        - qdrant_docker_bao_login.login is defined
+      register: qdrant_docker_bao_revoke
+      ignore_errors: true
+      changed_when: false
+
+    # The token expires on its own TTL; a failed revoke is reported, not fatal.
+    - name: Report a login token that was not revoked
+      ansible.builtin.debug:
+        msg: "Revoking the publish login token failed; it stays valid until its TTL expires."
+      when: qdrant_docker_bao_revoke is failed

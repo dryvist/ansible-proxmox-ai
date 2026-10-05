@@ -15,11 +15,139 @@
     # Provide port variables normally injected from tofu_data.constants
     qdrant_docker_http_port: 6333
     qdrant_docker_grpc_port: 6334
-    qdrant_docker_api_key: "{{ lookup('env', 'QDRANT_API_KEY') | default('molecule-test-api-key', true) }}"
     # Exercise the opt-in memory RBAC path verified in verify.yml.
     qdrant_docker_jwt_rbac_enabled: true
+    qdrant_docker_publish_untrusted_jwt: false
+    qdrant_docker_publish_memory_mcp_jwt: false
+    qdrant_docker_memory_round_trip_vector: [0.1, 0.2, 0.3, 0.4]
 
   tasks:
+    - name: Require the Molecule ephemeral directory
+      ansible.builtin.assert:
+        that: lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') | length > 0
+        quiet: true
+
+    - name: Generate the test instance admin key
+      ansible.builtin.set_fact:
+        qdrant_docker_molecule_api_key: >-
+          {{ lookup(
+               'password',
+               lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY')
+               ~ '/qdrant-api-key length=64 chars=ascii_letters,digits'
+             ) }}
+      no_log: true
+
     - name: Include qdrant_docker role
       ansible.builtin.include_role:
         name: qdrant_docker
+        public: true
+      vars:
+        qdrant_docker_api_key: "{{ qdrant_docker_molecule_api_key }}"
+
+    - name: Check the memory collection
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ qdrant_docker_http_port }}/collections/{{ qdrant_docker_trusted_collection }}"
+        headers:
+          api-key: "{{ qdrant_docker_molecule_api_key }}"
+        status_code: [200, 404]
+      register: qdrant_docker_memory_collection
+      changed_when: false
+      no_log: true
+
+    - name: Create the memory collection for the round-trip
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ qdrant_docker_http_port }}/collections/{{ qdrant_docker_trusted_collection }}"
+        method: PUT
+        headers:
+          api-key: "{{ qdrant_docker_molecule_api_key }}"
+        body_format: json
+        body:
+          vectors:
+            size: "{{ qdrant_docker_memory_round_trip_vector | length }}"
+            distance: Dot
+        status_code: 200
+      when: qdrant_docker_memory_collection.status == 404
+      changed_when: true
+      no_log: true
+
+    - name: Converge the untrusted collection mirrors
+      ansible.builtin.include_role:
+        name: qdrant_docker
+      vars:
+        qdrant_docker_api_key: "{{ qdrant_docker_molecule_api_key }}"
+
+    - name: Mint memory and untrusted test identities
+      ansible.builtin.set_fact:
+        qdrant_docker_memory_round_trip_jwt: >-
+          {{ qdrant_docker_molecule_api_key
+             | qdrant_jwt(qdrant_docker_memory_mcp_access) }}
+        qdrant_docker_untrusted_round_trip_jwt: >-
+          {{ qdrant_docker_molecule_api_key
+             | qdrant_jwt(qdrant_docker_untrusted_access) }}
+        qdrant_docker_round_trip_point_id: "{{ inventory_hostname | to_uuid }}"
+      no_log: true
+
+    - name: Write a memory point with the collection-scoped identity
+      ansible.builtin.uri:
+        url: >-
+          {{ 'http://127.0.0.1:' ~ qdrant_docker_http_port
+             ~ '/collections/' ~ qdrant_docker_trusted_collection
+             ~ '/points?wait=true' }}
+        method: PUT
+        headers:
+          api-key: "{{ qdrant_docker_memory_round_trip_jwt }}"
+        body_format: json
+        body:
+          points:
+            - id: "{{ qdrant_docker_round_trip_point_id }}"
+              vector: "{{ qdrant_docker_memory_round_trip_vector }}"
+              payload:
+                qdrantrb: "{{ inventory_hostname }}"
+        status_code: 200
+      register: qdrant_docker_memory_round_trip_write
+      changed_when: false
+      no_log: true
+
+    - name: Read the memory point with the same identity
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ qdrant_docker_http_port }}/collections/{{ qdrant_docker_trusted_collection }}/points"
+        method: POST
+        headers:
+          api-key: "{{ qdrant_docker_memory_round_trip_jwt }}"
+        body_format: json
+        body:
+          ids:
+            - "{{ qdrant_docker_round_trip_point_id }}"
+          with_payload: true
+          with_vector: true
+        status_code: 200
+      register: qdrant_docker_memory_round_trip_read
+      changed_when: false
+      no_log: true
+
+    - name: Assert the scoped identity completed a memory round-trip
+      ansible.builtin.assert:
+        that:
+          - qdrant_docker_memory_round_trip_read.json.result | length == 1
+          - qdrant_docker_memory_round_trip_read.json.result[0].payload.qdrantrb == inventory_hostname
+          - qdrant_docker_memory_round_trip_read.json.result[0].vector == qdrant_docker_memory_round_trip_vector
+
+    - name: Deny a write from the untrusted identity
+      ansible.builtin.uri:
+        url: >-
+          {{ 'http://127.0.0.1:' ~ qdrant_docker_http_port
+             ~ '/collections/' ~ qdrant_docker_trusted_collection
+             ~ '/points?wait=true' }}
+        method: PUT
+        headers:
+          api-key: "{{ qdrant_docker_untrusted_round_trip_jwt }}"
+        body_format: json
+        body:
+          points:
+            - id: "{{ qdrant_docker_round_trip_point_id }}"
+              vector: "{{ qdrant_docker_memory_round_trip_vector }}"
+              payload:
+                qdrantrb: denied
+        status_code: 403
+      changed_when: false
+      no_log: true
