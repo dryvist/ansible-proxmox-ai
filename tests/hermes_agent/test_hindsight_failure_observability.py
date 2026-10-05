@@ -70,6 +70,26 @@ def test_pinned_upstream_reproduces_the_empty_success_appearance() -> None:
     assert provider.prefetch("query") == ""
 
 
+def test_sync_prefetch_dispatches_one_recall_for_the_current_query() -> None:
+    class StoredFactClient:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def arecall(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(results=[SimpleNamespace(text="stored fixture fact")])
+
+    client = StoredFactClient()
+    provider = _provider(PINNED_HINDSIGHT_FAILURE_SOURCE, client)
+    query = "What is the stored fixture fact?"
+
+    context = provider.prefetch(query)
+
+    assert len(client.calls) == 1
+    assert client.calls[0]["query"] == query
+    assert "stored fixture fact" in context
+
+
 def test_async_retain_failure_after_acceptance_is_reported_and_marked(caplog) -> None:
     class FailedStatusClient:
         class operations:
