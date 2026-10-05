@@ -1,0 +1,41 @@
+---
+# Verify the post-restart tool catalog through LiteLLM's read-only MCP REST
+# endpoint. The master key is used only for this readiness check; tool schemas
+# and API responses remain censored in Ansible output.
+- name: Verify the Zammad MCP server exposes exactly its configured tools
+  ansible.builtin.uri:
+    url: >-
+      http://127.0.0.1:{{ llm_router_api_port }}/mcp-rest/tools/list?server_id={{ llm_router_mcp_zammad_server_id }}
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: 200
+    return_content: true
+    timeout: 5
+  register: _llm_router_zammad_mcp_tools
+  until:
+    - _llm_router_zammad_mcp_tools.status | default(0) == 200
+    - _llm_router_zammad_mcp_tools.json.error | default(none) is none
+    - (_llm_router_zammad_mcp_tools.json.tools | default([]) | map(attribute='name') | sort)
+      == (llm_router_mcp_zammad_allowed_tools | sort)
+  retries: 10
+  delay: "{{ llm_router_liveness_delay }}"
+  no_log: true
+
+- name: Verify the Slack MCP server exposes exactly its configured tools
+  ansible.builtin.uri:
+    url: >-
+      http://127.0.0.1:{{ llm_router_api_port }}/mcp-rest/tools/list?server_id={{ llm_router_mcp_slack_server_id }}
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: 200
+    return_content: true
+    timeout: 5
+  register: _llm_router_slack_mcp_tools
+  until:
+    - _llm_router_slack_mcp_tools.status | default(0) == 200
+    - _llm_router_slack_mcp_tools.json.error | default(none) is none
+    - (_llm_router_slack_mcp_tools.json.tools | default([]) | map(attribute='name') | sort)
+      == (llm_router_mcp_slack_allowed_tools | sort)
+  retries: 10
+  delay: "{{ llm_router_liveness_delay }}"
+  no_log: true

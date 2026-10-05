@@ -1,8 +1,7 @@
 ---
-# Regression/contract test for seed-keys.yml's rebuild-mode key diff
-# (`_llm_router_key_updates`), which replaced two separate per-attribute
-# /key/update loops with one computed list of {alias, body} entries — one
-# call per key that actually changed, carrying every changed field.
+# Regression/contract test for reconcile-seeded-key-policy.yml's key diff:
+# MCP permissions reconcile in every mode, while other policy fields remain
+# rebuild-only, with one computed {alias, body} update per changed key.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_seed_key_route_model_reconcile.yml -i localhost, -c local
@@ -12,9 +11,11 @@
   gather_facts: false
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    _seed_keys_file: "{{ _role_dir }}/tasks/seed-keys.yml"
-    _diff_task_name: "Compute the route/model update each live key still needs, if any"
+    _seed_keys_file: "{{ _role_dir }}/tasks/reconcile-seeded-key-policy.yml"
+    _diff_task_name: "Compute the key policy update each live key still needs, if any"
     llm_router_seed_mode: rebuild
+    llm_router_mcp_default_object_permission:
+      mcp_servers: [no-mcp-servers]
 
     # One /key/list?...&return_full_object=true snapshot covering every case
     # this test exercises:
@@ -43,20 +44,30 @@
             models: [cheap]
             # An Admin UI edit to tags must survive the create-only tag seed.
             metadata: {app: steady, tier: local, tags: ['ui-edited']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: widened-routes
             models: [cheap]
             allowed_routes: ["/metrics"]
             metadata: {app: widened-routes, tier: local, tags: ['ui-edited']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: malformed-live
+            object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: authoritative-narrow
             models: [cheap, stale-model]
+            object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: live-only
             models: [cheap]
+            object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: null-models
             models: null
+            object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: null-routes
             models: [cheap]
             allowed_routes: null
+            object_permission: {mcp_servers: [no-mcp-servers]}
+          - key_alias: mcp-reader
+            models: [cheap]
+            object_permission: {mcp_servers: [no-mcp-servers]}
 
     llm_router_virtual_keys:
       - alias: steady
@@ -84,6 +95,10 @@
         value: "sk-{{ 'f' * 20 }}"
         models: [cheap]
         allowed_routes: ["/metrics"]
+      - alias: mcp-reader
+        value: "sk-{{ 'g' * 20 }}"
+        models: [cheap]
+        object_permission: {mcp_servers: [zammad, slack]}
 
     # Hand-set, not extracted: this helper's own expression already has
     # dedicated coverage in test_seed_key_live_aliases.yml. Every live
@@ -96,16 +111,17 @@
       - live-only
       - null-models
       - null-routes
+      - mcp-reader
 
   tasks:
-    - name: Extract the real, committed diff expression from seed-keys.yml
+    - name: Extract the real, committed diff expression from the policy task
       ansible.builtin.set_fact:
         _diff_expr: >-
           {{ (lookup('ansible.builtin.file', _seed_keys_file) | from_yaml
               | selectattr('name', 'equalto', _diff_task_name) | first)
              ['ansible.builtin.set_fact']['_llm_router_key_updates'] }}
 
-    - name: The real expression must exist and must guard every attribute lookup with a default
+    - name: The real expression must guard lookups and reconcile MCP permissions
       ansible.builtin.assert:
         quiet: true
         that:
@@ -113,10 +129,21 @@
           - "\"map(attribute='models', default=[])\" in _diff_expr"
           - "\"default(none, true)\" in _diff_expr"
           - "\"default([], true)\" in _diff_expr"
+          - "'object_permission' in _diff_expr"
+          - "'_permission_changed' in _diff_expr"
         fail_msg: >-
-          Could not find the fail-safe attribute lookups in seed-keys.yml
+          Could not find the fail-safe attribute lookups in the policy task
           under the task name {{ _diff_task_name }} — this test's
           extraction is stale, fix the task name/lookup.
+
+    - name: Confirm seed-keys imports the policy reconciler
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            'reconcile-seeded-key-policy.yml' in
+            lookup('ansible.builtin.file', _role_dir ~ '/tasks/seed-keys.yml')
+        fail_msg: The seed task no longer imports its caller policy reconciler.
 
     # Same "write to a real template file, render, from_yaml" technique as
     # tests/inventory_load/test_ssh_probe_result_selection.yml: a string
@@ -141,14 +168,21 @@
       ansible.builtin.set_fact:
         _llm_router_initial_key_updates: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
 
-    - name: Initial mode leaves every existing key untouched
+    - name: Initial mode updates only the MCP permission security boundary
       ansible.builtin.assert:
         quiet: true
         that:
-          - _llm_router_initial_key_updates == []
+          - _llm_router_initial_key_updates | map(attribute='alias') | list == ['mcp-reader']
+          - "_initial_mcp.body.object_permission == {'mcp_servers': ['zammad', 'slack']}"
+          - "'models' not in _initial_mcp.body"
+          - "'allowed_routes' not in _initial_mcp.body"
+          - "'metadata' not in _initial_mcp.body"
         fail_msg: >-
-          initial mode computed updates for existing keys:
+          initial mode did not isolate the MCP permission update:
           {{ _llm_router_initial_key_updates | map(attribute='alias') | list }}.
+      vars:
+        _initial_mcp: >-
+          {{ _llm_router_initial_key_updates | selectattr('alias', 'equalto', 'mcp-reader') | first }}
 
     - name: Set explicit rebuild mode for the detailed reconciliation fixtures
       ansible.builtin.set_fact:
@@ -162,14 +196,14 @@
         # warning (removed in 2.23), not a no-op.
         _llm_router_key_updates: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
 
-    - name: Assert only the five genuinely-changed keys are updated, each exactly once
+    - name: Assert only the six genuinely-changed keys are updated, each exactly once
       ansible.builtin.assert:
         quiet: true
         that:
           - _llm_router_key_updates | map(attribute='alias') | sort
-            == ['authoritative-narrow', 'malformed-live', 'null-models', 'null-routes', 'widened-routes']
+            == ['authoritative-narrow', 'malformed-live', 'mcp-reader', 'null-models', 'null-routes', 'widened-routes']
         fail_msg: >-
-          Expected exactly the five changed aliases, got
+          Expected exactly the six changed aliases, got
           {{ _llm_router_key_updates | map(attribute='alias') | list }}.
           steady must be absent (nothing differs); live-only must be absent
           (no seed entry names it — current behavior preserved).
@@ -180,11 +214,22 @@
         that:
           - _widened.body.allowed_routes == ['/metrics', '/metrics/']
           - _widened.body.models == ['cheap']
+          - "_widened.body.object_permission == {'mcp_servers': ['no-mcp-servers']}"
           - _widened.body.metadata.tags == ['ui-edited']
           - "'router_settings' not in _widened.body"
         fail_msg: "widened-routes body: {{ _widened.body }}"
       vars:
         _widened: "{{ _llm_router_key_updates | selectattr('alias', 'equalto', 'widened-routes') | first }}"
+
+    - name: Assert an MCP grant is reconciled for the intended caller only
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "_mcp_reader.body.object_permission == {'mcp_servers': ['zammad', 'slack']}"
+          - _llm_router_key_updates | selectattr('alias', 'equalto', 'steady') | list | length == 0
+        fail_msg: "MCP key policy reconciliation: {{ _mcp_reader.body }}"
+      vars:
+        _mcp_reader: "{{ _llm_router_key_updates | selectattr('alias', 'equalto', 'mcp-reader') | first }}"
 
     - name: Assert a live record missing both fields entirely is treated as none/[] rather than raising
       ansible.builtin.assert:
@@ -229,7 +274,7 @@
       ansible.builtin.set_fact:
         _llm_router_key_updates_second_run: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
       vars:
-        # The live snapshot AFTER the five updates above would have landed:
+        # The live snapshot AFTER the six updates above would have landed:
         # every seed entry now matches live on both fields.
         llm_router_existing_keys:
           json:
@@ -237,25 +282,35 @@
               - key_alias: steady
                 models: [cheap]
                 metadata: {app: steady, tier: local}
+                object_permission: {mcp_servers: [no-mcp-servers]}
               - key_alias: widened-routes
                 models: [cheap]
                 allowed_routes: ["/metrics", "/metrics/"]
-                metadata: {app: widened-routes, tier: local}
+                metadata: {app: widened-routes, tier: local, tags: ['ui-edited']}
+                object_permission: {mcp_servers: [no-mcp-servers]}
               - key_alias: malformed-live
                 models: [cheap, embed]
                 metadata: {app: malformed-live, tier: local}
+                object_permission: {mcp_servers: [no-mcp-servers]}
               - key_alias: authoritative-narrow
                 models: [cheap]
                 metadata: {app: authoritative-narrow, tier: local}
+                object_permission: {mcp_servers: [no-mcp-servers]}
               - key_alias: live-only
                 models: [cheap]
               - key_alias: null-models
                 models: [cheap]
                 metadata: {app: null-models, tier: local}
+                object_permission: {mcp_servers: [no-mcp-servers]}
               - key_alias: null-routes
                 models: [cheap]
                 metadata: {app: null-routes, tier: local}
                 allowed_routes: ["/metrics"]
+                object_permission: {mcp_servers: [no-mcp-servers]}
+              - key_alias: mcp-reader
+                models: [cheap]
+                metadata: {app: mcp-reader, tier: local}
+                object_permission: {mcp_servers: [zammad, slack]}
 
     - name: Assert the idempotent second run finds nothing left to change
       ansible.builtin.assert:

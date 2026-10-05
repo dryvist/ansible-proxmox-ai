@@ -21,6 +21,7 @@ def load_registry() -> list[dict]:
         for slice_file in sorted((REPO_ROOT / "llm-models.d").glob("*.yml"))
         for entries in yaml.safe_load(slice_file.read_text()).values()
         for entry in entries
+        if "client_model_id" in entry
     ]
 
 

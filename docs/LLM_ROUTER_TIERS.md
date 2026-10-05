@@ -28,3 +28,10 @@ current targets. Each rendered profile carries zero token cost and advertises
 `max_input_tokens` equal to its registry `context_window`, which is the engine's
 `max_model_len` contract. The benchmark campaign finalises all four model ids
 and limits.
+
+Hermes sends `hermes_agent_model` from its default and named profile configs.
+The default key retains its configured model scope. Each named profile key
+also includes every active registry-owned `gpu-*` alias, so Hermes can resolve
+those aliases without the human-chat role scope. The aliases disappear from
+the key while GPU profiles are inactive; `test_hermes_profile_keys_assert.yml`
+and `test_hermes_agents.yml` enforce the rendered contract.

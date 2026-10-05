@@ -19,6 +19,38 @@
   ansible.builtin.include_vars:
     dir: "{{ llm_router_registry_dir }}"
 
+- name: Index campaign model artifacts
+  ansible.builtin.set_fact:
+    llm_router_model_artifacts_by_id: >-
+      {{ dict(_llm_model_artifacts | map(attribute='artifact_id')
+              | zip(_llm_model_artifacts)) }}
+
+- name: Assert every GPU router profile resolves its upstream id from an artifact
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_model_artifacts_by_id | length == _llm_model_artifacts | length
+      - item.artifact_id in llm_router_model_artifacts_by_id
+      - llm_router_model_artifacts_by_id[item.artifact_id].hf_repo | length > 0
+    fail_msg: >-
+      Every Pro6000 router profile must reference a known model artifact in
+      llm-models.d/65-gpu-pro6000-artifacts.yml.
+  loop: "{{ _llm_registry_gpu_pro6000 }}"
+  loop_control:
+    label: "{{ item.profile }}"
+
+- name: Resolve GPU router upstream ids from artifact references
+  ansible.builtin.set_fact:
+    llm_router_gpu_pro6000_profile_registry: >-
+      {%- set ns = namespace(entries=[]) -%}
+      {%- for profile in _llm_registry_gpu_pro6000 -%}
+      {%- set artifact = llm_router_model_artifacts_by_id[profile.artifact_id] -%}
+      {%- set ns.entries = ns.entries + [
+            profile | combine({'upstream_model_id': artifact.hf_repo})
+          ] -%}
+      {%- endfor -%}
+      {{ ns.entries }}
+
 - name: Assert the registry loaded and is non-empty
   ansible.builtin.assert:
     quiet: true

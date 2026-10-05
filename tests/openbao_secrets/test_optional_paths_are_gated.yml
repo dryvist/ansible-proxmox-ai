@@ -27,6 +27,8 @@
       "ai/saas/opencode": llm_router cloud-model credential gate
       # An empty token omits the sidecar service and the /nautobot route.
       "ai/mcp/nautobot": agentgateway_docker_nautobot_read_token gate
+      # The memory sidecar and /memory route wait for the scoped JWT.
+      "ai/mcp/qdrant": agentgateway_docker_qdrant_memory_mcp_api_key gate
       # Not yet seeded. No role in this repo reads it from the bao fact:
       # phoenix_docker resolves its own values by env with `mandatory`, and
       # the ingest key is read downstream by the Cribl role. Nothing renders
@@ -43,7 +45,7 @@
       "apps/dify": llm_router virtual-key empty-value gate
       "apps/llamaindex": llm_router virtual-key empty-value gate
       "apps/langfuse": llm_router virtual-key empty-value gate
-      "apps/benchmark": llm_router GPU benchmark key empty-value gate
+      "apps/benchmark": llm_router GPU benchmark key feature gate
       "apps/n8n": llm_router virtual-key empty-value gate
       "apps/zammad": llm_router virtual-key empty-value gate
       "apps/opencode": llm_router virtual-key empty-value gate
@@ -84,11 +86,12 @@
     # A path with `enabled: false` stays declared (so the gate above still
     # names its consumer) but fetch_domain.yml's loop leaves it unread — the
     # same filter expression, both directions.
-    - name: Capture the switch-off fetch list, then flip the switch on
+    - name: Capture the disabled fetch list, then enable optional key paths
       ansible.builtin.set_fact:
         _fetched_off: >-
           {{ _apps | select('mapping') | rejectattr('enabled', 'defined') | map(attribute='path') | list }}
         llm_router_oss_ci_key_enabled: true
+        llm_router_benchmark_key_enabled: true
       vars:
         _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
 
@@ -99,6 +102,9 @@
           - "'apps/github-actions-oss' in _optional_paths"
           - _fetched_off | select('search', 'github-actions-oss') | list | length == 0
           - _fetched_on | select('search', 'github-actions-oss') | list | length == 1
+          - "'apps/benchmark' in _optional_paths"
+          - _fetched_off | select('search', 'apps/benchmark') | list | length == 0
+          - _fetched_on | select('search', 'apps/benchmark') | list | length == 1
         fail_msg: "off={{ _fetched_off }} on={{ _fetched_on }}"
       vars:
         _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
@@ -122,6 +128,20 @@
         fail_msg: >-
           ai/mcp/nautobot is optional, so an absent token must omit both the
           sidecar service and the /nautobot route.
+      vars:
+        bao_local_llm_secrets: {}
+        _compose: "{{ lookup('file', _gateway_role_dir ~ '/templates/docker-compose.yml.j2') }}"
+        _config: "{{ lookup('file', _gateway_role_dir ~ '/templates/config.yaml.j2') }}"
+
+    - name: Assert the memory Qdrant sidecar and route are inert without its scoped JWT
+      ansible.builtin.assert:
+        that:
+          - agentgateway_docker_qdrant_memory_mcp_api_key | trim | length == 0
+          - _compose is search('agentgateway_docker_qdrant_memory_mcp_api_key \| length > 0')
+          - _config is search('agentgateway_docker_qdrant_memory_mcp_api_key \| length > 0')
+        fail_msg: >-
+          ai/mcp/qdrant is optional until the publisher writes its scoped JWT;
+          the memory sidecar and /memory route must stay absent without it.
       vars:
         bao_local_llm_secrets: {}
         _compose: "{{ lookup('file', _gateway_role_dir ~ '/templates/docker-compose.yml.j2') }}"

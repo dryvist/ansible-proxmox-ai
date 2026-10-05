@@ -9,9 +9,11 @@ Type=simple
 User={{ llm_gpu_serving_user }}
 Group={{ llm_gpu_serving_group }}
 WorkingDirectory={{ llm_gpu_serving_data_dir }}
-Environment=HF_HOME={{ llm_gpu_serving_model_cache_mount_path }}
+Environment=HF_HOME={{ llm_gpu_serving_hf_home }}
 Environment=HF_HUB_OFFLINE=1
 Environment=TRANSFORMERS_OFFLINE=1
+{% set tool_call_parser = llm_gpu_serving_profile_registry_model.artifact.tool_call_parser | default(llm_gpu_serving_profile.tool_call_parser) %}
+{% set reasoning_parser = llm_gpu_serving_profile_registry_model.artifact.reasoning_parser | default(llm_gpu_serving_profile.reasoning_parser) %}
 {% if llm_gpu_serving_profile.engine == 'llama_cpp' %}
 Environment=LD_LIBRARY_PATH={{ llm_gpu_serving_llamacpp_install_dir }}
 {% endif %}
@@ -31,21 +33,21 @@ ExecStart={{ llm_gpu_serving_venv }}/bin/vllm serve {{ llm_gpu_serving_profile_m
 {% if llm_gpu_serving_profile.moe_backend == 'b12x' %}
   --moe-backend b12x \
 {% endif %}
-{% if llm_gpu_serving_profile.quant == 'bf16' %}
+{% if llm_gpu_serving_profile_registry_model.artifact.quantization == 'BF16' %}
   --dtype bfloat16 \
-{% elif llm_gpu_serving_profile.quant in ['fp8', 'nvfp4'] %}
+{% elif 'NVFP4' in llm_gpu_serving_profile_registry_model.artifact.quantization %}
   --quantization modelopt \
 {% endif %}
 {% if llm_gpu_serving_profile.enable_auto_tool_choice %}
   --enable-auto-tool-choice \
 {% endif %}
-{% if llm_gpu_serving_profile.tool_call_parser | length > 0 %}
-  --tool-call-parser {{ llm_gpu_serving_profile.tool_call_parser }} \
+{% if tool_call_parser | length > 0 %}
+  --tool-call-parser {{ tool_call_parser }} \
 {% endif %}
-  --reasoning-parser {{ llm_gpu_serving_profile.reasoning_parser | mandatory('reasoning_parser is required for vLLM profiles') }}
+  --reasoning-parser {{ reasoning_parser | mandatory('reasoning_parser is required for vLLM profiles') }}
 {% elif llm_gpu_serving_profile.engine == 'llama_cpp' %}
 ExecStart={{ llm_gpu_serving_llamacpp_server_bin }} \
-  --model {{ llm_gpu_serving_profile_model_dir }}/{{ llm_gpu_serving_profile.gguf_file }} \
+  --model {{ llm_gpu_serving_profile_model_dir }}/{{ llm_gpu_serving_profile_registry_model.artifact.include_globs[0] }} \
   --host {{ llm_gpu_serving_listen_host | default(ansible_facts.default_ipv4.address) }} \
   --port {{ llm_gpu_serving_profile.port }} \
   --alias {{ llm_gpu_serving_profile_registry_model.upstream_model_id }} \

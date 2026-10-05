@@ -61,10 +61,17 @@ def registry_values(root: Path) -> dict[str, set[str]]:
     """Every registry value -> the kinds it occurs as ({client, upstream, alias})."""
     values: dict[str, set[str]] = {}
     for slice_file in sorted((root / "llm-models.d").glob("*.yml")):
-        for entries in yaml.safe_load(slice_file.read_text()).values():
+        for name, entries in yaml.safe_load(slice_file.read_text()).items():
+            if name == "_llm_model_artifacts":
+                for artifact in entries:
+                    values.setdefault(str(artifact["hf_repo"]), set()).add("upstream")
+                continue
             for entry in entries:
+                if "client_model_id" not in entry:
+                    continue
                 values.setdefault(str(entry["client_model_id"]), set()).add("client")
-                values.setdefault(str(entry["upstream_model_id"]), set()).add("upstream")
+                if "upstream_model_id" in entry:
+                    values.setdefault(str(entry["upstream_model_id"]), set()).add("upstream")
                 # A stable_alias counts as an "alias" value on a servable
                 # entry (unchanged) or a >=1M-context OpenRouter entry not
                 # opted out of ZDR (A5's `long` carve-out,
@@ -112,12 +119,15 @@ def test_virtual_key_tags_are_create_only() -> None:
     assert "item.router_settings" in create_body["router_settings"]
     assert "item.tags" in create_body["metadata"]
 
-    compute = by_name["Compute the route/model update each live key still needs, if any"]
+    policy_file = REPO_ROOT / "roles/llm_router/tasks/reconcile-seeded-key-policy.yml"
+    policy_tasks = yaml.load(policy_file.read_text(), Loader=_Permissive)
+    policy_by_name = {task.get("name"): task for task in policy_tasks}
+    compute = policy_by_name["Compute the key policy update each live key still needs, if any"]
     reconcile_expr = compute["ansible.builtin.set_fact"]["_llm_router_key_updates"]
     assert "item.tags" not in reconcile_expr
     assert "router_settings" not in reconcile_expr
 
-    update = by_name["Reconcile route allowlists and model names for live keys that changed"]
+    update = policy_by_name["Reconcile caller policy for live keys that changed"]
     assert update["ansible.builtin.uri"]["body"] == "{{ item.body }}"
 
 

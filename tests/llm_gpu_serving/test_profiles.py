@@ -12,6 +12,7 @@ ROLE_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
 PROFILE_DEFAULTS = ROLE_ROOT / "defaults/main/10-profiles.yml"
 UNIT_TEMPLATE = ROLE_ROOT / "templates/llm-gpu-serving.service.j2"
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
+ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml"
 
 
 def _profiles() -> dict:
@@ -20,7 +21,16 @@ def _profiles() -> dict:
 
 def _registry_profiles() -> dict:
     entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
-    return {entry["profile"]: entry for entry in entries}
+    artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))["_llm_model_artifacts"]
+    by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
+    return {
+        entry["profile"]: {
+            **entry,
+            "artifact": by_id[entry["artifact_id"]],
+            "upstream_model_id": by_id[entry["artifact_id"]]["hf_repo"],
+        }
+        for entry in entries
+    }
 
 
 def _comment_filter(text: str) -> str:
@@ -44,12 +54,13 @@ def _render(profile_name: str, profile: dict) -> str:
         llm_gpu_serving_data_dir="/var/lib/llm-gpu-serving",
         llm_gpu_serving_venv="/opt/llm-gpu-serving/venv",
         llm_gpu_serving_model_cache_mount_path="/cache",
+        llm_gpu_serving_hf_home="HF_CACHE_HOME",
         llm_gpu_serving_llamacpp_install_dir="/opt/llm-gpu-serving/llama.cpp",
         llm_gpu_serving_llamacpp_server_bin="/opt/llm-gpu-serving/llama.cpp/llama-server",
         llm_gpu_serving_profile_name=profile_name,
         llm_gpu_serving_profile=resolved_profile,
         llm_gpu_serving_profile_registry_model=registry_model,
-        llm_gpu_serving_profile_model_dir=f"/cache/{registry_model['upstream_model_id']}",
+        llm_gpu_serving_profile_model_dir=f"/cache/{registry_model['artifact']['hf_repo']}",
     )
 
 
@@ -63,7 +74,6 @@ def test_four_named_profiles_carry_the_serving_contract():
     assert list(profiles) == ["small", "medium-a", "medium-b", "max"]
     required = {
         "engine",
-        "quant",
         "linear_backend",
         "moe_backend",
         "max_model_len",
@@ -76,16 +86,87 @@ def test_four_named_profiles_carry_the_serving_contract():
     }
     assert all(required <= profile.keys() for profile in profiles.values())
     assert set(_registry_profiles()) == set(profiles)
+    assert {name: profile["enabled"] for name, profile in profiles.items()} == {
+        "small": True,
+        "medium-a": True,
+        "medium-b": False,
+        "max": False,
+    }
+    assert all("artifact_id" not in profile and "quant" not in profile for profile in profiles.values())
     assert all("model_id" not in profile and "served_model_name" not in profile for profile in profiles.values())
     assert [profiles[name]["max_num_seqs"] for name in ("medium-a", "medium-b", "max")] == [8, 4, 1]
+
+
+def test_artifact_registry_is_the_only_source_for_model_files_and_quantization():
+    artifact_file = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))
+    artifacts = artifact_file["_llm_model_artifacts"]
+    artifact_ids = [artifact["artifact_id"] for artifact in artifacts]
+    hf_repos = [artifact["hf_repo"] for artifact in artifacts]
+    assert len(artifact_ids) == len(set(artifact_ids))
+    assert len(hf_repos) == len(set(hf_repos))
+
+    required = {
+        "artifact_id",
+        "hf_repo",
+        "include_globs",
+        "format",
+        "quantization",
+        "engines",
+        "use",
+    }
+    assert all(required <= artifact.keys() for artifact in artifacts)
+    assert all(artifact["include_globs"] for artifact in artifacts)
+    assert all(artifact["use"] in {"serving", "benchmark-only"} for artifact in artifacts)
+
+    registry_entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))[
+        "_llm_registry_gpu_pro6000"
+    ]
+    assert all("artifact_id" in entry for entry in registry_entries)
+    assert all(
+        not {"hf_repo", "include_globs", "format", "quantization"} & entry.keys()
+        for entry in registry_entries
+    )
+    assert all(
+        not {"quant", "gguf_file"} & profile.keys() for profile in _profiles().values()
+    )
+
+    profiles = _registry_profiles()
+    assert {name: model["artifact"]["use"] for name, model in profiles.items()} == {
+        "small": "serving",
+        "medium-a": "serving",
+        "medium-b": "benchmark-only",
+        "max": "benchmark-only",
+    }
+    assert profiles["small"]["artifact"]["engines"] == ["vllm"]
+    assert profiles["small"]["artifact"]["tool_call_parser"] == "mimo"
+    assert profiles["small"]["artifact"]["reasoning_parser"] == "mimo"
+    assert profiles["medium-a"]["artifact"]["engines"] == ["vllm"]
+    assert profiles["medium-b"]["artifact"]["format"] == "GGUF"
+    assert profiles["max"]["artifact"]["format"] == "GGUF"
+
+
+def test_registry_artifact_engine_check_uses_the_runtime_profile():
+    tasks = yaml.safe_load((ROLE_ROOT / "tasks/load-registry.yml").read_text(encoding="utf-8"))
+    check = next(
+        task
+        for task in tasks
+        if task["name"] == "Assert each serving profile resolves to exactly one artifact"
+    )
+    condition = check["ansible.builtin.assert"]["that"][-1]
+
+    assert "llm_profiles[item.key].engine" in condition
 
 
 def test_each_vllm_profile_renders_its_runtime_flags():
     profiles = _profiles()
     registry_profiles = _registry_profiles()
-    for name, profile in profiles.items():
+    for name in ("small", "medium-a"):
+        profile = profiles[name]
         exec_start = _exec_start(_render(name, profile))
         registry_model_id = registry_profiles[name]["upstream_model_id"]
+        artifact = registry_profiles[name]["artifact"]
+        tool_parser = artifact.get("tool_call_parser", profile["tool_call_parser"])
+        reasoning_parser = artifact.get("reasoning_parser", profile["reasoning_parser"])
         assert f"vllm serve /cache/{registry_model_id}" in exec_start
         assert f"--served-model-name {registry_model_id}" in exec_start
         assert "--port 10434" in exec_start
@@ -93,8 +174,8 @@ def test_each_vllm_profile_renders_its_runtime_flags():
         assert f"--max-num-seqs {profile['max_num_seqs']}" in exec_start
         assert f"--gpu-memory-utilization {profile['gpu_memory_utilization']}" in exec_start
         assert "--enable-auto-tool-choice" in exec_start
-        assert f"--tool-call-parser {profile['tool_call_parser']}" in exec_start
-        assert f"--reasoning-parser {profile['reasoning_parser']}" in exec_start
+        assert f"--tool-call-parser {tool_parser}" in exec_start
+        assert f"--reasoning-parser {reasoning_parser}" in exec_start
         assert "{{" not in exec_start
 
 
@@ -102,28 +183,133 @@ def test_quantization_selects_the_expected_vllm_flag():
     profiles = _profiles()
     small = _exec_start(_render("small", profiles["small"]))
     medium = _exec_start(_render("medium-a", profiles["medium-a"]))
-    assert "--dtype bfloat16" in small
+    assert "--quantization modelopt" in small
     assert "--quantization modelopt" in medium
+    assert "--tool-call-parser mimo" in small
+    assert "--reasoning-parser mimo" in small
     assert "--linear-backend b12x" in medium
-    assert "--moe-backend b12x" in _exec_start(_render("medium-b", profiles["medium-b"]))
+    assert "--moe-backend b12x" not in medium
+
+
+def test_only_enabled_profiles_are_rendered_and_checked_by_the_role():
+    render_tasks = yaml.safe_load((ROLE_ROOT / "tasks/render-units.yml").read_text(encoding="utf-8"))
+    main_tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    render_unit = next(task for task in render_tasks if task.get("name", "").startswith("Render one systemd"))
+    profile_validation = next(task for task in main_tasks if task.get("name") == "Validate every GPU serving profile")
+    profile_state = next(task for task in main_tasks if task.get("name", "").startswith("Check profile service states"))
+    retire = next(task for task in main_tasks if task.get("name", "").startswith("Retire units for disabled"))
+    assert render_unit["when"] == "item.value.enabled | default(true)"
+    assert profile_validation["when"] == "item.value.enabled | default(true)"
+    assert profile_state["when"] == "item.value.enabled | default(true)"
+    assert "not (item.value.enabled | default(true))" in retire["when"]
+    retire_tasks = yaml.safe_load((ROLE_ROOT / "tasks/retire-disabled-profile.yml").read_text(encoding="utf-8"))
+    assert any(task.get("ansible.builtin.systemd", {}).get("state") == "stopped" for task in retire_tasks)
+    assert any(task.get("ansible.builtin.file", {}).get("state") == "absent" for task in retire_tasks)
 
 
 def test_llama_cpp_profile_renders_its_release_binary_command():
-    profile = {**_profiles()["small"], "engine": "llama_cpp", "gguf_file": "model.gguf"}
-    exec_start = _exec_start(_render("small", profile))
+    profile = {**_profiles()["medium-b"], "engine": "llama_cpp"}
+    exec_start = _exec_start(_render("medium-b", profile))
+    artifact = _registry_profiles()["medium-b"]["artifact"]
     assert exec_start.startswith("/opt/llm-gpu-serving/llama.cpp/llama-server")
-    assert "--model /cache/" in exec_start and "/model.gguf" in exec_start
+    assert f"--model /cache/{artifact['hf_repo']}/{artifact['include_globs'][0]}" in exec_start
     assert "--port 10434" in exec_start
     assert f"--parallel {profile['max_num_seqs']}" in exec_start
-    assert "Environment=LD_LIBRARY_PATH=/opt/llm-gpu-serving/llama.cpp" in _render("small", profile)
+    assert "Environment=LD_LIBRARY_PATH=/opt/llm-gpu-serving/llama.cpp" in _render("medium-b", profile)
 
 
-def test_cache_sync_is_scoped_to_the_active_profile_and_reports_itemized_changes():
+def test_hf_cli_and_uv_are_pinned_and_store_tools_on_the_tofu_cache_mount():
+    core_defaults = ROLE_ROOT / "defaults/main/00-core.yml"
+    defaults = yaml.safe_load(core_defaults.read_text(encoding="utf-8"))
     tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
-    cache_task = next(task for task in tasks if task.get("name", "").startswith("Sync only the active profile"))
-    assert "rsync" in cache_task["ansible.builtin.command"]["argv"]
-    assert "--delete" in cache_task["ansible.builtin.command"]["argv"]
-    assert "--out-format=%i %n%L" in cache_task["ansible.builtin.command"]["argv"]
-    assert "stdout | length > 0" in cache_task["changed_when"]
-    path_task = next(task for task in tasks if task.get("name") == "Resolve active profile model paths")
-    assert "llm_gpu_serving_active_registry_model.upstream_model_id" in path_task["ansible.builtin.set_fact"]["llm_gpu_serving_active_model_source"]
+
+    uv_check = next(task for task in tasks if task.get("name") == "Read the installed uv version")
+    uv_install = next(task for task in tasks if task.get("name") == "Install the pinned uv version")
+    hf_install = next(task for task in tasks if task.get("name") == "Install the pinned Hugging Face CLI in the model cache")
+    venv_create = next(task for task in tasks if task.get("name") == "Create the vLLM virtual environment")
+    vllm_install = next(task for task in tasks if task.get("name") == "Install the pinned vLLM build with SM120 b12x kernels")
+
+    assert "datasource=github-releases depName=astral-sh/uv" in core_defaults.read_text(encoding="utf-8")
+    assert "datasource=pypi depName=huggingface-hub" in core_defaults.read_text(encoding="utf-8")
+    assert uv_check["ansible.builtin.command"]["argv"][0] == "{{ llm_gpu_serving_uv_bin }}"
+    assert "{{ llm_gpu_serving_uv_version }}" in defaults["llm_gpu_serving_uv_install_url"]
+    assert "llm_gpu_serving_uv_bin | dirname" in uv_install["ansible.builtin.shell"]["cmd"]
+    assert hf_install["ansible.builtin.command"]["argv"][-1] == (
+        "huggingface_hub=={{ llm_gpu_serving_huggingface_hub_version }}"
+    )
+    assert hf_install["environment"] == "{{ llm_gpu_serving_uv_environment }}"
+    assert venv_create["environment"] == "{{ llm_gpu_serving_uv_environment }}"
+    assert vllm_install["environment"] == "{{ llm_gpu_serving_uv_environment }}"
+    for key in (
+        "llm_gpu_serving_uv_cache_dir",
+        "llm_gpu_serving_uv_python_install_dir",
+        "llm_gpu_serving_uv_tool_dir",
+        "llm_gpu_serving_uv_tool_bin_dir",
+    ):
+        assert defaults[key].startswith("{{ llm_gpu_serving_model_cache_mount_path }}")
+
+
+def test_hf_download_is_scoped_to_artifact_globs_in_the_local_cache():
+    main_tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    cache_tasks = yaml.safe_load((ROLE_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8"))
+    artifacts = yaml.safe_load((REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml").read_text(encoding="utf-8"))[
+        "_llm_model_artifacts"
+    ]
+    include = next(task for task in main_tasks if task.get("name", "").startswith("Cache the active profile"))
+    preview = next(task for task in cache_tasks if task.get("name", "").startswith("Preview each registered artifact"))
+    download = next(
+        task
+        for task in cache_tasks
+        if task.get("name", "").startswith("Download only the registered artifact")
+    )
+    notify = next(task for task in cache_tasks if task.get("name", "").startswith("Notify serving handlers"))
+    assert include["ansible.builtin.include_tasks"] == "cache-sync.yml"
+    assert "llm_gpu_serving_active_artifact.required_artifact_ids" in include["loop"]
+    assert include["loop_control"]["loop_var"] == "llm_gpu_serving_cache_sync_artifact_id"
+    assert include["vars"]["llm_gpu_serving_cache_sync_notify_service"] is True
+    artifact_by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
+    assert artifact_by_id["flash-next-nvfp4"]["required_artifact_ids"] == ["flash-next-ple-nvfp4"]
+    assert artifact_by_id["flash-next-ple-nvfp4"]["include_globs"] == [
+        "worker_image_quant.py",
+        "ple_layer_quant.py",
+        "connector_mrv2.py",
+        "ples_nvfp4/*",
+    ]
+    assert "llm_gpu_serving_cache_sync_artifact.hf_repo" in preview["ansible.builtin.command"]["argv"]
+    assert "llm_gpu_serving_cache_sync_artifact.include_globs" in preview["loop"]
+    assert "--dry-run" in preview["ansible.builtin.command"]["argv"]
+    assert preview["changed_when"] is False
+    assert "llm_gpu_serving_cache_sync_artifact.hf_repo" in download["ansible.builtin.command"]["argv"]
+    assert "llm_gpu_serving_cache_sync_destination" in download["ansible.builtin.command"]["argv"]
+    assert "llm_gpu_serving_cache_sync_previews.results[ansible_loop.index0]" in download["changed_when"]
+    assert download["become_user"] == "{{ llm_gpu_serving_user }}"
+    assert download["loop"] == "{{ llm_gpu_serving_cache_sync_artifact.include_globs }}"
+    assert "--local-dir" in download["ansible.builtin.command"]["argv"]
+    assert "notify" not in download
+    assert "llm_gpu_serving_model_cache_mount_path" in (ROLE_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8")
+    assert notify["when"] == [
+        "not ansible_check_mode",
+        "llm_gpu_serving_cache_sync_notify_service | default(false) | bool",
+        "llm_gpu_serving_cache_sync_download.changed | default(false)",
+    ]
+    assert notify["notify"] == [
+        "Stop every other GPU serving profile before switching",
+        "Start the active GPU serving profile",
+    ]
+    assert "rsync" not in (ROLE_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8")
+
+
+def test_model_campaign_uses_target_endpoint_and_cache_parameters():
+    campaign_path = REPO_ROOT / "playbooks/llm-model-campaign.yml"
+    campaign = campaign_path.read_text(encoding="utf-8")
+    target_playbook = (REPO_ROOT / "playbooks/llm-model-campaign-target.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ansible.builtin.import_playbook: llm-model-campaign-target.yml" in campaign
+    campaign += target_playbook
+    assert "benchmark_endpoint_root is defined" in campaign
+    assert "benchmark_cache_path is defined" in campaign
+    assert 'hosts: "{{ machine | default(\'localhost\') }}"' in campaign
+    assert "engine == 'mlx_lm'" in campaign
+    assert "engine != 'mlx_lm'" in campaign
