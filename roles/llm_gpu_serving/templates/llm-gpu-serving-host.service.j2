@@ -1,0 +1,43 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=GPU model serving profile {{ llm_gpu_serving_host_profile_name }}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory={{ llm_gpu_serving_host_working_directory }}
+Environment=HF_HOME={{ llm_gpu_serving_host_hf_home }}
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+Restart=on-failure
+RestartSec=5
+ExecStart={{ llm_gpu_serving_host_vllm_bin }} serve {{ llm_gpu_serving_host_model_dir }} \
+  --host {{ llm_gpu_serving_host_bind_host }} \
+  --port {{ llm_gpu_serving_host_profile.port }} \
+  --served-model-name {{ llm_gpu_serving_host_registry_model.upstream_model_id }} \
+  --max-model-len {{ llm_gpu_serving_host_profile.max_model_len }} \
+  --max-num-seqs {{ llm_gpu_serving_host_profile.max_num_seqs }} \
+  --gpu-memory-utilization {{ llm_gpu_serving_host_profile.gpu_memory_utilization }} \
+{% if llm_gpu_serving_host_profile.linear_backend == 'b12x' %}
+  --linear-backend b12x \
+{% endif %}
+{% if llm_gpu_serving_host_profile.moe_backend == 'b12x' %}
+  --moe-backend b12x \
+{% endif %}
+{% if llm_gpu_serving_host_registry_model.artifact.quantization == 'BF16' %}
+  --dtype bfloat16 \
+{% elif 'NVFP4' in llm_gpu_serving_host_registry_model.artifact.quantization %}
+  --quantization modelopt \
+{% endif %}
+{% if llm_gpu_serving_host_profile.enable_auto_tool_choice %}
+  --enable-auto-tool-choice \
+{% endif %}
+{% if llm_gpu_serving_host_tool_call_parser | length > 0 %}
+  --tool-call-parser {{ llm_gpu_serving_host_tool_call_parser }} \
+{% endif %}
+  --reasoning-parser {{ llm_gpu_serving_host_reasoning_parser }}
+
+[Install]
+WantedBy=multi-user.target
