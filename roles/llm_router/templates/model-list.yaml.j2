@@ -9,6 +9,7 @@
 {% if m.hints is defined %}{{ "\n" }}      hints: {{ m.hints | to_json }}{% endif %}
 {%- endmacro %}
 {% macro litellm_model(m) %}{{ m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id) }}{% endmacro %}
+{% macro deployment_tags(m) -%}{{ llm_router_deployment_tags_by_entry[m.client_model_id ~ '|' ~ m.tier] | to_json }}{%- endmacro %}
 {# Light-tier window projection. GENERIC, not a bge-m3 special case: any
    light-tier entry whose client_model_id ALSO owns a vllm-tier entry (the
    only way it lands in _llm_router_vllm_max_input_tokens_by_model,
@@ -88,7 +89,7 @@ model_list:
   - model_name: {{ m.client_model_id }}
     litellm_params:
       model: {{ litellm_model(m) }}
-      tags: {{ llm_router_deployment_tags_by_model[m.client_model_id] | to_json }}
+      tags: {{ deployment_tags(m) }}
       api_base: {{ llm_router_llm_large_base_url }}
       api_key: os.environ/LLM_LARGE_BEARER_TOKEN
       # /v1/responses -> /chat/completions bridge. None of these backends serve
@@ -125,7 +126,7 @@ model_list:
   - model_name: {{ m.client_model_id }}
     litellm_params:
       model: {{ litellm_model(m) }}
-      tags: {{ llm_router_deployment_tags_by_model[m.client_model_id] | to_json }}
+      tags: {{ deployment_tags(m) }}
       api_base: {{ llm_router_llm_large_standby_base_url }}
       api_key: os.environ/LLM_LARGE_STANDBY_BEARER_TOKEN
       # /v1/responses -> /chat/completions bridge. None of these backends serve
@@ -159,7 +160,7 @@ model_list:
   - model_name: "*"
     litellm_params:
       model: openai/*
-      tags: [local, zdr]
+      tags: {{ llm_router_deployment_tags_by_entry['*|large'] | to_json }}
       api_base: {{ llm_router_llm_large_base_url }}
       api_key: os.environ/LLM_LARGE_BEARER_TOKEN
 {% if llm_router_passthrough_max_parallel_requests | int > 0 %}
@@ -180,7 +181,7 @@ model_list:
   - model_name: {{ m.route_group }}
     litellm_params:
       model: {{ litellm_model(m) }}
-      tags: {{ llm_router_deployment_tags_by_model[m.client_model_id] | to_json }}
+      tags: {{ deployment_tags(m) }}
 {% if m.provider != 'chatgpt' %}
       api_key: os.environ/{{ m.credential_env }}
 {% endif %}
@@ -280,7 +281,7 @@ model_list:
   - model_name: {{ m.client_model_id }}
     litellm_params:
       model: {{ litellm_model(m) }}
-      tags: {{ llm_router_deployment_tags_by_model[m.client_model_id] | to_json }}
+      tags: {{ deployment_tags(m) }}
       api_base: {{ llm_router_llm_vllm_base_url }}
       api_key: {{ llm_router_light_api_key }}
       # /v1/responses -> /chat/completions bridge. None of these backends serve

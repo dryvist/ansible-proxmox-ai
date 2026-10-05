@@ -49,6 +49,29 @@ llm_router_deployment_tags_by_model: >-
   {%- endfor -%}
   {{ ns.tags }}
 
+# Full rendered tags are keyed by model and registry tier: one client model can
+# have physical deployments in multiple local tiers (for example, light and
+# vLLM), and those must not collapse into one telemetry tier. Policy tags stay
+# in the model-only map above; these registry-entry tags add telemetry labels.
+llm_router_deployment_tags_by_entry: >-
+  {%- set ns = namespace(tags={}) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- set _class = llm_router_deployment_class_by_model[m.client_model_id] -%}
+  {%- set _billing_class = 'subscription' if _class == 'sub'
+        else 'free' if _class == 'free'
+        else 'local' if _class == 'local'
+        else 'paid' -%}
+  {%- set _tags = llm_router_deployment_tags_by_model[m.client_model_id]
+        + ['telemetry_tier_' ~ m.tier,
+           'telemetry_billing_class_' ~ _billing_class] -%}
+  {%- set _ = ns.tags.update({m.client_model_id ~ '|' ~ m.tier: _tags}) -%}
+  {%- endfor -%}
+  {%- if llm_router_large_passthrough_enabled | bool -%}
+  {%- set _ = ns.tags.update({'*|large': ['local', 'zdr',
+        'telemetry_tier_large', 'telemetry_billing_class_local']}) -%}
+  {%- endif -%}
+  {{ ns.tags }}
+
 # A key whose tags require `&zdr` is narrowed to groups that have no retaining
 # or free member. LiteLLM applies the inherited tag constraint on every hop;
 # enforce_fallback_model_access remains the second layer on the model list.
