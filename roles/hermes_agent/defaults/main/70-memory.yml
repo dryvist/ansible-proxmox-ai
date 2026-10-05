@@ -69,71 +69,34 @@ hermes_agent_hindsight_client_pin: "=={{ hermes_agent_hindsight_client_version }
 # Renovate has opened the version-bump PRs for it; do not hand-bump either
 # pin ahead of that.
 
-# --- Memory resilience: what actually happens when Hindsight is down ---------
-# Read directly from the pinned plugin source (plugins/memory/hindsight/
-# __init__.py in NousResearch/hermes-agent@v2026.7.7.2) — do not assume
-# behavior from upstream docs, they don't describe local_external's failure
-# path. Two real gaps, one non-gap:
-#  - is_available() is a NO-OP for local_external mode: it unconditionally
-#    returns True without ever contacting the service. Hermes has no built-in
-#    way to know Hindsight is down short of an actual memory call failing.
-#  - Auto-recall (the per-turn prefetch injected into context before the
-#    model sees the user's message) runs on a background thread and is
-#    genuinely silent on failure: `logger.debug("Hindsight prefetch failed:
-#    %s", ...)` and returns "". Recall degrades to "no memories" with no
-#    signal to the agent or the operator beyond a DEBUG log line — this is
-#    the failure mode fabric_watchdog's new `hindsight` target (see
-#    roles/fabric_watchdog/defaults/main.yml) exists to catch actively
-#    instead of relying on someone noticing recall going quiet.
-#  - Auto-retain (the background writer draining sync_turn's queue) logs
-#    failures at WARNING (visible in Splunk at our DEBUG log level) but does
-#    not retry and does not propagate — a dropped retain during an outage is
-#    permanently lost, not queued for replay.
-#  - Non-gap: explicit tool calls (hindsight_recall/_retain/_reflect, when the
-#    model invokes them directly) DO surface failures — handle_tool_call
-#    catches the exception and returns tool_error(...), which the agent sees
-#    as a failed tool call, not silence.
-#  - `_run_hindsight_operation`'s one-retry-after-reconnect logic is
-#    local_embedded-only (recovers from the embedded daemon's idle-shutdown);
-#    it never fires for local_external, so a transient 5xx/timeout against the
-#    standalone service gets zero retries anywhere in this call chain.
-# All of the above lives in the upstream pip package, not this repo — fixing
-# it means patching/forking hermes-agent. The available lever here is making
-# an outage IMPOSSIBLE to miss (fabric_watchdog) rather than patching a
-# dependency we don't own.
+# --- Memory failure visibility ------------------------------------------------
+# Read from the bundled Hindsight provider in the pinned Hermes v2026.9.11.
+# In local_external mode is_available() checks configuration only; the
+# MemoryProvider contract explicitly forbids a network check there. Recall and
+# retain calls instead share _run_hindsight_operation, which now emits one
+# prompt-safe ERROR with request_id, operation, hindsight_failure_count=1 and
+# hindsight_degraded=true. The request id is included in the next prefetch as
+# [HINDSIGHT_MEMORY_DEGRADED ...], so the agent sees failures even when the
+# provider's best-effort recall contract returns an empty context. Direct tool
+# errors include the same id. Async retain completion failures and unresolved
+# retain timeouts use the same reporting path; successful queue acceptance is
+# still non-blocking and does not claim durable storage.
 #
-# UPDATE 2026-08-06 — one of the above IS now patched, because it turned out
-# to be the dominant failure, not a rare edge case. Measured via Splunk over
-# 18 days of index=hermes: prefetch delivers memory into the turn only 15.4%
-# of the time (472 GOT_RESULTS vs 1,983 NO_RESULTS + 613 FAILED). Retain works
-# fine (1,040 successful writes) and recall itself is fast in isolation
-# (67-256ms measured directly against the service) — the loss is NOT an empty
-# database and NOT recall being slow. Root cause, read from the installed
-# source: prefetch() joins its background thread for a HARDCODED 3.0s
-# (`self._prefetch_thread.join(timeout=3.0)`), completely decoupled from the
-# configurable HINDSIGHT_TIMEOUT — no config field feeds that literal, this
-# was confirmed by grepping the whole file, not assumed. Recall gets starved
-# because every Hindsight operation (recall AND retain) schedules onto ONE
-# process-global asyncio event loop (`_get_loop()`/`_run_sync()`); a retain
-# job stuck in its LLM-connection retry sequence (measured: 4 attempts
-# spanning ~2 minutes) occupies that shared loop for the whole sequence, so a
-# recall queued during that window can't even start before the fixed 3s join
-# gives up. See the patch task "Patch Hindsight prefetch join timeout..."
-# below and hermes_agent_hindsight_prefetch_timeout_seconds. This does NOT
-# fully fix worst-case starvation (a retain stuck for the full ~2min backoff
-# still outlasts any turn-latency-reasonable join) — it is the cheap first
-# lever per the "verify by the ratio" acceptance test in the Hindsight plan;
-# a structural fix (recall on its own event loop, never blockable by retain)
-# is the deeper fix if this doesn't move GOT_RESULTS share enough. The other
-# two gaps above (is_available() no-op, retain has zero retry) remain
-# unpatched — fabric_watchdog is still the lever for those.
+# Before the patch, _do_recall caught recall/reflect exceptions at DEBUG and
+# returned an empty result; writer errors had only a WARNING after sync_turn
+# returned; status-poll exceptions were DEBUG-only; and server-side `failed`
+# status counted as complete. The source patch also reports these paths. It
+# does not change local_external is_available() into a network probe, nor add
+# retries: the provider contract says that check must not perform network I/O.
+# Explicit tools already returned tool_error; they now also receive the
+# request id and share the central ERROR event. The `/version` capability
+# probe is separate from recall/retain: failure falls back to legacy document
+# ids and is already followed by a warning when append mode is unavailable.
 #
-# Bundled-provider-only: consumed by the source patch in
-# tasks/patches_worker_reap.yml, which targets
-# plugins/memory/hindsight/__init__.py. The catalog plugin that replaces the
-# bundled provider (see hermes_agent_hindsight_client_version below) has no
-# equivalent config key for this join timeout as of its v1.0.1 — delete this
-# var with that patch task at cutover, do not carry it forward.
+# Bundled-provider-only: these source patches target
+# plugins/memory/hindsight/__init__.py in the pinned package. Delete their
+# Hindsight-specific patch tasks after the catalog plugin cutover, after
+# checking the catalog source for equivalent behavior.
 hermes_agent_hindsight_prefetch_timeout_seconds: 10
 
 # --- Logging: config.yaml `logging.level` (installed hermes-agent's

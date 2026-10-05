@@ -14,7 +14,7 @@
 #
 # Fails the converge when:
 #   - a mapped model has neither an enabled, servable entry nor a parked entry;
-#   - that entry's max_parallel_requests differs from the map's declared concurrency;
+#   - that entry's max_parallel_requests differs from the catalog's limit;
 #   - the servable set differs from the server class's resident + swap models;
 #   - a role names a model the map does not define.
 
@@ -31,7 +31,7 @@
       The registry and the role map (dryvist.homelab.llm_roles) disagree.
       Map models with neither an enabled servable nor a parked large-tier entry:
       {{ _llm_roles_unmatched | join(', ') }}.
-      Entries whose max_parallel_requests differs from the map's concurrency:
+      Entries whose max_parallel_requests differs from the catalog:
       {{ _llm_roles_concurrency_drift | join(', ') }}.
       Servable entries the server class does not serve:
       {{ _llm_roles_servable_extra | join(', ') }}.
@@ -39,7 +39,7 @@
       {{ _llm_roles_servable_missing | join(', ') }}.
       Roles naming a model the map does not define:
       {{ _llm_roles_dangling | join(', ') }}.
-      Edit llm-models.d/10-large.yml to match the map; the map is the source.
+      Read max_parallel_requests from the shared model catalog.
     success_msg: >-
       Registry matches the role map ({{ llm_roles.models | length }} models,
       {{ llm_roles.roles | length }} roles).
@@ -65,8 +65,8 @@
       {%- for m in llm_roles.models.values() -%}
       {%- for e in _llm_roles_known_entries
             if e.client_model_id == m.id
-               and m.get('concurrency') is not none
-               and (e.max_parallel_requests | default(none)) != m.get('concurrency') -%}
+               and (e.max_parallel_requests | default(none))
+                   != llm_router_catalog_concurrency_by_id[m.id] -%}
       {%- set ns.out = ns.out + [m.id] -%}
       {%- endfor -%}
       {%- endfor -%}
