@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.65.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.64.2...v0.65.0) (2026-10-05)
+
+
+### Features
+
+* **llm-router:** report UI drift without overwriting ([#1078](https://github.com/dryvist/ansible-proxmox-ai/issues/1078)) ([7e4834d](https://github.com/dryvist/ansible-proxmox-ai/commit/7e4834d02d6a9599e23498ac654aa1bec034e2be))
+
+
+### Bug Fixes
+
+* **hermes_agent:** expose Hindsight operation failures ([#1081](https://github.com/dryvist/ansible-proxmox-ai/issues/1081)) ([d388199](https://github.com/dryvist/ansible-proxmox-ai/commit/d388199f5f19d6d6879477e916fd039b46e5f657))
+* **hermes_agent:** serialize innovation log appends ([#1082](https://github.com/dryvist/ansible-proxmox-ai/issues/1082)) ([e5e5e63](https://github.com/dryvist/ansible-proxmox-ai/commit/e5e5e631541b77fd3348aa2d97389367b56509a4))
+* **hermes:** read agent-specific Slack settings ([#1076](https://github.com/dryvist/ansible-proxmox-ai/issues/1076)) ([a472bec](https://github.com/dryvist/ansible-proxmox-ai/commit/a472bece2a629ffcb7af83bf96df3a9d7c4e0553))
+* **llm_router:** source limits from catalog ([#1084](https://github.com/dryvist/ansible-proxmox-ai/issues/1084)) ([57a2490](https://github.com/dryvist/ansible-proxmox-ai/commit/57a2490773c78f524b25269635c14c0b47f31349))
+* **llm-router:** bound readiness probes ([#1087](https://github.com/dryvist/ansible-proxmox-ai/issues/1087)) ([07cf6d4](https://github.com/dryvist/ansible-proxmox-ai/commit/07cf6d40618b4e5734bc1f66aff74f007839dd40))
+* use the homelab Cribl catalog for agent guests ([#1077](https://github.com/dryvist/ansible-proxmox-ai/issues/1077)) ([3431f1a](https://github.com/dryvist/ansible-proxmox-ai/commit/3431f1a15dab4db57f97aa936a5e36d4c7584bdc))
+
 ## [0.64.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.64.1...v0.64.2) (2026-10-04)
 
 
