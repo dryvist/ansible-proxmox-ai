@@ -8,6 +8,9 @@ so the backend topology is swappable with no app change.
 
 ## Installation
 
+The role installs the pinned proxy extra litellm[proxy]==1.104.0; release-specific
+behavior is verified against that pin.
+
 Ships with the `ansible-proxmox-apps` repo; no external install. Wired into
 `playbooks/site.yml` against `llm_router_group` (guests tagged `llm-router` in the
 tofu inventory). Tools come from the repo's Nix dev shell (`direnv allow`).
@@ -46,6 +49,10 @@ Common edits:
 | Add an OpenRouter model | one registry entry; reuse the provider credential |
 | Repoint a role (`subagent`, `lead`, ...) | the Admin UI — not this file |
 | Retire a model | `enabled: false` (or delete the entry) |
+
+## Prompt management
+
+See [prompt ownership and removal criteria](../../docs/LLM_ROUTER_PROMPTS.md).
 
 ## Tiers (one proxy, multiple backends)
 
@@ -90,6 +97,15 @@ unhealthy: a merely-busy single GPU must not be cooled out of rotation the way
 a real failure would be. Its `num_retries: 0` is the same idea — a
 single-instance local leg is only ever accepting or rejecting, never worth
 retrying, since a retry just re-queues behind the same busy box.
+
+## Retry and cooldown policy
+
+`num_retries: 0`; default `retry_policy`: rate limit `0`, timeout `0`. Local
+failures fall back; multi-member cloud groups retry 429s twice to reach another
+member. `allowed_fails: 2` parks a failing member; `cooldown_time: 30s` delays
+re-probes. Per-error allowances are `1000` for rate limits, to avoid cooling
+healthy busy members, and `100` for timeouts, to park sustained failure storms.
+Source: `defaults/main/40-routing.yml`.
 
 ## OpenRouter wildcard passthrough
 
@@ -176,7 +192,8 @@ Roles and Virtual Keys already enforce it:
 - **`initial`** (default) — the converge seeds `router_settings` into the
   database only the first time, when no row exists yet
   (`tasks/probe-router-settings.yml`, a read-only `psql` check —
-  litellm 1.102.0's `/config/list` never returns this section). Once a row
+  confirmed against 1.102.0; recheck the endpoint after the 1.104.0 proxy
+  refactor). Once a row
   exists, a converge leaves it alone; `tasks/sync-router-settings.yml` is
   skipped.
 - **`rebuild`** — DR / from-scratch reset. Every converge re-pushes the
@@ -185,10 +202,9 @@ Roles and Virtual Keys already enforce it:
   Set it for one converge to restore the git-declared state, then set it
   back to `initial`.
 
-Facts this rests on, verified against the pinned `litellm==1.102.0` wheel
-(never guessed) — the startup merge direction, the UI's actual write path,
-and how an edit propagates to the rest of the pool without a restart — moved
-to
+The historical startup merge, UI write, and cross-pool propagation facts were
+verified against LiteLLM 1.102.0; 1.104.0 refactored proxy internals, so
+revalidate those details before relying on them. They are documented in
 [`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md).
 
 ## Virtual keys (`defaults/main/56-virtual-keys.yml`)
@@ -204,6 +220,10 @@ GPU profiles and intentionally has no budget, so repeated benchmark runs do not
 consume a caller's monthly ceiling. It seeds only when its OpenBao value and
 the GPU profile switch are both enabled.
 
+MCP server IDs, tool allowlists, caller grants, OpenBao sources, and the OAuth
+boundary are documented in
+[LLM_ROUTER_MCP_GATEWAY.md](../../docs/LLM_ROUTER_MCP_GATEWAY.md).
+
 ## Subscription rung (chatgpt/ provider)
 
 `codex-subscription` (`chatgpt/<llm_router_chatgpt_model>`, the ChatGPT
@@ -218,17 +238,8 @@ log prints `Sign in with ChatGPT using device code:` with the verify URL and
 code — complete it on that node and the provider refreshes thereafter. With
 no login on a node the rung is not rendered there.
 
-## Admin UI SSO
-
-`/ui` signs in only via Authelia (LiteLLM generic OIDC; env contract
-`defaults/main/65-oidc.yml`, redirect `<PROXY_BASE_URL>/sso/callback`).
-`PROXY_ADMIN_ID` is the operator email (APPS authelia `authelia_admin_email`).
-With the client secret resolved (bao `secret/apps/authelia`, env fallback
-`LITELLM_OIDC_CLIENT_SECRET`), the env block renders and `general_settings`
-sets `disable_env_credential_login` and
-`disable_password_login_when_sso_enabled`; without it, none of these render.
-API bearer auth is unaffected; on a UI lockout the master key still works over
-the API. Boards link the router at `/ui` via the ingress `url_path`.
+The Admin UI's SSO contract and API lockout path are documented in
+[LLM_ROUTER_ADMIN_UI.md](../../docs/LLM_ROUTER_ADMIN_UI.md).
 
 ## Observability
 

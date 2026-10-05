@@ -87,6 +87,9 @@
           - _config.model_list | selectattr('model_name', 'in', _gpu_ids) | list | length == 0
           - _fallback_targets | intersect(_gpu_ids) | length == 0
           - llm_router_virtual_keys | selectattr('alias', 'equalto', 'benchmark') | list | length == 0
+          - >-
+            (_llm_router_hermes_profile_keys | map(attribute='models') | flatten
+             | intersect(_gpu_ids) | length) == 0
           - _config.router_settings.model_group_alias == llm_router_model_group_aliases
           - (_judge.model == llm_router_routine_model)
           - (_subagent.model == llm_router_hermes_local_4080_id)
@@ -189,6 +192,16 @@
         _registry_entry: >-
           {{ llm_router_gpu_models | selectattr('client_model_id', 'equalto',
                item.model_name) | first }}
+
+    - name: Assert every Hermes profile key can resolve each active GPU model alias
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _gpu_ids | difference(_hermes_profile_scopes) | length == 0
+      vars:
+        _hermes_profile_scopes: >-
+          {{ _llm_router_hermes_profile_keys | map(attribute='models')
+             | flatten | unique | list }}
 
     - name: Assert the judge and subagent use GPU profiles only in the enabled render
       ansible.builtin.assert:

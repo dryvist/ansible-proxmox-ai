@@ -1,0 +1,49 @@
+---
+# LiteLLM's stdio MCP tools use server service credentials from OpenBao. The
+# process environment is the only credential bridge; config.yaml carries only
+# os.environ references.
+llm_router_mcp_zammad_url: >-
+  {{ (bao_local_llm_secrets | default({})).get('ZAMMAD_MCP_URL', '') }}
+llm_router_mcp_zammad_http_token: >-
+  {{ (bao_local_llm_secrets | default({})).get('ZAMMAD_MCP_TOKEN', '') }}
+llm_router_mcp_slack_bot_token: >-
+  {{ (bao_local_llm_secrets | default({})).get('SLACK_BOT_TOKEN', '') }}
+# Resolved from Slack auth.test at converge time; an empty default lets
+# template-only contract checks render without pretending to authenticate.
+llm_router_slack_team_id: ""
+
+# Pin IDs so key grants and post-restart tools/list checks remain stable if
+# command/env fields change. LiteLLM also accepts these names in server grants.
+llm_router_mcp_zammad_server_id: zammad
+llm_router_mcp_slack_server_id: slack
+
+# Keep the installed server tools and each caller's key grants single-sourced.
+llm_router_mcp_zammad_allowed_tools:
+  - zammad_search_tickets
+  - zammad_get_ticket
+llm_router_mcp_slack_allowed_tools:
+  - slack_list_channels
+  - slack_get_channel_history
+  - slack_get_thread_replies
+
+# Every router-managed key starts with an explicit deny. Only the Hermes
+# profile keys below receive the MCP service grants.
+llm_router_mcp_default_object_permission:
+  mcp_servers:
+    - no-mcp-servers
+llm_router_mcp_hermes_object_permission: >-
+  {{ {'mcp_servers': [llm_router_mcp_zammad_server_id, llm_router_mcp_slack_server_id]} }}
+
+# Service processes are launched by LiteLLM's systemd unit, under its service
+# account, after uvx/npx are installed by this role.
+llm_router_mcp_zammad_command: "{{ llm_router_venv }}/bin/uvx"
+llm_router_mcp_zammad_args:
+  - --with
+  - "mcp<2"
+  - --from
+  - git+https://github.com/basher83/Zammad-MCP.git@v1.1.0
+  - mcp-zammad
+llm_router_mcp_slack_command: /usr/bin/npx
+llm_router_mcp_slack_args:
+  - --yes
+  - "@modelcontextprotocol/server-slack@2025.4.25"
