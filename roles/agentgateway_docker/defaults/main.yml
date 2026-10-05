@@ -84,17 +84,16 @@ agentgateway_docker_mcp_targets:
 
 # =============================================================================
 # Qdrant MCP sidecar — the official mcp-server-qdrant, run as a second compose
-# service on this LXC so agents get the read-only vector-memory tool
-# (qdrant-find) through the governed /memory capability route. The route takes
-# no client credential, so the sidecar runs with QDRANT_READ_ONLY and never
-# registers qdrant-store. The SIDECAR holds the Qdrant API key.
+# service so agents can store and find vectors through the governed /memory
+# route. The sidecar uses a collection-scoped JWT; the route exposes no Qdrant
+# credential to callers.
 # Container-to-container over the compose network — no host port, no new tofu
 # constant, no DNS record.
 #
 # Upstream publishes no container image, so the pinned uv base image runs the
 # pinned PyPI release via uvx (Renovate tracks both pins).
 #
-# Inert-until-creds: an empty API key omits both the sidecar service and its
+# Inert-until-creds: an empty scoped JWT omits the sidecar service and its
 # gateway route, so the role converges cleanly before the key is seeded.
 # =============================================================================
 agentgateway_docker_qdrant_mcp_enabled: true
@@ -112,11 +111,14 @@ agentgateway_docker_qdrant_url: >-
   http://{{ hostvars['localhost']['tofu_data']['containers']['qdrant']['ip'] }}:{{
   hostvars['localhost']['tofu_data']['constants']['vector_db_ports']['qdrant_http']
   | mandatory('tofu_data.constants.vector_db_ports.qdrant_http missing — regenerate tofu_inventory.json') }}
-# ai/qdrant QDRANT_API_KEY from bao_local_llm_secrets — the same fact
-# qdrant_docker and llamaindex read.
+# ai/qdrant QDRANT_API_KEY from bao_local_llm_secrets; used by docs search.
 agentgateway_docker_qdrant_api_key: >-
   {{ (bao_local_llm_secrets | default({}))['QDRANT_API_KEY']
      | mandatory('QDRANT_API_KEY must be set in the environment') }}
+# Collection-scoped JWT published by qdrant_docker, or fetched on later runs.
+agentgateway_docker_qdrant_memory_mcp_api_key: >-
+  {{ hostvars['localhost'].qdrant_docker_memory_mcp_jwt
+     | default((bao_local_llm_secrets | default({})).get('QDRANT_MEMORY_MCP_JWT', ''), true) }}
 
 # =============================================================================
 # Docs-search MCP sidecar — a ~60-line FastMCP server (files/mcp_docs_server.py)
