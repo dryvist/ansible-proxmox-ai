@@ -1,6 +1,8 @@
 ---
 # Loads the fabric model registry — the single place any model name, alias,
 # tier or enabled/servable state is written (repo-root llm-models.d/).
+# Disabled candidates may keep provisional limits until they have a catalog
+# entry; enabling one requires a catalog projection before it can be rendered.
 #
 # Its own file, and not two lines inlined into main.yml, so anything that needs
 # the registry in scope loads it THE SAME WAY the converge does:
@@ -77,7 +79,10 @@
       {%- endif -%}
       {%- endfor -%}
       {%- endif -%}
-      {%- if matches.entries | length != 1 -%}
+      {%- if matches.entries | length != 1
+            and not (model.enabled | default(false)) -%}
+      {%- set ns.entries = ns.entries + [model] -%}
+      {%- elif matches.entries | length != 1 -%}
       {%- set ns.errors = ns.errors + [
         model.client_model_id ~ ': expected one catalog entry, found '
         ~ (matches.entries | length | string)
@@ -87,19 +92,27 @@
       {%- set target_name = source.catalog_model | default(source.name) -%}
       {%- set targets = llm_model_catalog_models | selectattr('name', 'equalto', target_name) | list -%}
       {%- if targets | length != 1 -%}
+      {%- if not (model.enabled | default(false)) -%}
+      {%- set ns.entries = ns.entries + [model] -%}
+      {%- else -%}
       {%- set ns.errors = ns.errors + [
         model.client_model_id ~ ': catalog target ' ~ target_name
         ~ ' is missing or ambiguous'
       ] -%}
+      {%- endif -%}
       {%- else -%}
       {%- set target = targets[0] -%}
       {%- set profile_name = model.catalog_profile | default('') -%}
       {%- set profiles = target.profiles | default({}) -%}
       {%- if profile_name and profile_name not in profiles -%}
+      {%- if not (model.enabled | default(false)) -%}
+      {%- set ns.entries = ns.entries + [model] -%}
+      {%- else -%}
       {%- set ns.errors = ns.errors + [
         model.client_model_id ~ ': catalog profile ' ~ profile_name
         ~ ' is missing from ' ~ target.name
       ] -%}
+      {%- endif -%}
       {%- else -%}
       {%- set profile = profiles.get(profile_name, {}) -%}
       {%- set limits = namespace(values={}) -%}
@@ -125,18 +138,18 @@
       {%- endfor -%}
       {{ {'entries': ns.entries, 'errors': ns.errors} | to_json }}
 
-- name: Assert every registry model resolves to one catalog entry
+- name: Assert every enabled registry model resolves to one catalog entry
   ansible.builtin.assert:
     quiet: true
     that:
       - (_llm_router_catalog_projection | from_json).errors | length == 0
     fail_msg: >-
-      Every router model must resolve to one homelab-contracts catalog entry
-      and that entry's catalog_model target must exist:
+      Every enabled router model must resolve to one homelab-contracts catalog
+      entry and that entry's catalog_model target must exist:
       {{ (_llm_router_catalog_projection | from_json).errors }}
     success_msg: >-
-      Every router model resolves to the shared catalog; model limits are
-      projected from the catalog before rendering.
+      Every enabled router model resolves to the shared catalog; model limits
+      are projected from the catalog before rendering.
 
 - name: Replace the raw registry with its catalog limit projection
   ansible.builtin.set_fact:
