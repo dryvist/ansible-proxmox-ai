@@ -32,10 +32,10 @@ owns the URLs, ports and bearer env names. See the registry's own header for the
 full field reference.
 
 Two fields are easy to confuse and must not be: `enabled` means the router
-offers the id at all, `servable` means the backend will actually answer for it.
-The serving host runs llama-server's own router mode against a rendered
-`--models-preset` (one section per present model), so a non-servable id
-returns HTTP 404 rather than a degraded answer.
+offers the id at all, `servable` means its backend is expected to answer for
+it. The large tier is checked against its serving gate; the GPU tier is checked
+against the inventory-backed guest's `/models` listing. Non-servable ids are
+not alias targets.
 
 Common edits:
 
@@ -47,25 +47,11 @@ Common edits:
 | Repoint a role (`subagent`, `lead`, ...) | the Admin UI — not this file |
 | Retire a model | `enabled: false` (or delete the entry) |
 
-## Tiers (one proxy, two backends)
+## Tiers (one proxy, multiple backends)
 
-The router registers every physical backend exactly once. Consumers may request
-a physical ID or a stable role from `llm_router_model_group_aliases`.
-
-| Model ids | Backend | Auth |
-| --- | --- | --- |
-| `mlx-community/*` large models (`Qwen3.6-35B-A3B-OptiQ-4bit`, `gpt-oss-120b-MXFP4-Q8`, …) | `llm-large` runner (`/v1`, bearer) | `LLM_LARGE_BEARER_TOKEN` |
-| `qwen3-4b`, `embeddings` | `llm-light` (CPU), plus `llm-fast` (GPU) when `llm_router_llm_fast_enabled` | none |
-| OpenRouter allowlisted ids | OpenRouter (paid-SaaS egress) | one provider key |
-| `hermes-default` | local complexity router with credential-gated provider fallbacks | one key per API provider |
-
-Each light model id is registered as a CPU `llm-light` deployment, and as a second
-same-`model_name` GPU `llm-fast` deployment **only when `llm_router_llm_fast_enabled`
-is true**. With that toggle false the tier is a single deployment per model name and
-there is no standby. When both are registered, LiteLLM load-balances the pair and
-cools a failed deployment down (`allowed_fails` / `cooldown_time`), so a GPU outage
-drains to CPU. There is **no** cross-tier fallback — a large
-request that fails surfaces the error rather than silently degrading to a small model.
+The router projects each physical backend once and exposes stable consumer
+roles through aliases. See [LLM Router tiers](../../docs/LLM_ROUTER_TIERS.md)
+for the backend map, routing behavior, and Pro6000 profile contract.
 
 ## OpenRouter egress tier (optional, one provider key)
 
@@ -131,6 +117,13 @@ otherwise). Without a shared store, a multi-member pool would count only its
 own spend, silently turning a stated ceiling into N times its real value and
 resetting it on every rolling converge — a control that reports a limit it
 does not hold is worse than an absent one.
+
+LiteLLM uses logical database 1 for router budget/cooldown state and database 2
+for the shared cache/spend client. The response cache and spend features use
+that client's separate LiteLLM key namespaces. The fast-subagent lock callback
+was retired before this change, so this change adds no lock client or key and
+cannot alter its semantics. Logical databases separate keyspaces but do not
+provide separate credentials or failure domains.
 
 Why `redis_port` renders as a literal int rather than `os.environ/`, and why
 `fail_closed_budget_enforcement` is deliberately absent — moved to
@@ -206,6 +199,11 @@ scope word for open-source repositories is `oss` (`github-actions-oss`,
 appears in a credential, path, variable or role name — a key so named reads as
 if the key itself were public.
 
+This proxy issues per-caller virtual keys. The `benchmark` key is scoped to the
+GPU profiles and intentionally has no budget, so repeated benchmark runs do not
+consume a caller's monthly ceiling. It seeds only when its OpenBao value and
+the GPU profile switch are both enabled.
+
 ## Subscription rung (chatgpt/ provider)
 
 `codex-subscription` (`chatgpt/<llm_router_chatgpt_model>`, the ChatGPT
@@ -280,7 +278,7 @@ env -u DOPPLER_PROJECT -u DOPPLER_CONFIG -u DOPPLER_ENVIRONMENT doppler run -- \
 
 ## Not yet live-validated
 
-Verify on the first converge: (a) `litellm[proxy]` + the `otel` / `prometheus`
-callbacks import cleanly in the venv; (b) the `llm-large` runner accepts the bearer
+Verify on the first converge: (a) `litellm[proxy]` + the optional
+`langfuse_otel` / `prometheus` callbacks import cleanly in the venv; (b) the `llm-large` runner accepts the bearer
 on `/v1`; (c) the same-name GPU/CPU deployment pair drains as intended when the GPU
 box is stopped.

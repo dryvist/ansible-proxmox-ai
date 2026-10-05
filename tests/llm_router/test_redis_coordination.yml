@@ -1,15 +1,10 @@
 ---
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_redis_coordination.yml -i localhost, -c local
-# Pins the TYPE of litellm_settings.callbacks in the rendered config.yaml.j2.
+# Pins the Redis keyspace separation in the rendered proxy config.
 #
-# A folded block scalar around a to_json expression (`callbacks: >-`) parses
-# as ONE STRING that merely looks like a list; the proxy then imports that
-# string as a module name and exits at startup, on every router at once. The
-# render is syntactically valid YAML either way, so nothing short of a type
-# check on the parsed value catches it. Rendered twice: with the spend store
-# absent (lock callback off) and present (lock callback on), so both branches
-# of the expression are covered.
+# Response cache and LiteLLM router coordination use separate logical DBs.
+# Render twice so both the store-present and store-absent branches are covered.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_callbacks_render_as_list.yml -i localhost, -c local
@@ -74,10 +69,13 @@
           - _rendered.with.litellm_settings.cache_params.type == 'redis'
           - _rendered.with.litellm_settings.cache_params.mode == 'default_off'
           - _rendered.with.litellm_settings.cache_params.ttl | int > 0
+          - _rendered.with.litellm_settings.cache_params.db | int == llm_router_cache_redis_db | int
           - _rendered.with.litellm_settings.enable_redis_auth_cache is true
           - _rendered.with.general_settings.use_redis_transaction_buffer is true
           - _rendered.with.general_settings.use_shared_health_check is true
           - _rendered.with.router_settings.redis_host is defined
+          - _rendered.with.router_settings.redis_db | int == llm_router_redis_db | int
+          - llm_router_cache_redis_db | int != llm_router_redis_db | int
 
     - name: Without a store, none of it renders
       ansible.builtin.assert:

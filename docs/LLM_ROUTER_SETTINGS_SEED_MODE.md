@@ -37,8 +37,8 @@ throughout, function/route names unchanged, only line numbers moved.)
   - New in this range (additive, not consulted by this role's converge):
     `management_endpoints/router_settings_endpoints.py` adds a Key > Team
     hierarchical `router_settings` lookup ahead of the global one this doc
-    describes — irrelevant here since this proxy issues no virtual keys with
-    their own `router_settings` (see "Redis spend-tracking details" below).
+    describes. The benchmark key uses per-key tag filtering; other seeded keys
+    currently rely on global router settings.
 
 ## Database (optional)
 
@@ -130,8 +130,8 @@ Postgres-backed virtual-key budgets, not the provider budget above, and 503s
 when spend can't be verified against Redis or a database.
 
 The proxy now **has** a database (see `defaults/main/45-database.yml`) and
-**issues virtual keys** (`defaults/main/56-virtual-keys.yml`), one per
-caller. This setting is deliberately still absent: it 503s the fabric's
-only front door whenever spend can't be verified against Redis or the
-database, and no caller's budget enforcement depends on it today.
-Reconsider it if that changes.
+**issues virtual keys** (`defaults/main/56-virtual-keys.yml`), most with
+budgets. The benchmark key is intentionally unbudgeted. Fail-closed mode stays
+absent because it trades serving availability for strict accounting during a
+Redis/database outage; current budgeted keys use LiteLLM's normal store fallback
+behavior instead.

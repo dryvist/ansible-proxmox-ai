@@ -1,0 +1,26 @@
+{# Pro6000 model deployments, split from model-list.yaml.j2 at the GPU-tier seam. #}
+  # --- Pro6000 profiles: separate models on one inventory-backed guest ---
+{% for m in llm_router_gpu_models %}
+  - model_name: {{ m.client_model_id }}
+    litellm_params:
+      model: {{ litellm_model(m) }}
+      tags: {{ llm_router_deployment_tags_by_model[m.client_model_id] | to_json }}
+      api_base: {{ llm_router_llm_gpu_base_url }}
+      api_key: {{ llm_router_light_api_key }}
+      use_chat_completions_api: true
+      max_parallel_requests: {{ m.max_parallel_requests | default(1) }}
+{{ local_bounds(m) }}
+      input_cost_per_token: {{ m.input_cost_per_token | default(0) }}
+      output_cost_per_token: {{ m.output_cost_per_token | default(0) }}
+    model_info:
+      allow_fail_open: true
+      # Loading four heavy profiles in periodic probes can churn GPU memory;
+      # the converge-time /models check verifies the configured server itself.
+      disable_background_health_check: true
+{% if m.profile is defined %}
+      profile: {{ m.profile | to_json }}
+{% endif %}
+      max_input_tokens: {{ m.context_window }}
+      max_tokens: {{ m.max_output_tokens | default(m.context_window) }}
+{{ delegation_hints(m) }}
+{% endfor %}

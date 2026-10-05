@@ -1,0 +1,26 @@
+---
+- name: Load the Pro6000 registry entries
+  ansible.builtin.include_vars:
+    file: "{{ llm_gpu_serving_registry_file }}"
+
+- name: Index registry entries by profile
+  ansible.builtin.set_fact:
+    llm_gpu_serving_registry_by_profile: >-
+      {{ dict(_llm_registry_gpu_pro6000 | map(attribute='profile') | zip(_llm_registry_gpu_pro6000)) }}
+
+- name: Assert each serving profile has exactly one registry entry
+  ansible.builtin.assert:
+    that:
+      - llm_gpu_serving_registry_by_profile | length == _llm_registry_gpu_pro6000 | length
+      - llm_gpu_serving_registry_by_profile.keys() | list | sort == llm_profiles.keys() | list | sort
+      - >-
+        (_llm_registry_gpu_pro6000
+         | rejectattr('upstream_model_id', 'defined') | list | length) == 0
+      - >-
+        (_llm_registry_gpu_pro6000
+         | selectattr('upstream_model_id', 'defined')
+         | selectattr('upstream_model_id', 'equalto', '') | list | length) == 0
+    fail_msg: >-
+      llm-models.d/60-gpu-pro6000.yml must contain exactly one upstream model id
+      for every llm_profiles entry.
+    quiet: true
