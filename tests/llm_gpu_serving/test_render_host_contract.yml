@@ -1,0 +1,65 @@
+---
+- name: Render the primary serving profile as a stopped PVE host contract
+  hosts: localhost
+  gather_facts: false
+  vars:
+    tofu_data:
+      constants:
+        service_ports:
+          llm_fast_api: 10434
+
+  tasks:
+    - name: Create temporary contract output directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: llm-host-unit-contract-
+      register: _host_contract_tmp
+
+    - name: Exercise the host contract renderer
+      block:
+        - name: Render the profile and PVE extra-vars contract
+          ansible.builtin.include_role:
+            name: llm_gpu_serving
+            tasks_from: render-host-contract.yml
+          vars:
+            llm_gpu_serving_host_vllm_bin: /usr/bin/vllm
+            llm_gpu_serving_host_model_cache_mount_path: /tmp/model-cache
+            llm_gpu_serving_host_working_directory: /tmp/llm-cache
+            llm_gpu_serving_host_bind_host: placeholder
+            llm_gpu_serving_host_contract_unit_path: "{{ _host_contract_tmp.path }}/primary.service"
+            llm_gpu_serving_host_contract_vars_path: "{{ _host_contract_tmp.path }}/contract.yml"
+
+        - name: Read rendered unit and runner contract
+          ansible.builtin.slurp:
+            src: "{{ item }}"
+          loop:
+            - "{{ _host_contract_tmp.path }}/primary.service"
+            - "{{ _host_contract_tmp.path }}/contract.yml"
+          register: _host_contract_files
+
+        - name: Decode contract files
+          ansible.builtin.set_fact:
+            _host_unit_text: "{{ _host_contract_files.results[0].content | b64decode }}"
+            _host_contract_data: "{{ _host_contract_files.results[1].content | b64decode | from_yaml }}"
+
+        - name: Assert the registry and primary profile render into one stopped unit
+          ansible.builtin.assert:
+            that:
+              - _host_contract_data.pve_host_systemd_units_contracts | length == 1
+              - _host_contract_data.pve_host_systemd_units_contracts[0].name == llm_gpu_serving_host_contract_unit_name
+              - _host_contract_data.pve_host_systemd_units_contracts[0].state == 'stopped'
+              - _host_contract_data.pve_host_systemd_units_contracts[0].enabled is false
+              - _host_contract_data.pve_host_systemd_units_contracts[0].enabled | type_debug == 'bool'
+              - "'--served-model-name ' ~ llm_gpu_serving_host_registry_model.upstream_model_id in _host_unit_text"
+              - "'--max-model-len ' ~ llm_gpu_serving_host_profile.max_model_len in _host_unit_text"
+              - >-
+                (_host_contract_data.pve_host_systemd_units_contracts[0].content | trim) ==
+                (_host_unit_text | trim)
+            fail_msg: "The rendered host unit must use the marked profile and registry and remain stopped by default."
+            quiet: true
+
+      always:
+        - name: Remove temporary contract outputs
+          ansible.builtin.file:
+            path: "{{ _host_contract_tmp.path }}"
+            state: absent

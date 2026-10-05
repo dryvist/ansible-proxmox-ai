@@ -66,3 +66,13 @@ Callers that only need to stage a campaign artifact leave
 | `llm_gpu_serving_huggingface_hub_version` | Pinned Hugging Face CLI package version, tracked by Renovate |
 | `llm_gpu_serving_vllm_version` | Pinned vLLM package version, tracked by Renovate |
 | `llm_gpu_serving_api_port` | Shared API listener port |
+
+## Proxmox host-interim contract
+
+`playbooks/render-primary-host-unit.yml` renders the profile marked `primary`
+as a secret-free contract for the `pve_host_systemd_units` role in
+`ansible-proxmox`. The renderer requires the target's existing vLLM executable,
+model-cache root, bind address, working directory, and output paths as
+run-time inputs. It writes a stopped, disabled unit contract; the PVE runner
+must receive the contract explicitly and set its desired state for a gated
+start.

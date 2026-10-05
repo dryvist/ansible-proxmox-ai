@@ -1,0 +1,86 @@
+---
+- name: Load the primary GPU profile and artifact registries
+  ansible.builtin.include_tasks: load-registry.yml
+
+- name: Select the uniquely marked primary serving profile
+  ansible.builtin.set_fact:
+    llm_gpu_serving_host_primary_profiles: >-
+      {{ llm_profiles | dict2items
+         | selectattr('value.primary', 'defined')
+         | selectattr('value.primary') | list }}
+
+- name: Validate host contract inputs and primary profile
+  ansible.builtin.assert:
+    that:
+      - llm_gpu_serving_host_primary_profiles | length == 1
+      - llm_gpu_serving_host_primary_profiles[0].key in llm_gpu_serving_registry_by_profile
+      - llm_gpu_serving_registry_by_profile[llm_gpu_serving_host_primary_profiles[0].key].artifact.use == 'serving'
+      - llm_profiles[llm_gpu_serving_host_primary_profiles[0].key].engine == 'vllm'
+      - llm_gpu_serving_host_vllm_bin is defined
+      - llm_gpu_serving_host_vllm_bin is match('^/.+')
+      - llm_gpu_serving_host_model_cache_mount_path is defined
+      - llm_gpu_serving_host_model_cache_mount_path is match('^/.+')
+      - llm_gpu_serving_host_working_directory is defined
+      - llm_gpu_serving_host_working_directory is match('^/.+')
+      - llm_gpu_serving_host_bind_host is defined
+      - llm_gpu_serving_host_bind_host | string | length > 0
+      - llm_gpu_serving_host_contract_unit_path is defined
+      - llm_gpu_serving_host_contract_unit_path is match('^/.+')
+      - llm_gpu_serving_host_contract_vars_path is defined
+      - llm_gpu_serving_host_contract_vars_path is match('^/.+')
+      - llm_gpu_serving_host_contract_state | default('stopped') in ['started', 'stopped']
+      - llm_gpu_serving_host_contract_enabled | default(false) | type_debug == 'bool'
+    fail_msg: >-
+      Host contract rendering requires one primary vLLM profile, valid existing
+      host paths and bind address, and absolute output paths.
+    quiet: true
+
+- name: Resolve the primary profile model and paths
+  ansible.builtin.set_fact:
+    llm_gpu_serving_host_profile_name: "{{ llm_gpu_serving_host_primary_profiles[0].key }}"
+    llm_gpu_serving_host_profile: >-
+      {{ llm_profiles[llm_gpu_serving_host_primary_profiles[0].key]
+         | combine({'port': llm_gpu_serving_api_port}) }}
+    llm_gpu_serving_host_registry_model: >-
+      {{ llm_gpu_serving_registry_by_profile[llm_gpu_serving_host_primary_profiles[0].key] }}
+    llm_gpu_serving_host_model_dir: >-
+      {{ llm_gpu_serving_host_model_cache_mount_path ~ '/'
+         ~ llm_gpu_serving_registry_by_profile[llm_gpu_serving_host_primary_profiles[0].key].artifact.hf_repo }}
+    llm_gpu_serving_host_hf_home: >-
+      {{ llm_gpu_serving_host_hf_home_override
+         | default(llm_gpu_serving_host_working_directory ~ '/.cache/huggingface', true) }}
+
+- name: Resolve parser arguments from the primary profile and artifact
+  ansible.builtin.set_fact:
+    llm_gpu_serving_host_tool_call_parser: >-
+      {{ llm_gpu_serving_host_registry_model.artifact.tool_call_parser
+         | default(llm_gpu_serving_host_profile.tool_call_parser) }}
+    llm_gpu_serving_host_reasoning_parser: >-
+      {{ llm_gpu_serving_host_registry_model.artifact.reasoning_parser
+         | default(llm_gpu_serving_host_profile.reasoning_parser)
+         | mandatory('reasoning_parser is required for vLLM profiles') }}
+
+- name: Render the primary host-interim systemd unit
+  ansible.builtin.template:
+    src: llm-gpu-serving-host.service.j2
+    dest: "{{ llm_gpu_serving_host_contract_unit_path }}"
+    mode: "0600"
+
+- name: Set the PVE unit contract name
+  ansible.builtin.set_fact:
+    llm_gpu_serving_host_contract_unit_name: >-
+      {{ llm_gpu_serving_unit_prefix }}-{{ llm_gpu_serving_host_profile_name }}.service
+
+- name: Build the opt-in PVE unit contract
+  ansible.builtin.set_fact:
+    llm_gpu_serving_host_contracts:
+      - name: "{{ llm_gpu_serving_host_contract_unit_name }}"
+        content: "{{ lookup('ansible.builtin.file', llm_gpu_serving_host_contract_unit_path) }}"
+        state: "{{ llm_gpu_serving_host_contract_state | default('stopped') }}"
+        enabled: "{{ llm_gpu_serving_host_contract_enabled | default(false) | bool }}"
+
+- name: Write the PVE runner extra-vars contract
+  ansible.builtin.copy:
+    content: "{{ {'pve_host_systemd_units_contracts': llm_gpu_serving_host_contracts} | to_nice_yaml(indent=2) }}"
+    dest: "{{ llm_gpu_serving_host_contract_vars_path }}"
+    mode: "0600"
