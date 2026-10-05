@@ -36,7 +36,7 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
 
     # Physical aliases belong to the entries they point at. Hermes selects
     # the complexity-router entry while GPU profiles are inactive, then the
-    # registry alias targeting its active primary. Split the same way
+    # registry alias for its active profile. Split the same way
     # roles/llm_router splits them. An
     # alias on a SERVABLE entry renders as a static model_group_alias and is
     # bound by the role's two render-time asserts; an alias on any other entry
@@ -96,7 +96,8 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
 
     hermes_selector = group_vars["hermes_brain_model"]
     assert "llm_router_gpu_profiles_enabled" in hermes_selector
-    assert "llm_router_hermes_gpu_medium_target" in hermes_selector
+    assert "llm_router_gpu_model_aliases_by_profile" in hermes_selector
+    assert "llm_active_profile" in hermes_selector
     hermes_router = next(
         entry for entry in registry if entry.get("enabled") and entry.get("tier") == "hermes-router"
     )

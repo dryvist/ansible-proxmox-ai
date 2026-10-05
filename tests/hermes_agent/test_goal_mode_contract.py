@@ -79,8 +79,8 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     judge_backend = effective_backend_for_role(registry, "routine")
     hermes_selector = group_vars["hermes_brain_model"]
     assert "llm_router_gpu_profiles_enabled" in hermes_selector
-    assert "llm_router_model_group_aliases" in hermes_selector
-    assert "llm_router_hermes_gpu_medium_target" in hermes_selector
+    assert "llm_router_gpu_model_aliases_by_profile" in hermes_selector
+    assert "llm_active_profile" in hermes_selector
     assert "hermes-default" in hermes_selector
     # The judge normally rides its distinct routine model. During the explicit
     # parked state it shares the active primary until the serving host is rebuilt.
