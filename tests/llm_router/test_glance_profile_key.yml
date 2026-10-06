@@ -1,12 +1,12 @@
 ---
 # Owns ONE contract: the dashboard tile's `glance` virtual key reads only the
 # two routes the tile calls, and its model scope is derived from the registry's
-# GPU projection (client ids plus stable aliases) — never empty, because an
-# empty list on a key means ALL models.
+# GPU projection (the rendered client ids) — never empty, because an empty
+# list on a key means ALL models.
 #
 #   1. Seeded, GPU profiles enabled: the key is registered with the apps-domain
-#      value, scoped to the GPU client ids and the stable GPU aliases, and
-#      allowed_routes names exactly /health and /v2/model/info (plus the
+#      value, scoped to the rendered GPU client ids (the active profile only),
+#      and allowed_routes names exactly /health and /v2/model/info (plus the
 #      trailing-slash spellings), so it cannot complete a request.
 #   2. Seeded, no GPU entry rendered: the scope falls back to the non-matching
 #      sentinel, not an empty list.
@@ -55,24 +55,21 @@
       ansible.builtin.set_fact:
         llm_router_gpu_profiles_enabled: true
 
-    - name: The scope is the GPU client ids plus the stable GPU aliases, on two read routes
+    - name: The scope is the rendered GPU client ids, on two read routes
       ansible.builtin.assert:
         quiet: true
         that:
-          - _gpu_ids | length > 0
-          - _gpu_aliases | length > 0
+          - _gpu_ids | length == 1
           - _key.value == 'sk-fixture-glance-key-0123456789'
-          - _key.models | sort == (_gpu_ids + _gpu_aliases) | unique | sort
-          - _key.models | length > 0
+          - _key.models == _gpu_ids
           - _key.allowed_routes | sort == ['/health', '/health/', '/v2/model/info', '/v2/model/info/']
           - _key.monthly_budget is not defined
         fail_msg: >-
           glance models={{ _key.models }} routes={{ _key.allowed_routes | default('absent') }}
-          expected models={{ (_gpu_ids + _gpu_aliases) | unique | list }} on the two read routes
+          expected models={{ _gpu_ids }} on the two read routes
         success_msg: "glance={{ _key.models }} routes={{ _key.allowed_routes }}"
       vars:
         _gpu_ids: "{{ llm_router_gpu_models | map(attribute='client_model_id') | list }}"
-        _gpu_aliases: "{{ llm_router_gpu_profile_aliases }}"
         _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'glance') | first }}"
 
 - name: Verify the glance key falls back to the sentinel scope with no GPU entry, and is inert unseeded
