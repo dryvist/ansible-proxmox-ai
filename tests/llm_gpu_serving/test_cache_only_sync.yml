@@ -44,11 +44,14 @@
               body: |
                 #!/bin/sh
                 echo "hf $*" >> "{{ _calls }}"
-                case "$*" in *--dry-run*) echo "Will download 1 files" ;; esac
+                case "$*" in *--dry-run*)
+                  if [ -e "{{ _scratch.path }}/synced" ]; then echo "Will download 0 files"
+                  else echo "Will download 1 files"; fi ;; esac
             - name: nvidia-smi
               body: |
                 #!/bin/sh
                 echo "nvidia-smi" >> "{{ _calls }}"
+                if [ -e "{{ _scratch.path }}/gpu-busy" ]; then echo "4242, serving, 1024 MiB"; fi
 
         - name: Cache only, default mode
           ansible.builtin.include_role:
@@ -79,6 +82,68 @@
               - _lines | select('search', _origin) | list | length == 0
               - _lines.index('nvidia-smi') < _lines.index(_downloads | first)
             quiet: true
+
+        - name: A busy GPU with a pending download fails closed
+          block:
+            - name: Mark the GPU busy
+              ansible.builtin.file:
+                path: "{{ _scratch.path }}/gpu-busy"
+                state: touch
+                mode: "0644"
+            - name: Include cache-only sync with a download pending
+              ansible.builtin.include_role:
+                name: llm_gpu_serving
+                tasks_from: cache-sync.yml
+              vars:
+                llm_gpu_serving_model_cache_mount_path: "{{ _cache }}"
+                llm_gpu_serving_model_origin_mount_path: ""
+                llm_gpu_serving_hf_bin: "{{ _scratch.path }}/bin/hf"
+                llm_gpu_serving_cache_sync_artifact_id: "{{ _artifact_id }}"
+            - name: Fail when the assertion did not refuse
+              ansible.builtin.fail:
+                msg: A pending download on a busy GPU was accepted.
+          rescue:
+            - name: Require the busy-GPU message
+              ansible.builtin.assert:
+                that: "'compute application' in ansible_failed_result.msg"
+                quiet: true
+
+        - name: A busy GPU with nothing to download passes without a download
+          vars:
+            _calls_before: "{{ (lookup('file', _calls)).splitlines() | length }}"
+          block:
+            - name: Record that every include is already present
+              ansible.builtin.file:
+                path: "{{ _scratch.path }}/synced"
+                state: touch
+                mode: "0644"
+            - name: Include cache-only sync with nothing pending
+              ansible.builtin.include_role:
+                name: llm_gpu_serving
+                tasks_from: cache-sync.yml
+              vars:
+                llm_gpu_serving_model_cache_mount_path: "{{ _cache }}"
+                llm_gpu_serving_model_origin_mount_path: ""
+                llm_gpu_serving_hf_bin: "{{ _scratch.path }}/bin/hf"
+                llm_gpu_serving_cache_sync_artifact_id: "{{ _artifact_id }}"
+            - name: Read the recorded calls
+              ansible.builtin.slurp:
+                src: "{{ _calls }}"
+              register: _idle_calls
+            - name: The converge neither queried the GPU nor downloaded
+              vars:
+                _new: "{{ (_idle_calls.content | b64decode).splitlines()[_calls_before | int :] }}"
+              ansible.builtin.assert:
+                that:
+                  - _new | select('search', '^nvidia-smi') | list | length == 0
+                  - _new | select('search', '^hf download ') | reject('search', '--dry-run') | list | length == 0
+                quiet: true
+
+        - name: Clear the GPU and sync markers
+          ansible.builtin.file:
+            path: "{{ _scratch.path }}/{{ item }}"
+            state: absent
+          loop: [gpu-busy, synced]
 
         - name: Cache only is refused when the cache itself is missing
           block:

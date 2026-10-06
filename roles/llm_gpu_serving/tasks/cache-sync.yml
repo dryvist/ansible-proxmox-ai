@@ -182,6 +182,15 @@
   changed_when: false
   when: llm_gpu_serving_cache_sync_operation == 'download'
 
+- name: Resolve whether any registered include would download files
+  ansible.builtin.set_fact:
+    llm_gpu_serving_cache_sync_download_pending: >-
+      {{ llm_gpu_serving_cache_sync_previews.results
+         | selectattr('stdout', 'defined')
+         | rejectattr('stdout', 'search', 'Will download 0 files')
+         | list | length > 0 }}
+  when: llm_gpu_serving_cache_sync_operation == 'download'
+
 - name: Read compute applications before downloading a registered artifact
   ansible.builtin.command:
     argv:
@@ -190,7 +199,9 @@
       - --format=csv,noheader
   register: llm_gpu_serving_cache_sync_compute_apps
   changed_when: false
-  when: llm_gpu_serving_cache_sync_operation == 'download'
+  when:
+    - llm_gpu_serving_cache_sync_operation == 'download'
+    - llm_gpu_serving_cache_sync_download_pending | bool
 
 - name: Require an idle GPU before downloading a registered artifact
   ansible.builtin.assert:
@@ -201,12 +212,16 @@
       running: {{ llm_gpu_serving_cache_sync_compute_apps.stdout | trim }}.
       Clear the benchmark workload and retry through the runner.
     quiet: true
-  when: llm_gpu_serving_cache_sync_operation == 'download'
+  when:
+    - llm_gpu_serving_cache_sync_operation == 'download'
+    - llm_gpu_serving_cache_sync_download_pending | bool
 
 - name: Record the idle-GPU decision before downloading a registered artifact
   ansible.builtin.debug:
     msg: "The compute-application query was empty; the registered artifact download may proceed."
-  when: llm_gpu_serving_cache_sync_operation == 'download'
+  when:
+    - llm_gpu_serving_cache_sync_operation == 'download'
+    - llm_gpu_serving_cache_sync_download_pending | bool
 
 - name: Download only the registered pinned artifact includes into the download target
   ansible.builtin.command:
