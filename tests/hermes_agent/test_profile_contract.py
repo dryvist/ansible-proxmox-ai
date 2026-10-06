@@ -246,7 +246,10 @@ def test_github_maint_cron_runs_in_its_own_profile_behind_the_read_token() -> No
 def test_default_profile_has_no_static_write_github_token() -> None:
     defaults = _defaults()
     default_env = template_text(ROLE_ROOT, "hermes-env.j2")
-    group_vars = (REPO_ROOT / "inventory" / "group_vars" / "hermes_agent_group.yml").read_text()
+    group_vars = "".join(
+        path.read_text()
+        for path in sorted((REPO_ROOT / "inventory" / "group_vars" / "hermes_agent_group").glob("*.yml"))
+    )
 
     assert "hermes_agent_github_issues_pat" not in defaults
     assert "hermes_agent_github_issues_pat" not in group_vars
