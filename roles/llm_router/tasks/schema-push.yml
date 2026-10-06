@@ -5,9 +5,12 @@
 # db-push schema it adopts migration history only after verifying that this
 # schema matches the installed package. Keep the push non-destructive (no
 # --accept-data-loss) and do not disable LiteLLM's startup migration check.
-- name: Sync the proxy schema into the database
-  ansible.builtin.command:
-    argv:
+
+# The service-user environment both Prisma commands run under, DATABASE_URL
+# included, so it is set once and never logged.
+- name: Build the Prisma command prefix
+  ansible.builtin.set_fact:
+    llm_router_prisma_prefix:
       - runuser
       - -u
       - "{{ llm_router_user }}"
@@ -21,12 +24,18 @@
         }}:{{ llm_router_db_password | urlencode
         }}@{{ llm_router_db_host }}:{{ llm_router_db_port
         }}/{{ llm_router_db_name }}
-      - "{{ llm_router_venv }}/bin/prisma"
-      - db
-      - push
-      - --schema
-      - "{{ llm_router_site_packages }}/litellm/proxy/schema.prisma"
-      - --skip-generate
+  no_log: true
+
+- name: Ensure the JWT mapping unique index before the push
+  ansible.builtin.include_tasks: jwt-unique-index.yml
+
+- name: Sync the proxy schema into the database
+  ansible.builtin.command:
+    argv: >-
+      {{ llm_router_prisma_prefix + [
+        llm_router_venv ~ '/bin/prisma', 'db', 'push',
+        '--schema', llm_router_site_packages ~ '/litellm/proxy/schema.prisma',
+        '--skip-generate'] }}
     chdir: /tmp
   register: llm_router_schema_push
   # The failure is raised by the next task so its output can be shown redacted;
@@ -40,4 +49,7 @@
 
 - name: Stop on a failed schema push, showing the redacted output
   ansible.builtin.include_tasks: fail-schema-push.yml
+  vars:
+    failed_step: prisma db push
+    failed_result: "{{ llm_router_schema_push }}"
   when: llm_router_schema_push.rc != 0
