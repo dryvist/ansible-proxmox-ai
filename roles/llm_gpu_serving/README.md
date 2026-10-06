@@ -58,6 +58,15 @@ populate the origin. Callers that only stage a campaign artifact leave
 `llm_gpu_serving_cache_sync_notify_service` unset; the normal role sets it to
 `true` so changed local model files restart serving.
 
+## Serving floors
+
+A profile may declare `llm_profiles.<name>.floor`: `concurrency`, `input_len`,
+and `output_len` name the measured workload, `min_tok_s_per_agent` and
+`max_ttft_p90_ms` the accepted result, and `evidence` names the accepted
+measurement. Leave it unset until a measurement is accepted. A declared floor is
+never partial, and a registry entry marked `servable: true` must have its
+profile's floor; `tasks/assert-profile-floors.yml` fails the role otherwise.
+
 ## Key variables
 
 | Variable | Purpose |
@@ -70,6 +79,7 @@ populate the origin. Callers that only stage a campaign artifact leave
 | `llm_gpu_serving_huggingface_hub_version` | Pinned Hugging Face CLI package version, tracked by Renovate |
 | `llm_gpu_serving_vllm_version` | Pinned vLLM package version, tracked by Renovate |
 | `llm_gpu_serving_api_port` | Shared API listener port |
+| `llm_profiles.<name>.floor` | Optional measured serving floor (see Serving floors) |
 
 ## Proxmox host-interim contract
 
