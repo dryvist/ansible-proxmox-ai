@@ -1,0 +1,43 @@
+---
+# Creates the 1.104.0 unique index on LiteLLM_JWTKeyMapping (name and definition:
+# defaults/main/47-jwt-unique-index.yml) ahead of `prisma db push`, so the push
+# sees it already in place. Skipped on a fresh database (no table yet: the push
+# creates the table with the index). Idempotent; creates nothing destructive.
+# Fail closed: duplicate rows make CREATE UNIQUE INDEX fail, the converge stops
+# with a clear message, and no row is deleted or changed.
+# Runs through `prisma db execute` under the same DATABASE_URL as the push; the
+# SQL goes in on stdin and no_log covers the argv that carries the URL.
+- name: Create the JWT mapping unique index if absent
+  ansible.builtin.command:
+    argv: >-
+      {{ llm_router_prisma_prefix + [
+        llm_router_venv ~ '/bin/prisma', 'db', 'execute', '--stdin',
+        '--schema', llm_router_site_packages ~ '/litellm/proxy/schema.prisma'] }}
+    stdin: |
+      DO $$
+      BEGIN
+        IF to_regclass('"{{ llm_router_jwt_mapping_table }}"') IS NOT NULL THEN
+          ALTER TABLE "{{ llm_router_jwt_mapping_table }}"
+            ADD COLUMN IF NOT EXISTS "jwt_issuer" TEXT NOT NULL DEFAULT '';
+          CREATE UNIQUE INDEX IF NOT EXISTS "{{ llm_router_jwt_unique_index }}"
+            ON "{{ llm_router_jwt_mapping_table }}"("{{ llm_router_jwt_unique_columns | join('","') }}");
+        END IF;
+      EXCEPTION WHEN unique_violation THEN
+        RAISE EXCEPTION 'duplicate rows in {{ llm_router_jwt_mapping_table
+          }} block the unique index {{ llm_router_jwt_unique_index
+          }}; resolve the duplicates by hand, nothing was deleted';
+      END $$;
+    chdir: /tmp
+  register: llm_router_jwt_index
+  failed_when: false
+  # IF NOT EXISTS gives no signal whether it created anything; the push that
+  # follows reports and restarts on real schema change.
+  changed_when: false
+  no_log: true
+
+- name: Stop on a failed JWT mapping index, showing the redacted output
+  ansible.builtin.include_tasks: fail-schema-push.yml
+  vars:
+    failed_step: prisma db execute (JWT mapping unique index)
+    failed_result: "{{ llm_router_jwt_index }}"
+  when: llm_router_jwt_index.rc != 0

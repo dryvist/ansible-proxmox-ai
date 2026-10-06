@@ -1,0 +1,112 @@
+---
+# The role creates LiteLLM 1.104.0's LiteLLM_JWTKeyMapping unique index itself,
+# ahead of `prisma db push`, so the push finds nothing to change and needs no
+# --accept-data-loss. Pinned here:
+#   - the index name equals Prisma's default-name rule applied to the
+#     schema.prisma @@unique (table + columns, cut to 59 bytes, + "_key");
+#   - the SQL is idempotent (IF NOT EXISTS), creates the index on exactly those
+#     columns, skips a missing table, and never deletes or drops anything;
+#   - a duplicate-row failure carries a clear message, deletes nothing, and
+#     reaches the redacted-failure include with no secret in it;
+#   - the index step runs before the push, under no_log, with failure deferred.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_jwt_unique_index.yml -i localhost, -c local
+- name: JWT mapping unique index is Prisma-named, idempotent and fail-closed
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_db_password: "s3cr3t-P@ss/word"
+    _defaults: "{{ lookup('ansible.builtin.file', _role_dir ~ '/defaults/main/47-jwt-unique-index.yml') | from_yaml }}"
+    _tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/jwt-unique-index.yml') | from_yaml }}"
+    _push_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/schema-push.yml') | from_yaml }}"
+    _joined: "{{ _defaults.llm_router_jwt_mapping_table ~ '_' ~ _defaults.llm_router_jwt_unique_columns | join('_') }}"
+    # Prisma: cut to 63 - len("_key") bytes when the joined name is that long or longer.
+    _expected: "{{ (_joined[:59] if _joined | length >= 59 else _joined) ~ '_key' }}"
+    _index_task: "{{ _tasks | selectattr('name', 'equalto', 'Create the JWT mapping unique index if absent') | first }}"
+    _index_step: Ensure the JWT mapping unique index before the push
+    _push_step: Sync the proxy schema into the database
+    _push_names: "{{ _push_tasks | map(attribute='name') | list }}"
+  tasks:
+    - name: The index name follows Prisma's rule and fits PostgreSQL
+      ansible.builtin.assert:
+        that:
+          - _defaults.llm_router_jwt_unique_index == _expected
+          - _expected | length <= 63
+          - _expected is match('^LiteLLM_JWTKeyMapping_jwt_issuer_')
+          - _defaults.llm_router_jwt_unique_columns == ['jwt_issuer', 'jwt_claim_name', 'jwt_claim_value']
+        quiet: true
+
+    # Render the task's own stdin template: write it to a scratch file, then
+    # template that file with the role defaults in scope.
+    - name: Stage the SQL template
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .sql.j2
+      register: sql_template
+
+    - name: Write the SQL template
+      ansible.builtin.copy:
+        content: "{{ _index_task['ansible.builtin.command'].stdin }}"
+        dest: "{{ sql_template.path }}"
+        mode: "0600"
+
+    - name: Render the SQL
+      ansible.builtin.set_fact:
+        sql: "{{ lookup('ansible.builtin.template', sql_template.path) }}"
+      vars:
+        llm_router_jwt_mapping_table: "{{ _defaults.llm_router_jwt_mapping_table }}"
+        llm_router_jwt_unique_columns: "{{ _defaults.llm_router_jwt_unique_columns }}"
+        llm_router_jwt_unique_index: "{{ _defaults.llm_router_jwt_unique_index }}"
+
+    - name: Remove the scratch template
+      ansible.builtin.file:
+        path: "{{ sql_template.path }}"
+        state: absent
+
+    - name: The SQL is idempotent, targeted and non-destructive
+      ansible.builtin.assert:
+        that:
+          - >-
+            'CREATE UNIQUE INDEX IF NOT EXISTS "' ~ _expected ~ '"' in sql
+          - >-
+            '("jwt_issuer","jwt_claim_name","jwt_claim_value")' in sql
+          - "'to_regclass' in sql"
+          - "'ADD COLUMN IF NOT EXISTS \"jwt_issuer\" TEXT NOT NULL DEFAULT' in sql"
+          - "'nothing was deleted' in sql"
+          - sql | lower is not search('delete from|drop |truncate |update |accept-data-loss')
+        quiet: true
+
+    - name: The step runs before the push, hidden, with failure deferred
+      ansible.builtin.assert:
+        that:
+          - _index_task.no_log is true
+          - _index_task.failed_when is false
+          - _push_names.index(_index_step) < _push_names.index(_push_step)
+        quiet: true
+
+    - name: A duplicate-row failure goes through the redacted include
+      block:
+        - name: Include the failure task
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/fail-schema-push.yml"
+          vars:
+            failed_step: prisma db execute (JWT mapping unique index)
+            failed_result:
+              rc: 1
+              stdout: ""
+              stderr: >-
+                {{ lookup('ansible.builtin.file',
+                playbook_dir ~ '/fixtures/prisma-duplicate-index-error.txt') }}
+        - name: Unreachable - the failure task must fail
+          ansible.builtin.fail:
+            msg: fail-schema-push.yml did not fail
+      rescue:
+        - name: The message is clear and carries no secret
+          ansible.builtin.assert:
+            that:
+              - "'JWT mapping unique index' in ansible_failed_result.msg"
+              - "'nothing was deleted' in ansible_failed_result.msg"
+              - "'did not fail' not in ansible_failed_result.msg"
+              - ansible_failed_result.msg is not search('postgresql://|s3cr3t|P@ss')
+            quiet: true
