@@ -98,8 +98,10 @@ def test_evalscope_preflight_checks_each_recipe_option_and_the_sandbox_engine():
     asserted = options["ansible.builtin.assert"]["that"]
     assert asserted == [f"_llm_campaign_evalscope_help.stdout is search('{option}')" for option in EVALSCOPE_OPTIONS]
     assert docker["ansible.builtin.command"]["argv"] == ["docker", "info"]
-    for task in (surface, options, docker):
+    for task in (surface, options):
         assert task["when"] == "_llm_campaign_run.executable == 'evalscope'"
+    assert docker["when"][0] == "_llm_campaign_run.executable == 'evalscope'"
+    assert '"engine": "docker"' in docker["when"][1]
 
 
 def test_lm_eval_results_are_found_below_the_per_model_directory():
