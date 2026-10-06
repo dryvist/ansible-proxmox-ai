@@ -235,6 +235,11 @@ def test_hf_cli_and_uv_are_pinned_and_store_tools_on_the_tofu_cache_mount():
     assert hf_install["environment"] == "{{ llm_gpu_serving_uv_environment }}"
     assert venv_create["environment"] == "{{ llm_gpu_serving_uv_environment }}"
     assert vllm_install["environment"] == "{{ llm_gpu_serving_uv_environment }}"
+    assert "datasource=pypi depName=b12x" in core_defaults.read_text(encoding="utf-8")
+    vllm_argv = vllm_install["ansible.builtin.command"]["argv"]
+    assert "vllm=={{ llm_gpu_serving_vllm_version }}" in vllm_argv
+    assert "b12x=={{ llm_gpu_serving_b12x_version }}" in vllm_argv
+    assert not any("[b12x]" in str(arg) for arg in vllm_argv)
     for key in (
         "llm_gpu_serving_uv_cache_dir",
         "llm_gpu_serving_uv_python_install_dir",

@@ -31,8 +31,8 @@ mount point.
 - Installs a Renovate-pinned uv binary and creates a dedicated Python virtual environment.
 - Installs the Renovate-pinned `hf` CLI with uv under the supplied model cache; uv's package, Python, and tool caches use that same directory.
 - Links `vllm` and `hf` into `/usr/local/bin` so campaign preflights find them without a venv path.
-- Installs the Renovate-pinned vLLM version with the `b12x` extra for SM120
-  kernel support.
+- Installs the Renovate-pinned vLLM version and the Renovate-pinned `b12x`
+  package for SM120 kernel support in one uv command.
 - Resolves a recent llama.cpp release and installs its Linux x64 CUDA archive
   using the same release metadata and archive-layout checks as `llama_cpp`.
 - Seeds `model_store: true` artifacts from `llm-models.d/65-gpu-pro6000-artifacts.yml`
