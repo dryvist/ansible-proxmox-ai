@@ -45,7 +45,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     assert artifacts_by_id[entries[0]["artifact_id"]]["use"] == "serving"
     assert artifacts_by_id[entries[1]["artifact_id"]]["use"] == "serving"
     assert all(
-        artifacts_by_id[entry["artifact_id"]]["use"] == "benchmark-only"
+        artifacts_by_id[entry["artifact_id"]]["use"] == "serving"
         for entry in entries[2:]
     )
     for entry in entries:

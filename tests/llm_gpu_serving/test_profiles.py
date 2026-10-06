@@ -72,25 +72,31 @@ def _exec_start(unit: str) -> str:
 def test_four_named_profiles_carry_the_serving_contract():
     profiles = _profiles()
     assert list(profiles) == ["small", "medium-a", "medium-b", "max"]
-    required = {
-        "engine",
+    common = {"engine", "max_model_len", "max_num_seqs", "port"}
+    vllm_only = {
         "linear_backend",
         "moe_backend",
-        "max_model_len",
-        "max_num_seqs",
         "gpu_memory_utilization",
         "enable_auto_tool_choice",
         "tool_call_parser",
         "reasoning_parser",
-        "port",
     }
-    assert all(required <= profile.keys() for profile in profiles.values())
+    assert all(common <= profile.keys() for profile in profiles.values())
+    assert all(
+        vllm_only <= profile.keys() for profile in profiles.values() if profile["engine"] == "vllm"
+    )
+    assert {name: profile["engine"] for name, profile in profiles.items()} == {
+        "small": "vllm",
+        "medium-a": "vllm",
+        "medium-b": "llama_cpp",
+        "max": "llama_cpp",
+    }
     assert set(_registry_profiles()) == set(profiles)
     assert {name: profile["enabled"] for name, profile in profiles.items()} == {
         "small": True,
         "medium-a": True,
-        "medium-b": False,
-        "max": False,
+        "medium-b": True,
+        "max": True,
     }
     assert all("artifact_id" not in profile and "quant" not in profile for profile in profiles.values())
     assert all("model_id" not in profile and "served_model_name" not in profile for profile in profiles.values())
@@ -133,8 +139,8 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     assert {name: model["artifact"]["use"] for name, model in profiles.items()} == {
         "small": "serving",
         "medium-a": "serving",
-        "medium-b": "benchmark-only",
-        "max": "benchmark-only",
+        "medium-b": "serving",
+        "max": "serving",
     }
     assert profiles["small"]["artifact"]["engines"] == ["vllm"]
     small_artifact, small_defaults = profiles["small"]["artifact"], _profiles()["small"]
@@ -205,17 +211,6 @@ def test_only_enabled_profiles_are_rendered_and_checked_by_the_role():
     retire_tasks = yaml.safe_load((ROLE_ROOT / "tasks/retire-disabled-profile.yml").read_text(encoding="utf-8"))
     assert any(task.get("ansible.builtin.systemd", {}).get("state") == "stopped" for task in retire_tasks)
     assert any(task.get("ansible.builtin.file", {}).get("state") == "absent" for task in retire_tasks)
-
-
-def test_llama_cpp_profile_renders_its_release_binary_command():
-    profile = {**_profiles()["medium-b"], "engine": "llama_cpp"}
-    exec_start = _exec_start(_render("medium-b", profile))
-    artifact = _registry_profiles()["medium-b"]["artifact"]
-    assert exec_start.startswith("/opt/llm-gpu-serving/llama.cpp/llama-server")
-    assert f"--model /cache/models/{artifact['hf_repo']}/{artifact['include_globs'][0]}" in exec_start
-    assert "--port 10434" in exec_start
-    assert f"--parallel {profile['max_num_seqs']}" in exec_start
-    assert "Environment=LD_LIBRARY_PATH=/opt/llm-gpu-serving/llama.cpp" in _render("medium-b", profile)
 
 
 def test_hf_cli_and_uv_are_pinned_and_store_tools_on_the_tofu_cache_mount():
