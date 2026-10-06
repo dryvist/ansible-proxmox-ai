@@ -1,0 +1,48 @@
+{#- Campaign dimensions this cell can attest from its own inputs and the target's facts.
+    A leaf with no source here is left out, never written as null. -#}
+{%- set gpu = _llm_campaign_gpu_metadata if _llm_campaign_gpu_metadata is defined else [] -%}
+{%- set processors = ansible_facts.processor | default([]) -%}
+{%- set service_unit = _llm_campaign_service_command.stdout | default('') if _llm_campaign_service_command is defined else '' -%}
+{%- set window_pattern = {'vllm': '--max-model-len[ =]+([0-9]+)', 'llama_cpp': '--ctx-size[ =]+([0-9]+)'}.get(engine) -%}
+{%- set window_matches = service_unit | regex_search(window_pattern, '\\1') if window_pattern and service_unit else none -%}
+{%- set hardware = {
+  'accelerator_model': gpu[0] if gpu else none,
+  'accelerator_memory_gb': ((gpu[1] | float / 1024) | round | int) if gpu else none,
+  'host_cpu': (processors | last) if processors else ansible_facts.architecture | default(none),
+  'host_ram_gb': (ansible_facts.memtotal_mb | int + 512) // 1024,
+  'power_cap_w': (power_cap_w | float) if power_cap_w | float > 0 else none,
+  'chassis_container': 'macos' if ansible_facts.system | default('') == 'Darwin'
+    else ('lxc' if ansible_facts.virtualization_type | default('') == 'lxc' else none),
+} -%}
+{%- set software = {
+  'operating_system': ansible_facts.distribution ~ ' ' ~ ansible_facts.distribution_version,
+  'kernel': ansible_facts.kernel | default(none),
+  'driver_version': gpu[2] if gpu else none,
+  'engine': {'vllm': 'vLLM', 'llama_cpp': 'llama.cpp', 'mlx_lm': 'MLX'}.get(engine),
+  'backend': 'CUDA' if gpu else ('Metal' if engine == 'mlx_lm' else none),
+} -%}
+{%- set model = {
+  'id': _llm_campaign_model.artifact_id,
+  'hf_repo': _llm_campaign_model.hf_repo,
+  'revision_sha': _llm_campaign_model.revision | default(none),
+  'quantization': _llm_campaign_model.quantization | default(none),
+} -%}
+{%- set run = {
+  'allocated_context_tokens': (window_matches | first | int) if window_matches else none,
+  'output_tokens': _llm_campaign_run.output_tokens | int,
+  'concurrent_agents': _llm_campaign_concurrency_value | int,
+  'repeats': _llm_campaign_run.repetitions | int,
+} -%}
+{%- set provenance = {
+  'timestamp_utc': _llm_campaign_started_utc.stdout | trim,
+  'run_id': _llm_campaign_workdir.split('/')[-1] ~ '-' ~ _llm_campaign_cell_slug,
+  'config_name': config_name,
+  'config_git_sha': hostvars['localhost']._llm_campaign_config_ref | default(none),
+} -%}
+{{ {'campaign_dimensions': {
+  'hardware': dict(hardware | dictsort | rejectattr('1', 'none') | list),
+  'software': dict(software | dictsort | rejectattr('1', 'none') | list),
+  'model': dict(model | dictsort | rejectattr('1', 'none') | list),
+  'run': dict(run | dictsort | rejectattr('1', 'none') | list),
+  'provenance': dict(provenance | dictsort | rejectattr('1', 'none') | list),
+}} | to_nice_json }}
