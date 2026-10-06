@@ -72,11 +72,10 @@ def registry_values(root: Path) -> dict[str, set[str]]:
                 if "upstream_model_id" in entry:
                     values.setdefault(str(entry["upstream_model_id"]), set()).add("upstream")
                 # A stable_alias counts as an "alias" value on a servable
-                # entry (unchanged) or a >=1M-context OpenRouter entry not
-                # opted out of ZDR (A5's `long` carve-out,
-                # llm_router_long_context_alias_ids in 50-servable.yml).
-                # Mirrored here on registry-native fields, since this scan
-                # has no Ansible context to call that var directly. The
+                # entry (unchanged) or an OpenRouter ZDR entry that declares
+                # one. Its context window is now read from homelab-contracts,
+                # so this raw-YAML scan uses the categorical ZDR/alias fields
+                # rather than duplicating the numeric threshold. The
                 # hermes-router and embedding carve-outs are deliberately
                 # NOT mirrored here yet: their alias names collide with
                 # common-word literals elsewhere in the tree (see A5 PR
@@ -84,7 +83,7 @@ def registry_values(root: Path) -> dict[str, set[str]]:
                 # explosion the `servable`-only rule was chosen to avoid.
                 is_alias_bearing = entry.get("servable") or (
                     entry.get("tier") == "openrouter"
-                    and (entry.get("context_window") or 0) >= 1_000_000
+                    and entry.get("stable_aliases")
                     and entry.get("zero_data_retention", False) is True
                 )
                 if is_alias_bearing:
