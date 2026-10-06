@@ -208,24 +208,39 @@
     path: "{{ llm_gpu_serving_llamacpp_server_bin }}"
   register: llm_gpu_serving_llamacpp_server_stat
 
+- name: Resolve recent llama.cpp release metadata
+  ansible.builtin.uri:
+    url: "{{ llm_gpu_serving_llamacpp_releases_api }}"
+    return_content: true
+    status_code: 200
+  register: llm_gpu_serving_llamacpp_release
+
+- name: Select the CUDA release asset by name pattern
+  ansible.builtin.set_fact:
+    llm_gpu_serving_llamacpp_asset_url: >-
+      {{ llm_gpu_serving_llamacpp_release.json
+         | map(attribute='assets') | flatten
+         | selectattr('name', 'match', llm_gpu_serving_llamacpp_asset_regex)
+         | map(attribute='browser_download_url') | first | default('', true) }}
+
+- name: Inspect the installed llama.cpp asset marker
+  ansible.builtin.stat:
+    path: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
+  register: llm_gpu_serving_llamacpp_marker_stat
+
+- name: Read the installed llama.cpp asset name
+  ansible.builtin.slurp:
+    src: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
+  register: llm_gpu_serving_llamacpp_marker
+  when: llm_gpu_serving_llamacpp_marker_stat.stat.exists
+
 - name: Install the llama.cpp CUDA release binary
-  when: not llm_gpu_serving_llamacpp_server_stat.stat.exists
+  when: >-
+    not llm_gpu_serving_llamacpp_server_stat.stat.exists
+    or not llm_gpu_serving_llamacpp_marker_stat.stat.exists
+    or (llm_gpu_serving_llamacpp_marker.content | b64decode | trim)
+    != (llm_gpu_serving_llamacpp_asset_url | basename)
   block:
-    - name: Resolve recent llama.cpp release metadata
-      ansible.builtin.uri:
-        url: "{{ llm_gpu_serving_llamacpp_releases_api }}"
-        return_content: true
-        status_code: 200
-      register: llm_gpu_serving_llamacpp_release
-
-    - name: Select the CUDA release asset by name pattern
-      ansible.builtin.set_fact:
-        llm_gpu_serving_llamacpp_asset_url: >-
-          {{ llm_gpu_serving_llamacpp_release.json
-             | map(attribute='assets') | flatten
-             | selectattr('name', 'match', llm_gpu_serving_llamacpp_asset_regex)
-             | map(attribute='browser_download_url') | first | default('', true) }}
-
     # The guest carries the driver only; libcudart and libcublas come from the
     # same release's `cudart-` archive for the same CUDA version.
     - name: Name the matching CUDA runtime asset
@@ -309,6 +324,14 @@
       notify:
         - Stop every other GPU serving profile before switching
         - Start the active GPU serving profile
+
+    - name: Record the installed llama.cpp asset name
+      ansible.builtin.copy:
+        content: "{{ llm_gpu_serving_llamacpp_asset_url | basename }}\n"
+        dest: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
+        owner: "{{ llm_gpu_serving_user }}"
+        group: "{{ llm_gpu_serving_group }}"
+        mode: "0640"
 
     - name: Remove the temporary llama.cpp extraction directory
       ansible.builtin.file:

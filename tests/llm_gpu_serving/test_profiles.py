@@ -185,12 +185,12 @@ def test_each_vllm_profile_renders_its_runtime_flags():
         assert "{{" not in exec_start
 
 
-def test_quantization_selects_the_expected_vllm_flag():
+def test_nvfp4_profiles_leave_quantization_to_the_checkpoint():
     profiles = _profiles()
     small = _exec_start(_render("small", profiles["small"]))
     medium = _exec_start(_render("medium-a", profiles["medium-a"]))
-    assert "--quantization modelopt" in small
-    assert "--quantization modelopt" in medium
+    assert "--quantization" not in small
+    assert "--quantization" not in medium
     assert "--tool-call-parser qwen3_xml" in small
     assert "--reasoning-parser qwen3" in small
     assert "--linear-backend b12x" in medium
