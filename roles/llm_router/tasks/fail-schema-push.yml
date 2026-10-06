@@ -1,0 +1,22 @@
+---
+# Fails the converge with the Prisma output of a failed schema push. The push
+# task itself stays no_log (its argv carries the database URL), so the output is
+# surfaced here instead, with every URL, the database password and token-like
+# values removed. Never relax no_log on the push to see the output.
+- name: Fail with the redacted schema push output
+  ansible.builtin.fail:
+    msg: >-
+      prisma db push exited {{ llm_router_schema_push.rc }}.
+      Output (URLs, passwords and tokens redacted):
+      {{ redacted_output }}
+  vars:
+    # '<unset>' keeps an empty password from matching (and blanking) every gap.
+    db_password: "{{ llm_router_db_password | default('<unset>', true) | string }}"
+    redacted_output: >-
+      {{ ((llm_router_schema_push.stdout | default('')) ~ ' | ' ~ (llm_router_schema_push.stderr | default('')))
+         | regex_replace('[A-Za-z][A-Za-z0-9+.-]*://\S+', '<redacted-url>')
+         | regex_replace('(?i)(password|passwd|token|secret|api[_-]?key)(\s*[=:]\s*)\S+', '\1\2<redacted>')
+         | regex_replace('(?i)(bearer\s+)\S+', '\1<redacted>')
+         | regex_replace('sk-[A-Za-z0-9_-]{8,}', '<redacted>')
+         | replace(db_password | urlencode, '<redacted>')
+         | replace(db_password, '<redacted>') }}

@@ -177,39 +177,9 @@
   when: llm_router_store_model_in_db | bool and llm_router_prisma_client_fresh.rc != 0
   notify: Restart litellm
 
-# Reconcile the package schema before startup. LiteLLM 1.104.0 then runs its
-# Prisma migration resolver with the fail-closed check enabled; on the legacy
-# db-push schema it adopts migration history only after verifying that this
-# schema matches the installed package. Keep the push non-destructive (no
-# --accept-data-loss) and do not disable LiteLLM's startup migration check.
 - name: Sync the proxy schema into the database
-  ansible.builtin.command:
-    argv:
-      - runuser
-      - -u
-      - "{{ llm_router_user }}"
-      - --
-      - env
-      - "HOME={{ llm_router_home }}"
-      - "XDG_CACHE_HOME={{ llm_router_home }}/.cache"
-      - "PATH={{ llm_router_venv }}/bin:/usr/bin:/bin"
-      - >-
-        DATABASE_URL=postgresql://{{ llm_router_db_user
-        }}:{{ llm_router_db_password | urlencode
-        }}@{{ llm_router_db_host }}:{{ llm_router_db_port
-        }}/{{ llm_router_db_name }}
-      - "{{ llm_router_venv }}/bin/prisma"
-      - db
-      - push
-      - --schema
-      - "{{ llm_router_site_packages }}/litellm/proxy/schema.prisma"
-      - --skip-generate
-    chdir: /tmp
-  register: llm_router_schema_push
-  changed_when: "'already in sync' not in llm_router_schema_push.stdout"
+  ansible.builtin.include_tasks: schema-push.yml
   when: llm_router_store_model_in_db | bool
-  no_log: true
-  notify: Restart litellm
 
 - name: Assert every secret rendered into the LiteLLM env file is present
   ansible.builtin.include_tasks: >-
