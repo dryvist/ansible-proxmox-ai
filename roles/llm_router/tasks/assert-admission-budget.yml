@@ -3,16 +3,35 @@
 # a local rung that is already busy. A 429 hands over at once (zero rate-limit
 # retries), the retry budget a local rung can spend waiting — retries x
 # backoff — fits inside llm_router_admission_budget_seconds, and a stalled
-# first byte is bounded per rung below the ingress cut. Its own file so a
-# test can import exactly this assert and prove each failure mode. That every
-# rendered local deployment actually carries the bound is the template's
-# local_bounds macro plus tests/llm_router/test_admission_budget_and_ladder.yml.
+# first byte is bounded per rung below the ingress cut. One exception, by
+# name: the names the Hermes agents call (llm_router_rate_limit_retry_names)
+# retry a 429 llm_router_hermes_rate_limit_retries times, each retry after the
+# upstream's Retry-After, so this file holds every OTHER name at zero and
+# bounds the longest that wait can last. Its own file so a test can import
+# exactly this assert and prove each failure mode. That every rendered local
+# deployment actually carries the bound is the template's local_bounds macro
+# plus tests/llm_router/test_admission_budget_and_ladder.yml; the rendered
+# retry policy is pinned by tests/llm_router/test_hermes_rate_limit_retry.yml.
 - name: Assert the admission budget bounds every local rung and 429s hand over at once
   ansible.builtin.assert:
     quiet: true
     that:
       # A 429 from a rung is the hand-off signal, never a reason to sleep on it.
       - llm_router_rate_limit_retries | int == 0
+      # ...for every name but the ones the Hermes agents call and the
+      # multi-member cloud groups (a retry onto the next member, bounded
+      # below): no other group in model_group_retry_policy retries.
+      - _llm_router_unlisted_retry_groups | length == 0
+      # The names the Hermes agents call DO wait out a busy slot, so the list
+      # is non-empty and the figure positive: a zero here silently returns
+      # every agent to a bare 429.
+      - llm_router_rate_limit_retry_names | length > 0
+      - llm_router_hermes_rate_limit_retries | int >= 1
+      # The longest that wait can last — every retry sleeping LiteLLM's
+      # longest honoured Retry-After — plus one admitted attempt's first-byte
+      # bound still ends before the client's own stream read gives up.
+      - (_llm_router_hermes_worst_wait | int) + (llm_router_local_stream_timeout_seconds | int)
+        < (ai_stream_read_timeout_seconds | int)
       # The one timeout retry and its backoff are part of the budget below.
       - llm_router_timeout_retries | int <= 1
       - llm_router_retry_max_delay_seconds | int >= llm_router_retry_after_seconds | int
@@ -35,6 +54,13 @@
     fail_msg: >-
       Admission budget is unsound (roles/llm_router/tasks/assert-admission-budget.yml):
       rate_limit_retries={{ llm_router_rate_limit_retries }} (must be 0),
+      names retrying a 429 outside llm_router_rate_limit_retry_names
+      {{ llm_router_rate_limit_retry_names }} and the multi-member cloud groups:
+      {{ _llm_router_unlisted_retry_groups }} (must be none),
+      Hermes retries={{ llm_router_hermes_rate_limit_retries }} (at least 1) wait
+      up to {{ _llm_router_hermes_worst_wait }}s, which with the
+      {{ llm_router_local_stream_timeout_seconds }}s first-byte bound must stay
+      under the {{ ai_stream_read_timeout_seconds }}s stream read,
       timeout_retries={{ llm_router_timeout_retries }},
       retry_after={{ llm_router_retry_after_seconds }}s,
       local num_retries={{ llm_router_local_num_retries }} give a
@@ -46,7 +72,9 @@
       must be a positive, router-owned bound.
     success_msg: >-
       A busy local rung costs at most {{ _llm_router_local_admission_budget }}s of
-      retry backoff (budget {{ llm_router_admission_budget_seconds }}s); a hung
+      retry backoff (budget {{ llm_router_admission_budget_seconds }}s); the names
+      the Hermes agents call wait at most {{ _llm_router_hermes_worst_wait }}s
+      before handing over and no other name waits; a hung
       streaming rung {{ llm_router_local_stream_timeout_seconds }}s under the
       {{ ai_ingress_response_header_timeout_seconds }}s ingress cut; a hung
       non-streaming one {{ llm_router_local_request_timeout_seconds }}s, the
@@ -58,3 +86,15 @@
     _llm_router_local_admission_budget: >-
       {{ ([llm_router_local_num_retries | int, llm_router_timeout_retries | int] | max)
          * (llm_router_retry_after_seconds | int) }}
+    # Groups that retry a 429 although neither the Hermes list nor the
+    # multi-member cloud rule gives them leave to.
+    _llm_router_unlisted_retry_groups: >-
+      {{ llm_router_rate_limit_retries_by_group | dict2items
+         | selectattr('value', 'gt', 0) | map(attribute='key')
+         | difference(llm_router_rate_limit_retry_names + llm_router_multi_member_cloud_groups)
+         | list }}
+    # Every Hermes retry sleeping the longest Retry-After LiteLLM honours, plus
+    # a second each for its jitter.
+    _llm_router_hermes_worst_wait: >-
+      {{ (llm_router_hermes_rate_limit_retries | int)
+         * ((llm_router_retry_after_header_ceiling_seconds | int) + 1) }}

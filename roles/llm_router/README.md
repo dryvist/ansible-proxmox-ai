@@ -102,10 +102,12 @@ retrying, since a retry just re-queues behind the same busy box.
 
 `num_retries: 0`; default `retry_policy`: rate limit `0`, timeout `0`. Local
 failures fall back; multi-member cloud groups retry 429s twice to reach another
-member. `allowed_fails: 2` parks a failing member; `cooldown_time: 30s` delays
-re-probes. Per-error allowances are `1000` for rate limits, to avoid cooling
-healthy busy members, and `100` for timeouts, to park sustained failure storms.
-Source: `defaults/main/40-routing.yml`.
+member. The names the Hermes agents call (`llm_router_rate_limit_retry_names`)
+retry a 429 `llm_router_hermes_rate_limit_retries` times first, each after the
+upstream's `Retry-After`; no other name does. `allowed_fails: 2` parks a failing
+member; `cooldown_time: 30s` delays re-probes. Per-error allowances are `1000`
+for rate limits, to avoid cooling healthy busy members, and `100` for timeouts,
+to park sustained failure storms. Source: `defaults/main/40-routing.yml`.
 
 ## OpenRouter wildcard passthrough
 
