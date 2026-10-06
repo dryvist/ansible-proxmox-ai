@@ -15,7 +15,7 @@ def _defaults() -> dict:
 
 
 def _health_block() -> dict:
-    tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    tasks = yaml.safe_load((ROLE_ROOT / "tasks/health-check.yml").read_text(encoding="utf-8"))
     return next(t for t in tasks if t.get("name") == HEALTH_TASK)
 
 

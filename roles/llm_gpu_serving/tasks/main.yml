@@ -371,47 +371,5 @@
 - name: Apply pending GPU serving service changes
   ansible.builtin.meta: flush_handlers
 
-- name: Verify the active GPU serving profile is healthy
-  vars:
-    llm_gpu_serving_active_unit: "{{ llm_gpu_serving_unit_prefix }}-{{ llm_active_profile }}.service"
-  block:
-    - name: Probe the active GPU serving profile until it answers
-      ansible.builtin.uri:
-        url: "http://{{ llm_gpu_serving_health_host }}:{{ llm_profiles[llm_active_profile].port }}/v1/models"
-        status_code: 200
-      register: llm_gpu_serving_health
-      retries: "{{ llm_gpu_serving_health_retries }}"
-      delay: "{{ llm_gpu_serving_health_delay }}"
-      until: llm_gpu_serving_health.status == 200
-  rescue:
-    - name: Read the active GPU serving unit status and recent journal
-      ansible.builtin.command:
-        argv: "{{ item }}"
-      loop:
-        - [systemctl, status, "{{ llm_gpu_serving_active_unit }}", --no-pager]
-        - - journalctl
-          - -u
-          - "{{ llm_gpu_serving_active_unit }}"
-          - --no-pager
-          - -n
-          - "{{ llm_gpu_serving_health_journal_lines }}"
-      register: llm_gpu_serving_health_diagnostics
-      changed_when: false
-      failed_when: false
-      loop_control:
-        label: "{{ item[0] }}"
-
-    - name: Show the active GPU serving unit status and recent journal
-      ansible.builtin.debug:
-        msg: "{{ item.stdout_lines | map('regex_replace', llm_gpu_serving_health_redact_regex, '<redacted>') | list }}"
-      loop: "{{ llm_gpu_serving_health_diagnostics.results }}"
-      loop_control:
-        label: "{{ item.item[0] }}"
-
-    - name: Fail with the health check outcome
-      ansible.builtin.fail:
-        msg: >-
-          GPU serving unit {{ llm_gpu_serving_active_unit }} did not answer /v1/models
-          after {{ llm_gpu_serving_health_retries }} attempts
-          {{ llm_gpu_serving_health_delay }}s apart; the unit status and the last
-          {{ llm_gpu_serving_health_journal_lines }} journal lines are shown above.
+- name: Wait for the active GPU serving profile to answer
+  ansible.builtin.include_tasks: health-check.yml
