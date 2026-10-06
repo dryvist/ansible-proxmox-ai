@@ -124,7 +124,6 @@ def _context() -> dict[str, Any]:
         hermes_agent_splunk_mcp_token="SPLUNKTOK",
         hermes_agent_zammad_api_token="ZAMTOK",
         hermes_agent_github_read_token="READTOK",
-        hermes_agent_github_issues_pat="WRITETOK",
     )
     return context
 
