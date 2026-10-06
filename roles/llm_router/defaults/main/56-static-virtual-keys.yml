@@ -95,6 +95,21 @@ _llm_router_static_virtual_keys:
     value: "{{ bao_apps_secrets.prometheus_llm_router_key | default('', true) }}"
     models: "{{ ['no-default-models'] }}"
     allowed_routes: ["/metrics", "/metrics/"]
+  # The dashboard's deployment-profile tile (ansible-proxmox-apps roles/glance)
+  # reads /health and /v2/model/info. Same contract as the scraper above: the
+  # value is generated in the apps domain and merely read here, no-op until
+  # seeded. Its models are the GPU client ids plus the registry's stable GPU
+  # aliases (the set the Hermes profile keys carry), so /v2/model/info lists
+  # the GPU deployments for it; with no GPU entry rendered it falls back to the
+  # same non-matching sentinel (an empty list would mean ALL models). Only the
+  # two read routes are allowed, so the key cannot complete a request.
+  - alias: glance
+    value: "{{ bao_apps_secrets.glance_llm_router_key | default('', true) }}"
+    models: >-
+      {{ ((llm_router_gpu_models | map(attribute='client_model_id') | list)
+          + (llm_router_gpu_profile_aliases if (llm_router_gpu_profiles_enabled | bool) else [])
+          ) | unique | list or ['no-default-models'] }}
+    allowed_routes: ["/health", "/health/", "/v2/model/info", "/v2/model/info/"]
   # Zammad's AI provider (custom_open_ai), scoped to the `cheap` role —
   # zammad_ai_model names this same role.
   - alias: zammad
