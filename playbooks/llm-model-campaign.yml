@@ -21,7 +21,7 @@
           - benchmark_cache_path is defined
           - benchmark_cache_path | string is match('^/.+')
           - benchmark_cache_path is not search('(^|/)[.][.](/|$)')
-          - config_name is match('^(llama-cpp|vllm|mlx|lm-eval)/[a-z0-9-]+$')
+          - config_name is match('^(llama-cpp|vllm|mlx|lm-eval|evalscope)/[a-z0-9-]+$')
           - engine is defined
           - model_size is defined
           - concurrency_list is defined
@@ -95,7 +95,17 @@
       ansible.builtin.command:
         argv: [uv, run, mlx-bench-publish, --help]
         chdir: "{{ _llm_campaign_workspace.path }}/mlx-benchmarks"
+      register: _llm_campaign_publish_help
       changed_when: false
+
+    - name: Require the converter to accept the campaign dimensions file
+      ansible.builtin.assert:
+        that:
+          - _llm_campaign_publish_help.stdout is search('--campaign-dimensions')
+        fail_msg: >-
+          The pinned benchmark revision {{ _llm_campaign_benchmarks_ref }} has no
+          mlx-bench-publish --campaign-dimensions; advance the pin before dispatch.
+        quiet: true
 
     - name: Resolve the selected model-size and engine from the artifact registry
       ansible.builtin.set_fact:
@@ -145,6 +155,7 @@
     - name: Save the prepared campaign inputs for the inventory target play
       ansible.builtin.set_fact:
         _llm_campaign_checkout: "{{ _llm_campaign_workspace.path }}/mlx-benchmarks"
+        _llm_campaign_config_ref: "{{ _llm_campaign_benchmarks_ref }}"
         _llm_campaign_workdir: "{{ _llm_campaign_workspace.path }}"
         _llm_campaign_model: "{{ _llm_campaign_selected_artifacts[0] }}"
         _llm_campaign_concurrencies: "{{ _llm_campaign_concurrency_values }}"
