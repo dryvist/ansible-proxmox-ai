@@ -1,0 +1,62 @@
+---
+# A Hermes brain model that is a group alias (the GPU profile aliases, or any
+# stable alias) must not leave the keys unable to call the aliased entry
+# point the shared ladder falls back to. Every Hermes key must hold the whole
+# chain its tags permit, by name.
+#
+# Run from the repository root:
+#   ansible-playbook tests/llm_router/test_hermes_public_key_alias_brain.yml -i localhost, -c local
+- name: Verify Hermes keys hold the ladder when the brain model is a group alias
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: test-openrouter-provider-key
+      OPENCODE_API_KEY: test-opencode-provider-key
+      OPENAI_API_KEY: test-openai-provider-key
+      ZAI_API_KEY: test-zai-provider-key
+    bao_apps_secrets:
+      hermes_default_llm_router_key: sk-fixture-hermes-default
+      hermes_private_llm_router_key: sk-fixture-hermes-private
+      donna_llm_router_key: sk-fixture-donna
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: default
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Confirm the brain model is an alias that is not itself a ladder name
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - hermes_brain_model in llm_router_model_group_aliases
+          - hermes_brain_model not in _llm_router_directly_callable_ladder_names
+          - llm_router_hermes_router_ids | difference(_llm_router_directly_callable_ladder_names) | length == 0
+
+    - name: Run the profile-key chain contract against the rendered keys
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-hermes-profile-key-brain-model.yml"
