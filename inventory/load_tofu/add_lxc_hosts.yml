@@ -33,7 +33,7 @@
     - item.value.ansible_connection | default('') == 'ssh'
     - (item.value.tags | default([]))
          | intersect(
-             ['hermes-agent', 'llm-router', 'llm-redis', 'llm-vllm',
+             ['hermes-agent', 'llm-router', 'llm-redis', 'llm-vllm', 'llm-gpu',
               'llm-fast', 'open-webui', 'herdr', 'langfuse', 'phoenix']
              + (_llm_cpu_pool_tags | default([]))
            )
@@ -65,7 +65,7 @@
     - item.value.ansible_connection | default('') == 'ssh'
     - (item.value.tags | default([]))
          | intersect(
-             ['hermes-agent', 'llm-router', 'llm-redis', 'llm-vllm',
+             ['hermes-agent', 'llm-router', 'llm-redis', 'llm-vllm', 'llm-gpu',
               'llm-fast', 'open-webui', 'herdr', 'langfuse', 'phoenix']
              + (_llm_cpu_pool_tags | default([]))
            )
@@ -112,6 +112,7 @@
           ['llm_fast_group']
           if 'llm-fast' in (item.value.tags | default([]))
           and 'llm-vllm' not in (item.value.tags | default([]))
+          and 'llm-gpu' not in (item.value.tags | default([]))
           and (item.value.tags | default([])) | intersect(_llm_cpu_pool_tags | default([])) | length == 0
           else []
         ) +
@@ -137,6 +138,18 @@
         (
           ['llm_vllm_group']
           if 'llm-vllm' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['llm_gpu_group']
+          if 'llm-gpu' in (item.value.tags | default([]))
+          else []
+        ) +
+        (
+          ['llm_model_store_writer_group']
+          if (item.value.tags | default([])) | intersect(['llm-vllm', 'llm-gpu']) | length > 0
+             and item.value.models_origin_mount_path | default('', true) | length > 0
+             and not (item.value.models_origin_mount_read_only | default(true) | bool)
           else []
         ) +
         (
@@ -301,6 +314,10 @@
     # none. The llama_cpp role derives llama_cpp_models_dir from this
     # instead of a hardcoded default, so the two can never disagree.
     container_models_mount_path: "{{ item.value.models_mount_path | default('', true) }}"
+    container_models_cache_mount_path: "{{ item.value.models_cache_mount_path | default('', true) }}"
+    container_models_origin_mount_path: "{{ item.value.models_origin_mount_path | default('', true) }}"
+    container_models_origin_mount_read_only: >-
+      {{ item.value.models_origin_mount_read_only | default(true, true) | bool }}
     host_tags: "{{ item.value.tags | default([]) }}"
     # Which Hermes agent this guest runs. The deployment.json tag is the
     # single source of truth; roles/hermes_agent/defaults derives
@@ -316,8 +333,9 @@
     # keeps those plays from silently reverting every guest to the first
     # agent and reconciling it with the first agent's credentials.
     hermes_agent_identity: >-
-      {{ 'donna' if 'hermes-donna' in (item.value.tags | default([]))
-         else 'hermes' }}
+      {{ 'hermes-private' if 'hermes-private' in (item.value.tags | default([]))
+         else ('donna' if 'hermes-donna' in (item.value.tags | default([]))
+               else 'hermes') }}
   vars:
     # Derived from tags, per-item, rather than a hand-maintained name
     # list: 'hermes-agent' covers every Hermes agent guest (hermes-donna
@@ -335,7 +353,7 @@
     tofu_ssh_container: >-
       {{ (item.value.tags | default([]))
          | intersect(
-             ['hermes-agent', 'llm-router', 'llm-redis', 'llm-vllm',
+             ['hermes-agent', 'llm-router', 'llm-redis', 'llm-vllm', 'llm-gpu',
               'llm-fast', 'open-webui', 'herdr', 'langfuse', 'phoenix']
              + (_llm_cpu_pool_tags | default([]))
            )

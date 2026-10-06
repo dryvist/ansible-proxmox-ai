@@ -164,10 +164,24 @@ def test_sustained_saturation_still_escalates_to_down() -> None:
         "llm_router_rate_limit_retries",
     )
 
+    # The brain alias is a name the Hermes agents call, so it waits out a 429
+    # for its own retries, each sleeping at most LiteLLM's longest honoured
+    # Retry-After (plus a second of jitter).
+    hermes_retries = _int_var(
+        r"^llm_router_hermes_rate_limit_retries:\s*(\d+)",
+        ROUTER_DEFAULTS,
+        "llm_router_hermes_rate_limit_retries",
+    )
+    header_ceiling = _int_var(
+        r"^llm_router_retry_after_header_ceiling_seconds:\s*(\d+)",
+        ROUTER_DEFAULTS,
+        "llm_router_retry_after_header_ceiling_seconds",
+    )
+
     assert grace > 0, "a zero grace disables saturation reporting entirely"
     # Must outlast the router's own tolerance, or the watchdog pages for a
     # backlog the request path would still have ridden out.
-    router_tolerance = retry_after * rate_limit_retries
+    router_tolerance = max(retry_after * rate_limit_retries, hermes_retries * (header_ceiling + 1))
     assert grace * interval > router_tolerance, (
         f"busy grace {grace * interval}s must exceed the router's own {router_tolerance}s "
         "429 tolerance, else the watchdog pages for saturation real jobs survive"

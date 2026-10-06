@@ -1,10 +1,12 @@
-# llm_router router_settings seed mode: the litellm==1.102.0 facts
+# llm_router router_settings seed mode and LiteLLM 1.104.0 schema upgrade
 
 Split out of `roles/llm_router/README.md` ("Editing ladders in the UI") to
 keep both files under the repo's per-file token budget
-(`.token-limits.yaml`). Verified against the pinned `litellm==1.102.0` wheel,
-never guessed. (Re-verified on the 1.98.0 → 1.102.0 bump: same mechanism
-throughout, function/route names unchanged, only line numbers moved.)
+(`.token-limits.yaml`). The router-settings API details below are a historical
+source check against LiteLLM 1.102.0; LiteLLM 1.104.0 refactored the proxy
+internals, so re-verify those exact paths before relying on them for a later
+upgrade. The schema-upgrade section describes the current `litellm==1.104.0` migration
+contract.
 
 - **Startup merge direction**: with `store_model_in_db: true`, the database
   row wins over `config.yaml` for every key it carries — `ProxyConfig.
@@ -34,11 +36,11 @@ throughout, function/route names unchanged, only line numbers moved.)
   changes are served from `user_api_key_cache`, in-memory TTL 60s by default
   (`proxy_server.py:1660`, `general_settings.user_api_key_cache_ttl`, read at
   `proxy_server.py:5860`).
-  - New in this range (additive, not consulted by this role's converge):
+  - New in the 1.102.0 source check (additive, not consulted by this role's converge):
     `management_endpoints/router_settings_endpoints.py` adds a Key > Team
     hierarchical `router_settings` lookup ahead of the global one this doc
-    describes — irrelevant here since this proxy issues no virtual keys with
-    their own `router_settings` (see "Redis spend-tracking details" below).
+    describes. The benchmark key uses per-key tag filtering; other seeded keys
+    currently rely on global router settings.
 
 ## Database (optional)
 
@@ -61,31 +63,51 @@ Scope is deliberately narrow, and the reasoning is in
   converge in `ansible-proxmox-apps` uses to create the role, so the two ends
   cannot drift.
 
-## Schema updates: `db push` (ansible), never `migrate deploy` (litellm)
+## Schema updates: reconcile before startup, then fail closed
 
-`main.yml` runs `prisma db push` as the service user before every restart —
-idempotent, and the only path that has ever touched this schema. LiteLLM's
-own startup also tries to manage the schema, and its default there is
-different: `proxy_cli.py` calls `PrismaManager.setup_database(use_migrate=not
-use_prisma_db_push, ...)` with `use_prisma_db_push` defaulting `False` (a
-CLI-only flag with no env var), so an unmodified `litellm` boot always
-attempts `prisma migrate deploy`. Against a schema this role has only ever
-`db push`ed — no `_prisma_migrations` history — that fails `P3005` (schema
-not empty), and litellm's own recovery path then tries to create a baseline
-migration inside its installed package directory
-(`litellm_proxy_extras/migrations/0_init`), which is root-owned like every
-other pip-installed path, so the service user's write fails with
-`PermissionError` and the proxy crash-loops (ai #845, litellm 1.98.0 →
-1.102.0).
+`main.yml` runs `prisma db push` as the service user after generating the
+client for the installed schema. It does not pass `--accept-data-loss`. On
+startup, LiteLLM 1.104.0 uses Prisma migrations and its migration check is
+enabled by default; `litellm.env.j2` sets
+`ENFORCE_PRISMA_MIGRATION_CHECK=True` explicitly. Do not set
+`DISABLE_SCHEMA_UPDATE` or turn off the migration check.
 
-The fix is `DISABLE_SCHEMA_UPDATE=True` in the rendered env file
-(`litellm.env.j2`, gated on `llm_router_store_model_in_db` like the `db push`
-task itself): `should_update_prisma_schema()` then returns `False` and
-startup takes the `check_prisma_schema_diff()` branch instead, which only
-logs a diff (never raises) and leaves schema management entirely to the
-`db push` task that already ran. Verified against the pinned
-`litellm==1.102.0` wheel (`litellm/proxy/proxy_cli.py`,
-`litellm/proxy/db/prisma_client.py`, `litellm/proxy/db/check_migration.py`).
+This router's existing database was managed by `db push` and has no
+`_prisma_migrations` ledger. LiteLLM 1.104.0's v2 resolver handles that case
+only after verifying that the current database schema matches the installed
+Prisma model; if the diff is non-empty or setup fails, startup exits. The
+resolver's baseline records packaged migrations only after that schema check;
+it does not apply old data backfills. This keeps an uncertain schema from
+serving silently.
+
+For an existing database upgraded from LiteLLM 1.102.x or earlier, release
+notes require two SpendLogs indexes to be created concurrently before the
+rollout. The migration package's 1.104.0 entries for these indexes are no-ops,
+so the schema push and startup baseline do not create them. Use the exact SQL
+and one-member-first rollout below.
+
+### LiteLLM 1.104.0 release and rollout
+
+The role pins `litellm[proxy]==1.104.0`, verified as the current stable release
+on 2026-10-05. See the [official release and migration notes](https://docs.litellm.ai/release_notes/v1.104.0/v1-104-0).
+The release rejects an unset, empty, or public default master key; this role
+checks the configured key without logging its value. Admin UI and `lite` CLI
+users sign in again after a completed rolling upgrade.
+
+For an existing database upgraded from 1.102.x or earlier, create both indexes
+outside a transaction before the rollout:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "LiteLLM_SpendLogs_api_key_startTime_idx"
+  ON "LiteLLM_SpendLogs"("api_key", "startTime");
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "LiteLLM_SpendLogs_litellm_call_id_idx"
+  ON "LiteLLM_SpendLogs"("litellm_call_id");
+```
+
+Back up the database and confirm the index preflight first. Then rebuild one
+pool member through the existing `router-rebuild` template. Check startup,
+readiness, and advertised models before rebuilding the next member. This is
+the rollout plan only; it does not execute SQL or automation.
 
 ## Prisma without a database
 
@@ -130,8 +152,8 @@ Postgres-backed virtual-key budgets, not the provider budget above, and 503s
 when spend can't be verified against Redis or a database.
 
 The proxy now **has** a database (see `defaults/main/45-database.yml`) and
-**issues virtual keys** (`defaults/main/56-virtual-keys.yml`), one per
-caller. This setting is deliberately still absent: it 503s the fabric's
-only front door whenever spend can't be verified against Redis or the
-database, and no caller's budget enforcement depends on it today.
-Reconsider it if that changes.
+**issues virtual keys** (`defaults/main/56-virtual-keys.yml`), most with
+budgets. The benchmark key is intentionally unbudgeted. Fail-closed mode stays
+absent because it trades serving availability for strict accounting during a
+Redis/database outage; current budgeted keys use LiteLLM's normal store fallback
+behavior instead.

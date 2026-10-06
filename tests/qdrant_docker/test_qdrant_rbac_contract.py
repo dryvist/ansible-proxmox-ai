@@ -2,7 +2,8 @@
 
 Three things must hold together, and none is visible to ansible-lint:
 
-  1. Every consumer of the Qdrant API key reads the SAME secret field.
+  1. Administrative consumers read the same key, while memory MCP gets a
+     collection-scoped JWT.
   2. The collection set is exact: one trusted, one untrusted read-only, one
      untrusted read-write.
   3. The untrusted-tier JWT grants exactly the two untrusted collections at
@@ -109,6 +110,13 @@ def test_the_one_secret_field_is_fetched_exactly_once() -> None:
     assert paths.count("ai/qdrant") == 1
 
 
+def test_memory_mcp_secret_path_is_optional_until_published() -> None:
+    domains = _load_yaml(ROLES / "openbao_secrets" / "defaults" / "main" / "10-domains.yml")
+    local_llm = next(d for d in domains["openbao_secrets_domains"] if d["name"] == "local-llm")
+    scoped_paths = [p for p in local_llm["paths"] if isinstance(p, dict) and p.get("path") == "ai/mcp/qdrant"]
+    assert scoped_paths == [{"path": "ai/mcp/qdrant", "optional": True}]
+
+
 def _render_config(enabled: bool) -> dict[str, Any]:
     template = (ROLES / "qdrant_docker" / "templates" / "config.yaml.j2").read_text()
     env = jinja2.Environment(undefined=jinja2.StrictUndefined, trim_blocks=True)
@@ -141,7 +149,7 @@ def test_config_with_opt_in_enables_jwt_rbac_and_leaves_the_key_out_of_the_file(
 
 @pytest.mark.parametrize(
     "name",
-    ["Ensure the untrusted-tier collections exist", "Publish the untrusted-tier access token"],
+    ["Ensure the untrusted-tier collections exist", "Publish the Qdrant scoped access tokens"],
 )
 def test_collections_and_token_require_the_opt_in(name: str) -> None:
     when = _main_task(name).get("when")
@@ -161,7 +169,60 @@ def test_collection_names_are_exact() -> None:
 
 
 def test_memory_sidecar_writes_the_trusted_collection() -> None:
-    assert _defaults("agentgateway_docker")["agentgateway_docker_qdrant_mcp_collection"] == TRUSTED
+    defaults = _defaults("agentgateway_docker")
+    assert defaults["agentgateway_docker_qdrant_mcp_collection"] == TRUSTED
+    expression = defaults["agentgateway_docker_qdrant_memory_mcp_api_key"]
+    assert "qdrant_docker_memory_mcp_jwt" in expression
+    assert "QDRANT_MEMORY_MCP_JWT" in expression
+    assert "QDRANT_API_KEY" not in expression
+    compose = (ROLES / "agentgateway_docker" / "templates" / "docker-compose.yml.j2").read_text()
+    assert 'QDRANT_API_KEY: "{{ agentgateway_docker_qdrant_memory_mcp_api_key }}"' in compose
+    assert 'QDRANT_READ_ONLY: "true"' not in compose
+    config = (ROLES / "agentgateway_docker" / "templates" / "config.yaml.j2").read_text()
+    assert "agentgateway_docker_qdrant_memory_mcp_api_key | length > 0" in config
+
+
+def test_shared_sidecar_cache_exists_for_either_qdrant_consumer() -> None:
+    compose = (ROLES / "agentgateway_docker" / "templates" / "docker-compose.yml.j2").read_text()
+    volume_gate = compose.rsplit("{% if", 1)[-1].split("{% endif %}", 1)[0]
+    assert "agentgateway_docker_qdrant_memory_mcp_api_key | length > 0" in volume_gate
+    assert "agentgateway_docker_qdrant_api_key | length > 0" in volume_gate
+    assert "volumes:\n  mcp_qdrant_cache:" in volume_gate
+
+
+def test_memory_mcp_scope_is_read_write_on_the_trusted_collection_only() -> None:
+    defaults = _defaults("qdrant_docker")
+    access = _resolve(defaults["qdrant_docker_memory_mcp_access"], defaults)
+    assert access == [{"collection": TRUSTED, "access": "rw"}]
+    token = _plugin().qdrant_jwt("test-api-key", access)
+    _, payload, signature_ok = _decode(token, "test-api-key")
+    assert signature_ok
+    assert payload == {"access": [{"collection": TRUSTED, "access": "rw"}]}
+
+
+def test_memory_mcp_token_is_published_and_read_back_from_its_own_secret() -> None:
+    defaults = _defaults("qdrant_docker")
+    assert defaults["qdrant_docker_publish_memory_mcp_jwt"] is False
+    assert defaults["qdrant_docker_memory_mcp_jwt_kv_mount"] == "secret"
+    assert defaults["qdrant_docker_memory_mcp_jwt_kv_path"] == "ai/mcp/qdrant"
+    assert defaults["qdrant_docker_memory_mcp_jwt_field"] == "QDRANT_MEMORY_MCP_JWT"
+    publisher = (ROLES / "qdrant_docker" / "tasks" / "publish_jwts.yml").read_text()
+    assert publisher.count("community.hashi_vault.vault_login:") == 1
+    assert "community.hashi_vault.vault_kv2_write:" in publisher
+    assert "Read back the memory MCP token" in publisher
+    assert "delegate_facts: true" in publisher
+
+
+def test_molecule_proves_scoped_round_trip_and_denial() -> None:
+    converge = yaml.safe_load((REPO_ROOT / "molecule/qdrant/converge.yml").read_text())
+    tasks = converge[0]["tasks"]
+    names = {task.get("name") for task in tasks}
+    assert "Write a memory point with the collection-scoped identity" in names
+    assert "Read the memory point with the same identity" in names
+    assert "Assert the scoped identity completed a memory round-trip" in names
+    denied = next(task for task in tasks if task.get("name") == "Deny a write from the untrusted identity")
+    assert denied["ansible.builtin.uri"]["status_code"] == 403
+    assert "molecule-test-api-key" not in (REPO_ROOT / "molecule/qdrant/converge.yml").read_text()
 
 
 def test_untrusted_access_is_exactly_shared_read_and_scratch_write() -> None:
@@ -173,6 +234,7 @@ def test_untrusted_access_is_exactly_shared_read_and_scratch_write() -> None:
 
 def test_publishing_is_off_by_default() -> None:
     assert _defaults("qdrant_docker")["qdrant_docker_publish_untrusted_jwt"] is False
+    assert _defaults("qdrant_docker")["qdrant_docker_publish_memory_mcp_jwt"] is False
 
 
 def test_minted_token_carries_exactly_the_untrusted_grants() -> None:

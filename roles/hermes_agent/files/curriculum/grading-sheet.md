@@ -18,7 +18,7 @@ scoring the dimensions below.
 - **apps** — Cross-source fleet health: log-index error survey × open issues
   in dryvist/ansible-proxmox-apps; at most 3 evidence-backed new issues
   (**interpreted** — chosen as the synthesis exercise matching the agent's
-  real tool pair, Splunk MCP + the GitHub issues PAT).
+  real tool pair, Splunk MCP + the scoped GitHub CLI identity).
 - **improve** — Evidence-based self-improvement: review own cron/memory/wiki
   history, top-5 ranked proposals, apply at most 2 reversible self-serve
   items (**interpreted**).

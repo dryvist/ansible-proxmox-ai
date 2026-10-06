@@ -45,6 +45,10 @@ _llm_router_hermes_profile_object_permissions:
 
 _llm_router_hermes_profile_keys: >-
   {%- set _items = [] -%}
+  {%- set _gpu_ids = llm_router_gpu_models
+        | map(attribute='client_model_id') | list -%}
+  {%- set _gpu_aliases = llm_router_gpu_profile_aliases
+        if (llm_router_gpu_profiles_enabled | bool) else [] -%}
   {%- for _name in _llm_router_hermes_profile_names -%}
   {%- set _field = 'hermes_' ~ (_name | replace('-', '_'))
      ~ '_llm_router_key' -%}
@@ -54,9 +58,14 @@ _llm_router_hermes_profile_keys: >-
         'value': _value,
         'enabled': (_value | string | length > 0),
         'allowed_classes': _llm_router_consumer_classes_all,
-        'models': ['auto', hermes_brain_model],
-        'object_permission': _llm_router_hermes_profile_object_permissions.get(
-          _name, {'mcp_servers': []}),
+        'models': (['auto', hermes_brain_model]
+                   + (llm_router_d1_auto_router_tiers.values() | list)
+                   + [llm_router_d1_auto_initial_group]
+                   + _gpu_ids + _gpu_aliases) | unique | list,
+        'object_permission': {'mcp_servers': (
+          _llm_router_hermes_profile_object_permissions.get(
+            _name, {'mcp_servers': []}).mcp_servers
+          + llm_router_mcp_hermes_object_permission.mcp_servers) | unique | list},
         'monthly_budget': _llm_router_key_monthly_budget,
       } -%}
   {%- if hermes_agent_identity | default('hermes') == 'donna' -%}

@@ -6,6 +6,7 @@
 # The model comes from the router role alias in inventory/group_vars/all.yml.
 # Physical model IDs remain centralized in the router/MLX catalog.
 hermes_agent_model: "{{ hermes_brain_model }}"
+hermes_agent_model_provider: custom
 hermes_agent_model_base_url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1"
 hermes_agent_model_api_mode: chat_completions
 # Context compression uses the same >=64K-capable router alias as the agent.
@@ -18,9 +19,14 @@ hermes_agent_session_reset_idle_minutes: 1440
 # hermes_agent_context_compression_threshold * this value). It matches the
 # router's served 65,536-token window so compaction begins at 49,152 tokens,
 # before LiteLLM's pre-call context check can reject the request.
-hermes_agent_model_context_length: 65536
+hermes_agent_brain_catalog_entry: >-
+  {{ llm_model_catalog_models
+     | selectattr('aliases', 'defined')
+     | selectattr('aliases', 'contains', hermes_brain_model)
+     | first }}
+hermes_agent_model_context_length: "{{ hermes_agent_brain_catalog_entry.context_window }}"
 # Match the official MLX server's output cap and preserve input headroom.
-hermes_agent_model_max_tokens: 8192
+hermes_agent_model_max_tokens: "{{ hermes_agent_brain_catalog_entry.max_output_tokens }}"
 # Hermes classifies the brain endpoint by HOSTNAME STRING, never by DNS
 # resolution (agent/model_metadata.py is_local_endpoint: loopback, RFC-1918
 # IP literals, container suffixes, dot-less names). Our router base_url is an
@@ -134,20 +140,17 @@ hermes_agent_cron_wall_timeout_seconds: >-
 # bounded Splunk search. The brain call is separately bounded by
 # hermes_agent_stream_stale_timeout above.
 hermes_agent_mcp_tool_timeout_seconds: 180
-# This is the DEFAULT store's own scoped router key, never the shared
-# master key — no Hermes store uses the shared master key.
-# hermes_default_llm_router_key is seeded by roles/llm_router
-# (defaults/main/56-virtual-keys.yml) from the value ansible-proxmox-apps
-# generates; a converge with that field unseeded fails loudly here rather
-# than silently widening every store onto the master key.
-# HERMES_AGENT_MODEL_API_KEY still overrides if explicitly set (molecule/
-# local runs).
+# Each Hermes instance uses its own router-key alias. The default guest keeps
+# the existing variable name; other identities use their own prefix and key.
 hermes_agent_model_api_key: >-
-  {{ lookup('env', 'HERMES_AGENT_MODEL_API_KEY')
-     | default(bao_apps_secrets['hermes_default_llm_router_key'], true)
-     | mandatory('hermes_default_llm_router_key missing from bao_apps_secrets —
-                  seed it in ansible-proxmox-apps. The shared router master key
-                  is no longer an allowed fallback for any Hermes store.') }}
+  {{ lookup('env', 'HERMES_AGENT_MODEL_API_KEY' if hermes_agent_id == 'hermes'
+                     else hermes_agent_env_prefix ~ '_AGENT_MODEL_API_KEY')
+     | default(bao_apps_secrets.get(
+         'hermes_default_llm_router_key' if hermes_agent_id == 'hermes'
+         else (hermes_agent_id | replace('-', '_')) ~ '_llm_router_key', ''), true)
+     | mandatory('Identity-scoped Hermes router key missing from bao_apps_secrets —
+                  seed the matching consumer key. The shared router master key
+                  is not a fallback for any Hermes store.') }}
 
 # --- Slack gateway (Socket Mode) ---
 # The role stays injection-agnostic: inventory may provide an identity-scoped
@@ -160,22 +163,25 @@ hermes_agent_model_api_key: >-
 # what deriving the variable NAME from the identity buys. The secondary
 # agent's token is optional; absence leaves its Slack integration disabled.
 hermes_agent_slack_bot_token: >-
-  {{ (lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_BOT_TOKEN') | default('', true))
+  {{ (lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_BOT_TOKEN') | default('', true))
      if hermes_agent_id != 'donna' else '' }}
 hermes_agent_slack_app_token: >-
-  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_APP_TOKEN') | default('', true) }}
+  {{ lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_APP_TOKEN') | default('', true) }}
 # Identity-prefixed var wins when set (Donna's own allowed-user/home-channel);
 # otherwise falls back to the original unprefixed var, so hermes_agent_id: hermes
 # keeps reading the same Doppler vars it always has (no SLACK_HERMES_* exist).
 hermes_agent_slack_allowed_users: >-
-  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_MEMBER_ID')
-     | default(lookup('env', 'SLACK_MEMBER_ID'), true) | default('', true) }}
+  {{ lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_MEMBER_ID')
+     | default(lookup('env', 'SLACK_MEMBER_ID') if hermes_agent_id == 'hermes' else '', true)
+     | default('', true) }}
 hermes_agent_slack_home_channel: >-
-  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_HOME_CHANNEL')
-     | default(lookup('env', 'SLACK_HOME_CHANNEL'), true) | default('', true) }}
+  {{ lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_HOME_CHANNEL')
+     | default(lookup('env', 'SLACK_HOME_CHANNEL') if hermes_agent_id == 'hermes' else '', true)
+     | default('', true) }}
 hermes_agent_slack_home_channel_name: >-
-  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_HOME_CHANNEL_NAME')
-     | default(lookup('env', 'SLACK_HOME_CHANNEL_NAME'), true) | default('', true) }}
+  {{ lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_HOME_CHANNEL_NAME')
+     | default(lookup('env', 'SLACK_HOME_CHANNEL_NAME') if hermes_agent_id == 'hermes' else '', true)
+     | default('', true) }}
 
 # Routine work and findings use the agent's home channel. Native cron failures
 # use the configured issues channel; an empty setting leaves the failure on its
@@ -183,7 +189,7 @@ hermes_agent_slack_home_channel_name: >-
 # the quiet footer returns [SILENT] instead of posting a heartbeat there.
 hermes_agent_slack_firehose_channel: "{{ hermes_agent_slack_home_channel }}"
 hermes_agent_slack_issues_channel: >-
-  {{ lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_ISSUES_CHANNEL') | default('', true) }}
+  {{ lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_ISSUES_CHANNEL') | default('', true) }}
 hermes_agent_slack_noise_channel: "{{ hermes_agent_slack_home_channel }}"
 
 # The prefix a script-fed cron prints to declare that its OWN observation path

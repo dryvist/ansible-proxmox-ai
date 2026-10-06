@@ -1,0 +1,28 @@
+---
+- name: Resolve the surveyed axes used by this recipe row
+  ansible.builtin.set_fact:
+    _llm_campaign_context_axis: >-
+      {{ _llm_campaign_contexts if 'context_list' in _llm_campaign_run.dimensions else [0] }}
+    _llm_campaign_concurrency_axis: >-
+      {{ _llm_campaign_concurrencies if 'concurrency_list' in _llm_campaign_run.dimensions else [1] }}
+
+- name: Validate every requested prompt, output, and model-context combination
+  ansible.builtin.assert:
+    that:
+      - >-
+        _llm_campaign_run.get('requires_capability', {}).get(
+          'minimum_context_tokens',
+          _llm_campaign_run.get(
+            'minimum_context_tokens',
+            (_llm_campaign_cell[0] | int) + (_llm_campaign_run.output_tokens | int)
+          )
+        ) | int <= _llm_campaign_model.context_window_tokens | int
+    fail_msg: >-
+      Recipe row {{ _llm_campaign_run.name }} exceeds the context limit declared
+      by the selected model artifact or its required capability.
+    quiet: true
+  loop: "{{ query('community.general.cartesian', _llm_campaign_context_axis, _llm_campaign_concurrency_axis) }}"
+  loop_control:
+    loop_var: _llm_campaign_cell
+    label: >-
+      context={{ _llm_campaign_cell[0] }},concurrency={{ _llm_campaign_cell[1] }}

@@ -1,0 +1,167 @@
+---
+# Run one named, machine-neutral benchmark recipe. Model identity and files
+# come from llm-models.d; the benchmark checkout is pinned to its run-config
+# revision and supplies only the recipe and existing converters.
+- name: Resolve the named campaign and registry artifact
+  hosts: localhost
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    # renovate: datasource=git-refs depName=https://github.com/dryvist/mlx-benchmarks.git currentValue=main
+    _llm_campaign_benchmarks_ref: cf1f23920e2391b91f0e94e78dfc8daac6bf10ae
+  tasks:
+    - name: Validate the required survey values and safe config name
+      ansible.builtin.assert:
+        that:
+          - machine is defined
+          - machine | string | length > 0
+          - benchmark_endpoint_root is defined
+          - benchmark_endpoint_root | string is match('^https://[A-Za-z0-9-]+([.][A-Za-z0-9-]+)+$')
+          - benchmark_endpoint_root | urlsplit('hostname') is search('[A-Za-z]')
+          - benchmark_cache_path is defined
+          - benchmark_cache_path | string is match('^/.+')
+          - benchmark_cache_path is not search('(^|/)[.][.](/|$)')
+          - config_name is match('^(llama-cpp|vllm|mlx|lm-eval|evalscope)/[a-z0-9-]+$')
+          - engine is defined
+          - model_size is defined
+          - concurrency_list is defined
+          - context_list is defined
+          - power_cap_w | string is match('^[0-9]+([.][0-9]+)?$')
+        fail_msg: >-
+          The campaign survey requires an inventory alias, a named config,
+          supported engine/model size, positive context/concurrency lists,
+          an HTTPS endpoint origin, an existing target cache path, and a
+          non-negative numeric power cap in watts.
+        quiet: true
+
+    - name: Parse positive concurrency and context values
+      ansible.builtin.set_fact:
+        _llm_campaign_concurrency_values: >-
+          {{ concurrency_list.split(',') | map('trim') | map('int') | list }}
+        _llm_campaign_context_values: >-
+          {{ context_list.split(',') | map('trim') | map('int') | list }}
+
+    - name: Validate each survey list is canonical, positive, and unique
+      ansible.builtin.assert:
+        that:
+          - _llm_campaign_concurrency_values | length > 0
+          - _llm_campaign_context_values | length > 0
+          - _llm_campaign_concurrency_values | min > 0
+          - _llm_campaign_context_values | min > 0
+          - _llm_campaign_concurrency_values | unique | length == _llm_campaign_concurrency_values | length
+          - _llm_campaign_context_values | unique | length == _llm_campaign_context_values | length
+          - >-
+            _llm_campaign_concurrency_values | map('string') | list ==
+            concurrency_list.split(',') | map('trim') | list
+          - >-
+            _llm_campaign_context_values | map('string') | list ==
+            context_list.split(',') | map('trim') | list
+        fail_msg: "Context and concurrency lists must contain unique positive integers separated by commas."
+        quiet: true
+
+    - name: Create a temporary workspace for the pinned benchmark config
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: llm-model-campaign-
+      register: _llm_campaign_workspace
+
+    - name: Check out the benchmark recipes and existing converters
+      ansible.builtin.git:
+        repo: https://github.com/dryvist/mlx-benchmarks.git
+        dest: "{{ _llm_campaign_workspace.path }}/mlx-benchmarks"
+        version: "{{ _llm_campaign_benchmarks_ref }}"
+        update: false
+
+    - name: Confirm the selected config exists in the pinned checkout
+      ansible.builtin.stat:
+        path: "{{ _llm_campaign_workspace.path }}/mlx-benchmarks/configs/{{ config_name }}.toml"
+      register: _llm_campaign_config_stat
+
+    - name: Load the single-source model artifact registry
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../llm-models.d/65-gpu-pro6000-artifacts.yml"
+
+    - name: Read the selected TOML config
+      ansible.builtin.slurp:
+        src: "{{ _llm_campaign_workspace.path }}/mlx-benchmarks/configs/{{ config_name }}.toml"
+      register: _llm_campaign_config_file
+
+    - name: Parse the selected TOML config with the installed collection filter
+      ansible.builtin.set_fact:
+        _llm_campaign_config: >-
+          {{ _llm_campaign_config_file.content | b64decode | community.general.from_toml }}
+
+    - name: Verify the envelope converter is available before target work
+      ansible.builtin.command:
+        argv: [uv, run, mlx-bench-publish, --help]
+        chdir: "{{ _llm_campaign_workspace.path }}/mlx-benchmarks"
+      register: _llm_campaign_publish_help
+      changed_when: false
+
+    - name: Require the converter to accept the campaign dimensions file
+      ansible.builtin.assert:
+        that:
+          - _llm_campaign_publish_help.stdout is search('--campaign-dimensions')
+        fail_msg: >-
+          The pinned benchmark revision {{ _llm_campaign_benchmarks_ref }} has no
+          mlx-bench-publish --campaign-dimensions; advance the pin before dispatch.
+        quiet: true
+
+    - name: Resolve the selected model-size and engine from the artifact registry
+      ansible.builtin.set_fact:
+        _llm_campaign_selected_artifacts: >-
+          {{ _llm_model_artifacts
+             | selectattr('model_size', 'defined')
+             | selectattr('model_size', 'equalto', model_size)
+             | selectattr('engines', 'contains', engine)
+             | list }}
+
+    - name: Validate config axes, the artifact join, and context metadata
+      ansible.builtin.assert:
+        that:
+          - _llm_campaign_config_stat.stat.exists
+          - _llm_campaign_config.config_name == config_name
+          - _llm_campaign_config.power_cap_w == 'inventory'
+          - engine in _llm_campaign_config.engines
+          - _llm_campaign_concurrency_values | difference(_llm_campaign_config.concurrency_list) | length == 0
+          - _llm_campaign_context_values | difference(_llm_campaign_config.context_list) | length == 0
+          - _llm_campaign_selected_artifacts | length == 1
+          - _llm_campaign_selected_artifacts[0].artifact_id | length > 0
+          - _llm_campaign_selected_artifacts[0].hf_repo | length > 0
+          - _llm_campaign_selected_artifacts[0].include_globs | length > 0
+          - _llm_campaign_selected_artifacts[0].format | length > 0
+          - _llm_campaign_selected_artifacts[0].context_window_tokens is defined
+          - _llm_campaign_selected_artifacts[0].context_window_tokens | int > 0
+          - _llm_campaign_config.run | length > 0
+          - >-
+            _llm_campaign_config.run
+            | selectattr('artifact_id', 'equalto', 'selected_model')
+            | list | length == _llm_campaign_config.run | length
+          - >-
+            _llm_campaign_config.run
+            | selectattr('output_tokens', 'defined')
+            | list | length == _llm_campaign_config.run | length
+          - _llm_campaign_config.run | map(attribute='output_tokens') | map('int') | min > 0
+          - >-
+            not ('llama-batched-bench' in
+            (_llm_campaign_config.run | map(attribute='executable') | list))
+            or model_size in ['small', 'medium']
+        fail_msg: >-
+          The selected recipe and survey must resolve to one registry artifact,
+          use declared axes, and carry an authoritative context limit and output
+          size for every run. Batched llama.cpp supports small and medium only.
+        quiet: true
+
+    - name: Save the prepared campaign inputs for the inventory target play
+      ansible.builtin.set_fact:
+        _llm_campaign_checkout: "{{ _llm_campaign_workspace.path }}/mlx-benchmarks"
+        _llm_campaign_config_ref: "{{ _llm_campaign_benchmarks_ref }}"
+        _llm_campaign_workdir: "{{ _llm_campaign_workspace.path }}"
+        _llm_campaign_model: "{{ _llm_campaign_selected_artifacts[0] }}"
+        _llm_campaign_concurrencies: "{{ _llm_campaign_concurrency_values }}"
+        _llm_campaign_contexts: "{{ _llm_campaign_context_values }}"
+        _llm_campaign_endpoint_origin: "{{ benchmark_endpoint_root }}"
+        _llm_campaign_cache_root: "{{ benchmark_cache_path }}"
+
+- name: Continue the campaign on the selected target
+  ansible.builtin.import_playbook: llm-model-campaign-target.yml

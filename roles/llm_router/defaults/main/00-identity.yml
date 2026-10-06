@@ -5,7 +5,7 @@
 # https://llm.<subdomain>. Physical backends have one deployment entry each;
 # stable consumer role names resolve through model_group_alias below.
 #
-# Two tiers, both reached through this one proxy:
+# Serving tiers reached through this one proxy:
 #   large — the mlx-community/* models on the neutral `llm-large` runner
 #           (bearer auth). One deployment each; no cross-tier fallback.
 #   light — qwen3-4b / embeddings. The CPU `llm-light` deployment always
@@ -13,6 +13,7 @@
 #           llm_router_llm_fast_enabled is true. With that false there is ONE
 #           deployment per model name and no standby. With both, they share a
 #           model_name and LiteLLM load-balances and cools down the pair.
+#   gpu   — registry profiles on the inventory-backed Pro6000 guest.
 #
 # Restart-on-failure is native to the unit this role owns. The shared
 # systemd_restart_policy role is not present in this repository's immutable
@@ -28,31 +29,16 @@ llm_router_config_file: "{{ llm_router_config_dir }}/config.yaml"
 llm_router_env_file: "{{ llm_router_config_dir }}/litellm.env"
 
 # Installed into the venv (state: present — pinned by the ecosystem, never here).
-# The opentelemetry exporter backs the single OTLP logging callback below.
-# No direct langfuse SDK: LiteLLM's "langfuse" callback needs the v2 SDK
-# (pip resolves v3, which errors on init), and Langfuse ingestion already
-# arrives via the designed OTLP -> Cribl Stream fan-out path.
+# OTel spans go through the shared Cribl collector; its configured outputs own
+# the Langfuse and Phoenix fan-out.
 llm_router_pip_packages:
-  # Pinned to the signed stable release. Retry/fallback, timeout, complexity
-  # routing, rate-limit enforcement and provider-budget behavior were verified
-  # against tag v1.97.0. In particular, timeout remains a per-deployment-attempt
-  # guard in tagged source, not Hermes' aggregate wall clock; the external
-  # 1800-second job ceiling remains independently load-bearing.
-  # 1.98.0 keeps the same fastapi and prisma lock pins; its schema adds columns
-  # and one table (no destructive migration), which the freshness-guarded
-  # `prisma generate` + `db push` in tasks/main.yml apply on upgrade.
-  #
-  # 1.102.0: same fastapi/prisma pins hold (unchanged proxy extra). Adds
-  # litellm/proxy/auth/fallback_model_access.py — a per-fallback-target
-  # re-check of the calling key's own allowed-models list, opt-in via
-  # general_settings.enforce_fallback_model_access (37-fallback-entry-points.yml,
-  # config.yaml.j2). Does not change the fallback walk's re-keying-onto-the-
-  # failed-rung behavior (router.py::async_function_with_fallbacks_common_utils
-  # still reads kwargs.get("model"), which a nested hop has already overwritten
-  # — same mechanism as 1.98.0, unfixed upstream, BerriAI/litellm#17729 closed
-  # not-planned); it only prevents an unauthorized target reached via that
-  # mis-keyed walk from being attempted.
-  - "litellm[proxy]==1.102.0"
+  # Retry/fallback, timeout, complexity routing, rate-limit enforcement and
+  # provider-budget behavior are configured against the pinned stable release.
+  # 1.104.0 adds fail-closed startup Prisma migration checks by default. The
+  # role reconciles the package schema before service start, then leaves that
+  # check enabled so LiteLLM can validate/adopt the existing schema history.
+  # renovate: datasource=pypi depName=litellm
+  - "litellm[proxy]==1.104.0"
   # LiteLLM's own uv.lock pins this exact version. Its published proxy
   # extra permits FastAPI <1, which currently resolves 0.141.1; that release
   # removed get_flat_dependant while LiteLLM still imports it, so a fresh venv
@@ -75,6 +61,10 @@ llm_router_pip_packages:
   # Range copied from upstream's own declaration rather than pinned here, so
   # this tracks what LiteLLM tests against instead of a number chosen locally.
   - "prometheus-client>=0.20.0,<1.0"
+  # uvx is LiteLLM 1.104's allowlisted stdio runner for the Zammad MCP server.
+  # Pin it so a fresh environment cannot change the runner during converge.
+  # renovate: datasource=pypi depName=uv
+  - "uv==0.12.23"
   - opentelemetry-api
   - opentelemetry-sdk
   - opentelemetry-exporter-otlp

@@ -26,8 +26,12 @@ services:
       - "{{ agentgateway_docker_metrics_port }}:{{ agentgateway_docker_metrics_port }}"
     volumes:
       - "{{ agentgateway_docker_data_dir }}/config.yaml:/config.yaml:ro"
+{% if (agentgateway_docker_qdrant_mcp_enabled | bool
+       and agentgateway_docker_qdrant_memory_mcp_api_key | length > 0)
+      or (agentgateway_docker_docs_mcp_enabled | bool
+          and agentgateway_docker_qdrant_api_key | length > 0) %}
 {% if agentgateway_docker_qdrant_mcp_enabled | bool
-      and agentgateway_docker_qdrant_api_key | length > 0 %}
+      and agentgateway_docker_qdrant_memory_mcp_api_key | length > 0 %}
     # Start after the memory sidecar answers MCP so the gateway's first /memory
     # request does not land in the sidecar's startup window (uvx resolve +
     # embedding-model load). required: false keeps the gateway (every other
@@ -90,7 +94,7 @@ services:
       - "{{ agentgateway_docker_data_dir }}/mcp_nautobot_server.py:/app/mcp_nautobot_server.py:ro"
 {% endif %}
 {% if agentgateway_docker_qdrant_mcp_enabled | bool
-      and agentgateway_docker_qdrant_api_key | length > 0 %}
+      and agentgateway_docker_qdrant_memory_mcp_api_key | length > 0 %}
 
   # Qdrant vector-memory MCP sidecar (see defaults). Reached only by the
   # gateway over the compose network — no host port published.
@@ -108,11 +112,10 @@ services:
       FASTMCP_SERVER_HOST: "0.0.0.0"
       FASTMCP_SERVER_PORT: "{{ agentgateway_docker_qdrant_mcp_port }}"
       QDRANT_URL: "{{ agentgateway_docker_qdrant_url }}"
-      QDRANT_API_KEY: "{{ agentgateway_docker_qdrant_api_key }}"
+      QDRANT_API_KEY: "{{ agentgateway_docker_qdrant_memory_mcp_api_key }}"
       COLLECTION_NAME: "{{ agentgateway_docker_qdrant_mcp_collection }}"
-      QDRANT_READ_ONLY: "true"
-    # mcp-server-qdrant builds its embedding model in the server constructor,
-    # before it listens, so the port opening means the model is loaded. Healthy
+    # qdrant-store stays enabled for memory writes. The server builds its
+    # embedding model before it listens, so the open port means it is loaded. Healthy
     # = a real MCP initialize round-trip succeeds, not just a TCP accept. The
     # long start_period covers the first uvx resolve + model download.
     healthcheck:
@@ -136,7 +139,8 @@ services:
     volumes:
       # Cache the uvx-resolved package + fastembed model across restarts.
       - mcp_qdrant_cache:/root/.cache
-{% if agentgateway_docker_docs_mcp_enabled | bool %}
+{% if agentgateway_docker_docs_mcp_enabled | bool
+      and agentgateway_docker_qdrant_api_key | length > 0 %}
 
   # Docs-search MCP sidecar (see defaults) — FastMCP search_docs server that
   # embeds via the LLM router and searches Qdrant over REST (no local model).
@@ -165,7 +169,13 @@ services:
       - "{{ agentgateway_docker_data_dir }}/mcp_docs_server.py:/app/mcp_docs_server.py:ro"
       - mcp_qdrant_cache:/root/.cache
 {% endif %}
+{% endif %}
 
+{% if (agentgateway_docker_qdrant_mcp_enabled | bool
+       and agentgateway_docker_qdrant_memory_mcp_api_key | length > 0)
+      or (agentgateway_docker_docs_mcp_enabled | bool
+          and agentgateway_docker_qdrant_api_key | length > 0) %}
 volumes:
   mcp_qdrant_cache:
+{% endif %}
 {% endif %}

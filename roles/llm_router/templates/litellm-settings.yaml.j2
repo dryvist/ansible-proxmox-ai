@@ -1,10 +1,8 @@
 litellm_settings:
-  # "otel" (with LITELLM_OTEL_V2=true, see litellm.env.j2) exports one nested,
-  # GenAI-semconv trace per request over OTLP/HTTP to the shared collector;
-  # the collector sends traces to Langfuse + Phoenix. No direct "langfuse"
-  # callback — it requires the v2 SDK and errors on init with the v3 pip
-  # resolves; no direct "langfuse_otel" preset either — that connects
-  # straight to Langfuse with credentials this proxy does not hold.
+  # Send OTel through the shared collector so Cribl owns the trace fan-out.
+  # message_logging stays off: traces carry request metadata and usage, never
+  # prompt or response bodies. Prometheus counters use the same registry-backed
+  # deployment tags below and flow through Cribl remote_write.
   #
   # "prometheus" is NOT a second tracing sink. It is the only shipped consumer
   # of the router's fallback events, and the only thing in this proxy that
@@ -24,11 +22,22 @@ litellm_settings:
   # A flow sequence on the key's own line. Under a folded scalar (`>-`) the
   # JSON text became one YAML STRING and LiteLLM tried to import a module
   # literally named `["prometheus", ...` — every router crash-looped.
-  callbacks: {{ (['otel']
-        + (['prometheus'] if llm_router_prometheus_enabled | bool else [])
+  callbacks: {{ (['otel'] + (['prometheus'] if llm_router_prometheus_enabled | bool else [])
         + ['system_merge.proxy_handler_instance', 'request_metrics.proxy_handler_instance'])
        | to_json }}
+  callback_settings:
+    otel:
+      message_logging: false
   drop_params: true
+{% set telemetry = namespace(tags=[]) %}
+{% for tags in llm_router_deployment_tags_by_entry.values() %}
+{% for tag in tags %}
+{% if tag.startswith('telemetry_') and tag not in telemetry.tags %}
+{% set telemetry.tags = telemetry.tags + [tag] %}
+{% endif %}
+{% endfor %}
+{% endfor %}
+  custom_prometheus_tags: {{ telemetry.tags | to_json }}
 {% if llm_router_large_passthrough_enabled | bool %}
   # Resolve the wildcard against the gate's live /v1/models so this proxy's
   # own /v1/models lists every passthrough model (not just the aliases) —
@@ -49,6 +58,7 @@ litellm_settings:
     host: os.environ/LLM_ROUTER_REDIS_HOST
     port: {{ llm_router_redis_port }}
     password: os.environ/LLM_ROUTER_REDIS_PASSWORD
+    db: {{ llm_router_cache_redis_db }}
     mode: default_off
     ttl: {{ llm_router_response_cache_ttl }}
   # Virtual-key lookups shared across routers, so a revoked or changed key

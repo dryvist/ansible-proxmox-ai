@@ -6,7 +6,8 @@ from typing import Any
 
 import yaml
 from jinja2 import Environment, FileSystemLoader
-from _role_files import role_defaults, role_tasks_text, template_text
+from _role_files import role_defaults, role_tasks, role_tasks_text, template_text
+from _cron_pool_ceiling_shared import wall_timeout_seconds
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +16,7 @@ ROLE_ROOT = REPO_ROOT / "roles" / "hermes_agent"
 _RENDER_CONTEXT: dict[str, Any] = {
     "ansible_managed": "managed",
     "hermes_agent_model": "hermes-default",
+    "hermes_agent_model_provider": "custom",
     "hermes_agent_model_base_url": "https://llm.example.com/v1",
     "hermes_agent_model_api_mode": "chat_completions",
     "hermes_agent_model_context_length": 65536,
@@ -22,6 +24,7 @@ _RENDER_CONTEXT: dict[str, Any] = {
     "hermes_agent_memory_provider": "hindsight",
     "hermes_agent_log_level": "DEBUG",
     "hermes_agent_max_turns": 90,
+    "hermes_agent_cron_wall_timeout_seconds": wall_timeout_seconds(),
     "hermes_agent_context_compression_enabled": True,
     "hermes_agent_context_compression_threshold": 0.75,
     "hermes_agent_compression_model": "hermes-default",
@@ -221,8 +224,7 @@ def test_github_maint_cron_runs_in_its_own_profile_behind_the_read_token() -> No
     Two things carry it: the job must point HERMES_HOME at the github-maint
     profile (whose .env holds the read-only token and blanks everything else),
     and it must stay disabled until that token is actually seeded. Drop either
-    and the job silently becomes an ordinary default-profile job holding the
-    read/write PAT — which is exactly what it exists not to be.
+    and the job silently becomes an ordinary default-profile job.
     """
     defaults = _defaults()
     jobs = {
@@ -236,9 +238,47 @@ def test_github_maint_cron_runs_in_its_own_profile_behind_the_read_token() -> No
     assert defaults["hermes_agent_github_read_token"] == ""
 
     # Least-shared tier: the read token belongs in one profile's .env, not in
-    # the default profile's, which already holds the broader write PAT.
+    # the default profile's .env.
     default_env = template_text(ROLE_ROOT, "hermes-env.j2")
     assert "hermes_agent_github_read_token" not in default_env
+
+
+def test_default_profile_has_no_static_write_github_token() -> None:
+    defaults = _defaults()
+    default_env = template_text(ROLE_ROOT, "hermes-env.j2")
+    group_vars = "".join(
+        path.read_text()
+        for path in sorted((REPO_ROOT / "inventory" / "group_vars" / "hermes_agent_group").glob("*.yml"))
+    )
+
+    assert "hermes_agent_github_issues_pat" not in defaults
+    assert "hermes_agent_github_issues_pat" not in group_vars
+    assert not any(line.startswith("GH_PAT_WRITE_PROJECT_ISSUES=") for line in default_env.splitlines())
+
+
+def test_default_issue_crons_use_the_short_lived_github_identity() -> None:
+    jobs = {entry["name"]: entry for entry in _defaults()["hermes_agent_direct_cron_jobs"]}
+    for name in (
+        "{{ hermes_agent_github_monitor_cron_name }}",
+        "{{ hermes_agent_bot_pr_triage_cron_name }}",
+        "{{ hermes_agent_docs_study_cron_name }}",
+        "{{ hermes_agent_secrets_audit_cron_name }}",
+        "{{ hermes_agent_daily_innovation_cron_name }}",
+        "{{ hermes_agent_app_seeding_cron_name }}",
+    ):
+        job = jobs[name]
+        assert job["skill"] == "hermes_agent/github-issues-api"
+        assert "hermes_agent_github_identity_enabled | bool" in job["enabled"]
+
+    skill_task = next(
+        task for task in role_tasks(ROLE_ROOT)
+        if task["name"] == "Deploy the Hermes GitHub issue API skill"
+    )
+    copy = skill_task["ansible.builtin.copy"]
+    assert copy["src"] == "github-issues-api/"
+    assert copy["dest"].endswith("/skills/hermes_agent/github-issues-api/")
+    skill = (ROLE_ROOT / "files" / "github-issues-api" / "SKILL.md").read_text()
+    assert "HERMES_GH_TOKEN_SET=author" in skill
 
 
 def test_every_profile_cron_store_gets_its_own_tick_trigger() -> None:
@@ -264,13 +304,28 @@ def test_profile_config_template_renders_scoped_mcp_only() -> None:
         rendered = env.from_string(src).render(hermes_agent_profile=profile, **context)
         parsed = yaml.safe_load(rendered)
 
+        assert parsed["model"]["provider"] == defaults["hermes_agent_model_provider"]
         assert parsed["kanban"] == {"dispatch_in_gateway": False}
+        assert parsed["agent"]["run_budget_seconds"] == wall_timeout_seconds()
         assert "dashboard" not in parsed
         assert "platforms" not in parsed
         assert "platform_toolsets" not in parsed
         # Goal-mode judging must be wired identically to the default profile,
         # or completion judging fails for any card this profile owns.
         assert "auxiliary" in parsed
+        assert (
+            parsed["auxiliary"]["goal_judge"]["provider"]
+            == defaults["hermes_agent_model_provider"]
+        )
 
         rendered_servers = set(parsed.get("mcp_servers", {}))
         assert rendered_servers == set(profile["mcp"])
+
+
+def test_openai_compatible_model_provider_is_declared_once() -> None:
+    defaults = _defaults()
+    assert defaults["hermes_agent_model_provider"] == "custom"
+
+    for name in ("config.yaml.j2", "config-profile.yaml.j2", "config-public-gateway.yaml.j2"):
+        template = (ROLE_ROOT / "templates" / name).read_text()
+        assert "provider: {{ hermes_agent_model_provider }}" in template

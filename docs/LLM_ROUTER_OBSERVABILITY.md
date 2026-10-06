@@ -13,7 +13,7 @@ the role.
 `/health/liveliness` is unauthenticated by design — it is LiteLLM's
 load-balancer probe — so Traefik health checks need no credential.
 
-## Two paths, one source of truth
+## One trace path
 
 **The request log is the measurement of record.** With a database attached, the
 proxy writes one `LiteLLM_SpendLogs` row per request carrying `model` and
@@ -25,31 +25,18 @@ without a database attached, which is why the metric below is defined
 against this table and not against traces. The settings that arm it, and the
 reasoning for each: `roles/llm_router/defaults/main/45-database.yml`.
 
-**OTLP traces are a convenience, not a source of truth.**
-`litellm_settings.callbacks: ["otel"]` exports spans over OTLP/HTTP to the
-shared collector named by `ai_orchestration_otel_endpoint`
-(`inventory/group_vars/all.yml`), which fans them out to the tracing backends.
+The router uses LiteLLM's `otel` callback with `OTEL_EXPORTER=otlp_http` and the
+configured `ai_orchestration_otel_endpoint`. The collector routes traces to its
+configured destinations. `callback_settings.otel.message_logging` is false,
+so prompts and completions are not attached to traces. The Prometheus callback
+remains a separate path for routing counters.
 
-That export has been failing continuously, as span-batch export timeouts, and a
-dropped span leaves no trace of itself by definition — which is why the gap went
-unnoticed. **Do not build a measurement on it until it is proven to deliver.**
-
-What has been ruled out, and what remains, so the next person does not re-check
-the same things:
-
-- **The endpoint composition is correct.** LiteLLM hands `OTEL_ENDPOINT` to the
-  exporter verbatim and appends no signal path of its own, so the `/v1/traces`
-  suffix the EnvironmentFile adds is required rather than doubled.
-- **The batch bounds are unset and inherited.** LiteLLM constructs its
-  `BatchSpanProcessor` with no explicit arguments, so it takes the OpenTelemetry
-  SDK defaults unless the standard environment variables
-  (`OTEL_BSP_MAX_EXPORT_BATCH_SIZE`, `OTEL_BSP_EXPORT_TIMEOUT`,
-  `OTEL_BSP_SCHEDULE_DELAY`) are set. Those would belong in the router's
-  EnvironmentFile.
-- **The receiver's own capacity belongs to the collector's repository.**
-
-This role declares the callback and the endpoint and cannot fix either of the
-remaining two.
+LiteLLM Prometheus counters carry registry-derived tier and billing-class
+labels alongside model and provider. The existing remote-write pipeline sends
+those counters to the configured Prometheus and Splunk destinations. The
+rendered settings establish the intended routes; live trace and counter
+delivery remain external observations. **Do not use traces as a token
+measurement source; use the counters and verify their delivery live.**
 
 ## Per-request event in the log platform (`event=llm_request`)
 

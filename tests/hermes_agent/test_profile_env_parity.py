@@ -110,10 +110,20 @@ def _context() -> dict[str, Any]:
         hermes_agent_api_server_key="APIKEY",
         hermes_agent_slack_bot_token="xoxb-x",
         hermes_agent_slack_app_token="xapp-x",
+        # These outputs are set by identity-derived environment lookups in
+        # Ansible. Pin rendered values here: this test checks env-template
+        # parity, not the channel lookup implementation.
+        hermes_agent_slack_allowed_users="U_TEST",
+        hermes_agent_slack_home_channel="C_HOME",
+        hermes_agent_slack_home_channel_name="hermes-private",
+        hermes_agent_slack_firehose_channel="C_FIRE",
+        hermes_agent_slack_hermes_all_channel="C_ALL",
+        hermes_agent_slack_issues_channel="C_ISSUES",
+        hermes_agent_slack_noise_channel="C_NOISE",
+        hermes_agent_slack_splunk_channel="C_SPLUNK",
         hermes_agent_splunk_mcp_token="SPLUNKTOK",
         hermes_agent_zammad_api_token="ZAMTOK",
         hermes_agent_github_read_token="READTOK",
-        hermes_agent_github_issues_pat="WRITETOK",
     )
     return context
 

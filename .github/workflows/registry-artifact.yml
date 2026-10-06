@@ -12,12 +12,14 @@
 # git would make the deployed state a second source of truth, which is the
 # defect the registry exists to remove. The router may additionally serve a
 # runtime copy for discovery; that copy is never a build input.
+# Release runs start at the version-tag push, wait for release-please's draft,
+# attach both files, then publish. Manual runs only upload a workflow artifact.
 
 name: Registry Artifact
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
   # Manual runs produce the artifact as a workflow artifact only (no release to
   # attach to), which is enough to inspect what a release WOULD carry.
   workflow_dispatch:
@@ -76,12 +78,31 @@ jobs:
             servable-aliases.json
             servable-aliases.json.sha256
 
-      - name: Attach to the release
-        if: github.event_name == 'release'
+      - name: Attach to the draft release, then publish
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
-        run: >-
-          gh release upload "$TAG"
-          servable-aliases.json servable-aliases.json.sha256
-          --clobber
+          TAG: ${{ github.ref_name }}
+        run: |
+          draft=""
+          for attempt in $(seq 1 30); do
+            if draft="$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+              if [ "$draft" = true ]; then
+                break
+              fi
+              echo "Release $TAG is already published; refusing to upload assets" >&2
+              exit 1
+            fi
+            echo "Waiting for release-please to create draft $TAG ($attempt/30)"
+            sleep 2
+          done
+          if [ "$draft" != true ]; then
+            echo "Draft release $TAG was not created in time" >&2
+            exit 1
+          fi
+
+          gh release upload "$TAG" \
+            servable-aliases.json servable-aliases.json.sha256 \
+            --clobber
+
+          gh release edit "$TAG" --draft=false

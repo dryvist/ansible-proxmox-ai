@@ -29,6 +29,19 @@
 - name: Assert brain aliases carry real context windows before converging
   ansible.builtin.import_tasks: assert.yml
 
+# LiteLLM 1.104 refuses an unset, empty, or publicly known default master key.
+# Check before package/service/database work and never echo the secret on error.
+- name: Require a safe LiteLLM master key before installing the proxy
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_master_key | trim | length > 0
+      - llm_router_master_key | trim != 'sk-1234'
+    fail_msg: >-
+      LiteLLM 1.104 refuses an empty or publicly known master key; rotate the
+      configured key through its existing secret lifecycle.
+  no_log: true
+
 - name: Install the Python runtime and git
   ansible.builtin.apt:
     name:
@@ -36,6 +49,8 @@
       - python3-pip
       - python3-venv
       - git
+      - nodejs
+      - npm
     state: present
     update_cache: true
     cache_valid_time: 3600
@@ -162,10 +177,11 @@
   when: llm_router_store_model_in_db | bool and llm_router_prisma_client_fresh.rc != 0
   notify: Restart litellm
 
-# The generated client talks to tables `prisma db push` creates; on a fresh
-# database LiteLLM starts but every management endpoint 500s with
-# TableNotFoundError. Push is idempotent (in-sync push is a no-op) and needs
-# the same service-user environment as generation above.
+# Reconcile the package schema before startup. LiteLLM 1.104.0 then runs its
+# Prisma migration resolver with the fail-closed check enabled; on the legacy
+# db-push schema it adopts migration history only after verifying that this
+# schema matches the installed package. Keep the push non-destructive (no
+# --accept-data-loss) and do not disable LiteLLM's startup migration check.
 - name: Sync the proxy schema into the database
   ansible.builtin.command:
     argv:
@@ -203,14 +219,20 @@
     openbao_secrets_assert_names:
       - llm_router_master_key
       - llm_router_llm_large_bearer
+      - llm_router_mcp_zammad_url
+      - llm_router_mcp_zammad_http_token
+      - llm_router_mcp_slack_bot_token
+
+- name: Resolve Slack workspace id for the stdio MCP server
+  ansible.builtin.import_tasks: resolve-slack-team.yml
 
 - name: Deploy the LiteLLM secrets env file
   ansible.builtin.template:
     src: litellm.env.j2
     dest: "{{ llm_router_env_file }}"
     owner: root
-    group: "{{ llm_router_group }}"
-    mode: "0640"
+    group: root
+    mode: "0600"
   no_log: true
   notify: Restart litellm
 
@@ -335,13 +357,19 @@
       Authorization: "Bearer {{ llm_router_master_key }}"
     status_code: 200
     return_content: true
+    timeout: 2
   register: llm_router_models_probe
   until:
-    - llm_router_models_probe.status == 200
+    - llm_router_models_probe.status | default(0) == 200
     - (llm_router_models_probe.json.data | default([])) | length > 0
-  retries: "{{ llm_router_liveness_retries }}"
+  # Liveness has already established that the listener is accepting requests;
+  # 10 two-second attempts with six-second gaps cap this proof at 74 seconds.
+  retries: 10
   delay: "{{ llm_router_liveness_delay }}"
   no_log: true
+
+- name: Verify the rendered MCP server tool lists
+  ansible.builtin.import_tasks: verify-mcp-tools.yml
 
 # Virtual keys, their budgets, and caller-facing roles (seed-consumers.yml)
 # are NOT imported here: they write to the pool's SHARED database, so

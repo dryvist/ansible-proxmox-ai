@@ -12,11 +12,10 @@ Two zones, because the rule has two sides:
 * The PROJECTION zone — roles/llm_router, tests/llm_router, playbooks, and
   every Python test's string constants — may not carry any registry value at
   all. The one exception is not hand-listed:
-  a value the inventory assigns literally (`hermes_brain_model: hermes-default`)
-  is the consumer-selection contract, and a test fixture supplying that same
-  input is mirroring the inventory, not re-typing the registry. The set is
-  computed from inventory/group_vars, so deriving a selector there removes
-  the exemption on its own.
+  values selected by `inventory/group_vars` under `hermes_brain_model` are the
+  consumer-selection contract. The set is computed from that selector's
+  literal value or quoted fallback, so changing the selector changes the
+  exemption with it.
 * The CONSUMER zone — every other role's defaults/vars, inventory, the other
   tests — calls the fabric by a client-facing name. It may name a
   client_model_id or an alias; it may never name an upstream-only id, because
@@ -61,16 +60,22 @@ def registry_values(root: Path) -> dict[str, set[str]]:
     """Every registry value -> the kinds it occurs as ({client, upstream, alias})."""
     values: dict[str, set[str]] = {}
     for slice_file in sorted((root / "llm-models.d").glob("*.yml")):
-        for entries in yaml.safe_load(slice_file.read_text()).values():
+        for name, entries in yaml.safe_load(slice_file.read_text()).items():
+            if name == "_llm_model_artifacts":
+                for artifact in entries:
+                    values.setdefault(str(artifact["hf_repo"]), set()).add("upstream")
+                continue
             for entry in entries:
+                if "client_model_id" not in entry:
+                    continue
                 values.setdefault(str(entry["client_model_id"]), set()).add("client")
-                values.setdefault(str(entry["upstream_model_id"]), set()).add("upstream")
+                if "upstream_model_id" in entry:
+                    values.setdefault(str(entry["upstream_model_id"]), set()).add("upstream")
                 # A stable_alias counts as an "alias" value on a servable
-                # entry (unchanged) or a >=1M-context OpenRouter entry not
-                # opted out of ZDR (A5's `long` carve-out,
-                # llm_router_long_context_alias_ids in 50-servable.yml).
-                # Mirrored here on registry-native fields, since this scan
-                # has no Ansible context to call that var directly. The
+                # entry (unchanged) or an OpenRouter ZDR entry that declares
+                # one. Its context window is now read from homelab-contracts,
+                # so this raw-YAML scan uses the categorical ZDR/alias fields
+                # rather than duplicating the numeric threshold. The
                 # hermes-router and embedding carve-outs are deliberately
                 # NOT mirrored here yet: their alias names collide with
                 # common-word literals elsewhere in the tree (see A5 PR
@@ -78,7 +83,7 @@ def registry_values(root: Path) -> dict[str, set[str]]:
                 # explosion the `servable`-only rule was chosen to avoid.
                 is_alias_bearing = entry.get("servable") or (
                     entry.get("tier") == "openrouter"
-                    and (entry.get("context_window") or 0) >= 1_000_000
+                    and entry.get("stable_aliases")
                     and entry.get("zero_data_retention", False) is True
                 )
                 if is_alias_bearing:
@@ -112,12 +117,15 @@ def test_virtual_key_tags_are_create_only() -> None:
     assert "item.router_settings" in create_body["router_settings"]
     assert "item.tags" in create_body["metadata"]
 
-    compute = by_name["Compute the route/model update each live key still needs, if any"]
+    policy_file = REPO_ROOT / "roles/llm_router/tasks/reconcile-seeded-key-policy.yml"
+    policy_tasks = yaml.load(policy_file.read_text(), Loader=_Permissive)
+    policy_by_name = {task.get("name"): task for task in policy_tasks}
+    compute = policy_by_name["Compute the key policy update each live key still needs, if any"]
     reconcile_expr = compute["ansible.builtin.set_fact"]["_llm_router_key_updates"]
     assert "item.tags" not in reconcile_expr
     assert "router_settings" not in reconcile_expr
 
-    update = by_name["Reconcile route allowlists and model names for live keys that changed"]
+    update = policy_by_name["Reconcile caller policy for live keys that changed"]
     assert update["ansible.builtin.uri"]["body"] == "{{ item.body }}"
 
 
@@ -174,12 +182,14 @@ def _hits(root: Path, globs, values):
 
 
 def inventory_literals(root: Path, values) -> set[str]:
-    """Registry values the inventory assigns as bare literals: the consumer-selection contract."""
+    """Registry values selected by inventory, including its Hermes fallback literal."""
     found = set()
     for path in sorted(root.glob("inventory/group_vars/**/*.yml")):
-        for _, scalar in _scalars(yaml.load(path.read_text(encoding="utf-8"), Loader=_Permissive)):
+        for key_path, scalar in _scalars(yaml.load(path.read_text(encoding="utf-8"), Loader=_Permissive)):
             if scalar in values:
                 found.add(scalar)
+            elif key_path[-1:] == ("hermes_brain_model",):
+                found.update(value for value in _QUOTED.findall(scalar) if value in values)
     return found
 
 

@@ -15,7 +15,9 @@ router_settings:
   # It bought cost-ordering between two final-resort deployments already
   # ordered by their real token prices, so it loses nothing.
   # tests/llm_router/test_hermes_cloud_value.yml asserts the key stays absent.
+  # Generic deployment failure count before LiteLLM cools a member.
   allowed_fails: {{ llm_router_allowed_fails }}
+  # How long a cooled member stays out before it can receive another request.
   cooldown_time: {{ llm_router_cooldown_time }}
   model_group_alias:
 {% for alias, target in llm_router_model_group_aliases.items() %}
@@ -140,12 +142,14 @@ router_settings:
     # retry, same admission contract as every other rung in this file.
     - session_affinity
   # Bounded once; the rate-limit policy below overrides this for 429s only.
+  # Default retry count for errors without a more specific retry policy.
   num_retries: {{ llm_router_num_retries }}
   timeout: {{ llm_router_request_timeout_seconds }}
   # A 429 means the serving slot is busy, not that the work failed — wait it out
   # here so every consumer inherits the resilience instead of each one retrying.
   # retry_after is the MINIMUM sleep between attempts; see defaults for sizing.
   retry_after: {{ llm_router_retry_after_seconds }}
+  # Error-specific retry counts replace num_retries for the named error class.
   retry_policy:
     RateLimitErrorRetries: {{ llm_router_rate_limit_retries }}
     # A stalled first byte gets ONE more attempt after retry_after; the
@@ -158,20 +162,24 @@ router_settings:
   # then the paid one (55-roles.yml, llm_router_default_fallbacks).
   default_fallbacks: {{ llm_router_default_fallbacks | to_json }}
 {% endif %}
-{% if llm_router_hermes_cloud_zero_retry_groups | length > 0 %}
+{% if llm_router_rate_limit_retries_by_group | length > 0 %}
   # Every group that carries a fallback chain advances on 429 instead of
   # sleeping on the busy slot: the chain rungs, the provider routers, and each
-  # entry-point name above. Keyed by the name the caller TYPED for that
-  # invocation (router.py:6692, litellm 1.98.0) — the same key the fallback
-  # maps use — and a per-group policy REPLACES the global one for that name
-  # (router_utils/get_retry_from_policy.py:32-33), so zeroing 429 retries here
-  # leaves every other error type on num_retries and touches no other group.
+  # entry-point name above. The names the Hermes agents call
+  # (llm_router_rate_limit_retry_names) are the one exception: they retry
+  # llm_router_hermes_rate_limit_retries times first, each retry after the
+  # upstream's Retry-After, and hand over once those are spent. Keyed by the
+  # name the caller TYPED for that invocation (router.py:6692, litellm 1.98.0)
+  # — the same key the fallback maps use — and a per-group policy REPLACES
+  # the global one for that name
+  # (router_utils/get_retry_from_policy.py:32-33), so this figure leaves every
+  # other error type on num_retries and touches no other group.
   # The global RateLimitErrorRetries above now governs only names with no
   # chain to hand over to.
   model_group_retry_policy:
-{% for group in llm_router_hermes_cloud_zero_retry_groups %}
+{% for group, retries in llm_router_rate_limit_retries_by_group.items() %}
     {{ group }}:
-      RateLimitErrorRetries: {{ llm_router_cloud_group_retries if group in llm_router_multi_member_cloud_groups else 0 }}
+      RateLimitErrorRetries: {{ retries }}
 {% endfor %}
 {% endif %}
   # ONE failure counter per deployment, MANY allowances. The router-level
@@ -194,6 +202,9 @@ router_settings:
   redis_host: os.environ/LLM_ROUTER_REDIS_HOST
   redis_port: {{ llm_router_redis_port }}
   redis_password: os.environ/LLM_ROUTER_REDIS_PASSWORD
+  # Isolate LiteLLM's coordination keys from other consumers of this Redis
+  # service. A logical DB is keyspace separation, not an auth/failure boundary.
+  redis_db: {{ llm_router_redis_db }}
 {% if llm_router_openrouter_budget_limit | float > 0 %}
   provider_budget_config:
     openrouter:
@@ -205,12 +216,13 @@ router_settings:
   # see README "Spend tracking (Redis)". Set llm_router_redis_host for a real
   # cap; the rate ceilings on each egress deployment above work either way.
 {% endif %}
-  # Deliberately no `fail_closed_budget_enforcement`: it governs LiteLLM's
-  # virtual-key budgets, not the provider budget above, and 503s when spend
-  # cannot be verified. A database IS now attached and that does NOT make it
-  # appropriate — this proxy still issues no virtual keys, so there is nothing
-  # for it to enforce. See README "Spend tracking".
+  # Deliberately no `fail_closed_budget_enforcement`: this proxy issues virtual
+  # keys and most carry budgets, but fail-closed mode turns a simultaneous
+  # Redis/database accounting outage into 503s for otherwise routable work.
+  # The benchmark key is intentionally unbudgeted; see README "Virtual keys".
 
 {% include 'general-settings.yaml.j2' %}
 
 {% include 'litellm-settings.yaml.j2' %}
+
+{% include 'mcp-servers.yaml.j2' %}

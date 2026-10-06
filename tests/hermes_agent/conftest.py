@@ -40,6 +40,7 @@ from _pinned_sources import (
 )
 from _pinned_sources_worker import (
     JUDGE_ERROR,
+    PINNED_HINDSIGHT_FAILURE_SOURCE,
     PINNED_HINDSIGHT_PREFETCH_SOURCE,
     PINNED_JUDGE_AVAILABLE_SOURCE,
     PINNED_JUDGE_CALL_SOURCE,
@@ -62,6 +63,7 @@ from _patched_sources import (
     PATCHED_CRON_TIMEOUT_SOURCE,
     PATCHED_GOAL_JUDGE_SOURCE,
     PATCHED_HINDSIGHT_PREFETCH_SOURCE,
+    PATCHED_HINDSIGHT_FAILURE_SOURCE,
     PATCHED_JUDGE_AVAILABLE_SOURCE,
     PATCHED_JUDGE_CALL_SOURCE,
     PATCHED_KANBAN_GOAL_LOOP_SOURCE,
@@ -258,7 +260,7 @@ def _source_postconditions(
     auxiliary_source: str,
     compressor_source: str = PATCHED_COMPRESSOR_SCAN_SOURCE,
     cron_scheduler_source: str = PATCHED_CRON_DELIVERY_SOURCE,
-    hindsight_plugin_source: str = PATCHED_HINDSIGHT_PREFETCH_SOURCE,
+    hindsight_plugin_source: str = PATCHED_HINDSIGHT_FAILURE_SOURCE,
     goal_judge_source: str = PATCHED_GOAL_JUDGE_SOURCE,
     run_agent_source: str = PATCHED_RUN_AGENT_SOURCE,
     cli_main_source: str = PATCHED_CLI_MAIN_SOURCE,
@@ -301,6 +303,9 @@ def _goal_runner_namespace() -> dict[str, Any]:
     assert "{{" not in block, "block gained Jinja; render it before exec"
     namespace: dict[str, Any] = {
         "os": __import__("os"),
+        "json": __import__("json"),
+        "time": __import__("time"),
+        "_hermes_cron_wall_timeout_limit": lambda: None,
         "logger": logging.getLogger("test.cron.goal"),
     }
     exec(compile(block, "cron-goal-block", "exec"), namespace)  # noqa: S102
@@ -322,6 +327,7 @@ class _StubAgent:
         self.turns = 0
         self.histories: list[Any] = []
         self.task_ids: list[Any] = []
+        self.run_budget_seconds = None
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
         self.turns += 1

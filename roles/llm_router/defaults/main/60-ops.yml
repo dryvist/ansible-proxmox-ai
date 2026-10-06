@@ -4,10 +4,9 @@
 # with the list — measured at nearly four minutes for ~30 entries — and the
 # task that consumes this is the last in the role, so tripping it fails the
 # play and strands every host queued behind the failure (see tasks/main.yml).
-# 40 x 6 s = 240 s: under Semaphore's 1200 s per-task cap and the 5-minute
-# target with room to spare, while still past the ~4-minute worst case above;
-# a live run against this exact budget passed on attempt 5 (~24 s), so the
-# fast path costs nowhere near the ceiling.
+# 40 attempts with 6-second gaps retain the measured ~4-minute cold-start
+# window. The 2-second socket timeout in verify-liveness.yml caps the full wait
+# at 314 seconds, below Semaphore's 900-second per-task rail.
 llm_router_liveness_retries: 40
 llm_router_liveness_delay: 6
 
@@ -23,15 +22,8 @@ llm_router_llm_large_bearer: >-
 llm_router_light_api_key: "sk-noauth"
 
 # --- Observability -----------------------------------------------------------
-# OTLP traces only. Cribl Stream is the OTLP/HTTP receiver (base URL; the
-# exporter appends the signal path) and fans the spans out to the tracing
-# sinks (Langfuse, Phoenix) — the router holds no Langfuse credentials.
-#
-# Single definition: derived from the shared orchestration endpoint rather than
-# repeating the host/port composition. Two independently-maintained copies of
-# the same URL is how one of them ends up pointing at a receiver that no longer
-# exists without anything noticing.
-llm_router_otel_endpoint: "{{ ai_orchestration_otel_endpoint }}"
+# OTel traces use the shared Cribl collector. Prometheus counters and
+# LITELLM_LOG below carry the usage and routing diagnostics.
 
 # --- Routing observability ----------------------------------------------------
 # Fallback events, as counters rather than prose.
@@ -133,6 +125,12 @@ llm_router_large_passthrough_enabled: true
 # (llm-models.d/10-large.yml) that declares its own `max_parallel_requests` —
 # mirroring that MODEL's host effectiveConcurrency — overrides this value for
 # its own deployment; this default only backstops an entry that has none.
+#
+# litellm 1.104.0 (the pinned version) REJECTS a request over the cap with an
+# instant 429 instead of queueing it (router_utils/client_initalization_utils.py,
+# MaxParallelRequestsLimit). Where this comment says "queue", read "reject,
+# then hand over" (40-routing.yml, ADMISSION BUDGET). A GPU-tier entry takes
+# its cap from the serving profile instead (llm-models.d/60-gpu-pro6000.yml).
 #
 # Without this the local deployments carry no rpm/tpm/max_parallel_requests at
 # all (only the OpenRouter egress tier did), so LiteLLM admitted every inbound

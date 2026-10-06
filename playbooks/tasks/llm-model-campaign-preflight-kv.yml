@@ -1,0 +1,45 @@
+---
+- name: Parse the selected vLLM startup log's reported KV token capacity
+  ansible.builtin.set_fact:
+    _llm_campaign_kv_matches: >-
+      {{ _llm_campaign_vllm_log.stdout
+         | regex_findall('GPU KV cache size: ([0-9,]+) tokens') }}
+
+- name: Require a reported vLLM KV token capacity
+  ansible.builtin.assert:
+    that:
+      - _llm_campaign_kv_matches | length > 0
+    fail_msg: >-
+      The selected vLLM service log does not contain its reported GPU KV cache
+      token count. No benchmark cell can be safely reserved without it.
+    quiet: true
+
+- name: Set the vLLM capacity from its startup log
+  ansible.builtin.set_fact:
+    _llm_campaign_kv_pool_tokens: >-
+      {{ _llm_campaign_kv_matches[-1] | regex_replace(',', '') | int }}
+
+- name: Resolve the selected vLLM recipe row's parameter axes
+  ansible.builtin.set_fact:
+    _llm_campaign_context_axis: >-
+      {{ _llm_campaign_contexts if 'context_list' in _llm_campaign_run.dimensions else [0] }}
+    _llm_campaign_concurrency_axis: >-
+      {{ _llm_campaign_concurrencies if 'concurrency_list' in _llm_campaign_run.dimensions else [1] }}
+
+- name: Require every requested vLLM cell to fit within 95 percent of live KV capacity
+  ansible.builtin.assert:
+    that:
+      - >-
+        (_llm_campaign_cell[0] | int + _llm_campaign_run.output_tokens | int)
+        * (_llm_campaign_cell[1] | int)
+        <= (_llm_campaign_kv_pool_tokens | int * 95 // 100)
+    fail_msg: >-
+      Recipe row {{ _llm_campaign_run.name }} requests more than 95 percent of
+      the startup-reported vLLM KV token pool at concurrency
+      {{ _llm_campaign_cell[1] }}. Reduce the survey axes before dispatch.
+    quiet: true
+  loop: "{{ query('community.general.cartesian', _llm_campaign_context_axis, _llm_campaign_concurrency_axis) }}"
+  loop_control:
+    loop_var: _llm_campaign_cell
+    label: >-
+      context={{ _llm_campaign_cell[0] }},concurrency={{ _llm_campaign_cell[1] }}

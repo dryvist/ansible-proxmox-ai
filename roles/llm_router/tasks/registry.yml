@@ -1,6 +1,8 @@
 ---
 # Loads the fabric model registry — the single place any model name, alias,
 # tier or enabled/servable state is written (repo-root llm-models.d/).
+# Disabled candidates may keep provisional limits until they have a catalog
+# entry; enabling one requires a catalog projection before it can be rendered.
 #
 # Its own file, and not two lines inlined into main.yml, so anything that needs
 # the registry in scope loads it THE SAME WAY the converge does:
@@ -18,6 +20,140 @@
 - name: Load the fabric model registry
   ansible.builtin.include_vars:
     dir: "{{ llm_router_registry_dir }}"
+
+- name: Index campaign model artifacts
+  ansible.builtin.set_fact:
+    llm_router_model_artifacts_by_id: >-
+      {{ dict(_llm_model_artifacts | map(attribute='artifact_id')
+              | zip(_llm_model_artifacts)) }}
+
+- name: Assert every GPU router profile resolves its upstream id from an artifact
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_model_artifacts_by_id | length == _llm_model_artifacts | length
+      - item.artifact_id in llm_router_model_artifacts_by_id
+      - llm_router_model_artifacts_by_id[item.artifact_id].hf_repo | length > 0
+    fail_msg: >-
+      Every Pro6000 router profile must reference a known model artifact in
+      llm-models.d/65-gpu-pro6000-artifacts.yml.
+  loop: "{{ _llm_registry_gpu_pro6000 }}"
+  loop_control:
+    label: "{{ item.profile }}"
+
+- name: Resolve GPU router upstream ids from artifact references
+  ansible.builtin.set_fact:
+    llm_router_gpu_pro6000_profile_registry: >-
+      {%- set ns = namespace(entries=[]) -%}
+      {%- for profile in _llm_registry_gpu_pro6000 -%}
+      {%- set artifact = llm_router_model_artifacts_by_id[profile.artifact_id] -%}
+      {%- set ns.entries = ns.entries + [
+            profile | combine({'upstream_model_id': artifact.hf_repo})
+          ] -%}
+      {%- endfor -%}
+      {{ ns.entries }}
+
+- name: Load the shared model catalog
+  ansible.builtin.include_role:
+    name: dryvist.homelab.llm_model_catalog
+    public: true
+
+- name: Project model limits from the shared catalog
+  ansible.builtin.set_fact:
+    _llm_router_catalog_projection: >-
+      {%- set ns = namespace(entries=[], errors=[]) -%}
+      {%- for model in llm_router_model_registry -%}
+      {%- set matches = namespace(entries=[]) -%}
+      {%- for candidate in llm_model_catalog_models -%}
+      {%- if candidate.name == model.client_model_id
+            or model.client_model_id in (candidate.aliases | default([]))
+            or candidate.name in (model.aliases | default([])) -%}
+      {%- set matches.entries = matches.entries + [candidate] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- if matches.entries | length == 0 -%}
+      {%- for candidate in llm_model_catalog_models -%}
+      {%- if candidate.name == model.upstream_model_id
+            or model.upstream_model_id in (candidate.aliases | default([])) -%}
+      {%- set matches.entries = matches.entries + [candidate] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {%- if matches.entries | length != 1
+            and not (model.enabled | default(false)) -%}
+      {%- set ns.entries = ns.entries + [model] -%}
+      {%- elif matches.entries | length != 1 -%}
+      {%- set ns.errors = ns.errors + [
+        model.client_model_id ~ ': expected one catalog entry, found '
+        ~ (matches.entries | length | string)
+      ] -%}
+      {%- else -%}
+      {%- set source = matches.entries[0] -%}
+      {%- set target_name = source.catalog_model | default(source.name) -%}
+      {%- set targets = llm_model_catalog_models | selectattr('name', 'equalto', target_name) | list -%}
+      {%- if targets | length != 1 -%}
+      {%- if not (model.enabled | default(false)) -%}
+      {%- set ns.entries = ns.entries + [model] -%}
+      {%- else -%}
+      {%- set ns.errors = ns.errors + [
+        model.client_model_id ~ ': catalog target ' ~ target_name
+        ~ ' is missing or ambiguous'
+      ] -%}
+      {%- endif -%}
+      {%- else -%}
+      {%- set target = targets[0] -%}
+      {%- set profile_name = model.catalog_profile | default('') -%}
+      {%- set profiles = target.profiles | default({}) -%}
+      {%- if profile_name and profile_name not in profiles -%}
+      {%- if not (model.enabled | default(false)) -%}
+      {%- set ns.entries = ns.entries + [model] -%}
+      {%- else -%}
+      {%- set ns.errors = ns.errors + [
+        model.client_model_id ~ ': catalog profile ' ~ profile_name
+        ~ ' is missing from ' ~ target.name
+      ] -%}
+      {%- endif -%}
+      {%- else -%}
+      {%- set profile = profiles.get(profile_name, {}) -%}
+      {%- set limits = namespace(values={}) -%}
+      {%- for field in [
+            'context_window', 'max_output_tokens', 'max_parallel_requests',
+            'request_timeout', 'stream_timeout', 'max_queue_size', 'queue_size',
+            'num_retries', 'allowed_fails', 'cooldown_time'
+          ] -%}
+      {%- if profile[field] is defined -%}
+      {%- set _ = limits.values.update({field: profile[field]}) -%}
+      {%- elif target[field] is defined -%}
+      {%- set _ = limits.values.update({field: target[field]}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set projected = limits.values | combine({
+        'catalog_model_name': target.name,
+        'catalog_profile_name': profile_name
+      }) -%}
+      {%- set ns.entries = ns.entries + [model | combine(projected)] -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ {'entries': ns.entries, 'errors': ns.errors} | to_json }}
+
+- name: Assert every enabled registry model resolves to one catalog entry
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - (_llm_router_catalog_projection | from_json).errors | length == 0
+    fail_msg: >-
+      Every enabled router model must resolve to one homelab-contracts catalog
+      entry and that entry's catalog_model target must exist:
+      {{ (_llm_router_catalog_projection | from_json).errors }}
+    success_msg: >-
+      Every enabled router model resolves to the shared catalog; model limits
+      are projected from the catalog before rendering.
+
+- name: Replace the raw registry with its catalog limit projection
+  ansible.builtin.set_fact:
+    llm_router_model_registry: "{{ (_llm_router_catalog_projection | from_json).entries }}"
 
 - name: Assert the registry loaded and is non-empty
   ansible.builtin.assert:
@@ -42,3 +178,47 @@
   ansible.builtin.include_role:
     name: dryvist.homelab.llm_roles
     public: true
+
+- name: Load shared model catalog data
+  ansible.builtin.include_role:
+    name: dryvist.homelab.llm_model_catalog
+    public: true
+
+- name: Index catalog concurrency by model name and alias
+  ansible.builtin.set_fact:
+    llm_router_catalog_concurrency_by_id: >-
+      {%- set ns = namespace(by_id={}) -%}
+      {%- for entry in llm_model_catalog_models
+            if entry.max_parallel_requests is defined -%}
+      {%- for key in [entry.name] + (entry.aliases | default([])) -%}
+      {%- set ns.by_id = ns.by_id | combine({key: entry.max_parallel_requests}) -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.by_id }}
+
+- name: Assert every role-map model has catalog concurrency
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_roles.models.values() | map(attribute='id')
+        | difference(llm_router_catalog_concurrency_by_id.keys() | list)
+        | length == 0
+    fail_msg: >-
+      Every role-map model must have a max_parallel_requests value in the
+      shared catalog.
+
+- name: Project catalog concurrency onto router entries
+  ansible.builtin.set_fact:
+    llm_router_model_registry: >-
+      {%- set ns = namespace(entries=[]) -%}
+      {%- for model in llm_router_model_registry -%}
+      {%- set concurrency = llm_router_catalog_concurrency_by_id.get(model.client_model_id) -%}
+      {%- if concurrency is not none -%}
+      {%- set ns.entries = ns.entries + [
+            model | combine({'max_parallel_requests': concurrency})
+          ] -%}
+      {%- else -%}
+      {%- set ns.entries = ns.entries + [model] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.entries }}

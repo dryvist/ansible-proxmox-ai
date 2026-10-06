@@ -13,6 +13,7 @@ openbao_secrets_optional_domains:
   - ai-public   # AppRole/policy on secret/data/ai/public/* not provisioned yet
   - ai-runner   # CIDR-bound runner AppRole not provisioned yet
   - hermes      # AppRole credentials not provisioned yet
+  - hermes-private # second Hermes identity has an independent AppRole
   - donna       # second agent identity, features presence-gated off until seeded
   - clickhouse  # roles/clickhouse_docker's own domain — AppRole/policy live in
                 #   ansible-proxmox-apps' roles/openbao and are not provisioned
@@ -66,6 +67,10 @@ openbao_secrets_domains:
       - {path: apps/dify, optional: true}
       - {path: apps/llamaindex, optional: true}
       - {path: apps/langfuse, optional: true}
+      # The GPU benchmark key is read only when its consumer is enabled.
+      - path: apps/benchmark
+        optional: true
+        enabled: "{{ llm_router_benchmark_key_enabled | default(false) | bool }}"
       # Workstation-client router keys — path names match
       # _llm_router_declared_virtual_keys' alias field exactly
       # (roles/llm_router/defaults/main/56-virtual-keys.yml).
@@ -80,6 +85,7 @@ openbao_secrets_domains:
       # profile — path names match _llm_router_hermes_profile_keys' alias
       # field exactly ('hermes-' ~ profile name, same file).
       - {path: apps/hermes-default, optional: true}
+      - {path: apps/hermes-private, optional: true}
       - {path: apps/hermes-splunk-admin, optional: true}
       - {path: apps/hermes-homelab-admin, optional: true}
       - {path: apps/hermes-github-maint, optional: true}
@@ -88,10 +94,10 @@ openbao_secrets_domains:
       - {path: apps/agy, optional: true}
       - {path: apps/recorder, optional: true}
       - {path: apps/judge, optional: true}
-      - {path: apps/hermes-private, optional: true}
       - {path: apps/donna, optional: true}
       - {path: apps/zcode, optional: true}
       - {path: apps/prometheus, optional: true}
+      - {path: apps/glance, optional: true}
   # Public (non-secret) fabric coordination data — mirrors the "non-secret
   # coordination path" precedent in tofu-proxmox's SECRETS_HIERARCHY.md
   # (secret/platform/terrakube/main). Read-only, own least-privilege AppRole
@@ -138,8 +144,8 @@ openbao_secrets_domains:
   # local-llm layer for Hermes.
   - name: hermes
     paths:
-      - ai/hermes      # HERMES_VIKUNJA_API_TOKEN, GH_PAT_WRITE_PROJECT_ISSUES,
-                       #   HERMES_API_SERVER_KEY, WEBHOOK_SECRET, CODEX_AUTH_JSON
+      - ai/hermes      # HERMES_VIKUNJA_API_TOKEN, HERMES_API_SERVER_KEY,
+                       #   WEBHOOK_SECRET, CODEX_AUTH_JSON
       - ai/mcp/splunk  # SPLUNK_MCP_TOKEN
       - ai/mcp/zammad  # ZAMMAD_MCP_URL, ZAMMAD_MCP_TOKEN
       - mount: secrets-external
@@ -152,6 +158,10 @@ openbao_secrets_domains:
   - name: donna
     paths:
       - ai/donna
+  - name: hermes-private
+    paths:
+      - ai/hermes-private # private Hermes Slack/API-server/firecrawl fields
+      - ai/mcp/splunk     # read-only gateway route credential, independent of local-llm
   - name: local-llm
     paths:
       - ai/llm         # the router's own master key, LLM_LARGE_BEARER_TOKEN (single seeded KV path)
@@ -164,8 +174,10 @@ openbao_secrets_domains:
                        #   it lives here rather than in ai/llm to keep the
                        #   router's store credential separable later.
       - ai/qdrant      # QDRANT_API_KEY
+      - path: ai/mcp/qdrant  # QDRANT_MEMORY_MCP_JWT
+        optional: true
       - ai/open-webui  # OPEN_WEBUI_SECRET_KEY, OPEN_WEBUI_OPENAI_API_KEY
-      - ai/hermes      # GH_PAT_WRITE_PROJECT_ISSUES, HERMES_GITHUB_APP_{ID,INSTALLATION_ID,
+      - ai/hermes      # HERMES_GITHUB_APP_{ID,INSTALLATION_ID,
                        #   PRIVATE_KEY}.
       # OPENROUTER_API_KEY (the free rung and the general openrouter tier) AND
       # OPENROUTER_HERMES_KEY (the hermes-cloud-openrouter paid rung only, see

@@ -1,0 +1,59 @@
+---
+# The artifact registry owns model bytes and quantization. Profiles carry
+# runtime serving settings and join to the registry by profile name.
+# Optional per llama_cpp profile: kv_cache_dtype (--cache-type-k/-v), reasoning_format
+# (--reasoning-format), extra_args (appended verbatim).
+llm_active_profile: small # noqa var-naming[no-role-prefix]
+llm_profiles: # noqa var-naming[no-role-prefix]
+  small:
+    enabled: true
+    engine: vllm
+    linear_backend: auto
+    moe_backend: auto
+    max_model_len: 32768
+    max_num_seqs: 4
+    gpu_memory_utilization: 0.75
+    enable_auto_tool_choice: true
+    tool_call_parser: qwen3_xml
+    reasoning_parser: qwen3
+    port: "{{ llm_gpu_serving_api_port }}"
+  medium-a:
+    primary: true
+    enabled: true
+    engine: vllm
+    linear_backend: b12x
+    moe_backend: auto
+    # vLLM 0.30.0 declares b12x==1.3.0 in its optional [b12x] extra.
+    python_packages:
+      - b12x==1.3.0
+    max_model_len: 196608
+    max_num_seqs: 8
+    gpu_memory_utilization: 0.88
+    enable_auto_tool_choice: true
+    tool_call_parser: qwen3_xml
+    reasoning_parser: qwen3
+    port: "{{ llm_gpu_serving_api_port }}"
+  # llama_cpp profiles: max_model_len is the per-agent context; the unit sizes
+  # llama-server's shared context as max_model_len x max_num_seqs with
+  # max_num_seqs parallel slots. The model file comes from the artifact
+  # registry (gguf_file), never from here. Tool-call parsing is template-driven
+  # (--jinja), so these profiles carry no parser fields.
+  medium-b:
+    enabled: true
+    engine: llama_cpp
+    max_model_len: 65536
+    max_num_seqs: 4
+    flash_attention: true
+    gpu_layers: 99
+    port: "{{ llm_gpu_serving_api_port }}"
+  max:
+    enabled: true
+    engine: llama_cpp
+    max_model_len: 131072
+    max_num_seqs: 1
+    flash_attention: true
+    gpu_layers: 99
+    # Memory-mapped weights with the lookup shard loaded lazily, as in the
+    # campaign's large-model cells.
+    extra_args: ["-lm", "mmap", "-lzm", "on"]
+    port: "{{ llm_gpu_serving_api_port }}"

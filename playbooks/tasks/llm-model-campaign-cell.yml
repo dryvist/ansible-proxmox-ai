@@ -1,0 +1,179 @@
+---
+- name: Allocate a unique recipe cell name and result paths
+  ansible.builtin.set_fact:
+    _llm_campaign_cell_slug: >-
+      {{ _llm_campaign_run.name | regex_replace('[^A-Za-z0-9._-]', '-')
+         ~ ('-ctx' ~ _llm_campaign_context_value if 'context_list' in _llm_campaign_run.dimensions else '')
+         ~ ('-c' ~ _llm_campaign_concurrency_value if 'concurrency_list' in _llm_campaign_run.dimensions else '')
+         ~ '-r' ~ _llm_campaign_repetition_value }}
+    _llm_campaign_cell_target_dir: >-
+      {{ _llm_campaign_target_results.path ~ '/' ~ _llm_campaign_run.name
+         | regex_replace('[^A-Za-z0-9._-]', '-')
+         ~ ('-ctx' ~ _llm_campaign_context_value if 'context_list' in _llm_campaign_run.dimensions else '')
+         ~ ('-c' ~ _llm_campaign_concurrency_value if 'concurrency_list' in _llm_campaign_run.dimensions else '')
+         ~ '-r' ~ _llm_campaign_repetition_value }}
+    _llm_campaign_cell_controller_dir: >-
+      {{ _llm_campaign_workdir ~ '/results/' ~ _llm_campaign_run.name
+         | regex_replace('[^A-Za-z0-9._-]', '-')
+         ~ ('-ctx' ~ _llm_campaign_context_value if 'context_list' in _llm_campaign_run.dimensions else '')
+         ~ ('-c' ~ _llm_campaign_concurrency_value if 'concurrency_list' in _llm_campaign_run.dimensions else '')
+         ~ '-r' ~ _llm_campaign_repetition_value }}
+
+- name: Create the row's target and controller result directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "0750"
+  loop:
+    - path: "{{ _llm_campaign_cell_target_dir }}"
+      delegate: "{{ machine }}"
+    - path: "{{ _llm_campaign_cell_controller_dir }}"
+      delegate: localhost
+  loop_control:
+    label: "{{ item.path }}"
+  delegate_to: "{{ item.delegate }}"
+
+- name: Build the config-declared arguments from the current row parameters
+  ansible.builtin.set_fact:
+    result_dir: "{{ _llm_campaign_cell_target_dir }}"
+    result_filename: "{{ _llm_campaign_cell_slug }}.json"
+    result_path: "{{ _llm_campaign_cell_controller_dir }}/{{ _llm_campaign_cell_slug }}.json"
+    output_path: "{{ _llm_campaign_cell_target_dir }}"
+    context: "{{ _llm_campaign_context_value }}"
+    concurrency: "{{ _llm_campaign_concurrency_value }}"
+    repetition: "{{ _llm_campaign_repetition_value }}"
+    output_tokens: "{{ _llm_campaign_run.output_tokens }}"
+    model_id: "{{ _llm_campaign_model.hf_repo }}"
+    context_window_tokens: "{{ _llm_campaign_model.context_window_tokens }}"
+    artifact_path: "{{ _llm_campaign_artifact_path }}"
+    benchmark_endpoint: "{{ _llm_campaign_endpoint_root }}/v1"
+    benchmark_endpoint_root: "{{ _llm_campaign_endpoint_root }}"
+
+- name: Render the tool-native arguments from the config and survey parameters
+  ansible.builtin.set_fact:
+    _llm_campaign_rendered_argv: >-
+      {{ lookup('template', playbook_dir ~ '/templates/llm-model-campaign-argv.json.j2')
+         | from_json }}
+
+- name: Record the cell start in UTC
+  ansible.builtin.command:
+    argv: [date, -u, "+%Y-%m-%dT%H:%M:%SZ"]
+  delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
+  register: _llm_campaign_started_utc
+  changed_when: false
+
+- name: Run the tool-native command from the selected recipe row
+  ansible.builtin.command:
+    argv: "{{ _llm_campaign_rendered_argv }}"
+    chdir: "{{ _llm_campaign_checkout if _llm_campaign_run.run_on == 'controller' else omit }}"
+  delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
+  register: _llm_campaign_command_result
+  changed_when: true
+
+- name: Record the cell finish in UTC
+  ansible.builtin.command:
+    argv: [date, -u, "+%Y-%m-%dT%H:%M:%SZ"]
+  delegate_to: "{{ 'localhost' if _llm_campaign_run.run_on == 'controller' else machine }}"
+  register: _llm_campaign_ended_utc
+  changed_when: false
+
+- name: Preserve raw tool stdout beside the selected model cache
+  ansible.builtin.copy:
+    content: "{{ _llm_campaign_command_result.stdout }}\n"
+    dest: "{{ _llm_campaign_cell_target_dir }}/{{ _llm_campaign_cell_slug }}.stdout"
+    mode: "0640"
+  delegate_to: "{{ machine }}"
+  when: _llm_campaign_run.capture_stdout | default(false)
+
+- name: Preserve raw tool stderr beside the selected model cache
+  ansible.builtin.copy:
+    content: "{{ _llm_campaign_command_result.stderr }}\n"
+    dest: "{{ _llm_campaign_cell_target_dir }}/{{ _llm_campaign_cell_slug }}.stderr"
+    mode: "0640"
+  delegate_to: "{{ machine }}"
+  when: _llm_campaign_run.capture_stdout | default(false)
+
+- name: Preserve campaign and cell parameters beside the raw output
+  ansible.builtin.copy:
+    content: >-
+      {{ {'started_utc': _llm_campaign_started_utc.stdout,
+          'ended_utc': _llm_campaign_ended_utc.stdout,
+          'elapsed': _llm_campaign_command_result.delta,
+          'config_name': config_name,
+          'run_name': _llm_campaign_run.name,
+          'artifact_id': _llm_campaign_model.artifact_id,
+          'model_id': _llm_campaign_model.hf_repo,
+          'engine': engine,
+          'model_size': model_size,
+          'context_tokens': _llm_campaign_context_value,
+          'concurrency': _llm_campaign_concurrency_value,
+          'repetition': _llm_campaign_repetition_value,
+          'power_cap_w': power_cap_w,
+          'argv': _llm_campaign_rendered_argv} | to_nice_json }}
+    dest: "{{ _llm_campaign_cell_target_dir }}/{{ _llm_campaign_cell_slug }}.run.json"
+    mode: "0640"
+  delegate_to: "{{ machine }}"
+
+- name: Fetch vLLM's existing result file for the existing converter
+  ansible.builtin.fetch:
+    src: "{{ result_dir }}/{{ result_filename }}"
+    dest: "{{ _llm_campaign_cell_controller_dir }}/"
+    flat: true
+  when:
+    - _llm_campaign_run.converter is defined
+    - _llm_campaign_run.converter.kind == 'vllm'
+  register: _llm_campaign_vllm_fetch
+
+- name: Find lm-eval result and sample files for its converter
+  ansible.builtin.find:
+    paths: "{{ output_path }}"
+    patterns: [results_*.json, samples_*.jsonl]
+    recurse: true
+    file_type: file
+  delegate_to: "{{ machine }}"
+  register: _llm_campaign_lmeval_files
+  when:
+    - _llm_campaign_run.converter is defined
+    - _llm_campaign_run.converter.kind == 'lm-eval'
+
+- name: Fetch lm-eval result and sibling sample files for conversion
+  ansible.builtin.fetch:
+    src: "{{ item.path }}"
+    dest: "{{ _llm_campaign_cell_controller_dir }}/"
+    flat: true
+  loop: "{{ _llm_campaign_lmeval_files.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when:
+    - _llm_campaign_run.converter is defined
+    - _llm_campaign_run.converter.kind == 'lm-eval'
+
+- name: Find local converter inputs for this cell
+  ansible.builtin.find:
+    paths: "{{ _llm_campaign_cell_controller_dir }}"
+    patterns: "{{ 'results_*.json' if _llm_campaign_run.converter.kind == 'lm-eval'
+                else _llm_campaign_cell_slug ~ '.json' }}"
+    recurse: false
+    file_type: file
+  delegate_to: localhost
+  register: _llm_campaign_converter_files
+  when: _llm_campaign_run.converter is defined
+
+- name: Require a raw result for every configured converter
+  ansible.builtin.assert:
+    that:
+      - _llm_campaign_converter_files.matched > 0
+    fail_msg: "The selected command did not produce the raw result required by its converter."
+    quiet: true
+  when: _llm_campaign_run.converter is defined
+
+- name: Convert each supported raw result to its envelope
+  ansible.builtin.include_tasks: llm-model-campaign-convert.yml
+  loop: "{{ _llm_campaign_converter_files.files | default([]) }}"
+  loop_control:
+    loop_var: _llm_campaign_converter_file
+    label: "{{ _llm_campaign_converter_file.path | basename }}"
+  when: >-
+    _llm_campaign_run.converter is defined
+    and (_llm_campaign_run.converter.kind != 'lm-eval'
+         or _llm_campaign_converter_file.path is search('/results_.*[.]json$'))

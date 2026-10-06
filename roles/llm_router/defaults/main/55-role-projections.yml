@@ -1,0 +1,112 @@
+---
+# Connection parameters for a role's target, keyed by client_model_id and built
+# from the SAME registry fields config.yaml.j2 renders — a role deployment is a
+# real deployment, so it carries the target's own upstream and credential rather
+# than an extra hop through this proxy. Only the tiers a role can target are
+# projected; a role pointing anywhere else fails the assert in
+# tasks/seed-roles.yml rather than being seeded with half a configuration.
+# Values are secret REFERENCES (os.environ/), never secrets.
+#
+# vllm/hermes-local ADDED for the fast/subagent chain above — mirrors
+# model-list.yaml.j2's own vLLM-tier rendering exactly (same api_base/api_key
+# pair), which is the only reason those two match what config.yaml.j2 already
+# advertises for the same client_model_id.
+# The registry entry's own attempt bounds (num_retries, request_timeout as
+# `timeout`, stream_timeout) ride along onto every role's params, and every
+# LOCAL target is then held to the admission bounds of 40-routing.yml (first
+# byte within llm_router_local_stream_timeout_seconds, at most
+# llm_router_local_num_retries retries, non-streaming calls bounded by
+# llm_router_local_request_timeout_seconds) — an entry may tighten them,
+# never loosen them. Without the timeout clamp a role on a busy local rung
+# rode the whole 2400s generation timeout instead.
+_llm_router_role_params: >-
+  {%- set ns = namespace(params={}) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- set upstream = m.litellm_model_name | default(m.provider ~ '/' ~ m.upstream_model_id) -%}
+  {%- if m.tier == 'large' -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'api_base': llm_router_llm_large_base_url,
+        'api_key': 'os.environ/LLM_LARGE_BEARER_TOKEN',
+        'use_chat_completions_api': true}}) -%}
+  {%- elif m.tier == 'hermes-router' -%}
+  {%- set _router = {
+        'classifier_type': 'heuristic',
+        'tiers': llm_router_d1_auto_router_tiers,
+        'default_model': llm_router_d1_auto_initial_group} -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'complexity_router_config': _router}}) -%}
+  {%- elif m.tier == 'light' -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'api_base': llm_router_llm_light_base_url,
+        'api_key': llm_router_light_api_key,
+        'use_chat_completions_api': true}}) -%}
+  {%- elif m.tier == 'openrouter' -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'api_key': 'os.environ/' ~ m.credential_env,
+        'use_chat_completions_api': true}}) -%}
+  {%- elif m.tier == 'opencode' -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'api_base': llm_router_opencode_base_url,
+        'api_key': 'os.environ/' ~ m.credential_env,
+        'use_chat_completions_api': true}}) -%}
+  {%- elif m.tier in ['vllm', 'hermes-local'] -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'api_base': llm_router_llm_vllm_base_url,
+        'api_key': llm_router_light_api_key,
+        'use_chat_completions_api': true}}) -%}
+  {%- elif m.tier == 'gpu' -%}
+  {%- set _ = ns.params.update({m.client_model_id: {
+        'model': upstream,
+        'api_base': llm_router_llm_gpu_base_url,
+        'api_key': llm_router_light_api_key,
+        'use_chat_completions_api': true}}) -%}
+  {%- endif -%}
+  {%- if m.client_model_id in ns.params -%}
+  {%- if m.tier != 'hermes-router' -%}
+  {%- set _ = ns.params[m.client_model_id].update({
+        'tags': llm_router_deployment_tags_by_entry[m.client_model_id ~ '|' ~ m.tier]}) -%}
+  {%- endif -%}
+  {%- for k in ['num_retries', 'request_timeout', 'stream_timeout'] if m[k] is defined -%}
+  {%- set _ = ns.params[m.client_model_id].update({('timeout' if k == 'request_timeout' else k): m[k]}) -%}
+  {%- endfor -%}
+  {%- if m.tier in ['large', 'light', 'vllm', 'gpu', 'hermes-local'] -%}
+  {%- set _p = ns.params[m.client_model_id] -%}
+  {%- set _ = _p.update({
+        'num_retries': [_p.num_retries | default(llm_router_local_num_retries),
+                        llm_router_local_num_retries] | min,
+        'stream_timeout': [_p.stream_timeout | default(llm_router_local_stream_timeout_seconds),
+                           llm_router_local_stream_timeout_seconds] | min,
+        'timeout': [_p.timeout | default(llm_router_local_request_timeout_seconds),
+                    llm_router_local_request_timeout_seconds] | min}) -%}
+  {%- endif -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.params }}
+
+# The advertised window for each of those targets. An embedding target carries
+# mode instead: it has no chat context to advertise, and a null one there is
+# harmless where a null on a chat model is the compress-death trap.
+_llm_router_role_model_info: >-
+  {%- set ns = namespace(info={}) -%}
+  {%- for m in llm_router_registry_enabled -%}
+  {%- if m.embedding | default(false) -%}
+  {%- set _ = ns.info.update({m.client_model_id: {'mode': 'embedding', 'allow_fail_open': true}}) -%}
+  {%- elif m.context_window is defined -%}
+  {%- set _ = ns.info.update({m.client_model_id: {
+        'mode': 'chat',
+        'allow_fail_open': true,
+        'max_input_tokens': _llm_router_vllm_max_input_tokens_by_model[m.client_model_id]
+                             if m.client_model_id in _llm_router_vllm_max_input_tokens_by_model
+                             else m.context_window,
+        'max_tokens': m.max_output_tokens | default(m.context_window)}}) -%}
+  {%- else -%}
+  {%- set _ = ns.info.update({m.client_model_id: {'mode': 'chat', 'allow_fail_open': true}}) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.info }}

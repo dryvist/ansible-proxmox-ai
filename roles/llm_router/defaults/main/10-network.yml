@@ -56,6 +56,14 @@ llm_router_cpu_9b_backend_urls: >-
 # would need a second backend actually serving the same weights, and none
 # exists. A failure here surfaces as that model being unavailable rather than
 # silently degrading to something slower and different.
+#
+# THE TIER'S SWITCH. False takes the whole tier out of this router: no
+# deployment renders for it, the Hermes fallback rung over it drops out, and
+# its base URL below is not resolved by assert-endpoint-dns.yml. The role rows
+# keep their catalogued target, and the seed creates a role only once that
+# target is live (seed-roles.yml). assert-registry-render-parity.yml holds both
+# directions: nothing only this tier owns renders while it is off, and
+# everything it owns does while it is on.
 llm_router_llm_vllm_enabled: true
 # APEX-level, unlike the llm-fast and llm-light URLs above, and the difference
 # is not cosmetic — it is the difference between resolving and not.
@@ -81,6 +89,13 @@ llm_router_llm_vllm_enabled: true
 # upstream cannot be resolved looks identical to a working one from the model
 # list alone.
 llm_router_llm_vllm_base_url: "http://llm-4080.{{ llm_router_apex_domain }}:{{ llm_router_light_port }}/v1"
+# Pro6000 serving guest. Like the llm_vllm_group pattern above, derive the
+# backend host from the first inventory member and use the shared serving API
+# port. Its inventory membership comes from tofu tag `llm-gpu`.
+llm_router_llm_gpu_base_url: >-
+  {{ 'http://' ~ groups['llm_gpu_group'][0] ~ '.' ~ llm_router_apex_domain
+     ~ ':' ~ (llm_router_light_port | string) ~ '/v1'
+     if (groups['llm_gpu_group'] | default([]) | length > 0) else '' }}
 # The large-tier gate (a caddy TLS front on the Mac Studio, apex-level cert via
 # Route53 DNS-01) reverse-proxies to the host's llama-swap. It has always been
 # addressed apex-level (one label under the subdomain's parent), because the

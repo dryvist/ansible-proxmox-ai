@@ -14,9 +14,8 @@
 # fans out to multiple runners.
 #
 # ponytail: the exact Vikunja endpoint shapes (assignee PUT body, comment PUT
-# body, task-filter query) are validated on first converge against the live
-# instance — this phase ships no converge. Adjust here if the running Vikunja
-# version differs; the paths below follow the documented v1 API.
+# body, task-filter query) follow the documented v1 API and are exercised by
+# the bounded live queue job after the worker is converged.
 
 import json
 import os
@@ -35,6 +34,7 @@ JOB_TIMEOUT = int(os.environ.get("JOB_TIMEOUT_SECONDS", "1800"))
 NTFY_URL = os.environ.get("NTFY_URL", "").rstrip("/")
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
+CODEX_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 
 def log(msg):
@@ -94,8 +94,14 @@ def build_command(fields, prompt):
     model = fields.get("model", "")
     if agent == "codex":
         cmd = [CODEX_BIN, "exec"]
+        cmd.append("--dangerously-bypass-approvals-and-sandbox")
         if model:
             cmd += ["--model", model]
+        effort = fields.get("effort", "")
+        if effort:
+            if effort not in CODEX_EFFORTS:
+                raise ValueError(f"invalid Codex reasoning effort: {effort}")
+            cmd += ["--config", f"model_reasoning_effort={effort}"]
         cmd.append(prompt)
         return cmd
     # default: Claude Code, permission-skipping (safety is the container boundary)
@@ -106,7 +112,10 @@ def build_command(fields, prompt):
 
 
 def run_job(fields, prompt):
-    cmd = build_command(fields, prompt)
+    try:
+        cmd = build_command(fields, prompt)
+    except ValueError as exc:
+        return False, str(exc)
     try:
         proc = subprocess.run(
             cmd,
@@ -209,10 +218,27 @@ def main():
 def _self_check():
     """Runnable assertion set for the parse logic — the one piece with branches
     that a syntax check cannot exercise. `python3 ai-job-worker.py --self-check`."""
-    f, p = parse_frontmatter("---\nagent: codex\nmodel: gpt-5.2\n---\ndo the thing")
-    assert f == {"agent": "codex", "model": "gpt-5.2"}, f
+    f, p = parse_frontmatter(
+        "---\nagent: codex\nmodel: m\neffort: xhigh\n---\ndo the thing"
+    )
+    assert f == {"agent": "codex", "model": "m", "effort": "xhigh"}, f
     assert p == "do the thing", p
-    assert build_command({"agent": "codex", "model": "m"}, "x") == [CODEX_BIN, "exec", "--model", "m", "x"]
+    assert build_command(f, "x") == [
+        CODEX_BIN,
+        "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--model",
+        "m",
+        "--config",
+        "model_reasoning_effort=xhigh",
+        "x",
+    ]
+    try:
+        build_command({"agent": "codex", "effort": "turbo"}, "x")
+    except ValueError as exc:
+        assert "invalid Codex reasoning effort" in str(exc), exc
+    else:
+        raise AssertionError("unsupported Codex reasoning effort was accepted")
     c = build_command({}, "hello")
     assert c[0] == CLAUDE_BIN and "--dangerously-skip-permissions" in c, c
     f2, p2 = parse_frontmatter("no front-matter here")

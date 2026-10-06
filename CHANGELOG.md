@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.67.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.66.0...v0.67.0) (2026-10-05)
+
+
+### Features
+
+* **llm_gpu_serving:** install hf CLI in model cache ([41c4d35](https://github.com/dryvist/ansible-proxmox-ai/commit/41c4d356b151495c78951ca377d348631cdcd5cf))
+* **llm-router:** expose Zammad and Slack MCP tools ([#1101](https://github.com/dryvist/ansible-proxmox-ai/issues/1101)) ([e936345](https://github.com/dryvist/ansible-proxmox-ai/commit/e936345ac972c3f8a12baf7050383d8e85938d3b))
+* **llm:** add Pro6000 local model aliases ([#1105](https://github.com/dryvist/ansible-proxmox-ai/issues/1105)) ([8f7d06e](https://github.com/dryvist/ansible-proxmox-ai/commit/8f7d06e880425f5ee9676ca940c90d33a619dd49))
+* **llm:** add registry-driven benchmark campaigns ([f860e9c](https://github.com/dryvist/ansible-proxmox-ai/commit/f860e9c5f62f00a7aac6d89a329fd4b24d186c51))
+* **memory:** scope MCP access ([#1112](https://github.com/dryvist/ansible-proxmox-ai/issues/1112)) ([7d3a44d](https://github.com/dryvist/ansible-proxmox-ai/commit/7d3a44d967887d1b6b90c61dccfdeaa6c1bef199))
+
+
+### Bug Fixes
+
+* **hermes_agent:** enable current-query Hindsight recall ([#1099](https://github.com/dryvist/ansible-proxmox-ai/issues/1099)) ([1365feb](https://github.com/dryvist/ansible-proxmox-ai/commit/1365feb6b95a5cf6e8c331ac00e2186ec20f9afc))
+* **hermes-agent:** declare custom router provider ([#1113](https://github.com/dryvist/ansible-proxmox-ai/issues/1113)) ([c2a2989](https://github.com/dryvist/ansible-proxmox-ai/commit/c2a2989e8d4bbf325d08dd5c5972ae79861cbc06))
+* **hermes:** return partial goal-mode result at budget ([#1111](https://github.com/dryvist/ansible-proxmox-ai/issues/1111)) ([74b3a94](https://github.com/dryvist/ansible-proxmox-ai/commit/74b3a940ba76a25830b571315e314b36a7774e67))
+* **openbao_secrets:** gate optional benchmark path ([#1114](https://github.com/dryvist/ansible-proxmox-ai/issues/1114)) ([71b1433](https://github.com/dryvist/ansible-proxmox-ai/commit/71b1433ac05e80b8ad358904c8011fc6a64c465b))
+* **release:** publish registry assets from drafts ([#1097](https://github.com/dryvist/ansible-proxmox-ai/issues/1097)) ([b9848b2](https://github.com/dryvist/ansible-proxmox-ai/commit/b9848b291830c8de5196aa05eff31aed28c1f3c5))
+
+## [0.66.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.65.0...v0.66.0) (2026-10-05)
+
+
+### Features
+
+* **llm-router:** add Pro6000 GPU tier, inactive until host serves ([fc918e2](https://github.com/dryvist/ansible-proxmox-ai/commit/fc918e2bff1166a7e26c4c67dba23dc981911a96))
+
+## [0.65.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.64.2...v0.65.0) (2026-10-05)
+
+
+### Features
+
+* **llm-router:** report UI drift without overwriting ([#1078](https://github.com/dryvist/ansible-proxmox-ai/issues/1078)) ([7e4834d](https://github.com/dryvist/ansible-proxmox-ai/commit/7e4834d02d6a9599e23498ac654aa1bec034e2be))
+
+
+### Bug Fixes
+
+* **hermes_agent:** expose Hindsight operation failures ([#1081](https://github.com/dryvist/ansible-proxmox-ai/issues/1081)) ([d388199](https://github.com/dryvist/ansible-proxmox-ai/commit/d388199f5f19d6d6879477e916fd039b46e5f657))
+* **hermes_agent:** serialize innovation log appends ([#1082](https://github.com/dryvist/ansible-proxmox-ai/issues/1082)) ([e5e5e63](https://github.com/dryvist/ansible-proxmox-ai/commit/e5e5e631541b77fd3348aa2d97389367b56509a4))
+* **hermes:** read agent-specific Slack settings ([#1076](https://github.com/dryvist/ansible-proxmox-ai/issues/1076)) ([a472bec](https://github.com/dryvist/ansible-proxmox-ai/commit/a472bece2a629ffcb7af83bf96df3a9d7c4e0553))
+* **llm_router:** source limits from catalog ([#1084](https://github.com/dryvist/ansible-proxmox-ai/issues/1084)) ([57a2490](https://github.com/dryvist/ansible-proxmox-ai/commit/57a2490773c78f524b25269635c14c0b47f31349))
+* **llm-router:** bound readiness probes ([#1087](https://github.com/dryvist/ansible-proxmox-ai/issues/1087)) ([07cf6d4](https://github.com/dryvist/ansible-proxmox-ai/commit/07cf6d40618b4e5734bc1f66aff74f007839dd40))
+* use the homelab Cribl catalog for agent guests ([#1077](https://github.com/dryvist/ansible-proxmox-ai/issues/1077)) ([3431f1a](https://github.com/dryvist/ansible-proxmox-ai/commit/3431f1a15dab4db57f97aa936a5e36d4c7584bdc))
+
 ## [0.64.2](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.64.1...v0.64.2) (2026-10-04)
 
 

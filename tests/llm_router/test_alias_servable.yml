@@ -31,9 +31,20 @@
     hermes_goal_judge_model: judge
     bao_apps_secrets: {}
   tasks:
+    - name: Add a fixture member for the GPU-tier projections
+      ansible.builtin.add_host:
+        name: llm-gpu-fixture
+        groups: llm_gpu_group
+        ansible_connection: local
+
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
         dir: "{{ _defaults_dir }}"
+
+    - name: Select the small profile for this active-state contract
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: true
+        llm_active_profile: small
 
     # The defaults are projections of the registry, so both have to be in scope
     # for the contract to mean anything. Loaded through the role's own task file
@@ -51,14 +62,14 @@
         that:
           - >-
             llm_router_model_group_aliases | dict2items | map(attribute='value')
-            | difference(llm_router_servable_models + llm_router_hermes_router_ids
+            | difference(llm_router_all_servable_models + llm_router_hermes_router_ids
                          + llm_router_long_context_alias_ids) | length == 0
         fail_msg: >-
           Alias(es)
           [{{ llm_router_model_group_aliases | dict2items | map(attribute='value')
-              | difference(llm_router_servable_models + llm_router_hermes_router_ids
+              | difference(llm_router_all_servable_models + llm_router_hermes_router_ids
                            + llm_router_long_context_alias_ids) | unique | join(', ') }}]
-          are outside llm_router_servable_models, the local complexity
+          are outside the large/GPU servable set, the local complexity
           router, and the long-context entry, and would return HTTP 404.
         success_msg: "all {{ llm_router_model_group_aliases | length }} aliases are servable"
 
@@ -66,16 +77,16 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_servable_models | difference(_safe) | length == 0
+          - llm_router_all_servable_models | difference(_safe) | length == 0
         fail_msg: >-
-          [{{ llm_router_servable_models | difference(_safe) | join(', ') }}]
-          are in the servable set but carry no context_window in
-          llm_router_large_models — they would fall through the "*" wildcard and
+          [{{ llm_router_all_servable_models | difference(_safe) | join(', ') }}]
+          are in the servable set but carry no context_window in the large/GPU
+          registry — they would fall through the "*" wildcard and
           compress every caller to death.
         success_msg: "servable models all carry explicit context windows"
       vars:
         _safe: >-
-          {{ llm_router_large_models
+          {{ (llm_router_large_models + llm_router_gpu_models)
              | selectattr('context_window', 'defined')
              | rejectattr('context_window', 'none')
              | map(attribute='client_model_id') | list }}
@@ -105,30 +116,29 @@
           {{ llm_router_large_models
              | selectattr('client_model_id', 'equalto', llm_router_primary_model) | list }}
 
-    - name: The judge stays cross-family while the routine model is active
+    - name: The judge targets the smallest GPU profile and keeps the routine fallback
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_routine_model != llm_router_primary_model
-          - (llm_router_role_deployments | selectattr('role', 'equalto', hermes_goal_judge_model)
-             | map(attribute='model') | first) != llm_router_primary_model
-        success_msg: "judge is cross-family to the worker"
+          - _judge.model == llm_router_gpu_small_model
+          - llm_router_routine_model in _judge.fallbacks
+        success_msg: "judge uses the small GPU profile with the previous routine tier as fallback"
       vars:
-        _mapped_fast_model: "{{ llm_roles.models[llm_roles.roles.fast.model].id }}"
-      when: _mapped_fast_model in llm_router_servable_models
+        _judge: "{{ llm_router_role_deployments | selectattr('role', 'equalto', hermes_goal_judge_model) | first }}"
 
-    - name: The parked routine role uses the active primary
+    - name: The parked routine selector and judge fallback use the active primary
       ansible.builtin.assert:
         quiet: true
         that:
           - llm_router_routine_model == llm_router_primary_model
-          - (llm_router_role_deployments | selectattr('role', 'equalto', hermes_goal_judge_model)
-             | map(attribute='model') | first) == llm_router_primary_model
+          - _judge.model == llm_router_gpu_small_model
+          - llm_router_primary_model in _judge.fallbacks
           - _mapped_fast_model in _parked_routine | map(attribute='client_model_id') | list
-        fail_msg: "the parked routine role must resolve through the active primary"
-        success_msg: "parked routine role uses the active primary until its host is rebuilt"
+        fail_msg: "the parked routine role must remain a judge fallback target"
+        success_msg: "judge falls through to the active primary when the routine selector is parked"
       vars:
         _mapped_fast_model: "{{ llm_roles.models[llm_roles.roles.fast.model].id }}"
+        _judge: "{{ llm_router_role_deployments | selectattr('role', 'equalto', hermes_goal_judge_model) | first }}"
         _parked_routine: >-
           {{ llm_router_model_registry
              | selectattr('client_model_id', 'equalto', _mapped_fast_model)
@@ -184,7 +194,7 @@
         # always renders (model-list-light.yaml.j2), so its client name is a
         # group a key may be scoped to.
         _advertised: >-
-          {{ (llm_router_servable_models
+          {{ (llm_router_all_servable_models
               + (llm_router_light_models | map(attribute='client_model_id') | list)
               + (llm_router_model_group_aliases | list)
               + (llm_router_hermes_agents | list)

@@ -1,0 +1,335 @@
+---
+- name: Load the registry model identity for each GPU profile
+  ansible.builtin.include_tasks: load-registry.yml
+
+- name: Validate the active GPU serving profile
+  ansible.builtin.assert:
+    that:
+      - llm_active_profile in llm_profiles
+      - llm_profiles[llm_active_profile].enabled | default(true)
+      - llm_gpu_serving_model_cache_mount_path | length > 0
+      - llm_gpu_serving_model_origin_mount_path | length > 0
+      - llm_gpu_serving_registry_by_profile[llm_active_profile].artifact.use == 'serving'
+      - >-
+        llm_profiles[llm_active_profile].engine in
+        llm_gpu_serving_registry_by_profile[llm_active_profile].artifact.engines
+      - llm_gpu_serving_vllm_version is match('^[0-9]+[.][0-9]+[.][0-9]+$')
+    fail_msg: >-
+      Select an enabled serving profile, provide the target's writable cache
+      directory, and set a pinned vLLM version.
+    quiet: true
+
+- name: Inspect the supplied writable model cache directory
+  ansible.builtin.stat:
+    path: "{{ llm_gpu_serving_model_cache_mount_path }}"
+  register: llm_gpu_serving_cache_mount_stat
+
+- name: Assert the writable model cache mount exists
+  ansible.builtin.assert:
+    that:
+      - llm_gpu_serving_cache_mount_stat.stat.exists
+      - llm_gpu_serving_cache_mount_stat.stat.isdir
+    fail_msg: >-
+      The supplied writable model cache directory at
+      {{ llm_gpu_serving_model_cache_mount_path }} must already exist as a directory.
+    quiet: true
+
+- name: Validate every GPU serving profile
+  ansible.builtin.assert:
+    that:
+      - item.value.engine in ['vllm', 'llama_cpp']
+      - item.key in llm_gpu_serving_registry_by_profile
+      - item.value.max_model_len | int > 0
+      - item.value.max_num_seqs | int > 0
+      - item.value.port | int > 0
+      - >-
+        item.value.engine != 'vllm'
+        or (item.value.linear_backend in ['auto', 'b12x']
+            and item.value.moe_backend in ['auto', 'b12x']
+            and item.value.gpu_memory_utilization | float > 0
+            and item.value.gpu_memory_utilization | float <= 1
+            and (not item.value.enable_auto_tool_choice
+                 or llm_gpu_serving_registry_by_profile[item.key].artifact.tool_call_parser
+                    | default(item.value.tool_call_parser) | length > 0)
+            and llm_gpu_serving_registry_by_profile[item.key].artifact.reasoning_parser
+                | default(item.value.reasoning_parser) | length > 0)
+      - >-
+        item.value.engine != 'llama_cpp'
+        or (llm_gpu_serving_registry_by_profile[item.key].artifact.format == 'GGUF'
+            and llm_gpu_serving_registry_by_profile[item.key].artifact.gguf_file | default('')
+                is match('^[^*?\\[]+[.]gguf$'))
+      - >-
+        item.value.engine != 'llama_cpp'
+        or item.value.extra_args | default([]) is not string
+    fail_msg: "GPU serving profile {{ item.key }} is incomplete or invalid."
+    quiet: true
+  loop: "{{ llm_profiles | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: item.value.enabled | default(true)
+
+- name: Create the GPU serving system group
+  ansible.builtin.group:
+    name: "{{ llm_gpu_serving_group }}"
+    system: true
+
+- name: Create the GPU serving system user
+  ansible.builtin.user:
+    name: "{{ llm_gpu_serving_user }}"
+    group: "{{ llm_gpu_serving_group }}"
+    home: "{{ llm_gpu_serving_home }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: true
+
+- name: Install GPU serving prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gzip
+      - libgomp1
+      - sudo
+      - tar
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create GPU serving directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ llm_gpu_serving_user }}"
+    group: "{{ llm_gpu_serving_group }}"
+    mode: "0750"
+  loop:
+    - path: "{{ llm_gpu_serving_data_dir }}"
+    - path: "{{ llm_gpu_serving_install_dir }}"
+    - path: "{{ llm_gpu_serving_uv_cache_dir }}"
+    - path: "{{ llm_gpu_serving_uv_python_install_dir }}"
+    - path: "{{ llm_gpu_serving_uv_tool_dir }}"
+    - path: "{{ llm_gpu_serving_uv_tool_bin_dir }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Read the installed uv version
+  ansible.builtin.command:
+    argv:
+      - "{{ llm_gpu_serving_uv_bin }}"
+      - --version
+  register: llm_gpu_serving_uv_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Install the pinned uv version
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail && curl --proto '=https' --tlsv1.2 -LsSf
+      {{ llm_gpu_serving_uv_install_url | quote }}
+      | env UV_INSTALL_DIR={{ llm_gpu_serving_uv_bin | dirname | quote }} UV_NO_MODIFY_PATH=1 sh
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when: >-
+    (llm_gpu_serving_uv_version_check.stdout | default(''))
+    != ('uv ' ~ llm_gpu_serving_uv_version)
+
+- name: Install the pinned Hugging Face CLI in the model cache
+  ansible.builtin.command:
+    argv:
+      - "{{ llm_gpu_serving_uv_bin }}"
+      - tool
+      - install
+      - --python
+      - "{{ llm_gpu_serving_python }}"
+      - "huggingface_hub=={{ llm_gpu_serving_huggingface_hub_version }}"
+  become: true
+  become_user: "{{ llm_gpu_serving_user }}"
+  environment: "{{ llm_gpu_serving_uv_environment }}"
+  register: llm_gpu_serving_hf_cli_install
+  changed_when: >-
+    'Installed' in (llm_gpu_serving_hf_cli_install.stdout ~ llm_gpu_serving_hf_cli_install.stderr) or
+    'Uninstalled' in (llm_gpu_serving_hf_cli_install.stdout ~ llm_gpu_serving_hf_cli_install.stderr) or
+    'Prepared' in (llm_gpu_serving_hf_cli_install.stdout ~ llm_gpu_serving_hf_cli_install.stderr)
+
+- name: Create the vLLM virtual environment
+  ansible.builtin.command:
+    argv:
+      - "{{ llm_gpu_serving_uv_bin }}"
+      - venv
+      - --python
+      - "{{ llm_gpu_serving_python }}"
+      - "{{ llm_gpu_serving_venv }}"
+    creates: "{{ llm_gpu_serving_venv }}/bin/python"
+  become: true
+  become_user: "{{ llm_gpu_serving_user }}"
+  environment: "{{ llm_gpu_serving_uv_environment }}"
+
+- name: Install the pinned vLLM build with SM120 b12x kernels
+  ansible.builtin.command:
+    argv:
+      - "{{ llm_gpu_serving_uv_bin }}"
+      - pip
+      - install
+      - --python
+      - "{{ llm_gpu_serving_venv }}/bin/python"
+      - "vllm[b12x]=={{ llm_gpu_serving_vllm_version }}"
+  become: true
+  become_user: "{{ llm_gpu_serving_user }}"
+  environment: "{{ llm_gpu_serving_uv_environment }}"
+  register: llm_gpu_serving_vllm_install
+  changed_when: >-
+    'Installed' in llm_gpu_serving_vllm_install.stderr or
+    'Prepared' in llm_gpu_serving_vllm_install.stderr or
+    'Uninstalled' in llm_gpu_serving_vllm_install.stderr
+  notify:
+    - Stop every other GPU serving profile before switching
+    - Start the active GPU serving profile
+
+- name: Inspect the llama.cpp server binary
+  ansible.builtin.stat:
+    path: "{{ llm_gpu_serving_llamacpp_server_bin }}"
+  register: llm_gpu_serving_llamacpp_server_stat
+
+- name: Install the llama.cpp CUDA release binary
+  when: not llm_gpu_serving_llamacpp_server_stat.stat.exists
+  block:
+    - name: Resolve recent llama.cpp release metadata
+      ansible.builtin.uri:
+        url: "{{ llm_gpu_serving_llamacpp_releases_api }}"
+        return_content: true
+        status_code: 200
+      register: llm_gpu_serving_llamacpp_release
+
+    - name: Select the CUDA release asset by name pattern
+      ansible.builtin.set_fact:
+        llm_gpu_serving_llamacpp_asset_url: >-
+          {{ llm_gpu_serving_llamacpp_release.json
+             | map(attribute='assets') | flatten
+             | selectattr('name', 'match', llm_gpu_serving_llamacpp_asset_regex)
+             | map(attribute='browser_download_url') | first | default('', true) }}
+
+    - name: Assert a matching CUDA asset was found
+      ansible.builtin.assert:
+        that:
+          - llm_gpu_serving_llamacpp_asset_url | length > 0
+        fail_msg: >-
+          No llama.cpp CUDA release asset matched
+          {{ llm_gpu_serving_llamacpp_asset_regex }} in
+          {{ llm_gpu_serving_llamacpp_releases_api }}.
+
+    - name: Create a temporary llama.cpp extraction directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: llm-gpu-serving
+      register: llm_gpu_serving_llamacpp_extract_tmp
+
+    - name: Download and extract the llama.cpp release tarball
+      ansible.builtin.unarchive:
+        src: "{{ llm_gpu_serving_llamacpp_asset_url }}"
+        dest: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
+        remote_src: true
+
+    - name: Find llama-server in the CUDA release archive
+      ansible.builtin.find:
+        paths: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
+        patterns: llama-server
+        file_type: file
+        recurse: true
+      register: llm_gpu_serving_llamacpp_server_find
+
+    - name: Assert llama-server was included in the release archive
+      ansible.builtin.assert:
+        that:
+          - llm_gpu_serving_llamacpp_server_find.matched | int > 0
+        fail_msg: "No llama-server binary was found in the CUDA release archive."
+
+    - name: Create the llama.cpp install directory
+      ansible.builtin.file:
+        path: "{{ llm_gpu_serving_llamacpp_install_dir }}"
+        state: directory
+        owner: "{{ llm_gpu_serving_user }}"
+        group: "{{ llm_gpu_serving_group }}"
+        mode: "0750"
+
+    - name: Install llama.cpp binaries and shared libraries
+      ansible.builtin.command:
+        argv:
+          - cp
+          - -a
+          - "{{ llm_gpu_serving_llamacpp_server_find.files[0].path | dirname }}/."
+          - "{{ llm_gpu_serving_llamacpp_install_dir }}/"
+      changed_when: true
+      notify:
+        - Stop every other GPU serving profile before switching
+        - Start the active GPU serving profile
+
+    - name: Remove the temporary llama.cpp extraction directory
+      ansible.builtin.file:
+        path: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
+        state: absent
+
+- name: Resolve the active profile's registry model
+  ansible.builtin.set_fact:
+    llm_gpu_serving_active_registry_model: "{{ llm_gpu_serving_registry_by_profile[llm_active_profile] }}"
+    llm_gpu_serving_active_artifact: "{{ llm_gpu_serving_registry_by_profile[llm_active_profile].artifact }}"
+
+- name: Resolve active profile model paths
+  ansible.builtin.set_fact:
+    llm_gpu_serving_health_host: >-
+      {{ llm_gpu_serving_listen_host | default(ansible_facts.default_ipv4.address) }}
+
+- name: Cache the active profile's registered model artifact
+  ansible.builtin.include_tasks: cache-sync.yml
+  loop: >-
+    {{ [llm_gpu_serving_active_artifact.artifact_id]
+       + (llm_gpu_serving_active_artifact.required_artifact_ids | default([])) }}
+  loop_control:
+    loop_var: llm_gpu_serving_cache_sync_artifact_id
+    label: "{{ llm_gpu_serving_cache_sync_artifact_id }}"
+  vars:
+    llm_gpu_serving_cache_sync_notify_service: true
+
+- name: Retire units for disabled GPU serving profiles
+  ansible.builtin.include_tasks: retire-disabled-profile.yml
+  loop: "{{ llm_profiles | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - not (llm_gpu_serving_render_only | default(false))
+    - not (item.value.enabled | default(true))
+
+- name: Render one systemd unit for each GPU serving profile
+  ansible.builtin.include_tasks: render-units.yml
+
+- name: Check profile service states and request a switch when they diverge
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - --quiet
+      - "{{ llm_gpu_serving_unit_prefix }}-{{ item.key }}.service"
+  register: llm_gpu_serving_profile_state
+  changed_when: >-
+    (item.key == llm_active_profile and llm_gpu_serving_profile_state.rc != 0) or
+    (item.key != llm_active_profile and llm_gpu_serving_profile_state.rc == 0)
+  failed_when: llm_gpu_serving_profile_state.rc not in [0, 3, 4]
+  loop: "{{ llm_profiles | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: item.value.enabled | default(true)
+  notify:
+    - Stop every other GPU serving profile before switching
+    - Start the active GPU serving profile
+
+- name: Apply pending GPU serving service changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify the active GPU serving profile is healthy
+  ansible.builtin.uri:
+    url: "http://{{ llm_gpu_serving_health_host }}:{{ llm_profiles[llm_active_profile].port }}/v1/models"
+    status_code: 200
+  register: llm_gpu_serving_health
+  retries: 30
+  delay: 5
+  until: llm_gpu_serving_health.status == 200

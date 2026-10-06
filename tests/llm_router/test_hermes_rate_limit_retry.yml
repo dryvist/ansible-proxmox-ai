@@ -1,0 +1,261 @@
+---
+# Pins the rate-limit retry policy the router renders: the names the Hermes
+# agents call (llm_router_rate_limit_retry_names, defaults/main/38-zero-retry-
+# groups.yml) retry a 429 llm_router_hermes_rate_limit_retries times, each
+# retry sleeping the upstream's Retry-After; every other name hands a busy
+# slot over at once, except the multi-member cloud groups that retry onto
+# their next member. tasks/assert-admission-budget.yml holds that line at
+# converge time; the third play proves it refuses each way of breaking it.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_hermes_rate_limit_retry.yml -i localhost, -c local
+
+- name: With a ladder rendered, only the names the Hermes agents call wait out a 429
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Produce the fully credentialed render (runs the whole assert chain)
+      ansible.builtin.import_tasks: tasks/credentialed_render.yml
+
+    - name: The listed names retry, every other group is unchanged, the render is the declared map
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # ANTI-VACUITY: a ladder rendered, the list is not empty, the figure
+          # is positive and the policy exists. Without them every comparison
+          # below is trivially true over nothing.
+          - llm_router_hermes_default_fallback_chain | length > 0
+          - llm_router_rate_limit_retry_names | length > 0
+          - llm_router_hermes_rate_limit_retries | int >= 1
+          - _policy | length > 0
+          # A name outside every list hands over at once.
+          - _config.router_settings.retry_policy.RateLimitErrorRetries | int == 0
+          # Each listed name retries the declared figure, even though it carries a chain.
+          - >-
+            llm_router_rate_limit_retry_names | map('extract', _policy)
+            | map(attribute='RateLimitErrorRetries') | unique | list
+            == [llm_router_hermes_rate_limit_retries | int]
+          # Nothing else retries but the multi-member cloud groups.
+          - >-
+            _retrying | sort
+            == (llm_router_rate_limit_retry_names + llm_router_multi_member_cloud_groups) | unique | sort
+          # No other fail-fast role and no ladder role waits.
+          - >-
+            (llm_router_cross_modality_fail_fast_names + llm_router_local_only_fail_fast_names)
+            | difference(llm_router_rate_limit_retry_names) | intersect(_retrying) | length == 0
+          # Template and assert read one source.
+          - _rendered == llm_router_rate_limit_retries_by_group
+        fail_msg: >-
+          Rate-limit retries rendered {{ _rendered }}; expected {{ llm_router_rate_limit_retries_by_group }}
+          (listed names {{ llm_router_rate_limit_retry_names }}, retrying {{ _retrying }}).
+        success_msg: >-
+          {{ llm_router_rate_limit_retry_names }} retry {{ llm_router_hermes_rate_limit_retries }}x;
+          no other group waits.
+      vars:
+        _policy: "{{ _config.router_settings.model_group_retry_policy }}"
+        _rendered: >-
+          {{ dict(_policy | dict2items | map(attribute='key')
+                  | zip(_policy | dict2items | map(attribute='value.RateLimitErrorRetries'))) }}
+        _retrying: >-
+          {{ _policy | dict2items | rejectattr('value.RateLimitErrorRetries', 'equalto', 0)
+             | map(attribute='key') | list }}
+
+- name: With no ladder rendered, the names the Hermes agents call still wait out a 429
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    # set_fact outlives its play, so the credentials the first play seeded would
+    # otherwise still be on this host.
+    - name: Start with no credential and the vllm tier off, so no local rung leaves a chain either
+      ansible.builtin.set_fact:
+        bao_local_llm_secrets: {}
+        llm_router_llm_vllm_enabled: false
+
+    - name: Render the config
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: With nothing to hand a busy slot to, the listed names are the whole retry policy
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # ANTI-VACUITY: the render really has no ladder, so the policy block
+          # exists only because of the listed names.
+          - llm_router_hermes_default_fallback_chain | length == 0
+          - "'fallbacks' not in _config.router_settings"
+          - "'default_fallbacks' not in _config.router_settings"
+          - llm_router_rate_limit_retry_names | length > 0
+          - _config.router_settings.retry_policy.RateLimitErrorRetries | int == 0
+          - _policy.keys() | list | sort == llm_router_rate_limit_retry_names | sort
+          - >-
+            _policy.values() | map(attribute='RateLimitErrorRetries') | unique | list
+            == [llm_router_hermes_rate_limit_retries | int]
+        fail_msg: >-
+          Without a ladder the policy must be exactly the listed names;
+          rendered {{ _policy | default('(none)') }}.
+        success_msg: "No ladder rendered; {{ llm_router_rate_limit_retry_names }} still retry."
+      vars:
+        _policy: "{{ _config.router_settings.model_group_retry_policy | default({}) }}"
+
+- name: The admission assert refuses each way of breaking the retry policy
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Remember the shipped figures
+      ansible.builtin.set_fact:
+        _shipped_by_group: "{{ llm_router_rate_limit_retries_by_group }}"
+        _shipped_retries: "{{ llm_router_hermes_rate_limit_retries | int }}"
+        _victim: "{{ llm_router_cross_modality_fail_fast_names | first }}"
+
+    - name: The shipped policy passes
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: assert-admission-budget.yml
+
+    - name: A name outside the list that retries is refused
+      block:
+        - name: Give a fail-fast name a retry
+          ansible.builtin.set_fact:
+            llm_router_rate_limit_retries_by_group: "{{ _shipped_by_group | combine({_victim: 1}) }}"
+        - name: Run the assert
+          ansible.builtin.include_role:
+            name: llm_router
+            tasks_from: assert-admission-budget.yml
+        - name: Fail because the assert admitted it
+          ansible.builtin.fail:
+            msg: "The assert passed with {{ _victim }} retrying a 429."
+      rescue:
+        - name: Confirm it failed for that name
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'(must be none)' in ansible_failed_result.msg"
+              - "_victim in ansible_failed_result.msg"
+              - "'The assert passed' not in ansible_failed_result.msg"
+      always:
+        - name: Restore the shipped map
+          ansible.builtin.set_fact:
+            llm_router_rate_limit_retries_by_group: "{{ _shipped_by_group }}"
+
+    - name: Hermes retries of zero are refused
+      block:
+        - name: Zero the figure
+          ansible.builtin.set_fact:
+            llm_router_hermes_rate_limit_retries: 0
+        - name: Run the assert
+          ansible.builtin.include_role:
+            name: llm_router
+            tasks_from: assert-admission-budget.yml
+        - name: Fail because the assert admitted it
+          ansible.builtin.fail:
+            msg: "The assert passed with no Hermes retries."
+      rescue:
+        - name: Confirm it failed for the figure
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'Hermes retries=0' in ansible_failed_result.msg"
+      always:
+        - name: Restore the shipped figure
+          ansible.builtin.set_fact:
+            llm_router_hermes_rate_limit_retries: "{{ _shipped_retries }}"
+
+    - name: A wait that outlasts the client read is refused
+      block:
+        - name: Raise the figure past the stream read ceiling
+          ansible.builtin.set_fact:
+            llm_router_hermes_rate_limit_retries: "{{ (ai_stream_read_timeout_seconds | int) }}"
+        - name: Run the assert
+          ansible.builtin.include_role:
+            name: llm_router
+            tasks_from: assert-admission-budget.yml
+        - name: Fail because the assert admitted it
+          ansible.builtin.fail:
+            msg: "The assert passed with a wait past the client read."
+      rescue:
+        - name: Confirm it failed for the wait
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'must stay under the' in ansible_failed_result.msg"
+              - "'The assert passed' not in ansible_failed_result.msg"
+      always:
+        - name: Restore the shipped figure
+          ansible.builtin.set_fact:
+            llm_router_hermes_rate_limit_retries: "{{ _shipped_retries }}"

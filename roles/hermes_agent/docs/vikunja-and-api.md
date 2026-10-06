@@ -74,7 +74,7 @@ rate limit, so one bulk paste into Vikunja cannot create fifty cards at once.
 
 `HERMES_VIKUNJA_API_TOKEN` — a **write-scoped** Vikunja API token. Resolved
 bao-first via the `local-llm` OpenBao domain (`secret/ai/hermes` — see
-`inventory/group_vars/hermes_agent_group.yml`, which overrides the role's
+`inventory/group_vars/hermes_agent_group/00-agent-settings.yml`, which overrides the role's
 plain-env default above), falling back to the converge environment
 (`lookup('env', ...)`, so Doppler or SOPS also satisfy it) when that domain's
 AppRole isn't configured. A path-exact `hermes` domain also exists (see

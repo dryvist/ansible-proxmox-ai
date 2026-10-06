@@ -12,6 +12,7 @@ as terminal.
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 from typing import Any
@@ -27,6 +28,7 @@ from conftest import (
     _StubAgent,
     role_tasks,
 )
+from _cron_pool_ceiling_shared import wall_timeout_seconds
 
 
 def _real_loop(verdicts):
@@ -155,3 +157,43 @@ def test_real_loop_still_returns_the_conversation_dict(
 
     assert "outcome" not in result, "returned the decision dict, not the run"
     assert result["completed"] is True
+
+
+def test_budget_wrapup_returns_a_structured_partial_result(
+    monkeypatch: pytest.MonkeyPatch, real_goals
+) -> None:
+    monkeypatch.setenv("HERMES_CRON_GOAL_JOBS", "splunk-triage")
+    calls = real_goals(["continue", "continue"])
+
+    class _BudgetAgent(_StubAgent):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen_budgets = []
+
+        def run_conversation(self, message, conversation_history=None, task_id=None):
+            self.seen_budgets.append(self.run_budget_seconds)
+            result = super().run_conversation(message, conversation_history, task_id)
+            if self.turns == 2:
+                self._run_budget_wrapup_injected = True
+            return result
+
+    namespace = _goal_runner_namespace()
+    namespace["_hermes_cron_wall_timeout_limit"] = wall_timeout_seconds
+    run = namespace["_hermes_cron_goal_run"]
+    agent = _BudgetAgent()
+    result = run(agent, "sweep splunk", "splunk-triage", "task-id")
+
+    assert calls["judge"] == 1
+    assert agent.turns == 2
+    assert agent.seen_budgets[0] <= wall_timeout_seconds()
+    assert agent.seen_budgets[1] <= agent.seen_budgets[0]
+    assert agent.run_budget_seconds is None
+    partial_result = {
+        "status": "partial",
+        "reason": "wall_clock_budget",
+        "response": "resp2",
+        "goal_turns_used": 2,
+        "worker_turns": 2,
+    }
+    assert result["partial_result"] == partial_result
+    assert json.loads(result["final_response"]) == partial_result

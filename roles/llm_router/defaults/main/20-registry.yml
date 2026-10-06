@@ -1,10 +1,10 @@
 ---
 # --- THE MODEL REGISTRY (single source for every model name) -----------------
 # Model names, aliases, tiers and enabled/servable state are written ONCE, in
-# the repo-root llm-models.d/ registry, and everything below is a projection of
-# it. The registry carries the per-model rationale (context windows, sampling
-# overrides, incident history); this file carries only the topology the registry
-# deliberately does not know about — base URLs, ports, bearer env names.
+# the repo-root llm-models.d/ registry. Per-model numeric limits are loaded
+# from homelab-contracts and projected onto those entries by registry.yml.
+# This file carries only topology the catalog deliberately does not know about
+# — base URLs, ports, bearer env names.
 #
 # One file per tier rather than one file for everything: an agent changing the
 # NVIDIA rung reads 30-local-gpu.yml, not every cloud entry as well. Each slice
@@ -16,22 +16,39 @@
 # needs these vars (tests, CI) loads the same dir; nothing re-types a model id.
 llm_router_registry_dir: "{{ role_path | dirname | dirname }}/llm-models.d"
 
+# One fail-closed switch for the unprovisioned Pro6000 profiles. A later
+# profile-switch change may flip this only after the serving host is ready.
+llm_router_gpu_profiles_enabled: false
+
 llm_router_model_registry: >-
   {{ _llm_registry_large + _llm_registry_light + _llm_registry_cpu_pool
-     + _llm_registry_local_gpu + _llm_registry_opencode + _llm_registry_hermes_cloud
+     + _llm_registry_local_gpu
+     + (llm_router_gpu_pro6000_profile_registry | default(_llm_registry_gpu_pro6000))
+     + _llm_registry_opencode + _llm_registry_hermes_cloud
      + _llm_registry_openrouter + _llm_registry_zai }}
 
-# Only enabled entries reach the rendered config or any derived contract.
+# Only active entries reach the rendered config or any derived contract. The
+# GPU candidates stay hidden until the single switch above is true; when active,
+# the projection includes only llm_active_profile because one endpoint serves
+# one selected profile at a time.
 # cpu-moe / cpu-9b also require inventory-backed api_base URLs — without them
 # the template renders nothing and registry/render parity fails loudly.
 llm_router_registry_enabled: >-
   {%- set ns = namespace(out=[]) -%}
   {%- set backends = llm_router_cpu_pool_backend_urls_by_tier | default({}) -%}
-  {%- for m in (llm_router_model_registry | selectattr('enabled') | list) -%}
+  {%- for m in llm_router_model_registry -%}
+  {%- if m.tier == 'gpu' -%}
+  {%- if llm_router_gpu_profiles_enabled | bool
+       and (groups['llm_gpu_group'] | default([]) | length) > 0
+       and m.profile == (llm_active_profile | default('')) -%}
+  {%- set ns.out = ns.out + [m | combine({'enabled': true, 'servable': true})] -%}
+  {%- endif -%}
+  {%- elif m.enabled -%}
   {%- if m.tier in ['cpu-moe', 'cpu-9b']
        and (backends[m.tier] | default([]) | length) == 0 -%}
   {%- else -%}
   {%- set ns.out = ns.out + [m] -%}
+  {%- endif -%}
   {%- endif -%}
   {%- endfor -%}
   {{ ns.out }}
@@ -105,8 +122,46 @@ llm_router_cpu_9b_models: >-
 # entry, because the light tier renders a GPU+CPU deployment PAIR sharing a
 # model name, and no second backend serves these weights — rendering the pair
 # would advertise a standby that does not exist.
+# Empty while llm_router_llm_vllm_enabled is false (10-network.yml): the tier
+# then renders no deployment and contributes no fallback rung.
 llm_router_vllm_models: >-
-  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | list }}
+  {{ (llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | list)
+     if llm_router_llm_vllm_enabled | bool else [] }}
+# Pro6000: separate physical GPU serving tier. It is inventory-gated like the
+# CPU pool so this proxy never advertises a backend without a tofu-tagged host.
+llm_router_gpu_models: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'gpu') | list }}
+llm_router_gpu_profile_aliases: >-
+  {%- set ns = namespace(out=[]) -%}
+  {%- for m in llm_router_model_registry | selectattr('tier', 'equalto', 'gpu') | list -%}
+  {%- set ns.out = ns.out + (m.stable_aliases | default([])) -%}
+  {%- endfor -%}
+  {{ ns.out }}
+llm_router_gpu_models_by_profile: >-
+  {%- set ns = namespace(out={}) -%}
+  {%- for m in llm_router_gpu_models -%}
+  {%- set _ = ns.out.update({m.profile: m.client_model_id}) -%}
+  {%- endfor -%}
+  {{ ns.out }}
+llm_router_gpu_model_aliases_by_profile: >-
+  {%- set ns = namespace(out={}) -%}
+  {%- for m in llm_router_gpu_models -%}
+  {%- for alias in m.stable_aliases | default([]) -%}
+  {%- set _ = ns.out.update({m.profile: alias}) -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {{ ns.out }}
+llm_router_gpu_small_model: "{{ llm_router_gpu_models_by_profile.get('small', llm_router_routine_model) }}"
+llm_router_gpu_medium_a_model: "{{ llm_router_gpu_models_by_profile.get('medium-a', llm_router_primary_model) }}"
+llm_router_gpu_medium_b_model: "{{ llm_router_gpu_models_by_profile.get('medium-b', llm_router_hermes_local_4080_id) }}"
+llm_router_gpu_max_model: "{{ llm_router_gpu_models_by_profile.get('max', llm_router_primary_model) }}"
+# The complexity router targets tagged physical deployments. Stable aliases are
+# for callers that select a profile directly; LiteLLM's auto-router needs each
+# tier target to resolve to a tagged model-list entry.
+llm_router_hermes_gpu_fast_target: >-
+  {{ llm_router_gpu_models_by_profile.get('small', llm_router_routine_model) }}
+llm_router_hermes_gpu_medium_target: >-
+  {{ llm_router_gpu_models_by_profile.get('medium-a', llm_router_primary_model) }}
 # hermes-local: a Hermes-fallback-chain rung over a tier's backend that is
 # ALSO reachable directly under its own tier/id (e.g. the 4080 vllm guest).
 # Rendered alongside that physical tier (same api_base/api_key — see
@@ -114,12 +169,18 @@ llm_router_vllm_models: >-
 # fail-fast litellm_params/model_info and opt into the fallback chain without
 # duplicating or re-aliasing the physical entry. NOT credential-gated like the
 # hermes-cloud tiers below — it is local, not paid egress.
+# Empty while llm_router_llm_vllm_enabled is false, with the vllm tier above.
 llm_router_hermes_local_models: >-
-  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-local') | list }}
+  {{ (llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-local') | list)
+     if llm_router_llm_vllm_enabled | bool else [] }}
 # The single hermes-local-tier entry (hermes-local-4080), the primary target of
-# the fast/subagent/cheap/review DB roles (55-roles.yml).
+# the fast/subagent/cheap/review DB roles (55-roles.yml). Read from the enabled
+# registry rather than the switch-gated view above, so the role rows keep a
+# catalogued target while the tier is off; the role seed creates a role only
+# once its target is live, as for any other unrendered rung (seed-roles.yml).
 llm_router_hermes_local_4080_id: >-
-  {{ llm_router_hermes_local_models | map(attribute='client_model_id') | list | first }}
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-local')
+     | map(attribute='client_model_id') | list | first }}
 
 # The SAME prefill-derived cap model-list.yaml.j2 applies to every
 # vllm/hermes-local deployment: the smaller of the context window and what
@@ -144,7 +205,9 @@ llm_router_prefill_window_floor_tokens: 2048
 _llm_router_vllm_max_input_tokens_by_model: >-
   {%- set ns = namespace(out={}) -%}
   {%- set _vllm_hosts = groups['llm_vllm_group'] | default([]) -%}
-  {%- for m in llm_router_vllm_models + llm_router_hermes_local_models -%}
+  {#- Read from the enabled registry, not the switch-gated views above: a light-tier
+      sibling (embedding, reranker) keeps the window it advertises today when the tier is off. -#}
+  {%- for m in llm_router_registry_enabled | selectattr('tier', 'in', ['vllm', 'hermes-local']) -%}
   {%- set _cap = ([m.context_window,
         hostvars[_vllm_hosts[0]].llama_cpp_prefill_tokens_per_second | int
           * llm_router_local_stream_timeout_seconds | int] | min)

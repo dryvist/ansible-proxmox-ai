@@ -1,5 +1,5 @@
 ---
-# Contract for the Hermes OpenBao view (inventory/group_vars/hermes_agent_group.yml).
+# Contract for the Hermes OpenBao view (inventory/group_vars/hermes_agent_group/).
 # Once the `hermes` domain is fetched, nothing Hermes renders may come from the
 # local-llm domain. The negative case proves the check can fail: with the
 # `hermes` domain absent, the local-llm layer is present and detected.
@@ -11,7 +11,10 @@
   connection: local
   gather_facts: false
   vars_files:
-    - ../../inventory/group_vars/hermes_agent_group.yml
+    - ../../inventory/group_vars/hermes_agent_group/00-agent-settings.yml
+    - ../../inventory/group_vars/hermes_agent_group/90-github-identity.yml
+    - ../../roles/hermes_agent/defaults/main/00-identity.yml
+    - ../../roles/hermes_agent/defaults/main/53-event-relay.yml
     - ../../roles/openbao_secrets/defaults/main/00-connection.yml
     - ../../roles/openbao_secrets/defaults/main/10-domains.yml
   vars:
@@ -26,7 +29,6 @@
       - FIRECRAWL_API_KEY
       - WEBHOOK_SECRET
       - HERMES_API_SERVER_KEY
-      - GH_PAT_WRITE_PROJECT_ISSUES
       - GH_TOKEN_SECURITY_ALERTS_READ
       - GH_TOKEN_ORG_READ
       - CODEX_AUTH_JSON
@@ -42,7 +44,6 @@
       - hermes_agent_api_server_key
       - hermes_agent_zammad_url
       - hermes_agent_zammad_api_token
-      - hermes_agent_github_issues_pat
       - hermes_agent_github_alerts_token
       - hermes_agent_github_read_token
       - codex_runner_auth_json
@@ -101,6 +102,41 @@
           - hermes_agent_bao.WEBHOOK_SECRET == 'own:WEBHOOK_SECRET'
         fail_msg: donna's view carries local-llm values.
 
+    - name: Assert private Hermes uses its own view for Slack and shared Splunk access
+      vars:
+        hermes_agent_id: hermes-private
+        hermes_agent_env_prefix: HERMES_PRIVATE
+        bao_local_llm_secrets: "{{ _local_llm }}"
+        openbao_secrets_by_domain:
+          local-llm: "{{ _local_llm }}"
+          hermes-private: >-
+            {{ _own | combine({'HERMES_PRIVATE_API_SERVER_KEY': 'private-api-key',
+                               'SPLUNK_MCP_TOKEN': 'private-splunk-token',
+                               'SLACK_HERMES_PRIVATE_BOT_TOKEN': 'private-bot-token',
+                               'SLACK_HERMES_PRIVATE_APP_TOKEN': 'private-app-token'}) }}
+      ansible.builtin.assert:
+        that:
+          - hermes_agent_bao.values() | select('search', '^local-llm:') | list == []
+          - hermes_agent_slack_bot_token == 'private-bot-token'
+          - hermes_agent_slack_app_token == 'private-app-token'
+          - hermes_agent_splunk_mcp_token == 'private-splunk-token'
+          - hermes_agent_api_server_key == 'private-api-key'
+        fail_msg: private Hermes read another identity's OpenBao values.
+
+    - name: Assert private Hermes uses only its identity-prefixed credential fallbacks
+      vars:
+        hermes_agent_identity: hermes-private
+        hermes_agent_id: hermes-private
+        hermes_agent_env_prefix: HERMES_PRIVATE
+        openbao_secrets_by_domain: {hermes-private: {}}
+        bao_local_llm_secrets: {}
+      ansible.builtin.assert:
+        that:
+          - codex_runner_auth_json == 'private-auth-fixture'
+          - hermes_agent_event_relay_bao_role_id == 'private-role-fixture'
+          - hermes_agent_event_relay_bao_secret_id == 'private-secret-fixture'
+        fail_msg: A private Hermes credential resolved from the public environment prefix.
+
     - name: Assert the hermes domain declares exactly the paths Hermes reads
       vars:
         _declared: >-
@@ -111,3 +147,14 @@
         fail_msg: >-
           The hermes domain declares {{ _declared }}; it must be exactly
           {{ _expected_hermes_paths }} (the policy grants these exact paths).
+
+    - name: Assert the private identity has only its own domain and the shared read-only Splunk route
+      vars:
+        _declared: >-
+          {{ (openbao_secrets_domains | selectattr('name', 'equalto', 'hermes-private') | first).paths }}
+      ansible.builtin.assert:
+        that:
+          - _declared == ['ai/hermes-private', 'ai/mcp/splunk']
+        fail_msg: >-
+          hermes-private declares {{ _declared }}; expected only its own KV path
+          and the gateway's shared read-only Splunk route credential.

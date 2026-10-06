@@ -8,6 +8,9 @@ so the backend topology is swappable with no app change.
 
 ## Installation
 
+The role installs the pinned proxy extra litellm[proxy]==1.104.0; release-specific
+behavior is verified against that pin.
+
 Ships with the `ansible-proxmox-apps` repo; no external install. Wired into
 `playbooks/site.yml` against `llm_router_group` (guests tagged `llm-router` in the
 tofu inventory). Tools come from the repo's Nix dev shell (`direnv allow`).
@@ -32,10 +35,10 @@ owns the URLs, ports and bearer env names. See the registry's own header for the
 full field reference.
 
 Two fields are easy to confuse and must not be: `enabled` means the router
-offers the id at all, `servable` means the backend will actually answer for it.
-The serving host runs llama-server's own router mode against a rendered
-`--models-preset` (one section per present model), so a non-servable id
-returns HTTP 404 rather than a degraded answer.
+offers the id at all, `servable` means its backend is expected to answer for
+it. The large tier is checked against its serving gate; the GPU tier is checked
+against the inventory-backed guest's `/models` listing. Non-servable ids are
+not alias targets.
 
 Common edits:
 
@@ -47,25 +50,15 @@ Common edits:
 | Repoint a role (`subagent`, `lead`, ...) | the Admin UI — not this file |
 | Retire a model | `enabled: false` (or delete the entry) |
 
-## Tiers (one proxy, two backends)
+## Prompt management
 
-The router registers every physical backend exactly once. Consumers may request
-a physical ID or a stable role from `llm_router_model_group_aliases`.
+See [prompt ownership and removal criteria](../../docs/LLM_ROUTER_PROMPTS.md).
 
-| Model ids | Backend | Auth |
-| --- | --- | --- |
-| `mlx-community/*` large models (`Qwen3.6-35B-A3B-OptiQ-4bit`, `gpt-oss-120b-MXFP4-Q8`, …) | `llm-large` runner (`/v1`, bearer) | `LLM_LARGE_BEARER_TOKEN` |
-| `qwen3-4b`, `embeddings` | `llm-light` (CPU), plus `llm-fast` (GPU) when `llm_router_llm_fast_enabled` | none |
-| OpenRouter allowlisted ids | OpenRouter (paid-SaaS egress) | one provider key |
-| `hermes-default` | local complexity router with credential-gated provider fallbacks | one key per API provider |
+## Tiers (one proxy, multiple backends)
 
-Each light model id is registered as a CPU `llm-light` deployment, and as a second
-same-`model_name` GPU `llm-fast` deployment **only when `llm_router_llm_fast_enabled`
-is true**. With that toggle false the tier is a single deployment per model name and
-there is no standby. When both are registered, LiteLLM load-balances the pair and
-cools a failed deployment down (`allowed_fails` / `cooldown_time`), so a GPU outage
-drains to CPU. There is **no** cross-tier fallback — a large
-request that fails surfaces the error rather than silently degrading to a small model.
+The router projects each physical backend once and exposes stable consumer
+roles through aliases. See [LLM Router tiers](../../docs/LLM_ROUTER_TIERS.md)
+for the backend map, routing behavior, and Pro6000 profile contract.
 
 ## OpenRouter egress tier (optional, one provider key)
 
@@ -105,6 +98,17 @@ a real failure would be. Its `num_retries: 0` is the same idea — a
 single-instance local leg is only ever accepting or rejecting, never worth
 retrying, since a retry just re-queues behind the same busy box.
 
+## Retry and cooldown policy
+
+`num_retries: 0`; default `retry_policy`: rate limit `0`, timeout `0`. Local
+failures fall back; multi-member cloud groups retry 429s twice to reach another
+member. The names the Hermes agents call (`llm_router_rate_limit_retry_names`)
+retry a 429 `llm_router_hermes_rate_limit_retries` times first, each after the
+upstream's `Retry-After`; no other name does. `allowed_fails: 2` parks a failing
+member; `cooldown_time: 30s` delays re-probes. Per-error allowances are `1000`
+for rate limits, to avoid cooling healthy busy members, and `100` for timeouts,
+to park sustained failure storms. Source: `defaults/main/40-routing.yml`.
+
 ## OpenRouter wildcard passthrough
 
 The enumerated OpenRouter loop is no longer the sole egress allowlist: any
@@ -131,6 +135,13 @@ otherwise). Without a shared store, a multi-member pool would count only its
 own spend, silently turning a stated ceiling into N times its real value and
 resetting it on every rolling converge — a control that reports a limit it
 does not hold is worse than an absent one.
+
+LiteLLM uses logical database 1 for router budget/cooldown state and database 2
+for the shared cache/spend client. The response cache and spend features use
+that client's separate LiteLLM key namespaces. The fast-subagent lock callback
+was retired before this change, so this change adds no lock client or key and
+cannot alter its semantics. Logical databases separate keyspaces but do not
+provide separate credentials or failure domains.
 
 Why `redis_port` renders as a literal int rather than `os.environ/`, and why
 `fail_closed_budget_enforcement` is deliberately absent — moved to
@@ -183,7 +194,8 @@ Roles and Virtual Keys already enforce it:
 - **`initial`** (default) — the converge seeds `router_settings` into the
   database only the first time, when no row exists yet
   (`tasks/probe-router-settings.yml`, a read-only `psql` check —
-  litellm 1.102.0's `/config/list` never returns this section). Once a row
+  confirmed against 1.102.0; recheck the endpoint after the 1.104.0 proxy
+  refactor). Once a row
   exists, a converge leaves it alone; `tasks/sync-router-settings.yml` is
   skipped.
 - **`rebuild`** — DR / from-scratch reset. Every converge re-pushes the
@@ -192,10 +204,9 @@ Roles and Virtual Keys already enforce it:
   Set it for one converge to restore the git-declared state, then set it
   back to `initial`.
 
-Facts this rests on, verified against the pinned `litellm==1.102.0` wheel
-(never guessed) — the startup merge direction, the UI's actual write path,
-and how an edit propagates to the rest of the pool without a restart — moved
-to
+The historical startup merge, UI write, and cross-pool propagation facts were
+verified against LiteLLM 1.102.0; 1.104.0 refactored proxy internals, so
+revalidate those details before relying on them. They are documented in
 [`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md).
 
 ## Virtual keys (`defaults/main/56-virtual-keys.yml`)
@@ -205,6 +216,15 @@ scope word for open-source repositories is `oss` (`github-actions-oss`,
 `review-oss`, `github_actions_oss_llm_router_key`); the word "public" never
 appears in a credential, path, variable or role name — a key so named reads as
 if the key itself were public.
+
+This proxy issues per-caller virtual keys. The `benchmark` key is scoped to the
+GPU profiles and intentionally has no budget, so repeated benchmark runs do not
+consume a caller's monthly ceiling. It seeds only when its OpenBao value and
+the GPU profile switch are both enabled.
+
+MCP server IDs, tool allowlists, caller grants, OpenBao sources, and the OAuth
+boundary are documented in
+[LLM_ROUTER_MCP_GATEWAY.md](../../docs/LLM_ROUTER_MCP_GATEWAY.md).
 
 ## Subscription rung (chatgpt/ provider)
 
@@ -220,17 +240,8 @@ log prints `Sign in with ChatGPT using device code:` with the verify URL and
 code — complete it on that node and the provider refreshes thereafter. With
 no login on a node the rung is not rendered there.
 
-## Admin UI SSO
-
-`/ui` signs in only via Authelia (LiteLLM generic OIDC; env contract
-`defaults/main/65-oidc.yml`, redirect `<PROXY_BASE_URL>/sso/callback`).
-`PROXY_ADMIN_ID` is the operator email (APPS authelia `authelia_admin_email`).
-With the client secret resolved (bao `secret/apps/authelia`, env fallback
-`LITELLM_OIDC_CLIENT_SECRET`), the env block renders and `general_settings`
-sets `disable_env_credential_login` and
-`disable_password_login_when_sso_enabled`; without it, none of these render.
-API bearer auth is unaffected; on a UI lockout the master key still works over
-the API. Boards link the router at `/ui` via the ingress `url_path`.
+The Admin UI's SSO contract and API lockout path are documented in
+[LLM_ROUTER_ADMIN_UI.md](../../docs/LLM_ROUTER_ADMIN_UI.md).
 
 ## Observability
 
@@ -281,6 +292,6 @@ env -u DOPPLER_PROJECT -u DOPPLER_CONFIG -u DOPPLER_ENVIRONMENT doppler run -- \
 ## Not yet live-validated
 
 Verify on the first converge: (a) `litellm[proxy]` + the `otel` / `prometheus`
-callbacks import cleanly in the venv; (b) the `llm-large` runner accepts the bearer
-on `/v1`; (c) the same-name GPU/CPU deployment pair drains as intended when the GPU
-box is stopped.
+callbacks import cleanly in the venv; (b) the `llm-large` runner accepts the
+bearer on `/v1`; (c) the same-name GPU/CPU deployment pair drains as intended
+when the GPU box is stopped.
