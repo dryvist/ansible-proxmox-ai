@@ -43,6 +43,10 @@ def test_role_installs_the_runtime_archive_beside_the_binary() -> None:
     assert "llm_gpu_serving_llamacpp_cudart_find.files[0].path | dirname" in tasks
 
 
+def test_install_replaces_a_running_binary() -> None:
+    assert "--remove-destination" in TASKS.read_text(encoding="utf-8")
+
+
 def test_role_reinstalls_when_the_recorded_asset_differs() -> None:
     tasks = TASKS.read_text(encoding="utf-8")
     assert "llm_gpu_serving_llamacpp_asset_url | basename" in tasks
