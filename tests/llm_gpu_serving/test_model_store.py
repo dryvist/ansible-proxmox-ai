@@ -18,20 +18,20 @@ def _model_store() -> list[dict]:
 
 def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
     model_store = _model_store()
-    assert len(model_store) == 20
+    assert len(model_store) == 22
     assert {artifact["model_store_profile"] for artifact in model_store} == {
         "small",
         "medium-a",
         "medium-b",
         "max",
     }
-    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 289_195_631_019
+    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 334_707_157_291
     assert all(len(artifact["revision"]) == 40 for artifact in model_store)
     assert all(set(artifact["revision"]) <= set("0123456789abcdef") for artifact in model_store)
     assert {artifact["artifact_id"] for artifact in model_store if artifact.get("model_size")} == {
         "qwen35-9b-nvfp4",
         "qwen38-27b-nvfp4",
-        "qwen38-27b-ud-iq3-xxs",
+        "qwen38-27b-ud-q4-k-m",
         "flash-next-iq3-s",
     }
     repositories = {artifact["hf_repo"] for artifact in model_store}
