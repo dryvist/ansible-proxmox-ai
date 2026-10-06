@@ -177,3 +177,58 @@
     _llama_cpp_tier_registry_ids: >-
       {{ llm_router_registry_enabled | selectattr('tier', 'equalto', llama_cpp_registry_tier)
          | map(attribute='client_model_id') | list }}
+
+- name: Assert each served preset context matches the shared model catalog
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llama_cpp_catalog_model.context_window | int == (item.ctx_size | default(llama_cpp_ctx_size) | int)
+    fail_msg: >-
+      {{ item.name }} renders ctx_size={{ item.ctx_size | default(llama_cpp_ctx_size) }},
+      but the shared model catalog declares context_window={{ _llama_cpp_catalog_model.context_window }}.
+      Derive the preset context from the catalog entry so the router and server
+      cannot advertise different limits.
+    success_msg: >-
+      {{ item.name }} preset context matches the shared catalog
+      ({{ _llama_cpp_catalog_model.context_window }} tokens).
+  loop: "{{ llama_cpp_models }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    _llama_cpp_catalog_model: >-
+      {{ llm_model_catalog_models
+         | selectattr('name', 'in', [item.name] + (item.aliases | default([])))
+         | first }}
+
+- name: Assert llama-server concurrency matches its shared catalog entries
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llama_cpp_catalog_served_models | length == llama_cpp_catalog_lookup_names | length
+      - _llama_cpp_catalog_served_models | rejectattr('max_parallel_requests', 'defined') | list | length == 0
+      - >-
+        (_llama_cpp_catalog_served_models
+        | map(attribute='max_parallel_requests')
+        | map('int')
+        | unique
+        | list
+        | length) == 1
+      - >-
+        llama_cpp_parallel | int ==
+        (_llama_cpp_catalog_served_models
+        | map(attribute='max_parallel_requests')
+        | map('int')
+        | first)
+    fail_msg: >-
+      llama_cpp_parallel={{ llama_cpp_parallel }} disagrees with the per-model
+      max_parallel_requests values in the shared catalog for
+      {{ llama_cpp_catalog_lookup_names }}, or those models declare different
+      limits that this server cannot apply separately. The server slots and
+      router admission limits must derive from the same catalog entries.
+    success_msg: >-
+      llama-server concurrency matches catalog max_parallel_requests
+      ({{ llama_cpp_parallel }}).
+  vars:
+    _llama_cpp_catalog_served_models: >-
+      {{ llm_model_catalog_models
+         | selectattr('name', 'in', llama_cpp_catalog_lookup_names) | list }}

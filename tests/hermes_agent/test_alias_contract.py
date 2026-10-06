@@ -48,12 +48,15 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     # the local complexity router dispatches to llm_router_routine_model /
     # llm_router_primary_model rather than answering directly, so an alias on
     # it renders as a static model_group_alias too, not a DB role. A5 adds a
-    # third: a >=1M-context OpenRouter entry not explicitly opted out of ZDR
-    # (llm_router_long_context_alias_ids) — `long`'s carve-out.
+    # third: an OpenRouter entry whose >=1M context and ZDR eligibility are
+    # projected from the shared catalog (llm_router_long_context_alias_ids).
+    # Raw registry YAML no longer carries context_window, so this unit test
+    # recognizes that category by its explicit ZDR marker; the Ansible alias
+    # contract checks the threshold against the loaded catalog projection.
     def _is_long_context(entry: dict) -> bool:
         return (
             entry.get("tier") == "openrouter"
-            and (entry.get("context_window") or 0) >= 1_000_000
+            and entry.get("stable_aliases")
             and entry.get("zero_data_retention", False) is True
         )
 
@@ -157,7 +160,6 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
         entry for entry in registry if entry["client_model_id"] == hermes_backend
     ]
     assert len(hermes_entries) == 1
-    assert hermes_entries[0]["context_window"] == 65536
 
     # The registry is the SOLE spelling of a model name or key field: the role's
     # defaults project it and must never re-type one. A literal here is exactly

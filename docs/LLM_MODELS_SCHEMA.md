@@ -1,9 +1,12 @@
 # LLM Model Registry Schema
 
-Field reference for `llm-models.d/` (the fabric's single model-name
-source — see that file's own header for why it exists and what derives
-from it). Moved out of the yml to keep the data file under the repo's
-per-file token budget; this schema is documentation, not data.
+Field reference for `llm-models.d/` (the fabric's model identity and routing
+source — see that file's own header for why it exists and what derives from
+it). Per-model numeric limits live in the shared
+`dryvist.homelab.llm_model_catalog` from homelab-contracts and are projected
+into the router registry at load time. Moved out of the yml to keep the data
+file under the repo's per-file token budget; this schema is documentation, not
+data.
 
 A model name written twice is the defect class the registry exists to
 remove: on 2026-07-28 every consumer alias in the router pointed at
@@ -37,11 +40,15 @@ Required on every entry:
                     `openrouter` | `zai`. Selects the deployment shape; light entries
                     become two same-name deployments (GPU + CPU standby);
                     cpu-moe and cpu-9b each become two same-name deployments
-                    against the CPU pool instances (warm + scaled).
+                      against the CPU pool instances (warm + scaled).
                     `opencode` is a subscription tier: it advertises no
                     per-token price (see input_cost_per_token below) and its
                     deployment order comes from a role default, never a
                     registry field.
+  catalog_profile   Optional name of a backend profile on the resolved
+                    catalog entry. Selects backend-specific numeric limits;
+                    the profile name is identity metadata, never a local copy
+                    of the limits.
   enabled           false removes the entry from the rendered config entirely.
 
 Optional:
@@ -63,30 +70,6 @@ Optional:
   route_group         Optional caller-facing model group shared by equivalent
                       provider deployments. Used by Hermes cloud value groups;
                       the registry parity check treats it as the rendered name.
-  context_window      The backend's EFFECTIVE SERVING window — what its
-                      KV-cache budget (nix-ai catalog cacheMemoryMb) sustains,
-                      NOT the model's native max_position_embeddings. Renders
-                      as model_info.max_input_tokens/max_tokens and is the
-                      fabric's input enforcement via enable_pre_call_checks;
-                      Hermes auto-compacts at 75% of it. LiteLLM has no
-                      built-in entry for these backend ids, so an omitted
-                      value resolves max_input_tokens to null and every client
-                      that reads it falls back to a near-zero context guess
-                      and compresses its requests to death (outage
-                      2026-07-08). Advertising the NATIVE window is the
-                      opposite failure: sessions grow past the serving ceiling
-                      and die mid-stream instead of compacting. A light-tier
-                      entry that shares its client_model_id with a vllm-tier
-                      entry (the CPU-failover pattern under `tier` above) also
-                      carries this field, but its OWN rendered
-                      model_info.max_input_tokens is projected from the
-                      vllm-tier sibling's admission-budget-capped window
-                      (roles/llm_router/defaults/main/20-registry.yml's
-                      `_llm_router_vllm_max_input_tokens_by_model`,
-                      model-list-light.yaml.j2's `light_window` macro), not
-                      recomputed from its own context_window value — every
-                      deployment sharing a model_name must advertise the same
-                      number or the render-parity guard refuses it.
   servable            The serving host will actually answer for this id.
                       DISTINCT FROM `enabled`, and conflating them is a real
                       outage: the serving host serves only the models its own
@@ -126,7 +109,6 @@ Optional:
   standby             large tier only — also render a same-id, same-window
                       failover deployment when the role has a standby backend
                       URL configured.
-  max_output_tokens   Maximum advertised output for the deployment.
   input_cost_per_token / output_cost_per_token
                       Real USD/token list prices used by cost routing and spend
                       accounting. Never alter these to encode preference. OMIT
@@ -163,6 +145,7 @@ Optional:
                       match on the value and an undocumented one silently
                       matches nothing (pinned by
                       tests/llm_router/test_registry_hints_projection.yml):
+
                         speed     `fast` | `medium` | `slow` — decode class AS
                                   SERVED HERE, not the model's reputation.
                         quality   `routine` | `strong` | `frontier`.
@@ -179,3 +162,27 @@ Optional:
                                   behind `speed`, dated so a reader can see how
                                   old it is. Directional, never a promise.
 ```
+
+Projected from the shared model catalog (never written in `llm-models.d/`):
+  context_window      Effective serving window, not native model metadata.
+                      Renders as model_info.max_input_tokens and, when no
+                      explicit output cap exists, max_tokens. A light-tier
+                      CPU failover sharing a model name with a vllm-tier entry
+                      uses the backend's admission-budget-capped window so all
+                      deployments in the group agree.
+  max_output_tokens   Maximum advertised output for the deployment.
+  max_parallel_requests  Per-model admission ceiling. Serving roles and router
+                      templates read the same catalog field.
+  request_timeout / stream_timeout  Per-model attempt bounds. Local router
+                      guards may cap a catalog value at the shared local
+                      policy ceiling.
+  queue_size and backend profile fields  Serving-specific queue, timeout,
+                      prefill, decode, sequence, cache-block, swap, and
+                      cache-memory values are under the catalog entry's
+                      backend profile. Entries with `catalog_profile` project
+                      that profile; other entries use root limits.
+
+The router loader fails if an entry does not resolve to exactly one catalog
+entry or its `catalog_model` target is absent. CI also rejects per-model limit
+keys in `llm-models.d/`, then checks the rendered registry projection against
+the shared catalog.

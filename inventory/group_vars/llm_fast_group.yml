@@ -9,7 +9,10 @@ llama_cpp_gpu_backend: rocm
 
 # Mandatory (no role default). Host is frozen (host_vars/llm-fast.yml) but
 # the role's template still renders this, so it needs a value regardless.
-llama_cpp_parallel: 1
+llama_cpp_parallel: >-
+  {{ (llm_model_catalog_models
+      | selectattr('name', 'in', llama_cpp_catalog_lookup_names)
+      | map(attribute='max_parallel_requests') | map('int') | min) }}
 
 # Which llm-models.d/ tier this guest serves — read by roles/llama_cpp/tasks/
 # guards.yml to check llama_cpp_models against the registry in BOTH directions
@@ -101,7 +104,7 @@ llama_cpp_models:
     # Explicit on both halves: the CPU half would otherwise fall to the
     # role's 2048 non-GPU default, and Hindsight's fact-extraction request
     # (the one consumer whose key is scoped to this model) is ~3.3k tokens.
-    ctx_size: 8192
+    ctx_size: "{{ _llama_cpp_light_general_catalog.context_window }}"
 
   - name: embeddings
     aliases: [nomic-embed-text-v1.5]
@@ -109,6 +112,7 @@ llama_cpp_models:
     gguf: "{{ _llama_cpp_light_embeddings_catalog.gguf }}"
     param_billions: 0.137
     embeddings: true
+    ctx_size: "{{ _llama_cpp_light_embeddings_catalog.context_window }}"
 
   # CPU failover rung for llm_vllm_group's GPU entries — the SAME GGUF pair,
   # served under the SAME client_model_id (see llm-models.d/20-light.yml for
