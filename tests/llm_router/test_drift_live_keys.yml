@@ -1,0 +1,25 @@
+---
+# /key/list answers {"keys": [...], ...}. Jinja resolves `page.keys` to the
+# dict method, so the projection must index the list with page['keys']; null
+# metadata/object_permission on a live record must project to empty defaults.
+- name: Project a key-list page into aliases and policy flags
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _fixture: "{{ playbook_dir }}/fixtures/key-list-page.json"
+    _llm_router_drift_keys_page_1:
+      json: "{{ lookup('ansible.builtin.file', _fixture) | from_json }}"
+  tasks:
+    - name: Use the production projection
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-live-keys.yml"
+
+    - name: Only aliased keys remain, with defaulted flags
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_live_keys | length == 1
+          - _llm_router_drift_live_keys[0].alias == 'fixture-key'
+          - _llm_router_drift_live_keys[0].flags.max_budget == 7.0
+          - _llm_router_drift_live_keys[0].flags.metadata_tags == []
+          - _llm_router_drift_live_keys[0].flags.object_permission == {}
