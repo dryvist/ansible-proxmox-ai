@@ -1,0 +1,65 @@
+---
+# A failed `prisma db push` must fail the converge WITH its output, and that
+# output must carry no database URL, password or token. The push task keeps
+# no_log (its argv holds the URL), so the failure is raised by
+# roles/llm_router/tasks/fail-schema-push.yml from the registered result.
+#
+# Both halves are pinned: the secrets are gone AND the diagnostic text survives
+# (a redaction that blanks everything would also pass the first half), and the
+# push task still has no_log with the failure deferred to that task.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_schema_push_failure_redaction.yml -i localhost, -c local
+- name: Failed schema push shows redacted Prisma output
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_db_password: "s3cr3t-P@ss/word"
+    sample: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/fixtures/prisma-push-error.txt') }}"
+    secrets:
+      - "postgresql://"
+      - "s3cr3t"
+      - "P@ss"
+      - "%2Fword"
+      - "sk-live-abcdef0123456789"
+      - "ghs_abcdef0123456789"
+    push_task: >-
+      {{ (lookup('ansible.builtin.file', _role_dir ~ '/tasks/main.yml') | from_yaml)
+         | selectattr('name', 'equalto', 'Sync the proxy schema into the database') | first }}
+  tasks:
+    - name: Vacuity guard - the fixture really carries every secret
+      ansible.builtin.assert:
+        that: "item in sample or item == '%2Fword'"
+        quiet: true
+      loop: "{{ secrets }}"
+
+    - name: The push task still hides its argv and defers the failure
+      ansible.builtin.assert:
+        that:
+          - push_task.no_log is true
+          - push_task.failed_when is false
+        quiet: true
+
+    - name: Run the failure task against the sample output
+      block:
+        - name: Fail with the redacted output
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/fail-schema-push.yml"
+          vars:
+            llm_router_schema_push:
+              rc: 1
+              stdout: "{{ sample }}"
+              stderr: ""
+        - name: Unreachable - the failure task must fail
+          ansible.builtin.fail:
+            msg: fail-schema-push.yml did not fail
+      rescue:
+        - name: The failure carries the diagnostic and none of the secrets
+          ansible.builtin.assert:
+            that:
+              - "'prisma db push exited 1' in ansible_failed_result.msg"
+              - "'P1001' in ansible_failed_result.msg"
+              - "'<redacted-url>' in ansible_failed_result.msg"
+              - "'did not fail' not in ansible_failed_result.msg"
+              - ansible_failed_result.msg is not search(secrets | map('regex_escape') | join('|'))
+            quiet: true

@@ -206,10 +206,19 @@
       - --skip-generate
     chdir: /tmp
   register: llm_router_schema_push
-  changed_when: "'already in sync' not in llm_router_schema_push.stdout"
+  # The failure is raised by the next task so its output can be shown redacted;
+  # this one keeps no_log because its argv carries the database URL.
+  failed_when: false
+  changed_when: >-
+    llm_router_schema_push.rc == 0
+    and 'already in sync' not in llm_router_schema_push.stdout
   when: llm_router_store_model_in_db | bool
   no_log: true
   notify: Restart litellm
+
+- name: Stop on a failed schema push, showing the redacted output
+  ansible.builtin.include_tasks: fail-schema-push.yml
+  when: llm_router_store_model_in_db | bool and llm_router_schema_push.rc != 0
 
 - name: Assert every secret rendered into the LiteLLM env file is present
   ansible.builtin.include_tasks: >-
