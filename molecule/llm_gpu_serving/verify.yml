@@ -8,7 +8,6 @@
     expected_units:
       - llm-gpu-serving-small.service
       - llm-gpu-serving-medium-a.service
-    disabled_units:
       - llm-gpu-serving-medium-b.service
       - llm-gpu-serving-max.service
 
@@ -28,16 +27,15 @@
       loop_control:
         label: "{{ item.item }}"
 
-    - name: Inspect disabled profile units
-      ansible.builtin.stat:
-        path: "{{ llm_gpu_serving_systemd_dir }}/{{ item }}"
-      loop: "{{ disabled_units }}"
-      register: llm_gpu_serving_disabled_units
+    - name: Read the llama.cpp profile unit
+      ansible.builtin.slurp:
+        src: "{{ llm_gpu_serving_systemd_dir }}/llm-gpu-serving-medium-b.service"
+      register: llm_gpu_serving_llama_unit
 
-    - name: Assert disabled profile units were not rendered
+    - name: Assert the GGUF profile unit runs llama-server with its slots
       ansible.builtin.assert:
         that:
-          - not item.stat.exists
-      loop: "{{ llm_gpu_serving_disabled_units.results }}"
-      loop_control:
-        label: "{{ item.item }}"
+          - "'/llama.cpp/llama-server' in (llm_gpu_serving_llama_unit.content | b64decode)"
+          - "'--parallel ' in (llm_gpu_serving_llama_unit.content | b64decode)"
+          - "'--jinja' in (llm_gpu_serving_llama_unit.content | b64decode)"
+          - "'vllm serve' not in (llm_gpu_serving_llama_unit.content | b64decode)"

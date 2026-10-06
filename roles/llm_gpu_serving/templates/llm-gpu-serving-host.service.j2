@@ -11,8 +11,12 @@ WorkingDirectory={{ llm_gpu_serving_host_working_directory }}
 Environment=HF_HOME={{ llm_gpu_serving_host_hf_home }}
 Environment=HF_HUB_OFFLINE=1
 Environment=TRANSFORMERS_OFFLINE=1
+{% if llm_gpu_serving_host_profile.engine == 'llama_cpp' %}
+Environment=LD_LIBRARY_PATH={{ llm_gpu_serving_host_llamacpp_bin | dirname }}
+{% endif %}
 Restart=on-failure
 RestartSec=5
+{% if llm_gpu_serving_host_profile.engine == 'vllm' %}
 ExecStart={{ llm_gpu_serving_host_vllm_bin }} serve {{ llm_gpu_serving_host_model_dir }} \
   --host {{ llm_gpu_serving_host_bind_host }} \
   --port {{ llm_gpu_serving_host_profile.port }} \
@@ -38,6 +42,16 @@ ExecStart={{ llm_gpu_serving_host_vllm_bin }} serve {{ llm_gpu_serving_host_mode
   --tool-call-parser {{ llm_gpu_serving_host_tool_call_parser }} \
 {% endif %}
   --reasoning-parser {{ llm_gpu_serving_host_reasoning_parser }}
+{% else %}
+{% set lc_profile = llm_gpu_serving_host_profile %}
+{% set lc_artifact = llm_gpu_serving_host_registry_model.artifact %}
+{% set lc_alias = llm_gpu_serving_host_registry_model.upstream_model_id %}
+{% set lc_model_dir = llm_gpu_serving_host_model_dir %}
+{% set lc_host = llm_gpu_serving_host_bind_host %}
+ExecStart={{ llm_gpu_serving_host_llamacpp_bin }} \
+{% include 'llama-cpp-serve-args.j2' %}
+
+{% endif %}
 
 [Install]
 WantedBy=multi-user.target

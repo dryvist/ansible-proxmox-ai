@@ -8,23 +8,24 @@
 {% for base in llm_router_cpu_pool_backend_urls_by_tier[tier] | default([]) %}
   - model_name: {{ m.client_model_id }}
     litellm_params:
+      tags: {{ deployment_tags(m, 'local') }}
       model: {{ litellm_model(m) }}
-      tags: {{ llm_router_deployment_tags_by_model[m.client_model_id] | to_json }}
       api_base: {{ base }}
       api_key: {{ llm_router_light_api_key }}
       use_chat_completions_api: true
       # Same base value the serving host's llama_cpp role uses for -np
       # (inventory/group_vars/llm_cpu_pool_group.yml).
-      max_parallel_requests: {{ hostvars[(groups['llm_cpu_pool_group'] | default([]))[0]].llama_cpp_parallel
-                                 if (groups['llm_cpu_pool_group'] | default([]) | length > 0)
-                                 else llm_router_local_max_parallel_requests }}
+      max_parallel_requests: {{ m.max_parallel_requests
+                                 | default(hostvars[(groups['llm_cpu_pool_group'] | default([]))[0]].llama_cpp_parallel
+                                           if (groups['llm_cpu_pool_group'] | default([]) | length > 0)
+                                           else llm_router_local_max_parallel_requests) }}
 {{ local_bounds(m) }}
     model_info:
       allow_fail_open: true
       disable_background_health_check: true
 {% if m.context_window is defined %}
       max_input_tokens: {{ m.context_window }}
-      max_tokens: {{ m.context_window }}
+      max_tokens: {{ m.max_output_tokens | default(m.context_window) }}
 {% endif %}
 {{- delegation_hints(m) }}
 {% endfor %}

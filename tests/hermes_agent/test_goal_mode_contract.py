@@ -62,7 +62,6 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     config = (ROLE_ROOT / "templates" / "config.yaml.j2").read_text()
     environment = template_text(ROLE_ROOT, "hermes-env.j2")
 
-    hermes_alias = "hermes-default"
     # Physical ids live in ONE place — the repo-root llm-models.d/ registry —
     # and the router's selector vars are projections of it. Pinning literals
     # here is what let all four aliases drift to unroutable models at once
@@ -78,7 +77,11 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # model uses the active primary until the serving host is rebuilt.
     routine_parked = role_is_parked(registry, "routine")
     judge_backend = effective_backend_for_role(registry, "routine")
-    assert group_vars["hermes_brain_model"] == hermes_alias
+    hermes_selector = group_vars["hermes_brain_model"]
+    assert "llm_router_gpu_profiles_enabled" in hermes_selector
+    assert "llm_router_gpu_model_aliases_by_profile" in hermes_selector
+    assert "llm_active_profile" in hermes_selector
+    assert "hermes-default" in hermes_selector
     # The judge normally rides its distinct routine model. During the explicit
     # parked state it shares the active primary until the serving host is rebuilt.
     assert group_vars["hermes_goal_judge_model"] == "judge"
@@ -92,7 +95,15 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # hermes_brain_model at all — see
     # tests/hindsight_docker/test_model_var_confined_to_key_scope.yml for its
     # actual contract.
-    assert defaults["hermes_agent_model_max_tokens"] == 8192
+    brain_catalog_entry = defaults["hermes_agent_brain_catalog_entry"]
+    assert "llm_model_catalog_models" in brain_catalog_entry
+    assert "hermes_brain_model" in brain_catalog_entry
+    assert defaults["hermes_agent_model_context_length"] == (
+        "{{ hermes_agent_brain_catalog_entry.context_window }}"
+    )
+    assert defaults["hermes_agent_model_max_tokens"] == (
+        "{{ hermes_agent_brain_catalog_entry.max_output_tokens }}"
+    )
     assert defaults["hermes_agent_context_compression_threshold"] == 0.75
     assert defaults["hermes_agent_stream_stale_timeout"] == 900
     # The non-stream stale bound tracks the streaming one rather than carrying
@@ -124,7 +135,12 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # explicitly parked, that role follows the active primary; the rebuild gate
     # restores the distinct routine backend before this temporary state ends.
     assert defaults["hermes_agent_kanban_goal_judge_model"] == "{{ hermes_goal_judge_model }}"
-    assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == 150
+    judge_catalog_entry = defaults["hermes_agent_goal_judge_catalog_entry"]
+    assert "llm_model_catalog_models" in judge_catalog_entry
+    assert "hermes_goal_judge_model" in judge_catalog_entry
+    assert defaults["hermes_agent_kanban_goal_judge_timeout_seconds"] == (
+        "{{ hermes_agent_goal_judge_catalog_entry.goal_judge_timeout_seconds }}"
+    )
     assert "goal_judge:" in config
     assert "run_budget_seconds: {{ hermes_agent_cron_wall_timeout_seconds }}" in config
     assert "model: {{ hermes_agent_kanban_goal_judge_model | to_json }}" in config
@@ -132,7 +148,7 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
 
 
 def test_group_vars_reads_canonical_zammad_mcp_pair() -> None:
-    group_vars = (REPO_ROOT / "inventory/group_vars/hermes_agent_group.yml").read_text()
+    group_vars = (REPO_ROOT / "inventory/group_vars/hermes_agent_group/00-agent-settings.yml").read_text()
     assert "hermes_agent_mcp_bao.ZAMMAD_MCP_URL" in group_vars
     assert "hermes_agent_mcp_bao.ZAMMAD_MCP_TOKEN" in group_vars
     assert "_secrets.ZAMMAD_API_TOKEN" not in group_vars

@@ -1,0 +1,34 @@
+---
+- name: Resolve the selected pinned model-store repository
+  ansible.builtin.set_fact:
+    llm_gpu_serving_model_store_verify_artifact: >-
+      {{ _llm_model_artifacts
+         | selectattr('model_store', 'defined')
+         | selectattr('model_store', 'equalto', true)
+         | selectattr('hf_repo', 'equalto', llm_gpu_serving_model_store_verify_repo)
+         | first | default({}) }}
+
+- name: Require a pinned registered artifact for the selected model-store repository
+  ansible.builtin.assert:
+    that:
+      - llm_gpu_serving_model_store_verify_artifact | length > 0
+      - llm_gpu_serving_model_store_verify_artifact.revision is match('^[0-9a-f]{40}$')
+    fail_msg: "The selected model-store repository must resolve to a pinned registry artifact."
+    quiet: true
+
+- name: Verify checksums for the populated model-store repository
+  ansible.builtin.command:
+    argv:
+      - "{{ llm_gpu_serving_hf_bin }}"
+      - cache
+      - verify
+      - "{{ llm_gpu_serving_model_store_verify_repo }}"
+      - --revision
+      - "{{ llm_gpu_serving_model_store_verify_artifact.revision }}"
+      - --local-dir
+      - "{{ llm_gpu_serving_model_origin_mount_path }}/{{ llm_gpu_serving_model_store_verify_repo }}"
+  environment:
+    HF_HOME: "{{ llm_gpu_serving_hf_home }}"
+  become: true
+  become_user: "{{ llm_gpu_serving_user }}"
+  changed_when: false

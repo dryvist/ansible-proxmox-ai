@@ -46,7 +46,9 @@ llm_router_request_timeout_seconds: "{{ ai_router_request_timeout_seconds }}"
 # admission — retries x backoff — fits inside this many seconds.
 # tasks/assert-admission-budget.yml and tests/llm_router/
 # test_admission_budget_and_ladder.yml hold the product to this figure, so a
-# future retry bump cannot widen it.
+# future retry bump cannot widen it. The one exception is by name: the names the
+# Hermes agents call wait out a 429 first (llm_router_hermes_rate_limit_retries,
+# below), and the assert bounds that wait on its own.
 #
 # 4 (was 15): operator rule 2026-09-19 superseded by the 2026-09-21
 # "no queueing" rule — a busy LOCAL slot hands over INSTANTLY, never waits out
@@ -129,6 +131,23 @@ llm_router_timeout_retries: 0
 # moves to the next rung in the same call instead of sleeping on the busy one.
 # The tolerance arithmetic the comment above describes is retired with it.
 llm_router_rate_limit_retries: 0
+# The ONE exception to the zero above, by name: the names the Hermes agents
+# call (llm_router_rate_limit_retry_names, 38-zero-retry-groups.yml). A 429 on
+# one of them is retried this many times before the call hands over, so a busy
+# spell reaches an agent as a wait instead of an error. Before each retry
+# LiteLLM sleeps the upstream's Retry-After when that is a whole number of
+# seconds from 1 to llm_router_retry_after_header_ceiling_seconds; without a
+# usable header the sleep is retry_after, boxed by MAX_RETRY_DELAY. A group
+# with several healthy deployments retries at once instead, and the router's own
+# max_parallel_requests rejection carries no header (litellm 1.104.0
+# router.py _time_to_sleep_before_retry, utils.py _calculate_retry_after).
+# assert-admission-budget.yml fails the converge on any other name above zero
+# and bounds the worst-case wait.
+llm_router_hermes_rate_limit_retries: 3
+# The longest Retry-After LiteLLM honours; a longer one falls to the boxed
+# backoff above. A fact about the pinned LiteLLM, not a setting of this router:
+# it sizes the worst-case wait the assert bounds.
+llm_router_retry_after_header_ceiling_seconds: 60
 # Minimum sleep between rate-limit retries (LiteLLM router_settings.retry_after).
 # LiteLLM boxes each backoff into [retry_after, MAX_RETRY_DELAY]; the ceiling
 # defaults to 8s and would silently clamp this, so the service env pins

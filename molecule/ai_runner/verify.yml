@@ -19,6 +19,7 @@
       loop:
         - /var/lib/ai-runner/ai-job-worker.py
         - /var/lib/ai-runner/ai-job-worker.env
+        - /var/lib/ai-runner/.codex/config.toml
         - /etc/systemd/system/ai-job-worker.service
       register: _files
 
@@ -36,3 +37,17 @@
       changed_when: false
       register: _selfcheck
       failed_when: "'self-check OK' not in _selfcheck.stdout"
+
+    - name: Read the Codex trace configuration
+      ansible.builtin.slurp:
+        src: /var/lib/ai-runner/.codex/config.toml
+      register: _codex_config
+
+    - name: Assert the Codex trace exporter uses the declared ingress
+      ansible.builtin.assert:
+        that:
+          - "'https://otel.molecule.invalid/v1/traces' in (_codex_config.content | b64decode)"
+          - "'protocol = \"binary\"' in (_codex_config.content | b64decode)"
+          - "'metrics_exporter = \"none\"' in (_codex_config.content | b64decode)"
+        fail_msg: Codex OTLP config did not render the HTTPS protobuf trace exporter.
+        quiet: true

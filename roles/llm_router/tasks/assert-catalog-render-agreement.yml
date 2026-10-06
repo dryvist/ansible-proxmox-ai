@@ -1,0 +1,133 @@
+---
+# CI contract: the catalog is the source for every enabled model's numeric limit,
+# registry.yml projects it, and config.yaml.j2 emits the expected limit.
+- name: Assert projected registry limits match their catalog entry
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        item.context_window | default('unset') ==
+        _llm_router_catalog_profile.context_window
+        | default(_llm_router_catalog_model.context_window | default('unset'))
+      - >-
+        item.max_output_tokens | default('unset') ==
+        _llm_router_catalog_profile.max_output_tokens
+        | default(_llm_router_catalog_model.max_output_tokens | default('unset'))
+      - >-
+        item.max_parallel_requests | default('unset') ==
+        _llm_router_catalog_profile.max_parallel_requests
+        | default(_llm_router_catalog_model.max_parallel_requests | default('unset'))
+      - >-
+        item.request_timeout | default('unset') ==
+        _llm_router_catalog_profile.request_timeout
+        | default(_llm_router_catalog_model.request_timeout | default('unset'))
+      - >-
+        item.stream_timeout | default('unset') ==
+        _llm_router_catalog_profile.stream_timeout
+        | default(_llm_router_catalog_model.stream_timeout | default('unset'))
+      - >-
+        item.num_retries | default('unset') ==
+        _llm_router_catalog_profile.num_retries
+        | default(_llm_router_catalog_model.num_retries | default('unset'))
+      - >-
+        item.allowed_fails | default('unset') ==
+        _llm_router_catalog_profile.allowed_fails
+        | default(_llm_router_catalog_model.allowed_fails | default('unset'))
+      - >-
+        item.cooldown_time | default('unset') ==
+        _llm_router_catalog_profile.cooldown_time
+        | default(_llm_router_catalog_model.cooldown_time | default('unset'))
+    fail_msg: >-
+      {{ item.client_model_id }} has a projected numeric limit that differs
+      from homelab-contracts model {{ item.catalog_model_name }}.
+    success_msg: >-
+      {{ item.client_model_id }} projected limits match catalog entry
+      {{ item.catalog_model_name }}.
+  loop: "{{ llm_router_model_registry | selectattr('enabled') | list }}"
+  loop_control:
+    label: "{{ item.client_model_id }}"
+  vars:
+    _llm_router_catalog_model: >-
+      {{ llm_model_catalog_models
+         | selectattr('name', 'equalto', item.catalog_model_name) | first }}
+    _llm_router_catalog_profile: >-
+      {{ (_llm_router_catalog_model.profiles | default({})).get(item.catalog_profile_name, {}) }}
+
+- name: Assert rendered per-model limits match the catalog projection
+  ansible.builtin.set_fact:
+    _llm_router_catalog_render_mismatches: >-
+      {%- set ns = namespace(errors=[]) -%}
+      {%- set rendered_models = _llm_router_parity_config.model_list | default([]) -%}
+      {%- set local_tiers = ['large', 'light', 'vllm', 'hermes-local', 'cpu-moe', 'cpu-9b'] -%}
+      {%- for model in llm_router_registry_enabled -%}
+      {%- set model_name = model.route_group | default(model.client_model_id) -%}
+      {%- set deployments = rendered_models | selectattr('model_name', 'equalto', model_name) | list -%}
+      {%- set profile_endpoints = {'llama_cpp_vulkan': llm_router_llm_vllm_base_url | default(none)} -%}
+      {%- set expected_endpoint = profile_endpoints.get(model.catalog_profile_name, none) -%}
+      {%- if expected_endpoint is not none -%}
+      {%- set deployments = deployments | selectattr('litellm_params.api_base', 'equalto', expected_endpoint) | list -%}
+      {%- endif -%}
+      {%- for deployment in deployments -%}
+      {%- if model.context_window is defined -%}
+      {%- set expected = _llm_router_vllm_max_input_tokens_by_model.get(model.client_model_id, model.context_window) -%}
+      {%- set actual = deployment.model_info.max_input_tokens | default(none) -%}
+      {%- if actual is none or actual | int != expected | int -%}
+      {%- set ns.errors = ns.errors + [
+        model.client_model_id ~ ' max_input_tokens=' ~ (actual | string)
+        ~ ', expected ' ~ (expected | string)
+      ] -%}
+      {%- endif -%}
+      {%- if not (model.embedding | default(false)) -%}
+      {%- set expected_output = model.max_output_tokens | default(model.context_window) -%}
+      {%- set actual_output = deployment.model_info.max_tokens | default(none) -%}
+      {%- if actual_output is none or actual_output | int != expected_output | int -%}
+      {%- set ns.errors = ns.errors + [
+        model.client_model_id ~ ' max_tokens=' ~ (actual_output | string)
+        ~ ', expected ' ~ (expected_output | string)
+      ] -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- if model.max_parallel_requests is defined -%}
+      {%- set actual_parallel = deployment.litellm_params.max_parallel_requests | default(none) -%}
+      {%- if actual_parallel is none or actual_parallel | int != model.max_parallel_requests | int -%}
+      {%- set ns.errors = ns.errors + [
+        model.client_model_id ~ ' max_parallel_requests=' ~ (actual_parallel | string)
+        ~ ', expected ' ~ (model.max_parallel_requests | string)
+      ] -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- for field in ['request_timeout', 'stream_timeout'] if model[field] is defined -%}
+      {%- set expected_timeout = model[field] | int -%}
+      {%- if model.tier in local_tiers -%}
+      {%- set cap =
+        llm_router_local_request_timeout_seconds
+        if field == 'request_timeout'
+        else llm_router_local_stream_timeout_seconds
+      -%}
+      {%- set expected_timeout = [expected_timeout, cap | int] | min -%}
+      {%- endif -%}
+      {%- set rendered_field = 'timeout' if field == 'request_timeout' else 'stream_timeout' -%}
+      {%- set actual_timeout = deployment.litellm_params[rendered_field] | default(none) -%}
+      {%- if actual_timeout is none or actual_timeout | int != expected_timeout | int -%}
+      {%- set ns.errors = ns.errors + [
+        model.client_model_id ~ ' ' ~ rendered_field ~ '=' ~ (actual_timeout | string)
+        ~ ', expected ' ~ (expected_timeout | string)
+      ] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.errors | to_json }}
+
+- name: Assert rendered router limits agree with the shared model catalog
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - (_llm_router_catalog_render_mismatches | from_json) | length == 0
+    fail_msg: >-
+      Rendered model limits disagree with the shared catalog:
+      {{ _llm_router_catalog_render_mismatches | from_json }}
+    success_msg: >-
+      Rendered context, output, concurrency, and timeout values agree with the
+      shared model catalog (with the configured local timeout/pre-fill caps).

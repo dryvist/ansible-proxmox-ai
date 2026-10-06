@@ -101,17 +101,25 @@
                    + (_config.router_settings.model_group_alias | list))
                   | unique | list)
                + [hermes_brain_model]
-          # The complexity router hands a busy local slot to its chain at once
-          # when cloud rungs are credentialed. The no-credential half of this
-          # contract (it must NOT, since it would then have no chain) is pinned
-          # in test_hermes_default_failover.yml.
+          # The complexity router is a name the Hermes agents call, so it is the
+          # one chain-carrying name that waits out a busy local slot (honouring
+          # the upstream's Retry-After) before handing it to its chain. The
+          # no-credential render keeps the same figure
+          # (test_hermes_default_failover.yml); the rest of the contract is
+          # pinned in test_hermes_rate_limit_retry.yml.
+          - llm_router_hermes_rate_limit_retries | int > 0
           - >-
             _config.router_settings.model_group_retry_policy[hermes_brain_model]
-              .RateLimitErrorRetries | int == 0
+              .RateLimitErrorRetries | int == llm_router_hermes_rate_limit_retries | int
+          # The policy keys are the chain groups plus the listed names (the goal
+          # judge carries no chain, so it is listed but not a chain group).
           - _cloud_retry_groups
-            == llm_router_hermes_cloud_zero_retry_groups | sort
-          # Only the multi-member cloud groups retry (onto their next member).
-          - _nonzero_cloud_retry_groups | sort == llm_router_multi_member_cloud_groups | sort
+            == (llm_router_hermes_cloud_zero_retry_groups + llm_router_rate_limit_retry_names) | unique | sort
+          # Only the multi-member cloud groups (onto their next member) and the
+          # names the Hermes agents call retry.
+          - >-
+            _nonzero_cloud_retry_groups | sort
+            == (llm_router_multi_member_cloud_groups + llm_router_rate_limit_retry_names) | unique | sort
           - "'enforce_model_rate_limits' in _config.router_settings.optional_pre_call_checks"
           - "'session_affinity' in _config.router_settings.optional_pre_call_checks"
           - _cloud_models | length == 6

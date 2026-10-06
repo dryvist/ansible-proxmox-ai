@@ -1,0 +1,90 @@
+---
+# One profile of render-host-contract.yml; the profile name arrives as
+# llm_gpu_serving_host_contract_profile_name.
+- name: Validate the profile's artifact, engine and host binary
+  ansible.builtin.assert:
+    that:
+      - llm_gpu_serving_host_contract_profile_name in llm_gpu_serving_registry_by_profile
+      - llm_gpu_serving_registry_by_profile[llm_gpu_serving_host_contract_profile_name].artifact.use == 'serving'
+      - >-
+        llm_profiles[llm_gpu_serving_host_contract_profile_name].engine
+        in llm_gpu_serving_registry_by_profile[llm_gpu_serving_host_contract_profile_name].artifact.engines
+      - >-
+        llm_profiles[llm_gpu_serving_host_contract_profile_name].engine != 'vllm'
+        or (llm_gpu_serving_host_vllm_bin is defined and llm_gpu_serving_host_vllm_bin is match('^/.+'))
+      - >-
+        llm_profiles[llm_gpu_serving_host_contract_profile_name].engine != 'llama_cpp'
+        or (llm_gpu_serving_host_llamacpp_bin is defined and llm_gpu_serving_host_llamacpp_bin is match('^/.+'))
+    fail_msg: >-
+      Profile {{ llm_gpu_serving_host_contract_profile_name }} needs a serving artifact
+      for its engine and an absolute host binary (llm_gpu_serving_host_vllm_bin for
+      vllm, llm_gpu_serving_host_llamacpp_bin for llama_cpp).
+    quiet: true
+
+- name: Resolve the profile model and paths
+  ansible.builtin.set_fact:
+    llm_gpu_serving_host_profile_name: "{{ llm_gpu_serving_host_contract_profile_name }}"
+    llm_gpu_serving_host_profile: >-
+      {{ llm_profiles[llm_gpu_serving_host_contract_profile_name]
+         | combine({'port': llm_gpu_serving_api_port}) }}
+    llm_gpu_serving_host_registry_model: >-
+      {{ llm_gpu_serving_registry_by_profile[llm_gpu_serving_host_contract_profile_name] }}
+    llm_gpu_serving_host_model_dir: >-
+      {{ llm_gpu_serving_host_model_cache_mount_path ~ '/'
+         ~ llm_gpu_serving_registry_by_profile[llm_gpu_serving_host_contract_profile_name].artifact.hf_repo }}
+    llm_gpu_serving_host_hf_home: >-
+      {{ llm_gpu_serving_host_hf_home_override
+         | default(llm_gpu_serving_host_working_directory ~ '/.cache/huggingface', true) }}
+    llm_gpu_serving_host_contract_unit_name: >-
+      {{ llm_gpu_serving_unit_prefix }}-{{ llm_gpu_serving_host_contract_profile_name }}.service
+    llm_gpu_serving_host_contract_profile_unit_path: >-
+      {{ llm_gpu_serving_host_contract_unit_path
+         if llm_gpu_serving_host_contract_scope_resolved == 'primary'
+         else llm_gpu_serving_host_contract_unit_dir ~ '/' ~ llm_gpu_serving_unit_prefix
+              ~ '-' ~ llm_gpu_serving_host_contract_profile_name ~ '.service' }}
+
+- name: Resolve vLLM parser arguments from the profile and artifact
+  ansible.builtin.set_fact:
+    llm_gpu_serving_host_tool_call_parser: >-
+      {{ llm_gpu_serving_host_registry_model.artifact.tool_call_parser
+         | default(llm_gpu_serving_host_profile.tool_call_parser) }}
+    llm_gpu_serving_host_reasoning_parser: >-
+      {{ llm_gpu_serving_host_registry_model.artifact.reasoning_parser
+         | default(llm_gpu_serving_host_profile.reasoning_parser)
+         | mandatory('reasoning_parser is required for vLLM profiles') }}
+  when: llm_gpu_serving_host_profile.engine == 'vllm'
+
+- name: Render the host-interim systemd unit
+  ansible.builtin.template:
+    src: llm-gpu-serving-host.service.j2
+    dest: "{{ llm_gpu_serving_host_contract_profile_unit_path }}"
+    mode: "0600"
+
+- name: Add the unit to the PVE contract list
+  ansible.builtin.set_fact:
+    llm_gpu_serving_host_contracts: >-
+      {{ llm_gpu_serving_host_contracts + [
+           {
+             'name': llm_gpu_serving_host_contract_unit_name,
+             'content': lookup('ansible.builtin.file', llm_gpu_serving_host_contract_profile_unit_path),
+             'state': llm_gpu_serving_host_contract_profile_state,
+             'enabled': llm_gpu_serving_host_contract_profile_enabled | bool
+           } | combine(llm_gpu_serving_host_contract_python_keys)
+         ] }}
+  vars:
+    llm_gpu_serving_host_contract_default_state: >-
+      {{ 'stopped' if llm_gpu_serving_host_contract_scope_resolved == 'primary' else 'started' }}
+    llm_gpu_serving_host_contract_profile_state: >-
+      {{ llm_gpu_serving_host_contract_state | default(llm_gpu_serving_host_contract_default_state)
+         if (llm_gpu_serving_host_contract_scope_resolved == 'primary'
+             or llm_gpu_serving_host_contract_profile_name == llm_active_profile)
+         else 'stopped' }}
+    llm_gpu_serving_host_contract_profile_enabled: >-
+      {{ llm_gpu_serving_host_contract_enabled | default(llm_gpu_serving_host_contract_scope_resolved == 'all')
+         if (llm_gpu_serving_host_contract_scope_resolved == 'primary'
+             or llm_gpu_serving_host_contract_profile_name == llm_active_profile)
+         else false }}
+    llm_gpu_serving_host_contract_python_keys: >-
+      {{ {'python_virtualenv': llm_gpu_serving_host_vllm_bin | dirname | dirname,
+          'python_packages': llm_gpu_serving_host_profile.python_packages | default([])}
+         if llm_gpu_serving_host_profile.engine == 'vllm' else {} }}

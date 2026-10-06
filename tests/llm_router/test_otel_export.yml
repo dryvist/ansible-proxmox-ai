@@ -1,12 +1,10 @@
 ---
-# The pinned LiteLLM release has the `langfuse_otel` preset. Render it as the
-# sole trace exporter when keys exist and verify the no-credentials state stays
-# trace-free instead of enabling a second generic collector route.
+# LiteLLM traces use the shared OTLP collector; request and response bodies stay off.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_otel_export.yml -i localhost, -c local
 
-- name: Verify exactly one optional Langfuse trace path
+- name: Verify the shared LiteLLM OTLP trace path
   hosts: localhost
   gather_facts: false
   vars:
@@ -18,12 +16,13 @@
           llm_fast_api: 10434
           ollama_api: 11434
           redis_default: 6379
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
     bao_local_llm_secrets: {}
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: "pve.example.test"
-    llm_router_master_key: sk-test-master
-    llm_router_llm_large_bearer: test-bearer-token
+    llm_router_master_key: fixture
+    llm_router_llm_large_bearer: fixture
     ai_router_request_timeout_seconds: 2400
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 40
@@ -35,59 +34,25 @@
     - name: Load the role defaults and registry the way the converge does
       ansible.builtin.import_tasks: tasks/parity_setup.yml
 
-    - name: Render with no Langfuse credentials
-      ansible.builtin.set_fact:
-        llm_router_langfuse_public_key: ""
-        llm_router_langfuse_secret_key: ""
-        llm_router_langfuse_enabled: false
-
-    - name: Capture the no-credential render
-      ansible.builtin.set_fact:
-        _no_key_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
-        _no_key_env: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
-
-    - name: No tracing callback or exporter environment renders without credentials
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - "'otel' not in _no_key_config.litellm_settings.callbacks"
-          - "'langfuse' not in _no_key_config.litellm_settings.callbacks"
-          - "'langfuse_otel' not in _no_key_config.litellm_settings.callbacks"
-          - _no_key_env is not search('(?m)^LANGFUSE_')
-          - _no_key_env is not search('(?m)^LITELLM_OTEL_V2=')
-          - _no_key_env is not search('(?m)^OTEL_(EXPORTER|ENDPOINT)=')
-
-    - name: Supply a complete fixture key pair and render the active trace path
-      ansible.builtin.set_fact:
-        llm_router_langfuse_public_key: pk-test-fixture
-        llm_router_langfuse_secret_key: sk-test-fixture
-        llm_router_langfuse_enabled: true
-
-    - name: Capture the credentialed render
+    - name: Capture the rendered proxy config and environment
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
         _env: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
 
-    - name: The Langfuse preset is the only trace exporter and routing callbacks remain
+    - name: The shared collector is the only trace exporter
       ansible.builtin.assert:
         quiet: true
         that:
-          - "'langfuse_otel' in _config.litellm_settings.callbacks"
-          - _config.litellm_settings.callbacks | select('equalto', 'langfuse_otel') | list | length == 1
-          - "'otel' not in _config.litellm_settings.callbacks"
+          - _config.litellm_settings.callbacks | select('equalto', 'otel') | list | length == 1
           - "'langfuse' not in _config.litellm_settings.callbacks"
+          - "'langfuse_otel' not in _config.litellm_settings.callbacks"
+          - _config.litellm_settings.callback_settings.otel.message_logging == false
           - "'prometheus' in _config.litellm_settings.callbacks"
           - "'request_metrics.proxy_handler_instance' in _config.litellm_settings.callbacks"
-          - _env is search('(?m)^LANGFUSE_PUBLIC_KEY=pk-test-fixture$')
-          - _env is search('(?m)^LANGFUSE_SECRET_KEY=sk-test-fixture$')
-          - _env is search('(?m)^LANGFUSE_HOST=https://langfuse\\.pve\\.example\\.test$')
           - _env is search('(?m)^LITELLM_OTEL_V2=true$')
-          - _env is not search('(?m)^OTEL_(EXPORTER|ENDPOINT)=')
-        fail_msg: >-
-          Expected exactly one Langfuse OTel preset and no generic collector
-          exporter. callbacks={{ _config.litellm_settings.callbacks }}.
-          Environment:
-          {{ _env }}
+          - _env is search('(?m)^OTEL_EXPORTER=otlp_http$')
+          - _env is search('(?m)^OTEL_ENDPOINT=http://otel\\.example\\.test:4318$')
+          - _env is not search('(?m)^LANGFUSE_')
 
     - name: The pinned proxy includes the OTel exporter dependencies
       ansible.builtin.assert:

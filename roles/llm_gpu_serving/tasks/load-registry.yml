@@ -13,14 +13,66 @@
       {{ dict(_llm_model_artifacts | map(attribute='artifact_id')
               | zip(_llm_model_artifacts)) }}
 
-- name: Assert model artifacts and repositories are registered exactly once
+- name: Assert model artifacts have unique stable ids
   ansible.builtin.assert:
     that:
       - _llm_model_artifacts | length > 0
       - llm_gpu_serving_artifacts_by_id | length == _llm_model_artifacts | length
-      - (_llm_model_artifacts | map(attribute='hf_repo') | unique | list | length) == _llm_model_artifacts | length
-    fail_msg: "llm-models.d/65-gpu-pro6000-artifacts.yml must contain unique artifact ids and HF repositories."
+    fail_msg: "llm-models.d/65-gpu-pro6000-artifacts.yml must contain unique artifact ids."
     quiet: true
+
+- name: Select artifacts included in the pinned model store
+  ansible.builtin.set_fact:
+    llm_gpu_serving_model_store_artifacts: >-
+      {{ _llm_model_artifacts
+         | selectattr('model_store', 'defined')
+         | selectattr('model_store', 'equalto', true)
+         | list }}
+
+- name: Validate pinned model-store artifact metadata
+  ansible.builtin.assert:
+    that:
+      - item.revision is match('^[0-9a-f]{40}$')
+      - item.model_store_profile in ['small', 'medium-a', 'medium-b', 'max']
+      - item.model_store_size_bytes | int > 0
+    fail_msg: "Every model-store artifact must declare one pinned revision, profile, and positive size."
+    quiet: true
+  loop: "{{ llm_gpu_serving_model_store_artifacts }}"
+  loop_control:
+    label: "{{ item.artifact_id }}"
+
+- name: List distinct repositories in the pinned model store
+  ansible.builtin.set_fact:
+    llm_gpu_serving_model_store_repositories: >-
+      {{ llm_gpu_serving_model_store_artifacts | map(attribute='hf_repo') | unique | list }}
+
+- name: Validate pinned revisions and disjoint selectors for shared repositories
+  ansible.builtin.assert:
+    that:
+      - >-
+        (llm_gpu_serving_model_store_repository_artifacts
+         | map(attribute='revision') | unique | list | length) == 1
+      - >-
+        (llm_gpu_serving_model_store_repository_selectors | unique | list | length)
+        == (llm_gpu_serving_model_store_repository_selectors | length)
+      - >-
+        llm_gpu_serving_model_store_repository_artifacts | length == 1
+        or (llm_gpu_serving_model_store_repository_selectors
+            | select('match', '.*[?*\\[].*') | list | length == 0)
+    fail_msg: >-
+      Artifacts sharing one model-store repository must use one immutable
+      revision and pairwise-disjoint literal include selectors.
+    quiet: true
+  vars:
+    llm_gpu_serving_model_store_repository_artifacts: >-
+      {{ llm_gpu_serving_model_store_artifacts
+         | selectattr('hf_repo', 'equalto', item) | list }}
+    llm_gpu_serving_model_store_repository_selectors: >-
+      {{ llm_gpu_serving_model_store_repository_artifacts
+         | map(attribute='include_globs') | flatten | list }}
+  loop: "{{ llm_gpu_serving_model_store_repositories }}"
+  loop_control:
+    label: "{{ item }}"
 
 - name: Validate model artifact metadata
   ansible.builtin.assert:
@@ -80,3 +132,6 @@
   loop: "{{ llm_gpu_serving_registry_by_profile | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
+
+- name: Assert profile floors are complete and required for servable entries
+  ansible.builtin.include_tasks: assert-profile-floors.yml
