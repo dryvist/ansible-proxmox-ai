@@ -12,11 +12,10 @@ Two zones, because the rule has two sides:
 * The PROJECTION zone — roles/llm_router, tests/llm_router, playbooks, and
   every Python test's string constants — may not carry any registry value at
   all. The one exception is not hand-listed:
-  a value the inventory assigns literally (`hermes_brain_model: hermes-default`)
-  is the consumer-selection contract, and a test fixture supplying that same
-  input is mirroring the inventory, not re-typing the registry. The set is
-  computed from inventory/group_vars, so deriving a selector there removes
-  the exemption on its own.
+  values selected by `inventory/group_vars` under `hermes_brain_model` are the
+  consumer-selection contract. The set is computed from that selector's
+  literal value or quoted fallback, so changing the selector changes the
+  exemption with it.
 * The CONSUMER zone — every other role's defaults/vars, inventory, the other
   tests — calls the fabric by a client-facing name. It may name a
   client_model_id or an alias; it may never name an upstream-only id, because
@@ -184,12 +183,14 @@ def _hits(root: Path, globs, values):
 
 
 def inventory_literals(root: Path, values) -> set[str]:
-    """Registry values the inventory assigns as bare literals: the consumer-selection contract."""
+    """Registry values selected by inventory, including its Hermes fallback literal."""
     found = set()
     for path in sorted(root.glob("inventory/group_vars/**/*.yml")):
-        for _, scalar in _scalars(yaml.load(path.read_text(encoding="utf-8"), Loader=_Permissive)):
+        for key_path, scalar in _scalars(yaml.load(path.read_text(encoding="utf-8"), Loader=_Permissive)):
             if scalar in values:
                 found.add(scalar)
+            elif key_path[-1:] == ("hermes_brain_model",):
+                found.update(value for value in _QUOTED.findall(scalar) if value in values)
     return found
 
 

@@ -34,10 +34,10 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     judge_backend = effective_backend_for_role(registry, "routine")
     assert (judge_backend == hermes_backend) is routine_parked
 
-    # Physical aliases belong to the entries they point at. The Hermes brain
-    # selector is intentionally not one of them: it is a native LiteLLM
-    # complexity-router deployment, not duplicated configuration for a
-    # physical backend. Split the same way roles/llm_router splits them. An
+    # Physical aliases belong to the entries they point at. Hermes selects
+    # the complexity-router entry while GPU profiles are inactive, then the
+    # registry alias for its active profile. Split the same way
+    # roles/llm_router splits them. An
     # alias on a SERVABLE entry renders as a static model_group_alias and is
     # bound by the role's two render-time asserts; an alias on any other entry
     # is a ROLE seeded into the router database. Asserting the union would let
@@ -94,10 +94,12 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     assert len(db_role_aliases) == 0
     assert set(db_role_aliases.values()) & set(aliases.values()) == set()
 
+    hermes_selector = group_vars["hermes_brain_model"]
+    assert "llm_router_gpu_profiles_enabled" in hermes_selector
+    assert "llm_router_gpu_model_aliases_by_profile" in hermes_selector
+    assert "llm_active_profile" in hermes_selector
     hermes_router = next(
-        entry
-        for entry in registry
-        if entry.get("enabled") and entry["client_model_id"] == group_vars["hermes_brain_model"]
+        entry for entry in registry if entry.get("enabled") and entry.get("tier") == "hermes-router"
     )
     assert hermes_router["tier"] == "hermes-router"
     # The deployment name is the entry's own provider and upstream id; a drift
