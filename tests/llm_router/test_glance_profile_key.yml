@@ -1,0 +1,136 @@
+---
+# Owns ONE contract: the dashboard tile's `glance` virtual key reads only the
+# two routes the tile calls, and its model scope is derived from the registry's
+# GPU projection (the rendered client ids) — never empty, because an empty
+# list on a key means ALL models.
+#
+#   1. Seeded, GPU profiles enabled: the key is registered with the apps-domain
+#      value, scoped to the rendered GPU client ids (the active profile only),
+#      and allowed_routes names exactly /health and /v2/model/info (plus the
+#      trailing-slash spellings), so it cannot complete a request.
+#   2. Seeded, no GPU entry rendered: the scope falls back to the non-matching
+#      sentinel, not an empty list.
+#   3. Unseeded: the entry renders an empty value, which seed-keys.yml skips.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_glance_profile_key.yml -i localhost, -c local
+- name: Verify the glance key scope and routes with GPU profiles enabled
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      glance_llm_router_key: sk-fixture-glance-key-0123456789
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    hermes_brain_model: hermes-default
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+    llm_active_profile: medium-a
+  tasks:
+    - name: Add the fixture GPU serving member
+      ansible.builtin.add_host:
+        name: llm-gpu-fixture
+        groups: llm_gpu_group
+        ansible_connection: local
+
+    - name: Load defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Enable the GPU profiles
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: true
+
+    - name: The scope is the rendered GPU client ids, on two read routes
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _gpu_ids | length == 1
+          - _key.value == 'sk-fixture-glance-key-0123456789'
+          - _key.models == _gpu_ids
+          - _key.allowed_routes | sort == ['/health', '/health/', '/v2/model/info', '/v2/model/info/']
+          - _key.monthly_budget is not defined
+        fail_msg: >-
+          glance models={{ _key.models }} routes={{ _key.allowed_routes | default('absent') }}
+          expected models={{ _gpu_ids }} on the two read routes
+        success_msg: "glance={{ _key.models }} routes={{ _key.allowed_routes }}"
+      vars:
+        _gpu_ids: "{{ llm_router_gpu_models | map(attribute='client_model_id') | list }}"
+        _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'glance') | first }}"
+
+- name: Verify the glance key falls back to the sentinel scope with no GPU entry, and is inert unseeded
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      glance_llm_router_key: sk-fixture-glance-key-0123456789
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    hermes_brain_model: hermes-default
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Load defaults and registry the way the converge does (profiles off)
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    # set_fact outranks include_vars and persists across plays in one process,
+    # so the first play's switch is cleared explicitly.
+    - name: Keep the GPU profiles off
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: false
+
+    - name: With no GPU entry rendered the scope is the non-matching sentinel, never empty
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_gpu_models | length == 0
+          - _key.models == ['no-default-models']
+          - _key.allowed_routes | length == 4
+        fail_msg: "glance models={{ _key.models }} must be the sentinel when no GPU entry renders"
+        success_msg: "glance falls back to {{ _key.models }}"
+      vars:
+        _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'glance') | first }}"
+
+    - name: Unseed the apps secrets
+      ansible.builtin.set_fact:
+        bao_apps_secrets: {}
+
+    - name: Unseeded, the entry renders an empty value that seed-keys.yml skips
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _key.value == ''
+          - (llm_router_virtual_keys | rejectattr('value', 'equalto', '')
+             | selectattr('alias', 'equalto', 'glance') | list | length) == 0
+        fail_msg: "an unseeded glance key must render an empty value"
+      vars:
+        _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'glance') | first }}"
