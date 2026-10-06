@@ -289,7 +289,7 @@ env -u DOPPLER_PROJECT -u DOPPLER_CONFIG -u DOPPLER_ENVIRONMENT doppler run -- \
 
 ## Not yet live-validated
 
-Verify on the first converge: (a) `litellm[proxy]` + the optional
-`langfuse_otel` / `prometheus` callbacks import cleanly in the venv; (b) the `llm-large` runner accepts the bearer
-on `/v1`; (c) the same-name GPU/CPU deployment pair drains as intended when the GPU
-box is stopped.
+Verify on the first converge: (a) `litellm[proxy]` + the `otel` / `prometheus`
+callbacks import cleanly in the venv; (b) the `llm-large` runner accepts the
+bearer on `/v1`; (c) the same-name GPU/CPU deployment pair drains as intended
+when the GPU box is stopped.
