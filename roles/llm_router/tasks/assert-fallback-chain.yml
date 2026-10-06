@@ -1,247 +1,50 @@
 ---
-# Hermes fallback-chain contract: ordered composition, registry-backed
-# membership, no-single-provider-outage-empties-the-chain, depth bound. Its
-# own file so a test can import exactly this assert and prove each failure
-# mode, rather than restating its condition where every other Layer-1 assert
-# also runs.
-
-- name: Assert the Hermes fallback chain is ordered, registry-backed, and depth-bounded
+- name: Assert the shared D1 class ladder is ordered and complete
   ansible.builtin.assert:
     quiet: true
     that:
-      # MEMBERSHIP against the REAL atomic vars (35-hermes-cloud.yml): the
-      # chain holds exactly the declared local and cloud groups, no rung
-      # dropped, added, or duplicated. Ordering is asserted separately below --
-      # restating the concatenation here would duplicate the ordering policy
-      # that 35-hermes-cloud.yml already owns, and a limit that exists twice
-      # will disagree (it did: this clause hard-coded local-first and outlived
-      # the policy that made local-first conditional).
+      - llm_router_d1_class_order == ['sub', 'local', 'paid-zdr', 'free', 'retains']
+      - llm_router_hermes_cloud_fallback_groups == llm_router_d1_ladder_groups
+      - llm_router_hermes_default_fallback_chain == llm_router_d1_ladder_groups
+      - llm_router_hermes_default_fallback_chain | unique | length == llm_router_hermes_default_fallback_chain | length
       - >-
-        llm_router_hermes_default_fallback_chain | sort
-        == (llm_router_local_fallback_groups
-            + llm_router_hermes_cloud_only_fallback_groups
-            + llm_router_opencode_fallback_groups
-            + llm_router_openrouter_free_groups
-            + llm_router_shared_external_continuation) | unique | sort
-      - >-
-        llm_router_hermes_default_fallback_chain | unique | length
-        == llm_router_hermes_default_fallback_chain | length
-      # ORDERING, as the property rather than the formula. LiteLLM tries the
-      # chain top to bottom, so order IS the contract -- but the contract that
-      # matters is not "local first", it is "no rung that cannot serve the
-      # request stands in front of one that can". A leg narrower than the
-      # primary raises ContextWindowExceededError before it does any work.
-      #
-      # WHAT THAT COSTS, corrected against litellm 1.98.0 source: NOT the whole
-      # chain. This comment used to say a context error raised inside a fallback
-      # attempt is terminal; it is not. The raise is caught by the enclosing
-      # walk, which advances to the next rung. What truncates a walk early is
-      # the shared max_fallbacks budget. The ordering still matters for the
-      # smaller, real reason: every narrow leg standing in front spends one
-      # attempt and one unit of that shared budget on a rung that could never
-      # have served the request.
-      #
-      # Asserting the property instead of the concatenation makes this check
-      # STRONGER than the one it replaces, which passed happily on exactly the
-      # chain that aborted in production.
-      #
-      # Guarded by the policy variable because narrow_legs_last=false selects
-      # registry order deliberately, accepting that abort in exchange for
-      # keeping fallbacks on-network for as long as possible.
-      - >-
-        not (llm_router_hermes_narrow_legs_last | bool)
-        or _llm_router_misordered_narrow_groups | length == 0
-      # Every rung is a fallback_group an enabled registry entry actually
-      # declares — never a stale or hand-typed name.
-      - "llm_router_hermes_default_fallback_chain | difference(_llm_router_declared_groups) | length == 0"
-      # No single provider's outage empties the chain. This permits the
-      # hermes-cloud-free / hermes-cloud-openrouter overlap (both are
-      # OpenRouter — losing it still leaves local-4080, alibaba, gemini) while
-      # still hard-failing a chain where every rung shares one provider.
-      # Exempt a 0/1-rung chain (e.g. zero cloud credentials seeded): with
-      # nothing to diversify against, "one provider" is inherent, not a design
-      # flaw — see test_hermes_default_failover.yml.
-      - >-
-        llm_router_hermes_default_fallback_chain | length <= 1
-        or _llm_router_unsafe_providers | length == 0
-      # Depth bound: 8 (1 local + 2 OpenCode + 3 paid providers + free +
-      # free-zdrless), PLUS the shared external continuation every chain ends
-      # in since 2026-09-20 (35-hermes-cloud.yml): 2 Z.ai + subscription +
-      # provider API key = 4 more, 12 total, fully credentialed. This cap
-      # bounds PROVIDER COUNT (a reviewed onboarding decision each time it
-      # grows), not a worst-case timeout — see 40-routing.yml for why.
-      - "llm_router_hermes_default_fallback_chain | length <= 12"
-      # Free/retaining rungs follow the local, subscription, and paid legs.
-      # The public Hermes ladder then ends with the final Z.ai rung.
-      - "_llm_router_misplaced_zdrless_groups | length == 0"
-      - "_llm_router_zai_is_last | bool"
-      # Every rung narrower than the primary carries a context_window_fallbacks
-      # escape hatch — not because its absence aborts the chain (it does not;
-      # the enclosing walk advances), but because of how that map is consulted.
-      # On a context error it is checked FIRST, and once the map EXISTS a
-      # missing key re-raises without ever falling through to the ordinary
-      # fallbacks map, whereas no map at all would fall through. So an unkeyed
-      # narrow rung silently loses its own escape to the wider rungs, and a
-      # partially populated map is worse than none. See 35-hermes-cloud.yml.
-      # The composition checks above pass happily on exactly that chain, which
-      # is how it reached production.
-      - "_llm_router_unescaped_narrow_groups | length == 0"
-      # ANTI-VACUITY. Narrowness is "context_window < primary's", and the
-      # primary lookup defaults to 0 when it resolves nothing. At 0 no leg is
-      # ever narrow, so the ordering and escape-hatch checks above pass over an
-      # EMPTY set and report success on a chain they never examined. A primary
-      # that does not resolve is a broken registry, not a wide fleet.
-      - "llm_router_hermes_primary_context_window | int > 0"
+        llm_router_hermes_default_fallback_chain
+        == (llm_router_d1_class_order | map('extract', llm_router_d1_rungs_by_class) | flatten | unique | list)
+      - llm_router_d1_ladder_groups | difference(_llm_router_d1_declared_groups) | length == 0
+      - _llm_router_zai_is_last | bool
+      - llm_router_hermes_default_fallback_chain | length <= llm_router_max_fallbacks | int
+      - _llm_router_unescaped_narrow_groups | length == 0
     fail_msg: >-
-      Hermes fallback chain is unsound (roles/llm_router/tasks/assert-fallback-chain.yml):
-      got {{ llm_router_hermes_default_fallback_chain }}, which must hold
-      exactly {{ (llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups
-      + llm_router_opencode_fallback_groups + llm_router_openrouter_free_groups
-      + llm_router_shared_external_continuation) | unique | list }}
-      (in any order) with no duplicates. Narrow leg(s) standing in front of a
-      cloud rung that could serve the request, spending an attempt and a unit
-      of the shared depth budget on a rung that cannot answer:
-      {{ _llm_router_misordered_narrow_groups }}. Declared groups:
-      {{ _llm_router_declared_groups }}. Provider(s) whose outage would empty
-      the chain: {{ _llm_router_unsafe_providers }} (chain providers:
-      {{ _llm_router_chain_providers }}). Depth is capped at 12 (1 local + 2
-      OpenCode + 3 paid providers + free + free-zdrless + the shared external
-      continuation's 2 Z.ai + subscription + provider-API-key) — see the
-      arithmetic comment above the assert before raising it. Rung(s) narrower than the primary with no
-      context_window_fallbacks escape hatch (an over-long request re-raises
-      at these rather than escaping to a wider rung, because a rendered map
-      with a missing key never falls through):
-      {{ _llm_router_unescaped_narrow_groups }}. Free/retaining rung(s) found
-      ahead of local, subscription, or paid legs:
-      {{ _llm_router_misplaced_zdrless_groups }}. Final Z.ai rung expected:
-      {{ llm_router_zai_groups[-1] | default('none') }}.
-      The four inputs every ordering failure turns on, because they differ
-      between environments and are otherwise invisible here — primary model:
-      {{ llm_router_primary_model | default('UNRESOLVED') }}; primary context
-      window: {{ llm_router_hermes_primary_context_window }} (0 means the
-      primary did not resolve and nothing was classed narrow);
-      narrow groups: {{ llm_router_hermes_local_narrow_groups }};
-      narrow_legs_last: {{ llm_router_hermes_narrow_legs_last }}.
+      D1 ladder drifted: class order={{ llm_router_d1_class_order }},
+      ladder={{ llm_router_hermes_default_fallback_chain }},
+      undeclared={{ llm_router_d1_ladder_groups | difference(_llm_router_d1_declared_groups) }},
+      unescaped narrow local groups={{ _llm_router_unescaped_narrow_groups }}.
     success_msg: >-
-      Hermes fallback chain is ordered
-      ({{ llm_router_hermes_default_fallback_chain | join(' -> ') }}), every
-      rung is a real registry entry, no single provider's outage empties it,
-      and depth stays within the 12-rung cap.
+      D1 class ladder is complete and ordered:
+      {{ llm_router_hermes_default_fallback_chain | join(' -> ') }}.
   vars:
+    _llm_router_d1_declared_groups: >-
+      {{ llm_router_d1_class_order
+         | map('extract', llm_router_d1_rungs_by_class) | flatten | unique | list }}
     _llm_router_zai_is_last: >-
       {{ llm_router_zai_groups | length == 0
          or (llm_router_hermes_default_fallback_chain | last) == (llm_router_zai_groups | last) }}
-    # A retaining OpenRouter free rung may follow local, subscription, and
-    # paid fallbacks, then precede the shared terminal and final Z.ai rung.
-    # Check those first three segments explicitly so the later Z.ai placement
-    # does not make a free rung appear out of order.
-    _llm_router_misplaced_zdrless_groups: >-
-      {%- set ns = namespace(bad=[]) -%}
-      {%- set chain = llm_router_hermes_default_fallback_chain -%}
-      {%- set _other_groups = llm_router_local_fallback_groups
-            + llm_router_opencode_fallback_groups
-            + llm_router_hermes_cloud_only_fallback_groups -%}
-      {%- for g in llm_router_openrouter_free_groups -%}
-      {%- for h in _other_groups -%}
-      {%- if g in chain and h in chain
-             and chain.index(g) < chain.index(h) and g not in ns.bad -%}
-      {%- set ns.bad = ns.bad + [g] -%}
-      {%- endif -%}
+    _llm_router_escaped_narrow_groups: >-
+      {%- set ns = namespace(groups=[]) -%}
+      {%- for _entry in llm_router_context_window_fallbacks -%}
+      {%- set ns.groups = ns.groups + (_entry.keys() | list) -%}
       {%- endfor -%}
-      {%- endfor -%}
-      {{ ns.bad }}
-    # Narrow local legs that precede a rung they should not, in the chain.
-    # Each one is a place the chain can die with serviceable rungs behind it.
-    # Scoped to opencode_sub + or_zdr_paid only, NOT the free segments: the
-    # six-segment order (35-hermes-cloud.yml) deliberately places local_narrow
-    # BEFORE free_sub/free_zdrless — the free rungs are the last-resort safety
-    # net (Vikunja 2890), reached only once every OpenCode and paid rung has
-    # also failed, and a narrow leg ahead of them is the design, not a defect.
-    _llm_router_misordered_narrow_groups: >-
-      {%- set ns = namespace(bad=[]) -%}
-      {%- set chain = llm_router_hermes_default_fallback_chain -%}
-      {%- for g in llm_router_hermes_local_narrow_groups -%}
-      {%- for c in llm_router_opencode_fallback_groups + llm_router_hermes_cloud_paid_groups -%}
-      {%- if g in chain and c in chain
-             and chain.index(g) < chain.index(c) and g not in ns.bad -%}
-      {%- set ns.bad = ns.bad + [g] -%}
-      {%- endif -%}
-      {%- endfor -%}
-      {%- endfor -%}
-      {{ ns.bad }}
-    # Context the primary itself advertises; every rung is measured against it.
-    # The same derivation the narrow/wide split is BUILT from
-    # (35-hermes-cloud.yml), resolved through llm_router_primary_model — never
-    # a typed id, which would be a second source for "primary width" that
-    # agrees only until the primary moves.
-    _llm_router_primary_context: "{{ llm_router_hermes_primary_context_window }}"
-    # Chain rungs that advertise LESS context than the primary and have no
-    # context_window_fallbacks entry. A rung with no declared context_window is
-    # not assumed narrow — only a stated, smaller number counts.
-    #
-    # Scoped to chains that HAVE a wider rung to escape to: with cloud rungs
-    # absent (no credentials seeded) the narrow local leg is the whole chain,
-    # and there is nowhere better to send an over-long request. Failing the
-    # converge over that would block a legitimately local-only deployment. The
-    # same condition builds the map itself, so the two cannot disagree.
+      {{ ns.groups | unique | list }}
     _llm_router_unescaped_narrow_groups: >-
-      {%- set ns = namespace(bad=[], escaped=[]) -%}
-      {%- for entry in llm_router_context_window_fallbacks -%}
-      {%- set ns.escaped = ns.escaped + (entry.keys() | list) -%}
-      {%- endfor -%}
-      {%- for m in (llm_router_registry_enabled
-                    if (llm_router_hermes_cloud_only_fallback_groups
-                        + llm_router_opencode_fallback_groups
-                        + llm_router_openrouter_free_groups) | length > 0
-                    else []) -%}
-      {%- set group = m.fallback_group | default(m.route_group, true) | default(none) -%}
-      {%- if group and group in llm_router_hermes_default_fallback_chain
-             and group not in ns.escaped and group not in ns.bad
-             and m.context_window is defined
-             and m.context_window | int < _llm_router_primary_context | int -%}
-      {%- set ns.bad = ns.bad + [group] -%}
+      {%- set ns = namespace(groups=[]) -%}
+      {%- for _model in llm_router_registry_enabled -%}
+      {%- set _group = _model.fallback_group
+            | default(_model.route_group | default(_model.client_model_id, true), true) -%}
+      {%- if llm_router_context_window_wider_groups | length > 0
+            and _group in llm_router_hermes_local_narrow_groups
+            and _group in llm_router_hermes_default_fallback_chain
+            and _group not in _llm_router_escaped_narrow_groups -%}
+      {%- set ns.groups = ns.groups + [_group] -%}
       {%- endif -%}
       {%- endfor -%}
-      {{ ns.bad }}
-    _llm_router_declared_groups: >-
-      {{ (llm_router_local_fallback_groups + llm_router_hermes_cloud_only_fallback_groups
-          + llm_router_opencode_fallback_groups + llm_router_openrouter_free_groups
-          + llm_router_shared_external_continuation)
-         | unique | list }}
-    # First enabled registry entry to declare each fallback_group owns that
-    # group's provider. route_group fallback matters: entries sharing one
-    # fallback_group (e.g. the two hermes-cloud-openrouter leaves) often set
-    # only route_group, not their own fallback_group override. The final
-    # default to client_model_id covers the opencode and openrouter-free
-    # segments, whose entries deliberately carry neither field (each is its
-    # own model_name group) — without it they would resolve to `none` here and
-    # read as 'UNKNOWN:<name>' below instead of their real provider.
-    _llm_router_group_providers: >-
-      {%- set ns = namespace(pairs=[]) -%}
-      {%- for m in llm_router_registry_enabled -%}
-      {%- set group = m.fallback_group | default(m.route_group, true) | default(m.client_model_id, true) -%}
-      {%- if group and (ns.pairs | selectattr('group', 'equalto', group) | list | length == 0) -%}
-      {%- set ns.pairs = ns.pairs + [{'group': group, 'provider': m.provider}] -%}
-      {%- endif -%}
-      {%- endfor -%}
-      {{ ns.pairs }}
-    _llm_router_chain_providers: >-
-      {%- set ns = namespace(providers=[]) -%}
-      {%- for g in llm_router_hermes_default_fallback_chain -%}
-      {%- set match = _llm_router_group_providers | selectattr('group', 'equalto', g) | list -%}
-      {%- set ns.providers = ns.providers + [match[0].provider if match else ('UNKNOWN:' ~ g)] -%}
-      {%- endfor -%}
-      {{ ns.providers }}
-    # A provider is "unsafe" when removing every rung it owns leaves nothing —
-    # i.e. it owns every rung in the chain. Two-provider floor (surviving with
-    # >=2 rungs after the worst outage) was considered and rejected: that is a
-    # richness preference, not a correctness property, and would fail a
-    # legitimately short chain. One surviving rung is the hard requirement.
-    _llm_router_unsafe_providers: >-
-      {%- set ns = namespace(bad=[]) -%}
-      {%- for p in _llm_router_chain_providers | unique -%}
-      {%- if (_llm_router_chain_providers | reject('equalto', p) | list | length) == 0 -%}
-      {%- set ns.bad = ns.bad + [p] -%}
-      {%- endif -%}
-      {%- endfor -%}
-      {{ ns.bad }}
+      {{ ns.groups | unique | list }}

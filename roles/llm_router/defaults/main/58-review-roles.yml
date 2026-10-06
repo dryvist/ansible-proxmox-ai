@@ -19,7 +19,7 @@ llm_router_external_paid_rungs: >-
 llm_router_external_subscription_rungs: "{{ llm_router_hermes_cloud_subscription_groups | unique | list }}"
 llm_router_external_terminal_rungs: >-
   {{ llm_router_external_subscription_rungs + llm_router_external_paid_rungs }}
-llm_router_default_fallbacks: "{{ llm_router_external_terminal_rungs }}"
+llm_router_default_fallbacks: "{{ llm_router_d1_ladder_groups }}"
 
 # Names with no same-modality external rung to escape to: the two DB-seeded
 # "fail FAST" roles (55-roles.yml) plus the git-registry group behind the
@@ -54,28 +54,6 @@ llm_router_local_only_fail_fast_names: >-
      | reject('in', llm_router_cross_modality_fail_fast_names)
      | list }}
 
-# ONE variable for the whole shared external continuation (2026-09-20
-# operator decision, 35-hermes-cloud.yml): the Z.ai pair, the ZDR paid
-# OpenRouter group, then the subscription/API-key terminal every chain
-# already ends in — exactly the four things the operator named, NOT
-# llm_router_external_terminal_rungs' full paid segment (that also carries
-# hermes-cloud-alibaba/hermes-cloud-gemini, a separate, older
-# provider-diverse-value feature with no relation to this continuation).
-# Filtering llm_router_hermes_cloud_paid_groups down to the one matching
-# name, rather than typing 'hermes-cloud-openrouter' as a fresh literal,
-# keeps this credential-gated the same way every other member already is —
-# renders empty the moment OPENROUTER_HERMES_KEY is unseeded.
-#
-# Reachable ONLY through the role rows (review-oss/review-private,
-# 55-/58-roles.yml) and the ZDR-paid-OpenRouter isolation above — NOT used
-# by llm_router_hermes_own_fallback_by_group below, which derives every
-# group's own tail directly from the chain itself instead.
-llm_router_shared_external_continuation: >-
-  {{ (llm_router_zai_groups
-      + (llm_router_hermes_cloud_paid_groups | select('equalto', 'hermes-cloud-openrouter') | list)
-      + llm_router_external_subscription_rungs
-      + llm_router_hermes_cloud_api_key_groups) | unique | list }}
-
 # THE FIX for litellm 1.98's nested-fallback-follows-the-failed-rung's-own-
 # chain behavior (router.py::async_function_with_fallbacks): once a walk is
 # UNDER a group's own name (e.g. hermes-default's chain advanced to it, or
@@ -88,14 +66,9 @@ llm_router_shared_external_continuation: >-
 # hermes-cloud-alibaba, and an alibaba 429 walking its old [primary] entry
 # hit the identical cap, one rung earlier.
 #
-# GENERALIZED (2026-09-21): own(X), for every non-local group X in
-# llm_router_hermes_default_fallback_chain, is that SAME chain's own tail
-# after X, local rungs filtered out (they are never reachable a second time
-# this way — a caller already past X has no reason to re-enter one). The
-# shared external continuation above is nothing but the chain's own last
-# members, so it needs no separate expression here; the four-rung mapping
-# this fixed originally is simply what this produces for X in
-# {zai-glm-4.5-flash, zai-glm-5.3-flash, hermes-cloud-openrouter, codex-api}.
+# GENERALIZED: own(X), for every rung X in llm_router_hermes_default_fallback_chain,
+# is that same chain's tail after X. Local rungs stay in the tail now that D1
+# places subscriptions before on-prem deployments.
 #
 # ZDR: a group that is ALSO one of the caller-typed entry points
 # (llm_router_zdr_entry_point_names, 37-fallback-entry-points.yml) drops the
@@ -110,11 +83,11 @@ llm_router_shared_external_continuation: >-
 llm_router_hermes_own_fallback_by_group: >-
   {%- set ns = namespace(map={}) -%}
   {%- set _chain = llm_router_hermes_default_fallback_chain -%}
-  {%- for _group in _chain if not _group.startswith('hermes-local') -%}
+  {%- for _group in _chain -%}
   {%- set _idx = _chain.index(_group) -%}
-  {%- set _tail = _chain[_idx + 1 :] | reject('match', '^hermes-local') | list -%}
-  {%- if _group in llm_router_zdr_entry_point_names -%}
-  {%- set _tail = _tail | reject('in', llm_router_openrouter_free_groups) | list -%}
+  {%- set _tail = _chain[_idx + 1 :] | list -%}
+  {%- if _group in llm_router_zdr_asserted_group_names -%}
+  {%- set _tail = _tail | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list -%}
   {%- endif -%}
   {%- set _discard = ns.map.update({_group: _tail}) -%}
   {%- endfor -%}
@@ -127,7 +100,7 @@ llm_router_chain_groups_with_own_tail: >-
   {{ llm_router_hermes_own_fallback_by_group | dict2items
      | selectattr('value') | map(attribute='key') | list }}
 
-# REVIEW ROLES — local first, always. `review-oss` overflows to the Z.ai
+# REVIEW ROLES — `review-oss` starts local and overflows to the Z.ai
 # pair (33-zai.yml) — still no free rung (see above) — and, if the pair
 # itself fails (both members busy, or the paid member's plan/quota is
 # exhausted), on to the same paid terminal every other public chain ends

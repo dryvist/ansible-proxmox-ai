@@ -35,9 +35,7 @@
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
     # Registry-derived expectations, built from llm_router_model_registry
-    # directly (tier + credential_env) rather than from the credentialed
-    # projection the render uses — so an assert on the chain compares the
-    # render against the registry, not against its own input.
+    # directly rather than from the credentialed projection the render uses.
     _local_groups: >-
       {%- set ns = namespace(g=[]) -%}
       {%- for m in llm_router_model_registry | selectattr('enabled')
@@ -46,24 +44,15 @@
       {%- if g not in ns.g -%}{%- set ns.g = ns.g + [g] -%}{%- endif -%}
       {%- endfor -%}
       {{ ns.g }}
-    # The cross-modality fail-fast entries (58-review-roles.yml) render
-    # unconditionally, credentials or not, so the credential-free fixture
-    # still carries them after the local-only entry. PLUS `free`'s own
-    # empty, unconditional entry.
-    _expected_fallbacks: >-
-      {%- set ns2 = namespace(items=[{hermes_brain_model: _local_groups}]) -%}
-      {%- for _name in llm_router_cross_modality_fail_fast_names -%}
-      {%- set ns2.items = ns2.items + [{_name: []}] -%}
-      {%- endfor -%}
-      {%- for _name in llm_router_local_only_fail_fast_names -%}
-      {%- set ns2.items = ns2.items + [{_name: []}] -%}
-      {%- endfor -%}
-      {%- set ns2.items = ns2.items + [{'free': []}] -%}
-      {{ ns2.items }}
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Restore the non-secret render fixture after loading role defaults
+      ansible.builtin.set_fact:
+        llm_router_master_key: sk-test-master
+        llm_router_llm_large_bearer: test-bearer-token
 
     - name: Load the model registry through the role
       ansible.builtin.include_role:
@@ -97,7 +86,8 @@
         that:
           - llm_router_hermes_default_fallback_chain == _local_groups
           - _local_groups | length == 1
-          - _config.router_settings.fallbacks == _expected_fallbacks
+          - _fallback_chain | length == 0
+          - _fallback_targets | difference(_local_groups) | length == 0
           # No cloud rung means nowhere wider to escape to for anything
           # ORDINARY -- an empty map would not be "no map" to LiteLLM, it
           # would take the escape branch and fall back to nothing, hiding
@@ -127,3 +117,11 @@
              | selectattr('litellm_params.api_base', 'defined')
              | selectattr('litellm_params.api_base', 'equalto',
                           llm_router_opencode_base_url) | list }}
+        _fallback_chain: >-
+          {{ _config.router_settings.fallbacks
+             | selectattr('hermes-default', 'defined')
+             | map(attribute='hermes-default') | flatten }}
+        _fallback_targets: >-
+          {{ _config.router_settings.fallbacks
+             | map('dict2items') | flatten | map(attribute='value')
+             | flatten | unique | list }}

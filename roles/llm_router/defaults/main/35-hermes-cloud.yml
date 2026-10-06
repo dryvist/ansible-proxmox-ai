@@ -1,8 +1,7 @@
 ---
-# Hermes-only local complexity routing and paid provider fallbacks. Physical
-# local model groups stay unchanged, so Hindsight/Open WebUI callers retain a
-# local-only contract. Cloud groups render only when their exact credential is
-# present and the shared Redis budget store is configured.
+# Hermes complexity routing and credential-gated provider fallback groups.
+# The shared D1 class ladder below serves entry points and new database roles;
+# local-only callers keep their explicit empty chains.
 llm_router_hermes_virtual_models: >-
   {{ llm_router_registry_enabled
      | selectattr('tier', 'equalto', 'hermes-router') | list }}
@@ -44,9 +43,9 @@ llm_router_hermes_cloud_router_models_credentialed: >-
   {%- endfor -%}
   {{ ns.models }}
 
-# Local (non-cloud, non-credential-gated) fallback groups, registry order. A
-# local leg has no credential to gate on, and filtering it the way the cloud
-# projection filters would silently render nothing.
+# Local fallback groups, registry order. A local leg has no credential to
+# gate on, and filtering it the way the cloud projection filters would render
+# nothing.
 llm_router_local_fallback_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for m in llm_router_hermes_local_models -%}
@@ -57,7 +56,7 @@ llm_router_local_fallback_groups: >-
   {%- endfor -%}
   {{ ns.groups }}
 
-# Pure cloud (credential-gated) fallback groups, registry order. Kept as its
+# Paid cloud (credential-gated) fallback groups, registry order. Kept as its
 # own var — not just inlined into the combined one below — because
 # assert-budget-backing.yml needs a way to ask "is there a PAID leg" without
 # the local leg (which is never budgeted) tripping it, and because the assert
@@ -109,9 +108,9 @@ llm_router_hermes_primary_max_parallel_requests: >-
       | map(attribute='max_parallel_requests') | list | first)
      | default(llm_router_local_max_parallel_requests) }}
 
-# Local fallback groups split by whether they can serve what the primary was
-# handling. A NARROW leg (smaller window than the primary) is the failure this
-# split exists to prevent:
+# Local groups are split for context-window escape construction. D1 keeps the
+# local class after subscriptions and before paid ZDR; wide local groups lead
+# the class, followed by the narrower local groups.
 #
 #   primary 429s (a RATE error, not a size error) -> the ordinary `fallbacks`
 #   chain engages -> the next rung is a narrow leg -> the request is oversized
@@ -146,8 +145,6 @@ llm_router_hermes_primary_max_parallel_requests: >-
 #     after. "Verified present in the deployed config" described the file,
 #     not the row.
 #
-# The narrow/wide split below is still worth keeping: a narrow leg in front
-# cannot answer, so it costs an attempt and a unit of depth for nothing.
 llm_router_hermes_local_narrow_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for m in llm_router_hermes_local_models -%}
@@ -170,93 +167,16 @@ llm_router_hermes_local_wide_groups: >-
   {%- endfor -%}
   {{ ns.groups }}
 
-# WHICH POLICY: there is a genuine tradeoff and litellm cannot resolve it per
-# request, because a fallback chain is a static ordering while "does this rung
-# fit" depends on the request.
-#
-#   true  (default) -- narrow local legs go LAST, behind the cloud rungs. The
-#     chain then always reaches something that can serve the request. Cost: a
-#     SMALL fallback request that a narrow local leg could have served now
-#     tries a cloud rung first, so some traffic leaves the network that did
-#     not before. The first cloud rung is the free one, so this is not a
-#     spend change, it is an egress change.
-#
-#   false -- registry order, narrow legs first. Keeps every fallback local for
-#     as long as possible. Cost: a request larger than a narrow leg's window
-#     spends that rung and a unit of the shared depth budget for nothing
-#     before the chain reaches a rung that can answer.
-#
-# Defaulted to true because the goal this router serves states the chain "must
-# actually fall back, with one always-alive cheap rung" -- a chain that burns
-# its early rungs on legs that cannot answer is falling back late and with
-# less depth left for the rungs that can. Flip it if local-only egress
-# outranks chain completion for this estate.
-llm_router_hermes_narrow_legs_last: true
-
-# THREE SEGMENTS, AND "LAST" MEANS LAST IN THE COMPOSED CHAIN.
-#
-# The order is local_wide + cloud_only + local_narrow. Anyone who needs a rung
-# in ABSOLUTE last position — a rung that must only ever be reached once
-# everything else has failed — will reach for a re-sort inside cloud_only, and
-# it will look like it worked. It does not: local_narrow is appended after
-# cloud_only, so a rung sorted last WITHIN the cloud segment is still tried
-# before every narrow local leg.
-#
-# Measured, pushing one group to the end of cloud_only:
-#   [alibaba, gemini, openrouter, <the rung>, hermes-local-4080]
-#
-# Absolute-last therefore needs a FOURTH segment appended after local_narrow,
-# not a re-sort of an existing one. Composition is by concatenation precisely
-# so segments stay independently orderable; add the segment rather than
-# re-sorting, and the property survives a later change to any other segment.
-# EIGHT SEGMENTS: local_wide -> opencode_sub -> or_zdr_paid -> local_narrow ->
-# free_sub -> free_zdrless -> shared_terminal -> zai_overflow. Z.ai is last.
-#
-# OPERATOR DECISION (2026-09-20): every rendered chain ends in a guaranteed
-# final fallback — ai #845's enforce_fallback_model_access prunes each
-# caller KEY down to what it may use, so rendering these last two segments
-# widely costs a pruned key nothing:
-#   * zai_overflow (llm_router_zai_groups, 33-zai.yml) — explicit ZDR source,
-#     placed last in the public Hermes fallback order.
-#   * shared_terminal (llm_router_shared_external_continuation,
-#     58-review-roles.yml) — the same subscription/API-key terminal every
-#     role_deployment chain already ends in. The public Hermes chain places
-#     these after free/retaining rungs and before its final Z.ai pair. Its
-#     variable repeats paid groups (already placed above), collapsed by the
-#     trailing `| unique | list`; codex-subscription/codex-api land here and
-#     both carry `hermes_chain: false` to stay out of or_zdr_paid.
-#
-# or_zdr_paid + free_sub together are exactly
-# llm_router_hermes_cloud_only_fallback_groups's membership (the paid/free
-# split is additive, not a narrowing), so that part of the total membership
-# this var renders is unchanged in composition, only in ORDER: the OpenCode
-# subscription now precedes the ZDR-paid OpenRouter/Alibaba/Gemini rungs, and
-# the free segments now sit on either side of local_narrow instead of both
-# ahead of it.
+# One class-ordered ladder for every entry point. Registry classes determine
+# membership, and each class preserves the catalog's provider/model order.
+# The key's model allowlist and inherited deployment tags apply on every
+# fallback selection; `enforce_fallback_model_access` remains the second
+# check for group names.
 llm_router_hermes_cloud_fallback_groups: >-
-  {%- if llm_router_hermes_narrow_legs_last | bool -%}
-  {{ (llm_router_hermes_local_wide_groups
-      + llm_router_opencode_fallback_groups
-      + llm_router_hermes_cloud_paid_groups
-      + llm_router_hermes_local_narrow_groups
-      + llm_router_hermes_cloud_free_groups
-      + llm_router_openrouter_free_groups
-      + (llm_router_shared_external_continuation | reject('in', llm_router_zai_groups) | list)
-      + llm_router_zai_groups) | unique | list }}
-  {%- else -%}
-  {{ (llm_router_local_fallback_groups
-      + llm_router_opencode_fallback_groups
-      + llm_router_hermes_cloud_paid_groups
-      + llm_router_hermes_cloud_free_groups
-      + llm_router_openrouter_free_groups
-      + (llm_router_shared_external_continuation | reject('in', llm_router_zai_groups) | list)
-      + llm_router_zai_groups) | unique | list }}
-  {%- endif -%}
+  {{ llm_router_d1_ladder_groups }}
 
-# The full post-primary Hermes chain: local legs then cloud groups, in
-# registry order (llm_router_hermes_cloud_fallback_groups builds both halves
-# despite its name — see the NOTE ON NAMING above). Verified against the
-# registry independently in roles/llm_router/tasks/assert.yml.
+# The full post-entry chain shared by Hermes, stable aliases, and direct
+# model entry points.
 llm_router_hermes_default_fallback_chain: >-
   {{ llm_router_hermes_cloud_fallback_groups }}
 
@@ -267,6 +187,12 @@ llm_router_hermes_default_fallback_chain: >-
 # own `fallbacks` entry — a local rung — answers. Local first is FALLBACK
 # ORDER, never membership of a cloud group.
 llm_router_hermes_cloud_budgeted_groups: >-
-  {{ llm_router_hermes_cloud_models_credentialed
-     | selectattr('monthly_budget', 'defined')
-     | map(attribute='route_group') | unique | list }}
+  {%- set ns = namespace(groups=[]) -%}
+  {%- for m in llm_router_hermes_cloud_models_credentialed
+       if m.monthly_budget is defined or m.max_budget is defined -%}
+  {%- set group = m.fallback_group | default(m.route_group) -%}
+  {%- if group not in ns.groups -%}
+  {%- set ns.groups = ns.groups + [group] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.groups }}

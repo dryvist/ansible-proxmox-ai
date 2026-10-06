@@ -1,0 +1,111 @@
+---
+# The ordered fallback ladder is a projection of the registry's deployment
+# classes. The class of a deployment is distinct from its retention evidence:
+# a non-ZDR subscription or free deployment carries both its rung class and
+# `retains`, while standalone retaining models occupy the final class.
+#
+# Provider entries stay ordered as declared in llm-models.d/. The OpenRouter
+# slice puts its discounted/preview ZDR choices first; the provider-backed
+# Hermes entries follow it. Z.ai stays last in the retaining tail.
+llm_router_d1_paid_groups_by_class: >-
+  {%- set ns = namespace(paid_zdr=[], retains=[]) -%}
+  {%- for m in llm_router_openrouter_models -%}
+  {%- set key = llm_router_resolved_credentials.get(m.credential_env, '') -%}
+  {%- set _class = llm_router_deployment_class_by_model[m.client_model_id] -%}
+  {%- if key | length > 0 and _class in ['paid-zdr', 'retains'] -%}
+  {%- set target = ns.paid_zdr if _class == 'paid-zdr' else ns.retains -%}
+  {%- set _discard = target.append(m.client_model_id) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- for m in llm_router_hermes_cloud_models_credentialed
+       | selectattr('input_cost_per_token', 'defined') -%}
+  {%- set _class = llm_router_deployment_class_by_model[m.client_model_id] -%}
+  {%- if _class in ['paid-zdr', 'retains'] -%}
+  {%- set group = m.fallback_group | default(m.route_group) -%}
+  {%- set target = ns.paid_zdr if _class == 'paid-zdr' else ns.retains -%}
+  {%- if group not in target -%}
+  {%- set _discard = target.append(group) -%}
+  {%- endif -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ {'paid-zdr': ns.paid_zdr | unique | list, 'retains': ns.retains | unique | list} }}
+
+llm_router_d1_rungs_by_class: >-
+  {{ {
+       'sub': (llm_router_opencode_fallback_groups
+               + llm_router_hermes_cloud_subscription_groups) | unique | list,
+       'local': (llm_router_hermes_local_wide_groups
+                 + llm_router_hermes_local_narrow_groups) | unique | list,
+       'paid-zdr': llm_router_d1_paid_groups_by_class['paid-zdr'],
+       'free': (llm_router_hermes_cloud_free_groups
+                + llm_router_openrouter_free_groups) | unique | list,
+       'retains': (llm_router_d1_paid_groups_by_class['retains']
+                   + llm_router_zai_groups) | unique | list,
+     } }}
+
+llm_router_d1_group_class_by_name: >-
+  {%- set ns = namespace(classes={}) -%}
+  {%- for _class in ['sub', 'local', 'paid-zdr', 'free', 'retains'] -%}
+  {%- for _group in llm_router_d1_rungs_by_class[_class] -%}
+  {%- set _ = ns.classes.update({_group: _class}) -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {{ ns.classes }}
+
+llm_router_d1_class_order: [sub, local, paid-zdr, free, retains]
+llm_router_d1_ladder_groups: >-
+  {{ (llm_router_d1_rungs_by_class['sub']
+      + llm_router_d1_rungs_by_class['local']
+      + llm_router_d1_rungs_by_class['paid-zdr']
+      + llm_router_d1_rungs_by_class['free']
+      + llm_router_d1_rungs_by_class['retains']) | unique | list }}
+llm_router_d1_auto_initial_group: >-
+  {{ llm_router_hermes_gpu_medium_target if llm_router_gpu_models | length > 0
+     else (llm_router_d1_ladder_groups | first | default(llm_router_primary_model)) }}
+
+# LiteLLM's zero-call heuristic router maps prompt difficulty onto the early
+# D1 classes, except that rendered GPU profiles supply the fast and medium
+# targets (llm_router_hermes_gpu_*_target). Every other target is within the
+# catalog-derived ladder; the ordinary fallback map continues from the selected
+# group's D1 position.
+# Free and retaining classes stay at the fallback tail, rather than becoming
+# direct complexity targets. Deployment tags still filter each selected model
+# for ZDR keys, including the auto-router's internal tier selection.
+llm_router_d1_auto_simple_group: >-
+  {{ llm_router_hermes_gpu_fast_target if llm_router_gpu_models | length > 0
+     else (llm_router_d1_rungs_by_class['sub'] | first
+        | default(llm_router_routine_model, true)) }}
+llm_router_d1_auto_medium_group: >-
+  {{ llm_router_hermes_gpu_fast_target if llm_router_gpu_models | length > 0
+     else (llm_router_d1_rungs_by_class['local'] | first
+        | default(llm_router_routine_model, true)) }}
+llm_router_d1_auto_complex_group: >-
+  {{ llm_router_hermes_gpu_medium_target if llm_router_gpu_models | length > 0
+     else (llm_router_d1_rungs_by_class['paid-zdr'] | first
+        | default(llm_router_primary_model, true)) }}
+llm_router_d1_auto_reasoning_group: >-
+  {{ llm_router_hermes_gpu_medium_target if llm_router_gpu_models | length > 0
+     else (llm_router_d1_rungs_by_class['paid-zdr'] | last
+        | default(llm_router_primary_model, true)) }}
+llm_router_d1_auto_router_tiers:
+  SIMPLE: "{{ llm_router_d1_auto_simple_group }}"
+  MEDIUM: "{{ llm_router_d1_auto_medium_group }}"
+  COMPLEX: "{{ llm_router_d1_auto_complex_group }}"
+  REASONING: "{{ llm_router_d1_auto_reasoning_group }}"
+
+# ZDR entry points use the same class order, restricted to names backed by
+# positive ZDR evidence. This keeps a non-ZDR subscription (sub + retains)
+# out of a strict `&zdr` key's initial auto-router target as well as its
+# ordinary fallback tail.
+llm_router_d1_zdr_rungs_by_class: >-
+  {%- set ns = namespace(rungs={}) -%}
+  {%- for _class in ['sub', 'local', 'paid-zdr'] -%}
+  {%- set ns.rungs = ns.rungs | combine({
+        _class: llm_router_d1_rungs_by_class[_class]
+               | select('in', llm_router_zdr_asserted_group_names) | list}) -%}
+  {%- endfor -%}
+  {{ ns.rungs }}
+llm_router_d1_zdr_ladder_groups: >-
+  {{ (llm_router_d1_zdr_rungs_by_class['sub']
+      + llm_router_d1_zdr_rungs_by_class['local']
+      + llm_router_d1_zdr_rungs_by_class['paid-zdr']) | unique | list }}
