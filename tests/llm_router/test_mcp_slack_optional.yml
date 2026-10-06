@@ -49,6 +49,7 @@
         _env_lines: >-
           {{ lookup('ansible.builtin.template', _role_dir ~ '/templates/litellm.env.j2').splitlines() }}
         _main_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/main.yml') | from_yaml }}"
+        _slack_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/mcp-slack.yml') | from_yaml }}"
         _verify_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/verify-mcp-tools.yml') | from_yaml }}"
       no_log: true
 
@@ -61,6 +62,7 @@
           - "'LLM_ROUTER_SLACK_BOT_TOKEN=test-slack-token' in _env_lines"
           - _env_lines | select('match', '^LLM_ROUTER_SLACK_TEAM_ID=') | list | length == 1
           - "llm_router_mcp_hermes_object_permission == {'mcp_servers': ['zammad', 'slack']}"
+          - _main_tasks | selectattr('name', 'equalto', 'Settle the optional Slack MCP server') | list | length == 1
           - _resolve_task.when == 'llm_router_mcp_slack_enabled | bool'
           - _verify_task.when == 'llm_router_mcp_slack_enabled | bool'
           - "'llm_router_mcp_slack_bot_token' not in (_assert_task['ansible.builtin.include_tasks'] | to_json)"
@@ -68,7 +70,7 @@
         fail_msg: The Slack MCP pieces did not render with a resolved token.
       vars:
         _resolve_task: >-
-          {{ _main_tasks | selectattr('name', 'equalto',
+          {{ _slack_tasks | selectattr('name', 'equalto',
              'Resolve Slack workspace id for the stdio MCP server') | first }}
         _assert_task: >-
           {{ _main_tasks | selectattr('name', 'equalto',
@@ -122,6 +124,7 @@
           {{ lookup('ansible.builtin.template', _role_dir ~ '/templates/mcp-servers.yaml.j2') | from_yaml }}
         _env_text: "{{ lookup('ansible.builtin.template', _role_dir ~ '/templates/litellm.env.j2') }}"
         _main_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/main.yml') | from_yaml }}"
+        _slack_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/mcp-slack.yml') | from_yaml }}"
       no_log: true
 
     - name: Assert Zammad is unchanged and nothing Slack-specific renders
@@ -143,7 +146,7 @@
           {{ _main_tasks | selectattr('name', 'equalto',
              'Assert every secret rendered into the LiteLLM env file is present') | first }}
         _report_task: >-
-          {{ _main_tasks | selectattr('name', 'equalto', 'Report that the Slack MCP server is not rendered') | first }}
+          {{ _slack_tasks | selectattr('name', 'equalto', 'Report that the Slack MCP server is not rendered') | first }}
 
     - name: A whitespace-only token counts as empty
       ansible.builtin.set_fact:
