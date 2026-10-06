@@ -26,29 +26,46 @@
       - llm_gpu_serving_cache_sync_artifact.hf_repo | length > 0
       - llm_gpu_serving_cache_sync_artifact.revision is match('^[0-9a-f]{40}$')
       - llm_gpu_serving_cache_sync_artifact.include_globs | length > 0
-      - llm_gpu_serving_model_origin_mount_path | length > 0
+      - llm_gpu_serving_model_cache_mount_path | length > 0
       - >-
-        (llm_gpu_serving_cache_sync_mode | default('pull') != 'pull')
-        or llm_gpu_serving_model_cache_mount_path | length > 0
-      - >-
-        (llm_gpu_serving_cache_sync_mode | default('pull') != 'download')
+        llm_gpu_serving_model_origin_mount_path | length == 0
+        or (llm_gpu_serving_cache_sync_mode | default('pull')) != 'download'
         or not llm_gpu_serving_model_origin_mount_read_only
     fail_msg: >-
-      The registered artifact must be revision-pinned and the declared origin
-      mount must be available with the required access for this operation.
+      The registered artifact must be revision-pinned, the writable local cache
+      must be declared, and a declared origin mount must allow the requested
+      operation.
     quiet: true
 
-- name: Resolve origin and local cache directories for the selected artifact
+# Without a declared origin the local cache is the only store: the artifact is
+# downloaded straight into it and verified there.
+- name: Resolve the sync operation and directories for the selected artifact
   ansible.builtin.set_fact:
+    llm_gpu_serving_cache_sync_origin_declared: "{{ llm_gpu_serving_model_origin_mount_path | length > 0 }}"
     llm_gpu_serving_cache_sync_origin_directory: >-
       {{ llm_gpu_serving_model_origin_mount_path }}/{{ llm_gpu_serving_cache_sync_artifact.hf_repo }}
     llm_gpu_serving_cache_sync_local_directory: >-
       {{ llm_gpu_serving_model_cache_path }}/{{ llm_gpu_serving_cache_sync_artifact.hf_repo }}
 
+- name: Resolve the download target and the operation to run
+  ansible.builtin.set_fact:
+    llm_gpu_serving_cache_sync_download_directory: >-
+      {{ llm_gpu_serving_cache_sync_origin_directory
+         if llm_gpu_serving_cache_sync_origin_declared
+         else llm_gpu_serving_cache_sync_local_directory }}
+    llm_gpu_serving_cache_sync_operation: >-
+      {{ 'download' if (not llm_gpu_serving_cache_sync_origin_declared
+                        or (llm_gpu_serving_cache_sync_mode | default('pull')) == 'download')
+         else 'pull' }}
+    llm_gpu_serving_cache_sync_local_target: >-
+      {{ not llm_gpu_serving_cache_sync_origin_declared
+         or (llm_gpu_serving_cache_sync_mode | default('pull')) == 'pull' }}
+
 - name: Inspect the declared model-origin mount
   ansible.builtin.stat:
     path: "{{ llm_gpu_serving_model_origin_mount_path }}"
   register: llm_gpu_serving_cache_sync_origin_mount_stat
+  when: llm_gpu_serving_cache_sync_origin_declared | bool
 
 - name: Assert the declared model-origin mount exists
   ansible.builtin.assert:
@@ -59,6 +76,7 @@
       The declared model-origin mount must already exist as a directory before
       a model artifact can be downloaded or pulled into the local cache.
     quiet: true
+  when: llm_gpu_serving_cache_sync_origin_declared | bool
 
 - name: Inspect the pinned Hugging Face CLI for artifact cache sync
   ansible.builtin.stat:
@@ -79,7 +97,7 @@
   ansible.builtin.stat:
     path: "{{ llm_gpu_serving_cache_sync_origin_directory }}"
   register: llm_gpu_serving_cache_sync_origin_stat
-  when: (llm_gpu_serving_cache_sync_mode | default('pull')) == 'pull'
+  when: llm_gpu_serving_cache_sync_operation == 'pull'
 
 - name: Assert the selected artifact already exists in the shared origin
   ansible.builtin.assert:
@@ -90,7 +108,7 @@
       The selected registry artifact must be present in the shared model origin
       before it can be copied into the writable local cache.
     quiet: true
-  when: (llm_gpu_serving_cache_sync_mode | default('pull')) == 'pull'
+  when: llm_gpu_serving_cache_sync_operation == 'pull'
 
 - name: Create the local model cache directory
   ansible.builtin.file:
@@ -99,7 +117,7 @@
     owner: "{{ llm_gpu_serving_user }}"
     group: "{{ llm_gpu_serving_group }}"
     mode: "0750"
-  when: (llm_gpu_serving_cache_sync_mode | default('pull')) == 'pull'
+  when: llm_gpu_serving_cache_sync_local_target | bool
 
 - name: Create the selected artifact directory in the local model cache
   ansible.builtin.file:
@@ -108,7 +126,7 @@
     owner: "{{ llm_gpu_serving_user }}"
     group: "{{ llm_gpu_serving_group }}"
     mode: "0750"
-  when: (llm_gpu_serving_cache_sync_mode | default('pull')) == 'pull'
+  when: llm_gpu_serving_cache_sync_local_target | bool
 
 - name: Copy the registered artifact from the shared origin into the local model cache
   ansible.builtin.copy:
@@ -119,9 +137,9 @@
     group: "{{ llm_gpu_serving_group }}"
     mode: preserve
   register: llm_gpu_serving_cache_sync_copy
-  when: (llm_gpu_serving_cache_sync_mode | default('pull')) == 'pull'
+  when: llm_gpu_serving_cache_sync_operation == 'pull'
 
-- name: Verify the copied artifact against its pinned Hub revision
+- name: Verify the local artifact against its pinned Hub revision
   ansible.builtin.command:
     argv:
       - "{{ llm_gpu_serving_hf_bin }}"
@@ -137,21 +155,21 @@
   become: true
   become_user: "{{ llm_gpu_serving_user }}"
   changed_when: false
-  when: (llm_gpu_serving_cache_sync_mode | default('pull')) == 'pull'
+  when: llm_gpu_serving_cache_sync_local_target | bool
 
 - name: Create the artifact directory in the root-squashed shared origin
   ansible.builtin.file:
     path: "{{ llm_gpu_serving_cache_sync_origin_directory }}"
     state: directory
     mode: "0775"
-  when: (llm_gpu_serving_cache_sync_mode | default('pull')) == 'download'
+  when: llm_gpu_serving_cache_sync_operation == 'download' and llm_gpu_serving_cache_sync_origin_declared | bool
 
 - name: Preview each registered artifact include with pinned hf download
   ansible.builtin.command:
     argv: >-
       {{ [llm_gpu_serving_hf_bin, 'download', llm_gpu_serving_cache_sync_artifact.hf_repo,
           '--revision', llm_gpu_serving_cache_sync_artifact.revision,
-          '--include', item, '--local-dir', llm_gpu_serving_cache_sync_origin_directory,
+          '--include', item, '--local-dir', llm_gpu_serving_cache_sync_download_directory,
           '--dry-run'] }}
   environment:
     HF_HOME: "{{ llm_gpu_serving_hf_home }}"
@@ -162,7 +180,16 @@
     label: "{{ llm_gpu_serving_cache_sync_artifact.artifact_id }}:{{ item }}"
   register: llm_gpu_serving_cache_sync_previews
   changed_when: false
-  when: (llm_gpu_serving_cache_sync_mode | default('pull')) == 'download'
+  when: llm_gpu_serving_cache_sync_operation == 'download'
+
+- name: Resolve whether any registered include would download files
+  ansible.builtin.set_fact:
+    llm_gpu_serving_cache_sync_download_pending: >-
+      {{ llm_gpu_serving_cache_sync_previews.results
+         | selectattr('stdout', 'defined')
+         | rejectattr('stdout', 'search', 'Will download 0 files')
+         | list | length > 0 }}
+  when: llm_gpu_serving_cache_sync_operation == 'download'
 
 - name: Read compute applications before downloading a registered artifact
   ansible.builtin.command:
@@ -172,7 +199,9 @@
       - --format=csv,noheader
   register: llm_gpu_serving_cache_sync_compute_apps
   changed_when: false
-  when: (llm_gpu_serving_cache_sync_mode | default('pull')) == 'download'
+  when:
+    - llm_gpu_serving_cache_sync_operation == 'download'
+    - llm_gpu_serving_cache_sync_download_pending | bool
 
 - name: Require an idle GPU before downloading a registered artifact
   ansible.builtin.assert:
@@ -183,19 +212,23 @@
       running: {{ llm_gpu_serving_cache_sync_compute_apps.stdout | trim }}.
       Clear the benchmark workload and retry through the runner.
     quiet: true
-  when: (llm_gpu_serving_cache_sync_mode | default('pull')) == 'download'
+  when:
+    - llm_gpu_serving_cache_sync_operation == 'download'
+    - llm_gpu_serving_cache_sync_download_pending | bool
 
 - name: Record the idle-GPU decision before downloading a registered artifact
   ansible.builtin.debug:
     msg: "The compute-application query was empty; the registered artifact download may proceed."
-  when: (llm_gpu_serving_cache_sync_mode | default('pull')) == 'download'
+  when:
+    - llm_gpu_serving_cache_sync_operation == 'download'
+    - llm_gpu_serving_cache_sync_download_pending | bool
 
-- name: Download only the registered pinned artifact includes into the origin
+- name: Download only the registered pinned artifact includes into the download target
   ansible.builtin.command:
     argv: >-
       {{ [llm_gpu_serving_hf_bin, 'download', llm_gpu_serving_cache_sync_artifact.hf_repo,
           '--revision', llm_gpu_serving_cache_sync_artifact.revision,
-          '--include', item, '--local-dir', llm_gpu_serving_cache_sync_origin_directory] }}
+          '--include', item, '--local-dir', llm_gpu_serving_cache_sync_download_directory] }}
   environment:
     HF_HOME: "{{ llm_gpu_serving_hf_home }}"
   become: true
@@ -207,7 +240,7 @@
   register: llm_gpu_serving_cache_sync_download
   when:
     - not ansible_check_mode
-    - (llm_gpu_serving_cache_sync_mode | default('pull')) == 'download'
+    - llm_gpu_serving_cache_sync_operation == 'download'
   changed_when: >-
     'Will download 0 files' not in
     llm_gpu_serving_cache_sync_previews.results[ansible_loop.index0].stdout
