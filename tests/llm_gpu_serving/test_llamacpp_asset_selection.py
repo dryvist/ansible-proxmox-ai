@@ -16,6 +16,7 @@ TASKS = ROLE_ROOT / "tasks/main.yml"
 RELEASE_ASSETS = [
     "cudart-llama-b11457-bin-ubuntu-cuda-12.8-x64.tar.gz",
     "cudart-llama-b11457-bin-ubuntu-cuda-13.4-arm64.tar.gz",
+    "cudart-llama-b11457-bin-ubuntu-cuda-13.4-x64.tar.gz",
     "llama-b11457-bin-ubuntu-arm64.tar.gz",
     "llama-b11457-bin-ubuntu-cuda-12.8-x64.tar.gz",
     "llama-b11457-bin-ubuntu-cuda-13.4-x64.tar.gz",
@@ -29,7 +30,7 @@ def _selected() -> str:
 
 
 def test_selects_the_binary_archive_not_the_runtime_archive() -> None:
-    assert _selected() == "llama-b11457-bin-ubuntu-cuda-12.8-x64.tar.gz"
+    assert _selected() == "llama-b11457-bin-ubuntu-cuda-13.4-x64.tar.gz"
 
 
 def test_runtime_twin_of_the_selection_is_a_release_asset() -> None:
@@ -40,3 +41,9 @@ def test_role_installs_the_runtime_archive_beside_the_binary() -> None:
     tasks = TASKS.read_text(encoding="utf-8")
     assert "'/cudart-'" in tasks
     assert "llm_gpu_serving_llamacpp_cudart_find.files[0].path | dirname" in tasks
+
+
+def test_role_reinstalls_when_the_recorded_asset_differs() -> None:
+    tasks = TASKS.read_text(encoding="utf-8")
+    assert "llm_gpu_serving_llamacpp_asset_url | basename" in tasks
+    assert "llm_gpu_serving_llamacpp_asset_marker" in tasks
