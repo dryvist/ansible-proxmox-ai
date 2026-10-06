@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.68.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.67.0...v0.68.0) (2026-10-06)
+
+
+### Features
+
+* **ai-runner:** support Codex xhigh jobs ([d1a03d3](https://github.com/dryvist/ansible-proxmox-ai/commit/d1a03d301d28646c9b7f1ec5821c433dba9957fc))
+* **ansible-proxmox-ai:** seed registry-driven model store ([#1120](https://github.com/dryvist/ansible-proxmox-ai/issues/1120)) ([aa7c7f6](https://github.com/dryvist/ansible-proxmox-ai/commit/aa7c7f6a1ce7ff8b0837a1d60f84f2dce0f237fc))
+* **hermes_agent:** add per-instance GitHub and router boundaries ([3ab4da3](https://github.com/dryvist/ansible-proxmox-ai/commit/3ab4da39d64f5296aac393bc1972595aca56c5bd))
+* **hermes_agent:** support multiple instances ([5751a31](https://github.com/dryvist/ansible-proxmox-ai/commit/5751a31cdf8ff5b55e1780bfb37181d3968748ba))
+* **llm_gpu_serving:** declare and enforce a per-profile serving floor ([#1124](https://github.com/dryvist/ansible-proxmox-ai/issues/1124)) ([1f71eb8](https://github.com/dryvist/ansible-proxmox-ai/commit/1f71eb8330a51c2c7b947c23c6231b6fba95dd3c))
+* **llm_gpu_serving:** render every profile through a llama.cpp engine path ([#1123](https://github.com/dryvist/ansible-proxmox-ai/issues/1123)) ([abd4a0e](https://github.com/dryvist/ansible-proxmox-ai/commit/abd4a0e437400b77685b4ee46b68725c8bcaac3f))
+* **llm_router:** retry a 429 on the names the Hermes agents call ([#1121](https://github.com/dryvist/ansible-proxmox-ai/issues/1121)) ([a44021d](https://github.com/dryvist/ansible-proxmox-ai/commit/a44021d253c550b908fb50d43704723067192037))
+* **llm-router:** register a read-only virtual key for the dashboard profile tile ([#1125](https://github.com/dryvist/ansible-proxmox-ai/issues/1125)) ([7df3186](https://github.com/dryvist/ansible-proxmox-ai/commit/7df3186fe8c490ae55a2133ef3622b21c8a76573))
+* **llm-router:** tag deployments for local token telemetry ([#1103](https://github.com/dryvist/ansible-proxmox-ai/issues/1103)) ([6a7af9c](https://github.com/dryvist/ansible-proxmox-ai/commit/6a7af9c5e8df4fbf1684fc7159d845d2471ba651))
+* **llm:** pass campaign dimensions to the converter, admit EvalScope ([#1122](https://github.com/dryvist/ansible-proxmox-ai/issues/1122)) ([f75ef76](https://github.com/dryvist/ansible-proxmox-ai/commit/f75ef76287ca5ea0a535aa814f3585f46db70808))
+* **llm:** route Hermes through the local profile alias ([#1108](https://github.com/dryvist/ansible-proxmox-ai/issues/1108)) ([f8a79f4](https://github.com/dryvist/ansible-proxmox-ai/commit/f8a79f48ad157b269400bc6fcd97d6f736f47e2b))
+* **router:** derive model limits from shared catalog ([df3750e](https://github.com/dryvist/ansible-proxmox-ai/commit/df3750efa7c8deee2708cf298de8dffa6e51e925))
+
+
+### Bug Fixes
+
+* assert projected catalog limits ([eca99e4](https://github.com/dryvist/ansible-proxmox-ai/commit/eca99e4f7cefa4bc1f571ec6d7993c2fc3fcc612))
+* defer disabled profiles to the catalog gate ([3300d78](https://github.com/dryvist/ansible-proxmox-ai/commit/3300d786087727dd912041903a1cd00826d021d4))
+* **hermes_agent:** scope private credential fallbacks and keep tag retention ([fd1b2cc](https://github.com/dryvist/ansible-proxmox-ai/commit/fd1b2ccfe15288d429021e383322456fc792b3e7))
+* **hermes_agent:** scope profiles to the instance identity ([1066904](https://github.com/dryvist/ansible-proxmox-ai/commit/1066904fda7168a73bac35eaa12aad31450498e6))
+* **hermes_agent:** split instance boundary configuration ([112b535](https://github.com/dryvist/ansible-proxmox-ai/commit/112b5356e33c2d5cad4d2ba02e8daeafcb6618be))
+* **hermes:** use short-lived auth for issue jobs ([9af97ce](https://github.com/dryvist/ansible-proxmox-ai/commit/9af97ce39850685931a4582e02d54aa6cf974eed))
+* **hermes:** use short-lived auth for issue jobs ([5b93001](https://github.com/dryvist/ansible-proxmox-ai/commit/5b930018ec755c9c1bdd60fae6ce87d228bf28d9))
+* **llm_router:** apply the vllm tier switch to the whole tier ([#1118](https://github.com/dryvist/ansible-proxmox-ai/issues/1118)) ([4e59acc](https://github.com/dryvist/ansible-proxmox-ai/commit/4e59acc180c7001db6a7537e4d66a840e0f8e66a))
+* **llm_router:** preserve Hermes private render contract ([e0d0386](https://github.com/dryvist/ansible-proxmox-ai/commit/e0d0386514377d09f6de4d4301682fd4108821cc))
+* **llm_router:** share the telemetry-aware deployment tag macro ([b52d097](https://github.com/dryvist/ansible-proxmox-ai/commit/b52d097416ab29e4cdae4fb6833367116a855b30))
+* **llm-models:** order OpenRouter Hermes members by input price ([2c6b8df](https://github.com/dryvist/ansible-proxmox-ai/commit/2c6b8df53871c1b3f43e74e93649b4c17d951070))
+* skip disabled catalog candidates ([d30a934](https://github.com/dryvist/ansible-proxmox-ai/commit/d30a9348b14afe01cfd5e080d597bc675d0dbba4))
+
 ## [0.67.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.66.0...v0.67.0) (2026-10-05)
 
 
