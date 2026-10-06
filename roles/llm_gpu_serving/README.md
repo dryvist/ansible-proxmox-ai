@@ -17,8 +17,9 @@ local subprocess with a per-test timeout unless a recipe requests a Docker sandb
 
 ## Installation
 
-A selected target supplies a writable local cache and a declared model-origin
-mount. The role validates both and does not create a missing mount point.
+A selected target supplies a writable local cache and, optionally, a declared
+model-origin mount. The role validates the cache and does not create a missing
+mount point.
 
 ## What it does
 
@@ -77,7 +78,8 @@ The reusable cache-sync task accepts `llm_gpu_serving_cache_sync_artifact_id`
 and resolves its repository, revision, and include globs from the artifact
 registry. Its default `pull` mode copies from the origin to the local cache;
 `llm_gpu_serving_cache_sync_mode: download` is used by the seed playbook to
-populate the origin. Callers that only stage a campaign artifact leave
+populate the origin. With no origin declared, either mode downloads the pinned
+artifact straight into the local cache and verifies it there. Callers that only stage a campaign artifact leave
 `llm_gpu_serving_cache_sync_notify_service` unset; the normal role sets it to
 `true` so changed local model files restart serving.
 
@@ -97,7 +99,7 @@ profile's floor; `tasks/assert-profile-floors.yml` fails the role otherwise.
 | `llm_active_profile` | Profile whose unit is enabled and running |
 | `llm_profiles` | Per-profile engine and serving settings |
 | `llm_gpu_serving_model_cache_mount_path` | Writable local model-cache directory supplied for the target |
-| `llm_gpu_serving_model_origin_mount_path` | Declared shared origin mount supplied for the target |
+| `llm_gpu_serving_model_origin_mount_path` | Optional shared origin mount; when empty, models download straight into the local cache |
 | `llm_gpu_serving_nvidia_userspace_version` | Guest NVIDIA userspace version; equals the host driver version |
 | `llm_gpu_serving_uv_version` | Pinned uv installer version, tracked by Renovate |
 | `llm_gpu_serving_huggingface_hub_version` | Pinned Hugging Face CLI package version, tracked by Renovate |

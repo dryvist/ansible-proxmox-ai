@@ -89,7 +89,7 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     verify_local = next(
         task
         for task in cache_tasks
-        if task.get("name", "").startswith("Verify the copied artifact")
+        if task.get("name", "").startswith("Verify the local artifact")
     )
     notify = next(task for task in cache_tasks if task.get("name", "").startswith("Notify serving handlers"))
     assert include["ansible.builtin.include_tasks"] == "cache-sync.yml"
@@ -103,7 +103,11 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     assert preview["changed_when"] is False
     assert "llm_gpu_serving_cache_sync_artifact.hf_repo" in download["ansible.builtin.command"]["argv"]
     assert "llm_gpu_serving_cache_sync_artifact.revision" in download["ansible.builtin.command"]["argv"]
-    assert "llm_gpu_serving_cache_sync_origin_directory" in download["ansible.builtin.command"]["argv"]
+    assert "llm_gpu_serving_cache_sync_download_directory" in download["ansible.builtin.command"]["argv"]
+    assert "llm_gpu_serving_cache_sync_download_directory" in preview["ansible.builtin.command"]["argv"]
+    validate = next(task for task in main_tasks if task.get("name", "").startswith("Validate the active GPU serving profile"))
+    assert "llm_gpu_serving_model_cache_mount_path | length > 0" in validate["ansible.builtin.assert"]["that"]
+    assert "llm_gpu_serving_model_origin_mount_path" not in str(validate)
     assert "llm_gpu_serving_cache_sync_previews.results[ansible_loop.index0]" in download["changed_when"]
     assert download["become_user"] == "{{ llm_gpu_serving_user }}"
     assert download["loop"] == "{{ llm_gpu_serving_cache_sync_artifact.include_globs }}"
