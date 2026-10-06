@@ -1,0 +1,116 @@
+---
+- name: Render every enabled serving profile as a PVE host contract
+  hosts: localhost
+  gather_facts: false
+  vars:
+    tofu_data:
+      constants:
+        service_ports:
+          llm_fast_api: 10434
+    llm_gpu_serving_host_vllm_bin: /usr/bin/vllm
+    llm_gpu_serving_host_llamacpp_bin: /opt/llama.cpp/llama-server
+    llm_active_profile: medium-b
+
+  tasks:
+    - name: Create temporary contract output directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: llm-host-units-contract-
+      register: _host_contract_tmp
+
+    - name: Load the role's profile defaults for the assertions
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../roles/llm_gpu_serving/defaults/main/10-profiles.yml"
+        name: _role_profiles
+
+    - name: Exercise the all-profiles host contract renderer
+      block:
+        - name: Render every profile unit and the PVE extra-vars contract
+          ansible.builtin.include_role:
+            name: llm_gpu_serving
+            tasks_from: render-host-contract.yml
+          vars:
+            llm_gpu_serving_host_contract_scope: all
+            llm_gpu_serving_host_model_cache_mount_path: /tmp/model-cache
+            llm_gpu_serving_host_working_directory: /tmp/llm-cache
+            llm_gpu_serving_host_bind_host: placeholder
+            llm_gpu_serving_host_contract_unit_dir: "{{ _host_contract_tmp.path }}"
+            llm_gpu_serving_host_contract_vars_path: "{{ _host_contract_tmp.path }}/contract.yml"
+
+        - name: Read the runner contract
+          ansible.builtin.slurp:
+            src: "{{ _host_contract_tmp.path }}/contract.yml"
+          register: _host_contract_file
+
+        - name: Decode the runner contract and index it by unit name
+          ansible.builtin.set_fact:
+            _contracts: >-
+              {{ dict((_host_contract_file.content | b64decode | from_yaml).pve_host_systemd_units_contracts
+                      | map(attribute='name')
+                      | zip((_host_contract_file.content | b64decode | from_yaml).pve_host_systemd_units_contracts)) }}
+
+        - name: Name the contracts and profiles under test
+          ansible.builtin.set_fact:
+            _expected_units: >-
+              {{ _role_profiles.llm_profiles.keys()
+                 | map('regex_replace', '^', 'llm-gpu-serving-')
+                 | map('regex_replace', '$', '.service') | list | sort }}
+            _medium_b: "{{ _contracts['llm-gpu-serving-medium-b.service'] }}"
+            _max: "{{ _contracts['llm-gpu-serving-max.service'] }}"
+            _medium_a: "{{ _contracts['llm-gpu-serving-medium-a.service'] }}"
+            _small: "{{ _contracts['llm-gpu-serving-small.service'] }}"
+
+        - name: Assert one contract per enabled profile and one started unit
+          ansible.builtin.assert:
+            that:
+              - _contracts.keys() | list | sort == _expected_units
+              - >-
+                _contracts | dict2items | selectattr('value.state', 'equalto', 'started')
+                | map(attribute='key') | list == ['llm-gpu-serving-medium-b.service']
+              - >-
+                _contracts | dict2items | selectattr('value.enabled')
+                | map(attribute='key') | list == ['llm-gpu-serving-medium-b.service']
+              - _contracts | dict2items | selectattr('value.state', 'equalto', 'stopped') | list | length == 3
+            fail_msg: "Every enabled profile needs a contract; only llm_active_profile starts."
+            quiet: true
+
+        - name: Assert engine-specific contract keys and unit commands
+          ansible.builtin.assert:
+            that:
+              - "'python_packages' not in _medium_b"
+              - "'python_virtualenv' not in _medium_b"
+              - "'python_packages' not in _max"
+              - _medium_a.python_packages == _role_profiles.llm_profiles['medium-a'].python_packages
+              - _medium_a.python_virtualenv == '/usr'
+              - _small.python_packages == []
+              - "'ExecStart=/usr/bin/vllm serve' in _small.content"
+              - "'ExecStart=/opt/llama.cpp/llama-server' in _medium_b.content"
+              - "('--parallel ' ~ _role_profiles.llm_profiles['medium-b'].max_num_seqs) in _medium_b.content"
+              - >-
+                ('--ctx-size ' ~ (_role_profiles.llm_profiles['max'].max_model_len
+                  * _role_profiles.llm_profiles['max'].max_num_seqs))
+                in _max.content
+              - "'Environment=LD_LIBRARY_PATH=/opt/llama.cpp' in _max.content"
+              - "'--jinja' in _max.content"
+              - "'--gpu-memory-utilization' not in _max.content"
+              - "'--n-gpu-layers' not in _small.content"
+            fail_msg: "GGUF profiles render llama-server units without Python packages; vLLM profiles keep theirs."
+            quiet: true
+
+        - name: Find the per-profile unit files
+          ansible.builtin.find:
+            paths: "{{ _host_contract_tmp.path }}"
+            patterns: "llm-gpu-serving-*.service"
+          register: _unit_files
+
+        - name: Assert a unit file was written for every profile
+          ansible.builtin.assert:
+            that:
+              - _unit_files.matched == _expected_units | length
+            quiet: true
+
+      always:
+        - name: Remove temporary contract outputs
+          ansible.builtin.file:
+            path: "{{ _host_contract_tmp.path }}"
+            state: absent

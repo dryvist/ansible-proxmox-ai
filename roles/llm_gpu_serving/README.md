@@ -36,19 +36,26 @@ mount. The role validates both and does not create a missing mount point.
 ## Profiles
 
 `llm_profiles` defines four entries: `small`, `medium-a`, `medium-b`, and
-`max`. Runtime serving settings live here; model bytes, Hub repository,
-include globs, file format, quantization, engine support, and use are defined
-once in `llm-models.d/65-gpu-pro6000-artifacts.yml`. The router profile registry
-links to those records by `artifact_id`. Only small and medium-a are enabled
-and marked for serving; medium-b and max remain disabled campaign candidates
-because their campaign artifacts are GGUF and their retained role profiles use
-the vLLM runtime.
+`max`. All four are enabled so the profile switch can select any of them.
+Runtime serving settings live here; model bytes, Hub repository, include
+globs, file format, quantization, engine support, GGUF file name, and use are
+defined once in `llm-models.d/65-gpu-pro6000-artifacts.yml`. The router profile
+registry links to those records by `artifact_id` and stays `enabled: false`,
+`servable: false` until a serving floor is measured.
 
-Profile entries carry their engine and kernel backends, max model length, max
-sequences, GPU memory utilization, automatic tool-choice flag, parser defaults,
-and API port. The selected artifact supplies model-specific parsers when
-present. Select the active entry with `llm_active_profile`. `medium-b` and `max`
-are disabled campaign candidates and are not rendered as vLLM units.
+`small` and `medium-a` run vLLM (safetensors). `medium-b` and `max` run
+llama.cpp (GGUF) from the installed release binary. A vLLM profile carries its
+kernel backends, max model length, max sequences, GPU memory utilization,
+automatic tool-choice flag, parser defaults, and API port; the selected
+artifact supplies model-specific parsers when present. A llama.cpp profile
+carries `max_model_len` (the per-agent context), `max_num_seqs` (parallel
+slots), `gpu_layers`, `flash_attention`, and the API port. Its unit passes
+`--ctx-size` as `max_model_len` times `max_num_seqs`, `--parallel` as
+`max_num_seqs`, the model as `<cache>/<repository>/<gguf_file>`, and `--jinja`
+(tool calls are template-driven; llama.cpp has no tool-call parser flag).
+Optional `kv_cache_dtype` becomes `--cache-type-k`/`--cache-type-v`,
+`reasoning_format` becomes `--reasoning-format`, and `extra_args` is appended
+verbatim. Select the active entry with `llm_active_profile`.
 
 The reusable cache-sync task accepts `llm_gpu_serving_cache_sync_artifact_id`
 and resolves its repository, revision, and include globs from the artifact
@@ -73,10 +80,18 @@ populate the origin. Callers that only stage a campaign artifact leave
 
 ## Proxmox host-interim contract
 
-`playbooks/render-primary-host-unit.yml` renders the profile marked `primary`
-as a secret-free contract for the `pve_host_systemd_units` role in
-`ansible-proxmox`. The renderer requires the target's existing vLLM executable,
-model-cache root, bind address, working directory, and output paths as
-run-time inputs. It writes a stopped, disabled unit contract; the PVE runner
-must receive the contract explicitly and set its desired state for a gated
-start.
+`playbooks/render-primary-host-unit.yml` renders secret-free unit contracts for
+the `pve_host_systemd_units` role in `ansible-proxmox`. The renderer requires
+the target's existing engine executables, model-cache root, bind address,
+working directory, and output paths as run-time inputs: the vLLM executable
+(`llm_gpu_serving_host_vllm_bin`) for vLLM profiles and the llama-server
+executable (`llm_gpu_serving_host_llamacpp_bin`) for llama.cpp profiles.
+
+`llm_gpu_serving_host_contract_scope` selects the profiles. `primary`
+(default) renders the profile marked `primary` to
+`llm_gpu_serving_host_contract_unit_path` as a stopped, disabled contract; the
+PVE runner sets its desired state for a gated start. `all` renders every
+enabled profile to `llm_gpu_serving_host_contract_unit_dir`, one unit each; only
+`llm_active_profile` is `started` and enabled, every other profile is `stopped`
+and not enabled. Contracts carry `python_virtualenv` and `python_packages`
+for vLLM profiles only.
