@@ -159,20 +159,24 @@ router_settings:
   # then the paid one (55-roles.yml, llm_router_default_fallbacks).
   default_fallbacks: {{ llm_router_default_fallbacks | to_json }}
 {% endif %}
-{% if llm_router_hermes_cloud_zero_retry_groups | length > 0 %}
+{% if llm_router_rate_limit_retries_by_group | length > 0 %}
   # Every group that carries a fallback chain advances on 429 instead of
   # sleeping on the busy slot: the chain rungs, the provider routers, and each
-  # entry-point name above. Keyed by the name the caller TYPED for that
-  # invocation (router.py:6692, litellm 1.98.0) — the same key the fallback
-  # maps use — and a per-group policy REPLACES the global one for that name
-  # (router_utils/get_retry_from_policy.py:32-33), so zeroing 429 retries here
-  # leaves every other error type on num_retries and touches no other group.
+  # entry-point name above. The names the Hermes agents call
+  # (llm_router_rate_limit_retry_names) are the one exception: they retry
+  # llm_router_hermes_rate_limit_retries times first, each retry after the
+  # upstream's Retry-After, and hand over once those are spent. Keyed by the
+  # name the caller TYPED for that invocation (router.py:6692, litellm 1.98.0)
+  # — the same key the fallback maps use — and a per-group policy REPLACES
+  # the global one for that name
+  # (router_utils/get_retry_from_policy.py:32-33), so this figure leaves every
+  # other error type on num_retries and touches no other group.
   # The global RateLimitErrorRetries above now governs only names with no
   # chain to hand over to.
   model_group_retry_policy:
-{% for group in llm_router_hermes_cloud_zero_retry_groups %}
+{% for group, retries in llm_router_rate_limit_retries_by_group.items() %}
     {{ group }}:
-      RateLimitErrorRetries: {{ llm_router_cloud_group_retries if group in llm_router_multi_member_cloud_groups else 0 }}
+      RateLimitErrorRetries: {{ retries }}
 {% endfor %}
 {% endif %}
   # ONE failure counter per deployment, MANY allowances. The router-level

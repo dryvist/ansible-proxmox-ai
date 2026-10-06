@@ -86,6 +86,13 @@
         _gpu_aliases: >-
           {{ llm_router_gpu_profile_aliases }}
 
+    # `name:` keeps the file's own llm_active_profile default from replacing the
+    # profile this play selected.
+    - name: Load the serving profiles the router admission limit must mirror
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/../llm_gpu_serving/defaults/main/10-profiles.yml"
+        name: _serving_defaults
+
     - name: Assert the selected profile renders with registry-owned limits and zero cost
       ansible.builtin.assert:
         quiet: true
@@ -100,6 +107,13 @@
           - item.litellm_params.output_cost_per_token | float == 0
           - item.model_info.disable_background_health_check is true
           - item.litellm_params.api_base == 'http://localhost:10434/v1'
+          # The admission limit is what the serving profile decodes at once:
+          # below it the router rejects work the host could serve, which is the
+          # 429 an eight-agent fleet sees on the primary profile.
+          - item.litellm_params.max_parallel_requests | int == _registry_entry.max_parallel_requests | int
+          - >-
+            item.litellm_params.max_parallel_requests | int
+            == _serving_defaults.llm_profiles[llm_active_profile].max_num_seqs | int
         fail_msg: "Rendered GPU deployment {{ item.model_name }} differs from its registry limits."
       loop: "{{ _gpu_rendered }}"
       loop_control:
@@ -219,6 +233,9 @@
         that:
           - llm_router_gpu_models | length == 1
           - llm_router_gpu_models[0].profile == llm_active_profile
+          - >-
+            llm_router_gpu_models[0].max_parallel_requests | int
+            == _serving_defaults.llm_profiles[llm_active_profile].max_num_seqs | int
           - llm_router_model_group_aliases['local-fast'] == llm_router_gpu_small_model
           - "'local-medium' not in llm_router_model_group_aliases"
           - _production_hermes_brain_model_small == 'local-fast'

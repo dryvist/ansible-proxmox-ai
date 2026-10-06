@@ -39,7 +39,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         assert isinstance(entry["max_output_tokens"], int) and entry["max_output_tokens"] > 0
         assert entry["input_cost_per_token"] == 0
         assert entry["output_cost_per_token"] == 0
-        assert entry["max_parallel_requests"] == 1
+        assert isinstance(entry["max_parallel_requests"], int) and entry["max_parallel_requests"] > 0
         assert entry["num_retries"] == 0
 
     assert artifacts_by_id[entries[0]["artifact_id"]]["use"] == "serving"
@@ -80,3 +80,22 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     for entry in entries:
         profile = serving_profiles[entry["profile"]]
         assert entry["context_window"] + entry["max_output_tokens"] <= profile["max_model_len"]
+
+
+def test_router_admission_equals_serving_profile_concurrency() -> None:
+    """The router admits exactly the in-flight requests the serving profile decodes at once.
+
+    A cap below max_num_seqs rejects requests the host could have served (the
+    429s an eight-agent fleet sees); a cap above it queues them in the serving
+    engine behind the profile's own limit. The primary profile carries the
+    eight-agent fleet, so its router entry admits eight.
+    """
+    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
+    serving_profiles = yaml.safe_load(SERVING_DEFAULTS.read_text(encoding="utf-8"))["llm_profiles"]
+
+    caps = {entry["profile"]: entry["max_parallel_requests"] for entry in entries}
+    assert caps == {name: profile["max_num_seqs"] for name, profile in serving_profiles.items()}
+
+    primary = [name for name, profile in serving_profiles.items() if profile.get("primary")]
+    assert primary == ["medium-a"]
+    assert caps["medium-a"] == 8
