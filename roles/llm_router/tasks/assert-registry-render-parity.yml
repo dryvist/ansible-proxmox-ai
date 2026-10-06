@@ -45,6 +45,7 @@
     quiet: true
     that:
       - _llm_router_enabled_unrendered | length == 0
+      - _llm_router_switched_off_rendered | length == 0
       - _llm_router_rendered_unregistered | length == 0
       - _llm_router_cloud_fallback_missing_router | length == 0
       - _llm_router_cloud_router_not_fallback | length == 0
@@ -77,6 +78,11 @@
       ENABLED BUT NOT RENDERED: {{ _llm_router_enabled_unrendered | join(', ') }}
       — the registry advertises these but the template renders no deployment,
       so a caller (or a fallback target) naming one reaches nothing.
+      {% endif %}
+      {% if _llm_router_switched_off_rendered | length > 0 %}
+      SWITCHED OFF BUT RENDERED: {{ _llm_router_switched_off_rendered | join(', ') }}
+      — llm_router_llm_vllm_enabled is false, yet the config still serves
+      names only that tier owns, so the switch does not hold.
       {% endif %}
       {% if _llm_router_cloud_fallback_missing_router | length > 0 %}
       CLOUD FALLBACK NOT RENDERED:
@@ -117,12 +123,29 @@
     # would cost more than the drift it was added to catch. The other
     # direction below still covers OpenRouter fully: anything rendered under a
     # name no enabled entry owns still fails.
+    #
+    # The vllm / hermes-local tiers are the one operator-switched pair
+    # (llm_router_llm_vllm_enabled, 10-network.yml). While the switch is off the
+    # template renders nothing for them, so the names ONLY they own leave the
+    # expected set, and the converse is checked instead: none of those names may
+    # still render. Names a light-tier sibling also owns (the embedder and the
+    # reranker) stay expected, rendered by that sibling.
+    _llm_router_switched_off_names: >-
+      {{ [] if llm_router_llm_vllm_enabled | bool
+         else (llm_router_registry_enabled | selectattr('tier', 'in', ['vllm', 'hermes-local'])
+               | map(attribute='client_model_id') | unique
+               | difference(llm_router_registry_enabled
+                            | rejectattr('tier', 'in', ['vllm', 'hermes-local'])
+                            | map(attribute='client_model_id') | list) | list) }}
     _llm_router_parity_expected: >-
       {{ llm_router_registry_enabled
          | rejectattr('tier', 'in', ['openrouter', 'opencode', 'hermes-cloud', 'hermes-cloud-router', 'zai'])
-         | map(attribute='client_model_id') | unique | list }}
+         | map(attribute='client_model_id') | unique
+         | difference(_llm_router_switched_off_names) | list }}
     _llm_router_enabled_unrendered: >-
       {{ _llm_router_parity_expected | difference(_llm_router_rendered_names) }}
+    _llm_router_switched_off_rendered: >-
+      {{ _llm_router_switched_off_names | intersect(_llm_router_rendered_names) }}
     # A model_name containing "*" is a wildcard PATTERN, not a model — the
     # LARGE-tier bare "*" passthrough and the OpenRouter "openrouter/*"
     # passthrough are both patterns, exempt by construction rather than by
