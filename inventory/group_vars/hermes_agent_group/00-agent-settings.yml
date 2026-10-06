@@ -29,15 +29,23 @@ hermes_agent_bao: >-
 # Shared MCP client fields (secret/ai/mcp/*, Context7). Hermes reads them through
 # its own view; every other identity keeps the local-llm read.
 hermes_agent_mcp_bao: >-
-  {{ hermes_agent_bao if hermes_agent_id == 'hermes' else bao_local_llm_secrets }}
+  {{ hermes_agent_bao if hermes_agent_id in ['hermes', 'hermes-private']
+     else bao_local_llm_secrets }}
+
+# Slack credentials live on each agent's own secret/ai/<identity> path. Env
+# values remain a local/bootstrap override, with separate names per instance.
+# The original hermes and donna domains keep their unprefixed stored field.
+hermes_agent_slack_bot_token: >-
+  {{ hermes_agent_bao['SLACK_' ~ hermes_agent_env_prefix ~ '_BOT_TOKEN']
+     | default(hermes_agent_bao.SLACK_BOT_TOKEN
+               if hermes_agent_id in ['hermes', 'donna'] else '', true)
+     | default(lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_BOT_TOKEN'), true) }}
+hermes_agent_slack_app_token: >-
+  {{ hermes_agent_bao['SLACK_' ~ hermes_agent_env_prefix ~ '_APP_TOKEN']
+     | default(lookup('env', 'SLACK_' ~ hermes_agent_env_prefix ~ '_APP_TOKEN'), true) }}
 
 # An absent secondary-agent bot token stays empty and leaves Slack disabled;
 # other agents retain their existing token behavior.
-hermes_agent_slack_bot_token: >-
-  {{ (hermes_agent_bao.SLACK_BOT_TOKEN | default('', true))
-     if hermes_agent_id == 'donna'
-     else (hermes_agent_bao.SLACK_BOT_TOKEN
-           | default(lookup('env', 'SLACK_' ~ (hermes_agent_id | upper) ~ '_BOT_TOKEN'), true)) }}
 
 # Field names: the ones carrying an agent prefix derive it from the identity, so
 # `hermes` reads exactly the field it reads today. Unprefixed fields stay bare —
@@ -71,7 +79,9 @@ hermes_agent_context7_api_key: >-
 # the thing keeping anyone out.
 hermes_agent_firecrawl_api_key: >-
   {{ hermes_agent_bao.FIRECRAWL_API_KEY
-     | default(lookup('env', 'FIRECRAWL_API_KEY'), true) }}
+     | default(lookup('env', (hermes_agent_env_prefix ~ '_FIRECRAWL_API_KEY')
+                             if hermes_agent_id == 'hermes-private'
+                             else 'FIRECRAWL_API_KEY'), true) }}
 
 # Inbound webhook receiver global HMAC secret. Bao-first (the identity's own
 # domain, secret/ai/<id>, generated-if-absent at the least-shared tier — one
@@ -81,7 +91,9 @@ hermes_agent_firecrawl_api_key: >-
 # would let either verify the other's inbound payloads.
 hermes_agent_webhook_secret: >-
   {{ hermes_agent_bao.WEBHOOK_SECRET
-     | default(lookup('env', 'WEBHOOK_SECRET'), true) }}
+     | default(lookup('env', (hermes_agent_env_prefix ~ '_WEBHOOK_SECRET')
+                             if hermes_agent_id == 'hermes-private'
+                             else 'WEBHOOK_SECRET'), true) }}
 
 # Inbound job-submission API bearer key. Bao-first
 # (secret/ai/hermes), env fallback. Unlike the webhook secret, this key has
@@ -89,8 +101,8 @@ hermes_agent_webhook_secret: >-
 # https://hermes-api.<sub> with it), so it lives in the shared engine — seeded
 # programmatically, never hand-typed. Empty disables the platform (see defaults).
 hermes_agent_api_server_key: >-
-  {{ hermes_agent_bao[hermes_agent_id | upper ~ '_API_SERVER_KEY']
-     | default(lookup('env', hermes_agent_id | upper ~ '_API_SERVER_KEY'), true) }}
+  {{ hermes_agent_bao[hermes_agent_env_prefix ~ '_API_SERVER_KEY']
+     | default(lookup('env', hermes_agent_env_prefix ~ '_API_SERVER_KEY'), true) }}
 
 # Zammad ITSM client (dryvist/zammad-incidents skill). The canonical API pair is
 # published at secret/ai/mcp/zammad; legacy environment names remain only as a
@@ -117,7 +129,8 @@ hermes_agent_zammad_api_token: >-
 hermes_agent_github_issues_pat: >-
   {{ (hermes_agent_bao.GH_PAT_WRITE_PROJECT_ISSUES
       | default(lookup('env', 'GH_PAT_WRITE_PROJECT_ISSUES'), true))
-     if (hermes_agent_ops_workload_enabled | bool) else '' }}
+     if ((hermes_agent_ops_workload_enabled | bool)
+         and (hermes_agent_github_org_tokens_enabled | bool)) else '' }}
 
 # Read-only GitHub security-alert token for the bot-PR triage job (reads
 # code-scanning + Dependabot alerts + PR files across all repos). Separate from
@@ -126,7 +139,8 @@ hermes_agent_github_issues_pat: >-
 hermes_agent_github_alerts_token: >-
   {{ (hermes_agent_bao.GH_TOKEN_SECURITY_ALERTS_READ
       | default(lookup('env', 'GH_TOKEN_SECURITY_ALERTS_READ'), true))
-     if (hermes_agent_ops_workload_enabled | bool) else '' }}
+     if ((hermes_agent_ops_workload_enabled | bool)
+         and (hermes_agent_github_org_tokens_enabled | bool)) else '' }}
 
 # Read-only GitHub token for the github-maint profile (issues, pull requests,
 # contents, metadata across the dryvist org — no write scope of any kind).
@@ -135,16 +149,19 @@ hermes_agent_github_alerts_token: >-
 hermes_agent_github_read_token: >-
   {{ (hermes_agent_bao.GH_TOKEN_ORG_READ
       | default(lookup('env', 'GH_TOKEN_ORG_READ'), true))
-     if (hermes_agent_ops_workload_enabled | bool) else '' }}
+     if ((hermes_agent_ops_workload_enabled | bool)
+         and (hermes_agent_github_org_tokens_enabled | bool)) else '' }}
 
 # Codex CLI auth (ChatGPT-OAuth ~/.codex/auth.json) for the isolated
-# codex-runner user. Bao-first (secret/ai/hermes), env
-# fallback — empty until an operator seeds it. Create-only on the guest: this
-# is only a bootstrap snapshot, and Codex's guest-side refresh takes over after
-# first login (see roles/codex_runner/README.md).
+# codex-runner user. Bao-first (secret/ai/<identity>), then the identity's env
+# fallback; hermes keeps its existing unprefixed fallback. Create-only on the
+# guest: this is only a bootstrap snapshot, and Codex's guest-side refresh
+# takes over after first login (see roles/codex_runner/README.md).
 codex_runner_auth_json: >-
   {{ hermes_agent_bao.CODEX_AUTH_JSON
-     | default(lookup('env', 'CODEX_AUTH_JSON'), true) }}
+     | default(lookup('env', 'CODEX_AUTH_JSON'
+                     if hermes_agent_id == 'hermes'
+                     else hermes_agent_env_prefix ~ '_CODEX_AUTH_JSON'), true) }}
 
 # --- Vikunja Kanban bridge ----------------------------------------------------
 # Turns the operator's Vikunja board into Hermes' on-demand front end: a task in
@@ -178,25 +195,5 @@ hermes_agent_vikunja_bridge_enabled: >-
 # permission groups from projects — a token holding only `projects` 401s on
 # listing views and cannot drive this bridge.
 hermes_agent_vikunja_bridge_token: >-
-  {{ hermes_agent_bao[hermes_agent_id | upper ~ '_VIKUNJA_API_TOKEN']
-     | default(lookup('env', hermes_agent_id | upper ~ '_VIKUNJA_API_TOKEN'), true) }}
-
-# --- PR review (private repositories) ----------------------------------------
-# The `hermes` identity reviews private-repository pull requests (webhook route
-# plus the reconcile cron) once every input the identity assert requires is in
-# the run environment; until then all three stay off, as in role defaults.
-hermes_agent_pr_review_ready: >-
-  {{ (hermes_agent_identity | default('hermes')) == 'hermes'
-     and (query('ansible.builtin.env',
-                'HERMES_GITHUB_PUBLIC_VAULT_ROLE_ID', 'HERMES_GITHUB_PUBLIC_VAULT_SECRET_ID',
-                'HERMES_GITHUB_PRIVATE_VAULT_ROLE_ID', 'HERMES_GITHUB_PRIVATE_VAULT_SECRET_ID',
-                'HERMES_GH_GUARD_PRIVATE_REPOS')
-          | select | list | length) == 5 }}
-hermes_agent_github_identity_enabled: "{{ hermes_agent_pr_review_ready | bool }}"
-hermes_agent_github_route_private_enabled: "{{ hermes_agent_pr_review_ready | bool }}"
-hermes_agent_pr_reconcile_enabled: "{{ hermes_agent_pr_review_ready | bool }}"
-# The crawl's agent run uses the gateway's boundary (private), so only
-# private repositories are listed; each must also be in the private author set.
-hermes_agent_repo_crawl_enabled: "{{ hermes_agent_pr_review_ready | bool }}"
-hermes_agent_repo_crawl_repos:
-  - {repo: dryvist/docs-starlight, boundary: private}
+  {{ hermes_agent_bao[hermes_agent_env_prefix ~ '_VIKUNJA_API_TOKEN']
+     | default(lookup('env', hermes_agent_env_prefix ~ '_VIKUNJA_API_TOKEN'), true) }}

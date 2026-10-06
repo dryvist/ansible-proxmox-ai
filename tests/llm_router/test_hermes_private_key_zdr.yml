@@ -1,0 +1,99 @@
+---
+# Pins both Hermes keys to their intended routing boundaries. The private key
+# has only the local and asserted-ZDR ladder; the original retains the full
+# chain and the public Z.ai tail remains last.
+#
+# Run from the repository root:
+#   ansible-playbook tests/llm_router/test_hermes_private_key_zdr.yml -i localhost, -c local
+- name: Verify Hermes private and public router key scopes
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: test-openrouter-provider-key
+      OPENCODE_API_KEY: test-opencode-provider-key
+      OPENAI_API_KEY: test-openai-provider-key
+      ZAI_API_KEY: test-zai-provider-key
+    bao_apps_secrets:
+      hermes_default_llm_router_key: sk-fixture-hermes-default
+      hermes_private_llm_router_key: sk-fixture-hermes-private
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Resolve the rendered keys and model classes once
+      ansible.builtin.set_fact:
+        _hermes_private_test_keys: "{{ llm_router_virtual_keys }}"
+        _retaining_names: >-
+          {{ llm_router_deployment_tags_by_model | dict2items
+             | selectattr('value', 'contains', 'retains') | map(attribute='key') | list }}
+        _free_names: >-
+          {{ llm_router_deployment_tags_by_model | dict2items
+             | selectattr('value', 'contains', 'free') | map(attribute='key') | list }}
+        _hermes_public_test_chain: "{{ llm_router_hermes_default_fallback_chain }}"
+
+    - name: Assert the private key is scoped to local and asserted-ZDR models
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _private.zdr_only
+          - _private.models_authoritative
+          - _private.tags == ['&zdr', '!free', '!retains']
+          - _private.router_settings.enable_tag_filtering
+          - _private.models | difference(_llm_router_private_zdr_model_scope) | length == 0
+          - _private.models | intersect(llm_router_zdr_false_group_names) | length == 0
+          - _private.models | intersect(llm_router_zdr_unasserted_terminal_rungs) | length == 0
+          - _private.models | intersect(_free_names) | length == 0
+          - _private.models | intersect(_retaining_names) | length == 0
+          - _private.models | length > 1
+          - _private.monthly_budget == _llm_router_key_monthly_budget
+          - _private.object_permission.mcp_access_groups == ['hub-public', 'hub-homelab-read']
+          - _private.object_permission.agents is not defined
+        fail_msg: >-
+          hermes-private models={{ _private.models }} free={{ _free_names }}
+          retaining={{ _retaining_names }}
+        success_msg: "hermes-private={{ _private.models }}"
+      vars:
+        _private: "{{ _hermes_private_test_keys | selectattr('alias', 'equalto', 'hermes-private') | first }}"
+
+    - name: Assert the original key retains the full ladder and public Z.ai tail
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _public.models | intersect(_retaining_names) | length > 0
+          - _hermes_public_test_chain | difference(_public.models) | length == 0
+          - llm_router_zai_groups | length > 0
+          - _hermes_public_test_chain[-(llm_router_zai_groups | length):] == llm_router_zai_groups
+        fail_msg: >-
+          hermes-default models={{ _public.models }} chain={{ _hermes_public_test_chain }}
+        success_msg: >-
+          hermes-default retains non-ZDR access; final rungs={{ llm_router_zai_groups }}
+      vars:
+        _public: "{{ _hermes_private_test_keys | selectattr('alias', 'equalto', 'hermes-default') | first }}"

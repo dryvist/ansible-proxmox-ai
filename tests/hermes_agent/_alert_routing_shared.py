@@ -46,6 +46,9 @@ MAIN_TASKS = role_tasks_text(ROLE)
 DIRECT_TASKS = (ROLE / "tasks" / "reconcile_direct_cron.yml").read_text()
 
 _ENV = Environment(autoescape=False)
+_ENV.filters["regex_replace"] = lambda value, pattern, replacement="": re.sub(
+    pattern, replacement, value
+)
 
 # Work and routine reports use home; failures and Splunk findings have their
 # own configured destinations.
@@ -72,17 +75,19 @@ def _resolve(env_overrides: dict[str, str]) -> dict[str, str]:
         """Stand in for Ansible's lookup plugin against the simulated env.
 
         A real callable rather than a regex substitution on the source text:
-        the channel vars build their env-var NAME from the agent identity
-        (`'SLACK_' ~ (hermes_agent_id | upper) ~ '_ISSUES_CHANNEL'`), so there
-        is no literal in the source to match. Evaluating the expression is also
-        what the converge actually does, which is the behaviour worth pinning.
+        the channel vars build their env-var NAME from the identity-safe
+        `hermes_agent_env_prefix`, so there is no literal in the source to
+        match. Evaluating the expression is also what the converge actually
+        does, which is the behaviour worth pinning.
         """
         assert plugin == "env", f"only the env lookup is simulated, got {plugin!r}"
         return env.get(name, "")
 
     # hermes_agent_id leads: every channel name below derives its env-var name
     # from it, so it has to be in the context before the first channel renders.
-    names = ["hermes_agent_id"] + [k for k in DEFAULTS if "channel" in k]
+    names = ["hermes_agent_id", "hermes_agent_env_prefix"] + [
+        k for k in DEFAULTS if "channel" in k
+    ]
     source = DEFAULTS
     ctx: dict[str, str] = {}
     for _ in range(4):  # a few passes is plenty for this shallow dependency graph
