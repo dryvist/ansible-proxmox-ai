@@ -1,0 +1,52 @@
+---
+# Userspace only: libcuda and nvidia-smi at the host's exact driver version.
+# The guest loads no kernel module, so no module or DKMS package is installed.
+- name: Assert the guest is a Debian release the vendor repository serves
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Debian'
+    fail_msg: The NVIDIA userspace install supports Debian guests only.
+    quiet: true
+
+- name: Read the driver version nvidia-smi reports
+  ansible.builtin.command:
+    argv:
+      - nvidia-smi
+      - --query-gpu=driver_version
+      - --format=csv,noheader
+  register: llm_gpu_serving_nvidia_smi
+  changed_when: false
+  failed_when: false
+
+- name: Install the pinned NVIDIA userspace
+  when: >-
+    llm_gpu_serving_nvidia_smi.rc != 0
+    or llm_gpu_serving_nvidia_smi.stdout_lines | length == 0
+    or (llm_gpu_serving_nvidia_smi.stdout_lines
+        | reject('equalto', llm_gpu_serving_nvidia_userspace_version)
+        | list | length) > 0
+  block:
+    - name: Add the NVIDIA apt repository
+      ansible.builtin.deb822_repository:
+        name: nvidia-cuda
+        types: deb
+        uris: "{{ llm_gpu_serving_nvidia_repo_uri | trim }}"
+        suites: /
+        signed_by: "{{ llm_gpu_serving_nvidia_repo_key_url }}"
+        enabled: true
+        state: present
+
+    - name: Install the apt pin for the driver version
+      ansible.builtin.apt:
+        name: "nvidia-driver-pinning-{{ llm_gpu_serving_nvidia_userspace_version }}"
+        state: present
+        update_cache: true
+
+    - name: Install libcuda and nvidia-smi at the pinned version
+      ansible.builtin.apt:
+        name:
+          - "libcuda1={{ llm_gpu_serving_nvidia_userspace_version }}-*"
+          - "nvidia-driver-cuda={{ llm_gpu_serving_nvidia_userspace_version }}-*"
+        state: present
+        install_recommends: false
+        allow_downgrade: true
