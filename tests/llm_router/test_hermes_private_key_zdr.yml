@@ -26,6 +26,7 @@
     bao_apps_secrets:
       hermes_default_llm_router_key: sk-fixture-hermes-default
       hermes_private_llm_router_key: sk-fixture-hermes-private
+      donna_llm_router_key: sk-fixture-donna
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: "pve.example.test"
@@ -74,6 +75,13 @@
           - _private.models | intersect(_free_names) | length == 0
           - _private.models | intersect(_retaining_names) | length == 0
           - _private.models | length > 1
+          - _llm_router_private_zdr_model_scope | difference(_private.models) | length == 0
+          - _local_registry_names | length > 0
+          - _local_registry_names | difference(_private.models) | length == 0
+          - _asserted_zdr_cloud_names | length > 0
+          - _asserted_zdr_cloud_names | difference(_private.models) | length == 0
+          - _donna.models | difference(_llm_router_private_zdr_model_scope) | length == 0
+          - _donna.models | length < _private.models | length
           - _private.monthly_budget == _llm_router_key_monthly_budget
           - _private.object_permission.mcp_access_groups == ['hub-public', 'hub-homelab-read']
           - _private.object_permission.agents is not defined
@@ -83,6 +91,18 @@
         success_msg: "hermes-private={{ _private.models }}"
       vars:
         _private: "{{ _hermes_private_test_keys | selectattr('alias', 'equalto', 'hermes-private') | first }}"
+        _donna: "{{ _hermes_private_test_keys | selectattr('alias', 'equalto', 'donna') | first }}"
+        _local_registry_names: >-
+          {{ llm_router_registry_enabled
+             | selectattr('tier', 'in', llm_router_local_registry_tiers)
+             | map(attribute='client_model_id') | unique | list }}
+        _asserted_zdr_cloud_names: >-
+          {{ llm_router_registry_enabled
+             | rejectattr('tier', 'in', llm_router_local_registry_tiers)
+             | selectattr('zero_data_retention', 'defined')
+             | selectattr('zero_data_retention', 'truthy')
+             | rejectattr('client_model_id', 'in', _free_names)
+             | map(attribute='client_model_id') | unique | list }}
 
     - name: Assert the original key retains the full ladder and public Z.ai tail
       ansible.builtin.assert:
