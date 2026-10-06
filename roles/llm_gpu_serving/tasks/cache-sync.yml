@@ -193,6 +193,25 @@
          | list | length > 0 }}
   when: llm_gpu_serving_cache_sync_operation == 'download'
 
+# A profile converge replaces the running server anyway, so it clears its own
+# GPU work here; every other caller keeps the strict idle-GPU check below.
+- name: Stop this role's serving units before a profile switch downloads an artifact
+  ansible.builtin.systemd:
+    name: "{{ llm_gpu_serving_unit_prefix }}-{{ item.key }}.service"
+    state: stopped
+  register: llm_gpu_serving_cache_sync_stop_serving
+  notify: Start the active GPU serving profile
+  failed_when:
+    - llm_gpu_serving_cache_sync_stop_serving.failed | default(false)
+    - "'Could not find the requested service' not in (llm_gpu_serving_cache_sync_stop_serving.msg | default(''))"
+  loop: "{{ llm_profiles | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - llm_gpu_serving_cache_sync_operation == 'download'
+    - llm_gpu_serving_cache_sync_download_pending | bool
+    - llm_gpu_serving_cache_sync_notify_service | default(false) | bool
+
 - name: Read compute applications before downloading a registered artifact
   ansible.builtin.command:
     argv:

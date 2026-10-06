@@ -140,3 +140,15 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
         "Start the active GPU serving profile",
     ]
     assert "rsync" not in (ROLE_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8")
+
+
+def test_profile_switch_clears_only_its_own_gpu_work_before_downloading():
+    cache_tasks = yaml.safe_load((ROLE_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8"))
+    names = [task.get("name", "") for task in cache_tasks]
+    stop_index = names.index("Stop this role's serving units before a profile switch downloads an artifact")
+    guard_index = names.index("Require an idle GPU before downloading a registered artifact")
+    stop, guard = cache_tasks[stop_index], cache_tasks[guard_index]
+    assert stop_index < guard_index
+    assert "llm_gpu_serving_cache_sync_notify_service | default(false) | bool" in stop["when"]
+    assert stop["notify"] == "Start the active GPU serving profile"
+    assert "notify_service" not in str(guard["when"])
