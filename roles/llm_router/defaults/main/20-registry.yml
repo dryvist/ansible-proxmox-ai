@@ -122,8 +122,11 @@ llm_router_cpu_9b_models: >-
 # entry, because the light tier renders a GPU+CPU deployment PAIR sharing a
 # model name, and no second backend serves these weights — rendering the pair
 # would advertise a standby that does not exist.
+# Empty while llm_router_llm_vllm_enabled is false (10-network.yml): the tier
+# then renders no deployment and contributes no fallback rung.
 llm_router_vllm_models: >-
-  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | list }}
+  {{ (llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | list)
+     if llm_router_llm_vllm_enabled | bool else [] }}
 # Pro6000: separate physical GPU serving tier. It is inventory-gated like the
 # CPU pool so this proxy never advertises a backend without a tofu-tagged host.
 llm_router_gpu_models: >-
@@ -166,12 +169,18 @@ llm_router_hermes_gpu_medium_target: >-
 # fail-fast litellm_params/model_info and opt into the fallback chain without
 # duplicating or re-aliasing the physical entry. NOT credential-gated like the
 # hermes-cloud tiers below — it is local, not paid egress.
+# Empty while llm_router_llm_vllm_enabled is false, with the vllm tier above.
 llm_router_hermes_local_models: >-
-  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-local') | list }}
+  {{ (llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-local') | list)
+     if llm_router_llm_vllm_enabled | bool else [] }}
 # The single hermes-local-tier entry (hermes-local-4080), the primary target of
-# the fast/subagent/cheap/review DB roles (55-roles.yml).
+# the fast/subagent/cheap/review DB roles (55-roles.yml). Read from the enabled
+# registry rather than the switch-gated view above, so the role rows keep a
+# catalogued target while the tier is off; the role seed creates a role only
+# once its target is live, as for any other unrendered rung (seed-roles.yml).
 llm_router_hermes_local_4080_id: >-
-  {{ llm_router_hermes_local_models | map(attribute='client_model_id') | list | first }}
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-local')
+     | map(attribute='client_model_id') | list | first }}
 
 # The SAME prefill-derived cap model-list.yaml.j2 applies to every
 # vllm/hermes-local deployment: the smaller of the context window and what
@@ -196,7 +205,9 @@ llm_router_prefill_window_floor_tokens: 2048
 _llm_router_vllm_max_input_tokens_by_model: >-
   {%- set ns = namespace(out={}) -%}
   {%- set _vllm_hosts = groups['llm_vllm_group'] | default([]) -%}
-  {%- for m in llm_router_vllm_models + llm_router_hermes_local_models -%}
+  {#- Read from the enabled registry, not the switch-gated views above: a light-tier
+      sibling (embedding, reranker) keeps the window it advertises today when the tier is off. -#}
+  {%- for m in llm_router_registry_enabled | selectattr('tier', 'in', ['vllm', 'hermes-local']) -%}
   {%- set _cap = ([m.context_window,
         hostvars[_vllm_hosts[0]].llama_cpp_prefill_tokens_per_second | int
           * llm_router_local_stream_timeout_seconds | int] | min)
