@@ -24,7 +24,30 @@ def test_shared_nvidia_role_has_no_engine_installation():
 
 def test_engine_roles_own_only_their_profiles_and_selectors():
     cases = (
-        ("vllm_serving", "vllm", {"small", "medium-a"}),
+        (
+            "vllm_serving",
+            "vllm",
+            {
+                "small",
+                "medium-a",
+                "qwen38-16k-4-auto",
+                "qwen38-16k-1-auto",
+                "qwen38-16k-1-fp8",
+                "qwen38-16k-4-fp8",
+                "qwen38-64k-1-auto",
+                "qwen38-64k-1-fp8",
+                "qwen38-64k-4-auto",
+                "qwen38-64k-4-fp8",
+                "qwen38-192k-1-auto",
+                "qwen38-192k-1-fp8",
+                "qwen38-192k-4-fp8",
+                "qwen36-35b-a3b",
+                "nemotron-super-1x8192",
+                "nemotron-super-2x4096",
+                "muse-glimmer-30b",
+                "nemotron-lightning-30b-a3b",
+            },
+        ),
         ("llamacpp_serving", "llama_cpp", {"medium-b", "max", "glm-flash"}),
     )
     for role, engine, expected_profiles in cases:
