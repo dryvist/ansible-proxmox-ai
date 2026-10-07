@@ -86,12 +86,23 @@
         _gpu_aliases: >-
           {{ llm_router_gpu_profile_aliases }}
 
-    # `name:` keeps the file's own llm_active_profile default from replacing the
-    # profile this play selected.
-    - name: Load the serving profiles the router admission limit must mirror
+    # Keep the engine profile maps separate; the router's selected profile
+    # comes from the engine selector and the shared per-engine profile map.
+    - name: Load vLLM profiles for the router admission contract
       ansible.builtin.include_vars:
-        file: "{{ _role_dir }}/../llm_gpu_serving/defaults/main/10-profiles.yml"
-        name: _serving_defaults
+        file: "{{ _role_dir }}/../vllm_serving/defaults/main/10-profiles.yml"
+        name: _vllm_defaults
+
+    - name: Load llama.cpp profiles for the router admission contract
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/../llamacpp_serving/defaults/main/10-profiles.yml"
+        name: _llamacpp_defaults
+
+    - name: Combine engine-owned profile maps for the router contract
+      ansible.builtin.set_fact:
+        _serving_profiles: >-
+          {{ _vllm_defaults.vllm_serving_profiles
+             | combine(_llamacpp_defaults.llamacpp_serving_profiles) }}
 
     - name: Assert the selected profile renders with registry-owned limits and zero cost
       ansible.builtin.assert:
@@ -113,7 +124,7 @@
           - item.litellm_params.max_parallel_requests | int == _registry_entry.max_parallel_requests | int
           - >-
             item.litellm_params.max_parallel_requests | int
-            == _serving_defaults.llm_profiles[llm_active_profile].max_num_seqs | int
+            == _serving_profiles[llm_active_profile].max_num_seqs | int
         fail_msg: "Rendered GPU deployment {{ item.model_name }} differs from its registry limits."
       loop: "{{ _gpu_rendered }}"
       loop_control:
@@ -235,7 +246,7 @@
           - llm_router_gpu_models[0].profile == llm_active_profile
           - >-
             llm_router_gpu_models[0].max_parallel_requests | int
-            == _serving_defaults.llm_profiles[llm_active_profile].max_num_seqs | int
+            == _serving_profiles[llm_active_profile].max_num_seqs | int
           - llm_router_model_group_aliases['local-fast'] == llm_router_gpu_small_model
           - "'local-medium' not in llm_router_model_group_aliases"
           - _production_hermes_brain_model_small == 'local-fast'

@@ -1,5 +1,11 @@
 # llm_gpu_serving
 
+Legacy combined-engine role. It remains available for the existing guest until
+the replacement pair is accepted. New guests use `nvidia_gpu_guest` for shared
+NVIDIA userspace and cache setup, plus exactly one of `llamacpp_serving` or
+`vllm_serving`; the engine identity and the single Tofu selector determine the
+serving group and router profile.
+
 Deploys profile-based GPU inference with a pinned vLLM virtual environment and
 the CUDA release binary for llama.cpp. Each enabled profile receives its own
 systemd unit; the role keeps only `llm_active_profile` running and serving on
@@ -7,13 +13,16 @@ the shared API listener.
 
 ## Play
 
-`playbooks/llm-serving.yml` applies this role to `llm_gpu_group` (inventory tag
-`llm-gpu`) with the `llm_gpu_serving` tag, one host at a time, before the router
-pool. `playbooks/site.yml` imports that playbook. With no host in the group the
-play is skipped. The active profile is `llm_active_profile`; cache and origin
-paths come from the inventory's `container_models_*` values. The guest carries no
-container engine: the EvalScope LiveCodeBench evaluator runs generated code in a
-local subprocess with a per-test timeout unless a recipe requests a Docker sandbox.
+`playbooks/llm-serving.yml` applies this role only to `llm_gpu_legacy_group`,
+which the inventory loader populates while no replacement engine pair is
+declared. Once the pair exists, the loader selects one engine-specific serving
+group and routes `llm_gpu_group` to that same member. `playbooks/site.yml`
+imports the serving playbook before the router pool. The active profile is
+`llm_active_profile`, derived from the Tofu engine selector and the shared
+per-engine profile map; cache and origin paths come from the inventory's
+`container_models_*` values. The guest carries no container engine: the
+EvalScope LiveCodeBench evaluator runs generated code in a local subprocess
+with a per-test timeout unless a recipe requests a Docker sandbox.
 
 ## Installation
 

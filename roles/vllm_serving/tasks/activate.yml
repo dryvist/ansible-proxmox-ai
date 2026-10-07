@@ -1,0 +1,59 @@
+---
+- name: Resolve the active profile's registry model
+  ansible.builtin.set_fact:
+    vllm_serving_active_registry_model: "{{ nvidia_gpu_guest_registry_by_profile[vllm_serving_active_profile] }}"
+    vllm_serving_active_artifact: "{{ nvidia_gpu_guest_registry_by_profile[vllm_serving_active_profile].artifact }}"
+
+- name: Resolve active profile model paths
+  ansible.builtin.set_fact:
+    vllm_serving_health_host: >-
+      {{ nvidia_gpu_guest_listen_host | default(ansible_facts.default_ipv4.address) }}
+
+- name: Cache the active profile's registered model artifact
+  ansible.builtin.include_role:
+    name: nvidia_gpu_guest
+    tasks_from: cache-sync.yml
+  loop: >-
+    {{ [vllm_serving_active_artifact.artifact_id]
+       + (vllm_serving_active_artifact.required_artifact_ids | default([])) }}
+  loop_control:
+    loop_var: vllm_serving_cache_sync_artifact_id
+    label: "{{ vllm_serving_cache_sync_artifact_id }}"
+
+- name: Retire units for disabled GPU serving profiles
+  ansible.builtin.include_tasks: retire-disabled-profile.yml
+  loop: "{{ vllm_serving_profiles | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - not (vllm_serving_render_only | default(false))
+    - not (item.value.enabled | default(true))
+
+- name: Render one systemd unit for each GPU serving profile
+  ansible.builtin.include_tasks: render-units.yml
+
+- name: Check profile service states and request a switch when they diverge
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - --quiet
+      - "{{ nvidia_gpu_guest_unit_prefix }}-{{ item.key }}.service"
+  register: vllm_serving_profile_state
+  changed_when: >-
+    (item.key == vllm_serving_active_profile and vllm_serving_profile_state.rc != 0) or
+    (item.key != vllm_serving_active_profile and vllm_serving_profile_state.rc == 0)
+  failed_when: vllm_serving_profile_state.rc not in [0, 3, 4]
+  loop: "{{ vllm_serving_profiles | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: item.value.enabled | default(true)
+  notify:
+    - Stop every other GPU serving profile before switching
+    - Start the active GPU serving profile
+
+- name: Apply pending GPU serving service changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the active GPU serving profile to answer
+  ansible.builtin.include_tasks: health-check.yml

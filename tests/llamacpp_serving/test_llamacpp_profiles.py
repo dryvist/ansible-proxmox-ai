@@ -9,7 +9,7 @@ import jinja2
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-ROLE_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
+ROLE_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 PROFILE_DEFAULTS = ROLE_ROOT / "defaults/main/10-profiles.yml"
 TEMPLATE_DIR = ROLE_ROOT / "templates"
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
@@ -18,7 +18,7 @@ LLAMA_BIN = "/opt/llm-gpu-serving/llama.cpp/llama-server"
 
 
 def _profiles() -> dict:
-    return yaml.safe_load(PROFILE_DEFAULTS.read_text(encoding="utf-8"))["llm_profiles"]
+    return yaml.safe_load(PROFILE_DEFAULTS.read_text(encoding="utf-8"))["llamacpp_serving_profiles"]
 
 
 def _llama_profiles() -> dict:
@@ -43,25 +43,25 @@ def _render(profile_name: str, profile: dict) -> str:
     env.filters["comment"] = lambda text: "# " + str(text)
     env.filters["mandatory"] = lambda value, message="": value
     registry = _registry(profile_name)
-    return env.get_template("llm-gpu-serving.service.j2").render(
+    return env.get_template("llamacpp-serving.service.j2").render(
         ansible_managed="Managed by Ansible",
         ansible_facts={"default_ipv4": {"address": "LISTEN_ADDRESS"}},
-        llm_gpu_serving_user="llm-gpu-serving",
-        llm_gpu_serving_group="llm-gpu-serving",
-        llm_gpu_serving_data_dir="/var/lib/llm-gpu-serving",
-        llm_gpu_serving_venv="/opt/llm-gpu-serving/venv",
-        llm_gpu_serving_hf_home="HF_CACHE_HOME",
-        llm_gpu_serving_llamacpp_install_dir="/opt/llm-gpu-serving/llama.cpp",
-        llm_gpu_serving_llamacpp_server_bin=LLAMA_BIN,
-        llm_gpu_serving_profile_name=profile_name,
-        llm_gpu_serving_profile={**profile, "port": 10434},
-        llm_gpu_serving_profile_registry_model=registry,
-        llm_gpu_serving_profile_model_dir=f"/cache/models/{registry['artifact']['hf_repo']}",
+        nvidia_gpu_guest_user="llm-gpu-serving",
+        nvidia_gpu_guest_group="llm-gpu-serving",
+        nvidia_gpu_guest_data_dir="/var/lib/llm-gpu-serving",
+        nvidia_gpu_guest_hf_home="HF_CACHE_HOME",
+        nvidia_gpu_guest_listen_host="LISTEN_ADDRESS",
+        llamacpp_serving_server_bin=LLAMA_BIN,
+        llamacpp_serving_install_dir="/opt/llm-gpu-serving/llama.cpp",
+        llamacpp_serving_profile_name=profile_name,
+        llamacpp_serving_profile={**profile, "port": 10434},
+        llamacpp_serving_profile_registry_model=registry,
+        llamacpp_serving_profile_model_dir=f"/cache/models/{registry['artifact']['hf_repo']}",
     )
 
 
 def _exec_start(unit: str) -> str:
-    start = unit.split("ExecStart=", maxsplit=1)[1].split("\n\n[Install]", maxsplit=1)[0]
+    start = unit.split("ExecStart=", maxsplit=1)[1].split("[Install]", maxsplit=1)[0]
     return " ".join(start.replace("\\\n", " ").split())
 
 
@@ -87,7 +87,7 @@ def test_every_gguf_profile_renders_a_llama_server_command_from_profile_and_regi
         assert "--cache-type-k" not in exec_start
         assert "{{" not in unit
         assert "Environment=LD_LIBRARY_PATH=/opt/llm-gpu-serving/llama.cpp" in unit
-        assert "\n\n[Install]\nWantedBy=multi-user.target" in unit
+        assert "[Install]\nWantedBy=multi-user.target" in unit
 
 
 def test_total_context_is_per_agent_context_times_parallel_slots():

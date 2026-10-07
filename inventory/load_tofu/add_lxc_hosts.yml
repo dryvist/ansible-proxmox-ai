@@ -72,6 +72,49 @@
          | length == 0
     - item.key not in (load_tofu_ssh_ready | default([]))
 
+- name: Resolve the selector and declared GPU engine members
+  ansible.builtin.set_fact:
+    load_tofu_gpu_engine_selector: >-
+      {{ (tofu_data | default({})).get('llm_gpu_engine', 'llama_cpp') }}
+    load_tofu_gpu_engine_members: >-
+      {{ (tofu_data.containers | default({}) | dict2items)
+         | selectattr('value.llm_gpu_engine_identity', 'in', ['llama_cpp', 'vllm']) | list }}
+
+- name: Record whether the replacement engine pair is declared
+  ansible.builtin.set_fact:
+    load_tofu_gpu_engine_pair_present: >-
+      {{ load_tofu_gpu_engine_members | length > 0 }}
+
+- name: Log the GPU engine inventory decision
+  ansible.builtin.debug:
+    msg: >-
+      GPU selector={{ load_tofu_gpu_engine_selector }};
+      replacement_pair={{ 'present' if load_tofu_gpu_engine_pair_present else 'absent' }};
+      legacy_group={{ 'enabled' if not load_tofu_gpu_engine_pair_present else 'excluded' }}.
+
+- name: Validate the published GPU engine selector and pair before host projection
+  ansible.builtin.assert:
+    that:
+      - load_tofu_gpu_engine_selector in ['llama_cpp', 'vllm']
+      - load_tofu_gpu_engine_members | length == 0 or load_tofu_gpu_engine_members | length == 2
+      - >-
+        load_tofu_gpu_engine_members | length == 0 or
+        (load_tofu_gpu_engine_members | map(attribute='value.llm_gpu_engine_identity') | sort | list
+         == ['llama_cpp', 'vllm'])
+      - >-
+        load_tofu_gpu_engine_members | length == 0 or
+        (load_tofu_gpu_engine_members
+         | selectattr('value.llm_gpu_engine_identity', 'equalto', load_tofu_gpu_engine_selector)
+         | selectattr('value.started', 'equalto', true) | list | length == 1)
+      - >-
+        load_tofu_gpu_engine_members | length == 0 or
+        (load_tofu_gpu_engine_members
+         | selectattr('value.started', 'equalto', true) | list | length == 1)
+    fail_msg: >-
+      Published GPU engine inventory must have a supported selector and either
+      no replacement guests or exactly one llama_cpp and one vllm guest with
+      exactly one selector-matching guest marked started.
+
 - name: Add AI LXC containers to inventory (proxmox_pct_remote connection)
   ansible.builtin.add_host:
     name: "{{ item.key }}"
@@ -141,8 +184,33 @@
           else []
         ) +
         (
-          ['llm_gpu_group']
+          ['llm_gpu_legacy_group', 'llm_gpu_group']
           if 'llm-gpu' in (item.value.tags | default([]))
+             and not load_tofu_gpu_engine_pair_present | bool
+          else []
+        ) +
+        (
+          ['llm_gpu_engine_llama_cpp_group']
+          if item.value.llm_gpu_engine_identity | default('') == 'llama_cpp'
+          else []
+        ) +
+        (
+          ['llm_gpu_engine_vllm_group']
+          if item.value.llm_gpu_engine_identity | default('') == 'vllm'
+          else []
+        ) +
+        (
+          ['llm_gpu_serving_llama_cpp_group', 'llm_gpu_engine_llama_cpp_group', 'llm_gpu_group']
+          if load_tofu_gpu_engine_pair_present | bool
+             and load_tofu_gpu_engine_selector == 'llama_cpp'
+             and item.value.llm_gpu_engine_identity | default('') == 'llama_cpp'
+          else []
+        ) +
+        (
+          ['llm_gpu_serving_vllm_group', 'llm_gpu_engine_vllm_group', 'llm_gpu_group']
+          if load_tofu_gpu_engine_pair_present | bool
+             and load_tofu_gpu_engine_selector == 'vllm'
+             and item.value.llm_gpu_engine_identity | default('') == 'vllm'
           else []
         ) +
         (
@@ -319,6 +387,8 @@
     container_models_origin_mount_read_only: >-
       {{ item.value.models_origin_mount_read_only | default(true, true) | bool }}
     host_tags: "{{ item.value.tags | default([]) }}"
+    llm_gpu_engine_identity: "{{ item.value.llm_gpu_engine_identity | default('') }}"
+    llm_gpu_engine_selector: "{{ load_tofu_gpu_engine_selector }}"
     # Which Hermes agent this guest runs. The deployment.json tag is the
     # single source of truth; roles/hermes_agent/defaults derives
     # hermes_agent_id from this, and every shared-service handle (Slack app
