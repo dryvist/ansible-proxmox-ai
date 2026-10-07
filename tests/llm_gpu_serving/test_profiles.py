@@ -201,10 +201,14 @@ def test_nvfp4_profiles_leave_quantization_to_the_checkpoint():
 def test_only_enabled_profiles_are_rendered_and_checked_by_the_role():
     render_tasks = yaml.safe_load((ROLE_ROOT / "tasks/render-units.yml").read_text(encoding="utf-8"))
     main_tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    validation_tasks = yaml.safe_load((ROLE_ROOT / "tasks/validate-profiles.yml").read_text(encoding="utf-8"))
     render_unit = next(task for task in render_tasks if task.get("name", "").startswith("Render one systemd"))
-    profile_validation = next(task for task in main_tasks if task.get("name") == "Validate every GPU serving profile")
+    profile_validation = next(
+        task for task in validation_tasks if task.get("name") == "Validate every GPU serving profile"
+    )
     profile_state = next(task for task in main_tasks if task.get("name", "").startswith("Check profile service states"))
     retire = next(task for task in main_tasks if task.get("name", "").startswith("Retire units for disabled"))
+    assert any(task.get("ansible.builtin.include_tasks") == "validate-profiles.yml" for task in main_tasks)
     assert render_unit["when"] == "item.value.enabled | default(true)"
     assert profile_validation["when"] == "item.value.enabled | default(true)"
     assert profile_state["when"] == "item.value.enabled | default(true)"

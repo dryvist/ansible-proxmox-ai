@@ -65,6 +65,7 @@ def test_model_store_writer_group_comes_from_declared_gpu_mount_access():
 
 def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     main_tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    validation_tasks = yaml.safe_load((ROLE_ROOT / "tasks/validate-profiles.yml").read_text(encoding="utf-8"))
     cache_tasks = yaml.safe_load((ROLE_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8"))
     verify_tasks = yaml.safe_load(
         (ROLE_ROOT / "tasks/verify-model-store-origin-repo.yml").read_text(encoding="utf-8")
@@ -105,7 +106,10 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     assert "llm_gpu_serving_cache_sync_artifact.revision" in download["ansible.builtin.command"]["argv"]
     assert "llm_gpu_serving_cache_sync_download_directory" in download["ansible.builtin.command"]["argv"]
     assert "llm_gpu_serving_cache_sync_download_directory" in preview["ansible.builtin.command"]["argv"]
-    validate = next(task for task in main_tasks if task.get("name", "").startswith("Validate the active GPU serving profile"))
+    validate = next(
+        task for task in validation_tasks if task.get("name", "").startswith("Validate the active GPU serving profile")
+    )
+    assert any(task.get("ansible.builtin.include_tasks") == "validate-profiles.yml" for task in main_tasks)
     assert "llm_gpu_serving_model_cache_mount_path | length > 0" in validate["ansible.builtin.assert"]["that"]
     assert "llm_gpu_serving_model_origin_mount_path" not in str(validate)
     assert "llm_gpu_serving_cache_sync_previews.results[ansible_loop.index0]" in download["changed_when"]

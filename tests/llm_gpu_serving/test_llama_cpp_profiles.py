@@ -133,8 +133,10 @@ def test_registry_entries_stay_inactive_while_every_profile_is_selectable():
 
 
 def test_role_validation_requires_a_literal_gguf_file_for_llama_cpp_profiles():
-    tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
-    validation = next(task for task in tasks if task.get("name") == "Validate every GPU serving profile")
+    main_tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    validation_tasks = yaml.safe_load((ROLE_ROOT / "tasks/validate-profiles.yml").read_text(encoding="utf-8"))
+    validation = next(task for task in validation_tasks if task.get("name") == "Validate every GPU serving profile")
+    assert any(task.get("ansible.builtin.include_tasks") == "validate-profiles.yml" for task in main_tasks)
     conditions = "\n".join(validation["ansible.builtin.assert"]["that"])
     assert "artifact.gguf_file" in conditions
     assert "artifact.format == 'GGUF'" in conditions
