@@ -130,11 +130,11 @@
           - item.litellm_params.output_cost_per_token | float == 0
           - item.model_info.disable_background_health_check is true
           - item.litellm_params.api_base == 'http://localhost:10434/v1'
-          # The router admission cap is the active sequence limit from the serving profile.
+          # Router admission is registry-owned; the engine separately bounds active sequence slots.
           - item.litellm_params.max_parallel_requests | int == _registry_entry.max_parallel_requests | int
           - >-
             item.litellm_params.max_parallel_requests | int
-            == _serving_profiles[llm_active_profile].max_num_seqs | int
+            >= _serving_profiles[llm_active_profile].max_num_seqs | int
         fail_msg: "Rendered GPU deployment {{ item.model_name }} differs from its registry limits."
       loop: "{{ _gpu_rendered }}"
       loop_control:
@@ -243,7 +243,7 @@
         quiet: true
         that:
           - _gpu_rendered | length == 1
-          - _gpu_rendered[0].litellm_params.max_parallel_requests | int == _active_slots | int
+          - _gpu_rendered[0].litellm_params.max_parallel_requests | int >= _active_slots | int
           - _active_alias in _fallback_by_name
           - _fallback_by_name[_active_alias] | length > 0
           - _active_alias not in _fallback_by_name[_active_alias]
@@ -254,8 +254,8 @@
           Active rung {{ _active_alias }} cap={{ _gpu_rendered[0].litellm_params.max_parallel_requests }}
           retries={{ _active_rate_limit_retries }} fallback={{ _fallback_by_name.get(_active_alias, []) }}.
         success_msg: >-
-          The active GPU cap is {{ _active_slots }} and a saturated request hands to its rendered,
-          tag-filtered fallback ladder without retrying the same rung.
+          The GPU admission cap covers {{ _active_slots }} active engine slots, and saturation hands
+          to its rendered, tag-filtered fallback ladder without retrying the same rung.
       vars:
         _active_gpu_aliases: >-
           {{ llm_router_model_group_aliases | dict2items
@@ -308,7 +308,7 @@
           - llm_router_gpu_models[0].profile == llm_active_profile
           - >-
             llm_router_gpu_models[0].max_parallel_requests | int
-            == _serving_profiles[llm_active_profile].max_num_seqs | int
+            >= _serving_profiles[llm_active_profile].max_num_seqs | int
           - llm_router_model_group_aliases['local-fast'] == llm_router_gpu_small_model
           - "'local-medium' not in llm_router_model_group_aliases"
           - _production_hermes_brain_model_small == 'local-fast'
