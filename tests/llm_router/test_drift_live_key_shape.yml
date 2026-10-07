@@ -1,0 +1,83 @@
+---
+# Pins the /key/list record shape of the pinned LiteLLM (1.104.0): each
+# budget window carries a server-set reset_at, and object_permission is the
+# joined LiteLLM_ObjectPermissionTable row (object_permission_id plus every
+# grant list, empty when unset). Neither is drift; a changed ceiling or an
+# added grant still is.
+- name: Server-added fields do not read as drift
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _windows: &windows
+      - {budget_duration: 24h, max_budget: 2.0}
+      - {budget_duration: 7d, max_budget: 7.0}
+    _llm_router_drift_expected_keys:
+      - alias: shape-key
+        git_file: roles/llm_router/defaults/main/56-virtual-keys.yml
+        flags:
+          budget_limits: *windows
+          object_permission: {mcp_servers: [no-mcp-servers]}
+    _llm_router_drift_live_keys:
+      - alias: shape-key
+        flags:
+          budget_limits:
+            - {budget_duration: 7d, max_budget: 7.0, reset_at: "2026-10-13T00:00:00+00:00"}
+            - {budget_duration: 24h, max_budget: 2.0, reset_at: "2026-10-07T00:00:00+00:00"}
+          object_permission:
+            object_permission_id: 6f1c0000-0000-0000-0000-000000000000
+            mcp_servers: [no-mcp-servers]
+            mcp_access_groups: []
+            mcp_tool_permissions: null
+            vector_stores: []
+            agents: []
+            agent_access_groups: []
+            models: []
+            blocked_tools: []
+            mcp_toolsets: []
+            search_tools: []
+            mcp_tool_search_enabled: null
+            skills: []
+    _llm_router_drift_expected_settings: []
+  tasks:
+    - name: Use the production comparator
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-compare.yml"
+
+    - name: No message
+      ansible.builtin.assert:
+        quiet: true
+        that: _llm_router_drift_messages | length == 0
+        fail_msg: "Unexpected drift: {{ _llm_router_drift_messages | map(attribute='item') | list }}"
+
+- name: A changed ceiling or an added grant still drifts
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _llm_router_drift_expected_keys:
+      - alias: shape-key
+        git_file: roles/llm_router/defaults/main/56-virtual-keys.yml
+        flags:
+          budget_limits:
+            - {budget_duration: 7d, max_budget: 7.0}
+          object_permission: {mcp_servers: [no-mcp-servers]}
+    _llm_router_drift_live_keys:
+      - alias: shape-key
+        flags:
+          budget_limits:
+            - {budget_duration: 7d, max_budget: 9.0, reset_at: "2026-10-13T00:00:00+00:00"}
+          object_permission:
+            object_permission_id: 6f1c0000-0000-0000-0000-000000000000
+            mcp_servers: [no-mcp-servers]
+            vector_stores: [store-1]
+    _llm_router_drift_expected_settings: []
+  tasks:
+    - name: Use the production comparator
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/drift-compare.yml"
+
+    - name: One message naming both flags
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_messages | length == 1
+          - _llm_router_drift_messages[0].item == 'key alias shape-key flags budget_limits, object_permission'
