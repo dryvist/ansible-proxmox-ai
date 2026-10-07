@@ -27,12 +27,14 @@
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
-    - name: Load sanitized auto-router rows captured from a live router
-      ansible.builtin.include_vars:
-        file: "{{ playbook_dir }}/fixtures/live-auto-router-db-rows.yml"
-
     - name: Produce the fully credentialed render
       ansible.builtin.import_tasks: tasks/credentialed_render.yml
+
+    - name: Load sanitized auto-router rows captured from a live router
+      ansible.builtin.set_fact:
+        llm_router_live_role_model_info_fixture: >-
+          {{ (lookup('template', playbook_dir ~ '/fixtures/live-auto-router-db-rows.yml.j2')
+             | from_yaml).llm_router_live_role_model_info_fixture }}
 
     - name: Provider chain, costs, and operational ceilings are exact
       ansible.builtin.assert:
@@ -85,14 +87,14 @@
           # omits its initial rung.
           - >-
             llm_router_hermes_cloud_zero_retry_groups
-            == llm_router_d1_ladder_groups + ['hermes-cloud-alibaba-routine',
-                                  'hermes-cloud-alibaba-agentic',
-                                  'hermes-cloud-gemini-routine',
-                                  'hermes-cloud-gemini-agentic']
-               + ((llm_router_all_servable_models
+            == (llm_router_d1_ladder_groups
+                + ['hermes-cloud-alibaba-routine',
+                   'hermes-cloud-alibaba-agentic',
+                   'hermes-cloud-gemini-routine',
+                   'hermes-cloud-gemini-agentic']
+                + (llm_router_all_servable_models
                    + (_config.router_settings.model_group_alias | list))
-                  | unique | list)
-               + [hermes_brain_model]
+                + [hermes_brain_model]) | unique | list
           # The complexity router is a name the Hermes agents call, so it is the
           # one chain-carrying name that waits out a busy local slot (honouring
           # the upstream's Retry-After) before handing it to its chain. The
@@ -119,14 +121,16 @@
           - _modified_auto_routers[0].model_name == hermes_brain_model
           - llm_router_model_group_aliases['fast'] == hermes_brain_model
           - llm_router_model_group_aliases['cheap'] == hermes_brain_model
+          - "'fast' in llm_router_zdr_entry_point_names"
+          - "'cheap' in llm_router_zdr_entry_point_names"
           - >-
             _config.router_settings.fallbacks
             | selectattr('fast', 'defined') | map(attribute='fast') | first
-            == _expected_chain
+            == _expected_zdr_entry_chain
           - >-
             _config.router_settings.fallbacks
             | selectattr('cheap', 'defined') | map(attribute='cheap') | first
-            == _expected_chain
+            == _expected_zdr_entry_chain
           - _post_migration_auto_router_count == 1
           - _live_auto_router_names == ['cheap', 'fast']
           - _retired_auto_router_names == ['cheap', 'fast']
@@ -168,12 +172,14 @@
       vars:
         _modified_auto_routers: >-
           {{ _config.model_list
-             | selectattr('litellm_params.model', 'equalto', 'auto_router/complexity_router')
+             | selectattr('litellm_params.model', 'equalto', _auto_router_backend_model)
              | list }}
         _live_auto_router_rows: >-
           {{ llm_router_live_role_model_info_fixture
-             | selectattr('litellm_params.model', 'equalto', 'auto_router/complexity_router')
+             | selectattr('litellm_params.model', 'equalto', _auto_router_backend_model)
              | list }}
+        _auto_router_backend_model: >-
+          {{ llm_router_hermes_virtual_models | map(attribute='litellm_model_name') | first }}
         _live_auto_router_names: >-
           {{ _live_auto_router_rows | map(attribute='model_name') | list | sort }}
         _retired_auto_router_names: >-
@@ -195,6 +201,9 @@
         _expected_chain: >-
           {{ llm_router_d1_ladder_groups
              | reject('equalto', llm_router_d1_auto_initial_group) | list }}
+        _expected_zdr_entry_chain: >-
+          {{ _expected_chain
+             | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list }}
         _fallback_chain: >-
           {{ _config.router_settings.fallbacks
              | selectattr('hermes-default', 'defined')
