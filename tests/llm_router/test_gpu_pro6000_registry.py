@@ -38,7 +38,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     serving_profiles = _serving_profiles()
     serving_core = yaml.safe_load(VLLM_CORE_DEFAULTS.read_text(encoding="utf-8"))
 
-    assert len(entries) == 5
+    assert len(entries) == 21
     assert defaults["llm_router_gpu_profiles_enabled"] is False
     assert {entry["profile"] for entry in entries} == {
         "small",
@@ -46,6 +46,22 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "medium-b",
         "max",
         "glm-flash",
+        "qwen38-16k-1-auto",
+        "qwen38-16k-4-auto",
+        "qwen38-16k-1-fp8",
+        "qwen38-16k-4-fp8",
+        "qwen38-64k-1-auto",
+        "qwen38-64k-1-fp8",
+        "qwen38-64k-4-auto",
+        "qwen38-64k-4-fp8",
+        "qwen38-192k-1-auto",
+        "qwen38-192k-1-fp8",
+        "qwen38-192k-4-fp8",
+        "qwen36-35b-a3b",
+        "nemotron-super-1x8192",
+        "nemotron-super-2x4096",
+        "muse-glimmer-30b",
+        "nemotron-lightning-30b-a3b",
     }
     assert len({entry["client_model_id"] for entry in entries}) == len(entries)
     assert all(entry["artifact_id"] in artifacts_by_id for entry in entries)
@@ -84,18 +100,34 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "medium-b": 0,
         "max": 0,
         "glm-flash": 0,
+        "qwen38-16k-1-auto": 0,
+        "qwen38-16k-4-auto": 0,
+        "qwen38-16k-1-fp8": 0,
+        "qwen38-16k-4-fp8": 0,
+        "qwen38-64k-1-auto": 0,
+        "qwen38-64k-1-fp8": 0,
+        "qwen38-64k-4-auto": 0,
+        "qwen38-64k-4-fp8": 0,
+        "qwen38-192k-1-auto": 0,
+        "qwen38-192k-1-fp8": 0,
+        "qwen38-192k-4-fp8": 0,
+        "qwen36-35b-a3b": 0,
+        "nemotron-super-1x8192": 0,
+        "nemotron-super-2x4096": 0,
+        "muse-glimmer-30b": 0,
+        "nemotron-lightning-30b-a3b": 0,
     }
     assert len({alias for aliases in aliases_by_profile.values() for alias in aliases}) == 2
 
-    # The campaign's 27B cell config sets the same total vLLM context and
-    # sequence count as the medium-a serving profile. The router registry
-    # advertises the input remainder after its output reservation.
+    # medium-a is the 192K x 4 auto-KV cell in the sweep matrix.
     qwen_profile = next(entry for entry in entries if entry["profile"] == "medium-a")
     qwen_artifact = artifacts_by_id[qwen_profile["artifact_id"]]
     medium_a_serving = serving_profiles[qwen_profile["profile"]]
     assert serving_core["vllm_serving_version"] == "0.30.0"
-    assert medium_a_serving["max_model_len"] == qwen_artifact["context_window_tokens"] == 196608
-    assert medium_a_serving["max_num_seqs"] == 8
+    assert medium_a_serving["max_model_len"] == 196608
+    assert qwen_artifact["context_window_tokens"] == 196608
+    assert medium_a_serving["max_num_seqs"] == 4
+    assert medium_a_serving["kv_cache_dtype"] == "auto"
     assert qwen_profile["context_window"] + qwen_profile["max_output_tokens"] == medium_a_serving["max_model_len"]
 
     # Every registry input window plus its output reservation must fit both
@@ -105,20 +137,23 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         assert entry["context_window"] + entry["max_output_tokens"] <= profile["max_model_len"]
 
 
-def test_router_admission_equals_serving_profile_concurrency() -> None:
-    """The router admits exactly the in-flight requests the serving profile decodes at once.
-
-    A cap below max_num_seqs rejects requests the host could have served (the
-    429s an eight-agent fleet sees); a cap above it queues them in the serving
-    engine behind the profile's own limit. The primary profile carries the
-    eight-agent fleet, so its router entry admits eight.
-    """
+def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
+    """Load sweep entries admit 1..64; vLLM max_num_seqs controls active slots."""
     entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
     serving_profiles = _serving_profiles()
 
     caps = {entry["profile"]: entry["max_parallel_requests"] for entry in entries}
-    assert caps == {name: profile["max_num_seqs"] for name, profile in serving_profiles.items()}
+    sweep_profiles = {
+        entry["profile"]
+        for entry in entries
+        if entry["client_model_id"].startswith("gpu-sweep-")
+    } | {"medium-a"}
+    expected_caps = {
+        name: 64 if name in sweep_profiles else profile["max_num_seqs"]
+        for name, profile in serving_profiles.items()
+    }
+    assert caps == expected_caps
 
     primary = [name for name, profile in serving_profiles.items() if profile.get("primary")]
     assert primary == ["medium-a"]
-    assert caps["medium-a"] == 8
+    assert caps["medium-a"] == 64
