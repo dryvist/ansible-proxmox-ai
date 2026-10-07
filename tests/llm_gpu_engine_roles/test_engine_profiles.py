@@ -16,6 +16,7 @@ ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
     REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
     REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml",
+    REPO_ROOT / "llm-models.d/68-gpu-pro6000-stage0-artifacts.yml",
 )
 
 
@@ -160,6 +161,11 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     assert all(required <= artifact.keys() for artifact in artifacts)
     assert all(artifact["include_globs"] for artifact in artifacts)
     assert all(artifact["use"] in {"serving", "benchmark-only"} for artifact in artifacts)
+
+    campaign_artifacts = [artifact for artifact in artifacts if "model_size" in artifact]
+    assert all(artifact["model_task"] for artifact in campaign_artifacts)
+    assert all(artifact["model_task_source"] in {"model_card", "inferred"} for artifact in campaign_artifacts)
+    assert all("model_task" not in artifact or "model_task_source" in artifact for artifact in artifacts)
 
     registry_entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))[
         "_llm_registry_gpu"

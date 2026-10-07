@@ -37,27 +37,13 @@ contains a `:free` rung.
 
 ## Hermes local-first value routing
 
-`hermes-default` is a LiteLLM `auto_router/complexity_router` deployment. Its
-local heuristic sends SIMPLE/MEDIUM requests to the resident routine model and
-COMPLEX/REASONING requests to the resident primary; classification performs no
-provider call. If local serving fails, the original `hermes-default` request
-uses one credential-gated, ordered provider chain. Alibaba and Gemini each
-receive the original request through a second local heuristic classifier, so
-routine and agentic work do not pay for the same cloud model:
-
-- `hermes-cloud-alibaba`: Qwen 3.5 Flash at $0.10/$0.40 per million
-  input/output tokens for SIMPLE/MEDIUM work, and Qwen 3.6 Flash at
-  $0.25/$1.50 for COMPLEX/REASONING work, using the International endpoint.
-  The first is the lowest verified direct routine price; the second is the
-  selected lower-cost tool-capable, long-context agentic tier.
-- `hermes-cloud-gemini`: paid Gemini 3.5 Flash-Lite at $0.30/$2.50 per million
-  input/output tokens for SIMPLE/MEDIUM work, and paid Gemini 3.7 Flash at
-  $0.75/$3.75 through 2026-12-31 for COMPLEX/REASONING work. This is the
-  independent stable-provider path; operational prompts use the paid service.
-- `hermes-cloud-openrouter`: Kimi K2.6 at $0.60/$3.41 or GLM 5.2 at
-  $0.7308/$2.297 per million input/output tokens when verified. This is the
-  final gateway-diverse tier; both had multiple hosting endpoints, and LiteLLM
-  selects the eligible deployment with the lower configured token price.
+`hermes-default` is the only LiteLLM `auto_router/complexity_router`
+deployment. Its local heuristic sends SIMPLE/MEDIUM requests to the resident
+routine model and COMPLEX/REASONING requests to the resident primary;
+classification performs no provider call. If local serving fails, the original
+`hermes-default` request uses one credential-gated, ordered provider chain.
+Alibaba and Gemini routine and agentic deployments are separate provider
+groups in that chain; OpenRouter remains the final gateway-diverse group.
 
 The value claim is scoped: cost-based routing compares real token prices only
 among models declared equivalent in the final OpenRouter tier, and is not a

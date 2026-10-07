@@ -152,6 +152,71 @@
               {{ llm_router_model_registry
                  | rejectattr('client_model_id', 'equalto', 'test/orphaned-entry') | list }}
 
+- name: The guard rejects a second modified auto-router deployment
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Prove a second modified auto-router is rejected
+      block:
+        - name: Add a second auto-router to the rendered virtual-model projection
+          ansible.builtin.set_fact:
+            llm_router_hermes_virtual_models: >-
+              {{ llm_router_hermes_virtual_models + [
+                   (llm_router_hermes_virtual_models | first)
+                   | combine({'client_model_id': 'test/second-auto-router'})
+                 ] }}
+
+        - name: Run the parity guard against the second auto-router
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"
+
+        - name: Fail because the guard admitted a second auto-router
+          ansible.builtin.fail:
+            msg: >-
+              The parity guard PASSED with two modified auto-router deployments.
+
+      rescue:
+        - name: Confirm the guard failed for auto-router cardinality specifically
+          ansible.builtin.assert:
+            quiet: true
+            that:
+              - "'AUTO-ROUTER CARDINALITY EXCEEDED' in (ansible_failed_result.msg | default(''))"
+              - "'test/second-auto-router' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              The guard failed, but not for auto-router cardinality — got:
+              {{ ansible_failed_result.msg | default('(no message)') }}
+            success_msg: "Guard rejects a second modified auto-router deployment."
+
+        - name: Remove the second auto-router so later plays see the shipping projection
+          ansible.builtin.set_fact:
+            llm_router_hermes_virtual_models: >-
+              {{ llm_router_hermes_virtual_models
+                 | rejectattr('client_model_id', 'equalto', 'test/second-auto-router') | list }}
+
 - name: The guard stays quiet for key-gated OpenRouter entries that are unseeded
   hosts: localhost
   gather_facts: false

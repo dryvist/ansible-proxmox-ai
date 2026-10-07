@@ -16,6 +16,7 @@ ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
     REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
     REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml",
+    REPO_ROOT / "llm-models.d/68-gpu-pro6000-stage0-artifacts.yml",
 )
 
 
@@ -131,9 +132,23 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
         for task in cache_tasks
     )
     assert any(
+        task.get("name") == "Load Stage 0 benchmark artifacts"
+        and task["ansible.builtin.include_vars"]["file"]
+        == "{{ nvidia_gpu_guest_stage0_artifact_registry_file }}"
+        for task in registry_tasks
+    )
+    assert any(
+        task.get("name") == "Load Stage 0 benchmark artifacts for cache sync"
+        and task["ansible.builtin.include_vars"]["file"]
+        == "{{ nvidia_gpu_guest_stage0_artifact_registry_file }}"
+        for task in cache_tasks
+    )
+    assert any(
         task.get("name", "").startswith("Combine the campaign model artifact shards")
         and "_llm_model_artifacts_glm53flash" in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
         and "_llm_model_artifacts_nvfp4_sweep"
+        in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
+        and "_llm_model_stage0_artifacts"
         in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
         for task in registry_tasks
     )

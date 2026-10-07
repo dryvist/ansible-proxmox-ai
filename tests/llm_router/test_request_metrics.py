@@ -49,7 +49,7 @@ def test_success_record_has_expected_fields(module):
     payload = {
         "model_group": "review-oss",
         "model": "qwen-review",
-        "api_base": "http://llm-4080.example.test:8080/v1",
+        "api_base": "http://backend.example.test:8080/v1",
         "status": "success",
         "startTime": 100.0,
         "endTime": 102.5,
@@ -71,7 +71,7 @@ def test_success_record_has_expected_fields(module):
         "event": "llm_request",
         "model_group": "review-oss",
         "model": "qwen-review",
-        "api_base": "llm-4080.example.test",
+        "api_base": "backend.example.test",
         "status": "success",
         "error_class": None,
         "prompt_tokens": 512,
