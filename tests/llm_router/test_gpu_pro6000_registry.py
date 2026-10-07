@@ -10,6 +10,7 @@ REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
 ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml",
     REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
+    REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml",
 )
 REGISTRY_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 VLLM_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
