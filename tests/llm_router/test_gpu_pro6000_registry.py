@@ -39,7 +39,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     serving_profiles = _serving_profiles()
     serving_core = yaml.safe_load(VLLM_CORE_DEFAULTS.read_text(encoding="utf-8"))
 
-    assert len(entries) == 21
+    assert len(entries) == 26
     assert defaults["llm_router_gpu_profiles_enabled"] is False
     assert {entry["profile"] for entry in entries} == {
         "small",
@@ -58,6 +58,11 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "qwen38-192k-1-auto",
         "qwen38-192k-1-fp8",
         "qwen38-192k-4-fp8",
+        "qwen38-196k-4-auto",
+        "qwen38-16k-8-auto",
+        "qwen38-16k-8-fp8",
+        "qwen38-64k-8-auto",
+        "qwen38-64k-8-fp8",
         "qwen36-35b-a3b",
         "nemotron-super-1x8192",
         "nemotron-super-2x4096",
@@ -112,6 +117,11 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "qwen38-192k-1-auto": 0,
         "qwen38-192k-1-fp8": 0,
         "qwen38-192k-4-fp8": 0,
+        "qwen38-196k-4-auto": 0,
+        "qwen38-16k-8-auto": 0,
+        "qwen38-16k-8-fp8": 0,
+        "qwen38-64k-8-auto": 0,
+        "qwen38-64k-8-fp8": 0,
         "qwen36-35b-a3b": 0,
         "nemotron-super-1x8192": 0,
         "nemotron-super-2x4096": 0,
@@ -120,14 +130,14 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     }
     assert len({alias for aliases in aliases_by_profile.values() for alias in aliases}) == 2
 
-    # medium-a is the 192K x 4 auto-KV cell in the sweep matrix.
+    # medium-a stays the active eight-slot production profile, outside the sweep matrix.
     qwen_profile = next(entry for entry in entries if entry["profile"] == "medium-a")
     qwen_artifact = artifacts_by_id[qwen_profile["artifact_id"]]
     medium_a_serving = serving_profiles[qwen_profile["profile"]]
     assert serving_core["vllm_serving_version"] == "0.30.0"
     assert medium_a_serving["max_model_len"] == 196608
     assert qwen_artifact["context_window_tokens"] == 196608
-    assert medium_a_serving["max_num_seqs"] == 4
+    assert medium_a_serving["max_num_seqs"] == 8
     assert medium_a_serving["kv_cache_dtype"] == "auto"
     assert qwen_profile["context_window"] + qwen_profile["max_output_tokens"] == medium_a_serving["max_model_len"]
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from math import floor
 from pathlib import Path
 
 import yaml
@@ -12,6 +13,14 @@ ARTIFACT_FILE = REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.y
 PROFILE_FILE = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 GIB = 2**30
 GPU_MEMORY_GIB = 96
+# Sanitized from the production vLLM unit's non-default-args journal output on
+# 2026-10-07; paths, host and address are intentionally omitted.
+TARGET_MEDIUM_A_ARGS = {
+    "max_model_len": 196608,
+    "max_num_seqs": 8,
+    "gpu_memory_utilization": 0.88,
+    "linear_backend": "b12x",
+}
 
 
 def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
@@ -19,14 +28,24 @@ def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
     matrix = {
         (profiles[name]["max_model_len"], profiles[name]["max_num_seqs"], profiles[name]["kv_cache_dtype"])
         for name in profiles
-        if name == "medium-a" or name.startswith("qwen38-")
+        if name.startswith("qwen38-")
     }
     assert matrix == {
         (context, slots, dtype)
-        for context in (16384, 65536, 196608)
+        for context in (16384, 65536)
+        for slots in (1, 4, 8)
+        for dtype in ("auto", "fp8")
+    } | {
+        (196608, slots, dtype)
         for slots in (1, 4)
         for dtype in ("auto", "fp8")
     }
+
+    assert profiles["medium-a"]["max_num_seqs"] == 8
+    assert (196608, 4, "auto") in matrix
+    assert {
+        key: profiles["medium-a"][key] for key in TARGET_MEDIUM_A_ARGS
+    } == TARGET_MEDIUM_A_ARGS
 
 
 def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
@@ -39,7 +58,7 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
         name for name, profile in profiles.items() if "memory_screen_reserve_gib" in profile
     }
 
-    assert len(candidate_profiles) == 17
+    assert len(candidate_profiles) == 22
     assert candidate_profiles <= entries_by_profile.keys()
 
     for name in candidate_profiles:
@@ -53,10 +72,16 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
 
         dtype_scale = 0.5 if profile["kv_cache_dtype"] == "fp8" else 1.0
         assert profile["kv_cache_dtype"] in {"auto", "fp8"}
+        pool_token_capacity = floor(
+            (GPU_MEMORY_GIB * profile["gpu_memory_utilization"]
+             - artifact["model_store_size_bytes"] / GIB
+             - profile["memory_screen_reserve_gib"])
+            * GIB
+            / (artifact["kv_cache_bytes_per_token_bf16"] * dtype_scale)
+        )
         kv_gib = (
             artifact["kv_cache_bytes_per_token_bf16"]
             * profile["max_model_len"]
-            * profile["max_num_seqs"]
             * dtype_scale
             / GIB
         )
@@ -64,7 +89,10 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
         reserve_gib = profile["memory_screen_reserve_gib"]
         estimated_gib = checkpoint_gib + kv_gib + reserve_gib
         budget_gib = GPU_MEMORY_GIB * profile["gpu_memory_utilization"]
-        assert estimated_gib <= budget_gib, (name, estimated_gib, budget_gib)
+        assert profile["max_model_len"] <= pool_token_capacity, (
+            name, profile["max_model_len"], pool_token_capacity
+        )
+        assert estimated_gib <= budget_gib, (name, estimated_gib, budget_gib, pool_token_capacity)
 
 
 def test_sweep_artifact_sizes_match_the_hugging_face_reads():
