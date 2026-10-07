@@ -24,7 +24,7 @@ on:
     branches: [develop, main]
     types: [opened, synchronize, reopened]
   push:
-    branches: [develop, main]
+    branches: [main, develop]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -39,7 +39,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    uses: dryvist/.github/.github/workflows/_ansible-ci.yml@main
+    uses: dryvist/.github/.github/workflows/_ansible-ci.yml@d93c868d5e3a12d012eb381200d17b34c10eea59
     with:
       # Molecule is owned locally (see header); the shared workflow runs lint only.
       molecule: false
@@ -47,9 +47,8 @@ jobs:
       # its `molecule_scenarios` output, which the local molecule job below
       # consumes — one change-detection definition, same as the filter outputs.
       #
-      # Each role entry includes every role referenced by that scenario plus its
-      # own directory. CI harness and contract-fixture edits run the GPU-serving
-      # smoke scenario; otherwise unmapped paths widen to the full matrix.
+      # Each entry lists the scenario's transitive role closure plus its own
+      # directory. Changes to shared workflow inputs widen centrally.
       molecule_scenario_filters: |
         agent_guest:
           - 'roles/agent_guest/**'
@@ -61,6 +60,7 @@ jobs:
           - 'molecule/ai_runner/**'
         herdr_remote:
           - 'roles/herdr_remote/**'
+          - 'roles/nixos_deploy/**'
           - 'roles/herdr_server/**'
           - 'molecule/herdr_remote/**'
         herdr_server:
@@ -91,6 +91,7 @@ jobs:
           - 'roles/nixos_deploy/**'
           - 'molecule/nixos_deploy/**'
         qdrant:
+          - 'roles/docker_engine/**'
           - 'roles/qdrant_docker/**'
           - 'molecule/qdrant/**'
       # These paths have contract coverage in the Data Contract workflow
@@ -106,13 +107,20 @@ jobs:
   data-contract:
     name: Data Contract
     needs: ci
-    if: ${{ needs.ci.outputs.ansible == 'true' }}
+    if: >-
+      needs.ci.outputs.ansible == 'true' ||
+      github.event_name == 'push' ||
+      github.event.pull_request.base.ref == 'main'
     uses: ./.github/workflows/_data-contract.yml
 
   molecule:
     name: Molecule
     needs: ci
-    if: ${{ needs.ci.outputs.molecule == 'true' && needs.ci.outputs.molecule_scenarios != '[]' }}
+    if: >-
+      (needs.ci.outputs.molecule == 'true' ||
+      github.event_name == 'push' ||
+      github.event.pull_request.base.ref == 'main') &&
+      needs.ci.outputs.molecule_scenarios != '[]'
     uses: ./.github/workflows/_molecule.yml
     with:
       scenarios: ${{ needs.ci.outputs.molecule_scenarios }}
@@ -149,5 +157,8 @@ jobs:
         with:
           # installer-sha is NOT skippable: it always runs, so a skip means it
           # was tampered with or errored, and either must fail the gate.
-          allowed-skips: data-contract, molecule
+          allowed-skips: >-
+            ${{ github.event_name == 'pull_request' &&
+            github.event.pull_request.base.ref == 'develop' &&
+            'data-contract, molecule' || '' }}
           jobs: ${{ toJSON(needs) }}
