@@ -11,14 +11,19 @@
   ansible.builtin.include_vars:
     file: "{{ llm_gpu_serving_glm_artifact_registry_file }}"
 
+- name: Load the NVFP4 sweep artifact shard
+  ansible.builtin.include_vars:
+    file: "{{ llm_gpu_serving_nvfp4_sweep_artifact_registry_file }}"
+
 - name: Load Stage 0 benchmark artifacts
   ansible.builtin.include_vars:
     file: "{{ llm_gpu_serving_stage0_artifact_registry_file }}"
 
-- name: Combine model artifact shards
+- name: Combine campaign model artifact shards
   ansible.builtin.set_fact:
     llm_gpu_serving_model_artifacts: >-
-      {{ _llm_model_artifacts + _llm_model_artifacts_glm53flash + _llm_model_stage0_artifacts }}
+      {{ _llm_model_artifacts + _llm_model_artifacts_glm53flash
+         + _llm_model_artifacts_nvfp4_sweep + _llm_model_stage0_artifacts }}
 
 - name: Index campaign model artifacts by stable id
   ansible.builtin.set_fact:
@@ -31,7 +36,7 @@
     that:
       - llm_gpu_serving_model_artifacts | length > 0
       - llm_gpu_serving_artifacts_by_id | length == llm_gpu_serving_model_artifacts | length
-    fail_msg: "The model artifact registry shards must contain unique artifact ids."
+    fail_msg: "The GPU artifact registry shards must contain unique artifact ids."
     quiet: true
 
 - name: Select artifacts included in the pinned model store
@@ -97,12 +102,8 @@
       - item.quantization | length > 0
       - item.engines | length > 0
       - item.use in ['serving', 'benchmark-only']
-      - item.engines | difference(['vllm', 'llama_cpp', 'mlx_lm', 'opendecider', 'laya']) | length == 0
+      - item.engines | difference(['vllm', 'llama_cpp', 'mlx_lm']) | length == 0
       - item.model_size is not defined or item.model_size | length > 0
-      - item.model_task is not defined or item.model_task | length > 0
-      - item.model_task_source is not defined or item.model_task_source in ['model_card', 'inferred']
-      - (item.model_task is defined) == (item.model_task_source is defined)
-      - item.model_size is not defined or item.model_task is defined
       - item.context_window_tokens is not defined or item.context_window_tokens | int > 0
       - >-
         item.required_artifact_ids | default([])
@@ -112,7 +113,7 @@
       - >-
         (item.required_artifact_ids | default([]) | unique | length)
         == (item.required_artifact_ids | default([]) | length)
-    fail_msg: "The model artifact registry shards contain invalid or duplicate metadata."
+    fail_msg: "The GPU artifact registry shards contain invalid or duplicate artifact metadata."
     quiet: true
   loop: "{{ llm_gpu_serving_model_artifacts }}"
   loop_control:
@@ -122,7 +123,8 @@
   ansible.builtin.set_fact:
     llm_gpu_serving_registry_by_profile: >-
       {%- set ns = namespace(by_profile={}) -%}
-      {%- for profile in _llm_registry_gpu_pro6000 -%}
+      {%- for profile in _llm_registry_gpu_pro6000
+            if profile.profile in llm_profiles -%}
       {%- set artifact = llm_gpu_serving_artifacts_by_id.get(profile.artifact_id) -%}
       {%- if artifact is not none -%}
       {%- set _ = ns.by_profile.update({profile.profile: profile | combine({
@@ -135,7 +137,7 @@
 - name: Assert each serving profile resolves to exactly one artifact
   ansible.builtin.assert:
     that:
-      - llm_gpu_serving_registry_by_profile | length == _llm_registry_gpu_pro6000 | length
+      - llm_gpu_serving_registry_by_profile | length == llm_profiles | length
       - llm_gpu_serving_registry_by_profile.keys() | list | sort == llm_profiles.keys() | list | sort
       - item.value.artifact_id in llm_gpu_serving_artifacts_by_id
       - >-

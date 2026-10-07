@@ -83,6 +83,10 @@
       ansible.builtin.include_vars:
         file: "{{ playbook_dir }}/../llm-models.d/65-gpu-pro6000-artifacts.yml"
 
+    - name: Load the NVFP4 sweep artifact shard
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml"
+
     - name: Read the selected TOML config
       ansible.builtin.slurp:
         src: "{{ _llm_campaign_workspace.path }}/mlx-benchmarks/configs/{{ config_name }}.toml"
@@ -99,20 +103,23 @@
         chdir: "{{ _llm_campaign_workspace.path }}/mlx-benchmarks"
       register: _llm_campaign_publish_help
       changed_when: false
+      failed_when: false
 
     - name: Require the converter to accept the campaign dimensions file
       ansible.builtin.assert:
         that:
+          - _llm_campaign_publish_help.rc == 0
           - _llm_campaign_publish_help.stdout is search('--campaign-dimensions')
         fail_msg: >-
-          The pinned benchmark revision {{ _llm_campaign_benchmarks_ref }} has no
-          mlx-bench-publish --campaign-dimensions; advance the pin before dispatch.
+          The required binary uv failed to run mlx-bench-publish, or the pinned
+          benchmark revision {{ _llm_campaign_benchmarks_ref }} has no
+          --campaign-dimensions option; install uv in the runner or advance the pin.
         quiet: true
 
     - name: Resolve the selected model-size and engine from the artifact registry
       ansible.builtin.set_fact:
         _llm_campaign_selected_artifacts: >-
-          {{ _llm_model_artifacts
+          {{ (_llm_model_artifacts + _llm_model_artifacts_nvfp4_sweep)
              | selectattr('model_size', 'defined')
              | selectattr('model_size', 'equalto', model_size)
              | selectattr('engines', 'contains', engine)

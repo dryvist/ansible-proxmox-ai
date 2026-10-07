@@ -5,7 +5,7 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-STAGE0_FILE = REPO_ROOT / "llm-models.d/67-gpu-pro6000-stage0-artifacts.yml"
+STAGE0_FILE = REPO_ROOT / "llm-models.d/68-gpu-pro6000-stage0-artifacts.yml"
 ENGINE_ROLES = ("nvidia_gpu_guest", "llm_gpu_serving")
 
 
