@@ -104,13 +104,80 @@ jobs:
           - 'playbooks/tasks/llm-model-campaign-convert.yml'
           - 'playbooks/templates/llm-model-campaign-dimensions.json.j2'
 
+  # Data Contract runs the repo-wide contract suite. On develop PRs, select it
+  # only for contract inputs; workflow-only edits still exercise the CI gate.
+  contract-scope:
+    name: Data Contract Scope
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      source_contracts: ${{ steps.filter.outputs.source_contracts }}
+      workflow_contracts: ${{ steps.filter.outputs.workflow_contracts }}
+    steps:
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'develop' }}
+        id: filter
+        with:
+          predicate-quantifier: some-with-excludes
+          filters: |
+            source_contracts:
+              - '**.yml'
+              - '**.yaml'
+              - '**.j2'
+              - 'roles/**'
+              - 'tests/**'
+              - 'playbooks/**'
+              - 'inventory/**'
+              - 'group_vars/**'
+              - 'host_vars/**'
+              - 'scripts/**'
+              - '.github/scripts/**'
+              - 'requirements.yml'
+              - 'requirements-ci.txt'
+              - 'ansible.cfg'
+              - '!.github/workflows/**'
+            workflow_contracts:
+              - '.github/workflows/_data-contract.yml'
+              - '.github/workflows/_llm-router-contract.yml'
+      - name: Report the selected contract scope
+        if: ${{ always() }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          FILTER_RESULT: ${{ steps.filter.outcome }}
+          SOURCE_CONTRACTS: ${{ steps.filter.outputs.source_contracts }}
+          WORKFLOW_CONTRACTS: ${{ steps.filter.outputs.workflow_contracts }}
+        run: |
+          if [[ "$EVENT_NAME" != pull_request || "$BASE_REF" == main ]]; then
+            selection=full
+          elif [[ "$FILTER_RESULT" != success ]]; then
+            selection=full-fail-closed
+          elif [[ "$SOURCE_CONTRACTS" == true || "$WORKFLOW_CONTRACTS" == true ]]; then
+            selection=full
+          else
+            selection=not-required
+          fi
+          printf 'Data Contract selection: %s\n' "$selection" >> "$GITHUB_STEP_SUMMARY"
+
   data-contract:
     name: Data Contract
-    needs: ci
+    needs: [ci, contract-scope]
     if: >-
-      needs.ci.outputs.ansible == 'true' ||
-      github.event_name == 'push' ||
-      github.event.pull_request.base.ref == 'main'
+      always() &&
+      (
+        github.event_name == 'push' ||
+        github.event.pull_request.base.ref == 'main' ||
+        (
+          needs.ci.outputs.ansible == 'true' &&
+          (
+            needs.contract-scope.result != 'success' ||
+            needs.contract-scope.outputs.source_contracts == 'true' ||
+            needs.contract-scope.outputs.workflow_contracts == 'true'
+          )
+        )
+      )
     uses: ./.github/workflows/_data-contract.yml
 
   molecule:
@@ -148,7 +215,7 @@ jobs:
 
   gate:
     name: Merge Gate
-    needs: [ci, data-contract, molecule, installer-sha]
+    needs: [ci, contract-scope, data-contract, molecule, installer-sha]
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     steps:
