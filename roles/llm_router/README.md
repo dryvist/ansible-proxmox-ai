@@ -182,14 +182,12 @@ role by hand or through the Admin UI — moved to
 
 ## Editing ladders in the UI (`llm_router_seed_mode`, Vikunja 3316)
 
-Router settings — `router_settings` in `config.yaml`: `fallbacks`,
-`routing_strategy`, `allowed_fails`, `cooldown_time`, `model_group_alias` —
-are administered in the LiteLLM Admin UI, at **Router Settings**, the same
-"database owns it after first seed" contract Roles and Virtual Keys already
-have (above). `llm_router_seed_mode` (`defaults/main/45-database.yml`,
-default `initial`) extends that same contract to `router_settings` — how
-Roles and Virtual Keys already enforce it:
-[`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md#same-contract-elsewhere).
+Router settings and fallback ladders stay Admin UI-owned after first seed.
+Virtual-key model allowlists and MCP permissions follow Git on every
+converge; `models_authoritative: false` keeps additive model extensions.
+In `initial`, routes and attribution metadata remain UI-owned. Budgets
+reconcile only in `rebuild`. See
+[`llm_router_seed_mode`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md#same-contract-elsewhere).
 
 - **`initial`** (default) — the converge seeds `router_settings` into the
   database only the first time, when no row exists yet

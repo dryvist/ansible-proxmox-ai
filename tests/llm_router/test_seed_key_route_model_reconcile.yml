@@ -1,7 +1,7 @@
 ---
 # Regression/contract test for reconcile-seeded-key-policy.yml's key diff:
-# MCP permissions reconcile in every mode, while other policy fields remain
-# rebuild-only, with one computed {alias, body} update per changed key.
+# MCP permissions and explicit model policy reconcile in every mode; routes
+# and metadata remain rebuild-only, with one update per changed key.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_seed_key_route_model_reconcile.yml -i localhost, -c local
@@ -86,6 +86,7 @@
       - alias: malformed-live
         value: "sk-{{ 'c' * 20 }}"
         models: [cheap, embed]
+        models_authoritative: false
       - alias: authoritative-narrow
         value: "sk-{{ 'd' * 20 }}"
         models: [cheap]
@@ -93,6 +94,7 @@
       - alias: null-models
         value: "sk-{{ 'e' * 20 }}"
         models: [cheap]
+        models_authoritative: false
       - alias: null-routes
         value: "sk-{{ 'f' * 20 }}"
         models: [cheap]
@@ -185,21 +187,24 @@
       ansible.builtin.set_fact:
         _llm_router_initial_key_updates: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
 
-    - name: Initial mode updates only the MCP permission security boundary
+    - name: Initial mode updates the explicit model allowlist and MCP permission
       ansible.builtin.assert:
         quiet: true
         that:
-          - _llm_router_initial_key_updates | map(attribute='alias') | list == ['mcp-reader']
+          - _llm_router_initial_key_updates | map(attribute='alias') | sort == ['authoritative-narrow', 'mcp-reader']
           - "_initial_mcp.body.object_permission == {'mcp_servers': ['zammad', 'slack']}"
           - "'models' not in _initial_mcp.body"
           - "'allowed_routes' not in _initial_mcp.body"
           - "'metadata' not in _initial_mcp.body"
+          - _initial_narrow.body.models == ['cheap']
         fail_msg: >-
-          initial mode did not isolate the MCP permission update:
+          initial mode did not apply explicit model and MCP policy:
           {{ _llm_router_initial_key_updates | map(attribute='alias') | list }}.
       vars:
         _initial_mcp: >-
           {{ _llm_router_initial_key_updates | selectattr('alias', 'equalto', 'mcp-reader') | first }}
+        _initial_narrow: >-
+          {{ _llm_router_initial_key_updates | selectattr('alias', 'equalto', 'authoritative-narrow') | first }}
 
     - name: Set explicit rebuild mode for the detailed reconciliation fixtures
       ansible.builtin.set_fact:

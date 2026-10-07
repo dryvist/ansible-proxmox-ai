@@ -163,15 +163,15 @@
         _probe_offset: "{{ _text.find('import_tasks: probe-router-settings.yml') }}"
         _sync_offset: "{{ _text.find('import_tasks: sync-router-settings.yml') }}"
 
-- name: Existing model policy and budgets reconcile only in explicit rebuild mode
+- name: Seeded models and MCP permissions reconcile every converge while budgets remain rebuild-only
   hosts: localhost
   gather_facts: false
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
   tasks:
-    # In initial mode, existing model/route/metadata fields remain UI-owned.
-    # MCP object permissions are the security exception and reconcile every
-    # run; budget and model policy remain rebuild-gated.
+    # In initial mode, registry-derived model allowlists and MCP permissions
+    # reconcile on every run. Routes and metadata remain UI-owned; budgets
+    # remain rebuild-gated.
     - name: Read seed-keys.yml
       ansible.builtin.slurp:
         src: "{{ _role_dir }}/tasks/seed-keys.yml"
@@ -187,18 +187,21 @@
         src: "{{ _role_dir }}/tasks/reconcile-key-budgets.yml"
       register: _budgets_source
 
-    - name: Assert key updates are gated to rebuild mode and budgets never touch models
+    - name: Assert models and MCP permissions are Git-owned while budgets stay rebuild-gated
       ansible.builtin.assert:
         quiet: true
         that:
           - "'import_tasks: reconcile-seeded-key-policy.yml' in _seed_keys_text"
-          - "'_live_models + _k.models) | unique' in _keys_text"
-          - "\"llm_router_seed_mode == 'rebuild' and _rebuild_fields_changed\" in _keys_text"
+          - "'_k.models_authoritative | default(true)' in _keys_text"
+          - "'_authoritative and _models_changed' in _keys_text"
+          - "\"elif _authoritative and _models_changed\" in _keys_text"
+          - "\"_body | combine({'models': _models_target})\" in _keys_text"
           - "\"if llm_router_seed_mode == 'rebuild'\" in _budgets_text"
           - "'models' not in _budgets_body"
         fail_msg: >-
-          Existing model policy or budgets must remain rebuild-gated, and
-          the seed play must import the Git-owned key-policy reconciler.
+          Seeded models and MCP permissions must reconcile on every converge,
+          while budgets remain rebuild-gated and the seed play imports the
+          Git-owned key-policy reconciler.
       vars:
         _seed_keys_text: "{{ _seed_keys_source.content | b64decode }}"
         _keys_text: "{{ _key_policy_source.content | b64decode }}"
