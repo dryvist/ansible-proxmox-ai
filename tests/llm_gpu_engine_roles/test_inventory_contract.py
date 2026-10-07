@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVING_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving.yml"
 GPU_ENGINE_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 SITE_PLAYBOOK = REPO_ROOT / "playbooks/site.yml"
-ROUTER_GROUP_VARS = REPO_ROOT / "inventory/group_vars/llm_router_group.yml"
+ROUTER_GPU_PROFILE_VARS = REPO_ROOT / "inventory/group_vars/all/llm-router-gpu-profiles.yml"
 ROUTER_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 
 
@@ -135,7 +135,7 @@ def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():
 
 
 def test_router_projects_gpu_profiles_only_when_the_selected_host_group_has_a_member():
-    expression = _load(ROUTER_GROUP_VARS)["llm_router_gpu_profiles_enabled"]
+    expression = _load(ROUTER_GPU_PROFILE_VARS)["llm_router_gpu_profiles_enabled"]
     env = jinja2.Environment()
 
     def render(groups: dict) -> str:
