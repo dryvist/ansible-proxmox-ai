@@ -54,7 +54,7 @@ def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
 
 def test_model_store_writer_group_comes_from_declared_gpu_mount_access():
     inventory_tasks = yaml.safe_load(
-        (REPO_ROOT / "inventory/load_tofu/add_lxc_hosts.yml").read_text(encoding="utf-8")
+        (REPO_ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml").read_text(encoding="utf-8")
     )
     add_host = next(
         task["ansible.builtin.add_host"]

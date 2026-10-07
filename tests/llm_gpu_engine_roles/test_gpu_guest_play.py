@@ -13,6 +13,7 @@ NVIDIA_ROLE_ROOT = REPO_ROOT / "roles/nvidia_gpu_guest"
 LLAMACPP_ROLE_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 VLLM_ROLE_ROOT = REPO_ROOT / "roles/vllm_serving"
 SERVING_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving.yml"
+GPU_ENGINE_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 SITE_PLAYBOOK = REPO_ROOT / "playbooks/site.yml"
 USERSPACE_TASKS = NVIDIA_ROLE_ROOT / "tasks/install-nvidia-userspace.yml"
 CORE_DEFAULTS = NVIDIA_ROLE_ROOT / "defaults/main/00-core.yml"
@@ -24,6 +25,17 @@ def _load(path: Path):
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
+def _serving_plays() -> list[dict]:
+    plays = []
+    for play in _load(SERVING_PLAYBOOK):
+        imported = play.get("import_playbook", play.get("ansible.builtin.import_playbook"))
+        if imported == GPU_ENGINE_PLAYBOOK.name:
+            plays.extend(_load(GPU_ENGINE_PLAYBOOK))
+        else:
+            plays.append(play)
+    return plays
+
+
 def _engine_plays() -> dict[str, dict]:
     hosts = {
         "llm_gpu_serving_llama_cpp_group": "llamacpp_serving",
@@ -31,7 +43,7 @@ def _engine_plays() -> dict[str, dict]:
     }
     plays = {
         play["hosts"]: play
-        for play in _load(SERVING_PLAYBOOK)
+        for play in _serving_plays()
         if play.get("hosts") in hosts
     }
     assert set(plays) == set(hosts), "both engine-specific plays must exist"
@@ -66,7 +78,7 @@ def test_serving_plays_apply_each_engine_role_to_one_guest_at_a_time() -> None:
 
 
 def test_serving_play_precedes_the_router_pool() -> None:
-    hosts = [play.get("hosts") for play in _load(SERVING_PLAYBOOK)]
+    hosts = [play.get("hosts") for play in _serving_plays()]
 
     router = hosts.index("llm_router_group")
     for engine_group in _engine_plays():
@@ -81,7 +93,7 @@ def test_site_reaches_the_serving_playbook_without_a_tag_filter() -> None:
 
 
 def test_profile_comes_from_the_shared_selector_not_a_new_variable() -> None:
-    text = SERVING_PLAYBOOK.read_text(encoding="utf-8")
+    text = "\n".join(path.read_text(encoding="utf-8") for path in (SERVING_PLAYBOOK, GPU_ENGINE_PLAYBOOK))
     all_vars = _load(REPO_ROOT / "inventory/group_vars/all.yml")
     selector_expression = all_vars["llm_active_profile"]
 

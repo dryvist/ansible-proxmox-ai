@@ -8,6 +8,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVING_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving.yml"
+GPU_ENGINE_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 
 
 def _load(path: Path):
@@ -15,9 +16,20 @@ def _load(path: Path):
 
 
 def _legacy_play() -> dict:
-    plays = [play for play in _load(SERVING_PLAYBOOK) if play.get("hosts") == "llm_gpu_legacy_group"]
+    plays = [play for play in _serving_plays() if play.get("hosts") == "llm_gpu_legacy_group"]
     assert len(plays) == 1
     return plays[0]
+
+
+def _serving_plays() -> list[dict]:
+    plays = []
+    for play in _load(SERVING_PLAYBOOK):
+        imported = play.get("import_playbook", play.get("ansible.builtin.import_playbook"))
+        if imported == GPU_ENGINE_PLAYBOOK.name:
+            plays.extend(_load(GPU_ENGINE_PLAYBOOK))
+        else:
+            plays.append(play)
+    return plays
 
 
 def _walk(node):
@@ -44,7 +56,7 @@ def test_legacy_profile_switch_role_targets_only_the_legacy_group():
 
 
 def test_legacy_and_replacement_engine_plays_precede_the_router_pool():
-    hosts = [play.get("hosts") for play in _load(SERVING_PLAYBOOK)]
+    hosts = [play.get("hosts") for play in _serving_plays()]
     router = hosts.index("llm_router_group")
 
     assert hosts.index("llm_gpu_legacy_group") < router
@@ -53,7 +65,9 @@ def test_legacy_and_replacement_engine_plays_precede_the_router_pool():
 
 
 def test_legacy_play_does_not_override_the_shared_engine_profile_selector():
-    text = SERVING_PLAYBOOK.read_text(encoding="utf-8")
+    text = "\n".join(
+        path.read_text(encoding="utf-8") for path in (SERVING_PLAYBOOK, GPU_ENGINE_PLAYBOOK)
+    )
 
     assert "llm_active_profile" not in _legacy_play().get("vars", {})
     assert "llm_gpu_serving_model_cache_mount_path" not in text

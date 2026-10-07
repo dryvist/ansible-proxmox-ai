@@ -9,6 +9,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVING_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving.yml"
+GPU_ENGINE_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 SITE_PLAYBOOK = REPO_ROOT / "playbooks/site.yml"
 ROUTER_GROUP_VARS = REPO_ROOT / "inventory/group_vars/llm_router_group.yml"
 ROUTER_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
@@ -16,6 +17,17 @@ ROUTER_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 
 def _load(path: Path):
     return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _serving_plays():
+    plays = []
+    for play in _load(SERVING_PLAYBOOK):
+        imported = play.get("import_playbook", play.get("ansible.builtin.import_playbook"))
+        if imported == GPU_ENGINE_PLAYBOOK.name:
+            plays.extend(_load(GPU_ENGINE_PLAYBOOK))
+        else:
+            plays.append(play)
+    return plays
 
 
 def _walk(node):
@@ -66,7 +78,8 @@ def test_each_engine_profile_and_router_alias_follow_the_single_tofu_selector():
 
 def test_inventory_loader_assigns_selected_router_membership_and_retains_both_engine_identities():
     loader = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_hosts.yml")
-    add_host = next(task["ansible.builtin.add_host"] for task in _walk(loader) if "ansible.builtin.add_host" in task)
+    host_tasks = _load(REPO_ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml")
+    add_host = next(task["ansible.builtin.add_host"] for task in _walk(host_tasks) if "ansible.builtin.add_host" in task)
     groups = add_host["groups"]
 
     assert "load_tofu_gpu_engine_pair_present" in groups
@@ -75,13 +88,16 @@ def test_inventory_loader_assigns_selected_router_membership_and_retains_both_en
     assert "llm_gpu_engine_llama_cpp_group" in groups
     assert "llm_gpu_engine_vllm_group" in groups
     assert "llm_gpu_legacy_group" in groups
-    assert "value.llm_gpu_engine_identity" in yaml.safe_dump(loader)
-    assert "selectattr('value.llm_gpu_engine_identity', 'in', ['llama_cpp', 'vllm'])" in yaml.safe_dump(loader)
+    assert "value.llm_gpu_engine_identity" in yaml.safe_dump(loader + host_tasks)
+    selector = next(task for task in loader if task.get("name") == "Resolve the selector and declared GPU engine members")
+    members = selector["ansible.builtin.set_fact"]["load_tofu_gpu_engine_members"]
+    assert "selectattr('value.llm_gpu_engine_identity', 'defined')" in members
+    assert "selectattr('value.llm_gpu_engine_identity', 'in', ['llama_cpp', 'vllm'])" in members
     assert "llm_gpu_group" in groups
 
 
 def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():
-    plays = _load(SERVING_PLAYBOOK)
+    plays = _serving_plays()
     hosts = [play.get("hosts") for play in plays]
     router = hosts.index("llm_router_group")
     gpu_plays = [
