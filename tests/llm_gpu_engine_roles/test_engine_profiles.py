@@ -12,7 +12,10 @@ NVIDIA_ROOT = REPO_ROOT / "roles/nvidia_gpu_guest"
 VLLM_ROOT = REPO_ROOT / "roles/vllm_serving"
 LLAMACPP_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
-ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml"
+ARTIFACT_FILES = (
+    REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml",
+    REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
+)
 
 
 def _profiles() -> dict:
@@ -25,9 +28,19 @@ def _profiles() -> dict:
     return {**vllm, **llamacpp}
 
 
+def _artifacts() -> list[dict]:
+    return [
+        artifact
+        for path in ARTIFACT_FILES
+        for key, entries in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_model_artifacts")
+        for artifact in entries
+    ]
+
+
 def _registry_profiles() -> dict:
     entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
-    artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))["_llm_model_artifacts"]
+    artifacts = _artifacts()
     by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     return {
         entry["profile"]: {
@@ -135,8 +148,7 @@ def test_five_named_profiles_carry_the_serving_contract():
 
 
 def test_artifact_registry_is_the_only_source_for_model_files_and_quantization():
-    artifact_file = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))
-    artifacts = artifact_file["_llm_model_artifacts"]
+    artifacts = _artifacts()
     artifact_ids = [artifact["artifact_id"] for artifact in artifacts]
     assert len(artifact_ids) == len(set(artifact_ids))
 

@@ -13,7 +13,10 @@ ROLE_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 PROFILE_DEFAULTS = ROLE_ROOT / "defaults/main/10-profiles.yml"
 TEMPLATE_DIR = ROLE_ROOT / "templates"
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
-ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml"
+ARTIFACT_FILES = (
+    REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml",
+    REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
+)
 LLAMA_BIN = "/opt/llm-gpu-serving/llama.cpp/llama-server"
 
 
@@ -25,9 +28,19 @@ def _llama_profiles() -> dict:
     return {name: profile for name, profile in _profiles().items() if profile["engine"] == "llama_cpp"}
 
 
+def _artifacts() -> list[dict]:
+    return [
+        artifact
+        for path in ARTIFACT_FILES
+        for key, entries in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_model_artifacts")
+        for artifact in entries
+    ]
+
+
 def _registry(profile_name: str) -> dict:
     entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
-    artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))["_llm_model_artifacts"]
+    artifacts = _artifacts()
     by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     entry = next(item for item in entries if item["profile"] == profile_name)
     artifact = by_id[entry["artifact_id"]]

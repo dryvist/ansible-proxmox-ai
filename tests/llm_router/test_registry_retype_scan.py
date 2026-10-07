@@ -61,7 +61,7 @@ def registry_values(root: Path) -> dict[str, set[str]]:
     values: dict[str, set[str]] = {}
     for slice_file in sorted((root / "llm-models.d").glob("*.yml")):
         for name, entries in yaml.safe_load(slice_file.read_text()).items():
-            if name == "_llm_model_artifacts":
+            if name.startswith("_llm_model_artifacts"):
                 for artifact in entries:
                     values.setdefault(str(artifact["hf_repo"]), set()).add("upstream")
                 continue

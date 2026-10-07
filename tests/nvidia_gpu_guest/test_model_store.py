@@ -12,11 +12,20 @@ ENGINE_ROOTS = {
     "vllm": REPO_ROOT / "roles/vllm_serving",
     "llama_cpp": REPO_ROOT / "roles/llamacpp_serving",
 }
-ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml"
+ARTIFACT_FILES = (
+    REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml",
+    REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
+)
 
 
 def _model_store() -> list[dict]:
-    artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))["_llm_model_artifacts"]
+    artifacts = [
+        artifact
+        for path in ARTIFACT_FILES
+        for key, entries in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_model_artifacts")
+        for artifact in entries
+    ]
     return [artifact for artifact in artifacts if artifact.get("model_store") is True]
 
 
