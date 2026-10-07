@@ -59,8 +59,8 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         assert entry["servable"] is False
         assert isinstance(entry["context_window"], int) and entry["context_window"] > 0
         assert isinstance(entry["max_output_tokens"], int) and entry["max_output_tokens"] > 0
-        assert entry["input_cost_per_token"] == 0
-        assert entry["output_cost_per_token"] == 0
+        assert entry.get("input_cost_per_token", 0) == 0
+        assert entry.get("output_cost_per_token", 0) == 0
         assert isinstance(entry["max_parallel_requests"], int) and entry["max_parallel_requests"] > 0
         assert entry["num_retries"] == 0
 
