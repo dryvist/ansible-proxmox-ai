@@ -51,7 +51,7 @@ function brier(predicted: JsonObject, expected: JsonObject): number | undefined 
     if (p === undefined || q === undefined) return undefined;
     total += (p - q) ** 2;
   }
-  return total / expectedKeys.length;
+  return total;
 }
 
 function evaluate(ctx: EvaluationContext): { scores: Score[] } {
@@ -71,30 +71,39 @@ function evaluate(ctx: EvaluationContext): { scores: Score[] } {
   for (const [question, expectedValue] of Object.entries(expected)) {
     const reference = asObject(expectedValue);
     const predictedValue = answers[question];
-    if (predictedValue === undefined) continue;
-    const predicted = asObject(predictedValue);
+    const predicted =
+      predictedValue === undefined ? undefined : asObject(predictedValue);
     const expectedLabel = typeof reference.label === "string" ? reference.label : undefined;
-    const predictedLabel = answerLabel(predicted);
-    if (expectedLabel !== undefined && predictedLabel !== undefined) {
+    const predictedLabel = predicted === undefined ? undefined : answerLabel(predicted);
+    if (expectedLabel !== undefined) {
       exactCount += 1;
       if (predictedLabel === expectedLabel) exact += 1;
     }
 
     if (reference.type === "score") {
       const expectedScore = numeric(reference.score);
-      const predictedScore = numeric(predicted.score);
-      if (expectedScore !== undefined && predictedScore !== undefined) {
+      const predictedScore = predicted === undefined ? undefined : numeric(predicted.score);
+      if (expectedScore !== undefined) {
         numericCount += 1;
-        if (Math.abs(predictedScore - expectedScore) <= absoluteTolerance) numericEquivalent += 1;
+        if (
+          predictedScore !== undefined &&
+          Math.abs(predictedScore - expectedScore) <= absoluteTolerance
+        ) {
+          numericEquivalent += 1;
+        }
       }
     }
 
-    if (predicted.probabilities !== undefined && reference.probabilities !== undefined) {
-      const value = brier(asObject(predicted.probabilities), asObject(reference.probabilities));
-      if (value !== undefined) {
-        brierTotal += value;
-        brierCount += 1;
+    if (reference.probabilities !== undefined) {
+      if (predicted?.probabilities === undefined) {
+        throw new Error(`Missing probabilities for typed decision ${question}`);
       }
+      const value = brier(asObject(predicted.probabilities), asObject(reference.probabilities));
+      if (value === undefined) {
+        throw new Error(`Invalid probabilities for typed decision ${question}`);
+      }
+      brierTotal += value;
+      brierCount += 1;
     }
   }
 
@@ -121,6 +130,7 @@ function evaluate(ctx: EvaluationContext): { scores: Score[] } {
         name: "typed_decision_probability_brier",
         value: brierTotal / brierCount,
         dataType: "NUMERIC",
+        comment: "Mean multiclass Brier score; lower is better.",
         metadata: { total: brierCount, lower_is_better: true },
       },
     ],
