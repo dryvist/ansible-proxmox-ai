@@ -21,7 +21,10 @@ name: CI Gate
 
 on:
   pull_request:
+    branches: [develop, main]
     types: [opened, synchronize, reopened]
+  push:
+    branches: [main, develop]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -44,11 +47,8 @@ jobs:
       # its `molecule_scenarios` output, which the local molecule job below
       # consumes — one change-detection definition, same as the filter outputs.
       #
-      # Each entry lists ONLY the role its converge play includes, plus the
-      # scenario's own directory. Roles several scenarios share (docker_engine)
-      # are deliberately absent: an unmapped path matches nothing, and nothing
-      # matched means run everything, so touching a shared role widens instead
-      # of narrowing to a scenario that does not cover it.
+      # Each entry lists the scenario's transitive role closure plus its own
+      # directory. Changes to shared workflow inputs widen centrally.
       molecule_scenario_filters: |
         agent_guest:
           - 'roles/agent_guest/**'
@@ -58,14 +58,18 @@ jobs:
           - 'molecule/ai_runner/**'
         herdr_remote:
           - 'roles/herdr_remote/**'
+          - 'roles/nixos_deploy/**'
           - 'molecule/herdr_remote/**'
         herdr_server:
           - 'roles/herdr_server/**'
+          - 'roles/nixos_deploy/**'
           - 'molecule/herdr_server/**'
         hermes_ui:
+          - 'roles/docker_engine/**'
           - 'roles/hermes_ui_docker/**'
           - 'molecule/hermes_ui/**'
         hindsight:
+          - 'roles/docker_engine/**'
           - 'roles/hindsight_docker/**'
           - 'molecule/hindsight/**'
         llama_cpp_backend:
@@ -76,24 +80,32 @@ jobs:
           - 'molecule/llm_gpu_serving/**'
         llamaindex:
           - 'roles/llamaindex/**'
+          - 'roles/ollama/**'
           - 'molecule/llamaindex/**'
         nixos_deploy:
           - 'roles/nixos_deploy/**'
           - 'molecule/nixos_deploy/**'
         qdrant:
+          - 'roles/docker_engine/**'
           - 'roles/qdrant_docker/**'
           - 'molecule/qdrant/**'
 
   data-contract:
     name: Data Contract
     needs: ci
-    if: ${{ needs.ci.outputs.ansible == 'true' }}
+    if: >-
+      needs.ci.outputs.ansible == 'true' ||
+      github.event_name == 'push' ||
+      github.event.pull_request.base.ref == 'main'
     uses: ./.github/workflows/_data-contract.yml
 
   molecule:
     name: Molecule
     needs: ci
-    if: ${{ needs.ci.outputs.molecule == 'true' }}
+    if: >-
+      needs.ci.outputs.molecule == 'true' ||
+      github.event_name == 'push' ||
+      github.event.pull_request.base.ref == 'main'
     uses: ./.github/workflows/_molecule.yml
     with:
       scenarios: ${{ needs.ci.outputs.molecule_scenarios }}
@@ -130,5 +142,8 @@ jobs:
         with:
           # installer-sha is NOT skippable: it always runs, so a skip means it
           # was tampered with or errored, and either must fail the gate.
-          allowed-skips: data-contract, molecule
+          allowed-skips: >-
+            ${{ github.event_name == 'pull_request' &&
+            github.event.pull_request.base.ref == 'develop' &&
+            'data-contract, molecule' || '' }}
           jobs: ${{ toJSON(needs) }}
