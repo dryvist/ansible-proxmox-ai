@@ -28,7 +28,9 @@ with a per-test timeout unless a recipe requests a Docker sandbox.
 
 A selected target supplies a writable local cache and, optionally, a declared
 model-origin mount. The role validates the cache and does not create a missing
-mount point.
+mount point. Package, Python, Hugging Face, CUDA repository, and release
+downloads use the published inventory's `cache_proxy_urls.apt_cache` list; a
+missing list blocks the converge before upstream fetches.
 
 ## What it does
 
@@ -42,8 +44,8 @@ mount point.
 - Links `vllm` and `hf` into `/usr/local/bin` so campaign preflights find them without a venv path.
 - Installs the Renovate-pinned vLLM version and the Renovate-pinned `b12x`
   package for SM120 kernel support in one uv command.
-- Resolves a recent llama.cpp release and installs its Linux x64 CUDA archive
-  using the same release metadata and archive-layout checks as `llama_cpp`.
+- Installs the Renovate-pinned llama.cpp CUDA assets from the shared
+  `llamacpp_release` contract only when the recorded asset changes.
 - Seeds `model_store: true` artifacts from the base registry and NVFP4 sweep shard
   into the declared origin with immutable Hub revisions. The seed playbook
   checks for running GPU compute applications before each download and verifies
