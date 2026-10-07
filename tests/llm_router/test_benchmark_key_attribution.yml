@@ -1,0 +1,50 @@
+---
+- name: Single benchmark key uses request-level attribution
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load existing ladder fixture
+      ansible.builtin.include_vars: ladder_keys_fixture.yml
+
+    - name: Load router defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load registry projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry
+
+    - name: Load the sanitized benchmark app-field fixture
+      ansible.builtin.include_vars: fixtures/openbao-benchmark-app.yml
+
+    - name: Render LiteLLM settings
+      ansible.builtin.set_fact:
+        _settings: "{{ lookup('template', _role_dir ~ '/templates/litellm-settings.yaml.j2') | from_yaml }}"
+
+    - name: Benchmark catalog contains one field and no program projections
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - bao_apps_secrets.keys() | list == ['benchmark_llm_router_key']
+          - llm_router_key_catalog_facts.openbao_router_key_catalog.keys() | list == ['benchmark']
+          - llm_router_key_catalog_facts.openbao_router_key_catalog.benchmark == ['benchmark_llm_router_key']
+          - llm_router_key_catalog_facts.program_key_definitions is not defined
+          - llm_router_key_catalog_facts.program_key_catalog is not defined
+          - _llm_router_program_virtual_keys is not defined
+          - >-
+            _llm_router_declared_virtual_keys
+            | selectattr('alias', 'match', '^program-') | list | length == 0
+
+    - name: Caller metadata retains runner, purpose, and tier attribution
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'requester_metadata.runner' in llm_router_trace_span_metadata_keys"
+          - "'requester_metadata.purpose' in llm_router_trace_span_metadata_keys"
+          - "'requester_metadata.tier' in llm_router_trace_span_metadata_keys"
+          - >-
+            _settings.litellm_settings.callback_settings.otel.baggage_metadata_keys
+            == llm_router_trace_span_metadata_keys

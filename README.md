@@ -39,6 +39,11 @@ molecule test -s llamaindex
 molecule test -s qdrant
 ```
 
+Pull requests into `develop` run the scenarios matched by the shared
+Ansible CI role map. Shared inputs or an unmapped change widen to the full
+matrix. Pull requests into `main` and pushes to `main` or `develop` run the
+full Molecule matrix; `Merge Gate` aggregates Molecule and the data contract.
+
 ## Roles
 
 ### LLM serving
