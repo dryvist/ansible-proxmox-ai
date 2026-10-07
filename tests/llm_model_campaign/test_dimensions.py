@@ -273,3 +273,28 @@ def test_no_leaf_is_written_as_null_and_only_known_groups_appear():
 
     assert set(groups) <= {"hardware", "software", "model", "run", "provenance"}
     assert all(value is not None for group in groups.values() for value in group.values())
+
+
+def test_model_task_metadata_is_copied_from_the_selected_artifact():
+    dimensions = _render(
+        _cell(
+            _llm_campaign_model={
+                "artifact_id": "example-artifact",
+                "hf_repo": "example-org/example-model",
+                "revision": "0123456789abcdef0123456789abcdef01234567",
+                "quantization": "ExampleQuant",
+                "model_task": "text-generation",
+                "model_task_source": "model_card",
+            }
+        )
+    )
+
+    assert dimensions["model_task"] == "text-generation"
+    assert dimensions["model_task_source"] == "model_card"
+
+
+def test_model_task_metadata_is_omitted_when_the_artifact_has_no_tag():
+    dimensions = _render(_cell())
+
+    assert "model_task" not in dimensions
+    assert "model_task_source" not in dimensions
