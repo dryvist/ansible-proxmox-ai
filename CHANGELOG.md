@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.69.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.68.0...v0.69.0) (2026-10-07)
+
+
+### Features
+
+* **llm_gpu_serving:** serve and download into the local cache when no model origin is declared ([#1135](https://github.com/dryvist/ansible-proxmox-ai/issues/1135)) ([8e2c3b1](https://github.com/dryvist/ansible-proxmox-ai/commit/8e2c3b144d1031f09f276e331c4929673476a303))
+* **llm_gpu_serving:** serve profiles on the GPU guest group ([#1126](https://github.com/dryvist/ansible-proxmox-ai/issues/1126)) ([faba4fa](https://github.com/dryvist/ansible-proxmox-ai/commit/faba4faf702c63dac3a94b43cf89e324d97814ab))
+* **llm_router:** create the JWT mapping unique index before the schema push ([#1137](https://github.com/dryvist/ansible-proxmox-ai/issues/1137)) ([55d391a](https://github.com/dryvist/ansible-proxmox-ai/commit/55d391a0fd7b0f9714e20819e2e296073531f06a))
+* **llm_router:** render the Slack MCP server only when its token resolves ([#1130](https://github.com/dryvist/ansible-proxmox-ai/issues/1130)) ([01d1e17](https://github.com/dryvist/ansible-proxmox-ai/commit/01d1e1772b29c56633446582dfa5599c85e18f5e))
+* **llm_router:** send LiteLLM traces to Langfuse ([#1131](https://github.com/dryvist/ansible-proxmox-ai/issues/1131)) ([fc74066](https://github.com/dryvist/ansible-proxmox-ai/commit/fc740661314fc1bd4a0b2fde338f6c9b019b3acb))
+* **llm-models:** add Qwen3.8-27B Q4_K_M and Q8_0 artifacts, serve Q4_K_M on medium-b ([#1145](https://github.com/dryvist/ansible-proxmox-ai/issues/1145)) ([fbec2f4](https://github.com/dryvist/ansible-proxmox-ai/commit/fbec2f4021c9fd92c194201d3922c1b8ffad8697))
+
+
+### Bug Fixes
+
+* **llm_gpu_serving:** accept the uv-installed hf CLI symlink in cache sync ([#1141](https://github.com/dryvist/ansible-proxmox-ai/issues/1141)) ([39ea327](https://github.com/dryvist/ansible-proxmox-ai/commit/39ea3275e5b005ce0ecf40a8508d222b4e563e6c))
+* **llm_gpu_serving:** install the llama.cpp CUDA binary with its runtime archive ([#1140](https://github.com/dryvist/ansible-proxmox-ai/issues/1140)) ([4a5b7a1](https://github.com/dryvist/ansible-proxmox-ai/commit/4a5b7a1563edc5df2832ce0eb4806b3b2dfaf53b))
+* **llm_gpu_serving:** install vLLM and b12x in one resolver run ([#1138](https://github.com/dryvist/ansible-proxmox-ai/issues/1138)) ([3e15e7d](https://github.com/dryvist/ansible-proxmox-ai/commit/3e15e7dca162aa019d140ce23827833cda7fe223))
+* **llm_gpu_serving:** let a profile switch clear its own server before downloading ([714b623](https://github.com/dryvist/ansible-proxmox-ai/commit/714b623a93c387717571764e504ef4bf04dc2936))
+* **llm_gpu_serving:** let a profile switch clear its own server before downloading ([fbf3d19](https://github.com/dryvist/ansible-proxmox-ai/commit/fbf3d192a8c073f4d3aa1d43635f49e17db6f519))
+* **llm_gpu_serving:** let vLLM read NVFP4 quantization and select llama.cpp CUDA 13.x ([#1144](https://github.com/dryvist/ansible-proxmox-ai/issues/1144)) ([678166b](https://github.com/dryvist/ansible-proxmox-ai/commit/678166bb10586c686d086b0a4624cb32171e0190))
+* **llm_gpu_serving:** replace a running llama-server binary on reinstall ([#1146](https://github.com/dryvist/ansible-proxmox-ai/issues/1146)) ([5c7fd71](https://github.com/dryvist/ansible-proxmox-ai/commit/5c7fd7135f7e37cd35dce8aa8b7314455773ea1f))
+* **llm_gpu_serving:** wait for a first start and show the journal on health failure ([#1143](https://github.com/dryvist/ansible-proxmox-ai/issues/1143)) ([c685407](https://github.com/dryvist/ansible-proxmox-ai/commit/c685407cb55f9aa72220f76148d2b580271c0649))
+* **llm_router:** give zdr_only keys the private ZDR model scope ([#1132](https://github.com/dryvist/ansible-proxmox-ai/issues/1132)) ([179e482](https://github.com/dryvist/ansible-proxmox-ai/commit/179e4824eea406a53f239fb44287c8a273b8e27c))
+* **llm_router:** install the Postgres driver the migration lock imports ([#1139](https://github.com/dryvist/ansible-proxmox-ai/issues/1139)) ([71b5e22](https://github.com/dryvist/ansible-proxmox-ai/commit/71b5e229a115e282fa788b4dc7353ec83f231554))
+* **llm_router:** keep the router entry point in Hermes profile keys ([#1133](https://github.com/dryvist/ansible-proxmox-ai/issues/1133)) ([d526dbc](https://github.com/dryvist/ansible-proxmox-ai/commit/d526dbc1773b811dbbfac42ae37f6a7d6c8e13cf))
+* **llm_router:** read UI settings values by key in drift check ([be37eaf](https://github.com/dryvist/ansible-proxmox-ai/commit/be37eaf7989cc106f497aefd0525be690c92469b))
+* **llm_router:** read UI settings values by key in drift check ([e9289b0](https://github.com/dryvist/ansible-proxmox-ai/commit/e9289b07f9766b48479efbb1a9c4d26f4489d249))
+* **llm_router:** show redacted Prisma output when the schema push fails ([#1136](https://github.com/dryvist/ansible-proxmox-ai/issues/1136)) ([d763cff](https://github.com/dryvist/ansible-proxmox-ai/commit/d763cffed587c54b8792fdc682ffc6b3b19f1025))
+* **llm-model-campaign:** run controller-side tasks without privilege escalation ([#1149](https://github.com/dryvist/ansible-proxmox-ai/issues/1149)) ([f96d592](https://github.com/dryvist/ansible-proxmox-ai/commit/f96d5923dffaa72c78be37de39569f9d3e3bfc42))
+* **llm-router:** read key-list pages through page['keys'] in drift check ([#1142](https://github.com/dryvist/ansible-proxmox-ai/issues/1142)) ([e47315a](https://github.com/dryvist/ansible-proxmox-ai/commit/e47315a2233d04d0614302a699649901e2134e61))
+
 ## [0.68.0](https://github.com/dryvist/ansible-proxmox-ai/compare/v0.67.0...v0.68.0) (2026-10-06)
 
 
