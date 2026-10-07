@@ -29,8 +29,8 @@ with a per-test timeout unless a recipe requests a Docker sandbox.
 A selected target supplies a writable local cache and, optionally, a declared
 model-origin mount. The role validates the cache and does not create a missing
 mount point. Package, Python, Hugging Face, CUDA repository, and release
-downloads use the shared `APT_PROXY_URL` cache proxy; a missing proxy blocks
-the converge before upstream fetches.
+downloads use the published inventory's `cache_proxy_urls.apt_cache` list; a
+missing list blocks the converge before upstream fetches.
 
 ## What it does
 

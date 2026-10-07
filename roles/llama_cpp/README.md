@@ -38,7 +38,7 @@ Ordering: `tofu-proxmox` (LXC shell) → `ansible-proxmox` (GPU passthrough) →
 - Installs the Renovate-pinned llama.cpp asset selected for `rocm`, `vulkan`, or
   `cpu` by the shared `llamacpp_release` contract. The recorded asset triggers
   installation only when that backend's pin changes; downloads use
-  `APT_PROXY_URL`.
+  published inventory cache endpoints.
 - Adds the `llama-cpp` service user to whatever groups own the passed-in GPU device
   nodes (resolved at runtime via `stat`), so the server can open `/dev/kfd` +
   `/dev/dri` regardless of how host GIDs map to container group names (same idiom as

@@ -37,6 +37,7 @@ def test_one_renovate_pin_declares_every_backend_asset():
 
 
 def test_shared_download_uses_the_pinned_url_and_requires_apt_proxy():
+    defaults_path = RELEASE_ROOT / "defaults/main/00-release.yml"
     prepare = _load(RELEASE_ROOT / "tasks/prepare.yml")
     download = _load(RELEASE_ROOT / "tasks/download.yml")
     proxy_check = _load(RELEASE_ROOT / "tasks/require-proxy.yml")
@@ -44,7 +45,10 @@ def test_shared_download_uses_the_pinned_url_and_requires_apt_proxy():
 
     assert any("tasks/load.yml" in str(task) for task in prepare)
     assert any("require-proxy.yml" in str(task) for task in prepare)
-    assert "APT_PROXY_URL" in str(proxy_check)
+    assert "llamacpp_release_proxy_urls | length > 0" in str(proxy_check)
+    assert "cache_proxy_urls.apt_cache" in str(proxy_check)
+    assert "APT_PROXY_URL" not in str(proxy_check)
+    assert "cache_proxy_urls" in defaults_path.read_text(encoding="utf-8")
     assert get_url["url"] == "{{ llamacpp_release_download_url }}/{{ llamacpp_release_asset_name }}"
     assert download[-1]["environment"] == "{{ llamacpp_release_proxy_environment }}"
 
