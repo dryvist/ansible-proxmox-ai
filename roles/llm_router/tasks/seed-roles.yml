@@ -295,3 +295,35 @@
     label: "{{ item.role }} -> {{ item.fallbacks | select('in', _llm_router_live_models) | join(', ') }}"
   when: item.fallbacks | select('in', _llm_router_live_models) | list | length > 0
   no_log: true
+
+# Existing role targets stay UI-owned, but their privacy tags must track the
+# actual target. Read after create/recreate so this also covers rows changed in
+# this run; PATCH only `litellm_params.tags` and preserve the role and ladder.
+- name: Read current role deployments for privacy tag reconciliation
+  ansible.builtin.uri:
+    url: "http://localhost:{{ llm_router_api_port }}/model/info"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  register: _llm_router_roles_for_tag_sync
+  no_log: true
+
+- name: Prepare role tag reconciliation from live deployment targets
+  ansible.builtin.import_tasks: prepare-role-tag-updates.yml
+
+- name: Reconcile role deployment policy tags without changing its UI-owned target or ladder
+  ansible.builtin.uri:
+    url: "http://localhost:{{ llm_router_api_port }}/model/{{ item.model_id }}/update"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    body_format: json
+    body:
+      litellm_params:
+        tags: "{{ item.tags }}"
+    status_code: [200]
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: "{{ _llm_router_role_tag_updates }}"
+  loop_control:
+    label: "{{ item.role }}"
+  no_log: true
