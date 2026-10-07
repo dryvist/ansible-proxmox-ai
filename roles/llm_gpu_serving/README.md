@@ -61,17 +61,19 @@ mount point.
 
 ## Profiles
 
-`llm_profiles` defines four entries: `small`, `medium-a`, `medium-b`, and
-`max`. All four are enabled so the profile switch can select any of them.
+`llm_profiles` defines five entries: `small`, `medium-a`, `medium-b`, `max`,
+and `glm-flash`. All five are enabled so the profile switch can select any of
+them. `glm-flash` is a separate llama.cpp profile for the pinned GLM-5.3-Flash
+UD-IQ1_S artifact; its router entry remains disabled until it is validated.
 Runtime serving settings live here; model bytes, Hub repository, include
 globs, file format, quantization, engine support, GGUF file name, and use are
 defined once in `llm-models.d/65-gpu-pro6000-artifacts.yml`. The router profile
 registry links to those records by `artifact_id` and stays `enabled: false`,
 `servable: false` until a serving floor is measured.
 
-`small` and `medium-a` run vLLM (safetensors). `medium-b` and `max` run
-llama.cpp (GGUF) from the installed release binary. A vLLM profile carries its
-kernel backends, max model length, max sequences, GPU memory utilization,
+`small` and `medium-a` run vLLM (safetensors). `medium-b`, `max`, and
+`glm-flash` run llama.cpp (GGUF) from the installed release binary. A vLLM
+profile carries its kernel backends, max model length, max sequences, GPU memory utilization,
 automatic tool-choice flag, parser defaults, and API port; the selected
 artifact supplies model-specific parsers when present. A llama.cpp profile
 carries `max_model_len` (the per-agent context), `max_num_seqs` (parallel

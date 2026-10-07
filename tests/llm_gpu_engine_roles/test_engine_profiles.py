@@ -98,9 +98,9 @@ def _exec_start(unit: str) -> str:
     return start.replace("\\\n", " ").strip()
 
 
-def test_four_named_profiles_carry_the_serving_contract():
+def test_five_named_profiles_carry_the_serving_contract():
     profiles = _profiles()
-    assert list(profiles) == ["small", "medium-a", "medium-b", "max"]
+    assert list(profiles) == ["small", "medium-a", "medium-b", "max", "glm-flash"]
     common = {"engine", "max_model_len", "max_num_seqs", "port"}
     vllm_only = {
         "linear_backend",
@@ -119,6 +119,7 @@ def test_four_named_profiles_carry_the_serving_contract():
         "medium-a": "vllm",
         "medium-b": "llama_cpp",
         "max": "llama_cpp",
+        "glm-flash": "llama_cpp",
     }
     assert set(_registry_profiles()) == set(profiles)
     assert {name: profile["enabled"] for name, profile in profiles.items()} == {
@@ -126,6 +127,7 @@ def test_four_named_profiles_carry_the_serving_contract():
         "medium-a": True,
         "medium-b": True,
         "max": True,
+        "glm-flash": True,
     }
     assert all("artifact_id" not in profile and "quant" not in profile for profile in profiles.values())
     assert all("model_id" not in profile and "served_model_name" not in profile for profile in profiles.values())
@@ -170,6 +172,7 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
         "medium-a": "serving",
         "medium-b": "serving",
         "max": "serving",
+        "glm-flash": "serving",
     }
     assert profiles["small"]["artifact"]["engines"] == ["vllm"]
     small_artifact, small_defaults = profiles["small"]["artifact"], _profiles()["small"]

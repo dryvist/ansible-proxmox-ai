@@ -29,9 +29,15 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     serving_profiles = _serving_profiles()
     serving_core = yaml.safe_load(VLLM_CORE_DEFAULTS.read_text(encoding="utf-8"))
 
-    assert len(entries) == 4
+    assert len(entries) == 5
     assert defaults["llm_router_gpu_profiles_enabled"] is False
-    assert {entry["profile"] for entry in entries} == {"small", "medium-a", "medium-b", "max"}
+    assert {entry["profile"] for entry in entries} == {
+        "small",
+        "medium-a",
+        "medium-b",
+        "max",
+        "glm-flash",
+    }
     assert len({entry["client_model_id"] for entry in entries}) == len(entries)
     assert all(entry["artifact_id"] in artifacts_by_id for entry in entries)
     assert len(artifacts_by_id) == len(artifacts)
@@ -68,6 +74,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "medium-a": 1,
         "medium-b": 0,
         "max": 0,
+        "glm-flash": 0,
     }
     assert len({alias for aliases in aliases_by_profile.values() for alias in aliases}) == 2
 
