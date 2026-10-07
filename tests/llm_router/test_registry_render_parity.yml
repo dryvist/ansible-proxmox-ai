@@ -58,6 +58,29 @@
     - name: Check the rendered per-model limits against homelab-contracts
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-catalog-render-agreement.yml"
 
+    - name: Keep OLD model entries catalogued but absent from every route
+      vars:
+        _old_entries: >-
+          {{ llm_router_model_registry
+             | selectattr('lifecycle', 'defined')
+             | selectattr('lifecycle', 'equalto', 'old') | list }}
+        _old_model_ids:
+          "{{ _old_entries | map(attribute='client_model_id') | list }}"
+        _rendered_model_names: >-
+          {{ _llm_router_parity_config.model_list
+             | default([]) | map(attribute='model_name') | list }}
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _old_entries | length > 0
+          - _old_entries | selectattr('enabled', 'equalto', true) | list | length == 0
+          - _old_model_ids | intersect(_rendered_model_names) | length == 0
+        fail_msg: >-
+          Superseded model entries must remain in the complete registry for
+          provenance but must be disabled and absent from rendered routes.
+        success_msg: >-
+          All OLD entries remain catalogued and none is enabled or rendered.
+
     - name: The shipping registry really does exercise both tiers this guard covers
       # Guards against the whole test going vacuous: if the registry ever
       # rendered nothing, every difference() above would be empty and the
