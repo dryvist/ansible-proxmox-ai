@@ -1,0 +1,77 @@
+---
+# Shared NVIDIA guest userspace, CUDA toolkit, model cache, and utility pins.
+
+nvidia_gpu_guest_user: llm-gpu-serving
+nvidia_gpu_guest_group: llm-gpu-serving
+nvidia_gpu_guest_home: /var/lib/llm-gpu-serving
+nvidia_gpu_guest_data_dir: /var/lib/llm-gpu-serving
+nvidia_gpu_guest_install_dir: /opt/llm-gpu-serving
+nvidia_gpu_guest_venv: "{{ nvidia_gpu_guest_install_dir }}/venv"
+nvidia_gpu_guest_python: "3.12"
+nvidia_gpu_guest_uv_bin: /usr/local/bin/uv
+# renovate: datasource=github-releases depName=astral-sh/uv
+nvidia_gpu_guest_uv_version: "0.12.21"
+nvidia_gpu_guest_uv_install_url: "https://astral.sh/uv/{{ nvidia_gpu_guest_uv_version }}/install.sh"
+nvidia_gpu_guest_systemd_dir: /etc/systemd/system
+nvidia_gpu_guest_unit_prefix: llm-gpu-serving
+
+# A first start loads the model, compiles, and captures CUDA graphs before the
+# endpoint answers: 180 x 5 s allows 15 minutes. On failure the role shows the
+# unit status and the last journal lines, with token-shaped values redacted.
+nvidia_gpu_guest_health_retries: 180
+nvidia_gpu_guest_health_delay: 5
+nvidia_gpu_guest_health_journal_lines: 80
+nvidia_gpu_guest_health_redact_regex: '(?i)(bearer\s+|api[-_]?key[=\s:]+|token[=\s:]+|\bhf_|\bsk-)[A-Za-z0-9._~+/=-]+'
+
+# The writable local cache comes from target inventory. Missing values stay
+# empty so role validation fails instead of guessing a local path.
+nvidia_gpu_guest_model_cache_mount_path: "{{ container_models_cache_mount_path | default('', true) }}"
+nvidia_gpu_guest_model_origin_mount_path: "{{ container_models_origin_mount_path | default('', true) }}"
+nvidia_gpu_guest_model_origin_mount_read_only: >-
+  {{ container_models_origin_mount_read_only | default(true, true) | bool }}
+nvidia_gpu_guest_model_cache_path: "{{ nvidia_gpu_guest_model_cache_mount_path }}/models"
+nvidia_gpu_guest_uv_cache_dir: "{{ nvidia_gpu_guest_model_cache_mount_path }}/.uv-cache"
+nvidia_gpu_guest_uv_python_install_dir: "{{ nvidia_gpu_guest_model_cache_mount_path }}/.uv-python"
+nvidia_gpu_guest_uv_tool_dir: "{{ nvidia_gpu_guest_model_cache_mount_path }}/.uv-tools"
+nvidia_gpu_guest_uv_tool_bin_dir: "{{ nvidia_gpu_guest_model_cache_mount_path }}/bin"
+nvidia_gpu_guest_uv_environment:
+  UV_CACHE_DIR: "{{ nvidia_gpu_guest_uv_cache_dir }}"
+  UV_PYTHON_INSTALL_DIR: "{{ nvidia_gpu_guest_uv_python_install_dir }}"
+  UV_TOOL_DIR: "{{ nvidia_gpu_guest_uv_tool_dir }}"
+  UV_TOOL_BIN_DIR: "{{ nvidia_gpu_guest_uv_tool_bin_dir }}"
+
+# renovate: datasource=pypi depName=huggingface-hub
+nvidia_gpu_guest_huggingface_hub_version: "2.1.1"
+nvidia_gpu_guest_hf_home: "{{ nvidia_gpu_guest_home }}/.cache/huggingface"
+
+# Reuse the shared serving port; handlers ensure exactly one profile owns it.
+nvidia_gpu_guest_api_port: "{{ tofu_data.constants.service_ports.llm_fast_api }}"
+
+# CUDA toolkit for kernels that still compile at runtime (FlashInfer, DeepGEMM),
+# the package set vLLM's own image installs. Same series as the node's toolkit;
+# the guest's vendor repository starts at 13.1.
+nvidia_gpu_guest_cuda_version: "13.2"
+nvidia_gpu_guest_cuda_home: "/usr/local/cuda-{{ nvidia_gpu_guest_cuda_version }}"
+nvidia_gpu_guest_cuda_packages: >-
+  {{ ['cuda-nvcc', 'cuda-cudart', 'cuda-nvrtc', 'cuda-nvrtc-dev', 'cuda-cuobjdump',
+      'libcurand-dev', 'libcublas-dev']
+     | map('regex_replace', '$', '-' ~ (nvidia_gpu_guest_cuda_version | replace('.', '-')))
+     | list + ['libnuma-dev', 'numactl'] }}
+
+# The router registry owns model ids; serving profiles join to it by profile.
+nvidia_gpu_guest_registry_file: "{{ role_path | dirname | dirname }}/llm-models.d/60-gpu-pro6000.yml"
+nvidia_gpu_guest_artifact_registry_file: "{{ role_path | dirname | dirname }}/llm-models.d/65-gpu-pro6000-artifacts.yml"
+
+nvidia_gpu_guest_hf_bin: "{{ nvidia_gpu_guest_uv_tool_bin_dir }}/hf"
+
+# NVIDIA userspace (libcuda, nvidia-smi) in the guest. The host owns the kernel
+# module and the guest loads none, so this must equal the host driver version
+# exactly (the host pin is nvidia_driver_version in the node-side role). Bump
+# both together. apt verifies each package against the vendor repository's
+# signed metadata, which carries the package checksums.
+# renovate: ignore — NVIDIA's apt repo has no Renovate datasource; bump by hand with the host pin.
+nvidia_gpu_guest_nvidia_userspace_version: "595.91.07"
+nvidia_gpu_guest_nvidia_repo_uri: >-
+  https://developer.download.nvidia.com/compute/cuda/repos/debian{{
+  ansible_facts.distribution_major_version }}/x86_64/
+nvidia_gpu_guest_nvidia_repo_key_url: "{{ nvidia_gpu_guest_nvidia_repo_uri | trim }}8793F200.pub"

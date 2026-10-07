@@ -1,0 +1,26 @@
+---
+- name: Load the registry model identity before rendering profile units
+  ansible.builtin.include_role:
+    name: nvidia_gpu_guest
+    tasks_from: load-registry.yml
+
+- name: Render one systemd unit per GPU serving profile
+  ansible.builtin.template:
+    src: vllm-serving.service.j2
+    dest: "{{ nvidia_gpu_guest_systemd_dir }}/{{ nvidia_gpu_guest_unit_prefix }}-{{ item.key }}.service"
+    owner: "{{ omit if vllm_serving_render_only | default(false) else 'root' }}"
+    group: "{{ omit if vllm_serving_render_only | default(false) else 'root' }}"
+    mode: "0644"
+  vars:
+    vllm_serving_profile_name: "{{ item.key }}"
+    vllm_serving_profile: "{{ item.value }}"
+    vllm_serving_profile_registry_model: "{{ nvidia_gpu_guest_registry_by_profile[item.key] }}"
+    vllm_serving_profile_model_dir: >-
+      {{ nvidia_gpu_guest_model_cache_path }}/{{ nvidia_gpu_guest_registry_by_profile[item.key].artifact.hf_repo }}
+  loop: "{{ vllm_serving_profiles | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: item.value.enabled | default(true)
+  notify:
+    - Stop every other GPU serving profile before switching
+    - Start the active GPU serving profile

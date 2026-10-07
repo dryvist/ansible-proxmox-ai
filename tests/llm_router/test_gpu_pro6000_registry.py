@@ -9,8 +9,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
 ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml"
 REGISTRY_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
-SERVING_DEFAULTS = REPO_ROOT / "roles/llm_gpu_serving/defaults/main/10-profiles.yml"
-SERVING_CORE_DEFAULTS = REPO_ROOT / "roles/llm_gpu_serving/defaults/main/00-core.yml"
+VLLM_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
+LLAMACPP_DEFAULTS = REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml"
+VLLM_CORE_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/00-engine.yml"
+
+
+def _serving_profiles() -> dict:
+    vllm = yaml.safe_load(VLLM_DEFAULTS.read_text(encoding="utf-8"))["vllm_serving_profiles"]
+    llamacpp = yaml.safe_load(LLAMACPP_DEFAULTS.read_text(encoding="utf-8"))["llamacpp_serving_profiles"]
+    return {**vllm, **llamacpp}
 
 
 def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
@@ -19,8 +26,8 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))["_llm_model_artifacts"]
     artifacts_by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     defaults = yaml.safe_load(REGISTRY_DEFAULTS.read_text(encoding="utf-8"))
-    serving_profiles = yaml.safe_load(SERVING_DEFAULTS.read_text(encoding="utf-8"))["llm_profiles"]
-    serving_core = yaml.safe_load(SERVING_CORE_DEFAULTS.read_text(encoding="utf-8"))
+    serving_profiles = _serving_profiles()
+    serving_core = yaml.safe_load(VLLM_CORE_DEFAULTS.read_text(encoding="utf-8"))
 
     assert len(entries) == 4
     assert defaults["llm_router_gpu_profiles_enabled"] is False
@@ -70,7 +77,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     qwen_profile = next(entry for entry in entries if entry["profile"] == "medium-a")
     qwen_artifact = artifacts_by_id[qwen_profile["artifact_id"]]
     medium_a_serving = serving_profiles[qwen_profile["profile"]]
-    assert serving_core["llm_gpu_serving_vllm_version"] == "0.30.0"
+    assert serving_core["vllm_serving_version"] == "0.30.0"
     assert medium_a_serving["max_model_len"] == qwen_artifact["context_window_tokens"] == 196608
     assert medium_a_serving["max_num_seqs"] == 8
     assert qwen_profile["context_window"] + qwen_profile["max_output_tokens"] == medium_a_serving["max_model_len"]
@@ -91,7 +98,7 @@ def test_router_admission_equals_serving_profile_concurrency() -> None:
     eight-agent fleet, so its router entry admits eight.
     """
     entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
-    serving_profiles = yaml.safe_load(SERVING_DEFAULTS.read_text(encoding="utf-8"))["llm_profiles"]
+    serving_profiles = _serving_profiles()
 
     caps = {entry["profile"]: entry["max_parallel_requests"] for entry in entries}
     assert caps == {name: profile["max_num_seqs"] for name, profile in serving_profiles.items()}

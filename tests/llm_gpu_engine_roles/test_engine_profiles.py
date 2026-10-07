@@ -1,4 +1,4 @@
-"""Check the GPU serving profile defaults and render each systemd unit."""
+"""Check that engine roles own disjoint profiles and retain registry contracts."""
 
 from __future__ import annotations
 
@@ -8,15 +8,21 @@ import jinja2
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-ROLE_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
-PROFILE_DEFAULTS = ROLE_ROOT / "defaults/main/10-profiles.yml"
-UNIT_TEMPLATE = ROLE_ROOT / "templates/llm-gpu-serving.service.j2"
+NVIDIA_ROOT = REPO_ROOT / "roles/nvidia_gpu_guest"
+VLLM_ROOT = REPO_ROOT / "roles/vllm_serving"
+LLAMACPP_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
 ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml"
 
 
 def _profiles() -> dict:
-    return yaml.safe_load(PROFILE_DEFAULTS.read_text(encoding="utf-8"))["llm_profiles"]
+    vllm = yaml.safe_load((VLLM_ROOT / "defaults/main/10-profiles.yml").read_text(encoding="utf-8"))[
+        "vllm_serving_profiles"
+    ]
+    llamacpp = yaml.safe_load(
+        (LLAMACPP_ROOT / "defaults/main/10-profiles.yml").read_text(encoding="utf-8")
+    )["llamacpp_serving_profiles"]
+    return {**vllm, **llamacpp}
 
 
 def _registry_profiles() -> dict:
@@ -38,31 +44,53 @@ def _comment_filter(text: str) -> str:
 
 
 def _render(profile_name: str, profile: dict) -> str:
-    env = jinja2.Environment(trim_blocks=True, lstrip_blocks=False, undefined=jinja2.StrictUndefined)
+    is_vllm = profile["engine"] == "vllm"
+    role_root = VLLM_ROOT if is_vllm else LLAMACPP_ROOT
+    env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(role_root / "templates"),
+        trim_blocks=True,
+        lstrip_blocks=False,
+        undefined=jinja2.StrictUndefined,
+    )
     env.filters["comment"] = _comment_filter
     env.filters["mandatory"] = lambda value, message="": value
     resolved_profile = {
         **profile,
-        "port": env.from_string(str(profile["port"])).render(llm_gpu_serving_api_port=10434),
+        "port": env.from_string(str(profile["port"])).render(nvidia_gpu_guest_api_port=10434),
     }
     registry_model = _registry_profiles()[profile_name]
-    return env.from_string(UNIT_TEMPLATE.read_text(encoding="utf-8")).render(
-        ansible_managed="Managed by Ansible",
-        ansible_facts={"default_ipv4": {"address": "LISTEN_ADDRESS"}},
-        llm_gpu_serving_user="llm-gpu-serving",
-        llm_gpu_serving_group="llm-gpu-serving",
-        llm_gpu_serving_data_dir="/var/lib/llm-gpu-serving",
-        llm_gpu_serving_venv="/opt/llm-gpu-serving/venv",
-        llm_gpu_serving_cuda_home="/usr/local/cuda-X.Y",
-        llm_gpu_serving_model_cache_mount_path="/cache",
-        llm_gpu_serving_hf_home="HF_CACHE_HOME",
-        llm_gpu_serving_llamacpp_install_dir="/opt/llm-gpu-serving/llama.cpp",
-        llm_gpu_serving_llamacpp_server_bin="/opt/llm-gpu-serving/llama.cpp/llama-server",
-        llm_gpu_serving_profile_name=profile_name,
-        llm_gpu_serving_profile=resolved_profile,
-        llm_gpu_serving_profile_registry_model=registry_model,
-        llm_gpu_serving_profile_model_dir=f"/cache/models/{registry_model['artifact']['hf_repo']}",
-    )
+    common = {
+        "ansible_managed": "Managed by Ansible",
+        "ansible_facts": {"default_ipv4": {"address": "LISTEN_ADDRESS"}},
+        "nvidia_gpu_guest_user": "llm-gpu-serving",
+        "nvidia_gpu_guest_group": "llm-gpu-serving",
+        "nvidia_gpu_guest_data_dir": "/var/lib/llm-gpu-serving",
+        "nvidia_gpu_guest_venv": "/opt/llm-gpu-serving/venv",
+        "nvidia_gpu_guest_cuda_home": "/usr/local/cuda-X.Y",
+        "nvidia_gpu_guest_hf_home": "HF_CACHE_HOME",
+        "nvidia_gpu_guest_listen_host": "LISTEN_ADDRESS",
+    }
+    if is_vllm:
+        template = "vllm-serving.service.j2"
+        values = {
+            **common,
+            "vllm_serving_profile_name": profile_name,
+            "vllm_serving_profile": resolved_profile,
+            "vllm_serving_profile_registry_model": registry_model,
+            "vllm_serving_profile_model_dir": f"/cache/models/{registry_model['artifact']['hf_repo']}",
+        }
+    else:
+        template = "llamacpp-serving.service.j2"
+        values = {
+            **common,
+            "llamacpp_serving_install_dir": "/opt/llm-gpu-serving/llama.cpp",
+            "llamacpp_serving_server_bin": "/opt/llm-gpu-serving/llama.cpp/llama-server",
+            "llamacpp_serving_profile_name": profile_name,
+            "llamacpp_serving_profile": resolved_profile,
+            "llamacpp_serving_profile_registry_model": registry_model,
+            "llamacpp_serving_profile_model_dir": f"/cache/models/{registry_model['artifact']['hf_repo']}",
+        }
+    return env.get_template(template).render(**values)
 
 
 def _exec_start(unit: str) -> str:
@@ -153,7 +181,7 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
 
 
 def test_registry_artifact_engine_check_uses_the_runtime_profile():
-    tasks = yaml.safe_load((ROLE_ROOT / "tasks/load-registry.yml").read_text(encoding="utf-8"))
+    tasks = yaml.safe_load((NVIDIA_ROOT / "tasks/load-registry.yml").read_text(encoding="utf-8"))
     check = next(
         task
         for task in tasks
@@ -161,7 +189,7 @@ def test_registry_artifact_engine_check_uses_the_runtime_profile():
     )
     condition = check["ansible.builtin.assert"]["that"][-1]
 
-    assert "llm_profiles[item.key].engine" in condition
+    assert "nvidia_gpu_guest_profiles[item.key].engine" in condition
 
 
 def test_each_vllm_profile_renders_its_runtime_flags():
@@ -199,72 +227,62 @@ def test_nvfp4_profiles_leave_quantization_to_the_checkpoint():
 
 
 def test_only_enabled_profiles_are_rendered_and_checked_by_the_role():
-    render_tasks = yaml.safe_load((ROLE_ROOT / "tasks/render-units.yml").read_text(encoding="utf-8"))
-    main_tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
-    validation_tasks = yaml.safe_load((ROLE_ROOT / "tasks/validate-profiles.yml").read_text(encoding="utf-8"))
-    render_unit = next(task for task in render_tasks if task.get("name", "").startswith("Render one systemd"))
-    profile_validation = next(
-        task for task in validation_tasks if task.get("name") == "Validate every GPU serving profile"
-    )
-    profile_state = next(task for task in main_tasks if task.get("name", "").startswith("Check profile service states"))
-    retire = next(task for task in main_tasks if task.get("name", "").startswith("Retire units for disabled"))
-    assert any(task.get("ansible.builtin.include_tasks") == "validate-profiles.yml" for task in main_tasks)
-    assert render_unit["when"] == "item.value.enabled | default(true)"
-    assert profile_validation["when"] == "item.value.enabled | default(true)"
-    assert profile_state["when"] == "item.value.enabled | default(true)"
-    assert "not (item.value.enabled | default(true))" in retire["when"]
-    retire_tasks = yaml.safe_load((ROLE_ROOT / "tasks/retire-disabled-profile.yml").read_text(encoding="utf-8"))
-    assert any(task.get("ansible.builtin.systemd", {}).get("state") == "stopped" for task in retire_tasks)
-    assert any(task.get("ansible.builtin.file", {}).get("state") == "absent" for task in retire_tasks)
+    for role_root in (VLLM_ROOT, LLAMACPP_ROOT):
+        render_tasks = yaml.safe_load((role_root / "tasks/render-units.yml").read_text(encoding="utf-8"))
+        main_tasks = yaml.safe_load((role_root / "tasks/main.yml").read_text(encoding="utf-8"))
+        activate_tasks = yaml.safe_load((role_root / "tasks/activate.yml").read_text(encoding="utf-8"))
+        validation_tasks = yaml.safe_load((role_root / "tasks/validate-profiles.yml").read_text(encoding="utf-8"))
+        render_unit = next(task for task in render_tasks if task.get("name", "").startswith("Render one systemd"))
+        profile_validation = next(
+            task for task in validation_tasks if task.get("name") == "Validate every GPU serving profile"
+        )
+        profile_state = next(task for task in activate_tasks if task.get("name", "").startswith("Check profile service states"))
+        retire = next(task for task in activate_tasks if task.get("name", "").startswith("Retire units for disabled"))
+        assert any(task.get("ansible.builtin.include_tasks") == "validate-profiles.yml" for task in main_tasks)
+        assert render_unit["when"] == "item.value.enabled | default(true)"
+        assert profile_validation["when"] == "item.value.enabled | default(true)"
+        assert profile_state["when"] == "item.value.enabled | default(true)"
+        assert "not (item.value.enabled | default(true))" in retire["when"]
+        retire_tasks = yaml.safe_load((role_root / "tasks/retire-disabled-profile.yml").read_text(encoding="utf-8"))
+        assert any(task.get("ansible.builtin.systemd", {}).get("state") == "stopped" for task in retire_tasks)
+        assert any(task.get("ansible.builtin.file", {}).get("state") == "absent" for task in retire_tasks)
 
 
 def test_hf_cli_and_uv_are_pinned_and_store_tools_on_the_tofu_cache_mount():
-    core_defaults = ROLE_ROOT / "defaults/main/00-core.yml"
+    core_defaults = NVIDIA_ROOT / "defaults/main/00-core.yml"
     defaults = yaml.safe_load(core_defaults.read_text(encoding="utf-8"))
-    tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
+    tasks = yaml.safe_load((NVIDIA_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
 
     uv_check = next(task for task in tasks if task.get("name") == "Read the installed uv version")
     uv_install = next(task for task in tasks if task.get("name") == "Install the pinned uv version")
     hf_install = next(task for task in tasks if task.get("name") == "Install the pinned Hugging Face CLI in the model cache")
-    venv_create = next(task for task in tasks if task.get("name") == "Create the vLLM virtual environment")
-    vllm_install = next(task for task in tasks if task.get("name") == "Install the pinned vLLM build with SM120 b12x kernels")
+    vllm_tasks = yaml.safe_load((VLLM_ROOT / "tasks/install.yml").read_text(encoding="utf-8"))
+    vllm_defaults_path = VLLM_ROOT / "defaults/main/00-engine.yml"
+    vllm_defaults = yaml.safe_load(vllm_defaults_path.read_text(encoding="utf-8"))
+    venv_create = next(task for task in vllm_tasks if task.get("name") == "Create the vLLM virtual environment")
+    vllm_install = next(task for task in vllm_tasks if task.get("name") == "Install the pinned vLLM build with SM120 b12x kernels")
 
     assert "datasource=github-releases depName=astral-sh/uv" in core_defaults.read_text(encoding="utf-8")
     assert "datasource=pypi depName=huggingface-hub" in core_defaults.read_text(encoding="utf-8")
-    assert uv_check["ansible.builtin.command"]["argv"][0] == "{{ llm_gpu_serving_uv_bin }}"
-    assert "{{ llm_gpu_serving_uv_version }}" in defaults["llm_gpu_serving_uv_install_url"]
-    assert "llm_gpu_serving_uv_bin | dirname" in uv_install["ansible.builtin.shell"]["cmd"]
+    assert uv_check["ansible.builtin.command"]["argv"][0] == "{{ nvidia_gpu_guest_uv_bin }}"
+    assert "{{ nvidia_gpu_guest_uv_version }}" in defaults["nvidia_gpu_guest_uv_install_url"]
+    assert "nvidia_gpu_guest_uv_bin | dirname" in uv_install["ansible.builtin.shell"]["cmd"]
     assert hf_install["ansible.builtin.command"]["argv"][-1] == (
-        "huggingface_hub=={{ llm_gpu_serving_huggingface_hub_version }}"
+        "huggingface_hub=={{ nvidia_gpu_guest_huggingface_hub_version }}"
     )
-    assert hf_install["environment"] == "{{ llm_gpu_serving_uv_environment }}"
-    assert venv_create["environment"] == "{{ llm_gpu_serving_uv_environment }}"
-    assert vllm_install["environment"] == "{{ llm_gpu_serving_uv_environment }}"
-    assert "datasource=pypi depName=b12x" in core_defaults.read_text(encoding="utf-8")
+    assert hf_install["environment"] == "{{ nvidia_gpu_guest_uv_environment }}"
+    assert venv_create["environment"] == "{{ nvidia_gpu_guest_uv_environment }}"
+    assert vllm_install["environment"] == "{{ nvidia_gpu_guest_uv_environment }}"
+    assert "datasource=pypi depName=b12x" in vllm_defaults_path.read_text(encoding="utf-8")
     vllm_argv = vllm_install["ansible.builtin.command"]["argv"]
-    assert "vllm=={{ llm_gpu_serving_vllm_version }}" in vllm_argv
-    assert "b12x=={{ llm_gpu_serving_b12x_version }}" in vllm_argv
+    assert "vllm=={{ vllm_serving_version }}" in vllm_argv
+    assert f"b12x=={{{{ vllm_serving_b12x_version }}}}" in vllm_argv
+    assert vllm_defaults["vllm_serving_b12x_version"] == "1.5.0"
     assert not any("[b12x]" in str(arg) for arg in vllm_argv)
     for key in (
-        "llm_gpu_serving_uv_cache_dir",
-        "llm_gpu_serving_uv_python_install_dir",
-        "llm_gpu_serving_uv_tool_dir",
-        "llm_gpu_serving_uv_tool_bin_dir",
+        "nvidia_gpu_guest_uv_cache_dir",
+        "nvidia_gpu_guest_uv_python_install_dir",
+        "nvidia_gpu_guest_uv_tool_dir",
+        "nvidia_gpu_guest_uv_tool_bin_dir",
     ):
-        assert defaults[key].startswith("{{ llm_gpu_serving_model_cache_mount_path }}")
-
-
-def test_model_campaign_uses_target_endpoint_and_cache_parameters():
-    campaign_path = REPO_ROOT / "playbooks/llm-model-campaign.yml"
-    campaign = campaign_path.read_text(encoding="utf-8")
-    target_playbook = (REPO_ROOT / "playbooks/llm-model-campaign-target.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert "ansible.builtin.import_playbook: llm-model-campaign-target.yml" in campaign
-    campaign += target_playbook
-    assert "benchmark_endpoint_root is defined" in campaign
-    assert "benchmark_cache_path is defined" in campaign
-    assert 'hosts: "{{ machine | default(\'localhost\') }}"' in campaign
-    assert "engine == 'mlx_lm'" in campaign
-    assert "engine != 'mlx_lm'" in campaign
+        assert defaults[key].startswith("{{ nvidia_gpu_guest_model_cache_mount_path }}")

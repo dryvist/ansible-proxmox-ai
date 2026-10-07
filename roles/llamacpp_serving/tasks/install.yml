@@ -1,0 +1,138 @@
+---
+- name: Inspect the llama.cpp server binary
+  ansible.builtin.stat:
+    path: "{{ llamacpp_serving_server_bin }}"
+  register: llamacpp_serving_server_stat
+
+- name: Resolve recent llama.cpp release metadata
+  ansible.builtin.uri:
+    url: "{{ llamacpp_serving_releases_api }}"
+    return_content: true
+    status_code: 200
+  register: llamacpp_serving_release
+
+- name: Select the CUDA release asset by name pattern
+  ansible.builtin.set_fact:
+    llamacpp_serving_asset_url: >-
+      {{ llamacpp_serving_release.json
+         | map(attribute='assets') | flatten
+         | selectattr('name', 'match', llamacpp_serving_asset_regex)
+         | map(attribute='browser_download_url') | first | default('', true) }}
+
+- name: Inspect the installed llama.cpp asset marker
+  ansible.builtin.stat:
+    path: "{{ llamacpp_serving_asset_marker }}"
+  register: llamacpp_serving_marker_stat
+
+- name: Read the installed llama.cpp asset name
+  ansible.builtin.slurp:
+    src: "{{ llamacpp_serving_asset_marker }}"
+  register: llamacpp_serving_marker
+  when: llamacpp_serving_marker_stat.stat.exists
+
+- name: Install the llama.cpp CUDA release binary
+  when: >-
+    not llamacpp_serving_server_stat.stat.exists
+    or not llamacpp_serving_marker_stat.stat.exists
+    or (llamacpp_serving_marker.content | b64decode | trim)
+    != (llamacpp_serving_asset_url | basename)
+  block:
+    # The guest carries the driver only; libcudart and libcublas come from the
+    # same release's `cudart-` archive for the same CUDA version.
+    - name: Name the matching CUDA runtime asset
+      ansible.builtin.set_fact:
+        llamacpp_serving_cudart_url: >-
+          {{ (llamacpp_serving_asset_url | dirname) ~ '/cudart-'
+             ~ (llamacpp_serving_asset_url | basename) }}
+
+    - name: Assert a matching CUDA asset and its runtime were found
+      ansible.builtin.assert:
+        that:
+          - llamacpp_serving_asset_url | length > 0
+          - >-
+            llamacpp_serving_cudart_url in
+            (llamacpp_serving_release.json | map(attribute='assets') | flatten
+             | map(attribute='browser_download_url') | list)
+        fail_msg: >-
+          No llama.cpp CUDA release asset with a matching cudart- runtime
+          archive matched {{ llamacpp_serving_asset_regex }} in
+          {{ llamacpp_serving_releases_api }}.
+
+    - name: Create a temporary llama.cpp extraction directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: llm-gpu-serving
+      register: llamacpp_serving_extract_tmp
+
+    - name: Download and extract the llama.cpp release tarball
+      ansible.builtin.unarchive:
+        src: "{{ llamacpp_serving_asset_url }}"
+        dest: "{{ llamacpp_serving_extract_tmp.path }}"
+        remote_src: true
+
+    - name: Download and extract the matching CUDA runtime tarball
+      ansible.builtin.unarchive:
+        src: "{{ llamacpp_serving_cudart_url }}"
+        dest: "{{ llamacpp_serving_extract_tmp.path }}"
+        remote_src: true
+
+    - name: Find the CUDA runtime library in its archive
+      ansible.builtin.find:
+        paths: "{{ llamacpp_serving_extract_tmp.path }}"
+        patterns: "libcudart.so*"
+        recurse: true
+      register: llamacpp_serving_cudart_find
+
+    - name: Find llama-server in the CUDA release archive
+      ansible.builtin.find:
+        paths: "{{ llamacpp_serving_extract_tmp.path }}"
+        patterns: llama-server
+        file_type: file
+        recurse: true
+      register: llamacpp_serving_server_find
+
+    - name: Assert llama-server was included in the release archive
+      ansible.builtin.assert:
+        that:
+          - llamacpp_serving_server_find.matched | int > 0
+          - llamacpp_serving_cudart_find.matched | int > 0
+        fail_msg: "The CUDA release archives lack llama-server or libcudart."
+
+    - name: Create the llama.cpp install directory
+      ansible.builtin.file:
+        path: "{{ llamacpp_serving_install_dir }}"
+        state: directory
+        owner: "{{ nvidia_gpu_guest_user }}"
+        group: "{{ nvidia_gpu_guest_group }}"
+        mode: "0750"
+
+    - name: Install llama.cpp binaries, shared libraries and the CUDA runtime
+      ansible.builtin.command:
+        argv:
+          - cp
+          - -a
+          # Unlink before writing: a running llama-server keeps the old
+          # inode until its restart, instead of failing "Text file busy".
+          - --remove-destination
+          - "{{ item }}/."
+          - "{{ llamacpp_serving_install_dir }}/"
+      loop:
+        - "{{ llamacpp_serving_server_find.files[0].path | dirname }}"
+        - "{{ llamacpp_serving_cudart_find.files[0].path | dirname }}"
+      changed_when: true
+      notify:
+        - Stop every other GPU serving profile before switching
+        - Start the active GPU serving profile
+
+    - name: Record the installed llama.cpp asset name
+      ansible.builtin.copy:
+        content: "{{ llamacpp_serving_asset_url | basename }}\n"
+        dest: "{{ llamacpp_serving_asset_marker }}"
+        owner: "{{ nvidia_gpu_guest_user }}"
+        group: "{{ nvidia_gpu_guest_group }}"
+        mode: "0640"
+
+    - name: Remove the temporary llama.cpp extraction directory
+      ansible.builtin.file:
+        path: "{{ llamacpp_serving_extract_tmp.path }}"
+        state: absent

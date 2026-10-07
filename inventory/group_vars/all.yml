@@ -81,12 +81,20 @@ ai_default_model: >-
   {{ bao_ai_public_secrets.active_model
      | default(llm_router_primary_model, true) }}
 
-# Hermes Agent's OWN brain, structurally DECOUPLED from ai_default_model (user
-# decision 2026-07-19) so the agent brain and the ai-default fabric brain CAN
-# diverge. hermes_agent_model resolves to THIS, not ai_default_model.
-# Shared by GPU serving and LiteLLM so a single selected profile backs the
-# server process and its registry projection. The profile survey overrides it.
-llm_active_profile: medium-a
+# Hermes Agent's brain can differ from ai_default_model; hermes_brain_model
+# resolves to this value.
+# The Tofu engine selector chooses the active model/context profile.
+llm_gpu_active_profiles_by_engine:
+  llama_cpp: medium-b
+  vllm: medium-a
+llm_active_profile: >-
+  {{ llm_gpu_active_profiles_by_engine[
+       (hostvars['localhost']['tofu_data'] | default({})).get('llm_gpu_engine', 'llama_cpp')
+     ]
+     if (groups['llm_gpu_engine_llama_cpp_group'] | default([]) | length > 0)
+        and (groups['llm_gpu_engine_vllm_group'] | default([]) | length > 0)
+     else 'medium-a' }}
+
 #
 # Once inventory-backed GPU profiles are enabled, follow the selected
 # profile's stable alias. Profiles without one keep the existing complexity

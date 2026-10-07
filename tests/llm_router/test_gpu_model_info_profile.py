@@ -15,11 +15,18 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = REPO_ROOT / "roles/llm_router/templates"
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
-SERVING_DEFAULTS = REPO_ROOT / "roles/llm_gpu_serving/defaults/main/10-profiles.yml"
+VLLM_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
+LLAMACPP_DEFAULTS = REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml"
 
 
 def _entries() -> list[dict]:
     return yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
+
+
+def _serving_profiles() -> dict:
+    vllm = yaml.safe_load(VLLM_DEFAULTS.read_text(encoding="utf-8"))["vllm_serving_profiles"]
+    llamacpp = yaml.safe_load(LLAMACPP_DEFAULTS.read_text(encoding="utf-8"))["llamacpp_serving_profiles"]
+    return {**vllm, **llamacpp}
 
 
 def _render(models: list[dict]) -> list[dict]:
@@ -45,7 +52,7 @@ def _render(models: list[dict]) -> list[dict]:
 
 def test_every_serving_profile_is_declared_by_exactly_one_gpu_registry_entry():
     profiles = [entry["profile"] for entry in _entries()]
-    serving = yaml.safe_load(SERVING_DEFAULTS.read_text(encoding="utf-8"))["llm_profiles"]
+    serving = _serving_profiles()
     assert sorted(profiles) == sorted(serving)
     assert all(entry["tier"] == "gpu" for entry in _entries())
 

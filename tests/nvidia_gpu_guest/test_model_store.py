@@ -1,4 +1,4 @@
-"""Check the registry-driven model store: pinned artifacts, writer group, and the download-then-pull tasks."""
+"""Check pinned model-store contracts and cache safety across both engine roles."""
 
 from __future__ import annotations
 
@@ -7,7 +7,11 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-ROLE_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
+SHARED_ROOT = REPO_ROOT / "roles/nvidia_gpu_guest"
+ENGINE_ROOTS = {
+    "vllm": REPO_ROOT / "roles/vllm_serving",
+    "llama_cpp": REPO_ROOT / "roles/llamacpp_serving",
+}
 ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml"
 
 
@@ -50,7 +54,7 @@ def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
 
 def test_model_store_writer_group_comes_from_declared_gpu_mount_access():
     inventory_tasks = yaml.safe_load(
-        (REPO_ROOT / "inventory/load_tofu/add_lxc_hosts.yml").read_text(encoding="utf-8")
+        (REPO_ROOT / "inventory/load_tofu/add_lxc_host_inventory.yml").read_text(encoding="utf-8")
     )
     add_host = next(
         task["ansible.builtin.add_host"]
@@ -64,14 +68,12 @@ def test_model_store_writer_group_comes_from_declared_gpu_mount_access():
 
 
 def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
-    main_tasks = yaml.safe_load((ROLE_ROOT / "tasks/main.yml").read_text(encoding="utf-8"))
-    validation_tasks = yaml.safe_load((ROLE_ROOT / "tasks/validate-profiles.yml").read_text(encoding="utf-8"))
-    cache_tasks = yaml.safe_load((ROLE_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8"))
+    registry_tasks = yaml.safe_load((SHARED_ROOT / "tasks/load-registry.yml").read_text(encoding="utf-8"))
+    cache_tasks = yaml.safe_load((SHARED_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8"))
     verify_tasks = yaml.safe_load(
-        (ROLE_ROOT / "tasks/verify-model-store-origin-repo.yml").read_text(encoding="utf-8")
+        (SHARED_ROOT / "tasks/verify-model-store-origin-repo.yml").read_text(encoding="utf-8")
     )
     seed_playbook = yaml.safe_load((REPO_ROOT / "playbooks/llm-model-store-seed.yml").read_text(encoding="utf-8"))[0]
-    include = next(task for task in main_tasks if task.get("name", "").startswith("Cache the active profile"))
     preview = next(
         task
         for task in cache_tasks
@@ -93,30 +95,53 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
         if task.get("name", "").startswith("Verify the local artifact")
     )
     notify = next(task for task in cache_tasks if task.get("name", "").startswith("Notify serving handlers"))
-    assert include["ansible.builtin.include_tasks"] == "cache-sync.yml"
-    assert "llm_gpu_serving_active_artifact.required_artifact_ids" in include["loop"]
-    assert include["loop_control"]["loop_var"] == "llm_gpu_serving_cache_sync_artifact_id"
-    assert include["vars"]["llm_gpu_serving_cache_sync_notify_service"] is True
-    assert "llm_gpu_serving_cache_sync_artifact.hf_repo" in preview["ansible.builtin.command"]["argv"]
-    assert "llm_gpu_serving_cache_sync_artifact.revision" in preview["ansible.builtin.command"]["argv"]
-    assert "llm_gpu_serving_cache_sync_artifact.include_globs" in preview["loop"]
+
+    assert any(task.get("name") == "Assert each serving profile resolves to exactly one artifact" for task in registry_tasks)
+    for engine, role_root in ENGINE_ROOTS.items():
+        main_tasks = yaml.safe_load((role_root / "tasks/main.yml").read_text(encoding="utf-8"))
+        activation_tasks = yaml.safe_load((role_root / "tasks/activate.yml").read_text(encoding="utf-8"))
+        validation_tasks = yaml.safe_load((role_root / "tasks/validate-profiles.yml").read_text(encoding="utf-8"))
+        prefix = "vllm_serving" if engine == "vllm" else "llamacpp_serving"
+        include = next(
+            task
+            for task in activation_tasks
+            if task.get("name", "").startswith("Cache the active profile")
+        )
+        validate = next(
+            task
+            for task in validation_tasks
+            if task.get("name", "").startswith("Validate the active GPU serving profile")
+        )
+
+        assert any(
+            task.get("ansible.builtin.include_role", {}).get("tasks_from") == "load-registry.yml"
+            for task in main_tasks
+        )
+        assert include["ansible.builtin.include_role"] == {
+            "name": "nvidia_gpu_guest",
+            "tasks_from": "cache-sync.yml",
+        }
+        assert include["loop_control"]["loop_var"] == f"{prefix}_cache_sync_artifact_id"
+        assert f"{prefix}_active_artifact.required_artifact_ids" in include["loop"]
+        assert f"{prefix}_active_profile" in yaml.safe_dump(validate)
+        assert "nvidia_gpu_guest_model_cache_mount_path | length > 0" in validate["ansible.builtin.assert"]["that"]
+        assert "nvidia_gpu_guest_model_origin_mount_path" not in str(validate)
+
+    assert "nvidia_gpu_guest_cache_sync_artifact.required_artifact_ids" not in str(registry_tasks)
+    assert "nvidia_gpu_guest_cache_sync_artifact.hf_repo" in preview["ansible.builtin.command"]["argv"]
+    assert "nvidia_gpu_guest_cache_sync_artifact.revision" in preview["ansible.builtin.command"]["argv"]
+    assert "nvidia_gpu_guest_cache_sync_artifact.include_globs" in preview["loop"]
     assert "--dry-run" in preview["ansible.builtin.command"]["argv"]
     assert preview["changed_when"] is False
-    assert "llm_gpu_serving_cache_sync_artifact.hf_repo" in download["ansible.builtin.command"]["argv"]
-    assert "llm_gpu_serving_cache_sync_artifact.revision" in download["ansible.builtin.command"]["argv"]
-    assert "llm_gpu_serving_cache_sync_download_directory" in download["ansible.builtin.command"]["argv"]
-    assert "llm_gpu_serving_cache_sync_download_directory" in preview["ansible.builtin.command"]["argv"]
-    validate = next(
-        task for task in validation_tasks if task.get("name", "").startswith("Validate the active GPU serving profile")
-    )
-    assert any(task.get("ansible.builtin.include_tasks") == "validate-profiles.yml" for task in main_tasks)
-    assert "llm_gpu_serving_model_cache_mount_path | length > 0" in validate["ansible.builtin.assert"]["that"]
-    assert "llm_gpu_serving_model_origin_mount_path" not in str(validate)
-    assert "llm_gpu_serving_cache_sync_previews.results[ansible_loop.index0]" in download["changed_when"]
-    assert download["become_user"] == "{{ llm_gpu_serving_user }}"
-    assert download["loop"] == "{{ llm_gpu_serving_cache_sync_artifact.include_globs }}"
+    assert "nvidia_gpu_guest_cache_sync_artifact.hf_repo" in download["ansible.builtin.command"]["argv"]
+    assert "nvidia_gpu_guest_cache_sync_artifact.revision" in download["ansible.builtin.command"]["argv"]
+    assert "nvidia_gpu_guest_cache_sync_download_directory" in download["ansible.builtin.command"]["argv"]
+    assert "nvidia_gpu_guest_cache_sync_download_directory" in preview["ansible.builtin.command"]["argv"]
+    assert "nvidia_gpu_guest_cache_sync_previews.results[ansible_loop.index0]" in download["changed_when"]
+    assert download["become_user"] == "{{ nvidia_gpu_guest_user }}"
+    assert download["loop"] == "{{ nvidia_gpu_guest_cache_sync_artifact.include_globs }}"
     assert "--local-dir" in download["ansible.builtin.command"]["argv"]
-    assert "not llm_gpu_serving_model_origin_mount_read_only" in str(
+    assert "not nvidia_gpu_guest_model_origin_mount_read_only" in str(
         next(task for task in cache_tasks if task.get("name", "").startswith("Assert the requested artifact"))["ansible.builtin.assert"]["that"]
     )
     assert "nvidia-smi" in str(
@@ -126,8 +151,8 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
         next(task for task in cache_tasks if task.get("name", "").startswith("Require an idle GPU"))["ansible.builtin.assert"]["that"]
     )
     assert pull["ansible.builtin.copy"]["remote_src"] is True
-    assert "llm_gpu_serving_cache_sync_origin_directory" in pull["ansible.builtin.copy"]["src"]
-    assert "llm_gpu_serving_cache_sync_local_directory" in pull["ansible.builtin.copy"]["dest"]
+    assert "nvidia_gpu_guest_cache_sync_origin_directory" in pull["ansible.builtin.copy"]["src"]
+    assert "nvidia_gpu_guest_cache_sync_local_directory" in pull["ansible.builtin.copy"]["dest"]
     assert verify_local["ansible.builtin.command"]["argv"]
     assert any(task.get("name", "").startswith("Verify checksums") for task in verify_tasks)
     assert seed_playbook["hosts"] == "llm_model_store_writer_group"
@@ -135,24 +160,27 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     assert "notify" not in download
     assert notify["when"] == [
         "not ansible_check_mode",
-        "(llm_gpu_serving_cache_sync_mode | default('pull')) == 'pull'",
-        "llm_gpu_serving_cache_sync_notify_service | default(false) | bool",
-        "llm_gpu_serving_cache_sync_copy.changed | default(false)",
+        "(nvidia_gpu_guest_cache_sync_mode | default('pull')) == 'pull'",
+        "nvidia_gpu_guest_cache_sync_notify_service | default(false) | bool",
+        "nvidia_gpu_guest_cache_sync_copy.changed | default(false)",
     ]
     assert notify["notify"] == [
         "Stop every other GPU serving profile before switching",
         "Start the active GPU serving profile",
     ]
-    assert "rsync" not in (ROLE_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8")
+    assert "rsync" not in (SHARED_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8")
 
 
 def test_profile_switch_clears_only_its_own_gpu_work_before_downloading():
-    cache_tasks = yaml.safe_load((ROLE_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8"))
+    cache_tasks = yaml.safe_load((SHARED_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8"))
     names = [task.get("name", "") for task in cache_tasks]
     stop_index = names.index("Stop this role's serving units before a profile switch downloads an artifact")
     guard_index = names.index("Require an idle GPU before downloading a registered artifact")
     stop, guard = cache_tasks[stop_index], cache_tasks[guard_index]
     assert stop_index < guard_index
-    assert "llm_gpu_serving_cache_sync_notify_service | default(false) | bool" in stop["when"]
+    assert "nvidia_gpu_guest_cache_sync_notify_service | default(false) | bool" in stop["when"]
     assert stop["notify"] == "Start the active GPU serving profile"
-    assert "notify_service" not in str(guard["when"])
+    assert "{{ nvidia_gpu_guest_profiles | dict2items }}" == stop["loop"]
+    assert "nvidia_gpu_guest_cache_sync_notify_service" in (
+        SHARED_ROOT / "defaults/main/10-engine-context.yml"
+    ).read_text(encoding="utf-8")

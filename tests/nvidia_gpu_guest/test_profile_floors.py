@@ -7,8 +7,11 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-ROLE_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
-PROFILE_DEFAULTS = ROLE_ROOT / "defaults/main/10-profiles.yml"
+ROLE_ROOT = REPO_ROOT / "roles/nvidia_gpu_guest"
+PROFILE_DEFAULTS = {
+    **yaml.safe_load((REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml").read_text(encoding="utf-8"))["vllm_serving_profiles"],
+    **yaml.safe_load((REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml").read_text(encoding="utf-8"))["llamacpp_serving_profiles"],
+}
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
 FLOOR_FIELDS = {
     "concurrency",
@@ -21,7 +24,7 @@ FLOOR_FIELDS = {
 
 
 def _profiles() -> dict:
-    return yaml.safe_load(PROFILE_DEFAULTS.read_text(encoding="utf-8"))["llm_profiles"]
+    return PROFILE_DEFAULTS
 
 
 def _entries() -> list[dict]:
