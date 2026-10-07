@@ -106,7 +106,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     }
     assert {profile: len(aliases) for profile, aliases in aliases_by_profile.items()} == {
         "small": 1,
-        "medium-a": 1,
+        "medium-a": 2,
         "medium-b": 0,
         "max": 0,
         "glm-flash": 0,
@@ -136,7 +136,8 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "muse-glimmer-30b": 0,
         "nemotron-lightning-30b-a3b": 0,
     }
-    assert len({alias for aliases in aliases_by_profile.values() for alias in aliases}) == 2
+    assert aliases_by_profile["medium-a"] == ["qwen3.8-27b", "local-medium"]
+    assert len({alias for aliases in aliases_by_profile.values() for alias in aliases}) == 3
 
     # medium-a stays the active eight-slot production profile, outside the sweep matrix.
     qwen_profile = next(entry for entry in entries if entry["profile"] == "medium-a")
