@@ -99,7 +99,7 @@ def test_total_context_is_per_agent_context_times_parallel_slots():
         name: profile["max_model_len"] * profile["max_num_seqs"] for name, profile in _llama_profiles().items()
     }
     assert contexts == expected
-    assert contexts["medium-b"] == 4 * _profiles()["medium-b"]["max_model_len"]
+    assert contexts["medium-b"] == 8 * _profiles()["medium-b"]["max_model_len"]
 
 
 def test_optional_profile_fields_become_flags():
