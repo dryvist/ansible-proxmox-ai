@@ -79,7 +79,7 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     # The count and every target's servability are what a stray alias would
     # break, so a new consumer-facing name still lands here as a reviewed edit.
     assert aliases, "no static alias loaded; nothing below is checked"
-    assert len(aliases) == 9
+    assert len(aliases) == 10
     # Judge and subagent remain database-seeded roles, selected from the
     # registry-derived GPU profile projection rather than static aliases.
     seeded_roles = {item["role"]: item for item in router_defaults["llm_router_role_deployments"]}
