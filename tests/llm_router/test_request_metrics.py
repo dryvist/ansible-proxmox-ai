@@ -177,18 +177,44 @@ def test_benchmark_requires_variables_and_accepts_false_and_zero(module):
     assert "metadata" not in result
 
 
-def test_caller_session_and_user_survive_defaults(module):
-    key = {"trace_defaults": {"client": "consumer", "runner": "eval", "purpose": "live"}}
-    data = {"user": "person", "litellm_session_id": "session", "metadata": {"trace_name": "custom",
-            "trace_release": "app-release", "trace_version": "component-version"}}
+def test_caller_session_and_attribution_survive_defaults(module):
+    key = {
+        "trace_defaults": {
+            "client": "consumer",
+            "runner": "default-runner",
+            "purpose": "benchmark",
+            "tier": "local",
+        },
+        "trace_required": ["run_id"],
+    }
+    data = {
+        "user": "person",
+        "litellm_session_id": "session",
+        "metadata": {
+            "runner": "lm-eval",
+            "purpose": "live",
+            "tier": "large",
+            "run_id": "run-042",
+            "trace_name": "custom",
+            "trace_release": "app-release",
+            "trace_version": "component-version",
+        },
+    }
     result = module["apply_trace_contract"](data, key)
     assert result["user"] == "person"
     assert result["metadata"]["session_id"] == "session"
     assert result["metadata"]["trace_user_id"] == "person"
     assert result["metadata"]["trace_name"] == "custom"
     for carrier in ["requester_metadata", "spend_logs_metadata", "trace_metadata"]:
+        assert result["metadata"][carrier]["runner"] == "lm-eval"
+        assert result["metadata"][carrier]["purpose"] == "live"
+        assert result["metadata"][carrier]["tier"] == "large"
         assert result["metadata"][carrier]["trace_release"] == "app-release"
         assert result["metadata"][carrier]["trace_version"] == "component-version"
+    record = module["build_record"](_kwargs({"metadata": result["metadata"]}), None, 0, 1)
+    assert record["runner"] == "lm-eval"
+    assert record["purpose"] == "live"
+    assert record["tier"] == "large"
 
 
 @pytest.mark.parametrize("key_metadata", [None, {}, {"trace_defaults": {}}])
