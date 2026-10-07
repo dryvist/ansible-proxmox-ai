@@ -91,18 +91,20 @@ def build_record(kwargs, response_obj, start_time, end_time):
 
 
 def apply_trace_contract(data, key_metadata):
-    """Fill key-owned attribution and reject unlabelled benchmark calls."""
+    """Fill key defaults, preserve request attribution, and validate benchmarks."""
     defaults = (key_metadata or {}).get("trace_defaults") or {}
     if not defaults:
         raise HTTPException(status_code=400, detail="Missing consumer trace defaults")
     slot = "litellm_metadata" if "litellm_metadata" in data else "metadata"
     metadata = data.setdefault(slot, {})
+    request_attribution = {field: metadata.get(field) for field in ("runner", "purpose", "tier")}
     metadata.update(defaults)
+    metadata.update({field: value for field, value in request_attribution.items() if value not in (None, "")})
     session = data.get("litellm_session_id") or metadata.get("session_id")
     metadata["session_id"] = session or metadata.get("run_id") or data.get("litellm_trace_id") or metadata.get("trace_id") or uuid4().hex
     for field, fallback in {
         "trace_user_id": data.get("user") or defaults["client"],
-        "trace_name": defaults["runner"] + "/" + defaults["purpose"],
+        "trace_name": metadata["runner"] + "/" + metadata["purpose"],
         "trace_release": defaults.get("release"),
         "trace_version": defaults.get("release"),
     }.items():

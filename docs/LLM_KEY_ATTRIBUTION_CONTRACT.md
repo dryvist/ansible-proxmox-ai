@@ -25,6 +25,8 @@ one's content.
    key. This is where `device`, `host`, `agent`, `session` and `zdr` belong:
    they vary per call, not per credential, so baking them into the key would
    mean minting a new key per session, which the router has no lifecycle for.
+   The same request metadata accepts `runner`, `purpose`, and `tier` for
+   benchmark and live request attribution.
    - `device` / `host` — the calling machine's short hostname.
    - `agent` — `claude` \| `codex` \| `opencode` \| `hermes` \| `donna` \|
      `openwebui` \| ... — which coding/chat surface issued the call, distinct

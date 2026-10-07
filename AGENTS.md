@@ -235,6 +235,11 @@ host into a silent skip. Adopt them in the same change that adds the 2nd node.
 | Inventory load | see below | every PR (CI) |
 | Molecule (per scenario) | `molecule test -s llamaindex` / `-s qdrant` | CI |
 
+CI uses the shared Ansible workflow: pull requests into `develop` run mapped
+changed-role scenarios; promotion pull requests into `main` and pushes to
+`main` or `develop` run the full matrix. `Merge Gate` includes Molecule and
+the repository contract checks.
+
 **Inventory-load validation locally:**
 
 ```bash
