@@ -283,3 +283,13 @@ nix develop "github:JacobPEvans/nix-devenv#ansible-apps"
 - sops, age — secrets management
 - python3 with paramiko, pyyaml, jinja2, jsondiff — Ansible dependencies
 - jq, yq, pre-commit — utilities
+
+## CI
+
+Pull requests into `develop` use changed-role Molecule selection with lint,
+syntax, and contract checks. Pull requests into `main` and non-PR runs use the
+full matrix. Required validation is aggregated by `Merge Gate`; shared or
+unclassified changes widen to the full matrix. Public pull-request CI stays on
+GitHub-hosted runners.
+
+See the canonical policy in the `dryvist/.github` README, “Ansible CI policy.”
