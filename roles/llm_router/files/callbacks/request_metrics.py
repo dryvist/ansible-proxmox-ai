@@ -94,7 +94,7 @@ def apply_trace_contract(data, key_metadata):
     """Fill key-owned attribution and reject unlabelled benchmark calls."""
     defaults = (key_metadata or {}).get("trace_defaults") or {}
     if not defaults:
-        return data
+        raise HTTPException(status_code=400, detail="Missing consumer trace defaults")
     slot = "litellm_metadata" if "litellm_metadata" in data else "metadata"
     metadata = data.setdefault(slot, {})
     metadata.update(defaults)
@@ -114,6 +114,8 @@ def apply_trace_contract(data, key_metadata):
         data["user"] = metadata["trace_user_id"]
     required = (key_metadata or {}).get("trace_required") or []
     if defaults.get("purpose") == "benchmark":
+        if not required:
+            raise HTTPException(status_code=400, detail="Missing benchmark trace requirements")
         missing = [field for field in required
                    if not isinstance(metadata.get(field), (str, int, float, bool)) or metadata[field] == ""]
         if missing:

@@ -187,9 +187,14 @@ def test_caller_session_and_user_survive_defaults(module):
     assert result["metadata"]["trace_name"] == "custom"
 
 
-def test_unseeded_contract_does_not_change_requests(module):
+@pytest.mark.parametrize("key_metadata", [None, {}, {"trace_defaults": {}}])
+def test_unseeded_contract_rejects_unlabeled_inference(module, key_metadata):
     data = {"model": "test-target"}
-    assert module["apply_trace_contract"](data, {}) == {"model": "test-target"}
+    with pytest.raises(module["HTTPException"]) as exc:
+        module["apply_trace_contract"](data, key_metadata)
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "Missing consumer trace defaults"
+    assert data == {"model": "test-target"}
 
 
 def test_blank_identity_fields_fill_and_tools_reach_carriers(module):
@@ -212,3 +217,13 @@ def test_benchmark_rejects_nonscalar_labels(module):
            "trace_required": ["run_id"]}
     with pytest.raises(module["HTTPException"]):
         module["apply_trace_contract"]({"metadata": {"run_id": []}}, key)
+
+
+@pytest.mark.parametrize("required", [None, []])
+def test_benchmark_without_declared_requirements_is_rejected(module, required):
+    key = {"trace_defaults": {"client": "eval", "runner": "eval", "purpose": "benchmark"},
+           "trace_required": required}
+    with pytest.raises(module["HTTPException"]) as exc:
+        module["apply_trace_contract"]({"metadata": {"run_id": "run-1"}}, key)
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "Missing benchmark trace requirements"
