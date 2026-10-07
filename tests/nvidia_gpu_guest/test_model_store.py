@@ -15,6 +15,7 @@ ENGINE_ROOTS = {
 ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml",
     REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
+    REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml",
 )
 
 
@@ -31,14 +32,14 @@ def _model_store() -> list[dict]:
 
 def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
     model_store = _model_store()
-    assert len(model_store) == 22
+    assert len(model_store) == 25
     assert {artifact["model_store_profile"] for artifact in model_store} == {
         "small",
         "medium-a",
         "medium-b",
         "max",
     }
-    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 334_707_157_291
+    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 461_354_853_641
     assert all(len(artifact["revision"]) == 40 for artifact in model_store)
     assert all(set(artifact["revision"]) <= set("0123456789abcdef") for artifact in model_store)
     assert {artifact["artifact_id"] for artifact in model_store if artifact.get("model_size")} == {
@@ -117,8 +118,22 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
         for task in cache_tasks
     )
     assert any(
+        task.get("name", "").startswith("Load the NVFP4 sweep artifact shard")
+        and task["ansible.builtin.include_vars"]["file"]
+        == "{{ nvidia_gpu_guest_nvfp4_sweep_artifact_registry_file }}"
+        for task in registry_tasks
+    )
+    assert any(
+        task.get("name", "").startswith("Load the NVFP4 sweep artifact shard for cache sync")
+        and task["ansible.builtin.include_vars"]["file"]
+        == "{{ nvidia_gpu_guest_nvfp4_sweep_artifact_registry_file }}"
+        for task in cache_tasks
+    )
+    assert any(
         task.get("name", "").startswith("Combine the campaign model artifact shards")
         and "_llm_model_artifacts_glm53flash" in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
+        and "_llm_model_artifacts_nvfp4_sweep"
+        in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
         for task in registry_tasks
     )
     for engine, role_root in ENGINE_ROOTS.items():

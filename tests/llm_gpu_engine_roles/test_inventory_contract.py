@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVING_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving.yml"
 GPU_ENGINE_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 SITE_PLAYBOOK = REPO_ROOT / "playbooks/site.yml"
-ROUTER_GROUP_VARS = REPO_ROOT / "inventory/group_vars/llm_router_group.yml"
+ROUTER_GPU_PROFILE_VARS = REPO_ROOT / "inventory/group_vars/all/llm-router-gpu-profiles.yml"
 ROUTER_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 
 
@@ -91,6 +91,8 @@ def test_inventory_loader_assigns_selected_router_membership_and_retains_both_en
     assert "value.llm_gpu_engine_identity" in yaml.safe_dump(loader + host_tasks)
     selector = next(task for task in loader if task.get("name") == "Resolve the selector and declared GPU engine members")
     members = selector["ansible.builtin.set_fact"]["load_tofu_gpu_engine_members"]
+    assert "nvidia_gpu_group" in groups
+    assert "'nvidia-gpu'" in groups
     assert "selectattr('value.llm_gpu_engine_identity', 'defined')" in members
     assert "selectattr('value.llm_gpu_engine_identity', 'in', ['llama_cpp', 'vllm'])" in members
     assert "llm_gpu_group" in groups
@@ -104,9 +106,9 @@ def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():
         play
         for play in plays
         if play.get("hosts") in {
-            "llm_gpu_legacy_group",
-            "llm_gpu_serving_llama_cpp_group",
-            "llm_gpu_serving_vllm_group",
+            "llm_gpu_legacy_group:&nvidia_gpu_group",
+            "llm_gpu_serving_llama_cpp_group:&nvidia_gpu_group",
+            "llm_gpu_serving_vllm_group:&nvidia_gpu_group",
         }
     ]
 
@@ -115,7 +117,7 @@ def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():
     assert all("docker_engine" not in yaml.safe_dump(play) for play in gpu_plays)
 
     for play in gpu_plays:
-        if play["hosts"] == "llm_gpu_legacy_group":
+        if play["hosts"] == "llm_gpu_legacy_group:&nvidia_gpu_group":
             continue
         assert play["any_errors_fatal"] is True
         mark_failed = play["tasks"][0]["rescue"][-1]
@@ -135,7 +137,7 @@ def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():
 
 
 def test_router_projects_gpu_profiles_only_when_the_selected_host_group_has_a_member():
-    expression = _load(ROUTER_GROUP_VARS)["llm_router_gpu_profiles_enabled"]
+    expression = _load(ROUTER_GPU_PROFILE_VARS)["llm_router_gpu_profiles_enabled"]
     env = jinja2.Environment()
 
     def render(groups: dict) -> str:

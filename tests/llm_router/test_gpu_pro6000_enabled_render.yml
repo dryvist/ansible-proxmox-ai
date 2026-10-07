@@ -130,13 +130,12 @@
           - item.litellm_params.output_cost_per_token | float == 0
           - item.model_info.disable_background_health_check is true
           - item.litellm_params.api_base == 'http://localhost:10434/v1'
-          # The admission limit is what the serving profile decodes at once:
-          # below it the router rejects work the host could serve, which is the
-          # 429 an eight-agent fleet sees on the primary profile.
+          # Keep the router admission cap at least as high as the engine's
+          # active sequence limit; the sweep separately tests request concurrency.
           - item.litellm_params.max_parallel_requests | int == _registry_entry.max_parallel_requests | int
           - >-
             item.litellm_params.max_parallel_requests | int
-            == _serving_profiles[llm_active_profile].max_num_seqs | int
+            >= _serving_profiles[llm_active_profile].max_num_seqs | int
         fail_msg: "Rendered GPU deployment {{ item.model_name }} differs from its registry limits."
       loop: "{{ _gpu_rendered }}"
       loop_control:
@@ -145,6 +144,27 @@
         _registry_entry: >-
           {{ llm_router_gpu_models | selectattr('client_model_id', 'equalto',
                item.model_name) | first }}
+
+    - name: Capture non-empty virtual keys selected by seed-keys
+      ansible.builtin.set_fact:
+        _seeded_virtual_keys: >-
+          {{ llm_router_virtual_keys | rejectattr('value', 'equalto', '') | list }}
+
+    - name: Capture the seeded benchmark key
+      ansible.builtin.set_fact:
+        _benchmark_seed_entry: >-
+          {{ _seeded_virtual_keys | selectattr('alias', 'equalto', 'benchmark') | first }}
+
+    - name: Benchmark key enables only with its seeded value and GPU profile
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_gpu_profiles_enabled | bool
+          - llm_router_gpu_models | length > 0
+          - _benchmark_seed_entry.value == bao_apps_secrets.benchmark_llm_router_key
+          - _benchmark_seed_entry.value | length > 0
+          - _benchmark_seed_entry.models == (_gpu_ids | list)
+          - _seeded_virtual_keys | selectattr('alias', 'equalto', 'benchmark') | list | length == 1
 
     - name: Assert every Hermes profile key can resolve each active GPU model alias
       ansible.builtin.assert:
@@ -236,11 +256,9 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - _benchmark.models | sort == _gpu_ids | sort
-          - _benchmark.monthly_budget is not defined
-          - "'&zdr' in _benchmark.tags"
-      vars:
-        _benchmark: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'benchmark') | first }}"
+          - _benchmark_seed_entry.models | sort == _gpu_ids | sort
+          - _benchmark_seed_entry.monthly_budget is not defined
+          - "'&zdr' in _benchmark_seed_entry.tags"
 
     - name: Select the small profile for the registry projection check
       ansible.builtin.set_fact:

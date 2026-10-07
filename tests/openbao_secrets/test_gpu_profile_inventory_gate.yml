@@ -1,0 +1,37 @@
+---
+- name: Verify the GPU profile switch follows guest capability tags
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _gpu_guest_fixture: "{{ playbook_dir }}/fixtures/llm_gpu_guest_inventory.yml"
+    _all_group_vars_dir: "{{ playbook_dir }}/../../inventory/group_vars/all"
+  tasks:
+    - name: Load sanitized guest inventory fields
+      ansible.builtin.include_vars:
+        file: "{{ _gpu_guest_fixture }}"
+        name: _guest
+
+    - name: Add the fixture guest to its capability group
+      ansible.builtin.add_host:
+        name: llm-gpu-fixture
+        groups: "{{ ['llm_gpu_group'] if 'llm-gpu' in _guest.capability_tags else [] }}"
+        ansible_connection: local
+
+    - name: Load the production all-group variable directory
+      ansible.builtin.include_vars:
+        dir: "{{ _all_group_vars_dir }}"
+        name: _global
+
+    - name: Evaluate the production switch against the fixture inventory
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: "{{ _global.llm_router_gpu_profiles_enabled }}"
+
+    - name: Assert the captured capability tag enables the production switch
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _guest.tags_type == 'str'
+          - _guest.status == 'running'
+          - "'llm-gpu' in _guest.capability_tags"
+          - "'llm-gpu-fixture' in groups['llm_gpu_group']"
+          - llm_router_gpu_profiles_enabled | bool
