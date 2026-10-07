@@ -98,20 +98,21 @@ llm_router_long_context_alias_ids: >-
 # carve-out, ONLY. A static model_group_alias is subject to the two asserts
 # in tasks/assert.yml: its target must be in the servable set (or one of the
 # two named carve-outs) and must carry a real context window (hermes-router
-# and long-context are each individually exempted there). An alias declared
-# on an entry outside all three sets is a ROLE, and roles are seeded into
-# the router database (tasks/seed-roles.yml) where the Admin UI owns them
-# thereafter. The hermes-router and long-context tiers are admitted
-# alongside `servable` (not folded into it) because `servable` means "the
-# serving host will answer for this id directly" and neither ever does — the
-# complexity router dispatches locally, and the long-context entry is a
-# remote paid OpenRouter model. Adding either to `servable` itself would
-# corrupt llm_router_servable_models and the verify-servable probe
-# (2026-07-28).
+# and long-context are each individually exempted there). Roles that target
+# the hermes-router are rendered as aliases; other non-alias role names are
+# seeded into the router database (tasks/seed-roles.yml). The hermes-router
+# and long-context tiers are admitted alongside `servable` (not folded into
+# it) because `servable` means "the serving host will answer for this id
+# directly" and neither ever does — the complexity router dispatches locally,
+# and the long-context entry is a remote paid OpenRouter model. Adding either
+# to `servable` itself would corrupt llm_router_servable_models and the
+# verify-servable probe (2026-07-28).
 #
-# `judge`/`cheap`/`embed`/`ocr` remain database-seeded roles. GPU profiles are
-# excluded until the profile switch activates them; the primary role alias then
-# follows the shared route, while the other aliases retain their own targets.
+# `fast` and `cheap` target the complexity router, so they are rendered as
+# aliases and old DB rows are retired by tasks/retire-role-deployments.yml.
+# `judge`/`embed`/`ocr` remain database-seeded roles. GPU profiles are excluded
+# until the profile switch activates them; the primary role alias then follows
+# the shared route, while the other aliases retain their own targets.
 llm_router_alias_pairs: >-
   {%- set ns = namespace(pairs=[]) -%}
   {%- set _entries = ((llm_router_registry_enabled | selectattr('servable', 'defined')
@@ -137,7 +138,15 @@ llm_router_alias_pairs: >-
 llm_router_model_group_aliases: >-
   {{ dict(llm_router_alias_pairs | map(attribute=1)
           | zip(llm_router_alias_pairs | map(attribute=0)
-                | map(attribute='client_model_id'))) }}
+                | map(attribute='client_model_id')))
+     | combine(llm_router_auto_router_role_aliases) }}
+llm_router_auto_router_role_aliases: >-
+  {%- set ns = namespace(aliases={}) -%}
+  {%- for role in llm_router_role_deployments
+       if role.model == llm_router_auto_router_model -%}
+  {%- set _ = ns.aliases.update({role.role: role.model}) -%}
+  {%- endfor -%}
+  {{ ns.aliases }}
 
 
 # Background health checks send REAL test requests to every deployment — on the

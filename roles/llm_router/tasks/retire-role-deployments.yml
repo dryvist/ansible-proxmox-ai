@@ -59,11 +59,10 @@
   no_log: true
 
 # Proves the delete actually landed: a declared alias name must never also
-# be a live model_list row, or the deployment (not the alias) answers the
-# name — LiteLLM resolves a literal deployment name before consulting
-# model_group_alias. This also catches a config-declared deployment sharing
-# an alias's name: the delete task above never touches it (not DB-stored),
-# so it is still present here and fails loud as the registry violation it is.
+# remain as a real model deployment. This catches both a DB row the delete
+# missed and a config-declared deployment sharing an alias name. The latter
+# cannot be deleted through this cleanup path and must fail as a registry
+# collision.
 - name: Assert no declared alias name still exists as a model deployment
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/v2/model/info?page=1&size=100"
@@ -81,9 +80,8 @@
     fail_msg: >-
       Alias name(s) [{{ _llm_router_still_shadowed | join(', ') }}] still
       exist as a live model deployment after the delete above
-      (roles/llm_router/tasks/retire-role-deployments.yml) — the deployment,
-      not the alias, will answer that name. Delete it manually via
-      /model/delete and re-converge.
+      (roles/llm_router/tasks/retire-role-deployments.yml). Remove the DB
+      duplicate or fix the config-declared registry collision, then re-converge.
     success_msg: "No declared alias name is shadowed by a model deployment."
   vars:
     _llm_router_still_shadowed: >-
