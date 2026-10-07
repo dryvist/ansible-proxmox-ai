@@ -94,6 +94,15 @@ artifact straight into the local cache and verifies it there. Callers that only 
 `llm_gpu_serving_cache_sync_notify_service` unset; the normal role sets it to
 `true` so changed local model files restart serving.
 
+## Stress window
+
+Run `template 76` with `llm_gpu_serving_paused=true`, then `template 18` with
+`smoke` or `full`, then `template 76` with `llm_gpu_serving_paused=false`.
+The shared pause variable applies to this role and both engine-specific roles.
+Pausing stops the selected unit while leaving it enabled, its profile selected,
+and its model cache intact. Resuming starts the selected unit and requires the
+normal `/v1/models` health check to pass.
+
 ## Serving floors
 
 A profile may declare `llm_profiles.<name>.floor`: `concurrency`, `input_len`,
@@ -107,7 +116,8 @@ profile's floor; `tasks/assert-profile-floors.yml` fails the role otherwise.
 
 | Variable | Purpose |
 | --- | --- |
-| `llm_active_profile` | Profile whose unit is enabled and running |
+| `llm_gpu_serving_paused` | Stop serving during a declared stress window; defaults to `false` |
+| `llm_active_profile` | Selected profile; it remains selected while its unit is paused |
 | `llm_profiles` | Per-profile engine and serving settings |
 | `llm_gpu_serving_model_cache_mount_path` | Writable local model-cache directory supplied for the target |
 | `llm_gpu_serving_model_origin_mount_path` | Optional shared origin mount; when empty, models download straight into the local cache |
