@@ -1,4 +1,7 @@
 ---
+- name: Load shared artifact cache settings
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/load.yml"
+
 - name: Validate the requested cache-sync artifact reference
   ansible.builtin.assert:
     that:
@@ -68,6 +71,10 @@
     llm_gpu_serving_cache_sync_local_target: >-
       {{ not llm_gpu_serving_cache_sync_origin_declared
          or (llm_gpu_serving_cache_sync_mode | default('pull')) == 'pull' }}
+
+- name: Require the artifact cache for Hub downloads
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/require-proxy.yml"
+  when: llm_gpu_serving_cache_sync_operation == 'download'
 
 - name: Inspect the declared model-origin mount
   ansible.builtin.stat:
@@ -160,8 +167,7 @@
       - "{{ llm_gpu_serving_cache_sync_artifact.revision }}"
       - --local-dir
       - "{{ llm_gpu_serving_cache_sync_local_directory }}"
-  environment:
-    HF_HOME: "{{ llm_gpu_serving_hf_home }}"
+  environment: "{{ llamacpp_release_proxy_environment | combine({'HF_HOME': llm_gpu_serving_hf_home}) }}"
   become: true
   become_user: "{{ llm_gpu_serving_user }}"
   changed_when: false
@@ -181,8 +187,7 @@
           '--revision', llm_gpu_serving_cache_sync_artifact.revision,
           '--include', item, '--local-dir', llm_gpu_serving_cache_sync_download_directory,
           '--dry-run'] }}
-  environment:
-    HF_HOME: "{{ llm_gpu_serving_hf_home }}"
+  environment: "{{ llamacpp_release_proxy_environment | combine({'HF_HOME': llm_gpu_serving_hf_home}) }}"
   become: true
   become_user: "{{ llm_gpu_serving_user }}"
   loop: "{{ llm_gpu_serving_cache_sync_artifact.include_globs }}"
@@ -258,8 +263,7 @@
       {{ [llm_gpu_serving_hf_bin, 'download', llm_gpu_serving_cache_sync_artifact.hf_repo,
           '--revision', llm_gpu_serving_cache_sync_artifact.revision,
           '--include', item, '--local-dir', llm_gpu_serving_cache_sync_download_directory] }}
-  environment:
-    HF_HOME: "{{ llm_gpu_serving_hf_home }}"
+  environment: "{{ llamacpp_release_proxy_environment | combine({'HF_HOME': llm_gpu_serving_hf_home}) }}"
   become: true
   become_user: "{{ llm_gpu_serving_user }}"
   loop: "{{ llm_gpu_serving_cache_sync_artifact.include_globs }}"

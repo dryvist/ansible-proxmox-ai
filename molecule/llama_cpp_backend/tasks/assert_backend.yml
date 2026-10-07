@@ -1,8 +1,6 @@
 ---
-# Asserted per backend. Loads the role's REAL defaults file rather than
-# restating its expressions: a test that re-implements the logic it checks
-# agrees with the implementation only by coincidence, and drifts silently the
-# first time either side changes.
+# Asserted per backend. Load the role defaults and shared release defaults
+# rather than restating their expressions, so the test follows the real pin.
 #
 # PRECEDENCE TRAP, found by this scenario on its first run. `include_vars` sits
 # at precedence 18 and task-level `vars:` at 17, so include_vars WINS. Setting
@@ -11,35 +9,33 @@
 # asset. `set_fact` is 19, so it overrides include_vars; the order below is
 # load-bearing, not stylistic.
 #
-# Worth noting WHICH assertion caught it: "exactly one asset matched" passed
-# for all three backends, because exactly one always did — the wrong one. Only
-# comparing against the EXPECTED asset name exposed it. A count is satisfiable
-# by the state it is meant to rule out; an identity is not.
 - name: "Load the role defaults with backend={{ backend.key }}"
   ansible.builtin.include_vars:
     dir: "{{ playbook_dir }}/../../roles/llama_cpp/defaults/main"
+
+- name: "Load the shared llama.cpp release defaults with backend={{ backend.key }}"
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../../roles/llamacpp_release/defaults/main/00-release.yml"
 
 # set_fact (precedence 19) outranks include_vars (18) — see the note above.
 - name: "Override the loaded default to backend={{ backend.key }}"
   ansible.builtin.set_fact:
     llama_cpp_gpu_backend: "{{ backend.key }}"
 
-- name: "Select the asset for backend={{ backend.key }}"
+- name: "Select the pinned asset for backend={{ backend.key }}"
   ansible.builtin.set_fact:
     matched: >-
       {{ upstream_assets
-         | select('match', llama_cpp_llamacpp_asset_regex) | list }}
+         | select('equalto', llama_cpp_llamacpp_asset_name) | list }}
 
-- name: "Assert exactly one asset matched for backend={{ backend.key }}"
+- name: "Assert the pinned asset exists exactly once for backend={{ backend.key }}"
   ansible.builtin.assert:
     that:
       - matched | length == 1
     fail_msg: >-
       backend={{ backend.key }} matched {{ matched | length }} assets
-      ({{ matched }}). Exactly one must match: zero means the install fails
-      loud, but MORE THAN ONE is the dangerous case — the role takes the first
-      match, so an extra match silently decides the backend by release-ordering
-      rather than by this regex.
+      ({{ matched }}). The shared release pin must name exactly one asset in
+      the fixture.
 
 - name: "Assert the matched asset is the intended one for backend={{ backend.key }}"
   ansible.builtin.assert:

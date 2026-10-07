@@ -4,6 +4,9 @@
 # /dev/kfd + /dev/dri into this CT (GPU build only). We only need the service
 # user to be able to use them.
 
+- name: Load shared llama.cpp release settings and require the artifact cache
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/prepare.yml"
+
 - name: Install llama.cpp prerequisites
   ansible.builtin.apt:
     name:
@@ -17,6 +20,7 @@
     state: present
     update_cache: true
     cache_valid_time: 3600
+  environment: "{{ llamacpp_release_proxy_environment }}"
 
 # Best-effort ROCm runtime for the container (prebuilt ROCm build links against it).
 # Empty by default — a no-op until a validated package list is supplied per host.
@@ -26,6 +30,7 @@
     state: present
     update_cache: true
     cache_valid_time: 3600
+  environment: "{{ llamacpp_release_proxy_environment }}"
   when:
     - llama_cpp_gpu_backend == 'rocm'
     - llama_cpp_rocm_packages | length > 0
@@ -37,6 +42,7 @@
     state: present
     update_cache: true
     cache_valid_time: 3600
+  environment: "{{ llamacpp_release_proxy_environment }}"
   when: llama_cpp_gpu_backend == 'vulkan'
 
 # Model-size guardrails: the absolute llm-fast rule and the per-guest ceiling.
@@ -94,12 +100,7 @@
   ansible.builtin.include_tasks: gpu_access.yml
   when: llama_cpp_gpu | bool
 
-# --- llama.cpp release (resolve latest, install once) ------------------------
-# Presence-guarded: the build tag moves every release, so we install once behind
-# the binary's existence and let operators refresh by removing it. The GitHub API
-# call only runs on first install, so re-converge does not spend rate limit.
-# A binary that exists but cannot resolve its bundled libs (broken/missing
-# SONAME symlinks) counts as not installed, so a converge self-heals it.
+# --- llama.cpp release (pinned asset, reinstall only on version change) -------
 - name: Check whether the installed llama-server runs
   ansible.builtin.command:
     cmd: "{{ llama_cpp_server_bin }} --version"
@@ -107,46 +108,40 @@
   changed_when: false
   failed_when: false
 
+- name: Inspect the installed llama.cpp asset marker
+  ansible.builtin.stat:
+    path: "{{ llama_cpp_llamacpp_asset_marker }}"
+  register: llama_cpp_asset_marker_stat
+
+- name: Read the installed llama.cpp asset name
+  ansible.builtin.slurp:
+    src: "{{ llama_cpp_llamacpp_asset_marker }}"
+  register: llama_cpp_asset_marker
+  when: llama_cpp_asset_marker_stat.stat.exists
+
 - name: Install the llama.cpp release binary
-  when: llama_cpp_server_check.rc != 0
+  when: >-
+    llama_cpp_server_check.rc != 0
+    or not llama_cpp_asset_marker_stat.stat.exists
+    or (llama_cpp_asset_marker.content | b64decode | trim)
+    != llama_cpp_llamacpp_asset_name
   block:
-    - name: Resolve recent llama.cpp release metadata
-      ansible.builtin.uri:
-        url: "{{ llama_cpp_llamacpp_releases_api }}"
-        return_content: true
-        headers:
-          Accept: application/vnd.github+json
-      register: llama_cpp_llamacpp_release
-
-    # llama.cpp cuts a release every few hours and CI uploads assets minutes
-    # later, so the newest release is routinely asset-less. Scan newest-first
-    # across the last few releases and take the first matching asset.
-    - name: Select the llama.cpp release asset by name pattern
-      ansible.builtin.set_fact:
-        llama_cpp_llamacpp_asset_url: >-
-          {{ llama_cpp_llamacpp_release.json
-             | map(attribute='assets') | flatten
-             | selectattr('name', 'match', llama_cpp_llamacpp_asset_regex)
-             | map(attribute='browser_download_url') | list
-             | first | default('') }}
-
-    - name: Assert a matching llama.cpp asset was found
-      ansible.builtin.assert:
-        that:
-          - llama_cpp_llamacpp_asset_url | length > 0
-        fail_msg: >-
-          No llama.cpp release asset matched {{ llama_cpp_llamacpp_asset_regex }}
-          in {{ llama_cpp_llamacpp_releases_api }} — the asset naming may have changed.
-
     - name: Create a temporary extraction directory
       ansible.builtin.tempfile:
         state: directory
         suffix: llama-cpp
       register: llama_cpp_extract_tmp
 
-    - name: Download and extract the llama.cpp release tarball
+    - name: Download the pinned llama.cpp release asset through the cache
+      ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/download.yml"
+      vars:
+        llamacpp_release_asset_name: "{{ llama_cpp_llamacpp_asset_name }}"
+        llamacpp_release_download_path: >-
+          {{ llama_cpp_extract_tmp.path }}/{{ llama_cpp_llamacpp_asset_name }}
+
+    - name: Extract the pinned llama.cpp release tarball
       ansible.builtin.unarchive:
-        src: "{{ llama_cpp_llamacpp_asset_url }}"
+        src: "{{ llama_cpp_extract_tmp.path }}/{{ llama_cpp_llamacpp_asset_name }}"
         dest: "{{ llama_cpp_extract_tmp.path }}"
         remote_src: true
 
@@ -171,11 +166,22 @@
     # remote_src drops, leaving the binary unable to resolve its own libs.
     - name: Install the llama.cpp bin directory contents
       ansible.builtin.command:
-        cmd: >-
-          cp -a {{ llama_cpp_server_find.files[0].path | dirname }}/.
-          {{ llama_cpp_install_dir }}/
+        argv:
+          - cp
+          - -a
+          - --remove-destination
+          - "{{ llama_cpp_server_find.files[0].path | dirname }}/."
+          - "{{ llama_cpp_install_dir }}/"
       changed_when: true
       notify: Restart llama-server
+
+    - name: Record the installed llama.cpp asset name
+      ansible.builtin.copy:
+        content: "{{ llama_cpp_llamacpp_asset_name }}\n"
+        dest: "{{ llama_cpp_llamacpp_asset_marker }}"
+        owner: "{{ llama_cpp_user }}"
+        group: "{{ llama_cpp_group }}"
+        mode: "0640"
 
     - name: Remove the temporary extraction directory
       ansible.builtin.file:

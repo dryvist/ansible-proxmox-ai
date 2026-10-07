@@ -1,0 +1,102 @@
+"""Keep llama.cpp release selection pinned and all external fetches proxied."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+RELEASE_ROOT = ROOT / "roles/llamacpp_release"
+
+
+def _load(path: Path):
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def test_one_renovate_pin_declares_every_backend_asset():
+    defaults_path = RELEASE_ROOT / "defaults/main/00-release.yml"
+    text = defaults_path.read_text(encoding="utf-8")
+    defaults = _load(defaults_path)
+    pin_line = next(
+        index
+        for index, line in enumerate(text.splitlines())
+        if line.startswith("llamacpp_release_tag:")
+    )
+
+    assert text.splitlines()[pin_line - 1].startswith("# renovate: datasource=github-releases")
+    assert "depName=ggml-org/llama.cpp versioning=loose" in text.splitlines()[pin_line - 1]
+    for key in (
+        "llamacpp_release_cpu_asset",
+        "llamacpp_release_vulkan_asset",
+        "llamacpp_release_rocm_asset",
+        "llamacpp_release_cuda_asset",
+        "llamacpp_release_cuda_runtime_asset",
+    ):
+        assert "{{ llamacpp_release_tag }}" in defaults[key]
+
+
+def test_shared_download_uses_the_pinned_url_and_requires_apt_proxy():
+    prepare = _load(RELEASE_ROOT / "tasks/prepare.yml")
+    download = _load(RELEASE_ROOT / "tasks/download.yml")
+    proxy_check = _load(RELEASE_ROOT / "tasks/require-proxy.yml")
+    get_url = next(task["ansible.builtin.get_url"] for task in download if "ansible.builtin.get_url" in task)
+
+    assert any("tasks/load.yml" in str(task) for task in prepare)
+    assert any("require-proxy.yml" in str(task) for task in prepare)
+    assert "APT_PROXY_URL" in str(proxy_check)
+    assert get_url["url"] == "{{ llamacpp_release_download_url }}/{{ llamacpp_release_asset_name }}"
+    assert download[-1]["environment"] == "{{ llamacpp_release_proxy_environment }}"
+
+
+def test_all_three_installers_use_markers_and_never_query_release_api():
+    cases = (
+        ("roles/llm_gpu_serving/tasks/main.yml", "llm_gpu_serving_llamacpp_asset_marker"),
+        ("roles/llamacpp_serving/tasks/install.yml", "llamacpp_serving_asset_marker"),
+        ("roles/llama_cpp/tasks/main.yml", "llama_cpp_llamacpp_asset_marker"),
+    )
+    for relative_path, marker in cases:
+        text = (ROOT / relative_path).read_text(encoding="utf-8")
+        assert "api.github.com/repos/ggml-org/llama.cpp" not in text
+        assert "llamacpp_release/tasks/download.yml" in text
+        assert marker in text
+
+
+def test_package_and_model_fetch_tasks_use_the_shared_proxy():
+    paths = (
+        "roles/llm_gpu_serving/tasks/main.yml",
+        "roles/llm_gpu_serving/tasks/install-cuda-toolkit.yml",
+        "roles/llm_gpu_serving/tasks/install-nvidia-userspace.yml",
+        "roles/llm_gpu_serving/tasks/cache-sync.yml",
+        "roles/llm_gpu_serving/tasks/verify-model-store-origin-repo.yml",
+        "roles/nvidia_gpu_guest/tasks/main.yml",
+        "roles/nvidia_gpu_guest/tasks/install-cuda-toolkit.yml",
+        "roles/nvidia_gpu_guest/tasks/install-nvidia-userspace.yml",
+        "roles/nvidia_gpu_guest/tasks/cache-sync.yml",
+        "roles/nvidia_gpu_guest/tasks/verify-model-store-origin-repo.yml",
+        "roles/llama_cpp/tasks/main.yml",
+    )
+    for relative_path in paths:
+        text = (ROOT / relative_path).read_text(encoding="utf-8")
+        assert (
+            "llamacpp_release_proxy" in text or "llamacpp_release/tasks" in text
+        ), relative_path
+
+
+def test_standalone_model_sync_entrypoints_load_shared_cache_settings():
+    cache_sync_paths = (
+        "roles/llm_gpu_serving/tasks/cache-sync.yml",
+        "roles/nvidia_gpu_guest/tasks/cache-sync.yml",
+    )
+    for relative_path in cache_sync_paths:
+        text = (ROOT / relative_path).read_text(encoding="utf-8")
+        assert "llamacpp_release/tasks/load.yml" in text, relative_path
+        assert "llamacpp_release/tasks/require-proxy.yml" in text, relative_path
+
+    verify_paths = (
+        "roles/llm_gpu_serving/tasks/verify-model-store-origin-repo.yml",
+        "roles/nvidia_gpu_guest/tasks/verify-model-store-origin-repo.yml",
+    )
+    for relative_path in verify_paths:
+        text = (ROOT / relative_path).read_text(encoding="utf-8")
+        assert "llamacpp_release/tasks/prepare.yml" in text, relative_path
