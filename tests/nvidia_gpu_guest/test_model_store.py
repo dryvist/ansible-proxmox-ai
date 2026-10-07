@@ -106,6 +106,21 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     notify = next(task for task in cache_tasks if task.get("name", "").startswith("Notify serving handlers"))
 
     assert any(task.get("name") == "Assert each serving profile resolves to exactly one artifact" for task in registry_tasks)
+    assert any(
+        task.get("name", "").startswith("Load the GLM-5.3-Flash artifact shard")
+        and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_glm_artifact_registry_file }}"
+        for task in registry_tasks
+    )
+    assert any(
+        task.get("name", "").startswith("Load the GLM-5.3-Flash artifact shard for cache sync")
+        and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_glm_artifact_registry_file }}"
+        for task in cache_tasks
+    )
+    assert any(
+        task.get("name", "").startswith("Combine the campaign model artifact shards")
+        and "_llm_model_artifacts_glm53flash" in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
+        for task in registry_tasks
+    )
     for engine, role_root in ENGINE_ROOTS.items():
         main_tasks = yaml.safe_load((role_root / "tasks/main.yml").read_text(encoding="utf-8"))
         activation_tasks = yaml.safe_load((role_root / "tasks/activate.yml").read_text(encoding="utf-8"))
