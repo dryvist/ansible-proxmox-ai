@@ -120,7 +120,7 @@ def apply_trace_contract(data, key_metadata):
                    if not isinstance(metadata.get(field), (str, int, float, bool)) or metadata[field] == ""]
         if missing:
             raise HTTPException(status_code=400, detail="Missing benchmark metadata: " + ", ".join(missing))
-    fields = list(defaults) + ["session_id", "trace_user_id", "trace_name", "generation_name",
+    fields = list(defaults) + ["session_id", "trace_user_id", "trace_name", "generation_name", "trace_release", "trace_version",
                                "tool_category", "tool_name"] + required
     contract = {field: metadata[field] for field in fields if metadata.get(field) is not None}
     metadata["requester_metadata"] = {**(metadata.get("requester_metadata") or {}), **contract}
