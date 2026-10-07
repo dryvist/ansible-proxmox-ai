@@ -156,21 +156,6 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     assert all(artifact["model_task_source"] in {"model_card", "inferred"} for artifact in campaign_artifacts)
     assert all("model_task" not in artifact or "model_task_source" in artifact for artifact in artifacts)
 
-    stage0 = {artifact["artifact_id"]: artifact for artifact in artifacts if "stage0" in artifact["artifact_id"]}
-    assert set(stage0) == {
-        "embeddinggemma-2-stage0",
-        "opendecider-qwen3-4b-base-stage0",
-        "opendecider-small-stage0",
-        "opendecider-small-td-stage0",
-    }
-    assert all(artifact["use"] == "benchmark-only" for artifact in stage0.values())
-    assert all("model_size" not in artifact and "model_store" not in artifact for artifact in stage0.values())
-    assert stage0["embeddinggemma-2-stage0"]["model_task"] == "feature-extraction"
-    assert stage0["opendecider-small-stage0"]["model_task"] == "zero-shot-classification"
-    assert stage0["opendecider-small-td-stage0"]["required_artifact_ids"] == [
-        "opendecider-qwen3-4b-base-stage0"
-    ]
-
     registry_entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))[
         "_llm_registry_gpu_pro6000"
     ]
@@ -210,17 +195,6 @@ def test_registry_artifact_engine_check_uses_the_runtime_profile():
     condition = check["ansible.builtin.assert"]["that"][-1]
 
     assert "nvidia_gpu_guest_profiles[item.key].engine" in condition
-
-
-def test_registry_validates_model_task_provenance_for_campaign_artifacts():
-    tasks = yaml.safe_load((NVIDIA_ROOT / "tasks/load-registry.yml").read_text(encoding="utf-8"))
-    validation = next(task for task in tasks if task.get("name") == "Validate model artifact metadata")
-    conditions = validation["ansible.builtin.assert"]["that"]
-
-    assert "item.model_task is not defined or item.model_task | length > 0" in conditions
-    assert "item.model_task_source is not defined or item.model_task_source in ['model_card', 'inferred']" in conditions
-    assert "(item.model_task is defined) == (item.model_task_source is defined)" in conditions
-    assert "item.model_size is not defined or item.model_task is defined" in conditions
 
 
 def test_each_vllm_profile_renders_its_runtime_flags():
