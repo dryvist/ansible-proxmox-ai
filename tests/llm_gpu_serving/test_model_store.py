@@ -18,20 +18,20 @@ def _model_store() -> list[dict]:
 
 def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
     model_store = _model_store()
-    assert len(model_store) == 20
+    assert len(model_store) == 22
     assert {artifact["model_store_profile"] for artifact in model_store} == {
         "small",
         "medium-a",
         "medium-b",
         "max",
     }
-    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 289_195_631_019
+    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 334_707_157_291
     assert all(len(artifact["revision"]) == 40 for artifact in model_store)
     assert all(set(artifact["revision"]) <= set("0123456789abcdef") for artifact in model_store)
     assert {artifact["artifact_id"] for artifact in model_store if artifact.get("model_size")} == {
         "qwen35-9b-nvfp4",
         "qwen38-27b-nvfp4",
-        "qwen38-27b-ud-iq3-xxs",
+        "qwen38-27b-ud-q4-k-m",
         "flash-next-iq3-s",
     }
     repositories = {artifact["hf_repo"] for artifact in model_store}
@@ -89,7 +89,7 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     verify_local = next(
         task
         for task in cache_tasks
-        if task.get("name", "").startswith("Verify the copied artifact")
+        if task.get("name", "").startswith("Verify the local artifact")
     )
     notify = next(task for task in cache_tasks if task.get("name", "").startswith("Notify serving handlers"))
     assert include["ansible.builtin.include_tasks"] == "cache-sync.yml"
@@ -103,7 +103,11 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     assert preview["changed_when"] is False
     assert "llm_gpu_serving_cache_sync_artifact.hf_repo" in download["ansible.builtin.command"]["argv"]
     assert "llm_gpu_serving_cache_sync_artifact.revision" in download["ansible.builtin.command"]["argv"]
-    assert "llm_gpu_serving_cache_sync_origin_directory" in download["ansible.builtin.command"]["argv"]
+    assert "llm_gpu_serving_cache_sync_download_directory" in download["ansible.builtin.command"]["argv"]
+    assert "llm_gpu_serving_cache_sync_download_directory" in preview["ansible.builtin.command"]["argv"]
+    validate = next(task for task in main_tasks if task.get("name", "").startswith("Validate the active GPU serving profile"))
+    assert "llm_gpu_serving_model_cache_mount_path | length > 0" in validate["ansible.builtin.assert"]["that"]
+    assert "llm_gpu_serving_model_origin_mount_path" not in str(validate)
     assert "llm_gpu_serving_cache_sync_previews.results[ansible_loop.index0]" in download["changed_when"]
     assert download["become_user"] == "{{ llm_gpu_serving_user }}"
     assert download["loop"] == "{{ llm_gpu_serving_cache_sync_artifact.include_globs }}"
@@ -136,3 +140,15 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
         "Start the active GPU serving profile",
     ]
     assert "rsync" not in (ROLE_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8")
+
+
+def test_profile_switch_clears_only_its_own_gpu_work_before_downloading():
+    cache_tasks = yaml.safe_load((ROLE_ROOT / "tasks/cache-sync.yml").read_text(encoding="utf-8"))
+    names = [task.get("name", "") for task in cache_tasks]
+    stop_index = names.index("Stop this role's serving units before a profile switch downloads an artifact")
+    guard_index = names.index("Require an idle GPU before downloading a registered artifact")
+    stop, guard = cache_tasks[stop_index], cache_tasks[guard_index]
+    assert stop_index < guard_index
+    assert "llm_gpu_serving_cache_sync_notify_service | default(false) | bool" in stop["when"]
+    assert stop["notify"] == "Start the active GPU serving profile"
+    assert "notify_service" not in str(guard["when"])

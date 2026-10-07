@@ -5,17 +5,34 @@ the CUDA release binary for llama.cpp. Each enabled profile receives its own
 systemd unit; the role keeps only `llm_active_profile` running and serving on
 the shared API listener.
 
+## Play
+
+`playbooks/llm-serving.yml` applies this role to `llm_gpu_group` (inventory tag
+`llm-gpu`) with the `llm_gpu_serving` tag, one host at a time, before the router
+pool. `playbooks/site.yml` imports that playbook. With no host in the group the
+play is skipped. The active profile is `llm_active_profile`; cache and origin
+paths come from the inventory's `container_models_*` values. The guest carries no
+container engine: the EvalScope LiveCodeBench evaluator runs generated code in a
+local subprocess with a per-test timeout unless a recipe requests a Docker sandbox.
+
 ## Installation
 
-A selected target supplies a writable local cache and a declared model-origin
-mount. The role validates both and does not create a missing mount point.
+A selected target supplies a writable local cache and, optionally, a declared
+model-origin mount. The role validates the cache and does not create a missing
+mount point.
 
 ## What it does
 
+- Installs the NVIDIA userspace (`libcuda1`, `nvidia-driver-cuda` for `nvidia-smi`)
+  from the vendor apt repository at `llm_gpu_serving_nvidia_userspace_version`, with
+  the vendor's version-pinning package and no kernel module or DKMS. The version
+  must equal the host driver exactly. The step is skipped when `nvidia-smi`
+  already reports that version. Debian guests only.
 - Installs a Renovate-pinned uv binary and creates a dedicated Python virtual environment.
 - Installs the Renovate-pinned `hf` CLI with uv under the supplied model cache; uv's package, Python, and tool caches use that same directory.
-- Installs the Renovate-pinned vLLM version with the `b12x` extra for SM120
-  kernel support.
+- Links `vllm` and `hf` into `/usr/local/bin` so campaign preflights find them without a venv path.
+- Installs the Renovate-pinned vLLM version and the Renovate-pinned `b12x`
+  package for SM120 kernel support in one uv command.
 - Resolves a recent llama.cpp release and installs its Linux x64 CUDA archive
   using the same release metadata and archive-layout checks as `llama_cpp`.
 - Seeds `model_store: true` artifacts from `llm-models.d/65-gpu-pro6000-artifacts.yml`
@@ -61,7 +78,8 @@ The reusable cache-sync task accepts `llm_gpu_serving_cache_sync_artifact_id`
 and resolves its repository, revision, and include globs from the artifact
 registry. Its default `pull` mode copies from the origin to the local cache;
 `llm_gpu_serving_cache_sync_mode: download` is used by the seed playbook to
-populate the origin. Callers that only stage a campaign artifact leave
+populate the origin. With no origin declared, either mode downloads the pinned
+artifact straight into the local cache and verifies it there. Callers that only stage a campaign artifact leave
 `llm_gpu_serving_cache_sync_notify_service` unset; the normal role sets it to
 `true` so changed local model files restart serving.
 
@@ -81,7 +99,8 @@ profile's floor; `tasks/assert-profile-floors.yml` fails the role otherwise.
 | `llm_active_profile` | Profile whose unit is enabled and running |
 | `llm_profiles` | Per-profile engine and serving settings |
 | `llm_gpu_serving_model_cache_mount_path` | Writable local model-cache directory supplied for the target |
-| `llm_gpu_serving_model_origin_mount_path` | Declared shared origin mount supplied for the target |
+| `llm_gpu_serving_model_origin_mount_path` | Optional shared origin mount; when empty, models download straight into the local cache |
+| `llm_gpu_serving_nvidia_userspace_version` | Guest NVIDIA userspace version; equals the host driver version |
 | `llm_gpu_serving_uv_version` | Pinned uv installer version, tracked by Renovate |
 | `llm_gpu_serving_huggingface_hub_version` | Pinned Hugging Face CLI package version, tracked by Renovate |
 | `llm_gpu_serving_vllm_version` | Pinned vLLM package version, tracked by Renovate |

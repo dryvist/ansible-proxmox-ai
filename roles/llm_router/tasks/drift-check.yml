@@ -71,34 +71,8 @@
       register: _llm_router_drift_rendered_config
       no_log: true
 
-    - name: Keep only key aliases and policy flags from the live key records
-      ansible.builtin.set_fact:
-        _llm_router_drift_live_keys: >-
-          {%- set ns = namespace(pages=[_llm_router_drift_keys_page_1.json], keys=[]) -%}
-          {%- for page in (_llm_router_drift_key_pages.results | default([])) -%}
-          {%- set ns.pages = ns.pages + [page.json] -%}
-          {%- endfor -%}
-          {%- for page in ns.pages -%}
-          {%- for key in (page.keys | default([])) -%}
-          {%- if key.key_alias is defined and key.key_alias is not none and (key.key_alias | string | length) > 0 -%}
-          {%- set flags = {
-            'models': key.models | default([], true),
-            'allowed_routes': key.allowed_routes | default([], true),
-            'max_budget': key.max_budget | default(none),
-            'budget_duration': key.budget_duration | default(none),
-            'budget_limits': key.budget_limits | default([], true),
-            'rpm_limit': key.rpm_limit | default(none),
-            'tpm_limit': key.tpm_limit | default(none),
-            'router_settings': key.router_settings | default({}, true),
-            'metadata_tags': (key.metadata | default({}, true)).get('tags', []) | default([], true),
-            'object_permission': key.object_permission | default({}, true)
-          } -%}
-          {%- set ns.keys = ns.keys + [{'alias': key.key_alias, 'flags': flags}] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {%- endfor -%}
-          {{ ns.keys }}
-      no_log: true
+    - name: Project the live key records
+      ansible.builtin.import_tasks: drift-live-keys.yml
 
     - name: Keep only seeded key aliases and flags from the Git baseline
       ansible.builtin.set_fact:
@@ -151,7 +125,7 @@
               'name': 'UI setting',
               'git_file': llm_router_drift_ui_settings_git_file,
               'expected': llm_router_ui_settings_baseline,
-              'live': _llm_router_drift_ui_settings.json.values | default({}, true)
+              'live': _llm_router_drift_ui_settings.json['values'] | default({}, true)
             }
           ] }}
       no_log: true

@@ -185,12 +185,12 @@ def test_each_vllm_profile_renders_its_runtime_flags():
         assert "{{" not in exec_start
 
 
-def test_quantization_selects_the_expected_vllm_flag():
+def test_nvfp4_profiles_leave_quantization_to_the_checkpoint():
     profiles = _profiles()
     small = _exec_start(_render("small", profiles["small"]))
     medium = _exec_start(_render("medium-a", profiles["medium-a"]))
-    assert "--quantization modelopt" in small
-    assert "--quantization modelopt" in medium
+    assert "--quantization" not in small
+    assert "--quantization" not in medium
     assert "--tool-call-parser qwen3_xml" in small
     assert "--reasoning-parser qwen3" in small
     assert "--linear-backend b12x" in medium
@@ -235,6 +235,11 @@ def test_hf_cli_and_uv_are_pinned_and_store_tools_on_the_tofu_cache_mount():
     assert hf_install["environment"] == "{{ llm_gpu_serving_uv_environment }}"
     assert venv_create["environment"] == "{{ llm_gpu_serving_uv_environment }}"
     assert vllm_install["environment"] == "{{ llm_gpu_serving_uv_environment }}"
+    assert "datasource=pypi depName=b12x" in core_defaults.read_text(encoding="utf-8")
+    vllm_argv = vllm_install["ansible.builtin.command"]["argv"]
+    assert "vllm=={{ llm_gpu_serving_vllm_version }}" in vllm_argv
+    assert "b12x=={{ llm_gpu_serving_b12x_version }}" in vllm_argv
+    assert not any("[b12x]" in str(arg) for arg in vllm_argv)
     for key in (
         "llm_gpu_serving_uv_cache_dir",
         "llm_gpu_serving_uv_python_install_dir",

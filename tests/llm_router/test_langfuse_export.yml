@@ -1,0 +1,149 @@
+---
+# Direct Langfuse trace export is presence-gated on both keys. With both keys
+# the langfuse_otel callback is listed and the env file carries the keys, the
+# derived host and the no-content capture pin; with either key missing or
+# blank nothing Langfuse-related renders. Message bodies stay off either way.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_langfuse_export.yml -i localhost, -c local
+
+- name: Verify the Langfuse callback renders when both keys resolve
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          redis_default: 6379
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    bao_local_llm_secrets:
+      LANGFUSE_PUBLIC_KEY: pk-test-fixture
+      LANGFUSE_SECRET_KEY: sk-test-fixture
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: fixture
+    llm_router_llm_large_bearer: fixture
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Capture the rendered proxy config and environment
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _env: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+      no_log: true
+
+    - name: Both exporters are listed as a list and bodies stay off
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_langfuse_enabled | bool
+          - _config.litellm_settings.callbacks is not string
+          - _config.litellm_settings.callbacks | select('equalto', 'otel') | list | length == 1
+          - _config.litellm_settings.callbacks | select('equalto', 'langfuse_otel') | list | length == 1
+          - "'langfuse' not in _config.litellm_settings.callbacks"
+          - "'prometheus' in _config.litellm_settings.callbacks"
+          - _config.litellm_settings.callback_settings.langfuse_otel.message_logging == false
+          - _config.litellm_settings.callback_settings.otel.message_logging == false
+        fail_msg: The Langfuse callback did not render with both keys.
+
+    - name: The env file carries the keys, the derived host and the capture pin
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _env is search('(?m)^LANGFUSE_PUBLIC_KEY=pk-test-fixture$')
+          - _env is search('(?m)^LANGFUSE_SECRET_KEY=sk-test-fixture$')
+          - _env is search('(?m)^LANGFUSE_HOST=https://langfuse\\.pve\\.example\\.test$')
+          - _env is search('(?m)^OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=no_content$')
+          - _env is search('(?m)^LITELLM_OTEL_V2=true$')
+          - _env is search('(?m)^OTEL_ENDPOINT=http://otel\\.example\\.test:4318$')
+        fail_msg: The env file lacks the Langfuse lines.
+
+    - name: No Langfuse SDK is installed and the keys are in no assert list
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_pip_packages | select('match', '^langfuse') | list | length == 0
+          - "'opentelemetry-exporter-otlp' in llm_router_pip_packages"
+          - "'LANGFUSE' not in (_main_tasks | to_json)"
+          - "'langfuse' not in (_main_tasks | to_json | lower)"
+        fail_msg: The Langfuse keys must stay out of the converge asserts and no SDK is pinned.
+      vars:
+        _main_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/main.yml') | from_yaml }}"
+
+- name: Verify nothing Langfuse-related renders without both keys
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          redis_default: 6379
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    bao_local_llm_secrets:
+      LANGFUSE_PUBLIC_KEY: pk-test-fixture
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: fixture
+    llm_router_llm_large_bearer: fixture
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 40
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Load the role defaults and registry the way the converge does
+      ansible.builtin.import_tasks: tasks/parity_setup.yml
+
+    - name: Render with only the public key
+      ansible.builtin.set_fact:
+        _config_one: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _env_one: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+      no_log: true
+
+    - name: Render with a blank secret key
+      ansible.builtin.set_fact:
+        bao_local_llm_secrets:
+          LANGFUSE_PUBLIC_KEY: pk-test-fixture
+          LANGFUSE_SECRET_KEY: "  "
+      no_log: true
+
+    - name: Render with the blank secret key
+      ansible.builtin.set_fact:
+        _config_blank: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _env_blank: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+      no_log: true
+
+    - name: A single key or a blank key renders no callback and no env line
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not (llm_router_langfuse_enabled | bool)
+          - "'langfuse_otel' not in _config_one.litellm_settings.callbacks"
+          - "'langfuse_otel' not in _config_blank.litellm_settings.callbacks"
+          - "'langfuse_otel' not in _config_one.litellm_settings.callback_settings"
+          - "'langfuse_otel' not in _config_blank.litellm_settings.callback_settings"
+          - _env_one is not search('(?m)^LANGFUSE_')
+          - _env_blank is not search('(?m)^LANGFUSE_')
+          - _env_one is not search('(?m)^OTEL_INSTRUMENTATION_GENAI')
+          - _config_one.litellm_settings.callbacks | select('equalto', 'otel') | list | length == 1
+        fail_msg: The Langfuse pieces rendered without both keys.

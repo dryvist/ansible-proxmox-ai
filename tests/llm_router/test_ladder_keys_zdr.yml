@@ -1,0 +1,111 @@
+---
+- name: Verify ZDR tag filtering on every fallback hop
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ladder_keys_fixture.yml
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Prepare role-backed rendered contract
+      ansible.builtin.import_tasks: tasks/prepare_ladder_keys.yml
+    - name: Every enabled ZDR-only key rejects retaining and free deployments on each hop
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _zdr_keys | length >= 2
+          - _zdr_filter_mismatches | length == 0
+          - _bad_zdr_keys | length == 0
+          - _zdr_deployment_targets | difference(_deployment_group_names) | length == 0
+          - _zdr_untagged_router_rows | length == 0
+          - _zdr_tag_admitted_unsafe_rows | length == 0
+          - >-
+            (llm_router_d1_rungs_by_class['free']
+             + llm_router_d1_rungs_by_class['retains'])
+            | difference(llm_router_zdr_unasserted_terminal_rungs) | length == 0
+        fail_msg: >-
+          ZDR keys can reach an unsafe rung: {{ _bad_zdr_keys }};
+          missing rendered groups={{ _zdr_deployment_targets
+          | difference(_deployment_group_names) }};
+          nested routers={{ _nested_auto_routers | map(attribute='model_name') | list }};
+          nested targets={{ _nested_auto_targets }}.
+        success_msg: "ZDR keys cannot reach free or retaining deployments."
+      vars:
+        _zdr_keys: >-
+          {{ llm_router_virtual_keys | selectattr('tags', 'defined')
+             | selectattr('tags', 'contains', '&zdr') | list }}
+        _zdr_filter_mismatches: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for _key in _zdr_keys -%}
+          {%- if '!free' not in _key.tags or '!retains' not in _key.tags
+                or not (_key.router_settings.enable_tag_filtering | default(false) | bool) -%}
+          {%- set ns.rows = ns.rows + [_key.alias] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+        _auto: "{{ _config.model_list | selectattr('model_name', 'equalto', 'hermes-default') | first }}"
+        _hermes_fallback: >-
+          {{ _config.router_settings.fallbacks | selectattr('hermes-default', 'defined')
+             | map(attribute='hermes-default') | first }}
+        _zdr_router_targets: >-
+          {{ (_auto.litellm_params.complexity_router_config.tiers.values() | list)
+             + [_auto.litellm_params.complexity_router_config.default_model]
+             + _hermes_fallback }}
+        _deployment_group_names: >-
+          {{ _config.model_list | rejectattr('litellm_params.complexity_router_config', 'defined')
+             | map(attribute='model_name') | unique | list }}
+        _nested_auto_routers: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'in', _zdr_router_targets)
+             | selectattr('litellm_params.complexity_router_config', 'defined') | list }}
+        _nested_auto_targets: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for _row in _nested_auto_routers -%}
+          {%- set _router = _row.litellm_params.complexity_router_config -%}
+          {%- set _tiers = _router.tiers | default({}) -%}
+          {%- set _default = [_router.default_model]
+                if _router.default_model is defined else [] -%}
+          {%- set ns.names = ns.names + (_tiers.values() | list)
+                + _default -%}
+          {%- endfor -%}
+          {{ ns.names | unique | list }}
+        _nested_auto_router_names: "{{ _nested_auto_routers | map(attribute='model_name') | list }}"
+        _zdr_deployment_targets: >-
+          {{ (_zdr_router_targets | difference(_nested_auto_router_names)
+              + _nested_auto_targets) | unique | list }}
+        _zdr_untagged_router_rows: >-
+          {{ _config.model_list
+             | selectattr('model_name', 'in', _zdr_deployment_targets)
+             | rejectattr('litellm_params.complexity_router_config', 'defined')
+             | rejectattr('litellm_params.tags', 'defined') | list }}
+        _zdr_tag_admitted_unsafe_rows: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for _key in _zdr_keys -%}
+          {%- set _required = _key.tags | select('match', '^&')
+                | map('regex_replace', '^&', '') | list -%}
+          {%- set _forbidden = _key.tags | select('match', '^!')
+                | map('regex_replace', '^!', '') | list -%}
+          {%- for _row in _config.model_list
+                if _row.model_name in _zdr_deployment_targets
+                   and _row.litellm_params.complexity_router_config is not defined -%}
+          {%- set _tags = _row.litellm_params.tags | default([]) -%}
+          {%- set _class = llm_router_d1_group_class_by_name.get(_row.model_name, 'unknown') -%}
+          {%- set _admitted = (_required | difference(_tags) | length == 0)
+                and (_forbidden | intersect(_tags) | length == 0) -%}
+          {%- if _admitted and (_class in ['free', 'retains'] or 'zdr' not in _tags) -%}
+          {%- set ns.rows = ns.rows + [_key.alias ~ ':' ~ _row.model_name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+        _bad_zdr_keys: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for _key in _zdr_keys -%}
+          {%- set _unsafe = _key.models | intersect(llm_router_zdr_unasserted_terminal_rungs) -%}
+          {%- if '!free' not in _key.tags or '!retains' not in _key.tags
+                or not (_key.router_settings.enable_tag_filtering | default(false) | bool)
+                or _unsafe | length > 0 -%}
+          {%- set ns.rows = ns.rows + [_key.alias] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}

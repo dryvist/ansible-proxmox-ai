@@ -28,11 +28,11 @@
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
-    # Credentials present ON PURPOSE. With none, the cloud rungs are filtered
-    # out, the chain collapses to the single local leg, and the ordering
-    # assertion below passes trivially -- proving nothing about ordering. The
-    # bug this test pins only exists when there ARE rungs behind the narrow leg.
+    # Credentials present ON PURPOSE. The subscription, paid-ZDR, and free
+    # classes must render so the ordering assertion exercises the complete D1
+    # ladder rather than passing over a local-only chain.
     bao_local_llm_secrets:
+      CHATGPT_LOGIN_FILE: /dev/null
       OPENROUTER_API_KEY: test-openrouter-provider-key
       GEMINI_API_KEY: test-gemini-provider-key
       DASHSCOPE_API_KEY: test-dashscope-provider-key
@@ -57,6 +57,14 @@
         tasks_from: registry.yml
         public: true
 
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Model a node that holds a ChatGPT login
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: true
+
     - name: The primary must advertise a window, or the split is meaningless
       ansible.builtin.assert:
         that:
@@ -79,74 +87,58 @@
           undeclared window defaults to 0 and would classify a WIDE leg as
           narrow, demoting a perfectly good local rung behind cloud egress.
 
-    - name: Narrow legs are ordered behind every cloud rung under the default policy
+    - name: Local class follows sub and precedes paid ZDR under D1
       vars:
         _chain: "{{ llm_router_hermes_default_fallback_chain }}"
       ansible.builtin.assert:
         that:
-          - llm_router_hermes_narrow_legs_last | bool
-          # There must BE cloud rungs, or the ordering claim is vacuous.
-          - llm_router_hermes_cloud_only_fallback_groups | length > 0
+          - llm_router_d1_rungs_by_class['sub'] | length > 0
+          - llm_router_d1_rungs_by_class['paid-zdr'] | length > 0
           - llm_router_hermes_local_narrow_groups | length > 0
           - >-
-            _chain.index(llm_router_hermes_local_narrow_groups | first)
-            > _chain.index(llm_router_hermes_cloud_only_fallback_groups | last)
+            llm_router_d1_ladder_groups.index(llm_router_d1_rungs_by_class['sub'] | first)
+            < llm_router_d1_ladder_groups.index(llm_router_d1_rungs_by_class['local'] | first)
+          - >-
+            llm_router_d1_ladder_groups.index(llm_router_d1_rungs_by_class['local'] | last)
+            < llm_router_d1_ladder_groups.index(llm_router_d1_rungs_by_class['paid-zdr'] | first)
         fail_msg: >-
-          A narrow local leg precedes a cloud rung in the chain. That is the
-          exact ordering that spends an attempt and a unit of depth budget on a
-          rung that cannot answer, ahead of the rungs that can. Chain was: {{ _chain }}
+          The class order is not subscription, local, then paid ZDR. Chain: {{ _chain }}
 
-    - name: The chain still contains every group it did before the reorder
+    - name: The canonical chain contains every D1 class rung
       ansible.builtin.assert:
         that:
           - >-
-            (llm_router_hermes_default_fallback_chain | sort)
-            == ((llm_router_local_fallback_groups
-                 + llm_router_hermes_cloud_only_fallback_groups
-                 + llm_router_opencode_fallback_groups
-                 + llm_router_openrouter_free_groups) | sort)
+            llm_router_hermes_default_fallback_chain
+            == llm_router_d1_ladder_groups
         fail_msg: >-
-          The reorder changed WHICH groups are in the chain, not just their
-          order. Reordering must never drop or add a rung.
+          The canonical chain no longer matches the full ordered D1 class ladder.
 
     - name: Record the resulting order
       ansible.builtin.debug:
         msg: "chain: {{ llm_router_hermes_default_fallback_chain }}"
 
-    # The converge-time guard itself, not just the vars it reads. assert-
-    # fallback-chain.yml exists as its own file specifically so a test can
-    # import it and prove each failure mode; until now nothing did, so its
-    # ordering clause had never been shown to fire. Feed it the exact chain
-    # observed in production and require it to reject.
-    - name: The converge-time assert rejects a narrow leg placed ahead of a cloud rung
+    # The converge-time guard rejects a chain that moves local behind paid.
+    - name: The converge-time assert rejects a D1 class-order violation
       block:
-        - name: Import the assert with a misordered chain
+        - name: Import the assert with paid ZDR before local
           ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-fallback-chain.yml"
           vars:
-            # Full real membership (six segments), but with a narrow leg
-            # placed ahead of opencode/paid on purpose — the misordering this
-            # guard exists to catch. Omitting a segment here instead would
-            # trip the MEMBERSHIP clause first, not the ordering one, which is
-            # what this test means to prove.
             llm_router_hermes_default_fallback_chain: >-
-              {{ llm_router_hermes_local_narrow_groups
-                 + llm_router_opencode_fallback_groups
-                 + llm_router_hermes_cloud_paid_groups
-                 + llm_router_hermes_cloud_free_groups
-                 + llm_router_openrouter_free_groups
-                 + llm_router_hermes_local_wide_groups }}
+              {{ (llm_router_d1_rungs_by_class['sub']
+                  + llm_router_d1_rungs_by_class['paid-zdr']
+                  + llm_router_d1_rungs_by_class['local']
+                  + llm_router_d1_rungs_by_class['free']
+                  + llm_router_d1_rungs_by_class['retains']) | unique | list }}
         - name: Reaching here means the guard did not fire
           ansible.builtin.fail:
             msg: >-
-              assert-fallback-chain.yml ACCEPTED a chain with a narrow local
-              leg ahead of the cloud rungs. That is the ordering that spends a
-              rung and depth on a leg that cannot answer, so the guard is inert.
+              assert-fallback-chain.yml ACCEPTED paid ZDR before local.
       rescue:
         - name: Confirm it failed for the ordering reason, not an unrelated one
           ansible.builtin.assert:
             that:
-              - "'standing in front of a cloud rung' in (ansible_failed_result.msg | default(''))"
+              - "'D1 ladder drifted' in (ansible_failed_result.msg | default(''))"
             fail_msg: >-
               The assert failed, but not on the ordering clause. Actual:
               {{ ansible_failed_result.msg | default('(no msg)') }}
-            success_msg: Converge-time ordering guard fires as designed.
+            success_msg: Converge-time D1 order guard fires as designed.

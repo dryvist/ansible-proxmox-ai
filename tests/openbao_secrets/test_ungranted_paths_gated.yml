@@ -1,0 +1,53 @@
+---
+# The apps read policy has no grant for some router-key buckets yet, and a
+# denied read fails the whole domain fetch even for an optional path. Each such
+# path must stay out of the effective fetch list until its flag flips.
+- name: Verify ungranted apps paths are fetched only when their flag is on
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../inventory/group_vars/all.yml
+  vars:
+    _secrets_role_dir: "{{ playbook_dir }}/../../roles/openbao_secrets"
+    _ungranted: [apps/recorder, apps/judge, apps/donna]
+    _apps_path: "{{ playbook_dir }}/../../inventory/group_vars/all.yml"
+  tasks:
+    - name: Load the declared domains
+      ansible.builtin.include_vars:
+        dir: "{{ _secrets_role_dir }}/defaults/main"
+
+    - name: With the shipped flags (false) none of the paths is fetched
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not llm_router_recorder_key_enabled
+          - not llm_router_judge_key_enabled
+          - not llm_router_donna_key_enabled
+          - _ungranted | intersect(_fetched) | length == 0
+          - _ungranted | difference(_declared) | length == 0
+          - "'apps/agy' in _fetched"
+          - "'apps/zcode' in _fetched"
+        fail_msg: "fetched={{ _fetched }}"
+      vars:
+        _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
+        _declared: "{{ _apps | select('mapping') | map(attribute='path') | list }}"
+        _fetched: >-
+          {{ (_apps | select('mapping') | rejectattr('enabled', 'defined') | list
+              + _apps | selectattr('enabled', 'defined') | selectattr('enabled') | list)
+             | map(attribute='path') | list }}
+
+    - name: With every flag true all three paths are fetched
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _ungranted | difference(_fetched) | length == 0
+        fail_msg: "fetched={{ _fetched }}"
+      vars:
+        llm_router_recorder_key_enabled: true
+        llm_router_judge_key_enabled: true
+        llm_router_donna_key_enabled: true
+        _apps: "{{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths }}"
+        _fetched: >-
+          {{ (_apps | select('mapping') | rejectattr('enabled', 'defined') | list
+              + _apps | selectattr('enabled', 'defined') | selectattr('enabled') | list)
+             | map(attribute='path') | list }}

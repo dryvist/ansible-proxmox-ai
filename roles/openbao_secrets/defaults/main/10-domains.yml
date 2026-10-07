@@ -15,14 +15,9 @@ openbao_secrets_optional_domains:
   - hermes      # AppRole credentials not provisioned yet
   - hermes-private # second Hermes identity has an independent AppRole
   - donna       # second agent identity, features presence-gated off until seeded
-  - clickhouse  # roles/clickhouse_docker's own domain — AppRole/policy live in
-                #   ansible-proxmox-apps' roles/openbao and are not provisioned
-                #   yet (blocked on an unrelated fix there). The dedicated
-                #   ClickHouse guest itself does not exist yet either, so this
-                #   domain is never fetched by any play today; declared here
-                #   only so the role's own bao-first defaults resolve to a
-                #   clean "missing from OpenBao" failure instead of an
-                #   undefined-variable error once it is wired up.
+  - clickhouse  # roles/clickhouse_docker's domain — AppRole/policy not provisioned yet
+                #   (ansible-proxmox-apps) and no guest exists, so no play fetches it.
+                #   Declared so the role's bao-first defaults fail cleanly once wired up.
 
 # One entry per resource-domain identity this Ansible converge fetches for.
 # Each domain's role_id/secret_id come from its own env vars — sourced from
@@ -40,12 +35,9 @@ openbao_secrets_domains:
     paths:
       - apps/hindsight  # hindsight_db_password, hindsight_cp_access_key (+ replication),
                         #   hindsight_api_key, hindsight_llm_router_key
-      - apps/llm-router # llm_router_db_password — the router's login on the same
-                        #   ai-VLAN Postgres cluster Hindsight uses. Generated at
-                        #   source by ansible-proxmox-apps' roles/openbao, and read
-                        #   there too (postgres_ai_group.yml) so one field serves
-                        #   both ends and they cannot drift. NOT the same path as
-                        #   ai/llm-router, which carries the Redis password.
+      - apps/llm-router # llm_router_db_password — the router's login on the ai-VLAN Postgres
+                        #   cluster Hindsight uses; read at both ends (postgres_ai_group.yml)
+                        #   so the field cannot drift. NOT ai/llm-router (the Redis password).
       - apps/hermes-ui  # hermes_ui_workspace_password, hermes_ui_hermes_api_token,
                         #   hermes_ui_mission_control_auth_user/_auth_pass
       - apps/authelia   # authelia_oidc_{litellm,phoenix}_client_secret — the
@@ -72,7 +64,7 @@ openbao_secrets_domains:
         optional: true
         enabled: "{{ llm_router_benchmark_key_enabled | default(false) | bool }}"
       # Workstation-client router keys — path names match
-      # _llm_router_static_virtual_keys' alias field exactly
+      # _llm_router_declared_virtual_keys' alias field exactly
       # (roles/llm_router/defaults/main/56-virtual-keys.yml).
       - {path: apps/opencode, optional: true}
       - {path: apps/raycast, optional: true}
@@ -89,22 +81,29 @@ openbao_secrets_domains:
       - {path: apps/hermes-splunk-admin, optional: true}
       - {path: apps/hermes-homelab-admin, optional: true}
       - {path: apps/hermes-github-maint, optional: true}
+      - {path: apps/agy, optional: true}
+      # No apps read grant yet for these three; a denied read fails the whole fetch.
+      - path: apps/recorder
+        optional: true
+        enabled: "{{ llm_router_recorder_key_enabled | default(false) | bool }}"
+      - path: apps/judge
+        optional: true
+        enabled: "{{ llm_router_judge_key_enabled | default(false) | bool }}"
+      - path: apps/donna
+        optional: true
+        enabled: "{{ llm_router_donna_key_enabled | default(false) | bool }}"
+      - {path: apps/zcode, optional: true}
       - {path: apps/prometheus, optional: true}
       - {path: apps/glance, optional: true}
-  # Public (non-secret) fabric coordination data — mirrors the "non-secret
-  # coordination path" precedent in tofu-proxmox's SECRETS_HIERARCHY.md
-  # (secret/platform/terrakube/main). Read-only, own least-privilege AppRole
-  # (NOT local-llm's broader ai/* grant): this is the one domain whose
-  # role_id/secret_id is also handed to CONSUMER GUESTS (hermes_agent,
-  # open_webui — see their *_brain_sync_* vars) for a runtime systemd-timer
-  # poll, so it must stay narrowly scoped to non-secret data even though
-  # local-llm's existing ai/* policy would technically also cover this path —
-  # a guest holding a live, reusable copy of local-llm's credential could
-  # pull every OTHER ai/* secret (Langfuse/Langflow DB passwords, GitHub App
-  # key, ...) it does not otherwise have, not just the ones already baked
-  # into its own .env. Needs a companion AppRole + read-only policy on
-  # secret/data/ai/public/* in ansible-proxmox-apps' roles/openbao
-  # (openbao_approles/openbao_policies) before this domain resolves live.
+  # Public (non-secret) fabric coordination data — the "non-secret coordination
+  # path" precedent in tofu-proxmox's SECRETS_HIERARCHY.md (secret/platform/
+  # terrakube/main). Read-only, own least-privilege AppRole (NOT local-llm's
+  # broader ai/* grant): this domain's role_id/secret_id is also handed to
+  # CONSUMER GUESTS (hermes_agent, open_webui — see their *_brain_sync_* vars)
+  # for a runtime poll, and a guest holding a live copy of local-llm's
+  # credential could pull every OTHER ai/* secret. Needs a companion AppRole +
+  # read-only policy on secret/data/ai/public/* in ansible-proxmox-apps'
+  # roles/openbao before this domain resolves live.
   - name: ai-public
     paths:
       - ai/public/brain  # active_model — the runtime fabric-brain override;

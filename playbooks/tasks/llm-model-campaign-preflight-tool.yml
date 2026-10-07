@@ -155,11 +155,17 @@
     quiet: true
   when: _llm_campaign_run.executable == 'evalscope'
 
+# EvalScope runs LiveCodeBench generations in a local subprocess with a
+# per-test timeout unless the recipe asks for a Docker sandbox; only that
+# request needs an engine.
 - name: Require a running Docker engine for the EvalScope code sandbox
   ansible.builtin.command:
     argv: [docker, info]
   changed_when: false
-  when: _llm_campaign_run.executable == 'evalscope'
+  when:
+    - _llm_campaign_run.executable == 'evalscope'
+    - >-
+      '"engine": "docker"' in (_llm_campaign_run.argv | default([]) | map('string') | join(' '))
 
 - name: Inspect the installed uv command for controller-side throughput rows
   ansible.builtin.command:
@@ -167,6 +173,8 @@
   register: _llm_campaign_uv_version
   changed_when: false
   delegate_to: localhost
+  vars:
+    ansible_become: false
   when:
     - _llm_campaign_run.run_on == 'controller'
     - _llm_campaign_run.executable == 'uv'

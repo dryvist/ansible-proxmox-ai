@@ -79,7 +79,7 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     # The count and every target's servability are what a stray alias would
     # break, so a new consumer-facing name still lands here as a reviewed edit.
     assert aliases, "no static alias loaded; nothing below is checked"
-    assert len(aliases) == 8
+    assert len(aliases) == 9
     # Judge and subagent remain database-seeded roles, selected from the
     # registry-derived GPU profile projection rather than static aliases.
     seeded_roles = {item["role"]: item for item in router_defaults["llm_router_role_deployments"]}
@@ -110,10 +110,9 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     assert hermes_router["litellm_model_name"] == (
         f"{hermes_router['provider']}/{hermes_router['upstream_model_id']}"
     )
-    # The only alias this entry may carry is `default` — the hermes-router
-    # carve-out this test's `aliases` bucket already admits above; a second
-    # name here would be an undeclared consumer-facing alias.
-    assert hermes_router.get("stable_aliases") == ["default"]
+    # Its `default` and `auto` names are the router's two declared entry
+    # points, not aliases for physical model backends.
+    assert hermes_router.get("stable_aliases") == ["default", "auto"]
 
     # Both selectors must be declared servable, or the alias indirection just
     # moves the 404 one level down.
@@ -166,7 +165,14 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     # the drift this indirection exists to prevent, so it fails the build rather
     # than waiting for a live 404. Values only — the defaults' prose may of
     # course still discuss the tiers.
-    router_defaults_values = yaml.dump(router_defaults, allow_unicode=True)
+    def _leaf_values(value: object) -> list[object]:
+        if isinstance(value, dict):
+            return [leaf for child in value.values() for leaf in _leaf_values(child)]
+        if isinstance(value, list):
+            return [leaf for child in value for leaf in _leaf_values(child)]
+        return [value]
+
+    router_defaults_values = _leaf_values(router_defaults)
     for entry in registry:
         for field in ("client_model_id", "upstream_model_id", "key_field"):
             if field in entry:

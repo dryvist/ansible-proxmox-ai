@@ -1,0 +1,25 @@
+---
+# Pins that the venv installs the Postgres driver LiteLLM's startup migration
+# lock imports (psycopg). Without it a database-backed proxy exits on
+# ModuleNotFoundError before listening, while the converge itself renders and
+# applies cleanly and only the liveness gate notices.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_migration_lock_driver.yml -i localhost, -c local
+
+- name: The venv carries the driver the migration lock imports
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _defaults_file: "{{ playbook_dir }}/../../roles/llm_router/defaults/main/00-identity.yml"
+    _defaults: "{{ lookup('ansible.builtin.file', _defaults_file) | from_yaml }}"
+  tasks:
+    - name: Psycopg is in llm_router_pip_packages
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _defaults.llm_router_pip_packages | select('match', '^psycopg') | list | length == 1
+        fail_msg: >-
+          llm_router_pip_packages does not install psycopg. LiteLLM's migration
+          lock imports it at startup, so the proxy exits before listening.
+        success_msg: psycopg is installed, so the migration lock can import.

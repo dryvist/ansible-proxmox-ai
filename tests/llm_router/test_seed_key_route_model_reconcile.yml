@@ -11,7 +11,9 @@
   gather_facts: false
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    _seed_keys_file: "{{ _role_dir }}/tasks/reconcile-seeded-key-policy.yml"
+    _seed_keys_file: "{{ _role_dir }}/tasks/seed-keys.yml"
+    _create_task_name: "Create the caller keys that have a seeded value (an existing alias is not a failure)"
+    _policy_file: "{{ _role_dir }}/tasks/reconcile-seeded-key-policy.yml"
     _diff_task_name: "Compute the key policy update each live key still needs, if any"
     llm_router_seed_mode: rebuild
     llm_router_mcp_default_object_permission:
@@ -114,10 +116,25 @@
       - mcp-reader
 
   tasks:
+    - name: Extract the real create-only permission payload from seed-keys.yml
+      ansible.builtin.set_fact:
+        _create_key_body: >-
+          {{ (lookup('ansible.builtin.file', _seed_keys_file) | from_yaml
+              | selectattr('name', 'equalto', _create_task_name) | first)
+             ['ansible.builtin.uri']['body'] }}
+
+    - name: MCP permissions are passed on key creation only
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'object_permission' in _create_key_body"
+          - "'item.object_permission' in _create_key_body.object_permission"
+        fail_msg: "seed-keys.yml must pass each declared object_permission on initial key creation."
+
     - name: Extract the real, committed diff expression from the policy task
       ansible.builtin.set_fact:
         _diff_expr: >-
-          {{ (lookup('ansible.builtin.file', _seed_keys_file) | from_yaml
+          {{ (lookup('ansible.builtin.file', _policy_file) | from_yaml
               | selectattr('name', 'equalto', _diff_task_name) | first)
              ['ansible.builtin.set_fact']['_llm_router_key_updates'] }}
 

@@ -8,7 +8,6 @@
       - llm_active_profile in llm_profiles
       - llm_profiles[llm_active_profile].enabled | default(true)
       - llm_gpu_serving_model_cache_mount_path | length > 0
-      - llm_gpu_serving_model_origin_mount_path | length > 0
       - llm_gpu_serving_registry_by_profile[llm_active_profile].artifact.use == 'serving'
       - >-
         llm_profiles[llm_active_profile].engine in
@@ -89,11 +88,15 @@
       - curl
       - gzip
       - libgomp1
+      - python3-debian
       - sudo
       - tar
     state: present
     update_cache: true
     cache_valid_time: 3600
+
+- name: Install the NVIDIA userspace at the host driver version
+  ansible.builtin.include_tasks: install-nvidia-userspace.yml
 
 - name: Create GPU serving directories
   ansible.builtin.file:
@@ -173,7 +176,8 @@
       - install
       - --python
       - "{{ llm_gpu_serving_venv }}/bin/python"
-      - "vllm[b12x]=={{ llm_gpu_serving_vllm_version }}"
+      - "vllm=={{ llm_gpu_serving_vllm_version }}"
+      - "b12x=={{ llm_gpu_serving_b12x_version }}"
   become: true
   become_user: "{{ llm_gpu_serving_user }}"
   environment: "{{ llm_gpu_serving_uv_environment }}"
@@ -186,36 +190,76 @@
     - Stop every other GPU serving profile before switching
     - Start the active GPU serving profile
 
+- name: Put the vLLM and Hugging Face CLIs on the default PATH
+  ansible.builtin.file:
+    src: "{{ item.src }}"
+    dest: "/usr/local/bin/{{ item.name }}"
+    state: link
+  loop:
+    - name: vllm
+      src: "{{ llm_gpu_serving_venv }}/bin/vllm"
+    - name: hf
+      src: "{{ llm_gpu_serving_hf_bin }}"
+  loop_control:
+    label: "{{ item.name }}"
+
 - name: Inspect the llama.cpp server binary
   ansible.builtin.stat:
     path: "{{ llm_gpu_serving_llamacpp_server_bin }}"
   register: llm_gpu_serving_llamacpp_server_stat
 
+- name: Resolve recent llama.cpp release metadata
+  ansible.builtin.uri:
+    url: "{{ llm_gpu_serving_llamacpp_releases_api }}"
+    return_content: true
+    status_code: 200
+  register: llm_gpu_serving_llamacpp_release
+
+- name: Select the CUDA release asset by name pattern
+  ansible.builtin.set_fact:
+    llm_gpu_serving_llamacpp_asset_url: >-
+      {{ llm_gpu_serving_llamacpp_release.json
+         | map(attribute='assets') | flatten
+         | selectattr('name', 'match', llm_gpu_serving_llamacpp_asset_regex)
+         | map(attribute='browser_download_url') | first | default('', true) }}
+
+- name: Inspect the installed llama.cpp asset marker
+  ansible.builtin.stat:
+    path: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
+  register: llm_gpu_serving_llamacpp_marker_stat
+
+- name: Read the installed llama.cpp asset name
+  ansible.builtin.slurp:
+    src: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
+  register: llm_gpu_serving_llamacpp_marker
+  when: llm_gpu_serving_llamacpp_marker_stat.stat.exists
+
 - name: Install the llama.cpp CUDA release binary
-  when: not llm_gpu_serving_llamacpp_server_stat.stat.exists
+  when: >-
+    not llm_gpu_serving_llamacpp_server_stat.stat.exists
+    or not llm_gpu_serving_llamacpp_marker_stat.stat.exists
+    or (llm_gpu_serving_llamacpp_marker.content | b64decode | trim)
+    != (llm_gpu_serving_llamacpp_asset_url | basename)
   block:
-    - name: Resolve recent llama.cpp release metadata
-      ansible.builtin.uri:
-        url: "{{ llm_gpu_serving_llamacpp_releases_api }}"
-        return_content: true
-        status_code: 200
-      register: llm_gpu_serving_llamacpp_release
-
-    - name: Select the CUDA release asset by name pattern
+    # The guest carries the driver only; libcudart and libcublas come from the
+    # same release's `cudart-` archive for the same CUDA version.
+    - name: Name the matching CUDA runtime asset
       ansible.builtin.set_fact:
-        llm_gpu_serving_llamacpp_asset_url: >-
-          {{ llm_gpu_serving_llamacpp_release.json
-             | map(attribute='assets') | flatten
-             | selectattr('name', 'match', llm_gpu_serving_llamacpp_asset_regex)
-             | map(attribute='browser_download_url') | first | default('', true) }}
+        llm_gpu_serving_llamacpp_cudart_url: >-
+          {{ (llm_gpu_serving_llamacpp_asset_url | dirname) ~ '/cudart-'
+             ~ (llm_gpu_serving_llamacpp_asset_url | basename) }}
 
-    - name: Assert a matching CUDA asset was found
+    - name: Assert a matching CUDA asset and its runtime were found
       ansible.builtin.assert:
         that:
           - llm_gpu_serving_llamacpp_asset_url | length > 0
+          - >-
+            llm_gpu_serving_llamacpp_cudart_url in
+            (llm_gpu_serving_llamacpp_release.json | map(attribute='assets') | flatten
+             | map(attribute='browser_download_url') | list)
         fail_msg: >-
-          No llama.cpp CUDA release asset matched
-          {{ llm_gpu_serving_llamacpp_asset_regex }} in
+          No llama.cpp CUDA release asset with a matching cudart- runtime
+          archive matched {{ llm_gpu_serving_llamacpp_asset_regex }} in
           {{ llm_gpu_serving_llamacpp_releases_api }}.
 
     - name: Create a temporary llama.cpp extraction directory
@@ -230,6 +274,19 @@
         dest: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
         remote_src: true
 
+    - name: Download and extract the matching CUDA runtime tarball
+      ansible.builtin.unarchive:
+        src: "{{ llm_gpu_serving_llamacpp_cudart_url }}"
+        dest: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
+        remote_src: true
+
+    - name: Find the CUDA runtime library in its archive
+      ansible.builtin.find:
+        paths: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
+        patterns: "libcudart.so*"
+        recurse: true
+      register: llm_gpu_serving_llamacpp_cudart_find
+
     - name: Find llama-server in the CUDA release archive
       ansible.builtin.find:
         paths: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
@@ -242,7 +299,8 @@
       ansible.builtin.assert:
         that:
           - llm_gpu_serving_llamacpp_server_find.matched | int > 0
-        fail_msg: "No llama-server binary was found in the CUDA release archive."
+          - llm_gpu_serving_llamacpp_cudart_find.matched | int > 0
+        fail_msg: "The CUDA release archives lack llama-server or libcudart."
 
     - name: Create the llama.cpp install directory
       ansible.builtin.file:
@@ -252,17 +310,31 @@
         group: "{{ llm_gpu_serving_group }}"
         mode: "0750"
 
-    - name: Install llama.cpp binaries and shared libraries
+    - name: Install llama.cpp binaries, shared libraries and the CUDA runtime
       ansible.builtin.command:
         argv:
           - cp
           - -a
-          - "{{ llm_gpu_serving_llamacpp_server_find.files[0].path | dirname }}/."
+          # Unlink before writing: a running llama-server keeps the old
+          # inode until its restart, instead of failing "Text file busy".
+          - --remove-destination
+          - "{{ item }}/."
           - "{{ llm_gpu_serving_llamacpp_install_dir }}/"
+      loop:
+        - "{{ llm_gpu_serving_llamacpp_server_find.files[0].path | dirname }}"
+        - "{{ llm_gpu_serving_llamacpp_cudart_find.files[0].path | dirname }}"
       changed_when: true
       notify:
         - Stop every other GPU serving profile before switching
         - Start the active GPU serving profile
+
+    - name: Record the installed llama.cpp asset name
+      ansible.builtin.copy:
+        content: "{{ llm_gpu_serving_llamacpp_asset_url | basename }}\n"
+        dest: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
+        owner: "{{ llm_gpu_serving_user }}"
+        group: "{{ llm_gpu_serving_group }}"
+        mode: "0640"
 
     - name: Remove the temporary llama.cpp extraction directory
       ansible.builtin.file:
@@ -325,11 +397,5 @@
 - name: Apply pending GPU serving service changes
   ansible.builtin.meta: flush_handlers
 
-- name: Verify the active GPU serving profile is healthy
-  ansible.builtin.uri:
-    url: "http://{{ llm_gpu_serving_health_host }}:{{ llm_profiles[llm_active_profile].port }}/v1/models"
-    status_code: 200
-  register: llm_gpu_serving_health
-  retries: 30
-  delay: 5
-  until: llm_gpu_serving_health.status == 200
+- name: Wait for the active GPU serving profile to answer
+  ansible.builtin.include_tasks: health-check.yml

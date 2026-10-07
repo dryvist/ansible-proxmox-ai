@@ -1,0 +1,80 @@
+---
+# One key per Hermes operating profile (roles/hermes_agent
+# defaults/main/150-fleet-health-profiles.yml `hermes_agent_profiles`), plus
+# the implicit `default` profile every card without an explicit assignee
+# runs under. DERIVED, not hand-listed: a profile renamed or retired there
+# stops being a key alias without a second edit here. `coder` (Vikunja 3085)
+# is not a real profile yet, so it is not yet a key — it appears the first
+# render after that profile is added, with no further edit to this file.
+# This role does not run roles/hermes_agent, so playbooks/tasks/load_hermes_
+# profiles.yml loads the same list into this play instead.
+# assert-hermes-profile-keys.yml guards that it actually resolved.
+_llm_router_hermes_profile_names: >-
+  {{ ['default'] + (hermes_agent_profiles | default([]) | map(attribute='name') | list) }}
+
+# `default` gets the full human chat scope — it is the cross-domain/board-meta/
+# write-bearing catch-all profile. Every named profile is bounded to
+# cheap/embed the same way langgraph is below: none of splunk-admin/
+# homelab-admin/github-maint carry a lead-tier job. Every profile's own
+# config.yaml.j2 `model.default` still renders hermes_brain_model, so every
+# profile's key — named or default — must reach that one name directly,
+# regardless of scope. The ladder falls back to the router entry point by
+# name, so a brain model that is an alias still leaves that name in the list.
+_llm_router_consumer_classes_all: [sub, local, paid-zdr, free, retains]
+_llm_router_consumer_classes_standard: [sub, local, paid-zdr, free]
+_llm_router_consumer_classes_zdr: [sub, local, paid-zdr]
+_llm_router_trusted_hub_servers:
+  - context7
+  - grep
+  - docs
+  - splunk
+  - vikunja_ro
+  - nautobot
+  - memory
+  - hindsight
+  - vikunja
+  - zammad
+_llm_router_hermes_profile_object_permissions:
+  default:
+    mcp_servers: [context7, grep, docs, splunk, vikunja_ro]
+  splunk-admin:
+    mcp_servers: [docs, splunk]
+  homelab-admin:
+    mcp_servers: [docs, vikunja_ro, nautobot]
+  github-maint:
+    mcp_servers: [grep, docs]
+
+_llm_router_hermes_profile_keys: >-
+  {%- set _items = [] -%}
+  {%- set _gpu_ids = llm_router_gpu_models
+        | map(attribute='client_model_id') | list -%}
+  {%- set _gpu_aliases = llm_router_gpu_profile_aliases
+        if (llm_router_gpu_profiles_enabled | bool) else [] -%}
+  {%- for _name in _llm_router_hermes_profile_names -%}
+  {%- set _field = 'hermes_' ~ (_name | replace('-', '_'))
+     ~ '_llm_router_key' -%}
+  {%- set _value = (bao_apps_secrets | default({})).get(_field, '') -%}
+  {%- set _profile = {
+        'alias': 'hermes-' ~ _name,
+        'value': _value,
+        'enabled': (_value | string | length > 0),
+        'allowed_classes': _llm_router_consumer_classes_all,
+        'models': (['auto', hermes_brain_model]
+                   + llm_router_hermes_router_ids
+                   + (llm_router_d1_auto_router_tiers.values() | list)
+                   + [llm_router_d1_auto_initial_group]
+                   + _gpu_ids + _gpu_aliases) | unique | list,
+        'object_permission': {'mcp_servers': (
+          _llm_router_hermes_profile_object_permissions.get(
+            _name, {'mcp_servers': []}).mcp_servers
+          + llm_router_mcp_hermes_object_permission.mcp_servers) | unique | list},
+        'monthly_budget': _llm_router_key_monthly_budget,
+      } -%}
+  {%- if hermes_agent_identity | default('hermes') == 'donna' -%}
+  {%- set _profile = _profile | combine({'allowed_classes': _llm_router_consumer_classes_zdr,
+        'tags': ['&zdr', '!free', '!retains'],
+        'router_settings': {'enable_tag_filtering': true}}) -%}
+  {%- endif -%}
+  {%- set _discard = _items.append(_profile) -%}
+  {%- endfor -%}
+  {{ _items }}

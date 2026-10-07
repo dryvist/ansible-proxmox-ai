@@ -132,8 +132,11 @@
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
-    bao_apps_secrets: {}
-    bao_local_llm_secrets: {}
+    bao_apps_secrets:
+      hermes_default_llm_router_key: sk-fixture-hermes-default
+      hermes_review_llm_router_key: sk-fixture-hermes-review
+    bao_local_llm_secrets:
+      SLACK_BOT_TOKEN: test-slack-token
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: ""
     llm_router_subdomain: ""
@@ -189,10 +192,16 @@
           - >-
             (_projected_keys | selectattr('alias', 'equalto', 'non-mcp') | first).object_permission
             == {'mcp_servers': ['no-mcp-servers']}
+          - (_projected_keys | selectattr('alias', 'match', '^hermes-') | list | length) == 2
           - >-
-            (_projected_keys | selectattr('alias', 'match', '^hermes-')
-            | map(attribute='object_permission') | unique | list)
-            == [{'mcp_servers': ['zammad', 'slack']}]
+            _projected_keys | selectattr('alias', 'match', '^hermes-')
+            | map(attribute='object_permission.mcp_servers')
+            | map('intersect', ['zammad', 'slack']) | map('sort') | unique | list
+            == [['slack', 'zammad']]
+          - >-
+            _projected_keys | selectattr('alias', 'match', '^hermes-')
+            | map(attribute='object_permission') | map('dict2items') | flatten
+            | map(attribute='key') | unique | list == ['mcp_servers']
           - "'mcp_tool_permissions' not in (_projected_keys | to_json)"
         fail_msg: >-
           Expected default deny for non-Hermes keys and server-only grants for

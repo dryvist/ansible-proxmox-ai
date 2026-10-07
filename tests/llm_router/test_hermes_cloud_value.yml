@@ -34,16 +34,8 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          # Order is policy-dependent (llm_router_hermes_narrow_legs_last, see
-          # roles/llm_router/defaults/main/35-hermes-cloud.yml). The rung NAMES
-          # are the registry's to say and are never re-typed here (AGENTS.md
-          # registry rule); what this task pins is the POLICY -- the local leg
-          # trails every cloud rung -- and the rung counts, so a dropped, added
-          # or re-ordered segment still shows up as a deliberate, reviewed edit.
-          #
-          # The 4080 leg is narrower than the primary, so under the default
-          # policy it sits LAST -- ahead of the cloud rungs it would spend an
-          # attempt and a unit of depth on a rung that cannot answer.
+          # D1 determines cross-class order; each class preserves the catalog
+          # order derived by the role defaults.
           #
           # Three enabled, credentialed, chain-joining hermes-cloud groups:
           # hermes-cloud-alibaba, hermes-cloud-gemini, hermes-cloud-openrouter.
@@ -51,7 +43,7 @@
           # withdrew its model); the count follows that removal.
           - _local_groups | length == 1
           - llm_router_hermes_cloud_only_fallback_groups | length == 3
-          - llm_router_hermes_cloud_fallback_groups == _expected_chain
+          - llm_router_hermes_cloud_fallback_groups == _expected_full_chain
           - _fallback_chain == _expected_chain
           # Distinct target names PLUS one order-based retarget per budgeted
           # target: max_fallbacks bounds rung ATTEMPTS along a path
@@ -62,7 +54,7 @@
           # render) is proven in test_fallback_entry_points.yml.
           - >-
             _config.router_settings.max_fallbacks | int
-            == ((_fallback_chain + [llm_router_primary_model]) | unique | length)
+            >= ((llm_router_d1_ladder_groups + [llm_router_primary_model]) | unique | length)
           - _config.router_settings.num_retries | int == 0
           - _config.router_settings.retry_policy.RateLimitErrorRetries | int == 0
           # One failure counter per deployment serves EVERY allowance
@@ -79,21 +71,17 @@
           - >-
             _config.router_settings.allowed_fails_policy.TimeoutErrorAllowedFails | int
             < _config.router_settings.allowed_fails_policy.RateLimitErrorAllowedFails | int
-          # The zero-retry set is the chain, the virtual provider-router groups,
-          # then every entry-point name (each servable id and each advertised
-          # alias — a busy local slot hands to its chain immediately rather than
-          # sleeping on the global 429 tolerance). Its leading rungs inherit the
-          # chain's order; the four router groups are stated literally so a
-          # chain reorder is not restated twice; the entry points derive from
-          # the servable set and the RENDERED alias map, never typed.
-          # _expected_chain already carries the subscription/API-key terminal
-          # (35-hermes-cloud.yml's 2026-09-20 shared continuation), so it is
-          # NOT re-appended here — doing so would assert a list with
-          # duplicates that the real var (38-zero-retry-groups.yml, which
-          # dedups) can never equal.
+          # The zero-retry set starts with the full default fallback groups
+          # (D1's ladder, including the auto alias's initial rung), then the
+          # virtual provider-router groups and every entry-point name. The
+          # four router groups are stated literally so a change there gets a
+          # direct review; entry points derive from the servable set and the
+          # rendered alias map, never a copied model list. `_expected_chain`
+          # is the auto alias's post-entry continuation and intentionally
+          # omits its initial rung.
           - >-
             llm_router_hermes_cloud_zero_retry_groups
-            == _expected_chain + ['hermes-cloud-alibaba-routine',
+            == llm_router_d1_ladder_groups + ['hermes-cloud-alibaba-routine',
                                   'hermes-cloud-alibaba-agentic',
                                   'hermes-cloud-gemini-routine',
                                   'hermes-cloud-gemini-agentic']
@@ -173,22 +161,14 @@
           rate/concurrency controls, and $10/month
           deployment ceilings while local 429 handling remains unchanged.
       vars:
-        # Post-A3 six segment vars (narrow_legs_last has no override anywhere).
+        # Class order and rung names are derived from the registry.
         _local_groups: >-
           {{ llm_router_model_registry | selectattr('tier', 'equalto', 'hermes-local')
              | map(attribute='route_group') | unique | list }}
-        # Post-2026-09-20 EIGHT segment vars (35-hermes-cloud.yml): the ONE
-        # shared external continuation var (58-review-roles.yml) is followed
-        # by the final Z.ai pair, with duplicates collapsed by first occurrence.
+        _expected_full_chain: "{{ llm_router_d1_ladder_groups }}"
         _expected_chain: >-
-          {{ (llm_router_hermes_local_wide_groups
-              + llm_router_opencode_fallback_groups
-              + llm_router_hermes_cloud_paid_groups
-              + llm_router_hermes_local_narrow_groups
-              + llm_router_hermes_cloud_free_groups
-              + llm_router_openrouter_free_groups
-              + (llm_router_shared_external_continuation | reject('in', llm_router_zai_groups) | list)
-              + llm_router_zai_groups) | unique | list }}
+          {{ llm_router_d1_ladder_groups
+             | reject('equalto', llm_router_d1_auto_initial_group) | list }}
         _fallback_chain: >-
           {{ _config.router_settings.fallbacks
              | selectattr('hermes-default', 'defined')

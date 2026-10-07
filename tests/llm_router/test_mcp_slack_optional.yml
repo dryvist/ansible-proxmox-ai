@@ -1,0 +1,164 @@
+---
+# The Slack MCP server, its env lines, its workspace lookup, its verify probe
+# and its key grant exist only while the bot token resolves non-empty. Zammad
+# stays required and unchanged in both states.
+- name: Slack MCP pieces render when the token resolves
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the router defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the catalog-backed model registry
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+        public: true
+
+    - name: Load the real router and estate group_vars
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/{{ item }}.yml"
+      loop: [llm_router_group, all]
+
+    # set_fact outranks include_vars, so the env-looked-up secrets and the
+    # inventory data are stubbed here and the test needs no environment.
+    - name: Stub the router secrets, inventory data and the bao secret maps
+      ansible.builtin.set_fact:
+        llm_router_master_key: dummy-render-check
+        llm_router_llm_large_bearer: dummy-render-check
+        llm_router_oidc_admin_email: admin@example.test
+        ai_subdomain: pve.example.test
+        tofu_data:
+          domain: example.com
+          constants:
+            service_ports: { otel_traces_http: 4318, llm_router_api: 4000 }
+        bao_apps_secrets: {}
+        bao_local_llm_secrets:
+          ZAMMAD_MCP_URL: test-zammad-url
+          ZAMMAD_MCP_TOKEN: test-zammad-token
+          SLACK_BOT_TOKEN: test-slack-token
+      no_log: true
+
+    - name: Render the MCP server block and env file with a Slack token
+      ansible.builtin.set_fact:
+        _mcp_servers: >-
+          {{ lookup('ansible.builtin.template', _role_dir ~ '/templates/mcp-servers.yaml.j2') | from_yaml }}
+        _env_lines: >-
+          {{ lookup('ansible.builtin.template', _role_dir ~ '/templates/litellm.env.j2').splitlines() }}
+        _main_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/main.yml') | from_yaml }}"
+        _slack_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/mcp-slack.yml') | from_yaml }}"
+        _verify_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/verify-mcp-tools.yml') | from_yaml }}"
+      no_log: true
+
+    - name: Assert both servers, the Slack env lines, the lookup, the probe and the grant
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_mcp_slack_enabled | bool
+          - _mcp_servers.mcp_servers.keys() | sort | list == ['slack', 'zammad']
+          - "'LLM_ROUTER_SLACK_BOT_TOKEN=test-slack-token' in _env_lines"
+          - _env_lines | select('match', '^LLM_ROUTER_SLACK_TEAM_ID=') | list | length == 1
+          - "llm_router_mcp_hermes_object_permission == {'mcp_servers': ['zammad', 'slack']}"
+          - _main_tasks | selectattr('name', 'equalto', 'Settle the optional Slack MCP server') | list | length == 1
+          - _resolve_task.when == 'llm_router_mcp_slack_enabled | bool'
+          - _verify_task.when == 'llm_router_mcp_slack_enabled | bool'
+          - "'llm_router_mcp_slack_bot_token' not in (_assert_task['ansible.builtin.include_tasks'] | to_json)"
+          - "'llm_router_mcp_slack_bot_token' not in (_assert_task.vars | to_json)"
+        fail_msg: The Slack MCP pieces did not render with a resolved token.
+      vars:
+        _resolve_task: >-
+          {{ _slack_tasks | selectattr('name', 'equalto',
+             'Resolve Slack workspace id for the stdio MCP server') | first }}
+        _assert_task: >-
+          {{ _main_tasks | selectattr('name', 'equalto',
+             'Assert every secret rendered into the LiteLLM env file is present') | first }}
+        _verify_task: >-
+          {{ _verify_tasks | selectattr('name', 'equalto',
+             'Verify the Slack MCP server exposes exactly its configured tools') | first }}
+
+- name: Slack MCP pieces are absent when the token is empty
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load the router defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the catalog-backed model registry
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+        public: true
+
+    - name: Load the real router and estate group_vars
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../inventory/group_vars/{{ item }}.yml"
+      loop: [llm_router_group, all]
+
+    # set_fact outranks include_vars, so the env-looked-up secrets and the
+    # inventory data are stubbed here and the test needs no environment.
+    - name: Stub the router secrets, inventory data and the bao secret maps
+      ansible.builtin.set_fact:
+        llm_router_master_key: dummy-render-check
+        llm_router_llm_large_bearer: dummy-render-check
+        llm_router_oidc_admin_email: admin@example.test
+        ai_subdomain: pve.example.test
+        tofu_data:
+          domain: example.com
+          constants:
+            service_ports: { otel_traces_http: 4318, llm_router_api: 4000 }
+        bao_apps_secrets: {}
+        bao_local_llm_secrets:
+          ZAMMAD_MCP_URL: test-zammad-url
+          ZAMMAD_MCP_TOKEN: test-zammad-token
+      no_log: true
+
+    - name: Render the MCP server block and env file without a Slack token
+      ansible.builtin.set_fact:
+        _mcp_servers: >-
+          {{ lookup('ansible.builtin.template', _role_dir ~ '/templates/mcp-servers.yaml.j2') | from_yaml }}
+        _env_text: "{{ lookup('ansible.builtin.template', _role_dir ~ '/templates/litellm.env.j2') }}"
+        _main_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/main.yml') | from_yaml }}"
+        _slack_tasks: "{{ lookup('ansible.builtin.file', _role_dir ~ '/tasks/mcp-slack.yml') | from_yaml }}"
+      no_log: true
+
+    - name: Assert Zammad is unchanged and nothing Slack-specific renders
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not (llm_router_mcp_slack_enabled | bool)
+          - _mcp_servers.mcp_servers.keys() | list == ['zammad']
+          - "_mcp_servers.mcp_servers.zammad.allowed_tools == ['zammad_search_tickets', 'zammad_get_ticket']"
+          - _mcp_servers.mcp_servers.zammad.env.ZAMMAD_URL == 'os.environ/LLM_ROUTER_ZAMMAD_URL'
+          - "'LLM_ROUTER_ZAMMAD_HTTP_TOKEN=test-zammad-token' in _env_text"
+          - "'SLACK' not in _env_text"
+          - "llm_router_mcp_hermes_object_permission == {'mcp_servers': ['zammad']}"
+          - "'llm_router_mcp_zammad_http_token' in (_assert_task.vars | to_json)"
+          - _report_task.when == 'not (llm_router_mcp_slack_enabled | bool)'
+        fail_msg: The Slack MCP pieces rendered without a resolved token.
+      vars:
+        _assert_task: >-
+          {{ _main_tasks | selectattr('name', 'equalto',
+             'Assert every secret rendered into the LiteLLM env file is present') | first }}
+        _report_task: >-
+          {{ _slack_tasks | selectattr('name', 'equalto', 'Report that the Slack MCP server is not rendered') | first }}
+
+    - name: A whitespace-only token counts as empty
+      ansible.builtin.set_fact:
+        bao_local_llm_secrets:
+          ZAMMAD_MCP_URL: test-zammad-url
+          ZAMMAD_MCP_TOKEN: test-zammad-token
+          SLACK_BOT_TOKEN: "   "
+      no_log: true
+
+    - name: Assert the blank token disables the Slack server
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not (llm_router_mcp_slack_enabled | bool)
+        fail_msg: A blank token enabled the Slack MCP server.
