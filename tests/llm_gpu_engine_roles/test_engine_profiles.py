@@ -139,7 +139,7 @@ def test_named_profiles_carry_the_serving_contract():
     assert all(profile["enabled"] is True for profile in profiles.values())
     assert all("artifact_id" not in profile and "quant" not in profile for profile in profiles.values())
     assert all("model_id" not in profile and "served_model_name" not in profile for profile in profiles.values())
-    assert [profiles[name]["max_num_seqs"] for name in ("medium-a", "medium-b", "max")] == [4, 8, 1]
+    assert [profiles[name]["max_num_seqs"] for name in ("medium-a", "medium-b", "max")] == [8, 8, 1]
 
 
 def test_artifact_registry_is_the_only_source_for_model_files_and_quantization():
