@@ -77,9 +77,25 @@ def test_pinned_converter_must_accept_the_dimensions_flag_before_target_work():
     assertion = check["ansible.builtin.assert"]
 
     assert probe["register"] == "_llm_campaign_publish_help"
-    assert assertion["that"] == ["_llm_campaign_publish_help.stdout is search('--campaign-dimensions')"]
+    assert probe["failed_when"] is False
+    assert assertion["that"] == [
+        "_llm_campaign_publish_help.rc == 0",
+        "_llm_campaign_publish_help.stdout is search('--campaign-dimensions')",
+    ]
     assert "_llm_campaign_benchmarks_ref" in assertion["fail_msg"]
+    assert "binary uv" in assertion["fail_msg"]
     assert names.index(check["name"]) == names.index(probe["name"]) + 1
+
+
+def test_runner_missing_uv_result_fails_preflight_with_a_named_binary():
+    result = yaml.safe_load((Path(__file__).parent / "fixtures/runner-missing-uv.yml").read_text(encoding="utf-8"))
+    probe = _named(_controller_tasks(), "Verify the envelope converter is available before target work")
+    check = _named(_controller_tasks(), "Require the converter to accept the campaign dimensions file")
+
+    assert result == {"rc": 2, "stdout": "", "stderr": ""}
+    assert probe["failed_when"] is False
+    assert check["ansible.builtin.assert"]["that"][0] == "_llm_campaign_publish_help.rc == 0"
+    assert "binary uv" in check["ansible.builtin.assert"]["fail_msg"]
 
 
 def test_target_play_receives_the_pinned_config_revision():
