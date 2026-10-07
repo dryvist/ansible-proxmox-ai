@@ -24,6 +24,14 @@ def module():
     sys.modules.setdefault("litellm", types.ModuleType("litellm"))
     sys.modules.setdefault("litellm.integrations", types.ModuleType("litellm.integrations"))
     sys.modules["litellm.integrations.custom_logger"] = stub
+    fastapi = types.ModuleType("fastapi")
+
+    class HTTPException(Exception):
+        def __init__(self, status_code, detail):
+            self.status_code, self.detail = status_code, detail
+
+    fastapi.HTTPException = HTTPException
+    sys.modules["fastapi"] = fastapi
     ns: dict = {}
     exec(compile(SOURCE.read_text(), str(SOURCE), "exec"), ns)  # noqa: S102 - our own file
     return ns
@@ -137,3 +145,89 @@ def test_fallback_chain_shares_one_trace_id_across_attempts(module):
     )
     assert first_rung["trace_id"] == second_rung["trace_id"] == "t-1"
     assert first_rung["call_id"] != second_rung["call_id"]
+
+
+def test_key_defaults_fill_all_carriers_without_changing_routing(module):
+    data = {"model": "test-target", "priority": 5, "metadata": {"client": "spoofed", "secret": "never log"}}
+    key = {"trace_defaults": {"client": "consumer", "runner": "runner", "runtime": "runner",
+                             "purpose": "live", "tier": "test-tier", "environment": "production", "release": "test"}}
+    result = module["apply_trace_contract"](data, key)
+    metadata = result["metadata"]
+    assert result["model"] == "test-target" and result["priority"] == 5
+    assert metadata["client"] == "consumer" and metadata["session_id"]
+    assert result["user"] == "consumer"
+    for carrier in ["requester_metadata", "spend_logs_metadata", "trace_metadata"]:
+        assert metadata[carrier]["runner"] == "runner"
+        assert metadata[carrier]["session_id"] == metadata["session_id"]
+    record = module["build_record"](_kwargs({"metadata": metadata}), None, 0, 1)
+    assert record["purpose"] == "live" and "secret" not in record
+
+
+def test_benchmark_requires_variables_and_accepts_false_and_zero(module):
+    key = {"trace_defaults": {"client": "eval", "runner": "eval", "purpose": "benchmark"},
+           "trace_required": ["run_id", "thinking", "power_limit"]}
+    with pytest.raises(module["HTTPException"]) as exc:
+        module["apply_trace_contract"]({"metadata": {"run_id": "run-1"}}, key)
+    assert exc.value.status_code == 400
+    assert "thinking" in exc.value.detail and "power_limit" in exc.value.detail
+    data = {"litellm_metadata": {"run_id": "run-1", "thinking": False, "power_limit": 0}}
+    result = module["apply_trace_contract"](data, key)
+    assert result["litellm_metadata"]["trace_metadata"]["thinking"] is False
+    assert result["litellm_metadata"]["session_id"] == "run-1"
+    assert "metadata" not in result
+
+
+def test_caller_session_and_user_survive_defaults(module):
+    key = {"trace_defaults": {"client": "consumer", "runner": "eval", "purpose": "live"}}
+    data = {"user": "person", "litellm_session_id": "session", "metadata": {"trace_name": "custom",
+            "trace_release": "app-release", "trace_version": "component-version"}}
+    result = module["apply_trace_contract"](data, key)
+    assert result["user"] == "person"
+    assert result["metadata"]["session_id"] == "session"
+    assert result["metadata"]["trace_user_id"] == "person"
+    assert result["metadata"]["trace_name"] == "custom"
+    for carrier in ["requester_metadata", "spend_logs_metadata", "trace_metadata"]:
+        assert result["metadata"][carrier]["trace_release"] == "app-release"
+        assert result["metadata"][carrier]["trace_version"] == "component-version"
+
+
+@pytest.mark.parametrize("key_metadata", [None, {}, {"trace_defaults": {}}])
+def test_unseeded_contract_rejects_unlabeled_inference(module, key_metadata):
+    data = {"model": "test-target"}
+    with pytest.raises(module["HTTPException"]) as exc:
+        module["apply_trace_contract"](data, key_metadata)
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "Missing consumer trace defaults"
+    assert data == {"model": "test-target"}
+
+
+def test_blank_identity_fields_fill_and_tools_reach_carriers(module):
+    key = {"trace_defaults": {"client": "consumer", "runner": "eval", "purpose": "live", "release": "test"}}
+    data = {"user": None, "metadata": {"trace_user_id": "", "trace_name": "", "generation_name": None,
+                                      "trace_release": None, "trace_version": "",
+                                      "tool_category": "search", "tool_name": "lookup"}}
+    result = module["apply_trace_contract"](data, key)
+    assert result["user"] == "consumer"
+    for field in ["trace_user_id", "trace_name", "generation_name", "trace_release", "trace_version"]:
+        assert result["metadata"][field]
+    for carrier in ["requester_metadata", "spend_logs_metadata", "trace_metadata"]:
+        assert result["metadata"][carrier]["tool_name"] == "lookup"
+        assert result["metadata"][carrier]["tool_category"] == "search"
+    assert module["RequestMetrics"]().enforces_request_content is True
+
+
+def test_benchmark_rejects_nonscalar_labels(module):
+    key = {"trace_defaults": {"client": "eval", "runner": "eval", "purpose": "benchmark"},
+           "trace_required": ["run_id"]}
+    with pytest.raises(module["HTTPException"]):
+        module["apply_trace_contract"]({"metadata": {"run_id": []}}, key)
+
+
+@pytest.mark.parametrize("required", [None, []])
+def test_benchmark_without_declared_requirements_is_rejected(module, required):
+    key = {"trace_defaults": {"client": "eval", "runner": "eval", "purpose": "benchmark"},
+           "trace_required": required}
+    with pytest.raises(module["HTTPException"]) as exc:
+        module["apply_trace_contract"]({"metadata": {"run_id": "run-1"}}, key)
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "Missing benchmark trace requirements"

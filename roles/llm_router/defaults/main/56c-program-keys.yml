@@ -1,0 +1,53 @@
+---
+# One credential per runner, purpose and reachable rung/tier. Names and scopes
+# come from the existing registry projections, including their production
+# fallbacks; these keys do not change routing, batching or admission.
+llm_router_program_runners:
+  - lm-eval
+  - langfuse-experiments
+  - dify-workflows
+  - promptfoo
+  - claude-code
+  - qwen-code
+  - zcode
+  - codex
+  - opencode
+llm_router_program_key_targets: >-
+  {{ ((llm_router_registry_enabled | map(attribute='tier') | list)
+      + _llm_router_directly_callable_ladder_names) | unique | list }}
+_llm_router_program_keys_present: >-
+  {{ (bao_apps_secrets | default({})).keys() | select('match', '^program_') | list | length > 0 }}
+_llm_router_program_virtual_keys: >-
+  {%- set keys = [] -%}
+  {%- set secrets = bao_apps_secrets | default({}) -%}
+  {%- set provisioned = secrets.keys() | select('match', '^program_') | list -%}
+  {%- set scope = _llm_router_key_scope_all if provisioned else ['no-default-models'] -%}
+  {%- set budget = _llm_router_key_monthly_budget -%}
+  {%- set targets = llm_router_program_key_targets -%}
+  {%- set sources = _llm_router_hermes_profile_keys + _llm_router_target_virtual_keys
+       + _llm_router_static_virtual_keys + _llm_router_workstation_virtual_keys -%}
+  {%- for runner in llm_router_program_runners +
+       (_llm_router_hermes_profile_names | map('regex_replace', '^', 'hermes-') | list) -%}
+  {%- set source = sources | selectattr('alias', 'equalto', runner) | first | default({}) -%}
+  {%- for purpose in ['benchmark', 'live'] -%}
+  {%- for target in targets -%}
+  {%- set alias = 'program-' ~ runner ~ '-' ~ purpose ~ '-' ~ target -%}
+  {%- set field = (alias | regex_replace('[^a-zA-Z0-9_]', '_')) ~ '_llm_router_key' -%}
+  {%- set value = secrets.get(field, '') -%}
+  {%- set _ = keys.append(source | combine({
+        'alias': alias, 'secret_field': field, 'value': value,
+        'enabled': (value | string | length > 0),
+        'models': source.models | default(scope) if value else ['no-default-models'],
+        'monthly_budget': source.monthly_budget | default(budget),
+        'metadata': {'runner': runner, 'runtime': runner,
+                     'purpose': purpose, 'tier': target}}, recursive=true)) -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {{ keys }}
+
+# Input to the generating role's existing openbao_router_key_catalog. Secrets
+# stay at the already-read apps/benchmark path; generating/converging is a lead
+# action. No plaintext keys or duplicate model names are exported here.
+llm_router_program_key_catalog: >-
+  {{ {'benchmark': _llm_router_program_virtual_keys | map(attribute='secret_field') | list} }}

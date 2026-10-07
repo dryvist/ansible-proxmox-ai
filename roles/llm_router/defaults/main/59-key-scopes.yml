@@ -14,14 +14,18 @@
 # here avoids an order-dependent undefined value in include_vars dir.
 _llm_router_declared_virtual_keys: >-
   {{ _llm_router_hermes_profile_keys + _llm_router_static_virtual_keys
-     + _llm_router_target_virtual_keys + _llm_router_workstation_virtual_keys }}
+     + _llm_router_target_virtual_keys + _llm_router_workstation_virtual_keys
+     + (_llm_router_program_virtual_keys | selectattr('enabled') | list
+        if _llm_router_program_keys_present else []) }}
 
 # Names are declared before their OpenBao sources exist, but the create loop
 # sees only enabled keys. This projection drives the contract and report.
 llm_router_disabled_virtual_keys: >-
-  {{ _llm_router_declared_virtual_keys
-     | selectattr('enabled', 'defined')
-     | rejectattr('enabled', 'truthy') | map(attribute='alias') | list }}
+  {{ ((_llm_router_declared_virtual_keys
+       | selectattr('enabled', 'defined')
+       | rejectattr('enabled', 'truthy') | map(attribute='alias') | list)
+      + (_llm_router_program_virtual_keys
+         | rejectattr('enabled', 'truthy') | map(attribute='alias') | list)) | unique | list }}
 
 llm_router_local_registry_tiers: [large, light, vllm, gpu, hermes-local, cpu-moe, cpu-9b]
 llm_router_deployment_class_by_model: >-
@@ -118,11 +122,21 @@ llm_router_virtual_keys: >-
   {%- set _stripped = llm_router_zdr_unasserted_terminal_rungs -%}
   {%- set ns.models = ns.models | reject('in', _stripped) | list -%}
   {%- endif -%}
+  {%- set _purpose = (k.metadata | default({})).get('purpose', 'benchmark' if k.alias == 'benchmark' else 'live') -%}
   {%- set _permissions = k.object_permission
         | default(llm_router_mcp_default_object_permission) -%}
   {%- set _ = out.append(k | combine({
         'models': ns.models | unique | list,
         'object_permission': _permissions,
+        'metadata': {'trace_defaults': {
+          'client': k.alias,
+          'runner': (k.metadata | default({})).get('runner', k.alias),
+          'runtime': (k.metadata | default({})).get('runtime', k.alias),
+          'purpose': _purpose,
+          'tier': (k.metadata | default({})).get('tier', k.tier | default('local')),
+          'environment': 'benchmark' if _purpose == 'benchmark' else llm_router_trace_environment,
+          'release': (llm_router_pip_packages | select('match', '^litellm\\[') | first).split('==')[-1],
+        }, 'trace_required': llm_router_benchmark_trace_fields},
       }, recursive=true)) -%}
   {%- endfor -%}
   {{ out }}
