@@ -117,9 +117,16 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
         for task in cache_tasks
     )
     assert any(
-        task.get("name", "").startswith("Combine the campaign model artifact shards")
+        task.get("name") == "Combine model artifact shards"
         and "_llm_model_artifacts_glm53flash" in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
+        and "_llm_model_stage0_artifacts" in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
         for task in registry_tasks
+    )
+    assert any(
+        task.get("name") == "Combine model artifact shards for cache sync"
+        and "_llm_model_artifacts_glm53flash" in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
+        and "_llm_model_stage0_artifacts" in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
+        for task in cache_tasks
     )
     for engine, role_root in ENGINE_ROOTS.items():
         main_tasks = yaml.safe_load((role_root / "tasks/main.yml").read_text(encoding="utf-8"))

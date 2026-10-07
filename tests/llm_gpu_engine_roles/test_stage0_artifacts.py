@@ -17,25 +17,23 @@ def test_stage0_artifacts_are_pinned_and_separate_from_campaign_data():
 
     assert set(by_id) == {
         "embeddinggemma-2-stage0",
-        "opendecider-qwen3-4b-base-stage0",
-        "opendecider-small-stage0",
-        "opendecider-small-td-stage0",
+        "opendecider-nano-stage0",
+        "laya-typed-decisions-stage0",
     }
     for artifact in artifacts:
         assert len(artifact["revision"]) == 40
         assert artifact["use"] == "benchmark-only"
-        assert artifact["engines"] == ["vllm"]
+        assert artifact["model_card_url"].endswith(f"/{artifact['revision']}/README.md")
+        assert artifact["model_card_read_date"] == "2026-10-07"
+        assert artifact["parameter_count"] > 0
+        assert artifact["engines"] in [["vllm"], ["opendecider"], ["laya"]]
         assert artifact["model_task"]
         assert artifact["model_task_source"] in {"model_card", "inferred"}
         assert "model_size" not in artifact
         assert "model_store" not in artifact
 
-    assert by_id["opendecider-small-stage0"]["required_artifact_ids"] == [
-        "opendecider-qwen3-4b-base-stage0"
-    ]
-    assert by_id["opendecider-small-td-stage0"]["required_artifact_ids"] == [
-        "opendecider-qwen3-4b-base-stage0"
-    ]
+    assert by_id["opendecider-nano-stage0"]["engines"] == ["opendecider"]
+    assert by_id["laya-typed-decisions-stage0"]["engines"] == ["laya"]
 
 
 def test_engine_and_cache_sync_loaders_include_stage0_artifacts():
