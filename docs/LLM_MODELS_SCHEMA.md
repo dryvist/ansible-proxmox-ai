@@ -121,7 +121,7 @@ Optional:
                       `DASHSCOPE_API_KEY`, or `OPENCODE_API_KEY`. REQUIRED,
                       together with key_field, on every entry of a
                       credential-gated tier (`opencode`, `hermes-cloud`,
-                      `hermes-cloud-router`, `openrouter`). The env, probe and
+                      `openrouter`). The env, probe and
                       role projections read both fields bare off the entry;
                       there is no per-tier default to fall back on, so an
                       entry missing either fails the render rather than
