@@ -8,35 +8,35 @@
       Stage 0 code evaluators require the approved insecure-local dispatcher
       and the code-evaluation queue.
 
-- name: Fetch the pinned typed-decisions test subset from Hugging Face
-  ansible.builtin.uri:
-    url: "{{ langfuse_docker_stage0_dataset_api_url }}"
-    method: GET
-    headers:
-      Accept: application/json
-    return_content: true
-    status_code: 200
-    timeout: 30
-  register: langfuse_docker_stage0_dataset_rows
-  changed_when: false
-  no_log: true
+- name: Load the pinned typed-decisions dataset bundle from the role files
+  ansible.builtin.set_fact:
+    langfuse_docker_stage0_dataset_bundle: >-
+      {{ lookup('file', langfuse_docker_stage0_dataset_file) | from_json }}
 
-- name: Verify the dataset viewer served the pinned revision and subset
+- name: Verify the local dataset bundle matches the source pin and content hash
   ansible.builtin.assert:
     that:
+      - langfuse_docker_stage0_dataset_bundle.source == 'LocalLLaMA/typed-decisions'
+      - langfuse_docker_stage0_dataset_bundle.license == 'apache-2.0'
+      - langfuse_docker_stage0_dataset_bundle.revision == langfuse_docker_stage0_dataset_revision
+      - langfuse_docker_stage0_dataset_bundle.config == langfuse_docker_stage0_dataset_config
+      - langfuse_docker_stage0_dataset_bundle.split == langfuse_docker_stage0_dataset_split
       - >-
-        langfuse_docker_stage0_dataset_rows.x_revision
-        == langfuse_docker_stage0_dataset_revision
-      - >-
-        langfuse_docker_stage0_dataset_rows.json.rows | length
+        langfuse_docker_stage0_dataset_bundle.rows | length
         == langfuse_docker_stage0_dataset_length | int
-      - not (langfuse_docker_stage0_dataset_rows.json.partial | default(false) | bool)
       - >-
-        langfuse_docker_stage0_dataset_rows.json.num_rows_total | int
-        >= langfuse_docker_stage0_dataset_length | int
+        langfuse_docker_stage0_dataset_bundle.length | int
+        == langfuse_docker_stage0_dataset_length | int
+      - >-
+        lookup('file', langfuse_docker_stage0_dataset_file, rstrip=False)
+        | hash('sha256') == langfuse_docker_stage0_dataset_sha256
+      - >-
+        langfuse_docker_stage0_dataset_bundle.rows
+        | map(attribute='row') | map(attribute='id') | unique | length
+        == langfuse_docker_stage0_dataset_length | int
     fail_msg: >-
-      Hugging Face did not serve the pinned typed-decisions test data. Refuse
-      to create or update a Langfuse dataset from a different revision.
+      The local typed-decisions bundle does not match its source pin or content
+      hash. Refuse to create or update a Langfuse dataset from unverified data.
 
 - name: Read the Stage 0 Langfuse dataset
   ansible.builtin.uri:
@@ -70,8 +70,8 @@
         source_revision: "{{ langfuse_docker_stage0_dataset_revision }}"
         source_config: "{{ langfuse_docker_stage0_dataset_config }}"
         source_split: "{{ langfuse_docker_stage0_dataset_split }}"
-        source_offset: "{{ langfuse_docker_stage0_dataset_offset }}"
         source_length: "{{ langfuse_docker_stage0_dataset_length }}"
+        source_data_sha256: "{{ langfuse_docker_stage0_dataset_sha256 }}"
     return_content: true
     status_code: 200
   register: langfuse_docker_stage0_dataset_created
@@ -84,8 +84,8 @@
       - langfuse_docker_stage0_dataset.json.metadata.source_revision == langfuse_docker_stage0_dataset_revision
       - langfuse_docker_stage0_dataset.json.metadata.source_config == langfuse_docker_stage0_dataset_config
       - langfuse_docker_stage0_dataset.json.metadata.source_split == langfuse_docker_stage0_dataset_split
-      - langfuse_docker_stage0_dataset.json.metadata.source_offset | int == langfuse_docker_stage0_dataset_offset | int
       - langfuse_docker_stage0_dataset.json.metadata.source_length | int == langfuse_docker_stage0_dataset_length | int
+      - langfuse_docker_stage0_dataset.json.metadata.source_data_sha256 == langfuse_docker_stage0_dataset_sha256
     fail_msg: >-
       The existing Stage 0 dataset uses a different data source or subset.
       Preserve it and review the pin before updating.
@@ -116,14 +116,14 @@
          and _langfuse_stage0_item_matches[0].input.questions == (item.row.questions | from_json)
          and _langfuse_stage0_item_matches[0].expectedOutput == (item.row.gold | from_json))
     fail_msg: >-
-      An existing dataset item differs from the pinned Hugging Face row.
+      An existing dataset item differs from the pinned local dataset row.
       Review the item before changing Langfuse data.
   vars:
     _langfuse_stage0_item_id: "typed-decisions-stage0-{{ item.row.id }}"
     _langfuse_stage0_item_matches: >-
       {{ langfuse_docker_stage0_existing_items.json.data
          | selectattr('id', 'equalto', _langfuse_stage0_item_id) | list }}
-  loop: "{{ langfuse_docker_stage0_dataset_rows.json.rows }}"
+  loop: "{{ langfuse_docker_stage0_dataset_bundle.rows }}"
   loop_control:
     label: "{{ item.row.id }}"
 
@@ -148,7 +148,7 @@
         source_revision: "{{ langfuse_docker_stage0_dataset_revision }}"
         source_split: "{{ langfuse_docker_stage0_dataset_split }}"
     status_code: 200
-  loop: "{{ langfuse_docker_stage0_dataset_rows.json.rows }}"
+  loop: "{{ langfuse_docker_stage0_dataset_bundle.rows }}"
   loop_control:
     label: "{{ item.row.id }}"
   vars:

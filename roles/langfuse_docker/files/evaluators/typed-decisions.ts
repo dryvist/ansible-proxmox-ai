@@ -41,15 +41,32 @@ function numeric(value: unknown): number | undefined {
 function brier(predicted: JsonObject, expected: JsonObject): number | undefined {
   const predictedKeys = Object.keys(predicted);
   const expectedKeys = Object.keys(expected);
-  if (expectedKeys.length === 0 || expectedKeys.some((key) => !predictedKeys.includes(key))) {
+  if (
+    expectedKeys.length === 0 ||
+    predictedKeys.length !== expectedKeys.length ||
+    expectedKeys.some((key) => !predictedKeys.includes(key))
+  ) {
     return undefined;
   }
   let total = 0;
+  let predictedTotal = 0;
+  let expectedTotal = 0;
   for (const key of expectedKeys) {
     const p = numeric(predicted[key]);
     const q = numeric(expected[key]);
-    if (p === undefined || q === undefined) return undefined;
+    if (p === undefined || q === undefined || p < 0 || p > 1 || q < 0 || q > 1) {
+      return undefined;
+    }
     total += (p - q) ** 2;
+    predictedTotal += p;
+    expectedTotal += q;
+  }
+  const probabilityTolerance = 0.00001;
+  if (
+    Math.abs(predictedTotal - 1) > probabilityTolerance ||
+    Math.abs(expectedTotal - 1) > probabilityTolerance
+  ) {
+    return undefined;
   }
   return total;
 }
