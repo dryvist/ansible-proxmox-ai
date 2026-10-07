@@ -16,7 +16,11 @@ def _load(path: Path):
 
 
 def _legacy_play() -> dict:
-    plays = [play for play in _serving_plays() if play.get("hosts") == "llm_gpu_legacy_group"]
+    plays = [
+        play
+        for play in _serving_plays()
+        if play.get("hosts", "").split(":&", maxsplit=1)[0] == "llm_gpu_legacy_group"
+    ]
     assert len(plays) == 1
     return plays[0]
 
@@ -42,7 +46,7 @@ def _walk(node):
             yield from _walk(item)
 
 
-def test_legacy_profile_switch_role_targets_only_the_legacy_group():
+def test_legacy_profile_switch_role_targets_only_the_legacy_nvidia_group():
     play = _legacy_play()
     roles = [
         task["ansible.builtin.include_role"]["name"]
@@ -51,12 +55,13 @@ def test_legacy_profile_switch_role_targets_only_the_legacy_group():
     ]
 
     assert play["serial"] == 1
+    assert play["hosts"] == "llm_gpu_legacy_group:&nvidia_gpu_group"
     assert "llm_gpu_serving" in play["tags"]
     assert roles == ["llm_gpu_serving"]
 
 
 def test_legacy_and_replacement_engine_plays_precede_the_router_pool():
-    hosts = [play.get("hosts") for play in _serving_plays()]
+    hosts = [play.get("hosts", "").split(":&", maxsplit=1)[0] for play in _serving_plays()]
     router = hosts.index("llm_router_group")
 
     assert hosts.index("llm_gpu_legacy_group") < router

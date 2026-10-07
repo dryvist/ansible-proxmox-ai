@@ -12,7 +12,11 @@ NVIDIA_ROOT = REPO_ROOT / "roles/nvidia_gpu_guest"
 VLLM_ROOT = REPO_ROOT / "roles/vllm_serving"
 LLAMACPP_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
-ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml"
+ARTIFACT_FILES = (
+    REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
+    REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
+    REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml",
+)
 
 
 def _profiles() -> dict:
@@ -25,9 +29,19 @@ def _profiles() -> dict:
     return {**vllm, **llamacpp}
 
 
+def _artifacts() -> list[dict]:
+    return [
+        artifact
+        for path in ARTIFACT_FILES
+        for key, entries in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_model_artifacts")
+        for artifact in entries
+    ]
+
+
 def _registry_profiles() -> dict:
     entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
-    artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))["_llm_model_artifacts"]
+    artifacts = _artifacts()
     by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     return {
         entry["profile"]: {
@@ -100,7 +114,7 @@ def _exec_start(unit: str) -> str:
 
 def test_named_profiles_carry_the_serving_contract():
     profiles = _profiles()
-    assert list(profiles) == ["small", "medium-a", "medium-b", "16gb", "max"]
+    assert {"small", "medium-a", "medium-b", "16gb", "max", "glm-flash"} <= set(profiles)
     common = {"engine", "max_model_len", "max_num_seqs", "port"}
     vllm_only = {
         "linear_backend",
@@ -114,29 +128,23 @@ def test_named_profiles_carry_the_serving_contract():
     assert all(
         vllm_only <= profile.keys() for profile in profiles.values() if profile["engine"] == "vllm"
     )
-    assert {name: profile["engine"] for name, profile in profiles.items()} == {
+    assert {name: profiles[name]["engine"] for name in ("small", "medium-a", "medium-b", "16gb", "max", "glm-flash")} == {
         "small": "vllm",
         "medium-a": "vllm",
         "medium-b": "llama_cpp",
         "16gb": "llama_cpp",
         "max": "llama_cpp",
+        "glm-flash": "llama_cpp",
     }
     assert set(_registry_profiles()) == set(profiles)
-    assert {name: profile["enabled"] for name, profile in profiles.items()} == {
-        "small": True,
-        "medium-a": True,
-        "medium-b": True,
-        "16gb": True,
-        "max": True,
-    }
+    assert all(profile["enabled"] is True for profile in profiles.values())
     assert all("artifact_id" not in profile and "quant" not in profile for profile in profiles.values())
     assert all("model_id" not in profile and "served_model_name" not in profile for profile in profiles.values())
     assert [profiles[name]["max_num_seqs"] for name in ("medium-a", "medium-b", "16gb", "max")] == [8, 8, 1, 1]
 
 
 def test_artifact_registry_is_the_only_source_for_model_files_and_quantization():
-    artifact_file = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))
-    artifacts = artifact_file["_llm_model_artifacts"]
+    artifacts = _artifacts()
     artifact_ids = [artifact["artifact_id"] for artifact in artifacts]
     assert len(artifact_ids) == len(set(artifact_ids))
 
@@ -167,13 +175,7 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
 
     profiles = _registry_profiles()
     assert profiles["small"]["artifact_id"] == "qwen35-9b-nvfp4"
-    assert {name: model["artifact"]["use"] for name, model in profiles.items()} == {
-        "small": "serving",
-        "medium-a": "serving",
-        "medium-b": "serving",
-        "16gb": "serving",
-        "max": "serving",
-    }
+    assert all(model["artifact"]["use"] == "serving" for model in profiles.values())
     assert profiles["small"]["artifact"]["engines"] == ["vllm"]
     small_artifact, small_defaults = profiles["small"]["artifact"], _profiles()["small"]
     assert small_artifact.get("tool_call_parser", small_defaults["tool_call_parser"]) == "qwen3_xml"
@@ -200,8 +202,9 @@ def test_registry_artifact_engine_check_uses_the_runtime_profile():
 def test_each_vllm_profile_renders_its_runtime_flags():
     profiles = _profiles()
     registry_profiles = _registry_profiles()
-    for name in ("small", "medium-a"):
-        profile = profiles[name]
+    for name, profile in profiles.items():
+        if profile["engine"] != "vllm":
+            continue
         exec_start = _exec_start(_render(name, profile))
         registry_model_id = registry_profiles[name]["upstream_model_id"]
         artifact = registry_profiles[name]["artifact"]
@@ -216,6 +219,12 @@ def test_each_vllm_profile_renders_its_runtime_flags():
         assert "--enable-auto-tool-choice" in exec_start
         assert f"--tool-call-parser {tool_parser}" in exec_start
         assert f"--reasoning-parser {reasoning_parser}" in exec_start
+        if "kv_cache_dtype" in profile:
+            assert f"--kv-cache-dtype {profile['kv_cache_dtype']}" in exec_start
+        if artifact.get("trust_remote_code"):
+            assert "--trust-remote-code" in exec_start
+        if plugin := artifact.get("reasoning_parser_plugin"):
+            assert f"--reasoning-parser-plugin /cache/models/{registry_model_id}/{plugin}" in exec_start
         assert "{{" not in exec_start
 
 
@@ -223,12 +232,14 @@ def test_nvfp4_profiles_leave_quantization_to_the_checkpoint():
     profiles = _profiles()
     small = _exec_start(_render("small", profiles["small"]))
     medium = _exec_start(_render("medium-a", profiles["medium-a"]))
+    sweep = _exec_start(_render("qwen38-16k-4-auto", profiles["qwen38-16k-4-auto"]))
     assert "--quantization" not in small
     assert "--quantization" not in medium
     assert "--tool-call-parser qwen3_xml" in small
     assert "--reasoning-parser qwen3" in small
     assert "--linear-backend b12x" in medium
     assert "--moe-backend b12x" not in medium
+    assert "--kv-cache-dtype auto" in sweep
 
 
 def test_only_enabled_profiles_are_rendered_and_checked_by_the_role():

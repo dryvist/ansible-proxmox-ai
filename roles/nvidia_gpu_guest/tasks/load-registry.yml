@@ -7,24 +7,37 @@
   ansible.builtin.include_vars:
     file: "{{ nvidia_gpu_guest_artifact_registry_file }}"
 
+- name: Load the GLM-5.3-Flash artifact shard
+  ansible.builtin.include_vars:
+    file: "{{ nvidia_gpu_guest_glm_artifact_registry_file }}"
+
+- name: Load the NVFP4 sweep artifact shard
+  ansible.builtin.include_vars:
+    file: "{{ nvidia_gpu_guest_nvfp4_sweep_artifact_registry_file }}"
+
+- name: Combine the campaign model artifact shards
+  ansible.builtin.set_fact:
+    nvidia_gpu_guest_model_artifacts: >-
+      {{ _llm_model_artifacts + _llm_model_artifacts_glm53flash + _llm_model_artifacts_nvfp4_sweep }}
+
 - name: Index campaign model artifacts by stable id
   ansible.builtin.set_fact:
     nvidia_gpu_guest_artifacts_by_id: >-
-      {{ dict(_llm_model_artifacts | map(attribute='artifact_id')
-              | zip(_llm_model_artifacts)) }}
+      {{ dict(nvidia_gpu_guest_model_artifacts | map(attribute='artifact_id')
+              | zip(nvidia_gpu_guest_model_artifacts)) }}
 
 - name: Assert model artifacts have unique stable ids
   ansible.builtin.assert:
     that:
-      - _llm_model_artifacts | length > 0
-      - nvidia_gpu_guest_artifacts_by_id | length == _llm_model_artifacts | length
-    fail_msg: "llm-models.d/65-gpu-artifacts.yml must contain unique artifact ids."
+      - nvidia_gpu_guest_model_artifacts | length > 0
+      - nvidia_gpu_guest_artifacts_by_id | length == nvidia_gpu_guest_model_artifacts | length
+    fail_msg: "The GPU artifact registry shards must contain unique artifact ids."
     quiet: true
 
 - name: Select artifacts included in the pinned model store
   ansible.builtin.set_fact:
     nvidia_gpu_guest_model_store_artifacts: >-
-      {{ _llm_model_artifacts
+      {{ nvidia_gpu_guest_model_artifacts
          | selectattr('model_store', 'defined')
          | selectattr('model_store', 'equalto', true)
          | list }}
@@ -33,7 +46,7 @@
   ansible.builtin.assert:
     that:
       - item.revision is match('^[0-9a-f]{40}$')
-      - item.model_store_profile in ['small', 'medium-a', 'medium-b', '16gb', 'max']
+      - item.model_store_profile in ['small', 'medium-a', 'medium-b', 'max']
       - item.model_store_size_bytes | int > 0
     fail_msg: "Every model-store artifact must declare one pinned revision, profile, and positive size."
     quiet: true
@@ -89,15 +102,15 @@
       - item.context_window_tokens is not defined or item.context_window_tokens | int > 0
       - >-
         item.required_artifact_ids | default([])
-        | difference(_llm_model_artifacts | map(attribute='artifact_id') | list)
+        | difference(nvidia_gpu_guest_model_artifacts | map(attribute='artifact_id') | list)
         | length == 0
       - item.artifact_id not in (item.required_artifact_ids | default([]))
       - >-
         (item.required_artifact_ids | default([]) | unique | length)
         == (item.required_artifact_ids | default([]) | length)
-    fail_msg: "llm-models.d/65-gpu-artifacts.yml contains invalid or duplicate artifact metadata."
+    fail_msg: "The GPU artifact registry shards contain invalid or duplicate artifact metadata."
     quiet: true
-  loop: "{{ _llm_model_artifacts }}"
+  loop: "{{ nvidia_gpu_guest_model_artifacts }}"
   loop_control:
     label: "{{ item.artifact_id }}"
 
@@ -128,7 +141,7 @@
             and nvidia_gpu_guest_profiles[item.key].engine in item.value.artifact.engines)
     fail_msg: >-
       Every GPU serving profile must reference exactly one serving artifact with
-      matching engine support in llm-models.d/65-gpu-artifacts.yml.
+      matching engine support in the GPU artifact registry shards.
     quiet: true
   loop: "{{ nvidia_gpu_guest_registry_by_profile | dict2items }}"
   loop_control:

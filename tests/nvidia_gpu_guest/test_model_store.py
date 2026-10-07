@@ -12,17 +12,27 @@ ENGINE_ROOTS = {
     "vllm": REPO_ROOT / "roles/vllm_serving",
     "llama_cpp": REPO_ROOT / "roles/llamacpp_serving",
 }
-ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml"
+ARTIFACT_FILES = (
+    REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
+    REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
+    REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml",
+)
 
 
 def _model_store() -> list[dict]:
-    artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))["_llm_model_artifacts"]
+    artifacts = [
+        artifact
+        for path in ARTIFACT_FILES
+        for key, entries in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_model_artifacts")
+        for artifact in entries
+    ]
     return [artifact for artifact in artifacts if artifact.get("model_store") is True]
 
 
 def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
     model_store = _model_store()
-    assert len(model_store) == 22
+    assert len(model_store) == 25
     assert {artifact["model_store_profile"] for artifact in model_store} == {
         "small",
         "medium-a",
@@ -30,7 +40,7 @@ def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
         "16gb",
         "max",
     }
-    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 334_707_157_291
+    assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 461_354_853_641
     assert all(len(artifact["revision"]) == 40 for artifact in model_store)
     assert all(set(artifact["revision"]) <= set("0123456789abcdef") for artifact in model_store)
     assert {artifact["artifact_id"] for artifact in model_store if artifact.get("model_size")} == {
@@ -98,6 +108,35 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     notify = next(task for task in cache_tasks if task.get("name", "").startswith("Notify serving handlers"))
 
     assert any(task.get("name") == "Assert each serving profile resolves to exactly one artifact" for task in registry_tasks)
+    assert any(
+        task.get("name", "").startswith("Load the GLM-5.3-Flash artifact shard")
+        and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_glm_artifact_registry_file }}"
+        for task in registry_tasks
+    )
+    assert any(
+        task.get("name", "").startswith("Load the GLM-5.3-Flash artifact shard for cache sync")
+        and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_glm_artifact_registry_file }}"
+        for task in cache_tasks
+    )
+    assert any(
+        task.get("name", "").startswith("Load the NVFP4 sweep artifact shard")
+        and task["ansible.builtin.include_vars"]["file"]
+        == "{{ nvidia_gpu_guest_nvfp4_sweep_artifact_registry_file }}"
+        for task in registry_tasks
+    )
+    assert any(
+        task.get("name", "").startswith("Load the NVFP4 sweep artifact shard for cache sync")
+        and task["ansible.builtin.include_vars"]["file"]
+        == "{{ nvidia_gpu_guest_nvfp4_sweep_artifact_registry_file }}"
+        for task in cache_tasks
+    )
+    assert any(
+        task.get("name", "").startswith("Combine the campaign model artifact shards")
+        and "_llm_model_artifacts_glm53flash" in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
+        and "_llm_model_artifacts_nvfp4_sweep"
+        in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
+        for task in registry_tasks
+    )
     for engine, role_root in ENGINE_ROOTS.items():
         main_tasks = yaml.safe_load((role_root / "tasks/main.yml").read_text(encoding="utf-8"))
         activation_tasks = yaml.safe_load((role_root / "tasks/activate.yml").read_text(encoding="utf-8"))

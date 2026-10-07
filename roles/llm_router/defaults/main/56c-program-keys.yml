@@ -1,0 +1,38 @@
+---
+# Runner, purpose, and target key definitions come from the shared contract.
+# The router uses only currently reachable targets from its model registry.
+llm_router_program_key_definitions: >-
+  {{ llm_router_key_catalog_facts.program_key_definitions }}
+llm_router_program_key_catalog: >-
+  {{ llm_router_key_catalog_facts.program_key_catalog }}
+llm_router_program_key_targets: >-
+  {{ ((llm_router_registry_enabled | map(attribute='tier') | list)
+      + _llm_router_directly_callable_ladder_names) | unique | list }}
+_llm_router_program_keys_present: >-
+  {{ (bao_apps_secrets | default({})).keys() | select('match', '^program_') | list | length > 0 }}
+_llm_router_program_virtual_keys: >-
+  {%- set keys = [] -%}
+  {%- set secrets = bao_apps_secrets | default({}) -%}
+  {%- set provisioned = secrets.keys() | select('match', '^program_') | list -%}
+  {%- set scope = _llm_router_key_scope_all if provisioned else ['no-default-models'] -%}
+  {%- set budget = _llm_router_key_monthly_budget -%}
+  {%- set targets = llm_router_program_key_targets -%}
+  {%- set sources = _llm_router_hermes_profile_keys + _llm_router_target_virtual_keys
+       + _llm_router_static_virtual_keys + _llm_router_workstation_virtual_keys -%}
+  {%- for definition in llm_router_program_key_definitions | selectattr('target', 'in', targets) -%}
+  {%- set runner = definition.runner -%}
+  {%- set purpose = definition.purpose -%}
+  {%- set target = definition.target -%}
+  {%- set source = sources | selectattr('alias', 'equalto', runner) | first | default({}) -%}
+  {%- set alias = definition.alias -%}
+  {%- set field = definition.field -%}
+  {%- set value = secrets.get(field, '') -%}
+  {%- set _ = keys.append(source | combine({
+        'alias': alias, 'secret_field': field, 'value': value,
+        'enabled': (value | string | length > 0),
+        'models': source.models | default(scope) if value else ['no-default-models'],
+        'monthly_budget': source.monthly_budget | default(budget),
+        'metadata': {'runner': runner, 'runtime': runner,
+                     'purpose': purpose, 'tier': target}}, recursive=true)) -%}
+  {%- endfor -%}
+  {{ keys }}

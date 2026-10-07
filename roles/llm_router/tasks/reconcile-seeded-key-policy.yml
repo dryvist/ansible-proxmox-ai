@@ -1,9 +1,10 @@
 ---
+# Trace defaults reconcile additively in every mode; UI tags survive.
 # MCP server access and model allowlists are Git-owned in every mode. Model
 # lists are projections of the registry-derived seed, so a converge replaces
 # each existing seeded key's list with that exact baseline. In `initial` mode,
-# routes and attribution metadata remain UI-owned and are only reported by
-# drift-check.yml. `rebuild` explicitly reconciles those other fields too.
+# routes and other attribution metadata remain UI-owned and are only reported
+# by drift-check.yml. `rebuild` explicitly reconciles those other fields too.
 #
 # A seed entry may explicitly set `models_authoritative: false` to retain the
 # additive behavior for an intentional UI-owned extension. Every current entry
@@ -56,11 +57,17 @@
          "changed" means the seeded fields alone differ from what's already
          live. -#}
       {%- set _metadata_changed = (_live_metadata | combine(_metadata_target)) != _live_metadata -%}
+      {%- set _trace_target = dict(_metadata_target.items()
+            | selectattr('0', 'in', ['trace_defaults', 'trace_required']) | list) -%}
+      {%- set _trace_changed = (_live_metadata | combine(_trace_target, recursive=true)) != _live_metadata -%}
       {%- set _permission_changed = _live_permission != _permission_target -%}
       {%- set _rebuild_fields_changed = (_models_changed or _routes_changed or _metadata_changed) -%}
-      {%- if _permission_changed or (_authoritative and _models_changed)
+      {%- if _permission_changed or _trace_changed or (_authoritative and _models_changed)
             or (llm_router_seed_mode == 'rebuild' and _rebuild_fields_changed) -%}
       {%- set _body = {'key': _k.value, 'object_permission': _permission_target} -%}
+      {%- if _trace_changed -%}
+      {%- set _body = _body | combine({'metadata': (_live_metadata | combine(_trace_target, recursive=true))}) -%}
+      {%- endif -%}
       {%- if llm_router_seed_mode == 'rebuild' -%}
       {%- set _body = _body | combine({'models': _models_target}) -%}
       {%- set _body = (_body | combine({'allowed_routes': _k.allowed_routes}))

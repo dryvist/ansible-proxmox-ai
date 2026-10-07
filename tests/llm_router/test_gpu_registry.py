@@ -1,4 +1,4 @@
-"""Validate the shared GPU registry-owned profile contract."""
+"""Validate the Pro6000 tier's registry-owned profile contract."""
 
 from pathlib import Path
 
@@ -7,8 +7,13 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
-ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml"
+ARTIFACT_FILES = (
+    REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
+    REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
+    REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml",
+)
 REGISTRY_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
+REGISTRY_TASKS = REPO_ROOT / "roles/llm_router/tasks/registry.yml"
 VLLM_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 LLAMACPP_DEFAULTS = REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml"
 VLLM_CORE_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/00-engine.yml"
@@ -20,18 +25,52 @@ def _serving_profiles() -> dict:
     return {**vllm, **llamacpp}
 
 
-def test_gpu_profiles_are_inactive_placeholders_and_free() -> None:
+def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     registry = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))
     entries = registry["_llm_registry_gpu"]
-    artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))["_llm_model_artifacts"]
+    artifacts = [
+        artifact
+        for path in ARTIFACT_FILES
+        for key, values in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_model_artifacts")
+        for artifact in values
+    ]
     artifacts_by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     defaults = yaml.safe_load(REGISTRY_DEFAULTS.read_text(encoding="utf-8"))
     serving_profiles = _serving_profiles()
     serving_core = yaml.safe_load(VLLM_CORE_DEFAULTS.read_text(encoding="utf-8"))
 
-    assert len(entries) == 5
+    assert len(entries) == 27
     assert defaults["llm_router_gpu_profiles_enabled"] is False
-    assert {entry["profile"] for entry in entries} == {"small", "medium-a", "medium-b", "16gb", "max"}
+    assert {entry["profile"] for entry in entries} == {
+        "small",
+        "medium-a",
+        "medium-b",
+        "16gb",
+        "max",
+        "glm-flash",
+        "qwen38-16k-1-auto",
+        "qwen38-16k-4-auto",
+        "qwen38-16k-1-fp8",
+        "qwen38-16k-4-fp8",
+        "qwen38-64k-1-auto",
+        "qwen38-64k-1-fp8",
+        "qwen38-64k-4-auto",
+        "qwen38-64k-4-fp8",
+        "qwen38-192k-1-auto",
+        "qwen38-192k-1-fp8",
+        "qwen38-192k-4-fp8",
+        "qwen38-196k-4-auto",
+        "qwen38-16k-8-auto",
+        "qwen38-16k-8-fp8",
+        "qwen38-64k-8-auto",
+        "qwen38-64k-8-fp8",
+        "qwen36-35b-a3b",
+        "nemotron-super-1x8192",
+        "nemotron-super-2x4096",
+        "muse-glimmer-30b",
+        "nemotron-lightning-30b-a3b",
+    }
     assert len({entry["client_model_id"] for entry in entries}) == len(entries)
     assert all(entry["artifact_id"] in artifacts_by_id for entry in entries)
     assert len(artifacts_by_id) == len(artifacts)
@@ -44,8 +83,8 @@ def test_gpu_profiles_are_inactive_placeholders_and_free() -> None:
         assert entry["servable"] is False
         assert isinstance(entry["context_window"], int) and entry["context_window"] > 0
         assert isinstance(entry["max_output_tokens"], int) and entry["max_output_tokens"] > 0
-        assert entry["input_cost_per_token"] == 0
-        assert entry["output_cost_per_token"] == 0
+        assert entry.get("input_cost_per_token", 0) == 0
+        assert entry.get("output_cost_per_token", 0) == 0
         assert isinstance(entry["max_parallel_requests"], int) and entry["max_parallel_requests"] > 0
         assert entry["num_retries"] == 0
 
@@ -69,18 +108,40 @@ def test_gpu_profiles_are_inactive_placeholders_and_free() -> None:
         "medium-b": 0,
         "16gb": 0,
         "max": 0,
+        "glm-flash": 0,
+        "qwen38-16k-1-auto": 0,
+        "qwen38-16k-4-auto": 0,
+        "qwen38-16k-1-fp8": 0,
+        "qwen38-16k-4-fp8": 0,
+        "qwen38-64k-1-auto": 0,
+        "qwen38-64k-1-fp8": 0,
+        "qwen38-64k-4-auto": 0,
+        "qwen38-64k-4-fp8": 0,
+        "qwen38-192k-1-auto": 0,
+        "qwen38-192k-1-fp8": 0,
+        "qwen38-192k-4-fp8": 0,
+        "qwen38-196k-4-auto": 0,
+        "qwen38-16k-8-auto": 0,
+        "qwen38-16k-8-fp8": 0,
+        "qwen38-64k-8-auto": 0,
+        "qwen38-64k-8-fp8": 0,
+        "qwen36-35b-a3b": 0,
+        "nemotron-super-1x8192": 0,
+        "nemotron-super-2x4096": 0,
+        "muse-glimmer-30b": 0,
+        "nemotron-lightning-30b-a3b": 0,
     }
     assert len({alias for aliases in aliases_by_profile.values() for alias in aliases}) == 2
 
-    # The campaign's 27B cell config sets the same total vLLM context and
-    # sequence count as the medium-a serving profile. The router registry
-    # advertises the input remainder after its output reservation.
+    # medium-a stays the active eight-slot production profile, outside the sweep matrix.
     qwen_profile = next(entry for entry in entries if entry["profile"] == "medium-a")
     qwen_artifact = artifacts_by_id[qwen_profile["artifact_id"]]
     medium_a_serving = serving_profiles[qwen_profile["profile"]]
     assert serving_core["vllm_serving_version"] == "0.30.0"
-    assert medium_a_serving["max_model_len"] == qwen_artifact["context_window_tokens"] == 196608
+    assert medium_a_serving["max_model_len"] == 196608
+    assert qwen_artifact["context_window_tokens"] == 196608
     assert medium_a_serving["max_num_seqs"] == 8
+    assert medium_a_serving["kv_cache_dtype"] == "auto"
     assert qwen_profile["context_window"] + qwen_profile["max_output_tokens"] == medium_a_serving["max_model_len"]
 
     # Every registry input window plus its output reservation must fit both
@@ -90,20 +151,37 @@ def test_gpu_profiles_are_inactive_placeholders_and_free() -> None:
         assert entry["context_window"] + entry["max_output_tokens"] <= profile["max_model_len"]
 
 
-def test_router_admission_equals_serving_profile_concurrency() -> None:
-    """The router admits exactly the in-flight requests the serving profile decodes at once.
-
-    A cap below max_num_seqs rejects requests the host could have served (the
-    429s an eight-agent fleet sees); a cap above it queues them in the serving
-    engine behind the profile's own limit. The primary profile carries the
-    eight-agent fleet, so its router entry admits eight.
-    """
+def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
+    """Load sweep entries admit 1..64; vLLM max_num_seqs controls active slots."""
     entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
     serving_profiles = _serving_profiles()
 
     caps = {entry["profile"]: entry["max_parallel_requests"] for entry in entries}
-    assert caps == {name: profile["max_num_seqs"] for name, profile in serving_profiles.items()}
+    sweep_profiles = {
+        entry["profile"]
+        for entry in entries
+        if entry["client_model_id"].startswith("gpu-sweep-")
+    }
+    expected_caps = {
+        name: 64 if name in sweep_profiles else profile["max_num_seqs"]
+        for name, profile in serving_profiles.items()
+    }
+    assert caps == expected_caps
 
     primary = [name for name, profile in serving_profiles.items() if profile.get("primary")]
     assert primary == ["medium-a"]
     assert caps["medium-a"] == 8
+
+
+def test_router_consumes_the_shared_gpu_profile_projection() -> None:
+    defaults = yaml.safe_load(REGISTRY_DEFAULTS.read_text(encoding="utf-8"))
+    tasks = yaml.safe_load(REGISTRY_TASKS.read_text(encoding="utf-8"))
+    projection = next(
+        task["ansible.builtin.set_fact"]
+        for task in tasks
+        if task.get("name") == "Resolve GPU router upstream ids from artifact references"
+    )
+
+    assert "llm_router_gpu_profile_registry" in projection
+    assert "_llm_registry_gpu" in projection["llm_router_gpu_profile_registry"]
+    assert "llm_router_gpu_profile_registry" in defaults["llm_router_model_registry"]

@@ -1,0 +1,62 @@
+---
+# Verifies the trusted code evaluator dispatcher is enabled in both Langfuse
+# processes through the shared worker environment anchor.
+#
+# Run from the repository root:
+#   ansible-playbook tests/langfuse_docker/test_code_eval_compose.yml -i localhost, -c local
+- name: Verify the Langfuse code evaluator Compose contract
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_become: false
+    _template: "{{ playbook_dir }}/../../roles/langfuse_docker/templates/docker-compose.yml.j2"
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../roles/langfuse_docker/defaults/main.yml"
+
+    - name: Set fixture values for secrets and external configuration
+      ansible.builtin.set_fact:
+        langfuse_docker_postgres_password: fixture-postgres
+        langfuse_docker_clickhouse_password: fixture-clickhouse
+        langfuse_docker_redis_auth: fixture-redis
+        langfuse_docker_s3_endpoint: https://s3.example.invalid
+        langfuse_docker_s3_access_key_id: fixture-access
+        langfuse_docker_s3_secret_access_key: fixture-secret
+        langfuse_docker_init_user_email: fixture@example.invalid
+        langfuse_docker_init_user_password: fixture-password
+        langfuse_docker_init_public_key: fixture-public
+        langfuse_docker_init_secret_key: fixture-secret-key
+        langfuse_docker_web_port: "35555"
+        langfuse_docker_nextauth_url: https://langfuse.example.invalid
+        langfuse_docker_llm_connection_whitelisted_host: llm.example.invalid
+        langfuse_docker_auth_custom_client_secret: ""
+        langfuse_docker_oidc_enabled: false
+        langfuse_docker_secrets:
+          nextauth_secret: fixture-nextauth
+          salt: fixture-salt
+          encryption_key: fixture-encryption
+
+    - name: Render the Compose document and resolve its shared environment anchor
+      ansible.builtin.set_fact:
+        _rendered: "{{ lookup('template', _template) | from_yaml }}"
+
+    - name: The dispatcher and queue are enabled for both web and worker
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _rendered.services['langfuse-worker'].environment.LANGFUSE_CODE_EVAL_DISPATCHER
+            == 'insecure-local'
+          - >-
+            _rendered.services['langfuse-web'].environment.LANGFUSE_CODE_EVAL_DISPATCHER
+            == 'insecure-local'
+          - >-
+            _rendered.services['langfuse-worker'].environment.QUEUE_CONSUMER_CODE_EVAL_EXECUTION_QUEUE_IS_ENABLED
+            == 'true'
+          - >-
+            _rendered.services['langfuse-web'].environment.QUEUE_CONSUMER_CODE_EVAL_EXECUTION_QUEUE_IS_ENABLED
+            == 'true'
+        fail_msg: >-
+          The local code evaluator dispatcher and queue must be enabled in both
+          Langfuse web and worker processes.

@@ -17,7 +17,7 @@ GPU_ENGINE_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 SITE_PLAYBOOK = REPO_ROOT / "playbooks/site.yml"
 USERSPACE_TASKS = NVIDIA_ROLE_ROOT / "tasks/install-nvidia-userspace.yml"
 CORE_DEFAULTS = NVIDIA_ROLE_ROOT / "defaults/main/00-core.yml"
-ROUTER_GROUP_VARS = REPO_ROOT / "inventory/group_vars/llm_router_group.yml"
+ROUTER_GPU_PROFILE_VARS = REPO_ROOT / "inventory/group_vars/all/llm-router-gpu-profiles.yml"
 ROUTER_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 
 
@@ -36,15 +36,19 @@ def _serving_plays() -> list[dict]:
     return plays
 
 
+def _host_group(play: dict) -> str:
+    return play["hosts"].split(":&", maxsplit=1)[0]
+
+
 def _engine_plays() -> dict[str, dict]:
     hosts = {
         "llm_gpu_serving_llama_cpp_group": "llamacpp_serving",
         "llm_gpu_serving_vllm_group": "vllm_serving",
     }
     plays = {
-        play["hosts"]: play
+        _host_group(play): play
         for play in _serving_plays()
-        if play.get("hosts") in hosts
+        if _host_group(play) in hosts
     }
     assert set(plays) == set(hosts), "both engine-specific plays must exist"
     return plays
@@ -67,6 +71,7 @@ def test_serving_plays_apply_each_engine_role_to_one_guest_at_a_time() -> None:
     }
 
     for host_group, play in _engine_plays().items():
+        assert play["hosts"] == f"{host_group}:&nvidia_gpu_group"
         assert play["serial"] == 1
         assert play["any_errors_fatal"] is True
         included = [
@@ -78,7 +83,7 @@ def test_serving_plays_apply_each_engine_role_to_one_guest_at_a_time() -> None:
 
 
 def test_serving_play_precedes_the_router_pool() -> None:
-    hosts = [play.get("hosts") for play in _serving_plays()]
+    hosts = [_host_group(play) for play in _serving_plays()]
 
     router = hosts.index("llm_router_group")
     for engine_group in _engine_plays():
@@ -187,7 +192,7 @@ def test_userspace_install_is_skipped_when_nvidia_smi_reports_the_version() -> N
 
 
 def test_router_projects_gpu_profiles_only_when_a_gpu_host_exists() -> None:
-    expression = _load(ROUTER_GROUP_VARS)["llm_router_gpu_profiles_enabled"]
+    expression = _load(ROUTER_GPU_PROFILE_VARS)["llm_router_gpu_profiles_enabled"]
     env = jinja2.Environment()
 
     def render(groups: dict) -> str:

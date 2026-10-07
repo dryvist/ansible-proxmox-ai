@@ -1,8 +1,8 @@
 ---
 # Split out of test_review_roles.yml (#854 CI: that file was already at the
 # per-file token budget — #842 split test_review_oss_context_window_order.yml
-# out of it for the same reason). Owns ONE contract: the CI review keys'
-# `models` actually widen past their role name.
+# out of it for the same reason). Owns the CI review key scopes and the
+# local-only event-flow key boundaries.
 #
 # `enforce_fallback_model_access` (37-fallback-entry-points.yml) re-checks a
 # fallback target against the calling key's `models` on every hop, so a key
@@ -29,6 +29,8 @@
     bao_apps_secrets:
       github_actions_llm_router_key: sk-fixture-gha
       github_actions_oss_llm_router_key: sk-fixture-gha-oss
+      github_actions_ci_fix_llm_router_key: sk-fixture-ci-fix
+      github_actions_pr_review_llm_router_key: sk-fixture-pr-review
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: "pve.example.test"
@@ -92,3 +94,31 @@
       vars:
         _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
         _gha_oss: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
+
+    - name: The event flows stay on the local role and retain flow attribution
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _ci_fix.models == ['review-local', _local_review.model]
+          - _pr_review.models == ['review-local', _local_review.model]
+          - _ci_fix.models_authoritative | bool
+          - _pr_review.models_authoritative | bool
+          - _ci_fix.tags == ['&zdr', '!free', '!retains', '&local']
+          - _pr_review.tags == ['&zdr', '!free', '!retains', '&local']
+          - _ci_fix.router_settings.enable_tag_filtering | bool
+          - _pr_review.router_settings.enable_tag_filtering | bool
+          - _ci_fix.metadata.trace_defaults.agent_flow == 'ci-failure-fixer'
+          - _ci_fix.metadata.trace_defaults.agent_trigger == 'workflow_run'
+          - _pr_review.metadata.trace_defaults.agent_flow == 'pr-review-responder'
+          - _pr_review.metadata.trace_defaults.agent_trigger == 'review-event'
+          - _local_review.fallbacks | length == 0
+        fail_msg: >-
+          ci_fix={{ _ci_fix.models }} pr_review={{ _pr_review.models }}
+          review_local.fallbacks={{ _local_review.fallbacks }}
+        success_msg: >-
+          ci_fix={{ _ci_fix.models }} pr_review={{ _pr_review.models }}
+          review_local.fallbacks={{ _local_review.fallbacks }}
+      vars:
+        _ci_fix: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-ci-fix') | first }}"
+        _pr_review: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-pr-review') | first }}"
+        _local_review: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-local') | first }}"
