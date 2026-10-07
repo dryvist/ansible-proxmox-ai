@@ -39,7 +39,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    uses: dryvist/.github/.github/workflows/_ansible-ci.yml@d93c868d5e3a12d012eb381200d17b34c10eea59
+    uses: dryvist/.github/.github/workflows/_ansible-ci.yml@e3c0fa803516d9a85697cce97583bc2b7cc5c6d6
     with:
       # Molecule is owned locally (see header); the shared workflow runs lint only.
       molecule: false
@@ -118,51 +118,55 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      source_contracts: ${{ steps.filter.outputs.source_contracts }}
-      workflow_contracts: ${{ steps.filter.outputs.workflow_contracts }}
+      full_suite: ${{ steps.select.outputs.full_suite }}
+      pytest_targets: ${{ steps.select.outputs.pytest_targets }}
+      ansible_tests: ${{ steps.select.outputs.ansible_tests }}
+      llm_router_playbooks: ${{ steps.select.outputs.llm_router_playbooks }}
+      run_inventory: ${{ steps.select.outputs.run_inventory }}
+      run_selector_checks: ${{ steps.select.outputs.run_selector_checks }}
     steps:
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
-        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'develop' }}
-        id: filter
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          predicate-quantifier: some-with-excludes
-          filters: |
-            source_contracts:
-              - '**.yml'
-              - '**.yaml'
-              - '**.j2'
-              - 'roles/**'
-              - 'tests/**'
-              - 'playbooks/**'
-              - 'inventory/**'
-              - 'group_vars/**'
-              - 'host_vars/**'
-              - 'scripts/**'
-              - '.github/scripts/**'
-              - 'requirements.yml'
-              - 'requirements-ci.txt'
-              - 'ansible.cfg'
-              - '!.github/workflows/**'
-            workflow_contracts:
-              - '.github/workflows/_data-contract.yml'
-              - '.github/workflows/_llm-router-contract.yml'
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Select focused contract checks
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_HEAD: ${{ github.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+            echo 'full_suite=true' >> "$GITHUB_OUTPUT"
+            python .github/scripts/select-contract-scope.py --full --output "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo 'full_suite=false' >> "$GITHUB_OUTPUT"
+          if [[ "$EVENT_NAME" == push ]]; then
+            BASE_SHA="$PUSH_BEFORE"
+            HEAD_SHA="$PUSH_HEAD"
+          fi
+          git diff --name-only "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-paths"
+          python .github/scripts/select-contract-scope.py \
+            --paths-file "$RUNNER_TEMP/changed-paths" \
+            --output "$GITHUB_OUTPUT"
       - name: Report the selected contract scope
         if: ${{ always() }}
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          FILTER_RESULT: ${{ steps.filter.outcome }}
-          SOURCE_CONTRACTS: ${{ steps.filter.outputs.source_contracts }}
-          WORKFLOW_CONTRACTS: ${{ steps.filter.outputs.workflow_contracts }}
+          GITHUB_REF: ${{ github.ref }}
+          SELECT_RESULT: ${{ steps.select.outcome }}
+          SELECTED: ${{ toJSON(steps.select.outputs) }}
         run: |
-          if [[ "$EVENT_NAME" != pull_request || "$BASE_REF" == main ]]; then
+          if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
             selection=full
-          elif [[ "$FILTER_RESULT" != success ]]; then
-            selection=full-fail-closed
-          elif [[ "$SOURCE_CONTRACTS" == true || "$WORKFLOW_CONTRACTS" == true ]]; then
-            selection=full
+          elif [[ "$SELECT_RESULT" != success ]]; then
+            selection=failed-unmapped
           else
-            selection=not-required
+            selection=focused
           fi
           printf 'Data Contract selection: %s\n' "$selection" >> "$GITHUB_STEP_SUMMARY"
 
@@ -172,30 +176,40 @@ jobs:
     if: >-
       always() &&
       (
-        github.event_name == 'push' ||
-        github.event.pull_request.base.ref == 'main' ||
-        (
-          needs.ci.outputs.ansible == 'true' &&
-          (
-            needs.contract-scope.result != 'success' ||
-            needs.contract-scope.outputs.source_contracts == 'true' ||
-            needs.contract-scope.outputs.workflow_contracts == 'true'
-          )
-        )
+        needs.contract-scope.result == 'success' &&
+        (needs.contract-scope.outputs.full_suite == 'true' ||
+        needs.contract-scope.outputs.pytest_targets != '[]' ||
+        needs.contract-scope.outputs.ansible_tests != '[]' ||
+        needs.contract-scope.outputs.llm_router_playbooks != '[]' ||
+        needs.contract-scope.outputs.run_inventory == 'true' ||
+        needs.contract-scope.outputs.run_selector_checks == 'true')
       )
     uses: ./.github/workflows/_data-contract.yml
+    with:
+      full_suite: ${{ needs.contract-scope.outputs.full_suite == 'true' }}
+      pytest_targets: ${{ needs.contract-scope.outputs.pytest_targets }}
+      ansible_tests: ${{ needs.contract-scope.outputs.ansible_tests }}
+      llm_router_playbooks: ${{ needs.contract-scope.outputs.llm_router_playbooks }}
+      run_inventory: ${{ needs.contract-scope.outputs.run_inventory == 'true' }}
+      run_selector_checks: ${{ needs.contract-scope.outputs.run_selector_checks == 'true' }}
 
   molecule:
     name: Molecule
     needs: ci
     if: >-
-      (needs.ci.outputs.molecule == 'true' ||
-      github.event_name == 'push' ||
-      github.event.pull_request.base.ref == 'main') &&
-      needs.ci.outputs.molecule_scenarios != '[]'
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        needs.ci.outputs.molecule == 'true' ||
+        github.event.pull_request.base.ref == 'main'
+      ) &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        needs.ci.outputs.molecule_scenarios != '[]'
+      )
     uses: ./.github/workflows/_molecule.yml
     with:
       scenarios: ${{ needs.ci.outputs.molecule_scenarios }}
+      full_suite: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     secrets: inherit
 
   # Deliberately UNCONDITIONAL — no `needs: ci`, no change filter. A version
@@ -224,13 +238,25 @@ jobs:
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     steps:
-      - name: Check all results
-        uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # release/v1
+      - name: Set up Node for the shared result aggregator
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          # installer-sha is NOT skippable: it always runs, so a skip means it
-          # was tampered with or errored, and either must fail the gate.
-          allowed-skips: >-
-            ${{ github.event_name == 'pull_request' &&
-            github.event.pull_request.base.ref == 'develop' &&
+          node-version: '22'
+
+      - name: Check out the shared result aggregator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: dryvist/.github
+          ref: 1ee6eaa788a7d713019c71493cd2a03b9021dc2a
+          path: .gh-shared
+          sparse-checkout: scripts/ci-gate-aggregate.mts
+          sparse-checkout-cone-mode: false
+
+      - name: Check all results
+        env:
+          CI_GATE_JOBS: ${{ toJSON(needs) }}
+          CI_GATE_ALLOWED_SKIPS: >-
+            ${{ (github.event_name == 'pull_request' ||
+            (github.event_name == 'push' && github.ref == 'refs/heads/develop')) &&
             'data-contract, molecule' || '' }}
-          jobs: ${{ toJSON(needs) }}
+        run: node .gh-shared/scripts/ci-gate-aggregate.mts
