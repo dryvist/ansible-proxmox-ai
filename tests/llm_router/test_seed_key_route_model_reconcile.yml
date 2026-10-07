@@ -1,7 +1,8 @@
 ---
 # Regression/contract test for reconcile-seeded-key-policy.yml's key diff:
-# MCP permissions reconcile in every mode, while other policy fields remain
-# rebuild-only, with one computed {alias, body} update per changed key.
+# MCP permissions and authoritative model allowlists reconcile in every mode;
+# routes and attribution metadata remain rebuild-only, with one computed
+# {alias, body} update per changed key.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_seed_key_route_model_reconcile.yml -i localhost, -c local
@@ -29,9 +30,10 @@
     #     models at all — the rejectattr trap. The diff must not crash on
     #     it, and must treat the missing fields as none/[] (fail safe),
     #     the same class of missing-key bug fixed in #945.
-    #   - authoritative-narrow: a models_authoritative seed whose live list
-    #     carries a name the seed no longer does — must be flagged changed
-    #     even though nothing was ADDED, only removed.
+    #   - authoritative-narrow: an explicitly authoritative seed whose live
+    #     list carries a name the seed no longer does — remove it.
+    #   - default-authoritative: the default authority also replaces a stale
+    #     live name; this is the normal registry-derived seed behavior.
     #   - live-only: a live key with no matching llm_router_virtual_keys
     #     entry at all — never a candidate, current behavior preserved.
     #   - null-models: a live record whose `models` key is PRESENT but JSON
@@ -56,6 +58,13 @@
             object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: authoritative-narrow
             models: [cheap, stale-model]
+            object_permission: {mcp_servers: [no-mcp-servers]}
+          - key_alias: default-authoritative
+            models: [cheap, stale-model]
+            object_permission: {mcp_servers: [no-mcp-servers]}
+          - key_alias: additive-opt-out
+            models: [cheap, local-custom]
+            metadata: {app: additive-opt-out, tier: local}
             object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: live-only
             models: [cheap]
@@ -90,6 +99,13 @@
         value: "sk-{{ 'd' * 20 }}"
         models: [cheap]
         models_authoritative: true
+      - alias: default-authoritative
+        value: "sk-{{ 'h' * 20 }}"
+        models: [cheap]
+      - alias: additive-opt-out
+        value: "sk-{{ 'i' * 20 }}"
+        models: [cheap]
+        models_authoritative: false
       - alias: null-models
         value: "sk-{{ 'e' * 20 }}"
         models: [cheap]
@@ -110,6 +126,8 @@
       - widened-routes
       - malformed-live
       - authoritative-narrow
+      - default-authoritative
+      - additive-opt-out
       - live-only
       - null-models
       - null-routes
@@ -185,21 +203,37 @@
       ansible.builtin.set_fact:
         _llm_router_initial_key_updates: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
 
-    - name: Initial mode updates only the MCP permission security boundary
+    - name: Initial mode reconciles models and MCP permissions while leaving routes and metadata UI-owned
       ansible.builtin.assert:
         quiet: true
         that:
-          - _llm_router_initial_key_updates | map(attribute='alias') | list == ['mcp-reader']
+          - _llm_router_initial_key_updates | map(attribute='alias') | sort
+            == ['authoritative-narrow', 'default-authoritative', 'malformed-live', 'mcp-reader', 'null-models']
+          - _llm_router_initial_key_updates | selectattr('alias', 'equalto', 'additive-opt-out') | list | length == 0
           - "_initial_mcp.body.object_permission == {'mcp_servers': ['zammad', 'slack']}"
+          - _initial_narrow.body.models == ['cheap']
+          - _initial_default.body.models == ['cheap']
+          - _initial_malformed.body.models == ['cheap', 'embed']
+          - _initial_null_models.body.models == ['cheap']
           - "'models' not in _initial_mcp.body"
           - "'allowed_routes' not in _initial_mcp.body"
           - "'metadata' not in _initial_mcp.body"
+          - _llm_router_initial_key_updates | selectattr('alias', 'equalto', 'widened-routes') | list | length == 0
         fail_msg: >-
-          initial mode did not isolate the MCP permission update:
+          initial mode did not reconcile model lists and MCP permissions while
+          preserving UI-owned fields:
           {{ _llm_router_initial_key_updates | map(attribute='alias') | list }}.
       vars:
         _initial_mcp: >-
           {{ _llm_router_initial_key_updates | selectattr('alias', 'equalto', 'mcp-reader') | first }}
+        _initial_narrow: >-
+          {{ _llm_router_initial_key_updates | selectattr('alias', 'equalto', 'authoritative-narrow') | first }}
+        _initial_default: >-
+          {{ _llm_router_initial_key_updates | selectattr('alias', 'equalto', 'default-authoritative') | first }}
+        _initial_malformed: >-
+          {{ _llm_router_initial_key_updates | selectattr('alias', 'equalto', 'malformed-live') | first }}
+        _initial_null_models: >-
+          {{ _llm_router_initial_key_updates | selectattr('alias', 'equalto', 'null-models') | first }}
 
     - name: Set explicit rebuild mode for the detailed reconciliation fixtures
       ansible.builtin.set_fact:
@@ -213,14 +247,16 @@
         # warning (removed in 2.23), not a no-op.
         _llm_router_key_updates: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
 
-    - name: Assert only the six genuinely-changed keys are updated, each exactly once
+    - name: Assert only the seven genuinely-changed keys are updated, each exactly once
       ansible.builtin.assert:
         quiet: true
         that:
-          - _llm_router_key_updates | map(attribute='alias') | sort
-            == ['authoritative-narrow', 'malformed-live', 'mcp-reader', 'null-models', 'null-routes', 'widened-routes']
+          - >-
+            _llm_router_key_updates | map(attribute='alias') | sort ==
+            ['authoritative-narrow', 'default-authoritative', 'malformed-live',
+             'mcp-reader', 'null-models', 'null-routes', 'widened-routes']
         fail_msg: >-
-          Expected exactly the six changed aliases, got
+          Expected exactly the seven changed aliases, got
           {{ _llm_router_key_updates | map(attribute='alias') | list }}.
           steady must be absent (nothing differs); live-only must be absent
           (no seed entry names it — current behavior preserved).
@@ -312,6 +348,14 @@
               - key_alias: authoritative-narrow
                 models: [cheap]
                 metadata: {app: authoritative-narrow, tier: local}
+                object_permission: {mcp_servers: [no-mcp-servers]}
+              - key_alias: default-authoritative
+                models: [cheap]
+                metadata: {app: default-authoritative, tier: local}
+                object_permission: {mcp_servers: [no-mcp-servers]}
+              - key_alias: additive-opt-out
+                models: [cheap, local-custom]
+                metadata: {app: additive-opt-out, tier: local}
                 object_permission: {mcp_servers: [no-mcp-servers]}
               - key_alias: live-only
                 models: [cheap]

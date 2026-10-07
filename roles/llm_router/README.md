@@ -185,10 +185,15 @@ role by hand or through the Admin UI — moved to
 Router settings — `router_settings` in `config.yaml`: `fallbacks`,
 `routing_strategy`, `allowed_fails`, `cooldown_time`, `model_group_alias` —
 are administered in the LiteLLM Admin UI, at **Router Settings**, the same
-"database owns it after first seed" contract Roles and Virtual Keys already
-have (above). `llm_router_seed_mode` (`defaults/main/45-database.yml`,
+"database owns it after first seed" contract the fallback ladders already
+have (above). Virtual-key model allowlists instead reconcile to their
+registry-derived Git seed on every converge, and MCP server permissions do
+too. An entry can set `models_authoritative: false` to retain additive live
+model extensions. In `initial`, routes and attribution metadata remain
+UI-owned; budgets reconcile only in `rebuild`. `llm_router_seed_mode`
+(`defaults/main/45-database.yml`,
 default `initial`) extends that same contract to `router_settings` — how
-Roles and Virtual Keys already enforce it:
+the fallback role ladders already enforce it:
 [`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md#same-contract-elsewhere).
 
 - **`initial`** (default) — the converge seeds `router_settings` into the

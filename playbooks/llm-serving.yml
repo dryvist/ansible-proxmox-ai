@@ -292,17 +292,20 @@
         name: llm_router
         tasks_from: drift-check.yml
 
-# If the gate above end_host'd every member, the tasks: play above never ran
-# (zero hosts left to run them) — and a play with zero hosts is not itself a
-# failure, so the run would otherwise carry on as if seeding had nothing to
-# do. Catch that here, from localhost, which the gate's end_host never
-# touches: every original pool member's pool_member_probe (registered by the
-# gate before any end_host fires) stays readable in hostvars regardless of
-# how many members got end_host'd, so this can tell "every member was down"
-# apart from "seeding ran and finished".
+# If every router targeted by this invocation failed the gate, the tasks:
+# play above never ran (zero hosts left to run them) — and a play with zero
+# hosts is not itself a failure, so the run would otherwise carry on as if
+# seeding had nothing to do. Catch that here, from localhost, which the
+# gate's end_host never touches. Respect the invocation's --limit: a
+# GPU-only converge can select localhost without targeting any router, and
+# must not be reported as a router outage.
 - name: Fail loudly if the whole llm_router pool failed the reachability gate
   hosts: localhost
   gather_facts: false
+  vars:
+    _llm_router_seed_target_hosts: >-
+      {{ query('ansible.builtin.inventory_hostnames', ansible_limit | default('all', true))
+         | intersect(groups['llm_router_group'] | default([])) }}
   tags:
     - llm_router
     - llm
@@ -312,14 +315,15 @@
       ansible.builtin.set_fact:
         site_isolated_failures: >-
           {{ (site_isolated_failures | default([])) +
-             ['llm_router_seed_consumers: every llm_router_group member failed the reachability gate' ~
+             ['llm_router_seed_consumers: every targeted llm_router_group member failed the reachability gate' ~
               ' — seeding did not run'] }}
       when: >-
-        (groups['llm_router_group']
+        (_llm_router_seed_target_hosts | length > 0) and
+        ((_llm_router_seed_target_hosts
          | map('extract', hostvars, 'pool_member_probe')
          | selectattr('ping', 'defined')
          | selectattr('ping', 'equalto', 'pong')
-         | list | length) == 0
+         | list | length) == 0)
 
 - name: Configure the CPU LLM pool scaler
   hosts: llm_router_group
