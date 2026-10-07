@@ -39,6 +39,10 @@ def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
         (196608, slots, dtype)
         for slots in (1, 4)
         for dtype in ("auto", "fp8")
+    } | {
+        (262144, slots, dtype)
+        for slots in (1, 2)
+        for dtype in ("auto", "fp8")
     }
 
     assert profiles["medium-a"]["max_num_seqs"] == 8
@@ -58,7 +62,7 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
         name for name, profile in profiles.items() if "memory_screen_reserve_gib" in profile
     }
 
-    assert len(candidate_profiles) == 22
+    assert len(candidate_profiles) == 26
     assert candidate_profiles <= entries_by_profile.keys()
 
     for name in candidate_profiles:
@@ -79,9 +83,12 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
             * GIB
             / (artifact["kv_cache_bytes_per_token_bf16"] * dtype_scale)
         )
+        required_tokens = profile["max_model_len"]
+        if name.startswith("qwen38-262k-"):
+            required_tokens *= profile["max_num_seqs"]
         kv_gib = (
             artifact["kv_cache_bytes_per_token_bf16"]
-            * profile["max_model_len"]
+            * required_tokens
             * dtype_scale
             / GIB
         )
@@ -89,8 +96,8 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
         reserve_gib = profile["memory_screen_reserve_gib"]
         estimated_gib = checkpoint_gib + kv_gib + reserve_gib
         budget_gib = GPU_MEMORY_GIB * profile["gpu_memory_utilization"]
-        assert profile["max_model_len"] <= pool_token_capacity, (
-            name, profile["max_model_len"], pool_token_capacity
+        assert required_tokens <= pool_token_capacity, (
+            name, required_tokens, pool_token_capacity
         )
         assert estimated_gib <= budget_gib, (name, estimated_gib, budget_gib, pool_token_capacity)
 

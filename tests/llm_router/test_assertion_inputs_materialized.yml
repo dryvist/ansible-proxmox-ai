@@ -8,8 +8,13 @@
 - name: Verify router assertion inputs retain their values when materialized
   hosts: localhost
   gather_facts: false
+  # This test runs with an inline inventory, like Semaphore's generated file.
+  # It proves the production router inputs are explicitly loaded even when the
+  # inventory source is not next to inventory/group_vars.
+  vars_files:
+    - "{{ playbook_dir }}/../../inventory/group_vars/all.yml"
+    - "{{ playbook_dir }}/../../inventory/group_vars/llm_router_group.yml"
   vars:
-    _group_vars_dir: "{{ playbook_dir }}/../../inventory/group_vars"
     _role_defaults_dir: "{{ playbook_dir }}/../../roles/llm_router/defaults/main"
     bao_ai_public_secrets: {}
     bao_apps_secrets: {}
@@ -19,16 +24,16 @@
       - name: homelab-admin
       - name: github-maint
   tasks:
-    - name: Load shared and router group vars as they ship
-      ansible.builtin.include_vars:
-        file: "{{ item }}"
-      loop:
-        - "{{ _group_vars_dir }}/all.yml"
-        - "{{ _group_vars_dir }}/llm_router_group.yml"
-
     - name: Load the router defaults as they ship
       ansible.builtin.include_vars:
         dir: "{{ _role_defaults_dir }}"
+
+    - name: Confirm inventory-backed key-scope selectors load from source files
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - hermes_brain_model == 'hermes-default'
+          - hindsight_retain_model == 'interim-brain'
 
     - name: Supply the shared budget store required by the subscription rung
       ansible.builtin.set_fact:
