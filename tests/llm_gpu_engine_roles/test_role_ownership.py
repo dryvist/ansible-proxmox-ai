@@ -25,7 +25,7 @@ def test_shared_nvidia_role_has_no_engine_installation():
 def test_engine_roles_own_only_their_profiles_and_selectors():
     cases = (
         ("vllm_serving", "vllm", {"small", "medium-a"}),
-        ("llamacpp_serving", "llama_cpp", {"medium-b", "max"}),
+        ("llamacpp_serving", "llama_cpp", {"medium-b", "16gb", "max"}),
     )
     for role, engine, expected_profiles in cases:
         role_root = ROLES / role
@@ -42,6 +42,12 @@ def test_engine_roles_own_only_their_profiles_and_selectors():
             task.get("ansible.builtin.include_role", {}).get("name") == "nvidia_gpu_guest"
             for task in main_tasks
         )
+
+
+def test_legacy_combined_role_indexes_only_its_own_profiles():
+    loader = (ROLES / "llm_gpu_serving/tasks/load-registry.yml").read_text()
+    assert "profile.profile in llm_profiles" in loader
+    assert "llm_gpu_serving_registry_by_profile.keys()" in loader
 
 
 def test_engine_installers_stay_separate_and_keep_shared_safety_tasks():

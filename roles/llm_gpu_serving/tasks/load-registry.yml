@@ -1,5 +1,5 @@
 ---
-- name: Load Pro6000 profile references
+- name: Load shared GPU profile references owned by the legacy role
   ansible.builtin.include_vars:
     file: "{{ llm_gpu_serving_registry_file }}"
 
@@ -18,7 +18,7 @@
     that:
       - _llm_model_artifacts | length > 0
       - llm_gpu_serving_artifacts_by_id | length == _llm_model_artifacts | length
-    fail_msg: "llm-models.d/65-gpu-pro6000-artifacts.yml must contain unique artifact ids."
+    fail_msg: "llm-models.d/65-gpu-artifacts.yml must contain unique artifact ids."
     quiet: true
 
 - name: Select artifacts included in the pinned model store
@@ -33,7 +33,7 @@
   ansible.builtin.assert:
     that:
       - item.revision is match('^[0-9a-f]{40}$')
-      - item.model_store_profile in ['small', 'medium-a', 'medium-b', 'max']
+      - item.model_store_profile in ['small', 'medium-a', 'medium-b', '16gb', 'max']
       - item.model_store_size_bytes | int > 0
     fail_msg: "Every model-store artifact must declare one pinned revision, profile, and positive size."
     quiet: true
@@ -95,7 +95,7 @@
       - >-
         (item.required_artifact_ids | default([]) | unique | length)
         == (item.required_artifact_ids | default([]) | length)
-    fail_msg: "llm-models.d/65-gpu-pro6000-artifacts.yml contains invalid or duplicate artifact metadata."
+    fail_msg: "llm-models.d/65-gpu-artifacts.yml contains invalid or duplicate artifact metadata."
     quiet: true
   loop: "{{ _llm_model_artifacts }}"
   loop_control:
@@ -105,7 +105,7 @@
   ansible.builtin.set_fact:
     llm_gpu_serving_registry_by_profile: >-
       {%- set ns = namespace(by_profile={}) -%}
-      {%- for profile in _llm_registry_gpu_pro6000 -%}
+      {%- for profile in _llm_registry_gpu if profile.profile in llm_profiles -%}
       {%- set artifact = llm_gpu_serving_artifacts_by_id.get(profile.artifact_id) -%}
       {%- if artifact is not none -%}
       {%- set _ = ns.by_profile.update({profile.profile: profile | combine({
@@ -118,7 +118,6 @@
 - name: Assert each serving profile resolves to exactly one artifact
   ansible.builtin.assert:
     that:
-      - llm_gpu_serving_registry_by_profile | length == _llm_registry_gpu_pro6000 | length
       - llm_gpu_serving_registry_by_profile.keys() | list | sort == llm_profiles.keys() | list | sort
       - item.value.artifact_id in llm_gpu_serving_artifacts_by_id
       - >-
@@ -127,7 +126,7 @@
             and llm_profiles[item.key].engine in item.value.artifact.engines)
     fail_msg: >-
       Every GPU serving profile must reference exactly one serving artifact with
-      matching engine support in llm-models.d/65-gpu-pro6000-artifacts.yml.
+      matching engine support in llm-models.d/65-gpu-artifacts.yml.
     quiet: true
   loop: "{{ llm_gpu_serving_registry_by_profile | dict2items }}"
   loop_control:

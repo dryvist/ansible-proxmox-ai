@@ -1,4 +1,4 @@
-"""Validate the Pro6000 tier's registry-owned profile contract."""
+"""Validate the shared GPU registry-owned profile contract."""
 
 from pathlib import Path
 
@@ -6,8 +6,8 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
-ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml"
+REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
+ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml"
 REGISTRY_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 VLLM_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 LLAMACPP_DEFAULTS = REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml"
@@ -20,18 +20,18 @@ def _serving_profiles() -> dict:
     return {**vllm, **llamacpp}
 
 
-def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
+def test_gpu_profiles_are_inactive_placeholders_and_free() -> None:
     registry = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))
-    entries = registry["_llm_registry_gpu_pro6000"]
+    entries = registry["_llm_registry_gpu"]
     artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))["_llm_model_artifacts"]
     artifacts_by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     defaults = yaml.safe_load(REGISTRY_DEFAULTS.read_text(encoding="utf-8"))
     serving_profiles = _serving_profiles()
     serving_core = yaml.safe_load(VLLM_CORE_DEFAULTS.read_text(encoding="utf-8"))
 
-    assert len(entries) == 4
+    assert len(entries) == 5
     assert defaults["llm_router_gpu_profiles_enabled"] is False
-    assert {entry["profile"] for entry in entries} == {"small", "medium-a", "medium-b", "max"}
+    assert {entry["profile"] for entry in entries} == {"small", "medium-a", "medium-b", "16gb", "max"}
     assert len({entry["client_model_id"] for entry in entries}) == len(entries)
     assert all(entry["artifact_id"] in artifacts_by_id for entry in entries)
     assert len(artifacts_by_id) == len(artifacts)
@@ -67,6 +67,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "small": 1,
         "medium-a": 1,
         "medium-b": 0,
+        "16gb": 0,
         "max": 0,
     }
     assert len({alias for aliases in aliases_by_profile.values() for alias in aliases}) == 2
@@ -97,7 +98,7 @@ def test_router_admission_equals_serving_profile_concurrency() -> None:
     engine behind the profile's own limit. The primary profile carries the
     eight-agent fleet, so its router entry admits eight.
     """
-    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
+    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
     serving_profiles = _serving_profiles()
 
     caps = {entry["profile"]: entry["max_parallel_requests"] for entry in entries}

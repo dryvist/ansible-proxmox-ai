@@ -12,7 +12,7 @@ ENGINE_ROOTS = {
     "vllm": REPO_ROOT / "roles/vllm_serving",
     "llama_cpp": REPO_ROOT / "roles/llamacpp_serving",
 }
-ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml"
+ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml"
 
 
 def _model_store() -> list[dict]:
@@ -27,6 +27,7 @@ def test_model_store_registry_pins_every_artifact_and_covers_each_profile():
         "small",
         "medium-a",
         "medium-b",
+        "16gb",
         "max",
     }
     assert sum(artifact["model_store_size_bytes"] for artifact in model_store) == 334_707_157_291

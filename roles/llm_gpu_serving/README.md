@@ -44,7 +44,7 @@ mount point.
   package for SM120 kernel support in one uv command.
 - Resolves a recent llama.cpp release and installs its Linux x64 CUDA archive
   using the same release metadata and archive-layout checks as `llama_cpp`.
-- Seeds `model_store: true` artifacts from `llm-models.d/65-gpu-pro6000-artifacts.yml`
+- Seeds `model_store: true` artifacts from `llm-models.d/65-gpu-artifacts.yml`
   into the declared origin with immutable Hub revisions. The seed playbook
   checks for running GPU compute applications before each download and verifies
   every populated repository with Hub checksums.
@@ -61,13 +61,14 @@ mount point.
 
 ## Profiles
 
-`llm_profiles` defines four entries: `small`, `medium-a`, `medium-b`, and
-`max`. All four are enabled so the profile switch can select any of them.
+`llm_profiles` defines four legacy entries: `small`, `medium-a`, `medium-b`,
+and `max`. All four are enabled so the profile switch can select any of them.
 Runtime serving settings live here; model bytes, Hub repository, include
 globs, file format, quantization, engine support, GGUF file name, and use are
-defined once in `llm-models.d/65-gpu-pro6000-artifacts.yml`. The router profile
-registry links to those records by `artifact_id` and stays `enabled: false`,
-`servable: false` until a serving floor is measured.
+defined once in `llm-models.d/65-gpu-artifacts.yml`. The shared registry also
+contains the `16gb` llama.cpp profile owned by `llamacpp_serving`; this legacy
+role indexes only its own four profile names. Router candidates stay
+`enabled: false`, `servable: false` until selected and measured.
 
 `small` and `medium-a` run vLLM (safetensors). `medium-b` and `max` run
 llama.cpp (GGUF) from the installed release binary. A vLLM profile carries its
