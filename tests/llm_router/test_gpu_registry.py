@@ -152,25 +152,25 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
 
 
 def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
-    """Load sweep entries admit 1..64; vLLM max_num_seqs controls active slots."""
+    """Sweeps and medium-a admit 1..64; engine slots control active work."""
     entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
     serving_profiles = _serving_profiles()
 
     caps = {entry["profile"]: entry["max_parallel_requests"] for entry in entries}
-    sweep_profiles = {
+    admission_profiles = {
         entry["profile"]
         for entry in entries
         if entry["client_model_id"].startswith("gpu-sweep-")
-    }
+    } | {"medium-a"}
     expected_caps = {
-        name: 64 if name in sweep_profiles else profile["max_num_seqs"]
+        name: 64 if name in admission_profiles else profile["max_num_seqs"]
         for name, profile in serving_profiles.items()
     }
     assert caps == expected_caps
 
     primary = [name for name, profile in serving_profiles.items() if profile.get("primary")]
     assert primary == ["medium-a"]
-    assert caps["medium-a"] == 8
+    assert caps["medium-a"] == 64
 
 
 def test_router_consumes_the_shared_gpu_profile_projection() -> None:
