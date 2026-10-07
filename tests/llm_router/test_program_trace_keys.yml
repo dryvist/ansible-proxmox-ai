@@ -24,12 +24,27 @@
             (_llm_router_program_virtual_keys | map(attribute='secret_field') | list | unique | length)
             == (_llm_router_program_virtual_keys | length)
           - >-
+            llm_router_program_key_targets
+            | difference(llm_router_key_catalog_facts.llm_router_key_catalog_source.program.targets)
+            | length == 0
+          - >-
+            ((_llm_router_hermes_profile_names
+              | map('regex_replace', '^', 'hermes-') | list)
+             | difference(llm_router_key_catalog_facts.llm_router_key_catalog_source.program.runners)
+             | length) == 0
+          - >-
             (_llm_router_program_virtual_keys | selectattr('metadata.purpose', 'equalto', 'benchmark') | list | length)
             == (_llm_router_program_virtual_keys | selectattr('metadata.purpose', 'equalto', 'live') | list | length)
-          - llm_router_program_key_catalog.benchmark | length == _llm_router_program_virtual_keys | length
+          - >-
+            (_llm_router_program_virtual_keys | map(attribute='secret_field') | list)
+            | difference(llm_router_program_key_catalog.benchmark) | length == 0
           - >-
             llm_router_disabled_virtual_keys
             | intersect(_llm_router_program_virtual_keys | map(attribute='alias') | list) | length > 0
+        fail_msg: >-
+          Reachable program targets missing from shared catalog:
+          {{ llm_router_program_key_targets
+             | difference(llm_router_key_catalog_facts.llm_router_key_catalog_source.program.targets) }}
       vars:
         _codex_program: >-
           {{ _llm_router_program_virtual_keys | selectattr('metadata.runner', 'equalto', 'codex') | first }}
