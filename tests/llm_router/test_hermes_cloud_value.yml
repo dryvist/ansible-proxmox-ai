@@ -27,6 +27,10 @@
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
+    - name: Load sanitized auto-router rows captured from a live router
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/fixtures/live-auto-router-db-rows.yml"
+
     - name: Produce the fully credentialed render
       ansible.builtin.import_tasks: tasks/credentialed_render.yml
 
@@ -37,12 +41,12 @@
           # D1 determines cross-class order; each class preserves the catalog
           # order derived by the role defaults.
           #
-          # Three enabled, credentialed, chain-joining hermes-cloud groups:
-          # hermes-cloud-alibaba, hermes-cloud-gemini, hermes-cloud-openrouter.
+          # Five enabled, credentialed, chain-joining provider groups:
+          # two Alibaba, two Gemini, and one OpenRouter group.
           # hermes-cloud-free was the fourth until it was disabled (upstream
           # withdrew its model); the count follows that removal.
           - _local_groups | length == 1
-          - llm_router_hermes_cloud_only_fallback_groups | length == 3
+          - llm_router_hermes_cloud_only_fallback_groups | length == 5
           - llm_router_hermes_cloud_fallback_groups == _expected_full_chain
           - _fallback_chain == _expected_chain
           # Distinct target names PLUS one order-based retarget per budgeted
@@ -73,8 +77,8 @@
             < _config.router_settings.allowed_fails_policy.RateLimitErrorAllowedFails | int
           # The zero-retry set starts with the full default fallback groups
           # (D1's ladder, including the auto alias's initial rung), then the
-          # virtual provider-router groups and every entry-point name. The
-          # four router groups are stated literally so a change there gets a
+          # ordered provider groups and every entry-point name. The
+          # four provider groups are stated literally so a change there gets a
           # direct review; entry points derive from the servable set and the
           # rendered alias map, never a copied model list. `_expected_chain`
           # is the auto alias's post-entry continuation and intentionally
@@ -111,7 +115,22 @@
           - "'enforce_model_rate_limits' in _config.router_settings.optional_pre_call_checks"
           - "'session_affinity' in _config.router_settings.optional_pre_call_checks"
           - _cloud_models | length == 6
-          - _cloud_routers | length == 2
+          - _modified_auto_routers | length == 1
+          - _modified_auto_routers[0].model_name == hermes_brain_model
+          - llm_router_model_group_aliases['fast'] == hermes_brain_model
+          - llm_router_model_group_aliases['cheap'] == hermes_brain_model
+          - >-
+            _config.router_settings.fallbacks
+            | selectattr('fast', 'defined') | map(attribute='fast') | first
+            == _expected_chain
+          - >-
+            _config.router_settings.fallbacks
+            | selectattr('cheap', 'defined') | map(attribute='cheap') | first
+            == _expected_chain
+          - _post_migration_auto_router_count == 1
+          - _live_auto_router_names == ['cheap', 'fast']
+          - _retired_auto_router_names == ['cheap', 'fast']
+          - _unaliased_auto_router_roles | length == 0
           - _uncapped | length == 0
           - _wrong_input_cap | length == 0
           - _wrong_output_cap | length == 0
@@ -120,18 +139,6 @@
           - _wrong_timeout | length == 0
           - _missing_prices | length == 0
           - _monthly_total | round(2) == 6.66
-          - >-
-            _alibaba_router.litellm_params.complexity_router_config.tiers
-            == {'SIMPLE': 'hermes-cloud-alibaba-routine',
-                'MEDIUM': 'hermes-cloud-alibaba-routine',
-                'COMPLEX': 'hermes-cloud-alibaba-agentic',
-                'REASONING': 'hermes-cloud-alibaba-agentic'}
-          - >-
-            _gemini_router.litellm_params.complexity_router_config.tiers
-            == {'SIMPLE': 'hermes-cloud-gemini-routine',
-                'MEDIUM': 'hermes-cloud-gemini-routine',
-                'COMPLEX': 'hermes-cloud-gemini-agentic',
-                'REASONING': 'hermes-cloud-gemini-agentic'}
           # REVIEWED EDIT 2026-09-02. This pair used to assert that a
           # routing_group declared cost-based-routing over the final-resort
           # group. That mechanism is PROHIBITED now: declaring it for one group
@@ -156,11 +163,30 @@
           cloud_count={{ _cloud_models | length }}, monthly={{ _monthly_total }},
           uncapped={{ _uncapped }}.
         success_msg: >-
-          Hermes has one local, one free, and three paid ordered provider
-          groups, real prices, zero ordinary or rate-limit retries, bounded
-          rate/concurrency controls, and $10/month
-          deployment ceilings while local 429 handling remains unchanged.
+          Hermes has one configured auto-router, ordered provider groups, zero
+          ordinary or rate-limit retries, and bounded rate/concurrency controls.
       vars:
+        _modified_auto_routers: >-
+          {{ _config.model_list
+             | selectattr('litellm_params.model', 'equalto', 'auto_router/complexity_router')
+             | list }}
+        _live_auto_router_rows: >-
+          {{ llm_router_live_role_model_info_fixture
+             | selectattr('litellm_params.model', 'equalto', 'auto_router/complexity_router')
+             | list }}
+        _live_auto_router_names: >-
+          {{ _live_auto_router_rows | map(attribute='model_name') | list | sort }}
+        _retired_auto_router_names: >-
+          {{ _live_auto_router_names | intersect(llm_router_model_group_aliases | list) | sort }}
+        _unaliased_auto_router_roles: >-
+          {{ llm_router_role_deployments
+             | selectattr('model', 'equalto', llm_router_auto_router_model)
+             | rejectattr('role', 'in', llm_router_model_group_aliases | list)
+             | map(attribute='role') | list }}
+        _post_migration_auto_router_count: >-
+          {{ (_modified_auto_routers | length)
+             + (_live_auto_router_names | difference(_retired_auto_router_names) | length)
+             + (_unaliased_auto_router_roles | length) }}
         # Class order and rung names are derived from the registry.
         _local_groups: >-
           {{ llm_router_model_registry | selectattr('tier', 'equalto', 'hermes-local')
@@ -193,25 +219,6 @@
           {%- endif -%}
           {%- endfor -%}
           {{ ns.groups }}
-        _cloud_routers: >-
-          {{ _config.model_list
-             | selectattr('model_name', 'match', '^hermes-cloud-')
-             | selectattr('litellm_params.model', 'match', '^auto_router/')
-             | list }}
-        # The two provider routers, by registry position: the registry names
-        # them, the render is looked up under those names.
-        _provider_routers: >-
-          {{ llm_router_model_registry
-             | selectattr('tier', 'equalto', 'hermes-cloud-router')
-             | map(attribute='client_model_id') | list }}
-        _alibaba_router: >-
-          {{ _cloud_routers
-             | selectattr('model_name', 'equalto', _provider_routers[0])
-             | first }}
-        _gemini_router: >-
-          {{ _cloud_routers
-             | selectattr('model_name', 'equalto', _provider_routers[1])
-             | first }}
         _uncapped: >-
           {{ _cloud_models
              | rejectattr('litellm_params.rpm', 'defined')

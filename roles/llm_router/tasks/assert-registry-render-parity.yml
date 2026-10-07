@@ -47,9 +47,8 @@
       - _llm_router_enabled_unrendered | length == 0
       - _llm_router_switched_off_rendered | length == 0
       - _llm_router_rendered_unregistered | length == 0
+      - _llm_router_modified_auto_routers | length <= 1
       - _llm_router_cloud_fallback_missing_router | length == 0
-      - _llm_router_cloud_router_not_fallback | length == 0
-      - _llm_router_cloud_router_missing_target | length == 0
       - _llm_router_narrow_preferred | length == 0
       - _llm_router_partial_window_groups | length == 0
     fail_msg: >-
@@ -88,18 +87,16 @@
       CLOUD FALLBACK NOT RENDERED:
       {{ _llm_router_cloud_fallback_missing_router | join(', ') }}.
       {% endif %}
-      {% if _llm_router_cloud_router_not_fallback | length > 0 %}
-      CLOUD ROUTER NOT IN FALLBACK CHAIN:
-      {{ _llm_router_cloud_router_not_fallback | join(', ') }}.
-      {% endif %}
-      {% if _llm_router_cloud_router_missing_target | length > 0 %}
-      CLOUD ROUTER TARGET NOT RENDERED:
-      {{ _llm_router_cloud_router_missing_target | join(', ') }}.
-      {% endif %}
       {% if _llm_router_rendered_unregistered | length > 0 %}
       RENDERED BUT NOT REGISTERED: {{ _llm_router_rendered_unregistered | join(', ') }}
       — the config serves these under a name no enabled registry entry owns, so
       their config drifts from the registry every time a model changes.
+      {% endif %}
+      {% if _llm_router_modified_auto_routers | length > 1 %}
+      AUTO-ROUTER CARDINALITY EXCEEDED:
+      {{ _llm_router_modified_auto_routers | map(attribute='model_name') | join(', ') }}
+      — the router is configured with multiple modified auto-router deployments.
+      Keep the rendered model_list to at most one auto-router.
       {% endif %}
       Fix the registry entry or the template projection; do not silence this by
       adding a name to the exemptions below.
@@ -139,7 +136,7 @@
                             | map(attribute='client_model_id') | list) | list) }}
     _llm_router_parity_expected: >-
       {{ llm_router_registry_enabled
-         | rejectattr('tier', 'in', ['openrouter', 'opencode', 'hermes-cloud', 'hermes-cloud-router', 'zai'])
+         | rejectattr('tier', 'in', ['openrouter', 'opencode', 'hermes-cloud', 'zai'])
          | map(attribute='client_model_id') | unique
          | difference(_llm_router_switched_off_names) | list }}
     _llm_router_enabled_unrendered: >-
@@ -164,22 +161,11 @@
          | difference(llm_router_registry_enabled_route_names)
          | difference(llm_router_hermes_agents.keys() | list)
          | reject('search', '\*') | list }}
-    _llm_router_cloud_router_names: >-
-      {{ llm_router_hermes_cloud_router_models_credentialed
-         | map(attribute='client_model_id') | unique | list }}
-    _llm_router_cloud_router_targets: >-
-      {{ ((llm_router_hermes_cloud_router_models_credentialed
-           | map(attribute='routine_model') | list)
-          + (llm_router_hermes_cloud_router_models_credentialed
-             | map(attribute='agentic_model') | list)) | unique | list }}
+    _llm_router_modified_auto_routers: >-
+      {{ _llm_router_parity_config.model_list | default([])
+         | selectattr('litellm_params.model', 'match', '^auto_router/') | list }}
     _llm_router_cloud_fallback_missing_router: >-
       {{ llm_router_hermes_cloud_fallback_groups
-         | difference(_llm_router_rendered_names) }}
-    _llm_router_cloud_router_not_fallback: >-
-      {{ _llm_router_cloud_router_names
-         | difference(llm_router_hermes_cloud_fallback_groups) }}
-    _llm_router_cloud_router_missing_target: >-
-      {{ _llm_router_cloud_router_targets
          | difference(_llm_router_rendered_names) }}
     # Several model_names deliberately carry more than one deployment, so this
     # walks the RENDERED list rather than _llm_router_rendered_names above,
