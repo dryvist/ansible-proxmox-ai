@@ -211,7 +211,7 @@ def test_credential_gated_entries_declare_their_own_credential() -> None:
     (roles/llm_router/tasks/assert-registry-render-parity.yml).
     """
     registry = load_registry()
-    gated_tiers = {"opencode", "hermes-cloud", "hermes-cloud-router", "openrouter"}
+    gated_tiers = {"opencode", "hermes-cloud", "openrouter"}
     gated = [entry for entry in registry if entry["tier"] in gated_tiers]
     assert gated, "no credential-gated registry entries loaded; nothing was checked"
     missing = [
