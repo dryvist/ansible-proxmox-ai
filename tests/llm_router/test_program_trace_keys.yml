@@ -39,15 +39,21 @@
         bao_apps_secrets: >-
           {{ bao_apps_secrets | combine({
                (_llm_router_program_virtual_keys | first).secret_field: 'sk-test-program-key'}) }}
-    - name: Check generated key uses production scope and tracing defaults
+    - name: Project generated keys once for trace-default assertions
+      ansible.builtin.set_fact:
+        _program_keys: "{{ llm_router_virtual_keys }}"
+    - name: Check generated key uses production scope and purpose-specific trace defaults
       ansible.builtin.assert:
         that:
           - _program.models | difference(_production_scope) | length == 0
           - _production_scope | difference(_program.models) | length == 0
           - _program.metadata.trace_defaults.purpose == 'benchmark'
+          - _program.metadata.trace_defaults.environment == 'benchmark'
           - _program.metadata.trace_defaults.client == _program.alias
           - _program.metadata.trace_defaults.release | length > 0
           - _program.metadata.trace_required == llm_router_benchmark_trace_fields
+          - _live_program.metadata.trace_defaults.purpose == 'live'
+          - _live_program.metadata.trace_defaults.environment == 'production'
           - "'requester_metadata.run_id' in llm_router_trace_span_metadata_keys"
       vars:
         # The existing key projection expands every requested role to its
@@ -57,8 +63,11 @@
               + (llm_router_role_deployments | map(attribute='model') | list)
               + (llm_router_role_deployments | map(attribute='fallbacks') | flatten)) | unique | list }}
         _program: >-
-          {{ llm_router_virtual_keys
+          {{ _program_keys
              | selectattr('alias', 'equalto', (_llm_router_program_virtual_keys | first).alias) | first }}
+        _live_program: >-
+          {{ _program_keys
+             | selectattr('metadata.trace_defaults.purpose', 'equalto', 'live') | first }}
     - name: Check scalar carriers and native semantic mapper configuration
       ansible.builtin.set_fact:
         _settings: "{{ lookup('template', _role_dir ~ '/templates/litellm-settings.yaml.j2') | from_yaml }}"
