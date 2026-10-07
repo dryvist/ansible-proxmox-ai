@@ -1,4 +1,7 @@
 ---
+- name: Load shared artifact cache settings
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/load.yml"
+
 - name: Validate the requested cache-sync artifact reference
   ansible.builtin.assert:
     that:
@@ -73,6 +76,10 @@
     nvidia_gpu_guest_cache_sync_local_target: >-
       {{ not nvidia_gpu_guest_cache_sync_origin_declared
          or (nvidia_gpu_guest_cache_sync_mode | default('pull')) == 'pull' }}
+
+- name: Require the artifact cache for Hub downloads
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/require-proxy.yml"
+  when: nvidia_gpu_guest_cache_sync_operation == 'download'
 
 - name: Inspect the declared model-origin mount
   ansible.builtin.stat:
@@ -165,8 +172,7 @@
       - "{{ nvidia_gpu_guest_cache_sync_artifact.revision }}"
       - --local-dir
       - "{{ nvidia_gpu_guest_cache_sync_local_directory }}"
-  environment:
-    HF_HOME: "{{ nvidia_gpu_guest_hf_home }}"
+  environment: "{{ llamacpp_release_proxy_environment | combine({'HF_HOME': nvidia_gpu_guest_hf_home}) }}"
   become: true
   become_user: "{{ nvidia_gpu_guest_user }}"
   changed_when: false
@@ -186,8 +192,7 @@
           '--revision', nvidia_gpu_guest_cache_sync_artifact.revision,
           '--include', item, '--local-dir', nvidia_gpu_guest_cache_sync_download_directory,
           '--dry-run'] }}
-  environment:
-    HF_HOME: "{{ nvidia_gpu_guest_hf_home }}"
+  environment: "{{ llamacpp_release_proxy_environment | combine({'HF_HOME': nvidia_gpu_guest_hf_home}) }}"
   become: true
   become_user: "{{ nvidia_gpu_guest_user }}"
   loop: "{{ nvidia_gpu_guest_cache_sync_artifact.include_globs }}"
@@ -263,8 +268,7 @@
       {{ [nvidia_gpu_guest_hf_bin, 'download', nvidia_gpu_guest_cache_sync_artifact.hf_repo,
           '--revision', nvidia_gpu_guest_cache_sync_artifact.revision,
           '--include', item, '--local-dir', nvidia_gpu_guest_cache_sync_download_directory] }}
-  environment:
-    HF_HOME: "{{ nvidia_gpu_guest_hf_home }}"
+  environment: "{{ llamacpp_release_proxy_environment | combine({'HF_HOME': nvidia_gpu_guest_hf_home}) }}"
   become: true
   become_user: "{{ nvidia_gpu_guest_user }}"
   loop: "{{ nvidia_gpu_guest_cache_sync_artifact.include_globs }}"
