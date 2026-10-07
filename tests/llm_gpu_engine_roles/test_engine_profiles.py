@@ -11,9 +11,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 NVIDIA_ROOT = REPO_ROOT / "roles/nvidia_gpu_guest"
 VLLM_ROOT = REPO_ROOT / "roles/vllm_serving"
 LLAMACPP_ROOT = REPO_ROOT / "roles/llamacpp_serving"
-REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
+REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
 ARTIFACT_FILES = (
-    REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml",
+    REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
     REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
     REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml",
 )
@@ -40,7 +40,7 @@ def _artifacts() -> list[dict]:
 
 
 def _registry_profiles() -> dict:
-    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
+    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
     artifacts = _artifacts()
     by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     return {
@@ -114,7 +114,7 @@ def _exec_start(unit: str) -> str:
 
 def test_named_profiles_carry_the_serving_contract():
     profiles = _profiles()
-    assert {"small", "medium-a", "medium-b", "max", "glm-flash"} <= set(profiles)
+    assert {"small", "medium-a", "medium-b", "16gb", "max", "glm-flash"} <= set(profiles)
     common = {"engine", "max_model_len", "max_num_seqs", "port"}
     vllm_only = {
         "linear_backend",
@@ -128,10 +128,11 @@ def test_named_profiles_carry_the_serving_contract():
     assert all(
         vllm_only <= profile.keys() for profile in profiles.values() if profile["engine"] == "vllm"
     )
-    assert {name: profiles[name]["engine"] for name in ("small", "medium-a", "medium-b", "max", "glm-flash")} == {
+    assert {name: profiles[name]["engine"] for name in ("small", "medium-a", "medium-b", "16gb", "max", "glm-flash")} == {
         "small": "vllm",
         "medium-a": "vllm",
         "medium-b": "llama_cpp",
+        "16gb": "llama_cpp",
         "max": "llama_cpp",
         "glm-flash": "llama_cpp",
     }
@@ -139,7 +140,7 @@ def test_named_profiles_carry_the_serving_contract():
     assert all(profile["enabled"] is True for profile in profiles.values())
     assert all("artifact_id" not in profile and "quant" not in profile for profile in profiles.values())
     assert all("model_id" not in profile and "served_model_name" not in profile for profile in profiles.values())
-    assert [profiles[name]["max_num_seqs"] for name in ("medium-a", "medium-b", "max")] == [8, 8, 1]
+    assert [profiles[name]["max_num_seqs"] for name in ("medium-a", "medium-b", "16gb", "max")] == [8, 8, 1, 1]
 
 
 def test_artifact_registry_is_the_only_source_for_model_files_and_quantization():
@@ -161,7 +162,7 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     assert all(artifact["use"] in {"serving", "benchmark-only"} for artifact in artifacts)
 
     registry_entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))[
-        "_llm_registry_gpu_pro6000"
+        "_llm_registry_gpu"
     ]
     assert all("artifact_id" in entry for entry in registry_entries)
     assert all(
@@ -181,6 +182,8 @@ def test_artifact_registry_is_the_only_source_for_model_files_and_quantization()
     assert small_artifact.get("reasoning_parser", small_defaults["reasoning_parser"]) == "qwen3"
     assert profiles["medium-a"]["artifact"]["engines"] == ["vllm"]
     assert profiles["medium-b"]["artifact"]["format"] == "GGUF"
+    assert profiles["16gb"]["artifact"]["artifact_id"] == "qwen38-27b-ud-iq3-xxs"
+    assert profiles["16gb"]["artifact"]["format"] == "GGUF"
     assert profiles["max"]["artifact"]["format"] == "GGUF"
 
 
