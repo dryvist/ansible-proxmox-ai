@@ -75,7 +75,7 @@ def _group_vars_all() -> dict[str, Any]:
     (dryvist/tofu-proxmox's pipeline_constants.serving.llm_concurrency,
     published via the inventory_resolve role at playbook run time) rather
     than a bare int. tofu_data doesn't exist outside a real inventory load,
-    so a minimal fixture stands in here — 1, matching the current published
+    so a minimal fixture stands in here — 8, matching the active profile
     value — and ai_llm_concurrency is pre-rendered against it so _effective's
     single-pass render below sees a resolved int, the way Ansible's templar
     would after resolving both levels.
@@ -83,7 +83,7 @@ def _group_vars_all() -> dict[str, Any]:
     group_vars = yaml.safe_load(
         (REPO_ROOT / "inventory" / "group_vars" / "all.yml").read_text()
     )
-    group_vars["tofu_data"] = {"constants": {"serving": {"llm_concurrency": 1}}}
+    group_vars["tofu_data"] = {"constants": {"serving": {"llm_concurrency": 8}}}
     group_vars["ai_llm_concurrency"] = (
         _jinja_env().from_string(str(group_vars["ai_llm_concurrency"])).render(**group_vars)
     )
@@ -170,18 +170,26 @@ def test_profile_skill_lists_never_grant_a_forbidden_skill() -> None:
         )
 
 
-def test_concurrency_sum_cap_is_pinned_to_todays_effective_ceiling() -> None:
-    # Naming more profiles must never silently raise real concurrency — the
-    # SUM cap stays at 1 (today's effective ceiling with per-profile cap 1
-    # and a single profile) until an operator deliberately raises it.
-    #
-    # Asserts the EFFECTIVE value, not the literal: both caps now derive from
-    # ai_llm_concurrency (inventory/group_vars/all.yml), the single definition
-    # of serving concurrency. That makes this test strictly stronger — raising
-    # ai_llm_concurrency now trips it too, which is correct, because raising
-    # the sum cap is exactly the operator decision this test exists to gate.
-    assert _effective("hermes_agent_kanban_max_in_progress") == 1
-    assert _effective("hermes_agent_kanban_max_in_progress_per_profile") == 1
+def test_kanban_caps_use_the_shared_agent_concurrency() -> None:
+    assert _group_vars_all()["ai_agent_default_concurrency"] == 8
+    assert _effective("hermes_agent_kanban_max_in_progress") == 8
+    assert _effective("hermes_agent_kanban_max_in_progress_per_profile") == 8
+    assert _effective("hermes_agent_api_max_concurrent_runs") == 8
+
+
+def test_hermes_gateway_renders_agent_api_cap_as_eight() -> None:
+    template = template_text(ROLE_ROOT, "config.yaml.j2")
+    expression = "max_concurrent_runs: {{ hermes_agent_api_max_concurrent_runs }}"
+    assert expression in template
+
+    context = {**_group_vars_all(), **_defaults()}
+    context["hermes_agent_api_max_concurrent_runs"] = _effective(
+        "hermes_agent_api_max_concurrent_runs"
+    )
+    rendered = _jinja_env().from_string(expression).render(
+        **context
+    )
+    assert yaml.safe_load(rendered) == {"max_concurrent_runs": 8}
 
 
 def test_every_profile_has_a_soul_addendum_template_on_disk() -> None:
