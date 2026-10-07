@@ -48,7 +48,7 @@ def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
     } == TARGET_MEDIUM_A_ARGS
 
 
-def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive(record_property):
+def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
     profiles = yaml.safe_load(PROFILE_FILE.read_text(encoding="utf-8"))["vllm_serving_profiles"]
     entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
     artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))["_llm_model_artifacts_nvfp4_sweep"]
@@ -79,7 +79,6 @@ def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive(recor
             * GIB
             / (artifact["kv_cache_bytes_per_token_bf16"] * dtype_scale)
         )
-        record_property(f"{name}.pool_token_capacity_tokens", pool_token_capacity)
         kv_gib = (
             artifact["kv_cache_bytes_per_token_bf16"]
             * profile["max_model_len"]
