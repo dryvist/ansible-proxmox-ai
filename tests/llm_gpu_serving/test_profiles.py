@@ -53,6 +53,7 @@ def _render(profile_name: str, profile: dict) -> str:
         llm_gpu_serving_group="llm-gpu-serving",
         llm_gpu_serving_data_dir="/var/lib/llm-gpu-serving",
         llm_gpu_serving_venv="/opt/llm-gpu-serving/venv",
+        llm_gpu_serving_cuda_home="/usr/local/cuda-X.Y",
         llm_gpu_serving_model_cache_mount_path="/cache",
         llm_gpu_serving_hf_home="HF_CACHE_HOME",
         llm_gpu_serving_llamacpp_install_dir="/opt/llm-gpu-serving/llama.cpp",
