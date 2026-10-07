@@ -10,6 +10,7 @@
     llm_gpu_serving_host_vllm_bin: /usr/bin/vllm
     llm_gpu_serving_host_llamacpp_bin: /opt/llama.cpp/llama-server
     llm_active_profile: medium-b
+    _target_fixture_dir: "{{ playbook_dir }}/../llm_gpu_engine_roles/fixtures/pro6000-target"
 
   tasks:
     - name: Create temporary contract output directory
@@ -29,6 +30,28 @@
 
     - name: Exercise the all-profiles host contract renderer
       block:
+        - name: Exercise the NVIDIA guest artifact guard with its production registry
+          ansible.builtin.include_role:
+            name: nvidia_gpu_guest
+            tasks_from: load-registry.yml
+            public: true
+
+        - name: Read the sanitized live GPU output fixtures
+          ansible.builtin.set_fact:
+            _target_gpu_query: "{{ lookup('ansible.builtin.file', _target_fixture_dir ~ '/nvidia-smi-query.csv') }}"
+            _target_model_store: >-
+              {{ lookup('ansible.builtin.file', _target_fixture_dir
+                 ~ '/model-store-listing.txt') }}
+            _target_active_unit: >-
+              {{ lookup('ansible.builtin.file', _target_fixture_dir
+                 ~ '/rendered-medium-a.service') }}
+            _target_model_repo: >-
+              {{ (lookup('ansible.builtin.file', _target_fixture_dir ~ '/rendered-medium-a.service')
+                  | regex_findall('(?m)^  --served-model-name ([^ ]+)')) | first }}
+            _target_max_model_len: >-
+              {{ (lookup('ansible.builtin.file', _target_fixture_dir ~ '/rendered-medium-a.service')
+                  | regex_findall('(?m)^  --max-model-len ([0-9]+)')) | first | int }}
+
         - name: Render every profile unit and the PVE extra-vars contract
           ansible.builtin.include_role:
             name: llm_gpu_serving
@@ -63,6 +86,44 @@
             _max: "{{ _contracts['llm-gpu-serving-max.service'] }}"
             _medium_a: "{{ _contracts['llm-gpu-serving-medium-a.service'] }}"
             _small: "{{ _contracts['llm-gpu-serving-small.service'] }}"
+
+        - name: Assert both artifact guards and the rendered contract match live target output
+          ansible.builtin.assert:
+            that:
+              - "'NVIDIA RTX PRO 6000' in _target_gpu_query"
+              - nvidia_gpu_guest_nvidia_userspace_version in _target_gpu_query
+              - "'memory.total [MiB]' in _target_gpu_query"
+              - nvidia_gpu_guest_registry_by_profile['medium-a'].artifact.hf_repo == _target_model_repo
+              - llm_gpu_serving_registry_by_profile['medium-a'].artifact.hf_repo == _target_model_repo
+              - _target_model_repo ~ '/' in _target_model_store
+              - "'config.json' in _target_model_store"
+              - "'model.safetensors.index.json' in _target_model_store"
+              - >-
+                _target_model_store
+                | regex_search('(?m)^model-[0-9]+-of-[0-9]+[.]safetensors') is not none
+              - >-
+                ('--served-model-name ' ~ _target_model_repo)
+                in _target_active_unit
+              - >-
+                ('--served-model-name ' ~ _target_model_repo)
+                in _medium_a.content
+              - >-
+                _target_max_model_len
+                == _role_profiles.llm_profiles['medium-a'].max_model_len | int
+              - >-
+                ('--max-model-len ' ~ _target_max_model_len)
+                in _medium_a.content
+              - "'LISTEN_ADDRESS' in _target_active_unit"
+              - >-
+                _target_active_unit
+                | regex_search('([0-9]{1,3}[.]){3}[0-9]{1,3}') is none
+              - >-
+                _target_active_unit
+                | regex_search('(?i)(bearer\\s+|api[-_]?key[=: ]|token[=: ])') is none
+            fail_msg: >-
+              The real-node GPU query, model-store files, and serving unit must
+              match both artifact registries and the rendered medium-a contract.
+            quiet: true
 
         - name: Assert one contract per enabled profile and one started unit
           ansible.builtin.assert:
