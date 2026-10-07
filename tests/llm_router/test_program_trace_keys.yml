@@ -18,6 +18,8 @@
       ansible.builtin.assert:
         that:
           - _llm_router_program_virtual_keys | length > 0
+          - _codex_program.allowed_classes == _codex_source.allowed_classes
+          - _codex_program.object_permission == _codex_source.object_permission
           - >-
             (_llm_router_program_virtual_keys | map(attribute='secret_field') | list | unique | length)
             == (_llm_router_program_virtual_keys | length)
@@ -28,6 +30,10 @@
           - >-
             llm_router_disabled_virtual_keys
             | intersect(_llm_router_program_virtual_keys | map(attribute='alias') | list) | length > 0
+      vars:
+        _codex_program: >-
+          {{ _llm_router_program_virtual_keys | selectattr('metadata.runner', 'equalto', 'codex') | first }}
+        _codex_source: "{{ _llm_router_target_virtual_keys | selectattr('alias', 'equalto', 'codex') | first }}"
     - name: Supply one program credential through the existing store fact
       ansible.builtin.set_fact:
         bao_apps_secrets: >-
@@ -36,14 +42,20 @@
     - name: Check generated key uses production scope and tracing defaults
       ansible.builtin.assert:
         that:
-          - _program.models | difference(_llm_router_key_scope_all) | length == 0
-          - _llm_router_key_scope_all | difference(_program.models) | length == 0
+          - _program.models | difference(_production_scope) | length == 0
+          - _production_scope | difference(_program.models) | length == 0
           - _program.metadata.trace_defaults.purpose == 'benchmark'
           - _program.metadata.trace_defaults.client == _program.alias
           - _program.metadata.trace_defaults.release | length > 0
           - _program.metadata.trace_required == llm_router_benchmark_trace_fields
           - "'requester_metadata.run_id' in llm_router_trace_span_metadata_keys"
       vars:
+        # The existing key projection expands every requested role to its
+        # model and production fallback chain, beyond its initial scope list.
+        _production_scope: >-
+          {{ (_llm_router_key_scope_all
+              + (llm_router_role_deployments | map(attribute='model') | list)
+              + (llm_router_role_deployments | map(attribute='fallbacks') | flatten)) | unique | list }}
         _program: >-
           {{ llm_router_virtual_keys
              | selectattr('alias', 'equalto', (_llm_router_program_virtual_keys | first).alias) | first }}
