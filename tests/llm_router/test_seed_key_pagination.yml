@@ -1,0 +1,52 @@
+---
+- name: Policy snapshots include keys beyond the first API page
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_existing_keys:
+      json:
+        keys: "{{ range(100) | map('string') | list }}"
+        total_pages: 3
+    _llm_router_remaining_key_pages:
+      results:
+        - json:
+            keys: [page-two-key]
+        - json:
+            keys: [page-three-key]
+  tasks:
+    - name: Read the pagination tasks
+      ansible.builtin.set_fact:
+        _tasks: "{{ lookup('file', _role_dir ~ '/tasks/seed-key-pages.yml') | from_yaml }}"
+    - name: Verify native pagination and integration
+      ansible.builtin.assert:
+        that:
+          - "'range(2,' in _tasks[0].loop"
+          - "'total_pages' in _tasks[0].loop"
+          - "'size=100&return_full_object=true' in _tasks[0]['ansible.builtin.uri'].url"
+          - _tasks[0].no_log and _tasks[1].no_log
+          - "'seed-key-pages.yml' in lookup('file', _role_dir ~ '/tasks/seed-keys.yml')"
+    - name: Persist the actual snapshot expression for native rendering
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .j2
+      register: _template
+    - name: Write the extracted expression
+      ansible.builtin.copy:
+        dest: "{{ _template.path }}"
+        content: "{{ _tasks[1]['ansible.builtin.set_fact'].llm_router_existing_keys }}"
+        mode: '0600'
+    - name: Render the actual snapshot expression
+      ansible.builtin.set_fact:
+        _snapshot: "{{ lookup('template', _template.path) }}"
+    - name: Verify later pages remain available and API fields survive
+      ansible.builtin.assert:
+        that:
+          - _snapshot.json['keys'] | length == 102
+          - "'page-two-key' in _snapshot.json['keys']"
+          - "'page-three-key' in _snapshot.json['keys']"
+          - _snapshot.json.total_pages == 3
+    - name: Remove the temporary expression
+      ansible.builtin.file:
+        path: "{{ _template.path }}"
+        state: absent

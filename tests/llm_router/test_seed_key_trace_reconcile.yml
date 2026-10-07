@@ -1,0 +1,66 @@
+---
+- name: Existing keys receive trace defaults without changing UI policy
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    llm_router_seed_mode: initial
+    _llm_router_live_key_aliases: [steady]
+    llm_router_mcp_default_object_permission:
+      mcp_servers: [no-mcp-servers]
+  tasks:
+    - name: Extract the real policy expression
+      ansible.builtin.set_fact:
+        _expr: >-
+          {{ (lookup('file', _role_dir ~ '/tasks/reconcile-seeded-key-policy.yml') | from_yaml | first)
+             ['ansible.builtin.set_fact']['_llm_router_key_updates'] }}
+    - name: Allocate a renderable expression
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .j2
+      register: _diff_template_file
+    - name: Write the actual expression
+      ansible.builtin.copy:
+        dest: "{{ _diff_template_file.path }}"
+        content: "{{ _expr }}"
+        mode: '0600'
+    - name: Render initial mode with a changed trace default and unrelated UI metadata
+      ansible.builtin.set_fact:
+        _trace_updates: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
+      vars:
+        llm_router_virtual_keys:
+          - alias: steady
+            value: sk-test-trace-key
+            models: [cheap]
+            metadata:
+              trace_defaults: {client: steady, purpose: live}
+              trace_required: [run_id]
+        llm_router_existing_keys:
+          json:
+            keys:
+              - key_alias: steady
+                models: [cheap]
+                metadata:
+                  app: ui-owned-app
+                  tags: [ui-edited]
+                  other: keep-me
+                  trace_defaults: {client: outdated}
+                object_permission: {mcp_servers: [no-mcp-servers]}
+
+    - name: Initial mode updates trace defaults while preserving UI policy
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _trace_updates | length == 1
+          - "_trace_updates[0].body.metadata.trace_defaults == {'client': 'steady', 'purpose': 'live'}"
+          - _trace_updates[0].body.metadata.trace_required == ['run_id']
+          - _trace_updates[0].body.metadata.app == 'ui-owned-app'
+          - _trace_updates[0].body.metadata.tags == ['ui-edited']
+          - _trace_updates[0].body.metadata.other == 'keep-me'
+          - "'models' not in _trace_updates[0].body"
+          - "'allowed_routes' not in _trace_updates[0].body"
+
+    - name: Remove the temporary expression
+      ansible.builtin.file:
+        path: "{{ _diff_template_file.path }}"
+        state: absent

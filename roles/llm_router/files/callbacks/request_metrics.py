@@ -31,6 +31,9 @@ field this callback needs to compute.
 
 import json
 from urllib.parse import urlparse
+from uuid import uuid4
+
+from fastapi import HTTPException
 
 from litellm.integrations.custom_logger import CustomLogger
 
@@ -58,7 +61,7 @@ def build_record(kwargs, response_obj, start_time, end_time):
         else None
     )
 
-    return {
+    record = {
         "ts": end if isinstance(end, (int, float)) else start,
         "event": "llm_request",
         "model_group": payload.get("model_group"),
@@ -75,9 +78,62 @@ def build_record(kwargs, response_obj, start_time, end_time):
         "call_id": payload.get("litellm_call_id") or payload.get("id"),
         "trace_id": payload.get("trace_id"),
     }
+    # Emit only the explicit contract, never arbitrary metadata or credentials.
+    contract = metadata.get("requester_metadata") or {}
+    safe_fields = (
+        "client", "runtime", "runner", "purpose", "tier", "environment", "release",
+        "session_id", "trace_user_id", "trace_name", "generation_name", "tool_category", "tool_name",
+        "engine", "profile", "quant", "kv_dtype", "ctx_per_slot", "slots", "concurrency",
+        "power_limit", "thinking", "suite", "dataset", "run_id",
+    )
+    record.update({field: contract[field] for field in safe_fields if field in contract})
+    return record
+
+
+def apply_trace_contract(data, key_metadata):
+    """Fill key-owned attribution and reject unlabelled benchmark calls."""
+    defaults = (key_metadata or {}).get("trace_defaults") or {}
+    if not defaults:
+        return data
+    slot = "litellm_metadata" if "litellm_metadata" in data else "metadata"
+    metadata = data.setdefault(slot, {})
+    metadata.update(defaults)
+    session = data.get("litellm_session_id") or metadata.get("session_id")
+    metadata["session_id"] = session or metadata.get("run_id") or data.get("litellm_trace_id") or metadata.get("trace_id") or uuid4().hex
+    for field, fallback in {
+        "trace_user_id": data.get("user") or defaults["client"],
+        "trace_name": defaults["runner"] + "/" + defaults["purpose"],
+        "trace_release": defaults.get("release"),
+        "trace_version": defaults.get("release"),
+    }.items():
+        if metadata.get(field) is None or metadata.get(field) == "":
+            metadata[field] = fallback
+    if not metadata.get("generation_name"):
+        metadata["generation_name"] = metadata["trace_name"]
+    if not data.get("user"):
+        data["user"] = metadata["trace_user_id"]
+    required = (key_metadata or {}).get("trace_required") or []
+    if defaults.get("purpose") == "benchmark":
+        missing = [field for field in required
+                   if not isinstance(metadata.get(field), (str, int, float, bool)) or metadata[field] == ""]
+        if missing:
+            raise HTTPException(status_code=400, detail="Missing benchmark metadata: " + ", ".join(missing))
+    fields = list(defaults) + ["session_id", "trace_user_id", "trace_name", "generation_name",
+                               "tool_category", "tool_name"] + required
+    contract = {field: metadata[field] for field in fields if metadata.get(field) is not None}
+    metadata["requester_metadata"] = {**(metadata.get("requester_metadata") or {}), **contract}
+    metadata["spend_logs_metadata"] = {**(metadata.get("spend_logs_metadata") or {}), **contract}
+    metadata["trace_metadata"] = {**(metadata.get("trace_metadata") or {}), **contract}
+    return data
 
 
 class RequestMetrics(CustomLogger):
+    # Validate individual records on gateway batch-content scanning paths too.
+    enforces_request_content = True
+
+    async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type: str):
+        return apply_trace_contract(data, user_api_key_dict.metadata)
+
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         print(json.dumps(build_record(kwargs, response_obj, start_time, end_time)), flush=True)
 

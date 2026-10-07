@@ -1,0 +1,60 @@
+---
+- name: Program keys derive from registry and carry trace defaults
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+  tasks:
+    - name: Load existing ladder fixture
+      ansible.builtin.include_vars: ladder_keys_fixture.yml
+    - name: Load router defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+    - name: Load registry projections
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry
+    - name: Prove unique runner purpose and target declarations
+      ansible.builtin.assert:
+        that:
+          - _llm_router_program_virtual_keys | length > 0
+          - >-
+            (_llm_router_program_virtual_keys | map(attribute='secret_field') | list | unique | length)
+            == (_llm_router_program_virtual_keys | length)
+          - >-
+            (_llm_router_program_virtual_keys | selectattr('metadata.purpose', 'equalto', 'benchmark') | list | length)
+            == (_llm_router_program_virtual_keys | selectattr('metadata.purpose', 'equalto', 'live') | list | length)
+          - llm_router_program_key_catalog.benchmark | length == _llm_router_program_virtual_keys | length
+          - >-
+            llm_router_disabled_virtual_keys
+            | intersect(_llm_router_program_virtual_keys | map(attribute='alias') | list) | length > 0
+    - name: Supply one program credential through the existing store fact
+      ansible.builtin.set_fact:
+        bao_apps_secrets: >-
+          {{ bao_apps_secrets | combine({
+               (_llm_router_program_virtual_keys | first).secret_field: 'sk-test-program-key'}) }}
+    - name: Check generated key uses production scope and tracing defaults
+      ansible.builtin.assert:
+        that:
+          - _program.models | difference(_llm_router_key_scope_all) | length == 0
+          - _llm_router_key_scope_all | difference(_program.models) | length == 0
+          - _program.metadata.trace_defaults.purpose == 'benchmark'
+          - _program.metadata.trace_defaults.client == _program.alias
+          - _program.metadata.trace_defaults.release | length > 0
+          - _program.metadata.trace_required == llm_router_benchmark_trace_fields
+          - "'requester_metadata.run_id' in llm_router_trace_span_metadata_keys"
+      vars:
+        _program: >-
+          {{ llm_router_virtual_keys
+             | selectattr('alias', 'equalto', (_llm_router_program_virtual_keys | first).alias) | first }}
+    - name: Check scalar carriers and native semantic mapper configuration
+      ansible.builtin.set_fact:
+        _settings: "{{ lookup('template', _role_dir ~ '/templates/litellm-settings.yaml.j2') | from_yaml }}"
+    - name: Prove one collector uses native sink vocabularies and bounded metadata
+      ansible.builtin.assert:
+        that:
+          - _settings.litellm_settings.callback_settings.otel.mapper_names == ['genai', 'openinference', 'langfuse']
+          - >-
+            _settings.litellm_settings.callback_settings.otel.baggage_metadata_keys
+            == llm_router_trace_span_metadata_keys
+          - _settings.litellm_settings.callback_settings.otel.message_logging == false

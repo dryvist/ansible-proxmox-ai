@@ -1,0 +1,28 @@
+---
+# The native endpoint caps each page at 100; preserve the existing first-page
+# and conditional rotation reads, then complete that snapshot before reconcile.
+- name: Read remaining existing-key pages
+  ansible.builtin.uri:
+    url: >-
+      {{ 'http://127.0.0.1:' ~ llm_router_api_port ~ '/key/list?page=' ~ item
+         ~ '&size=100&return_full_object=true' }}
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    status_code: 200
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: "{{ range(2, (llm_router_existing_keys.json.total_pages | default(1) | int) + 1) | list }}"
+  loop_control:
+    label: "page {{ item }}"
+  register: _llm_router_remaining_key_pages
+  no_log: true
+
+- name: Complete the existing-key snapshot
+  ansible.builtin.set_fact:
+    llm_router_existing_keys: >-
+      {%- set ns = namespace(keys=llm_router_existing_keys.json['keys'] | default([])) -%}
+      {%- for page in _llm_router_remaining_key_pages.results | default([]) -%}
+      {%- set ns.keys = ns.keys + page.json['keys'] -%}
+      {%- endfor -%}
+      {{ llm_router_existing_keys | combine({
+           'json': llm_router_existing_keys.json | combine({'keys': ns.keys})}) }}
+  no_log: true
