@@ -1,8 +1,7 @@
-"""Check the llama.cpp asset choice: the binary archive, never its cudart- runtime twin, and the twin still pairs."""
+"""Check the pinned llama.cpp CUDA asset and its matching runtime archive."""
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import yaml
@@ -10,36 +9,39 @@ import yaml
 ROLE_ROOT = Path(__file__).resolve().parents[2] / "roles/llamacpp_serving"
 CORE_DEFAULTS = ROLE_ROOT / "defaults/main/00-engine.yml"
 TASKS = ROLE_ROOT / "tasks/install.yml"
-
-# Release asset names in the order the release API lists them: the runtime-only
-# archive comes first, which is what the old pattern picked.
-RELEASE_ASSETS = [
-    "cudart-llama-b11457-bin-ubuntu-cuda-12.8-x64.tar.gz",
-    "cudart-llama-b11457-bin-ubuntu-cuda-13.4-arm64.tar.gz",
-    "cudart-llama-b11457-bin-ubuntu-cuda-13.4-x64.tar.gz",
-    "llama-b11457-bin-ubuntu-arm64.tar.gz",
-    "llama-b11457-bin-ubuntu-cuda-12.8-x64.tar.gz",
-    "llama-b11457-bin-ubuntu-cuda-13.4-x64.tar.gz",
-    "llama-b11457-bin-ubuntu-vulkan-x64.tar.gz",
-]
+RELEASE_DEFAULTS = Path(__file__).resolve().parents[2] / "roles/llamacpp_release/defaults/main/00-release.yml"
 
 
-def _selected() -> str:
-    pattern = yaml.safe_load(CORE_DEFAULTS.read_text(encoding="utf-8"))["llamacpp_serving_asset_regex"]
-    return next(name for name in RELEASE_ASSETS if re.match(pattern, name))
+def _release_defaults() -> dict:
+    defaults = yaml.safe_load(RELEASE_DEFAULTS.read_text(encoding="utf-8"))
+    tag = defaults["llamacpp_release_tag"]
+    return {
+        key: value.replace("{{ llamacpp_release_tag }}", tag)
+        if isinstance(value, str)
+        else value
+        for key, value in defaults.items()
+    }
 
 
-def test_selects_the_binary_archive_not_the_runtime_archive() -> None:
-    assert _selected() == "llama-b11457-bin-ubuntu-cuda-13.4-x64.tar.gz"
+def test_selects_the_pinned_cuda_binary_archive() -> None:
+    defaults = _release_defaults()
+    role_defaults = yaml.safe_load(CORE_DEFAULTS.read_text(encoding="utf-8"))
+    expected_asset = f"llama-{defaults['llamacpp_release_tag']}-bin-ubuntu-cuda-13.4-x64.tar.gz"
+
+    assert role_defaults["llamacpp_serving_asset_name"] == "{{ llamacpp_release_cuda_asset }}"
+    assert defaults["llamacpp_release_cuda_asset"] == expected_asset
 
 
-def test_runtime_twin_of_the_selection_is_a_release_asset() -> None:
-    assert "cudart-" + _selected() in RELEASE_ASSETS
+def test_pinned_runtime_asset_matches_the_binary_release() -> None:
+    defaults = _release_defaults()
+    assert defaults["llamacpp_release_cuda_runtime_asset"] == f"cudart-{defaults['llamacpp_release_cuda_asset']}"
 
 
 def test_role_installs_the_runtime_archive_beside_the_binary() -> None:
     tasks = TASKS.read_text(encoding="utf-8")
-    assert "'/cudart-'" in tasks
+    assert "llamacpp_release_cuda_runtime_asset" in CORE_DEFAULTS.read_text(encoding="utf-8")
+    assert "llamacpp_release/tasks/download.yml" in tasks
+    assert "llamacpp_serving_cudart_asset_name" in tasks
     assert "llamacpp_serving_cudart_find.files[0].path | dirname" in tasks
 
 
@@ -49,5 +51,5 @@ def test_install_replaces_a_running_binary() -> None:
 
 def test_role_reinstalls_when_the_recorded_asset_differs() -> None:
     tasks = TASKS.read_text(encoding="utf-8")
-    assert "llamacpp_serving_asset_url | basename" in tasks
     assert "llamacpp_serving_asset_marker" in tasks
+    assert "!= llamacpp_serving_asset_name" in tasks
