@@ -58,10 +58,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install ansible pytest pyyaml
 
-      # Cache Galaxy content keyed on requirements.yml. Run the pinned installer
-      # after restore too, so a partial cache cannot hide a missing collection.
-      # Same key/paths as dryvist/.github's _ansible-ci.yml so a warm run of
-      # either workflow warms the other.
+      # Cache this repository's pinned Galaxy dependencies by requirements.yml.
+      # A hit reuses the installed collections and roles; a miss installs them.
       - name: Cache Ansible Galaxy content
         id: galaxy-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -69,9 +67,10 @@ jobs:
           path: |
             ~/.ansible/collections
             ~/.ansible/roles
-          key: ansible-galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+          key: ansible-proxmox-ai-galaxy-v2-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
 
       - name: Install Ansible dependencies
+        if: steps.galaxy-cache.outputs.cache-hit != 'true'
         run: |
           ansible-galaxy install -r requirements.yml
 
@@ -253,11 +252,8 @@ jobs:
       # collection actually resolves it. `install` covers both sections of
       # requirements.yml — `collection install` and `role install` each silently
       # ignore the other section and still exit zero.
-      # Cache Galaxy content keyed on requirements.yml. On a hit the collections
-      # (and any roles) are already present, so the install below is skipped;
-      # on a miss (requirements.yml changed) it runs and repopulates the cache.
-      # Same key/paths as dryvist/.github's _ansible-ci.yml so a warm run of
-      # either workflow warms the other.
+      # Cache this repository's pinned Galaxy dependencies by requirements.yml.
+      # A hit reuses the installed collections and roles; a miss installs them.
       - name: Cache Ansible Galaxy content
         id: galaxy-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -265,7 +261,7 @@ jobs:
           path: |
             ~/.ansible/collections
             ~/.ansible/roles
-          key: ansible-galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+          key: ansible-proxmox-ai-galaxy-v2-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
 
       - name: Install Ansible dependencies
         if: steps.galaxy-cache.outputs.cache-hit != 'true'
