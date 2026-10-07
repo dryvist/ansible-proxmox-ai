@@ -7,7 +7,10 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
-ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml"
+ARTIFACT_FILES = (
+    REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml",
+    REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
+)
 REGISTRY_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 VLLM_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 LLAMACPP_DEFAULTS = REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml"
@@ -23,15 +26,27 @@ def _serving_profiles() -> dict:
 def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     registry = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))
     entries = registry["_llm_registry_gpu_pro6000"]
-    artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))["_llm_model_artifacts"]
+    artifacts = [
+        artifact
+        for path in ARTIFACT_FILES
+        for key, values in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_model_artifacts")
+        for artifact in values
+    ]
     artifacts_by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     defaults = yaml.safe_load(REGISTRY_DEFAULTS.read_text(encoding="utf-8"))
     serving_profiles = _serving_profiles()
     serving_core = yaml.safe_load(VLLM_CORE_DEFAULTS.read_text(encoding="utf-8"))
 
-    assert len(entries) == 4
+    assert len(entries) == 5
     assert defaults["llm_router_gpu_profiles_enabled"] is False
-    assert {entry["profile"] for entry in entries} == {"small", "medium-a", "medium-b", "max"}
+    assert {entry["profile"] for entry in entries} == {
+        "small",
+        "medium-a",
+        "medium-b",
+        "max",
+        "glm-flash",
+    }
     assert len({entry["client_model_id"] for entry in entries}) == len(entries)
     assert all(entry["artifact_id"] in artifacts_by_id for entry in entries)
     assert len(artifacts_by_id) == len(artifacts)
@@ -44,8 +59,8 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         assert entry["servable"] is False
         assert isinstance(entry["context_window"], int) and entry["context_window"] > 0
         assert isinstance(entry["max_output_tokens"], int) and entry["max_output_tokens"] > 0
-        assert entry["input_cost_per_token"] == 0
-        assert entry["output_cost_per_token"] == 0
+        assert entry.get("input_cost_per_token", 0) == 0
+        assert entry.get("output_cost_per_token", 0) == 0
         assert isinstance(entry["max_parallel_requests"], int) and entry["max_parallel_requests"] > 0
         assert entry["num_retries"] == 0
 
@@ -68,6 +83,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "medium-a": 1,
         "medium-b": 0,
         "max": 0,
+        "glm-flash": 0,
     }
     assert len({alias for aliases in aliases_by_profile.values() for alias in aliases}) == 2
 

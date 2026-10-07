@@ -12,11 +12,20 @@ ENGINE_ROOTS = {
     "vllm": REPO_ROOT / "roles/vllm_serving",
     "llama_cpp": REPO_ROOT / "roles/llamacpp_serving",
 }
-ARTIFACT_FILE = REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml"
+ARTIFACT_FILES = (
+    REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml",
+    REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
+)
 
 
 def _model_store() -> list[dict]:
-    artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))["_llm_model_artifacts"]
+    artifacts = [
+        artifact
+        for path in ARTIFACT_FILES
+        for key, entries in yaml.safe_load(path.read_text(encoding="utf-8")).items()
+        if key.startswith("_llm_model_artifacts")
+        for artifact in entries
+    ]
     return [artifact for artifact in artifacts if artifact.get("model_store") is True]
 
 
@@ -97,6 +106,21 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     notify = next(task for task in cache_tasks if task.get("name", "").startswith("Notify serving handlers"))
 
     assert any(task.get("name") == "Assert each serving profile resolves to exactly one artifact" for task in registry_tasks)
+    assert any(
+        task.get("name", "").startswith("Load the GLM-5.3-Flash artifact shard")
+        and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_glm_artifact_registry_file }}"
+        for task in registry_tasks
+    )
+    assert any(
+        task.get("name", "").startswith("Load the GLM-5.3-Flash artifact shard for cache sync")
+        and task["ansible.builtin.include_vars"]["file"] == "{{ nvidia_gpu_guest_glm_artifact_registry_file }}"
+        for task in cache_tasks
+    )
+    assert any(
+        task.get("name", "").startswith("Combine the campaign model artifact shards")
+        and "_llm_model_artifacts_glm53flash" in task["ansible.builtin.set_fact"]["nvidia_gpu_guest_model_artifacts"]
+        for task in registry_tasks
+    )
     for engine, role_root in ENGINE_ROOTS.items():
         main_tasks = yaml.safe_load((role_root / "tasks/main.yml").read_text(encoding="utf-8"))
         activation_tasks = yaml.safe_load((role_root / "tasks/activate.yml").read_text(encoding="utf-8"))

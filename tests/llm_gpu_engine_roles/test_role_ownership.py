@@ -25,7 +25,7 @@ def test_shared_nvidia_role_has_no_engine_installation():
 def test_engine_roles_own_only_their_profiles_and_selectors():
     cases = (
         ("vllm_serving", "vllm", {"small", "medium-a"}),
-        ("llamacpp_serving", "llama_cpp", {"medium-b", "max"}),
+        ("llamacpp_serving", "llama_cpp", {"medium-b", "max", "glm-flash"}),
     )
     for role, engine, expected_profiles in cases:
         role_root = ROLES / role
