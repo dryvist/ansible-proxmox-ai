@@ -1,5 +1,5 @@
 ---
-- name: Verify ZDR-only key tags and create-only seeding
+- name: Verify ZDR-only and sensitivity key tags
   hosts: localhost
   gather_facts: false
   vars:
@@ -110,17 +110,20 @@
               | selectattr('name', 'equalto', 'Reconcile caller policy for live keys that changed')
               | first)['ansible.builtin.uri']['body'] }}
 
-    - name: The create body carries filters; reconciliation leaves them to the UI
+    - name: The create body carries filters and reconciliation enforces sensitivity
       ansible.builtin.assert:
         quiet: true
         that:
           - "'item.tags' in _create_metadata_source"
+          - "'item.sensitivity_tag' in _create_metadata_source"
           - "'item.router_settings | default(omit)' in _create_router_settings_source"
           - "'item.tags' not in _reconcile_expression"
+          - "'_sensitivity_tag' in _reconcile_expression"
+          - "'_sensitivity_changed' in _reconcile_expression"
           - "'router_settings' not in _reconcile_expression"
           - "\"llm_router_seed_mode == 'rebuild'\" in _reconcile_expression"
           - "'router_settings' not in _update_body_source"
         fail_msg: >-
           create metadata={{ _create_metadata_source }}, create settings={{ _create_router_settings_source }},
           reconcile={{ _reconcile_expression }}, update body={{ _update_body_source }}
-        success_msg: "Tags and filtering settings seed at creation and do not overwrite live key edits."
+        success_msg: "Sensitivity is enforced in every mode; other tags and filtering settings preserve live edits."
