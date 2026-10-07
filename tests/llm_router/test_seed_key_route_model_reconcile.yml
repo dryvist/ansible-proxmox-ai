@@ -183,40 +183,6 @@
         content: "{{ _diff_expr }}"
         mode: "0600"
 
-    - name: Set initial mode before rendering the real update expression
-      ansible.builtin.set_fact:
-        llm_router_seed_mode: initial
-
-    - name: Render the expression in initial mode
-      ansible.builtin.set_fact:
-        _llm_router_initial_key_updates: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
-
-    - name: Initial mode updates the explicit model allowlist and MCP permission
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - >-
-            _llm_router_initial_key_updates | map(attribute='alias') | sort
-            == ['authoritative-narrow', 'malformed-live', 'mcp-reader']
-          - "_initial_mcp.body.object_permission == {'mcp_servers': ['zammad', 'slack']}"
-          - "'models' not in _initial_mcp.body"
-          - "'allowed_routes' not in _initial_mcp.body"
-          - "'metadata' not in _initial_mcp.body"
-          - _initial_narrow.body.models == ['cheap']
-          - _initial_malformed.body.metadata.tags == ['&sensitivity:sensitive']
-          - "'models' not in _initial_malformed.body"
-          - "'allowed_routes' not in _initial_malformed.body"
-        fail_msg: >-
-          initial mode did not apply model, MCP, and sensitivity policy:
-          {{ _llm_router_initial_key_updates | map(attribute='alias') | list }}.
-      vars:
-        _initial_mcp: >-
-          {{ _llm_router_initial_key_updates | selectattr('alias', 'equalto', 'mcp-reader') | first }}
-        _initial_narrow: >-
-          {{ _llm_router_initial_key_updates | selectattr('alias', 'equalto', 'authoritative-narrow') | first }}
-        _initial_malformed: >-
-          {{ _llm_router_initial_key_updates | selectattr('alias', 'equalto', 'malformed-live') | first }}
-
     - name: Set explicit rebuild mode for the detailed reconciliation fixtures
       ansible.builtin.set_fact:
         llm_router_seed_mode: rebuild

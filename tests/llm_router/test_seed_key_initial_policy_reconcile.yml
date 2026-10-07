@@ -1,0 +1,98 @@
+---
+# Initial key seeding reconciles caller permissions, authoritative models, and
+# required sensitivity without rebuilding routes or caller-owned metadata.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_seed_key_initial_policy_reconcile.yml -i localhost, -c local
+
+- name: Initial mode applies only caller policy and required sensitivity
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _policy_file: "{{ _role_dir }}/tasks/reconcile-seeded-key-policy.yml"
+    _diff_task_name: "Compute the key policy update each live key still needs, if any"
+    llm_router_seed_mode: initial
+    llm_router_mcp_default_object_permission:
+      mcp_servers: [no-mcp-servers]
+
+    llm_router_existing_keys:
+      json:
+        keys:
+          - key_alias: authoritative-narrow
+            models: [cheap, stale-model]
+            metadata: {tags: ['&sensitivity:sensitive']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
+          - key_alias: malformed-live
+            object_permission: {mcp_servers: [no-mcp-servers]}
+          - key_alias: mcp-reader
+            models: [cheap]
+            metadata: {tags: ['&sensitivity:sensitive']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
+
+    llm_router_virtual_keys:
+      - alias: authoritative-narrow
+        value: "sk-{{ 'a' * 20 }}"
+        models: [cheap]
+        models_authoritative: true
+      - alias: malformed-live
+        value: "sk-{{ 'b' * 20 }}"
+        models: [cheap, embed]
+        models_authoritative: false
+      - alias: mcp-reader
+        value: "sk-{{ 'c' * 20 }}"
+        models: [cheap]
+        object_permission: {mcp_servers: [zammad, slack]}
+
+    _llm_router_live_key_aliases:
+      - authoritative-narrow
+      - malformed-live
+      - mcp-reader
+
+  tasks:
+    - name: Extract the committed policy diff expression
+      ansible.builtin.set_fact:
+        _diff_expr: >-
+          {{ (lookup('ansible.builtin.file', _policy_file) | from_yaml
+              | selectattr('name', 'equalto', _diff_task_name) | first)
+             ['ansible.builtin.set_fact']['_llm_router_key_updates'] }}
+
+    - name: Persist the expression as a renderable template
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .j2
+      register: _diff_template_file
+
+    - name: Write the expression to the temporary template
+      ansible.builtin.copy:
+        dest: "{{ _diff_template_file.path }}"
+        content: "{{ _diff_expr }}"
+        mode: "0600"
+
+    - name: Render the real expression in initial mode
+      ansible.builtin.set_fact:
+        _initial_updates: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
+
+    - name: Initial mode reconciles only required caller fields
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _initial_updates | map(attribute='alias') | sort == ['authoritative-narrow', 'malformed-live', 'mcp-reader']
+          - "_initial_mcp.body.object_permission == {'mcp_servers': ['zammad', 'slack']}"
+          - "'models' not in _initial_mcp.body"
+          - "'allowed_routes' not in _initial_mcp.body"
+          - "'metadata' not in _initial_mcp.body"
+          - _initial_narrow.body.models == ['cheap']
+          - _initial_malformed.body.metadata.tags == ['&sensitivity:sensitive']
+          - "'models' not in _initial_malformed.body"
+          - "'allowed_routes' not in _initial_malformed.body"
+        fail_msg: >-
+          Initial mode did not apply model, MCP, and sensitivity policy:
+          {{ _initial_updates | map(attribute='alias') | list }}.
+      vars:
+        _initial_mcp: >-
+          {{ _initial_updates | selectattr('alias', 'equalto', 'mcp-reader') | first }}
+        _initial_narrow: >-
+          {{ _initial_updates | selectattr('alias', 'equalto', 'authoritative-narrow') | first }}
+        _initial_malformed: >-
+          {{ _initial_updates | selectattr('alias', 'equalto', 'malformed-live') | first }}
