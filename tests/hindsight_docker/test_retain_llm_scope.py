@@ -1,7 +1,5 @@
-"""Hindsight's background retain (fact extraction) scope must render onto the
-fabric's light `cheap` role, at concurrency 1, with a bounded retry budget —
-not the fabric-wide primary/master-key defaults every other LLM call here
-uses.
+"""Hindsight retain uses its dedicated primary-route alias, with request
+limits and retries justified by live observations.
 """
 
 from __future__ import annotations
@@ -20,10 +18,10 @@ LIVE_FIXTURE = REPO_ROOT / "tests/hindsight_docker/fixtures/live-retain-observat
 
 def test_retain_scope_uses_the_dedicated_primary_route_alias() -> None:
     rendered = render()
-    assert '"qwen3.8-27b"' in env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_MODEL")
-    assert '"qwen3.8-27b"' in env_line(rendered, "HINDSIGHT_API_LLM_MODEL")
-    inventory = (REPO_ROOT / "inventory/group_vars/all.yml").read_text()
-    assert "hindsight_retain_model: qwen3.8-27b" in inventory
+    inventory = yaml.safe_load((REPO_ROOT / "inventory/group_vars/all.yml").read_text())
+    selected_model = inventory["hindsight_retain_model"]
+    assert f'"{selected_model}"' in env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_MODEL")
+    assert f'"{selected_model}"' in env_line(rendered, "HINDSIGHT_API_LLM_MODEL")
 
 
 def test_retain_scope_admits_one_in_flight_extraction() -> None:
@@ -58,8 +56,33 @@ def test_retain_limits_cover_real_target_observations() -> None:
         .strip()
         .strip('"')
     )
+    provider_retries = int(
+        env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_MAX_RETRIES").split(":", 1)[1]
+        .strip()
+        .strip('"')
+    )
+    initial_backoff = float(
+        env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_INITIAL_BACKOFF").split(":", 1)[1]
+        .strip()
+        .strip('"')
+    )
+    max_backoff = float(
+        env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_MAX_BACKOFF").split(":", 1)[1]
+        .strip()
+        .strip('"')
+    )
     wall_timeout = int(
         env_line(rendered, "HINDSIGHT_API_RETAIN_WALL_TIMEOUT").split(":", 1)[1]
+        .strip()
+        .strip('"')
+    )
+    worker_retries = int(
+        env_line(rendered, "HINDSIGHT_API_WORKER_MAX_RETRIES").split(":", 1)[1]
+        .strip()
+        .strip('"')
+    )
+    worker_backoff = int(
+        env_line(rendered, "HINDSIGHT_API_WORKER_TASK_RETRY_BACKOFF_SECONDS").split(":", 1)[1]
         .strip()
         .strip('"')
     )
@@ -67,14 +90,20 @@ def test_retain_limits_cover_real_target_observations() -> None:
     assert output_cap > bank["retain_chunk_size_chars"]
     assert output_cap >= max(replica["output_tokens_p99"] for replica in replicas)
     assert request_timeout > max(replica["llm_latency_p99_seconds"] for replica in replicas)
-    assert wall_timeout >= 3 * request_timeout + 2 * 120
+    provider_retry_budget = sum(
+        min(initial_backoff * (2**attempt), max_backoff) * 1.2
+        for attempt in range(provider_retries)
+    )
+    task_attempt_budget = (provider_retries + 1) * request_timeout + provider_retry_budget
+    assert worker_retries > 0 and worker_backoff > 0
+    assert wall_timeout >= task_attempt_budget
 
     key_file = REPO_ROOT / "roles/llm_router/defaults/main/56-static-virtual-keys.yml"
     keys = yaml.safe_load(key_file.read_text())["_llm_router_static_virtual_keys"]
     hindsight_key = next(key for key in keys if key["alias"] == "hindsight")
     observed_peak = sum(replica["peak_model_calls_per_minute"] for replica in replicas)
-    assert hindsight_key["rpm_limit"] >= 20
-    assert hindsight_key["rpm_limit"] >= observed_peak * 2
+    assert hindsight_key["rpm_limit"] == 60
+    assert hindsight_key["rpm_limit"] >= observed_peak * 5
 
 
 def test_base_scope_is_bounded_like_retain() -> None:

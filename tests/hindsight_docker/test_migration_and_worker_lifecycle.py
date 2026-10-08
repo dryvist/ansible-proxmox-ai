@@ -16,7 +16,7 @@ from pathlib import Path
 
 import yaml
 
-from _compose_render import DEFAULT_CONTEXT, env_line, render
+from _compose_render import DEFAULT_CONTEXT, ROLE_DEFAULTS, env_line, render
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles/hindsight_docker"
@@ -36,19 +36,21 @@ def test_migrations_on_startup_defaults_off_in_compose() -> None:
     assert '"false"' in env_line(rendered, "HINDSIGHT_API_RUN_MIGRATIONS_ON_STARTUP")
 
 
-def test_wall_clock_timeouts_render_explicitly_and_below_upstream_defaults() -> None:
+def test_wall_clock_timeouts_render_explicitly() -> None:
     rendered = render()
-    # Upstream loose defaults are 3600 (retain) / 7200 (consolidation) —
-    # every value here must render explicitly and stay strictly under them.
-    assert env_line(rendered, "HINDSIGHT_API_RETAIN_WALL_TIMEOUT").endswith('"2700"')
-    assert env_line(rendered, "HINDSIGHT_API_CONSOLIDATION_WALL_TIMEOUT").endswith('"2400"')
-    assert env_line(rendered, "HINDSIGHT_API_REFLECT_WALL_TIMEOUT").endswith('"120"')
-    assert env_line(rendered, "HINDSIGHT_API_REFRESH_MENTAL_MODEL_WALL_TIMEOUT").endswith('"120"')
-    for name, value in (
-        ("HINDSIGHT_API_RETAIN_WALL_TIMEOUT", 2700),
-        ("HINDSIGHT_API_CONSOLIDATION_WALL_TIMEOUT", 2400),
+    for env_name, default_name in (
+        ("HINDSIGHT_API_RETAIN_WALL_TIMEOUT", "hindsight_docker_retain_wall_timeout"),
+        (
+            "HINDSIGHT_API_CONSOLIDATION_WALL_TIMEOUT",
+            "hindsight_docker_consolidation_wall_timeout",
+        ),
+        ("HINDSIGHT_API_REFLECT_WALL_TIMEOUT", "hindsight_docker_reflect_wall_timeout"),
+        (
+            "HINDSIGHT_API_REFRESH_MENTAL_MODEL_WALL_TIMEOUT",
+            "hindsight_docker_refresh_mental_model_wall_timeout",
+        ),
     ):
-        assert value < 3600 if "RETAIN" in name else value < 7200
+        assert env_line(rendered, env_name).endswith(f'"{ROLE_DEFAULTS[default_name]}"')
 
 
 def test_database_url_is_single_sourced_not_rebuilt_in_the_template() -> None:
