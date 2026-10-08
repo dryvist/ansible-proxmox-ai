@@ -97,7 +97,7 @@ def test_full_suite_keeps_every_router_matrix_entry() -> None:
 
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
-    assert len(selection["llm_router_playbooks"]) == 12
+    assert len(selection["llm_router_playbooks"]) == 32
 
 
 def test_full_suite_covers_main_pushes_and_promotion_prs() -> None:
@@ -160,7 +160,7 @@ def test_registry_selects_all_consumers_without_global_pytest() -> None:
     assert selection["run_selector_checks"]
     assert {"tests/nvidia_gpu_guest/", "tests/llm_model_campaign/", "tests/hermes_agent/"} <= set(
         selection["pytest_targets"])
-    assert len(selection["llm_router_playbooks"]) == 12
+    assert len(selection["llm_router_playbooks"]) == 32
     assert "tests/nvidia_gpu_guest/test_cache_only_sync.yml" in selection["ansible_tests"]
 
 
@@ -191,7 +191,7 @@ def test_actual_scope_step_dispatches_full_or_focused(
     assert selected["full_suite"] == str(expected_full).lower()
     targets = json.loads(selected["pytest_targets"])
     assert targets == (["tests/"] if expected_full else ["tests/test_contract_scope_selector.py"])
-    assert len(json.loads(selected["llm_router_playbooks"])) == (12 if expected_full else 0)
+    assert len(json.loads(selected["llm_router_playbooks"])) == (32 if expected_full else 0)
 
 
 @pytest.mark.parametrize(("event", "ref", "base", "allows_skips"), [
