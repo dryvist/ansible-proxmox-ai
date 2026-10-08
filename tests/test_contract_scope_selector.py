@@ -53,11 +53,30 @@ def test_unmapped_role_fails_fast() -> None:
     assert "Unmapped contract paths" in result.stderr
 
 
-def test_llm_router_role_paths_fail_fast_until_a_focused_mapping_exists() -> None:
-    result = run_selector("roles/llm_router/tasks/main.yml")
+def test_changed_llm_router_role_selects_focused_router_contracts() -> None:
+    result = run_selector("roles/llm_router/tasks/assert.yml")
 
-    assert result.returncode == 2
-    assert "Unmapped contract paths" in result.stderr
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    assert selection["pytest_targets"] == ["tests/llm_router/"]
+    assert selection["llm_router_playbooks"] == [
+        "tests/llm_router/test_fallback_entry_points.yml",
+        "tests/llm_router/test_gpu_pro6000_render.yml",
+        "tests/llm_router/test_registry_render_parity.yml",
+    ]
+
+
+def test_changed_gpu_render_support_files_select_parent_playbook() -> None:
+    result = run_selector(
+        "tests/fixtures/llm-router-target-output.yml",
+        "tests/llm_router/tasks/gpu_pro6000_route_switch.yml",
+    )
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    assert selection["llm_router_playbooks"] == [
+        "tests/llm_router/test_gpu_pro6000_render.yml"
+    ]
 
 
 def test_unmapped_yaml_contract_fails_fast() -> None:

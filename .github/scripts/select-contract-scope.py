@@ -28,6 +28,16 @@ ANSIBLE_TESTS = {
     "tests/llm_gpu_legacy/test_render_host_contract_all.yml",
 }
 
+LLM_ROUTER_ROLE_TESTS = {
+    "tests/llm_router/test_fallback_entry_points.yml",
+    "tests/llm_router/test_gpu_pro6000_render.yml",
+    "tests/llm_router/test_registry_render_parity.yml",
+}
+LLM_ROUTER_SUPPORT_TESTS = {
+    "tests/fixtures/llm-router-target-output.yml": "tests/llm_router/test_gpu_pro6000_render.yml",
+    "tests/llm_router/tasks/gpu_pro6000_route_switch.yml": "tests/llm_router/test_gpu_pro6000_render.yml",
+}
+
 
 def llm_router_matrix() -> list[list[str]]:
     workflow = Path(".github/workflows/_llm-router-contract.yml").read_text()
@@ -58,16 +68,29 @@ def select(paths: list[str]) -> dict[str, object]:
     matrix = llm_router_matrix()
     matrix_by_test = {test: entry for entry in matrix for test in entry}
 
+    def add_router_test(test: str) -> None:
+        if test not in matrix_by_test:
+            raise ValueError(f"router test is missing from the workflow matrix: {test}")
+        router_tests.add(" ".join(matrix_by_test[test]))
+
     for raw_path in paths:
         path = raw_path.removeprefix("./")
         if not path:
+            continue
+        if path in LLM_ROUTER_SUPPORT_TESTS:
+            add_router_test(LLM_ROUTER_SUPPORT_TESTS[path])
+            continue
+        if path.startswith(("roles/llm_router/", "llm-models.d/")):
+            pytest_targets.add("tests/llm_router/")
+            for test in LLM_ROUTER_ROLE_TESTS:
+                add_router_test(test)
             continue
         if path.startswith("tests/"):
             if path.startswith("tests/llm_router/") and path.endswith((".yml", ".yaml")):
                 if path not in matrix_by_test:
                     unknown.append(raw_path)
                 else:
-                    router_tests.add(" ".join(matrix_by_test[path]))
+                    add_router_test(path)
             elif Path(path).suffix == ".py" and Path(path).is_file():
                 pytest_targets.add(path)
             elif Path(path).suffix in {".yml", ".yaml"} and Path(path).is_file():
