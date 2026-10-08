@@ -12,9 +12,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ROLE_ROOT = REPO_ROOT / "roles/llamacpp_serving"
 PROFILE_DEFAULTS = ROLE_ROOT / "defaults/main/10-profiles.yml"
 TEMPLATE_DIR = ROLE_ROOT / "templates"
-REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
+REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
 ARTIFACT_FILES = (
-    REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml",
+    REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
     REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
     REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml",
 )
@@ -40,7 +40,7 @@ def _artifacts() -> list[dict]:
 
 
 def _registry(profile_name: str) -> dict:
-    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
+    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
     artifacts = _artifacts()
     by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     entry = next(item for item in entries if item["profile"] == profile_name)
@@ -80,7 +80,7 @@ def _exec_start(unit: str) -> str:
 
 
 def test_every_gguf_profile_renders_a_llama_server_command_from_profile_and_registry_fields():
-    assert set(_llama_profiles()) == {"medium-b", "max", "glm-flash"}
+    assert set(_llama_profiles()) == {"medium-b", "16gb", "max", "glm-flash"}
     for name, profile in _llama_profiles().items():
         unit = _render(name, profile)
         exec_start = _exec_start(unit)
@@ -114,6 +114,7 @@ def test_total_context_is_per_agent_context_times_parallel_slots():
     }
     assert contexts == expected
     assert contexts["medium-b"] == 8 * _profiles()["medium-b"]["max_model_len"]
+    assert contexts["16gb"] == 32768
 
 
 def test_optional_profile_fields_become_flags():
@@ -142,7 +143,7 @@ def test_each_served_gguf_artifact_names_one_literal_file_its_selector_downloads
 
 def test_registry_entries_stay_inactive_while_every_profile_is_selectable():
     assert all(profile["enabled"] is True for profile in _profiles().values())
-    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
+    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
     assert all(entry["enabled"] is False and entry["servable"] is False for entry in entries)
 
 

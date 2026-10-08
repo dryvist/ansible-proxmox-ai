@@ -15,6 +15,13 @@ name: LLM Router Contract
 
 on:
   workflow_call:
+    inputs:
+      full_suite:
+        type: boolean
+        required: true
+      playbooks:
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -22,6 +29,7 @@ permissions:
 jobs:
   llm-router-contract:
     name: ${{ matrix.playbook }}
+    if: inputs.full_suite || inputs.playbooks != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -30,120 +38,127 @@ jobs:
         # entry — two only where the original single ansible-playbook
         # invocation ran them together (process-recovery pair, admission
         # pair), preserved here so they still share one Ansible process.
-        playbook:
-          - tests/llm_router/test_alias_servable.yml # servable-alias contract
-          # admission budget, ladder, local-first order
-          - tests/llm_router/test_admission_budget_and_ladder.yml tests/llm_router/test_local_first_by_order.yml
-          - tests/llm_router/test_review_roles.yml # review roles, Codex rungs, Z.ai overflow
-          # Kept out of the pairing above: test_review_roles.yml's tail
-          # clears bao_local_llm_secrets via set_fact, and that host fact
-          # persists across plays sharing one ansible-playbook process.
-          - tests/llm_router/test_review_oss_context_window_order.yml # review-oss context-window escape order
-          # Split out of test_review_roles.yml (#854): that file was already
-          # at the per-file token budget.
-          - tests/llm_router/test_review_key_scopes.yml # CI review keys widen past their role name
-          - tests/llm_router/test_litellm_local_key_scope.yml # litellm-local key widens past its two roles
-          - tests/llm_router/test_glance_profile_key.yml # glance key GPU scope and read-only routes
-          - tests/llm_router/test_litellm_local_workstation_key_zdr.yml # workstation key excludes retaining/free groups
-          - tests/llm_router/test_hermes_private_key_zdr.yml # private Hermes excludes retaining rungs
-          - tests/llm_router/test_deployment_class_tags.yml # each deployment classed; explicit ZDR evidence
-          - tests/llm_router/test_mcp_gateway_contract.yml # stdio server and key-permission contract
-          - tests/llm_router/test_mcp_slack_optional.yml # Slack MCP pieces render only when its token resolves
-          - tests/llm_router/test_zdr_key_tags.yml # ZDR key tags seed at create only
-          - tests/llm_router/test_ladder_keys.yml # D1 class order, ZDR hop filtering, one consumer key each
-          - tests/llm_router/test_auto_router_deployment_tags.yml # auto-router tiers and public Hermes order
-          # Seeded model lists reconcile; UI-owned routes and metadata survive.
-          - tests/llm_router/test_seed_key_route_model_reconcile.yml
-          - tests/llm_router/test_seed_key_model_allowlist_reconcile.yml # default replacement and additive opt-out
-          - tests/llm_router/test_llm_roles_egress.yml # role chains respect egress; registry matches the role map
-          - tests/llm_router/test_assertion_inputs_materialized.yml # cached router assertion inputs
-          - tests/llm_router/test_callbacks_render_as_list.yml # callbacks parse as a list, not a block scalar
-          - tests/llm_router/test_schema_push_failure_redaction.yml # failed schema push shows redacted output
-          - tests/llm_router/test_jwt_unique_index.yml # JWT mapping unique index named, idempotent, fail-closed
-          - tests/llm_router/test_redis_coordination.yml # shared store backs cache, limits, spend buffer, health checks
-          # process-recovery + rolling-converge
-          - tests/llm_router/test_service_restart_policy.yml tests/llm_router/test_syslog_route_outside_rolling_play.yml
-          - tests/llm_router/test_hermes_default_failover.yml # no-credential fallback stays local
-          - tests/llm_router/test_fallback_narrow_legs_last.yml # narrow-fallback ordering
-          - tests/llm_router/test_fallback_entry_points.yml # fallback entry-point contract
-          - tests/llm_router/test_credential_placeholder_rejected.yml # placeholder value never credentials a rung
-          - tests/llm_router/test_fallback_zdr_and_escape.yml # ZDR-ladder purity + escape coverage
-          - tests/llm_router/test_hindsight_key_zdr_isolation.yml # hindsight key excludes retaining/free groups
-          - tests/llm_router/test_fallback_depth_budget.yml # fallback depth-budget contract
-          - tests/llm_router/test_external_rung_own_fallback.yml # external rungs never recover to local
-          - tests/llm_router/test_fallback_model_access_enforced.yml # per-fallback-target key re-check is on
-          - tests/llm_router/test_hermes_cloud_value.yml # Hermes cloud value contract
-          - tests/llm_router/test_hermes_rate_limit_retry.yml # Hermes-called names retry a 429, no other name
-          - tests/llm_router/test_zai_flat_rate_no_budget.yml # flat-rate api_base never renders a dollar budget
-          - tests/llm_router/test_hermes_provider_policy.yml # provider credential policy
-          - tests/llm_router/test_hermes_provider_keys.yml # provider-key contract
-          - tests/llm_router/test_hermes_provider_keys_whitespace.yml # whitespace-credential contract
-          - tests/llm_router/test_hermes_provider_keys_escape.yml # OpenRouter-only escape-map completeness
-          - tests/llm_router/test_virtual_key_apps_paths_covered.yml # every virtual-key alias has an apps domain path
-          - tests/llm_router/test_key_budget_limits_window.yml # key budget-limits daily window arithmetic
-          - tests/llm_router/test_opencode_tier_render.yml # subscription-tier render contract
-          - tests/llm_router/test_opencode_session_header.yml # required x-opencode-session header contract
-          - tests/llm_router/test_free_route_credential_gate_order.yml # a skip must not consume an order slot
-          - tests/llm_router/test_openrouter_allowlist.yml # OpenRouter allowlist + budget contract
-          - tests/llm_router/test_budget_requires_store.yml # budget/store pairing contract
-          - tests/llm_router/test_spend_log_retention.yml # request-record retention contract
-          - tests/llm_router/test_db_connection_pool_limit.yml # database pool-limit derivation contract
-          - tests/llm_router/test_migration_lock_driver.yml # migration-lock driver is installed
-          - tests/llm_router/test_serving_share.yml # serving-share metric job contract
-          - tests/llm_router/test_local_admission_cap.yml # local admission-cap contract
-          - tests/llm_router/test_registry_render_parity.yml # registry/render parity contract
-          - tests/llm_router/test_background_health_check_exclusion.yml # background health-check exclusion
-          - tests/llm_router/test_serving_identity.yml # heavy-tier serving identity contract
-          - tests/llm_router/test_endpoint_dns_assert.yml # backend DNS resolution contract
-          - tests/llm_router/test_vllm_tier_switch.yml # the vllm tier switch holds across render and asserts
-          - tests/llm_router/test_hermes_profile_keys_assert.yml # Hermes profile/virtual-key parity contract
-          - tests/llm_router/test_servable_probe.yml # servable probe gate contract
-          - tests/llm_router/test_servable_probe_remote.yml # servable probe remote contract
-          - tests/llm_router/test_servable_probe_plan.yml # servable probe plan contract
-          - tests/llm_router/test_litellm_oidc_env.yml # generic-OIDC env rendering contract
-          # Startup migration enforcement stays explicit and fail-closed
-          - tests/llm_router/test_schema_migration_enforced.yml
-          # OIDC admin identity is mandatory, never a literal
-          - tests/llm_router/test_litellm_oidc_admin_identity_required.yml
-          - tests/llm_router/test_alert_webhook.yml # alerting block renders only when a webhook URL is set
-          - tests/llm_router/test_cheap_gpu_first_ladder.yml # cheap role's GPU-first ladder and per-rung bounds
-          - tests/llm_router/test_gpu_pro6000_render.yml # Pro6000 remains inactive until its profile switch is enabled
-          - tests/llm_router/test_gpu_pro6000_enabled_render.yml # benchmark key needs value + profile switch
-          # GPU router limits derive from the catalog-backed registry
-          # GPU rung admission derives from the guest's own llama_cpp_parallel
-          - tests/llm_router/test_gpu_rung_admission_matches_backend.yml
-          - tests/llm_router/test_hermes_agents.yml # every published Hermes agent renders as its own deployment
-          # every local deployment carries its own non-streaming timeout
-          - tests/llm_router/test_local_nonstreaming_timeout.yml
-          # OpenCode-only credential keeps entry points fallback-capable
-          - tests/llm_router/test_opencode_only_entry_points.yml
-          - tests/llm_router/test_registry_hints_projection.yml # registry hints reach the rendered model_info
-          # role-deployment retirement selects only the DB-stored shadow
-          - tests/llm_router/test_retire_role_deployments_db_only.yml
-          - tests/llm_router/test_router_settings_seed_mode.yml # settings seed-mode defaults to initial, never rebuild
-          - tests/llm_router/test_router_ui_drift.yml # read-only drift compares and alert messages
-          - tests/llm_router/test_drift_live_key_shape.yml # LiteLLM key-list shape is not drift
-          - tests/llm_router/test_role_model_info_reconcile.yml # same-target role metadata follows the catalog
-          # settings DB sync handler runs after the restart handler
-          - tests/llm_router/test_router_settings_sync_after_restart.yml
-          - tests/llm_router/test_seed_key_format_assert.yml # seed-key format guard fails loud before /key/generate
-          # live-alias expression matches the full-object /key/list response
-          - tests/llm_router/test_seed_key_live_aliases.yml
-          # rotation re-read must not clobber the prior live-key read on skip
-          - tests/llm_router/test_seed_keys_rotation_reread_preserves_existing.yml
-          # consumer-seeding play gates run_once selection on pool reachability
-          - tests/llm_router/test_seed_play_reachability_gate.yml
-          - tests/llm_router/test_syslog_route.yml # router syslog route renders the documented taxonomy and unit match
-          - tests/llm_router/test_otel_export.yml # only the optional Langfuse OTel preset exports traces
-          - tests/llm_router/test_benchmark_key_attribution.yml
-          - tests/llm_router/test_seed_key_pagination.yml
-          - tests/llm_router/test_seed_key_trace_reconcile.yml
-          - tests/llm_router/test_langfuse_export.yml # direct Langfuse callback is gated on both keys, bodies off
-          # embed/embeddings/ocr never fall through to the chat ladder
-          - tests/llm_router/test_cross_modality_fail_fast.yml
-          - tests/llm_router/test_review_local.yml # review-local targets the resident model with no fallbacks
-          - tests/llm_router/test_local_only_no_hosted_fallback.yml # empty-fallback roles never reach a hosted rung
-
+        playbook: ${{ fromJSON(inputs.playbooks) }}
+        # Entries are assembled by the selector from this explicit list on
+        # main pushes; PRs pass only changed tests and their preserved pairs.
+        # The list below remains documented here for reviewer visibility.
+        #   - tests/llm_router/test_alias_servable.yml # servable-alias contract
+        #   # admission budget, ladder, local-first order
+        #   - tests/llm_router/test_admission_budget_and_ladder.yml tests/llm_router/test_local_first_by_order.yml
+        #   - tests/llm_router/test_review_roles.yml # review roles, Codex rungs, Z.ai overflow
+        #   # Kept out of the pairing above: test_review_roles.yml's tail
+        #   # clears bao_local_llm_secrets via set_fact, and that host fact
+        #   # persists across plays sharing one ansible-playbook process.
+        #   - tests/llm_router/test_review_oss_context_window_order.yml # review-oss context-window escape order
+        #   # Split out of test_review_roles.yml (#854): that file was already
+        #   # at the per-file token budget.
+        #   - tests/llm_router/test_review_key_scopes.yml # CI review keys widen past their role name
+        #   - tests/llm_router/test_litellm_local_key_scope.yml # litellm-local key widens past its two roles
+        #   - tests/llm_router/test_glance_profile_key.yml # glance key GPU scope and read-only routes
+        #   - tests/llm_router/test_litellm_local_workstation_key_zdr.yml
+        #     # workstation key excludes retaining/free groups
+        #   - tests/llm_router/test_hermes_private_key_zdr.yml # private Hermes excludes retaining rungs
+        #   - tests/llm_router/test_deployment_class_tags.yml # each deployment classed; explicit ZDR evidence
+        #   - tests/llm_router/test_mcp_gateway_contract.yml # stdio server and key-permission contract
+        #   - tests/llm_router/test_mcp_slack_optional.yml # Slack MCP pieces render only when its token resolves
+        #   - tests/llm_router/test_zdr_key_tags.yml # ZDR key tags seed at create only
+        #   - tests/llm_router/test_ladder_keys.yml # D1 class order, ZDR hop filtering, one consumer key each
+        #   - tests/llm_router/test_auto_router_deployment_tags.yml # auto-router tiers and public Hermes order
+        #   # Seeded model lists reconcile; UI-owned routes and metadata survive.
+        #   - tests/llm_router/test_seed_key_route_model_reconcile.yml
+        #   - tests/llm_router/test_seed_key_model_allowlist_reconcile.yml # default replacement and additive opt-out
+        #   - tests/llm_router/test_llm_roles_egress.yml # role chains respect egress; registry matches the role map
+        #   - tests/llm_router/test_assertion_inputs_materialized.yml # cached router assertion inputs
+        #   - tests/llm_router/test_callbacks_render_as_list.yml # callbacks parse as a list, not a block scalar
+        #   - tests/llm_router/test_schema_push_failure_redaction.yml # failed schema push shows redacted output
+        #   - tests/llm_router/test_jwt_unique_index.yml # JWT mapping unique index named, idempotent, fail-closed
+        #   - tests/llm_router/test_redis_coordination.yml
+        #     # shared store backs cache, limits, spend buffer, health checks
+        #   # process-recovery + rolling-converge
+# - tests/llm_router/test_service_restart_policy.yml tests/llm_router/test_syslog_route_outside_rolling_play.yml
+        #   - tests/llm_router/test_hermes_default_failover.yml # no-credential fallback stays local
+        #   - tests/llm_router/test_fallback_narrow_legs_last.yml # narrow-fallback ordering
+        #   - tests/llm_router/test_fallback_entry_points.yml # fallback entry-point contract
+        #   - tests/llm_router/test_credential_placeholder_rejected.yml # placeholder value never credentials a rung
+        #   - tests/llm_router/test_fallback_zdr_and_escape.yml # ZDR-ladder purity + escape coverage
+        #   - tests/llm_router/test_hindsight_key_zdr_isolation.yml # hindsight key excludes retaining/free groups
+        #   - tests/llm_router/test_fallback_depth_budget.yml # fallback depth-budget contract
+        #   - tests/llm_router/test_external_rung_own_fallback.yml # external rungs never recover to local
+        #   - tests/llm_router/test_fallback_model_access_enforced.yml # per-fallback-target key re-check is on
+        #   - tests/llm_router/test_hermes_cloud_value.yml # Hermes cloud value contract
+        #   - tests/llm_router/test_hermes_rate_limit_retry.yml # Hermes-called names retry a 429, no other name
+        #   - tests/llm_router/test_zai_flat_rate_no_budget.yml # flat-rate api_base never renders a dollar budget
+        #   - tests/llm_router/test_hermes_provider_policy.yml # provider credential policy
+        #   - tests/llm_router/test_hermes_provider_keys.yml # provider-key contract
+        #   - tests/llm_router/test_hermes_provider_keys_whitespace.yml # whitespace-credential contract
+        #   - tests/llm_router/test_hermes_provider_keys_escape.yml # OpenRouter-only escape-map completeness
+        #   - tests/llm_router/test_virtual_key_apps_paths_covered.yml # every virtual-key alias has an apps domain path
+        #   - tests/llm_router/test_key_budget_limits_window.yml # key budget-limits daily window arithmetic
+        #   - tests/llm_router/test_opencode_tier_render.yml # subscription-tier render contract
+        #   - tests/llm_router/test_opencode_session_header.yml # required x-opencode-session header contract
+        #   - tests/llm_router/test_free_route_credential_gate_order.yml # a skip must not consume an order slot
+        #   - tests/llm_router/test_openrouter_allowlist.yml # OpenRouter allowlist + budget contract
+        #   - tests/llm_router/test_budget_requires_store.yml # budget/store pairing contract
+        #   - tests/llm_router/test_spend_log_retention.yml # request-record retention contract
+        #   - tests/llm_router/test_db_connection_pool_limit.yml # database pool-limit derivation contract
+        #   - tests/llm_router/test_migration_lock_driver.yml # migration-lock driver is installed
+        #   - tests/llm_router/test_serving_share.yml # serving-share metric job contract
+        #   - tests/llm_router/test_local_admission_cap.yml # local admission-cap contract
+        #   - tests/llm_router/test_registry_render_parity.yml # registry/render parity contract
+        #   - tests/llm_router/test_background_health_check_exclusion.yml # background health-check exclusion
+        #   - tests/llm_router/test_serving_identity.yml # heavy-tier serving identity contract
+        #   - tests/llm_router/test_endpoint_dns_assert.yml # backend DNS resolution contract
+        #   - tests/llm_router/test_vllm_tier_switch.yml # the vllm tier switch holds across render and asserts
+        #   - tests/llm_router/test_hermes_profile_keys_assert.yml # Hermes profile/virtual-key parity contract
+        #   - tests/llm_router/test_servable_probe.yml # servable probe gate contract
+        #   - tests/llm_router/test_servable_probe_remote.yml # servable probe remote contract
+        #   - tests/llm_router/test_servable_probe_plan.yml # servable probe plan contract
+        #   - tests/llm_router/test_litellm_oidc_env.yml # generic-OIDC env rendering contract
+        #   # Startup migration enforcement stays explicit and fail-closed
+        #   - tests/llm_router/test_schema_migration_enforced.yml
+        #   # OIDC admin identity is mandatory, never a literal
+        #   - tests/llm_router/test_litellm_oidc_admin_identity_required.yml
+        #   - tests/llm_router/test_alert_webhook.yml # alerting block renders only when a webhook URL is set
+        #   - tests/llm_router/test_cheap_gpu_first_ladder.yml # cheap role's GPU-first ladder and per-rung bounds
+        #   - tests/llm_router/test_gpu_pro6000_render.yml
+        #     # Pro6000 remains inactive until its profile switch is enabled
+        #   - tests/llm_router/test_gpu_pro6000_enabled_render.yml # benchmark key needs value + profile switch
+        #   # GPU router limits derive from the catalog-backed registry
+        #   # GPU rung admission derives from the guest's own llama_cpp_parallel
+        #   - tests/llm_router/test_gpu_rung_admission_matches_backend.yml
+        #   - tests/llm_router/test_hermes_agents.yml # every published Hermes agent renders as its own deployment
+        #   # every local deployment carries its own non-streaming timeout
+        #   - tests/llm_router/test_local_nonstreaming_timeout.yml
+        #   # OpenCode-only credential keeps entry points fallback-capable
+        #   - tests/llm_router/test_opencode_only_entry_points.yml
+        #   - tests/llm_router/test_registry_hints_projection.yml # registry hints reach the rendered model_info
+        #   # role-deployment retirement selects only the DB-stored shadow
+        #   - tests/llm_router/test_retire_role_deployments_db_only.yml
+        #   - tests/llm_router/test_router_settings_seed_mode.yml
+        #     # settings seed-mode defaults to initial, never rebuild
+        #   - tests/llm_router/test_router_ui_drift.yml # read-only drift compares and alert messages
+        #   - tests/llm_router/test_drift_live_key_shape.yml # LiteLLM key-list shape is not drift
+        #   - tests/llm_router/test_role_model_info_reconcile.yml # same-target role metadata follows the catalog
+        #   # settings DB sync handler runs after the restart handler
+        #   - tests/llm_router/test_router_settings_sync_after_restart.yml
+        #   - tests/llm_router/test_seed_key_format_assert.yml # seed-key format guard fails loud before /key/generate
+        #   # live-alias expression matches the full-object /key/list response
+        #   - tests/llm_router/test_seed_key_live_aliases.yml
+        #   # rotation re-read must not clobber the prior live-key read on skip
+        #   - tests/llm_router/test_seed_keys_rotation_reread_preserves_existing.yml
+        #   # consumer-seeding play gates run_once selection on pool reachability
+        #   - tests/llm_router/test_seed_play_reachability_gate.yml
+        #   - tests/llm_router/test_syslog_route.yml
+        #     # router syslog route renders the documented taxonomy and unit match
+        #   - tests/llm_router/test_otel_export.yml # only the optional Langfuse OTel preset exports traces
+        #   - tests/llm_router/test_benchmark_key_attribution.yml
+        #   - tests/llm_router/test_seed_key_pagination.yml
+        #   - tests/llm_router/test_seed_key_trace_reconcile.yml
+        #   - tests/llm_router/test_langfuse_export.yml # direct Langfuse callback is gated on both keys, bodies off
+        #   # embed/embeddings/ocr never fall through to the chat ladder
+        #   - tests/llm_router/test_cross_modality_fail_fast.yml
+        #   - tests/llm_router/test_review_local.yml # review-local targets the resident model with no fallbacks
+        #   - tests/llm_router/test_local_only_no_hosted_fallback.yml # empty-fallback roles never reach a hosted rung
     # Static placeholders for the required-environment inputs the llm_router
     # role reads. No workflow context or untrusted input is interpolated here.
     # NOT secrets and NOT a bypass: the role's guards still refuse a real
@@ -191,6 +206,7 @@ jobs:
   # Not part of the matrix above: pytest, not ansible-playbook.
   llm-router-registry-contract:
     name: Registry single-source contract
+    if: inputs.full_suite || inputs.playbooks != '[]'
     runs-on: ubuntu-latest
 
     env:

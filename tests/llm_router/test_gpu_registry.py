@@ -6,13 +6,14 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
+REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
 ARTIFACT_FILES = (
-    REPO_ROOT / "llm-models.d/65-gpu-pro6000-artifacts.yml",
+    REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
     REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
     REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml",
 )
 REGISTRY_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
+REGISTRY_TASKS = REPO_ROOT / "roles/llm_router/tasks/registry.yml"
 VLLM_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 LLAMACPP_DEFAULTS = REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml"
 VLLM_CORE_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/00-engine.yml"
@@ -26,7 +27,7 @@ def _serving_profiles() -> dict:
 
 def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     registry = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))
-    entries = registry["_llm_registry_gpu_pro6000"]
+    entries = registry["_llm_registry_gpu"]
     artifacts = [
         artifact
         for path in ARTIFACT_FILES
@@ -39,12 +40,13 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     serving_profiles = _serving_profiles()
     serving_core = yaml.safe_load(VLLM_CORE_DEFAULTS.read_text(encoding="utf-8"))
 
-    assert len(entries) == 30
+    assert len(entries) == 31
     assert defaults["llm_router_gpu_profiles_enabled"] is False
     assert {entry["profile"] for entry in entries} == {
         "small",
         "medium-a",
         "medium-b",
+        "16gb",
         "max",
         "glm-flash",
         "qwen38-16k-1-auto",
@@ -108,6 +110,7 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
         "small": 1,
         "medium-a": 1,
         "medium-b": 0,
+        "16gb": 0,
         "max": 0,
         "glm-flash": 0,
         "qwen38-16k-1-auto": 0,
@@ -157,18 +160,18 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
 
 
 def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
-    """Load sweep entries admit 1..64; vLLM max_num_seqs controls active slots."""
-    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
+    """Sweeps and medium-a admit 1..64; engine slots control active work."""
+    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
     serving_profiles = _serving_profiles()
 
     caps = {entry["profile"]: entry["max_parallel_requests"] for entry in entries}
-    sweep_profiles = {
+    admission_profiles = {
         entry["profile"]
         for entry in entries
         if entry["client_model_id"].startswith("gpu-sweep-")
     } | {"medium-a"}
     expected_caps = {
-        name: 64 if name in sweep_profiles else profile["max_num_seqs"]
+        name: 64 if name in admission_profiles else profile["max_num_seqs"]
         for name, profile in serving_profiles.items()
     }
     assert caps == expected_caps
@@ -176,3 +179,17 @@ def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
     primary = [name for name, profile in serving_profiles.items() if profile.get("primary")]
     assert primary == ["medium-a"]
     assert caps["medium-a"] == 64
+
+
+def test_router_consumes_the_shared_gpu_profile_projection() -> None:
+    defaults = yaml.safe_load(REGISTRY_DEFAULTS.read_text(encoding="utf-8"))
+    tasks = yaml.safe_load(REGISTRY_TASKS.read_text(encoding="utf-8"))
+    projection = next(
+        task["ansible.builtin.set_fact"]
+        for task in tasks
+        if task.get("name") == "Resolve GPU router upstream ids from artifact references"
+    )
+
+    assert "llm_router_gpu_profile_registry" in projection
+    assert "_llm_registry_gpu" in projection["llm_router_gpu_profile_registry"]
+    assert "llm_router_gpu_profile_registry" in defaults["llm_router_model_registry"]
