@@ -1,0 +1,110 @@
+---
+- name: Disable only the Pro6000 primary-route rung
+  ansible.builtin.set_fact:
+    llm_router_vllm_medium_enabled: false
+
+- name: Render the proxy config with the primary-route rung disabled
+  ansible.builtin.set_fact:
+    _config_route_disabled: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+- name: Index fallback settings from the switch-off config
+  ansible.builtin.set_fact:
+    _fallback_by_name_route_disabled: >-
+      {{ dict(_config_route_disabled.router_settings.fallbacks | map('dict2items') | flatten
+              | map(attribute='key') | zip(_config_route_disabled.router_settings.fallbacks
+                | map('dict2items') | flatten | map(attribute='value'))) }}
+
+- name: Assert switch-off removes the primary route rung and preserves scorer targets
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_primary_model == llm_router_primary_large_model
+      - ai_default_model == (llm_router_primary_registry_aliases | first)
+      - llm_router_model_group_aliases[ai_default_model] == llm_router_primary_large_model
+      - llm_router_vllm_medium_route_models | length == 0
+      - llm_router_vllm_medium_model not in llm_router_local_fallback_groups
+      - >-
+        llm_router_vllm_medium_model not in
+        (llm_router_hermes_local_fallback_models
+         | map(attribute='client_model_id') | list)
+      - llm_router_vllm_medium_route_alias not in llm_router_model_group_aliases
+      - llm_router_vllm_medium_route_alias not in _config_route_disabled.router_settings.model_group_alias
+      - _primary_large_aliases | length > 0
+      - _primary_large_aliases | difference(_primary_large_aliases_targeted) | length == 0
+      - llm_router_vllm_medium_route_alias not in _fallback_by_name_route_disabled
+      - _fallback_by_name_route_disabled[llm_router_primary_large_model] | length > 0
+      - _auto_router_tiers_enabled == _hermes_router_route_disabled.litellm_params.complexity_router_config.tiers
+      - >-
+        _auto_router_initial_enabled
+        == _hermes_router_route_disabled.litellm_params.complexity_router_config.default_model
+    fail_msg: "The route switch must restore the Mac primary and keep auto-router targets unchanged."
+  vars:
+    _primary_large_aliases: >-
+      {{ llm_router_registry_enabled
+         | selectattr('client_model_id', 'equalto', llm_router_primary_large_model)
+         | map(attribute='stable_aliases') | first }}
+    _primary_large_aliases_targeted: >-
+      {{ llm_router_model_group_aliases | dict2items
+         | selectattr('value', 'equalto', llm_router_primary_large_model)
+         | map(attribute='key') | list }}
+    _hermes_router_route_disabled: >-
+      {{ _config_route_disabled.model_list
+         | selectattr('model_name', 'equalto', hermes_brain_model) | first }}
+
+- name: Run the primary brain guard against the switch-off rendered route
+  ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-safe-models.yml"
+
+- name: Load the sanitized live router target-output fixture
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../fixtures/llm-router-target-output.yml"
+    name: _real_router_target
+
+- name: Project aliased model context from the live router output
+  ansible.builtin.set_fact:
+    _real_router_large_models: >-
+      {{ (_real_router_large_models | default([]))
+         + [{'client_model_id': item.model_name,
+             'context_window': item.model_info.max_input_tokens}] }}
+  loop: "{{ _real_router_target.model_list }}"
+  when: item.model_name in (_real_router_target.router_settings.model_group_alias.values() | list)
+
+- name: Run the primary brain guard against sanitized live router output
+  ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-safe-models.yml"
+  vars:
+    ai_default_model: "{{ _real_router_target.primary_alias }}"
+    llm_router_primary_model: "{{ _real_router_target.primary_alias }}"
+    llm_router_routine_model: "{{ _real_router_target.goal_judge_alias }}"
+    hermes_goal_judge_model: "{{ _real_router_target.goal_judge_alias }}"
+    llm_router_large_models: "{{ _real_router_large_models }}"
+    llm_router_gpu_models: []
+    llm_router_model_group_aliases: "{{ _real_router_target.router_settings.model_group_alias }}"
+    llm_router_role_deployments: []
+    llm_router_hermes_router_ids: []
+    llm_router_long_context_alias_ids: []
+
+- name: Select the small profile for the registry projection check
+  ansible.builtin.set_fact:
+    llm_active_profile: small
+
+- name: Evaluate the production Hermes selector for the small profile
+  ansible.builtin.set_fact:
+    _production_hermes_brain_model_small: "{{ _production_group_vars.hermes_brain_model }}"
+
+- name: Project only the 9B profile when the fast profile is selected
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_gpu_models | length == 1
+      - llm_router_gpu_models[0].profile == llm_active_profile
+      - >-
+        llm_router_gpu_models[0].max_parallel_requests | int
+        == _registry_entry.max_parallel_requests | int
+      - >-
+        llm_router_gpu_models[0].max_parallel_requests | int
+        >= _serving_profiles[llm_active_profile].max_num_seqs | int
+      - llm_router_model_group_aliases['local-fast'] == llm_router_gpu_small_model
+      - "'local-medium' not in llm_router_model_group_aliases"
+      - _production_hermes_brain_model_small == 'local-fast'
+  vars:
+    _registry_entry: >-
+      {{ _llm_registry_gpu | selectattr('profile', 'equalto', llm_active_profile) | first }}

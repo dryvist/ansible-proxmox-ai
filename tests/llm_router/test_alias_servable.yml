@@ -104,17 +104,23 @@
         quiet: true
         that:
           - _primary_entry | length == 1
-          - (_primary_entry | first).context_window | int == 65536
+          - (_primary_entry | first).context_window | int > 0
+          - >-
+            (_primary_entry | first).tier != 'large'
+            or (_primary_entry | first).context_window | int == 65536
         fail_msg: >-
-          llm_router_primary_model ({{ llm_router_primary_model }}) must appear
-          exactly once in llm_router_large_models with context_window 65536 to
-          match its nix-ai resident profile; found
+          llm_router_primary_model ({{ llm_router_primary_model }}) resolves to
+          {{ _primary_target }}, which must be one tuned large/GPU entry with a
+          positive context window; a large-tier primary must keep the
+          nix-ai resident window 65536. Found
           {{ _primary_entry | map(attribute='context_window') | list }}.
-        success_msg: "resident window (65536) matches the nix-ai resident profile"
+        success_msg: "primary route resolves to one tuned large/GPU entry"
       vars:
+        _primary_target: >-
+          {{ llm_router_model_group_aliases.get(llm_router_primary_model, llm_router_primary_model) }}
         _primary_entry: >-
-          {{ llm_router_large_models
-             | selectattr('client_model_id', 'equalto', llm_router_primary_model) | list }}
+          {{ (llm_router_large_models + llm_router_gpu_models)
+             | selectattr('client_model_id', 'equalto', _primary_target) | list }}
 
     - name: The judge targets the smallest GPU profile and keeps the routine fallback
       ansible.builtin.assert:
