@@ -1,16 +1,6 @@
 ---
-# Pins the OpenRouter egress contract: the registry is the allowlist, every
-# egress deployment is rate-limited, and any spend budget is backed by the
-# store that makes it true.
-#
-# WHY: until 2026-08 the role rendered an `openrouter/*` passthrough on one
-# already-seeded, ACCOUNT-WIDE key — no real control but caller-side prose,
-# binding a compliant caller and nothing else. Both failures are silent
-# (render succeeds either way); only the RENDERED config shows it, which is
-# what this test inspects.
-#
-# Run (from the REPO ROOT — the registry load resolves the llm_router role
-# through ansible.cfg's cwd-relative roles_path):
+# Verify rendered registry allowlists, rate limits, spend backing and ZDR.
+# Run from the repository root for ansible.cfg's relative roles_path:
 #   ansible-playbook tests/llm_router/test_openrouter_allowlist.yml -i localhost, -c local
 - name: Verify the OpenRouter egress allowlist and router-enforced budget
   hosts: localhost
@@ -45,12 +35,8 @@
     hermes_brain_model: hermes-default
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
-    # Shared by both directions of the allowlist-parity check below (rendered
-    # ⊆ registry and registry ⊆ rendered) — hoisted to a play var instead of
-    # duplicated per-task now that both need the identical expression.
-    # `free` / `free-zdrless`: a second registration split by explicit
-    # zero_data_retention evidence. Missing and false fields are retaining.
-    # OpenCode Go members are provider: openai, so never reach this check.
+    # Both parity directions use this set. Missing or false ZDR is retaining;
+    # OpenAI-provider entries are excluded.
     _registry_or: >-
       {%- set ns = namespace(names=[]) -%}
       {%- for m in llm_router_registry_enabled
@@ -84,11 +70,7 @@
         name: llm_router
         tasks_from: registry.yml
 
-    # An entry renders only when its key_field is seeded; seeding them all is
-    # what makes "rendered set == registry set" meaningful below. Every
-    # provider: openrouter entry, not just the general openrouter tier — the
-    # assertions below check ALL of them, including the hermes-cloud tier's
-    # own OpenRouter-backed rungs (each may key off its own credential_env).
+    # Seed every OpenRouter provider entry so both parity directions apply.
     - name: Seed every registry key_field so the egress tier actually renders
       ansible.builtin.set_fact:
         bao_local_llm_secrets: >-
@@ -106,10 +88,7 @@
       ansible.builtin.set_fact:
         _config: "{{ _rendered_config | from_yaml }}"
 
-    # Reversed 2026-08: a wildcard is now allowed IF guarded, so this asserts
-    # "no EXTERNAL wildcard without guards" not "no wildcard". External =
-    # api_base outside this role's own known-internal endpoints — the
-    # LARGE-tier bare "*" is exempt (targets the local gate).
+    # External wildcards require guards; the internal serving gate is exempt.
     - name: The external-provider wildcard carries its retaining class and egress guards
       ansible.builtin.assert:
         quiet: true
@@ -194,10 +173,7 @@
         success_msg: >-
           all {{ _rendered_or | length }} rendered egress models come from the registry
       vars:
-        # A "*" model_name is a wildcard pattern, not a registry-backed
-        # deployment (same rule as assert-registry-render-parity.yml) —
-        # covered by the task above instead. _registry_or is a play var
-        # (shared with the converse check below).
+        # Wildcards are checked above, separately from registry deployments.
         _rendered_or: >-
           {{ _config.model_list
              | selectattr('litellm_params.model', 'match', '^openrouter/')
@@ -205,9 +181,7 @@
              | reject('search', '\*') | list }}
 
     - name: Every enabled registry egress entry is actually reachable
-      # Converse direction: without it, a regression that dropped the whole
-      # egress loop would still satisfy the assertion above (empty is a
-      # subset of anything) and read as a pass.
+      # The converse check rejects a missing egress loop.
       ansible.builtin.assert:
         quiet: true
         that:
@@ -224,10 +198,7 @@
              | map(attribute='model_name') | list }}
 
     - name: A rendered spend budget is present AND backed by a shared store
-      # Inverted TWICE, deliberately: "a budget is configured" (false — no
-      # Redis meant a multi-member pool's ceiling was really Nx); then "NO
-      # budget is configured" (true but not the destination). Now pins the
-      # INVARIANT that survives both: budget and store appear together.
+      # A budget and its shared spend store must appear together.
       ansible.builtin.assert:
         quiet: true
         that:
@@ -256,10 +227,7 @@
           resolved from the environment
 
     - name: No Postgres-backed budget setting is claimed without Postgres
-      # NOT the sibling of the budget above: governs POSTGRES-backed
-      # virtual-key budgets and 503s when spend can't be verified. This proxy
-      # has neither virtual keys nor a database — inert at best, a 503
-      # generator on the only front door at worst.
+      # Database-backed virtual-key budget enforcement is separate.
       ansible.builtin.assert:
         quiet: true
         that:
@@ -293,10 +261,7 @@
              | rejectattr('litellm_params.rpm', 'defined')
              | map(attribute='model_name') | list }}
 
-    # zdr was gated purely on `provider == 'openrouter'`, applying to the
-    # free preset too — which exists to reach models that DO retain prompts
-    # and must NOT carry ZDR (operator decision, 2026-08-22). Pinned per
-    # entry instead. DECLARED policy only: the free pool's 429s are separate.
+    # Each registry entry supplies ZDR, including retaining free presets.
     - name: Each egress deployment's zdr flag matches its registry declaration
       ansible.builtin.assert:
         quiet: true
