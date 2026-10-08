@@ -32,6 +32,14 @@ ANSIBLE_TESTS = {
 }
 
 
+PYTEST_PATH_TARGETS = {
+    "roles/dify_docker/templates/docker-compose.yml.j2": "tests/agent_concurrency/test_runner_compose_caps.py",
+    "roles/langflow_docker/defaults/main.yml": "tests/agent_concurrency/test_runner_compose_caps.py",
+    "roles/langflow_docker/templates/docker-compose.yml.j2": "tests/agent_concurrency/test_runner_compose_caps.py",
+    "tests/llm_router/fixtures/seed-key-response-shape.json": "tests/llm_router/test_seed_key_sensitivity_guard.py",
+}
+
+
 # Role closures use the existing contract directories and playbooks. Shared GPU
 # roles consume the same profiles, model-store contract and rendered units.
 GPU_PYTEST = {
@@ -110,6 +118,8 @@ def select(paths: list[str]) -> dict[str, object]:
         path = raw_path.removeprefix("./")
         if not path:
             continue
+        if path in PYTEST_PATH_TARGETS:
+            pytest_targets.add(PYTEST_PATH_TARGETS[path])
         if path.startswith("tests/"):
             parts = Path(path).parts
             owner = parts[1] if len(parts) > 2 else ""
