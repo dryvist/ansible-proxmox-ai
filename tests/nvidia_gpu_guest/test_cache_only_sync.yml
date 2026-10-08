@@ -10,6 +10,8 @@
   vars:
     _artifact_id: qwen35-9b-nvfp4
     _registry_file: "{{ playbook_dir }}/../../llm-models.d/65-gpu-artifacts.yml"
+    tofu_data: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../inventory_load/tofu_inventory.json') | from_json }}
     nvidia_gpu_guest_user: "{{ ansible_facts.user_id }}"
     nvidia_gpu_guest_group: "{{ ansible_facts.user_gid }}"
   tasks:
@@ -54,10 +56,29 @@
             - name: hf-entry
               body: |
                 #!/bin/sh
+                [ "${HF_HUB_DISABLE_UPDATE_CHECK:-}" = "1" ] || exit 2
                 echo "hf $*" >> "{{ _calls }}"
-                case "$*" in *--dry-run*)
-                  if [ -e "{{ _scratch.path }}/synced" ]; then echo "Will download 0 files"
-                  else echo "Will download 1 files"; fi ;; esac
+                case "$*" in
+                  *--dry-run*)
+                    if [ -e "{{ _scratch.path }}/synced" ]; then echo "Will download 0 files"
+                    else echo "Will download 1 files"; fi
+                    ;;
+                  *)
+                    revision=""; local_dir=""
+                    while [ "$#" -gt 0 ]; do
+                      case "$1" in
+                        --revision) revision="$2"; shift 2 ;;
+                        --local-dir) local_dir="$2"; shift 2 ;;
+                        *) shift ;;
+                      esac
+                    done
+                    mkdir -p "$local_dir/.cache/huggingface/download"
+                    printf '{}\n' > "$local_dir/config.json"
+                    etag=$(sha256sum "$local_dir/config.json" | cut -d' ' -f1)
+                    sidecar="$local_dir/.cache/huggingface/download/config.json.metadata"
+                    printf '%s\n%s\n0\n' "$revision" "$etag" > "$sidecar"
+                    ;;
+                esac
             - name: nvidia-smi
               body: |
                 #!/bin/sh
@@ -81,6 +102,11 @@
             nvidia_gpu_guest_hf_bin: "{{ _scratch.path }}/bin/hf"
             nvidia_gpu_guest_cache_sync_artifact_id: "{{ _artifact_id }}"
 
+        - name: Inspect the removed local manifest path
+          ansible.builtin.stat:
+            path: "{{ _cache }}/models/{{ _repo }}/.cache/huggingface/model-store-manifest.json"
+          register: _model_store_manifest
+
         - name: Read the recorded calls
           ansible.builtin.slurp:
             src: "{{ _calls }}"
@@ -92,11 +118,13 @@
             _local: "{{ _cache }}/models/{{ _repo }}"
             _downloads: "{{ _lines | select('search', '^hf download ') | reject('search', '--dry-run') | list }}"
             _download_target: "^hf download {{ _repo }} .*--local-dir {{ _local }}$"
-            _verify_target: "^hf cache verify {{ _repo }} .*--local-dir {{ _local }}$"
           ansible.builtin.assert:
             that:
               - _downloads | select('search', _download_target) | list | length == 1
-              - _lines | select('search', _verify_target) | list | length == 1
+              - _lines | select('search', '^hf cache verify ') | list | length == 0
+              - nvidia_gpu_guest_cache_sync_local_verification.rc == 0
+              - "'Verified 1 pinned local model-store file(s)' in nvidia_gpu_guest_cache_sync_local_verification.stdout"
+              - not _model_store_manifest.stat.exists
               - _lines | select('search', _origin) | list | length == 0
               - _lines.index('nvidia-smi') < _lines.index(_downloads | first)
             quiet: true

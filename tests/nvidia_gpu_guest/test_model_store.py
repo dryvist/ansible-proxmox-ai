@@ -18,6 +18,7 @@ ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml",
     REPO_ROOT / "llm-models.d/68-gpu-pro6000-stage0-artifacts.yml",
 )
+LOCAL_VERIFIER = SHARED_ROOT / "files/verify-local-model-store.py"
 
 
 def _model_store() -> list[dict]:
@@ -104,7 +105,7 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     verify_local = next(
         task
         for task in cache_tasks
-        if task.get("name", "").startswith("Verify the local artifact")
+        if task.get("name", "").startswith("Verify local files against pinned download sidecars")
     )
     notify = next(task for task in cache_tasks if task.get("name", "").startswith("Notify serving handlers"))
 
@@ -208,8 +209,32 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
     assert pull["ansible.builtin.copy"]["remote_src"] is True
     assert "nvidia_gpu_guest_cache_sync_origin_directory" in pull["ansible.builtin.copy"]["src"]
     assert "nvidia_gpu_guest_cache_sync_local_directory" in pull["ansible.builtin.copy"]["dest"]
-    assert verify_local["ansible.builtin.command"]["argv"]
-    assert any(task.get("name", "").startswith("Verify checksums") for task in verify_tasks)
+    assert "verify-local-model-store.py" in verify_local["ansible.builtin.script"]["cmd"]
+    assert "--revision" in verify_local["ansible.builtin.script"]["cmd"]
+    assert "--mode" not in verify_local["ansible.builtin.script"]["cmd"]
+    assert "--repo-id" not in verify_local["ansible.builtin.script"]["cmd"]
+    assert verify_local["changed_when"] is False
+    assert cache_tasks.index(download) < cache_tasks.index(verify_local)
+    assert cache_tasks.index(pull) < cache_tasks.index(verify_local)
+    verify_origin = next(
+        task
+        for task in verify_tasks
+        if task.get("name", "").startswith("Verify pinned model-store files")
+    )
+    assert "verify-local-model-store.py" in verify_origin["ansible.builtin.script"]["cmd"]
+    assert "--mode" not in verify_origin["ansible.builtin.script"]["cmd"]
+    assert verify_origin["changed_when"] is False
+    assert any(
+        task.get("name", "").startswith("Require a pinned registered artifact") for task in verify_tasks
+    )
+    for path in (
+        SHARED_ROOT / "tasks/cache-sync.yml",
+        REPO_ROOT / "roles/llm_gpu_serving/tasks/cache-sync.yml",
+        SHARED_ROOT / "tasks/verify-model-store-origin-repo.yml",
+        REPO_ROOT / "roles/llm_gpu_serving/tasks/verify-model-store-origin-repo.yml",
+    ):
+        assert "cache\n      - verify" not in path.read_text(encoding="utf-8")
+    assert "list_repo_tree" not in LOCAL_VERIFIER.read_text(encoding="utf-8")
     assert seed_playbook["hosts"] == "llm_model_store_writer_group"
     assert "llm_model_store_seed_artifacts" in seed_playbook["tasks"][0]["loop"]
     assert "notify" not in download
