@@ -88,6 +88,8 @@ def llm_router_matrix() -> list[list[str]]:
             match = re.match(r"\s*#?\s*-\s*(tests/llm_router/[^#]+)", line)
             if match:
                 entries.append(match.group(1).split())
+            elif entries and (continuation := re.match(r"\s*#\s+(tests/llm_router/[^#]+)", line)):
+                entries[-1].extend(continuation.group(1).split())
             elif line.strip() and not line.lstrip().startswith("#") and not line.startswith(" "):
                 break
     if not entries:
