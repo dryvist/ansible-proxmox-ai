@@ -106,6 +106,28 @@ jobs:
           - 'tests/fixtures/llm-router-target-output.yml'
           - 'tests/llm_model_campaign/**'
           - 'tests/test_contract_scope_selector.py'
+          - 'roles/fabric_watchdog/**'
+          - 'roles/dify_docker/**'
+          - 'roles/langflow_docker/**'
+          - 'roles/langfuse_docker/**'
+          - 'roles/llamacpp_release/**'
+          - 'roles/llamacpp_serving/**'
+          - 'roles/vllm_serving/**'
+          - 'roles/nvidia_gpu_guest/**'
+          - 'roles/openbao_secrets/**'
+          - 'tests/agent_concurrency/**'
+          - 'tests/dify_docker/**'
+          - 'tests/langfuse_docker/**'
+          - 'tests/llamacpp_release/**'
+          - 'tests/llamacpp_serving/**'
+          - 'tests/vllm_serving/**'
+          - 'tests/nvidia_gpu_guest/**'
+          - 'tests/llm_gpu_engine_roles/**'
+          - 'tests/llm_gpu_legacy/**'
+          - 'tests/llm_gpu_serving/**'
+          - 'tests/openbao_secrets/**'
+          - 'tests/inventory_load/**'
+          - 'tests/repo_guards/**'
           - 'playbooks/llm-model-campaign-target.yml'
           - 'playbooks/tasks/llm-model-campaign-convert.yml'
           - 'playbooks/templates/llm-model-campaign-dimensions.json.j2'
@@ -135,12 +157,14 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           GITHUB_REF: ${{ github.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_HEAD: ${{ github.sha }}
         run: |
-          if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+          if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]] ||
+             [[ "$EVENT_NAME" == pull_request && "$BASE_REF" == main ]]; then
             echo 'full_suite=true' >> "$GITHUB_OUTPUT"
             python .github/scripts/select-contract-scope.py --full --output "$GITHUB_OUTPUT"
             exit 0
@@ -159,10 +183,12 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           GITHUB_REF: ${{ github.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           SELECT_RESULT: ${{ steps.select.outcome }}
           SELECTED: ${{ toJSON(steps.select.outputs) }}
         run: |
-          if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+          if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]] ||
+             [[ "$EVENT_NAME" == pull_request && "$BASE_REF" == main ]]; then
             selection=full
           elif [[ "$SELECT_RESULT" != success ]]; then
             selection=failed-unmapped
@@ -205,12 +231,14 @@ jobs:
       ) &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        github.event.pull_request.base.ref == 'main' ||
         needs.ci.outputs.molecule_scenarios != '[]'
       )
     uses: ./.github/workflows/_molecule.yml
     with:
       scenarios: ${{ needs.ci.outputs.molecule_scenarios }}
-      full_suite: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      full_suite: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        github.event.pull_request.base.ref == 'main' }}
     secrets: inherit
 
   # Deliberately UNCONDITIONAL — no `needs: ci`, no change filter. A version
@@ -257,7 +285,8 @@ jobs:
         env:
           CI_GATE_JOBS: ${{ toJSON(needs) }}
           CI_GATE_ALLOWED_SKIPS: >-
-            ${{ (github.event_name == 'pull_request' ||
+            ${{ ((github.event_name == 'pull_request' &&
+            github.event.pull_request.base.ref != 'main') ||
             (github.event_name == 'push' && github.ref == 'refs/heads/develop')) &&
             'data-contract, molecule' || '' }}
         run: node .gh-shared/scripts/ci-gate-aggregate.mts
