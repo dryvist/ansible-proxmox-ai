@@ -16,6 +16,25 @@ name: Data Contract
 
 on:
   workflow_call:
+    inputs:
+      full_suite:
+        type: boolean
+        required: true
+      pytest_targets:
+        type: string
+        required: true
+      ansible_tests:
+        type: string
+        required: true
+      llm_router_playbooks:
+        type: string
+        required: true
+      run_inventory:
+        type: boolean
+        required: true
+      run_selector_checks:
+        type: boolean
+        required: true
 
 permissions:
   contents: read
@@ -91,26 +110,35 @@ jobs:
       # and in the dangerous direction: a missing key renders as a deliberately
       # unkeyed tier and the converge stays green.
       - name: Verify required-environment guards actually fire
+        if: inputs.full_suite || contains(inputs.ansible_tests, 'tests/repo_guards/test_env_guards_actually_fire.yml')
         run: >-
           ansible-playbook tests/repo_guards/test_env_guards_actually_fire.yml
           -i inventory/hosts.yml -c local
 
       - name: Verify every optional KV path has a presence-gated consumer
+        if: >-
+          inputs.full_suite || contains(inputs.ansible_tests,
+          'tests/openbao_secrets/test_optional_paths_are_gated.yml')
         run: >-
           ansible-playbook tests/openbao_secrets/test_optional_paths_are_gated.yml
           -i inventory/hosts.yml -c local
 
       - name: Verify GPU profile inventory switch from capability tags
+        if: >-
+          inputs.full_suite || contains(inputs.ansible_tests,
+          'tests/openbao_secrets/test_gpu_profile_inventory_gate.yml')
         run: >-
           ansible-playbook tests/openbao_secrets/test_gpu_profile_inventory_gate.yml
           -i inventory/hosts.yml -c local
 
       - name: Verify ungranted apps paths are fetched only when their flag is on
+        if: inputs.full_suite || contains(inputs.ansible_tests, 'tests/openbao_secrets/test_ungranted_paths_gated.yml')
         run: >-
           ansible-playbook tests/openbao_secrets/test_ungranted_paths_gated.yml
           -i inventory/hosts.yml -c local
 
       - name: Verify the Hermes OpenBao view excludes local-llm once its own domain resolves
+        if: inputs.full_suite || contains(inputs.ansible_tests, 'tests/openbao_secrets/test_hermes_domain_view.yml')
         run: >-
           ansible-playbook tests/openbao_secrets/test_hermes_domain_view.yml
           -i inventory/hosts.yml -c local
@@ -123,9 +151,11 @@ jobs:
           HERMES_PRIVATE_GITHUB_PRIVATE_VAULT_SECRET_ID: private-secret-fixture
 
       - name: Verify the source-address tolerance can still fire
+        if: inputs.full_suite || contains(inputs.pytest_targets, 'tests/test_openbao_login_classification.py')
         run: python3 tests/test_openbao_login_classification.py -v
 
       - name: Verify Hermes API key seed contract
+        if: inputs.full_suite || contains(inputs.ansible_tests, 'tests/openbao_secrets/verify_hermes_api_key_seed.yml')
         run: >-
           ansible-playbook tests/openbao_secrets/verify_hermes_api_key_seed.yml
           -i inventory/hosts.yml -c local
@@ -136,6 +166,7 @@ jobs:
       # every PR so a registry edit that breaks generation fails here rather
       # than at tag time, when the release is already cut.
       - name: Verify the alias contract generates deterministically
+        if: inputs.full_suite || inputs.run_selector_checks
         run: |
           python3 scripts/generate_servable_aliases.py -o first.json
           python3 scripts/generate_servable_aliases.py -o second.json
@@ -154,6 +185,7 @@ jobs:
       # the converge's own eval was broken, which is the drift this whole
       # change removes — so the installer is the honest cost of the test.
       - name: Install Nix
+        if: inputs.full_suite
         uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
 
       # phoenix_docker renders Authelia SSO env only when a client secret is
@@ -161,16 +193,21 @@ jobs:
       # template both ways and asserts the gate flips and no literal port
       # leaked in.
       - name: Verify phoenix_docker compose render contract
+        if: inputs.full_suite || contains(inputs.ansible_tests, 'tests/phoenix_docker/test_compose_render.yml')
         run: >-
           ansible-playbook tests/phoenix_docker/test_compose_render.yml
           -i localhost, -c local
 
       - name: Verify Hindsight model vars are single-sourced and key-scoped
+        if: >-
+          inputs.full_suite || contains(inputs.ansible_tests,
+          'tests/hindsight_docker/test_model_var_confined_to_key_scope.yml')
         run: >-
           ansible-playbook tests/hindsight_docker/test_model_var_confined_to_key_scope.yml
           -i localhost, -c local
 
       - name: Verify dify_docker database password re-assert
+        if: inputs.full_suite || contains(inputs.ansible_tests, 'tests/dify_docker/test_db_password.yml')
         run: >-
           ansible-playbook tests/dify_docker/test_db_password.yml
           -i localhost, -c local
@@ -183,11 +220,13 @@ jobs:
       # and proves the real task file: a successful login never touches the
       # account, a 401 gets one native reset then one retry.
       - name: Verify dify_docker login/password-reset contract
+        if: inputs.full_suite || contains(inputs.ansible_tests, 'tests/dify_docker/test_admin_password_reset.yml')
         run: >-
           ansible-playbook tests/dify_docker/test_admin_password_reset.yml
           -i localhost, -c local
 
       - name: Verify agent_guest residual deny contract
+        if: inputs.full_suite || contains(inputs.ansible_tests, 'tests/agent_guest/test_residual_deny_contract.yml')
         run: >-
           ansible-playbook tests/agent_guest/test_residual_deny_contract.yml
           -i localhost, -c local
@@ -204,18 +243,23 @@ jobs:
 
       # A servable GPU profile entry must carry a complete serving floor.
       - name: Verify the GPU serving floor contract
+        if: >-
+          inputs.full_suite || contains(inputs.ansible_tests,
+          'tests/nvidia_gpu_guest/test_floor_required_for_servable.yml')
         run: >-
           ansible-playbook tests/nvidia_gpu_guest/test_floor_required_for_servable.yml
           -i localhost, -c local
 
       # Cache sync with and without a declared model origin; stand-in binaries.
       - name: Verify GPU serving cache sync without a model origin
+        if: inputs.full_suite || contains(inputs.ansible_tests, 'tests/nvidia_gpu_guest/test_cache_only_sync.yml')
         run: >-
           ansible-playbook tests/nvidia_gpu_guest/test_cache_only_sync.yml
           -i localhost, -c local
 
       # assert_hardening.yml pass and fail paths; no packages or live router.
       - name: Verify llamaindex hardening checks fail closed
+        if: inputs.full_suite || contains(inputs.ansible_tests, 'tests/llamaindex/test_hardening.yml')
         run: >-
           ansible-playbook tests/llamaindex/test_hardening.yml
           -i localhost, -c local
@@ -223,6 +267,10 @@ jobs:
       # Host contract renderer: the primary-profile unit and the every-profile
       # contract (one unit per enabled profile, only the active one started).
       - name: Verify GPU serving host contract rendering
+        if: >-
+          inputs.full_suite ||
+          contains(inputs.ansible_tests, 'tests/llm_gpu_legacy/test_render_host_contract.yml') ||
+          contains(inputs.ansible_tests, 'tests/llm_gpu_legacy/test_render_host_contract_all.yml')
         run: >-
           ansible-playbook tests/llm_gpu_legacy/test_render_host_contract.yml
           tests/llm_gpu_legacy/test_render_host_contract_all.yml
@@ -231,7 +279,19 @@ jobs:
       # Every test under tests/; llm_router/ runs in _llm-router-contract.yml;
       # qdrant_llamaindex/ needs live Qdrant + Ollama.
       - name: Run role self-checks
-        run: python -m pytest tests/ -q --ignore=tests/llm_router --ignore=tests/qdrant_llamaindex
+        if: inputs.full_suite || inputs.pytest_targets != '[]'
+        env:
+          PYTEST_TARGETS: ${{ inputs.pytest_targets }}
+        run: |
+          python - <<'PY'
+          import json, os, subprocess
+          targets = json.loads(os.environ['PYTEST_TARGETS'])
+          if not targets:
+              raise SystemExit('focused pytest selection is empty')
+          subprocess.run(
+              ['python', '-m', 'pytest', *targets, '-q', '--ignore=tests/llm_router',
+               '--ignore=tests/qdrant_llamaindex'], check=True)
+          PY
 
   # The llm_router role's contract checks, in their own file: that list only
   # grows and outgrew this file's token budget. Its result reaches the Merge
@@ -239,10 +299,14 @@ jobs:
   llm-router-contract:
     name: LLM Router Contract
     uses: ./.github/workflows/_llm-router-contract.yml
+    with:
+      full_suite: ${{ inputs.full_suite }}
+      playbooks: ${{ inputs.llm_router_playbooks }}
 
   verify-inventory-load:
     name: Verify Inventory Load
     runs-on: ubuntu-latest
+    if: inputs.full_suite || inputs.run_inventory
 
     steps:
       - name: Checkout code

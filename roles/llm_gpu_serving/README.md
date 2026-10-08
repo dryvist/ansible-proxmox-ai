@@ -46,8 +46,8 @@ missing list blocks the converge before upstream fetches.
   package for SM120 kernel support in one uv command.
 - Installs the Renovate-pinned llama.cpp CUDA assets from the shared
   `llamacpp_release` contract only when the recorded asset changes.
-- Seeds `model_store: true` artifacts from the base registry and NVFP4 sweep shard
-  into the declared origin with immutable Hub revisions. The seed playbook
+- Seeds `model_store: true` artifacts from the base registry, GLM, and NVFP4
+  sweep shards into the declared origin with immutable Hub revisions. The seed playbook
   checks for running GPU compute applications before each download and verifies
   every populated repository with Hub checksums.
 - Pulls the active profile's registered repository from the origin into the
@@ -69,10 +69,13 @@ them. `glm-flash` is a separate llama.cpp profile for the pinned GLM-5.3-Flash
 UD-IQ1_S artifact; its router entry remains disabled until it is validated.
 Runtime serving settings live here; model bytes, Hub repository, include
 globs, file format, quantization, engine support, GGUF file name, and use are
-defined once in `llm-models.d/65-gpu-pro6000-artifacts.yml` and
+defined once in `llm-models.d/65-gpu-artifacts.yml`,
+`llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml`, and
 `llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml`. The router profile
 registry links to those records by `artifact_id` and stays `enabled: false`,
-`servable: false` until a serving floor is measured.
+`servable: false` until a serving floor is measured. The shared GPU registry
+also contains the `16gb` llama.cpp candidate owned by `llamacpp_serving`; this
+legacy role indexes only its own five profile names.
 
 `small` and `medium-a` run vLLM (safetensors). `medium-b`, `max`, and
 `glm-flash` run llama.cpp (GGUF) from the installed release binary. A vLLM

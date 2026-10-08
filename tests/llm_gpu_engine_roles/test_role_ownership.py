@@ -57,7 +57,7 @@ def test_engine_roles_own_only_their_profiles_and_selectors():
                 "nemotron-lightning-30b-a3b",
             },
         ),
-        ("llamacpp_serving", "llama_cpp", {"medium-b", "max", "glm-flash"}),
+        ("llamacpp_serving", "llama_cpp", {"medium-b", "16gb", "max", "glm-flash"}),
     )
     for role, engine, expected_profiles in cases:
         role_root = ROLES / role
