@@ -26,7 +26,46 @@ ANSIBLE_TESTS = {
     "tests/llamaindex/test_hardening.yml",
     "tests/llm_gpu_legacy/test_render_host_contract.yml",
     "tests/llm_gpu_legacy/test_render_host_contract_all.yml",
+    "tests/langfuse_docker/test_stage0_evaluation.yml",
+    "tests/langfuse_docker/test_code_eval_dispatcher.yml",
+    "tests/langfuse_docker/test_code_eval_compose.yml",
 }
+
+
+# Role closures use the existing contract directories and playbooks. Shared GPU
+# roles consume the same profiles, model-store contract and rendered units.
+GPU_PYTEST = {
+    "tests/nvidia_gpu_guest/", "tests/llm_gpu_engine_roles/",
+    "tests/llm_gpu_legacy/", "tests/llm_gpu_serving/",
+    "tests/llamacpp_serving/", "tests/vllm_serving/",
+}
+GPU_ANSIBLE = {test for test in ANSIBLE_TESTS if test.startswith(
+    ("tests/nvidia_gpu_guest/", "tests/llm_gpu_legacy/"))}
+ROLE_TESTS = {
+    "hermes_agent": {"tests/hermes_agent/"},
+    "fabric_watchdog": {"tests/hermes_agent/"},
+    "dify_docker": set(),
+    "langflow_docker": {"tests/agent_concurrency/"},
+    "langfuse_docker": {"tests/langfuse_docker/"},
+    "hindsight_docker": {"tests/hindsight_docker/"},
+    "hindsight_bank_dr": {"tests/hindsight_bank_dr/"},
+    "llama_cpp": {"tests/llama_cpp/"},
+    "llamacpp_release": {"tests/llamacpp_release/", "tests/llamacpp_serving/"},
+    "llamacpp_serving": GPU_PYTEST,
+    "vllm_serving": GPU_PYTEST,
+    "nvidia_gpu_guest": GPU_PYTEST,
+    "llm_gpu_serving": GPU_PYTEST,
+    "openbao_secrets": {"tests/test_openbao_login_classification.py",
+                        "tests/test_openbao_secrets_approle_name_resolution.py"},
+    "phoenix_docker": set(),
+    "llamaindex": set(),
+    "qdrant_docker": {"tests/qdrant_docker/"},
+    "agent_guest": set(),
+}
+TEST_SCOPES = {target.removeprefix("tests/").rstrip("/")
+               for targets in ROLE_TESTS.values() for target in targets if target.endswith("/")}
+TEST_SCOPES.update({"llm_router", "llm_model_campaign", "inventory_load", "repo_guards",
+                    "dify_docker", "phoenix_docker", "openbao_secrets", "llamaindex", "agent_guest"})
 
 
 def llm_router_matrix() -> list[list[str]]:
@@ -41,6 +80,8 @@ def llm_router_matrix() -> list[list[str]]:
             match = re.match(r"\s*#?\s*-\s*(tests/llm_router/[^#]+)", line)
             if match:
                 entries.append(match.group(1).split())
+            elif entries and (continuation := re.match(r"\s*#\s+(tests/llm_router/[^#]+)", line)):
+                entries[-1].extend(continuation.group(1).split())
             elif line.strip() and not line.lstrip().startswith("#") and not line.startswith(" "):
                 break
     if not entries:
@@ -58,11 +99,44 @@ def select(paths: list[str]) -> dict[str, object]:
     matrix = llm_router_matrix()
     matrix_by_test = {test: entry for entry in matrix for test in entry}
 
+    def role_scope(role: str) -> None:
+        pytest_targets.update(ROLE_TESTS.get(role, set()))
+        ansible_tests.update(test for test in ANSIBLE_TESTS if test.startswith(f"tests/{role}/"))
+        if role in {"llamacpp_serving", "vllm_serving", "nvidia_gpu_guest", "llm_gpu_serving"}:
+            ansible_tests.update(GPU_ANSIBLE)
+        if role == "llm_router":
+            pytest_targets.add("tests/llm_gpu_engine_roles/")
+            router_tests.update(" ".join(entry) for entry in matrix)
+
     for raw_path in paths:
         path = raw_path.removeprefix("./")
         if not path:
             continue
         if path.startswith("tests/"):
+            parts = Path(path).parts
+            owner = parts[1] if len(parts) > 2 else ""
+            if path == "tests/fixtures/llm-router-target-output.yml":
+                role_scope("llm_router")
+                continue
+            if path in {"tests/inventory_load/tofu_inventory.json", "tests/inventory_load/verify_inventory.yml",
+                        "tests/inventory_load/test_ssh_probe_result_selection.yml"}:
+                run_inventory = True
+                continue
+            if owner in TEST_SCOPES and ("fixtures" in parts or "tasks" in parts
+                                        or Path(path).name.startswith("_")):
+                if owner == "llm_router":
+                    role_scope(owner)
+                elif owner == "inventory_load":
+                    run_inventory = True
+                elif owner == "repo_guards":
+                    ansible_tests.add("tests/repo_guards/test_env_guards_actually_fire.yml")
+                elif owner in ROLE_TESTS:
+                    role_scope(owner)
+                else:
+                    if owner not in {"dify_docker", "phoenix_docker"}:
+                        pytest_targets.add(f"tests/{owner}/")
+                    ansible_tests.update(test for test in ANSIBLE_TESTS if test.startswith(f"tests/{owner}/"))
+                continue
             if path.startswith("tests/llm_router/") and path.endswith((".yml", ".yaml")):
                 if path not in matrix_by_test:
                     unknown.append(raw_path)
@@ -79,8 +153,30 @@ def select(paths: list[str]) -> dict[str, object]:
                 pytest_targets.add(path)
             else:
                 unknown.append(raw_path)
-        elif path.startswith("roles/hermes_agent/"):
-            pytest_targets.add("tests/hermes_agent/")
+        elif path.startswith("roles/"):
+            role = path.split("/")[1]
+            if role in ROLE_TESTS or role == "llm_router":
+                role_scope(role)
+            else:
+                unknown.append(raw_path)
+        elif path.startswith("llm-models.d/"):
+            role_scope("llm_router")
+            pytest_targets.update(GPU_PYTEST | {"tests/llm_model_campaign/", "tests/hermes_agent/"})
+            ansible_tests.update(GPU_ANSIBLE)
+            run_selector_checks = True
+        elif path.startswith("molecule/") and Path(path).parts[1] in {
+                directory.name for directory in Path("molecule").iterdir() if directory.is_dir()}:
+            # The shared scenario selector owns this path's Molecule execution.
+            run_selector_checks = True
+        elif path == "scripts/generate_servable_aliases.py":
+            role_scope("llm_router")
+            run_selector_checks = True
+        elif path == "scripts/run-ansible.sh":
+            pytest_targets.update({"tests/test_run_ansible_runner.py", "tests/test_run_ansible_identity.py"})
+        elif path == "scripts/verify-pinned-patches.py":
+            role_scope("hermes_agent")
+        elif path == "renovate.json":
+            run_selector_checks = True
         elif path.startswith(("inventory/", "group_vars/", "host_vars/", "playbooks/")) or path == "requirements.yml":
             run_inventory = True
             run_selector_checks = True
