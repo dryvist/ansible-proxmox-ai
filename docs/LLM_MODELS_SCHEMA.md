@@ -52,6 +52,10 @@ Required on every entry:
   enabled           false removes the entry from the rendered config entirely.
 
 Optional:
+  lifecycle           `old` records a superseded model identity for history.
+                      It has no render effect, but an OLD entry MUST also have
+                      `enabled: false`; the registry/render parity test
+                      enforces that it is absent from every rendered route.
   subscription        true marks a flat-rate rung with no per-token price that
                       is NOT free (the chatgpt/ rung): it joins neither the
                       free nor the paid segment. Ladder order is derived from
