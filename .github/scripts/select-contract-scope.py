@@ -193,6 +193,10 @@ def select(paths: list[str]) -> dict[str, object]:
         elif path.startswith(".github/workflows/") or path.startswith(".github/scripts/"):
             run_selector_checks = True
             pytest_targets.add("tests/test_contract_scope_selector.py")
+            if path == ".github/workflows/_llm-router-contract.yml":
+                # The explicit matrix is the router contract manifest; changes
+                # to it must exercise every entry, not just selector checks.
+                role_scope("llm_router")
         elif path.lower().endswith((".md", ".mdx", ".txt")) or path.startswith("docs/"):
             continue
         else:
