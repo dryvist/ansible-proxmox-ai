@@ -164,7 +164,7 @@ llm_router_donna_key_enabled: false
 
 # Per-model serving concurrency ceiling. THE single numeric definition now
 # lives upstream in dryvist/tofu-proxmox's
-# modules/proxmox-stack/constants.tf (pipeline_constants.serving.llm_concurrency)
+# modules/proxmox-stack/constants-serving.tf (pipeline_constants.serving.llm_concurrency)
 # and is published to every host via the same tofu_data.constants channel
 # every other pipeline_constants family already uses (dryvist.homelab.
 # inventory_resolve, see inventory/load_tofu.yml). This value is a DERIVATION,
@@ -178,18 +178,15 @@ llm_router_donna_key_enabled: false
 # published constant and fails the build on drift. The serving tier admits
 # this many in-flight requests per model and 429s the rest (the 429s are
 # absorbed by llm_router's rate-limit retry policy, not this repo's concern).
-# Consumers: hermes_agent_api_max_concurrent_runs and
-# hermes_agent_kanban_max_in_progress* (roles/hermes_agent/defaults/main.yml)
-# derive from this, so the rendered config stays byte-identical to the prior
-# literals at the current value of 1.
+# Consumer: ollama_num_parallel (roles/ollama/defaults/main.yml). Agent
+# admission caps are independent of serving slots; see
+# ai_agent_default_concurrency below.
 # ROLLOUT WINDOW (remove the fallback once the artifact carries it). Ansible
 # reads the PUBLISHED inventory artifact, not tofu-proxmox's constants.tf, and
-# that artifact is only rewritten by a `tofu apply`. `serving.llm_concurrency`
-# was added to constants.tf and promoted to main, but the artifact in the
-# object store still predates it — its `constants` object has no `serving` key
-# at all. A bare reference therefore raises "object of type 'dict' has no
-# attribute 'serving'" and fails EVERY converge of this role, which is what it
-# did on 2026-08-02 before this fallback existed.
+# that artifact is only rewritten by a `tofu apply`. Older artifacts have no
+# `serving` key; a bare reference therefore raises "object of type 'dict' has
+# no attribute 'serving'" and fails every converge. The fallback follows the
+# active eight-slot profile until the artifact is republished.
 #
 # The fallback is a migration shim, NOT a second definition: it is the same
 # value the constant publishes, it disappears from every render the moment the
@@ -198,11 +195,15 @@ llm_router_donna_key_enabled: false
 # the `| default` and that assert together after the first apply that
 # republishes the inventory.
 ai_llm_concurrency: >-
-  {{ (tofu_data.constants.serving | default({})).llm_concurrency | default(1) }}
+  {{ (tofu_data.constants.serving | default({})).llm_concurrency | default(8) }}
 # True only while the shim above is load-bearing. Consumed by the converge-time
 # notice in roles/hermes_agent/tasks/assert.yml.
 ai_llm_concurrency_from_fallback: >-
   {{ (tofu_data.constants.serving | default({})).llm_concurrency is not defined }}
+
+# Agent runners accept work up to this shared cap. LiteLLM handles backend
+# saturation and fallback, so this value does not track any serving profile.
+ai_agent_default_concurrency: 8
 
 # Resource-domain secrets fetched from OpenBao by the openbao_secrets pre-play.
 # Defaults to an empty dict so every consumer's

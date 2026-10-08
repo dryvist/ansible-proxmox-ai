@@ -70,17 +70,12 @@ hermes_agent_api_server_host: "0.0.0.0"
 hermes_agent_api_server_port: >-
   {{ hostvars['localhost']['tofu_data']['constants']['service_ports']['hermes_api']
      | mandatory('tofu_data.constants.service_ports.hermes_api missing — regenerate tofu_inventory.json') }}
-# Queue hardening: cap in-flight agent runs across ALL of the platform's
-# agent-serving endpoints (/v1/runs, /v1/chat/completions, /v1/responses).
+# Cap in-flight runs across every agent-serving endpoint
+# (/v1/runs, /v1/chat/completions, /v1/responses). LiteLLM absorbs backend
+# saturation and sends requests to the next eligible rung.
 # Upstream reads this from config.yaml (gateway.api_server.max_concurrent_runs)
 # and refuses over-cap submissions with 429 + Retry-After — the submitter
-# retries, nothing stacks unbounded prefills on the shared brain. Upstream's
-# default (10) is sized for cloud brains; ours is a SINGLE serving deployment
-# the cron fleet already shares, and the serving tier runs one stream well
-# but does not batch (measured 2-stream aggregate ~0.71x of single-stream,
-# 2026-07-11 bench). 2 = one operator submission + one background/curriculum
-# run in flight; anything more waits at the door, not in the GPU queue.
+# retries, nothing stacks unbounded prefills on the shared brain. Keep the
+# agent cap separate from the serving profile's slot count.
 # 0 would disable the cap entirely — assert.yml forbids that.
-# Derived from ai_llm_concurrency (all.yml) so this cap scales with the
-# serving tier's admitted concurrency; resolves to 2 at the current value of 1.
-hermes_agent_api_max_concurrent_runs: "{{ ai_llm_concurrency | int * 2 }}"
+hermes_agent_api_max_concurrent_runs: "{{ ai_agent_default_concurrency | int }}"
