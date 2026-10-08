@@ -109,13 +109,14 @@ hermes_agent_backlog_sweep_cron_prompt: >-
   back to "backlog-sweep-last".
 
 # --- GitHub Actions cache health: read-only, github-maint profile ----------
-# Same credential shape as github-maint-review below in 110-*.yml: the
-# github-maint profile carries only the read-only token
-# (hermes_agent_github_read_token, delivered under the GH_PAT_WRITE_PROJECT_ISSUES
-# key), so this job physically cannot write to GitHub. Daily at an hour/minute
-# clear of every other GitHub job's phase (github-triage 2,8,14,20;
-# bot-pr-triage 4,10,16,22; github-maint-review 1,5,9,13,17,21) and of the
-# fleet generally (tests/hermes_agent/test_cron_stagger.py).
+# Reads GitHub only through the minted gh wrapper, pinned to its `review` set
+# (read-only installation token) and the repository's own visibility boundary.
+# The static read PAT is no longer rendered into any profile, so the read-only
+# contract here is the prompt's, not the token's: the wrapper's `author` set is
+# reachable from every profile (one OS user). Daily at an hour/minute clear of
+# every other GitHub job's phase (github-triage 2,8,14,20; bot-pr-triage
+# 4,10,16,22; github-maint-review 1,5,9,13,17,21) and of the fleet generally
+# (tests/hermes_agent/test_cron_stagger.py).
 #
 # No memory/delta state: an unresolved quota problem should keep alerting,
 # not go quiet after the first report, so this always re-checks and only
@@ -125,15 +126,18 @@ hermes_agent_github_cache_stats_cron_name: github-cache-stats
 hermes_agent_github_cache_stats_cron_schedule: "47 3 * * *"
 hermes_agent_github_cache_stats_cron_prompt: >-
   Daily GitHub Actions cache health check for the dryvist organization,
-  read-only. Your GitHub credential cannot write: only GET requests, sending
-  header "Authorization: token $GH_PAT_WRITE_PROJECT_ISSUES" (this profile's
-  key holds the read-only token) — never open, comment on, label, close, or
-  change anything. List every non-archived repository in the org (GET
-  https://api.github.com/orgs/dryvist/repos?per_page=100, following the Link
-  header until exhausted). For each repo, call GET
-  https://api.github.com/repos/dryvist/<repo>/actions/cache/usage and GET
-  https://api.github.com/repos/dryvist/<repo>/actions/caches?per_page=100
-  (same Link-header pagination). Flag a repo on either condition: (1)
+  read-only. Every GitHub call goes through the gh wrapper at
+  {{ hermes_agent_github_identity_shim_path }} with HERMES_GH_TOKEN_SET=review
+  — never set HERMES_GH_TOKEN_SET=author, and never open, comment on, label,
+  close, or change anything. Set HERMES_TRUST_BOUNDARY per call: private for
+  the org listing and for any repo whose `private` field is true, public for
+  the others. List every non-archived repository in the org
+  ({{ hermes_agent_github_identity_shim_path }} api --paginate
+  "orgs/dryvist/repos?per_page=100"). For each repo, call
+  {{ hermes_agent_github_identity_shim_path }} api --paginate
+  "repos/dryvist/<repo>/actions/cache/usage" and
+  {{ hermes_agent_github_identity_shim_path }} api --paginate
+  "repos/dryvist/<repo>/actions/caches?per_page=100". Flag a repo on either condition: (1)
   active_caches_size_in_bytes exceeds 80% of the 10 GiB (10737418240 byte)
   default per-repository Actions cache limit — if you find solid evidence
   the repo's actual configured limit differs from 10 GiB, use that instead
@@ -203,7 +207,7 @@ hermes_agent_direct_cron_jobs_recurring_catalog:
     hermes_home: "{{ hermes_agent_hermes_home }}/profiles/github-maint"
     enabled: >-
       {{ hermes_agent_github_cache_stats_enabled | bool
-         and hermes_agent_github_read_token | length > 0
+         and hermes_agent_github_identity_enabled | bool
          and hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}

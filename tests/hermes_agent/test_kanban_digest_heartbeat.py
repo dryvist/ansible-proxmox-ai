@@ -137,12 +137,13 @@ def test_a_section_over_the_cap_says_how_many_it_hid():
     assert "and 3 more not shown" in text
 
 
-def test_a_long_summary_is_clipped_with_a_visible_marker():
+def test_a_long_summary_is_shown_in_full_without_an_ellipsis():
+    summary = "x" * 5000
     text = digest(
         [{"id": "t_jj", "title": "Verbose", "status": "done"}],
         [{"id": 1, "task_id": "t_jj", "outcome": "completed", "started_at": NOW - 200,
-          "ended_at": NOW - 100, "summary": "x" * 5000}])
-    assert "…" in text and len(max(text.splitlines(), key=len)) < 600
+          "ended_at": NOW - 100, "summary": summary}])
+    assert summary in text and "…" not in text
 
 
 # --- one interval variable, no drift ------------------------------------------

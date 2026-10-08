@@ -107,9 +107,6 @@ SILENT = "[SILENT]"
 # against real Slack posts, not templating.
 # Per-section cap. An overflowing section says how many it did not name.
 MAX_ITEMS = 10
-# A worker summary is a paragraph; Slack wants a line. Enough to carry the
-# finding, not the whole evidence block.
-SUMMARY_CHARS = 400
 # Every run outcome that is not this one is a failure of some kind.
 OK = "completed"
 # Where a card is allowed to be once its run ended. Anything else means the run
@@ -187,7 +184,13 @@ def fmt_dur(seconds):
     return f"{seconds / 3600:.1f}h"
 
 
-def clip(text, limit=SUMMARY_CHARS):
+def one_line(text):
+    """Collapse whitespace to one line. Never truncates: a worker's summary is
+    shown in full, because an ellipsis cut the finding off mid-sentence."""
+    return " ".join((text or "").split())
+
+
+def clip(text, limit):
     """One-line, length-capped. Truncation is marked, never silent."""
     text = " ".join((text or "").split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -328,7 +331,7 @@ def completed_lines(by_task):
         if REPORT_ALREADY_POSTED.search(summary_raw):
             summary = "posted its own full report to Slack — see that message"
         else:
-            summary = clip(summary_raw) or "(the worker recorded no summary)"
+            summary = one_line(summary_raw) or "(the worker recorded no summary)"
         out.append(f":white_check_mark: *{e['title']}* [{task_id}] "
                    f"{fmt_dur(elapsed)}{retry_note} — {summary}")
     return out

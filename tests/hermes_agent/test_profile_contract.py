@@ -226,13 +226,10 @@ def test_llm_wiki_skill_is_materializable_into_any_profile_that_opts_in() -> Non
     )
 
 
-def test_github_maint_cron_runs_in_its_own_profile_behind_the_read_token() -> None:
-    """The job's read-only property comes from WHERE it runs, not its prompt.
-
-    Two things carry it: the job must point HERMES_HOME at the github-maint
-    profile (whose .env holds the read-only token and blanks everything else),
-    and it must stay disabled until that token is actually seeded. Drop either
-    and the job silently becomes an ordinary default-profile job.
+def test_github_maint_cron_runs_in_its_own_profile_on_the_review_set() -> None:
+    """The job runs in the github-maint profile and reads GitHub only through
+    the minted gh wrapper's `review` set. No profile .env carries a static
+    GitHub PAT, so the read-only contract is the prompt's and the skill's.
     """
     defaults = _defaults()
     jobs = {
@@ -241,14 +238,14 @@ def test_github_maint_cron_runs_in_its_own_profile_behind_the_read_token() -> No
     entry = jobs["{{ hermes_agent_github_maint_cron_name }}"]
 
     assert entry["hermes_home"].endswith("/profiles/github-maint")
-    assert "hermes_agent_github_read_token | length > 0" in entry["enabled"]
+    assert "hermes_agent_github_identity_enabled | bool" in entry["enabled"]
     assert "hermes_agent_github_issues_pat" not in entry["enabled"]
-    assert defaults["hermes_agent_github_read_token"] == ""
 
-    # Least-shared tier: the read token belongs in one profile's .env, not in
-    # the default profile's .env.
     default_env = template_text(ROLE_ROOT, "hermes-env.j2")
     assert "hermes_agent_github_read_token" not in default_env
+    profile_env = template_text(ROLE_ROOT, "hermes-env-profile.j2")
+    assert "GH_PAT_WRITE_PROJECT_ISSUES" not in profile_env
+
 
 
 def test_default_profile_has_no_static_write_github_token() -> None:

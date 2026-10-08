@@ -37,7 +37,6 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         "slack": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
         "splunk": ("SPLUNK_MCP_URL", "SPLUNK_MCP_TOKEN"),
         "zammad": ("ZAMMAD_URL", "ZAMMAD_API_TOKEN"),
-        "github": ("GH_PAT_WRITE_PROJECT_ISSUES",),
     }
 
     for profile in _profiles():
@@ -71,7 +70,8 @@ def test_profile_env_template_blanks_every_ungranted_credential() -> None:
         assert values["WIKI_PATH"] == "/var/lib/hermes/wiki", (
             f"{profile['name']}: WIKI_PATH must be set whenever hermes_agent_wiki_enabled is true"
         )
-        expected_github_token = "READTOK" if "github" in profile["env"] else ""
-        assert values["GH_PAT_WRITE_PROJECT_ISSUES"] == expected_github_token, (
-            f"{profile['name']}: only the read-only GitHub token may reach a github-granted profile"
+        # GitHub is reached only through the minted gh wrapper; no profile's
+        # .env carries a static GitHub PAT, whatever its grants.
+        assert "GH_PAT_WRITE_PROJECT_ISSUES" not in values, (
+            f"{profile['name']}: no static GitHub PAT may be rendered into a profile .env"
         )
