@@ -236,3 +236,45 @@ def test_caller_contract_mapping_retains_unknown_role_rejection() -> None:
     filters = yaml.safe_load(CI_GATE.read_text())["jobs"]["ci"]["with"]["molecule_contract_filters"]
     assert not any(fnmatch.fnmatchcase("roles/unmapped_role/tasks/main.yml", pattern)
                    for pattern in yaml.safe_load(filters)["contract_only"])
+
+
+@pytest.mark.parametrize("path", [
+    "roles/dify_docker/templates/docker-compose.yml.j2",
+    "roles/langflow_docker/defaults/main.yml",
+    "roles/langflow_docker/templates/docker-compose.yml.j2",
+])
+def test_compose_path_adds_python_contract_and_preserves_role_scope(path: str) -> None:
+    result = run_selector(path)
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    assert "tests/agent_concurrency/test_runner_compose_caps.py" in selection["pytest_targets"]
+    if path.startswith("roles/dify_docker/"):
+        assert {"tests/dify_docker/test_db_password.yml",
+                "tests/dify_docker/test_admin_password_reset.yml"} <= set(selection["ansible_tests"])
+    else:
+        assert "tests/agent_concurrency/" in selection["pytest_targets"]
+
+
+def test_seed_fixture_adds_python_guard_and_preserves_full_router_scope() -> None:
+    result = run_selector("tests/llm_router/fixtures/seed-key-response-shape.json")
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    assert "tests/llm_router/test_seed_key_sensitivity_guard.py" in selection["pytest_targets"]
+    assert "tests/llm_gpu_engine_roles/" in selection["pytest_targets"]
+    full = subprocess.run([sys.executable, str(SELECTOR), "--full"],
+                          check=False, capture_output=True, text=True)
+    assert full.returncode == 0, full.stderr
+    assert set(selection["llm_router_playbooks"]) == set(json.loads(full.stdout)["llm_router_playbooks"])
+
+
+@pytest.mark.parametrize("path", [
+    "roles/hermes_agent/defaults/main/50-webhook-persona-api.yml",
+    "roles/hermes_agent/defaults/main/60-kanban-dispatcher.yml",
+])
+def test_captured_hermes_inputs_reach_existing_contract_family(path: str) -> None:
+    import fnmatch
+    filters = yaml.safe_load(CI_GATE.read_text())["jobs"]["ci"]["with"]["molecule_contract_filters"]
+    assert any(fnmatch.fnmatchcase(path, pattern) for pattern in yaml.safe_load(filters)["contract_only"])
+    result = run_selector(path)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["pytest_targets"] == ["tests/hermes_agent/"]
