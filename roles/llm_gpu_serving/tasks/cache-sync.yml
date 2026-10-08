@@ -166,23 +166,6 @@
   register: llm_gpu_serving_cache_sync_copy
   when: llm_gpu_serving_cache_sync_operation == 'pull'
 
-- name: Verify the local artifact against its pinned Hub revision
-  ansible.builtin.command:
-    argv:
-      - "{{ llm_gpu_serving_hf_bin }}"
-      - cache
-      - verify
-      - "{{ llm_gpu_serving_cache_sync_artifact.hf_repo }}"
-      - --revision
-      - "{{ llm_gpu_serving_cache_sync_artifact.revision }}"
-      - --local-dir
-      - "{{ llm_gpu_serving_cache_sync_local_directory }}"
-  environment: "{{ llamacpp_release_proxy_environment | combine({'HF_HOME': llm_gpu_serving_hf_home}) }}"
-  become: true
-  become_user: "{{ llm_gpu_serving_user }}"
-  changed_when: false
-  when: llm_gpu_serving_cache_sync_local_target | bool
-
 - name: Create the artifact directory in the root-squashed shared origin
   ansible.builtin.file:
     path: "{{ llm_gpu_serving_cache_sync_origin_directory }}"
@@ -287,6 +270,21 @@
   changed_when: >-
     'Will download 0 files' not in
     llm_gpu_serving_cache_sync_previews.results[ansible_loop.index0].stdout
+
+- name: Verify local files against pinned download sidecars
+  ansible.builtin.script:
+    cmd: >-
+      {{ role_path | dirname }}/nvidia_gpu_guest/files/verify-local-model-store.py
+      --root {{ llm_gpu_serving_cache_sync_local_directory | quote }}
+      --revision {{ llm_gpu_serving_cache_sync_artifact.revision | quote }}
+      --include-globs {{ llm_gpu_serving_cache_sync_artifact.include_globs | to_json | quote }}
+  register: llm_gpu_serving_cache_sync_local_verification
+  become: true
+  become_user: "{{ llm_gpu_serving_user }}"
+  changed_when: false
+  when:
+    - llm_gpu_serving_cache_sync_local_target | bool
+    - not ansible_check_mode
 
 - name: Notify serving handlers only when the local model cache changed
   ansible.builtin.debug:

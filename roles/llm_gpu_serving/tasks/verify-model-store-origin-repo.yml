@@ -1,36 +1,38 @@
 ---
-- name: Load shared llama.cpp release settings and require the artifact cache
-  ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/prepare.yml"
-
-- name: Resolve the selected pinned model-store repository
+- name: Resolve registered artifacts for the selected model-store repository
   ansible.builtin.set_fact:
-    llm_gpu_serving_model_store_verify_artifact: >-
+    llm_gpu_serving_model_store_verify_artifacts: >-
       {{ llm_gpu_serving_model_artifacts
          | selectattr('model_store', 'defined')
          | selectattr('model_store', 'equalto', true)
          | selectattr('hf_repo', 'equalto', llm_gpu_serving_model_store_verify_repo)
-         | first | default({}) }}
+         | list }}
+
+- name: Resolve the pinned revision and include globs for the selected repository
+  ansible.builtin.set_fact:
+    llm_gpu_serving_model_store_verify_artifact: >-
+      {{ llm_gpu_serving_model_store_verify_artifacts | first | default({}) }}
+    llm_gpu_serving_model_store_verify_globs: >-
+      {{ llm_gpu_serving_model_store_verify_artifacts
+         | map(attribute='include_globs') | flatten | unique | list }}
 
 - name: Require a pinned registered artifact for the selected model-store repository
   ansible.builtin.assert:
     that:
-      - llm_gpu_serving_model_store_verify_artifact | length > 0
+      - llm_gpu_serving_model_store_verify_artifacts | length > 0
       - llm_gpu_serving_model_store_verify_artifact.revision is match('^[0-9a-f]{40}$')
+      - (llm_gpu_serving_model_store_verify_artifacts | map(attribute='revision') | unique | list | length) == 1
+      - llm_gpu_serving_model_store_verify_globs | length > 0
     fail_msg: "The selected model-store repository must resolve to a pinned registry artifact."
     quiet: true
 
-- name: Verify checksums for the populated model-store repository
-  ansible.builtin.command:
-    argv:
-      - "{{ llm_gpu_serving_hf_bin }}"
-      - cache
-      - verify
-      - "{{ llm_gpu_serving_model_store_verify_repo }}"
-      - --revision
-      - "{{ llm_gpu_serving_model_store_verify_artifact.revision }}"
-      - --local-dir
-      - "{{ llm_gpu_serving_model_origin_mount_path }}/{{ llm_gpu_serving_model_store_verify_repo }}"
-  environment: "{{ llamacpp_release_proxy_environment | combine({'HF_HOME': llm_gpu_serving_hf_home}) }}"
+- name: Verify pinned model-store files against download sidecars
+  ansible.builtin.script:
+    cmd: >-
+      {{ role_path | dirname }}/nvidia_gpu_guest/files/verify-local-model-store.py
+      --root {{ (llm_gpu_serving_model_origin_mount_path ~ '/' ~ llm_gpu_serving_model_store_verify_repo) | quote }}
+      --revision {{ llm_gpu_serving_model_store_verify_artifact.revision | quote }}
+      --include-globs {{ llm_gpu_serving_model_store_verify_globs | to_json | quote }}
   become: true
   become_user: "{{ llm_gpu_serving_user }}"
   changed_when: false

@@ -104,12 +104,10 @@ def test_package_and_model_fetch_tasks_use_the_shared_proxy():
         "roles/llm_gpu_serving/tasks/install-cuda-toolkit.yml",
         "roles/llm_gpu_serving/tasks/install-nvidia-userspace.yml",
         "roles/llm_gpu_serving/tasks/cache-sync.yml",
-        "roles/llm_gpu_serving/tasks/verify-model-store-origin-repo.yml",
         "roles/nvidia_gpu_guest/tasks/main.yml",
         "roles/nvidia_gpu_guest/tasks/install-cuda-toolkit.yml",
         "roles/nvidia_gpu_guest/tasks/install-nvidia-userspace.yml",
         "roles/nvidia_gpu_guest/tasks/cache-sync.yml",
-        "roles/nvidia_gpu_guest/tasks/verify-model-store-origin-repo.yml",
         "roles/llama_cpp/tasks/main.yml",
     )
     for relative_path in paths:
@@ -135,4 +133,16 @@ def test_standalone_model_sync_entrypoints_load_shared_cache_settings():
     )
     for relative_path in verify_paths:
         text = (ROOT / relative_path).read_text(encoding="utf-8")
-        assert "llamacpp_release/tasks/prepare.yml" in text, relative_path
+        tasks = _load(ROOT / relative_path)
+        scripts = [task for task in tasks if "ansible.builtin.script" in task]
+        assert len(scripts) == 1, relative_path
+        script = scripts[0]
+        command = script["ansible.builtin.script"]["cmd"]
+        assert "verify-local-model-store.py" in command, relative_path
+        assert "--revision" in command and "--include-globs" in command, relative_path
+        assert script["changed_when"] is False, relative_path
+        assert not any(
+            key in task for task in tasks
+            for key in ("ansible.builtin.command", "ansible.builtin.uri", "ansible.builtin.get_url")
+        ), relative_path
+        assert "llamacpp_release/tasks/prepare.yml" not in text, relative_path
