@@ -47,6 +47,27 @@
 # rather than terminating — better than terminal, not a working OCR fallback.
 # The free rung's upstream is a vision-capable model and may in fact serve such
 # a request; that is unverified and not relied on.
+# The shared route alias and canonical best-role alias follow the GPU-first
+# route while it is active. Other aliases keep their registry targets.
+llm_router_primary_route_fallback_aliases: >-
+  {%- set ns = namespace(aliases=[llm_router_vllm_medium_route_alias]) -%}
+  {%- if llm_router_vllm_medium_route_enabled | bool -%}
+  {%- set ns.aliases = ns.aliases + llm_router_primary_registry_aliases -%}
+  {%- endif -%}
+  {{ ns.aliases | unique | list if llm_router_vllm_medium_route_enabled | bool else [] }}
+llm_router_primary_registry_aliases: >-
+  {{ llm_router_registry_enabled
+     | selectattr('serving_role', 'defined')
+     | selectattr('serving_role', 'equalto', 'primary')
+     | map(attribute='stable_aliases') | flatten
+     | select('in', (llm_roles.roles | dict2items | map(attribute='key') | list))
+     | list }}
+llm_router_primary_route_fallbacks: >-
+  {%- set ns = namespace(out={}) -%}
+  {%- for alias in llm_router_primary_route_fallback_aliases -%}
+  {%- set _ = ns.out.update({alias: [llm_router_primary_large_model]}) -%}
+  {%- endfor -%}
+  {{ ns.out }}
 llm_router_entry_point_names: >-
   {{ (llm_router_all_servable_models + (llm_router_model_group_aliases | list))
      | unique | list }}
@@ -111,6 +132,8 @@ llm_router_zdr_entry_point_names: >-
 # Still a fallback bound, not a retry budget; same-provider retries stay zero.
 llm_router_fallback_target_names: >-
   {{ (llm_router_hermes_default_fallback_chain
+      + ([llm_router_primary_large_model]
+         if llm_router_vllm_medium_route_enabled | bool else [])
       + ([llm_router_primary_model]
          if (llm_router_hermes_cloud_only_fallback_groups
              + llm_router_opencode_fallback_groups
