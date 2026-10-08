@@ -61,10 +61,9 @@ jobs:
 
       # Pushed via the Contents API (never `git push`): the only way a commit
       # from CI satisfies this repo's required_signatures rule — see the
-      # header. `sha` is the CURRENT blob sha at that path on the branch, not
-      # the pre-fix content we read locally, so a concurrent push between our
-      # checkout and this step fails the API call loudly (409) instead of
-      # silently overwriting it.
+      # header. `sha` comes from the event checkout. If a concurrent push
+      # changed this file after checkout, the Contents API rejects the stale
+      # blob SHA instead of overwriting that change.
       - name: Commit the fix onto the Renovate branch
         if: steps.fix.outputs.changed == 'true'
         env:
@@ -72,16 +71,16 @@ jobs:
           BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
-          for file in $(git diff --name-only); do
-            case "$file" in
+          for FILE in $(git diff --name-only); do
+            case "$FILE" in
               roles/hermes_agent/defaults/main/10-installer-and-bundles.yml|\
                 roles/llamacpp_release/defaults/main/00-release.yml) ;;
-              *) echo "Unexpected checksum file: $file" >&2; exit 1 ;;
+              *) echo "Unexpected checksum file: $FILE" >&2; exit 1 ;;
             esac
-            current_sha=$(gh api "repos/${GITHUB_REPOSITORY}/contents/${file}?ref=${BRANCH}" --jq .sha)
-            gh api "repos/${GITHUB_REPOSITORY}/contents/${file}" -X PUT \
+            current_sha=$(git rev-parse "HEAD:${FILE}")
+            gh api "repos/${GITHUB_REPOSITORY}/contents/${FILE}" -X PUT \
               -f message="fix(deps): refresh pinned artifact checksums" \
-              -f content="$(base64 -w0 "$file")" \
+              -f content="$(base64 -w0 "$FILE")" \
               -f sha="$current_sha" \
               -f branch="$BRANCH"
           done
