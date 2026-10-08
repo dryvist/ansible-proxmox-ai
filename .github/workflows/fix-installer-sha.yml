@@ -96,10 +96,9 @@ jobs:
 
       # Pushed via the Contents API (never `git push`): the only way a commit
       # from CI satisfies this repo's required_signatures rule — see the
-      # header. `sha` is the CURRENT blob sha at that path on the branch, not
-      # the pre-fix content we read locally, so a concurrent push between our
-      # checkout and this step fails the API call loudly (409) instead of
-      # silently overwriting it.
+      # header. `sha` comes from the event checkout. If a concurrent push
+      # changed this file after checkout, the Contents API rejects the stale
+      # blob SHA instead of overwriting that change.
       - name: Commit the fix onto the Renovate branch
         if: steps.fix.outputs.changed == 'true'
         env:
@@ -114,7 +113,7 @@ jobs:
           Automated by fix-installer-sha.yml: hermes_agent_version moved and
           Renovate cannot compute a checksum, so this recomputes and commits
           the matching sha256."
-          current_sha=$(gh api "repos/${GITHUB_REPOSITORY}/contents/${FILE}?ref=${BRANCH}" --jq .sha)
+          current_sha=$(git rev-parse "HEAD:${FILE}")
           gh api "repos/${GITHUB_REPOSITORY}/contents/${FILE}" -X PUT \
             -f message="$msg" \
             -f content="$(base64 -w0 "$FILE")" \
