@@ -75,13 +75,21 @@ hindsight_docker_llm_api_key: >-
      | mandatory('hindsight_llm_router_key is not seeded: run the apps openbao provisioning first') }}
 
 hindsight_docker_retain_llm_max_concurrent: 1
-hindsight_docker_retain_llm_max_retries: 1
-# Backoff BEFORE a retry, native to the vendor image (no separate inter-item
-# pacing knob exists). With max_concurrent/max_retries above this paces a
-# 429'd backlog item to roughly the router's per-key rpm_limit (56-virtual-
-# keys.yml `hindsight` entry) instead of hot-looping against it.
-hindsight_docker_retain_llm_initial_backoff: "2.0"
-hindsight_docker_retain_llm_max_backoff: "30.0"
+hindsight_docker_retain_llm_max_retries: 2
+# Hindsight 0.9.0 applies exponential backoff with jitter to provider status
+# errors. Three total attempts and a 30/60-second delay cap retries per call;
+# worker-level retries below are separately bounded.
+hindsight_docker_retain_llm_initial_backoff: "30.0"
+hindsight_docker_retain_llm_max_backoff: "120.0"
+# The 24-hour p99 LLM call latency was 703.339 seconds. Keep one request alive
+# slightly beyond that observed tail; the retain wall limit below covers the
+# bounded provider retry budget. Worker retries run as separate delayed tasks.
+hindsight_docker_retain_llm_timeout: 750
+hindsight_docker_retain_max_completion_tokens: 3072
+# Hindsight 0.9.0 defaults to three worker retries. One delayed task retry
+# bounds the outer loop; provider retries remain exponential and jittered.
+hindsight_docker_worker_max_retries: 1
+hindsight_docker_worker_task_retry_backoff_seconds: 60
 # The base scope (consolidation, reflect, and any operation without its own
 # override) gets the same budget as retain. Upstream defaults are 32 in flight,
 # 3 retries and a 1s initial backoff, and consolidation fans out 4 tag groups
@@ -146,12 +154,10 @@ hindsight_docker_migration_backup_dir: "{{ hindsight_docker_data_dir }}/pre-migr
 # connection.
 hindsight_docker_alembic_script_location: /app/api/hindsight_api/alembic
 
-# Explicit operation wall-clock ceilings, below upstream's loose defaults
-# (retain 3600s / consolidation 7200s). retain and consolidation are set
-# from measured p99 operation duration over a 7-day window, plus margin;
-# reflect and refresh_mental_model have no measured duration data yet and
-# keep a conservative fixed value.
-hindsight_docker_retain_wall_timeout: 720
+# Explicit operation wall-clock ceilings. The retain task ceiling covers three
+# 750s provider attempts and the configured exponential jitter; a worker retry
+# runs as a separate delayed task. Other operation limits remain unchanged.
+hindsight_docker_retain_wall_timeout: 2700
 hindsight_docker_consolidation_wall_timeout: 2400
 hindsight_docker_reflect_wall_timeout: 120
 hindsight_docker_refresh_mental_model_wall_timeout: 120

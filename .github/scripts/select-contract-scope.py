@@ -190,9 +190,16 @@ def select(paths: list[str]) -> dict[str, object]:
         elif path.startswith(("inventory/", "group_vars/", "host_vars/", "playbooks/")) or path == "requirements.yml":
             run_inventory = True
             run_selector_checks = True
+        elif path == ".github/workflows/_llm-router-contract.yml":
+            role_scope("llm_router")
+            run_selector_checks = True
         elif path.startswith(".github/workflows/") or path.startswith(".github/scripts/"):
             run_selector_checks = True
             pytest_targets.add("tests/test_contract_scope_selector.py")
+            if path == ".github/workflows/_llm-router-contract.yml":
+                # The explicit matrix is the router contract manifest; changes
+                # to it must exercise every entry, not just selector checks.
+                role_scope("llm_router")
         elif path.lower().endswith((".md", ".mdx", ".txt")) or path.startswith("docs/"):
             continue
         else:
@@ -201,7 +208,8 @@ def select(paths: list[str]) -> dict[str, object]:
     return {
         "pytest_targets": sorted(pytest_targets),
         "ansible_tests": sorted(ansible_tests),
-        "llm_router_playbooks": sorted(router_tests),
+        "llm_router_playbooks": [" ".join(entry) for entry in matrix
+                                 if " ".join(entry) in router_tests],
         "run_inventory": run_inventory,
         "run_selector_checks": run_selector_checks,
         "unknown": sorted(set(unknown)),

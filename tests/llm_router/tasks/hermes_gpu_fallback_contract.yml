@@ -1,0 +1,65 @@
+---
+- name: Hermes complexity router targets physical profiles and retains its fallback chain
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        _hermes_router.litellm_params.complexity_router_config.tiers.SIMPLE
+        == llm_router_gpu_small_model
+      - >-
+        _hermes_router.litellm_params.complexity_router_config.tiers.MEDIUM
+        == llm_router_gpu_small_model
+      - >-
+        _hermes_router.litellm_params.complexity_router_config.tiers.COMPLEX
+        == llm_router_gpu_medium_a_model
+      - >-
+        _hermes_router.litellm_params.complexity_router_config.tiers.REASONING
+        == llm_router_gpu_medium_a_model
+      - _hermes_router.litellm_params.complexity_router_config.default_model == llm_router_gpu_medium_a_model
+      - llm_router_hermes_cloud_only_fallback_groups | length > 0
+      - >-
+        llm_router_hermes_cloud_only_fallback_groups
+        | difference(_fallback_by_name[hermes_brain_model]) | length == 0
+      - >-
+        _fallback_by_name[hermes_brain_model]
+        == (llm_router_hermes_default_fallback_chain
+            | reject('equalto', llm_router_d1_auto_initial_group) | list)
+      - _fallback_by_name[llm_router_vllm_medium_route_alias] == [llm_router_primary_large_model]
+      - _fallback_by_name[ai_default_model] == [llm_router_primary_large_model]
+      - _active_gpu_aliases | length == llm_router_primary_route_fallback_aliases | length + 1
+      - _active_gpu_aliases | difference(_fallback_by_name.keys() | list) | length == 0
+      - _active_gpu_aliases | difference(_context_fallback_by_name.keys() | list) | length == 0
+      - llm_router_local_fallback_groups | first == llm_router_vllm_medium_model
+      - llm_router_hermes_local_wide_groups | first == llm_router_vllm_medium_model
+      - llm_router_d1_rungs_by_class['local'] | first == llm_router_vllm_medium_model
+      - _fallback_by_name[llm_router_vllm_medium_model] | first == llm_router_primary_large_model
+      - >-
+        _active_gpu_aliases | reject('in', llm_router_primary_route_fallback_aliases)
+        | select('in', _fallback_by_name)
+        | map('extract', _fallback_by_name)
+        | select('equalto', _expected_alias_chain)
+        | list | length == (_active_gpu_aliases
+            | reject('in', llm_router_primary_route_fallback_aliases) | list | length)
+      - >-
+        llm_router_primary_route_fallback_aliases
+        | map('extract', _fallback_by_name) | unique | list
+        == [[llm_router_primary_large_model]]
+  vars:
+    _hermes_router: >-
+      {{ _config.model_list | selectattr('model_name', 'equalto', hermes_brain_model) | first }}
+    _active_gpu_aliases: >-
+      {{ llm_router_model_group_aliases | dict2items
+         | selectattr('value', 'in', _gpu_ids)
+         | map(attribute='key') | list }}
+    _fallback_by_name: >-
+      {{ dict(_config.router_settings.fallbacks | map('dict2items') | flatten
+              | map(attribute='key') | zip(_config.router_settings.fallbacks
+                | map('dict2items') | flatten | map(attribute='value'))) }}
+    _context_fallback_by_name: >-
+      {{ dict(_config.router_settings.context_window_fallbacks | map('dict2items') | flatten
+              | map(attribute='key') | zip(_config.router_settings.context_window_fallbacks
+                | map('dict2items') | flatten | map(attribute='value'))) }}
+    _expected_alias_chain: >-
+      {{ llm_router_hermes_default_fallback_chain
+         | reject('in', llm_router_zdr_unasserted_terminal_rungs)
+         | reject('equalto', llm_router_vllm_medium_model) | list }}

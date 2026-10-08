@@ -1,0 +1,95 @@
+---
+- name: Assert the selected profile renders with registry-owned limits and zero cost
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _gpu_rendered | length == 1
+      - _gpu_ids | length == 1
+      - _gpu_ids == [llm_router_gpu_medium_a_model]
+      - _gpu_rendered[0].model_info.profile == llm_active_profile
+      - item.model_info.profile == _registry_entry.profile
+      - item.model_info.max_input_tokens | int == _registry_entry.context_window | int
+      - item.litellm_params.input_cost_per_token | float == 0
+      - item.litellm_params.output_cost_per_token | float == 0
+      - item.model_info.disable_background_health_check is true
+      - item.litellm_params.api_base == 'http://localhost:10434/v1'
+      # Router admission is registry-owned; the engine separately bounds active sequence slots.
+      - item.litellm_params.max_parallel_requests | int == _registry_entry.max_parallel_requests | int
+      - >-
+        item.litellm_params.max_parallel_requests | int
+        >= _serving_profiles[llm_active_profile].max_num_seqs | int
+    fail_msg: "Rendered GPU deployment {{ item.model_name }} differs from its registry limits."
+  loop: "{{ _gpu_rendered }}"
+  loop_control:
+    label: "{{ item.model_name }}"
+  vars:
+    _registry_entry: >-
+      {{ llm_router_gpu_models | selectattr('client_model_id', 'equalto',
+           item.model_name) | first }}
+
+- name: Capture non-empty virtual keys selected by seed-keys
+  ansible.builtin.set_fact:
+    _seeded_virtual_keys: >-
+      {{ llm_router_virtual_keys | rejectattr('value', 'equalto', '') | list }}
+
+- name: Capture the seeded benchmark key
+  ansible.builtin.set_fact:
+    _benchmark_seed_entry: >-
+      {{ _seeded_virtual_keys | selectattr('alias', 'equalto', 'benchmark') | first }}
+
+- name: Benchmark key enables only with its seeded value and GPU profile
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_gpu_profiles_enabled | bool
+      - llm_router_gpu_models | length > 0
+      - _benchmark_seed_entry.value == bao_apps_secrets.benchmark_llm_router_key
+      - _benchmark_seed_entry.value | length > 0
+      - _benchmark_seed_entry.models == (_gpu_ids | list)
+      - _seeded_virtual_keys | selectattr('alias', 'equalto', 'benchmark') | list | length == 1
+      - _seeded_virtual_keys | selectattr('alias', 'match', '^program-') | list | length == 0
+
+- name: Assert every Hermes profile key can resolve each active GPU model alias
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _gpu_ids | difference(_hermes_profile_scopes) | length == 0
+      - _gpu_aliases | length == 3
+      - _gpu_aliases | difference(_hermes_profile_scopes) | length == 0
+      - >-
+        _production_hermes_brain_model ==
+        llm_router_gpu_model_aliases_by_profile[llm_active_profile]
+      - _production_hermes_brain_model in _gpu_aliases
+      - _production_hermes_brain_model in _hermes_profile_scopes
+      - llm_router_primary_model == llm_router_vllm_medium_route_alias
+      - ai_default_model == (llm_router_primary_registry_aliases | first)
+      - llm_router_model_group_aliases[ai_default_model] == llm_router_vllm_medium_model
+      - llm_router_model_group_aliases[llm_router_vllm_medium_route_alias] == llm_router_vllm_medium_model
+      - _primary_large_aliases | length > 0
+      - >-
+        _primary_large_aliases | difference(_primary_large_aliases_targeted)
+        == (llm_router_primary_route_fallback_aliases
+            | intersect(_primary_large_aliases))
+      - _primary_large_aliases_targeted | length > 0
+      - _config.model_list | selectattr('model_name', 'equalto', llm_router_vllm_medium_model) | list | length == 1
+      - >-
+        _config.model_list
+        | selectattr('model_name', 'equalto', llm_router_primary_large_model)
+        | list | length == 1
+      - llm_router_model_group_aliases['local-medium'] == llm_router_gpu_medium_a_model
+      - "'local-fast' not in llm_router_model_group_aliases"
+      - >-
+        _config.model_list | selectattr('model_name', 'in', _gpu_aliases)
+        | list | length == 0
+  vars:
+    _primary_large_aliases: >-
+      {{ llm_router_registry_enabled
+         | selectattr('client_model_id', 'equalto', llm_router_primary_large_model)
+         | map(attribute='stable_aliases') | first }}
+    _primary_large_aliases_targeted: >-
+      {{ llm_router_model_group_aliases | dict2items
+         | selectattr('value', 'equalto', llm_router_primary_large_model)
+         | map(attribute='key') | list }}
+    _hermes_profile_scopes: >-
+      {{ _llm_router_hermes_profile_keys | map(attribute='models')
+         | flatten | unique | list }}

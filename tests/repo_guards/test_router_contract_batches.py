@@ -59,7 +59,7 @@ def _assert_calls(result, calls, batch):
 def test_matrix_paths_are_nonempty_unique_existing_playbooks():
     paths = [path for batch in BATCHES for path in batch["playbooks"].split()]
     assert all(batch["playbooks"].strip() for batch in BATCHES)
-    assert len(BATCHES) == 32
+    assert len(BATCHES) == 94
     assert all(len(batch["playbooks"].split()) <= 3 for batch in BATCHES)
     assert len(paths) == len(set(paths)) == 96
     assert hashlib.sha256("\n".join(sorted(paths)).encode()).hexdigest() == (
@@ -68,10 +68,11 @@ def test_matrix_paths_are_nonempty_unique_existing_playbooks():
     assert JOB["strategy"]["matrix"]["playbook"] == "${{ fromJSON(inputs.playbooks) }}"
     assert all((ROOT / path).is_file() for path in paths)
     assert JOB["strategy"]["fail-fast"] is False
+    assert JOB["strategy"]["max-parallel"] == 32
 
 
 @pytest.mark.parametrize("batch", BATCHES, ids=lambda batch: str(batch["batch"]))
-def test_every_batch_executes_all_paths_in_independent_cli_processes(tmp_path, batch):
+def test_every_contract_executes_its_path_in_an_independent_cli_process(tmp_path, batch):
     result, calls = _replay(tmp_path, batch)
     assert result.returncode == 0, result.stderr
     _assert_calls(result, calls, batch)
@@ -79,7 +80,9 @@ def test_every_batch_executes_all_paths_in_independent_cli_processes(tmp_path, b
 
 @pytest.mark.parametrize("position", ["early", "middle", "late"])
 def test_any_failure_reaches_the_gate_after_all_paths_run(tmp_path, position):
-    batch = max(BATCHES, key=lambda batch: len(batch["playbooks"].split()))
+    sample = [BATCHES[0], BATCHES[len(BATCHES) // 2], BATCHES[-1]]
+    batch = {"batch": "failure-propagation",
+             "playbooks": " ".join(item["playbooks"] for item in sample)}
     paths = batch["playbooks"].split()
     index = {"early": 0, "middle": len(paths) // 2, "late": len(paths) - 1}[position]
     result, calls = _replay(tmp_path, batch, failure=paths[index])
