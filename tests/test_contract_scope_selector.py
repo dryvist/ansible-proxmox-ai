@@ -265,3 +265,16 @@ def test_seed_fixture_adds_python_guard_and_preserves_full_router_scope() -> Non
                           check=False, capture_output=True, text=True)
     assert full.returncode == 0, full.stderr
     assert set(selection["llm_router_playbooks"]) == set(json.loads(full.stdout)["llm_router_playbooks"])
+
+
+@pytest.mark.parametrize("path", [
+    "roles/hermes_agent/defaults/main/50-webhook-persona-api.yml",
+    "roles/hermes_agent/defaults/main/60-kanban-dispatcher.yml",
+])
+def test_captured_hermes_inputs_reach_existing_contract_family(path: str) -> None:
+    import fnmatch
+    filters = yaml.safe_load(CI_GATE.read_text())["jobs"]["ci"]["with"]["molecule_contract_filters"]
+    assert any(fnmatch.fnmatchcase(path, pattern) for pattern in yaml.safe_load(filters)["contract_only"])
+    result = run_selector(path)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["pytest_targets"] == ["tests/hermes_agent/"]
