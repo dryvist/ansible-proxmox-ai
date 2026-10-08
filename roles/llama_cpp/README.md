@@ -35,9 +35,10 @@ Ordering: `tofu-proxmox` (LXC shell) → `ansible-proxmox` (GPU passthrough) →
 ## What it does
 
 - Installs `curl`, `ca-certificates`, `tar`, `gzip`.
-- Resolves and installs the **latest** llama.cpp release (the `ubuntu-rocm` asset,
-  selected by name pattern so both the build tag and the embedded ROCm version can
-  move without a role change), once behind a presence guard.
+- Installs the Renovate-pinned llama.cpp asset selected for `rocm`, `vulkan`, or
+  `cpu` by the shared `llamacpp_release` contract. The recorded asset triggers
+  installation only when that backend's pin changes; downloads use
+  published inventory cache endpoints.
 - Adds the `llama-cpp` service user to whatever groups own the passed-in GPU device
   nodes (resolved at runtime via `stat`), so the server can open `/dev/kfd` +
   `/dev/dri` regardless of how host GIDs map to container group names (same idiom as
