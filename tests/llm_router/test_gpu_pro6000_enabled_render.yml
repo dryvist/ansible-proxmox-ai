@@ -14,7 +14,16 @@
           ollama_api: 11434
           redis_default: 6379
     bao_local_llm_secrets: {}
-    ai_default_model: "{{ llm_router_primary_model }}"
+    # Exercise the inventory's runtime model override with a synthetic alias:
+    # it must follow the shared primary route without revealing the live value.
+    bao_ai_public_secrets:
+      active_model: "{{ llm_router_primary_registry_aliases | first }}"
+    ai_default_model: >-
+      {{ bao_ai_public_secrets.active_model
+         | default(llm_router_primary_model, true) }}
+    # Match the router fleet group so the existing vLLM model name cannot
+    # collide with the shared route alias.
+    llm_router_llm_vllm_enabled: false
     llm_large_serving_host: llm-large
     llm_router_subdomain: pve.example.test
     llm_router_master_key: sk-test-master
@@ -43,6 +52,8 @@
     - name: Enable profiles and configure only render fixtures
       ansible.builtin.set_fact:
         llm_router_gpu_profiles_enabled: "{{ _enable_gpu_profiles | default(false) | bool }}"
+        llm_router_llm_vllm_enabled: false
+        llm_router_vllm_medium_enabled: true
         bao_local_llm_secrets:
           OPENROUTER_API_KEY: test-openrouter-provider-key
           OPENROUTER_HERMES_KEY: test-openrouter-hermes-provider-key
@@ -77,6 +88,15 @@
     - name: Render the proxy config with GPU profiles enabled
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Save the auto-router tier targets for the switch-off comparison
+      ansible.builtin.set_fact:
+        _auto_router_tiers_enabled: >-
+          {{ (_config.model_list | selectattr('model_name', 'equalto', hermes_brain_model)
+              | first).litellm_params.complexity_router_config.tiers }}
+        _auto_router_initial_enabled: >-
+          {{ (_config.model_list | selectattr('model_name', 'equalto', hermes_brain_model)
+              | first).litellm_params.complexity_router_config.default_model }}
 
     - name: Collect the rendered GPU deployments
       ansible.builtin.set_fact:
@@ -172,21 +192,42 @@
         quiet: true
         that:
           - _gpu_ids | difference(_hermes_profile_scopes) | length == 0
-          - _gpu_aliases | length == 2
+          - _gpu_aliases | length == 3
           - _gpu_aliases | difference(_hermes_profile_scopes) | length == 0
           - >-
             _production_hermes_brain_model ==
-            (llm_router_model_group_aliases | dict2items
-             | selectattr('value', 'equalto', llm_router_hermes_gpu_medium_target)
-             | map(attribute='key') | list | first)
+            llm_router_gpu_model_aliases_by_profile[llm_active_profile]
           - _production_hermes_brain_model in _gpu_aliases
           - _production_hermes_brain_model in _hermes_profile_scopes
+          - llm_router_primary_model == llm_router_vllm_medium_route_alias
+          - ai_default_model == (llm_router_primary_registry_aliases | first)
+          - llm_router_model_group_aliases[ai_default_model] == llm_router_vllm_medium_model
+          - llm_router_model_group_aliases[llm_router_vllm_medium_route_alias] == llm_router_vllm_medium_model
+          - _primary_large_aliases | length > 0
+          - >-
+            _primary_large_aliases | difference(_primary_large_aliases_targeted)
+            == (llm_router_primary_route_fallback_aliases
+                | intersect(_primary_large_aliases))
+          - _primary_large_aliases_targeted | length > 0
+          - _config.model_list | selectattr('model_name', 'equalto', llm_router_vllm_medium_model) | list | length == 1
+          - >-
+            _config.model_list
+            | selectattr('model_name', 'equalto', llm_router_primary_large_model)
+            | list | length == 1
           - llm_router_model_group_aliases['local-medium'] == llm_router_gpu_medium_a_model
           - "'local-fast' not in llm_router_model_group_aliases"
           - >-
             _config.model_list | selectattr('model_name', 'in', _gpu_aliases)
             | list | length == 0
       vars:
+        _primary_large_aliases: >-
+          {{ llm_router_registry_enabled
+             | selectattr('client_model_id', 'equalto', llm_router_primary_large_model)
+             | map(attribute='stable_aliases') | first }}
+        _primary_large_aliases_targeted: >-
+          {{ llm_router_model_group_aliases | dict2items
+             | selectattr('value', 'equalto', llm_router_primary_large_model)
+             | map(attribute='key') | list }}
         _hermes_profile_scopes: >-
           {{ _llm_router_hermes_profile_keys | map(attribute='models')
              | flatten | unique | list }}
@@ -212,15 +253,30 @@
           - >-
             llm_router_hermes_cloud_only_fallback_groups
             | difference(_fallback_by_name[hermes_brain_model]) | length == 0
-          - _fallback_by_name[hermes_brain_model] == llm_router_hermes_default_fallback_chain
-          - _active_gpu_aliases | length == 1
+          - >-
+            _fallback_by_name[hermes_brain_model]
+            == (llm_router_hermes_default_fallback_chain
+                | reject('equalto', llm_router_d1_auto_initial_group) | list)
+          - _fallback_by_name[llm_router_vllm_medium_route_alias] == [llm_router_primary_large_model]
+          - _fallback_by_name[ai_default_model] == [llm_router_primary_large_model]
+          - _active_gpu_aliases | length == llm_router_primary_route_fallback_aliases | length + 1
           - _active_gpu_aliases | difference(_fallback_by_name.keys() | list) | length == 0
           - _active_gpu_aliases | difference(_context_fallback_by_name.keys() | list) | length == 0
+          - llm_router_local_fallback_groups | first == llm_router_vllm_medium_model
+          - llm_router_hermes_local_wide_groups | first == llm_router_vllm_medium_model
+          - llm_router_d1_rungs_by_class['local'] | first == llm_router_vllm_medium_model
+          - _fallback_by_name[llm_router_vllm_medium_model] | first == llm_router_primary_large_model
           - >-
-            _active_gpu_aliases | select('in', _fallback_by_name)
+            _active_gpu_aliases | reject('in', llm_router_primary_route_fallback_aliases)
+            | select('in', _fallback_by_name)
             | map('extract', _fallback_by_name)
             | select('equalto', _expected_alias_chain)
-            | list | length == _active_gpu_aliases | length
+            | list | length == (_active_gpu_aliases
+                | reject('in', llm_router_primary_route_fallback_aliases) | list | length)
+          - >-
+            llm_router_primary_route_fallback_aliases
+            | map('extract', _fallback_by_name) | unique | list
+            == [[llm_router_primary_large_model]]
       vars:
         _hermes_router: >-
           {{ _config.model_list | selectattr('model_name', 'equalto', hermes_brain_model) | first }}
@@ -238,7 +294,8 @@
                     | map('dict2items') | flatten | map(attribute='value'))) }}
         _expected_alias_chain: >-
           {{ llm_router_hermes_default_fallback_chain
-             | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list }}
+             | reject('in', llm_router_zdr_unasserted_terminal_rungs)
+             | reject('equalto', llm_router_vllm_medium_model) | list }}
 
     - name: A saturated active GPU rung can hand off within its profile admission cap
       ansible.builtin.assert:
@@ -294,29 +351,8 @@
           - _benchmark_seed_entry.monthly_budget is not defined
           - "'&zdr' in _benchmark_seed_entry.tags"
 
-    - name: Select the small profile for the registry projection check
-      ansible.builtin.set_fact:
-        llm_active_profile: small
+    - name: Run the primary brain guard against the enabled rendered route
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-safe-models.yml"
 
-    - name: Evaluate the production Hermes selector for the small profile
-      ansible.builtin.set_fact:
-        _production_hermes_brain_model_small: "{{ _production_group_vars.hermes_brain_model }}"
-
-    - name: Project only the 9B profile when the fast profile is selected
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - llm_router_gpu_models | length == 1
-          - llm_router_gpu_models[0].profile == llm_active_profile
-          - >-
-            llm_router_gpu_models[0].max_parallel_requests | int
-            == _registry_entry.max_parallel_requests | int
-          - >-
-            llm_router_gpu_models[0].max_parallel_requests | int
-            >= _serving_profiles[llm_active_profile].max_num_seqs | int
-          - llm_router_model_group_aliases['local-fast'] == llm_router_gpu_small_model
-          - "'local-medium' not in llm_router_model_group_aliases"
-          - _production_hermes_brain_model_small == 'local-fast'
-      vars:
-        _registry_entry: >-
-          {{ _llm_registry_gpu | selectattr('profile', 'equalto', llm_active_profile) | first }}
+    - name: Verify the route switch and sanitized target compatibility
+      ansible.builtin.import_tasks: tasks/gpu_pro6000_route_switch.yml
