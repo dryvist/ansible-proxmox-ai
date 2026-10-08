@@ -114,7 +114,9 @@ def select(paths: list[str]) -> dict[str, object]:
         if role in {"llamacpp_serving", "vllm_serving", "nvidia_gpu_guest", "llm_gpu_serving"}:
             ansible_tests.update(GPU_ANSIBLE)
         if role == "llm_router":
-            pytest_targets.add("tests/llm_gpu_engine_roles/")
+            # hermes_agent tests read the router role defaults (alias and role
+            # contract), so any router change selects them too.
+            pytest_targets.update({"tests/llm_gpu_engine_roles/", "tests/hermes_agent/"})
             router_tests.update(" ".join(entry) for entry in matrix)
 
     for raw_path in paths:
