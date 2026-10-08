@@ -282,3 +282,26 @@ def test_captured_hermes_inputs_reach_existing_contract_family(path: str) -> Non
     result = run_selector(path)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["pytest_targets"] == ["tests/hermes_agent/"]
+
+
+@pytest.mark.parametrize("path", [
+    "roles/llm_router/tasks/main.yml",
+    "llm-models.d/10-large.yml",
+    "tests/fixtures/llm-router-target-output.yml",
+])
+def test_router_scope_preserves_manifest_execution_order(path: str) -> None:
+    result = run_selector(path)
+    assert result.returncode == 0, result.stderr
+    full = json.loads(run_selector("--full").stdout)["llm_router_playbooks"]
+    selected = json.loads(result.stdout)["llm_router_playbooks"]
+    assert selected == full
+    paths = [playbook for group in selected for playbook in group.split()]
+    assert len(paths) == len(set(paths)) == 94
+
+
+def test_changed_router_groups_follow_manifest_order_not_path_order() -> None:
+    full = json.loads(run_selector("--full").stdout)["llm_router_playbooks"]
+    chosen = [full[0], full[-1]]
+    result = run_selector(*(group.split()[0] for group in reversed(chosen)))
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["llm_router_playbooks"] == chosen

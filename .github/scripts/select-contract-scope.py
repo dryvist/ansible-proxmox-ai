@@ -208,7 +208,8 @@ def select(paths: list[str]) -> dict[str, object]:
     return {
         "pytest_targets": sorted(pytest_targets),
         "ansible_tests": sorted(ansible_tests),
-        "llm_router_playbooks": sorted(router_tests),
+        "llm_router_playbooks": [" ".join(entry) for entry in matrix
+                                 if " ".join(entry) in router_tests],
         "run_inventory": run_inventory,
         "run_selector_checks": run_selector_checks,
         "unknown": sorted(set(unknown)),
