@@ -135,12 +135,14 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           GITHUB_REF: ${{ github.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_HEAD: ${{ github.sha }}
         run: |
-          if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+          if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]] ||
+             [[ "$EVENT_NAME" == pull_request && "$BASE_REF" == main ]]; then
             echo 'full_suite=true' >> "$GITHUB_OUTPUT"
             python .github/scripts/select-contract-scope.py --full --output "$GITHUB_OUTPUT"
             exit 0
@@ -159,10 +161,12 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           GITHUB_REF: ${{ github.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           SELECT_RESULT: ${{ steps.select.outcome }}
           SELECTED: ${{ toJSON(steps.select.outputs) }}
         run: |
-          if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+          if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]] ||
+             [[ "$EVENT_NAME" == pull_request && "$BASE_REF" == main ]]; then
             selection=full
           elif [[ "$SELECT_RESULT" != success ]]; then
             selection=failed-unmapped
@@ -205,12 +209,14 @@ jobs:
       ) &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        github.event.pull_request.base.ref == 'main' ||
         needs.ci.outputs.molecule_scenarios != '[]'
       )
     uses: ./.github/workflows/_molecule.yml
     with:
       scenarios: ${{ needs.ci.outputs.molecule_scenarios }}
-      full_suite: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      full_suite: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        github.event.pull_request.base.ref == 'main' }}
     secrets: inherit
 
   # Deliberately UNCONDITIONAL — no `needs: ci`, no change filter. A version
