@@ -105,6 +105,9 @@ def test_non_timeout_curl_failures_still_classify_down() -> None:
     assert (
         "if (( rc != 0 )); then\n"
         "    (( rc == 28 )) && { printf 'busy'; return; }\n"
+        "    # Log the cause of every DOWN: the alert carries no reason otherwise, and a\n"
+        "    # non-429 HTTP failure is only recoverable from this line.\n"
+        "    logger -t hermes-brain-watchdog \"probe down: curl rc=${rc}\"\n"
         "    printf 'down'; return\n"
         "  fi" in probe_fn
     ), "a non-28 curl failure must fall through to printf 'down', not busy"
