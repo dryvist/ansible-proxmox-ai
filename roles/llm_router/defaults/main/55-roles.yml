@@ -85,15 +85,32 @@ _llm_router_cheap_chain: >-
 #
 # Existing database rows remain untouched by the seed; this applies to new
 # roles only until the Admin UI edits them.
+# GPU-first role targets. The switch that moves the shared primary route onto
+# the medium deployment (50-servable.yml) also moves each role below: while the
+# route is active the medium deployment is the role's rung 1 and the role's
+# previous first rung becomes rung 2, so no rung is dropped. While the route is
+# inactive every role keeps its previous target and order.
+_llm_router_review_first: >-
+  {{ llm_router_vllm_medium_model if llm_router_vllm_medium_route_enabled | bool
+     else llm_router_hermes_local_4080_id }}
+_llm_router_review_local_model: >-
+  {{ llm_router_vllm_medium_model if llm_router_vllm_medium_route_enabled | bool
+     else llm_router_routine_model }}
+_llm_router_recorder_model: >-
+  {{ llm_router_vllm_medium_model if llm_router_vllm_medium_route_enabled | bool
+     else llm_router_hermes_local_4080_id }}
+_llm_router_subagent_model: >-
+  {{ llm_router_vllm_medium_model if llm_router_vllm_medium_route_enabled | bool
+     else llm_router_gpu_medium_b_model }}
 llm_router_role_deployments:
   # Try the Pro6000 medium profile first only when the profile switch is on;
   # otherwise its projection resolves to today's 4080 tier. The inventory
   # group alone never activates profiles. The tail is the shared D1 ladder.
   - role: subagent
-    model: "{{ llm_router_gpu_medium_b_model }}"
+    model: "{{ _llm_router_subagent_model }}"
     fallbacks: >-
       {{ ([llm_router_hermes_local_4080_id] + _llm_router_fast_subagent_chain)
-         | reject('equalto', llm_router_gpu_medium_b_model) | unique | list }}
+         | reject('equalto', _llm_router_subagent_model) | unique | list }}
   # Same chain, second name — both Codex's `--profile fast` and this
   # project's own `subagent` naming already have external callers expecting
   # them; see the note above _llm_router_fast_subagent_chain.
@@ -119,8 +136,11 @@ llm_router_role_deployments:
   # The router never stores a recorder prompt body: message logging is off on
   # this role's deployment (seed-roles.yml merges `litellm_params`).
   - role: recorder
-    model: "{{ llm_router_hermes_local_4080_id }}"
-    fallbacks: "{{ [llm_router_routine_model] }}"
+    model: "{{ _llm_router_recorder_model }}"
+    fallbacks: >-
+      {{ (([llm_router_hermes_local_4080_id] if llm_router_vllm_medium_route_enabled | bool else [])
+          + [llm_router_routine_model])
+         | reject('equalto', _llm_router_recorder_model) | unique | list }}
     litellm_params:
       turn_off_message_logging: true
   # Trivial background chores and every CI review. The GPU rung first — the
@@ -131,18 +151,19 @@ llm_router_role_deployments:
     model: "{{ llm_router_auto_router_model }}"
     fallbacks: "{{ _llm_router_cheap_chain }}"
   - role: review-oss
-    model: "{{ llm_router_hermes_local_4080_id }}"
+    model: "{{ _llm_router_review_first }}"
     fallbacks: "{{ _llm_router_review_oss_chain }}"
   - role: review-private
-    model: "{{ llm_router_hermes_local_4080_id }}"
+    model: "{{ _llm_router_review_first }}"
     fallbacks: "{{ _llm_router_review_private_chain }}"
-  # Local-only review: no fallbacks, no default ladder. Targets the resident
-  # full-context studio model directly (same id `judge` uses) rather than the
-  # 4080 — an exact empty fallbacks entry (58-review-roles.yml) keeps it off
+  # Local-only review: no external rung, ever. While the GPU route is active the
+  # medium deployment is rung 1 and the routine model (the same id `judge` used
+  # to target) is rung 2. While it is inactive the role targets the routine
+  # model with an exact empty fallbacks entry, which keeps it off
   # default_fallbacks even when the local backend is down.
   - role: review-local
-    model: "{{ llm_router_routine_model }}"
-    fallbacks: []
+    model: "{{ _llm_router_review_local_model }}"
+    fallbacks: "{{ [llm_router_routine_model] if llm_router_vllm_medium_route_enabled | bool else [] }}"
   # embed/ocr have no same-modality external rung (no cloud embeddings, no
   # cloud OCR in the registry): bounded by the same admission figures as
   # every local rung, they fail FAST on a busy backend rather than hold.
