@@ -1,5 +1,6 @@
 """Exercise the native workflow loop with recorded CLI processes and failures."""
 
+import hashlib
 import json
 import os
 import runpy
@@ -58,8 +59,12 @@ def _assert_calls(result, calls, batch):
 def test_matrix_paths_are_nonempty_unique_existing_playbooks():
     paths = [path for batch in BATCHES for path in batch["playbooks"].split()]
     assert all(batch["playbooks"].strip() for batch in BATCHES)
-    assert len(BATCHES) == 12
+    assert len(BATCHES) == 32
+    assert all(len(batch["playbooks"].split()) <= 3 for batch in BATCHES)
     assert len(paths) == len(set(paths)) == 94
+    assert hashlib.sha256("\n".join(sorted(paths)).encode()).hexdigest() == (
+        "7b353fc37c15e60214242f150bc845aacf48ca47d71d61ec65b17fbea2084b2d"
+    )
     assert JOB["strategy"]["matrix"]["playbook"] == "${{ fromJSON(inputs.playbooks) }}"
     assert all((ROOT / path).is_file() for path in paths)
     assert JOB["strategy"]["fail-fast"] is False
