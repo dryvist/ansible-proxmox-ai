@@ -12,6 +12,10 @@ on:
           the rules producing it live in dryvist/.github's _ansible-ci.yml.
         type: string
         default: ""
+      full_suite:
+        description: Run every discovered Molecule scenario.
+        type: boolean
+        default: false
     secrets:
       DOPPLER_TOKEN:
         description: Doppler service token
@@ -30,7 +34,9 @@ jobs:
       # Narrowed set when the change is attributable, the full on-disk list
       # otherwise. Discovery still runs either way, so a scenario that exists
       # but is absent from the caller's filter map is never invisible here.
-      scenarios: ${{ inputs.scenarios != '' && inputs.scenarios || steps.find.outputs.scenarios }}
+      scenarios: >-
+        ${{ inputs.full_suite && steps.find.outputs.scenarios ||
+        inputs.scenarios != '' && inputs.scenarios || steps.find.outputs.scenarios }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -130,7 +136,5 @@ jobs:
           # the matrix above did. It is a comment, not a gate — a scenario
           # missing from it still runs and still receives the variable below.
           QDRANT_API_KEY: ${{ steps.doppler.outputs.QDRANT_API_KEY }}
-        # --destroy never skips only the run's final destroy step (the
-        # leading cleanup/destroy before create still runs). The runner VM
-        # is discarded after the job, so the final teardown is unneeded work.
-        run: molecule test -s "$MOLECULE_SCENARIO" --destroy never
+        # Run the normal lifecycle, including initial and final destruction.
+        run: molecule test -s "$MOLECULE_SCENARIO"
