@@ -28,6 +28,75 @@ ANSIBLE_TESTS = {
     "tests/llm_gpu_legacy/test_render_host_contract_all.yml",
 }
 
+PYTEST_PATH_TARGETS = {
+    "roles/dify_docker/templates/docker-compose.yml.j2": (
+        "tests/agent_concurrency/test_runner_compose_caps.py"
+    ),
+    "roles/langflow_docker/defaults/main.yml": (
+        "tests/agent_concurrency/test_runner_compose_caps.py"
+    ),
+    "roles/langflow_docker/templates/docker-compose.yml.j2": (
+        "tests/agent_concurrency/test_runner_compose_caps.py"
+    ),
+    "tests/llm_router/fixtures/seed-key-response-shape.json": (
+        "tests/llm_router/test_seed_key_sensitivity_guard.py"
+    ),
+}
+
+LLM_ROUTER_ROLE_TESTS = {
+    "roles/llm_router/defaults/main/40-routing.yml": (
+        "tests/llm_router/test_auto_router_deployment_tags.yml",
+        "tests/llm_router/test_deployment_class_tags.yml",
+        "tests/llm_router/test_hermes_agents.yml",
+    ),
+    "roles/llm_router/defaults/main/56-static-virtual-keys.yml": (
+        "tests/llm_router/test_seed_key_model_allowlist_reconcile.yml",
+        "tests/llm_router/test_seed_key_route_model_reconcile.yml",
+        "tests/llm_router/test_seed_key_trace_reconcile.yml",
+    ),
+    "roles/llm_router/defaults/main/59-key-scopes.yml": (
+        "tests/llm_router/test_review_key_scopes.yml",
+        "tests/llm_router/test_zdr_key_tags.yml",
+    ),
+    "roles/llm_router/tasks/drift-check.yml": (
+        "tests/llm_router/test_drift_live_key_shape.yml",
+        "tests/llm_router/test_router_ui_drift.yml",
+    ),
+    "roles/llm_router/tasks/prepare-role-tag-updates.yml": (
+        "tests/llm_router/test_review_roles.yml",
+    ),
+    "roles/llm_router/tasks/reconcile-seeded-key-policy.yml": (
+        "tests/llm_router/test_seed_key_model_allowlist_reconcile.yml",
+        "tests/llm_router/test_seed_key_route_model_reconcile.yml",
+        "tests/llm_router/test_seed_key_trace_reconcile.yml",
+    ),
+    "roles/llm_router/tasks/seed-keys.yml": (
+        "tests/llm_router/test_seed_key_format_assert.yml",
+        "tests/llm_router/test_seed_key_model_allowlist_reconcile.yml",
+        "tests/llm_router/test_seed_key_route_model_reconcile.yml",
+        "tests/llm_router/test_seed_key_trace_reconcile.yml",
+    ),
+    "roles/llm_router/tasks/seed-roles.yml": (
+        "tests/llm_router/test_review_roles.yml",
+    ),
+    "roles/llm_router/templates/config.yaml.j2": (
+        "tests/llm_router/test_registry_render_parity.yml",
+        "tests/llm_router/test_router_ui_drift.yml",
+    ),
+    "roles/llm_router/templates/model-list-hermes-agents.yaml.j2": (
+        "tests/llm_router/test_hermes_agents.yml",
+    ),
+    "roles/llm_router/templates/model-list-tags.yaml.j2": (
+        "tests/llm_router/test_deployment_class_tags.yml",
+        "tests/llm_router/test_zdr_key_tags.yml",
+    ),
+    "roles/llm_router/templates/model-list.yaml.j2": (
+        "tests/llm_router/test_auto_router_deployment_tags.yml",
+        "tests/llm_router/test_gpu_pro6000_enabled_render.yml",
+        "tests/llm_router/test_registry_render_parity.yml",
+    ),
+}
+
 
 def llm_router_matrix() -> list[list[str]]:
     workflow = Path(".github/workflows/_llm-router-contract.yml").read_text()
@@ -58,11 +127,25 @@ def select(paths: list[str]) -> dict[str, object]:
     matrix = llm_router_matrix()
     matrix_by_test = {test: entry for entry in matrix for test in entry}
 
+    def add_router_tests(tests: tuple[str, ...], raw_path: str) -> None:
+        for test in tests:
+            entry = matrix_by_test.get(test)
+            if entry is None:
+                unknown.append(raw_path)
+            else:
+                router_tests.add(" ".join(entry))
+
     for raw_path in paths:
         path = raw_path.removeprefix("./")
         if not path:
             continue
-        if path.startswith("tests/"):
+        if path in PYTEST_PATH_TARGETS:
+            pytest_targets.add(PYTEST_PATH_TARGETS[path])
+        elif path.startswith("llm-models.d/") and path.endswith((".yml", ".yaml")):
+            add_router_tests(("tests/llm_router/test_registry_render_parity.yml",), raw_path)
+        elif path in LLM_ROUTER_ROLE_TESTS:
+            add_router_tests(LLM_ROUTER_ROLE_TESTS[path], raw_path)
+        elif path.startswith("tests/"):
             if path.startswith("tests/llm_router/") and path.endswith((".yml", ".yaml")):
                 if path not in matrix_by_test:
                     unknown.append(raw_path)
