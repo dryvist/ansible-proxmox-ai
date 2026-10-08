@@ -10,6 +10,7 @@ from typing import Any
 import jinja2
 import pytest
 import yaml
+from jinja2.nativetypes import NativeEnvironment
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO_ROOT / "playbooks"
@@ -210,6 +211,33 @@ def _render(context: dict[str, Any]) -> dict[str, Any]:
     return json.loads(template.render(**context))
 
 
+def _render_converter_argv(model: dict[str, Any]) -> list[str]:
+    convert = _named(
+        _load_tasks(TASKS / "llm-model-campaign-convert.yml"),
+        "Convert the supported tool output to its versioned result envelope",
+    )
+    template = convert["ansible.builtin.command"]["argv"]
+    context = {
+        "_llm_campaign_converter_file": {"path": "/tmp/results.json"},
+        "_llm_campaign_run": {"converter": {"kind": "throughput", "suite": "campaign"}},
+        "_llm_campaign_model": model,
+        "_llm_campaign_port": 8000,
+        "engine": "vllm",
+        "_llm_campaign_concurrency_value": 4,
+        "model_size": "medium",
+        "_llm_campaign_context_value": 8192,
+        "_llm_campaign_gpu_metadata": ["Example GPU", "97887", "100.1", "300.00"],
+        "power_cap_w": "300",
+        "_llm_campaign_cell_controller_dir": "/tmp",
+        "_llm_campaign_cell_slug": "example-cell",
+        "_llm_campaign_repetition_value": 1,
+    }
+
+    argv = NativeEnvironment(undefined=jinja2.StrictUndefined).from_string(template).render(**context)
+    assert isinstance(argv, list)
+    return argv
+
+
 def _cell(**overrides: Any) -> dict[str, Any]:
     context: dict[str, Any] = {
         "engine": "vllm",
@@ -343,26 +371,23 @@ def test_no_leaf_is_written_as_null_and_only_known_groups_appear():
     assert all(value is not None for group in groups.values() for value in group.values())
 
 
-def test_model_task_metadata_is_copied_from_the_selected_artifact():
-    dimensions = _render(
-        _cell(
-            _llm_campaign_model={
-                "artifact_id": "example-artifact",
-                "hf_repo": "example-org/example-model",
-                "revision": "0123456789abcdef0123456789abcdef01234567",
-                "quantization": "ExampleQuant",
-                "model_task": "text-generation",
-                "model_task_source": "model_card",
-            }
-        )
-    )
+@pytest.mark.parametrize(
+    ("metadata", "expected_tags"),
+    [
+        (
+            {"model_task": "text-generation", "model_task_source": "model_card"},
+            ["model_task=text-generation", "model_task_source=model_card"],
+        ),
+        ({}, []),
+    ],
+)
+def test_model_task_metadata_uses_supported_converter_tags(metadata, expected_tags):
+    model = {**_cell()["_llm_campaign_model"], **metadata}
+    dimensions = _render(_cell(_llm_campaign_model=model))
+    argv = _render_converter_argv(model)
+    converter_tags = [
+        argv[index + 1] for index, argument in enumerate(argv[:-1]) if argument == "--tag"
+    ]
 
-    assert dimensions["model_task"] == "text-generation"
-    assert dimensions["model_task_source"] == "model_card"
-
-
-def test_model_task_metadata_is_omitted_when_the_artifact_has_no_tag():
-    dimensions = _render(_cell())
-
-    assert "model_task" not in dimensions
-    assert "model_task_source" not in dimensions
+    assert set(dimensions) == {"campaign_dimensions"}
+    assert [tag for tag in converter_tags if tag.startswith("model_task")] == expected_tags
