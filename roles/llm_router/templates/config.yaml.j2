@@ -66,8 +66,18 @@ router_settings:
     #
   # A ZDR entry point additionally drops every rung without explicit ZDR
   # evidence, including the free and retains classes.
+{% set _gpu_fallback_ids = llm_router_gpu_models | map(attribute='client_model_id') | list %}
 {% for _name in llm_router_entry_point_names %}
-{% set _chain = llm_router_hermes_default_fallback_chain | reject('equalto', _name) | list %}
+{% if _name not in llm_router_hermes_default_fallback_chain %}
+{% set _target = llm_router_model_group_aliases.get(_name, _name) %}
+{% set _chain = llm_router_hermes_default_fallback_chain
+  | reject('equalto', _name) | list %}
+{% if _target in _gpu_fallback_ids %}
+{% set _chain = _chain | reject('equalto', _target) | list %}
+{% endif %}
+{% if _name in llm_router_primary_route_fallbacks %}
+{% set _chain = llm_router_primary_route_fallbacks[_name] %}
+{% endif %}
 {% if llm_router_model_group_aliases.get(_name, _name) == 'hermes-default' %}
 {% set _chain = _chain | reject('equalto', llm_router_d1_auto_initial_group) | list %}
 {% endif %}
@@ -75,6 +85,7 @@ router_settings:
 {% set _chain = _chain | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list %}
 {% endif %}
     - {{ _name | to_json }}: {{ _chain | to_json }}
+{% endif %}
 {% endfor %}
 {% endif %}
 {% endif %}
