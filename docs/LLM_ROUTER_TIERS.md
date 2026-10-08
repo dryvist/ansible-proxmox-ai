@@ -20,7 +20,7 @@ drains to CPU. There is **no** cross-tier fallback — a large
 request that fails surfaces the error rather than silently degrading to a small model.
 
 The Pro6000 router candidates stay disabled and unservable in
-`llm-models.d/60-gpu-pro6000.yml`. Engine profiles remain available for an
+`llm-models.d/60-gpu.yml`. Engine profiles remain available for an
 explicit engine selection; only the inventory-selected profile is activated.
 For the router pool, `inventory/group_vars/llm_router_group.yml` sets
 `llm_router_gpu_profiles_enabled` to true exactly when `llm_gpu_group` has a

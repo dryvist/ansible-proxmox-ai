@@ -14,13 +14,13 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = REPO_ROOT / "roles/llm_router/templates"
-REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
+REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
 VLLM_DEFAULTS = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 LLAMACPP_DEFAULTS = REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml"
 
 
 def _entries() -> list[dict]:
-    return yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
+    return yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
 
 
 def _serving_profiles() -> dict:
