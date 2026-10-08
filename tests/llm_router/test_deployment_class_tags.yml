@@ -62,14 +62,19 @@
           - _bad_deployments | length == 0
           - _bad_zdr_evidence | length == 0
           - _bad_telemetry_tags | length == 0
+          - _bad_sensitivity_routes | length == 0
+          - _sensitive_candidates | length > 0
+          - _unsafe_sensitive_candidates | length == 0
+          - _config.router_settings.enable_tag_filtering | bool
           - _expected_telemetry_tags | difference(_config.litellm_settings.custom_prometheus_tags) | length == 0
           - _config.litellm_settings.callbacks | select('equalto', 'otel') | list | length == 1
           - _config.litellm_settings.callback_settings.otel.message_logging == false
         fail_msg: >-
           policy tags={{ _bad_deployments }}, ZDR evidence mismatches={{ _bad_zdr_evidence }},
-          telemetry tags={{ _bad_telemetry_tags }}
+          telemetry tags={{ _bad_telemetry_tags }}, sensitivity routing={{ _bad_sensitivity_routes }}
+          unsafe sensitive candidates={{ _unsafe_sensitive_candidates }}
         success_msg: >-
-          {{ _deployment_rows | length }} deployments have policy and registry-backed telemetry tags;
+          {{ _deployment_rows | length }} deployments have policy, sensitivity, and registry-backed telemetry tags;
           OTel uses Cribl and prompt/response logging stays off.
       vars:
         _class_names: [sub, local, paid-zdr, free, retains]
@@ -79,6 +84,17 @@
           {{ _config.model_list
              | selectattr('litellm_params.model', 'defined')
              | rejectattr('litellm_params.complexity_router_config', 'defined') | list }}
+        _sensitive_candidates: >-
+          {{ _deployment_rows | selectattr('litellm_params.tags', 'contains', 'sensitivity:sensitive') | list }}
+        _unsafe_sensitive_candidates: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for d in _sensitive_candidates -%}
+          {%- set _tags = d.litellm_params.tags | default([]) -%}
+          {%- if 'local' not in _tags and 'zdr' not in _tags -%}
+          {%- set ns.names = ns.names + [d.model_name ~ ':' ~ (_tags | string)] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.names }}
         _expected_telemetry_tags: >-
           {{ llm_router_deployment_tags_by_entry.values() | flatten
              | select('match', '^telemetry_') | unique | list }}
@@ -89,7 +105,9 @@
           {%- set _policy_tags = _tags | reject('match', '^telemetry_') | list -%}
           {%- set _class = _policy_tags | first | default('') -%}
           {%- if _class not in _class_names
-                or (_policy_tags | difference(['zdr', 'retains', _class]) | length > 0)
+                or (_policy_tags | difference(['zdr', 'retains', _class,
+                    'sensitivity:public', 'sensitivity:sensitive', 'sensitivity:pii']) | length > 0)
+                or 'sensitivity:public' not in _tags
                 or ('retains' in _tags and _class not in ['sub', 'free', 'retains'])
                 or 'default' in _tags
                 or d.model_info.allow_fail_open | default(false) != true -%}
@@ -109,6 +127,27 @@
                 | select('match', '^telemetry_') | list -%}
           {%- if _expected | difference(_actual) | length > 0 or _actual | difference(_expected) | length > 0 -%}
           {%- set ns.rows = ns.rows + [m.client_model_id ~ ':' ~ (_actual | string)] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.rows }}
+        _bad_sensitivity_routes: >-
+          {%- set ns = namespace(rows=[]) -%}
+          {%- for d in _deployment_rows -%}
+          {%- set _tags = d.litellm_params.tags | default([]) -%}
+          {%- set _class = _tags | select('in', _class_names) | first | default('') -%}
+          {%- set _missing = [] -%}
+          {%- if _class == 'local' -%}
+          {%- set _missing = ['sensitivity:public', 'sensitivity:sensitive', 'sensitivity:pii'] | difference(_tags) -%}
+          {%- elif 'zdr' in _tags and _class != 'free' -%}
+          {%- set _missing = ['sensitivity:public', 'sensitivity:sensitive'] | difference(_tags) -%}
+          {%- else -%}
+          {%- set _missing = ['sensitivity:public'] | difference(_tags) -%}
+          {%- endif -%}
+          {%- if _missing | length > 0
+                or ('sensitivity:sensitive' in _tags and 'local' not in _tags and 'zdr' not in _tags)
+                or ('sensitivity:pii' in _tags and 'local' not in _tags)
+                or ('sensitivity:pii' in _tags and 'zdr' in _tags and 'local' not in _tags) -%}
+          {%- set ns.rows = ns.rows + [d.model_name ~ ':' ~ (_tags | string)] -%}
           {%- endif -%}
           {%- endfor -%}
           {{ ns.rows }}

@@ -129,6 +129,46 @@
               - _lines.index('nvidia-smi') < _lines.index(_downloads | first)
             quiet: true
 
+        - name: A busy GPU with a complete store passes without any Hub request
+          vars:
+            _calls_before: "{{ (lookup('file', _calls)).splitlines() | length }}"
+          block:
+            - name: Mark the GPU busy
+              ansible.builtin.file:
+                path: "{{ _scratch.path }}/gpu-busy"
+                state: touch
+                mode: "0644"
+            - name: Include cache-only sync with the store already complete
+              ansible.builtin.include_role:
+                name: nvidia_gpu_guest
+                tasks_from: cache-sync.yml
+              vars:
+                nvidia_gpu_guest_model_cache_mount_path: "{{ _cache }}"
+                nvidia_gpu_guest_model_origin_mount_path: ""
+                nvidia_gpu_guest_hf_bin: "{{ _scratch.path }}/bin/hf"
+                nvidia_gpu_guest_cache_sync_artifact_id: "{{ _artifact_id }}"
+            - name: Read the recorded calls
+              ansible.builtin.slurp:
+                src: "{{ _calls }}"
+              register: _complete_calls
+            - name: The offline check proved the store, so the converge made no Hub or GPU call
+              vars:
+                _new: "{{ (_complete_calls.content | b64decode).splitlines()[_calls_before | int :] }}"
+              ansible.builtin.assert:
+                that:
+                  - _new | select('search', '^hf ') | list | length == 0
+                  - _new | select('search', '^nvidia-smi') | list | length == 0
+                quiet: true
+          always:
+            - name: Clear the GPU marker
+              ansible.builtin.file:
+                path: "{{ _scratch.path }}/gpu-busy"
+                state: absent
+            - name: Remove the complete store so the next pending download is genuine
+              ansible.builtin.file:
+                path: "{{ _cache }}/models/{{ _repo }}"
+                state: absent
+
         - name: A busy GPU with a pending download fails closed
           block:
             - name: Mark the GPU busy

@@ -60,10 +60,10 @@ def test_matrix_paths_are_nonempty_unique_existing_playbooks():
     paths = [path for batch in BATCHES for path in batch["playbooks"].split()]
     assert all(batch["playbooks"].strip() for batch in BATCHES)
     assert len(BATCHES) == 94
-    assert all(len(batch["playbooks"].split()) == 1 for batch in BATCHES)
-    assert len(paths) == len(set(paths)) == 94
+    assert all(len(batch["playbooks"].split()) <= 3 for batch in BATCHES)
+    assert len(paths) == len(set(paths)) == 96
     assert hashlib.sha256("\n".join(sorted(paths)).encode()).hexdigest() == (
-        "7b353fc37c15e60214242f150bc845aacf48ca47d71d61ec65b17fbea2084b2d"
+        "06c8ed5807267068c5d536f93f6e9acdb3e8bb665a1c1f1b1667be7813969604"
     )
     assert JOB["strategy"]["matrix"]["playbook"] == "${{ fromJSON(inputs.playbooks) }}"
     assert all((ROOT / path).is_file() for path in paths)

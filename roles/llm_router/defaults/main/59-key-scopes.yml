@@ -40,6 +40,11 @@ llm_router_deployment_class_by_model: >-
 # The first tag is the deployment's single class. `zdr` is evidence, separate
 # from cost class; non-ZDR subscription/free deployments also carry `retains`
 # so a negative tag constraint can reject them without changing that class.
+# Sensitivity tags are a separate routing dimension: every physical rung
+# accepts public data, only local or explicitly-ZDR non-free rungs accept
+# sensitive data, and only local rungs accept PII. Virtual auto-router entries
+# carry all three classes so LiteLLM can select a class-compatible physical
+# deployment after its native classifier chooses a tier.
 llm_router_deployment_tags_by_model: >-
   {%- set ns = namespace(tags={}) -%}
   {%- for m in llm_router_registry_enabled -%}
@@ -49,6 +54,12 @@ llm_router_deployment_tags_by_model: >-
   {%- set _tags = _tags + ['zdr'] -%}
   {%- elif _class in ['sub', 'free'] -%}
   {%- set _tags = _tags + ['retains'] -%}
+  {%- endif -%}
+  {%- set _tags = _tags + ['sensitivity:public'] -%}
+  {%- if _class == 'local' -%}
+  {%- set _tags = _tags + ['sensitivity:sensitive', 'sensitivity:pii'] -%}
+  {%- elif _class != 'free' and m.zero_data_retention | default(false) -%}
+  {%- set _tags = _tags + ['sensitivity:sensitive'] -%}
   {%- endif -%}
   {%- set _ = ns.tags.update({m.client_model_id: _tags}) -%}
   {%- endfor -%}
@@ -73,6 +84,7 @@ llm_router_deployment_tags_by_entry: >-
   {%- endfor -%}
   {%- if llm_router_large_passthrough_enabled | bool -%}
   {%- set _ = ns.tags.update({'*|large': ['local', 'zdr',
+        'sensitivity:public', 'sensitivity:sensitive', 'sensitivity:pii',
         'telemetry_tier_large', 'telemetry_billing_class_local']}) -%}
   {%- endif -%}
   {{ ns.tags }}
@@ -121,8 +133,10 @@ llm_router_virtual_keys: >-
   {%- set _purpose = (k.metadata | default({})).get('purpose', 'benchmark' if k.alias == 'benchmark' else 'live') -%}
   {%- set _permissions = k.object_permission
         | default(llm_router_mcp_default_object_permission) -%}
+  {%- set _sensitivity_tag = k.sensitivity_tag | default('&sensitivity:sensitive') -%}
   {%- set _ = out.append(k | combine({
         'models': ns.models | unique | list,
+        'sensitivity_tag': _sensitivity_tag,
         'object_permission': _permissions,
         'metadata': {'trace_defaults': {
           'client': k.alias,
