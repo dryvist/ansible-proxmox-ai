@@ -17,30 +17,9 @@ ai_otel_http_port: >-
 # Edge remains the per-guest transcript collector, not the OTLP receiver.
 ai_orchestration_otel_endpoint: "http://cribl-stream.{{ ai_subdomain }}:{{ ai_otel_http_port }}"
 
-# Heavy-tier LLM serving host — short hostname and reserved address, read from
-# the inventory artifact and NEVER written here.
-#
-# This host is a fixed-address reservation made by the network IaC rather than
-# a PVE guest, so it is absent from the tofu inventory's guest list and its
-# address cannot be derived the way every other host's is. Until
-# tofu-proxmox#827 there was nothing to read, so both this repository and
-# ansible-proxmox-apps carried their own copies of the two values, each with a
-# comment telling the reader to change both together. Both repositories are
-# PUBLIC, which made those copies committed topology rather than a committed
-# convention.
-#
-# tofu-proxmox now publishes both as constants.serving.host/.ip, supplied from
-# the private deployment object at apply time. The env vars remain as the
-# operator override and as the supply path while the published artifact is
-# still catching up; what is gone is the third option, a value baked into a
-# public file.
-#
-# DELIBERATELY NO FALLBACK VALUE. Contrast ai_llm_concurrency below, whose
-# rollout shim can safely repeat the published number: a number that matches is
-# harmless, whereas an address that merely looks plausible is not. A wrong
-# address does not fail here — it fails later, somewhere else, as a timeout
-# against a host nobody chose. Absence is therefore reported and asserted
-# (roles/llm_router/tasks/assert-serving-identity.yml) rather than papered over.
+# Resolve the serving identity from published inventory constants, then the
+# environment override. No host or address fallback is supplied. Missing
+# identity is asserted by roles/llm_router/tasks/assert-serving-identity.yml.
 llm_large_serving_host: >-
   {{ ((tofu_data.constants.serving | default({})).host | default('', true))
      or (lookup('env', 'LLM_LARGE_RUNNER_HOST') | split('.') | first) }}
