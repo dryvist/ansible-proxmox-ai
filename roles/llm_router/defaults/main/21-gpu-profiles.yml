@@ -1,0 +1,65 @@
+---
+# Pro6000 GPU profile views over the model registry: the GPU tier, the medium
+# deployment's route alias and models, the profile-keyed model and alias lookups,
+# and the small, medium and max tier targets. Every value is a projection of the
+# registry in 20-registry.yml; no model id is typed here.
+# Pro6000: separate physical GPU serving tier. It is inventory-gated like the
+# CPU pool so this proxy never advertises a backend without a tofu-tagged host.
+llm_router_gpu_models: >-
+  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'gpu') | list }}
+llm_router_vllm_medium_registry_entry: >-
+  {{ llm_router_model_registry | selectattr('tier', 'equalto', 'gpu')
+     | selectattr('profile', 'equalto', 'medium-a') | first }}
+llm_router_vllm_medium_model: "{{ llm_router_vllm_medium_registry_entry.client_model_id }}"
+llm_router_vllm_medium_route_alias: >-
+  {{ llm_router_vllm_medium_registry_entry.stable_aliases | first }}
+llm_router_vllm_medium_route_enabled: >-
+  {{ llm_router_vllm_medium_enabled | bool
+     and llm_router_vllm_medium_model in (llm_router_gpu_models
+         | map(attribute='client_model_id') | list) }}
+llm_router_vllm_medium_route_models: >-
+  {{ llm_router_gpu_models | selectattr('client_model_id', 'equalto', llm_router_vllm_medium_model) | list
+     if llm_router_vllm_medium_route_enabled | bool else [] }}
+llm_router_gpu_profile_aliases: >-
+  {%- set ns = namespace(out=[]) -%}
+  {%- for m in llm_router_model_registry | selectattr('tier', 'equalto', 'gpu') -%}
+  {%- for alias in m.stable_aliases | default([]) -%}
+  {%- if alias != llm_router_vllm_medium_route_alias
+         or llm_router_vllm_medium_route_enabled | bool -%}
+  {%- set ns.out = ns.out + [alias] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {{ ns.out }}
+llm_router_gpu_models_by_profile: >-
+  {%- set ns = namespace(out={}) -%}
+  {%- for m in llm_router_gpu_models -%}
+  {%- set _ = ns.out.update({m.profile: m.client_model_id}) -%}
+  {%- endfor -%}
+  {{ ns.out }}
+llm_router_gpu_model_aliases_by_profile: >-
+  {%- set ns = namespace(out={}) -%}
+  {%- for m in llm_router_gpu_models -%}
+  {%- for alias in m.stable_aliases | default([]) -%}
+  {%- set _ = ns.out.update({m.profile: alias}) -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {{ ns.out }}
+# GPU-first small tier: while the small profile is not the active one, the
+# small tier (the judge role, and the complexity router's simple and medium
+# tiers) resolves to the medium deployment on the GPU host, not the routine
+# model. The judge role keeps the routine model as its fallback. With no GPU
+# profile active this resolves to the routine model exactly as before.
+llm_router_gpu_small_model: >-
+  {{ llm_router_gpu_models_by_profile.get('small',
+       llm_router_gpu_models_by_profile.get('medium-a', llm_router_routine_model)) }}
+llm_router_gpu_medium_a_model: "{{ llm_router_gpu_models_by_profile.get('medium-a', llm_router_primary_large_model) }}"
+llm_router_gpu_medium_b_model: "{{ llm_router_gpu_models_by_profile.get('medium-b', llm_router_hermes_local_4080_id) }}"
+llm_router_gpu_max_model: "{{ llm_router_gpu_models_by_profile.get('max', llm_router_primary_large_model) }}"
+# The complexity router targets tagged physical deployments. Stable aliases are
+# for callers that select a profile directly; LiteLLM's auto-router needs each
+# tier target to resolve to a tagged model-list entry.
+llm_router_hermes_gpu_fast_target: >-
+  {{ llm_router_gpu_small_model }}
+llm_router_hermes_gpu_medium_target: >-
+  {{ llm_router_gpu_models_by_profile.get('medium-a', llm_router_primary_large_model) }}
