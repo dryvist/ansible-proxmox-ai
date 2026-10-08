@@ -44,15 +44,15 @@ def test_changed_llm_router_playbook_selects_its_matrix_entry() -> None:
     assert "tests/llm_router/test_review_key_scopes.yml" in selection["llm_router_playbooks"][0].split()
 
 
-def test_changed_paired_router_playbook_keeps_its_pair() -> None:
+def test_changed_router_playbook_selects_only_its_playbook() -> None:
     result = run_selector("tests/llm_router/test_service_restart_policy.yml")
 
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
     assert len(selection["llm_router_playbooks"]) == 1
-    assert {"tests/llm_router/test_service_restart_policy.yml",
-            "tests/llm_router/test_syslog_route_outside_rolling_play.yml"} <= set(
-        selection["llm_router_playbooks"][0].split())
+    assert selection["llm_router_playbooks"][0].split() == [
+        "tests/llm_router/test_service_restart_policy.yml"
+    ]
 
 
 def test_unmapped_role_fails_fast() -> None:
@@ -97,7 +97,7 @@ def test_full_suite_keeps_every_router_matrix_entry() -> None:
 
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
-    assert len(selection["llm_router_playbooks"]) == 32
+    assert len(selection["llm_router_playbooks"]) == 94
 
 
 def test_full_suite_covers_main_pushes_and_promotion_prs() -> None:
@@ -113,6 +113,10 @@ def test_full_suite_covers_main_pushes_and_promotion_prs() -> None:
         CI_GATE.parents[0] / "_molecule.yml"
     ).read_text()
     assert "github.event_name == 'push' && github.ref == 'refs/heads/develop'" in workflow
+    matrix_edit = json.loads(run_selector(".github/workflows/_llm-router-contract.yml").stdout)
+    full = json.loads(run_selector("--full").stdout)
+    assert matrix_edit["run_selector_checks"]
+    assert set(matrix_edit["llm_router_playbooks"]) == set(full["llm_router_playbooks"])
     assert "tests/test_contract_scope_selector.py" in workflow
 
 
@@ -160,7 +164,7 @@ def test_registry_selects_all_consumers_without_global_pytest() -> None:
     assert selection["run_selector_checks"]
     assert {"tests/nvidia_gpu_guest/", "tests/llm_model_campaign/", "tests/hermes_agent/"} <= set(
         selection["pytest_targets"])
-    assert len(selection["llm_router_playbooks"]) == 32
+    assert len(selection["llm_router_playbooks"]) == 94
     assert "tests/nvidia_gpu_guest/test_cache_only_sync.yml" in selection["ansible_tests"]
 
 
@@ -191,7 +195,7 @@ def test_actual_scope_step_dispatches_full_or_focused(
     assert selected["full_suite"] == str(expected_full).lower()
     targets = json.loads(selected["pytest_targets"])
     assert targets == (["tests/"] if expected_full else ["tests/test_contract_scope_selector.py"])
-    assert len(json.loads(selected["llm_router_playbooks"])) == (32 if expected_full else 0)
+    assert len(json.loads(selected["llm_router_playbooks"])) == (94 if expected_full else 0)
 
 
 @pytest.mark.parametrize(("event", "ref", "base", "allows_skips"), [
@@ -278,3 +282,26 @@ def test_captured_hermes_inputs_reach_existing_contract_family(path: str) -> Non
     result = run_selector(path)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["pytest_targets"] == ["tests/hermes_agent/"]
+
+
+@pytest.mark.parametrize("path", [
+    "roles/llm_router/tasks/main.yml",
+    "llm-models.d/10-large.yml",
+    "tests/fixtures/llm-router-target-output.yml",
+])
+def test_router_scope_preserves_manifest_execution_order(path: str) -> None:
+    result = run_selector(path)
+    assert result.returncode == 0, result.stderr
+    full = json.loads(run_selector("--full").stdout)["llm_router_playbooks"]
+    selected = json.loads(result.stdout)["llm_router_playbooks"]
+    assert selected == full
+    paths = [playbook for group in selected for playbook in group.split()]
+    assert len(paths) == len(set(paths)) == 94
+
+
+def test_changed_router_groups_follow_manifest_order_not_path_order() -> None:
+    full = json.loads(run_selector("--full").stdout)["llm_router_playbooks"]
+    chosen = [full[0], full[-1]]
+    result = run_selector(*(group.split()[0] for group in reversed(chosen)))
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["llm_router_playbooks"] == chosen
