@@ -82,9 +82,35 @@
       {{ not nvidia_gpu_guest_cache_sync_origin_declared
          or (nvidia_gpu_guest_cache_sync_mode | default('pull')) == 'pull' }}
 
+# A store already complete at the pinned revision is proven by the same sidecar
+# check the converge verifies with, so it needs no Hub request: the preview and
+# the download below are skipped for it. Exit 1 is the verifier's verdict that
+# the store is not complete; any other exit code is a crash and stays fatal.
+- name: Check the pinned artifact store offline before any Hub request
+  ansible.builtin.script:
+    cmd: >-
+      {{ role_path }}/files/verify-local-model-store.py
+      --root {{ nvidia_gpu_guest_cache_sync_download_directory | quote }}
+      --revision {{ nvidia_gpu_guest_cache_sync_artifact.revision | quote }}
+      --include-globs {{ nvidia_gpu_guest_cache_sync_artifact.include_globs | to_json | quote }}
+  register: nvidia_gpu_guest_cache_sync_offline_check
+  become: true
+  become_user: "{{ nvidia_gpu_guest_user }}"
+  changed_when: false
+  failed_when: nvidia_gpu_guest_cache_sync_offline_check.rc not in [0, 1]
+  check_mode: false
+  when: nvidia_gpu_guest_cache_sync_operation == 'download'
+
+- name: Record whether the pinned artifact store is already complete
+  ansible.builtin.set_fact:
+    nvidia_gpu_guest_cache_sync_store_complete: "{{ nvidia_gpu_guest_cache_sync_offline_check.rc | default(1) == 0 }}"
+  when: nvidia_gpu_guest_cache_sync_operation == 'download'
+
 - name: Require the artifact cache for Hub downloads
   ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/require-proxy.yml"
-  when: nvidia_gpu_guest_cache_sync_operation == 'download'
+  when:
+    - nvidia_gpu_guest_cache_sync_operation == 'download'
+    - not (nvidia_gpu_guest_cache_sync_store_complete | default(false) | bool)
 
 - name: Inspect the declared model-origin mount
   ansible.builtin.stat:
@@ -188,7 +214,9 @@
     label: "{{ nvidia_gpu_guest_cache_sync_artifact.artifact_id }}:{{ item }}"
   register: nvidia_gpu_guest_cache_sync_previews
   changed_when: false
-  when: nvidia_gpu_guest_cache_sync_operation == 'download'
+  when:
+    - nvidia_gpu_guest_cache_sync_operation == 'download'
+    - not (nvidia_gpu_guest_cache_sync_store_complete | default(false) | bool)
 
 - name: Resolve whether any registered include would download files
   ansible.builtin.set_fact:
@@ -267,6 +295,7 @@
   when:
     - not ansible_check_mode
     - nvidia_gpu_guest_cache_sync_operation == 'download'
+    - not (nvidia_gpu_guest_cache_sync_store_complete | default(false) | bool)
   changed_when: >-
     'Will download 0 files' not in
     nvidia_gpu_guest_cache_sync_previews.results[ansible_loop.index0].stdout

@@ -1,0 +1,128 @@
+---
+- name: Verify DB role tags follow their live routing target
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: fixture-openrouter
+    llm_router_subdomain: localhost
+    llm_router_llm_large_base_url: http://localhost/v1
+    llm_router_llm_light_base_url: http://localhost/v1
+    llm_router_llm_fast_base_url: http://localhost/v1
+    llm_router_llm_vllm_base_url: http://localhost/v1
+    llm_router_llm_gpu_base_url: http://localhost/v1
+  tasks:
+    - name: Load router defaults and registry projections
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+        public: true
+
+    - name: Select local, retaining, and native complexity-router targets
+      ansible.builtin.set_fact:
+        _local_target: "{{ llm_router_hermes_local_4080_id }}"
+        _retaining_target: >-
+          {{ _llm_router_role_params | dict2items
+             | selectattr('value.tags', 'defined')
+             | selectattr('value.tags', 'contains', 'retains')
+             | map(attribute='key') | first }}
+        _router_target: >-
+          {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-router')
+             | map(attribute='client_model_id') | select('in', _llm_router_role_params)
+             | first }}
+
+    - name: Declare the roles represented by the live fixture
+      ansible.builtin.set_fact:
+        llm_router_role_deployments:
+          - {role: local-role, model: "{{ _local_target }}", fallbacks: []}
+          - {role: redirected-role, model: "{{ _local_target }}", fallbacks: []}
+          - {role: unknown-role, model: "{{ _local_target }}", fallbacks: []}
+          - {role: auto-router-role, model: "{{ _router_target }}", fallbacks: []}
+        _llm_router_roles_for_tag_sync:
+          json:
+            data:
+              - model_name: local-role
+                litellm_params:
+                  model: "{{ _llm_router_role_params[_local_target].model }}"
+                  api_base: "{{ _llm_router_role_params[_local_target].api_base }}"
+                  tags: [local, zdr, operator-note, sensitivity:public]
+                model_info: {id: local-role-id}
+              - model_name: redirected-role
+                litellm_params:
+                  model: "{{ _llm_router_role_params[_retaining_target].model }}"
+                  api_base: "{{ _llm_router_role_params[_retaining_target].api_base | default('') }}"
+                  tags: [local, zdr, operator-note, sensitivity:sensitive, sensitivity:pii]
+                model_info: {id: redirected-role-id}
+              - model_name: unknown-role
+                litellm_params:
+                  model: unsupported/target
+                  api_base: http://localhost/v1
+                  tags: [local, zdr, operator-note, sensitivity:sensitive, sensitivity:pii]
+                model_info: {id: unknown-role-id}
+              - model_name: auto-router-role
+                litellm_params:
+                  model: "{{ _llm_router_role_params[_router_target].model }}"
+                  tags: [retains, sensitivity:public]
+                model_info: {id: auto-router-role-id}
+
+    - name: Run the production role-tag projection
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/prepare-role-tag-updates.yml"
+
+    - name: A recognized local role accepts all classes and preserves operator tags
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _local.tags | difference([
+              'local', 'zdr', 'operator-note', 'sensitivity:public',
+              'sensitivity:sensitive', 'sensitivity:pii'
+            ]) | length == 0
+          - _local.tags | length == 6
+          - _local.model_id == 'local-role-id'
+        fail_msg: "Local role tags: {{ _local.tags }}"
+      vars:
+        _local: "{{ _llm_router_role_tag_updates | selectattr('role', 'equalto', 'local-role') | first }}"
+
+    - name: A known retaining UI retarget removes sensitive and PII admission
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'sensitivity:public' in _redirected.tags"
+          - "'sensitivity:sensitive' not in _redirected.tags"
+          - "'sensitivity:pii' not in _redirected.tags"
+          - "'retains' in _redirected.tags"
+          - "'operator-note' in _redirected.tags"
+      vars:
+        _redirected: "{{ _llm_router_role_tag_updates | selectattr('role', 'equalto', 'redirected-role') | first }}"
+
+    - name: Unknown UI targets fail closed as retaining and public-only
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _unknown.tags | sort == ['operator-note', 'retains', 'sensitivity:public']
+      vars:
+        _unknown: "{{ _llm_router_role_tag_updates | selectattr('role', 'equalto', 'unknown-role') | first }}"
+
+    - name: Native auto-router roles keep all classes for downstream filtered selection
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - "'sensitivity:public' in _auto.tags"
+          - "'sensitivity:sensitive' in _auto.tags"
+          - "'sensitivity:pii' in _auto.tags"
+          - "'retains' in _auto.tags"
+      vars:
+        _auto: "{{ _llm_router_role_tag_updates | selectattr('role', 'equalto', 'auto-router-role') | first }}"

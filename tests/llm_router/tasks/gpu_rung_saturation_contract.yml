@@ -1,0 +1,33 @@
+---
+- name: A saturated active GPU rung can hand off within its profile admission cap
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _gpu_rendered | length == 1
+      - _gpu_rendered[0].litellm_params.max_parallel_requests | int >= _active_slots | int
+      - _active_alias in _fallback_by_name
+      - _fallback_by_name[_active_alias] | length > 0
+      - _active_alias not in _fallback_by_name[_active_alias]
+      - _active_rate_limit_retries | int == 0
+      - _config.router_settings.enable_tag_filtering | bool
+      - _config.router_settings.retry_policy.RateLimitErrorRetries | int == 0
+    fail_msg: >-
+      Active rung {{ _active_alias }} cap={{ _gpu_rendered[0].litellm_params.max_parallel_requests }}
+      retries={{ _active_rate_limit_retries }} fallback={{ _fallback_by_name.get(_active_alias, []) }}.
+    success_msg: >-
+      The GPU admission cap covers {{ _active_slots }} active engine slots, and saturation hands
+      to its rendered, tag-filtered fallback ladder without retrying the same rung.
+  vars:
+    _active_gpu_aliases: >-
+      {{ llm_router_model_group_aliases | dict2items
+         | selectattr('value', 'in', _gpu_ids) | map(attribute='key') | list }}
+    _fallback_by_name: >-
+      {{ dict(_config.router_settings.fallbacks | map('dict2items') | flatten
+              | map(attribute='key') | zip(_config.router_settings.fallbacks
+                | map('dict2items') | flatten | map(attribute='value'))) }}
+    _active_alias: "{{ _active_gpu_aliases | first }}"
+    _active_slots: "{{ _serving_profiles[llm_active_profile].max_num_seqs }}"
+    _active_rate_limit_retries: >-
+      {{ ((_config.router_settings.model_group_retry_policy | default({}))
+          .get(_active_alias, {}))
+         .get('RateLimitErrorRetries', _config.router_settings.retry_policy.RateLimitErrorRetries) }}
