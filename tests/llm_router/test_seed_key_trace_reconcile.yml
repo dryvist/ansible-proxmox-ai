@@ -1,11 +1,11 @@
 ---
-- name: Existing keys receive trace defaults without changing UI policy
+- name: Existing keys receive trace and sensitivity defaults without changing UI policy
   hosts: localhost
   gather_facts: false
   vars:
     _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
     llm_router_seed_mode: initial
-    _llm_router_live_key_aliases: [steady]
+    _llm_router_live_key_aliases: [steady, class-only]
     llm_router_mcp_default_object_permission:
       mcp_servers: [no-mcp-servers]
   tasks:
@@ -35,6 +35,9 @@
             metadata:
               trace_defaults: {client: steady, purpose: live}
               trace_required: [run_id]
+          - alias: class-only
+            value: sk-test-class-key
+            models: [cheap]
         llm_router_existing_keys:
           json:
             keys:
@@ -46,19 +49,47 @@
                   other: keep-me
                   trace_defaults: {client: outdated}
                 object_permission: {mcp_servers: [no-mcp-servers]}
+              - key_alias: class-only
+                models: [cheap]
+                metadata:
+                  app: class-only
+                  tier: local
+                  tags: [keep-tag, '&sensitivity:public']
+                object_permission: {mcp_servers: [no-mcp-servers]}
 
     - name: Initial mode updates trace defaults while preserving UI policy
       ansible.builtin.assert:
         quiet: true
         that:
-          - _trace_updates | length == 1
-          - "_trace_updates[0].body.metadata.trace_defaults == {'client': 'steady', 'purpose': 'live'}"
-          - _trace_updates[0].body.metadata.trace_required == ['run_id']
-          - _trace_updates[0].body.metadata.app == 'ui-owned-app'
-          - _trace_updates[0].body.metadata.tags == ['ui-edited']
-          - _trace_updates[0].body.metadata.other == 'keep-me'
-          - "'models' not in _trace_updates[0].body"
-          - "'allowed_routes' not in _trace_updates[0].body"
+          - _trace_updates | length == 2
+          - >-
+            (_trace_updates | selectattr('alias', 'equalto', 'steady') | first).body.metadata.trace_defaults
+            == {'client': 'steady', 'purpose': 'live'}
+          - >-
+            (_trace_updates | selectattr('alias', 'equalto', 'steady') | first).body.metadata.trace_required
+            == ['run_id']
+          - >-
+            (_trace_updates | selectattr('alias', 'equalto', 'steady') | first).body.metadata.app
+            == 'ui-owned-app'
+          - >-
+            (_trace_updates | selectattr('alias', 'equalto', 'steady') | first).body.metadata.tags
+            == ['ui-edited', '&sensitivity:sensitive']
+          - >-
+            (_trace_updates | selectattr('alias', 'equalto', 'steady') | first).body.metadata.other
+            == 'keep-me'
+          - >-
+            'models' not in (_trace_updates | selectattr('alias', 'equalto', 'steady') | first).body
+          - >-
+            'allowed_routes' not in (_trace_updates | selectattr('alias', 'equalto', 'steady') | first).body
+          - >-
+            (_trace_updates | selectattr('alias', 'equalto', 'class-only') | first).body.metadata.tags
+            == ['keep-tag', '&sensitivity:sensitive']
+          - >-
+            'trace_defaults' not in
+            (_trace_updates | selectattr('alias', 'equalto', 'class-only') | first).body.metadata
+          - >-
+            'trace_required' not in
+            (_trace_updates | selectattr('alias', 'equalto', 'class-only') | first).body.metadata
 
     - name: Remove the temporary expression
       ansible.builtin.file:

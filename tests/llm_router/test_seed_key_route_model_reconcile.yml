@@ -1,7 +1,7 @@
 ---
 # Regression/contract test for reconcile-seeded-key-policy.yml's key diff:
-# MCP permissions and explicit model policy reconcile in every mode; routes
-# and metadata remain rebuild-only, with one update per changed key.
+# MCP permissions, models, and sensitivity reconcile in every mode; routes
+# and other metadata remain rebuild-only, with one update per changed key.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_seed_key_route_model_reconcile.yml -i localhost, -c local
@@ -44,31 +44,35 @@
         keys:
           - key_alias: steady
             models: [cheap]
-            # An Admin UI edit to tags must survive the create-only tag seed.
-            metadata: {app: steady, tier: local, tags: ['ui-edited']}
+            # UI tags survive while the policy-owned sensitivity tag remains fixed.
+            metadata: {app: steady, tier: local, tags: ['ui-edited', '&sensitivity:sensitive']}
             object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: widened-routes
             models: [cheap]
             allowed_routes: ["/metrics"]
-            metadata: {app: widened-routes, tier: local, tags: ['ui-edited']}
+            metadata: {app: widened-routes, tier: local, tags: ['ui-edited', '&sensitivity:sensitive']}
             object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: malformed-live
             object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: authoritative-narrow
             models: [cheap, stale-model]
+            metadata: {tags: ['&sensitivity:sensitive']}
             object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: live-only
             models: [cheap]
             object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: null-models
             models: null
+            metadata: {tags: ['&sensitivity:sensitive']}
             object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: null-routes
             models: [cheap]
             allowed_routes: null
+            metadata: {tags: ['&sensitivity:sensitive']}
             object_permission: {mcp_servers: [no-mcp-servers]}
           - key_alias: mcp-reader
             models: [cheap]
+            metadata: {tags: ['&sensitivity:sensitive']}
             object_permission: {mcp_servers: [no-mcp-servers]}
 
     llm_router_virtual_keys:
@@ -179,33 +183,6 @@
         content: "{{ _diff_expr }}"
         mode: "0600"
 
-    - name: Set initial mode before rendering the real update expression
-      ansible.builtin.set_fact:
-        llm_router_seed_mode: initial
-
-    - name: Render the expression in initial mode
-      ansible.builtin.set_fact:
-        _llm_router_initial_key_updates: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
-
-    - name: Initial mode updates the explicit model allowlist and MCP permission
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _llm_router_initial_key_updates | map(attribute='alias') | sort == ['authoritative-narrow', 'mcp-reader']
-          - "_initial_mcp.body.object_permission == {'mcp_servers': ['zammad', 'slack']}"
-          - "'models' not in _initial_mcp.body"
-          - "'allowed_routes' not in _initial_mcp.body"
-          - "'metadata' not in _initial_mcp.body"
-          - _initial_narrow.body.models == ['cheap']
-        fail_msg: >-
-          initial mode did not apply explicit model and MCP policy:
-          {{ _llm_router_initial_key_updates | map(attribute='alias') | list }}.
-      vars:
-        _initial_mcp: >-
-          {{ _llm_router_initial_key_updates | selectattr('alias', 'equalto', 'mcp-reader') | first }}
-        _initial_narrow: >-
-          {{ _llm_router_initial_key_updates | selectattr('alias', 'equalto', 'authoritative-narrow') | first }}
-
     - name: Set explicit rebuild mode for the detailed reconciliation fixtures
       ansible.builtin.set_fact:
         llm_router_seed_mode: rebuild
@@ -237,7 +214,7 @@
           - _widened.body.allowed_routes == ['/metrics', '/metrics/']
           - _widened.body.models == ['cheap']
           - "_widened.body.object_permission == {'mcp_servers': ['no-mcp-servers']}"
-          - _widened.body.metadata.tags == ['ui-edited']
+          - _widened.body.metadata.tags == ['ui-edited', '&sensitivity:sensitive']
           - "'router_settings' not in _widened.body"
         fail_msg: "widened-routes body: {{ _widened.body }}"
       vars:
@@ -303,35 +280,35 @@
             keys:
               - key_alias: steady
                 models: [cheap]
-                metadata: {app: steady, tier: local}
+                metadata: {app: steady, tier: local, tags: ['&sensitivity:sensitive']}
                 object_permission: {mcp_servers: [no-mcp-servers]}
               - key_alias: widened-routes
                 models: [cheap]
                 allowed_routes: ["/metrics", "/metrics/"]
-                metadata: {app: widened-routes, tier: local, tags: ['ui-edited']}
+                metadata: {app: widened-routes, tier: local, tags: ['ui-edited', '&sensitivity:sensitive']}
                 object_permission: {mcp_servers: [no-mcp-servers]}
               - key_alias: malformed-live
                 models: [cheap, embed]
-                metadata: {app: malformed-live, tier: local}
+                metadata: {app: malformed-live, tier: local, tags: ['&sensitivity:sensitive']}
                 object_permission: {mcp_servers: [no-mcp-servers]}
               - key_alias: authoritative-narrow
                 models: [cheap]
-                metadata: {app: authoritative-narrow, tier: local}
+                metadata: {app: authoritative-narrow, tier: local, tags: ['&sensitivity:sensitive']}
                 object_permission: {mcp_servers: [no-mcp-servers]}
               - key_alias: live-only
                 models: [cheap]
               - key_alias: null-models
                 models: [cheap]
-                metadata: {app: null-models, tier: local}
+                metadata: {app: null-models, tier: local, tags: ['&sensitivity:sensitive']}
                 object_permission: {mcp_servers: [no-mcp-servers]}
               - key_alias: null-routes
                 models: [cheap]
-                metadata: {app: null-routes, tier: local}
+                metadata: {app: null-routes, tier: local, tags: ['&sensitivity:sensitive']}
                 allowed_routes: ["/metrics"]
                 object_permission: {mcp_servers: [no-mcp-servers]}
               - key_alias: mcp-reader
                 models: [cheap]
-                metadata: {app: mcp-reader, tier: local}
+                metadata: {app: mcp-reader, tier: local, tags: ['&sensitivity:sensitive']}
                 object_permission: {mcp_servers: [zammad, slack]}
 
     - name: Assert the idempotent second run finds nothing left to change

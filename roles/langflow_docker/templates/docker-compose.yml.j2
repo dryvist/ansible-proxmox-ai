@@ -27,12 +27,25 @@ services:
       - {{ langflow_docker_postgres_data_dir }}:{{ langflow_docker_postgres_internal_data }}
     restart: {{ langflow_docker_restart_policy }}
 
+  {{ langflow_docker_redis_service }}:
+    image: {{ langflow_docker_redis_image }}
+    logging: *langflow_docker_logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: {{ langflow_docker_restart_policy }}
+
   {{ langflow_docker_app_service }}:
     image: {{ langflow_docker_app_image }}
     container_name: "{{ langflow_docker_container_name }}"
     logging: *langflow_docker_logging
     depends_on:
-      - {{ langflow_docker_db_service }}
+      {{ langflow_docker_db_service }}:
+        condition: service_started
+      {{ langflow_docker_redis_service }}:
+        condition: service_healthy
     environment:
       LANGFLOW_DATABASE_URL: "{{ langflow_docker_database_url }}"
       LANGFLOW_SUPERUSER: "{{ langflow_docker_superuser }}"
@@ -46,6 +59,10 @@ services:
       # reachable (LangFlow otherwise binds the loopback in some builds).
       LANGFLOW_HOST: "0.0.0.0"
       LANGFLOW_PORT: "{{ langflow_docker_web_port }}"
+      LANGFLOW_WORKERS: "{{ ai_agent_default_concurrency }}"
+      LANGFLOW_GUNICORN_PRELOAD: "true"
+      LANGFLOW_JOB_QUEUE_TYPE: "redis"
+      LANGFLOW_REDIS_QUEUE_URL: "redis://{{ langflow_docker_redis_service }}:{{ langflow_docker_redis_port }}/1"
     ports:
       - "{{ langflow_docker_web_port }}:{{ langflow_docker_web_port }}"
     volumes:
