@@ -69,7 +69,7 @@ def test_llm_router_role_paths_select_the_complete_router_contract() -> None:
     selection = json.loads(result.stdout)
     full = json.loads(run_selector("--full").stdout)
     assert set(selection["llm_router_playbooks"]) == set(full["llm_router_playbooks"])
-    assert "tests/llm_gpu_engine_roles/" in selection["pytest_targets"]
+    assert {"tests/llm_gpu_engine_roles/", "tests/hermes_agent/"} <= set(selection["pytest_targets"])
 
 
 def test_unmapped_yaml_contract_fails_fast() -> None:
