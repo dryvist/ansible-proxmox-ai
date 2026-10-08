@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
+REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
 ARTIFACT_FILE = REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml"
 PROFILE_FILE = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 GIB = 2**30
@@ -54,7 +54,7 @@ def test_qwen38_profile_matrix_covers_context_slots_and_kv_dtype():
 
 def test_candidate_profiles_fit_the_96_gib_memory_screen_and_stay_inactive():
     profiles = yaml.safe_load(PROFILE_FILE.read_text(encoding="utf-8"))["vllm_serving_profiles"]
-    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
+    entries = yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
     artifacts = yaml.safe_load(ARTIFACT_FILE.read_text(encoding="utf-8"))["_llm_model_artifacts_nvfp4_sweep"]
     artifacts_by_id = {artifact["artifact_id"]: artifact for artifact in artifacts}
     entries_by_profile = {entry["profile"]: entry for entry in entries}
