@@ -12,7 +12,7 @@ PROFILE_DEFAULTS = {
     **yaml.safe_load((REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml").read_text(encoding="utf-8"))["vllm_serving_profiles"],
     **yaml.safe_load((REPO_ROOT / "roles/llamacpp_serving/defaults/main/10-profiles.yml").read_text(encoding="utf-8"))["llamacpp_serving_profiles"],
 }
-REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu-pro6000.yml"
+REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
 FLOOR_FIELDS = {
     "concurrency",
     "input_len",
@@ -28,7 +28,7 @@ def _profiles() -> dict:
 
 
 def _entries() -> list[dict]:
-    return yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu_pro6000"]
+    return yaml.safe_load(REGISTRY_FILE.read_text(encoding="utf-8"))["_llm_registry_gpu"]
 
 
 def _floor_complete(floor: object) -> bool:

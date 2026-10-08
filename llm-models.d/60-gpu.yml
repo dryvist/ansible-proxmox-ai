@@ -1,14 +1,8 @@
 ---
-# Candidate Pro6000 profiles. Model bytes and quantization live once in the
-# artifact shards; these router entries reference artifact ids and keep only
-# the client-facing profile contract.
-#
-# max_parallel_requests is the router admission ceiling, independent of the
-# vLLM profile's max_num_seqs. Sweep entries admit up to 64 in-flight requests
-# while vLLM's slots queue excess work. tests/llm_router/test_gpu_pro6000_registry.py
-# pins this split. The router renders only the active profile's entry, so the
-# limit follows llm_active_profile on the next router converge.
-_llm_registry_gpu_pro6000:
+# Shared router profiles reference artifact shards for model bytes/quantization.
+# Regular limits follow max_num_seqs; medium-a/sweeps admit 64 and queue in-engine.
+# Only llm_active_profile renders. test_gpu_registry.py checks admission limits.
+_llm_registry_gpu:
   - client_model_id: gpu-small
     artifact_id: qwen35-9b-nvfp4
     provider: openai
@@ -16,8 +10,7 @@ _llm_registry_gpu_pro6000:
     profile: small
     enabled: false
     servable: false
-    # The serving profile's 32,768-token max_model_len includes the reserved
-    # output budget; advertise the remaining input window to LiteLLM.
+    # max_model_len includes output; advertise the remaining input window.
     context_window: 24576
     max_output_tokens: 8192
     input_cost_per_token: 0
@@ -38,8 +31,7 @@ _llm_registry_gpu_pro6000:
     profile: medium-a
     enabled: false
     servable: false
-    # The measured max_model_len is 196,608 including the advertised output
-    # budget; context_window is the effective input window served by vLLM.
+    # The measured 196,608-token limit includes the output budget.
     context_window: 188416
     max_output_tokens: 8192
     input_cost_per_token: 0
@@ -72,6 +64,22 @@ _llm_registry_gpu_pro6000:
       speed: fast
       quality: strong
       best_for: [subagent, coding, tool-use]
+
+  # A catalogued 16 GB llama.cpp candidate; inventory and router selection
+  # stay unchanged until the guest moves to the shared engine role.
+  - client_model_id: gpu-16gb
+    artifact_id: qwen38-27b-ud-iq3-xxs
+    provider: openai
+    tier: gpu
+    profile: 16gb
+    enabled: false
+    servable: false
+    context_window: 24576
+    max_output_tokens: 8192
+    input_cost_per_token: 0
+    output_cost_per_token: 0
+    max_parallel_requests: 1
+    num_retries: 0
 
   - client_model_id: gpu-max
     artifact_id: flash-next-iq3-s
