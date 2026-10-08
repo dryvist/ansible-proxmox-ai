@@ -27,8 +27,14 @@ For the router pool, `inventory/group_vars/llm_router_group.yml` sets
 host, and only the active profile (`llm_active_profile`) is projected.
 `playbooks/llm-serving.yml` converges that guest with the `llm_gpu_serving` tag
 before the router play. While the switch is off, `judge` and `subagent` resolve
-to the current routine and 4080 tiers, and the existing `best`, `lead`, and
-`long` aliases keep their current targets. Each rendered profile carries zero
+to the current routine and fast GPU tiers. While it is on, the medium deployment
+is rung 1 of `judge`, `subagent`, `recorder`, `review-local`, `review-private`
+and `review-oss`, and of the complexity router's simple and medium tiers. Each
+role keeps its previous rungs behind it, in the same order. The simple and
+medium tiers keep only their external rungs behind the medium deployment, since
+their previous local target is not part of their fallback continuation. The
+existing `best`, `lead`, and `long` aliases keep their current targets. Each
+rendered profile carries zero
 token cost and advertises `max_input_tokens` equal to its registry
 `context_window`, which is the engine's `max_model_len` contract. The vLLM
 sweep candidates admit up to 64 requests for load testing; `max_num_seqs`

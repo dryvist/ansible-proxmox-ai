@@ -146,18 +146,27 @@
     - name: Verify GPU rung saturation contract
       ansible.builtin.import_tasks: tasks/gpu_rung_saturation_contract.yml
 
-    - name: Assert the judge and subagent use GPU profiles only in the enabled render
+    - name: Assert the judge and subagent take the GPU medium rung first in the enabled render
       ansible.builtin.assert:
         quiet: true
         that:
-          - _judge.model == llm_router_routine_model
-          - _judge.fallbacks | length == 0
-          - _subagent.model == llm_router_gpu_medium_b_model
-          - _subagent.model == llm_router_hermes_local_4080_id
-          - llm_router_hermes_local_4080_id not in _subagent.fallbacks
+          # Judge: the small tier, which is the medium deployment while the small
+          # profile is off, then the routine model, which stays local.
+          - _judge.model == llm_router_gpu_small_model
+          - _judge.model == llm_router_vllm_medium_model
+          - _judge.fallbacks == [llm_router_routine_model]
+          # Subagent: the medium deployment first, the fast GPU rung second,
+          # and the medium deployment never repeated inside its own tail.
+          - _subagent.model == llm_router_vllm_medium_model
+          - _subagent.fallbacks | first == llm_router_hermes_local_4080_id
+          - llm_router_hermes_local_4080_id in _subagent.fallbacks
+          - llm_router_vllm_medium_model not in _subagent.fallbacks
       vars:
         _judge: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'judge') | first }}"
         _subagent: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'subagent') | first }}"
+
+    - name: Verify the medium deployment is rung 1 of every GPU-capable role and CI key
+      ansible.builtin.import_tasks: tasks/gpu_first_rung_contract.yml
 
     - name: Assert the benchmark key is scoped to GPU profiles and has no budget
       ansible.builtin.assert:
