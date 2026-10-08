@@ -53,6 +53,13 @@ def test_unmapped_role_fails_fast() -> None:
     assert "Unmapped contract paths" in result.stderr
 
 
+def test_llm_router_role_paths_fail_fast_until_a_focused_mapping_exists() -> None:
+    result = run_selector("roles/llm_router/tasks/main.yml")
+
+    assert result.returncode == 2
+    assert "Unmapped contract paths" in result.stderr
+
+
 def test_unmapped_yaml_contract_fails_fast() -> None:
     result = run_selector("tests/phoenix_docker/unmapped-contract.yml")
 
@@ -92,3 +99,4 @@ def test_full_suite_is_limited_to_main_pushes() -> None:
         CI_GATE.parents[0] / "_molecule.yml"
     ).read_text()
     assert "github.event_name == 'push' && github.ref == 'refs/heads/develop'" in workflow
+    assert "tests/test_contract_scope_selector.py" in workflow

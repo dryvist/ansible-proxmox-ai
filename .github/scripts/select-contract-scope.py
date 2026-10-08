@@ -81,8 +81,6 @@ def select(paths: list[str]) -> dict[str, object]:
                 unknown.append(raw_path)
         elif path.startswith("roles/hermes_agent/"):
             pytest_targets.add("tests/hermes_agent/")
-        elif path.startswith("roles/llm_router/"):
-            router_tests.update(" ".join(entry) for entry in matrix)
         elif path.startswith(("inventory/", "group_vars/", "host_vars/", "playbooks/")) or path == "requirements.yml":
             run_inventory = True
             run_selector_checks = True
