@@ -17,7 +17,7 @@ GPU_ENGINE_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 SITE_PLAYBOOK = REPO_ROOT / "playbooks/site.yml"
 USERSPACE_TASKS = NVIDIA_ROLE_ROOT / "tasks/install-nvidia-userspace.yml"
 CORE_DEFAULTS = NVIDIA_ROLE_ROOT / "defaults/main/00-core.yml"
-ROUTER_GPU_PROFILE_VARS = REPO_ROOT / "inventory/group_vars/all/llm-router-gpu-profiles.yml"
+ROUTER_GPU_PROFILE_VARS = REPO_ROOT / "inventory/group_vars/all.yml"
 ROUTER_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 
 
