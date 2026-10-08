@@ -102,5 +102,5 @@ def test_engine_installers_stay_separate_and_keep_shared_safety_tasks():
         assert (role_root / "handlers/main.yml").is_file()
 
     cache_sync = (ROLES / "nvidia_gpu_guest/tasks/cache-sync.yml").read_text()
-    assert "Verify the local artifact against its pinned Hub revision" in cache_sync
+    assert "Verify local files against pinned download sidecars" in cache_sync
     assert "Require an idle GPU before downloading a registered artifact" in cache_sync

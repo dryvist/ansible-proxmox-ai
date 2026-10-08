@@ -1,4 +1,7 @@
 ---
+- name: Load shared artifact cache settings
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/load.yml"
+
 - name: Validate the requested cache-sync artifact reference
   ansible.builtin.assert:
     that:
@@ -78,6 +81,10 @@
     nvidia_gpu_guest_cache_sync_local_target: >-
       {{ not nvidia_gpu_guest_cache_sync_origin_declared
          or (nvidia_gpu_guest_cache_sync_mode | default('pull')) == 'pull' }}
+
+- name: Require the artifact cache for Hub downloads
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/require-proxy.yml"
+  when: nvidia_gpu_guest_cache_sync_operation == 'download'
 
 - name: Inspect the declared model-origin mount
   ansible.builtin.stat:
@@ -159,24 +166,6 @@
   register: nvidia_gpu_guest_cache_sync_copy
   when: nvidia_gpu_guest_cache_sync_operation == 'pull'
 
-- name: Verify the local artifact against its pinned Hub revision
-  ansible.builtin.command:
-    argv:
-      - "{{ nvidia_gpu_guest_hf_bin }}"
-      - cache
-      - verify
-      - "{{ nvidia_gpu_guest_cache_sync_artifact.hf_repo }}"
-      - --revision
-      - "{{ nvidia_gpu_guest_cache_sync_artifact.revision }}"
-      - --local-dir
-      - "{{ nvidia_gpu_guest_cache_sync_local_directory }}"
-  environment:
-    HF_HOME: "{{ nvidia_gpu_guest_hf_home }}"
-  become: true
-  become_user: "{{ nvidia_gpu_guest_user }}"
-  changed_when: false
-  when: nvidia_gpu_guest_cache_sync_local_target | bool
-
 - name: Create the artifact directory in the root-squashed shared origin
   ansible.builtin.file:
     path: "{{ nvidia_gpu_guest_cache_sync_origin_directory }}"
@@ -191,8 +180,7 @@
           '--revision', nvidia_gpu_guest_cache_sync_artifact.revision,
           '--include', item, '--local-dir', nvidia_gpu_guest_cache_sync_download_directory,
           '--dry-run'] }}
-  environment:
-    HF_HOME: "{{ nvidia_gpu_guest_hf_home }}"
+  environment: "{{ llamacpp_release_proxy_environment | combine({'HF_HOME': nvidia_gpu_guest_hf_home}) }}"
   become: true
   become_user: "{{ nvidia_gpu_guest_user }}"
   loop: "{{ nvidia_gpu_guest_cache_sync_artifact.include_globs }}"
@@ -268,8 +256,7 @@
       {{ [nvidia_gpu_guest_hf_bin, 'download', nvidia_gpu_guest_cache_sync_artifact.hf_repo,
           '--revision', nvidia_gpu_guest_cache_sync_artifact.revision,
           '--include', item, '--local-dir', nvidia_gpu_guest_cache_sync_download_directory] }}
-  environment:
-    HF_HOME: "{{ nvidia_gpu_guest_hf_home }}"
+  environment: "{{ llamacpp_release_proxy_environment | combine({'HF_HOME': nvidia_gpu_guest_hf_home}) }}"
   become: true
   become_user: "{{ nvidia_gpu_guest_user }}"
   loop: "{{ nvidia_gpu_guest_cache_sync_artifact.include_globs }}"
@@ -283,6 +270,21 @@
   changed_when: >-
     'Will download 0 files' not in
     nvidia_gpu_guest_cache_sync_previews.results[ansible_loop.index0].stdout
+
+- name: Verify local files against pinned download sidecars
+  ansible.builtin.script:
+    cmd: >-
+      {{ role_path }}/files/verify-local-model-store.py
+      --root {{ nvidia_gpu_guest_cache_sync_local_directory | quote }}
+      --revision {{ nvidia_gpu_guest_cache_sync_artifact.revision | quote }}
+      --include-globs {{ nvidia_gpu_guest_cache_sync_artifact.include_globs | to_json | quote }}
+  register: nvidia_gpu_guest_cache_sync_local_verification
+  become: true
+  become_user: "{{ nvidia_gpu_guest_user }}"
+  changed_when: false
+  when:
+    - nvidia_gpu_guest_cache_sync_local_target | bool
+    - not ansible_check_mode
 
 - name: Notify serving handlers only when the local model cache changed
   ansible.builtin.debug:

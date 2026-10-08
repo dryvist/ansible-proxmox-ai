@@ -1,0 +1,43 @@
+# Source: huggingface/huggingface_hub v2.1.1 cli/_cli_utils.py
+# Copyright 2022 The HuggingFace Team. Licensed under Apache-2.0.
+def _check_cli_update(library: Literal["huggingface_hub", "transformers"]) -> None:
+    if constants.HF_HUB_DISABLE_UPDATE_CHECK:
+        return
+
+    current_version = importlib.metadata.version(library)
+
+    # Skip if current version is a pre-release or dev version
+    if any(tag in current_version for tag in ["rc", "dev"]):
+        return
+
+    # Skip if already checked in the last 24 hours
+    if os.path.exists(constants.CHECK_FOR_UPDATE_DONE_PATH):
+        mtime = os.path.getmtime(constants.CHECK_FOR_UPDATE_DONE_PATH)
+        if (time.time() - mtime) < 24 * 3600:
+            return
+
+    # Touch the file to mark that we did the check now
+    Path(constants.CHECK_FOR_UPDATE_DONE_PATH).parent.mkdir(parents=True, exist_ok=True)
+    Path(constants.CHECK_FOR_UPDATE_DONE_PATH).touch()
+
+    # Check latest version from the appropriate registry
+    if library == "huggingface_hub" and installation_method() == "brew":
+        latest_version = _fetch_latest_brew_version()
+    else:
+        latest_version = _fetch_latest_pypi_version(library)
+    if latest_version is None or current_version == latest_version:
+        return
+
+    if library == "huggingface_hub":
+        update_command = _get_huggingface_hub_update_command()
+    else:
+        update_command = _get_transformers_update_command()
+
+    message = f"A new version of {library} ({latest_version}) is available! You are using version {current_version}."
+    if update_command is not None:
+        match library:
+            case "huggingface_hub":
+                message += "\nTo update, run: hf update"
+            case _:
+                message += f"\nTo update, run: {' '.join(update_command)}"
+    out.hint(message)

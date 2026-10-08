@@ -69,7 +69,7 @@ for pin in "${PINS[@]}"; do
   accept=()
   [[ "$url" == https://api.github.com/* ]] && accept=(-H 'Accept: application/vnd.github.raw')
 
-  if ! curl -fsSL ${auth[@]+"${auth[@]}"} ${accept[@]+"${accept[@]}"} --max-time 30 --retry 3 --retry-delay 2 -o "$tmp" "$url"; then
+  if ! http_code=$(curl -fsS ${auth[@]+"${auth[@]}"} ${accept[@]+"${accept[@]}"} --max-time 30 --retry 3 --retry-delay 2 -w '%{http_code}' -o "$tmp" "$url") || [[ "$http_code" != 200 ]]; then
     echo "FAIL ${version_var}=${version}: cannot fetch ${url}" >&2
     echo "     A version whose installer does not exist is not a version to pin." >&2
     fail=1
@@ -95,6 +95,65 @@ for pin in "${PINS[@]}"; do
     echo "       .github/scripts/check-installer-sha.sh --fix" >&2
     fail=1
   fi
+done
+
+# Release asset digests come from one pinned GitHub release response. Keep this
+# in CI: role converges consume these pins and never query the release API.
+readonly RELEASE_PINS=(
+  "roles/llamacpp_release/defaults/main/00-release.yml|llamacpp_release_tag|https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/%s"
+)
+
+for release_pin in "${RELEASE_PINS[@]}"; do
+  IFS='|' read -r release_file release_var release_url_tmpl <<<"$release_pin"
+  release_tag=$(sed -nE "s/^${release_var}: *\"([^\"]+)\"/\1/p" "$release_file" | head -1)
+  if [[ ! "$release_tag" =~ ^b[0-9]+$ ]]; then
+    echo "FAIL ${release_file}: no valid pinned release tag" >&2
+    fail=1
+    continue
+  fi
+  # shellcheck disable=SC2059 # release_url_tmpl is a trusted PINS format string
+  release_url=$(printf "$release_url_tmpl" "$release_tag")
+  release_metadata="${workdir}/release.json"
+  # API responses are read directly: never forward auth headers on redirects.
+  if ! http_code=$(curl -fsS ${auth[@]+"${auth[@]}"} --max-time 30 --retry 3 --retry-delay 2 -w '%{http_code}' -o "$release_metadata" "$release_url") || [[ "$http_code" != 200 ]]; then
+    echo "FAIL ${release_var}=${release_tag}: cannot fetch release metadata" >&2
+    fail=1
+    continue
+  fi
+  if ! jq -e --arg tag "$release_tag" '.tag_name == $tag and (.assets | type == "array")' "$release_metadata" >/dev/null; then
+    echo "FAIL ${release_var}=${release_tag}: invalid release metadata" >&2
+    fail=1
+    continue
+  fi
+
+  release_assets=$(sed -nE 's/^(llamacpp_release_[a-z_]+_asset): *"([^"]+)"/\1|\2/p' "$release_file")
+  if [[ -z "$release_assets" ]]; then
+    echo "FAIL ${release_file}: no declared release assets" >&2
+    fail=1
+    continue
+  fi
+  while IFS='|' read -r asset_var asset_template; do
+    asset_placeholder="{{ ${release_var} }}"
+    asset_name="${asset_template//"$asset_placeholder"/$release_tag}"
+    sha_var="${asset_var%_asset}_sha256"
+    pinned=$(sed -nE "s/^${sha_var}: *\"([0-9a-f]{64})\"/\1/p" "$release_file" | head -1)
+    digest=$(jq -r --arg name "$asset_name" '[.assets[] | select(.name == $name) | .digest] | if length == 1 then .[0] else empty end' "$release_metadata")
+    if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ || -z "$pinned" ]]; then
+      echo "FAIL ${asset_name}: requires one official SHA-256 digest and one pin" >&2
+      fail=1
+      continue
+    fi
+    actual="${digest#sha256:}"
+    if [[ "$actual" == "$pinned" ]]; then
+      echo "OK   ${asset_name} sha matches"
+    elif (( FIX )); then
+      sed -i.bak "s/^${sha_var}: *\"${pinned}\"/${sha_var}: \"${actual}\"/" "$release_file" && rm -f "${release_file}.bak"
+      echo "FIXED ${asset_name} sha ${pinned:0:12}... -> ${actual:0:12}..."
+    else
+      echo "FAIL ${asset_name} sha MISMATCH" >&2
+      fail=1
+    fi
+  done <<<"$release_assets"
 done
 
 exit "$fail"

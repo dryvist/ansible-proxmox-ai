@@ -8,10 +8,9 @@
 #     llm_fast_group the role previously enforced NOTHING — a new guest served
 #     any size at all by virtue of being in a different group.
 #
-# A guard nobody has watched fail is indistinguishable from a guard that cannot
-# fail, so this asserts the ceiling REFUSES an oversized model, not merely that
-# it accepts a small one. Accepting a small one is satisfied by a guard that
-# does nothing.
+# This exercises only the model guard. Including the full install entrypoint
+# would also require a real proxy and package changes, neither of which this
+# scenario needs to validate.
 - name: Verify
   hosts: all
   gather_facts: false
@@ -29,7 +28,7 @@
         - name: Include the role with an oversized model
           ansible.builtin.include_role:
             name: llama_cpp
-            tasks_from: main
+            tasks_from: guards.yml
           vars:
             llama_cpp_max_param_billions: 28
             llama_cpp_models:
@@ -42,21 +41,26 @@
 
         - name: Record that the ceiling did NOT fire
           ansible.builtin.set_fact:
-            ceiling_fired: false
+            ceiling_failure_task: ""
+            ceiling_failure_message: ""
 
       rescue:
-        - name: Record that the ceiling fired
+        - name: Record the failing guard task and its message
           ansible.builtin.set_fact:
-            ceiling_fired: true
+            ceiling_failure_task: "{{ ansible_failed_task.name | default('') }}"
+            ceiling_failure_message: "{{ ansible_failed_result.msg | default('') }}"
 
     - name: Assert the ceiling refused the oversized model
       ansible.builtin.assert:
         that:
-          - ceiling_fired | bool
+          - ceiling_failure_task == "Assert no model exceeds this guest's parameter ceiling"
+          - >-
+            "oversized" in ceiling_failure_message
+            and "ceiling of" in ceiling_failure_message
+            and "28B" in ceiling_failure_message
         fail_msg: >-
-          A 999B model was accepted against a 28B ceiling, so the per-guest
-          ceiling gates nothing and every future model change on every guest
-          running this role is unguarded.
+          The 999B model did not fail at the per-guest 28B ceiling. Failure:
+          {{ ceiling_failure_task }}: {{ ceiling_failure_message }}
         success_msg: The per-guest ceiling refused a model above the limit.
 
     - name: Report how many assertions this scenario ran
