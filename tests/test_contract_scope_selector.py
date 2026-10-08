@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
+
+from jinja2 import Environment, StrictUndefined
 
 import pytest
 import yaml
@@ -187,3 +190,47 @@ def test_actual_scope_step_dispatches_full_or_focused(
     targets = json.loads(selected["pytest_targets"])
     assert targets == (["tests/"] if expected_full else ["tests/test_contract_scope_selector.py"])
     assert len(json.loads(selected["llm_router_playbooks"])) == (92 if expected_full else 0)
+
+
+@pytest.mark.parametrize(("event", "ref", "base", "allows_skips"), [
+    ("pull_request", "refs/pull/1/merge", "main", False),
+    ("pull_request", "refs/pull/1/merge", "develop", True),
+    ("push", "refs/heads/main", "", False),
+    ("push", "refs/heads/develop", "", True),
+])
+def test_actual_gate_policy_requires_full_main_results(
+    event: str, ref: str, base: str, allows_skips: bool,
+) -> None:
+    gate = yaml.safe_load(CI_GATE.read_text())["jobs"]["gate"]
+    step = next(step for step in gate["steps"] if step.get("name") == "Check all results")
+    clause = step["env"]["CI_GATE_ALLOWED_SKIPS"].strip().removeprefix("${{").removesuffix("}}")
+    clause = re.sub(r"!(?!=)", "not ", clause.replace("&&", "and").replace("||", "or"))
+    allowed = Environment(undefined=StrictUndefined).compile_expression(clause)(github={
+        "event_name": event, "ref": ref, "event": {"pull_request": {"base": {"ref": base}}},
+    })
+    allowed_set = {name.strip() for name in allowed.split(",") if name.strip()}
+    required = {"data-contract", "molecule"}
+    assert required <= set(gate["needs"])
+    assert (required <= allowed_set) is allows_skips
+    assert bool(required - allowed_set) is (not allows_skips)
+
+
+@pytest.mark.parametrize("path", [
+    "roles/fabric_watchdog/defaults/main.yml", "roles/langfuse_docker/tasks/main.yml",
+    "roles/llamacpp_serving/tasks/install.yml", "roles/nvidia_gpu_guest/tasks/cache-sync.yml",
+    "roles/openbao_secrets/defaults/main/10-domains.yml", "roles/vllm_serving/tasks/install.yml",
+    "tests/langfuse_docker/fixtures/api-response-shapes.json",
+    "tests/llm_gpu_engine_roles/fixtures/pro6000-target/nvidia-smi-query.csv",
+    "tests/inventory_load/tofu_inventory.json",
+])
+def test_caller_contract_mapping_covers_registered_production_inputs(path: str) -> None:
+    import fnmatch
+    filters = yaml.safe_load(CI_GATE.read_text())["jobs"]["ci"]["with"]["molecule_contract_filters"]
+    assert any(fnmatch.fnmatchcase(path, pattern) for pattern in yaml.safe_load(filters)["contract_only"])
+
+
+def test_caller_contract_mapping_retains_unknown_role_rejection() -> None:
+    import fnmatch
+    filters = yaml.safe_load(CI_GATE.read_text())["jobs"]["ci"]["with"]["molecule_contract_filters"]
+    assert not any(fnmatch.fnmatchcase("roles/unmapped_role/tasks/main.yml", pattern)
+                   for pattern in yaml.safe_load(filters)["contract_only"])
