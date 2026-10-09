@@ -1,0 +1,54 @@
+---
+# Trace retention: each table in `langfuse_docker_clickhouse_retention_tables`
+# gets `TTL <column> + toIntervalDay(<days>)`. Included after the health checks
+# because Langfuse's migrations create these tables when web and worker boot.
+#
+# ClickHouse stores the TTL clause in the table definition, so each table is
+# read back first and altered only when its definition lacks the wanted clause.
+# A converged host is a no-op. A table that does not exist yet is refused
+# before any ALTER runs.
+
+- name: Read the ClickHouse definition of each Langfuse trace table
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -f {{ langfuse_docker_data_dir }}/docker-compose.yml
+      exec -T {{ langfuse_docker_clickhouse_service }}
+      clickhouse-client --user {{ langfuse_docker_clickhouse_user }}
+      --password {{ langfuse_docker_clickhouse_password }}
+      --query "SELECT create_table_query FROM system.tables WHERE database = currentDatabase()
+      AND name = '{{ item.name }}' FORMAT TSVRaw"
+  loop: "{{ langfuse_docker_clickhouse_retention_tables }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: langfuse_docker_clickhouse_ttl_reads
+  changed_when: false
+  no_log: true
+
+- name: Require every Langfuse trace table to exist before setting retention
+  ansible.builtin.assert:
+    that:
+      - langfuse_docker_clickhouse_ttl_reads.results | selectattr('stdout', 'equalto', '') | list | length == 0
+    fail_msg: >-
+      ClickHouse has no definition for these trace tables:
+      {{ langfuse_docker_clickhouse_ttl_reads.results
+         | selectattr('stdout', 'equalto', '')
+         | map(attribute='item.name') | join(', ') }}.
+      Langfuse creates them on boot; retention is not set until they exist.
+
+- name: Set the Langfuse trace retention TTL where it differs
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -f {{ langfuse_docker_data_dir }}/docker-compose.yml
+      exec -T {{ langfuse_docker_clickhouse_service }}
+      clickhouse-client --user {{ langfuse_docker_clickhouse_user }}
+      --password {{ langfuse_docker_clickhouse_password }}
+      --query "ALTER TABLE {{ item.item.name }} MODIFY TTL {{ item.item.column }}
+      + INTERVAL {{ langfuse_docker_clickhouse_retention_days }} DAY"
+  loop: "{{ langfuse_docker_clickhouse_ttl_reads.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  when: >-
+    ('TTL ' ~ item.item.column ~ ' + toIntervalDay(' ~ langfuse_docker_clickhouse_retention_days ~ ')')
+    not in (item.stdout | default(''))
+  changed_when: true
+  no_log: true
