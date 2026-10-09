@@ -437,3 +437,15 @@ def test_roles_consumed_by_molecule_scenarios_are_not_contract_only() -> None:
     for path in ("roles/llamacpp_release/defaults/main/00-release.yml",
                  "roles/openbao_secrets/defaults/main/10-domains.yml"):
         assert not any(fnmatch.fnmatchcase(path, pattern) for pattern in contract_only)
+
+
+@pytest.mark.parametrize(("path", "guard"), [
+    (".github/scripts/check-installer-sha.sh", "tests/llamacpp_release/test_checksum_gate.py"),
+    (".github/workflows/fix-installer-sha.yml", "tests/repo_guards/test_installer_sha_workflow_race.py"),
+    (".github/workflows/_llm-router-contract.yml", "tests/repo_guards/test_router_contract_batches.py"),
+])
+def test_ci_contract_edits_select_their_guard_test(path: str, guard: str) -> None:
+    result = run_selector(path)
+
+    assert result.returncode == 0, result.stderr
+    assert guard in json.loads(result.stdout)["pytest_targets"]

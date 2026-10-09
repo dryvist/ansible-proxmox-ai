@@ -38,6 +38,9 @@ PYTEST_PATH_TARGETS = {
     "roles/langflow_docker/defaults/main.yml": "tests/agent_concurrency/test_runner_compose_caps.py",
     "roles/langflow_docker/templates/docker-compose.yml.j2": "tests/agent_concurrency/test_runner_compose_caps.py",
     "tests/llm_router/fixtures/seed-key-response-shape.json": "tests/llm_router/test_seed_key_sensitivity_guard.py",
+    ".github/scripts/check-installer-sha.sh": "tests/llamacpp_release/test_checksum_gate.py",
+    ".github/workflows/fix-installer-sha.yml": "tests/repo_guards/test_installer_sha_workflow_race.py",
+    ".github/workflows/_llm-router-contract.yml": "tests/repo_guards/test_router_contract_batches.py",
 }
 
 
@@ -227,10 +230,6 @@ def select(paths: list[str]) -> dict[str, object]:
         elif path.startswith(".github/workflows/") or path.startswith(".github/scripts/"):
             run_selector_checks = True
             pytest_targets.add("tests/test_contract_scope_selector.py")
-            if path == ".github/workflows/_llm-router-contract.yml":
-                # The explicit matrix is the router contract manifest; changes
-                # to it must exercise every entry, not just selector checks.
-                role_scope("llm_router")
         elif path.lower().endswith((".md", ".mdx", ".txt")) or path.startswith("docs/"):
             continue
         else:
