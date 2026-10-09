@@ -102,6 +102,39 @@
   ansible.builtin.set_fact:
     llm_router_site_packages: "{{ llm_router_venv_purelib.stdout | trim }}"
 
+# The generated client is not in the prisma wheel's RECORD, so a prisma version
+# change keeps the previous version's generated modules, and `import prisma`
+# then fails against the new runtime (even `prisma generate` cannot start).
+# Drop the package and reinstall it; the freshness test below regenerates.
+- name: Check that the prisma package imports
+  ansible.builtin.command:
+    argv:
+      - "{{ llm_router_venv }}/bin/python"
+      - -c
+      - import prisma
+  register: llm_router_prisma_import
+  changed_when: false
+  failed_when: false
+  when: llm_router_store_model_in_db | bool
+
+- name: Remove a prisma package holding another version's generated client
+  ansible.builtin.file:
+    path: "{{ llm_router_site_packages }}/prisma"
+    state: absent
+  when:
+    - llm_router_store_model_in_db | bool
+    - llm_router_prisma_import.rc != 0
+
+- name: Reinstall prisma without its stale generated client
+  ansible.builtin.pip:
+    name: "{{ llm_router_pip_packages | select('match', 'prisma==') | list }}"
+    state: forcereinstall
+    extra_args: --no-deps
+    virtualenv: "{{ llm_router_venv }}"
+  when:
+    - llm_router_store_model_in_db | bool
+    - llm_router_prisma_import.rc != 0
+
 - name: Deploy the explicit data exfiltration matcher
   ansible.builtin.copy:
     src: guardrails/prompt_injection_data_exfiltration.yaml
