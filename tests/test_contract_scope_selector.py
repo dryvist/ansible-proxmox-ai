@@ -225,7 +225,7 @@ def test_actual_gate_policy_requires_full_main_results(
 @pytest.mark.parametrize("path", [
     "roles/fabric_watchdog/defaults/main.yml", "roles/langfuse_docker/tasks/main.yml",
     "roles/llamacpp_serving/tasks/install.yml", "roles/nvidia_gpu_guest/tasks/cache-sync.yml",
-    "roles/openbao_secrets/defaults/main/10-domains.yml", "roles/vllm_serving/tasks/install.yml",
+    "roles/vllm_serving/tasks/install.yml",
     "tests/langfuse_docker/fixtures/api-response-shapes.json",
     "tests/llm_gpu_engine_roles/fixtures/pro6000-target/nvidia-smi-query.csv",
     "tests/inventory_load/tofu_inventory.json",
@@ -348,3 +348,24 @@ def test_ci_gate_header_names_the_contract_scope_gate() -> None:
     header = "\n".join(lines[: lines.index("name: CI Gate")])
     assert "contract-scope" in header
     assert "All local jobs" not in header
+
+
+@pytest.mark.parametrize(("scenario", "role"), [
+    ("llama_cpp_backend", "llamacpp_release"),
+    ("llm_gpu_serving", "llamacpp_release"),
+    ("llm_gpu_serving", "nvidia_gpu_guest"),
+    ("hindsight", "openbao_secrets"),
+    ("hermes_ui", "openbao_secrets"),
+])
+def test_molecule_filters_cover_every_role_the_scenario_loads(scenario: str, role: str) -> None:
+    filters = yaml.safe_load(CI_GATE.read_text())["jobs"]["ci"]["with"]["molecule_scenario_filters"]
+    assert f"roles/{role}/**" in yaml.safe_load(filters)[scenario]
+
+
+def test_roles_consumed_by_molecule_scenarios_are_not_contract_only() -> None:
+    import fnmatch
+    filters = yaml.safe_load(CI_GATE.read_text())["jobs"]["ci"]["with"]["molecule_contract_filters"]
+    contract_only = yaml.safe_load(filters)["contract_only"]
+    for path in ("roles/llamacpp_release/defaults/main/00-release.yml",
+                 "roles/openbao_secrets/defaults/main/10-domains.yml"):
+        assert not any(fnmatch.fnmatchcase(path, pattern) for pattern in contract_only)
