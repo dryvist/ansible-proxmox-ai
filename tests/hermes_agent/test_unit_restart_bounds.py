@@ -13,12 +13,24 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from _role_files import role_defaults_text, role_tasks_text
+
+import pytest
+from _role_files import role_defaults_text, role_tasks, role_tasks_text, template_text
+from _shell_harness_shared import (
+    defaults_of,
+    headers_of,
+    install_stubs,
+    lines,
+    records,
+    render,
+    run_script,
+)
 
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
 TEMPLATES = ROLE / "templates"
 DEFAULTS = role_defaults_text(ROLE)
 TASKS = role_tasks_text(ROLE)
+NTFY_URL = "https://ntfy.test.invalid/ai"
 
 LONG_RUNNING = [
     "hermes-gateway.service.j2",
@@ -82,20 +94,67 @@ def test_start_limits_live_in_the_unit_section() -> None:
         assert "StartLimitBurst=" in _section(unit, "Unit"), f"{name}: StartLimit* must be in [Unit]"
 
 
-def test_hitting_the_bound_pages_instead_of_dying_quietly() -> None:
-    """A bound without an alert trades a silent loop for a silent outage."""
-    for name in LONG_RUNNING:
-        assert "OnFailure=hermes-unit-alert@%n.service" in _section(_unit(name), "Unit"), (
-            f"{name}: bounded restarts must page when the bound is hit"
-        )
+def _directive(section: str, key: str) -> str:
+    """The value of the one `Key=value` line in a systemd section body."""
+    values = re.findall(rf"^{key}=(.+)$", section, re.M)
+    assert len(values) == 1, f"expected exactly one {key}= line, found {len(values)}"
+    return values[0].strip()
 
 
-def test_the_alert_unit_and_script_are_actually_deployed() -> None:
+def _deployed() -> dict[str, str]:
+    """Install path -> template source, from the role's own template tasks."""
+    deployed = {}
+    for task in role_tasks(ROLE):
+        spec = task.get("ansible.builtin.template") or task.get("template")
+        if spec:
+            deployed[spec["dest"]] = spec["src"]
+    return deployed
+
+
+def test_the_alert_unit_and_script_are_deployed_from_their_templates() -> None:
     """An OnFailure= naming a unit that was never installed is a silent no-op."""
-    assert "hermes-unit-alert.sh.j2" in TASKS
-    assert "hermes-unit-alert@.service.j2" in TASKS
-    assert (TEMPLATES / "hermes-unit-alert@.service.j2").exists()
-    assert (TEMPLATES / "hermes-unit-alert.sh.j2").exists()
+    deployed = _deployed()
+    assert deployed.get("/etc/systemd/system/hermes-unit-alert@.service") == "hermes-unit-alert@.service.j2"
+    assert deployed.get("/usr/local/bin/hermes-unit-alert.sh") == "hermes-unit-alert.sh.j2"
+
+
+@pytest.mark.parametrize("unit", LONG_RUNNING)
+def test_hitting_the_bound_sends_one_urgent_post_naming_the_unit(unit: str, tmp_path: Path) -> None:
+    """Start the alert the way systemd does for a unit that hit its bound.
+
+    The failed unit's OnFailure= names an alert instance. The alert template's
+    ExecStart= runs the deployed script with that instance as argv[1]. The script
+    is rendered from its template and run under stub curl and logger, and it must
+    send exactly one urgent ntfy publish that names the unit.
+    """
+    failed = unit.removesuffix(".j2")
+    alert_unit = _directive(_section(_unit(unit), "Unit"), "OnFailure").replace("%n", failed)
+    assert alert_unit.startswith("hermes-unit-alert@") and alert_unit.endswith(".service"), alert_unit
+    instance = alert_unit[len("hermes-unit-alert@") : -len(".service")]
+    execstart = _directive(_section(_unit("hermes-unit-alert@.service.j2"), "Service"), "ExecStart")
+    script_path, *script_args = execstart.replace("%i", instance).split()
+    deployed = _deployed()
+    assert script_path in deployed, f"ExecStart runs {script_path}, which no task installs"
+
+    env = install_stubs(tmp_path)
+    context = {
+        **defaults_of("hermes_agent"),
+        "ansible_managed": "test render",
+        "hermes_agent_brain_watchdog_ntfy_url": NTFY_URL,
+    }
+    script = tmp_path / "hermes-unit-alert.sh"
+    script.write_text(render(template_text(ROLE, deployed[script_path]), context))
+    script.chmod(0o755)
+
+    proc = run_script(script, script_args, env)
+    assert proc.returncode == 0, proc.stderr
+    posts = records(env, "posts.jsonl")
+    assert len(posts) == 1, f"{unit}: expected one ntfy publish, got {len(posts)}"
+    headers = headers_of(posts[0])
+    assert headers["Priority"] == "urgent"
+    assert posts[0]["url"] == NTFY_URL
+    assert failed in headers["Title"] and failed in posts[0]["body"]
+    assert any(failed in line for line in lines(env, "logger.log")), "the journal line must name the unit"
 
 
 def test_the_alert_deploy_is_not_gated_on_the_brain_watchdog() -> None:
