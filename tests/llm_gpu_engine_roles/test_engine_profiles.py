@@ -262,6 +262,9 @@ def test_only_enabled_profiles_are_rendered_and_checked_by_the_role():
         retire = next(task for task in activate_tasks if task.get("name", "").startswith("Retire units for disabled"))
         assert any(task.get("ansible.builtin.include_tasks") == "validate-profiles.yml" for task in main_tasks)
         assert render_unit["when"] == "item.value.enabled | default(true)"
+        assert "notify" not in render_unit
+        restart = next(task for task in render_tasks if "notify" in task)
+        assert "active_profile" in restart["when"]
         assert profile_validation["when"] == "item.value.enabled | default(true)"
         assert profile_state["when"] == "item.value.enabled | default(true)"
         assert "not (item.value.enabled | default(true))" in retire["when"]
