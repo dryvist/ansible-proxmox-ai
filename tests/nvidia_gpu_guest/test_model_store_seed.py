@@ -50,3 +50,30 @@ def test_seed_coverage_accepts_the_catalog_and_rejects_a_missing_profile(tmp_pat
     assert result.returncode == expected_rc, result.stdout + result.stderr
     if missing_profile:
         assert "all declared model-store profiles" in result.stdout
+
+
+def _include_roles(node):
+    if isinstance(node, dict):
+        if "ansible.builtin.include_role" in node:
+            yield node["ansible.builtin.include_role"]
+        for value in node.values():
+            yield from _include_roles(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _include_roles(item)
+
+
+@pytest.mark.parametrize(
+    "playbook",
+    ["playbooks/llm-model-store-seed.yml", "playbooks/llm-model-campaign-target.yml"],
+)
+def test_model_store_callers_use_the_maintained_guest_role(playbook: str) -> None:
+    document = yaml.safe_load((REPO_ROOT / playbook).read_text(encoding="utf-8"))
+    store_includes = [
+        include
+        for include in _include_roles(document)
+        if include.get("tasks_from") in {"cache-sync.yml", "verify-model-store-origin-repo.yml"}
+    ]
+
+    assert store_includes, playbook
+    assert {include["name"] for include in store_includes} == {"nvidia_gpu_guest"}

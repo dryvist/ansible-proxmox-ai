@@ -230,7 +230,6 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
         SHARED_ROOT / "tasks/cache-sync.yml",
         REPO_ROOT / "roles/llm_gpu_serving/tasks/cache-sync.yml",
         SHARED_ROOT / "tasks/verify-model-store-origin-repo.yml",
-        REPO_ROOT / "roles/llm_gpu_serving/tasks/verify-model-store-origin-repo.yml",
     ):
         assert "cache\n      - verify" not in path.read_text(encoding="utf-8")
     assert "list_repo_tree" not in LOCAL_VERIFIER.read_text(encoding="utf-8")

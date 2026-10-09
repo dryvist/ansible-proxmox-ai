@@ -67,8 +67,8 @@ scripts/run-ansible.sh playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.
   every populated repository with Hub checksums.
 - Pulls the active profile's registered repository from the origin into the
   writable local cache under `models/`, verifies the pinned revision, and then
-  lets the engine use that local path. Campaign playbooks can include the
-  `llm_gpu_serving` role with `tasks_from: cache-sync.yml` and an artifact ID
+  lets the engine use that local path. Campaign playbooks include the
+  `nvidia_gpu_guest` role with `tasks_from: cache-sync.yml` and an artifact ID
   without rendering or changing service units.
 - Renders one systemd unit for each enabled profile. On a profile change, handlers
   stop and disable the other units before starting and enabling the selected
