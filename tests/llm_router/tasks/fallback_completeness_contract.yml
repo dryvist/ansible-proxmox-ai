@@ -98,13 +98,19 @@
     # (b) A primary needs ONE rung in its general chain at least as wide as
     # itself; narrower rungs earlier in the chain are fine, litellm walks on.
     # A rung that resolves to the primary's own group adds no capacity and
-    # does not count. Exempt: a primary no other served group is as wide as
-    # (it is physically the widest), and a primary with no window (wildcard).
+    # does not count. Otherwise the primary passes only when it is DOWNSTREAM
+    # of every other served group at least as wide: the group lists it in its
+    # own resolved chain, or comes before it in any rendered chain (the shared
+    # default ladder included), so traffic reaches the primary only after the
+    # wider group was tried. That clause also covers a primary no other group
+    # is as wide as (nothing upstream to check). A primary with no window
+    # (wildcard) is skipped.
     _no_wide_rung: >-
       {%- set ns = namespace(bad=[]) -%}
       {%- set peers = _routing.win | dict2items | rejectattr('value', 'none')
             | rejectattr('key', 'in', llm_router_cross_modality_fail_fast_names)
             | rejectattr('key', 'in', _routing.seeded) | list -%}
+      {%- set all_chains = (_routing.rungs.values() | map(attribute='general') | list) + [_routing.default] -%}
       {%- for n, r in _routing.rungs.items() if r.general | length > 0 -%}
       {%- set own = _routing.aliases.get(n, n) -%}
       {%- set own_group = (_routing.seeded_models.get(own, own)) -%}
@@ -121,9 +127,22 @@
       {%- set wider_peers = peers | rejectattr('key', 'equalto', own)
             | rejectattr('key', 'equalto', own_group)
             | selectattr('value', '>=', pw | int) | map(attribute='key') | list -%}
-      {%- if (rung_wins | select('>=', pw | int) | list | length == 0) and wider_peers | length > 0 -%}
+      {%- set selves = [n, own, own_group] | unique | list -%}
+      {%- set not_upstream = [] -%}
+      {%- for g in wider_peers -%}
+      {%- set up = namespace(found=false) -%}
+      {%- for c in [[g] + _routing.rungs[g].general] + all_chains if g in c -%}
+      {%- if c[c.index(g) + 1:] | select('in', selves) | list | length > 0 -%}
+      {%- set up.found = true -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- if not up.found -%}
+      {%- set _ = not_upstream.append(g) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- if (rung_wins | select('>=', pw | int) | list | length == 0) and not_upstream | length > 0 -%}
       {%- set ns.bad = ns.bad + [n ~ ' (' ~ pw ~ '; widest rung ' ~ (rung_wins | max | default('none'))
-            ~ '; wider served: ' ~ (wider_peers | join(', ')) ~ ')'] -%}
+            ~ '; wider, never ahead of it: ' ~ (not_upstream | join(', ')) ~ ')'] -%}
       {%- endif -%}
       {%- endif -%}
       {%- endfor -%}
@@ -158,8 +177,9 @@
       declared fail-fast names with NO fallback rung, so a single failed
       deployment fails the call completely: {{ _no_rung }}.
       (b) {{ _no_wide_rung | length }} primary(ies) whose chain never reaches
-      a rung as wide as itself although a wider served group exists, as
-      'name (window; widest rung; wider served)': {{ _no_wide_rung }}.
+      a rung as wide as itself, with a wider served group that no rendered
+      chain tries before it, as
+      'name (window; widest rung; wider, never ahead of it)': {{ _no_wide_rung }}.
       (c) {{ _dangling | length }} rung(s) naming no served model group:
       {{ _dangling }}.
     success_msg: >-
