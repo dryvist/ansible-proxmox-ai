@@ -1,35 +1,24 @@
 ---
-# MCP server access is Git-owned in every mode because it is a security
-# boundary: existing keys are narrowed or granted their declared server list
-# on every converge. In `initial` mode, models, routes, and attribution
-# metadata remain UI-owned and are only reported by drift-check.yml. `rebuild`
-# explicitly reconciles those other fields too.
+# Trace defaults reconcile additively in every mode. The required sensitivity
+# tag also reconciles in every mode; other existing UI tags are preserved.
+# MCP server access and model allowlists are Git-owned in every mode. Model
+# lists are projections of the registry-derived seed, so a converge replaces
+# each existing seeded key's list with that exact baseline. In `initial` mode,
+# routes and other attribution metadata remain UI-owned and are only reported
+# by drift-check.yml. `rebuild` explicitly reconciles those other fields too.
 #
-# In rebuild mode models are UNIONED with the live list by default (only ever
-# added, never removed, so an operator's Admin UI edit survives) — same reason: a
-# name added to a seed entry's list after the mint (a new role in
-# 55-roles.yml, a new servable model) never reaches an existing key on its
-# own, and sending the git list outright would erase a name an operator
-# added in the Admin UI.
-#
-# A key marked `models_authoritative: true` (hindsight, 56-virtual-keys.yml)
-# is the deliberate exception: it gets the seeded list VERBATIM, a REPLACE
-# rather than a union, because for THAT key the seed is the whole allowlist,
-# not a floor — a name granted before the free-only boundary landed
-# (`cheap`, the primary model, the `no-default-models` stopgap) must
-# actually be revoked, not linger forever alongside the new one. Such a key
-# is flagged as changed on drift in EITHER direction (seeded names live
-# lacks, OR live names seeded no longer lists) — a narrowing has to reach
-# the live key too, not only a widening.
+# A seed entry may explicitly set `models_authoritative: false` to retain the
+# additive behavior for an intentional UI-owned extension. Every current entry
+# defaults to authoritative, so retired names are removed and new
+# registry-derived names reach existing keys on the next converge.
 #
 # In rebuild mode routes are replaced outright with the seed value, and only
 # for a key that declares allowed_routes at all. Object permissions are always
 # replaced with the seeded value.
 #
-# Computed as one list of {alias, body} entries in `rebuild` mode so a key
-# needing a change gets exactly one /key/update call carrying its changed
-# policy fields — the diff itself runs once, in Jinja, against the single
-# /key/list read above.
+# Computed as one list of {alias, body} entries so a key needing a change gets
+# exactly one /key/update call carrying its changed policy fields — the diff
+# itself runs once, in Jinja, against the single /key/list read above.
 - name: Compute the key policy update each live key still needs, if any
   ansible.builtin.set_fact:
     _llm_router_key_updates: >-
@@ -47,10 +36,10 @@
       {%- set _live_models = (llm_router_existing_keys.json['keys'] | default([])
               | selectattr('key_alias', 'equalto', _k.alias)
               | map(attribute='models', default=[]) | first | default([], true)) -%}
-      {%- set _authoritative = _k.models_authoritative | default(false) -%}
+      {%- set _authoritative = _k.models_authoritative | default(true) -%}
       {%- set _models_target = _k.models if _authoritative else ((_live_models + _k.models) | unique | list) -%}
-      {%- set _models_changed = (_k.models | difference(_live_models) | length > 0)
-            or (_authoritative and (_live_models | difference(_k.models) | length > 0)) -%}
+      {%- set _models_changed = ((_live_models | sort) != (_models_target | sort))
+            if _authoritative else (_k.models | difference(_live_models) | length > 0) -%}
       {%- set _routes_changed = (_k.allowed_routes is defined) and (_live_routes != _k.allowed_routes) -%}
       {%- set _live_metadata = (llm_router_existing_keys.json['keys'] | default([])
               | selectattr('key_alias', 'equalto', _k.alias)
@@ -60,24 +49,42 @@
               | map(attribute='object_permission', default={}) | first | default({}, true)) -%}
       {%- set _permission_target = _k.object_permission
               | default(llm_router_mcp_default_object_permission) -%}
+      {%- set _live_tags = _live_metadata.get('tags', []) | default([], true) | list -%}
+      {%- set _sensitivity_tag = _k.sensitivity_tag | default('&sensitivity:sensitive') -%}
+      {%- set _desired_tags = (_live_tags | reject('match', '^([&!])?sensitivity:') | list)
+            + [_sensitivity_tag] -%}
+      {%- set _live_sensitivity_tags = _live_tags | select('match', '^([&!])?sensitivity:') | list -%}
       {%- set _metadata_target = (_k.metadata | default({})) | combine({
               'app': _k.alias,
               'tier': (_k.tier | default('local' if (_k.monthly_budget | default(0) | float == 0) else 'subscription')),
+              'tags': _desired_tags,
             }, recursive=true) -%}
-      {#- Additive only (same union-not-overwrite stance as models above): an
-         operator-set or request-time metadata field this seed knows nothing
-         about must survive a reconcile untouched, so "changed" means the
-         seeded fields alone differ from what's already live. -#}
+      {#- Additive only: an operator-set or request-time metadata field this
+         seed knows nothing about must survive a reconcile untouched, so
+         "changed" means the seeded fields alone differ from what's already
+         live. -#}
       {%- set _metadata_changed = (_live_metadata | combine(_metadata_target)) != _live_metadata -%}
+      {%- set _trace_target = dict(_metadata_target.items()
+            | selectattr('0', 'in', ['trace_defaults', 'trace_required']) | list) -%}
+      {%- set _trace_changed = (_live_metadata | combine(_trace_target, recursive=true)) != _live_metadata -%}
+      {%- set _sensitivity_changed = _live_sensitivity_tags != [_sensitivity_tag] -%}
       {%- set _permission_changed = _live_permission != _permission_target -%}
       {%- set _rebuild_fields_changed = (_models_changed or _routes_changed or _metadata_changed) -%}
-      {%- if _permission_changed or (llm_router_seed_mode == 'rebuild' and _rebuild_fields_changed) -%}
+      {%- if _permission_changed or _trace_changed or _sensitivity_changed or (_authoritative and _models_changed)
+            or (llm_router_seed_mode == 'rebuild' and _rebuild_fields_changed) -%}
       {%- set _body = {'key': _k.value, 'object_permission': _permission_target} -%}
+      {%- if _trace_changed or _sensitivity_changed -%}
+      {%- set _initial_metadata_target = _trace_target | combine({'tags': _desired_tags}, recursive=true) -%}
+      {%- set _initial_live_metadata = _live_metadata | combine(_initial_metadata_target, recursive=true) -%}
+      {%- set _body = _body | combine({'metadata': _initial_live_metadata}) -%}
+      {%- endif -%}
       {%- if llm_router_seed_mode == 'rebuild' -%}
       {%- set _body = _body | combine({'models': _models_target}) -%}
       {%- set _body = (_body | combine({'allowed_routes': _k.allowed_routes}))
             if (_k.allowed_routes is defined) else _body -%}
       {%- set _body = _body | combine({'metadata': (_live_metadata | combine(_metadata_target, recursive=true))}) -%}
+      {%- elif _authoritative and _models_changed -%}
+      {%- set _body = _body | combine({'models': _models_target}) -%}
       {%- endif -%}
       {%- set _discard = _out.append({'alias': _k.alias, 'body': _body}) -%}
       {%- endif -%}

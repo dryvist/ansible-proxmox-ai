@@ -1,0 +1,34 @@
+---
+- name: Verify the GPU profile switch follows guest capability tags
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _gpu_guest_fixture: "{{ playbook_dir }}/fixtures/llm_gpu_guest_inventory.yml"
+  tasks:
+    - name: Load sanitized guest inventory fields
+      ansible.builtin.include_vars:
+        file: "{{ _gpu_guest_fixture }}"
+        name: _guest
+
+    - name: Add the fixture guest to its capability group
+      ansible.builtin.add_host:
+        name: llm-gpu-fixture
+        groups: "{{ ['llm_gpu_group'] if 'llm-gpu' in _guest.capability_tags else [] }}"
+        ansible_connection: local
+
+    - name: Evaluate the production switch against the fixture inventory
+      ansible.builtin.set_fact:
+        llm_router_gpu_profiles_enabled: "{{ hostvars['llm-gpu-fixture'].llm_router_gpu_profiles_enabled }}"
+
+    - name: Assert the captured capability tag enables the production switch
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _guest.tags_type == 'str'
+          - _guest.status == 'running'
+          - "'llm-gpu' in _guest.capability_tags"
+          - "'llm-gpu-fixture' in groups['llm_gpu_group']"
+          - llm_router_gpu_profiles_enabled | bool
+          - hostvars['llm-gpu-fixture'].bao_apps_secrets == {}
+          - hostvars['llm-gpu-fixture'].ai_stream_read_timeout_seconds is defined
+          - hostvars['llm-gpu-fixture'].hermes_goal_judge_model is defined

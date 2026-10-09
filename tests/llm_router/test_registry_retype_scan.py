@@ -61,7 +61,7 @@ def registry_values(root: Path) -> dict[str, set[str]]:
     values: dict[str, set[str]] = {}
     for slice_file in sorted((root / "llm-models.d").glob("*.yml")):
         for name, entries in yaml.safe_load(slice_file.read_text()).items():
-            if name == "_llm_model_artifacts":
+            if name.startswith("_llm_model_artifacts") or name == "_llm_model_stage0_artifacts":
                 for artifact in entries:
                     values.setdefault(str(artifact["hf_repo"]), set()).add("upstream")
                 continue
@@ -108,7 +108,7 @@ def test_zdr_true_registry_entries_name_the_provider_source() -> None:
 
 
 def test_virtual_key_tags_are_create_only() -> None:
-    """New key metadata receives tags; reconcile preserves UI edits."""
+    """Routing tags seed on create; the required sensitivity class also reconciles."""
     seed_file = REPO_ROOT / "roles/llm_router/tasks/seed-keys.yml"
     tasks = yaml.load(seed_file.read_text(), Loader=_Permissive)
     by_name = {task.get("name"): task for task in tasks}
@@ -116,6 +116,7 @@ def test_virtual_key_tags_are_create_only() -> None:
     create_body = create["ansible.builtin.uri"]["body"]
     assert "item.router_settings" in create_body["router_settings"]
     assert "item.tags" in create_body["metadata"]
+    assert "item.sensitivity_tag" in create_body["metadata"]
 
     policy_file = REPO_ROOT / "roles/llm_router/tasks/reconcile-seeded-key-policy.yml"
     policy_tasks = yaml.load(policy_file.read_text(), Loader=_Permissive)
@@ -123,6 +124,7 @@ def test_virtual_key_tags_are_create_only() -> None:
     compute = policy_by_name["Compute the key policy update each live key still needs, if any"]
     reconcile_expr = compute["ansible.builtin.set_fact"]["_llm_router_key_updates"]
     assert "item.tags" not in reconcile_expr
+    assert "_sensitivity_tag" in reconcile_expr
     assert "router_settings" not in reconcile_expr
 
     update = policy_by_name["Reconcile caller policy for live keys that changed"]

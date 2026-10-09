@@ -1,0 +1,329 @@
+---
+- name: Load shared artifact cache settings
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/load.yml"
+
+- name: Validate the requested cache-sync artifact reference
+  ansible.builtin.assert:
+    that:
+      - nvidia_gpu_guest_cache_sync_artifact_id is defined
+      - nvidia_gpu_guest_cache_sync_artifact_id | string | length > 0
+      - (nvidia_gpu_guest_cache_sync_mode | default('pull')) in ['pull', 'download']
+    fail_msg: "Set an artifact id and a supported model-store cache-sync mode."
+    quiet: true
+
+- name: Load registered artifacts for cache sync
+  ansible.builtin.include_vars:
+    file: "{{ nvidia_gpu_guest_artifact_registry_file }}"
+
+- name: Load the GLM-5.3-Flash artifact shard for cache sync
+  ansible.builtin.include_vars:
+    file: "{{ nvidia_gpu_guest_glm_artifact_registry_file }}"
+
+- name: Load the NVFP4 sweep artifact shard for cache sync
+  ansible.builtin.include_vars:
+    file: "{{ nvidia_gpu_guest_nvfp4_sweep_artifact_registry_file }}"
+
+- name: Load Stage 0 benchmark artifacts for cache sync
+  ansible.builtin.include_vars:
+    file: "{{ nvidia_gpu_guest_stage0_artifact_registry_file }}"
+
+- name: Combine the campaign model artifact shards for cache sync
+  ansible.builtin.set_fact:
+    nvidia_gpu_guest_model_artifacts: >-
+      {{ _llm_model_artifacts + _llm_model_artifacts_glm53flash
+         + _llm_model_artifacts_nvfp4_sweep + _llm_model_stage0_artifacts }}
+
+- name: Resolve the requested cache-sync artifact
+  ansible.builtin.set_fact:
+    nvidia_gpu_guest_cache_sync_artifact: >-
+      {{ nvidia_gpu_guest_model_artifacts
+         | selectattr('artifact_id', 'equalto', nvidia_gpu_guest_cache_sync_artifact_id)
+         | first | default({}) }}
+
+- name: Assert the requested artifact and model-store mounts are registered
+  ansible.builtin.assert:
+    that:
+      - nvidia_gpu_guest_cache_sync_artifact | length > 0
+      - nvidia_gpu_guest_cache_sync_artifact.hf_repo | length > 0
+      - nvidia_gpu_guest_cache_sync_artifact.revision is match('^[0-9a-f]{40}$')
+      - nvidia_gpu_guest_cache_sync_artifact.include_globs | length > 0
+      - nvidia_gpu_guest_model_cache_mount_path | length > 0
+      - >-
+        nvidia_gpu_guest_model_origin_mount_path | length == 0
+        or (nvidia_gpu_guest_cache_sync_mode | default('pull')) != 'download'
+        or not nvidia_gpu_guest_model_origin_mount_read_only
+    fail_msg: >-
+      The registered artifact must be revision-pinned, the writable local cache
+      must be declared, and a declared origin mount must allow the requested
+      operation.
+    quiet: true
+
+# Without a declared origin the local cache is the only store: the artifact is
+# downloaded straight into it and verified there.
+- name: Resolve the sync operation and directories for the selected artifact
+  ansible.builtin.set_fact:
+    nvidia_gpu_guest_cache_sync_origin_declared: "{{ nvidia_gpu_guest_model_origin_mount_path | length > 0 }}"
+    nvidia_gpu_guest_cache_sync_origin_directory: >-
+      {{ nvidia_gpu_guest_model_origin_mount_path }}/{{ nvidia_gpu_guest_cache_sync_artifact.hf_repo }}
+    nvidia_gpu_guest_cache_sync_local_directory: >-
+      {{ nvidia_gpu_guest_model_cache_path }}/{{ nvidia_gpu_guest_cache_sync_artifact.hf_repo }}
+
+- name: Resolve the download target and the operation to run
+  ansible.builtin.set_fact:
+    nvidia_gpu_guest_cache_sync_download_directory: >-
+      {{ nvidia_gpu_guest_cache_sync_origin_directory
+         if nvidia_gpu_guest_cache_sync_origin_declared
+         else nvidia_gpu_guest_cache_sync_local_directory }}
+    nvidia_gpu_guest_cache_sync_operation: >-
+      {{ 'download' if (not nvidia_gpu_guest_cache_sync_origin_declared
+                        or (nvidia_gpu_guest_cache_sync_mode | default('pull')) == 'download')
+         else 'pull' }}
+    nvidia_gpu_guest_cache_sync_local_target: >-
+      {{ not nvidia_gpu_guest_cache_sync_origin_declared
+         or (nvidia_gpu_guest_cache_sync_mode | default('pull')) == 'pull' }}
+
+# A store already complete at the pinned revision is proven by the same sidecar
+# check the converge verifies with, so it needs no Hub request: the preview and
+# the download below are skipped for it. Exit 1 is the verifier's verdict that
+# the store is not complete; any other exit code is a crash and stays fatal.
+- name: Check the pinned artifact store offline before any Hub request
+  ansible.builtin.script:
+    cmd: >-
+      {{ role_path }}/files/verify-local-model-store.py
+      --root {{ nvidia_gpu_guest_cache_sync_download_directory | quote }}
+      --revision {{ nvidia_gpu_guest_cache_sync_artifact.revision | quote }}
+      --include-globs {{ nvidia_gpu_guest_cache_sync_artifact.include_globs | to_json | quote }}
+  register: nvidia_gpu_guest_cache_sync_offline_check
+  become: true
+  become_user: "{{ nvidia_gpu_guest_user }}"
+  changed_when: false
+  failed_when: nvidia_gpu_guest_cache_sync_offline_check.rc not in [0, 1]
+  check_mode: false
+  when: nvidia_gpu_guest_cache_sync_operation == 'download'
+
+- name: Record whether the pinned artifact store is already complete
+  ansible.builtin.set_fact:
+    nvidia_gpu_guest_cache_sync_store_complete: "{{ nvidia_gpu_guest_cache_sync_offline_check.rc | default(1) == 0 }}"
+  when: nvidia_gpu_guest_cache_sync_operation == 'download'
+
+- name: Require the artifact cache for Hub downloads
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/require-proxy.yml"
+  when:
+    - nvidia_gpu_guest_cache_sync_operation == 'download'
+    - not (nvidia_gpu_guest_cache_sync_store_complete | default(false) | bool)
+
+- name: Inspect the declared model-origin mount
+  ansible.builtin.stat:
+    path: "{{ nvidia_gpu_guest_model_origin_mount_path }}"
+  register: nvidia_gpu_guest_cache_sync_origin_mount_stat
+  when: nvidia_gpu_guest_cache_sync_origin_declared | bool
+
+- name: Assert the declared model-origin mount exists
+  ansible.builtin.assert:
+    that:
+      - nvidia_gpu_guest_cache_sync_origin_mount_stat.stat.exists
+      - nvidia_gpu_guest_cache_sync_origin_mount_stat.stat.isdir
+    fail_msg: >-
+      The declared model-origin mount must already exist as a directory before
+      a model artifact can be downloaded or pulled into the local cache.
+    quiet: true
+  when: nvidia_gpu_guest_cache_sync_origin_declared | bool
+
+- name: Inspect the pinned Hugging Face CLI for artifact cache sync
+  ansible.builtin.stat:
+    path: "{{ nvidia_gpu_guest_hf_bin }}"
+    # uv installs tool entry points as symlinks into its tool bin directory.
+    follow: true
+  register: nvidia_gpu_guest_cache_sync_hf_bin_stat
+
+- name: Assert the pinned Hugging Face CLI is installed
+  ansible.builtin.assert:
+    that:
+      - nvidia_gpu_guest_cache_sync_hf_bin_stat.stat.exists
+      - nvidia_gpu_guest_cache_sync_hf_bin_stat.stat.isreg
+    fail_msg: >-
+      Install the role's pinned Hugging Face CLI before including cache-sync.yml.
+      This task file does not converge the serving or CLI installation state.
+    quiet: true
+
+- name: Inspect the selected artifact in the shared origin
+  ansible.builtin.stat:
+    path: "{{ nvidia_gpu_guest_cache_sync_origin_directory }}"
+  register: nvidia_gpu_guest_cache_sync_origin_stat
+  when: nvidia_gpu_guest_cache_sync_operation == 'pull'
+
+- name: Assert the selected artifact already exists in the shared origin
+  ansible.builtin.assert:
+    that:
+      - nvidia_gpu_guest_cache_sync_origin_stat.stat.exists
+      - nvidia_gpu_guest_cache_sync_origin_stat.stat.isdir
+    fail_msg: >-
+      The selected registry artifact must be present in the shared model origin
+      before it can be copied into the writable local cache.
+    quiet: true
+  when: nvidia_gpu_guest_cache_sync_operation == 'pull'
+
+- name: Create the local model cache directory
+  ansible.builtin.file:
+    path: "{{ nvidia_gpu_guest_model_cache_path }}"
+    state: directory
+    owner: "{{ nvidia_gpu_guest_user }}"
+    group: "{{ nvidia_gpu_guest_group }}"
+    mode: "0750"
+  when: nvidia_gpu_guest_cache_sync_local_target | bool
+
+- name: Create the selected artifact directory in the local model cache
+  ansible.builtin.file:
+    path: "{{ nvidia_gpu_guest_cache_sync_local_directory }}"
+    state: directory
+    owner: "{{ nvidia_gpu_guest_user }}"
+    group: "{{ nvidia_gpu_guest_group }}"
+    mode: "0750"
+  when: nvidia_gpu_guest_cache_sync_local_target | bool
+
+- name: Copy the registered artifact from the shared origin into the local model cache
+  ansible.builtin.copy:
+    src: "{{ nvidia_gpu_guest_cache_sync_origin_directory }}/"
+    dest: "{{ nvidia_gpu_guest_cache_sync_local_directory }}/"
+    remote_src: true
+    owner: "{{ nvidia_gpu_guest_user }}"
+    group: "{{ nvidia_gpu_guest_group }}"
+    mode: preserve
+  register: nvidia_gpu_guest_cache_sync_copy
+  when: nvidia_gpu_guest_cache_sync_operation == 'pull'
+
+- name: Create the artifact directory in the root-squashed shared origin
+  ansible.builtin.file:
+    path: "{{ nvidia_gpu_guest_cache_sync_origin_directory }}"
+    state: directory
+    mode: "0775"
+  when: nvidia_gpu_guest_cache_sync_operation == 'download' and nvidia_gpu_guest_cache_sync_origin_declared | bool
+
+- name: Preview each registered artifact include with pinned hf download
+  ansible.builtin.command:
+    argv: >-
+      {{ [nvidia_gpu_guest_hf_bin, 'download', nvidia_gpu_guest_cache_sync_artifact.hf_repo,
+          '--revision', nvidia_gpu_guest_cache_sync_artifact.revision,
+          '--include', item, '--local-dir', nvidia_gpu_guest_cache_sync_download_directory,
+          '--dry-run'] }}
+  environment: "{{ llamacpp_release_proxy_environment | combine({'HF_HOME': nvidia_gpu_guest_hf_home}) }}"
+  become: true
+  become_user: "{{ nvidia_gpu_guest_user }}"
+  loop: "{{ nvidia_gpu_guest_cache_sync_artifact.include_globs }}"
+  loop_control:
+    label: "{{ nvidia_gpu_guest_cache_sync_artifact.artifact_id }}:{{ item }}"
+  register: nvidia_gpu_guest_cache_sync_previews
+  changed_when: false
+  when:
+    - nvidia_gpu_guest_cache_sync_operation == 'download'
+    - not (nvidia_gpu_guest_cache_sync_store_complete | default(false) | bool)
+
+- name: Resolve whether any registered include would download files
+  ansible.builtin.set_fact:
+    nvidia_gpu_guest_cache_sync_download_pending: >-
+      {{ nvidia_gpu_guest_cache_sync_previews.results
+         | selectattr('stdout', 'defined')
+         | rejectattr('stdout', 'search', 'Will download 0 files')
+         | list | length > 0 }}
+  when: nvidia_gpu_guest_cache_sync_operation == 'download'
+
+# A profile converge replaces the running server anyway, so it clears its own
+# GPU work here; every other caller keeps the strict idle-GPU check below.
+- name: Stop this role's serving units before a profile switch downloads an artifact
+  ansible.builtin.systemd:
+    name: "{{ nvidia_gpu_guest_unit_prefix }}-{{ item.key }}.service"
+    state: stopped
+  register: nvidia_gpu_guest_cache_sync_stop_serving
+  notify: Start the active GPU serving profile
+  failed_when:
+    - nvidia_gpu_guest_cache_sync_stop_serving.failed | default(false)
+    - "'Could not find the requested service' not in (nvidia_gpu_guest_cache_sync_stop_serving.msg | default(''))"
+  loop: "{{ nvidia_gpu_guest_profiles | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - nvidia_gpu_guest_cache_sync_operation == 'download'
+    - nvidia_gpu_guest_cache_sync_download_pending | bool
+    - nvidia_gpu_guest_cache_sync_notify_service | default(false) | bool
+
+- name: Read compute applications before downloading a registered artifact
+  ansible.builtin.command:
+    argv:
+      - nvidia-smi
+      - --query-compute-apps=pid,name,used_memory
+      - --format=csv,noheader
+  register: nvidia_gpu_guest_cache_sync_compute_apps
+  changed_when: false
+  when:
+    - nvidia_gpu_guest_cache_sync_operation == 'download'
+    - nvidia_gpu_guest_cache_sync_download_pending | bool
+
+- name: Require an idle GPU before downloading a registered artifact
+  ansible.builtin.assert:
+    that:
+      - nvidia_gpu_guest_cache_sync_compute_apps.stdout | trim | length == 0
+    fail_msg: >-
+      The model-store download is blocked while a GPU compute application is
+      running: {{ nvidia_gpu_guest_cache_sync_compute_apps.stdout | trim }}.
+      Clear the benchmark workload and retry through the runner.
+    quiet: true
+  when:
+    - nvidia_gpu_guest_cache_sync_operation == 'download'
+    - nvidia_gpu_guest_cache_sync_download_pending | bool
+
+- name: Record the idle-GPU decision before downloading a registered artifact
+  ansible.builtin.debug:
+    msg: "The compute-application query was empty; the registered artifact download may proceed."
+  when:
+    - nvidia_gpu_guest_cache_sync_operation == 'download'
+    - nvidia_gpu_guest_cache_sync_download_pending | bool
+
+- name: Download only the registered pinned artifact includes into the download target
+  ansible.builtin.command:
+    argv: >-
+      {{ [nvidia_gpu_guest_hf_bin, 'download', nvidia_gpu_guest_cache_sync_artifact.hf_repo,
+          '--revision', nvidia_gpu_guest_cache_sync_artifact.revision,
+          '--include', item, '--local-dir', nvidia_gpu_guest_cache_sync_download_directory] }}
+  environment: "{{ llamacpp_release_proxy_environment | combine({'HF_HOME': nvidia_gpu_guest_hf_home}) }}"
+  become: true
+  become_user: "{{ nvidia_gpu_guest_user }}"
+  loop: "{{ nvidia_gpu_guest_cache_sync_artifact.include_globs }}"
+  loop_control:
+    label: "{{ nvidia_gpu_guest_cache_sync_artifact.artifact_id }}:{{ item }}"
+    extended: true
+  register: nvidia_gpu_guest_cache_sync_download
+  when:
+    - not ansible_check_mode
+    - nvidia_gpu_guest_cache_sync_operation == 'download'
+    - not (nvidia_gpu_guest_cache_sync_store_complete | default(false) | bool)
+  changed_when: >-
+    'Will download 0 files' not in
+    nvidia_gpu_guest_cache_sync_previews.results[ansible_loop.index0].stdout
+
+- name: Verify local files against pinned download sidecars
+  ansible.builtin.script:
+    cmd: >-
+      {{ role_path }}/files/verify-local-model-store.py
+      --root {{ nvidia_gpu_guest_cache_sync_local_directory | quote }}
+      --revision {{ nvidia_gpu_guest_cache_sync_artifact.revision | quote }}
+      --include-globs {{ nvidia_gpu_guest_cache_sync_artifact.include_globs | to_json | quote }}
+  register: nvidia_gpu_guest_cache_sync_local_verification
+  become: true
+  become_user: "{{ nvidia_gpu_guest_user }}"
+  changed_when: false
+  when:
+    - nvidia_gpu_guest_cache_sync_local_target | bool
+    - not ansible_check_mode
+
+- name: Notify serving handlers only when the local model cache changed
+  ansible.builtin.debug:
+    msg: "The active model artifact changed in the writable local cache."
+  when:
+    - not ansible_check_mode
+    - (nvidia_gpu_guest_cache_sync_mode | default('pull')) == 'pull'
+    - nvidia_gpu_guest_cache_sync_notify_service | default(false) | bool
+    - nvidia_gpu_guest_cache_sync_copy.changed | default(false)
+  changed_when: true
+  notify:
+    - Stop every other GPU serving profile before switching
+    - Start the active GPU serving profile

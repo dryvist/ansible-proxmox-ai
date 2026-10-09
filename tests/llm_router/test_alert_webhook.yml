@@ -156,9 +156,53 @@
       vars:
         _template_source: "{{ lookup('file', _role_dir ~ '/templates/config.yaml.j2') }}"
 
-# NOTE ON COVERAGE: this proves the RENDERED YAML SHAPE only -- that
-# alert_to_webhook_url is a map keyed by alert type, gated on the URL var,
-# and free of a literal host. It does not call LiteLLM and cannot prove the
-# pinned release actually accepts this config or that ntfy's templating
-# query parameters produce the intended notification text; that requires a
-# live probe (see the PR body).
+- name: Router inventory config derives the alert webhook from its configured topic
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _router_group_vars: >-
+      {{ lookup('ansible.builtin.file',
+         playbook_dir ~ '/../../inventory/group_vars/llm_router_group.yml') | from_yaml }}
+  tasks:
+    - name: Apply the router group's declared notification topic
+      ansible.builtin.set_fact:
+        llm_router_alert_webhook_topic: "{{ _router_group_vars.llm_router_alert_webhook_topic }}"
+
+    - name: Read the real role-default URL expression
+      ansible.builtin.set_fact:
+        _ops_defaults: >-
+          {{ lookup('ansible.builtin.file', _role_dir ~ '/defaults/main/60-ops.yml') | from_yaml }}
+
+    - name: Persist the default expression as a renderable template
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .j2
+      register: _webhook_template
+
+    - name: Write the unchanged default URL expression
+      ansible.builtin.copy:
+        dest: "{{ _webhook_template.path }}"
+        content: "{{ _ops_defaults.llm_router_alert_webhook_url }}"
+        mode: "0600"
+
+    - name: Render the role-default URL using the configured inventory topic
+      ansible.builtin.set_fact:
+        _derived_alert_url: "{{ lookup('ansible.builtin.template', _webhook_template.path) }}"
+
+    - name: The group topic arms a host-derived webhook URL for drift alerts
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_alert_webhook_topic == 'keystone'
+          - _derived_alert_url.startswith('https://ntfy.')
+          - _derived_alert_url.endswith('/keystone')
+        fail_msg: >-
+          The router group must configure the urgent notification topic and
+          defaults/main/60-ops.yml must derive a host-based URL from that topic.
+        success_msg: "Router group config supplies the alert topic and role defaults derive the URL."
+
+# NOTE ON COVERAGE: these plays prove the topic-to-URL derivation and rendered
+# YAML shape only. They do not call LiteLLM and cannot prove the pinned release
+# accepts this config or that ntfy's templating query parameters produce the
+# intended notification text; that requires a live probe.

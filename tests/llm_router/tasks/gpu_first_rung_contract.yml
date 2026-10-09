@@ -1,0 +1,109 @@
+---
+# While the shared GPU route is active, the medium deployment on the GPU host is
+# rung 1 of every role it can serve. Each role keeps every rung it had before,
+# in the same order, behind it. Embedding and OCR roles have no medium-deployment
+# rung (no such model there), and the fast-gpu role keeps its single rung.
+#
+# Imported by test_gpu_pro6000_enabled_render.yml after the GPU profile render.
+
+- name: Assert every GPU-capable role starts on the medium deployment
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _first['review-oss'] == llm_router_vllm_medium_model
+      - _first['review-private'] == llm_router_vllm_medium_model
+      - _first['review-local'] == llm_router_vllm_medium_model
+      - _first['recorder'] == llm_router_vllm_medium_model
+      - _first['subagent'] == llm_router_vllm_medium_model
+      - _first['judge'] == llm_router_vllm_medium_model
+      - _first['fast-gpu'] == llm_router_hermes_local_4080_id
+      - _first['embed'] == llm_router_embedding_model
+      - _first['ocr'] == llm_router_ocr_model
+    fail_msg: "rung 1 by role: {{ _first }}"
+    success_msg: "the medium deployment is rung 1 of every GPU-capable role"
+  vars:
+    _first: >-
+      {{ dict(llm_router_role_deployments | map(attribute='role')
+              | zip(llm_router_role_deployments | map(attribute='model'))) }}
+
+- name: Assert the rungs each role had before still follow the medium deployment in order
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # review-oss: the fast GPU rung, then the primary large local model, then
+      # the external pair, then paid.
+      - _fb['review-oss'][:2] == [llm_router_hermes_local_4080_id, llm_router_primary_large_model]
+      - _fb['review-oss'][2:2 + (llm_router_zai_groups | length)] == llm_router_zai_groups
+      - llm_router_external_free_rungs | intersect(_fb['review-oss']) | length == 0
+      - _fb['review-oss'][-1] in llm_router_external_terminal_rungs
+      # review-private: the fast GPU rung, the primary large local model, then
+      # the subscription and API-key rungs only.
+      - >-
+        _fb['review-private'] == [llm_router_hermes_local_4080_id, llm_router_primary_large_model]
+        + llm_router_external_subscription_rungs + llm_router_hermes_cloud_api_key_groups
+      - llm_router_zai_groups | intersect(_fb['review-private']) | length == 0
+      # review-local and judge: local only, the routine model behind the medium
+      # deployment.
+      - _fb['review-local'] == [llm_router_routine_model]
+      - _fb['judge'] == [llm_router_routine_model]
+      # recorder: the medium deployment, then the fast GPU rung, then the routine
+      # model.
+      - _fb['recorder'] == [llm_router_hermes_local_4080_id, llm_router_routine_model]
+      # subagent: the fast GPU rung directly behind the medium deployment, then the
+      # D1 ladder.
+      - _fb['subagent'][0] == llm_router_hermes_local_4080_id
+      - _fb['subagent'][1:] == _llm_router_fast_subagent_chain
+    fail_msg: "fallbacks by role: {{ _fb }}"
+    success_msg: "each role keeps its earlier rungs behind the medium deployment"
+  vars:
+    _fb: >-
+      {{ dict(llm_router_role_deployments | map(attribute='role')
+              | zip(llm_router_role_deployments | map(attribute='fallbacks'))) }}
+
+- name: Assert the rendered config writes the local-only chains out in full
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _cfg_fb['review-local'] == [llm_router_routine_model]
+      - _cfg_fb['judge'] == [llm_router_routine_model]
+      - _cfg_fb['recorder'] == [llm_router_hermes_local_4080_id, llm_router_routine_model]
+    fail_msg: >-
+      rendered local-only chains:
+      {{ _cfg_fb | dict2items | selectattr('key', 'in', ['review-local', 'judge', 'recorder']) | list }}
+    success_msg: "local-only chains are rendered explicitly in the config"
+  vars:
+    _cfg_fb: >-
+      {{ dict(_config.router_settings.fallbacks | map('dict2items') | flatten
+              | map(attribute='key') | zip(_config.router_settings.fallbacks
+                | map('dict2items') | flatten | map(attribute='value'))) }}
+
+- name: Assert the complexity router sends its simple and medium tiers to the medium deployment
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _tiers.SIMPLE == llm_router_vllm_medium_model
+      - _tiers.MEDIUM == llm_router_vllm_medium_model
+      - _tiers.COMPLEX == llm_router_vllm_medium_model
+      - _tiers.REASONING == llm_router_vllm_medium_model
+      - _tiers.SIMPLE == llm_router_hermes_gpu_fast_target
+    fail_msg: "complexity tiers: {{ _tiers }}"
+    success_msg: "the complexity router's tiers all resolve to the medium deployment"
+  vars:
+    _tiers: >-
+      {{ (_config.model_list | selectattr('model_name', 'equalto', hermes_brain_model)
+          | first).litellm_params.complexity_router_config.tiers }}
+
+- name: Assert the CI keys reach the medium deployment
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_vllm_medium_model in _keys['github-actions']
+      - llm_router_vllm_medium_model in _keys['github-actions-ci-fix']
+      - llm_router_vllm_medium_model in _keys['github-actions-pr-review']
+      - llm_router_vllm_medium_model in _keys['github-actions-oss']
+    fail_msg: "CI key model scopes: {{ _keys | dict2items | selectattr('key', 'match', 'github-actions') | list }}"
+    success_msg: "every CI key's model scope includes the medium deployment"
+  vars:
+    _keys: >-
+      {{ dict(llm_router_virtual_keys | map(attribute='alias')
+              | zip(llm_router_virtual_keys | map(attribute='models'))) }}

@@ -1,0 +1,62 @@
+---
+# Registry-derived model allowlists replace stale names by default; an
+# explicit false keeps additive live extensions.
+
+- name: Render seeded model-list updates from the real policy reconciler
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _policy_file: "{{ playbook_dir }}/../../roles/llm_router/tasks/reconcile-seeded-key-policy.yml"
+    llm_router_seed_mode: initial
+    llm_router_mcp_default_object_permission:
+      mcp_servers: [no-mcp-servers]
+    llm_router_existing_keys:
+      json:
+        keys:
+          - key_alias: registry-seeded
+            models: [active, retired]
+            metadata: {app: registry-seeded, tier: local, tags: ['&sensitivity:sensitive']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
+          - key_alias: additive-opt-out
+            models: [active, local-custom]
+            metadata: {app: additive-opt-out, tier: local, tags: ['&sensitivity:sensitive']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
+    llm_router_virtual_keys:
+      - alias: registry-seeded
+        value: "sk-{{ 'a' * 20 }}"
+        models: [active]
+      - alias: additive-opt-out
+        value: "sk-{{ 'b' * 20 }}"
+        models: [active]
+        models_authoritative: false
+    _llm_router_live_key_aliases: [registry-seeded, additive-opt-out]
+  tasks:
+    - name: Extract the committed model policy expression
+      ansible.builtin.set_fact:
+        _policy_expr: >-
+          {{ (lookup('ansible.builtin.file', _policy_file) | from_yaml
+              | selectattr('name', 'equalto', 'Compute the key policy update each live key still needs, if any')
+              | first)['ansible.builtin.set_fact']['_llm_router_key_updates'] }}
+
+    - name: Persist the expression for normal Jinja evaluation
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .j2
+      register: _policy_template
+
+    - name: Write the extracted expression
+      ansible.builtin.copy:
+        dest: "{{ _policy_template.path }}"
+        content: "{{ _policy_expr }}"
+        mode: "0600"
+
+    - name: Render initial-mode model updates
+      ansible.builtin.set_fact:
+        _model_updates: "{{ lookup('ansible.builtin.template', _policy_template.path) }}"
+
+    - name: Default authority removes stale names while opt-out keeps live additions
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _model_updates | map(attribute='alias') | list == ['registry-seeded']
+          - _model_updates[0].body.models == ['active']

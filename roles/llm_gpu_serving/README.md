@@ -1,5 +1,11 @@
 # llm_gpu_serving
 
+Legacy combined-engine role. It remains available for the existing guest until
+the replacement pair is accepted. New guests use `nvidia_gpu_guest` for shared
+NVIDIA userspace and cache setup, plus exactly one of `llamacpp_serving` or
+`vllm_serving`; the engine identity and the single Tofu selector determine the
+serving group and router profile.
+
 Deploys profile-based GPU inference with a pinned vLLM virtual environment and
 the CUDA release binary for llama.cpp. Each enabled profile receives its own
 systemd unit; the role keeps only `llm_active_profile` running and serving on
@@ -7,19 +13,24 @@ the shared API listener.
 
 ## Play
 
-`playbooks/llm-serving.yml` applies this role to `llm_gpu_group` (inventory tag
-`llm-gpu`) with the `llm_gpu_serving` tag, one host at a time, before the router
-pool. `playbooks/site.yml` imports that playbook. With no host in the group the
-play is skipped. The active profile is `llm_active_profile`; cache and origin
-paths come from the inventory's `container_models_*` values. The guest carries no
-container engine: the EvalScope LiveCodeBench evaluator runs generated code in a
-local subprocess with a per-test timeout unless a recipe requests a Docker sandbox.
+`playbooks/llm-serving.yml` applies this role only to `llm_gpu_legacy_group`,
+which the inventory loader populates while no replacement engine pair is
+declared. Once the pair exists, the loader selects one engine-specific serving
+group and routes `llm_gpu_group` to that same member. `playbooks/site.yml`
+imports the serving playbook before the router pool. The active profile is
+`llm_active_profile`, derived from the Tofu engine selector and the shared
+per-engine profile map; cache and origin paths come from the inventory's
+`container_models_*` values. The guest carries no container engine: the
+EvalScope LiveCodeBench evaluator runs generated code in a local subprocess
+with a per-test timeout unless a recipe requests a Docker sandbox.
 
 ## Installation
 
 A selected target supplies a writable local cache and, optionally, a declared
 model-origin mount. The role validates the cache and does not create a missing
-mount point.
+mount point. Package, Python, Hugging Face, CUDA repository, and release
+downloads use the published inventory's `cache_proxy_urls.apt_cache` list; a
+missing list blocks the converge before upstream fetches.
 
 ## What it does
 
@@ -33,10 +44,10 @@ mount point.
 - Links `vllm` and `hf` into `/usr/local/bin` so campaign preflights find them without a venv path.
 - Installs the Renovate-pinned vLLM version and the Renovate-pinned `b12x`
   package for SM120 kernel support in one uv command.
-- Resolves a recent llama.cpp release and installs its Linux x64 CUDA archive
-  using the same release metadata and archive-layout checks as `llama_cpp`.
-- Seeds `model_store: true` artifacts from `llm-models.d/65-gpu-pro6000-artifacts.yml`
-  into the declared origin with immutable Hub revisions. The seed playbook
+- Installs the Renovate-pinned llama.cpp CUDA assets from the shared
+  `llamacpp_release` contract only when the recorded asset changes.
+- Seeds `model_store: true` artifacts from the base registry, GLM, and NVFP4
+  sweep shards into the declared origin with immutable Hub revisions. The seed playbook
   checks for running GPU compute applications before each download and verifies
   every populated repository with Hub checksums.
 - Pulls the active profile's registered repository from the origin into the
@@ -52,17 +63,23 @@ mount point.
 
 ## Profiles
 
-`llm_profiles` defines four entries: `small`, `medium-a`, `medium-b`, and
-`max`. All four are enabled so the profile switch can select any of them.
+`llm_profiles` defines five entries: `small`, `medium-a`, `medium-b`, `max`,
+and `glm-flash`. All five are enabled so the profile switch can select any of
+them. `glm-flash` is a separate llama.cpp profile for the pinned GLM-5.3-Flash
+UD-IQ1_S artifact; its router entry remains disabled until it is validated.
 Runtime serving settings live here; model bytes, Hub repository, include
 globs, file format, quantization, engine support, GGUF file name, and use are
-defined once in `llm-models.d/65-gpu-pro6000-artifacts.yml`. The router profile
+defined once in `llm-models.d/65-gpu-artifacts.yml`,
+`llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml`, and
+`llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml`. The router profile
 registry links to those records by `artifact_id` and stays `enabled: false`,
-`servable: false` until a serving floor is measured.
+`servable: false` until a serving floor is measured. The shared GPU registry
+also contains the `16gb` llama.cpp candidate owned by `llamacpp_serving`; this
+legacy role indexes only its own five profile names.
 
-`small` and `medium-a` run vLLM (safetensors). `medium-b` and `max` run
-llama.cpp (GGUF) from the installed release binary. A vLLM profile carries its
-kernel backends, max model length, max sequences, GPU memory utilization,
+`small` and `medium-a` run vLLM (safetensors). `medium-b`, `max`, and
+`glm-flash` run llama.cpp (GGUF) from the installed release binary. A vLLM
+profile carries its kernel backends, max model length, max sequences, GPU memory utilization,
 automatic tool-choice flag, parser defaults, and API port; the selected
 artifact supplies model-specific parsers when present. A llama.cpp profile
 carries `max_model_len` (the per-agent context), `max_num_seqs` (parallel
@@ -83,6 +100,15 @@ artifact straight into the local cache and verifies it there. Callers that only 
 `llm_gpu_serving_cache_sync_notify_service` unset; the normal role sets it to
 `true` so changed local model files restart serving.
 
+## Stress window
+
+Run `template 76` with `llm_gpu_serving_paused=true`, then `template 18` with
+`smoke` or `full`, then `template 76` with `llm_gpu_serving_paused=false`.
+The shared pause variable applies to this role and both engine-specific roles.
+Pausing stops the selected unit while leaving it enabled, its profile selected,
+and its model cache intact. Resuming starts the selected unit and requires the
+normal `/v1/models` health check to pass.
+
 ## Serving floors
 
 A profile may declare `llm_profiles.<name>.floor`: `concurrency`, `input_len`,
@@ -96,7 +122,8 @@ profile's floor; `tasks/assert-profile-floors.yml` fails the role otherwise.
 
 | Variable | Purpose |
 | --- | --- |
-| `llm_active_profile` | Profile whose unit is enabled and running |
+| `llm_gpu_serving_paused` | Stop serving during a declared stress window; defaults to `false` |
+| `llm_active_profile` | Selected profile; it remains selected while its unit is paused |
 | `llm_profiles` | Per-profile engine and serving settings |
 | `llm_gpu_serving_model_cache_mount_path` | Writable local model-cache directory supplied for the target |
 | `llm_gpu_serving_model_origin_mount_path` | Optional shared origin mount; when empty, models download straight into the local cache |

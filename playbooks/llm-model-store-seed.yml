@@ -32,12 +32,16 @@
 
     - name: Load model-store artifact metadata
       ansible.builtin.include_vars:
-        file: "{{ playbook_dir }}/../llm-models.d/65-gpu-pro6000-artifacts.yml"
+        file: "{{ playbook_dir }}/../llm-models.d/65-gpu-artifacts.yml"
+
+    - name: Load NVFP4 sweep model-store metadata
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml"
 
     - name: Select the registry-declared model-store artifacts
       ansible.builtin.set_fact:
         llm_model_store_seed_artifacts: >-
-          {{ _llm_model_artifacts
+          {{ (_llm_model_artifacts + _llm_model_artifacts_nvfp4_sweep)
              | selectattr('model_store', 'defined')
              | selectattr('model_store', 'equalto', true)
              | list }}
@@ -48,12 +52,15 @@
           - llm_model_store_seed_artifacts | length >= 20
           - >-
             (llm_model_store_seed_artifacts | map(attribute='model_store_profile') | unique | list | sort)
-            == ['max', 'medium-a', 'medium-b', 'small']
+            == ((_llm_model_artifacts + _llm_model_artifacts_nvfp4_sweep)
+                | selectattr('model_store', 'defined')
+                | selectattr('model_store', 'equalto', true)
+                | map(attribute='model_store_profile') | unique | list | sort)
           - "'GGUF' in (llm_model_store_seed_artifacts | map(attribute='format') | list)"
           - "'safetensors' in (llm_model_store_seed_artifacts | map(attribute='format') | list)"
           - "'MLX' in (llm_model_store_seed_artifacts | map(attribute='format') | list)"
         fail_msg: >-
-          The artifact registry must cover all four profiles and the GGUF,
+          The artifact registry must cover all declared model-store profiles and the GGUF,
           safetensors, and MLX formats before the model origin is populated.
         quiet: true
 

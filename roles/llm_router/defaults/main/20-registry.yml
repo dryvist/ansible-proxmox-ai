@@ -17,14 +17,14 @@
 llm_router_registry_dir: "{{ role_path | dirname | dirname }}/llm-models.d"
 
 # One fail-closed switch for the Pro6000 profiles; false here for every
-# consumer. inventory/group_vars/llm_router_group.yml turns it on for the router
-# pool exactly when the inventory has a host in llm_gpu_group.
+# consumer. inventory/group_vars/all.yml turns it on when a host belongs to
+# llm_gpu_group, so both the router and secret-prefetch play see the switch.
 llm_router_gpu_profiles_enabled: false
 
 llm_router_model_registry: >-
   {{ _llm_registry_large + _llm_registry_light + _llm_registry_cpu_pool
      + _llm_registry_local_gpu
-     + (llm_router_gpu_pro6000_profile_registry | default(_llm_registry_gpu_pro6000))
+     + (llm_router_gpu_profile_registry | default(_llm_registry_gpu))
      + _llm_registry_opencode + _llm_registry_hermes_cloud
      + _llm_registry_openrouter + _llm_registry_zai }}
 
@@ -128,41 +128,6 @@ llm_router_cpu_9b_models: >-
 llm_router_vllm_models: >-
   {{ (llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | list)
      if llm_router_llm_vllm_enabled | bool else [] }}
-# Pro6000: separate physical GPU serving tier. It is inventory-gated like the
-# CPU pool so this proxy never advertises a backend without a tofu-tagged host.
-llm_router_gpu_models: >-
-  {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'gpu') | list }}
-llm_router_gpu_profile_aliases: >-
-  {%- set ns = namespace(out=[]) -%}
-  {%- for m in llm_router_model_registry | selectattr('tier', 'equalto', 'gpu') | list -%}
-  {%- set ns.out = ns.out + (m.stable_aliases | default([])) -%}
-  {%- endfor -%}
-  {{ ns.out }}
-llm_router_gpu_models_by_profile: >-
-  {%- set ns = namespace(out={}) -%}
-  {%- for m in llm_router_gpu_models -%}
-  {%- set _ = ns.out.update({m.profile: m.client_model_id}) -%}
-  {%- endfor -%}
-  {{ ns.out }}
-llm_router_gpu_model_aliases_by_profile: >-
-  {%- set ns = namespace(out={}) -%}
-  {%- for m in llm_router_gpu_models -%}
-  {%- for alias in m.stable_aliases | default([]) -%}
-  {%- set _ = ns.out.update({m.profile: alias}) -%}
-  {%- endfor -%}
-  {%- endfor -%}
-  {{ ns.out }}
-llm_router_gpu_small_model: "{{ llm_router_gpu_models_by_profile.get('small', llm_router_routine_model) }}"
-llm_router_gpu_medium_a_model: "{{ llm_router_gpu_models_by_profile.get('medium-a', llm_router_primary_model) }}"
-llm_router_gpu_medium_b_model: "{{ llm_router_gpu_models_by_profile.get('medium-b', llm_router_hermes_local_4080_id) }}"
-llm_router_gpu_max_model: "{{ llm_router_gpu_models_by_profile.get('max', llm_router_primary_model) }}"
-# The complexity router targets tagged physical deployments. Stable aliases are
-# for callers that select a profile directly; LiteLLM's auto-router needs each
-# tier target to resolve to a tagged model-list entry.
-llm_router_hermes_gpu_fast_target: >-
-  {{ llm_router_gpu_models_by_profile.get('small', llm_router_routine_model) }}
-llm_router_hermes_gpu_medium_target: >-
-  {{ llm_router_gpu_models_by_profile.get('medium-a', llm_router_primary_model) }}
 # hermes-local: a Hermes-fallback-chain rung over a tier's backend that is
 # ALSO reachable directly under its own tier/id (e.g. the 4080 vllm guest).
 # Rendered alongside that physical tier (same api_base/api_key — see

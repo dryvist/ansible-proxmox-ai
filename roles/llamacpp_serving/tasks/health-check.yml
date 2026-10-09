@@ -1,0 +1,50 @@
+---
+# Waits for the active profile to answer; on failure shows the unit status and
+# the recent journal, redacted, before failing.
+- name: Verify the active GPU serving profile is healthy
+  vars:
+    llamacpp_serving_active_unit: "{{ nvidia_gpu_guest_unit_prefix }}-{{ llamacpp_serving_active_profile }}.service"
+  block:
+    - name: Probe the active GPU serving profile until it answers
+      ansible.builtin.uri:
+        url: >-
+          {{ 'http://' ~ llamacpp_serving_health_host ~ ':'
+             ~ (llamacpp_serving_profiles[llamacpp_serving_active_profile].port | string)
+             ~ '/v1/models' }}
+        status_code: 200
+      register: llamacpp_serving_health
+      retries: "{{ nvidia_gpu_guest_health_retries }}"
+      delay: "{{ nvidia_gpu_guest_health_delay }}"
+      until: llamacpp_serving_health.status == 200
+  rescue:
+    - name: Read the active GPU serving unit status and recent journal
+      ansible.builtin.command:
+        argv: "{{ item }}"
+      loop:
+        - [systemctl, status, "{{ llamacpp_serving_active_unit }}", --no-pager]
+        - - journalctl
+          - -u
+          - "{{ llamacpp_serving_active_unit }}"
+          - --no-pager
+          - -n
+          - "{{ nvidia_gpu_guest_health_journal_lines }}"
+      register: llamacpp_serving_health_diagnostics
+      changed_when: false
+      failed_when: false
+      loop_control:
+        label: "{{ item[0] }}"
+
+    - name: Show the active GPU serving unit status and recent journal
+      ansible.builtin.debug:
+        msg: "{{ item.stdout_lines | map('regex_replace', nvidia_gpu_guest_health_redact_regex, '<redacted>') | list }}"
+      loop: "{{ llamacpp_serving_health_diagnostics.results }}"
+      loop_control:
+        label: "{{ item.item[0] }}"
+
+    - name: Fail with the health check outcome
+      ansible.builtin.fail:
+        msg: >-
+          GPU serving unit {{ llamacpp_serving_active_unit }} did not answer /v1/models
+          after {{ nvidia_gpu_guest_health_retries }} attempts
+          {{ nvidia_gpu_guest_health_delay }}s apart; the unit status and the last
+          {{ nvidia_gpu_guest_health_journal_lines }} journal lines are shown above.

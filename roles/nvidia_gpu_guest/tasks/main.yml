@@ -1,0 +1,96 @@
+---
+- name: Load shared artifact cache settings and require the proxy
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/prepare.yml"
+
+- name: Create the GPU serving system group
+  ansible.builtin.group:
+    name: "{{ nvidia_gpu_guest_group }}"
+    system: true
+
+- name: Create the GPU serving system user
+  ansible.builtin.user:
+    name: "{{ nvidia_gpu_guest_user }}"
+    group: "{{ nvidia_gpu_guest_group }}"
+    home: "{{ nvidia_gpu_guest_home }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: true
+
+- name: Install GPU serving prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gzip
+      - libgomp1
+      - python3-debian
+      - sudo
+      - tar
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  environment: "{{ llamacpp_release_proxy_environment }}"
+
+- name: Install the NVIDIA userspace at the host driver version
+  ansible.builtin.include_tasks: install-nvidia-userspace.yml
+
+- name: Install the CUDA toolkit for runtime kernel compilation
+  ansible.builtin.include_tasks: install-cuda-toolkit.yml
+
+- name: Create GPU serving directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ nvidia_gpu_guest_user }}"
+    group: "{{ nvidia_gpu_guest_group }}"
+    mode: "0750"
+  loop:
+    - path: "{{ nvidia_gpu_guest_data_dir }}"
+    - path: "{{ nvidia_gpu_guest_install_dir }}"
+    - path: "{{ nvidia_gpu_guest_uv_cache_dir }}"
+    - path: "{{ nvidia_gpu_guest_uv_python_install_dir }}"
+    - path: "{{ nvidia_gpu_guest_uv_tool_dir }}"
+    - path: "{{ nvidia_gpu_guest_uv_tool_bin_dir }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Read the installed uv version
+  ansible.builtin.command:
+    argv:
+      - "{{ nvidia_gpu_guest_uv_bin }}"
+      - --version
+  register: nvidia_gpu_guest_uv_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Install the pinned uv version
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail && curl --proto '=https' --tlsv1.2 -LsSf
+      {{ nvidia_gpu_guest_uv_install_url | quote }}
+      | env UV_INSTALL_DIR={{ nvidia_gpu_guest_uv_bin | dirname | quote }} UV_NO_MODIFY_PATH=1 sh
+  args:
+    executable: /bin/bash
+  changed_when: true
+  environment: "{{ llamacpp_release_proxy_environment }}"
+  when: >-
+    (nvidia_gpu_guest_uv_version_check.stdout | default(''))
+    != ('uv ' ~ nvidia_gpu_guest_uv_version)
+
+- name: Install the pinned Hugging Face CLI in the model cache
+  ansible.builtin.command:
+    argv:
+      - "{{ nvidia_gpu_guest_uv_bin }}"
+      - tool
+      - install
+      - --python
+      - "{{ nvidia_gpu_guest_python }}"
+      - "huggingface_hub=={{ nvidia_gpu_guest_huggingface_hub_version }}"
+  become: true
+  become_user: "{{ nvidia_gpu_guest_user }}"
+  environment: "{{ nvidia_gpu_guest_uv_environment }}"
+  register: nvidia_gpu_guest_hf_cli_install
+  changed_when: >-
+    'Installed' in (nvidia_gpu_guest_hf_cli_install.stdout ~ nvidia_gpu_guest_hf_cli_install.stderr) or
+    'Uninstalled' in (nvidia_gpu_guest_hf_cli_install.stdout ~ nvidia_gpu_guest_hf_cli_install.stderr) or
+    'Prepared' in (nvidia_gpu_guest_hf_cli_install.stdout ~ nvidia_gpu_guest_hf_cli_install.stderr)

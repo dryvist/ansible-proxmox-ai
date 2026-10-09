@@ -1,9 +1,8 @@
 ---
-# The consumer-seeding play (virtual keys, budgets, caller-facing roles)
-# gates on pool-member reachability the same way the rolling router play
-# does, so run_once selection cannot land on a member the gate already
-# knows is down — and a total-outage failure fails the run instead of
-# silently seeding nothing (#949 review, BLOCKER).
+# The consumer-seeding play gates on pool-member reachability so run_once
+# selection cannot land on a known-down member. A localhost failure check
+# must honor --limit: GPU-only runs select no router hosts and must not be
+# mislabeled a router outage.
 #
 # Structural only, like test_syslog_route_outside_rolling_play.yml: this
 # parses the committed playbooks/llm-serving.yml rather than executing it
@@ -99,16 +98,56 @@
     _gate_check_play: "{{ _plays[_seed_idx | int + 1] }}"
     _gate_check_task: "{{ _gate_check_play.tasks[0] | default({}) }}"
   tasks:
-    - name: A localhost play immediately after seeding records a loud failure when the whole pool failed the gate
+    - name: The localhost failure check scopes its probe assertion to router hosts selected by --limit
       ansible.builtin.assert:
         quiet: true
         that:
           - _gate_check_play.hosts == 'localhost'
+          - "'_llm_router_seed_target_hosts' in (_gate_check_play.vars | default({}))"
+          - "'ansible_limit' in (_gate_check_play.vars._llm_router_seed_target_hosts | default(''))"
+          - "'inventory_hostnames' in (_gate_check_play.vars._llm_router_seed_target_hosts | default(''))"
+          - "'_llm_router_seed_target_hosts | length > 0' in (_gate_check_task['when'] | string)"
           - "'site_isolated_failures' in (_gate_check_task | string)"
-          - "'llm_router_group' in (_gate_check_task['when'] | string)"
+          - "'_llm_router_seed_target_hosts' in (_gate_check_task['when'] | string)"
           - "'pool_member_probe' in (_gate_check_task['when'] | string)"
           - "'pong' in (_gate_check_task['when'] | string)"
         fail_msg: >-
-          Expected a localhost play right after the seed play that sets
-          site_isolated_failures when no llm_router_group member's
-          pool_member_probe reports 'pong' — got: {{ _gate_check_play }}
+          Expected a localhost check after seeding that fails only when at
+          least one router host was targeted and none of those hosts passed
+          pool_member_probe — got: {{ _gate_check_play }}
+
+- name: Inventory limit selection keeps a GPU-only run out of the router seed failure branch
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Add router fixtures to the inventory
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: llm_router_group
+      loop:
+        - fixture-router-1
+        - fixture-router-2
+
+    - name: Resolve the same target set expression the play uses for common limits
+      ansible.builtin.set_fact:
+        _gpu_only_targets: >-
+          {{ query('ansible.builtin.inventory_hostnames', 'llm_gpu_group,localhost')
+             | intersect(groups['llm_router_group'] | default([])) }}
+        _router_pool_targets: >-
+          {{ query('ansible.builtin.inventory_hostnames', 'llm_router_group,localhost')
+             | intersect(groups['llm_router_group'] | default([])) }}
+        _single_router_targets: >-
+          {{ query('ansible.builtin.inventory_hostnames', 'fixture-router-1,localhost')
+             | intersect(groups['llm_router_group'] | default([])) }}
+
+    - name: GPU-only skips router outage assertion while pool and single-router limits stay scoped
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _gpu_only_targets | length == 0
+          - _router_pool_targets | sort == ['fixture-router-1', 'fixture-router-2']
+          - _single_router_targets == ['fixture-router-1']
+        fail_msg: >-
+          Unexpected target resolution: GPU-only={{ _gpu_only_targets }},
+          router-pool={{ _router_pool_targets }},
+          single-router={{ _single_router_targets }}

@@ -39,6 +39,11 @@ molecule test -s llamaindex
 molecule test -s qdrant
 ```
 
+Pull requests into `develop` run the scenarios matched by the shared
+Ansible CI role map. Shared inputs or an unmapped change widen to the full
+matrix. Pull requests into `main` and pushes to `main` or `develop` run the
+full Molecule matrix; `Merge Gate` aggregates Molecule and the data contract.
+
 ## Roles
 
 ### LLM serving
@@ -103,3 +108,14 @@ Apache License 2.0 — see [LICENSE](LICENSE) for details.
 
 [ci-badge]: https://github.com/dryvist/ansible-proxmox-ai/actions/workflows/ci-gate.yml/badge.svg
 [ci-workflow]: https://github.com/dryvist/ansible-proxmox-ai/actions/workflows/ci-gate.yml
+
+## CI
+
+Pull requests into `develop` use changed-role Molecule selection with lint,
+syntax, and contract checks. Pull requests into `main` and non-PR runs use the
+full matrix. CI-harness and GPU contract-fixture changes select the
+`llm_gpu_serving` smoke scenario; other unclassified paths widen to the full
+matrix. Required validation is aggregated by `Merge Gate`. Public pull-request
+CI stays on GitHub-hosted runners.
+
+See the canonical policy in the `dryvist/.github` README, “Ansible CI policy.”

@@ -54,6 +54,22 @@ llm_router_local_only_fail_fast_names: >-
      | reject('in', llm_router_cross_modality_fail_fast_names)
      | list }}
 
+# A role whose chain is non-empty but entirely local (its GPU rung and routine
+# rung) is written into the config with that exact chain, the same way the
+# fail-fast roles above are, so its local-only property does not depend on the
+# seeded fallback record alone. Keys are role names; values are the chains.
+# Written only while the GPU route is active: with it inactive the rendered
+# config is unchanged, and the fail-fast entries and seeded chains apply.
+llm_router_local_only_chains: >-
+  {%- set ns = namespace(out={}) -%}
+  {%- for d in llm_router_role_deployments
+       if llm_router_vllm_medium_route_enabled | bool
+          and (d.fallbacks | length > 0)
+          and (d.fallbacks | reject('in', llm_router_zdr_asserted_group_names) | list | length == 0) -%}
+  {%- set _discard = ns.out.update({d.role: d.fallbacks}) -%}
+  {%- endfor -%}
+  {{ ns.out }}
+
 # THE FIX for litellm 1.98's nested-fallback-follows-the-failed-rung's-own-
 # chain behavior (router.py::async_function_with_fallbacks): once a walk is
 # UNDER a group's own name (e.g. hermes-default's chain advanced to it, or
@@ -63,7 +79,7 @@ llm_router_local_only_fail_fast_names: >-
 # at [llm_router_primary_model] (config.yaml.j2's per-group loop) — wrong
 # for ANY group in the chain, not only the shared external continuation:
 # the interactive caller's first hop past the primary is often
-# hermes-cloud-alibaba, and an alibaba 429 walking its old [primary] entry
+# hermes-cloud-alibaba-routine, and an Alibaba 429 walking its old [primary] entry
 # hit the identical cap, one rung earlier.
 #
 # GENERALIZED: own(X), for every rung X in llm_router_hermes_default_fallback_chain,
@@ -86,6 +102,10 @@ llm_router_hermes_own_fallback_by_group: >-
   {%- for _group in _chain -%}
   {%- set _idx = _chain.index(_group) -%}
   {%- set _tail = _chain[_idx + 1 :] | list -%}
+  {%- if llm_router_vllm_medium_route_enabled | bool
+        and _group == llm_router_vllm_medium_model -%}
+  {%- set _tail = ([llm_router_primary_large_model] + _tail) | unique | list -%}
+  {%- endif -%}
   {%- if _group in llm_router_zdr_asserted_group_names -%}
   {%- set _tail = _tail | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list -%}
   {%- endif -%}
@@ -114,12 +134,20 @@ llm_router_chain_groups_with_own_tail: >-
 # subscription first, the API key last — no OpenRouter, no free tier, no
 # Z.ai, ever. Until a Codex rung is credentialed it renders local-only and
 # fails fast; tests/llm_router/test_review_roles.yml states both contracts.
+# The local rungs both review chains start with, behind the role's own first
+# rung. While the GPU route is active that first rung (55-roles.yml) is the
+# medium deployment, so the fast GPU rung is rung 2 and the primary large local
+# model rung 3. While the route is inactive the chains are unchanged.
+_llm_router_review_local_head: >-
+  {{ [llm_router_hermes_local_4080_id, llm_router_primary_large_model]
+     if llm_router_vllm_medium_route_enabled | bool
+     else [llm_router_primary_model] }}
 _llm_router_review_oss_chain: >-
-  {%- set _chain = [llm_router_primary_model] + llm_router_zai_groups -%}
+  {%- set _chain = _llm_router_review_local_head + llm_router_zai_groups -%}
   {{ _chain + (llm_router_external_paid_rungs
                if (_chain | length > 1
                    and _chain[-1] not in llm_router_external_terminal_rungs)
                else []) }}
 _llm_router_review_private_chain: >-
-  {{ [llm_router_primary_model] + llm_router_external_subscription_rungs
+  {{ _llm_router_review_local_head + llm_router_external_subscription_rungs
      + llm_router_hermes_cloud_api_key_groups }}

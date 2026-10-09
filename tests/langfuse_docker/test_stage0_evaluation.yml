@@ -1,0 +1,72 @@
+---
+# Verify the pinned Langfuse dataset/evaluator reconciliation without making
+# any HTTP request or changing the initialized project.
+- name: Verify Stage 0 Langfuse evaluation source
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_become: false
+    _defaults: "{{ playbook_dir }}/../../roles/langfuse_docker/defaults/main.yml"
+    _main_tasks: "{{ playbook_dir }}/../../roles/langfuse_docker/tasks/main.yml"
+    _reconcile_tasks: "{{ playbook_dir }}/../../roles/langfuse_docker/tasks/reconcile-stage0-evaluation.yml"
+    _evaluator_source: "{{ playbook_dir }}/../../roles/langfuse_docker/files/evaluators/typed-decisions.ts"
+    _dataset_file: "{{ playbook_dir }}/../../roles/langfuse_docker/files/datasets/typed-decisions-stage0.json"
+  tasks:
+    - name: Load Langfuse defaults
+      ansible.builtin.include_vars:
+        file: "{{ _defaults }}"
+
+    - name: Read the reconciliation, evaluator source, and local dataset fixture
+      ansible.builtin.set_fact:
+        _main: "{{ lookup('file', _main_tasks) }}"
+        _reconcile: "{{ lookup('file', _reconcile_tasks) }}"
+        _source: "{{ lookup('file', _evaluator_source) }}"
+        _dataset: "{{ lookup('file', _dataset_file) | from_json }}"
+        _dataset_hash: "{{ lookup('file', _dataset_file, rstrip=False) | hash('sha256') }}"
+
+    - name: Require source pinning, opt-in reconciliation, and typed scores
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - not langfuse_docker_stage0_eval_reconcile_enabled | bool
+          - langfuse_docker_stage0_dataset_revision | length == 40
+          - langfuse_docker_stage0_dataset_config == 'all'
+          - langfuse_docker_stage0_dataset_split == 'test'
+          - langfuse_docker_stage0_dataset_length | int == 20
+          - _dataset.source == 'LocalLLaMA/typed-decisions'
+          - _dataset.license == 'apache-2.0'
+          - _dataset.revision == langfuse_docker_stage0_dataset_revision
+          - _dataset.config == langfuse_docker_stage0_dataset_config
+          - _dataset.split == langfuse_docker_stage0_dataset_split
+          - _dataset.rows | length == langfuse_docker_stage0_dataset_length | int
+          - _dataset_hash == langfuse_docker_stage0_dataset_sha256
+          - >-
+            _dataset.rows | map(attribute='row') | map(attribute='id')
+            | unique | length == langfuse_docker_stage0_dataset_length | int
+          - >-
+            'datasets-server.huggingface.co' not in _reconcile
+          - "'langfuse_docker_stage0_dataset_file) | from_json' in _reconcile"
+          - "'langfuse_docker_stage0_eval_reconcile_enabled | bool' in _main"
+          - "'langfuse_docker_stage0_dataset_sha256' in _reconcile"
+          - "'langfuse_docker_stage0_dataset_revision' in _reconcile"
+          - "'api/public/v2/datasets' in _reconcile"
+          - "'api/public/dataset-items' in _reconcile"
+          - "'api/public/v2/evaluators' in _reconcile"
+          - "'sourceCodeLanguage: TYPESCRIPT' in _reconcile"
+          - "'typed_decision_exact_accuracy' in _source"
+          - "'typed_decision_numeric_equivalence' in _source"
+          - "'typed_decision_probability_brier' in _source"
+          - "'predictedKeys.length !== expectedKeys.length' in _source"
+          - "'probabilityTolerance' in _source"
+
+    - name: Require every project API request to hide credentials and data bodies
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _langfuse_api_task_count | int == 7
+          - _langfuse_api_no_log_count | int == 7
+      vars:
+        _langfuse_api_task_count: >-
+          {{ _reconcile | regex_findall('ansible[.]builtin[.]uri:') | length }}
+        _langfuse_api_no_log_count: >-
+          {{ _reconcile | regex_findall('no_log: true') | length }}

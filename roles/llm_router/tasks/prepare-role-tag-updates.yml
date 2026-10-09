@@ -1,0 +1,65 @@
+---
+# Role targets and fallback order remain UI-owned. Their admission tags follow
+# the actual stored target so a UI retarget cannot carry stale privacy classes.
+- name: Derive sensitivity and privacy tag updates for existing role targets
+  ansible.builtin.set_fact:
+    _llm_router_role_tag_updates: >-
+      {%- set ns = namespace(updates=[]) -%}
+      {%- set _class_tags = (llm_router_deployment_class_by_model.values() | list)
+            + ['zdr', 'retains', 'sensitivity:public', 'sensitivity:sensitive', 'sensitivity:pii'] -%}
+      {%- for role in llm_router_role_deployments -%}
+      {%- set live = (_llm_router_roles_for_tag_sync.json.data | default([])
+            | selectattr('model_name', 'equalto', role.role) | first | default({})) -%}
+      {%- if live -%}
+      {%- set actual = live.litellm_params | default({}) -%}
+      {%- set candidates = namespace(ids=[]) -%}
+      {%- for entry in _llm_router_role_params | dict2items -%}
+      {%- if (entry.value.model | default('')) == (actual.model | default(''))
+            and (entry.value.api_base | default('')) == (actual.api_base | default('')) -%}
+      {%- set candidates.ids = candidates.ids + [entry.key] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set policies = namespace(tags=[]) -%}
+      {%- for target in candidates.ids -%}
+      {%- set target_entry = (llm_router_registry_enabled
+            | selectattr('client_model_id', 'equalto', target) | first) -%}
+      {%- set policy_tags = llm_router_deployment_tags_by_model[target]
+            | reject('match', '^sensitivity:') | list -%}
+      {%- set sensitivity_tags = (['sensitivity:public', 'sensitivity:sensitive', 'sensitivity:pii']
+            if target_entry.tier == 'hermes-router'
+            else llm_router_deployment_tags_by_model[target]
+                 | select('match', '^sensitivity:') | list) -%}
+      {%- set signature = (policy_tags + sensitivity_tags) | unique | sort -%}
+      {%- if signature not in policies.tags -%}
+      {%- set policies.tags = policies.tags + [signature] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- if policies.tags | length == 1 -%}
+      {%- set target_tags = policies.tags | first -%}
+      {%- else -%}
+      {#- An unknown or ambiguous UI target is retaining and public-only. -#}
+      {%- set target_tags = ['retains', 'sensitivity:public'] -%}
+      {%- endif -%}
+      {%- set live_tags = actual.tags | default([]) | list -%}
+      {%- set desired_tags = ((live_tags | reject('in', _class_tags) | list)
+            + target_tags) | unique | list -%}
+      {%- if live_tags | sort != desired_tags | sort -%}
+      {%- set _discard = ns.updates.append({
+            'role': role.role,
+            'model_id': live.model_info.id | default(''),
+            'tags': desired_tags,
+          }) -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.updates }}
+
+- name: Require model ids for role tag updates
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_role_tag_updates | selectattr('model_id', 'equalto', '') | list | length == 0
+    fail_msg: >-
+      A role deployment needs its stored model id before LiteLLM tags can be
+      reconciled: {{ _llm_router_role_tag_updates | selectattr('model_id', 'equalto', '')
+      | map(attribute='role') | list }}.

@@ -20,7 +20,8 @@ _llm_router_static_virtual_keys:
   # monthly_budget: repeatable tests should not consume a caller budget.
   - alias: benchmark
     value: >-
-      {{ bao_apps_secrets.benchmark_llm_router_key | default('', true)
+      {{ (bao_apps_secrets | default({})).get(
+           llm_router_key_catalog_facts.llm_router_key_catalog_source.benchmark_field, '')
          if llm_router_gpu_models | length > 0 else '' }}
     models: "{{ llm_router_gpu_models | map(attribute='client_model_id') | list }}"
     tags: ['&zdr', '!free']
@@ -55,12 +56,10 @@ _llm_router_static_virtual_keys:
   - alias: llamaindex
     value: "{{ bao_apps_secrets.llamaindex_llm_router_key | default('', true) }}"
     models: "{{ ['embed'] }}"
-  # Hindsight's background retain (fact extraction) scope: exactly the model
-  # the inventory selects as hindsight_retain_model, a light-tier model served
-  # on this fabric's own hardware. Memory content must never reach a
-  # prompt-retaining model, and a locally served model is the one route that
-  # can neither retain it elsewhere nor run out of someone else's quota. Its
-  # fallback entry is empty (config.yaml.j2) and
+  # Hindsight's background retain (fact extraction) scope: exactly the alias
+  # the inventory selects as hindsight_retain_model. It resolves to a local
+  # GPU primary with a local Mac fallback. Memory content must never reach a
+  # prompt-retaining model. Its fallback entry is empty (config.yaml.j2) and
   # general_settings.enforce_fallback_model_access re-checks the calling key's
   # own allow-list on every fallback hop, so there is no hop to a wider model;
   # tests/llm_router/test_hindsight_key_zdr_isolation.yml walks the rendered
@@ -118,13 +117,36 @@ _llm_router_static_virtual_keys:
   # then the Codex rungs, nothing else) plus `review-local` (local rungs
   # only, no fallbacks at all). The value is generated in
   # the apps domain and merely read here; revoking CI's access is one key.
-  # The live key's model list is reconciled by union (seed-keys.yml), so the
-  # roles it carried before (cheap, subagent, fast, judge) stay until removed
-  # in the Admin UI once every CI caller has moved to the review roles.
+  # The live model list is replaced with these declared review roles on every
+  # converge; old role names retire from the key when the Git seed changes.
   - alias: github-actions
     value: "{{ bao_apps_secrets.github_actions_llm_router_key | default('', true) }}"
     models: "{{ ['review-private', 'review-local'] }}"
     monthly_budget: "{{ _llm_router_key_monthly_budget }}"
+  # Event-driven automation keys are isolated by flow, limited to the local
+  # review role (which has no fallback), and carry a stable trace identity.
+  - alias: github-actions-ci-fix
+    value: "{{ bao_apps_secrets.github_actions_ci_fix_llm_router_key | default('', true) }}"
+    models: ['review-local']
+    models_authoritative: true
+    tags: ['&zdr', '!free', '!retains', '&local']
+    metadata:
+      trace_defaults:
+        agent_flow: ci-failure-fixer
+        agent_trigger: workflow_run
+    router_settings:
+      enable_tag_filtering: true
+  - alias: github-actions-pr-review
+    value: "{{ bao_apps_secrets.github_actions_pr_review_llm_router_key | default('', true) }}"
+    models: ['review-local']
+    models_authoritative: true
+    tags: ['&zdr', '!free', '!retains', '&local']
+    metadata:
+      trace_defaults:
+        agent_flow: pr-review-responder
+        agent_trigger: review-event
+    router_settings:
+      enable_tag_filtering: true
   # CI, open-source repositories: the `review-oss` role only — local rungs, the
   # free external rungs, then the Z.ai pair. Its value is a separate apps-
   # domain secret (github-actions-oss) behind the same switch that fetches
@@ -134,6 +156,7 @@ _llm_router_static_virtual_keys:
       {{ bao_apps_secrets.github_actions_oss_llm_router_key | default('', true)
          if llm_router_oss_ci_key_enabled | default(false) | bool else '' }}
     models: "{{ ['review-oss'] }}"
+    sensitivity_tag: '&sensitivity:public'
   - alias: raycast
     value: "{{ bao_apps_secrets.raycast_llm_router_key | default('', true) }}"
     models: "{{ _llm_router_key_scope_all }}"

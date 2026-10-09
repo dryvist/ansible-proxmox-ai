@@ -1,71 +1,12 @@
 ---
+- name: Load shared llama.cpp release settings and require the artifact cache
+  ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/prepare.yml"
+
 - name: Load the registry model identity for each GPU profile
   ansible.builtin.include_tasks: load-registry.yml
 
-- name: Validate the active GPU serving profile
-  ansible.builtin.assert:
-    that:
-      - llm_active_profile in llm_profiles
-      - llm_profiles[llm_active_profile].enabled | default(true)
-      - llm_gpu_serving_model_cache_mount_path | length > 0
-      - llm_gpu_serving_registry_by_profile[llm_active_profile].artifact.use == 'serving'
-      - >-
-        llm_profiles[llm_active_profile].engine in
-        llm_gpu_serving_registry_by_profile[llm_active_profile].artifact.engines
-      - llm_gpu_serving_vllm_version is match('^[0-9]+[.][0-9]+[.][0-9]+$')
-    fail_msg: >-
-      Select an enabled serving profile, provide the target's writable cache
-      directory, and set a pinned vLLM version.
-    quiet: true
-
-- name: Inspect the supplied writable model cache directory
-  ansible.builtin.stat:
-    path: "{{ llm_gpu_serving_model_cache_mount_path }}"
-  register: llm_gpu_serving_cache_mount_stat
-
-- name: Assert the writable model cache mount exists
-  ansible.builtin.assert:
-    that:
-      - llm_gpu_serving_cache_mount_stat.stat.exists
-      - llm_gpu_serving_cache_mount_stat.stat.isdir
-    fail_msg: >-
-      The supplied writable model cache directory at
-      {{ llm_gpu_serving_model_cache_mount_path }} must already exist as a directory.
-    quiet: true
-
-- name: Validate every GPU serving profile
-  ansible.builtin.assert:
-    that:
-      - item.value.engine in ['vllm', 'llama_cpp']
-      - item.key in llm_gpu_serving_registry_by_profile
-      - item.value.max_model_len | int > 0
-      - item.value.max_num_seqs | int > 0
-      - item.value.port | int > 0
-      - >-
-        item.value.engine != 'vllm'
-        or (item.value.linear_backend in ['auto', 'b12x']
-            and item.value.moe_backend in ['auto', 'b12x']
-            and item.value.gpu_memory_utilization | float > 0
-            and item.value.gpu_memory_utilization | float <= 1
-            and (not item.value.enable_auto_tool_choice
-                 or llm_gpu_serving_registry_by_profile[item.key].artifact.tool_call_parser
-                    | default(item.value.tool_call_parser) | length > 0)
-            and llm_gpu_serving_registry_by_profile[item.key].artifact.reasoning_parser
-                | default(item.value.reasoning_parser) | length > 0)
-      - >-
-        item.value.engine != 'llama_cpp'
-        or (llm_gpu_serving_registry_by_profile[item.key].artifact.format == 'GGUF'
-            and llm_gpu_serving_registry_by_profile[item.key].artifact.gguf_file | default('')
-                is match('^[^*?\\[]+[.]gguf$'))
-      - >-
-        item.value.engine != 'llama_cpp'
-        or item.value.extra_args | default([]) is not string
-    fail_msg: "GPU serving profile {{ item.key }} is incomplete or invalid."
-    quiet: true
-  loop: "{{ llm_profiles | dict2items }}"
-  loop_control:
-    label: "{{ item.key }}"
-  when: item.value.enabled | default(true)
+- name: Validate GPU serving profiles and cache
+  ansible.builtin.include_tasks: validate-profiles.yml
 
 - name: Create the GPU serving system group
   ansible.builtin.group:
@@ -86,7 +27,10 @@
     name:
       - ca-certificates
       - curl
+      # Triton (vLLM) compiles its CUDA helper module with the system C compiler on first use.
+      - gcc
       - gzip
+      - libc6-dev
       - libgomp1
       - python3-debian
       - sudo
@@ -94,9 +38,13 @@
     state: present
     update_cache: true
     cache_valid_time: 3600
+  environment: "{{ llamacpp_release_proxy_environment }}"
 
 - name: Install the NVIDIA userspace at the host driver version
   ansible.builtin.include_tasks: install-nvidia-userspace.yml
+
+- name: Install the CUDA toolkit for runtime kernel compilation
+  ansible.builtin.include_tasks: install-cuda-toolkit.yml
 
 - name: Create GPU serving directories
   ansible.builtin.file:
@@ -133,6 +81,7 @@
   args:
     executable: /bin/bash
   changed_when: true
+  environment: "{{ llamacpp_release_proxy_environment }}"
   when: >-
     (llm_gpu_serving_uv_version_check.stdout | default(''))
     != ('uv ' ~ llm_gpu_serving_uv_version)
@@ -178,6 +127,13 @@
       - "{{ llm_gpu_serving_venv }}/bin/python"
       - "vllm=={{ llm_gpu_serving_vllm_version }}"
       - "b12x=={{ llm_gpu_serving_b12x_version }}"
+      - "flashinfer-cubin=={{ llm_gpu_serving_flashinfer_version }}"
+      - "flashinfer-jit-cache=={{ llm_gpu_serving_flashinfer_version }}"
+      # Both indexes host only FlashInfer packages, at the pinned version.
+      - --extra-index-url
+      - "{{ llm_gpu_serving_flashinfer_index_url }}"
+      - --extra-index-url
+      - "{{ llm_gpu_serving_flashinfer_jit_cache_index_url }}"
   become: true
   become_user: "{{ llm_gpu_serving_user }}"
   environment: "{{ llm_gpu_serving_uv_environment }}"
@@ -208,21 +164,6 @@
     path: "{{ llm_gpu_serving_llamacpp_server_bin }}"
   register: llm_gpu_serving_llamacpp_server_stat
 
-- name: Resolve recent llama.cpp release metadata
-  ansible.builtin.uri:
-    url: "{{ llm_gpu_serving_llamacpp_releases_api }}"
-    return_content: true
-    status_code: 200
-  register: llm_gpu_serving_llamacpp_release
-
-- name: Select the CUDA release asset by name pattern
-  ansible.builtin.set_fact:
-    llm_gpu_serving_llamacpp_asset_url: >-
-      {{ llm_gpu_serving_llamacpp_release.json
-         | map(attribute='assets') | flatten
-         | selectattr('name', 'match', llm_gpu_serving_llamacpp_asset_regex)
-         | map(attribute='browser_download_url') | first | default('', true) }}
-
 - name: Inspect the installed llama.cpp asset marker
   ansible.builtin.stat:
     path: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
@@ -239,44 +180,39 @@
     not llm_gpu_serving_llamacpp_server_stat.stat.exists
     or not llm_gpu_serving_llamacpp_marker_stat.stat.exists
     or (llm_gpu_serving_llamacpp_marker.content | b64decode | trim)
-    != (llm_gpu_serving_llamacpp_asset_url | basename)
+    != llm_gpu_serving_llamacpp_asset_name
   block:
-    # The guest carries the driver only; libcudart and libcublas come from the
-    # same release's `cudart-` archive for the same CUDA version.
-    - name: Name the matching CUDA runtime asset
-      ansible.builtin.set_fact:
-        llm_gpu_serving_llamacpp_cudart_url: >-
-          {{ (llm_gpu_serving_llamacpp_asset_url | dirname) ~ '/cudart-'
-             ~ (llm_gpu_serving_llamacpp_asset_url | basename) }}
-
-    - name: Assert a matching CUDA asset and its runtime were found
-      ansible.builtin.assert:
-        that:
-          - llm_gpu_serving_llamacpp_asset_url | length > 0
-          - >-
-            llm_gpu_serving_llamacpp_cudart_url in
-            (llm_gpu_serving_llamacpp_release.json | map(attribute='assets') | flatten
-             | map(attribute='browser_download_url') | list)
-        fail_msg: >-
-          No llama.cpp CUDA release asset with a matching cudart- runtime
-          archive matched {{ llm_gpu_serving_llamacpp_asset_regex }} in
-          {{ llm_gpu_serving_llamacpp_releases_api }}.
-
     - name: Create a temporary llama.cpp extraction directory
       ansible.builtin.tempfile:
         state: directory
         suffix: llm-gpu-serving
       register: llm_gpu_serving_llamacpp_extract_tmp
 
-    - name: Download and extract the llama.cpp release tarball
+    - name: Download the pinned llama.cpp CUDA asset through the cache
+      ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/download.yml"
+      vars:
+        llamacpp_release_asset_name: "{{ llm_gpu_serving_llamacpp_asset_name }}"
+        llamacpp_release_asset_sha256: "{{ llamacpp_release_cuda_sha256 }}"
+        llamacpp_release_download_path: >-
+          {{ llm_gpu_serving_llamacpp_extract_tmp.path }}/{{ llm_gpu_serving_llamacpp_asset_name }}
+
+    - name: Download the pinned llama.cpp CUDA runtime through the cache
+      ansible.builtin.include_tasks: "{{ role_path | dirname }}/llamacpp_release/tasks/download.yml"
+      vars:
+        llamacpp_release_asset_name: "{{ llm_gpu_serving_llamacpp_cudart_asset_name }}"
+        llamacpp_release_asset_sha256: "{{ llamacpp_release_cuda_runtime_sha256 }}"
+        llamacpp_release_download_path: >-
+          {{ llm_gpu_serving_llamacpp_extract_tmp.path }}/{{ llm_gpu_serving_llamacpp_cudart_asset_name }}
+
+    - name: Extract the pinned llama.cpp release tarball
       ansible.builtin.unarchive:
-        src: "{{ llm_gpu_serving_llamacpp_asset_url }}"
+        src: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}/{{ llm_gpu_serving_llamacpp_asset_name }}"
         dest: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
         remote_src: true
 
-    - name: Download and extract the matching CUDA runtime tarball
+    - name: Extract the matching CUDA runtime tarball
       ansible.builtin.unarchive:
-        src: "{{ llm_gpu_serving_llamacpp_cudart_url }}"
+        src: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}/{{ llm_gpu_serving_llamacpp_cudart_asset_name }}"
         dest: "{{ llm_gpu_serving_llamacpp_extract_tmp.path }}"
         remote_src: true
 
@@ -330,7 +266,7 @@
 
     - name: Record the installed llama.cpp asset name
       ansible.builtin.copy:
-        content: "{{ llm_gpu_serving_llamacpp_asset_url | basename }}\n"
+        content: "{{ llm_gpu_serving_llamacpp_asset_name }}\n"
         dest: "{{ llm_gpu_serving_llamacpp_asset_marker }}"
         owner: "{{ llm_gpu_serving_user }}"
         group: "{{ llm_gpu_serving_group }}"
@@ -383,7 +319,8 @@
       - "{{ llm_gpu_serving_unit_prefix }}-{{ item.key }}.service"
   register: llm_gpu_serving_profile_state
   changed_when: >-
-    (item.key == llm_active_profile and llm_gpu_serving_profile_state.rc != 0) or
+    (item.key == llm_active_profile and
+     (llm_gpu_serving_paused | default(false) | bool) == (llm_gpu_serving_profile_state.rc == 0)) or
     (item.key != llm_active_profile and llm_gpu_serving_profile_state.rc == 0)
   failed_when: llm_gpu_serving_profile_state.rc not in [0, 3, 4]
   loop: "{{ llm_profiles | dict2items }}"
@@ -399,3 +336,4 @@
 
 - name: Wait for the active GPU serving profile to answer
   ansible.builtin.include_tasks: health-check.yml
+  when: not (llm_gpu_serving_paused | default(false) | bool)

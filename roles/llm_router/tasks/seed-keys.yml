@@ -1,7 +1,9 @@
 ---
-# In `initial` mode, seed a virtual key only when it is absent and never
-# reconcile an existing key. The explicit `rebuild` mode may reconcile the
-# Git-declared fields; normal converges leave UI edits in place for drift-check.
+# Key creation is idempotent. Existing model allowlists and MCP permissions
+# reconcile from the Git seed on every converge; routes and attribution
+# other attribution metadata stay UI-owned in `initial` mode and are
+# reconciled only by the explicit `rebuild` mode. Required sensitivity tags
+# reconcile in every mode while preserving unrelated live tags.
 #
 # The router does not MINT these. /key/generate accepts a caller-supplied value,
 # so each key is registered with a value generated at the consumer's own tier
@@ -39,6 +41,18 @@
 # it cannot repair the value. assert-seed-key-format.yml can't fix that
 # either, but it turns the next occurrence into a message naming the alias
 # instead of a second log-platform trip.
+
+- name: Validate every key's declared sensitivity class before key reads or writes
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - item.sensitivity_tag | default('&sensitivity:sensitive') in
+        ['&sensitivity:pii', '&sensitivity:sensitive', '&sensitivity:public']
+    fail_msg: "Key alias {{ item.alias }} must use a supported required sensitivity tag."
+  no_log: true
+  loop: "{{ llm_router_virtual_keys }}"
+  loop_control:
+    label: "{{ item.alias }}"
 
 - name: Read the virtual keys the proxy already carries
   ansible.builtin.uri:
@@ -113,6 +127,9 @@
 # whose body says the alias already exists is treated as the create having
 # nothing left to do, not a failure — this task no longer needs to get the
 # live-alias read right to be correct.
+- name: Include every existing key in policy reconciliation
+  ansible.builtin.import_tasks: seed-key-pages.yml
+
 - name: Assert each seeded value is a valid LiteLLM custom key before minting
   ansible.builtin.import_tasks: assert-seed-key-format.yml
   vars:
@@ -140,14 +157,19 @@
       # key-level default is the fallback a request that omits them still
       # rolls up under.
       metadata: >-
-        {{ (item.metadata | default({})) | combine(
+        {%- set _metadata = item.metadata | default({}) -%}
+        {%- set _metadata_tags = ((_metadata.get('tags', []) | default([], true) | list)
+              + (item.tags | default([]) | list))
+              | reject('match', '^([&!])?sensitivity:') | unique | list
+              + [item.sensitivity_tag | default('&sensitivity:sensitive')] -%}
+        {{ _metadata | combine(
           {
             'app': item.alias,
             'tier': item.tier | default(
               'subscription' if (item.monthly_budget | default(0) | float > 0) else 'local'),
           },
           recursive=true,
-        ) | combine({'tags': item.tags} if item.tags is defined else {}, recursive=true) }}
+        ) | combine({'tags': _metadata_tags}, recursive=true) }}
       router_settings: "{{ item.router_settings | default(omit) }}"
       allowed_routes: "{{ item.allowed_routes | default(omit) }}"
       rpm_limit: "{{ item.rpm_limit | default(omit) }}"
@@ -176,6 +198,7 @@
       (_llm_router_key_generate_result.json.error.message | default(''))
   no_log: true
 
-# Reconcile seeded models, routes, metadata, and MCP permissions after create.
+# Reconcile seeded models and MCP permissions after create; routes and
+# metadata remain rebuild-only so normal converges preserve Admin UI edits.
 - name: Reconcile seeded caller key policy
   ansible.builtin.import_tasks: reconcile-seeded-key-policy.yml

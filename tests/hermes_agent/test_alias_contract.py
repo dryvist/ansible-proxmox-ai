@@ -79,12 +79,19 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     # The count and every target's servability are what a stray alias would
     # break, so a new consumer-facing name still lands here as a reviewed edit.
     assert aliases, "no static alias loaded; nothing below is checked"
-    assert len(aliases) == 9
+    assert len(aliases) == 10
     # Judge and subagent remain database-seeded roles, selected from the
     # registry-derived GPU profile projection rather than static aliases.
     seeded_roles = {item["role"]: item for item in router_defaults["llm_router_role_deployments"]}
     assert "llm_router_gpu_small_model" in seeded_roles["judge"]["model"]
-    assert "llm_router_gpu_medium_b_model" in seeded_roles["subagent"]["model"]
+    # The subagent target is the shared helper, and the helper resolves from
+    # the registry-derived medium deployment variables on both branches of the
+    # route switch.
+    assert seeded_roles["subagent"]["model"] == "{{ _llm_router_subagent_model }}"
+    subagent_helper = router_defaults["_llm_router_subagent_model"]
+    assert "llm_router_vllm_medium_model" in subagent_helper
+    assert "llm_router_gpu_medium_b_model" in subagent_helper
+    assert "llm_router_vllm_medium_registry_entry" in router_defaults["llm_router_vllm_medium_model"]
     # The brain is reached by alias too; routine-role placement is independent.
     assert hermes_backend in aliases.values()
     # The document tier is reached by image content parts, not by a selector
@@ -211,7 +218,7 @@ def test_credential_gated_entries_declare_their_own_credential() -> None:
     (roles/llm_router/tasks/assert-registry-render-parity.yml).
     """
     registry = load_registry()
-    gated_tiers = {"opencode", "hermes-cloud", "hermes-cloud-router", "openrouter"}
+    gated_tiers = {"opencode", "hermes-cloud", "openrouter"}
     gated = [entry for entry in registry if entry["tier"] in gated_tiers]
     assert gated, "no credential-gated registry entries loaded; nothing was checked"
     missing = [

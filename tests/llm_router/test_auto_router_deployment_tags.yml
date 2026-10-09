@@ -1,5 +1,5 @@
 ---
-- name: Verify auto-router tiers resolve to tagged deployments and public Hermes ends in Z.ai
+- name: Verify auto-router tiers preserve sensitivity tags and Hermes fallbacks
   hosts: localhost
   gather_facts: false
   vars:
@@ -23,6 +23,8 @@
       ZAI_API_KEY: fixture-zai
     bao_apps_secrets:
       hermes_default_llm_router_key: sk-fixture-hermes-public
+      github_actions_oss_llm_router_key: sk-fixture-github-actions-oss
+    llm_router_oss_ci_key_enabled: true
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
     llm_router_subdomain: pve.example.test
@@ -61,8 +63,11 @@
           - _router_targets | length > 0
           - _missing_targets | length == 0
           - _untagged_targets | length == 0
-        fail_msg: "auto-router missing targets={{ _missing_targets }}, untagged={{ _untagged_targets }}"
-        success_msg: "All auto-router tiers and defaults resolve to rendered deployments with a class tag."
+          - _bad_auto_router_sensitivity | length == 0
+        fail_msg: >-
+          auto-router missing targets={{ _missing_targets }}, untagged={{ _untagged_targets }},
+          sensitivity={{ _bad_auto_router_sensitivity }}
+        success_msg: "Auto-router tiers resolve to tagged deployments and preserve their sensitivity constraints."
       vars:
         _deployment_rows: >-
           {{ _config.model_list
@@ -100,16 +105,32 @@
           {%- endif -%}
           {%- endfor -%}
           {{ ns.names }}
+        _bad_auto_router_sensitivity: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for r in _auto_routers -%}
+          {%- set _tags = r.litellm_params.tags | default([]) -%}
+          {%- if r.model_name in (llm_router_hermes_virtual_models | map(attribute='client_model_id') | list) -%}
+          {%- if ['sensitivity:public', 'sensitivity:sensitive', 'sensitivity:pii'] | difference(_tags) | length > 0 -%}
+          {%- set ns.names = ns.names + [r.model_name ~ ':' ~ (_tags | string)] -%}
+          {%- endif -%}
+          {%- elif 'sensitivity:public' not in _tags
+                or 'sensitivity:sensitive' in _tags or 'sensitivity:pii' in _tags -%}
+          {%- set ns.names = ns.names + [r.model_name ~ ':' ~ (_tags | string)] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.names }}
 
-    - name: The public Hermes key is unfiltered and its ladder ends with Z.ai
+    - name: Hermes defaults to sensitive while an explicitly public key stays public
       ansible.builtin.assert:
         quiet: true
         that:
-          - _public_key.tags is not defined
+          - _hermes_key.sensitivity_tag == '&sensitivity:sensitive'
+          - _public_key.sensitivity_tag == '&sensitivity:public'
+          - "'review-oss' in _public_key.models"
           - _fallback == (llm_router_d1_ladder_groups | reject('equalto', llm_router_d1_auto_initial_group) | list)
           - _fallback | length > 0
           - _fallback | last == llm_router_zai_groups | last
-          - llm_router_hermes_default_fallback_chain | difference(_public_key.models) | length == 0
+          - llm_router_hermes_default_fallback_chain | difference(_hermes_key.models) | length == 0
           - _hermes_auto_targets | unique | length >= 3
           - _hermes_auto_tier_classes.values() | unique | sort == ['local', 'paid-zdr', 'sub']
           - _hermes_auto_tier_classes['SIMPLE'] == 'sub'
@@ -117,11 +138,14 @@
           - _hermes_auto_tier_classes['COMPLEX'] == 'paid-zdr'
           - _hermes_auto_tier_classes['REASONING'] == 'paid-zdr'
         fail_msg: >-
-          public tags={{ _public_key.tags | default([]) }} fallback={{ _fallback }}
+          Hermes sensitivity={{ _hermes_key.sensitivity_tag }},
+          public sensitivity={{ _public_key.sensitivity_tag }} fallback={{ _fallback }}
           zai={{ llm_router_zai_groups }}
-        success_msg: "Public Hermes retains every class in its scope and places Z.ai last in its fallback order."
+        success_msg: >-
+          Hermes defaults to sensitive; the explicit public key remains public and the Hermes ladder is scoped.
       vars:
-        _public_key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'hermes-default') | first }}"
+        _hermes_key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'hermes-default') | first }}"
+        _public_key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
         _auto: "{{ _config.model_list | selectattr('model_name', 'equalto', 'hermes-default') | first }}"
         _hermes_auto_targets: >-
           {{ (_auto.litellm_params.complexity_router_config.tiers.values() | list)

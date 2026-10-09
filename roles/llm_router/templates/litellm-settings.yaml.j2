@@ -22,13 +22,16 @@ litellm_settings:
   # A flow sequence on the key's own line. Under a folded scalar (`>-`) the
   # JSON text became one YAML STRING and LiteLLM tried to import a module
   # literally named `["prometheus", ...` — every router crash-looped.
-  callbacks: {{ (['otel'] + (['langfuse_otel'] if llm_router_langfuse_enabled | bool else [])
+  # Apply authenticated identity defaults before OTel captures request baggage.
+  callbacks: {{ (['request_metrics.proxy_handler_instance', 'otel'] + (['langfuse_otel'] if llm_router_langfuse_enabled | bool else [])
         + (['prometheus'] if llm_router_prometheus_enabled | bool else [])
-        + ['system_merge.proxy_handler_instance', 'request_metrics.proxy_handler_instance'])
+        + ['system_merge.proxy_handler_instance'])
        | to_json }}
   callback_settings:
     otel:
       message_logging: false
+      mapper_names: [genai, openinference]
+      baggage_metadata_keys: {{ llm_router_trace_span_metadata_keys | to_json }}
 {% if llm_router_langfuse_enabled | bool %}
     langfuse_otel:
       message_logging: false

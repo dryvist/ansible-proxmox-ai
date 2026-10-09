@@ -1,0 +1,56 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=vLLM serving profile {{ vllm_serving_profile_name }}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ nvidia_gpu_guest_user }}
+Group={{ nvidia_gpu_guest_group }}
+WorkingDirectory={{ nvidia_gpu_guest_data_dir }}
+Environment=HF_HOME={{ nvidia_gpu_guest_hf_home }}
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+Environment=CUDA_HOME={{ nvidia_gpu_guest_cuda_home }}
+Environment=PATH={{ nvidia_gpu_guest_cuda_home }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=600
+ExecStart={{ nvidia_gpu_guest_venv }}/bin/vllm serve {{ vllm_serving_profile_model_dir }} \
+  --host {{ nvidia_gpu_guest_listen_host | default(ansible_facts.default_ipv4.address) }} \
+  --port {{ vllm_serving_profile.port }} \
+  --served-model-name {{ vllm_serving_profile_registry_model.upstream_model_id }} \
+  --max-model-len {{ vllm_serving_profile.max_model_len }} \
+  --max-num-seqs {{ vllm_serving_profile.max_num_seqs }} \
+  --gpu-memory-utilization {{ vllm_serving_profile.gpu_memory_utilization }} \
+{% if vllm_serving_profile.kv_cache_dtype is defined %}
+  --kv-cache-dtype {{ vllm_serving_profile.kv_cache_dtype }} \
+{% endif %}
+{% if vllm_serving_profile_registry_model.artifact.trust_remote_code | default(false) %}
+  --trust-remote-code \
+{% endif %}
+{% if vllm_serving_profile.linear_backend == 'b12x' %}
+  --linear-backend b12x \
+{% endif %}
+{% if vllm_serving_profile.moe_backend == 'b12x' %}
+  --moe-backend b12x \
+{% endif %}
+{% if vllm_serving_profile_registry_model.artifact.quantization == 'BF16' %}
+  --dtype bfloat16 \
+{% endif %}
+{% if vllm_serving_profile.enable_auto_tool_choice %}
+  --enable-auto-tool-choice \
+{% endif %}
+{% set vllm_reasoning_parser_plugin = vllm_serving_profile_registry_model.artifact.reasoning_parser_plugin | default('') %}
+{% if vllm_reasoning_parser_plugin | length > 0 %}
+  --reasoning-parser-plugin {{ vllm_serving_profile_model_dir }}/{{ vllm_reasoning_parser_plugin }} \
+{% endif %}
+{% set vllm_tool_call_parser = vllm_serving_profile_registry_model.artifact.tool_call_parser | default(vllm_serving_profile.tool_call_parser) %}
+{% if vllm_tool_call_parser | length > 0 %}
+  --tool-call-parser {{ vllm_tool_call_parser }} \
+{% endif %}
+  --reasoning-parser {{ vllm_serving_profile_registry_model.artifact.reasoning_parser | default(vllm_serving_profile.reasoning_parser) | mandatory('reasoning_parser is required for vLLM profiles') }}
+
+[Install]
+WantedBy=multi-user.target

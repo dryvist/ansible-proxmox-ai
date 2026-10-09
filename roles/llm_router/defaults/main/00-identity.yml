@@ -28,7 +28,8 @@ llm_router_config_dir: /etc/litellm
 llm_router_config_file: "{{ llm_router_config_dir }}/config.yaml"
 llm_router_env_file: "{{ llm_router_config_dir }}/litellm.env"
 
-# Installed into the venv (state: present — pinned by the ecosystem, never here).
+# Installed into the venv (state: present — pinned by the ecosystem, never here,
+# except prisma, which is pinned below because its ecosystem pin is only a floor).
 # OTel spans go through the shared Cribl collector; its configured outputs own
 # the Langfuse and Phoenix fan-out.
 llm_router_pip_packages:
@@ -53,7 +54,14 @@ llm_router_pip_packages:
   # role deployments and their fallback order live in Postgres (45-database.yml)
   # — so it is a functional dependency, not only an import the handler needs to
   # resolve.
-  - prisma
+  # Pinned, not floating: litellm 1.104.0 (proxy/db/prisma_client.py) reads and
+  # writes `_Prisma__engine`, the name-mangled engine attribute of the 0.11.x
+  # generated client. prisma 0.14.0 and 0.15.0 dropped that attribute, so an
+  # unpinned install resolved to 0.15.0 and every database-backed start raised
+  # "'Prisma' object has no attribute '_Prisma__engine'". 0.11.0 is also the
+  # lower bound litellm declares for its prisma requirement.
+  # renovate: datasource=pypi depName=prisma
+  - "prisma==0.11.0"
   # LiteLLM's migration runner takes a Postgres advisory lock through psycopg
   # (litellm_proxy_extras/migration_lock.py) before it applies the schema at
   # startup. Neither litellm[proxy] nor prisma pulls it, so a database-backed

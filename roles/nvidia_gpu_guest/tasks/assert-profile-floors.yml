@@ -1,0 +1,44 @@
+---
+# A serving floor is the measured minimum a profile must meet: concurrency,
+# input_len and output_len name the measured workload, min_tok_s_per_agent and
+# max_ttft_p90_ms the accepted result, and evidence names the accepted
+# measurement. A floor is optional until measured, but never partial, and a
+# registry entry marked servable must carry one.
+- name: Assert every declared profile floor is complete
+  ansible.builtin.assert:
+    that:
+      - item.value.floor is mapping
+      - >-
+        ['concurrency', 'input_len', 'output_len', 'min_tok_s_per_agent',
+         'max_ttft_p90_ms', 'evidence'] | difference(item.value.floor.keys() | list) | length == 0
+      - item.value.floor.concurrency | int > 0
+      - item.value.floor.input_len | int > 0
+      - item.value.floor.output_len | int > 0
+      - item.value.floor.min_tok_s_per_agent | float > 0
+      - item.value.floor.max_ttft_p90_ms | float > 0
+      - item.value.floor.evidence | string | length > 0
+    fail_msg: >-
+      GPU serving profile {{ item.key }} declares a floor that is incomplete: it needs
+      concurrency, input_len, output_len, min_tok_s_per_agent, max_ttft_p90_ms and evidence.
+    quiet: true
+  loop: "{{ nvidia_gpu_guest_profiles | dict2items | selectattr('value.floor', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Assert every servable registry entry carries a measured floor
+  ansible.builtin.assert:
+    that:
+      - nvidia_gpu_guest_profiles[item.key].floor is defined
+    fail_msg: >-
+      Registry entry for profile {{ item.key }} is servable: true but nvidia_gpu_guest_profiles.{{ item.key }}.floor
+      is not set; a profile is servable only after a measured floor is accepted.
+    quiet: true
+  loop: >-
+    {{ nvidia_gpu_guest_registry_by_profile
+       | dict2items
+       | selectattr('value.servable', 'defined')
+       | selectattr('value.servable')
+       | selectattr('key', 'in', nvidia_gpu_guest_profiles.keys() | list)
+       | list }}
+  loop_control:
+    label: "{{ item.key }}"

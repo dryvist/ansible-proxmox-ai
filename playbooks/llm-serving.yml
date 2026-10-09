@@ -3,10 +3,9 @@
 # and the LiteLLM router in front of them.
 #
 # Split out of site.yml as one unit because these plays are ORDER-COUPLED in
-# ways the rest of the file is not — the NVIDIA guest's two engines must run in
-# sequence to hand off the card, and the spend store must precede the router
-# pool. Keeping them together makes that ordering local and reviewable instead
-# of buried in a 25-play file.
+# ways the rest of the file is not — the selected GPU engine must pass its
+# health check before router projection, and the spend store must precede the
+# router pool. Keeping them together makes that ordering local and reviewable.
 
 # =============================================================================
 # Phase 4: LLM serving fabric — llama.cpp light tier + LiteLLM front door.
@@ -79,21 +78,9 @@
           vars:
             _isolated_play_name: llama_cpp_cpu_pool
 
-# The NVIDIA serving guest.
-#
-# CORRECTION, and do not re-derive the old reasoning from it. This role used
-# to read "upstream llama.cpp ships no Linux CUDA binary, so CUDA serving here
-# is vLLM from official wheels." The first clause is true and remains true.
-# The conclusion does not follow: upstream ships a prebuilt Linux VULKAN
-# binary that runs on NVIDIA, which is how the 27B is served here now — see
-# inventory/group_vars/llm_vllm_group.yml for the full reasoning (vLLM cannot
-# read these weights at all; no CUDA build is not why Vulkan was chosen).
-#
-# No vLLM role exists: llama.cpp on Vulkan (below) is the only engine
-# converged against this guest. The `llm_vllm_group` inventory group name and
-# the registry's `vllm` TIER key are a different thing — both name the
-# ROUTER's view of this guest, unrelated to which engine actually serves it;
-# do not remove either.
+# This separate GPU guest keeps its existing llama.cpp-on-Vulkan workload.
+# Its `llm_vllm_group` name is historical; the Pro6000 engine guests and their
+# engine-specific roles are projected by the `llm_gpu_engine_*` groups below.
 - name: Configure llama.cpp serving on the NVIDIA guest (router mode, Vulkan)
   hosts: llm_vllm_group
   become: true
@@ -132,31 +119,8 @@
           vars:
             _isolated_play_name: llama_cpp_nvidia
 
-# Profile serving on the GPU guest (tag llm-gpu). Inert while the group is
-# empty: a play with no hosts is skipped. serial: 1 because a profile switch
-# hands the one card between engines. The profile is llm_active_profile.
-- name: Configure profile serving on the GPU guest
-  hosts: llm_gpu_group
-  become: true
-  gather_facts: false
-  serial: 1
-  tags:
-    - llm_gpu_serving
-    - llm
-    - ai
-  tasks:
-    - name: Converge llm_gpu_serving (isolated — failure does not abort downstream plays)
-      block:
-        - name: Gather facts
-          ansible.builtin.include_tasks: tasks/gather_facts.yml
-        - name: Include llm_gpu_serving role
-          ansible.builtin.include_role:
-            name: llm_gpu_serving
-      rescue:
-        - name: Record isolated failure and continue
-          ansible.builtin.include_tasks: tasks/record_isolated_failure.yml
-          vars:
-            _isolated_play_name: llm_gpu_serving
+- name: Configure GPU engine guests
+  ansible.builtin.import_playbook: llm-serving-gpu-engines.yml
 
 # Ordered BEFORE the router pool on purpose. This is the store the routers
 # count spend in, so converging it second would leave the first router of a
@@ -188,6 +152,13 @@
   hosts: llm_router_group
   become: true
   gather_facts: false
+  # Semaphore supplies a generated inventory outside this checkout, so its
+  # host_group_vars plugin cannot discover this repo's adjacent group_vars.
+  # Load the canonical router inputs explicitly; these are the same files the
+  # local inventory path loads automatically.
+  vars_files:
+    - "{{ playbook_dir }}/../inventory/group_vars/all.yml"
+    - "{{ playbook_dir }}/../inventory/group_vars/llm_router_group.yml"
   # Rolling pool converge. Restarting all three routers in the same play took
   # the whole front door down on 2026-07-24 (the watchdog recorded a down
   # transition across the converge) — the pool exists for redundancy and the
@@ -207,6 +178,33 @@
   serial: 1
   max_fail_percentage: 0
   pre_tasks:
+    - name: Resolve failed selected GPU serving guests before router projection
+      ansible.builtin.set_fact:
+        _llm_router_gpu_engine_failures: >-
+          {{ (groups['llm_gpu_serving_llama_cpp_group'] | default([])
+              + groups['llm_gpu_serving_vllm_group'] | default([]))
+             | map('extract', hostvars)
+             | selectattr('llm_gpu_engine_convergence_failed', 'defined')
+             | selectattr('llm_gpu_engine_convergence_failed', 'equalto', true)
+             | list }}
+
+    - name: Log the GPU serving health decision before router projection
+      ansible.builtin.debug:
+        msg: >-
+          GPU router gate={{ 'blocked' if _llm_router_gpu_engine_failures | length > 0 else 'clear' }};
+          selected_engine_hosts={{ (groups['llm_gpu_serving_llama_cpp_group'] | default([])
+                                    + groups['llm_gpu_serving_vllm_group'] | default([])) | length }};
+          failed_engine_hosts={{ _llm_router_gpu_engine_failures | length }}.
+
+    - name: Hold router projection until the selected GPU engine is healthy
+      ansible.builtin.assert:
+        that:
+          - _llm_router_gpu_engine_failures | length == 0
+        fail_msg: >-
+          The selected GPU engine did not pass its serving health check. Router
+          projection is held so the current backend configuration remains in place.
+        quiet: true
+
     - name: Load Hermes' operating-profile list
       ansible.builtin.import_tasks: tasks/load_hermes_profiles.yml
       vars:
@@ -292,17 +290,15 @@
         name: llm_router
         tasks_from: drift-check.yml
 
-# If the gate above end_host'd every member, the tasks: play above never ran
-# (zero hosts left to run them) — and a play with zero hosts is not itself a
-# failure, so the run would otherwise carry on as if seeding had nothing to
-# do. Catch that here, from localhost, which the gate's end_host never
-# touches: every original pool member's pool_member_probe (registered by the
-# gate before any end_host fires) stays readable in hostvars regardless of
-# how many members got end_host'd, so this can tell "every member was down"
-# apart from "seeding ran and finished".
+# Zero-host plays do not fail. Scope this localhost assertion to routers
+# selected by --limit; GPU-only limits select none.
 - name: Fail loudly if the whole llm_router pool failed the reachability gate
   hosts: localhost
   gather_facts: false
+  vars:
+    _llm_router_seed_target_hosts: >-
+      {{ query('ansible.builtin.inventory_hostnames', ansible_limit | default('all', true))
+         | intersect(groups['llm_router_group'] | default([])) }}
   tags:
     - llm_router
     - llm
@@ -312,14 +308,15 @@
       ansible.builtin.set_fact:
         site_isolated_failures: >-
           {{ (site_isolated_failures | default([])) +
-             ['llm_router_seed_consumers: every llm_router_group member failed the reachability gate' ~
+             ['llm_router_seed_consumers: every targeted llm_router_group member failed the reachability gate' ~
               ' — seeding did not run'] }}
       when: >-
-        (groups['llm_router_group']
+        (_llm_router_seed_target_hosts | length > 0) and
+        ((_llm_router_seed_target_hosts
          | map('extract', hostvars, 'pool_member_probe')
          | selectattr('ping', 'defined')
          | selectattr('ping', 'equalto', 'pong')
-         | list | length) == 0
+         | list | length) == 0)
 
 - name: Configure the CPU LLM pool scaler
   hosts: llm_router_group

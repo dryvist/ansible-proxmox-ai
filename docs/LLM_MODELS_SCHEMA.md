@@ -52,6 +52,10 @@ Required on every entry:
   enabled           false removes the entry from the rendered config entirely.
 
 Optional:
+  lifecycle           `old` records a superseded model identity for history.
+                      It has no render effect, but an OLD entry MUST also have
+                      `enabled: false`; the registry/render parity test
+                      enforces that it is absent from every rendered route.
   subscription        true marks a flat-rate rung with no per-token price that
                       is NOT free (the chatgpt/ rung): it joins neither the
                       free nor the paid segment. Ladder order is derived from
@@ -121,7 +125,7 @@ Optional:
                       `DASHSCOPE_API_KEY`, or `OPENCODE_API_KEY`. REQUIRED,
                       together with key_field, on every entry of a
                       credential-gated tier (`opencode`, `hermes-cloud`,
-                      `hermes-cloud-router`, `openrouter`). The env, probe and
+                      `openrouter`). The env, probe and
                       role projections read both fields bare off the entry;
                       there is no per-tier default to fall back on, so an
                       entry missing either fails the render rather than

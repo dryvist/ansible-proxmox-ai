@@ -36,8 +36,38 @@
       {%- set baseline_value = (baseline | float) if baseline is not none else none -%}
       {%- set live_value = (live | float) if live is not none else none -%}
       {%- elif flag == 'budget_limits' -%}
-      {%- set baseline_value = baseline | default([], true) | sort(attribute='budget_duration') -%}
-      {%- set live_value = live | default([], true) | sort(attribute='budget_duration') -%}
+      {#- LiteLLM stores each window with a server-side reset_at (and returns it
+         from /key/list), so only the declared duration and ceiling compare. -#}
+      {%- set wins = namespace(baseline=[], live=[]) -%}
+      {%- for window in baseline | default([], true) -%}
+      {%- set wins.baseline = wins.baseline + [{
+        'budget_duration': window.budget_duration, 'max_budget': window.max_budget | float}] -%}
+      {%- endfor -%}
+      {%- for window in live | default([], true) -%}
+      {%- set wins.live = wins.live + [{
+        'budget_duration': window.budget_duration, 'max_budget': window.max_budget | float}] -%}
+      {%- endfor -%}
+      {%- set baseline_value = wins.baseline | sort(attribute='budget_duration') -%}
+      {%- set live_value = wins.live | sort(attribute='budget_duration') -%}
+      {%- elif flag == 'object_permission' -%}
+      {#- /key/list returns the joined LiteLLM_ObjectPermissionTable row: an
+         object_permission_id plus every grant list, empty when unset. Compare
+         only non-empty grants, so a UI-added grant still drifts. -#}
+      {%- set perms = namespace(baseline={}, live={}) -%}
+      {%- for grant, names in (baseline | default({}, true)).items() -%}
+      {%- if names not in [none, [], {}] and grant != 'object_permission_id' -%}
+      {%- set grant_value = names | sort if names is sequence and names is not string else names -%}
+      {%- set perms.baseline = perms.baseline | combine({grant: grant_value}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- for grant, names in (live | default({}, true)).items() -%}
+      {%- if names not in [none, [], {}] and grant != 'object_permission_id' -%}
+      {%- set grant_value = names | sort if names is sequence and names is not string else names -%}
+      {%- set perms.live = perms.live | combine({grant: grant_value}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set baseline_value = perms.baseline -%}
+      {%- set live_value = perms.live -%}
       {%- else -%}
       {%- set baseline_value = baseline -%}
       {%- set live_value = live -%}

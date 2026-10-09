@@ -1,0 +1,312 @@
+---
+# A GPU guest with only a writable local cache downloads a registered artifact
+# straight into that cache and verifies it there; a declared origin keeps the
+# pull and download behaviour. The pinned CLI and nvidia-smi are recording
+# stand-ins, so the run proves which commands the role issues and where.
+- name: Verify cache sync with and without a declared model origin
+  hosts: localhost
+  gather_facts: true
+  gather_subset: [min]
+  vars:
+    _artifact_id: qwen35-9b-nvfp4
+    _registry_file: "{{ playbook_dir }}/../../llm-models.d/65-gpu-artifacts.yml"
+    tofu_data: >-
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/../inventory_load/tofu_inventory.json') | from_json }}
+    nvidia_gpu_guest_user: "{{ ansible_facts.user_id }}"
+    nvidia_gpu_guest_group: "{{ ansible_facts.user_gid }}"
+  tasks:
+    - name: Resolve the artifact repository from the registry
+      ansible.builtin.include_vars:
+        file: "{{ _registry_file }}"
+
+    - name: Select the registered artifact
+      ansible.builtin.set_fact:
+        _repo: >-
+          {{ (_llm_model_artifacts
+              | selectattr('artifact_id', 'equalto', _artifact_id)
+              | first).hf_repo }}
+
+    - name: Create the scratch tree
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: llm-cache-only-
+      register: _scratch
+
+    - name: Exercise cache sync
+      vars:
+        _cache: "{{ _scratch.path }}/cache"
+        _origin: "{{ _scratch.path }}/origin"
+        _calls: "{{ _scratch.path }}/calls.log"
+      environment:
+        PATH: "{{ _scratch.path }}/bin:{{ ansible_facts.env.PATH }}"
+      block:
+        - name: Create the cache, origin and stand-in binaries
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: "0755"
+          loop: ["{{ _cache }}", "{{ _origin }}", "{{ _scratch.path }}/bin"]
+
+        - name: Install the recording stand-ins
+          ansible.builtin.copy:
+            dest: "{{ _scratch.path }}/bin/{{ item.name }}"
+            content: "{{ item.body }}"
+            mode: "0755"
+          loop:
+            - name: hf-entry
+              body: |
+                #!/bin/sh
+                [ "${HF_HUB_DISABLE_UPDATE_CHECK:-}" = "1" ] || exit 2
+                echo "hf $*" >> "{{ _calls }}"
+                case "$*" in
+                  *--dry-run*)
+                    if [ -e "{{ _scratch.path }}/synced" ]; then echo "Will download 0 files"
+                    else echo "Will download 1 files"; fi
+                    ;;
+                  *)
+                    revision=""; local_dir=""
+                    while [ "$#" -gt 0 ]; do
+                      case "$1" in
+                        --revision) revision="$2"; shift 2 ;;
+                        --local-dir) local_dir="$2"; shift 2 ;;
+                        *) shift ;;
+                      esac
+                    done
+                    mkdir -p "$local_dir/.cache/huggingface/download"
+                    printf '{}\n' > "$local_dir/config.json"
+                    etag=$(sha256sum "$local_dir/config.json" | cut -d' ' -f1)
+                    sidecar="$local_dir/.cache/huggingface/download/config.json.metadata"
+                    printf '%s\n%s\n0\n' "$revision" "$etag" > "$sidecar"
+                    ;;
+                esac
+            - name: nvidia-smi
+              body: |
+                #!/bin/sh
+                echo "nvidia-smi" >> "{{ _calls }}"
+                if [ -e "{{ _scratch.path }}/gpu-busy" ]; then echo "4242, serving, 1024 MiB"; fi
+
+        # uv installs the hf entry point as a symlink; the role must accept it.
+        - name: Link the hf stand-in the way uv installs tool entry points
+          ansible.builtin.file:
+            src: "{{ _scratch.path }}/bin/hf-entry"
+            dest: "{{ _scratch.path }}/bin/hf"
+            state: link
+
+        - name: Cache only, default mode
+          ansible.builtin.include_role:
+            name: nvidia_gpu_guest
+            tasks_from: cache-sync.yml
+          vars:
+            nvidia_gpu_guest_model_cache_mount_path: "{{ _cache }}"
+            nvidia_gpu_guest_model_origin_mount_path: ""
+            nvidia_gpu_guest_hf_bin: "{{ _scratch.path }}/bin/hf"
+            nvidia_gpu_guest_cache_sync_artifact_id: "{{ _artifact_id }}"
+
+        - name: Inspect the removed local manifest path
+          ansible.builtin.stat:
+            path: "{{ _cache }}/models/{{ _repo }}/.cache/huggingface/model-store-manifest.json"
+          register: _model_store_manifest
+
+        - name: Read the recorded calls
+          ansible.builtin.slurp:
+            src: "{{ _calls }}"
+          register: _cache_only_calls
+
+        - name: The download and the verification target the local cache after the idle-GPU gate
+          vars:
+            _lines: "{{ (_cache_only_calls.content | b64decode).splitlines() }}"
+            _local: "{{ _cache }}/models/{{ _repo }}"
+            _downloads: "{{ _lines | select('search', '^hf download ') | reject('search', '--dry-run') | list }}"
+            _download_target: "^hf download {{ _repo }} .*--local-dir {{ _local }}$"
+          ansible.builtin.assert:
+            that:
+              - _downloads | select('search', _download_target) | list | length == 1
+              - _lines | select('search', '^hf cache verify ') | list | length == 0
+              - nvidia_gpu_guest_cache_sync_local_verification.rc == 0
+              - "'Verified 1 pinned local model-store file(s)' in nvidia_gpu_guest_cache_sync_local_verification.stdout"
+              - not _model_store_manifest.stat.exists
+              - _lines | select('search', _origin) | list | length == 0
+              - _lines.index('nvidia-smi') < _lines.index(_downloads | first)
+            quiet: true
+
+        - name: A busy GPU with a complete store passes without any Hub request
+          vars:
+            _calls_before: "{{ (lookup('file', _calls)).splitlines() | length }}"
+          block:
+            - name: Mark the GPU busy
+              ansible.builtin.file:
+                path: "{{ _scratch.path }}/gpu-busy"
+                state: touch
+                mode: "0644"
+            - name: Include cache-only sync with the store already complete
+              ansible.builtin.include_role:
+                name: nvidia_gpu_guest
+                tasks_from: cache-sync.yml
+              vars:
+                nvidia_gpu_guest_model_cache_mount_path: "{{ _cache }}"
+                nvidia_gpu_guest_model_origin_mount_path: ""
+                nvidia_gpu_guest_hf_bin: "{{ _scratch.path }}/bin/hf"
+                nvidia_gpu_guest_cache_sync_artifact_id: "{{ _artifact_id }}"
+            - name: Read the recorded calls
+              ansible.builtin.slurp:
+                src: "{{ _calls }}"
+              register: _complete_calls
+            - name: The offline check proved the store, so the converge made no Hub or GPU call
+              vars:
+                _new: "{{ (_complete_calls.content | b64decode).splitlines()[_calls_before | int :] }}"
+              ansible.builtin.assert:
+                that:
+                  - _new | select('search', '^hf ') | list | length == 0
+                  - _new | select('search', '^nvidia-smi') | list | length == 0
+                quiet: true
+          always:
+            - name: Clear the GPU marker
+              ansible.builtin.file:
+                path: "{{ _scratch.path }}/gpu-busy"
+                state: absent
+            - name: Remove the complete store so the next pending download is genuine
+              ansible.builtin.file:
+                path: "{{ _cache }}/models/{{ _repo }}"
+                state: absent
+
+        - name: A busy GPU with a pending download fails closed
+          block:
+            - name: Mark the GPU busy
+              ansible.builtin.file:
+                path: "{{ _scratch.path }}/gpu-busy"
+                state: touch
+                mode: "0644"
+            - name: Include cache-only sync with a download pending
+              ansible.builtin.include_role:
+                name: nvidia_gpu_guest
+                tasks_from: cache-sync.yml
+              vars:
+                nvidia_gpu_guest_model_cache_mount_path: "{{ _cache }}"
+                nvidia_gpu_guest_model_origin_mount_path: ""
+                nvidia_gpu_guest_hf_bin: "{{ _scratch.path }}/bin/hf"
+                nvidia_gpu_guest_cache_sync_artifact_id: "{{ _artifact_id }}"
+            - name: Fail when the assertion did not refuse
+              ansible.builtin.fail:
+                msg: A pending download on a busy GPU was accepted.
+          rescue:
+            - name: Require the busy-GPU message
+              ansible.builtin.assert:
+                that: "'compute application' in ansible_failed_result.msg"
+                quiet: true
+
+        - name: A busy GPU with nothing to download passes without a download
+          vars:
+            _calls_before: "{{ (lookup('file', _calls)).splitlines() | length }}"
+          block:
+            - name: Record that every include is already present
+              ansible.builtin.file:
+                path: "{{ _scratch.path }}/synced"
+                state: touch
+                mode: "0644"
+            - name: Include cache-only sync with nothing pending
+              ansible.builtin.include_role:
+                name: nvidia_gpu_guest
+                tasks_from: cache-sync.yml
+              vars:
+                nvidia_gpu_guest_model_cache_mount_path: "{{ _cache }}"
+                nvidia_gpu_guest_model_origin_mount_path: ""
+                nvidia_gpu_guest_hf_bin: "{{ _scratch.path }}/bin/hf"
+                nvidia_gpu_guest_cache_sync_artifact_id: "{{ _artifact_id }}"
+            - name: Read the recorded calls
+              ansible.builtin.slurp:
+                src: "{{ _calls }}"
+              register: _idle_calls
+            - name: The converge neither queried the GPU nor downloaded
+              vars:
+                _new: "{{ (_idle_calls.content | b64decode).splitlines()[_calls_before | int :] }}"
+              ansible.builtin.assert:
+                that:
+                  - _new | select('search', '^nvidia-smi') | list | length == 0
+                  - _new | select('search', '^hf download ') | reject('search', '--dry-run') | list | length == 0
+                quiet: true
+
+        - name: Clear the GPU and sync markers
+          ansible.builtin.file:
+            path: "{{ _scratch.path }}/{{ item }}"
+            state: absent
+          loop: [gpu-busy, synced]
+
+        - name: Cache only is refused when the cache itself is missing
+          block:
+            - name: Include cache sync without a cache
+              ansible.builtin.include_role:
+                name: nvidia_gpu_guest
+                tasks_from: cache-sync.yml
+              vars:
+                nvidia_gpu_guest_model_cache_mount_path: ""
+                nvidia_gpu_guest_model_origin_mount_path: ""
+                nvidia_gpu_guest_hf_bin: "{{ _scratch.path }}/bin/hf"
+                nvidia_gpu_guest_cache_sync_artifact_id: "{{ _artifact_id }}"
+            - name: Fail when the assertion did not refuse
+              ansible.builtin.fail:
+                msg: A target without a cache was accepted.
+          rescue:
+            - name: Require the cache message
+              ansible.builtin.assert:
+                that: "'writable local cache' in ansible_failed_result.msg"
+                quiet: true
+
+        - name: Reset the recorded calls
+          ansible.builtin.file:
+            path: "{{ _calls }}"
+            state: absent
+
+        - name: Declared origin in download mode downloads into the origin only
+          ansible.builtin.include_role:
+            name: nvidia_gpu_guest
+            tasks_from: cache-sync.yml
+          vars:
+            nvidia_gpu_guest_model_cache_mount_path: "{{ _cache }}"
+            nvidia_gpu_guest_model_origin_mount_path: "{{ _origin }}"
+            nvidia_gpu_guest_model_origin_mount_read_only: false
+            nvidia_gpu_guest_hf_bin: "{{ _scratch.path }}/bin/hf"
+            nvidia_gpu_guest_cache_sync_artifact_id: "{{ _artifact_id }}"
+            nvidia_gpu_guest_cache_sync_mode: download
+
+        - name: Read the origin-mode calls
+          ansible.builtin.slurp:
+            src: "{{ _calls }}"
+          register: _origin_calls
+
+        - name: Origin download targets the origin and runs no cache verification
+          vars:
+            _lines: "{{ (_origin_calls.content | b64decode).splitlines() }}"
+            _origin_target: "^hf download {{ _repo }} .*--local-dir {{ _origin }}/{{ _repo }}$"
+          ansible.builtin.assert:
+            that:
+              - _lines | select('search', _origin_target) | list | length == 1
+              - _lines | select('search', 'cache verify') | list | length == 0
+            quiet: true
+
+        - name: A declared read-only origin still refuses a download
+          block:
+            - name: Include origin download with a read-only origin
+              ansible.builtin.include_role:
+                name: nvidia_gpu_guest
+                tasks_from: cache-sync.yml
+              vars:
+                nvidia_gpu_guest_model_cache_mount_path: "{{ _cache }}"
+                nvidia_gpu_guest_model_origin_mount_path: "{{ _origin }}"
+                nvidia_gpu_guest_model_origin_mount_read_only: true
+                nvidia_gpu_guest_hf_bin: "{{ _scratch.path }}/bin/hf"
+                nvidia_gpu_guest_cache_sync_artifact_id: "{{ _artifact_id }}"
+                nvidia_gpu_guest_cache_sync_mode: download
+            - name: Fail when the assertion did not refuse
+              ansible.builtin.fail:
+                msg: A read-only origin download was accepted.
+          rescue:
+            - name: Require the origin access message
+              ansible.builtin.assert:
+                that: "'declared origin mount' in ansible_failed_result.msg"
+                quiet: true
+
+      always:
+        - name: Remove the scratch tree
+          ansible.builtin.file:
+            path: "{{ _scratch.path }}"
+            state: absent

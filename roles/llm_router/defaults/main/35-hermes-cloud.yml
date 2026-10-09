@@ -5,9 +5,6 @@
 llm_router_hermes_virtual_models: >-
   {{ llm_router_registry_enabled
      | selectattr('tier', 'equalto', 'hermes-router') | list }}
-llm_router_hermes_cloud_router_models: >-
-  {{ llm_router_registry_enabled
-     | selectattr('tier', 'equalto', 'hermes-cloud-router') | list }}
 llm_router_hermes_cloud_models: >-
   {{ llm_router_registry_enabled
      | selectattr('tier', 'equalto', 'hermes-cloud') | list }}
@@ -30,26 +27,15 @@ llm_router_hermes_cloud_models_credentialed: >-
   {%- endfor -%}
   {{ ns.models }}
 
-# Virtual provider routers use the same provider credential gate as their
-# physical tier deployments. They hold no API key themselves; the selected
-# routine/agentic deployment is the only provider call.
-llm_router_hermes_cloud_router_models_credentialed: >-
-  {%- set ns = namespace(models=[]) -%}
-  {%- for m in llm_router_hermes_cloud_router_models -%}
-  {%- set key = llm_router_resolved_credentials.get(m.credential_env, '') -%}
-  {%- if key | length > 0 -%}
-  {%- set ns.models = ns.models + [m] -%}
-  {%- endif -%}
-  {%- endfor -%}
-  {{ ns.models }}
-
 # Local fallback groups, registry order. A local leg has no credential to
 # gate on, and filtering it the way the cloud projection filters would render
 # nothing.
+llm_router_hermes_local_fallback_models: >-
+  {{ llm_router_vllm_medium_route_models + llm_router_hermes_local_models }}
 llm_router_local_fallback_groups: >-
   {%- set ns = namespace(groups=[]) -%}
-  {%- for m in llm_router_hermes_local_models -%}
-  {%- set group = m.fallback_group | default(m.route_group) -%}
+  {%- for m in llm_router_hermes_local_fallback_models -%}
+  {%- set group = m.fallback_group | default(m.route_group | default(m.client_model_id)) -%}
   {%- if group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [group] -%}
   {%- endif -%}
@@ -65,7 +51,7 @@ llm_router_local_fallback_groups: >-
 llm_router_hermes_cloud_only_fallback_groups: >-
   {%- set ns = namespace(groups=[]) -%}
   {%- for m in llm_router_hermes_cloud_models_credentialed | rejectattr('hermes_chain', 'defined') -%}
-  {%- set group = m.fallback_group | default(m.route_group) -%}
+  {%- set group = m.fallback_group | default(m.route_group | default(m.client_model_id)) -%}
   {%- if group not in ns.groups -%}
   {%- set ns.groups = ns.groups + [group] -%}
   {%- endif -%}
@@ -93,18 +79,17 @@ llm_router_hermes_cloud_only_fallback_groups: >-
 # always going to be too big for it.
 llm_router_hermes_primary_context_window: >-
   {{ (llm_router_registry_enabled
-      | selectattr('client_model_id', 'equalto', llm_router_primary_model)
+      | selectattr('client_model_id', 'equalto',
+          llm_router_primary_serving_model)
       | map(attribute='context_window') | list | first) | default(0) }}
 
-# The primary's OWN admission cap (10-large.yml `max_parallel_requests` —
-# mirrors this host's effectiveConcurrency), for the local-survivor
-# deployment below: it is model_name: openai/{{ llm_router_primary_model }},
-# so its cap must track the SAME registry field the primary's own model_list
-# entry reads, never the tier-wide default independently — a host whose
-# concurrency changes must not leave the survivor's cap stale.
+# The primary's own registry admission cap for the local-survivor deployment
+# below. Resolve the primary's serving model first so large and GPU primary routes
+# both use the same field their model_list entries read.
 llm_router_hermes_primary_max_parallel_requests: >-
   {{ (llm_router_registry_enabled
-      | selectattr('client_model_id', 'equalto', llm_router_primary_model)
+      | selectattr('client_model_id', 'equalto',
+          llm_router_primary_serving_model)
       | map(attribute='max_parallel_requests') | list | first)
      | default(llm_router_local_max_parallel_requests) }}
 
@@ -147,8 +132,8 @@ llm_router_hermes_primary_max_parallel_requests: >-
 #
 llm_router_hermes_local_narrow_groups: >-
   {%- set ns = namespace(groups=[]) -%}
-  {%- for m in llm_router_hermes_local_models -%}
-  {%- set group = m.fallback_group | default(m.route_group) -%}
+  {%- for m in llm_router_hermes_local_fallback_models -%}
+  {%- set group = m.fallback_group | default(m.route_group | default(m.client_model_id)) -%}
   {%- if (m.context_window | default(0) | int)
          < (llm_router_hermes_primary_context_window | int)
      and group not in ns.groups -%}

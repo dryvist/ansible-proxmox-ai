@@ -40,6 +40,10 @@ llm_gpu_serving_uv_environment:
   UV_PYTHON_INSTALL_DIR: "{{ llm_gpu_serving_uv_python_install_dir }}"
   UV_TOOL_DIR: "{{ llm_gpu_serving_uv_tool_dir }}"
   UV_TOOL_BIN_DIR: "{{ llm_gpu_serving_uv_tool_bin_dir }}"
+  http_proxy: "{{ llamacpp_release_proxy_url }}"
+  https_proxy: "{{ llamacpp_release_proxy_url }}"
+  HTTP_PROXY: "{{ llamacpp_release_proxy_url }}"
+  HTTPS_PROXY: "{{ llamacpp_release_proxy_url }}"
 
 # renovate: datasource=pypi depName=huggingface-hub
 llm_gpu_serving_huggingface_hub_version: "2.1.1"
@@ -54,18 +58,41 @@ llm_gpu_serving_vllm_version: "0.30.0"
 # renovate: datasource=pypi depName=b12x
 llm_gpu_serving_b12x_version: "1.5.0"
 
+# FlashInfer's prebuilt kernels, at the flashinfer-python version the pinned vLLM
+# requires (its requirements/cuda.txt). vLLM's PyPI wheel omits them, so without
+# these every FlashInfer op JIT-compiles on first use. The JIT cache is built per
+# CUDA series; this is the series of vLLM's torch build.
+# renovate: ignore — must equal the flashinfer-python pin of the vLLM version above; bump together.
+llm_gpu_serving_flashinfer_version: "0.6.18.post1"
+llm_gpu_serving_flashinfer_index_url: https://flashinfer.ai/whl/
+llm_gpu_serving_flashinfer_jit_cache_index_url: "{{ llm_gpu_serving_flashinfer_index_url }}cu130"
+
+# CUDA toolkit for kernels that still compile at runtime (FlashInfer, DeepGEMM),
+# the package set vLLM's own image installs. Same series as the node's toolkit;
+# the guest's vendor repository starts at 13.1.
+llm_gpu_serving_cuda_version: "13.2"
+llm_gpu_serving_cuda_home: "/usr/local/cuda-{{ llm_gpu_serving_cuda_version }}"
+llm_gpu_serving_cuda_packages: >-
+  {{ ['cuda-nvcc', 'cuda-cudart', 'cuda-nvrtc', 'cuda-nvrtc-dev', 'cuda-cuobjdump',
+      'libcurand-dev', 'libcublas-dev']
+     | map('regex_replace', '$', '-' ~ (llm_gpu_serving_cuda_version | replace('.', '-')))
+     | list + ['libnuma-dev', 'numactl'] }}
+
 # The router registry owns model ids; serving profiles join to it by profile.
-llm_gpu_serving_registry_file: "{{ role_path | dirname | dirname }}/llm-models.d/60-gpu-pro6000.yml"
-llm_gpu_serving_artifact_registry_file: "{{ role_path | dirname | dirname }}/llm-models.d/65-gpu-pro6000-artifacts.yml"
+llm_gpu_serving_registry_file: "{{ role_path | dirname | dirname }}/llm-models.d/60-gpu.yml"
+llm_gpu_serving_artifact_registry_file: "{{ role_path | dirname | dirname }}/llm-models.d/65-gpu-artifacts.yml"
+llm_gpu_serving_glm_artifact_registry_file: >-
+  {{ role_path | dirname | dirname }}/llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml
+llm_gpu_serving_nvfp4_sweep_artifact_registry_file: >-
+  {{ role_path | dirname | dirname }}/llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml
+llm_gpu_serving_stage0_artifact_registry_file: >-
+  {{ role_path | dirname | dirname }}/llm-models.d/68-gpu-pro6000-stage0-artifacts.yml
 
 llm_gpu_serving_hf_bin: "{{ llm_gpu_serving_uv_tool_bin_dir }}/hf"
 
-# Match the release-binary selection used by llama_cpp, narrowed to Linux x64
-# CUDA 13.x assets. The binary archive carries llama-server but not the CUDA
-# runtime; the release's `cudart-` twin of the same name carries only
-# libcudart/libcublas, and both are installed side by side.
-llm_gpu_serving_llamacpp_releases_api: "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=5"
-llm_gpu_serving_llamacpp_asset_regex: "^llama-.*-bin-ubuntu-cuda-13[.].*-x64[.]tar[.]gz$"
+# Exact release assets and the Renovate-managed tag are shared by llamacpp_release.
+llm_gpu_serving_llamacpp_asset_name: "{{ llamacpp_release_cuda_asset }}"
+llm_gpu_serving_llamacpp_cudart_asset_name: "{{ llamacpp_release_cuda_runtime_asset }}"
 llm_gpu_serving_llamacpp_install_dir: "{{ llm_gpu_serving_install_dir }}/llama.cpp"
 llm_gpu_serving_llamacpp_server_bin: "{{ llm_gpu_serving_llamacpp_install_dir }}/llama-server"
 # Names the installed release asset so a changed selection reinstalls.

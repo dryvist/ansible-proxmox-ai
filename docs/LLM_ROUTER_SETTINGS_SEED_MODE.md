@@ -121,11 +121,14 @@ no database is configured.
 
 ## Same contract elsewhere
 
-Virtual Keys carry the same "database owns it after first seed" contract
-`llm_router_seed_mode` extends to `router_settings`: `tasks/seed-keys.yml`
-mints a key only when absent, then only ever adds model names to an
-existing key's scope; `tasks/reconcile-key-budgets.yml` never sends
-`models`, only budget fields.
+Virtual-key fields have separate ownership rules. `tasks/seed-keys.yml`
+creates a key only when absent. The policy reconciler then replaces its model
+allowlist with the rendered registry-derived list and replaces its MCP
+permissions on every converge. A seed entry can set
+`models_authoritative: false` to preserve an intentional additive model
+extension. In `initial` mode, routes and attribution metadata remain
+UI-owned; `rebuild` reconciles those fields. The budget reconciler remains
+rebuild-gated and sends budget fields without `models`.
 
 Role deployments (`tasks/seed-roles.yml`) carry the same `llm_router_seed_mode`
 gate directly, not just the same contract by convention: in `initial` mode a

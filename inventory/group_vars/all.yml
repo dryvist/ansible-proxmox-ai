@@ -17,30 +17,9 @@ ai_otel_http_port: >-
 # Edge remains the per-guest transcript collector, not the OTLP receiver.
 ai_orchestration_otel_endpoint: "http://cribl-stream.{{ ai_subdomain }}:{{ ai_otel_http_port }}"
 
-# Heavy-tier LLM serving host — short hostname and reserved address, read from
-# the inventory artifact and NEVER written here.
-#
-# This host is a fixed-address reservation made by the network IaC rather than
-# a PVE guest, so it is absent from the tofu inventory's guest list and its
-# address cannot be derived the way every other host's is. Until
-# tofu-proxmox#827 there was nothing to read, so both this repository and
-# ansible-proxmox-apps carried their own copies of the two values, each with a
-# comment telling the reader to change both together. Both repositories are
-# PUBLIC, which made those copies committed topology rather than a committed
-# convention.
-#
-# tofu-proxmox now publishes both as constants.serving.host/.ip, supplied from
-# the private deployment object at apply time. The env vars remain as the
-# operator override and as the supply path while the published artifact is
-# still catching up; what is gone is the third option, a value baked into a
-# public file.
-#
-# DELIBERATELY NO FALLBACK VALUE. Contrast ai_llm_concurrency below, whose
-# rollout shim can safely repeat the published number: a number that matches is
-# harmless, whereas an address that merely looks plausible is not. A wrong
-# address does not fail here — it fails later, somewhere else, as a timeout
-# against a host nobody chose. Absence is therefore reported and asserted
-# (roles/llm_router/tasks/assert-serving-identity.yml) rather than papered over.
+# Resolve the serving identity from published inventory constants, then the
+# environment override. No host or address fallback is supplied. Missing
+# identity is asserted by roles/llm_router/tasks/assert-serving-identity.yml.
 llm_large_serving_host: >-
   {{ ((tofu_data.constants.serving | default({})).host | default('', true))
      or (lookup('env', 'LLM_LARGE_RUNNER_HOST') | split('.') | first) }}
@@ -81,12 +60,23 @@ ai_default_model: >-
   {{ bao_ai_public_secrets.active_model
      | default(llm_router_primary_model, true) }}
 
-# Hermes Agent's OWN brain, structurally DECOUPLED from ai_default_model (user
-# decision 2026-07-19) so the agent brain and the ai-default fabric brain CAN
-# diverge. hermes_agent_model resolves to THIS, not ai_default_model.
-# Shared by GPU serving and LiteLLM so a single selected profile backs the
-# server process and its registry projection. The profile survey overrides it.
-llm_active_profile: medium-a
+# Hermes Agent's brain can differ from ai_default_model; hermes_brain_model
+# resolves to this value.
+# The Tofu engine selector chooses the active model/context profile.
+llm_gpu_active_profiles_by_engine:
+  llama_cpp: medium-b
+  vllm: medium-a
+llm_active_profile: >-
+  {{ llm_gpu_active_profiles_by_engine[
+       (hostvars['localhost']['tofu_data'] | default({})).get('llm_gpu_engine', 'llama_cpp')
+     ]
+     if (groups['llm_gpu_engine_llama_cpp_group'] | default([]) | length > 0)
+        and (groups['llm_gpu_engine_vllm_group'] | default([]) | length > 0)
+     else 'medium-a' }}
+
+# Shared by the legacy and per-engine GPU serving roles for declared stress windows.
+llm_gpu_serving_paused: false
+
 #
 # Once inventory-backed GPU profiles are enabled, follow the selected
 # profile's stable alias. Profiles without one keep the existing complexity
@@ -95,15 +85,12 @@ hermes_brain_model: >-
   {{ llm_router_gpu_model_aliases_by_profile.get(llm_active_profile, 'hermes-default')
      if llm_router_gpu_profiles_enabled | bool else 'hermes-default' }}
 
-# Hindsight's fact-extraction (retain) and reflection model: a model served
-# on this fabric's own hardware, so memory content never leaves the estate and
-# the route never runs out of a third party's quota. Retain requests carry a
-# ~3.3k-token extraction prompt, so the alias must serve an 8k context; the
-# light tier serves 2048 and rejects them, and interim-brain is the fabric
-# brain served directly on the Studio. The hindsight virtual key (llm_router
-# 56-virtual-keys.yml) is scoped to exactly this name, so the two can only
-# move together.
-hindsight_retain_model: interim-brain
+# Hindsight's fact-extraction (retain) and reflection use the dedicated
+# primary-route alias: the GPU medium profile first, then the local Mac primary
+# fallback. The 24-hour p99 was 6.8k input and 2.3k output tokens, so the route
+# needs at least 10k combined context. The Hindsight virtual key (llm_router
+# 56-static-virtual-keys.yml) is scoped to exactly this alias.
+hindsight_retain_model: qwen3.8-27b
 
 # SELECTION PHILOSOPHY (2026-08-15, operator decision) — ACCURACY OVER SPEED.
 # Where a tier choice trades quality against latency, this fabric takes the
@@ -174,7 +161,7 @@ llm_router_donna_key_enabled: false
 
 # Per-model serving concurrency ceiling. THE single numeric definition now
 # lives upstream in dryvist/tofu-proxmox's
-# modules/proxmox-stack/constants.tf (pipeline_constants.serving.llm_concurrency)
+# modules/proxmox-stack/constants-serving.tf (pipeline_constants.serving.llm_concurrency)
 # and is published to every host via the same tofu_data.constants channel
 # every other pipeline_constants family already uses (dryvist.homelab.
 # inventory_resolve, see inventory/load_tofu.yml). This value is a DERIVATION,
@@ -188,18 +175,15 @@ llm_router_donna_key_enabled: false
 # published constant and fails the build on drift. The serving tier admits
 # this many in-flight requests per model and 429s the rest (the 429s are
 # absorbed by llm_router's rate-limit retry policy, not this repo's concern).
-# Consumers: hermes_agent_api_max_concurrent_runs and
-# hermes_agent_kanban_max_in_progress* (roles/hermes_agent/defaults/main.yml)
-# derive from this, so the rendered config stays byte-identical to the prior
-# literals at the current value of 1.
+# Consumer: ollama_num_parallel (roles/ollama/defaults/main.yml). Agent
+# admission caps are independent of serving slots; see
+# ai_agent_default_concurrency below.
 # ROLLOUT WINDOW (remove the fallback once the artifact carries it). Ansible
 # reads the PUBLISHED inventory artifact, not tofu-proxmox's constants.tf, and
-# that artifact is only rewritten by a `tofu apply`. `serving.llm_concurrency`
-# was added to constants.tf and promoted to main, but the artifact in the
-# object store still predates it — its `constants` object has no `serving` key
-# at all. A bare reference therefore raises "object of type 'dict' has no
-# attribute 'serving'" and fails EVERY converge of this role, which is what it
-# did on 2026-08-02 before this fallback existed.
+# that artifact is only rewritten by a `tofu apply`. Older artifacts have no
+# `serving` key; a bare reference therefore raises "object of type 'dict' has
+# no attribute 'serving'" and fails every converge. The fallback follows the
+# active eight-slot profile until the artifact is republished.
 #
 # The fallback is a migration shim, NOT a second definition: it is the same
 # value the constant publishes, it disappears from every render the moment the
@@ -208,11 +192,15 @@ llm_router_donna_key_enabled: false
 # the `| default` and that assert together after the first apply that
 # republishes the inventory.
 ai_llm_concurrency: >-
-  {{ (tofu_data.constants.serving | default({})).llm_concurrency | default(1) }}
+  {{ (tofu_data.constants.serving | default({})).llm_concurrency | default(8) }}
 # True only while the shim above is load-bearing. Consumed by the converge-time
 # notice in roles/hermes_agent/tasks/assert.yml.
 ai_llm_concurrency_from_fallback: >-
   {{ (tofu_data.constants.serving | default({})).llm_concurrency is not defined }}
+
+# Agent runners accept work up to this shared cap. LiteLLM handles backend
+# saturation and fallback, so this value does not track any serving profile.
+ai_agent_default_concurrency: 8
 
 # Resource-domain secrets fetched from OpenBao by the openbao_secrets pre-play.
 # Defaults to an empty dict so every consumer's
@@ -269,3 +257,6 @@ hermes_goal_judge_model: judge
 # Restart the Docker stack on failure (Phase 9 systemd restart policy).
 systemd_restart_policy_services:
   - docker
+
+# Shared by the router and OpenBao prefetch play across the full inventory.
+llm_router_gpu_profiles_enabled: "{{ (groups['llm_gpu_group'] | default([])) | length > 0 }}"
