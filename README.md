@@ -41,8 +41,9 @@ molecule test -s qdrant
 
 Pull requests into `develop` run the scenarios matched by the shared
 Ansible CI role map. Shared inputs or an unmapped change widen to the full
-matrix. Pull requests into `main` and pushes to `main` or `develop` run the
-full Molecule matrix; `Merge Gate` aggregates Molecule and the data contract.
+matrix. Pull requests into `main` run the full Molecule matrix. Pushes to
+`main` or `develop` skip Molecule and the Data Contract job; `Merge Gate`
+allows both to be skipped only on pushes and on pull requests into `develop`.
 
 ## Roles
 
@@ -112,10 +113,14 @@ Apache License 2.0 — see [LICENSE](LICENSE) for details.
 ## CI
 
 Pull requests into `develop` use changed-role Molecule selection with lint,
-syntax, and contract checks. Pull requests into `main` and non-PR runs use the
-full matrix. CI-harness and GPU contract-fixture changes select the
-`llm_gpu_serving` smoke scenario; other unclassified paths widen to the full
-matrix. Required validation is aggregated by `Merge Gate`. Public pull-request
-CI stays on GitHub-hosted runners.
+syntax, and contract checks. Pull requests into `main` run the full matrix.
+Pushes to `main` and `develop` skip Molecule and the Data Contract job.
+CI-harness and GPU contract-fixture changes select the `llm_gpu_serving` smoke
+scenario; other unclassified paths widen to the full matrix. The Data Contract
+selector sends unmapped roles and unrecognized paths to the full contract
+suite and fails on an unmapped test playbook; a removed test file selects its
+owner's scope, if any. Runner jobs cap at ten minutes, except the Renovate
+checksum fix job, which caps at five. Required validation is aggregated by
+`Merge Gate`. Public pull-request CI stays on GitHub-hosted runners.
 
 See the canonical policy in the `dryvist/.github` README, “Ansible CI policy.”

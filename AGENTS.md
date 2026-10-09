@@ -236,9 +236,10 @@ host into a silent skip. Adopt them in the same change that adds the 2nd node.
 | Molecule (per scenario) | `molecule test -s llamaindex` / `-s qdrant` | CI |
 
 CI uses the shared Ansible workflow: pull requests into `develop` run mapped
-changed-role scenarios; promotion pull requests into `main` and pushes to
-`main` or `develop` run the full matrix. `Merge Gate` includes Molecule and
-the repository contract checks.
+changed-role scenarios; promotion pull requests into `main` run the full
+matrix. Pushes to `main` or `develop` skip Molecule and the Data Contract job.
+`Merge Gate` includes Molecule and the repository contract checks, and allows
+both to be skipped only on pushes and on pull requests into `develop`.
 
 **Inventory-load validation locally:**
 
@@ -292,10 +293,14 @@ nix develop "github:JacobPEvans/nix-devenv#ansible-apps"
 ## CI
 
 Pull requests into `develop` use changed-role Molecule selection with lint,
-syntax, and contract checks. Pull requests into `main` and non-PR runs use the
-full matrix. CI-harness and GPU contract-fixture changes select the
-`llm_gpu_serving` smoke scenario; other unclassified paths widen to the full
-matrix. Required validation is aggregated by `Merge Gate`. Public pull-request
-CI stays on GitHub-hosted runners.
+syntax, and contract checks. Pull requests into `main` run the full matrix.
+Pushes to `main` and `develop` skip Molecule and the Data Contract job.
+CI-harness and GPU contract-fixture changes select the `llm_gpu_serving` smoke
+scenario; other unclassified paths widen to the full matrix. The Data Contract
+selector sends unmapped roles and unrecognized paths to the full contract
+suite and fails on an unmapped test playbook; a removed test file selects its
+owner's scope, if any. Runner jobs cap at ten minutes, except the Renovate
+checksum fix job, which caps at five. Required validation is aggregated by
+`Merge Gate`. Public pull-request CI stays on GitHub-hosted runners.
 
 See the canonical policy in the `dryvist/.github` README, “Ansible CI policy.”
