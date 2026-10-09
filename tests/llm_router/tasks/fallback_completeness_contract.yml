@@ -6,9 +6,7 @@
 # A name's rungs resolve the way litellm's get_fallback_model_group does: an
 # exact key in router_settings.fallbacks wins even when empty; a seeded role
 # with no key uses the order tasks/seed-roles.yml posts (rungs the proxy does
-# not serve dropped); anything else walks default_fallbacks. Wildcard groups
-# (`*`, `provider/*`) advertise no window, so (b) has nothing to compare them
-# against and skips them as a PRIMARY; a rung with no window is still flagged.
+# not serve dropped); anything else walks default_fallbacks.
 
 - name: Resolve every routable name to its rungs and context windows
   ansible.builtin.set_fact:
@@ -61,29 +59,75 @@
       {%- set _ = out.primary_win.update({n: ns2.win.get(aliases.get(n, n), none)}) -%}
       {%- endfor -%}
       {{ {'groups': groups, 'aliases': aliases, 'served': served, 'names': names,
-          'seeded': ns.seeded | list, 'win': ns2.win, 'fb_keys': ns.fb | list,
+          'seeded': ns.seeded | list, 'win': ns2.win,
+          'seeded_models': dict(ns.seeded | list | zip(ns.seeded.values() | map(attribute='model'))),
+          'fb_keys': ns.fb | list,
           'default': rs.default_fallbacks | default([]),
           'rungs': out.rungs, 'primary_win': out.primary_win} }}
+
+# Names the role itself declares fail-fast, read from role data, never typed:
+# the cross-modality and local-only lists (58-review-roles.yml), plus every
+# ladder terminal — a hermes-default chain group with no admissible rung left
+# after it (the chain's own tail, minus every ZDR-unasserted rung for a
+# ZDR-asserted group). The terminals are recomputed here from the chain and
+# the ZDR sets rather than read off llm_router_hermes_own_fallback_by_group,
+# so a tail the role empties by mistake still fails (a).
+- name: Derive the names the role declares fail-fast
+  ansible.builtin.set_fact:
+    _fail_fast_exempt: >-
+      {%- set chain = llm_router_hermes_default_fallback_chain -%}
+      {%- set ns = namespace(terminals=[]) -%}
+      {%- for g in chain -%}
+      {%- set tail = chain[loop.index:] | list -%}
+      {%- if g in llm_router_zdr_asserted_group_names -%}
+      {%- set tail = tail | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list -%}
+      {%- endif -%}
+      {%- if tail | length == 0 -%}
+      {%- set ns.terminals = ns.terminals + [g] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ (llm_router_cross_modality_fail_fast_names + llm_router_local_only_fail_fast_names
+          + ns.terminals) | unique | list }}
 
 - name: Collect the violations of each contract
   ansible.builtin.set_fact:
     _no_rung: >-
       {{ _routing.rungs | dict2items
-         | selectattr('value.general', 'equalto', []) | map(attribute='key') | sort }}
-    _narrower: >-
+         | selectattr('value.general', 'equalto', []) | map(attribute='key')
+         | reject('in', _fail_fast_exempt) | sort }}
+    # (b) A primary needs ONE rung in its general chain at least as wide as
+    # itself; narrower rungs earlier in the chain are fine, litellm walks on.
+    # A rung that resolves to the primary's own group adds no capacity and
+    # does not count. Exempt: a primary no other served group is as wide as
+    # (it is physically the widest), and a primary with no window (wildcard).
+    _no_wide_rung: >-
       {%- set ns = namespace(bad=[]) -%}
-      {%- for n, r in _routing.rungs.items() -%}
+      {%- set peers = _routing.win | dict2items | rejectattr('value', 'none')
+            | rejectattr('key', 'in', llm_router_cross_modality_fail_fast_names)
+            | rejectattr('key', 'in', _routing.seeded) | list -%}
+      {%- for n, r in _routing.rungs.items() if r.general | length > 0 -%}
+      {%- set own = _routing.aliases.get(n, n) -%}
+      {%- set own_group = (_routing.seeded_models.get(own, own)) -%}
       {%- set pw = _routing.primary_win[n] -%}
-      {%- for rung in (r.general + r.context_window) | unique -%}
-      {%- set rw = _routing.win.get(_routing.aliases.get(rung, rung), none) -%}
-      {%- if rung in _routing.served or rung in _routing.aliases -%}
-      {%- if pw is not none and (rw is none or (rw | int) < (pw | int)) -%}
-      {%- set ns.bad = ns.bad + [n ~ ' (' ~ pw ~ ') -> ' ~ rung ~ ' (' ~ rw ~ ')'] -%}
+      {%- if pw is not none -%}
+      {%- set rung_wins = [] -%}
+      {%- for rung in r.general -%}
+      {%- set target = _routing.aliases.get(rung, rung) -%}
+      {%- set rw = _routing.win.get(target, none) -%}
+      {%- if (_routing.seeded_models.get(target, target)) != own_group and rw is not none -%}
+      {%- set _ = rung_wins.append(rw | int) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set wider_peers = peers | rejectattr('key', 'equalto', own)
+            | rejectattr('key', 'equalto', own_group)
+            | selectattr('value', '>=', pw | int) | map(attribute='key') | list -%}
+      {%- if (rung_wins | select('>=', pw | int) | list | length == 0) and wider_peers | length > 0 -%}
+      {%- set ns.bad = ns.bad + [n ~ ' (' ~ pw ~ '; widest rung ' ~ (rung_wins | max | default('none'))
+            ~ '; wider served: ' ~ (wider_peers | join(', ')) ~ ')'] -%}
       {%- endif -%}
       {%- endif -%}
       {%- endfor -%}
-      {%- endfor -%}
-      {{ ns.bad | unique | sort }}
+      {{ ns.bad | sort }}
     _dangling: >-
       {%- set ns = namespace(bad=[]) -%}
       {%- for n, r in _routing.rungs.items() -%}
@@ -93,7 +137,7 @@
       {%- endfor -%}
       {{ ns.bad | unique | sort }}
 
-- name: Every routable name has a served, no-narrower fallback rung
+- name: Every routable name has a served fallback ladder that reaches a wide-enough rung
   ansible.builtin.assert:
     quiet: true
     that:
@@ -104,21 +148,22 @@
       - _routing.fb_keys | length > 0
       - _routing.default | length > 0
       - _routing.win | dict2items | rejectattr('value', 'none') | list | length > 0
+      - _fail_fast_exempt | length > 0
       # THE CONTRACTS.
       - _no_rung | length == 0
-      - _narrower | length == 0
+      - _no_wide_rung | length == 0
       - _dangling | length == 0
     fail_msg: >-
-      (a) {{ _no_rung | length }} routable name(s) with NO fallback rung
-      (an exact empty key, or no key and no default ladder), so a single
-      failed deployment fails the call completely: {{ _no_rung }}.
-      (b) {{ _narrower | length }} rung(s) narrower than, or with no
-      advertised window against, the name they back, as
-      'name (window) -> rung (window)': {{ _narrower }}.
+      (a) {{ _no_rung | length }} routable name(s) outside the role's
+      declared fail-fast names with NO fallback rung, so a single failed
+      deployment fails the call completely: {{ _no_rung }}.
+      (b) {{ _no_wide_rung | length }} primary(ies) whose chain never reaches
+      a rung as wide as itself although a wider served group exists, as
+      'name (window; widest rung; wider served)': {{ _no_wide_rung }}.
       (c) {{ _dangling | length }} rung(s) naming no served model group:
       {{ _dangling }}.
     success_msg: >-
       All {{ _routing.names | length }} routable names
       ({{ _routing.groups | length }} groups, {{ _routing.aliases | length }}
-      aliases, {{ _routing.seeded | length }} seeded roles) carry at least
-      one served rung no narrower than themselves.
+      aliases, {{ _routing.seeded | length }} seeded roles; {{ _fail_fast_exempt | length }}
+      declared fail-fast) reach a served rung at least as wide as themselves.
