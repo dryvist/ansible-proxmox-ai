@@ -487,3 +487,10 @@ def test_otel_mapping_is_inert_while_the_test_file_is_absent(tmp_path: Path) -> 
 
     assert result.returncode == 0, result.stderr
     assert OTEL_TEST not in json.loads(result.stdout)["pytest_targets"]
+
+
+@pytest.mark.parametrize("path", sorted(WORKFLOWS.glob("*.yml")), ids=lambda path: path.name)
+def test_every_runner_job_declares_a_ten_minute_timeout(path: Path) -> None:
+    for name, job in yaml.safe_load(path.read_text())["jobs"].items():
+        if "runs-on" in job and (path.name, name) != ("fix-installer-sha.yml", "fix"):
+            assert job.get("timeout-minutes") == 10, f"{path.name}:{name}"
