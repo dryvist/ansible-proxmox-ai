@@ -282,6 +282,7 @@ def test_actual_gate_policy_allows_skips_only_for_focused_and_push_runs(
     allowed = Environment(undefined=StrictUndefined).compile_expression(clause)(github={
         "event_name": event, "ref": ref, "event": {"pull_request": {"base": {"ref": base}}},
     })
+    assert isinstance(allowed, str)
     allowed_set = {name.strip() for name in allowed.split(",") if name.strip()}
     required = {"data-contract", "molecule"}
     assert required <= set(gate["needs"])

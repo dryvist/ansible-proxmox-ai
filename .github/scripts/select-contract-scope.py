@@ -8,6 +8,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import TypedDict
 
 ANSIBLE_TESTS = {
     "tests/repo_guards/test_env_guards_actually_fire.yml",
@@ -88,6 +89,15 @@ TEST_SCOPES.update({"llm_router", "llm_model_campaign", "inventory_load", "repo_
                     "dify_docker", "phoenix_docker", "openbao_secrets", "llamaindex", "agent_guest"})
 
 
+class Selection(TypedDict):
+    pytest_targets: list[str]
+    ansible_tests: list[str]
+    llm_router_playbooks: list[str]
+    run_inventory: bool
+    run_selector_checks: bool
+    unknown: list[str]
+
+
 def llm_router_matrix() -> list[list[str]]:
     workflow = Path(".github/workflows/_llm-router-contract.yml").read_text()
     in_matrix = False
@@ -119,7 +129,7 @@ def router_imports(matrix: list[list[str]]) -> dict[str, list[str]]:
     return importers
 
 
-def full_selection() -> dict[str, object]:
+def full_selection() -> Selection:
     return {
         "pytest_targets": ["tests/"],
         "ansible_tests": sorted(ANSIBLE_TESTS),
@@ -130,7 +140,7 @@ def full_selection() -> dict[str, object]:
     }
 
 
-def select(paths: list[str]) -> dict[str, object]:
+def select(paths: list[str]) -> Selection:
     pytest_targets: set[str] = set()
     ansible_tests: set[str] = set()
     router_tests: set[str] = set()
@@ -245,16 +255,18 @@ def select(paths: list[str]) -> dict[str, object]:
         else:
             route_full = True  # unmapped root file: no narrower scope is known
 
-    result = full_selection() if route_full else {
+    unknown_paths = sorted(set(unknown))
+    if route_full:
+        return {**full_selection(), "unknown": unknown_paths}
+    return {
         "pytest_targets": sorted(pytest_targets),
         "ansible_tests": sorted(ansible_tests),
         "llm_router_playbooks": [" ".join(entry) for entry in matrix
                                  if " ".join(entry) in router_tests],
         "run_inventory": run_inventory,
         "run_selector_checks": run_selector_checks,
+        "unknown": unknown_paths,
     }
-    result["unknown"] = sorted(set(unknown))
-    return result
 
 
 def main() -> int:
