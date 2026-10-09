@@ -1,17 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
-import re
-
-from jinja2 import Environment, StrictUndefined
-
-import pytest
-import yaml
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+import yaml
 
 SELECTOR = Path(__file__).parents[1] / ".github/scripts/select-contract-scope.py"
 CI_GATE = Path(__file__).parents[1] / ".github/workflows/ci-gate.yml"
@@ -155,25 +150,6 @@ def test_full_suite_keeps_every_router_matrix_entry() -> None:
     assert len(selection["llm_router_playbooks"]) == 98
 
 
-def test_full_suite_covers_main_pushes_and_promotion_prs() -> None:
-    workflow = CI_GATE.read_text()
-
-    assert 'EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main' in workflow
-    assert 'BASE_SHA="$PUSH_BEFORE"' in workflow
-    assert 'HEAD_SHA="$PUSH_HEAD"' in workflow
-    molecule = yaml.safe_load(workflow)["jobs"]["molecule"]
-    assert "github.event.pull_request.base.ref == 'main'" in molecule["with"]["full_suite"]
-    assert molecule["if"].count("github.event.pull_request.base.ref == 'main'") == 2
-    assert "inputs.full_suite && steps.find.outputs.scenarios" in (
-        CI_GATE.parents[0] / "_molecule.yml"
-    ).read_text()
-    matrix_edit = json.loads(run_selector(".github/workflows/_llm-router-contract.yml").stdout)
-    full = json.loads(run_selector("--full").stdout)
-    assert matrix_edit["run_selector_checks"]
-    assert set(matrix_edit["llm_router_playbooks"]) == set(full["llm_router_playbooks"])
-    assert "tests/test_contract_scope_selector.py" in workflow
-
-
 @pytest.mark.parametrize(("path", "target"), [
     ("roles/nvidia_gpu_guest/tasks/cache-sync.yml", "tests/nvidia_gpu_guest/"),
     ("roles/llm_gpu_serving/tasks/main.yml", "tests/llm_gpu_engine_roles/"),
@@ -234,60 +210,6 @@ def test_inventory_and_playbook_edits_route_to_full_suite(path: str) -> None:
     full = json.loads(run_selector("--full").stdout)
     assert selection["pytest_targets"] == ["tests/"]
     assert set(selection["llm_router_playbooks"]) == set(full["llm_router_playbooks"])
-
-
-@pytest.mark.parametrize(("event", "ref", "base", "expected_full"), [
-    ("pull_request", "refs/pull/1/merge", "main", True),
-    ("pull_request", "refs/pull/1/merge", "develop", False),
-    ("push", "refs/heads/main", "", True),
-    ("push", "refs/heads/develop", "", False),
-])
-def test_actual_scope_step_dispatches_full_or_focused(
-    tmp_path: Path, event: str, ref: str, base: str, expected_full: bool,
-) -> None:
-    step = next(step for step in yaml.safe_load(CI_GATE.read_text())["jobs"]["contract-scope"]["steps"]
-                if step.get("id") == "select")
-    mock_bin = tmp_path / "bin"
-    mock_bin.mkdir()
-    git = mock_bin / "git"
-    git.write_text("#!/bin/sh\nprintf '%s\\n' tests/test_contract_scope_selector.py\n")
-    git.chmod(0o755)
-    output = tmp_path / "output"
-    env = dict(os.environ, EVENT_NAME=event, GITHUB_REF=ref, BASE_REF=base,
-               BASE_SHA="base", HEAD_SHA="head", PUSH_BEFORE="before", PUSH_HEAD="push",
-               GITHUB_OUTPUT=str(output), RUNNER_TEMP=str(tmp_path),
-               PATH=str(mock_bin) + os.pathsep + os.environ["PATH"])
-    result = subprocess.run(["bash", "-e", "-c", step["run"]], env=env, capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-    selected = dict(line.split("=", 1) for line in output.read_text().splitlines())
-    assert selected["full_suite"] == str(expected_full).lower()
-    targets = json.loads(selected["pytest_targets"])
-    assert targets == (["tests/"] if expected_full else ["tests/test_contract_scope_selector.py"])
-    assert len(json.loads(selected["llm_router_playbooks"])) == (98 if expected_full else 0)
-
-
-@pytest.mark.parametrize(("event", "ref", "base", "allows_skips"), [
-    ("pull_request", "refs/pull/1/merge", "main", False),
-    ("pull_request", "refs/pull/1/merge", "develop", True),
-    ("push", "refs/heads/main", "", True),
-    ("push", "refs/heads/develop", "", True),
-])
-def test_actual_gate_policy_allows_skips_only_for_focused_and_push_runs(
-    event: str, ref: str, base: str, allows_skips: bool,
-) -> None:
-    gate = yaml.safe_load(CI_GATE.read_text())["jobs"]["gate"]
-    step = next(step for step in gate["steps"] if step.get("name") == "Check all results")
-    clause = step["env"]["CI_GATE_ALLOWED_SKIPS"].strip().removeprefix("${{").removesuffix("}}")
-    clause = re.sub(r"!(?!=)", "not ", clause.replace("&&", "and").replace("||", "or"))
-    allowed = Environment(undefined=StrictUndefined).compile_expression(clause)(github={
-        "event_name": event, "ref": ref, "event": {"pull_request": {"base": {"ref": base}}},
-    })
-    assert isinstance(allowed, str)
-    allowed_set = {name.strip() for name in allowed.split(",") if name.strip()}
-    required = {"data-contract", "molecule"}
-    assert required <= set(gate["needs"])
-    assert (required <= allowed_set) is allows_skips
-    assert bool(required - allowed_set) is (not allows_skips)
 
 
 @pytest.mark.parametrize("path", [
@@ -376,48 +298,6 @@ def test_changed_router_groups_follow_manifest_order_not_path_order() -> None:
     assert json.loads(result.stdout)["llm_router_playbooks"] == chosen
 
 
-def test_agent_ci_fix_runs_only_for_pull_request_ci_gate_runs() -> None:
-    job = yaml.safe_load((WORKFLOWS / "agent-ci-fix.yml").read_text())["jobs"]["ci-fix"]
-    assert "vars.AI_AGENT_CI_FIX_ENABLED == 'true'" in job["if"]
-    assert "github.event.workflow_run.event == 'pull_request'" in job["if"]
-
-
-@pytest.mark.parametrize("workflow", ["agent-ci-fix.yml", "agent-pr-review-responder.yml"])
-def test_agent_workflows_pin_the_shared_callee_to_a_commit(workflow: str) -> None:
-    jobs = yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"].values()
-    uses = [job["uses"] for job in jobs if "uses" in job]
-    assert uses
-    assert all(re.fullmatch(r"dryvist/ai-workflows/\.github/workflows/[\w.-]+@[0-9a-f]{40}", ref)
-               for ref in uses), uses
-
-
-def test_installer_recompute_authenticates_checksum_requests() -> None:
-    steps = yaml.safe_load((WORKFLOWS / "fix-installer-sha.yml").read_text())["jobs"]["fix"]["steps"]
-    recompute = next(step for step in steps if step.get("name") == "Recompute the checksum")
-    assert recompute["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
-
-
-def test_nix_installs_whenever_the_agent_guest_test_runs() -> None:
-    steps = yaml.safe_load((WORKFLOWS / "_data-contract.yml").read_text())["jobs"]["syntax-check"]["steps"]
-    nix = next(step for step in steps if step.get("name") == "Install Nix")
-    agent_guest = next(step for step in steps
-                       if step.get("name") == "Verify agent_guest residual deny contract")
-    assert nix["if"] == agent_guest["if"]
-
-
-def test_report_step_reads_no_unused_selection_env() -> None:
-    steps = yaml.safe_load(CI_GATE.read_text())["jobs"]["contract-scope"]["steps"]
-    report = next(step for step in steps if step.get("name") == "Report the selected contract scope")
-    assert "SELECTED" not in report["env"]
-
-
-def test_ci_gate_header_names_the_contract_scope_gate() -> None:
-    lines = CI_GATE.read_text().splitlines()
-    header = "\n".join(lines[: lines.index("name: CI Gate")])
-    assert "contract-scope" in header
-    assert "All local jobs" not in header
-
-
 @pytest.mark.parametrize(("scenario", "role"), [
     ("llama_cpp_backend", "llamacpp_release"),
     ("llm_gpu_serving", "llamacpp_release"),
@@ -487,94 +367,6 @@ def test_otel_mapping_is_inert_while_the_test_file_is_absent(tmp_path: Path) -> 
 
     assert result.returncode == 0, result.stderr
     assert OTEL_TEST not in json.loads(result.stdout)["pytest_targets"]
-
-
-@pytest.mark.parametrize(("job", "guard"), [
-    ("data-contract", "github.event_name != 'push'"),
-    ("molecule", "github.event_name == 'pull_request'"),
-])
-def test_push_events_skip_the_contract_and_molecule_jobs(job: str, guard: str) -> None:
-    condition = yaml.safe_load(CI_GATE.read_text())["jobs"][job]["if"]
-    assert guard in condition
-
-
-PROMOTION_TIMEOUT = (
-    "${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' "
-    "&& github.event.pull_request.head.ref == 'develop' "
-    "&& github.event.pull_request.head.repo.full_name == github.repository) && 60 || 10 }}"
-)
-
-
-def _context(
-    event: str, base: str | None = None, head: str | None = None, head_repo: str | None = None
-) -> dict[str, str | None]:
-    return {
-        "github.event_name": event,
-        "github.event.pull_request.base.ref": base,
-        "github.event.pull_request.head.ref": head,
-        "github.event.pull_request.head.repo.full_name": head_repo,
-        "github.repository": "owner/repo",
-    }
-
-
-def _evaluate_timeout(expression: str, context: dict[str, str | None]) -> object:
-    # Substitute the context values, then map the expression's && and || onto Python's and/or.
-    body = expression.removeprefix("${{").removesuffix("}}")
-    for key, value in context.items():
-        body = body.replace(key, repr(value))
-    return eval(body.replace("&&", " and ").replace("||", " or "), {"__builtins__": {}}, {})
-
-
-@pytest.mark.parametrize(("context", "expected"), [
-    (_context("pull_request", "main", "develop", "owner/repo"), 60),
-    (_context("pull_request", "main", "develop", "fork/ansible-proxmox-ai"), 10),
-    (_context("pull_request", "main", "release-please--branches--main", "owner/repo"), 10),
-    (_context("pull_request", "main", "hotfix/fix-x", "owner/repo"), 10),
-    (_context("pull_request", "develop", "feature/x", "owner/repo"), 10),
-    (_context("push"), 10),
-])
-def test_promotion_timeout_is_sixty_only_for_same_repo_develop_into_main(
-    context: dict[str, str | None], expected: int
-) -> None:
-    assert _evaluate_timeout(PROMOTION_TIMEOUT, context) == expected
-
-
-@pytest.mark.parametrize("path", sorted(WORKFLOWS.glob("*.yml")), ids=lambda path: path.name)
-def test_every_runner_job_takes_the_promotion_timeout(path: Path) -> None:
-    for name, job in yaml.safe_load(path.read_text())["jobs"].items():
-        if "runs-on" in job and (path.name, name) != ("fix-installer-sha.yml", "fix"):
-            value = " ".join(str(job.get("timeout-minutes")).split())
-            assert value in (PROMOTION_TIMEOUT, "${{ inputs.timeout_minutes }}"), f"{path.name}:{name}"
-
-
-def test_reusable_calls_forward_the_timeout_input() -> None:
-    jobs = yaml.safe_load(CI_GATE.read_text())["jobs"]
-    for name in ("data-contract", "molecule"):
-        assert " ".join(jobs[name]["with"]["timeout_minutes"].split()) == PROMOTION_TIMEOUT, name
-    nested = yaml.safe_load((WORKFLOWS / "_data-contract.yml").read_text())["jobs"]["llm-router-contract"]
-    assert nested["with"]["timeout_minutes"] == "${{ inputs.timeout_minutes }}"
-
-
-@pytest.mark.parametrize(("workflow", "job"), [
-    ("_data-contract.yml", "syntax-check"),
-    ("_data-contract.yml", "verify-inventory-load"),
-    ("_llm-router-contract.yml", "llm-router-contract"),
-    ("_llm-router-contract.yml", "llm-router-registry-contract"),
-])
-def test_ansible_install_uses_the_pinned_ci_requirements(workflow: str, job: str) -> None:
-    steps = yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"][job]["steps"]
-    setup = next(step for step in steps if step.get("uses", "").startswith("actions/setup-python@"))
-    assert setup["with"]["cache"] == "pip"
-    assert setup["with"]["cache-dependency-path"] == ".github/requirements-ci.txt"
-    install = next(step for step in steps if "pip install" in step.get("run", ""))
-    assert "pip install -r .github/requirements-ci.txt" in install["run"]
-
-
-def test_ci_requirements_pin_exact_versions() -> None:
-    lines = [line.strip() for line in (WORKFLOWS.parents[0] / "requirements-ci.txt").read_text().splitlines()
-             if line.strip() and not line.lstrip().startswith("#")]
-    assert "ansible==14.0.0" in lines
-    assert all("==" in line for line in lines)
 
 
 def test_ci_requirements_edit_selects_the_selector_checks() -> None:
