@@ -62,6 +62,15 @@ def test_unmapped_role_fails_fast() -> None:
     assert "Unmapped contract paths" in result.stderr
 
 
+def test_release_back_merge_paths_need_no_contracts() -> None:
+    result = run_selector(".release-please-manifest.json", "CHANGELOG.md")
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    assert selection["pytest_targets"] == []
+    assert selection["llm_router_playbooks"] == []
+
+
 def test_llm_router_role_paths_select_the_complete_router_contract() -> None:
     result = run_selector("roles/llm_router/tasks/main.yml")
 
@@ -97,7 +106,7 @@ def test_full_suite_keeps_every_router_matrix_entry() -> None:
 
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
-    assert len(selection["llm_router_playbooks"]) == 94
+    assert len(selection["llm_router_playbooks"]) == 95
 
 
 def test_full_suite_covers_main_pushes_and_promotion_prs() -> None:
@@ -164,7 +173,7 @@ def test_registry_selects_all_consumers_without_global_pytest() -> None:
     assert selection["run_selector_checks"]
     assert {"tests/nvidia_gpu_guest/", "tests/llm_model_campaign/", "tests/hermes_agent/"} <= set(
         selection["pytest_targets"])
-    assert len(selection["llm_router_playbooks"]) == 94
+    assert len(selection["llm_router_playbooks"]) == 95
     assert "tests/nvidia_gpu_guest/test_cache_only_sync.yml" in selection["ansible_tests"]
 
 
@@ -195,7 +204,7 @@ def test_actual_scope_step_dispatches_full_or_focused(
     assert selected["full_suite"] == str(expected_full).lower()
     targets = json.loads(selected["pytest_targets"])
     assert targets == (["tests/"] if expected_full else ["tests/test_contract_scope_selector.py"])
-    assert len(json.loads(selected["llm_router_playbooks"])) == (94 if expected_full else 0)
+    assert len(json.loads(selected["llm_router_playbooks"])) == (95 if expected_full else 0)
 
 
 @pytest.mark.parametrize(("event", "ref", "base", "allows_skips"), [
@@ -296,7 +305,7 @@ def test_router_scope_preserves_manifest_execution_order(path: str) -> None:
     selected = json.loads(result.stdout)["llm_router_playbooks"]
     assert selected == full
     paths = [playbook for group in selected for playbook in group.split()]
-    assert len(paths) == len(set(paths)) == 96
+    assert len(paths) == len(set(paths)) == 97
 
 
 def test_changed_router_groups_follow_manifest_order_not_path_order() -> None:
