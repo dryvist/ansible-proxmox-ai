@@ -44,6 +44,14 @@ PYTEST_PATH_TARGETS = {
 }
 
 
+# Consumers of ai_orchestration_otel_endpoint; the OTEL test renders each one.
+# The file is selected only when the checkout contains it.
+OTEL_CONSUMER_TEST = "tests/hermes_agent/test_otel_endpoint_consumers.py"
+OTEL_CONSUMER_ROLES = {
+    "llm_router", "agent_exec", "dify_docker", "langgraph_docker", "hindsight_docker",
+    "hermes_agent", "open_webui", "agentgateway_docker",
+}
+
 # Role closures use the existing contract directories and playbooks. Shared GPU
 # roles consume the same profiles, model-store contract and rendered units.
 GPU_PYTEST = {
@@ -135,6 +143,8 @@ def select(paths: list[str]) -> dict[str, object]:
 
     def role_scope(role: str) -> None:
         pytest_targets.update(ROLE_TESTS.get(role, set()))
+        if role in OTEL_CONSUMER_ROLES and Path(OTEL_CONSUMER_TEST).is_file():
+            pytest_targets.add(OTEL_CONSUMER_TEST)
         ansible_tests.update(test for test in ANSIBLE_TESTS if test.startswith(f"tests/{role}/"))
         if role in {"llamacpp_serving", "vllm_serving", "nvidia_gpu_guest", "llm_gpu_serving"}:
             ansible_tests.update(GPU_ANSIBLE)

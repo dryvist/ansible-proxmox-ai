@@ -32,7 +32,7 @@ def test_hermes_agent_role_selects_its_role_tests() -> None:
 
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
-    assert selection["pytest_targets"] == ["tests/hermes_agent/"]
+    assert "tests/hermes_agent/" in selection["pytest_targets"]
     assert selection["llm_router_playbooks"] == []
 
 
@@ -350,7 +350,7 @@ def test_captured_hermes_inputs_reach_existing_contract_family(path: str) -> Non
     assert any(fnmatch.fnmatchcase(path, pattern) for pattern in yaml.safe_load(filters)["contract_only"])
     result = run_selector(path)
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout)["pytest_targets"] == ["tests/hermes_agent/"]
+    assert "tests/hermes_agent/" in json.loads(result.stdout)["pytest_targets"]
 
 
 @pytest.mark.parametrize("path", [
@@ -449,3 +449,41 @@ def test_ci_contract_edits_select_their_guard_test(path: str, guard: str) -> Non
 
     assert result.returncode == 0, result.stderr
     assert guard in json.loads(result.stdout)["pytest_targets"]
+
+
+def _run_in(cwd: Path, *paths: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SELECTOR), *paths], check=False, capture_output=True, text=True, cwd=cwd,
+    )
+
+
+def _copy_router_manifest(root: Path) -> None:
+    workflows = root / ".github/workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "_llm-router-contract.yml").write_text((CI_GATE.parent / "_llm-router-contract.yml").read_text())
+
+
+OTEL_TEST = "tests/hermes_agent/test_otel_endpoint_consumers.py"
+
+
+@pytest.mark.parametrize("role", [
+    "llm_router", "agent_exec", "dify_docker", "langgraph_docker", "hindsight_docker",
+    "hermes_agent", "open_webui", "agentgateway_docker",
+])
+def test_otel_consumer_edits_select_the_otel_test(tmp_path: Path, role: str) -> None:
+    (tmp_path / OTEL_TEST).parent.mkdir(parents=True)
+    (tmp_path / OTEL_TEST).write_text("")
+    _copy_router_manifest(tmp_path)
+    result = _run_in(tmp_path, f"roles/{role}/tasks/main.yml")
+
+    assert result.returncode == 0, result.stderr
+    targets = json.loads(result.stdout)["pytest_targets"]
+    assert OTEL_TEST in targets or "tests/" in targets
+
+
+def test_otel_mapping_is_inert_while_the_test_file_is_absent(tmp_path: Path) -> None:
+    _copy_router_manifest(tmp_path)
+    result = _run_in(tmp_path, "roles/dify_docker/tasks/main.yml")
+
+    assert result.returncode == 0, result.stderr
+    assert OTEL_TEST not in json.loads(result.stdout)["pytest_targets"]
