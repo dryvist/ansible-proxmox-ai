@@ -8,6 +8,7 @@ import re
 import runpy
 import tempfile
 import types
+from datetime import datetime, timezone
 from pathlib import Path
 
 from _role_files import role_defaults, role_tasks_text
@@ -56,6 +57,19 @@ def job(name, status="error", streak=1, error="", enabled=True):
             "last_error": error, "enabled": enabled}
 
 
+def row(store, name, streak, cause, age=None, stale=False):
+    """One failing-job tuple, as failing_jobs returns it."""
+    return (store, name, streak, cause, age, stale)
+
+
+def timed(name, *, last_ago_h, cadence_h, error="HTTP 429"):
+    """A failing job whose scheduler bookkeeping puts its last run last_ago_h hours back."""
+    last = NOW - last_ago_h * 3600
+    return {**job(name, error=error),
+            "last_run_at": datetime.fromtimestamp(last, timezone.utc).isoformat(),
+            "next_run_at": datetime.fromtimestamp(last + cadence_h * 3600, timezone.utc).isoformat()}
+
+
 def test_causes_are_classed_from_the_error_text():
     assert MOD.cause_of("Cron job exceeded wall-clock budget of 1800s") == "wall-clock"
     assert MOD.cause_of("HTTP 401 Unauthorized from splunk") == "auth"
@@ -65,36 +79,73 @@ def test_causes_are_classed_from_the_error_text():
     assert MOD.cause_of("something novel happened here") == "something novel happened here"
 
 
+def test_the_router_provider_cap_is_its_own_class_not_a_key_budget():
+    cap = ("No deployments available - crossed budget: "
+           "Exceeded budget for provider example-provider: 12.5 >= 12.0")
+    assert MOD.cause_of(cap) == "provider-cap"
+    assert MOD.cause_of("Exceeded budget for provider example-provider") == "provider-cap"
+    assert MOD.cause_of("insufficient credits (budget)") == "budget"
+
+
 def test_every_store_is_read_and_only_failing_enabled_jobs_are_kept():
     write_store(TMP, [job("ok", status="ok", streak=0), job("bad", error="502"),
                       job("off", enabled=False, error="502")])
     write_store(TMP / "profiles" / "splunk-admin", [job("triage", streak=12, error="wall-clock kill")])
-    failing = MOD.failing_jobs((n, MOD.load_jobs(h)) for n, h in MOD.stores())
-    assert failing == [("default", "bad", 1, "upstream-5xx"),
-                       ("splunk-admin", "triage", 12, "wall-clock")]
+    failing = MOD.failing_jobs(((n, MOD.load_jobs(h)) for n, h in MOD.stores()), NOW)
+    assert failing == [row("default", "bad", 1, "upstream-5xx"),
+                       row("splunk-admin", "triage", 12, "wall-clock")]
 
 
 def test_the_message_groups_by_cause_and_names_the_streak():
-    failing = [("default", "a", 1, "auth"), ("default", "b", 5, "auth"), ("p", "c", 31, "wall-clock")]
+    failing = [row("default", "a", 1, "auth"), row("default", "b", 5, "auth"), row("p", "c", 31, "wall-clock")]
     text = MOD.build_message(failing)
     assert text.splitlines()[0] == ":rotating_light: 3 cron job(s) failing"
     assert "• auth (2): a, b ×5" in text
     assert "• wall-clock (1): p/c ×31" in text
 
 
+def test_a_job_past_its_cadence_is_stale_not_currently_failing():
+    jobs = [timed("fresh", last_ago_h=9, cadence_h=24),
+            timed("overdue", last_ago_h=50, cadence_h=24),
+            timed("hourly", last_ago_h=5, cadence_h=1),
+            job("untimed", error="HTTP 429")]
+    failing = MOD.failing_jobs([("default", jobs)], NOW)
+    assert [(r[1], r[5]) for r in failing] == [
+        ("fresh", False), ("hourly", True), ("overdue", True), ("untimed", False)]
+    assert MOD.build_message(failing).splitlines() == [
+        ":rotating_light: 2 cron job(s) failing",
+        "• rate-limit (2): fresh (last 9h ago), untimed",
+        "• stale, last run past cadence (2): hourly (last 5h ago), overdue (last 2d ago)",
+    ]
+    # A job going stale is news even though no name or cause changed.
+    _, state = MOD.decide([row("default", "a", 1, "auth")], {}, NOW)
+    assert MOD.decide([row("default", "a", 1, "auth", age=50 * 3600, stale=True)], state, NOW + 60)[0]
+
+
+def test_causes_are_cut_at_80_characters_on_a_word_boundary():
+    short = "RuntimeError: HTTP 400: Missing consumer trace data for run 42"
+    assert len(short) <= 80 and MOD.cause_of(short) == short
+    long = ("RuntimeError: HTTP 400: Missing consumer trace data for run 42 because the router "
+            "requires the telemetry tag set on every request")
+    label = MOD.cause_of(long)
+    assert label.endswith("...") and len(label) <= 83
+    kept = label[:-3]
+    assert long.startswith(kept) and long[len(kept)] == " "
+
+
 def test_an_unchanged_set_reposts_only_after_the_heartbeat():
-    failing = [("default", "a", 1, "auth")]
+    failing = [row("default", "a", 1, "auth")]
     text, state = MOD.decide(failing, {}, NOW)
     assert text and state["signature"] == ["default/a:auth"]
     assert MOD.decide(failing, state, NOW + 3600)[0] is None
     assert MOD.decide(failing, state, NOW + 6 * 3600)[0] is not None
     # A streak change alone is not news; a new job or cause is.
-    assert MOD.decide([("default", "a", 9, "auth")], state, NOW + 3600)[0] is None
-    assert MOD.decide([("default", "a", 1, "budget")], state, NOW + 3600)[0] is not None
+    assert MOD.decide([row("default", "a", 9, "auth")], state, NOW + 3600)[0] is None
+    assert MOD.decide([row("default", "a", 1, "budget")], state, NOW + 3600)[0] is not None
 
 
 def test_a_zero_heartbeat_never_reposts_an_unchanged_set():
-    failing = [("default", "a", 1, "auth")]
+    failing = [row("default", "a", 1, "auth")]
     _, state = MOD.decide(failing, {}, NOW)
     module_globals = MOD.decide.__globals__
     saved = module_globals["HEARTBEAT_HOURS"]
@@ -106,7 +157,7 @@ def test_a_zero_heartbeat_never_reposts_an_unchanged_set():
 
 
 def test_the_all_clear_posts_once_when_the_set_empties():
-    _, state = MOD.decide([("default", "a", 1, "auth")], {}, NOW)
+    _, state = MOD.decide([row("default", "a", 1, "auth")], {}, NOW)
     text, state = MOD.decide([], state, NOW + 3600)
     assert text.startswith(":white_check_mark:")
     assert MOD.decide([], state, NOW + 7200) == (None, state)
