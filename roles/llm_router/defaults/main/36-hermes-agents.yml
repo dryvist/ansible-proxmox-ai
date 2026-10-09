@@ -33,6 +33,7 @@ llm_router_hermes_agents: "{{ tofu_data.hermes_agents | default({}, true) }}"
 # (fail closed) rather than being sent a key its gateway would reject.
 llm_router_hermes_agent_identities:
   hermes-agent: hermes
+  hermes-private: hermes-private
   hermes-donna: donna
 
 # Sourced from OpenBao first, falling back to the environment, matching how the
@@ -44,6 +45,16 @@ llm_router_hermes_identity_bearers:
   hermes: >-
     {{ bao_local_llm_secrets['HERMES_API_SERVER_KEY']
        | default(lookup('env', 'HERMES_API_SERVER_KEY'), true)
+       | default('', true) }}
+  # The private identity's own domain first. If that domain was not fetched to
+  # this converge, fall back to the shared bearer it was always sent, so it stays
+  # rendered exactly as before rather than dropping out of the router.
+  hermes-private: >-
+    {{ ((openbao_secrets_by_domain | default({}, true)).get('hermes-private', {}))
+         .get('HERMES_PRIVATE_API_SERVER_KEY', '')
+       | default(lookup('env', 'HERMES_PRIVATE_API_SERVER_KEY'), true)
+       | default(bao_local_llm_secrets['HERMES_API_SERVER_KEY']
+                 | default(lookup('env', 'HERMES_API_SERVER_KEY'), true), true)
        | default('', true) }}
   donna: >-
     {{ ((openbao_secrets_by_domain | default({}, true)).get('donna', {})).get('DONNA_API_SERVER_KEY', '')
