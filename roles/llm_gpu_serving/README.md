@@ -32,6 +32,20 @@ mount point. Package, Python, Hugging Face, CUDA repository, and release
 downloads use the published inventory's `cache_proxy_urls.apt_cache` list; a
 missing list blocks the converge before upstream fetches.
 
+```sh
+ansible-galaxy install -r requirements.yml
+```
+
+## Usage
+
+The legacy group's serving play runs this role, one guest at a time. A scoped
+converge names the group and `localhost`, as the inventory loader needs:
+
+```sh
+scripts/run-ansible.sh playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.yml \
+  --tags llm_gpu_serving --limit llm_gpu_legacy_group,localhost
+```
+
 ## What it does
 
 - Installs the NVIDIA userspace (`libcuda1`, `nvidia-driver-cuda` for `nvidia-smi`)
