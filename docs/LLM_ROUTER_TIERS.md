@@ -22,7 +22,7 @@ request that fails surfaces the error rather than silently degrading to a small 
 The GPU router candidates stay disabled and unservable in
 `llm-models.d/60-gpu.yml`. Engine profiles remain available for an
 explicit engine selection; only the inventory-selected profile is activated.
-For the router pool, `inventory/group_vars/llm_router_group.yml` sets
+For the router pool, `inventory/group_vars/all.yml` sets
 `llm_router_gpu_profiles_enabled` to true exactly when `llm_gpu_group` has a
 host, and only the active profile (`llm_active_profile`) is projected.
 `playbooks/llm-serving.yml` converges that guest with the `llm_gpu_serving` tag
