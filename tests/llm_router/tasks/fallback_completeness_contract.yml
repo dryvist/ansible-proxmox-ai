@@ -1,0 +1,124 @@
+---
+# The fallback-completeness contract over a parsed proxy render. Needs `_config`
+# (the parsed config.yaml) and `llm_router_role_deployments` in scope; imported
+# by ../test_fallback_completeness.yml after tasks/credentialed_render.yml.
+#
+# A name's rungs resolve the way litellm's get_fallback_model_group does: an
+# exact key in router_settings.fallbacks wins even when empty; a seeded role
+# with no key uses the order tasks/seed-roles.yml posts (rungs the proxy does
+# not serve dropped); anything else walks default_fallbacks. Wildcard groups
+# (`*`, `provider/*`) advertise no window, so (b) has nothing to compare them
+# against and skips them as a PRIMARY; a rung with no window is still flagged.
+
+- name: Resolve every routable name to its rungs and context windows
+  ansible.builtin.set_fact:
+    _routing: >-
+      {%- set rs = _config.router_settings -%}
+      {%- set aliases = rs.model_group_alias | default({}) -%}
+      {%- set ns = namespace(win={}, fb={}, cwf={}, seeded={}) -%}
+      {%- for d in _config.model_list -%}
+      {%- set w = (d.model_info | default({})).max_input_tokens | default(none) -%}
+      {%- set prev = ns.win.get(d.model_name, none) -%}
+      {%- if w is not none and (prev is none or (w | int) > prev) -%}
+      {%- set _ = ns.win.update({d.model_name: w | int}) -%}
+      {%- elif d.model_name not in ns.win -%}
+      {%- set _ = ns.win.update({d.model_name: none}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set groups = ns.win | list -%}
+      {%- for entry in rs.fallbacks | default([]) -%}
+      {%- for k, v in entry.items() if k not in ns.fb -%}
+      {%- set _ = ns.fb.update({k: v}) -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {%- for entry in rs.context_window_fallbacks | default([]) -%}
+      {%- for k, v in entry.items() if k not in ns.cwf -%}
+      {%- set _ = ns.cwf.update({k: v}) -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {%- for r in llm_router_role_deployments
+           if r.role not in groups and r.role not in aliases and r.model in groups -%}
+      {%- set _ = ns.seeded.update({r.role: r}) -%}
+      {%- endfor -%}
+      {%- set served = groups + (ns.seeded | list) -%}
+      {%- set ns2 = namespace(win=ns.win) -%}
+      {%- for role, r in ns.seeded.items() -%}
+      {%- set _ = ns2.win.update({role: ns.win[r.model]}) -%}
+      {%- endfor -%}
+      {%- set names = (groups + (aliases | list) + (aliases.values() | list) + (ns.seeded | list)) | unique | list -%}
+      {%- set out = namespace(rungs={}, primary_win={}) -%}
+      {%- for n in names -%}
+      {%- if n in ns.fb -%}
+      {%- set chain = ns.fb[n] -%}
+      {%- elif n in ns.seeded and (ns.seeded[n].fallbacks | select('in', served) | list | length > 0) -%}
+      {%- set chain = ns.seeded[n].fallbacks | select('in', served) | list -%}
+      {%- elif '*' in ns.fb -%}
+      {%- set chain = ns.fb['*'] -%}
+      {%- else -%}
+      {%- set chain = rs.default_fallbacks | default([]) -%}
+      {%- endif -%}
+      {%- set _ = out.rungs.update({n: {'general': chain, 'context_window': ns.cwf.get(n, [])}}) -%}
+      {%- set _ = out.primary_win.update({n: ns2.win.get(aliases.get(n, n), none)}) -%}
+      {%- endfor -%}
+      {{ {'groups': groups, 'aliases': aliases, 'served': served, 'names': names,
+          'seeded': ns.seeded | list, 'win': ns2.win, 'fb_keys': ns.fb | list,
+          'default': rs.default_fallbacks | default([]),
+          'rungs': out.rungs, 'primary_win': out.primary_win} }}
+
+- name: Collect the violations of each contract
+  ansible.builtin.set_fact:
+    _no_rung: >-
+      {{ _routing.rungs | dict2items
+         | selectattr('value.general', 'equalto', []) | map(attribute='key') | sort }}
+    _narrower: >-
+      {%- set ns = namespace(bad=[]) -%}
+      {%- for n, r in _routing.rungs.items() -%}
+      {%- set pw = _routing.primary_win[n] -%}
+      {%- for rung in (r.general + r.context_window) | unique -%}
+      {%- set rw = _routing.win.get(_routing.aliases.get(rung, rung), none) -%}
+      {%- if rung in _routing.served or rung in _routing.aliases -%}
+      {%- if pw is not none and (rw is none or (rw | int) < (pw | int)) -%}
+      {%- set ns.bad = ns.bad + [n ~ ' (' ~ pw ~ ') -> ' ~ rung ~ ' (' ~ rw ~ ')'] -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.bad | unique | sort }}
+    _dangling: >-
+      {%- set ns = namespace(bad=[]) -%}
+      {%- for n, r in _routing.rungs.items() -%}
+      {%- for rung in (r.general + r.context_window) | unique if rung not in _routing.served -%}
+      {%- set ns.bad = ns.bad + [n ~ ' -> ' ~ rung] -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.bad | unique | sort }}
+
+- name: Every routable name has a served, no-narrower fallback rung
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      # ANTI-VACUITY: a render with no groups, aliases, chains or default
+      # ladder would pass every subset check below over nothing.
+      - _routing.groups | length > 1
+      - _routing.aliases | length > 0
+      - _routing.fb_keys | length > 0
+      - _routing.default | length > 0
+      - _routing.win | dict2items | rejectattr('value', 'none') | list | length > 0
+      # THE CONTRACTS.
+      - _no_rung | length == 0
+      - _narrower | length == 0
+      - _dangling | length == 0
+    fail_msg: >-
+      (a) {{ _no_rung | length }} routable name(s) with NO fallback rung
+      (an exact empty key, or no key and no default ladder), so a single
+      failed deployment fails the call completely: {{ _no_rung }}.
+      (b) {{ _narrower | length }} rung(s) narrower than, or with no
+      advertised window against, the name they back, as
+      'name (window) -> rung (window)': {{ _narrower }}.
+      (c) {{ _dangling | length }} rung(s) naming no served model group:
+      {{ _dangling }}.
+    success_msg: >-
+      All {{ _routing.names | length }} routable names
+      ({{ _routing.groups | length }} groups, {{ _routing.aliases | length }}
+      aliases, {{ _routing.seeded | length }} seeded roles) carry at least
+      one served rung no narrower than themselves.
