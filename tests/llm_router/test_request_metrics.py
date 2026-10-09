@@ -218,13 +218,20 @@ def test_caller_session_and_attribution_survive_defaults(module):
 
 
 @pytest.mark.parametrize("key_metadata", [None, {}, {"trace_defaults": {}}])
-def test_unseeded_contract_rejects_unlabeled_inference(module, key_metadata):
-    data = {"model": "test-target"}
-    with pytest.raises(module["HTTPException"]) as exc:
-        module["apply_trace_contract"](data, key_metadata)
-    assert exc.value.status_code == 400
-    assert exc.value.detail == "Missing consumer trace defaults"
-    assert data == {"model": "test-target"}
+def test_unseeded_key_gets_unattributed_defaults(module, key_metadata):
+    result = module["apply_trace_contract"]({"model": "test-target"}, key_metadata)
+    metadata = result["metadata"]
+    assert result["model"] == "test-target"
+    assert metadata["client"] == metadata["runner"] == metadata["purpose"] == "unattributed"
+    assert metadata["requester_metadata"]["purpose"] == "unattributed"
+    assert result["user"] == "unattributed"
+    assert metadata["session_id"]
+
+
+def test_unseeded_key_fallback_client_is_key_alias(module):
+    result = module["apply_trace_contract"]({"model": "test-target"}, None, key_alias="langgraph")
+    assert result["metadata"]["client"] == "langgraph"
+    assert result["user"] == "langgraph"
 
 
 def test_blank_identity_fields_fill_and_tools_reach_carriers(module):
