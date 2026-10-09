@@ -220,8 +220,7 @@ def select(paths: list[str]) -> dict[str, object]:
         elif path == "renovate.json":
             run_selector_checks = True
         elif path.startswith(("inventory/", "group_vars/", "host_vars/", "playbooks/")) or path == "requirements.yml":
-            run_inventory = True
-            run_selector_checks = True
+            route_full = True  # every role and router playbook reads these files
         elif path == ".github/workflows/_llm-router-contract.yml":
             role_scope("llm_router")
             run_selector_checks = True

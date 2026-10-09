@@ -223,6 +223,20 @@ def test_registry_selects_all_consumers_without_global_pytest() -> None:
     assert "tests/nvidia_gpu_guest/test_cache_only_sync.yml" in selection["ansible_tests"]
 
 
+@pytest.mark.parametrize("path", [
+    "inventory/group_vars/all.yml", "group_vars/all.yml", "host_vars/example.yml",
+    "playbooks/site.yml", "requirements.yml",
+])
+def test_inventory_and_playbook_edits_route_to_full_suite(path: str) -> None:
+    result = run_selector(path)
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    full = json.loads(run_selector("--full").stdout)
+    assert selection["pytest_targets"] == ["tests/"]
+    assert set(selection["llm_router_playbooks"]) == set(full["llm_router_playbooks"])
+
+
 @pytest.mark.parametrize(("event", "ref", "base", "expected_full"), [
     ("pull_request", "refs/pull/1/merge", "main", True),
     ("pull_request", "refs/pull/1/merge", "develop", False),
