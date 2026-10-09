@@ -335,3 +335,16 @@ def test_nix_installs_whenever_the_agent_guest_test_runs() -> None:
     agent_guest = next(step for step in steps
                        if step.get("name") == "Verify agent_guest residual deny contract")
     assert nix["if"] == agent_guest["if"]
+
+
+def test_report_step_reads_no_unused_selection_env() -> None:
+    steps = yaml.safe_load(CI_GATE.read_text())["jobs"]["contract-scope"]["steps"]
+    report = next(step for step in steps if step.get("name") == "Report the selected contract scope")
+    assert "SELECTED" not in report["env"]
+
+
+def test_ci_gate_header_names_the_contract_scope_gate() -> None:
+    lines = CI_GATE.read_text().splitlines()
+    header = "\n".join(lines[: lines.index("name: CI Gate")])
+    assert "contract-scope" in header
+    assert "All local jobs" not in header
