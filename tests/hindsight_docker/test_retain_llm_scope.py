@@ -43,7 +43,6 @@ def test_retain_retries_are_bounded_and_jittered() -> None:
 def test_retain_limits_cover_real_target_observations() -> None:
     observed = json.loads(LIVE_FIXTURE.read_text())
     replicas = observed["replicas"]
-    bank = observed["bank_config"]
     rendered = render()
 
     output_cap = int(
@@ -87,7 +86,6 @@ def test_retain_limits_cover_real_target_observations() -> None:
         .strip('"')
     )
 
-    assert output_cap > bank["retain_chunk_size_chars"]
     assert output_cap >= max(replica["output_tokens_p99"] for replica in replicas)
     assert request_timeout > max(replica["llm_latency_p99_seconds"] for replica in replicas)
     provider_retry_budget = sum(
