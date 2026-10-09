@@ -24,6 +24,9 @@
     hermes_ui_docker_workspace_hermes_api_url: "http://127.0.0.1:9"
     hermes_ui_docker_workspace_hermes_dashboard_url: "http://127.0.0.1:9"
     hermes_ui_docker_mission_control_allowed_hosts: "localhost,127.0.0.1"
+    # The runner builds and saves mission-control (see _molecule.yml); compose
+    # uses the image loaded below instead of building it in this instance.
+    hermes_ui_docker_mission_control_build_policy: never
 
   tasks:
     - name: Bootstrap Docker (same role the hermes_ui_docker meta dependency uses)
@@ -32,6 +35,37 @@
       vars:
         docker_engine_configure_daemon_json: true
         docker_engine_storage_driver: fuse-overlayfs
+
+    - name: Check whether the mission-control image is already loaded
+      ansible.builtin.command: docker image inspect homelab/mission-control:local
+      register: hermes_ui_molecule_mc_image
+      changed_when: false
+      failed_when: false
+
+    - name: Require the runner-built mission-control tarball path
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'HERMES_UI_MISSION_CONTROL_IMAGE_TAR') | length > 0
+        fail_msg: HERMES_UI_MISSION_CONTROL_IMAGE_TAR must name the saved mission-control image.
+      when: hermes_ui_molecule_mc_image.rc != 0
+
+    - name: Copy the runner-built mission-control image into the instance
+      ansible.builtin.copy:
+        src: "{{ lookup('env', 'HERMES_UI_MISSION_CONTROL_IMAGE_TAR') }}"
+        dest: /var/tmp/mission-control-image.tar
+        mode: "0600"
+      when: hermes_ui_molecule_mc_image.rc != 0
+
+    - name: Load the mission-control image into the instance's Docker daemon
+      ansible.builtin.command: docker load --input /var/tmp/mission-control-image.tar
+      changed_when: true
+      when: hermes_ui_molecule_mc_image.rc != 0
+
+    - name: Remove the mission-control tarball from the instance
+      ansible.builtin.file:
+        path: /var/tmp/mission-control-image.tar
+        state: absent
+      when: hermes_ui_molecule_mc_image.rc != 0
 
     - name: Converge hermes-ui with container-log capture on failure
       block:
