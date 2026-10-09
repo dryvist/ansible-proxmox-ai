@@ -203,10 +203,12 @@ jobs:
           fi
           printf 'Data Contract selection: %s\n' "$selection" >> "$GITHUB_STEP_SUMMARY"
 
+  # Push events skip the contract and Molecule jobs; pull requests run them.
   data-contract:
     name: Data Contract
     needs: contract-scope
     if: >-
+      github.event_name != 'push' &&
       always() &&
       (
         needs.contract-scope.result == 'success' &&
@@ -230,21 +232,19 @@ jobs:
     name: Molecule
     needs: ci
     if: >-
+      github.event_name == 'pull_request' &&
       (
-        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        needs.ci.outputs.molecule == 'true' ||
-        github.event.pull_request.base.ref == 'main'
+        github.event.pull_request.base.ref == 'main' ||
+        needs.ci.outputs.molecule == 'true'
       ) &&
       (
-        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         github.event.pull_request.base.ref == 'main' ||
         needs.ci.outputs.molecule_scenarios != '[]'
       )
     uses: ./.github/workflows/_molecule.yml
     with:
       scenarios: ${{ needs.ci.outputs.molecule_scenarios }}
-      full_suite: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        github.event.pull_request.base.ref == 'main' }}
+      full_suite: ${{ github.event.pull_request.base.ref == 'main' }}
     secrets: inherit
 
   # Deliberately UNCONDITIONAL — no `needs: ci`, no change filter. A version
@@ -295,6 +295,6 @@ jobs:
           CI_GATE_ALLOWED_SKIPS: >-
             ${{ ((github.event_name == 'pull_request' &&
             github.event.pull_request.base.ref != 'main') ||
-            (github.event_name == 'push' && github.ref == 'refs/heads/develop')) &&
+            github.event_name == 'push') &&
             'data-contract, molecule' || '' }}
         run: node .gh-shared/scripts/ci-gate-aggregate.mts

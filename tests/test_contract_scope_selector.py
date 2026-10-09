@@ -167,7 +167,6 @@ def test_full_suite_covers_main_pushes_and_promotion_prs() -> None:
     assert "inputs.full_suite && steps.find.outputs.scenarios" in (
         CI_GATE.parents[0] / "_molecule.yml"
     ).read_text()
-    assert "github.event_name == 'push' && github.ref == 'refs/heads/develop'" in workflow
     matrix_edit = json.loads(run_selector(".github/workflows/_llm-router-contract.yml").stdout)
     full = json.loads(run_selector("--full").stdout)
     assert matrix_edit["run_selector_checks"]
@@ -270,10 +269,10 @@ def test_actual_scope_step_dispatches_full_or_focused(
 @pytest.mark.parametrize(("event", "ref", "base", "allows_skips"), [
     ("pull_request", "refs/pull/1/merge", "main", False),
     ("pull_request", "refs/pull/1/merge", "develop", True),
-    ("push", "refs/heads/main", "", False),
+    ("push", "refs/heads/main", "", True),
     ("push", "refs/heads/develop", "", True),
 ])
-def test_actual_gate_policy_requires_full_main_results(
+def test_actual_gate_policy_allows_skips_only_for_focused_and_push_runs(
     event: str, ref: str, base: str, allows_skips: bool,
 ) -> None:
     gate = yaml.safe_load(CI_GATE.read_text())["jobs"]["gate"]
@@ -487,6 +486,15 @@ def test_otel_mapping_is_inert_while_the_test_file_is_absent(tmp_path: Path) -> 
 
     assert result.returncode == 0, result.stderr
     assert OTEL_TEST not in json.loads(result.stdout)["pytest_targets"]
+
+
+@pytest.mark.parametrize(("job", "guard"), [
+    ("data-contract", "github.event_name != 'push'"),
+    ("molecule", "github.event_name == 'pull_request'"),
+])
+def test_push_events_skip_the_contract_and_molecule_jobs(job: str, guard: str) -> None:
+    condition = yaml.safe_load(CI_GATE.read_text())["jobs"][job]["if"]
+    assert guard in condition
 
 
 @pytest.mark.parametrize("path", sorted(WORKFLOWS.glob("*.yml")), ids=lambda path: path.name)
