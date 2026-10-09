@@ -72,10 +72,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r .github/requirements-ci.txt
 
-      # Cache Galaxy content keyed on requirements.yml; the install verifies
-      # restored dependencies and installs any that are missing.
-      # Same key/paths as dryvist/.github's _ansible-ci.yml so a warm run of
-      # either workflow warms the other.
+      # Same key, restore-keys, paths and install-on-miss logic as
+      # dryvist/.github's _ansible-ci.yml, so a warm run of either warms the other.
       - name: Cache Ansible Galaxy content
         id: galaxy-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -83,11 +81,20 @@ jobs:
           path: |
             ~/.ansible/collections
             ~/.ansible/roles
-          key: ansible-galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
-
-      - name: Install Ansible dependencies
-        run: |
-          ansible-galaxy install -r requirements.yml
+          key: ansible-galaxy-v2-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+          # A branch that edits requirements.yml gets a new key. A partial
+          # restore keeps unchanged dependencies warm; the explicit install
+          # below force-reconciles restored content against the current pins.
+          restore-keys: |
+            ansible-galaxy-v2-${{ runner.os }}-
+      - name: Install Ansible collections
+        if: steps.galaxy-cache.outputs.cache-hit != 'true'
+        run: ansible-galaxy collection install -r requirements.yml --force
+      - name: Install Ansible roles
+        if: steps.galaxy-cache.outputs.cache-hit != 'true'
+        run: ansible-galaxy role install -r requirements.yml --force -p "$HOME/.ansible/roles"
+      - name: Set Ansible roles path
+        run: echo "ANSIBLE_ROLES_PATH=$GITHUB_WORKSPACE/roles:$HOME/.ansible/roles" >> "$GITHUB_ENV"
 
       - name: Syntax check playbooks
         run: |
@@ -338,13 +345,11 @@ jobs:
 
       # load_tofu.yml (imported by verify_inventory.yml) include_role's the
       # shared inventory_resolve role by FQCN, so this run is what proves the
-      # collection actually resolves it. `install` covers both sections of
-      # requirements.yml — `collection install` and `role install` each silently
-      # ignore the other section and still exit zero.
-      # Cache Galaxy content keyed on requirements.yml; the install verifies
-      # restored dependencies and installs any that are missing.
-      # Same key/paths as dryvist/.github's _ansible-ci.yml so a warm run of
-      # either workflow warms the other.
+      # collection actually resolves it. The collection and role installs below
+      # together cover both sections of requirements.yml — each alone silently
+      # ignores the other section and still exits zero.
+      # Same key, restore-keys, paths and install-on-miss logic as
+      # dryvist/.github's _ansible-ci.yml, so a warm run of either warms the other.
       - name: Cache Ansible Galaxy content
         id: galaxy-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -352,11 +357,20 @@ jobs:
           path: |
             ~/.ansible/collections
             ~/.ansible/roles
-          key: ansible-galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
-
-      - name: Install Ansible dependencies
-        run: |
-          ansible-galaxy install -r requirements.yml
+          key: ansible-galaxy-v2-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+          # A branch that edits requirements.yml gets a new key. A partial
+          # restore keeps unchanged dependencies warm; the explicit install
+          # below force-reconciles restored content against the current pins.
+          restore-keys: |
+            ansible-galaxy-v2-${{ runner.os }}-
+      - name: Install Ansible collections
+        if: steps.galaxy-cache.outputs.cache-hit != 'true'
+        run: ansible-galaxy collection install -r requirements.yml --force
+      - name: Install Ansible roles
+        if: steps.galaxy-cache.outputs.cache-hit != 'true'
+        run: ansible-galaxy role install -r requirements.yml --force -p "$HOME/.ansible/roles"
+      - name: Set Ansible roles path
+        run: echo "ANSIBLE_ROLES_PATH=$GITHUB_WORKSPACE/roles:$HOME/.ansible/roles" >> "$GITHUB_ENV"
 
       - name: Verify inventory loads and groups are assigned correctly
         run: |

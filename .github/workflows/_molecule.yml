@@ -84,9 +84,9 @@ jobs:
             netaddr \
             ansible-lint
 
-      # Cache Galaxy content keyed on requirements.yml, using the v2 key and
-      # paths of dryvist/.github's _ansible-ci.yml so a warm run of either
-      # workflow warms the other. The install runs only on a miss.
+      # Cache Galaxy content keyed on requirements.yml. On a hit the collections
+      # and roles are already present, so the forced reinstalls below are skipped;
+      # on a miss (requirements.yml changed) they run and repopulate the cache.
       - name: Cache Ansible Galaxy content
         id: galaxy-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -95,10 +95,17 @@ jobs:
             ~/.ansible/collections
             ~/.ansible/roles
           key: ansible-galaxy-v2-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
-
       - name: Install Ansible collections
         if: steps.galaxy-cache.outputs.cache-hit != 'true'
-        run: ansible-galaxy install -r requirements.yml
+        run: ansible-galaxy collection install -r requirements.yml --force
+      # `collection install` ignores a `roles:` key, so any role a repo pins in
+      # requirements.yml (e.g. splunk.splunk, the shared inventory_resolve) was
+      # never installed. Skips cleanly when the file has no `roles:` entries.
+      - name: Install Ansible roles
+        if: steps.galaxy-cache.outputs.cache-hit != 'true'
+        run: ansible-galaxy role install -r requirements.yml --force -p "$HOME/.ansible/roles"
+      - name: Set Ansible roles path
+        run: echo "ANSIBLE_ROLES_PATH=$GITHUB_WORKSPACE/roles:$HOME/.ansible/roles" >> "$GITHUB_ENV"
 
       # agent_guest's converge play does `nix eval` delegate_to: localhost
       # (roles/agent_guest/tasks/policy.yml) — it evaluates the pinned
