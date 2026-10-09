@@ -98,12 +98,24 @@ def llm_router_matrix() -> list[list[str]]:
     return entries
 
 
+def full_selection() -> dict[str, object]:
+    return {
+        "pytest_targets": ["tests/"],
+        "ansible_tests": sorted(ANSIBLE_TESTS),
+        "llm_router_playbooks": [" ".join(entry) for entry in llm_router_matrix()],
+        "run_inventory": True,
+        "run_selector_checks": True,
+        "unknown": [],
+    }
+
+
 def select(paths: list[str]) -> dict[str, object]:
     pytest_targets: set[str] = set()
     ansible_tests: set[str] = set()
     router_tests: set[str] = set()
     run_inventory = False
     run_selector_checks = False
+    route_full = False
     unknown: list[str] = []
     matrix = llm_router_matrix()
     matrix_by_test = {test: entry for entry in matrix for test in entry}
@@ -135,7 +147,8 @@ def select(paths: list[str]) -> dict[str, object]:
                         "tests/inventory_load/test_ssh_probe_result_selection.yml"}:
                 run_inventory = True
                 continue
-            if owner in TEST_SCOPES and ("fixtures" in parts or "tasks" in parts
+            removed = not Path(path).exists()
+            if owner in TEST_SCOPES and (removed or "fixtures" in parts or "tasks" in parts
                                         or Path(path).name.startswith("_")):
                 if owner == "llm_router":
                     role_scope(owner)
@@ -149,6 +162,10 @@ def select(paths: list[str]) -> dict[str, object]:
                     if owner not in {"dify_docker", "phoenix_docker"}:
                         pytest_targets.add(f"tests/{owner}/")
                     ansible_tests.update(test for test in ANSIBLE_TESTS if test.startswith(f"tests/{owner}/"))
+                continue
+            if removed:
+                # Nothing is left to run. The owner scope above, or the manifest
+                # edit that dropped the file, selects what the removal affects.
                 continue
             if path.startswith("tests/llm_router/") and path.endswith((".yml", ".yaml")):
                 if path not in matrix_by_test:
@@ -171,7 +188,7 @@ def select(paths: list[str]) -> dict[str, object]:
             if role in ROLE_TESTS or role == "llm_router":
                 role_scope(role)
             else:
-                unknown.append(raw_path)
+                route_full = True  # unmapped role: no contract family to narrow to
         elif path.startswith("llm-models.d/"):
             role_scope("llm_router")
             pytest_targets.update(GPU_PYTEST | {"tests/llm_model_campaign/", "tests/hermes_agent/"})
@@ -206,17 +223,18 @@ def select(paths: list[str]) -> dict[str, object]:
         elif path.lower().endswith((".md", ".mdx", ".txt")) or path.startswith("docs/"):
             continue
         else:
-            unknown.append(raw_path)
+            route_full = True  # unmapped root file: no narrower scope is known
 
-    return {
+    result = full_selection() if route_full else {
         "pytest_targets": sorted(pytest_targets),
         "ansible_tests": sorted(ansible_tests),
         "llm_router_playbooks": [" ".join(entry) for entry in matrix
                                  if " ".join(entry) in router_tests],
         "run_inventory": run_inventory,
         "run_selector_checks": run_selector_checks,
-        "unknown": sorted(set(unknown)),
     }
+    result["unknown"] = sorted(set(unknown))
+    return result
 
 
 def main() -> int:
@@ -227,14 +245,7 @@ def main() -> int:
     parser.add_argument("--full", action="store_true")
     args = parser.parse_args()
     if args.full:
-        result = {
-            "pytest_targets": ["tests/"],
-            "ansible_tests": [],
-            "llm_router_playbooks": [" ".join(entry) for entry in llm_router_matrix()],
-            "run_inventory": True,
-            "run_selector_checks": True,
-            "unknown": [],
-        }
+        result = full_selection()
     else:
         paths = args.paths
         if args.paths_file:

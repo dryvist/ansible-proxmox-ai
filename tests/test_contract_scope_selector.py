@@ -56,11 +56,14 @@ def test_changed_router_playbook_selects_only_its_playbook() -> None:
     ]
 
 
-def test_unmapped_role_fails_fast() -> None:
-    result = run_selector("roles/unmapped_role/tasks/main.yml")
+@pytest.mark.parametrize("path", [
+    "roles/unmapped_role/tasks/main.yml", "roles/ollama/tasks/main.yml", "pyproject.toml",
+])
+def test_unmapped_paths_route_to_full_suite(path: str) -> None:
+    result = run_selector(path)
 
-    assert result.returncode == 2
-    assert "Unmapped contract paths" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["pytest_targets"] == ["tests/"]
 
 
 def test_llm_router_role_paths_select_the_complete_router_contract() -> None:
@@ -73,11 +76,35 @@ def test_llm_router_role_paths_select_the_complete_router_contract() -> None:
     assert {"tests/llm_gpu_engine_roles/", "tests/hermes_agent/"} <= set(selection["pytest_targets"])
 
 
-def test_unmapped_yaml_contract_fails_fast() -> None:
-    result = run_selector("tests/phoenix_docker/unmapped-contract.yml")
+def test_unmapped_yaml_contract_fails_fast(tmp_path: Path) -> None:
+    contract = tmp_path / "tests/phoenix_docker/unmapped-contract.yml"
+    contract.parent.mkdir(parents=True)
+    contract.write_text("---\n[]\n")
+    workflows = tmp_path / ".github/workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "_llm-router-contract.yml").write_text(
+        (CI_GATE.parent / "_llm-router-contract.yml").read_text())
+    result = subprocess.run(
+        [sys.executable, str(SELECTOR), "tests/phoenix_docker/unmapped-contract.yml"],
+        check=False, capture_output=True, text=True, cwd=tmp_path,
+    )
 
     assert result.returncode == 2
     assert "Unmapped contract paths" in result.stderr
+
+
+def test_removed_test_file_selects_its_owner_scope() -> None:
+    result = run_selector("tests/hermes_agent/test_removed_contract.py")
+
+    assert result.returncode == 0, result.stderr
+    assert "tests/hermes_agent/" in json.loads(result.stdout)["pytest_targets"]
+
+
+def test_removed_unowned_test_file_is_accepted() -> None:
+    result = run_selector("tests/test_removed_contract.py")
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["pytest_targets"] == []
 
 
 def test_changed_python_test_selects_only_that_file() -> None:
