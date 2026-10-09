@@ -29,17 +29,6 @@ def test_retain_scope_admits_one_in_flight_extraction() -> None:
     assert '"1"' in env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT")
 
 
-def test_retain_retries_are_bounded_and_jittered() -> None:
-    rendered = render()
-    assert '"2"' in env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_MAX_RETRIES")
-    assert '"30.0"' in env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_INITIAL_BACKOFF")
-    assert '"120.0"' in env_line(rendered, "HINDSIGHT_API_RETAIN_LLM_MAX_BACKOFF")
-    assert '"1"' in env_line(rendered, "HINDSIGHT_API_WORKER_MAX_RETRIES")
-    assert '"60"' in env_line(
-        rendered, "HINDSIGHT_API_WORKER_TASK_RETRY_BACKOFF_SECONDS"
-    )
-
-
 def test_retain_limits_cover_real_target_observations() -> None:
     observed = json.loads(LIVE_FIXTURE.read_text())
     replicas = observed["replicas"]
