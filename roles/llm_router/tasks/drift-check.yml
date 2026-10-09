@@ -71,6 +71,29 @@
       register: _llm_router_drift_rendered_config
       no_log: true
 
+    - name: Read the live model deployments for the role report
+      ansible.builtin.import_tasks: read-model-rows.yml
+
+    # Roles are Admin-UI owned once seeded (55-roles.yml), so role drift is
+    # reported here and never reverted or alerted.
+    - name: Read the live fallback order of each declared role
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ llm_router_api_port }}/fallback/{{ item.role }}?fallback_type=general"
+        headers:
+          Authorization: "Bearer {{ llm_router_master_key }}"
+        status_code: [200, 404]
+        timeout: "{{ llm_router_seed_request_timeout }}"
+      loop: "{{ _llm_router_drift_live_roles }}"
+      loop_control:
+        label: "{{ item.role }}"
+      register: _llm_router_drift_role_fallbacks
+      no_log: true
+
+    - name: Report each live role that differs from its seed
+      ansible.builtin.debug:
+        msg: "{{ _llm_router_drift_role_report }}"
+      when: _llm_router_drift_role_report | length > 0
+
     - name: Project the live key records
       ansible.builtin.import_tasks: drift-live-keys.yml
 
