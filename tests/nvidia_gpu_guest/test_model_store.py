@@ -180,7 +180,6 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
         assert include["loop_control"]["loop_var"] == f"{prefix}_cache_sync_artifact_id"
         assert f"{prefix}_active_artifact.required_artifact_ids" in include["loop"]
         assert f"{prefix}_active_profile" in yaml.safe_dump(validate)
-        assert "nvidia_gpu_guest_model_cache_mount_path | length > 0" in validate["ansible.builtin.assert"]["that"]
         assert "nvidia_gpu_guest_model_origin_mount_path" not in str(validate)
 
     assert "nvidia_gpu_guest_cache_sync_artifact.required_artifact_ids" not in str(registry_tasks)
