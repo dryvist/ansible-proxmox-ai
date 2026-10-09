@@ -15,6 +15,7 @@ from pathlib import Path
 
 SELECTOR = Path(__file__).parents[1] / ".github/scripts/select-contract-scope.py"
 CI_GATE = Path(__file__).parents[1] / ".github/workflows/ci-gate.yml"
+WORKFLOWS = Path(__file__).parents[1] / ".github/workflows"
 
 
 def run_selector(*paths: str) -> subprocess.CompletedProcess[str]:
@@ -305,3 +306,9 @@ def test_changed_router_groups_follow_manifest_order_not_path_order() -> None:
     result = run_selector(*(group.split()[0] for group in reversed(chosen)))
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["llm_router_playbooks"] == chosen
+
+
+def test_agent_ci_fix_runs_only_for_pull_request_ci_gate_runs() -> None:
+    job = yaml.safe_load((WORKFLOWS / "agent-ci-fix.yml").read_text())["jobs"]["ci-fix"]
+    assert "vars.AI_AGENT_CI_FIX_ENABLED == 'true'" in job["if"]
+    assert "github.event.workflow_run.event == 'pull_request'" in job["if"]
