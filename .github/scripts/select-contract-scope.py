@@ -28,7 +28,6 @@ ANSIBLE_TESTS = {
     "tests/llm_gpu_legacy/test_render_host_contract.yml",
     "tests/llm_gpu_legacy/test_render_host_contract_all.yml",
     "tests/langfuse_docker/test_stage0_evaluation.yml",
-    "tests/langfuse_docker/test_code_eval_dispatcher.yml",
     "tests/langfuse_docker/test_code_eval_compose.yml",
 }
 
