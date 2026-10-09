@@ -46,8 +46,9 @@ missing list blocks the converge before upstream fetches.
   package for SM120 kernel support in one uv command.
 - Installs the Renovate-pinned llama.cpp CUDA assets from the shared
   `llamacpp_release` contract only when the recorded asset changes.
-- Seeds `model_store: true` artifacts from the base registry, GLM, and NVFP4
-  sweep shards into the declared origin with immutable Hub revisions. The seed playbook
+- Seeds `model_store: true` artifacts from the base registry and NVFP4 sweep
+  shards into the declared origin with immutable Hub revisions. The GLM shard is
+  not seeded. The seed playbook
   checks for running GPU compute applications before each download and verifies
   every populated repository with Hub checksums.
 - Pulls the active profile's registered repository from the origin into the
