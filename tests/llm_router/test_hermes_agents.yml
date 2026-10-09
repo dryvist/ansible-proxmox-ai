@@ -47,6 +47,7 @@
     hermes_brain_model: hermes-default
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
+    ai_orchestration_otel_endpoint: "http://fixture-otel.example.invalid:4318"
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
@@ -81,10 +82,13 @@
     # renders — which is how a lowercase key name shipped and silently
     # published nothing: the converge stayed green and the agents never
     # appeared in any consumer's dropdown.
-    - name: Seed the shared agent bearer at its real field name
+    - name: Seed each agent's gateway key at its real field name on its own domain
       ansible.builtin.set_fact:
         bao_local_llm_secrets:
           HERMES_API_SERVER_KEY: test-hermes-server-key
+        openbao_secrets_by_domain:
+          donna:
+            DONNA_API_SERVER_KEY: donna-gateway-key
 
     - name: Re-bind role defaults so the bearer resolves from the store
       ansible.builtin.include_vars:
@@ -94,7 +98,7 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_hermes_agent_bearer == 'test-hermes-server-key'
+          - llm_router_hermes_identity_bearers.hermes == 'test-hermes-server-key'
         fail_msg: >-
           The bearer did not resolve from bao_local_llm_secrets. The key must be
           the LITERAL field name at secret/ai/hermes — openbao_secrets merges the
@@ -130,7 +134,7 @@
         that:
           - _by_name['hermes-agent'].litellm_params.api_base == tofu_data.hermes_agents['hermes-agent'].api_url
           - _by_name['hermes-donna'].litellm_params.api_base == tofu_data.hermes_agents['hermes-donna'].api_url
-          - _by_name['hermes-agent'].litellm_params.api_key == 'os.environ/HERMES_AGENT_BEARER_TOKEN'
+          - _by_name['hermes-agent'].litellm_params.api_key == 'os.environ/HERMES_AGENT_BEARER_TOKEN_HERMES'
         fail_msg: >-
           An agent deployment points at the wrong endpoint or has no
           credential. A crossed api_base answers as the WRONG agent, which is
@@ -163,3 +167,42 @@
           {{ _config.router_settings.fallbacks | default([])
              | map('dict2items') | map('map', attribute='value') | map('flatten')
              | flatten | list }}
+
+    # The bearer a deployment SENDS must be the key its OWN gateway CHECKS. The
+    # donna gateway authenticates with DONNA_API_SERVER_KEY from its own domain
+    # (hermes_agent_group 00-agent-settings.yml); a deployment that sends the
+    # shared default bearer answers 401 on selection. Checked on the rendered
+    # config and env file, so it fails on the wiring whatever the variable is
+    # named.
+    - name: Render the deployments and the env file the way the converge does
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _environment: "{{ lookup('template', _role_dir ~ '/templates/litellm.env.j2') }}"
+
+    - name: Each agent's deployment sends the key its own gateway checks
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _gateway_key['hermes-donna'] != _gateway_key['hermes-agent']
+          - _sent['hermes-agent'] == _gateway_key['hermes-agent']
+          - _sent['hermes-donna'] == _gateway_key['hermes-donna']
+        fail_msg: >-
+          A deployment sends a bearer its own gateway does not check. That agent
+          answers 401 on selection. Each deployment must send the key its
+          identity's gateway checks, not the shared default bearer.
+        success_msg: "Each agent's deployment sends the key its own gateway checks."
+      vars:
+        _gateway_key:
+          hermes-agent: "{{ bao_local_llm_secrets.HERMES_API_SERVER_KEY }}"
+          hermes-donna: "{{ openbao_secrets_by_domain.donna.DONNA_API_SERVER_KEY }}"
+        _by_name: >-
+          {{ dict(_config.model_list | map(attribute='model_name') | zip(_config.model_list)) }}
+        _env_values: >-
+          {{ dict(_environment | regex_findall('^(HERMES_AGENT_BEARER_TOKEN[A-Z_]*)=(.*)$', multiline=True)) }}
+        _sent:
+          hermes-agent: >-
+            {{ _env_values.get(_by_name['hermes-agent'].litellm_params.api_key
+               | regex_replace('^os.environ/', ''), '') }}
+          hermes-donna: >-
+            {{ _env_values.get(_by_name['hermes-donna'].litellm_params.api_key
+               | regex_replace('^os.environ/', ''), '') }}

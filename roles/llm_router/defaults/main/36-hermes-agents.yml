@@ -21,19 +21,34 @@
 # whole block away rather than failing — an older artifact must still converge.
 llm_router_hermes_agents: "{{ tofu_data.hermes_agents | default({}, true) }}"
 
-# Every agent's API server authenticates with the same bearer the hermes_agent
-# role writes as API_SERVER_KEY, so this is one credential rather than one per
-# agent. Sourced from OpenBao first, falling back to the environment, matching
-# how the other provider credentials in this role resolve.
+# Each agent's gateway checks the API_SERVER_KEY its OWN identity writes
+# (hermes_agent_group 00-agent-settings.yml). The default identity reads the
+# shared HERMES_API_SERVER_KEY field; every other identity reads
+# <IDENTITY>_API_SERVER_KEY from its own secret/ai/<identity> domain. So the
+# router keeps one bearer per identity: a deployment that sends another
+# identity's key answers 401 on selection.
 #
-# The key is the LITERAL field name at secret/ai/hermes. openbao_secrets merges
-# the KV subtree verbatim — nothing case-folds — so a lowercase key silently
-# misses, the bearer resolves empty, and the gate below renders every agent
-# away while the converge still reports changed=0.
-llm_router_hermes_agent_bearer: >-
-  {{ bao_local_llm_secrets['HERMES_API_SERVER_KEY']
-     | default(lookup('env', 'HERMES_API_SERVER_KEY'), true)
-     | default('', true) }}
+# Published agent (model name) -> identity. The published inventory carries no
+# identity, so it is named here. An agent with no entry gets no deployment
+# (fail closed) rather than being sent a key its gateway would reject.
+llm_router_hermes_agent_identities:
+  hermes-agent: hermes
+  hermes-donna: donna
+
+# Sourced from OpenBao first, falling back to the environment, matching how the
+# other provider credentials in this role resolve. The donna domain is fetched
+# only when its AppRole is supplied to the converge; otherwise the env fallback
+# applies. Field names are LITERAL: openbao_secrets merges the KV subtree
+# verbatim, so a lowercase key silently misses and that agent is not rendered.
+llm_router_hermes_identity_bearers:
+  hermes: >-
+    {{ bao_local_llm_secrets['HERMES_API_SERVER_KEY']
+       | default(lookup('env', 'HERMES_API_SERVER_KEY'), true)
+       | default('', true) }}
+  donna: >-
+    {{ ((openbao_secrets_by_domain | default({}, true)).get('donna', {})).get('DONNA_API_SERVER_KEY', '')
+       | default(lookup('env', 'DONNA_API_SERVER_KEY'), true)
+       | default('', true) }}
 
 # An agent is an agentic loop that shells tools and can chain many calls before
 # it answers, so it needs a far longer ceiling than a plain completion. This is
