@@ -68,23 +68,26 @@
 
     # POSITIVE: a GPU-tier rung is on-estate, not cloud. The estate tier list in
     # assert-egress.yml must carry `gpu`, or every GPU rung on an estate role
-    # reads as cloud. The GPU profile is inactive in this test, so enable the
-    # real medium-a entry the way the GPU profile does, then put it on judge.
+    # reads as cloud. A copy of the first GPU-tier registry entry, renamed to a
+    # fixture id, stands in for a real deployment so the test proves the tier,
+    # not a registry name.
     - name: A GPU-tier rung passes the estate assert
       block:
-        - name: Enable the medium-a GPU entry the way the GPU profile does
+        - name: Add a fixture GPU-tier registry entry
           ansible.builtin.set_fact:
             llm_router_registry_enabled: >-
               {{ llm_router_registry_enabled
-                 + (llm_router_model_registry
-                    | selectattr('client_model_id', 'equalto', 'gpu-medium-a')
-                    | map('combine', {'enabled': true, 'servable': true}) | list) }}
+                 + [llm_router_model_registry
+                    | selectattr('tier', 'equalto', 'gpu') | first
+                    | combine({'client_model_id': 'fixture-gpu-rung',
+                               'route_group': 'fixture-gpu-rung',
+                               'enabled': true, 'servable': true})] }}
 
-        - name: Put the GPU rung on the judge chain
+        - name: Put the fixture GPU rung on the judge chain
           ansible.builtin.set_fact:
             llm_router_role_deployments: >-
               {{ (llm_router_role_deployments | rejectattr('role', 'equalto', 'judge') | list)
-                 + [{'role': 'judge', 'model': llm_router_routine_model, 'fallbacks': ['gpu-medium-a']}] }}
+                 + [{'role': 'judge', 'model': llm_router_routine_model, 'fallbacks': ['fixture-gpu-rung']}] }}
 
         - name: Run the egress assert
           ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-egress.yml"
