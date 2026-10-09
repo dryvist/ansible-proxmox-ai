@@ -34,7 +34,6 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import HTTPException
-
 from litellm.integrations.custom_logger import CustomLogger
 
 
@@ -90,11 +89,11 @@ def build_record(kwargs, response_obj, start_time, end_time):
     return record
 
 
-def apply_trace_contract(data, key_metadata):
+def apply_trace_contract(data, key_metadata, key_alias=None):
     """Fill key defaults, preserve request attribution, and validate benchmarks."""
     defaults = (key_metadata or {}).get("trace_defaults") or {}
     if not defaults:
-        raise HTTPException(status_code=400, detail="Missing consumer trace defaults")
+        defaults = {"client": key_alias or "unattributed", "runner": "unattributed", "purpose": "unattributed"}
     slot = "litellm_metadata" if "litellm_metadata" in data else "metadata"
     metadata = data.setdefault(slot, {})
     request_attribution = {field: metadata.get(field) for field in ("runner", "purpose", "tier")}
@@ -136,7 +135,7 @@ class RequestMetrics(CustomLogger):
     enforces_request_content = True
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type: str):
-        return apply_trace_contract(data, user_api_key_dict.metadata)
+        return apply_trace_contract(data, user_api_key_dict.metadata, getattr(user_api_key_dict, "key_alias", None))
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         print(json.dumps(build_record(kwargs, response_obj, start_time, end_time)), flush=True)
