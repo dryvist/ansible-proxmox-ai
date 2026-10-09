@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+from base64 import b64encode
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -20,7 +22,8 @@ def _git(repo: Path, *args: str) -> str:
     ).strip()
 
 
-def test_installer_fix_uses_event_checkout_blob_after_branch_moves(tmp_path: Path) -> None:
+@pytest.mark.parametrize("branch_moves", [True, False], ids=["branch-moved", "branch-unchanged"])
+def test_installer_fix_uses_event_checkout_blob_after_branch_moves(tmp_path: Path, branch_moves: bool) -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text())
     steps = workflow["jobs"]["fix"]["steps"]
     checkout_step = next(step for step in steps if step.get("name") == "Checkout the PR branch")
@@ -50,10 +53,11 @@ def test_installer_fix_uses_event_checkout_blob_after_branch_moves(tmp_path: Pat
     event_head = _git(repo, "rev-parse", "HEAD")
     event_blob = _git(repo, "rev-parse", f"{event_head}:{INSTALLER_FILE}")
 
-    installer.write_text('hermes_agent_version: "2.0.0"\n')
-    _git(repo, "commit", "-am", "test: simulate concurrent branch update")
-    moved_branch_blob = _git(repo, "rev-parse", f"HEAD:{INSTALLER_FILE}")
-    assert moved_branch_blob != event_blob
+    if branch_moves:
+        installer.write_text('hermes_agent_version: "2.0.0"\n')
+        _git(repo, "commit", "-am", "test: simulate concurrent branch update")
+    branch_head_blob = _git(repo, "rev-parse", f"HEAD:{INSTALLER_FILE}")
+    assert (branch_head_blob != event_blob) is branch_moves
 
     # actions/checkout pins the event SHA, then the checksum step changes the
     # worktree file before the Contents API write.
@@ -65,7 +69,7 @@ def test_installer_fix_uses_event_checkout_blob_after_branch_moves(tmp_path: Pat
     )
     checked_out_blob = _git(repo, "rev-parse", f"HEAD:{INSTALLER_FILE}")
     branch_blob = _git(repo, "rev-parse", f"refs/heads/renovate/test:{INSTALLER_FILE}")
-    assert branch_blob == moved_branch_blob
+    assert branch_blob == branch_head_blob
     assert checked_out_blob == event_blob
 
     bin_dir = tmp_path / "bin"
@@ -139,7 +143,11 @@ printf '%s' "$content" > "$GH_STUB_WRITES"
         check=False,
     )
 
-    assert result.returncode != 0, result.stdout
-    assert "409 Conflict" in result.stderr
-    assert not writes.exists()
-    assert _git(repo, "rev-parse", f"refs/heads/renovate/test:{INSTALLER_FILE}") == moved_branch_blob
+    if branch_moves:
+        assert result.returncode != 0, result.stdout
+        assert "409 Conflict" in result.stderr
+        assert not writes.exists()
+        assert _git(repo, "rev-parse", f"refs/heads/renovate/test:{INSTALLER_FILE}") == branch_head_blob
+    else:
+        assert result.returncode == 0, result.stderr
+        assert writes.read_text() == b64encode(installer.read_bytes()).decode()
