@@ -62,6 +62,15 @@ def test_unmapped_role_fails_fast() -> None:
     assert "Unmapped contract paths" in result.stderr
 
 
+def test_release_back_merge_paths_need_no_contracts() -> None:
+    result = run_selector(".release-please-manifest.json", "CHANGELOG.md")
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    assert selection["pytest_targets"] == []
+    assert selection["llm_router_playbooks"] == []
+
+
 def test_llm_router_role_paths_select_the_complete_router_contract() -> None:
     result = run_selector("roles/llm_router/tasks/main.yml")
 
