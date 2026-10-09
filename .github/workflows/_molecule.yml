@@ -119,6 +119,62 @@ jobs:
         with:
           doppler-token: ${{ secrets.DOPPLER_TOKEN }}
 
+      # hermes_ui only: build mission-control on the runner from the repo, ref
+      # and build args the role itself uses, then save the image so the molecule
+      # run loads it instead of compiling it inside the test instance.
+      - name: Read mission-control build inputs from the hermes_ui role
+        id: mc-inputs
+        if: matrix.scenario == 'hermes_ui'
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import re
+          import sys
+
+          import yaml
+
+          defaults = yaml.safe_load(open("roles/hermes_ui_docker/defaults/main.yml"))
+          template = open("roles/hermes_ui_docker/templates/docker-compose.yml.j2").read()
+
+          image = re.search(r"^\s*image:\s*(homelab/mission-control:\S+)\s*$", template, re.M)
+          if image is None:
+              sys.exit("compose template has no homelab/mission-control image line")
+          for arg in ("MC_VERSION", "NEXT_PUBLIC_GATEWAY_OPTIONAL"):
+              if not re.search(rf"^\s*{arg}:", template, re.M):
+                  sys.exit(f"compose template no longer passes build arg {arg}")
+
+          print(f"repo={defaults['hermes_ui_docker_mission_control_repo']}")
+          print(f"ref={defaults['hermes_ui_docker_mission_control_ref']}")
+          print(f"gateway={defaults['hermes_ui_docker_mission_control_gateway_optional']}")
+          print(f"image={image.group(1)}")
+          PY
+
+      - name: Set up Docker Buildx
+        if: matrix.scenario == 'hermes_ui'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build mission-control on the runner
+        if: matrix.scenario == 'hermes_ui'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: "${{ steps.mc-inputs.outputs.repo }}#${{ steps.mc-inputs.outputs.ref }}"
+          tags: ${{ steps.mc-inputs.outputs.image }}
+          build-args: |
+            MC_VERSION=${{ steps.mc-inputs.outputs.ref }}
+            NEXT_PUBLIC_GATEWAY_OPTIONAL=${{ steps.mc-inputs.outputs.gateway }}
+          load: true
+          push: false
+          cache-from: type=gha,scope=mission-control
+          cache-to: type=gha,scope=mission-control,mode=max
+
+      - name: Save the mission-control image for the molecule run
+        if: matrix.scenario == 'hermes_ui'
+        env:
+          MC_IMAGE: ${{ steps.mc-inputs.outputs.image }}
+        run: |
+          tar="$GITHUB_WORKSPACE/mission-control-image.tar"
+          docker save "$MC_IMAGE" -o "$tar"
+          echo "HERMES_UI_MISSION_CONTROL_IMAGE_TAR=$tar" >> "$GITHUB_ENV"
+
       - name: Run molecule tests
         env:
           PY_COLORS: "1"
