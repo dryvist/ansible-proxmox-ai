@@ -502,3 +502,34 @@ def test_every_runner_job_declares_a_ten_minute_timeout(path: Path) -> None:
     for name, job in yaml.safe_load(path.read_text())["jobs"].items():
         if "runs-on" in job and (path.name, name) != ("fix-installer-sha.yml", "fix"):
             assert job.get("timeout-minutes") == 10, f"{path.name}:{name}"
+
+
+@pytest.mark.parametrize(("workflow", "job"), [
+    ("_data-contract.yml", "syntax-check"),
+    ("_data-contract.yml", "verify-inventory-load"),
+    ("_llm-router-contract.yml", "llm-router-contract"),
+    ("_llm-router-contract.yml", "llm-router-registry-contract"),
+])
+def test_ansible_install_uses_the_pinned_ci_requirements(workflow: str, job: str) -> None:
+    steps = yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"][job]["steps"]
+    setup = next(step for step in steps if step.get("uses", "").startswith("actions/setup-python@"))
+    assert setup["with"]["cache"] == "pip"
+    assert setup["with"]["cache-dependency-path"] == ".github/requirements-ci.txt"
+    install = next(step for step in steps if "pip install" in step.get("run", ""))
+    assert "pip install -r .github/requirements-ci.txt" in install["run"]
+
+
+def test_ci_requirements_pin_exact_versions() -> None:
+    lines = [line.strip() for line in (WORKFLOWS.parents[0] / "requirements-ci.txt").read_text().splitlines()
+             if line.strip() and not line.lstrip().startswith("#")]
+    assert "ansible==14.0.0" in lines
+    assert all("==" in line for line in lines)
+
+
+def test_ci_requirements_edit_selects_the_selector_checks() -> None:
+    result = run_selector(".github/requirements-ci.txt")
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    assert selection["run_selector_checks"]
+    assert "tests/test_contract_scope_selector.py" in selection["pytest_targets"]

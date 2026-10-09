@@ -237,7 +237,7 @@ def select(paths: list[str]) -> dict[str, object]:
         elif path == ".github/workflows/_llm-router-contract.yml":
             role_scope("llm_router")
             run_selector_checks = True
-        elif path.startswith(".github/workflows/") or path.startswith(".github/scripts/"):
+        elif path.startswith((".github/workflows/", ".github/scripts/")) or path == ".github/requirements-ci.txt":
             run_selector_checks = True
             pytest_targets.add("tests/test_contract_scope_selector.py")
         elif path.lower().endswith((".md", ".mdx", ".txt")) or path.startswith("docs/"):
