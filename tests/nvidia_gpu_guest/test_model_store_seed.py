@@ -19,12 +19,15 @@ def test_seed_coverage_accepts_the_catalog_and_rejects_a_missing_profile(tmp_pat
         if include:
             include["file"] = include["file"].replace("{{ playbook_dir }}/..", str(REPO_ROOT))
     if missing_profile:
-        tasks.insert(-1, {
-            "name": "Remove one profile from the selected seed artifacts",
+        # Drop the profile from the catalog itself. The declared profile set is
+        # not derived from the catalog, so the seed coverage assert must reject it.
+        tasks.insert(2, {
+            "name": "Remove one profile from the artifact catalog",
             "ansible.builtin.set_fact": {
-                "llm_model_store_seed_artifacts": (
-                    "{{ llm_model_store_seed_artifacts "
-                    "| rejectattr('model_store_profile', 'equalto', '16gb') | list }}"
+                "_llm_model_artifacts": (
+                    "{{ _llm_model_artifacts | selectattr('model_store_profile', 'defined')"
+                    " | rejectattr('model_store_profile', 'equalto', '"
+                    + missing_profile + "') | list }}"
                 ),
             },
         })
