@@ -22,12 +22,10 @@
 # that's the rolling converge play that just started it, or the later
 # run_once seeding play reusing an already-serving member (llm-serving.yml).
 #
-# Exceptions to "does nothing to one that already exists" in `initial` mode:
-# a role whose model target or catalog-derived model_info changed is recreated
-# so callers see the current model contract. Its fallback order is re-seeded,
-# since /model/delete + /model/new replace the deployment but carry no fallback
-# record with it. An unchanged target and model_info leave the role and its
-# UI-edited fallback order alone.
+# In `initial` mode an existing role is never deleted or recreated, whatever
+# its target or model_info: tasks/drift-check.yml reports a role that differs
+# from its seed. The two writes an existing role still receives are a fallback
+# order where it has none (backfill below) and its privacy tags.
 
 - name: Assert every role targets a model the catalog describes
   ansible.builtin.assert:
@@ -79,8 +77,10 @@
          | combine({'tags': llm_router_deployment_tags_by_model[item.model]}) }}"
       # Carried explicitly for the same reason the rendered deployments carry
       # it: a null max_input_tokens makes every caller compress its context to
-      # death instead of failing (tasks/assert.yml).
-      model_info: "{{ _llm_router_role_model_info[item.model] }}"
+      # death instead of failing (tasks/assert.yml). `seed_model` records the
+      # Git seed target on the row, so a /v2/model/info reader can tell an
+      # Admin UI retarget from the seed.
+      model_info: "{{ _llm_router_role_model_info[item.model] | combine({'seed_model': item.model}) }}"
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
   # Absent roles whose TARGET the proxy actually serves. A credential-gated
@@ -88,10 +88,7 @@
   # role onto one would advertise a name that answers with an auth error
   # instead of not existing — the honest-empty contract the rest of this role
   # follows. The role arms itself on the converge after the key lands.
-  loop: >-
-    {{ llm_router_role_deployments
-       | rejectattr('role', 'in', _llm_router_live_models)
-       | selectattr('model', 'in', _llm_router_live_models) | list }}
+  loop: "{{ _llm_router_roles_to_create }}"
   loop_control:
     label: "{{ item.role }} -> {{ item.model }}"
   register: llm_router_seeded
@@ -119,11 +116,7 @@
   # Only roles created in THIS run, and only those left with an order to
   # express after that intersection. An existing role's order belongs to
   # whoever last set it in the UI.
-  loop: >-
-    {{ llm_router_role_deployments
-       | rejectattr('role', 'in', _llm_router_live_models)
-       | selectattr('model', 'in', _llm_router_live_models)
-       | selectattr('fallbacks') | list }}
+  loop: "{{ _llm_router_roles_to_create | selectattr('fallbacks') | list }}"
   loop_control:
     label: "{{ item.role }} -> {{ item.fallbacks | select('in', _llm_router_live_models) | join(', ') }}"
   # The endpoint also rejects an empty list, so a role whose every rung is
@@ -174,60 +167,18 @@
     - item.item.fallbacks | select('in', _llm_router_live_models) | list | length > 0
   no_log: true
 
-# RECONCILE an existing role whose target or catalog-derived model_info has
-# drifted in `initial` mode, or EVERY existing role unconditionally (`rebuild`
-# mode — see the file header). A same-target role can still advertise a stale
-# max_input_tokens after its catalog window changes; comparing the small public
-# model_info contract catches that drift without rewriting a steady-state role.
-# `rebuild` widens this same loop to every role so a DR reset also re-pushes
-# current litellm_params and fallbacks onto roles whose contract never moved.
+# REBUILD (DR / from-scratch reset) only: every live, catalogued role is
+# deleted and recreated with the current litellm_params and model_info, and its
+# declared fallback order is pushed — git wins across the whole role layer, as
+# it does for router_settings. In `initial` mode _llm_router_roles_to_rebuild
+# is empty, so an existing role is never touched here.
 #
 # Delete-then-create rather than /model/update, deliberately. 55-roles.yml
 # records the measured trap: /model/update writes the new litellm_params and
 # answers 200 but leaves the advertised max_input_tokens at the OLD value, so a
-# caller is told a window the new model does not have. Recreating is the one
-# path that is correct whether or not the window changed, so there is no
-# same-window special case to get wrong.
-#
-# Idempotent by construction: in `initial` mode the loop is empty unless a
-# live role's target or advertised model_info differs from the catalog, so a
-# steady-state converge changes nothing; in `rebuild` mode it always covers
-# every live, catalogued role, by design.
+# caller is told a window the new model does not have.
 
-- name: Note which role deployments point somewhere the registry no longer does, or every role under rebuild
-  ansible.builtin.set_fact:
-    _llm_router_stale_roles: >-
-      {{ (llm_router_role_deployments
-          | selectattr('role', 'in', _llm_router_live_models)
-          | selectattr('model', 'in', _llm_router_live_models) | list)
-         if llm_router_seed_mode == 'rebuild'
-         else (llm_router_role_deployments
-               | selectattr('role', 'in', _llm_router_live_models)
-               | selectattr('model', 'in', _llm_router_live_models)
-               | rejectattr('role', 'in', _llm_router_roles_on_catalog_contract) | list) }}
-  vars:
-    _llm_router_roles_on_catalog_contract: >-
-      {%- set ns = namespace(roles=[]) -%}
-      {%- for role in llm_router_role_deployments
-           if role.role in _llm_router_live_models
-           and role.model in _llm_router_live_models -%}
-      {%- set _existing = llm_router_existing_models.json.data | default([])
-           | selectattr('model_name', 'equalto', role.role) | first | default({}) -%}
-      {%- set _actual_params = _existing.litellm_params | default({}) -%}
-      {%- set _actual_info = _existing.model_info | default({}) -%}
-      {%- set _expected_info = _llm_router_role_model_info[role.model] -%}
-      {%- if (_actual_params.model | default('')) == _llm_router_role_params[role.model].model
-           and (_actual_info.mode | default('')) == (_expected_info.mode | default(''))
-           and (_actual_info.max_input_tokens | default(-1) | int)
-               == (_expected_info.max_input_tokens | default(-1) | int)
-           and (_actual_info.max_tokens | default(-1) | int)
-               == (_expected_info.max_tokens | default(-1) | int) -%}
-      {%- set ns.roles = ns.roles + [role.role] -%}
-      {%- endif -%}
-      {%- endfor -%}
-      {{ ns.roles }}
-
-- name: Retire the stale role deployment
+- name: Delete each role being rebuilt
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/model/delete"
     method: POST
@@ -241,12 +192,12 @@
            | map(attribute='model_info.id') | first }}
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
-  loop: "{{ _llm_router_stale_roles }}"
+  loop: "{{ _llm_router_roles_to_rebuild }}"
   loop_control:
     label: "{{ item.role }}"
   no_log: true
 
-- name: Recreate it on the target the registry now declares
+- name: Recreate it on the target the registry declares
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/model/new"
     method: POST
@@ -258,26 +209,17 @@
       litellm_params: "{{ _llm_router_role_params[item.model]
          | combine(item.litellm_params | default({}))
          | combine({'tags': llm_router_deployment_tags_by_model[item.model]}) }}"
-      model_info: "{{ _llm_router_role_model_info[item.model] }}"
+      model_info: "{{ _llm_router_role_model_info[item.model] | combine({'seed_model': item.model}) }}"
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
-  loop: "{{ _llm_router_stale_roles }}"
+  loop: "{{ _llm_router_roles_to_rebuild }}"
   loop_control:
     label: "{{ item.role }} -> {{ item.model }}"
   no_log: true
 
-# /model/delete + /model/new above replace the deployment but carry no
-# fallback record of their own — every role retargeted through this path
-# before now (judge/cheap/embed/ocr/subagent) happened to carry 0 or 1
-# fallbacks, so a role losing its fallback order on retarget went
-# unnoticed. Re-seed it here so a role with a real chain (subagent/fast,
-# 55-roles.yml) does not silently lose it the moment its target moves — and,
-# under `rebuild`, every declared role, since _llm_router_stale_roles above
-# then covers all of them regardless of target drift. Same idempotent shape
-# as "Seed the fallback order for the roles just created" above — a
-# steady-state `initial` converge (nothing stale) loops over nothing, so a
-# UI-edited fallback order on an UNCHANGED role is untouched outside rebuild.
-- name: Seed the fallback order for the roles just retargeted or rebuilt
+# /model/delete + /model/new above carry no fallback record, so each rebuilt
+# role gets its declared order back.
+- name: Seed the fallback order for the roles just rebuilt
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ llm_router_api_port }}/fallback"
     method: POST
@@ -290,7 +232,7 @@
       fallback_type: general
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
-  loop: "{{ _llm_router_stale_roles | selectattr('fallbacks') | list }}"
+  loop: "{{ _llm_router_roles_to_rebuild | selectattr('fallbacks') | list }}"
   loop_control:
     label: "{{ item.role }} -> {{ item.fallbacks | select('in', _llm_router_live_models) | join(', ') }}"
   when: item.fallbacks | select('in', _llm_router_live_models) | list | length > 0
