@@ -55,7 +55,7 @@ def test_legacy_profile_switch_role_targets_only_the_legacy_nvidia_group():
     ]
 
     assert play["serial"] == 1
-    assert play["hosts"] == "llm_gpu_legacy_group:&nvidia_gpu_group"
+    assert play["hosts"] == "llm_gpu_legacy_group"
     assert "llm_gpu_serving" in play["tags"]
     assert roles == ["llm_gpu_serving"]
 

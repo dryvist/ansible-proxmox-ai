@@ -106,9 +106,9 @@ def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():
         play
         for play in plays
         if play.get("hosts") in {
-            "llm_gpu_legacy_group:&nvidia_gpu_group",
-            "llm_gpu_serving_llama_cpp_group:&nvidia_gpu_group",
-            "llm_gpu_serving_vllm_group:&nvidia_gpu_group",
+            "llm_gpu_legacy_group",
+            "llm_gpu_serving_llama_cpp_group",
+            "llm_gpu_serving_vllm_group",
         }
     ]
 
@@ -117,7 +117,7 @@ def test_every_gpu_serving_play_is_engine_specific_and_before_the_router():
     assert all("docker_engine" not in yaml.safe_dump(play) for play in gpu_plays)
 
     for play in gpu_plays:
-        if play["hosts"] == "llm_gpu_legacy_group:&nvidia_gpu_group":
+        if play["hosts"] == "llm_gpu_legacy_group":
             continue
         assert play["any_errors_fatal"] is True
         mark_failed = play["tasks"][0]["rescue"][-1]
