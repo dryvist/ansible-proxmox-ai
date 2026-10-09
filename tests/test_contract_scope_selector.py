@@ -498,11 +498,61 @@ def test_push_events_skip_the_contract_and_molecule_jobs(job: str, guard: str) -
     assert guard in condition
 
 
+PROMOTION_TIMEOUT = (
+    "${{ (github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' "
+    "&& github.event.pull_request.head.ref == 'develop' "
+    "&& github.event.pull_request.head.repo.full_name == github.repository) && 60 || 10 }}"
+)
+
+
+def _context(
+    event: str, base: str | None = None, head: str | None = None, head_repo: str | None = None
+) -> dict[str, str | None]:
+    return {
+        "github.event_name": event,
+        "github.event.pull_request.base.ref": base,
+        "github.event.pull_request.head.ref": head,
+        "github.event.pull_request.head.repo.full_name": head_repo,
+        "github.repository": "owner/repo",
+    }
+
+
+def _evaluate_timeout(expression: str, context: dict[str, str | None]) -> object:
+    # Substitute the context values, then map the expression's && and || onto Python's and/or.
+    body = expression.removeprefix("${{").removesuffix("}}")
+    for key, value in context.items():
+        body = body.replace(key, repr(value))
+    return eval(body.replace("&&", " and ").replace("||", " or "), {"__builtins__": {}}, {})
+
+
+@pytest.mark.parametrize(("context", "expected"), [
+    (_context("pull_request", "main", "develop", "owner/repo"), 60),
+    (_context("pull_request", "main", "develop", "fork/ansible-proxmox-ai"), 10),
+    (_context("pull_request", "main", "release-please--branches--main", "owner/repo"), 10),
+    (_context("pull_request", "main", "hotfix/fix-x", "owner/repo"), 10),
+    (_context("pull_request", "develop", "feature/x", "owner/repo"), 10),
+    (_context("push"), 10),
+])
+def test_promotion_timeout_is_sixty_only_for_same_repo_develop_into_main(
+    context: dict[str, str | None], expected: int
+) -> None:
+    assert _evaluate_timeout(PROMOTION_TIMEOUT, context) == expected
+
+
 @pytest.mark.parametrize("path", sorted(WORKFLOWS.glob("*.yml")), ids=lambda path: path.name)
-def test_every_runner_job_declares_a_ten_minute_timeout(path: Path) -> None:
+def test_every_runner_job_takes_the_promotion_timeout(path: Path) -> None:
     for name, job in yaml.safe_load(path.read_text())["jobs"].items():
         if "runs-on" in job and (path.name, name) != ("fix-installer-sha.yml", "fix"):
-            assert job.get("timeout-minutes") == 10, f"{path.name}:{name}"
+            value = " ".join(str(job.get("timeout-minutes")).split())
+            assert value in (PROMOTION_TIMEOUT, "${{ inputs.timeout_minutes }}"), f"{path.name}:{name}"
+
+
+def test_reusable_calls_forward_the_timeout_input() -> None:
+    jobs = yaml.safe_load(CI_GATE.read_text())["jobs"]
+    for name in ("data-contract", "molecule"):
+        assert " ".join(jobs[name]["with"]["timeout_minutes"].split()) == PROMOTION_TIMEOUT, name
+    nested = yaml.safe_load((WORKFLOWS / "_data-contract.yml").read_text())["jobs"]["llm-router-contract"]
+    assert nested["with"]["timeout_minutes"] == "${{ inputs.timeout_minutes }}"
 
 
 @pytest.mark.parametrize(("workflow", "job"), [

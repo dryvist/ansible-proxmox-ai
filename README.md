@@ -119,8 +119,9 @@ CI-harness and GPU contract-fixture changes select the `llm_gpu_serving` smoke
 scenario; other unclassified paths widen to the full matrix. The Data Contract
 selector sends unmapped roles and unrecognized paths to the full contract
 suite and fails on an unmapped test playbook; a removed test file selects its
-owner's scope, if any. Runner jobs cap at ten minutes, except the Renovate
-checksum fix job, which caps at five. Required validation is aggregated by
-`Merge Gate`. Public pull-request CI stays on GitHub-hosted runners.
+owner's scope, if any. Runner jobs cap at ten minutes, or at sixty on pull
+requests from `develop` into `main` in this repository; the Renovate checksum
+fix job caps at five. Required validation is aggregated by `Merge Gate`.
+Public pull-request CI stays on GitHub-hosted runners.
 
 See the canonical policy in the `dryvist/.github` README, “Ansible CI policy.”
