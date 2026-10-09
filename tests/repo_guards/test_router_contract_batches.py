@@ -59,11 +59,11 @@ def _assert_calls(result, calls, batch):
 def test_matrix_paths_are_nonempty_unique_existing_playbooks():
     paths = [path for batch in BATCHES for path in batch["playbooks"].split()]
     assert all(batch["playbooks"].strip() for batch in BATCHES)
-    assert len(BATCHES) == 94
+    assert len(BATCHES) == 98
     assert all(len(batch["playbooks"].split()) <= 3 for batch in BATCHES)
-    assert len(paths) == len(set(paths)) == 96
+    assert len(paths) == len(set(paths)) == 98
     assert hashlib.sha256("\n".join(sorted(paths)).encode()).hexdigest() == (
-        "06c8ed5807267068c5d536f93f6e9acdb3e8bb665a1c1f1b1667be7813969604"
+        "917dcb81eb7b2dae2a371998f721b86c234af84bfc76519f96b2cdba04b985b6"
     )
     assert JOB["strategy"]["matrix"]["playbook"] == "${{ fromJSON(inputs.playbooks) }}"
     assert all((ROOT / path).is_file() for path in paths)
@@ -88,3 +88,23 @@ def test_any_failure_reaches_the_gate_after_all_paths_run(tmp_path, position):
     result, calls = _replay(tmp_path, batch, failure=paths[index])
     assert result.returncode != 0
     _assert_calls(result, calls, batch)
+
+
+def _is_playbook(path: Path) -> bool:
+    doc = yaml.safe_load(path.read_text())
+    return isinstance(doc, list) and any(
+        isinstance(item, dict) and {"hosts", "import_playbook", "ansible.builtin.import_playbook"} & set(item)
+        for item in doc)
+
+
+def test_every_router_playbook_is_listed_or_imported_by_a_listed_one():
+    listed = {path for batch in BATCHES for path in batch["playbooks"].split()}
+    imported = set()
+    for path in listed:
+        for item in yaml.safe_load((ROOT / path).read_text()):
+            for key in ("import_playbook", "ansible.builtin.import_playbook"):
+                if isinstance(item, dict) and key in item:
+                    imported.add((Path(path).parent / item[key]).as_posix())
+    playbooks = {path.relative_to(ROOT).as_posix()
+                 for path in (ROOT / "tests/llm_router").glob("*.yml") if _is_playbook(path)}
+    assert playbooks - listed - imported == set()

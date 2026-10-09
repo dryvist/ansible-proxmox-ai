@@ -56,6 +56,33 @@ def test_changed_router_playbook_selects_only_its_playbook() -> None:
     ]
 
 
+@pytest.mark.parametrize("playbook", [
+    "tests/llm_router/test_drift_live_keys.yml",
+    "tests/llm_router/test_hermes_public_key_alias_brain.yml",
+])
+def test_registered_router_playbook_selects_its_own_entry(playbook: str) -> None:
+    result = run_selector(playbook)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["llm_router_playbooks"] == [playbook]
+
+
+@pytest.mark.parametrize(("imported", "importer"), [
+    ("tests/llm_router/test_ladder_keys_order.yml", "tests/llm_router/test_ladder_keys.yml"),
+    ("tests/llm_router/test_ladder_keys_consumers.yml", "tests/llm_router/test_ladder_keys.yml"),
+    ("tests/llm_router/test_ladder_keys_zdr.yml", "tests/llm_router/test_ladder_keys.yml"),
+    ("tests/llm_router/test_gpu_pro6000_inactive_render.yml",
+     "tests/llm_router/test_gpu_pro6000_render.yml"),
+])
+def test_imported_router_playbook_selects_its_importing_entry(imported: str, importer: str) -> None:
+    result = run_selector(imported)
+
+    assert result.returncode == 0, result.stderr
+    entries = json.loads(result.stdout)["llm_router_playbooks"]
+    assert len(entries) == 1
+    assert importer in entries[0].split()
+
+
 @pytest.mark.parametrize("path", [
     "roles/unmapped_role/tasks/main.yml", "roles/ollama/tasks/main.yml", "pyproject.toml",
 ])
@@ -125,7 +152,7 @@ def test_full_suite_keeps_every_router_matrix_entry() -> None:
 
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
-    assert len(selection["llm_router_playbooks"]) == 94
+    assert len(selection["llm_router_playbooks"]) == 98
 
 
 def test_full_suite_covers_main_pushes_and_promotion_prs() -> None:
@@ -192,7 +219,7 @@ def test_registry_selects_all_consumers_without_global_pytest() -> None:
     assert selection["run_selector_checks"]
     assert {"tests/nvidia_gpu_guest/", "tests/llm_model_campaign/", "tests/hermes_agent/"} <= set(
         selection["pytest_targets"])
-    assert len(selection["llm_router_playbooks"]) == 94
+    assert len(selection["llm_router_playbooks"]) == 98
     assert "tests/nvidia_gpu_guest/test_cache_only_sync.yml" in selection["ansible_tests"]
 
 
@@ -223,7 +250,7 @@ def test_actual_scope_step_dispatches_full_or_focused(
     assert selected["full_suite"] == str(expected_full).lower()
     targets = json.loads(selected["pytest_targets"])
     assert targets == (["tests/"] if expected_full else ["tests/test_contract_scope_selector.py"])
-    assert len(json.loads(selected["llm_router_playbooks"])) == (94 if expected_full else 0)
+    assert len(json.loads(selected["llm_router_playbooks"])) == (98 if expected_full else 0)
 
 
 @pytest.mark.parametrize(("event", "ref", "base", "allows_skips"), [
@@ -324,7 +351,7 @@ def test_router_scope_preserves_manifest_execution_order(path: str) -> None:
     selected = json.loads(result.stdout)["llm_router_playbooks"]
     assert selected == full
     paths = [playbook for group in selected for playbook in group.split()]
-    assert len(paths) == len(set(paths)) == 96
+    assert len(paths) == len(set(paths)) == 98
 
 
 def test_changed_router_groups_follow_manifest_order_not_path_order() -> None:

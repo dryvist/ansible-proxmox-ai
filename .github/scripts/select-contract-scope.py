@@ -98,6 +98,16 @@ def llm_router_matrix() -> list[list[str]]:
     return entries
 
 
+def router_imports(matrix: list[list[str]]) -> dict[str, list[str]]:
+    importers: dict[str, list[str]] = {}
+    for entry in matrix:
+        for playbook in entry:
+            for target in re.findall(r"import_playbook:\s*(\S+)", Path(playbook).read_text()):
+                imported = (Path(playbook).parent / target).as_posix()
+                importers.setdefault(imported, []).append(" ".join(entry))
+    return importers
+
+
 def full_selection() -> dict[str, object]:
     return {
         "pytest_targets": ["tests/"],
@@ -168,10 +178,12 @@ def select(paths: list[str]) -> dict[str, object]:
                 # edit that dropped the file, selects what the removal affects.
                 continue
             if path.startswith("tests/llm_router/") and path.endswith((".yml", ".yaml")):
-                if path not in matrix_by_test:
-                    unknown.append(raw_path)
-                else:
+                if path in matrix_by_test:
                     router_tests.add(" ".join(matrix_by_test[path]))
+                elif importers := router_imports(matrix).get(path):
+                    router_tests.update(importers)
+                else:
+                    unknown.append(raw_path)
             elif Path(path).suffix == ".py" and Path(path).is_file():
                 pytest_targets.add(path)
             elif Path(path).suffix in {".yml", ".yaml"} and Path(path).is_file():
