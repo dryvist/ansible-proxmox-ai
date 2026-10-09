@@ -312,3 +312,12 @@ def test_agent_ci_fix_runs_only_for_pull_request_ci_gate_runs() -> None:
     job = yaml.safe_load((WORKFLOWS / "agent-ci-fix.yml").read_text())["jobs"]["ci-fix"]
     assert "vars.AI_AGENT_CI_FIX_ENABLED == 'true'" in job["if"]
     assert "github.event.workflow_run.event == 'pull_request'" in job["if"]
+
+
+@pytest.mark.parametrize("workflow", ["agent-ci-fix.yml", "agent-pr-review-responder.yml"])
+def test_agent_workflows_pin_the_shared_callee_to_a_commit(workflow: str) -> None:
+    jobs = yaml.safe_load((WORKFLOWS / workflow).read_text())["jobs"].values()
+    uses = [job["uses"] for job in jobs if "uses" in job]
+    assert uses
+    assert all(re.fullmatch(r"dryvist/ai-workflows/\.github/workflows/[\w.-]+@[0-9a-f]{40}", ref)
+               for ref in uses), uses
