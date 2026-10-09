@@ -321,3 +321,9 @@ def test_agent_workflows_pin_the_shared_callee_to_a_commit(workflow: str) -> Non
     assert uses
     assert all(re.fullmatch(r"dryvist/ai-workflows/\.github/workflows/[\w.-]+@[0-9a-f]{40}", ref)
                for ref in uses), uses
+
+
+def test_installer_recompute_authenticates_checksum_requests() -> None:
+    steps = yaml.safe_load((WORKFLOWS / "fix-installer-sha.yml").read_text())["jobs"]["fix"]["steps"]
+    recompute = next(step for step in steps if step.get("name") == "Recompute the checksum")
+    assert recompute["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
