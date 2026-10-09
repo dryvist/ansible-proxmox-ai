@@ -327,3 +327,11 @@ def test_installer_recompute_authenticates_checksum_requests() -> None:
     steps = yaml.safe_load((WORKFLOWS / "fix-installer-sha.yml").read_text())["jobs"]["fix"]["steps"]
     recompute = next(step for step in steps if step.get("name") == "Recompute the checksum")
     assert recompute["env"]["GITHUB_TOKEN"] == "${{ github.token }}"
+
+
+def test_nix_installs_whenever_the_agent_guest_test_runs() -> None:
+    steps = yaml.safe_load((WORKFLOWS / "_data-contract.yml").read_text())["jobs"]["syntax-check"]["steps"]
+    nix = next(step for step in steps if step.get("name") == "Install Nix")
+    agent_guest = next(step for step in steps
+                       if step.get("name") == "Verify agent_guest residual deny contract")
+    assert nix["if"] == agent_guest["if"]
