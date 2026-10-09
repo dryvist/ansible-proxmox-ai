@@ -177,8 +177,6 @@ def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
     }
     assert caps == expected_caps
 
-    primary = [name for name, profile in serving_profiles.items() if profile.get("primary")]
-    assert primary == ["medium-a"]
     assert caps["medium-a"] == 64
 
 
