@@ -217,7 +217,7 @@ if the key itself were public.
 
 This proxy issues per-caller virtual keys. The `benchmark` key is scoped to the
 GPU profiles and intentionally has no budget, so repeated benchmark runs do not
-consume a caller's monthly ceiling. It seeds only when its OpenBao value and
+consume a caller's daily ceiling. It seeds only when its OpenBao value and
 the GPU profile switch are both enabled.
 
 MCP server IDs, tool allowlists, caller grants, OpenBao sources, and the OAuth

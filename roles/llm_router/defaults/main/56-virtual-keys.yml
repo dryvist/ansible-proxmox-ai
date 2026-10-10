@@ -4,8 +4,8 @@
 # Buys per-caller attribution in the spend logs and revocation of one tool
 # without rotating everything.
 #
-# `monthly_budget` (this role's own field name) becomes /key/generate's
-# `max_budget` + `budget_duration: 7d` in tasks/seed-keys.yml. Existing keys
+# `daily_budget` (this role's own field name) becomes /key/generate's
+# `max_budget` + `budget_duration: 24h` in tasks/seed-keys.yml. Existing keys
 # are resynced only in explicit rebuild mode by
 # tasks/reconcile-key-budgets.yml —
 # model_max_budget is the one LiteLLM field this stays away from: it is
@@ -15,7 +15,7 @@
 # below the key ceiling is still the local survivor member in each budgeted
 # group (model-list.yaml.j2) — the key budget is an outer per-caller cap, not
 # a substitute for that. assert-budget-backing.yml extends to require the
-# router database before any key here carries a monthly_budget, the same way
+# router database before any key here carries a daily_budget, the same way
 # it already requires Redis before a provider budget.
 #
 # Existing model allowlists reconcile to this registry-derived seed on every
@@ -40,13 +40,16 @@
 # database is actually in the inventory, so no key here ever advertises a
 # ceiling assert-budget-backing.yml would then have to fail the build over.
 #
-# HALF of llm_router_openrouter_budget_limit (the provider's own 14.0/week
-# cap in inventory/group_vars/llm_router_group.yml), same 7d period,
-# deliberately — one consumer must not be ABLE to drain the whole provider
-# ceiling by itself. assert-budget-backing.yml enforces the inequality so
-# the two numbers cannot drift apart unnoticed.
-_llm_router_key_monthly_budget: >-
-  {{ 7.0 if (llm_router_db_host | default('') | trim | length > 0) else 0 }}
+# The operator's per-key DAILY cap, in USD, applied to every budgeted key
+# below. A key's spend resets each 24 hours (budget_duration 24h); the provider
+# ceiling (llm_router_openrouter_budget_limit, weekly, in
+# inventory/group_vars/llm_router_group.yml) is a separate number.
+# assert-budget-backing.yml requires the daily cap to stay strictly below that
+# weekly ceiling, so one consumer cannot be ABLE to drain the provider ceiling
+# by itself. Honestly 0 (no budget) until the router database is in the
+# inventory.
+_llm_router_key_daily_budget: >-
+  {{ 1.0 if (llm_router_db_host | default('') | trim | length > 0) else 0 }}
 
 # Every name a call to hermes_brain_model can land on: the entry point
 # itself plus its whole fallback chain, single-sourced from the same var

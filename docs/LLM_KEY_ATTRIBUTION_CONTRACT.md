@@ -15,7 +15,7 @@ one's content.
    - `app` — the key's own alias (`56-virtual-keys.yml`). Never re-typed:
      the seed task reads `item.alias`, so a renamed key stays in sync with
      zero doc/dashboard edit.
-   - `tier` — `subscription` for a key carrying a weekly `monthly_budget` (a
+   - `tier` — `subscription` for a key carrying a daily `daily_budget` (a
      metered consumer against the shared subscription/paid ceiling), `local`
      otherwise (a budget-less key draws only on the free/local-only serving
      tier this router never meters). An entry may override either field with
