@@ -159,7 +159,7 @@ Optional:
                       matches nothing (pinned by
                       tests/llm_router/test_registry_hints_projection.yml):
 
-                        speed     `fast` | `medium` | `slow` — decode class AS
+                        speed     `quick` | `moderate` | `slow` — decode class AS
                                   SERVED HERE, not the model's reputation.
                         quality   `routine` | `strong` | `frontier`.
                         best_for  Free-form subtask labels a caller matches
