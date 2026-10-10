@@ -9,13 +9,17 @@
 # router's running model list. The guard closes that; this test proves the
 # guard actually fires, in both directions, rather than passing vacuously.
 #
-# The third play is the one that matters most. The OpenRouter tier is exempt
-# from the enabled-but-unrendered direction because those entries are
+# The OpenRouter exemption play, in test_registry_render_parity_exemptions.yml,
+# is the one that matters most. The OpenRouter tier is exempt from the
+# enabled-but-unrendered direction because those entries are
 # key-gated and render nothing when unseeded — four such entries ship enabled
 # and unseeded today. If that exemption ever regresses, the guard fires four
 # false positives on a correct config, and an assert that cries wolf gets
 # switched off. A passing guard is not enough; it has to stay quiet when it
 # should.
+#
+# The remaining three plays are in test_registry_render_parity_exemptions.yml,
+# split out to keep each file under the repo's per-file token budget.
 #
 # Run (from the REPO ROOT — the registry load resolves the llm_router role
 # through ansible.cfg's cwd-relative roles_path):
@@ -174,191 +178,3 @@
             llm_router_model_registry: >-
               {{ llm_router_model_registry
                  | rejectattr('client_model_id', 'equalto', 'test/orphaned-entry') | list }}
-
-- name: The guard rejects a second modified auto-router deployment
-  hosts: localhost
-  gather_facts: false
-  vars:
-    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    tofu_data:
-      constants:
-        service_ports:
-          llm_router_api: 4000
-          llm_fast_api: 10434
-          ollama_api: 11434
-          otel_traces_http: 4318
-    bao_local_llm_secrets: {}
-    ai_default_model: "{{ llm_router_primary_model }}"
-    llm_large_serving_host: llm-large
-    llm_router_subdomain: "pve.example.test"
-    llm_router_master_key: sk-test-master
-    llm_router_llm_large_bearer: test-bearer-token
-    ai_router_request_timeout_seconds: 2400
-    ai_stream_read_timeout_seconds: 1800
-    ai_router_retry_after_seconds: 40
-    ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
-    hindsight_retain_model: qwen3-4b
-    hermes_goal_judge_model: judge
-  tasks:
-    - name: Load the role defaults and registry the way the converge does
-      ansible.builtin.import_tasks: tasks/parity_setup.yml
-
-    - name: Prove a second modified auto-router is rejected
-      block:
-        - name: Add a second auto-router to the rendered virtual-model projection
-          ansible.builtin.set_fact:
-            llm_router_hermes_virtual_models: >-
-              {{ llm_router_hermes_virtual_models + [
-                   (llm_router_hermes_virtual_models | first)
-                   | combine({'client_model_id': 'test/second-auto-router'})
-                 ] }}
-
-        - name: Run the parity guard against the second auto-router
-          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"
-
-        - name: Fail because the guard admitted a second auto-router
-          ansible.builtin.fail:
-            msg: >-
-              The parity guard PASSED with two modified auto-router deployments.
-
-      rescue:
-        - name: Confirm the guard failed for auto-router cardinality specifically
-          ansible.builtin.assert:
-            quiet: true
-            that:
-              - "'AUTO-ROUTER CARDINALITY EXCEEDED' in (ansible_failed_result.msg | default(''))"
-              - "'test/second-auto-router' in (ansible_failed_result.msg | default(''))"
-            fail_msg: >-
-              The guard failed, but not for auto-router cardinality — got:
-              {{ ansible_failed_result.msg | default('(no message)') }}
-            success_msg: "Guard rejects a second modified auto-router deployment."
-
-        - name: Remove the second auto-router so later plays see the shipping projection
-          ansible.builtin.set_fact:
-            llm_router_hermes_virtual_models: >-
-              {{ llm_router_hermes_virtual_models
-                 | rejectattr('client_model_id', 'equalto', 'test/second-auto-router') | list }}
-
-- name: The guard stays quiet for key-gated OpenRouter entries that are unseeded
-  hosts: localhost
-  gather_facts: false
-  vars:
-    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    tofu_data:
-      constants:
-        service_ports:
-          llm_router_api: 4000
-          llm_fast_api: 10434
-          ollama_api: 11434
-          otel_traces_http: 4318
-    bao_local_llm_secrets: {}
-    ai_default_model: "{{ llm_router_primary_model }}"
-    llm_large_serving_host: llm-large
-    llm_router_subdomain: "pve.example.test"
-    llm_router_master_key: sk-test-master
-    llm_router_llm_large_bearer: test-bearer-token
-    ai_router_request_timeout_seconds: 2400
-    ai_stream_read_timeout_seconds: 1800
-    ai_router_retry_after_seconds: 40
-    ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
-    hindsight_retain_model: qwen3-4b
-    hermes_goal_judge_model: judge
-  tasks:
-    - name: Load the role defaults and registry the way the converge does
-      ansible.builtin.import_tasks: tasks/parity_setup.yml
-
-    - name: Confirm the fixture really does leave OpenRouter entries unrendered
-      # If this stops being true the exemption below is untested — the play
-      # would pass because there was nothing to exempt, not because the
-      # exemption works.
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _unseeded_openrouter | length > 0
-          - (_unseeded_openrouter | difference(_rendered)) | length == _unseeded_openrouter | length
-        fail_msg: >-
-          Expected every enabled OpenRouter entry to render nothing with
-          bao_local_llm_secrets empty, but some rendered:
-          {{ _unseeded_openrouter | intersect(_rendered) }}.
-        success_msg: >-
-          {{ _unseeded_openrouter | length }} unseeded OpenRouter entries
-          render nothing, as the egress allowlist intends.
-      vars:
-        _rendered: >-
-          {{ (lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml).model_list
-             | default([]) | map(attribute='model_name') | unique | list }}
-        _unseeded_openrouter: >-
-          {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'openrouter')
-             | map(attribute='client_model_id') | list }}
-
-    - name: The guard passes anyway, because the exemption holds
-      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"
-
-- name: The guard stays quiet for tag-derived Hermes agents absent from the registry
-  hosts: localhost
-  gather_facts: false
-  vars:
-    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
-    tofu_data:
-      constants:
-        service_ports:
-          llm_router_api: 4000
-          llm_fast_api: 10434
-          ollama_api: 11434
-          otel_traces_http: 4318
-      # Two agents, exactly the shape 36-hermes-agents.yml expects from the
-      # published inventory — never hand-listed in llm-models.d/.
-      hermes_agents:
-        hermes-agent:
-          model_name: hermes-agent
-          api_url: "https://hermes-agent.pve.example.test/v1"
-        hermes-donna:
-          model_name: hermes-donna
-          api_url: "https://hermes-donna.pve.example.test/v1"
-    bao_local_llm_secrets:
-      HERMES_API_SERVER_KEY: test-hermes-server-key
-    # Each agent renders only with its own identity's bearer.
-    openbao_secrets_by_domain:
-      donna:
-        DONNA_API_SERVER_KEY: test-donna-server-key
-    ai_default_model: "{{ llm_router_primary_model }}"
-    llm_large_serving_host: llm-large
-    llm_router_subdomain: "pve.example.test"
-    llm_router_master_key: sk-test-master
-    llm_router_llm_large_bearer: test-bearer-token
-    ai_router_request_timeout_seconds: 2400
-    ai_stream_read_timeout_seconds: 1800
-    ai_router_retry_after_seconds: 40
-    ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
-    hindsight_retain_model: qwen3-4b
-    hermes_goal_judge_model: judge
-  tasks:
-    - name: Load the role defaults and registry the way the converge does
-      ansible.builtin.import_tasks: tasks/parity_setup.yml
-
-    - name: Confirm the fixture really does render agents the registry does not own
-      # If this stops being true the exemption below is untested — the play
-      # would pass because there was nothing to exempt, not because the
-      # exemption works.
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - "'hermes-agent' in _rendered"
-          - "'hermes-donna' in _rendered"
-          - "'hermes-agent' not in llm_router_registry_enabled_route_names"
-          - "'hermes-donna' not in llm_router_registry_enabled_route_names"
-        fail_msg: >-
-          Expected both agents to render while owning no registry entry, but
-          got rendered={{ _rendered }}
-          route_names={{ llm_router_registry_enabled_route_names }}.
-        success_msg: "Both agents render and neither owns a registry entry, as intended."
-      vars:
-        _rendered: >-
-          {{ (lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml).model_list
-             | default([]) | map(attribute='model_name') | unique | list }}
-
-    - name: The guard passes anyway, because the hermes-agent exemption holds
-      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import TypedDict
 
@@ -137,6 +138,11 @@ def router_imports(matrix: list[list[str]]) -> dict[str, list[str]]:
     return importers
 
 
+def warn_unmapped(path: str) -> None:
+    # Stderr, not stdout: stdout carries the JSON selection the workflow reads.
+    print(f"::warning::unmapped path {path} selects the full suite", file=sys.stderr)
+
+
 def full_selection() -> Selection:
     return {
         "pytest_targets": ["tests/"],
@@ -214,6 +220,7 @@ def select(paths: list[str]) -> Selection:
                 elif importers := router_imports(matrix).get(path):
                     router_tests.update(importers)
                 else:
+                    warn_unmapped(path)
                     route_full = True  # unmapped router playbook: run the full matrix
             elif Path(path).suffix == ".py" and Path(path).is_file():
                 pytest_targets.add(path)
@@ -221,16 +228,19 @@ def select(paths: list[str]) -> Selection:
                 if path in ANSIBLE_TESTS:
                     ansible_tests.add(path)
                 else:
+                    warn_unmapped(path)
                     route_full = True  # unmapped Ansible test: run the full suite
             elif Path(path).is_dir():
                 pytest_targets.add(path)
             else:
+                warn_unmapped(path)
                 route_full = True  # unmapped test file: run the full suite
         elif path.startswith("roles/"):
             role = path.split("/")[1]
             if role in ROLE_TESTS or role == "llm_router":
                 role_scope(role)
             else:
+                warn_unmapped(path)
                 route_full = True  # unmapped role: no contract family to narrow to
         elif path.startswith("llm-models.d/"):
             role_scope("llm_router")
@@ -263,6 +273,7 @@ def select(paths: list[str]) -> Selection:
               or path == ".release-please-manifest.json"):
             continue
         else:
+            warn_unmapped(path)
             route_full = True  # unmapped root file: no narrower scope is known
 
     if route_full:

@@ -87,6 +87,7 @@ def test_unmapped_paths_route_to_full_suite(path: str) -> None:
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["pytest_targets"] == ["tests/"]
+    assert f"::warning::unmapped path {path} selects the full suite" in result.stderr
 
 
 def test_release_back_merge_paths_need_no_contracts() -> None:

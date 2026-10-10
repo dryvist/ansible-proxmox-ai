@@ -48,6 +48,7 @@ def test_production_role_selects_its_existing_contract_family(path: str, target:
     "tests/llm_gpu_engine_roles/fixtures/pro6000-target/nvidia-smi-query.csv",
     "tests/llm_router/fixtures/seed-key-response-shape.json",
     "tests/llm_router/tasks/parity_setup.yml",
+    "tests/llm_router/tasks/openrouter_allowlist_zdr.yml",
     "tests/llm_model_campaign/fixtures/runner-missing-uv.yml",
     "tests/fixtures/llm-router-target-output.yml",
     "tests/inventory_load/tofu_inventory.json",

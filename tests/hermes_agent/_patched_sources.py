@@ -22,13 +22,15 @@ from _pinned_sources import (
     PINNED_CRON_DELIVERY_SOURCE,
     PINNED_CRON_TIMEOUT_SOURCE,
 )
-from _pinned_sources_worker import (
-    PINNED_HINDSIGHT_FAILURE_SOURCE,
-    PINNED_HINDSIGHT_PREFETCH_SOURCE,
+from _pinned_sources_hooks import (
     PINNED_JUDGE_AVAILABLE_SOURCE,
     PINNED_JUDGE_CALL_SOURCE,
     PINNED_JUDGE_ERROR_SENTINEL_SOURCE,
     PINNED_SYNC_EXTERNAL_MEMORY_SOURCE,
+)
+from _pinned_sources_worker import (
+    PINNED_HINDSIGHT_FAILURE_SOURCE,
+    PINNED_HINDSIGHT_PREFETCH_SOURCE,
 )
 from _pinned_goal_loop import PINNED_KANBAN_GOAL_LOOP_SOURCE
 from _role_files import role_tasks
