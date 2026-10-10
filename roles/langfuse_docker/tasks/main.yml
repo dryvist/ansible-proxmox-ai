@@ -251,6 +251,8 @@
   community.docker.docker_compose_v2:
     project_src: "{{ langfuse_docker_data_dir }}"
     state: present
+    # Removes containers for services the template no longer renders.
+    remove_orphans: true
   register: langfuse_docker_compose_result
   changed_when: >-
     (langfuse_docker_compose_result.actions | default([]))
@@ -318,6 +320,11 @@
     # Langfuse that never got its router connection still reported success.
     status_code: [200, 201]
   register: langfuse_docker_llm_connection
+  # A web container that has just passed its health check can still time out
+  # on this first API write, so retry it before failing the converge.
+  retries: 5
+  delay: 10
+  until: langfuse_docker_llm_connection.status in [200, 201]
   changed_when: false
   # The request body carries the router master key.
   no_log: true
