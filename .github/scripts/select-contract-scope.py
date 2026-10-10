@@ -74,6 +74,9 @@ ROLE_TESTS = {
     "qdrant_docker": {"tests/qdrant_docker/"},
     "agent_guest": set(),
     "clickhouse_docker": set(),
+    "herdr_server": set(),
+    "herdr_remote": set(),
+    "nixos_deploy": set(),
 }
 TEST_SCOPES = {target.removeprefix("tests/").rstrip("/")
                for targets in ROLE_TESTS.values() for target in targets if target.endswith("/")}

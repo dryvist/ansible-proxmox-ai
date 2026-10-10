@@ -62,10 +62,23 @@ def test_unmapped_role_fails_fast() -> None:
     assert "Unmapped contract paths" in result.stderr
 
 
-def test_removed_role_and_retired_test_select_nothing() -> None:
+def test_clickhouse_role_and_retired_test_select_nothing() -> None:
     result = run_selector(
         "roles/clickhouse_docker/tasks/main.yml",
         "tests/langfuse_docker/test_code_eval_dispatcher.yml",
+    )
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    assert selection["pytest_targets"] == []
+    assert selection["ansible_tests"] == []
+
+
+def test_nix_ai_pin_roles_are_mapped_without_contracts() -> None:
+    result = run_selector(
+        "roles/herdr_server/defaults/main.yml",
+        "roles/herdr_remote/defaults/main.yml",
+        "roles/nixos_deploy/defaults/main.yml",
     )
 
     assert result.returncode == 0, result.stderr
