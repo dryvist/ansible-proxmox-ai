@@ -56,7 +56,7 @@
   tasks:
     - name: Assert Hermes reads only its own domain once that domain is fetched
       vars:
-        hermes_agent_id: hermes
+        hermes_agent_identity: hermes
         bao_local_llm_secrets: "{{ _local_llm }}"
         openbao_secrets_by_domain: {local-llm: "{{ _local_llm }}", hermes: "{{ _own }}"}
         _rendered: "{{ query('vars', *_consumers) }}"
@@ -79,7 +79,7 @@
     # present, or the case above proves nothing.
     - name: Assert the local-llm layer is present and detected while the hermes domain is absent
       vars:
-        hermes_agent_id: hermes
+        hermes_agent_identity: hermes
         bao_local_llm_secrets: "{{ _local_llm }}"
         openbao_secrets_by_domain: {local-llm: "{{ _local_llm }}"}
         _rendered: "{{ query('vars', *_consumers) }}"
@@ -93,7 +93,7 @@
 
     - name: Assert a second identity never inherits local-llm through its own view
       vars:
-        hermes_agent_id: donna
+        hermes_agent_identity: donna
         bao_local_llm_secrets: "{{ _local_llm }}"
         openbao_secrets_by_domain: {local-llm: "{{ _local_llm }}", donna: "{{ _own }}"}
       ansible.builtin.assert:
@@ -104,7 +104,7 @@
 
     - name: Assert private Hermes uses its own view for Slack and shared Splunk access
       vars:
-        hermes_agent_id: hermes-private
+        hermes_agent_identity: hermes-private
         hermes_agent_env_prefix: HERMES_PRIVATE
         bao_local_llm_secrets: "{{ _local_llm }}"
         openbao_secrets_by_domain:
@@ -158,3 +158,28 @@
         fail_msg: >-
           hermes-private declares {{ _declared }}; expected only its own KV path
           and the gateway's shared read-only Splunk route credential.
+
+# codex_runner runs before the hermes_agent role, so its auth view must resolve
+# from the group vars alone, without the role's hermes_agent_id and
+# hermes_agent_env_prefix defaults (those role files are not loaded here).
+- name: Verify the Codex auth view resolves before the hermes_agent role loads
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../../inventory/group_vars/hermes_agent_group/00-agent-settings.yml
+  vars:
+    bao_local_llm_secrets: {}
+    openbao_secrets_by_domain: {}
+  tasks:
+    - name: Assert each identity's Codex auth resolves from its own env fallback
+      vars:
+        hermes_agent_identity: "{{ item.identity }}"
+      ansible.builtin.assert:
+        that:
+          - codex_runner_auth_json == item.expected
+        fail_msg: >-
+          {{ item.identity }} resolved Codex auth to the wrong env fallback.
+      loop:
+        - {identity: hermes, expected: public-auth-fixture}
+        - {identity: hermes-private, expected: private-auth-fixture}

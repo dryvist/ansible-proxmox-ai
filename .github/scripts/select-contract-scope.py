@@ -203,7 +203,8 @@ def select(paths: list[str]) -> dict[str, object]:
                 # The explicit matrix is the router contract manifest; changes
                 # to it must exercise every entry, not just selector checks.
                 role_scope("llm_router")
-        elif path.lower().endswith((".md", ".mdx", ".txt")) or path.startswith("docs/"):
+        elif (path.lower().endswith((".md", ".mdx", ".txt")) or path.startswith("docs/")
+              or path == ".release-please-manifest.json"):
             continue
         else:
             unknown.append(raw_path)

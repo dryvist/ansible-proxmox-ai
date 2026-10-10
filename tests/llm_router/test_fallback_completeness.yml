@@ -1,0 +1,57 @@
+---
+# Every name a client can route to must have somewhere to go when its first
+# deployment fails: at least one fallback rung, one rung as wide as the name it
+# backs, and no rung that names nothing.
+#
+# WHAT IS RENDERED. The fully credentialed config.yaml (tasks/credentialed_render.yml)
+# — model_list, router_settings.fallbacks, default_fallbacks,
+# context_window_fallbacks and model_group_alias — plus the role deployments
+# tasks/seed-roles.yml creates over the API, with the fallback order it seeds
+# for them (rungs filtered to names the proxy serves, as that task does).
+# How a name resolves its rungs: tasks/fallback_completeness_contract.yml.
+#
+# THE THREE CONTRACTS, each reported by client name:
+#   (a) every model group, alias, alias target and seeded role has >= 1
+#       general rung, counting default_fallbacks — except the names the role
+#       declares fail-fast (cross-modality, local-only, ladder terminals);
+#   (b) every chain reaches at least one rung as wide as its primary, unless
+#       every other served group that wide comes before the primary in some
+#       rendered chain (narrower rungs before it are fine: litellm walks on);
+#   (c) every rung names a model group the proxy serves (config model_list
+#       or a seeded role deployment).
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_fallback_completeness.yml -i localhost, -c local
+- name: Verify every routable name has a complete, wide-enough fallback ladder
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Produce the fully credentialed render
+      ansible.builtin.import_tasks: tasks/credentialed_render.yml
+
+    - name: Check every routable name's ladder
+      ansible.builtin.import_tasks: tasks/fallback_completeness_contract.yml
