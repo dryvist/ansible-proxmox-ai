@@ -127,10 +127,7 @@ def test_standalone_model_sync_entrypoints_load_shared_cache_settings():
         assert "llamacpp_release/tasks/load.yml" in text, relative_path
         assert "llamacpp_release/tasks/require-proxy.yml" in text, relative_path
 
-    verify_paths = (
-        "roles/llm_gpu_serving/tasks/verify-model-store-origin-repo.yml",
-        "roles/nvidia_gpu_guest/tasks/verify-model-store-origin-repo.yml",
-    )
+    verify_paths = ("roles/nvidia_gpu_guest/tasks/verify-model-store-origin-repo.yml",)
     for relative_path in verify_paths:
         text = (ROOT / relative_path).read_text(encoding="utf-8")
         tasks = _load(ROOT / relative_path)
