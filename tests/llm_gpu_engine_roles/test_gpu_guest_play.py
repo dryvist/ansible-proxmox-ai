@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import jinja2
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -71,7 +73,7 @@ def test_serving_plays_apply_each_engine_role_to_one_guest_at_a_time() -> None:
     }
 
     for host_group, play in _engine_plays().items():
-        assert play["hosts"] == f"{host_group}:&nvidia_gpu_group"
+        assert play["hosts"] == host_group
         assert play["serial"] == 1
         assert play["any_errors_fatal"] is True
         included = [
@@ -214,3 +216,35 @@ def test_campaign_tools_are_linked_onto_the_default_path_after_install() -> None
     install_index = names.index("Install the pinned vLLM build with SM120 b12x kernels")
     assert names.index(link["name"]) > install_index
     assert "Install the pinned Hugging Face CLI" not in " ".join(names)
+
+
+@pytest.mark.parametrize(
+    "engine_group",
+    [
+        "llm_gpu_legacy_group",
+        "llm_gpu_serving_llama_cpp_group",
+        "llm_gpu_serving_vllm_group",
+    ],
+)
+def test_engine_host_outside_nvidia_gpu_group_fails_its_play(tmp_path: Path, engine_group: str) -> None:
+    inventory = tmp_path / "inventory.yml"
+    inventory.write_text(yaml.safe_dump({
+        "all": {
+            "children": {
+                engine_group: {"hosts": {"non-gpu-guest": {"ansible_connection": "local"}}},
+                "nvidia_gpu_group": {"hosts": {}},
+            },
+        },
+    }), encoding="utf-8")
+    result = subprocess.run(
+        ["ansible-playbook", "-i", str(inventory), "-e", "ansible_become=false", str(GPU_ENGINE_PLAYBOOK)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0, output
+    assert "not in nvidia_gpu_group" in output, output
+    assert "TASK [Include " not in output, output

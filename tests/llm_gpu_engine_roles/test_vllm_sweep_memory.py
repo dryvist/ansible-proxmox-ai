@@ -9,7 +9,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
-ARTIFACT_FILE = REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml"
+ARTIFACT_FILE = REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml"
 PROFILE_FILE = REPO_ROOT / "roles/vllm_serving/defaults/main/10-profiles.yml"
 GIB = 2**30
 GPU_MEMORY_GIB = 96

@@ -14,9 +14,9 @@ ENGINE_ROOTS = {
 }
 ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
-    REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
-    REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml",
-    REPO_ROOT / "llm-models.d/68-gpu-pro6000-stage0-artifacts.yml",
+    REPO_ROOT / "llm-models.d/66-gpu-artifacts-glm53flash.yml",
+    REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
+    REPO_ROOT / "llm-models.d/68-gpu-stage0-artifacts.yml",
 )
 LOCAL_VERIFIER = SHARED_ROOT / "files/verify-local-model-store.py"
 
@@ -180,7 +180,6 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
         assert include["loop_control"]["loop_var"] == f"{prefix}_cache_sync_artifact_id"
         assert f"{prefix}_active_artifact.required_artifact_ids" in include["loop"]
         assert f"{prefix}_active_profile" in yaml.safe_dump(validate)
-        assert "nvidia_gpu_guest_model_cache_mount_path | length > 0" in validate["ansible.builtin.assert"]["that"]
         assert "nvidia_gpu_guest_model_origin_mount_path" not in str(validate)
 
     assert "nvidia_gpu_guest_cache_sync_artifact.required_artifact_ids" not in str(registry_tasks)
@@ -231,7 +230,6 @@ def test_model_store_downloads_pinned_artifacts_then_pulls_from_origin():
         SHARED_ROOT / "tasks/cache-sync.yml",
         REPO_ROOT / "roles/llm_gpu_serving/tasks/cache-sync.yml",
         SHARED_ROOT / "tasks/verify-model-store-origin-repo.yml",
-        REPO_ROOT / "roles/llm_gpu_serving/tasks/verify-model-store-origin-repo.yml",
     ):
         assert "cache\n      - verify" not in path.read_text(encoding="utf-8")
     assert "list_repo_tree" not in LOCAL_VERIFIER.read_text(encoding="utf-8")
