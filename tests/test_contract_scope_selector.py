@@ -330,7 +330,7 @@ def test_router_scope_preserves_manifest_execution_order(path: str) -> None:
     selected = json.loads(result.stdout)["llm_router_playbooks"]
     assert selected == full
     paths = [playbook for group in selected for playbook in group.split()]
-    assert len(paths) == len(set(paths)) == 98
+    assert len(paths) == len(set(paths)) == 99
 
 
 def test_changed_router_groups_follow_manifest_order_not_path_order() -> None:
