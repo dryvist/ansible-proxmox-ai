@@ -1,6 +1,8 @@
 ---
-# Verifies the trusted code evaluator dispatcher is enabled in both Langfuse
-# processes through the shared worker environment anchor.
+# Verifies the code evaluator dispatcher reaches both Langfuse processes only
+# while evaluator reconciliation is enabled. Web and worker inherit it through
+# the shared worker environment anchor; with reconciliation off the variable is
+# omitted from the rendered Compose document.
 #
 # Run from the repository root:
 #   ansible-playbook tests/langfuse_docker/test_code_eval_compose.yml -i localhost, -c local
@@ -37,36 +39,56 @@
           salt: fixture-salt
           encryption_key: fixture-encryption
 
-    - name: Render the Compose document and resolve its shared environment anchor
+    - name: Render the Compose document with evaluator reconciliation off
       ansible.builtin.set_fact:
-        _rendered: "{{ lookup('template', _template) | from_yaml }}"
+        _rendered_off: "{{ lookup('template', _template) | from_yaml }}"
 
-    - name: The dispatcher and queue are enabled for both web and worker
+    - name: Neither web nor worker receives a dispatcher while reconciliation is off
       ansible.builtin.assert:
         quiet: true
         that:
           - >-
-            _rendered.services['langfuse-worker'].environment.LANGFUSE_CODE_EVAL_DISPATCHER
+            'LANGFUSE_CODE_EVAL_DISPATCHER' not in _rendered_off.services['langfuse-worker'].environment
+          - >-
+            'LANGFUSE_CODE_EVAL_DISPATCHER' not in _rendered_off.services['langfuse-web'].environment
+        fail_msg: >-
+          The insecure-local code evaluator dispatcher must not reach Langfuse
+          web or worker unless evaluator reconciliation is enabled.
+
+    - name: Enable evaluator reconciliation for the second render
+      ansible.builtin.set_fact:
+        langfuse_docker_stage0_eval_reconcile_enabled: true
+
+    - name: Render the Compose document with evaluator reconciliation on
+      ansible.builtin.set_fact:
+        _rendered_on: "{{ lookup('template', _template) | from_yaml }}"
+
+    - name: The dispatcher and queue are enabled for both web and worker while reconciliation is on
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _rendered_on.services['langfuse-worker'].environment.LANGFUSE_CODE_EVAL_DISPATCHER
             == 'insecure-local'
           - >-
-            _rendered.services['langfuse-web'].environment.LANGFUSE_CODE_EVAL_DISPATCHER
+            _rendered_on.services['langfuse-web'].environment.LANGFUSE_CODE_EVAL_DISPATCHER
             == 'insecure-local'
           - >-
-            _rendered.services['langfuse-worker'].environment.QUEUE_CONSUMER_CODE_EVAL_EXECUTION_QUEUE_IS_ENABLED
+            _rendered_on.services['langfuse-worker'].environment.QUEUE_CONSUMER_CODE_EVAL_EXECUTION_QUEUE_IS_ENABLED
             == 'true'
           - >-
-            _rendered.services['langfuse-web'].environment.QUEUE_CONSUMER_CODE_EVAL_EXECUTION_QUEUE_IS_ENABLED
+            _rendered_on.services['langfuse-web'].environment.QUEUE_CONSUMER_CODE_EVAL_EXECUTION_QUEUE_IS_ENABLED
             == 'true'
         fail_msg: >-
           The local code evaluator dispatcher and queue must be enabled in both
-          Langfuse web and worker processes.
+          Langfuse web and worker processes when evaluator reconciliation is on.
 
     - name: Ingestion skips the ClickHouse read-back for every project
       ansible.builtin.assert:
         quiet: true
         that:
           - >-
-            _rendered.services[item].environment.LANGFUSE_SKIP_INGESTION_CLICKHOUSE_READ_MIN_PROJECT_CREATE_DATE
+            _rendered_off.services[item].environment.LANGFUSE_SKIP_INGESTION_CLICKHOUSE_READ_MIN_PROJECT_CREATE_DATE
             == '2025-01-01'
         fail_msg: "{{ item }} must skip the per-event ClickHouse read during ingestion."
       loop: [langfuse-worker, langfuse-web]

@@ -59,14 +59,20 @@
           - "'predictedKeys.length !== expectedKeys.length' in _source"
           - "'probabilityTolerance' in _source"
 
+    - name: Count the Langfuse API tasks and the ones that set no_log on the task itself
+      ansible.builtin.set_fact:
+        _langfuse_api_task_count: "{{ (_langfuse_api_task_count | default(0) | int) + 1 }}"
+        _langfuse_api_no_log_count: >-
+          {{ (_langfuse_api_no_log_count | default(0) | int)
+             + (1 if item.no_log | default(false) | bool else 0) }}
+      loop: "{{ _reconcile | from_yaml }}"
+      loop_control:
+        label: "{{ item.name | default('unnamed task') }}"
+      when: "'ansible.builtin.uri' in item"
+
     - name: Require every project API request to hide credentials and data bodies
       ansible.builtin.assert:
         quiet: true
         that:
           - _langfuse_api_task_count | int == 7
-          - _langfuse_api_no_log_count | int == 7
-      vars:
-        _langfuse_api_task_count: >-
-          {{ _reconcile | regex_findall('ansible[.]builtin[.]uri:') | length }}
-        _langfuse_api_no_log_count: >-
-          {{ _reconcile | regex_findall('no_log: true') | length }}
+          - _langfuse_api_no_log_count | int == _langfuse_api_task_count | int

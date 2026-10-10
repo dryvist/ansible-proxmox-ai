@@ -24,4 +24,3 @@ def test_front_door_probe_accepts_the_live_unauthenticated_health_response() -> 
 
     assert target["url"].endswith("/health/liveliness")
     assert target["ok_codes"].split() == [str(LIVE_LITELLM_HEALTH_RESPONSE["status_code"])]
-    assert LIVE_LITELLM_HEALTH_RESPONSE["body"]

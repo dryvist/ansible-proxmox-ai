@@ -26,7 +26,7 @@ def test_one_renovate_pin_declares_every_backend_asset():
     )
 
     assert text.splitlines()[pin_line - 1].startswith("# renovate: datasource=github-releases")
-    assert "depName=ggml-org/llama.cpp versioning=loose" in text.splitlines()[pin_line - 1]
+    assert r"depName=ggml-org/llama.cpp versioning=regex:^b(?<major>\d+)$" in text.splitlines()[pin_line - 1]
     for key in (
         "llamacpp_release_cpu_asset",
         "llamacpp_release_vulkan_asset",
