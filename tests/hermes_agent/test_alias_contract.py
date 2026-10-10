@@ -144,7 +144,7 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
     assert all(
         entry.get("serving_role")
         for entry in registry
-        if entry.get("servable") and entry.get("tier") == "large"
+        if entry.get("servable") and entry.get("tier") == "local-large"
     )
     assert all(
         entry.get("profile") and "serving_role" not in entry

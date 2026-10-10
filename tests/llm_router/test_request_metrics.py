@@ -193,7 +193,7 @@ def test_caller_session_and_attribution_survive_defaults(module):
         "metadata": {
             "runner": "lm-eval",
             "purpose": "live",
-            "tier": "large",
+            "tier": "local-large",
             "run_id": "run-042",
             "trace_name": "custom",
             "trace_release": "app-release",
@@ -208,13 +208,13 @@ def test_caller_session_and_attribution_survive_defaults(module):
     for carrier in ["requester_metadata", "spend_logs_metadata", "trace_metadata"]:
         assert result["metadata"][carrier]["runner"] == "lm-eval"
         assert result["metadata"][carrier]["purpose"] == "live"
-        assert result["metadata"][carrier]["tier"] == "large"
+        assert result["metadata"][carrier]["tier"] == "local-large"
         assert result["metadata"][carrier]["trace_release"] == "app-release"
         assert result["metadata"][carrier]["trace_version"] == "component-version"
     record = module["build_record"](_kwargs({"metadata": result["metadata"]}), None, 0, 1)
     assert record["runner"] == "lm-eval"
     assert record["purpose"] == "live"
-    assert record["tier"] == "large"
+    assert record["tier"] == "local-large"
 
 
 @pytest.mark.parametrize("key_metadata", [None, {}, {"trace_defaults": {}}])

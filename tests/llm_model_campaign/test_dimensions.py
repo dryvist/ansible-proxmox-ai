@@ -224,7 +224,7 @@ def _render_converter_argv(model: dict[str, Any]) -> list[str]:
         "_llm_campaign_port": 8000,
         "engine": "vllm",
         "_llm_campaign_concurrency_value": 4,
-        "model_size": "medium",
+        "model_size": "size-medium",
         "_llm_campaign_context_value": 8192,
         "_llm_campaign_gpu_metadata": ["Example GPU", "97887", "100.1", "300.00"],
         "power_cap_w": "300",
