@@ -24,6 +24,9 @@ on:
       run_selector_checks:
         type: boolean
         required: true
+      timeout_minutes:
+        type: number
+        default: 10
 
 permissions:
   contents: read
@@ -32,19 +35,13 @@ jobs:
   syntax-check:
     name: Syntax Check
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
 
     # Static placeholders for the required-environment inputs the llm_router
     # role reads. No workflow context or untrusted input is interpolated here.
     # NOT secrets and NOT a bypass: the role's guards still refuse a real
     # converge with these unset, and the tests below render the config rather
     # than reaching any provider.
-    #
-    # They became necessary when those guards were made able to fire. Before
-    # that, `lookup('env', 'NAME') | mandatory(...)` returned '' rather than
-    # raising, so every test that renders the proxy config was asserting
-    # against a config carrying an EMPTY master key and bearer token — and
-    # passing. Eight tests were in that state. Supplying obvious placeholders
-    # is what makes those assertions mean anything.
     env:
       LLM_ROUTER_MASTER_KEY: sk-ci-placeholder-not-a-secret
       LLM_LARGE_BEARER_TOKEN: ci-placeholder-bearer-not-a-secret
@@ -58,17 +55,19 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.14'
+          cache: pip
+          cache-dependency-path: .github/requirements-ci.txt
 
       # pytest joins the existing pip install: the hermes_agent self-checks below
       # use parametrize and raises, so pytest is their runner, not an extra tool.
       - name: Install Ansible
         run: |
           python -m pip install --upgrade pip
-          pip install ansible pytest pyyaml
+          pip install -r .github/requirements-ci.txt
 
       # Cache Galaxy content keyed on requirements.yml; the install verifies
       # restored dependencies and installs any that are missing.
-      # Same key/paths as dryvist/.github's _ansible-ci.yml so a warm run of
+      # Same v2 key/paths as dryvist/.github's _ansible-ci.yml on main, so a warm run of
       # either workflow warms the other.
       - name: Cache Ansible Galaxy content
         id: galaxy-cache
@@ -77,7 +76,9 @@ jobs:
           path: |
             ~/.ansible/collections
             ~/.ansible/roles
-          key: ansible-galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+          key: ansible-galaxy-v2-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+          restore-keys: |
+            ansible-galaxy-v2-${{ runner.os }}-
 
       - name: Install Ansible dependencies
         run: |
@@ -174,7 +175,7 @@ jobs:
       # the converge's own eval was broken, which is the drift this whole
       # change removes — so the installer is the honest cost of the test.
       - name: Install Nix
-        if: inputs.full_suite
+        if: inputs.full_suite || contains(inputs.ansible_tests, 'tests/agent_guest/test_residual_deny_contract.yml')
         uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
 
       # phoenix_docker renders Authelia SSO env only when a client secret is
@@ -301,10 +302,12 @@ jobs:
     with:
       full_suite: ${{ inputs.full_suite }}
       playbooks: ${{ inputs.llm_router_playbooks }}
+      timeout_minutes: ${{ inputs.timeout_minutes }}
 
   verify-inventory-load:
     name: Verify Inventory Load
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     if: inputs.full_suite || inputs.run_inventory
 
     steps:
@@ -315,11 +318,13 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.14'
+          cache: pip
+          cache-dependency-path: .github/requirements-ci.txt
 
       - name: Install Ansible
         run: |
           python -m pip install --upgrade pip
-          pip install ansible
+          pip install -r .github/requirements-ci.txt
 
       # load_tofu.yml (imported by verify_inventory.yml) include_role's the
       # shared inventory_resolve role by FQCN, so this run is what proves the
@@ -328,7 +333,7 @@ jobs:
       # ignore the other section and still exit zero.
       # Cache Galaxy content keyed on requirements.yml; the install verifies
       # restored dependencies and installs any that are missing.
-      # Same key/paths as dryvist/.github's _ansible-ci.yml so a warm run of
+      # Same v2 key/paths as dryvist/.github's _ansible-ci.yml on main, so a warm run of
       # either workflow warms the other.
       - name: Cache Ansible Galaxy content
         id: galaxy-cache
@@ -337,7 +342,9 @@ jobs:
           path: |
             ~/.ansible/collections
             ~/.ansible/roles
-          key: ansible-galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+          key: ansible-galaxy-v2-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+          restore-keys: |
+            ansible-galaxy-v2-${{ runner.os }}-
 
       - name: Install Ansible dependencies
         run: |

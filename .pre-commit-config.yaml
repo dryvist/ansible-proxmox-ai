@@ -21,14 +21,13 @@ repos:
       - id: ansible-lint
         name: ansible-lint
         language: system
-        # Bare `ansible-lint`, no path argument: matches the `ansible-lint`
-        # CI job exactly, which lints the whole repo (molecule/, playbooks/,
-        # roles/ — everything `.ansible-lint`'s exclude_paths doesn't
-        # exclude). A prior `roles/`-only scoping here caused ansible-lint to
-        # never see molecule/ locally, so a real line-length violation there
-        # passed locally and failed CI. The cross-repo `docker_engine`
-        # meta-dependency that scoping worked around is resolved by
-        # `.ansible-lint`'s own `mock_roles`.
+        # Lints only the staged YAML files, passed explicitly. The CI
+        # `ansible-lint` job still lints the whole repo, so CI remains the
+        # full-repo gate. Staged molecule/, playbooks/ and roles/ files are all
+        # passed here too, so a violation in a file being committed is caught
+        # before the commit. A whole-repo lint on every commit took 15-40 min
+        # with several sessions sharing the machine.
+        # `require_serial` keeps one ansible-lint process per commit.
         #
         # `env -u GIT_DIR ...` is required, not cosmetic. Git exports GIT_DIR,
         # GIT_INDEX_FILE and GIT_WORK_TREE to every hook, and child processes
@@ -40,7 +39,8 @@ repos:
         # that is perfectly valid upstream.
         entry: env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE ansible-lint
         files: \.(yaml|yml)$
-        pass_filenames: false
+        pass_filenames: true
+        require_serial: true
 
   # markdownlint-cli2, not markdownlint-cli: the repo's canonical markdown
   # config is .markdownlint-cli2.yaml (auto-discovered; line_length 160 +
