@@ -32,6 +32,10 @@ ANSIBLE_TESTS = {
 }
 
 
+# Test files this change deletes. Nothing runs for them, and the registry edit
+# that retires each one is part of the same diff.
+RETIRED_TESTS = {"tests/langfuse_docker/test_code_eval_dispatcher.yml"}
+
 PYTEST_PATH_TARGETS = {
     "roles/dify_docker/templates/docker-compose.yml.j2": "tests/agent_concurrency/test_runner_compose_caps.py",
     "roles/langflow_docker/defaults/main.yml": "tests/agent_concurrency/test_runner_compose_caps.py",
@@ -69,6 +73,7 @@ ROLE_TESTS = {
     "llamaindex": set(),
     "qdrant_docker": {"tests/qdrant_docker/"},
     "agent_guest": set(),
+    "clickhouse_docker": set(),
 }
 TEST_SCOPES = {target.removeprefix("tests/").rstrip("/")
                for targets in ROLE_TESTS.values() for target in targets if target.endswith("/")}
@@ -124,6 +129,8 @@ def select(paths: list[str]) -> dict[str, object]:
             continue
         if path in PYTEST_PATH_TARGETS:
             pytest_targets.add(PYTEST_PATH_TARGETS[path])
+        if path in RETIRED_TESTS:
+            continue
         if path.startswith("tests/"):
             parts = Path(path).parts
             owner = parts[1] if len(parts) > 2 else ""
