@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Select focused contract tests from an explicit changed-path mapping."""
+"""Select focused contract tests from an explicit changed-path mapping.
+
+A path the mapping does not cover selects the full suite instead of failing.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
 import re
-import sys
 from pathlib import Path
 from typing import TypedDict
 
@@ -98,7 +100,6 @@ class Selection(TypedDict):
     llm_router_playbooks: list[str]
     run_inventory: bool
     run_selector_checks: bool
-    unknown: list[str]
 
 
 def llm_router_matrix() -> list[list[str]]:
@@ -139,7 +140,6 @@ def full_selection() -> Selection:
         "llm_router_playbooks": [" ".join(entry) for entry in llm_router_matrix()],
         "run_inventory": True,
         "run_selector_checks": True,
-        "unknown": [],
     }
 
 
@@ -150,7 +150,6 @@ def select(paths: list[str]) -> Selection:
     run_inventory = False
     run_selector_checks = False
     route_full = False
-    unknown: list[str] = []
     matrix = llm_router_matrix()
     matrix_by_test = {test: entry for entry in matrix for test in entry}
 
@@ -209,18 +208,18 @@ def select(paths: list[str]) -> Selection:
                 elif importers := router_imports(matrix).get(path):
                     router_tests.update(importers)
                 else:
-                    unknown.append(raw_path)
+                    route_full = True  # unmapped router playbook: run the full matrix
             elif Path(path).suffix == ".py" and Path(path).is_file():
                 pytest_targets.add(path)
             elif Path(path).suffix in {".yml", ".yaml"} and Path(path).is_file():
                 if path in ANSIBLE_TESTS:
                     ansible_tests.add(path)
                 else:
-                    unknown.append(raw_path)
+                    route_full = True  # unmapped Ansible test: run the full suite
             elif Path(path).is_dir():
                 pytest_targets.add(path)
             else:
-                unknown.append(raw_path)
+                route_full = True  # unmapped test file: run the full suite
         elif path.startswith("roles/"):
             role = path.split("/")[1]
             if role in ROLE_TESTS or role == "llm_router":
@@ -260,9 +259,8 @@ def select(paths: list[str]) -> Selection:
         else:
             route_full = True  # unmapped root file: no narrower scope is known
 
-    unknown_paths = sorted(set(unknown))
     if route_full:
-        return {**full_selection(), "unknown": unknown_paths}
+        return full_selection()
     return {
         "pytest_targets": sorted(pytest_targets),
         "ansible_tests": sorted(ansible_tests),
@@ -270,7 +268,6 @@ def select(paths: list[str]) -> Selection:
                                  if " ".join(entry) in router_tests],
         "run_inventory": run_inventory,
         "run_selector_checks": run_selector_checks,
-        "unknown": unknown_paths,
     }
 
 
@@ -288,9 +285,6 @@ def main() -> int:
         if args.paths_file:
             paths = Path(args.paths_file).read_text().splitlines()
         result = select(paths)
-    if result["unknown"]:
-        print("Unmapped contract paths: " + ", ".join(result["unknown"]), file=sys.stderr)
-        return 2
     encoded = json.dumps(result, sort_keys=True)
     if args.output:
         with open(args.output, "a", encoding="utf-8") as output:

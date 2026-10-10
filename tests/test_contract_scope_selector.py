@@ -118,7 +118,7 @@ def test_llm_router_role_paths_select_the_complete_router_contract() -> None:
     assert {"tests/llm_gpu_engine_roles/", "tests/hermes_agent/"} <= set(selection["pytest_targets"])
 
 
-def test_unmapped_yaml_contract_fails_fast(tmp_path: Path) -> None:
+def test_unmapped_yaml_contract_routes_to_full_suite(tmp_path: Path) -> None:
     contract = tmp_path / "tests/phoenix_docker/unmapped-contract.yml"
     contract.parent.mkdir(parents=True)
     contract.write_text("---\n[]\n")
@@ -131,8 +131,9 @@ def test_unmapped_yaml_contract_fails_fast(tmp_path: Path) -> None:
         check=False, capture_output=True, text=True, cwd=tmp_path,
     )
 
-    assert result.returncode == 2
-    assert "Unmapped contract paths" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "Unmapped" not in result.stderr
+    assert json.loads(result.stdout) == json.loads(run_selector("--full").stdout)
 
 
 def test_removed_test_file_selects_its_owner_scope() -> None:
