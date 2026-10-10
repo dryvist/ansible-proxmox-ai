@@ -40,7 +40,10 @@ def test_pro6000_profiles_are_inactive_placeholders_and_free() -> None:
     serving_profiles = _serving_profiles()
     serving_core = yaml.safe_load(VLLM_CORE_DEFAULTS.read_text(encoding="utf-8"))
 
-    assert len(entries) == 31
+    profiles = [entry["profile"] for entry in entries]
+    assert profiles
+    assert len(profiles) == len(set(profiles))
+    assert set(profiles) <= set(serving_profiles)
     assert defaults["llm_router_gpu_profiles_enabled"] is False
     assert {entry["profile"] for entry in entries} == {
         "small",

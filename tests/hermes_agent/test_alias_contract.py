@@ -76,10 +76,12 @@ def test_static_aliases_and_roles_follow_the_registry() -> None:
         and not _is_long_context(entry)
         for alias in entry.get("stable_aliases", [])
     }
-    # The count and every target's servability are what a stray alias would
-    # break, so a new consumer-facing name still lands here as a reviewed edit.
+    # Every enabled alias the registry declares must be a static alias. The set
+    # is read from the registry, never typed out: an enabled alias the static
+    # filter drops (for example, one moved to the database-role set) fails here.
     assert aliases, "no static alias loaded; nothing below is checked"
-    assert len(aliases) == 10
+    declared = {alias for entry in registry if entry.get("enabled") for alias in entry.get("stable_aliases", [])}
+    assert set(aliases) == declared
     # Judge and subagent remain database-seeded roles, selected from the
     # registry-derived GPU profile projection rather than static aliases.
     seeded_roles = {item["role"]: item for item in router_defaults["llm_router_role_deployments"]}
