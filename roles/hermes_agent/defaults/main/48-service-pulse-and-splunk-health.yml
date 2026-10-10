@@ -1,5 +1,5 @@
 ---
-# --- Service pulse and Splunk license audit -----------------------------------
+# --- Service pulse and Splunk platform health ---------------------------------
 # Two direct crons whose bodies live in the pinned ai-llm-prompts catalog
 # (hermes_agent_prompts_flake_ref) and are loaded by tasks/prompt_catalog.yml.
 # Both keep history in Hindsight between runs (baselines, flaky list, ingest
@@ -32,13 +32,14 @@ hermes_agent_service_pulse_endpoints: |
     both with header "Authorization: Token token=${ZAMMAD_API_TOKEN}"; each answers {"total_count": N}
     and nothing else, so read the number and never fetch the tickets themselves.
 
-# splunk-license: every two hours at :01 (a minute no other agentic job uses),
+# splunk-health: every two hours at :01 (a minute no other agentic job uses),
 # under the Splunk admin profile so the findings share that profile's memory
-# bank. Alerts only on a real signal or a projection over the learned threshold.
-hermes_agent_splunk_license_enabled: true
-hermes_agent_splunk_license_cron_name: splunk-license
-hermes_agent_splunk_license_cron_schedule: "1 */2 * * *"
-hermes_agent_splunk_license_cron_prompt_file: hermes-splunk-license.md
+# bank. An open-ended review of Splunk's own health: the catalog body chooses
+# what to inspect and keeps its baselines and known noise in Hindsight.
+hermes_agent_splunk_health_enabled: true
+hermes_agent_splunk_health_cron_name: splunk-health
+hermes_agent_splunk_health_cron_schedule: "1 */2 * * *"
+hermes_agent_splunk_health_cron_prompt_file: hermes-splunk-health.md
 
 # The two jobs, appended to hermes_agent_direct_cron_jobs by
 # 43-direct-cron-jobs-core.yml. Both prompt vars are set by prompt_catalog.yml.
@@ -53,21 +54,27 @@ hermes_agent_direct_cron_jobs_service_pulse:
          and hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
-  - name: "{{ hermes_agent_splunk_license_cron_name }}"
-    schedule: "{{ hermes_agent_splunk_license_cron_schedule }}"
-    prompt_var: hermes_agent_splunk_license_cron_prompt
+  - name: "{{ hermes_agent_splunk_health_cron_name }}"
+    schedule: "{{ hermes_agent_splunk_health_cron_schedule }}"
+    prompt_var: hermes_agent_splunk_health_cron_prompt
     skill: dryvist/splunk-monitor
     deliver: >-
       slack:{{ hermes_agent_slack_splunk_channel
                | default(hermes_agent_slack_hermes_all_channel, true) }}
     hermes_home: "{{ hermes_agent_hermes_home }}/profiles/splunk-admin"
     enabled: >-
-      {{ hermes_agent_splunk_license_enabled | bool
+      {{ hermes_agent_splunk_health_enabled | bool
          and hermes_agent_splunk_monitor_enabled | bool
          and hermes_agent_splunk_mcp_url | length > 0
          and hermes_agent_slack_bot_token | length > 0
          and hermes_agent_slack_app_token | length > 0
          and hermes_agent_slack_home_channel | length > 0 }}
+  # Withdrawn: splunk-health above replaced it. It was installed under the
+  # splunk-admin profile, so the removal must run in that profile's home too.
+  - name: splunk-license
+    schedule: "1 */2 * * *"
+    hermes_home: "{{ hermes_agent_hermes_home }}/profiles/splunk-admin"
+    enabled: false
   # Withdrawn: the pulse above replaced it. enabled:false makes
   # reconcile_direct_cron.yml remove it wherever it is still installed.
   - name: demo-pulse
