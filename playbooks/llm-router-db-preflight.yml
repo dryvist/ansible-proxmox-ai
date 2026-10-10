@@ -1,0 +1,32 @@
+---
+# Read-only preflight of the LiteLLM router database against the Git-rendered
+# role set and model list. Reports drift; never changes anything.
+#
+# Tagged `never`, so no converge runs it. Select it explicitly:
+#   --tags llm_router_db_preflight --limit <one router>,localhost
+# (Semaphore template "ai-site" has no default --tags, so the tag is the only
+# way in.) The tasks run once, on the first selected router, and reach the
+# database from there, which pg_hba admits. Every query is a SELECT under
+# default_transaction_read_only=on. The task file is
+# roles/llm_router/tasks/db-preflight.yml.
+#
+# Loads the inventory and the secrets prefetch the same way the llm_router play
+# in llm-serving.yml does: the always-tagged OpenBao prefetch in site.yml runs
+# first, and the vars_files below are the same group inputs.
+- name: Read-only preflight of the llm_router database against the Git role set
+  hosts: llm_router_group
+  become: true
+  gather_facts: false
+  # Semaphore supplies a generated inventory outside this checkout, so load the
+  # canonical router inputs explicitly, as llm-serving.yml does.
+  vars_files:
+    - "{{ playbook_dir }}/../inventory/group_vars/all.yml"
+    - "{{ playbook_dir }}/../inventory/group_vars/llm_router_group.yml"
+  tags:
+    - never
+    - llm_router_db_preflight
+  tasks:
+    - name: Run the database preflight (read-only, reports drift without failing on it)
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: db-preflight.yml

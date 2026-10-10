@@ -1,0 +1,221 @@
+---
+# Read-only preflight of the router database against the Git-rendered role set.
+# Entered only through playbooks/llm-router-db-preflight.yml (tag `never`), so no
+# converge reaches it. It reports drift and never fails on it: the only failures
+# are a query that errors or a database that is not configured.
+#
+# Every database task is run_once, so the single router that runs them reaches
+# the database over its own connection (pg_hba admits it). The registry load and
+# the in-memory render touch no database and run on each host. Every query is a
+# SELECT under default_transaction_read_only=on. The password travels only in
+# PGPASSWORD, never on argv, and each psql task is no_log.
+#
+# Stored fallbacks are read from LiteLLM_Config (param_name = 'router_settings',
+# key 'fallbacks'), the row POST /fallback writes (tasks/seed-roles.yml). Git's
+# expected fallbacks are the declared order filtered to the names the proxy
+# serves, the same intersection seed-roles.yml writes. A rung the proxy does not
+# serve is skipped and counted, not reported as drift.
+
+- name: Refuse the preflight when no router database is configured
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - llm_router_db_host | default('') | length > 0
+    fail_msg: >-
+      llm_router_db_host is empty: this router has no database to preflight.
+  run_once: true
+
+- name: Load the fabric model registry
+  ansible.builtin.import_tasks: registry.yml
+
+# The rendered config is the git side of the model-list comparison. It is
+# rendered in memory, the same way assert-registry-render-parity.yml renders it.
+- name: Render the git model_list in memory
+  ansible.builtin.set_fact:
+    _llm_router_preflight_git_models: >-
+      {{ (lookup('template', _llm_router_preflight_template) | from_yaml).model_list
+         | map(attribute='model_name') | unique | list }}
+  vars:
+    _llm_router_preflight_template: "{{ role_path }}/templates/config.yaml.j2"
+  no_log: true
+
+- name: Name the router database connection (the password stays in PGPASSWORD)
+  ansible.builtin.set_fact:
+    _llm_router_preflight_dsn: >-
+      postgresql://{{ llm_router_db_user }}@{{ llm_router_db_host }}:{{ llm_router_db_port
+      }}/{{ llm_router_db_name }}
+  no_log: true
+  run_once: true
+
+- name: Read the newest Prisma migration row
+  ansible.builtin.command:
+    argv:
+      - psql
+      - "{{ _llm_router_preflight_dsn }}"
+      - -t
+      - -A
+      - -F
+      - "|"
+      - -c
+      - "SELECT migration_name, finished_at FROM _prisma_migrations ORDER BY finished_at DESC NULLS LAST LIMIT 1"
+  environment:
+    PGPASSWORD: "{{ llm_router_db_password }}"
+    PGOPTIONS: "-c default_transaction_read_only=on"
+  register: _llm_router_preflight_migration
+  changed_when: false
+  failed_when: _llm_router_preflight_migration.rc != 0
+  no_log: true
+  run_once: true
+
+- name: Count the router_settings row in LiteLLM_Config
+  ansible.builtin.command:
+    argv:
+      - psql
+      - "{{ _llm_router_preflight_dsn }}"
+      - -t
+      - -A
+      - -c
+      - "SELECT count(*) FROM \"LiteLLM_Config\" WHERE param_name = 'router_settings'"
+  environment:
+    PGPASSWORD: "{{ llm_router_db_password }}"
+    PGOPTIONS: "-c default_transaction_read_only=on"
+  register: _llm_router_preflight_settings
+  changed_when: false
+  failed_when: _llm_router_preflight_settings.rc != 0
+  no_log: true
+  run_once: true
+
+- name: Read the stored router_settings fallbacks as JSON
+  ansible.builtin.command:
+    argv:
+      - psql
+      - "{{ _llm_router_preflight_dsn }}"
+      - -t
+      - -A
+      - -c
+      - >-
+        SELECT COALESCE((param_value::jsonb) -> 'fallbacks', 'null'::jsonb)::text
+        FROM "LiteLLM_Config" WHERE param_name = 'router_settings'
+  environment:
+    PGPASSWORD: "{{ llm_router_db_password }}"
+    PGOPTIONS: "-c default_transaction_read_only=on"
+  register: _llm_router_preflight_fallbacks
+  changed_when: false
+  failed_when: _llm_router_preflight_fallbacks.rc != 0
+  no_log: true
+  run_once: true
+
+- name: Read every model name the database holds
+  ansible.builtin.command:
+    argv:
+      - psql
+      - "{{ _llm_router_preflight_dsn }}"
+      - -t
+      - -A
+      - -c
+      - "SELECT model_name FROM \"LiteLLM_ProxyModelTable\""
+  environment:
+    PGPASSWORD: "{{ llm_router_db_password }}"
+    PGOPTIONS: "-c default_transaction_read_only=on"
+  register: _llm_router_preflight_models
+  changed_when: false
+  failed_when: _llm_router_preflight_models.rc != 0
+  no_log: true
+  run_once: true
+
+# Parsing only: no database access, so the output stays visible.
+- name: Parse the query results
+  ansible.builtin.set_fact:
+    _llm_router_preflight_migration_row: "{{ _llm_router_preflight_migration.stdout | default('', true) | trim }}"
+    _llm_router_preflight_settings_rows: "{{ _llm_router_preflight_settings.stdout | default('0', true) | trim | int }}"
+    _llm_router_preflight_db_models: >-
+      {{ _llm_router_preflight_models.stdout_lines | default([], true)
+         | map('trim') | reject('equalto', '') | unique | sort | list }}
+    _llm_router_preflight_stored_raw: >-
+      {{ _llm_router_preflight_fallbacks.stdout | default('null', true) | trim | default('null', true) | from_json }}
+  run_once: true
+
+# The stored value is a list of single-key mappings ({role: [rungs]}), the shape
+# LiteLLM keeps in router_settings.fallbacks. A plain mapping is accepted too.
+- name: Build the stored fallback map (role -> rungs)
+  ansible.builtin.set_fact:
+    _llm_router_preflight_stored_map: >-
+      {{ {} if _llm_router_preflight_stored_raw is none
+         else (_llm_router_preflight_stored_raw
+               if _llm_router_preflight_stored_raw is mapping
+               else (_llm_router_preflight_stored_raw | map('dict2items') | flatten | items2dict)) }}
+  run_once: true
+
+- name: Compare each git role's fallbacks with the stored ones
+  ansible.builtin.set_fact:
+    _llm_router_preflight_roles: >-
+      {%- set served = _llm_router_preflight_git_models | union(_llm_router_preflight_db_models) -%}
+      {%- set ns = namespace(out=[]) -%}
+      {%- for d in llm_router_role_deployments -%}
+      {%- set declared = d.fallbacks | default([], true) | list -%}
+      {%- set expected = declared | select('in', served) | list -%}
+      {%- set has_record = d.role in _llm_router_preflight_stored_map -%}
+      {%- set stored = (_llm_router_preflight_stored_map[d.role] | default([], true) | list) if has_record else [] -%}
+      {%- if has_record and stored == expected -%}
+      {%- set status = 'matching' -%}
+      {%- elif not has_record and expected | length == 0 -%}
+      {%- set status = 'matching' -%}
+      {%- elif not has_record -%}
+      {%- set status = 'missing' -%}
+      {%- else -%}
+      {%- set status = 'drifted' -%}
+      {%- endif -%}
+      {%- set ns.out = ns.out + [{'role': d.role, 'status': status, 'expected': expected,
+                                  'stored': stored, 'skipped_unserved': declared | reject('in', served) | list}] -%}
+      {%- endfor -%}
+      {{ ns.out }}
+  run_once: true
+
+- name: Describe each drifted role's expected and stored rungs
+  ansible.builtin.set_fact:
+    _llm_router_preflight_drift_detail: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- for r in _llm_router_preflight_roles if r.status == 'drifted' -%}
+      {%- set ns.out = ns.out + [r.role ~ ': expected [' ~ (r.expected | join(', ')) ~
+                                 '], stored [' ~ (r.stored | join(', ')) ~ ']'] -%}
+      {%- endfor -%}
+      {{ ns.out }}
+  run_once: true
+
+# Roles are database rows by design, so they are not "DB-only".
+- name: Name the database models that Git does not render
+  ansible.builtin.set_fact:
+    _llm_router_preflight_db_only: >-
+      {{ _llm_router_preflight_db_models
+         | reject('in', _llm_router_preflight_git_models)
+         | reject('in', llm_router_role_deployments | map(attribute='role') | list)
+         | list }}
+  run_once: true
+
+- name: Report the router database preflight (read-only, no secrets)
+  ansible.builtin.debug:
+    msg:
+      - >-
+        Newest _prisma_migrations row:
+        {{ (_llm_router_preflight_migration_row.split('|') | first) ~ ' finished_at=' ~
+           (_llm_router_preflight_migration_row.split('|') | last)
+           if _llm_router_preflight_migration_row | length > 0 else 'none' }}
+      - >-
+        LiteLLM_Config router_settings row:
+        {{ 'present' if _llm_router_preflight_settings_rows | int > 0 else 'absent' }}
+      - >-
+        Role fallbacks (git roles={{ _llm_router_preflight_roles | length }}):
+        matching={{ _llm_router_preflight_roles
+                    | selectattr('status', 'equalto', 'matching') | list | length }},
+        drifted={{ _llm_router_preflight_roles
+                   | selectattr('status', 'equalto', 'drifted') | map(attribute='role') | list }},
+        missing={{ _llm_router_preflight_roles
+                   | selectattr('status', 'equalto', 'missing') | map(attribute='role') | list }}
+      - "Drifted detail: {{ _llm_router_preflight_drift_detail }}"
+      - >-
+        Rungs skipped as not served by the proxy (not counted as drift):
+        {{ _llm_router_preflight_roles | map(attribute='skipped_unserved') | flatten | unique | list | length }}
+      - >-
+        DB-only model names (not rendered by Git, not a git role):
+        {{ _llm_router_preflight_db_only }}
+  run_once: true
