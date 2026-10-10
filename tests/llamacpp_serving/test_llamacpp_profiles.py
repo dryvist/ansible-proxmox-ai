@@ -15,8 +15,8 @@ TEMPLATE_DIR = ROLE_ROOT / "templates"
 REGISTRY_FILE = REPO_ROOT / "llm-models.d/60-gpu.yml"
 ARTIFACT_FILES = (
     REPO_ROOT / "llm-models.d/65-gpu-artifacts.yml",
-    REPO_ROOT / "llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml",
-    REPO_ROOT / "llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml",
+    REPO_ROOT / "llm-models.d/66-gpu-artifacts-glm53flash.yml",
+    REPO_ROOT / "llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml",
 )
 LLAMA_BIN = "/opt/llm-gpu-serving/llama.cpp/llama-server"
 

@@ -32,6 +32,20 @@ mount point. Package, Python, Hugging Face, CUDA repository, and release
 downloads use the published inventory's `cache_proxy_urls.apt_cache` list; a
 missing list blocks the converge before upstream fetches.
 
+```sh
+ansible-galaxy install -r requirements.yml
+```
+
+## Usage
+
+The legacy group's serving play runs this role, one guest at a time. A scoped
+converge names the group and `localhost`, as the inventory loader needs:
+
+```sh
+scripts/run-ansible.sh playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.yml \
+  --tags llm_gpu_serving --limit llm_gpu_legacy_group,localhost
+```
+
 ## What it does
 
 - Installs the NVIDIA userspace (`libcuda1`, `nvidia-driver-cuda` for `nvidia-smi`)
@@ -46,14 +60,15 @@ missing list blocks the converge before upstream fetches.
   package for SM120 kernel support in one uv command.
 - Installs the Renovate-pinned llama.cpp CUDA assets from the shared
   `llamacpp_release` contract only when the recorded asset changes.
-- Seeds `model_store: true` artifacts from the base registry, GLM, and NVFP4
-  sweep shards into the declared origin with immutable Hub revisions. The seed playbook
+- Seeds `model_store: true` artifacts from the base registry and NVFP4 sweep
+  shards into the declared origin with immutable Hub revisions. The GLM shard is
+  not seeded. The seed playbook
   checks for running GPU compute applications before each download and verifies
   every populated repository with Hub checksums.
 - Pulls the active profile's registered repository from the origin into the
   writable local cache under `models/`, verifies the pinned revision, and then
-  lets the engine use that local path. Campaign playbooks can include the
-  `llm_gpu_serving` role with `tasks_from: cache-sync.yml` and an artifact ID
+  lets the engine use that local path. Campaign playbooks include the
+  `nvidia_gpu_guest` role with `tasks_from: cache-sync.yml` and an artifact ID
   without rendering or changing service units.
 - Renders one systemd unit for each enabled profile. On a profile change, handlers
   stop and disable the other units before starting and enabling the selected
@@ -70,8 +85,8 @@ UD-IQ1_S artifact; its router entry remains disabled until it is validated.
 Runtime serving settings live here; model bytes, Hub repository, include
 globs, file format, quantization, engine support, GGUF file name, and use are
 defined once in `llm-models.d/65-gpu-artifacts.yml`,
-`llm-models.d/66-gpu-pro6000-artifacts-glm53flash.yml`, and
-`llm-models.d/67-gpu-pro6000-artifacts-nvfp4-sweep.yml`. The router profile
+`llm-models.d/66-gpu-artifacts-glm53flash.yml`, and
+`llm-models.d/67-gpu-artifacts-nvfp4-sweep.yml`. The router profile
 registry links to those records by `artifact_id` and stays `enabled: false`,
 `servable: false` until a serving floor is measured. The shared GPU registry
 also contains the `16gb` llama.cpp candidate owned by `llamacpp_serving`; this
