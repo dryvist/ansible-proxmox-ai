@@ -21,14 +21,8 @@ repos:
       - id: ansible-lint
         name: ansible-lint
         language: system
-        # Bare `ansible-lint`, no path argument: matches the `ansible-lint`
-        # CI job exactly, which lints the whole repo (molecule/, playbooks/,
-        # roles/ — everything `.ansible-lint`'s exclude_paths doesn't
-        # exclude). A prior `roles/`-only scoping here caused ansible-lint to
-        # never see molecule/ locally, so a real line-length violation there
-        # passed locally and failed CI. The cross-repo `docker_engine`
-        # meta-dependency that scoping worked around is resolved by
-        # `.ansible-lint`'s own `mock_roles`.
+        # Lints only the staged files, one run at a time per machine; CI runs
+        # the full-repo `ansible-lint` job.
         #
         # `env -u GIT_DIR ...` is required, not cosmetic. Git exports GIT_DIR,
         # GIT_INDEX_FILE and GIT_WORK_TREE to every hook, and child processes
@@ -38,9 +32,19 @@ repos:
         # object store instead of the clone. The pinned commit is genuinely not
         # a ref here, so it fails with "upload-pack: not our ref" naming a SHA
         # that is perfectly valid upstream.
-        entry: env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE ansible-lint
+        entry: |-
+          sh -c '
+          mkdir -p "$HOME/.cache" && exec 9>"$HOME/.cache/pre-commit-ansible-lint.lock" || exit 1
+          msg="another ansible-lint is running on this machine; retry later"
+          if [ -x /usr/bin/lockf ]; then
+            /usr/bin/lockf -s -t 900 9 || { echo "$msg"; exit 1; }
+          elif command -v flock >/dev/null 2>&1; then
+            flock -w 900 9 || { echo "$msg"; exit 1; }
+          fi
+          exec env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE ansible-lint "$@"
+          ' ansible-lint
         files: \.(yaml|yml)$
-        pass_filenames: false
+        pass_filenames: true
 
   # markdownlint-cli2, not markdownlint-cli: the repo's canonical markdown
   # config is .markdownlint-cli2.yaml (auto-discovered; line_length 160 +
