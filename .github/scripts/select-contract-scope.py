@@ -252,8 +252,8 @@ def select(paths: list[str]) -> Selection:
             run_selector_checks = True
         elif path.startswith((".github/workflows/", ".github/scripts/")) or path == ".github/requirements-ci.txt":
             run_selector_checks = True
-            pytest_targets.update({"tests/test_contract_scope_selector.py", "tests/test_ci_workflow_policy.py",
-                                  "tests/test_ci_gate_dispatch.py"})
+            pytest_targets.update({"tests/test_contract_scope_selector.py", "tests/test_contract_scope_mapping.py",
+                                  "tests/test_ci_workflow_policy.py", "tests/test_ci_gate_dispatch.py"})
         elif (path.lower().endswith((".md", ".mdx", ".txt")) or path.startswith("docs/")
               or path == ".release-please-manifest.json"):
             continue
