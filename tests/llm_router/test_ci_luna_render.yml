@@ -1,0 +1,153 @@
+---
+# Render the CI-only Luna route from the shipping defaults and registry.
+- name: Verify the CI Luna route and its isolated key scope
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      github_actions_llm_router_key: sk-fixture-gha
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: sk-or-fixture
+      OPENROUTER_HERMES_KEY: sk-orh-fixture
+      OPENAI_API_KEY: sk-oa-fixture
+      ZAI_API_KEY: sk-zai-fixture
+      GEMINI_API_KEY: sk-gemini-fixture
+      DASHSCOPE_API_KEY: sk-dash-fixture
+      OPENCODE_API_KEY: sk-opencode-fixture
+  tasks:
+    - name: Load the role defaults and registry
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry through the role
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Render with a ChatGPT login
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: true
+
+    - name: Capture logged-in projections
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _private: >-
+          {{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}
+        _gha: >-
+          {{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}
+        _keys: "{{ llm_router_virtual_keys }}"
+
+    - name: The deployment is the registered CI Luna budgeted subscription
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _luna | length == 1
+          - _luna[0].litellm_params.model == 'chatgpt/' ~ llm_router_ci_luna_model
+          - _luna[0].litellm_params.reasoning_effort == 'xhigh'
+          - _luna[0].model_info.mode == 'responses'
+          - _luna[0].litellm_params.max_budget | float == 5.0
+          - _luna[0].litellm_params.budget_duration == '1d'
+          - _luna[0].litellm_params.input_cost_per_token | float == _entry.input_cost_per_token | float
+          - _luna[0].litellm_params.output_cost_per_token | float == _entry.output_cost_per_token | float
+          - _entry.review_private_only | bool
+          - _entry.hermes_chain | bool == false
+          - _entry.max_budget | float == 5.0
+          - _entry.budget_duration == '1d'
+          - llm_router_ci_luna_groups | length == 1
+        fail_msg: "CI Luna registry={{ _entry }} rendered={{ _luna }}"
+      vars:
+        _entry: >-
+          {{ llm_router_registry_enabled | selectattr('review_private_only', 'defined') | first }}
+        _luna: "{{ _config.model_list | selectattr('model_name', 'equalto', llm_router_ci_luna_groups[0]) | list }}"
+
+    - name: The private review chain contains only local rungs followed by CI Luna
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _private.fallbacks == _llm_router_review_local_head + llm_router_ci_luna_groups
+          - llm_router_ci_luna_groups | intersect(llm_router_external_subscription_rungs) | length == 0
+          - llm_router_ci_luna_groups | intersect(llm_router_d1_ladder_groups) | length == 0
+          - llm_router_ci_luna_groups | intersect(llm_router_hermes_default_fallback_chain) | length == 0
+          - llm_router_ci_luna_groups | intersect(_config.router_settings.default_fallbacks) | length == 0
+          - _fb_ci == [[]]
+        fail_msg: "review-private={{ _private.fallbacks }} fallbacks={{ _config.router_settings.fallbacks }}"
+      vars:
+        _fb_ci: >-
+          {{ _config.router_settings.fallbacks | selectattr('codex-ci', 'defined')
+             | map(attribute='codex-ci') | list }}
+
+    - name: Only github-actions can reach the review-only deployment and has no key budget
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_ci_luna_groups[0] in _gha.models
+          - _gha.daily_budget is not defined
+          - _gha.max_budget is not defined
+          - _gha.budget_duration is not defined
+          - _keys | rejectattr('alias', 'equalto', 'github-actions') | map(attribute='models')
+            | flatten | select('equalto', llm_router_ci_luna_groups[0]) | list | length == 0
+        fail_msg: "gha={{ _gha }} other model scopes={{ _keys | map(attribute='models') | list }}"
+
+    - name: The context-window escape for private review targets only CI Luna
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _context_private == [llm_router_ci_luna_groups]
+        fail_msg: "context-window fallbacks={{ _config.router_settings.context_window_fallbacks }}"
+      vars:
+        _context_private: >-
+          {{ _config.router_settings.context_window_fallbacks | selectattr('review-private', 'defined')
+             | map(attribute='review-private') | list }}
+
+    # Whitespace, never absent: an absent field falls through to the RUNNER's
+    # environment (same fixture rule as test_review_roles.yml).
+    - name: Model a node with no ChatGPT login
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: false
+        bao_local_llm_secrets:
+          OPENROUTER_API_KEY: sk-or-fixture
+          OPENROUTER_HERMES_KEY: sk-orh-fixture
+          OPENAI_API_KEY: sk-oa-fixture
+          ZAI_API_KEY: sk-zai-fixture
+          GEMINI_API_KEY: sk-gemini-fixture
+          DASHSCOPE_API_KEY: sk-dash-fixture
+          OPENCODE_API_KEY: sk-opencode-fixture
+          CHATGPT_LOGIN_FILE: "   "
+
+    - name: Capture the render without a ChatGPT login
+      ansible.builtin.set_fact:
+        _bare: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _bare_private: >-
+          {{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}
+
+    - name: Without a login the CI deployment is absent and private review stays local
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _bare.model_list | selectattr('model_name', 'equalto', 'codex-ci') | list | length == 0
+          - _bare_private.fallbacks == _llm_router_review_local_head
+          - llm_router_ci_luna_groups | length == 0
+        fail_msg: >-
+          bare deployment names={{ _bare.model_list | map(attribute='model_name') | list }}
+          private={{ _bare_private.fallbacks }}
