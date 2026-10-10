@@ -33,6 +33,13 @@ def test_logger_and_text_log_level_is_information():
     assert root.findtext("text_log/level") == "information"
 
 
+def test_each_system_log_is_declared_once():
+    # ClickHouse reads only the first of two same-named elements in one file.
+    tags = [child.tag for child in _render_override()]
+
+    assert len(tags) == len(set(tags)), tags
+
+
 def test_system_logs_expire_after_30_days():
     root = _render_override()
 
