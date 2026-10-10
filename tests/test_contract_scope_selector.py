@@ -62,6 +62,19 @@ def test_unmapped_role_fails_fast() -> None:
     assert "Unmapped contract paths" in result.stderr
 
 
+def test_nix_ai_pin_roles_are_mapped_without_contracts() -> None:
+    result = run_selector(
+        "roles/herdr_server/defaults/main.yml",
+        "roles/herdr_remote/defaults/main.yml",
+        "roles/nixos_deploy/defaults/main.yml",
+    )
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    assert selection["pytest_targets"] == []
+    assert selection["ansible_tests"] == []
+
+
 def test_release_back_merge_paths_need_no_contracts() -> None:
     result = run_selector(".release-please-manifest.json", "CHANGELOG.md")
 
