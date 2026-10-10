@@ -116,7 +116,8 @@
             == (llm_router_multi_member_cloud_groups + llm_router_rate_limit_retry_names) | unique | sort
           - "'enforce_model_rate_limits' in _config.router_settings.optional_pre_call_checks"
           - "'session_affinity' in _config.router_settings.optional_pre_call_checks"
-          - _cloud_models | length == 6
+          - _cloud_models | length > 0
+          - _cloud_models | length == _registry_paid_cloud | length
           - _modified_auto_routers | length == 1
           - _modified_auto_routers[0].model_name == hermes_brain_model
           - llm_router_model_group_aliases['fast'] == hermes_brain_model
@@ -156,7 +157,8 @@
           # final-resort deployments must appear in ascending input price, read
           # from their own litellm_params rather than restated as literals.
           - "'routing_groups' not in _config.router_settings"
-          - _final_resort | length == 2
+          - _final_resort | length > 0
+          - _final_resort | length == _registry_final_resort | length
           - >-
             _final_resort | map(attribute='litellm_params.input_cost_per_token')
             | map('float') | list | sort
@@ -218,6 +220,16 @@
              | selectattr('model_name', 'match', '^hermes-cloud-')
              | selectattr('litellm_params.input_cost_per_token', 'defined')
              | rejectattr('litellm_params.input_cost_per_token', 'in', [0, '0', '0.0']) | list }}
+        # Paid credentialed hermes-cloud registry entries, counted from the registry.
+        _registry_paid_cloud: >-
+          {{ llm_router_hermes_cloud_models_credentialed
+             | selectattr('input_cost_per_token', 'defined')
+             | rejectattr('input_cost_per_token', 'in', [0, '0', '0.0'])
+             | map(attribute='client_model_id') | select('match', '^hermes-cloud-') | list }}
+        _registry_final_resort: >-
+          {{ llm_router_hermes_cloud_models_credentialed
+             | selectattr('route_group', 'defined')
+             | selectattr('route_group', 'equalto', 'hermes-cloud-openrouter') | list }}
         _cloud_retry_groups: >-
           {{ _config.router_settings.model_group_retry_policy.keys() | list | sort }}
         _nonzero_cloud_retry_groups: >-

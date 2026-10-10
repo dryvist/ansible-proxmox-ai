@@ -109,23 +109,6 @@ member; `cooldown_time: 30s` delays re-probes. Per-error allowances are `1000`
 for rate limits, to avoid cooling healthy busy members, and `100` for timeouts,
 to park sustained failure storms. Source: `defaults/main/40-routing.yml`.
 
-## OpenRouter wildcard passthrough
-
-The enumerated OpenRouter loop is no longer the sole egress allowlist: any
-OpenRouter model is reachable by requesting `openrouter/<real-id>` directly
-(`model_name: "openrouter/*"`, `config.yaml.j2`). This is a deliberate
-reversal — read `defaults/main/30-openrouter.yml` before touching that block.
-
-It is **not** reachable through any fallback chain: LiteLLM resolves a
-fallback target by exact `model_name`, which skips wildcard rewriting and
-would forward the literal `"*"` upstream. It **is** more specific than the
-large-tier bare `"*"` (a longer pattern string ranks first in LiteLLM's
-`PatternMatchRouter`), so an `"openrouter/..."` request reaches this
-deployment and never the Mac gate. It carries no `max_budget`/`budget_duration`
-— there is no per-model spend figure to attach, and no separate shared-spend
-key for wildcard traffic distinct from the tier-wide Redis cap; that is a
-known gap, not an oversight.
-
 ## Spend tracking (Redis)
 
 `router_settings.redis_host`/`redis_port`/`redis_password` back LiteLLM's
