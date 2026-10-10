@@ -57,8 +57,6 @@ def test_incident_baseline_is_rendered_from_config_and_compared_to_live_total():
         assert rendered.startswith("Probe the configured services.\n\n")
         assert DEFAULTS["hermes_agent_service_pulse_endpoints"].strip() in rendered
         assert rendered.endswith(f"OPEN-INCIDENT BASELINE (operator-maintained): {baseline}")
-        rendered_baseline = int(rendered.rsplit(": ", 1)[1])
-        assert response["total_count"] - rendered_baseline == response["total_count"] - baseline
 
 
 if __name__ == "__main__":

@@ -138,7 +138,8 @@ def test_stage0_reconciliation(tmp_path, scenario):
     assert (result.returncode != 0) == fails, result.stdout + result.stderr
     writes = [(method, path, body) for method, path, body in requests if method != "GET"]
     if scenario == "absent":
-        assert len(writes) == 22
+        # One dataset create, one item create per bundle row, one evaluator create.
+        assert len(writes) == len(items) + 2
         assert writes[0][1:] == ("/api/public/v2/datasets", {
             **dataset, "description": "Pinned 20-row test subset for Stage 0 System One evaluation.",
             "metadata": {**dataset["metadata"], "source": "LocalLLaMA/typed-decisions"},

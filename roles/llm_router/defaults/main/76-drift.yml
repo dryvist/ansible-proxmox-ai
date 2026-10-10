@@ -6,3 +6,82 @@ llm_router_drift_workstation_key_git_file: roles/llm_router/defaults/main/56b-wo
 llm_router_drift_router_settings_git_file: roles/llm_router/templates/config.yaml.j2
 llm_router_drift_ui_settings_git_file: roles/llm_router/defaults/main/75-ui-settings.yml
 llm_router_drift_key_page_size: 100
+
+# Database-stored deployments (model_info.db_model) a converge reverts, one
+# record each: id, model_name and the reason. Every database row this role
+# writes is a role (tasks/seed-roles.yml), so a row is kept only when it is a
+# declared role that is not also a declared alias. Any other row shadows a
+# Git name (an alias or a config deployment) or is untracked; back-port it to
+# llm-models.d/ or 55-roles.yml to keep it. Reads _llm_router_model_rows
+# (tasks/read-model-rows.yml), so it re-evaluates after each read.
+_llm_router_db_model_reverts: >-
+  {%- set rows = _llm_router_model_rows | default([]) -%}
+  {%- set aliases = llm_router_model_group_aliases | list -%}
+  {%- set config_names = rows | rejectattr('model_info.db_model', 'equalto', true)
+        | map(attribute='model_name') | list -%}
+  {%- set roles = llm_router_role_deployments | map(attribute='role')
+        | reject('in', aliases) | list -%}
+  {%- set ns = namespace(out=[]) -%}
+  {%- for row in rows | selectattr('model_info.db_model', 'equalto', true) -%}
+  {%- if row.model_name in aliases -%}
+  {%- set reason = 'shadows a declared alias' -%}
+  {%- elif row.model_name in config_names -%}
+  {%- set reason = 'shadows a config deployment' -%}
+  {%- elif row.model_name not in roles -%}
+  {%- set reason = 'is not tracked in Git' -%}
+  {%- else -%}
+  {%- set reason = '' -%}
+  {%- endif -%}
+  {%- if reason -%}
+  {%- set ns.out = ns.out + [{'id': row.model_info.id, 'model_name': row.model_name, 'reason': reason}] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.out }}
+
+# Whether a converge deletes rows that are "not tracked in Git" (Admin UI
+# additions). Off, they are reported and kept so the ones worth keeping can be
+# back-ported first; rows that shadow an alias or a config deployment are
+# always deleted.
+llm_router_db_model_revert_untracked: false
+
+# The subset of _llm_router_db_model_reverts a converge deletes.
+_llm_router_db_model_deletes: >-
+  {{ _llm_router_db_model_reverts if llm_router_db_model_revert_untracked | bool
+     else _llm_router_db_model_reverts | rejectattr('reason', 'equalto', 'is not tracked in Git') | list }}
+
+# The declared roles the proxy carries as database rows, and the report lines
+# for those whose target or fallback order differs from the seed in
+# 55-roles.yml. Fallbacks compare against the seed intersected with the live
+# model names, the same list seed-roles.yml writes.
+_llm_router_drift_live_roles: >-
+  {{ llm_router_role_deployments
+     | rejectattr('role', 'in', llm_router_model_group_aliases | list)
+     | selectattr('role', 'in', _llm_router_model_rows | default([])
+                  | selectattr('model_info.db_model', 'equalto', true)
+                  | map(attribute='model_name') | list) | list }}
+_llm_router_drift_role_report: >-
+  {%- set rows = _llm_router_model_rows | default([]) -%}
+  {%- set live_names = rows | map(attribute='model_name') | unique | list -%}
+  {%- set ns = namespace(out=[]) -%}
+  {%- for record in _llm_router_drift_role_fallbacks.results | default([]) -%}
+  {%- set role = record.item -%}
+  {%- set row = rows | selectattr('model_name', 'equalto', role.role)
+        | selectattr('model_info.db_model', 'equalto', true) | first -%}
+  {%- set live_model = row.litellm_params.model | default('') -%}
+  {%- set seed_model = _llm_router_role_params[role.model].model -%}
+  {%- set live_window = row.model_info.max_input_tokens | default(-1) | int -%}
+  {%- set seed_window = _llm_router_role_model_info[role.model].max_input_tokens | default(-1) | int -%}
+  {%- if live_model != seed_model -%}
+  {%- set ns.out = ns.out + ['role ' ~ role.role ~ ' targets ' ~ live_model ~ '; seed ' ~ seed_model] -%}
+  {%- elif live_window != seed_window -%}
+  {%- set ns.out = ns.out + ['role ' ~ role.role ~ ' advertises max_input_tokens ' ~ live_window
+        ~ '; catalog ' ~ seed_window] -%}
+  {%- endif -%}
+  {%- set live_fallbacks = (record.json | default({}, true)).fallback_models | default([], true) | list -%}
+  {%- set seed_fallbacks = role.fallbacks | select('in', live_names) | list -%}
+  {%- if live_fallbacks != seed_fallbacks -%}
+  {%- set ns.out = ns.out + ['role ' ~ role.role ~ ' falls back ' ~ live_fallbacks | join(' > ')
+        ~ '; seed ' ~ seed_fallbacks | join(' > ')] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.out }}

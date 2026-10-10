@@ -21,6 +21,9 @@ on:
       playbooks:
         type: string
         required: true
+      timeout_minutes:
+        type: number
+        default: 10
 
 permissions:
   contents: read
@@ -30,6 +33,7 @@ jobs:
     name: Router contract ${{ strategy.job-index }}
     if: inputs.full_suite || inputs.playbooks != '[]'
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     strategy:
       fail-fast: false
       max-parallel: 32
@@ -37,8 +41,10 @@ jobs:
         # One playbook per matrix item lets independent jobs schedule all paths.
         playbook: ${{ fromJSON(inputs.playbooks) }}
         # - tests/llm_router/test_vllm_tier_switch.yml
-        #   tests/llm_router/test_role_sensitivity_reconcile.yml
-        #   tests/llm_router/test_seed_key_initial_policy_reconcile.yml
+        # - tests/llm_router/test_vllm_tier_switch_on.yml
+        # - tests/llm_router/test_vllm_tier_switch_guard.yml
+        # - tests/llm_router/test_role_sensitivity_reconcile.yml
+        # - tests/llm_router/test_seed_key_initial_policy_reconcile.yml
         # - tests/llm_router/test_review_key_scopes.yml
         # - tests/llm_router/test_serving_identity.yml
         # - tests/llm_router/test_migration_lock_driver.yml
@@ -60,6 +66,7 @@ jobs:
         # - tests/llm_router/test_seed_play_reachability_gate.yml
         # - tests/llm_router/test_cross_modality_fail_fast.yml
         # - tests/llm_router/test_retire_role_deployments_db_only.yml
+        #   tests/llm_router/test_drift_role_report.yml
         # - tests/llm_router/test_servable_probe_remote.yml
         # - tests/llm_router/test_registry_render_parity.yml
         # - tests/llm_router/test_seed_key_live_aliases.yml
@@ -134,6 +141,7 @@ jobs:
         # - tests/llm_router/test_alert_webhook.yml
         # - tests/llm_router/test_callbacks_render_as_list.yml
         # - tests/llm_router/test_hermes_provider_keys_whitespace.yml
+        # - tests/llm_router/test_hermes_public_key_alias_brain.yml
         # Workflow edits select every router contract entry in CI.
     env:
       LLM_ROUTER_MASTER_KEY: sk-ci-placeholder-not-a-secret
@@ -148,15 +156,17 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.14'
+          cache: pip
+          cache-dependency-path: .github/requirements-ci.txt
 
       - name: Install Ansible
         run: |
           python -m pip install --upgrade pip
-          pip install ansible
+          pip install -r .github/requirements-ci.txt
 
       # Cache Galaxy content keyed on requirements.yml; install verifies
       # restored dependencies and installs any that are missing.
-      # Same key/paths as dryvist/.github's _ansible-ci.yml so a warm run of
+      # Same v2 key/paths as dryvist/.github's _ansible-ci.yml on main, so a warm run of
       # either workflow warms the other.
       - name: Cache Ansible Galaxy content
         id: galaxy-cache
@@ -165,7 +175,9 @@ jobs:
           path: |
             ~/.ansible/collections
             ~/.ansible/roles
-          key: ansible-galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+          key: ansible-galaxy-v2-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+          restore-keys: |
+            ansible-galaxy-v2-${{ runner.os }}-
 
       - name: Install Ansible dependencies
         run: |
@@ -190,6 +202,7 @@ jobs:
     name: Registry single-source contract
     if: inputs.full_suite || inputs.playbooks != '[]'
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
 
     env:
       LLM_ROUTER_MASTER_KEY: sk-ci-placeholder-not-a-secret
@@ -204,11 +217,13 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.14'
+          cache: pip
+          cache-dependency-path: .github/requirements-ci.txt
 
       - name: Install Ansible
         run: |
           python -m pip install --upgrade pip
-          pip install ansible pytest pyyaml
+          pip install -r .github/requirements-ci.txt
 
       - name: Cache Ansible Galaxy content
         id: galaxy-cache
@@ -217,7 +232,9 @@ jobs:
           path: |
             ~/.ansible/collections
             ~/.ansible/roles
-          key: ansible-galaxy-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+          key: ansible-galaxy-v2-${{ runner.os }}-${{ hashFiles('requirements.yml') }}
+          restore-keys: |
+            ansible-galaxy-v2-${{ runner.os }}-
 
       - name: Install Ansible dependencies
         run: |

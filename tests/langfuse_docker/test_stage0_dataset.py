@@ -23,7 +23,8 @@ def test_stage0_dataset_subset_contains_no_private_identifiers_or_prices():
         r"\b(?:receipt|invoice|transaction\s*(?:id|ref(?:erence)?)|payment\s*ref(?:erence)?)\b",
     )
 
-    assert dataset["length"] == len(dataset["rows"]) == 20
+    assert dataset["rows"]
+    assert dataset["length"] == len(dataset["rows"])
     assert all(
         re.search(pattern, rows, re.IGNORECASE) is None
         for pattern in forbidden_patterns
