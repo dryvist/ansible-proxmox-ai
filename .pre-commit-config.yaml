@@ -27,7 +27,8 @@ repos:
         # passed here too, so a violation in a file being committed is caught
         # before the commit. A whole-repo lint on every commit took 15-40 min
         # with several sessions sharing the machine.
-        # `require_serial` keeps one ansible-lint process per commit.
+        # `require_serial` keeps one ansible-lint process per commit; the lock
+        # in `entry` keeps one per machine.
         #
         # `env -u GIT_DIR ...` is required, not cosmetic. Git exports GIT_DIR,
         # GIT_INDEX_FILE and GIT_WORK_TREE to every hook, and child processes
@@ -37,7 +38,19 @@ repos:
         # object store instead of the clone. The pinned commit is genuinely not
         # a ref here, so it fails with "upload-pack: not our ref" naming a SHA
         # that is perfectly valid upstream.
-        entry: env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE ansible-lint
+        entry: |-
+          sh -c '
+          mkdir -p "$HOME/.cache" && exec 9>"$HOME/.cache/pre-commit-ansible-lint.lock" || exit 1
+          msg="another ansible-lint is running on this machine; retry later"
+          if [ -x /usr/bin/lockf ]; then
+            /usr/bin/lockf -s -t 900 9 || { echo "$msg"; exit 1; }
+          elif command -v flock >/dev/null 2>&1; then
+            flock -w 900 9 || { echo "$msg"; exit 1; }
+          else
+            echo "ansible-lint: no lockf/flock found; running without the machine-wide lock" >&2
+          fi
+          exec env -u GIT_DIR -u GIT_INDEX_FILE -u GIT_WORK_TREE ansible-lint "$@"
+          ' ansible-lint
         files: \.(yaml|yml)$
         pass_filenames: true
         require_serial: true
