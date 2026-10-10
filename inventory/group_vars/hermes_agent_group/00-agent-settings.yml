@@ -20,11 +20,15 @@ systemd_restart_policy_services:
 # so every consumer below falls through to its env fallback.
 hermes_agent_bao_local_llm_layer: >-
   {{ 'hermes' not in (openbao_secrets_by_domain | default({})) }}
+# Keyed on the inventory identity, not the role's hermes_agent_id default:
+# codex_runner reads this view before the hermes_agent role is loaded.
 hermes_agent_bao: >-
   {{ (bao_local_llm_secrets
-      if (hermes_agent_id == 'hermes' and (hermes_agent_bao_local_llm_layer | bool))
+      if ((hermes_agent_identity | default('hermes', true)) == 'hermes'
+          and (hermes_agent_bao_local_llm_layer | bool))
       else {})
-     | combine((openbao_secrets_by_domain | default({})).get(hermes_agent_id, {})) }}
+     | combine((openbao_secrets_by_domain | default({}))
+               .get(hermes_agent_identity | default('hermes', true), {})) }}
 
 # Shared MCP client fields (secret/ai/mcp/*, Context7). Hermes reads them through
 # its own view; every other identity keeps the local-llm read.
@@ -146,12 +150,15 @@ hermes_agent_github_read_token: >-
 # codex-runner user. Bao-first (secret/ai/<identity>), then the identity's env
 # fallback; hermes keeps its existing unprefixed fallback. Create-only on the
 # guest: this is only a bootstrap snapshot, and Codex's guest-side refresh
-# takes over after first login (see roles/codex_runner/README.md).
+# takes over after first login (see roles/codex_runner/README.md). Uses the
+# inventory identity: codex_runner runs before the hermes_agent role defines
+# hermes_agent_id and hermes_agent_env_prefix.
 codex_runner_auth_json: >-
   {{ hermes_agent_bao.CODEX_AUTH_JSON
      | default(lookup('env', 'CODEX_AUTH_JSON'
-                     if hermes_agent_id == 'hermes'
-                     else hermes_agent_env_prefix ~ '_CODEX_AUTH_JSON'), true) }}
+                     if (hermes_agent_identity | default('hermes', true)) == 'hermes'
+                     else (hermes_agent_identity | upper
+                           | regex_replace('[^A-Z0-9]', '_')) ~ '_CODEX_AUTH_JSON'), true) }}
 
 # --- Vikunja Kanban bridge ----------------------------------------------------
 # Turns the operator's Vikunja board into Hermes' on-demand front end: a task in

@@ -6,11 +6,11 @@
    the repo's per-file token budget — the split the budget note asks for, not a
    workaround of it.
 
-   Renders to nothing when the inventory carries no hermes_agents key or the
-   bearer did not resolve. Emitting a deployment with no credential would put a
-   model in every consumer's dropdown that answers 401 on selection, which is
-   worse than the agent simply not appearing. #}
-{% if llm_router_hermes_agent_bearer | trim | length > 0 %}
+   Each deployment is gated on ITS OWN identity's bearer and sends that bearer
+   only. An agent whose bearer did not resolve, or that has no identity entry,
+   renders nothing: a deployment with no credential would put a model in every
+   consumer's dropdown that answers 401 on selection, which is worse than the
+   agent simply not appearing. #}
 
   # --- Hermes agents: each running agent, callable as its own model ---
   # These are agentic endpoints, not plain completions: a single request may
@@ -22,6 +22,9 @@
   # agent to a plain model, or from one agent's identity to another's, would be
   # answering as the wrong thing rather than failing.
 {% for _name, _agent in (llm_router_hermes_agents | dictsort) %}
+{% set _identity = llm_router_hermes_agent_identities.get(_name, '') %}
+{% set _bearer = (llm_router_hermes_identity_bearers.get(_identity, '') | default('', true)) | trim %}
+{% if _identity and _bearer | length > 0 %}
   - model_name: {{ _name }}
     litellm_params:
       # The agent's API server speaks the OpenAI protocol and advertises itself
@@ -32,7 +35,7 @@
       # and tool paths carry the same sensitivity policy.
       tags: [local, zdr, sensitivity:public]
       api_base: {{ _agent.api_url }}
-      api_key: os.environ/HERMES_AGENT_BEARER_TOKEN
+      api_key: os.environ/HERMES_AGENT_BEARER_TOKEN_{{ _identity | upper | regex_replace('[^A-Z0-9]', '_') }}
       timeout: {{ llm_router_hermes_agent_timeout }}
       stream_timeout: {{ llm_router_hermes_agent_timeout }}
       # An agent is stateful and single-identity; retrying a half-run request
@@ -43,5 +46,5 @@
       mode: chat
       max_input_tokens: {{ llm_router_hermes_agent_context_window }}
       max_tokens: {{ llm_router_hermes_agent_context_window }}
-{% endfor %}
 {% endif %}
+{% endfor %}
