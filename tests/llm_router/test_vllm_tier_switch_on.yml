@@ -1,0 +1,59 @@
+---
+# Tier-on half of the vllm switch contract, split from test_vllm_tier_switch.yml
+# so each router shard stays under its time cap. With llm_router_llm_vllm_enabled
+# true, every name the tier owns must render.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_vllm_tier_switch_on.yml -i localhost, -c local
+
+- name: With the tier on, the same fixture renders everything the tier owns
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    _vllm_tier_enabled: true
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_local_llm_secrets: {}
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: pve.example.test
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: hermes-default
+    hindsight_retain_model: qwen3-4b
+    hermes_goal_judge_model: judge
+  tasks:
+    - name: Produce the fully credentialed render with the tier on
+      ansible.builtin.import_tasks: tasks/credentialed_render.yml
+
+    - name: Every name the tier owns renders, so the off-switch play in test_vllm_tier_switch.yml removed something real
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _tier_names | length > 0
+          - _tier_names | difference(_rendered_names) | length == 0
+          - llm_router_vllm_models | length > 0
+          - llm_router_hermes_local_models | length > 0
+          - llm_router_local_fallback_groups | length > 0
+        fail_msg: >-
+          With llm_router_llm_vllm_enabled true the tier's names
+          ({{ _tier_names | join(', ') }}) must all render; missing:
+          {{ _tier_names | difference(_rendered_names) }}.
+        success_msg: "Tier on: all {{ _tier_names | length }} tier names render."
+      vars:
+        _tier_names: >-
+          {{ llm_router_registry_enabled | selectattr('tier', 'in', ['vllm', 'hermes-local'])
+             | map(attribute='client_model_id') | unique | list }}
+        _rendered_names: "{{ _config.model_list | map(attribute='model_name') | unique | list }}"
