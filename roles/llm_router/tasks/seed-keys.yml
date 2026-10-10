@@ -150,7 +150,7 @@
       # Attribution contract (docs/LLM_KEY_ATTRIBUTION_CONTRACT.md): every key
       # carries at minimum `app` (its own alias, so no per-entry edit is ever
       # needed to keep this in sync) and `tier` (derived, never hand-listed —
-      # a key with a positive weekly budget is `subscription`; a budget-less
+      # a key with a positive daily budget is `subscription`; a budget-less
       # key draws on the local/free serving tier, which this router never
       # meters). `device`/`host`/`agent`/`session`/`zdr` are request-time
       # fields (the caller's own X-Litellm-Tags/metadata on each call) — this
@@ -166,26 +166,22 @@
           {
             'app': item.alias,
             'tier': item.tier | default(
-              'subscription' if (item.monthly_budget | default(0) | float > 0) else 'local'),
+              'subscription' if (item.daily_budget | default(0) | float > 0) else 'local'),
           },
           recursive=true,
         ) | combine({'tags': _metadata_tags}, recursive=true) }}
       router_settings: "{{ item.router_settings | default(omit) }}"
       allowed_routes: "{{ item.allowed_routes | default(omit) }}"
       rpm_limit: "{{ item.rpm_limit | default(omit) }}"
-      max_budget: "{{ item.monthly_budget if (item.monthly_budget | default(0) | float > 0) else omit }}"
-      budget_duration: "{{ '7d' if (item.monthly_budget | default(0) | float > 0) else omit }}"
-      # A second, tighter window stacked on top of the flat weekly fields
-      # above (litellm 1.98.0 GenerateKeyRequest.budget_limits — confirmed on
-      # the pinned tag, litellm/models/team.py BudgetLimitEntry): a bad DAY
-      # cannot burn the whole week even while the week itself is in budget.
-      # Daily figure is the weekly ceiling pro-rated to two days' worth,
-      # rounded — not a separate policy number to keep in sync by hand.
+      max_budget: "{{ item.daily_budget if (item.daily_budget | default(0) | float > 0) else omit }}"
+      budget_duration: "{{ '24h' if (item.daily_budget | default(0) | float > 0) else omit }}"
+      # The same single 24h window, stated again as budget_limits (litellm
+      # 1.98.0 GenerateKeyRequest.budget_limits — confirmed on the pinned tag,
+      # litellm/models/team.py BudgetLimitEntry), so the window list carries
+      # the daily cap explicitly.
       budget_limits: >-
-        {{ [{'budget_duration': '24h',
-             'max_budget': ((item.monthly_budget | float / 7 * 2) | round | float)},
-            {'budget_duration': '7d', 'max_budget': item.monthly_budget | float}]
-           if (item.monthly_budget | default(0) | float > 0) else omit }}
+        {{ [{'budget_duration': '24h', 'max_budget': item.daily_budget | float}]
+           if (item.daily_budget | default(0) | float > 0) else omit }}
     status_code: [200, 201, 400]
     timeout: "{{ llm_router_seed_request_timeout }}"
   loop: "{{ llm_router_virtual_keys | rejectattr('value', 'equalto', '') | list }}"

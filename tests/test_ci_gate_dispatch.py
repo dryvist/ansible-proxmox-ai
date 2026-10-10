@@ -65,7 +65,7 @@ def test_actual_scope_step_dispatches_full_or_focused(
     assert selected["full_suite"] == str(expected_full).lower()
     targets = json.loads(selected["pytest_targets"])
     assert targets == (["tests/"] if expected_full else ["tests/test_contract_scope_selector.py"])
-    assert len(json.loads(selected["llm_router_playbooks"])) == (98 if expected_full else 0)
+    assert len(json.loads(selected["llm_router_playbooks"])) == (99 if expected_full else 0)
 
 
 @pytest.mark.parametrize(("event", "ref", "base", "allows_skips"), [

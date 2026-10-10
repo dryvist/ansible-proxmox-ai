@@ -44,6 +44,7 @@ def test_langflow_worker_pool_uses_the_shared_cap_with_redis_queue() -> None:
     app = compose["services"]["langflow"]
 
     assert app["environment"]["LANGFLOW_WORKERS"] == str(AGENT_CAP)
+    assert app["environment"]["LANGFLOW_GUNICORN_PRELOAD"] == "false"
     assert app["environment"]["LANGFLOW_JOB_QUEUE_TYPE"] == "redis"
     assert app["environment"]["LANGFLOW_REDIS_QUEUE_URL"] == "redis://redis:6379/1"
     assert app["depends_on"]["redis"]["condition"] == "service_healthy"
