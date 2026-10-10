@@ -60,6 +60,9 @@ Optional:
                       is NOT free (the chatgpt/ rung): it joins neither the
                       free nor the paid segment. Ladder order is derived from
                       the deployment class, not this flag alone.
+  review_private_only true keeps a credentialed deployment out of shared
+                      fallback ladders and broad key scopes; only the
+                      review-private role can widen its CI key to that group.
   mode                model_info.mode override (`responses` for a
                       Responses-native model; default `chat`).
   reasoning_effort    Forwarded as litellm_params.reasoning_effort (hermes-cloud
