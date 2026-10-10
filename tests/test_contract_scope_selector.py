@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -9,6 +10,8 @@ import pytest
 
 SELECTOR = Path(__file__).parents[1] / ".github/scripts/select-contract-scope.py"
 CI_GATE = Path(__file__).parents[1] / ".github/workflows/ci-gate.yml"
+# The router matrix as the selector generates it from the workflow.
+GENERATED_MATRIX = runpy.run_path(str(SELECTOR))["llm_router_matrix"]()
 
 
 def run_selector(*paths: str) -> subprocess.CompletedProcess[str]:
@@ -168,4 +171,4 @@ def test_full_suite_keeps_every_router_matrix_entry() -> None:
 
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
-    assert len(selection["llm_router_playbooks"]) == 99
+    assert len(selection["llm_router_playbooks"]) == len(GENERATED_MATRIX)

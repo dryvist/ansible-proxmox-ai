@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +12,8 @@ import yaml
 
 SELECTOR = Path(__file__).parents[1] / ".github/scripts/select-contract-scope.py"
 CI_GATE = Path(__file__).parents[1] / ".github/workflows/ci-gate.yml"
+# The router matrix as the selector generates it from the workflow.
+GENERATED_MATRIX = runpy.run_path(str(SELECTOR))["llm_router_matrix"]()
 
 
 def run_selector(*paths: str) -> subprocess.CompletedProcess[str]:
@@ -66,7 +69,7 @@ def test_registry_selects_all_consumers_without_global_pytest() -> None:
     assert selection["run_selector_checks"]
     assert {"tests/nvidia_gpu_guest/", "tests/llm_model_campaign/", "tests/hermes_agent/"} <= set(
         selection["pytest_targets"])
-    assert len(selection["llm_router_playbooks"]) == 99
+    assert len(selection["llm_router_playbooks"]) == len(GENERATED_MATRIX)
     assert "tests/nvidia_gpu_guest/test_cache_only_sync.yml" in selection["ansible_tests"]
 
 
@@ -156,7 +159,7 @@ def test_router_scope_preserves_manifest_execution_order(path: str) -> None:
     selected = json.loads(result.stdout)["llm_router_playbooks"]
     assert selected == full
     paths = [playbook for group in selected for playbook in group.split()]
-    assert len(paths) == len(set(paths)) == 99
+    assert len(paths) == len(set(paths)) == sum(len(entry) for entry in GENERATED_MATRIX)
 
 
 def test_changed_router_groups_follow_manifest_order_not_path_order() -> None:

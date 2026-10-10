@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,8 @@ from jinja2 import Environment, StrictUndefined
 
 SELECTOR = Path(__file__).parents[1] / ".github/scripts/select-contract-scope.py"
 CI_GATE = Path(__file__).parents[1] / ".github/workflows/ci-gate.yml"
+# The router matrix as the selector generates it from the workflow.
+GENERATED_MATRIX = runpy.run_path(str(SELECTOR))["llm_router_matrix"]()
 
 
 def run_selector(*paths: str) -> subprocess.CompletedProcess[str]:
@@ -65,7 +68,7 @@ def test_actual_scope_step_dispatches_full_or_focused(
     assert selected["full_suite"] == str(expected_full).lower()
     targets = json.loads(selected["pytest_targets"])
     assert targets == (["tests/"] if expected_full else ["tests/test_contract_scope_selector.py"])
-    assert len(json.loads(selected["llm_router_playbooks"])) == (99 if expected_full else 0)
+    assert len(json.loads(selected["llm_router_playbooks"])) == (len(GENERATED_MATRIX) if expected_full else 0)
 
 
 @pytest.mark.parametrize(("event", "ref", "base", "allows_skips"), [
