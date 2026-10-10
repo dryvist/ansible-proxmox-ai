@@ -1,0 +1,264 @@
+---
+# Dedicated ClickHouse server, Docker Compose in an LXC.
+#
+# Serves a Langfuse application database plus read-only access for downstream
+# consumers (Grafana, HyperDX, Splunk). Only the ClickHouse server is deployed
+# here — the OpenTelemetry collector and the OTEL table schema are a
+# deliberate follow-up (a separate PR), not built or stubbed in this role.
+#
+# Docker itself (docker-ce + compose plugin, fuse-overlayfs, the fuse-overlayfs
+# daemon.json) is installed by the docker_engine meta dependency (meta/main.yml).
+# No venv: ClickHouse deploys via docker_compose_v2, which uses the docker
+# compose CLI (not the docker SDK), so compose runs under the system
+# interpreter.
+
+# =============================================================================
+# ClickHouse Data Directories
+# =============================================================================
+# Data and log dirs are pre-owned by uid 101 because the service pins
+# `user: 101:101` (bypassing the image's root-entrypoint chown) — an
+# unprivileged LXC cannot chown after the fact.
+
+- name: Create ClickHouse data directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "0755"
+  loop: "{{ clickhouse_docker_directories }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+# =============================================================================
+# Default-user lockdown
+# =============================================================================
+# ClickHouse's HTTP interface is unauthenticated by default and this guest's
+# firewall scope is broad (every internal VLAN), so the `default` user is
+# removed entirely rather than merely password-protected (templates/users.d/
+# default-disabled.xml.j2 — see that file for the reasoning). No secret in
+# this file, so no assert_nonempty guard is needed before rendering it.
+
+- name: Deploy the default-user lockdown config
+  ansible.builtin.template:
+    src: users.d/default-disabled.xml.j2
+    dest: "{{ clickhouse_docker_users_d_dir }}/default-disabled.xml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart clickhouse
+
+# =============================================================================
+# Compose Deployment
+# =============================================================================
+
+- name: Assert every secret rendered into the ClickHouse compose file is present
+  ansible.builtin.include_tasks: >-
+    {{ role_path }}/../openbao_secrets/tasks/assert_nonempty.yml
+  vars:
+    openbao_secrets_assert_context: the ClickHouse compose file
+    openbao_secrets_assert_names:
+      - clickhouse_docker_app_password
+
+# =============================================================================
+# ClickHouse step upgrade
+# =============================================================================
+# ClickHouse must cross one release line at a time; the deployed line cannot
+# jump straight to the pinned tag. Walk the path first so the pinned tag is
+# only ever reached from its immediate predecessor. Skipped entirely on a
+# fresh install (nothing running yet) and on an already-converged host (no
+# pending hops).
+
+# The running tag decides which hops still have to be crossed, so this read is
+# load-bearing and fails closed. "Nothing is running" is a legitimate state on
+# a fresh install (or before the compose file has ever been written) and is
+# reported explicitly as __none__, so it can never be confused with a read
+# that failed.
+- name: Read the running ClickHouse image tag
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      compose={{ clickhouse_docker_data_dir }}/docker-compose.yml;
+      [ -f "$compose" ] || { echo __none__; exit 0; };
+      cid=$(docker compose -f "$compose" ps -q {{ clickhouse_docker_service }}) || exit 1;
+      [ -n "$cid" ] || { echo __none__; exit 0; };
+      docker inspect -f '{{ '{{' }} .Config.Image {{ '}}' }}' "$cid" | awk -F: '{print $NF}'
+  register: clickhouse_docker_running
+  changed_when: false
+
+- name: Resolve the pending ClickHouse upgrade hops
+  ansible.builtin.set_fact:
+    clickhouse_docker_pending_hops: >-
+      {{ []
+         if (clickhouse_docker_running.stdout | trim) in ['', '__none__']
+         else (clickhouse_docker_upgrade_path
+               | select('version', clickhouse_docker_running.stdout | trim, '>')
+               | list) }}
+
+# Refuse a path the mechanism cannot walk safely, rather than walking it
+# obediently. These check the mis-edits that are actually plausible: a pin
+# bumped without extending the path, a hop added past the 26 boundary, or a
+# host already running something newer than the pin.
+- name: Refuse an unsafe ClickHouse upgrade path
+  ansible.builtin.assert:
+    that:
+      - clickhouse_docker_upgrade_path | reject('version', '26', '<') | list | length == 0
+      - clickhouse_docker_upgrade_path | last == clickhouse_docker_version
+      - >-
+        (clickhouse_docker_running.stdout | trim) in ['', '__none__']
+        or (clickhouse_docker_running.stdout | trim)
+           is version(clickhouse_docker_version, '<=')
+    fail_msg: >-
+      The declared ClickHouse upgrade path is not safe to walk. Every hop must
+      be below 26 (upstream reports CORRUPTED_DATA on a 25 -> 26 upgrade), the
+      path must terminate at the pinned version
+      ({{ clickhouse_docker_version }}), and the running server
+      ({{ clickhouse_docker_running.stdout | default('unknown') | trim }})
+      must not already be newer than the pin — a downgrade is never safe.
+    success_msg: >-
+      ClickHouse upgrade path accepted:
+      {{ clickhouse_docker_upgrade_path | join(' -> ') }}
+      (pending: {{ clickhouse_docker_pending_hops | join(', ') | default('none', true) }})
+
+# A restore point before the first hop. The archive is taken with the service
+# stopped: a copy of a running ClickHouse is crash-consistent, which is fine
+# for guest loss but is not a valid rollback point for a version upgrade. The
+# hop loop starts the service again, so stopping here costs nothing extra.
+#
+# It lands on the same mount as the data it copies. That is deliberate and
+# sufficient for its purpose — undoing a bad upgrade — and is explicitly not a
+# substitute for the guest-level backup, which protects against losing the
+# mount itself.
+- name: Stop ClickHouse before taking the pre-upgrade archive
+  community.docker.docker_compose_v2:
+    project_src: "{{ clickhouse_docker_data_dir }}"
+    services:
+      - "{{ clickhouse_docker_service }}"
+    state: stopped
+  when: clickhouse_docker_pending_hops | length > 0
+
+- name: Measure the ClickHouse data directory and its free space
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      du -sk {{ clickhouse_docker_ch_data_dir }} | awk '{print $1}';
+      df -Pk {{ clickhouse_docker_data_dir }} | awk 'NR==2 {print $4}'
+  register: clickhouse_docker_space
+  changed_when: false
+  when: clickhouse_docker_pending_hops | length > 0
+
+- name: Require room for the pre-upgrade archive before touching the data
+  ansible.builtin.assert:
+    that:
+      - (clickhouse_docker_space.stdout_lines[1] | int)
+        > (clickhouse_docker_space.stdout_lines[0] | int)
+    fail_msg: >-
+      Not enough free space for the pre-upgrade ClickHouse archive:
+      the data directory is
+      {{ clickhouse_docker_space.stdout_lines[0] | default(0) | int // 1024 }} MiB
+      and only
+      {{ clickhouse_docker_space.stdout_lines[1] | default(0) | int // 1024 }} MiB
+      are free. Free space or take the archive elsewhere; the upgrade is not
+      started without a restore point.
+  when: clickhouse_docker_pending_hops | length > 0
+
+- name: Archive the stopped ClickHouse data directory
+  community.general.archive:
+    path: "{{ clickhouse_docker_ch_data_dir }}"
+    dest: >-
+      {{ clickhouse_docker_data_dir }}/clickhouse-preupgrade-{{
+      clickhouse_docker_running.stdout | trim }}.tar.gz
+    format: gz
+    owner: root
+    group: root
+    mode: "0600"
+    force_archive: true
+  when: clickhouse_docker_pending_hops | length > 0
+
+- name: Upgrade ClickHouse one release line at a time
+  ansible.builtin.include_tasks: clickhouse_upgrade.yml
+  vars:
+    clickhouse_docker_hop: "{{ item }}"
+  loop: "{{ clickhouse_docker_pending_hops }}"
+
+- name: Deploy the pinned ClickHouse compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ clickhouse_docker_data_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0600"  # contains the app credential
+  no_log: true
+  notify: Restart clickhouse
+
+- name: Deploy ClickHouse via docker compose
+  community.docker.docker_compose_v2:
+    project_src: "{{ clickhouse_docker_data_dir }}"
+    state: present
+    wait: true
+    wait_timeout: 300
+  register: clickhouse_docker_compose_result
+  changed_when: >-
+    (clickhouse_docker_compose_result.actions | default([]))
+    | selectattr('status', 'in', ['Creating', 'Recreating', 'Pulling', 'Building'])
+    | list | length > 0
+  no_log: true
+
+# =============================================================================
+# Users and databases
+# =============================================================================
+# The application database + app user are bootstrapped by the image's own
+# CLICKHOUSE_DB / CLICKHOUSE_USER / CLICKHOUSE_PASSWORD entrypoint mechanism
+# (see the compose template) on first init only. The three read-only
+# consumer users are provisioned here instead, on every converge, so they
+# exist regardless of when this role first ran relative to their addition.
+# `CREATE USER IF NOT EXISTS` + a repeatable `GRANT` are both converge-safe:
+# a second run issues the same statements again and changes nothing.
+
+- name: Assert every secret used to provision ClickHouse users is present
+  ansible.builtin.include_tasks: >-
+    {{ role_path }}/../openbao_secrets/tasks/assert_nonempty.yml
+  vars:
+    openbao_secrets_assert_context: ClickHouse user provisioning
+    openbao_secrets_assert_names:
+      - clickhouse_docker_app_password
+      - clickhouse_docker_grafana_password
+      - clickhouse_docker_hyperdx_password
+      - clickhouse_docker_splunk_password
+
+- name: Provision the read-only ClickHouse users
+  ansible.builtin.command:
+    cmd: >-
+      docker compose -f {{ clickhouse_docker_data_dir }}/docker-compose.yml
+      exec -T {{ clickhouse_docker_service }}
+      clickhouse-client --user {{ clickhouse_docker_app_user }}
+      --password {{ clickhouse_docker_app_password }}
+      --multiquery
+      --query "CREATE USER IF NOT EXISTS {{ item.key }}
+               IDENTIFIED WITH sha256_password BY '{{ item.value }}';
+               GRANT SELECT ON {{ clickhouse_docker_database }}.* TO {{ item.key }};"
+  loop: "{{ clickhouse_docker_readonly_credentials | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  changed_when: false
+  no_log: true
+
+# =============================================================================
+# Prove the default-user lockdown
+# =============================================================================
+# A role that configures the lockdown without verifying it is exactly the
+# false green this estate keeps getting bitten by, so this check is
+# load-bearing: the uri module fails the task (and the play) whenever the
+# response status is outside status_code, so an unexpected 200 fails closed
+# with no separate assert needed. Dials the guest's own FQDN (never a bare
+# compose service name or a loopback address — both refused for ClickHouse
+# in this estate) and queries the real query endpoint, not /ping (which is
+# deliberately unauthenticated by ClickHouse itself and would prove nothing).
+
+- name: Assert an unauthenticated ClickHouse query over HTTP is refused
+  ansible.builtin.uri:
+    url: "{{ clickhouse_docker_http_endpoint }}/?query=SELECT%201"
+    method: GET
+    status_code: [401, 403]
+  register: clickhouse_docker_unauth_probe
+  changed_when: false
