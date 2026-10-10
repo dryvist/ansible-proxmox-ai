@@ -45,6 +45,11 @@ langfuse_docker_migration_v4_write_mode: dual
 langfuse_docker_migration_v4_native_otel_behaviour: dual_write
 langfuse_docker_migration_v4_historic_backfill: "false"
 
+# Ingestion merges each event from S3 alone instead of reading the stored row
+# back from ClickHouse first. A date before the first project applies it to
+# every project.
+langfuse_docker_skip_ingestion_clickhouse_read_min_project_create_date: "2025-01-01"
+
 # Stage 0 scoring uses trusted TypeScript evaluators owned in IaC. The
 # insecure-local dispatcher executes evaluator code inside the worker process.
 langfuse_docker_code_eval_dispatcher: insecure-local
@@ -75,7 +80,24 @@ langfuse_docker_data_dir: /opt/langfuse
 langfuse_docker_postgres_data_dir: "{{ langfuse_docker_data_dir }}/postgres"
 langfuse_docker_clickhouse_data_dir: "{{ langfuse_docker_data_dir }}/clickhouse/data"
 langfuse_docker_clickhouse_logs_dir: "{{ langfuse_docker_data_dir }}/clickhouse/logs"
+langfuse_docker_clickhouse_config_dir: "{{ langfuse_docker_data_dir }}/clickhouse/config"
 langfuse_docker_redis_data_dir: "{{ langfuse_docker_data_dir }}/redis"
+
+# Level for the ClickHouse server logger and system.text_log. The image's stock
+# config sets trace, and nearly every text_log row was Trace or Debug.
+langfuse_docker_clickhouse_log_level: information
+
+# ClickHouse's own system log tables, not Langfuse data, which keeps no TTL.
+# A changed TTL makes ClickHouse rename the old table to <name>_0 at startup
+# and create a new one; the renamed table is dropped by hand.
+langfuse_docker_clickhouse_system_log_ttl_days: 30
+langfuse_docker_clickhouse_system_log_ttl_tables:
+  - text_log
+  - query_log
+  - trace_log
+  - part_log
+  - metric_log
+  - asynchronous_metric_log
 
 # ClickHouse runs as uid/gid 101 (the image's `clickhouse` user). Because the
 # service pins `user: 101:101`, the bind-mounted host dirs must be pre-owned by
@@ -98,6 +120,9 @@ langfuse_docker_directories:
   - path: "{{ langfuse_docker_clickhouse_logs_dir }}"
     owner: "{{ langfuse_docker_clickhouse_uid }}"
     group: "{{ langfuse_docker_clickhouse_uid }}"
+  - path: "{{ langfuse_docker_clickhouse_config_dir }}"
+    owner: root
+    group: root
   # redis-server drops to the image's redis user (uid 999) and the entrypoint
   # chown does not take effect on this bind mount — a root-owned /data makes
   # every RDB save fail (MISCONF) and the container goes unhealthy.

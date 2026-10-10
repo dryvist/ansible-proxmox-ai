@@ -1,0 +1,34 @@
+---
+# Every real deployment the proxy carries, all pages, as _llm_router_model_rows.
+# /v2/model/info, not /model/info: v1 appends one synthetic row per declared
+# alias (retire-role-deployments.yml has the detail), so every alias would look
+# live there. The registry renders close to a hundred deployments, so a single
+# page can hide a database row on the next one.
+- name: Read the first page of model deployments
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/v2/model/info?page=1&size=100"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  register: _llm_router_model_rows_page_1
+  no_log: true
+
+- name: Read the remaining model deployment pages
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_router_api_port }}/v2/model/info?page={{ item }}&size=100"
+    headers:
+      Authorization: "Bearer {{ llm_router_master_key }}"
+    timeout: "{{ llm_router_seed_request_timeout }}"
+  loop: "{{ range(2, (_llm_router_model_rows_page_1.json.total_pages | default(1) | int) + 1) | list }}"
+  loop_control:
+    label: "page {{ item }}"
+  register: _llm_router_model_rows_pages
+  no_log: true
+
+- name: Collect the model deployment rows
+  ansible.builtin.set_fact:
+    _llm_router_model_rows: >-
+      {{ (_llm_router_model_rows_page_1.json.data | default([]))
+         + (_llm_router_model_rows_pages.results | default([])
+            | map(attribute='json') | map(attribute='data') | flatten) }}
+  no_log: true

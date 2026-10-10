@@ -1,0 +1,68 @@
+---
+# Pins the role drift report in tasks/drift-check.yml
+# (_llm_router_drift_role_report, defaults/main/76-drift.yml): a live role whose
+# target or fallback order differs from its seed is reported, a matching role
+# is not, and an aliased role is never treated as a role.
+#
+# Run (from the REPO ROOT):
+#   ansible-playbook tests/llm_router/test_drift_role_report.yml -i localhost, -c local
+
+- name: Live roles that differ from their seed are reported
+  hosts: localhost
+  gather_facts: false
+  vars:
+    llm_router_model_group_aliases: {fast: auto-router}
+    _llm_router_role_params:
+      model-a: {model: openai/model-a}
+      model-b: {model: openai/model-b}
+    _llm_router_role_model_info:
+      model-a: {max_input_tokens: 1000}
+      model-b: {max_input_tokens: 2000}
+    llm_router_role_deployments:
+      - {role: steady, model: model-a, fallbacks: [model-b, not-live]}
+      - {role: retargeted, model: model-a, fallbacks: []}
+      - {role: reordered, model: model-b, fallbacks: [model-a, model-b]}
+      - {role: fast, model: model-a, fallbacks: []}
+    _llm_router_model_rows:
+      - {model_name: model-a, model_info: {id: a, db_model: false}}
+      - {model_name: model-b, model_info: {id: b, db_model: false}}
+      - model_name: steady
+        litellm_params: {model: openai/model-a}
+        model_info: {id: s, db_model: true, max_input_tokens: 1000}
+      - model_name: retargeted
+        litellm_params: {model: openai/model-b}
+        model_info: {id: r, db_model: true, max_input_tokens: 2000}
+      - model_name: reordered
+        litellm_params: {model: openai/model-b}
+        model_info: {id: o, db_model: true, max_input_tokens: 1500}
+      - {model_name: fast, litellm_params: {model: openai/model-a}, model_info: {id: f, db_model: true}}
+  tasks:
+    - name: Load the role report projection
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../roles/llm_router/defaults/main/76-drift.yml"
+
+    - name: Assert the aliased role is not read as a role
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_live_roles | map(attribute='role') | list == ['steady', 'retargeted', 'reordered']
+
+    - name: Stand in for the live fallback reads
+      ansible.builtin.set_fact:
+        _llm_router_drift_role_fallbacks:
+          results:
+            - {item: "{{ llm_router_role_deployments[0] }}", status: 200, json: {fallback_models: [model-b]}}
+            - {item: "{{ llm_router_role_deployments[1] }}", status: 404, json: {detail: not found}}
+            - {item: "{{ llm_router_role_deployments[2] }}", status: 200, json: {fallback_models: [model-b, model-a]}}
+
+    - name: Assert only the drifted roles are reported
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_role_report == _expected
+        fail_msg: "Expected {{ _expected }}, got {{ _llm_router_drift_role_report }}"
+      vars:
+        _expected:
+          - role retargeted targets openai/model-b; seed openai/model-a
+          - role reordered advertises max_input_tokens 1500; catalog 2000
+          - role reordered falls back model-b > model-a; seed model-a > model-b
