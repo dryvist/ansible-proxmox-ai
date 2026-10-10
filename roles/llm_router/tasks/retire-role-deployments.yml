@@ -28,7 +28,9 @@
 
 - name: Report each database-stored deployment that Git does not own
   ansible.builtin.debug:
-    msg: "Reverting {{ item.model_name }}: it {{ item.reason }}."
+    msg: >-
+      {{ 'Reverting' if item in _llm_router_db_model_deletes else 'Keeping until back-ported' }}
+      {{ item.model_name }}: it {{ item.reason }}.
   loop: "{{ _llm_router_db_model_reverts }}"
   loop_control:
     label: "{{ item.model_name }}"
@@ -44,7 +46,7 @@
       id: "{{ item.id }}"
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
-  loop: "{{ _llm_router_db_model_reverts }}"
+  loop: "{{ _llm_router_db_model_deletes }}"
   loop_control:
     label: "{{ item.model_name }}"
   no_log: true
@@ -60,14 +62,14 @@
     quiet: true
     that:
       - _llm_router_still_shadowed | length == 0
-      - _llm_router_db_model_reverts | length == 0
+      - _llm_router_db_model_deletes | length == 0
     fail_msg: >-
       Alias name(s) [{{ _llm_router_still_shadowed | join(', ') }}] or
-      database row(s) [{{ _llm_router_db_model_reverts | map(attribute='model_name') | join(', ') }}]
+      database row(s) [{{ _llm_router_db_model_deletes | map(attribute='model_name') | join(', ') }}]
       still exist after the deletes above
       (roles/llm_router/tasks/retire-role-deployments.yml). Remove the DB
       duplicate or fix the config-declared registry collision, then re-converge.
-    success_msg: "Every database-stored deployment is a declared role."
+    success_msg: "No database-stored deployment shadows a Git name."
   vars:
     _llm_router_still_shadowed: >-
       {{ (llm_router_model_group_aliases | list)

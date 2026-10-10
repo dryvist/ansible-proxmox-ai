@@ -2,7 +2,8 @@
 # Pins which database-stored deployments a converge reverts
 # (_llm_router_db_model_reverts, defaults/main/76-drift.yml): a DB row that
 # shadows a declared alias or a config deployment, or that no Git declaration
-# tracks, is reverted; a declared role is kept; a config-declared row is never
+# tracks, is reverted (an untracked row only when
+# llm_router_db_model_revert_untracked is on); a declared role is kept; a config-declared row is never
 # a delete candidate (it can't be deleted through the API, and the final
 # assert in retire-role-deployments.yml reports a config alias collision).
 # Also pins the /v2/model/info read: /model/info appends one synthetic row per
@@ -45,6 +46,25 @@
           - {id: db-shadow, model_name: catalog-model, reason: shadows a config deployment}
           - {id: fast-row, model_name: fast, reason: shadows a declared alias}
           - {id: ui-row, model_name: ui-added, reason: is not tracked in Git}
+
+    - name: Assert untracked rows are kept by default
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_db_model_deletes | map(attribute='id') | list == ['db-alias', 'db-shadow', 'fast-row']
+        fail_msg: "Expected the default delete set to skip ui-row, got {{ _llm_router_db_model_deletes }}"
+
+    # include_vars outranks task vars, so the switch is flipped with set_fact.
+    - name: Turn on reverting untracked rows
+      ansible.builtin.set_fact:
+        llm_router_db_model_revert_untracked: true
+
+    - name: Assert the switch adds the untracked row to the delete set
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_db_model_deletes | map(attribute='id') | list == ['db-alias', 'db-shadow', 'fast-row', 'ui-row']
+        fail_msg: "Expected ui-row deleted with the switch on, got {{ _llm_router_db_model_deletes }}"
 
 - name: Nothing is reverted when every database row is a declared role
   hosts: localhost
