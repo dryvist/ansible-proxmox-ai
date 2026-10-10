@@ -35,7 +35,7 @@ Required on every entry:
                     `dashscope`, `gemini`, `openrouter`, or `chatgpt` (the
                     subscription over OAuth; no key field resolves for it —
                     a per-node login file credentials it).
-  tier              `large` | `light` | `cpu-moe` | `cpu-9b` | `vllm` |
+  tier              `local-large` | `light` | `cpu-moe` | `cpu-9b` | `vllm` |
                     `opencode` | `hermes-router` | `hermes-cloud` |
                     `openrouter` | `zai`. Selects the deployment shape; light entries
                     become two same-name deployments (GPU + CPU standby);
@@ -159,7 +159,7 @@ Optional:
                       matches nothing (pinned by
                       tests/llm_router/test_registry_hints_projection.yml):
 
-                        speed     `fast` | `medium` | `slow` — decode class AS
+                        speed     `quick` | `moderate` | `slow` — decode class AS
                                   SERVED HERE, not the model's reputation.
                         quality   `routine` | `strong` | `frontier`.
                         best_for  Free-form subtask labels a caller matches
