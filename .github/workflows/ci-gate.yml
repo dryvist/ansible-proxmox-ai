@@ -177,6 +177,7 @@ jobs:
           PUSH_HEAD: ${{ github.sha }}
         run: |
           if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]] ||
+             [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/develop ]] ||
              [[ "$EVENT_NAME" == pull_request && "$BASE_REF" == main ]]; then
             echo 'full_suite=true' >> "$GITHUB_OUTPUT"
             python .github/scripts/select-contract-scope.py --full --output "$GITHUB_OUTPUT"
@@ -200,6 +201,7 @@ jobs:
           SELECT_RESULT: ${{ steps.select.outcome }}
         run: |
           if [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]] ||
+             [[ "$EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/develop ]] ||
              [[ "$EVENT_NAME" == pull_request && "$BASE_REF" == main ]]; then
             selection=full
           elif [[ "$SELECT_RESULT" != success ]]; then
@@ -209,21 +211,26 @@ jobs:
           fi
           printf 'Data Contract selection: %s\n' "$selection" >> "$GITHUB_STEP_SUMMARY"
 
-  # Push events skip the contract and Molecule jobs; pull requests run them.
+  # Pushes to main and develop run the full contract suite and skip Molecule.
+  # Pull requests run the focused selection unless the full suite is selected.
   data-contract:
     name: Data Contract
     needs: contract-scope
     if: >-
-      github.event_name != 'push' &&
       always() &&
+      needs.contract-scope.result == 'success' &&
       (
-        needs.contract-scope.result == 'success' &&
-        (needs.contract-scope.outputs.full_suite == 'true' ||
-        needs.contract-scope.outputs.pytest_targets != '[]' ||
-        needs.contract-scope.outputs.ansible_tests != '[]' ||
-        needs.contract-scope.outputs.llm_router_playbooks != '[]' ||
-        needs.contract-scope.outputs.run_inventory == 'true' ||
-        needs.contract-scope.outputs.run_selector_checks == 'true')
+        needs.contract-scope.outputs.full_suite == 'true' ||
+        (
+          github.event_name != 'push' &&
+          (
+            needs.contract-scope.outputs.pytest_targets != '[]' ||
+            needs.contract-scope.outputs.ansible_tests != '[]' ||
+            needs.contract-scope.outputs.llm_router_playbooks != '[]' ||
+            needs.contract-scope.outputs.run_inventory == 'true' ||
+            needs.contract-scope.outputs.run_selector_checks == 'true'
+          )
+        )
       )
     uses: ./.github/workflows/_data-contract.yml
     with:

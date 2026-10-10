@@ -22,10 +22,11 @@ def run_selector(*paths: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(SELECTOR), *paths], check=False, capture_output=True, text=True)
 
 
-def test_full_suite_covers_main_pushes_and_promotion_prs() -> None:
+def test_full_suite_covers_main_and_develop_pushes_and_promotion_prs() -> None:
     workflow = CI_GATE.read_text()
 
     assert 'EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main' in workflow
+    assert 'EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/develop' in workflow
     assert 'BASE_SHA="$PUSH_BEFORE"' in workflow
     assert 'HEAD_SHA="$PUSH_HEAD"' in workflow
     molecule = yaml.safe_load(workflow)["jobs"]["molecule"]
@@ -45,7 +46,7 @@ def test_full_suite_covers_main_pushes_and_promotion_prs() -> None:
     ("pull_request", "refs/pull/1/merge", "main", True),
     ("pull_request", "refs/pull/1/merge", "develop", False),
     ("push", "refs/heads/main", "", True),
-    ("push", "refs/heads/develop", "", False),
+    ("push", "refs/heads/develop", "", True),
 ])
 def test_actual_scope_step_dispatches_full_or_focused(
     tmp_path: Path, event: str, ref: str, base: str, expected_full: bool,

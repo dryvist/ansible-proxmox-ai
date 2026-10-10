@@ -56,7 +56,7 @@ def test_ci_gate_header_names_the_contract_scope_gate() -> None:
     ("data-contract", "github.event_name != 'push'"),
     ("molecule", "github.event_name == 'pull_request'"),
 ])
-def test_push_events_skip_the_contract_and_molecule_jobs(job: str, guard: str) -> None:
+def test_push_events_skip_focused_contract_and_molecule_jobs(job: str, guard: str) -> None:
     condition = yaml.safe_load(CI_GATE.read_text())["jobs"][job]["if"]
     assert guard in condition
 
