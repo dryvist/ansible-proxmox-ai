@@ -35,7 +35,7 @@ Required on every entry:
                     `dashscope`, `gemini`, `openrouter`, or `chatgpt` (the
                     subscription over OAuth; no key field resolves for it —
                     a per-node login file credentials it).
-  tier              `large` | `light` | `cpu-moe` | `cpu-9b` | `vllm` |
+  tier              `local-large` | `light` | `cpu-moe` | `cpu-9b` | `vllm` |
                     `opencode` | `hermes-router` | `hermes-cloud` |
                     `openrouter` | `zai`. Selects the deployment shape; light entries
                     become two same-name deployments (GPU + CPU standby);
