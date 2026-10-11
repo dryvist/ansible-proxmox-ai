@@ -30,9 +30,15 @@ def ns():
 
 
 def _call(ns, alias, data, call_type="acompletion"):
+    added_snapshot = alias == CI_ALIAS and "proxy_server_request" not in data
+    if added_snapshot:
+        data["proxy_server_request"] = {"body": dict(data)}
     key = types.SimpleNamespace(key_alias=alias)
     handler = ns["proxy_handler_instance"]
-    return asyncio.run(handler.async_pre_call_hook(key, None, data, call_type))
+    result = asyncio.run(handler.async_pre_call_hook(key, None, data, call_type))
+    if added_snapshot:
+        data.pop("proxy_server_request")
+    return result
 
 
 def test_source_parses():
@@ -141,11 +147,13 @@ def test_ci_key_served_call_types_are_pinned(ns, call_type):
         "input": "hi",
     }
     out = _call(ns, CI_ALIAS, data, call_type=call_type)
-    assert out == {
+    expected = {
         "model": "review-private",
         "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
-        "input": "hi",
     }
+    if call_type in {"responses", "aresponses", "compact_responses", "acompact_responses"}:
+        expected["input"] = "hi"
+    assert out == expected
 
 
 @pytest.mark.parametrize("alias", ["github-actions-oss", "open-webui", None])
