@@ -37,26 +37,48 @@
         name: llm_router
         tasks_from: registry.yml
 
-    - name: CI keys use capability names while retaining their granted classes
+    - name: Private CI reaches local capabilities, its review aliases and CI Luna, and no cloud class
       ansible.builtin.assert:
         quiet: true
         that:
           - _gha.models[:3] == _capabilities
-          - _gha.allowed_classes == _llm_router_consumer_classes_standard
-          - _gha_oss.models[:3] == _capabilities
-          - _gha_oss.sensitivity_tag == '&sensitivity:public'
-          - _gha.models | intersect(_review_aliases) | length == 0
+          - _gha.allowed_classes == ['local']
+          - _gha.models | difference(_capabilities) | sort == (_gha_aliases + llm_router_ci_luna_groups) | sort
+          - _gha.models | intersect(_review_aliases) | sort == _gha_aliases | sort
+          - _gha.models | intersect(_cloud_groups) | difference(llm_router_ci_luna_groups) | length == 0
+          - llm_router_external_free_rungs | intersect(_gha.models) | length == 0
+          - llm_router_ci_luna_groups | difference(_gha.models) | length == 0
           - _review_aliases | map('extract', _aliases) | unique | list == [llm_router_primary_model]
           - _review_aliases | length == 3
-        fail_msg: "gha={{ _gha.models }} gha-oss={{ _gha_oss.models }}"
+        fail_msg: "gha={{ _gha.models }} classes={{ _gha.allowed_classes }}"
       vars:
         _capabilities: "{{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model] }}"
-        _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
-        _gha_oss: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
+        _gha_aliases: "{{ [llm_router_review_aliases.private, llm_router_review_aliases.local] }}"
+        _cloud_groups: >-
+          {{ ['sub', 'paid-zdr', 'free', 'retains']
+             | map('extract', llm_router_d1_rungs_by_class) | flatten | unique | list }}
         _aliases: "{{ llm_router_model_group_aliases }}"
         _review_aliases: >-
           {{ _aliases | dict2items | selectattr('key', 'match', '^review-')
              | map(attribute='key') | list }}
+        _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
+
+    - name: Public CI reaches its review alias and the groups that alias walks, nothing wider
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _gha_oss.models[0] == llm_router_review_aliases.oss
+          - >-
+            _gha_oss.models
+            == ([llm_router_review_aliases.oss, llm_router_primary_model]
+                + llm_router_review_oss_chain) | unique | list
+          - llm_router_review_aliases.private not in _gha_oss.models
+          - llm_router_review_aliases.local not in _gha_oss.models
+          - llm_router_ci_luna_groups | intersect(_gha_oss.models) | length == 0
+          - _gha_oss.sensitivity_tag == '&sensitivity:public'
+        fail_msg: "gha-oss={{ _gha_oss.models }}"
+      vars:
+        _gha_oss: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
 
     - name: Event-specific local keys keep their medium capability and trace metadata
       ansible.builtin.assert:
