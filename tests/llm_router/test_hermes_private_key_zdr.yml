@@ -81,7 +81,7 @@
           - _asserted_zdr_cloud_names | difference(_private.models) | length == 0
           - _donna.models | difference(_llm_router_private_zdr_model_scope) | length == 0
           - _donna.models | length < _private.models | length
-          - _private.daily_budget == _llm_router_key_daily_budget
+          - _private.daily_budget == _llm_router_hermes_profile_daily_budget
           - _private.object_permission.mcp_access_groups == ['hub-public', 'hub-homelab-read']
           - _private.object_permission.agents is not defined
         fail_msg: >-
@@ -126,18 +126,18 @@
       ansible.builtin.set_fact:
         llm_router_db_host: db.example.test
 
-    - name: Assert the Hermes profile keys carry the profile daily cap and the others the shared one
+    - name: Assert every Hermes key carries the Hermes daily cap
       ansible.builtin.assert:
         quiet: true
         that:
-          - _profile_caps | unique == [2.0]
-          - _profile_caps | length > 0
-          - _private.daily_budget | float == 1.0
-        fail_msg: "profile caps={{ _profile_caps }} hermes-private={{ _private.daily_budget }}"
-        success_msg: "Hermes profile keys cap at {{ _profile_caps | unique }} per 24h"
+          - _hermes_caps | unique == [2.0]
+          - _hermes_caps | length == _hermes_aliases | length
+        fail_msg: "hermes aliases={{ _hermes_aliases }} caps={{ _hermes_caps }}"
+        success_msg: "Hermes keys cap at {{ _hermes_caps | unique }} per 24h"
       vars:
-        _profile_aliases: "{{ _llm_router_hermes_profile_keys | map(attribute='alias') | list }}"
-        _profile_caps: >-
-          {{ llm_router_virtual_keys | selectattr('alias', 'in', _profile_aliases)
+        _hermes_aliases: >-
+          {{ _llm_router_hermes_profile_keys | map(attribute='alias') | list
+             + ['hermes-private', 'donna'] }}
+        _hermes_caps: >-
+          {{ llm_router_virtual_keys | selectattr('alias', 'in', _hermes_aliases)
              | map(attribute='daily_budget') | map('float') | list }}
-        _private: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'hermes-private') | first }}"
