@@ -66,3 +66,26 @@ def test_stream_options_replaced_by_the_proxy_still_narrow_to_include_usage(hand
     data = {"model": "m", "stream_options": {"include_usage": True, "reasoning_effort": "high"}}
     data["proxy_server_request"] = {"body": {"model": "m", "stream_options": sent}}
     assert call(handler, data, "acompletion")["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.parametrize("call_type", CALL_TYPES)
+def test_header_derived_retry_and_timeout_values_are_removed(handler, call_type):
+    sent = {"model": "m"}
+    carriers = {
+        "num_retries": 50,
+        "timeout": 1.0,
+        "stream_timeout": 1.0,
+        "keepalive_seconds": 5.0,
+        "client_side_timeout": True,
+    }
+    data = {**sent, **carriers, "proxy_server_request": {"body": dict(sent)}}
+    assert not set(carriers) & set(call(handler, data, call_type))
+
+
+@pytest.mark.parametrize("call_type", CALL_TYPES)
+@pytest.mark.parametrize("model", [["a", "b"], ("a",), 7, {"a": 1}])
+def test_model_must_be_a_single_string(handler, call_type, model):
+    msg = "The CI key must select one model per request."
+    assert call(handler, {"model": model}, call_type) == msg
+    live = {"model": model, "proxy_server_request": {"body": {"model": "m"}}}
+    assert call(handler, live, call_type) == msg
