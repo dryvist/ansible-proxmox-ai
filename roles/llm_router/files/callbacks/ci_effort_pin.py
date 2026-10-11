@@ -277,12 +277,19 @@ def default_thinking_off(data, call_type):
     model = data.get("model")
     if _ROUTE_FAMILIES.get(call_type) != "chat" or not isinstance(model, str) or model not in _THINKING_OFF_MODELS:
         return
-    extra = data.setdefault("extra_body", {}) if data.get("extra_body") is None else data["extra_body"]
-    template = extra.get("chat_template_kwargs") if isinstance(extra, dict) else False
+    extra = data.get("extra_body")
+    if isinstance(extra, dict) and "chat_template_kwargs" in extra:
+        template = extra["chat_template_kwargs"]
+        if isinstance(template, dict) and "enable_thinking" not in template:
+            data["extra_body"] = {**extra, "chat_template_kwargs": {**template, "enable_thinking": False}}
+        return
+    # Top level, never extra_body: LiteLLM lets a request extra_body replace the deployment's whole extra_body
+    # (provider settings) on a fallback hop, and merges a top-level key into it.
+    template = data.get("chat_template_kwargs")
     if template is None:
-        template = extra["chat_template_kwargs"] = {}
-    if isinstance(template, dict):
-        template.setdefault("enable_thinking", False)
+        data["chat_template_kwargs"] = {"enable_thinking": False}
+    elif isinstance(template, dict) and "enable_thinking" not in template:
+        data["chat_template_kwargs"] = {**template, "enable_thinking": False}
 
 
 class CiEffortPin(CustomLogger):
