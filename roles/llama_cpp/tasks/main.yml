@@ -79,20 +79,24 @@
     shell: /usr/sbin/nologin
     create_home: true
 
-- name: Create the install, config and models directories
+- name: Create the install and config directories
   ansible.builtin.file:
-    path: "{{ item.path }}"
+    path: "{{ item }}"
     state: directory
-    owner: "{{ item.owner }}"
-    group: "{{ item.group }}"
-    mode: "{{ item.mode }}"
+    owner: root
+    group: root
+    mode: "0755"
   loop:
-    - { path: "{{ llama_cpp_install_dir }}", owner: root, group: root, mode: "0755" }
-    - { path: "{{ llama_cpp_config_dir }}", owner: root, group: root, mode: "0755" }
-    - path: "{{ llama_cpp_models_dir }}"
-      owner: "{{ llama_cpp_user }}"
-      group: "{{ llama_cpp_group }}"
-      mode: "0750"
+    - "{{ llama_cpp_install_dir }}"
+    - "{{ llama_cpp_config_dir }}"
+
+# The models directory is the read-only shared mount, so its owner and mode
+# come from the mount; this only checks that it is a directory.
+- name: Assert the shared models mount is a directory
+  ansible.builtin.stat:
+    path: "{{ llama_cpp_models_dir }}"
+  register: llama_cpp_models_dir_stat
+  failed_when: not (llama_cpp_models_dir_stat.stat.isdir | default(false))
 
 # Device-group resolution plus, on the vulkan backend, the visibility gate that
 # stops a silent CPU fallback from shipping as a GPU deployment.
