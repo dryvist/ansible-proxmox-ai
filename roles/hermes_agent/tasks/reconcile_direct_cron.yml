@@ -3,8 +3,8 @@
 # --no-agent enqueuers (reconcile_enqueuer_cron.yml), the gateway RUNS the
 # prompt and delivers the model's final response straight to Slack. Mirrors the
 # same create-if-absent + checksum-marker remove/recreate idempotency (the CLI's
-# `cron edit` is not relied on — recreate re-pins schedule/prompt/skill/deliver
-# deterministically).
+# `cron edit` is not relied on — recreate re-pins schedule/prompt/skill/model/
+# provider/deliver deterministically).
 #
 # item fields: name, schedule, EITHER prompt_file (loaded from the pinned
 # catalog) OR prompt_var (name of an already-resolved var, inline or
@@ -12,6 +12,8 @@
 # table used), skill (may be ""), enabled, an optional deliver override
 # (defaults to the shared digest channel), and optional channel_when_healthy
 # (outcome-based routing: the catalog's quiet-when-healthy footer is appended).
+# A job may also pin `model` and `model_provider` through Hermes's native
+# per-job inference pin; its HERMES_HOME supplies that profile's router key.
 # Also optional: script, a path under ~/.hermes/scripts/ attached WITHOUT
 # --no-agent (monitor mode) — the script decides per tick whether to wake the
 # agent at all (upstream's `wakeAgent` gate). The job stays fully agentic
@@ -71,6 +73,8 @@
           hermes_agent_direct_prompt, '--name', item.name]
          + (['--skill', item.skill] if (item.skill | default('') | length > 0) else [])
          + (['--script', item.script] if (item.script | default('') | length > 0) else [])
+         + (['--model', item.model] if item.model is defined else [])
+         + (['--provider', item.model_provider] if item.model_provider is defined else [])
          + ['--deliver', hermes_agent_direct_deliver,
             '--workdir', item.hermes_home | default(hermes_agent_hermes_home)]
          + (['--failure-deliver', hermes_agent_cron_failure_deliver]
@@ -128,12 +132,15 @@
 - name: "Direct cron | Calculate desired state for {{ item.name }}"
   ansible.builtin.set_fact:
     hermes_agent_direct_checksum: >-
-      {{ {'schedule': item.schedule, 'prompt': hermes_agent_direct_prompt,
+      {{ ({'schedule': item.schedule, 'prompt': hermes_agent_direct_prompt,
           'skill': item.skill | default(''),
           'script': item.script | default(''),
           'deliver': hermes_agent_direct_deliver,
           'workdir': item.hermes_home | default(hermes_agent_hermes_home),
           'failure_deliver': hermes_agent_cron_failure_deliver}
+         | combine({'model': item.model} if item.model is defined else {})
+         | combine({'model_provider': item.model_provider}
+                  if item.model_provider is defined else {}))
          | to_json | hash('sha256') }}
   when: hermes_agent_direct_wanted | bool
 
@@ -148,9 +155,9 @@
   register: hermes_agent_direct_marker_probe
   when: hermes_agent_direct_wanted | bool
 
-# A changed marker on an EXISTING job means schedule/prompt/skill/deliver
-# drifted: remove it so the create below re-pins the new definition. No drift
-# (or a job that does not exist yet) is a no-op here.
+# A changed marker on an EXISTING job means schedule/prompt/skill/model/provider/
+# deliver drifted: remove it so the create below re-pins the new definition. No
+# drift (or a job that does not exist yet) is a no-op here.
 - name: "Direct cron | Remove drifted {{ item.name }}"
   ansible.builtin.command: "{{ hermes_agent_bin }} cron remove {{ item.name }}"
   environment:
