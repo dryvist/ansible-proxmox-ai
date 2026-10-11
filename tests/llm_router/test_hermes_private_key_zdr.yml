@@ -119,3 +119,25 @@
           {{ _hermes_private_test_keys | selectattr('alias', 'equalto',
              (_llm_router_hermes_profile_keys | selectattr('alias', 'search', '-default$')
               | map(attribute='alias') | first)) | first }}
+
+    # The caps are honestly 0 until the router database is in the inventory,
+    # so give it one here and render the keys again.
+    - name: Give the router a database so the key budgets are not zero
+      ansible.builtin.set_fact:
+        llm_router_db_host: db.example.test
+
+    - name: Assert the Hermes profile keys carry the profile daily cap and the others the shared one
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _profile_caps | unique == [2.0]
+          - _profile_caps | length > 0
+          - _private.daily_budget | float == 1.0
+        fail_msg: "profile caps={{ _profile_caps }} hermes-private={{ _private.daily_budget }}"
+        success_msg: "Hermes profile keys cap at {{ _profile_caps | unique }} per 24h"
+      vars:
+        _profile_aliases: "{{ _llm_router_hermes_profile_keys | map(attribute='alias') | list }}"
+        _profile_caps: >-
+          {{ llm_router_virtual_keys | selectattr('alias', 'in', _profile_aliases)
+             | map(attribute='daily_budget') | map('float') | list }}
+        _private: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'hermes-private') | first }}"
