@@ -211,3 +211,33 @@
           {%- endif -%}
           {%- endfor -%}
           {{ ns.out | unique | list }}
+
+    # The parity assert compares this set with the gate's own listing, which
+    # names physical models. Capability names (route groups) are what aliases
+    # and key scopes read, and the gate never lists one.
+    - name: The set compared with the serving gate is physical ids, never capability names
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - llm_router_servable_models | length > 0
+          - llm_router_servable_models | sort == _gate_entries | sort
+          - llm_router_servable_models | intersect(_route_groups) | length == 0
+          - llm_router_servable_route_groups | difference(_route_groups) | length == 0
+          - llm_router_servable_route_groups | difference(llm_router_all_servable_models) | length == 0
+        fail_msg: >-
+          llm_router_servable_models={{ llm_router_servable_models }} is not the
+          physical ids of the enabled servable large-tier entries
+          ({{ _gate_entries }}), or names a capability. The gate answers only to
+          physical ids, so a capability name here is reported as unserved on
+          every converge.
+        success_msg: >-
+          The gate comparison set is {{ llm_router_servable_models | length }}
+          physical id(s); capability names stay in the alias and key projections.
+      vars:
+        _gate_entries: >-
+          {{ llm_router_registry_enabled | selectattr('servable', 'defined')
+             | selectattr('servable') | selectattr('tier', 'equalto', 'local-large')
+             | map(attribute='client_model_id') | list }}
+        _route_groups: >-
+          {{ llm_router_model_registry | selectattr('route_group', 'defined')
+             | map(attribute='route_group') | unique | list }}

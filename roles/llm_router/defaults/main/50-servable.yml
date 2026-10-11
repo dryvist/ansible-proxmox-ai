@@ -53,7 +53,15 @@ llm_router_small_model: >-
   {{ (llm_router_model_registry | selectattr('tier', 'equalto', 'vllm') | first).route_group }}
 llm_router_routine_model: >-
   {{ llm_router_small_model }}
+# The physical ids the Mac serving gate must list: what the parity assert
+# (tasks/assert-servable-parity.yml) compares against the gate's own listing.
 llm_router_servable_models: >-
+  {{ llm_router_registry_enabled | selectattr('servable', 'defined')
+     | selectattr('servable') | selectattr('tier', 'equalto', 'local-large')
+     | map(attribute='client_model_id') | list }}
+# The capability names those entries (and the other servable tiers) route
+# through; the alias, key-scope and fallback projections read this set.
+llm_router_servable_route_groups: >-
   {{ ((llm_router_registry_enabled | selectattr('servable', 'defined')
        | selectattr('servable') | rejectattr('tier', 'equalto', 'vllm') | list)
       + (llm_router_vllm_models | selectattr('servable', 'defined')
@@ -65,7 +73,7 @@ llm_router_gpu_servable_models: >-
   {{ llm_router_gpu_models | selectattr('servable', 'defined')
      | selectattr('servable') | map(attribute='route_group') | unique | list }}
 llm_router_all_servable_models: >-
-  {{ (llm_router_servable_models + llm_router_gpu_servable_models) | unique
+  {{ (llm_router_servable_route_groups + llm_router_gpu_servable_models) | unique
      | reject('equalto', none) | list }}
 
 # Aliases carry no deployment configuration. Their targets are route groups,
