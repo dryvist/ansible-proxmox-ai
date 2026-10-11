@@ -112,9 +112,9 @@ def test_every_runner_job_takes_the_promotion_timeout(path: Path) -> None:
 
 def test_reusable_calls_forward_the_timeout_input() -> None:
     jobs = yaml.safe_load(CI_GATE.read_text())["jobs"]
-    expected = {"data-contract": PROMOTION_TIMEOUT, "molecule": PROMOTION_TIMEOUT.replace("|| 10", "|| 15")}
-    for name, timeout in expected.items():
-        assert " ".join(jobs[name]["with"]["timeout_minutes"].split()) == timeout, name
+    for name in ("data-contract", "molecule"):
+        timeout = " ".join(jobs[name]["with"]["timeout_minutes"].split())
+        assert timeout == PROMOTION_TIMEOUT.replace("|| 10", "|| 15"), name
     nested = yaml.safe_load((WORKFLOWS / "_data-contract.yml").read_text())["jobs"]["llm-router-contract"]
     assert nested["with"]["timeout_minutes"] == "${{ inputs.timeout_minutes }}"
 

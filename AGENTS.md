@@ -301,7 +301,7 @@ smoke scenario; other unclassified paths widen to the full matrix. The Data
 Contract selector sends any path its mapping does not cover, including an
 unmapped test playbook, to the full contract suite; it does not fail the run.
 A removed test file selects its owner's scope, if any. Runner jobs cap at ten
-minutes (Molecule at fifteen), or at sixty on pull requests from `develop` into
+minutes (Molecule and the data contract at fifteen), or at sixty on pull requests from `develop` into
 `main` in this repository; the Renovate checksum fix job caps at five. Required validation is
 aggregated by `Merge Gate`.
 Public pull-request CI stays on GitHub-hosted runners.
