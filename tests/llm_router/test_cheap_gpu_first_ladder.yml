@@ -1,14 +1,9 @@
 ---
-# Pins the `cheap` role alias and the attempt bounds database roles inherit
-# from its registry entry (roles/llm_router/defaults/main/55-roles.yml).
-#
-# `cheap` aliases the single configured complexity router. The heuristic
-# selector targets the first D1 rung, and its fallback tail follows the same
-# class order.
+# Pins the deprecated caller aliases and the hardware order behind `small`.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_cheap_gpu_first_ladder.yml -i localhost, -c local
-- name: Verify the cheap alias's D1 ladder and heuristic router target
+- name: Verify the small alias's D1 ladder and heuristic router target
   hosts: localhost
   gather_facts: false
   vars:
@@ -39,27 +34,26 @@
         name: llm_router
         tasks_from: registry.yml
 
-    - name: Resolve the cheap alias and the catalog auto-router entry
+    - name: Resolve small capability members and transitional aliases
       ansible.builtin.set_fact:
-        _cheap: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'cheap') | first }}"
-        _auto: "{{ _llm_router_role_params['hermes-default'] }}"
+        _small_members: >-
+          {{ llm_router_capability_registry_members
+             | selectattr('route_group', 'equalto', llm_router_small_model) | list }}
 
-    - name: Cheap uses the native heuristic router and the D1 tail
+    - name: Legacy cheap and fast names point at the small capability
       ansible.builtin.assert:
         quiet: true
         that:
-          - _cheap.model == 'hermes-default'
-          - >-
-            _cheap.fallbacks ==
-            (llm_router_d1_ladder_groups
-             | reject('equalto', llm_router_d1_auto_initial_group) | list)
-          - _auto.complexity_router_config.classifier_type == 'heuristic'
-          - _auto.complexity_router_config.default_model == llm_router_d1_auto_initial_group
-        fail_msg: "cheap seed is {{ _cheap }}"
-        success_msg: "cheap: heuristic -> {{ llm_router_d1_ladder_groups | join(' -> ') }}"
+          - llm_router_model_group_aliases.cheap == llm_router_small_model
+          - llm_router_model_group_aliases.fast == llm_router_small_model
+          - _small_members | map(attribute='order') | map('int') | sort == [1, 2, 3]
+          - llm_router_small_model == llm_router_routine_model
+        fail_msg: "small capability members={{ _small_members }} aliases={{ llm_router_model_group_aliases }}"
+        success_msg: "fast and cheap target the ordered small capability members"
 
-    - name: Cheap never escapes to long
+    - name: The deleted long name has no fallback or alias projection
       ansible.builtin.assert:
         quiet: true
         that:
-          - "'cheap' not in llm_router_long_context_escape_roles"
+          - "'long' not in llm_router_model_group_aliases"
+          - "'long' not in llm_router_entry_point_names"

@@ -1,0 +1,102 @@
+---
+- name: Verify the capability API and registry alias projection
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets: {}
+    llm_router_subdomain: "pve.example.test"
+    llm_large_serving_host: llm-large
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_default_model: "{{ llm_router_primary_model }}"
+    ai_orchestration_otel_endpoint: http://otel.example.test:4318
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    llm_router_vllm_first_byte_timeout_seconds: 40
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+    hermes_goal_judge_model: "{{ llm_router_small_model }}"
+    bao_local_llm_secrets: {}
+  tasks:
+    - name: Load the role defaults
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Set a fixture precheck result for the local capability render
+      ansible.builtin.set_fact:
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+        llm_router_llm_vllm_base_url: "http://localhost:10434/v1"
+
+    - name: Load the registry through the role task
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Run the registry alias and unique-order guards
+      ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-capabilities.yml"
+
+    - name: Render model and alias names from the same registry views
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+        _capabilities: "{{ llm_router_capability_names | unique | list }}"
+        _registry_local_capability_names: >-
+          {{ llm_router_registry_enabled
+             | selectattr('tier', 'in', llm_router_local_registry_tiers)
+             | selectattr('route_group', 'defined')
+             | map(attribute='route_group') | unique | list }}
+        _aliases: "{{ llm_router_model_group_aliases }}"
+        _alias_pairs: "{{ llm_router_alias_pairs }}"
+
+    - name: Capture the rendered capability model names
+      ansible.builtin.set_fact:
+        _rendered_capability_names: >-
+          {{ _config.model_list | map(attribute='model_name') | unique
+             | intersect(_capabilities) | list }}
+
+    - name: Expose exactly five local capabilities and the registry aliases
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _capabilities | length == 5
+          - _capabilities | symmetric_difference(_expected_capabilities) | length == 0
+          - _registry_local_capability_names | symmetric_difference(_capabilities) | length == 0
+          - _rendered_capability_names | symmetric_difference(_capabilities) | length == 0
+          - _aliases | length == 14
+          - _aliases | length == _alias_pairs | length
+          - _aliases.keys() | symmetric_difference(_expected_aliases) | length == 0
+          - _aliases.keys() | difference(_config.router_settings.model_group_alias.keys()) | length == 0
+          - _config.router_settings.model_group_alias.keys() | difference(_aliases.keys()) | length == 0
+          - _aliases.keys() | intersect(_config.model_list | map(attribute='model_name') | unique | list) | length == 0
+          - _aliases.values() | difference(_capabilities) | length == 0
+          - _capabilities | difference(_config.model_list | map(attribute='model_name') | unique | list) | length == 0
+          - >-
+            llm_router_max_fallbacks | int
+            == llm_router_fallback_target_names | length
+            + llm_router_capability_order_retarget_count | int
+          - >-
+            llm_router_role_deployments | map(attribute='role')
+            | difference(llm_router_database_role_chain_names) | length == 0
+          - llm_router_enforce_fallback_model_access | bool
+        fail_msg: >-
+          capability names={{ _capabilities }}, aliases={{ _aliases }},
+          rendered aliases={{ _config.router_settings.model_group_alias }}
+      vars:
+        _expected_capabilities: >-
+          {{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model,
+              llm_router_embedding_model, llm_router_ocr_model] | unique | list }}
+        _expected_aliases: >-
+          {{ ['subagent', 'fast', 'cheap', 'judge', 'recorder', 'review-oss',
+              'review-private', 'review-local', 'hermes-default', 'goal-judge',
+              'default', 'auto', 'coding', 'embeddings'] }}

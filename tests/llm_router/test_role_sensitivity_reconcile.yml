@@ -31,18 +31,97 @@
         tasks_from: registry.yml
         public: true
 
-    - name: Select local, retaining, and native complexity-router targets
+    - name: Select a cloud retaining deployment for the tag-sync fixture
       ansible.builtin.set_fact:
-        _local_target: "{{ llm_router_hermes_local_4080_id }}"
-        _retaining_target: >-
-          {{ _llm_router_role_params | dict2items
-             | selectattr('value.tags', 'defined')
-             | selectattr('value.tags', 'contains', 'retains')
-             | map(attribute='key') | first }}
-        _router_target: >-
-          {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-router')
-             | map(attribute='client_model_id') | select('in', _llm_router_role_params)
+        _retaining_entry: >-
+          {{ llm_router_registry_enabled
+             | selectattr('tier', 'equalto', 'openrouter')
+             | selectattr('zero_data_retention', 'defined')
+             | rejectattr('zero_data_retention')
              | first }}
+
+    - name: Add the retaining deployment to the role-tag fixture projection
+      ansible.builtin.set_fact:
+        _retaining_target: "{{ _retaining_entry.client_model_id }}"
+        _llm_router_role_params: >-
+          {{ _llm_router_role_params | combine({
+              _retaining_entry.client_model_id: {
+                'model': _retaining_entry.litellm_model_name
+                         | default(_retaining_entry.provider ~ '/' ~ _retaining_entry.upstream_model_id),
+                'api_base': _retaining_entry.api_base | default('')
+              }}) }}
+
+    - name: Declare the native router fixture target
+      ansible.builtin.set_fact:
+        _router_target: contract-native-router
+
+    - name: Add the native router to the role-tag fixture projection
+      ansible.builtin.set_fact:
+        llm_router_registry_enabled: >-
+          {{ llm_router_registry_enabled + [{
+              'client_model_id': _router_target,
+              'tier': 'hermes-router',
+              'enabled': true
+            }] }}
+        llm_router_deployment_tags_by_model: >-
+          {{ llm_router_deployment_tags_by_model | combine({
+              _router_target: ['retains', 'sensitivity:public']}) }}
+        llm_router_deployment_tags_by_entry: >-
+          {{ llm_router_deployment_tags_by_entry | combine({
+              _router_target ~ '|hermes-router': ['retains', 'sensitivity:public']}) }}
+        _llm_router_role_params: >-
+          {{ _llm_router_role_params | combine({
+              _router_target: {'model': 'fixture/native-router-target'}
+            }) }}
+
+    - name: Select local and native complexity-router targets
+      ansible.builtin.set_fact:
+        # Role params are keyed by capability name; take the first capability
+        # whose selected member is a local deployment.
+        _local_target: >-
+          {{ (llm_router_capability_members
+              | selectattr('tier', 'in', ['local-large', 'light', 'vllm', 'gpu', 'cpu-9b', 'cpu-moe'])
+              | first).route_group }}
+
+    - name: Add a second member to the local capability as a retarget fixture
+      ansible.builtin.set_fact:
+        llm_router_capability_members: >-
+          {{ llm_router_capability_members + [_alt_entry] }}
+        llm_router_deployment_tags_by_entry: >-
+          {{ llm_router_deployment_tags_by_entry | combine({
+              _alt_entry.client_model_id ~ '|' ~ _alt_entry.tier:
+                ['local', 'zdr', 'sensitivity:public', 'sensitivity:sensitive']}) }}
+      vars:
+        _alt_entry: >-
+          {{ (llm_router_capability_members
+              | selectattr('route_group', 'equalto', _local_target) | first)
+             | combine({'client_model_id': 'contract-alt-member',
+                        'upstream_model_id': 'contract-alt-model',
+                        'litellm_model_name': 'openai/contract-alt-model'}) }}
+
+    - name: Select a later capability member whose target differs from its group's first member
+      ansible.builtin.set_fact:
+        _alternate_member_projection: >-
+          {%- set ns = namespace(found=none) -%}
+          {%- for member in _llm_router_capability_member_params if ns.found is none -%}
+          {%- set first = _llm_router_role_params[member.entry.route_group] -%}
+          {%- if member.params.model != first.model
+                or (member.params.api_base | default('')) != (first.api_base | default('')) -%}
+          {%- set ns.found = member -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.found }}
+
+    - name: Require a capability with a distinct later member
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _alternate_member_projection is mapping
+        fail_msg: No capability has a later member with a distinct target; the retarget case would test nothing.
+
+    - name: Name the alternate member's capability
+      ansible.builtin.set_fact:
+        _alternate_group: "{{ _alternate_member_projection.entry.route_group }}"
 
     - name: Declare the roles represented by the live fixture
       ansible.builtin.set_fact:
@@ -51,13 +130,14 @@
           - {role: redirected-role, model: "{{ _local_target }}", fallbacks: []}
           - {role: unknown-role, model: "{{ _local_target }}", fallbacks: []}
           - {role: auto-router-role, model: "{{ _router_target }}", fallbacks: []}
+          - {role: alternate-member-role, model: "{{ _alternate_group }}", fallbacks: []}
         _llm_router_roles_for_tag_sync:
           json:
             data:
               - model_name: local-role
                 litellm_params:
                   model: "{{ _llm_router_role_params[_local_target].model }}"
-                  api_base: "{{ _llm_router_role_params[_local_target].api_base }}"
+                  api_base: "{{ _llm_router_role_params[_local_target].api_base | default('') }}"
                   tags: [local, zdr, operator-note, "sensitivity:public"]
                 model_info: {id: local-role-id, db_model: true}
               - model_name: redirected-role
@@ -77,6 +157,12 @@
                   model: "{{ _llm_router_role_params[_router_target].model }}"
                   tags: [retains, "sensitivity:public"]
                 model_info: {id: auto-router-role-id, db_model: true}
+              - model_name: alternate-member-role
+                litellm_params:
+                  model: "{{ _alternate_member_projection.params.model }}"
+                  api_base: "{{ _alternate_member_projection.params.api_base | default('') }}"
+                  tags: [retains, "sensitivity:public", operator-note]
+                model_info: {id: alternate-member-role-id, db_model: true}
 
     - name: Run the production role-tag projection
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/prepare-role-tag-updates.yml"
@@ -95,6 +181,25 @@
         fail_msg: "Local role tags: {{ _local.tags }}"
       vars:
         _local: "{{ _llm_router_role_tag_updates | selectattr('role', 'equalto', 'local-role') | first }}"
+
+    - name: A live role on a later member receives that member's deployment tags
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _alternate_member_projection.params.model != _llm_router_role_params[_alternate_group].model
+            or (_alternate_member_projection.params.api_base | default(''))
+            != (_llm_router_role_params[_alternate_group].api_base | default(''))
+          - _alternate.tags | sort == (['operator-note'] + (_alternate_entry_tags
+            | reject('match', '^telemetry_') | list)) | unique | sort
+      vars:
+        _alternate: >-
+          {{ _llm_router_role_tag_updates
+             | selectattr('role', 'equalto', 'alternate-member-role') | first }}
+        _alternate_entry_tags: >-
+          {{ llm_router_deployment_tags_by_entry[
+              _alternate_member_projection.entry.client_model_id ~ '|'
+              ~ _alternate_member_projection.entry.tier] }}
 
     - name: A known retaining UI retarget removes sensitive and PII admission
       ansible.builtin.assert:

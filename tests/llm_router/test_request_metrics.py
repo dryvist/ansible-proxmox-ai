@@ -47,7 +47,7 @@ def _kwargs(payload):
 
 def test_success_record_has_expected_fields(module):
     payload = {
-        "model_group": "review-oss",
+        "model_group": "medium",
         "model": "qwen-review",
         "api_base": "http://backend.example.test:8080/v1",
         "status": "success",
@@ -69,7 +69,7 @@ def test_success_record_has_expected_fields(module):
     assert record == {
         "ts": 102.5,
         "event": "llm_request",
-        "model_group": "review-oss",
+        "model_group": "medium",
         "model": "qwen-review",
         "api_base": "backend.example.test",
         "status": "success",
@@ -85,7 +85,7 @@ def test_success_record_has_expected_fields(module):
 
 def test_failure_record_carries_error_class(module):
     payload = {
-        "model_group": "review-private",
+        "model_group": "medium",
         "model": "hermes-review",
         "status": "failure",
         "startTime": 10.0,
@@ -102,7 +102,7 @@ def test_failure_record_carries_error_class(module):
 
 def test_no_prompt_or_response_content_leaks(module):
     payload = {
-        "model_group": "review-oss",
+        "model_group": "medium",
         "model": "qwen-review",
         "status": "success",
         "startTime": 1.0,

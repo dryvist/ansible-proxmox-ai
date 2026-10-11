@@ -1,15 +1,15 @@
 ---
 # Owns ONE contract: the dashboard tile's `glance` virtual key reads only the
 # two routes the tile calls, and its model scope is derived from the registry's
-# GPU projection (the rendered client ids) — never empty, because an empty
+# local capability groups — never empty, because an empty
 # list on a key means ALL models.
 #
 #   1. Seeded, GPU profiles enabled: the key is registered with the apps-domain
-#      value, scoped to the rendered GPU client ids (the active profile only),
+#      value, scoped to the small and medium capability groups,
 #      and allowed_routes names exactly /health and /v2/model/info (plus the
 #      trailing-slash spellings), so it cannot complete a request.
-#   2. Seeded, no GPU entry rendered: the scope falls back to the non-matching
-#      sentinel, not an empty list.
+#   2. Seeded, no GPU profile rendered: the scope stays on the two local
+#      capability groups provided by the registry.
 #   3. Unseeded: the entry renders an empty value, which seed-keys.yml skips.
 #
 # Run (from the REPO ROOT):
@@ -37,7 +37,7 @@
     ai_router_request_timeout_seconds: 2400
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
     llm_active_profile: medium-a
@@ -59,20 +59,19 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - _gpu_ids | length == 1
+          - llm_router_gpu_models | length == 1
           - _key.value == 'sk-fixture-glance-key-0123456789'
-          - _key.models == _gpu_ids
+          - _key.models == [llm_router_primary_model, llm_router_small_model]
           - _key.allowed_routes | sort == ['/health', '/health/', '/v2/model/info', '/v2/model/info/']
           - _key.daily_budget is not defined
         fail_msg: >-
           glance models={{ _key.models }} routes={{ _key.allowed_routes | default('absent') }}
-          expected models={{ _gpu_ids }} on the two read routes
+          expected local capabilities={{ [llm_router_small_model, llm_router_primary_model] }} on the two read routes
         success_msg: "glance={{ _key.models }} routes={{ _key.allowed_routes }}"
       vars:
-        _gpu_ids: "{{ llm_router_gpu_models | map(attribute='client_model_id') | list }}"
         _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'glance') | first }}"
 
-- name: Verify the glance key falls back to the sentinel scope with no GPU entry, and is inert unseeded
+- name: Verify the glance key stays capability-scoped without a GPU profile, and is inert unseeded
   hosts: localhost
   gather_facts: false
   vars:
@@ -95,7 +94,7 @@
     ai_router_request_timeout_seconds: 2400
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
@@ -108,15 +107,15 @@
       ansible.builtin.set_fact:
         llm_router_gpu_profiles_enabled: false
 
-    - name: With no GPU entry rendered the scope is the non-matching sentinel, never empty
+    - name: With no GPU profile rendered the scope still contains the local capabilities
       ansible.builtin.assert:
         quiet: true
         that:
           - llm_router_gpu_models | length == 0
-          - _key.models == ['no-default-models']
+          - _key.models == [llm_router_primary_model, llm_router_small_model]
           - _key.allowed_routes | length == 4
-        fail_msg: "glance models={{ _key.models }} must be the sentinel when no GPU entry renders"
-        success_msg: "glance falls back to {{ _key.models }}"
+        fail_msg: "glance models={{ _key.models }} must stay scoped to the local capabilities"
+        success_msg: "glance remains scoped to {{ _key.models }}"
       vars:
         _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'glance') | first }}"
 

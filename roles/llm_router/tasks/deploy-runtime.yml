@@ -1,0 +1,55 @@
+---
+# Registered unconditionally: it depends on nothing but the message list.
+- name: Deploy the system-message-merge LiteLLM callback
+  ansible.builtin.copy:
+    src: callbacks/system_merge.py
+    dest: "{{ llm_router_config_dir }}/system_merge.py"
+    owner: root
+    group: "{{ llm_router_group }}"
+    mode: "0640"
+  notify: Restart litellm
+
+# Registered unconditionally: reads only litellm's own StandardLoggingPayload,
+# present on every request regardless of backend or store config.
+- name: Deploy the request-metrics LiteLLM callback
+  ansible.builtin.copy:
+    src: callbacks/request_metrics.py
+    dest: "{{ llm_router_config_dir }}/request_metrics.py"
+    owner: root
+    group: "{{ llm_router_group }}"
+    mode: "0640"
+  notify: Restart litellm
+
+- name: Deploy the CI effort-pin LiteLLM callback
+  ansible.builtin.import_tasks: ci-effort-pin.yml
+
+- name: Deploy the LiteLLM proxy config
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ llm_router_config_file }}"
+    owner: root
+    group: "{{ llm_router_group }}"
+    mode: "0640"
+  notify: Restart litellm
+
+- name: Compute the serving-share metric on a schedule
+  ansible.builtin.import_tasks: serving-share.yml
+
+- name: Pin the Mac Studio serving apex for LiteLLM host pinning
+  ansible.builtin.import_tasks: pin-llm-large-host.yml
+
+- name: Deploy the litellm systemd unit
+  ansible.builtin.template:
+    src: litellm.service.j2
+    dest: "/etc/systemd/system/{{ llm_router_service }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart litellm
+
+- name: Enable and start litellm
+  ansible.builtin.systemd:
+    name: "{{ llm_router_service }}"
+    state: started
+    enabled: true
+    daemon_reload: true

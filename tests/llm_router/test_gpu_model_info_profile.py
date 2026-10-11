@@ -62,7 +62,7 @@ def test_each_profile_renders_its_name_into_model_info():
         rendered = _render([entry])
         assert len(rendered) == 1
         assert rendered[0]["model_info"]["profile"] == entry["profile"]
-        assert rendered[0]["model_name"] == entry["client_model_id"]
+        assert rendered[0]["model_name"] == entry.get("route_group", entry["client_model_id"])
 
 
 def test_a_deployment_without_a_profile_renders_no_profile_marker():

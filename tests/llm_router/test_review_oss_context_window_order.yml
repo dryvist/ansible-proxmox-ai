@@ -1,14 +1,7 @@
 ---
-# Split from test_review_roles.yml (2026-09-20, token budget) — see that
-# file's header for the review-role contract this pins one clause of:
-# review-oss's context_window_fallbacks entry must equal its own chain minus
-# local rungs, IN ORDER. 37-fallback-entry-points.yml must build it with
-# `reject('in', _local) | list`, not the set-based `difference`, which
-# reorders non-deterministically per PYTHONHASHSEED.
-#
-# Run (from the REPO ROOT):
-#   ansible-playbook tests/llm_router/test_review_oss_context_window_order.yml -i localhost, -c local
-- name: Verify review-oss's context-window escape order
+# Transitional model-group aliases inherit the fallback order of their
+# registry target, with the target removed to prevent a self-cycle.
+- name: Verify capability alias fallback ordering
   hosts: localhost
   gather_facts: false
   vars:
@@ -21,75 +14,82 @@
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
-    bao_apps_secrets:
-      github_actions_llm_router_key: sk-fixture-gha
-      github_actions_oss_llm_router_key: sk-fixture-gha-oss
-    ai_default_model: "{{ llm_router_primary_model }}"
-    llm_large_serving_host: llm-large
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
+    bao_apps_secrets: {}
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: fixture-openrouter
+      OPENROUTER_HERMES_KEY: fixture-hermes
+      OPENAI_API_KEY: fixture-openai
     llm_router_subdomain: "pve.example.test"
+    llm_large_serving_host: llm-large
     llm_router_master_key: sk-test-master
     llm_router_llm_large_bearer: test-bearer-token
     ai_router_request_timeout_seconds: 2400
-    ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
-    ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
-    hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
-    bao_local_llm_secrets:
-      OPENROUTER_API_KEY: sk-or-fixture
-      OPENROUTER_HERMES_KEY: sk-orh-fixture
-      OPENAI_API_KEY: sk-oa-fixture
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
   tasks:
-    - name: Load the role defaults as they ship
+    - name: Load the role defaults and registry
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
 
-    - name: Load the fabric model registry the way the converge does
+    - name: Load registry projections
       ansible.builtin.include_role:
         name: llm_router
         tasks_from: registry.yml
 
-    # include_vars loads the role default (false) as a host fact, which
-    # outranks a play var: model a logged-in node with a fact of the same rank.
-    - name: Model a node that holds a ChatGPT login
-      ansible.builtin.set_fact:
-        llm_router_chatgpt_auth_file_present: true
+    - name: Re-evaluate credentialed cloud projections
+      ansible.builtin.include_vars:
+        file: "{{ _role_dir }}/defaults/main/35-hermes-cloud.yml"
 
-    - name: Run the role's own admission-budget assert
-      ansible.builtin.include_role:
-        name: llm_router
-        tasks_from: assert-admission-budget.yml
-
-    - name: Render config.yaml.j2 with every credential present
+    - name: Render the config without contacting serving endpoints
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
-    - name: Note the review-oss deployment
+    - name: Index the rendered fallback map
       ansible.builtin.set_fact:
-        _public: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-oss') | first }}"
+        _fallback_pairs: "{{ _config.router_settings.fallbacks | map('dict2items') | flatten }}"
 
-    - name: Review-oss context-window escape is deterministic and in declared order
+    - name: Every alias has an ordered fallback entry without its target or itself
       ansible.builtin.assert:
         quiet: true
         that:
-          - _cwf_review_oss | length > 0
-          - _cwf_review_oss == _expected_review_oss_cwf
-        fail_msg: >-
-          context_window_fallbacks[review-oss] must equal review-oss's own
-          chain minus its local rungs, IN ORDER
-          (37-fallback-entry-points.yml must use `reject('in', _local) |
-          list`, not the set-based `difference`, which reorders
-          non-deterministically per PYTHONHASHSEED). Rendered:
-          {{ _cwf_review_oss }}. Expected: {{ _expected_review_oss_cwf }}.
-        success_msg: "context_window_fallbacks[review-oss] == {{ _cwf_review_oss }}, in declared order"
+          - _aliases | length > 0
+          - _fallback_pairs | map(attribute='key') | unique | length == _fallback_pairs | length
+          - _missing | length == 0
+          - _mismatched | length == 0
+        fail_msg: "missing={{ _missing }}, mismatched={{ _mismatched }}"
       vars:
-        _local_rungs: >-
-          {{ llm_router_local_fallback_groups + [llm_router_primary_model]
-             + llm_router_all_servable_models }}
-        _expected_review_oss_cwf: "{{ _public.fallbacks | reject('in', _local_rungs) | list }}"
-        _cwf_review_oss: >-
-          {{ (_config.router_settings.context_window_fallbacks
-              | map('dict2items') | flatten
-              | selectattr('key', 'equalto', 'review-oss')
-              | map(attribute='value') | list | first) | default([]) }}
+        _aliases: "{{ llm_router_model_group_aliases | dict2items }}"
+        _fallback_map: >-
+          {{ dict(_fallback_pairs | map(attribute='key')
+                  | zip(_fallback_pairs | map(attribute='value'))) }}
+        _missing: "{{ _aliases | map(attribute='key') | difference(_fallback_map.keys()) | list }}"
+        _mismatched: >-
+          {%- set ns = namespace(bad=[]) -%}
+          {%- for pair in _aliases -%}
+          {%- set name = pair.key -%}
+          {%- set target = pair.value -%}
+          {%- set expected = llm_router_entry_point_fallback_overrides.get(
+                name, llm_router_hermes_default_fallback_chain
+                | reject('equalto', name) | reject('equalto', target) | list) -%}
+          {%- if name in llm_router_zdr_entry_point_names
+                and name not in llm_router_entry_point_fallback_overrides -%}
+          {%- set expected = expected | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list -%}
+          {%- endif -%}
+          {%- if name in (llm_router_cross_modality_fail_fast_names
+                           + llm_router_local_only_fail_fast_names) -%}
+          {%- set expected = [] -%}
+          {%- endif -%}
+          {%- if _fallback_map.get(name, none) != expected -%}
+          {%- set ns.bad = ns.bad + [name] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.bad }}

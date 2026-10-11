@@ -1,0 +1,161 @@
+---
+# Covers CI key scopes, credential gating, and parameterized roles.
+# Run from the repo root: ansible-playbook tests/llm_router/test_review_roles_ci_keys.yml -i localhost, -c local
+- name: Verify the review-role CI key scopes
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets:
+      github_actions_llm_router_key: sk-fixture-gha
+      github_actions_oss_llm_router_key: sk-fixture-gha-oss
+    ai_default_model: "{{ llm_router_primary_model }}"
+    llm_large_serving_host: llm-large
+    llm_router_subdomain: "pve.example.test"
+    llm_router_master_key: sk-test-master
+    llm_router_llm_large_bearer: test-bearer-token
+    ai_orchestration_otel_endpoint: "http://otel.example.test:4318"
+    ai_router_request_timeout_seconds: 2400
+    ai_stream_read_timeout_seconds: 1800
+    ai_router_retry_after_seconds: 2
+    ai_ingress_response_header_timeout_seconds: 120
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+    hermes_goal_judge_model: "{{ llm_router_small_model }}"
+    bao_local_llm_secrets:
+      OPENROUTER_API_KEY: sk-or-fixture
+      OPENROUTER_HERMES_KEY: sk-orh-fixture
+      OPENAI_API_KEY: sk-oa-fixture
+  tasks:
+    - name: Load the role defaults as they ship
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the fabric model registry the way the converge does
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    # The public key sits behind llm_router_oss_ci_key_enabled: with the
+    # switch off (the shipped default) it renders empty and seed-keys registers
+    # nothing, however the apps secret reads; on, the secret's value renders.
+    # The path side of the switch: tests/openbao_secrets/test_optional_paths_are_gated.yml.
+    - name: Capture the switch-off render, then flip the switch on
+      ansible.builtin.set_fact:
+        _off: "{{ llm_router_virtual_keys }}"
+        llm_router_oss_ci_key_enabled: true
+
+    - name: The public CI key is inert with its switch off and minted with it on
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _off_value == ''
+          - _on_value == 'sk-fixture-gha-oss'
+      vars:
+        _off_value: >-
+          {{ _off | selectattr('alias', 'equalto', 'github-actions-oss') | map(attribute='value') | first }}
+        _on_value: >-
+          {{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss')
+             | map(attribute='value') | first }}
+        _apps_paths: >-
+          {{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths
+             | select('mapping') | list }}
+
+    - name: The CI keys use capabilities and grant only their declared cloud groups
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          # Capability names are direct entry points; aliases remain available
+          # through model_group_alias but are not part of the private CI key.
+          - llm_router_review_aliases.private not in _gha.models
+          - llm_router_review_aliases.local not in _gha.models
+          - llm_router_review_aliases.oss not in _gha.models
+          - llm_router_ci_luna_groups | difference(_gha.models) | length == 0
+          - llm_router_review_aliases.oss in _gha_oss.models
+          - llm_router_review_aliases.private not in _gha_oss.models
+          - llm_router_review_aliases.local not in _gha_oss.models
+          - llm_router_ci_luna_groups | intersect(_gha_oss.models) | length == 0
+      vars:
+        _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
+        _gha_oss: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
+
+    # Whitespace, never absent: an absent field falls through to the RUNNER's
+    # environment (test_hermes_provider_keys.yml has the same fixture rule).
+    - name: Model a node with no ChatGPT login and no Codex key
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: false
+        bao_local_llm_secrets:
+          OPENROUTER_API_KEY: sk-or-fixture
+          OPENROUTER_HERMES_KEY: "   "
+          OPENAI_API_KEY: "   "
+          GEMINI_API_KEY: "   "
+          DASHSCOPE_API_KEY: "   "
+          OPENCODE_API_KEY: "   "
+
+    - name: Render again with no Codex credential
+      ansible.builtin.set_fact:
+        _bare: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Capture uncredentialed review fallback chains
+      ansible.builtin.set_fact:
+        _bare_fallbacks: >-
+          {{ dict(_bare.router_settings.fallbacks | map('dict2items') | flatten
+             | map(attribute='key') | zip(_bare.router_settings.fallbacks
+               | map('dict2items') | flatten | map(attribute='value'))) }}
+
+    - name: Uncredentialed, both review roles are local-only
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _bare_fallbacks[llm_router_review_aliases.private]
+            == llm_router_review_local_fallback_groups
+          - _bare_fallbacks[llm_router_review_aliases.oss]
+            == llm_router_review_local_fallback_groups
+          - >-
+            _bare.model_list
+            | selectattr('model_name', 'in',
+                llm_router_hermes_cloud_subscription_groups + llm_router_ci_luna_groups)
+            | list | length == 0
+          - _all_api_key_groups | length > 0
+          - >-
+            _bare.model_list
+            | selectattr('model_name', 'in', _all_api_key_groups)
+            | selectattr('litellm_params.model', 'match', '^openai/gpt') | list | length == 0
+        fail_msg: >-
+          private={{ _bare_fallbacks[llm_router_review_aliases.private] }}
+          public={{ _bare_fallbacks[llm_router_review_aliases.oss] }}
+      vars:
+        # Every API-key cloud group the registry declares, whether or not its
+        # credential is present; uncredentialed, none may render a GPT deployment.
+        _all_api_key_groups: >-
+          {{ llm_router_hermes_cloud_models
+             | selectattr('hermes_chain', 'defined') | rejectattr('subscription', 'defined')
+             | map(attribute='route_group') | unique | list }}
+        success_msg: >-
+          uncredentialed: private={{ _bare_fallbacks[llm_router_review_aliases.private] }}
+          public={{ _bare_fallbacks[llm_router_review_aliases.oss] }}
+
+    - name: Keep parameterized database roles for request-specific behavior
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _judge.model == llm_router_small_model
+          - _judge.fallbacks == []
+          - _judge.litellm_params.extra_body.chat_template_kwargs.enable_thinking == false
+          - _recorder.model == llm_router_small_model
+          - _recorder.fallbacks == []
+          - _recorder.litellm_params.turn_off_message_logging == true
+        fail_msg: "parameterized roles={{ _roles }}"
+      vars:
+        _roles: "{{ llm_router_role_deployments }}"
+        _judge: "{{ _roles | selectattr('role', 'equalto', 'judge') | first }}"
+        _recorder: >-
+          {{ _roles | selectattr('litellm_params.turn_off_message_logging', 'defined') | first }}

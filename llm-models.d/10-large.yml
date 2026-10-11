@@ -10,13 +10,13 @@ _llm_registry_large:
     upstream_model_id: mlx-community/gpt-oss-120b-MXFP4-Q8
     provider: openai
     tier: local-large
-    enabled: false
+    enabled: true
+    servable: true
+    route_group: large
+    order: 1
+    serving_role: large
 
-  # Shared successor for OLD Qwen records below: Qwen3.8-Flash-Next is Qwen4Exp,
-  # released 2026-08-26; open weights; 176B (125B LM + 51B n-gram)/6B active
-  # per QwenLM (HF metadata: 180B); MLX OptiQ2 80.8 GB, SSD streamed on M3 Max.
-  # https://github.com/QwenLM/Qwen3.8-Flash-Next
-  # https://huggingface.co/mlx-community/Qwen3.8-Flash-Next-OptiQ-2bit
+  # Largest enabled Mac deployment for the large capability.
   # OLD: Qwen3-MoE; 2025-07-22; open, Apache-2.0; 30.5B/3.3B active;
   # MLX 4-bit 17.2 GB. https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
   # https://huggingface.co/mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit
@@ -37,8 +37,7 @@ _llm_registry_large:
       caveats: [tool-calls-degrade-above-one-stream]
       measured: { tok_s: 136.7, date: 2026-07-11, source: mlx-benchmarks }
 
-  # Primary model (serving_role: primary). Stays enabled: no served successor
-  # holds the primary role, and the fabric brain and aliases route here.
+  # Medium fallback when the GPU profile is unavailable.
   # Facts: Qwen3.8 dense (`qwen3_5`); 2026-08-14; open, Apache-2.0;
   # 27B official / 28B HF; MLX 4-bit 16.1 GB (loaded).
   # https://huggingface.co/Qwen/Qwen3.8-27B
@@ -53,15 +52,17 @@ _llm_registry_large:
     # every resident large-tier worker runs --decode-concurrency 1
     # --prompt-concurrency 1 (roles/llm_router/defaults/main/60-ops.yml).
     serving_role: primary
+    route_group: medium
+    order: 2
     stable_aliases:
-      - tool-calling
-      - interim-brain
-      - best
-      - lead
-      - mac-studio-primary
-      # Temporary bridge while the mapped routine model is parked. Move this
-      # alias back with the routine model after the serving-host rebuild.
-      - goal-judge
+      - subagent
+      - review-oss
+      - review-private
+      - review-local
+      - hermes-default
+      - default
+      - auto
+      - coding
     hints:
       speed: slow
       quality: strong
@@ -69,8 +70,7 @@ _llm_registry_large:
       caveats: [long-prefill]
       measured: { tok_s: 17.7, date: 2026-08-30, source: mlx-benchmarks }
 
-  # Parked until the serving-host rebuild publishes the declared resident
-  # model. The `standby` state keeps this catalogued while it is unavailable.
+  # Parked while this deployment is not part of the capability groups.
   - client_model_id: mlx-community/MiMo-V2.6-Distill-Qwen-9B-OptiQ-4bit
     upstream_model_id: mlx-community/MiMo-V2.6-Distill-Qwen-9B-OptiQ-4bit
     provider: openai
@@ -141,16 +141,10 @@ _llm_registry_large:
     # every resident large-tier worker runs --decode-concurrency 1
     # --prompt-concurrency 1 (roles/llm_router/defaults/main/60-ops.yml).
     serving_role: ocr
-    stable_aliases:
-      - Unlimited OCR
-    # `ocr` is deliberately NOT added here yet. Unlike `lead` (a pure
-    # naming-transport swap, safe to do unconditionally — see 55-roles.yml),
-    # `serving_role: ocr` on THIS SAME entry already spells the literal
-    # 'ocr' in llm_router_ocr_model's own selectattr('serving_role',
-    # 'equalto', 'ocr') (55-roles.yml) — a structural field collision the
-    # retype scan correctly flags the moment 'ocr' also becomes a protected
-    # alias value, on top of the same common-word collisions `judge` hit.
-    # Deferred with them.
+    route_group: ocr
+    order: 1
+    # Its client name comes from this route_group; `serving_role` remains an
+    # internal registry selector.
     hints:
       speed: moderate
       quality: routine
@@ -234,17 +228,3 @@ _llm_registry_large:
     tier: local-large
     enabled: false
     standby: true
-
-  # Local complexity router; targets derive from serving_role entries.
-  - client_model_id: hermes-default
-    upstream_model_id: complexity_router
-    litellm_model_name: auto_router/complexity_router
-    provider: auto_router
-    tier: hermes-router
-    enabled: true
-    # Not `servable` (it dispatches, it never answers directly) — admitted as
-    # an alias target by llm_router_alias_pairs' hermes-router carve-out, see
-    # roles/llm_router/defaults/main/50-servable.yml.
-    stable_aliases:
-      - default
-      - auto

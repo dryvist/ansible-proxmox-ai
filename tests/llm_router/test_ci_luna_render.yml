@@ -24,9 +24,9 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
-    hindsight_retain_model: qwen3-4b
-    hermes_goal_judge_model: judge
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
+    hermes_goal_judge_model: "{{ llm_router_small_model }}"
     bao_local_llm_secrets:
       OPENROUTER_API_KEY: sk-or-fixture
       OPENROUTER_HERMES_KEY: sk-orh-fixture
@@ -51,11 +51,16 @@
     - name: Capture logged-in projections
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
-        _private: >-
-          {{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}
         _gha: >-
           {{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}
         _keys: "{{ llm_router_virtual_keys }}"
+
+    - name: Capture the exact fallback map
+      ansible.builtin.set_fact:
+        _fallbacks: >-
+          {{ dict(_config.router_settings.fallbacks | map('dict2items') | flatten
+             | map(attribute='key') | zip(_config.router_settings.fallbacks
+               | map('dict2items') | flatten | map(attribute='value'))) }}
 
     - name: The deployment is the registered CI Luna budgeted subscription
       ansible.builtin.assert:
@@ -84,17 +89,22 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - _private.fallbacks == _llm_router_review_local_head + llm_router_ci_luna_groups
+          - _fallbacks[llm_router_review_aliases.private] == llm_router_review_private_chain
+          - llm_router_model_group_aliases[llm_router_review_aliases.private]
+            == llm_router_primary_model
           - llm_router_ci_luna_groups | intersect(llm_router_external_subscription_rungs) | length == 0
           - llm_router_ci_luna_groups | intersect(llm_router_d1_ladder_groups) | length == 0
           - llm_router_ci_luna_groups | intersect(llm_router_hermes_default_fallback_chain) | length == 0
           - llm_router_ci_luna_groups | intersect(_config.router_settings.default_fallbacks) | length == 0
           - _fb_ci == [[]]
-        fail_msg: "review-private={{ _private.fallbacks }} fallbacks={{ _config.router_settings.fallbacks }}"
+        fail_msg: >-
+          private={{ _fallbacks[llm_router_review_aliases.private] }}
+          fallbacks={{ _config.router_settings.fallbacks }}
       vars:
         _fb_ci: >-
-          {{ _config.router_settings.fallbacks | selectattr('codex-ci', 'defined')
-             | map(attribute='codex-ci') | list }}
+          {{ _config.router_settings.fallbacks
+             | selectattr(llm_router_ci_luna_groups | first, 'defined')
+             | map(attribute=llm_router_ci_luna_groups | first) | list }}
 
     - name: Only github-actions can reach the review-only deployment and has no key budget
       ansible.builtin.assert:
@@ -116,8 +126,9 @@
         fail_msg: "context-window fallbacks={{ _config.router_settings.context_window_fallbacks }}"
       vars:
         _context_private: >-
-          {{ _config.router_settings.context_window_fallbacks | selectattr('review-private', 'defined')
-             | map(attribute='review-private') | list }}
+          {{ _config.router_settings.context_window_fallbacks
+             | selectattr(llm_router_review_aliases.private, 'defined')
+             | map(attribute=llm_router_review_aliases.private) | list }}
 
     # Whitespace, never absent: an absent field falls through to the RUNNER's
     # environment (same fixture rule as test_review_roles.yml).
@@ -136,16 +147,24 @@
     - name: Capture the render without a ChatGPT login
       ansible.builtin.set_fact:
         _bare: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
-        _bare_private: >-
-          {{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}
+
+    - name: Capture the uncredentialed fallback map
+      ansible.builtin.set_fact:
+        _bare_fallbacks: >-
+          {{ dict(_bare.router_settings.fallbacks | map('dict2items') | flatten
+             | map(attribute='key') | zip(_bare.router_settings.fallbacks
+               | map('dict2items') | flatten | map(attribute='value'))) }}
 
     - name: Without a login the CI deployment is absent and private review stays local
       ansible.builtin.assert:
         quiet: true
         that:
-          - _bare.model_list | selectattr('model_name', 'equalto', 'codex-ci') | list | length == 0
-          - _bare_private.fallbacks == _llm_router_review_local_head
+          - _bare.model_list
+            | selectattr('model_name', 'in', llm_router_ci_luna_groups)
+            | list | length == 0
+          - _bare_fallbacks[llm_router_review_aliases.private]
+            == llm_router_review_local_fallback_groups
           - llm_router_ci_luna_groups | length == 0
         fail_msg: >-
           bare deployment names={{ _bare.model_list | map(attribute='model_name') | list }}
-          private={{ _bare_private.fallbacks }}
+          private={{ _bare_fallbacks[llm_router_review_aliases.private] }}

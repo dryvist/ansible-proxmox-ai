@@ -1,0 +1,57 @@
+---
+- name: Verify duplicate model-group aliases fail the registry guard
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _role_dir: "{{ playbook_dir }}/../../roles/llm_router"
+    tofu_data:
+      constants:
+        service_ports:
+          llm_router_api: 4000
+          llm_fast_api: 10434
+          ollama_api: 11434
+          otel_traces_http: 4318
+          redis_default: 6379
+    bao_apps_secrets: {}
+  tasks:
+    - name: Load registry projections
+      ansible.builtin.include_vars:
+        dir: "{{ _role_dir }}/defaults/main"
+
+    - name: Load the model registry
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: registry.yml
+
+    - name: Build two synthetic entries with the same registered alias
+      ansible.builtin.set_fact:
+        _alias_fixture: >-
+          {{ llm_router_model_registry
+             | selectattr('stable_aliases', 'defined') | first }}
+        _duplicate_alias: >-
+          {{ (llm_router_model_registry
+              | selectattr('stable_aliases', 'defined') | first).stable_aliases | first }}
+
+    - name: Present the duplicate input to the real guard and require rejection
+      block:
+        - name: Override the registry with the synthetic duplicate
+          ansible.builtin.set_fact:
+            llm_router_model_registry: >-
+              {{ [_alias_fixture | combine({'stable_aliases': [_duplicate_alias]}),
+                 _alias_fixture | combine({'client_model_id': _alias_fixture.client_model_id ~ '-copy',
+                                           'stable_aliases': [_duplicate_alias]})] }}
+
+        - name: Execute the real capability assertions
+          ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-capabilities.yml"
+
+      rescue:
+        - name: Record the expected alias rejection
+          ansible.builtin.set_fact:
+            _duplicate_alias_rejected: "{{ 'appears more than once' in (ansible_failed_result.msg | default('')) }}"
+
+    - name: Reject the duplicate alias fixture
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _duplicate_alias_rejected | default(false) | bool
+        fail_msg: "The real capability guard did not reject duplicate registry aliases."
