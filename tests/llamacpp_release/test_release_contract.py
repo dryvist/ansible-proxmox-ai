@@ -102,7 +102,6 @@ def test_package_and_model_fetch_tasks_use_the_shared_proxy():
     paths = (
         "roles/llm_gpu_serving/tasks/main.yml",
         "roles/llm_gpu_serving/tasks/install-cuda-toolkit.yml",
-        "roles/llm_gpu_serving/tasks/install-nvidia-userspace.yml",
         "roles/llm_gpu_serving/tasks/cache-sync.yml",
         "roles/nvidia_gpu_guest/tasks/main.yml",
         "roles/nvidia_gpu_guest/tasks/install-cuda-toolkit.yml",

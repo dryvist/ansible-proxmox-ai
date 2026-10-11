@@ -1,5 +1,5 @@
 ---
-# Userspace only: libcuda and nvidia-smi at the host's exact driver version.
+# Userspace only: match the host's NVIDIA kernel module version.
 # The guest loads no kernel module, so no module or DKMS package is installed.
 - name: Assert the guest is a Debian release the vendor repository serves
   ansible.builtin.assert:
@@ -8,15 +8,35 @@
     fail_msg: The NVIDIA userspace install supports Debian guests only.
     quiet: true
 
-- name: Read the driver version nvidia-smi reports
-  ansible.builtin.command:
-    argv:
-      - nvidia-smi
-      - --query-gpu=driver_version
-      - --format=csv,noheader
-  register: nvidia_gpu_guest_nvidia_smi
-  changed_when: false
+- name: Read the host NVIDIA module version from procfs
+  ansible.builtin.slurp:
+    src: /proc/driver/nvidia/version
+  register: nvidia_gpu_guest_host_module_version
   failed_when: false
+
+- name: Assert the host NVIDIA module version is readable
+  ansible.builtin.assert:
+    that:
+      - "'content' in (nvidia_gpu_guest_host_module_version | default({}))"
+    fail_msg: >-
+      Cannot read /proc/driver/nvidia/version inside this NVIDIA guest; the
+      host module version is required to install matching NVIDIA userspace.
+    quiet: true
+
+- name: Parse the host NVIDIA module version
+  ansible.builtin.set_fact:
+    nvidia_gpu_guest_nvidia_userspace_version: >-
+      {{ (nvidia_gpu_guest_host_module_version.content | b64decode
+          | regex_search('[0-9]+[.][0-9]+[.][0-9]+')) | default('', true) }}
+
+- name: Assert the host NVIDIA module version is parseable
+  ansible.builtin.assert:
+    that:
+      - nvidia_gpu_guest_nvidia_userspace_version | length > 0
+    fail_msg: >-
+      Could not parse an NVIDIA driver version from
+      /proc/driver/nvidia/version; expected a version in N.N.N form.
+    quiet: true
 
 - name: Add the NVIDIA apt repository
   ansible.builtin.deb822_repository:
@@ -30,27 +50,20 @@
   register: nvidia_gpu_guest_nvidia_repo
   environment: "{{ llamacpp_release_proxy_environment }}"
 
-- name: Install the pinned NVIDIA userspace
-  when: >-
-    nvidia_gpu_guest_nvidia_smi.rc != 0
-    or nvidia_gpu_guest_nvidia_smi.stdout_lines | length == 0
-    or (nvidia_gpu_guest_nvidia_smi.stdout_lines
-        | reject('equalto', nvidia_gpu_guest_nvidia_userspace_version)
-        | list | length) > 0
-  block:
-    - name: Install the apt pin for the driver version
-      ansible.builtin.apt:
-        name: "nvidia-driver-pinning-{{ nvidia_gpu_guest_nvidia_userspace_version }}"
-        state: present
-        update_cache: true
-      environment: "{{ llamacpp_release_proxy_environment }}"
+- name: Install the apt pin for the host driver version
+  ansible.builtin.apt:
+    name: "nvidia-driver-pinning-{{ nvidia_gpu_guest_nvidia_userspace_version }}"
+    state: present
+    update_cache: true
+  environment: "{{ llamacpp_release_proxy_environment }}"
 
-    - name: Install libcuda and nvidia-smi at the pinned version
-      ansible.builtin.apt:
-        name:
-          - "libcuda1={{ nvidia_gpu_guest_nvidia_userspace_version }}-*"
-          - "nvidia-driver-cuda={{ nvidia_gpu_guest_nvidia_userspace_version }}-*"
-        state: present
-        install_recommends: false
-        allow_downgrade: true
-      environment: "{{ llamacpp_release_proxy_environment }}"
+- name: Install CUDA, nvidia-smi, and Vulkan userspace at the host version
+  ansible.builtin.apt:
+    name:
+      - "nvidia-vulkan-icd={{ nvidia_gpu_guest_nvidia_userspace_version }}-1"
+      - "libcuda1={{ nvidia_gpu_guest_nvidia_userspace_version }}-1"
+      - "nvidia-driver-cuda={{ nvidia_gpu_guest_nvidia_userspace_version }}-*"
+    state: present
+    install_recommends: false
+    allow_downgrade: true
+  environment: "{{ llamacpp_release_proxy_environment }}"

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import subprocess
 from pathlib import Path
 
@@ -17,8 +16,7 @@ VLLM_ROLE_ROOT = REPO_ROOT / "roles/vllm_serving"
 SERVING_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving.yml"
 GPU_ENGINE_PLAYBOOK = REPO_ROOT / "playbooks/llm-serving-gpu-engines.yml"
 SITE_PLAYBOOK = REPO_ROOT / "playbooks/site.yml"
-USERSPACE_TASKS = NVIDIA_ROLE_ROOT / "tasks/install-nvidia-userspace.yml"
-CORE_DEFAULTS = NVIDIA_ROLE_ROOT / "defaults/main/00-core.yml"
+LLM_GPU_SERVING_ROLE_ROOT = REPO_ROOT / "roles/llm_gpu_serving"
 ROUTER_GPU_PROFILE_VARS = REPO_ROOT / "inventory/group_vars/all.yml"
 ROUTER_DEFAULTS = REPO_ROOT / "roles/llm_router/defaults/main/20-registry.yml"
 
@@ -147,50 +145,15 @@ def test_both_engine_roles_depend_on_the_shared_nvidia_guest_role() -> None:
         assert includes == ["nvidia_gpu_guest", "nvidia_gpu_guest"]
 
 
-def test_userspace_version_is_one_pinned_variable() -> None:
-    defaults = _load(CORE_DEFAULTS)
-    version = defaults["nvidia_gpu_guest_nvidia_userspace_version"]
+def test_legacy_gpu_serving_role_uses_the_shared_userspace_installer() -> None:
+    tasks = _load(LLM_GPU_SERVING_ROLE_ROOT / "tasks/main.yml")
+    includes = [
+        task["ansible.builtin.include_role"]
+        for task in tasks
+        if task.get("name") == "Install NVIDIA userspace from the host module version"
+    ]
 
-    assert re.fullmatch(r"[0-9]+[.][0-9]+[.][0-9]+", version)
-    text = CORE_DEFAULTS.read_text(encoding="utf-8")
-    pin_line = text.splitlines().index(f'nvidia_gpu_guest_nvidia_userspace_version: "{version}"')
-    assert text.splitlines()[pin_line - 1].startswith("# renovate:")
-    tasks = USERSPACE_TASKS.read_text(encoding="utf-8")
-    assert version not in tasks
-
-
-def test_userspace_install_is_userspace_only_and_pinned() -> None:
-    tasks = _load(USERSPACE_TASKS)
-    installs = [task for task in _walk(tasks) if "ansible.builtin.apt" in task]
-    packages = yaml.safe_dump([task["ansible.builtin.apt"]["name"] for task in installs])
-
-    assert re.search(r"dkms|kernel|nvidia-open", packages) is None
-    assert installs[-1]["ansible.builtin.apt"]["install_recommends"] is False
-    names = installs[-1]["ansible.builtin.apt"]["name"]
-    assert all("{{ nvidia_gpu_guest_nvidia_userspace_version }}" in name for name in names)
-    assert [name.split("=")[0] for name in names] == ["libcuda1", "nvidia-driver-cuda"]
-    assert "nvidia-driver-pinning-" in installs[0]["ansible.builtin.apt"]["name"]
-
-
-def test_userspace_install_is_skipped_when_nvidia_smi_reports_the_version() -> None:
-    block = next(task for task in _load(USERSPACE_TASKS) if "block" in task)
-    condition = block["when"].replace("\n", " ")
-    env = jinja2.Environment()
-    template = env.from_string("{{ " + condition + " }}")
-    version = "595.91.07"
-
-    def decide(rc: int, lines: list[str]) -> str:
-        return template.render(
-            nvidia_gpu_guest_nvidia_smi={"rc": rc, "stdout_lines": lines},
-            nvidia_gpu_guest_nvidia_userspace_version=version,
-        )
-
-    assert decide(0, [version]) == "False"
-    assert decide(0, [version, version]) == "False"
-    assert decide(0, ["595.45.04"]) == "True"
-    assert decide(9, []) == "True"
-    assert decide(0, []) == "True"
-    assert decide(127, []) == "True"
+    assert includes == [{"name": "nvidia_gpu_guest", "tasks_from": "install-nvidia-userspace.yml"}]
 
 
 def test_router_projects_gpu_profiles_only_when_a_gpu_host_exists() -> None:

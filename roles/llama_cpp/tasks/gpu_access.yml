@@ -4,6 +4,24 @@
 # rarely match the container's own render/video groups. Instead of forcing GIDs
 # (which collides), add the service user to whatever groups actually own the nodes,
 # resolved at runtime from the files themselves.
+- name: Stat NVIDIA device and host-module paths
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /dev/nvidia0
+    - /proc/driver/nvidia/version
+  register: llama_cpp_nvidia_exposure
+
+- name: Install NVIDIA userspace from the host module version
+  ansible.builtin.include_role:
+    name: nvidia_gpu_guest
+    tasks_from: install-nvidia-userspace.yml
+  when:
+    - llama_cpp_gpu_backend == 'vulkan'
+    - >-
+      llama_cpp_nvidia_exposure.results[0].stat.exists
+      or llama_cpp_nvidia_exposure.results[1].stat.exists
+
 - name: Stat the GPU device nodes to learn their owning groups
   ansible.builtin.stat:
     path: "{{ item }}"
