@@ -13,7 +13,7 @@ import pytest
 
 SOURCE = Path(__file__).resolve().parents[2] / "roles/llm_router/files/callbacks/ci_effort_pin.py"
 THINKING_OFF = {"enable_thinking": False}
-KEYS = ["github-actions", "github-actions-oss"]
+KEYS = ["github-actions", "github-actions-oss", "github-actions-oss-interim"]
 
 
 @pytest.fixture(scope="module")

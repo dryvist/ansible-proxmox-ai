@@ -5,7 +5,7 @@ import logging
 from litellm.integrations.custom_logger import CustomLogger
 
 _CI_KEY_ALIASES = frozenset({"github-actions"})
-_THINKING_OFF_ALIASES = _CI_KEY_ALIASES | {"github-actions-oss"}
+_THINKING_OFF_ALIASES = _CI_KEY_ALIASES | {"github-actions-oss", "github-actions-oss-interim"}
 _THINKING_OFF_MODELS = frozenset({"review-local", "review-private", "review-oss"})
 _SERVED_CALL_TYPES = frozenset(
     {
