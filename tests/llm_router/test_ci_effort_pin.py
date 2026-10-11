@@ -88,7 +88,7 @@ def test_router_settings_override_cannot_smuggle_fallback_entries(ns):
         "custom_llm_provider": "chatgpt",
     }
     out = _call(ns, CI_ALIAS, data)
-    assert out == {"model": "review-private"}
+    assert out == {"model": "review-private", "chat_template_kwargs": {"enable_thinking": False}}
 
 
 def test_compact_route_cannot_pick_a_deployment_by_response_id(ns):
@@ -171,5 +171,5 @@ def test_other_keys_keep_every_request_control(ns, alias):
 
 
 def test_request_without_effort_is_untouched(ns):
-    data = {"model": "review-private", "messages": []}
+    data = {"model": "m", "messages": []}
     assert _call(ns, CI_ALIAS, dict(data)) == data
