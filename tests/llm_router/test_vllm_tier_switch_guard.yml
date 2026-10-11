@@ -1,12 +1,7 @@
 ---
-# Guard half of the vllm switch contract, split from test_vllm_tier_switch.yml
-# so each router shard stays under its time cap. It proves the parity guard
-# fails loud when a switched-off tier still renders.
-#
-# Run (from the REPO ROOT):
-#   ansible-playbook tests/llm_router/test_vllm_tier_switch_guard.yml -i localhost, -c local
-
-- name: The guard fails loud when a switched-off tier still renders
+# A backend switch removes only that deployment. The capability name remains
+# live when another registry member serves it, so parity stays group-based.
+- name: Verify the vLLM switch keeps the CPU member but removes the vLLM backend
   hosts: localhost
   gather_facts: false
   vars:
@@ -18,6 +13,14 @@
           llm_fast_api: 10434
           ollama_api: 11434
           otel_traces_http: 4318
+          redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
     bao_local_llm_secrets: {}
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
@@ -28,75 +31,81 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 40
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
     - name: Load the role defaults and registry the way the converge does
       ansible.builtin.import_tasks: tasks/parity_setup.yml
 
-    - name: Switch the tier off
+    - name: Switch off the vLLM deployment
       ansible.builtin.set_fact:
         llm_router_llm_vllm_enabled: false
 
-    - name: Prove the guard catches a tier-only name that renders anyway
+    - name: Render the switched-off config
+      ansible.builtin.set_fact:
+        _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+    - name: Registry parity still holds at the capability group boundary
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"
+
+    - name: Small stays served by CPU while the vLLM backend is absent
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _cpu_small | length > 0
+          - _vllm_small | length == 0
+          - llm_router_vllm_models | length == 0
+        fail_msg: >-
+          Switching vLLM off must remove its deployment while leaving the
+          CPU-backed small capability available.
+      vars:
+        _cpu_small: >-
+          {{ _config.model_list | selectattr('model_name', 'equalto', llm_router_small_model)
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_cpu_9b_backend_urls[0]) | list }}
+        _vllm_small: >-
+          {{ _config.model_list | selectattr('model_name', 'equalto', llm_router_small_model)
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url) | list }}
+
+    - name: Build a synthetic vLLM-only registry member
+      ansible.builtin.set_fact:
+        _synthetic_vllm_member: >-
+          {{ (llm_router_registry_enabled | selectattr('tier', 'equalto', 'vllm') | first)
+             | combine({'route_group': 'fixture-vllm-only'}) }}
+
+    - name: Plant an exclusive vLLM route despite the disabled projection
+      ansible.builtin.set_fact:
+        llm_router_registry_enabled: "{{ llm_router_registry_enabled + [_synthetic_vllm_member] }}"
+        # Model a template regression that routes a vLLM entry through a live list.
+        llm_router_large_models: "{{ llm_router_large_models + [_synthetic_vllm_member] }}"
+
+    - name: Render the synthetic switched-off route
+      ansible.builtin.set_fact:
+        _synthetic_config: >-
+          {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
+
+    - name: Confirm the synthetic vLLM-only route was rendered
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _synthetic_config.model_list
+            | selectattr('model_name', 'equalto', _synthetic_vllm_member.route_group) | list | length > 0
+
+    - name: Require the guard to reject a switched-off exclusive vLLM route
       block:
-        # A stand-in config that serves one name only the tier owns, handed to
-        # the guard in place of the real template — the shape of a template
-        # that stopped honouring the switch.
-        - name: Make a scratch directory for the stand-in config
-          ansible.builtin.tempfile:
-            state: directory
-            prefix: vllm-switch-
-          register: _scratch
-
-        - name: Write a stand-in config that serves a tier-only name
-          ansible.builtin.copy:
-            content: "model_list:\n  - model_name: {{ _leaked_name }}\n"
-            dest: "{{ _scratch.path }}/config.yaml.j2"
-            mode: "0600"
-          vars:
-            _leaked_name: >-
-              {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-local')
-                 | map(attribute='client_model_id') | first }}
-
-        - name: Point the guard at the stand-in config
-          ansible.builtin.set_fact:
-            _llm_router_parity_template: "{{ _scratch.path }}/config.yaml.j2"
-
-        - name: Run the parity guard against the leaking config
+        - name: Check parity for the synthetic switched-off route
           ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-registry-render-parity.yml"
 
-        - name: Fail because the guard admitted a switched-off tier that still renders
+        - name: Fail when the guard accepts the switched-off route
           ansible.builtin.fail:
-            msg: >-
-              The parity guard PASSED with llm_router_llm_vllm_enabled false
-              while the config still served a name only the vllm / hermes-local
-              tiers own. That is a switch that does not hold.
+            msg: "The parity guard accepted a switched-off vLLM-only route."
       rescue:
-        - name: Confirm the guard failed for the switched-off-but-rendered reason specifically
+        - name: Confirm the guard reported the switched-off rendered route
           ansible.builtin.assert:
             quiet: true
             that:
-              - "'SWITCHED OFF BUT RENDERED: ' ~ _leaked_name in (ansible_failed_result.msg | default(''))"
+              - "'SWITCHED OFF BUT RENDERED' in ansible_failed_result.msg"
             fail_msg: >-
-              The guard failed, but not for the expected reason — got:
-              {{ ansible_failed_result.msg | default('(no message)') }}
-            success_msg: "Guard correctly rejects a switched-off tier that still renders."
-          vars:
-            _leaked_name: >-
-              {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-local')
-                 | map(attribute='client_model_id') | first }}
-      always:
-        # set_fact outranks the guard's own task vars, so the stand-in would
-        # follow this host into any later play; restore the real path and drop
-        # the scratch directory whether or not the assertion above held.
-        - name: Point the guard back at the real config template
-          ansible.builtin.set_fact:
-            _llm_router_parity_template: "{{ _role_dir }}/templates/config.yaml.j2"
-
-        - name: Remove the scratch directory
-          ansible.builtin.file:
-            path: "{{ _scratch.path }}"
-            state: absent
-          when: (_scratch | default({})).path | default('') | length > 0
+              Expected the switched-off rendered route failure, got:
+              {{ ansible_failed_result.msg | default('no failure message') }}

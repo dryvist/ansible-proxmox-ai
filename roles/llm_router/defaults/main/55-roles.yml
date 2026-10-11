@@ -1,188 +1,29 @@
 ---
-# --- ROLES: the stable names callers request ---------------------------------
-# A caller names a ROLE — `lead`, `subagent`, `judge`, `cheap`, `embed`, `ocr` —
-# never a physical model. Which model a role resolves to, and the order it falls
-# back through, is an operational decision that changes on the timescale of an
-# afternoon, so it lives in the router database and the Admin UI owns it
-# (45-database.yml has the catalog/roles split, and why that is safe).
-#
-# What is written here is only the FIRST SEED. tasks/seed-roles.yml creates a
-# role when the running proxy has none by that name and leaves every existing
-# one untouched, so a converge can never overwrite an edit made in the UI. To
-# change a role permanently, change it in the UI; changing it here affects only
-# a proxy that has never carried the role before.
-#
-# Each role names a registry entry by its client_model_id, so no model id is
-# re-typed and a role can only point at something the catalog actually
-# describes — the seed task asserts exactly that before it writes anything.
-#
-# TWO THINGS TO KNOW BEFORE RETARGETING A ROLE ON A RUNNING PROXY. The
-# behaviors were measured live 2026-08-24 on LiteLLM 1.97.0; this repo now pins
-# 1.104.0 (00-identity.yml). Recheck the live role contract after package upgrades.
-#
-# 1. Changing the target ACROSS a context-window difference means DELETING the
-#    deployment and creating it again, not updating it. `/model/update` writes
-#    the new litellm_params and answers 200, but leaves the advertised
-#    `max_input_tokens` at the old value — passing model_info in the same call
-#    does not change that. A role left advertising a window ten times the one
-#    its model really has is how a caller sends a context nothing can read;
-#    `enable_pre_call_checks` cannot save a caller that was told the wrong
-#    number. Delete plus create sets it correctly. Updating in place is fine
-#    when the window does not change.
-#
-# 2. The local serving tier admits one in-flight request per model. A role that
-#    takes bursty delegation must not name the model the always-on agent is
-#    using, or it answers 429 for as long as that agent is working.
-
-# The OCR entry, selected the same way as primary/routine/small in 50-servable.yml.
-llm_router_ocr_model: >-
-  {{ llm_roles.models[llm_roles.roles.ocr.model].id }}
-# The embedding entry. Selected by its `embedding` flag because that is the
-# field the template already keys the embedding render off, and because the
-# registry is the only place a model id is spelled.
+# The role database only holds the two caller roles whose per-role request
+# parameters cannot be represented by a model_group_alias.
 llm_router_embedding_model: >-
-  {{ llm_router_registry_enabled | selectattr('embedding', 'defined')
-     | selectattr('embedding') | map(attribute='client_model_id') | first }}
+  {{ (llm_router_registry_enabled | selectattr('embedding', 'defined')
+      | selectattr('embedding') | first).route_group }}
+llm_router_ocr_model: >-
+  {{ (llm_router_registry_enabled | selectattr('serving_role', 'defined')
+      | selectattr('serving_role', 'equalto', 'ocr') | first).route_group }}
 
-# `lead` is a pure git alias of `best` (llm-models.d/10-large.yml), not a DB
-# role. `fast` and `cheap` are consumer aliases of the single complexity
-# router; their fallback lists carry its ordered continuation. `subagent`
-# remains a database-seeded role with the shared D1 chain. The seed only
-# creates missing rows; the Admin UI owns existing rows after creation.
-#
-# `fast-gpu` (below) is a THIRD, narrower role for a caller that wants to
-# address "just the 4080" directly without naming its physical model id
-# (nix-ai's own DRY guard forbids that) — `fallbacks: []`, deliberately: a
-# MacBook client builds its OWN sequence (try `fast-gpu` -> try its own
-# local MLX -> fall through to the full `fast` chain above as an ultimate
-# catch-all), so this role must fail outright on contention rather than
-# silently trying anything else, or the client's own fallback logic never
-# gets a chance to run.
-#
-# subagent is still NOT a git alias itself, for the same common-word-
-# collision reason `judge`/`cheap`/`embed`/`ocr` are deferred
-# (test_registry_retype_scan.py).
-# The role names whose oversized requests escape via context_window_fallbacks.
-llm_router_long_context_escape_roles: []
-
-# Every ordinary entry role shares D1's class order. Each role starts at its
-# first available rung, and its fallback list is exactly the remaining tail.
-_llm_router_fast_subagent_chain: >-
-  {{ llm_router_d1_ladder_groups
-     | reject('equalto', llm_router_d1_auto_initial_group) | list }}
-_llm_router_cheap_chain: >-
-  {{ _llm_router_fast_subagent_chain }}
-
-# Each class rung uses its catalog-backed context limit. The explicit context
-# escape rules below remain the guard for any narrower local model.
-#
-# A fallback that serves a smaller context than the model it replaces does not
-# degrade a caller, it poisons one: the request is silently truncated and the
-# answer is confidently wrong. router_settings.enable_pre_call_checks rejects
-# the over-long request rather than routing it, so a short-context fallback
-# behind a million-token model is not a safety net, it is a dead rung that
-# turns into a hard failure exactly when the fallback was supposed to help.
-#
-# Existing database rows remain untouched by the seed; this applies to new
-# roles only until the Admin UI edits them.
-# GPU-first role targets. The switch that moves the shared primary route onto
-# the medium deployment (50-servable.yml) also moves each role below: while the
-# route is active the medium deployment is the role's rung 1 and the role's
-# previous first rung becomes rung 2, so no rung is dropped. While the route is
-# inactive every role keeps its previous target and order.
-_llm_router_review_first: >-
-  {{ llm_router_vllm_medium_model if llm_router_vllm_medium_route_enabled | bool
-     else llm_router_hermes_local_4080_id }}
-_llm_router_review_local_model: >-
-  {{ llm_router_vllm_medium_model if llm_router_vllm_medium_route_enabled | bool
-     else llm_router_routine_model }}
-_llm_router_recorder_model: >-
-  {{ llm_router_vllm_medium_model if llm_router_vllm_medium_route_enabled | bool
-     else llm_router_hermes_local_4080_id }}
-_llm_router_subagent_model: >-
-  {{ llm_router_vllm_medium_model if llm_router_vllm_medium_route_enabled | bool
-     else llm_router_gpu_medium_b_model }}
 llm_router_role_deployments:
-  # Try the Pro6000 medium profile first only when the profile switch is on;
-  # otherwise its projection resolves to today's 4080 tier. The inventory
-  # group alone never activates profiles. The tail is the shared D1 ladder.
-  - role: subagent
-    model: "{{ _llm_router_subagent_model }}"
-    fallbacks: >-
-      {{ ([llm_router_hermes_local_4080_id] + _llm_router_fast_subagent_chain)
-         | reject('equalto', _llm_router_subagent_model) | unique | list }}
-  # Same chain, second name — both Codex's `--profile fast` and this
-  # project's own `subagent` naming already have external callers expecting
-  # them; see the note above _llm_router_fast_subagent_chain.
-  - role: fast
-    model: "{{ llm_router_auto_router_model }}"
-    fallbacks: "{{ _llm_router_fast_subagent_chain }}"
-  # Just the 4080, no fallback — see the note above _llm_router_fast_subagent_chain
-  # for why this must fail outright rather than redirecting anywhere.
-  - role: fast-gpu
-    model: "{{ llm_router_hermes_local_4080_id }}"
-    fallbacks: []
-  # Use the smallest Pro6000 profile only when the profile switch is on, then
-  # today's routine model. Thinking stays off for short verdicts.
   - role: judge
-    model: "{{ llm_router_gpu_small_model }}"
-    fallbacks: "{{ [llm_router_routine_model] | reject('equalto', llm_router_gpu_small_model) | list }}"
+    model: "{{ llm_router_small_model }}"
+    fallbacks: []
     litellm_params:
       extra_body:
         chat_template_kwargs:
           enable_thinking: false
-  # Screen-recorder pipes: the home-lab GPU first, then the Studio's fast
-  # model, and nothing beyond (egress `estate` in the role map, no cloud rung).
-  # The router never stores a recorder prompt body: message logging is off on
-  # this role's deployment (seed-roles.yml merges `litellm_params`).
   - role: recorder
-    model: "{{ _llm_router_recorder_model }}"
-    fallbacks: >-
-      {{ (([llm_router_hermes_local_4080_id] if llm_router_vllm_medium_route_enabled | bool else [])
-          + [llm_router_routine_model])
-         | reject('equalto', _llm_router_recorder_model) | unique | list }}
+    model: "{{ llm_router_small_model }}"
+    fallbacks: []
     litellm_params:
       turn_off_message_logging: true
-  # Trivial background chores and every CI review. The GPU rung first — the
-  # fastest local model — then the studio, free and paid rungs of the chain
-  # above, walked by the router's own fallbacks. A role that refuses is the
-  # standing rule inverted.
-  - role: cheap
-    model: "{{ llm_router_auto_router_model }}"
-    fallbacks: "{{ _llm_router_cheap_chain }}"
-  - role: review-oss
-    model: "{{ _llm_router_review_first }}"
-    fallbacks: "{{ _llm_router_review_oss_chain }}"
-  - role: review-private
-    model: "{{ _llm_router_review_first }}"
-    fallbacks: "{{ _llm_router_review_private_chain }}"
-  # Local-only review: no external rung, ever. While the GPU route is active the
-  # medium deployment is rung 1 and the routine model (the same id `judge` used
-  # to target) is rung 2. While it is inactive the role targets the routine
-  # model with an exact empty fallbacks entry, which keeps it off
-  # default_fallbacks even when the local backend is down.
-  - role: review-local
-    model: "{{ _llm_router_review_local_model }}"
-    fallbacks: "{{ [llm_router_routine_model] if llm_router_vllm_medium_route_enabled | bool else [] }}"
-  # embed/ocr have no same-modality external rung (no cloud embeddings, no
-  # cloud OCR in the registry): bounded by the same admission figures as
-  # every local rung, they fail FAST on a busy backend rather than hold.
-  - role: embed
-    model: "{{ llm_router_embedding_model }}"
-    fallbacks: []
-  - role: ocr
-    model: "{{ llm_router_ocr_model }}"
-    fallbacks: []
 
-# Seeding talks to the proxy over loopback with the master key: the management
-# endpoints are authenticated, and the role has the key already. Bounded tightly
-# because the proxy is verified live before this runs.
 llm_router_seed_request_timeout: 30
 
-# What tasks/seed-roles.yml writes, from the live model names it reads
-# (_llm_router_live_models). A role is created only while it is absent and its
-# target is served. An existing role is deleted and recreated only under
-# `rebuild`; in `initial` mode it is never touched, whatever its target.
 _llm_router_roles_to_create: >-
   {{ llm_router_role_deployments
      | rejectattr('role', 'in', _llm_router_live_models)

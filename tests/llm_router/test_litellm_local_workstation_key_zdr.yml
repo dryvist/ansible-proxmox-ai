@@ -1,15 +1,5 @@
 ---
-# Owns ONE contract: the &zdr litellm-local-workstation key holds no
-# retaining or free deployment while still holding the local head of its own
-# roles' chains.
-#
-# enforce_fallback_model_access re-checks the calling key on every fallback
-# hop, so the key's `models` list IS the boundary: a rung it does not hold is
-# refused, never reached.
-#
-# Run (from the REPO ROOT):
-#   ansible-playbook tests/llm_router/test_litellm_local_workstation_key_zdr.yml -i localhost, -c local
-- name: Verify the litellm-local-workstation key reaches no retaining/free group
+- name: Verify the workstation local key has exactly the three local capabilities
   hosts: localhost
   gather_facts: false
   vars:
@@ -22,73 +12,40 @@
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
-    bao_local_llm_secrets:
-      OPENROUTER_API_KEY: test-openrouter-provider-key
-      OPENCODE_API_KEY: test-opencode-provider-key
-      OPENAI_API_KEY: test-openai-provider-key
     bao_apps_secrets:
-      litellm_local_workstation_llm_router_key: sk-fixture-litellm-local-workstation
-    ai_default_model: "{{ llm_router_primary_model }}"
+      litellm_local_workstation_llm_router_key: sk-fixture-workstation
+    bao_local_llm_secrets: {}
+    llm_router_subdomain: pve.example.test
     llm_large_serving_host: llm-large
-    llm_router_subdomain: "pve.example.test"
     llm_router_master_key: sk-test-master
     llm_router_llm_large_bearer: test-bearer-token
     ai_router_request_timeout_seconds: 2400
-    ai_stream_read_timeout_seconds: 1800
-    ai_router_retry_after_seconds: 2
-    ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
-    hindsight_retain_model: qwen3-4b
-    hermes_goal_judge_model: judge
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
   tasks:
-    - name: Load the role defaults as they ship
+    - name: Load defaults and the model registry
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
 
-    - name: Load the fabric model registry the way the converge does
+    - name: Load registry projections
       ansible.builtin.include_role:
         name: llm_router
         tasks_from: registry.yml
 
-    - name: The key is tag-filtered and drops retaining/free rungs
+    - name: The workstation key is local-only with explicit local policy
       ansible.builtin.assert:
         quiet: true
         that:
-          # Non-vacuous: the registry really does carry unsafe groups, and
-          # the unfiltered chain really does reach one of them.
-          - llm_router_zdr_false_group_names | length > 0
-          - _unfiltered | intersect(llm_router_zdr_false_group_names) | length > 0
-          - "'&zdr' in _key.tags"
-          - "'!free' in _key.tags"
+          - _key.allowed_classes == ['local']
+          - _key.models | sort == _capability_names | sort
+          - _key.models | intersect(_cloud_groups) | length == 0
+          - _key.models_authoritative | bool
+          - _key.tags == ['&zdr', '!free', '!retains']
           - _key.router_settings.enable_tag_filtering | bool
-          - _key.models | intersect(llm_router_zdr_unasserted_terminal_rungs) | length == 0
-          - _fast.model in _key.models
-          - "'subagent' in _key.models"
-          # Judge has its own local-only key; the workstation key no longer
-          # carries the judge role.
-          - "'judge' not in _key.models"
-          - _key.models_authoritative
-        fail_msg: >-
-          litellm-local-workstation={{ _key.models }}
-          unsafe={{ llm_router_zdr_unasserted_terminal_rungs }}
-        success_msg: "litellm-local-workstation={{ _key.models }}"
+        fail_msg: "workstation key={{ _key }} cloud groups={{ _cloud_groups }}"
       vars:
+        _capability_names: "{{ [llm_router_large_model, llm_router_primary_model, llm_router_small_model] }}"
         _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'litellm-local-workstation') | first }}"
-        _fast: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'fast') | first }}"
-        _unfiltered: "{{ [_fast.model] + (_fast.fallbacks | list) }}"
-
-    # NEGATIVE CONTROL: removing the tag constraint must restore unsafe rungs.
-    - name: Drop the ZDR tag constraint from the workstation key
-      ansible.builtin.set_fact:
-        _llm_router_workstation_virtual_keys: >-
-          {{ _llm_router_workstation_virtual_keys
-             | map('combine', {'tags': []}) | list }}
-
-    - name: Without the ZDR tag constraint the key reaches a retaining or free group
-      ansible.builtin.assert:
-        quiet: true
-        that:
-          - _key.models | intersect(llm_router_zdr_unasserted_terminal_rungs) | length > 0
-        fail_msg: "without the ZDR tag constraint the key still holds no unsafe group: {{ _key.models }}"
-      vars:
-        _key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'litellm-local-workstation') | first }}"
+        _cloud_groups: >-
+          {{ llm_router_d1_group_class_by_name | dict2items
+             | rejectattr('value', 'equalto', 'local') | map(attribute='key') | list }}

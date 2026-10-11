@@ -1,7 +1,6 @@
 ---
-# With no provider credential, the complexity router advertises only the
-# local fallback (hermes-local-4080, not credential-gated) and no cloud
-# fallback route that could be selected but not authenticated.
+# Without provider credentials the primary capability retains only its
+# rendered local fallback chain.
 - name: Verify Hermes stays local when provider credentials are absent
   hosts: localhost
   gather_facts: false
@@ -15,6 +14,13 @@
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
     bao_local_llm_secrets: {}
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
@@ -25,7 +31,7 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
@@ -65,46 +71,48 @@
         _config: >-
           {{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}
 
-    - name: Hermes auto-routes locally and advertises no unseeded fallback
+    - name: The primary capability falls back only through local rendered groups
       ansible.builtin.assert:
         quiet: true
         that:
           # The local leg is read from the registry, not re-typed, and there
           # must be exactly one: an empty list here would let a chain that
           # advertises nothing at all pass as "local only".
-          - _local_groups | length == 1
-          - llm_router_hermes_default_fallback_chain == _local_groups
-          - _config.router_settings.fallbacks == _expected_fallbacks
-          - _config.router_settings.max_fallbacks | int == 1
-          # With no cloud rung the complexity router has no chain to hand a
-          # busy slot to, so it must never be zeroed: it is a name the Hermes
-          # agents call and waits out a busy slot (honouring the upstream's
+          - _local_groups | length > 0
+          - llm_router_hermes_default_fallback_chain | length > 0
+          - llm_router_hermes_default_fallback_chain | difference(_local_groups) | length == 0
+          - _hermes_fallback | length == 1
+          - _hermes_fallback[0][hermes_brain_model] == llm_router_hermes_own_fallback_by_group[hermes_brain_model]
+          - _hermes_fallback[0][hermes_brain_model] | difference(_local_groups) | length == 0
+          - _hermes_fallback[0][hermes_brain_model] | intersect(llm_router_zdr_unasserted_terminal_rungs) | length == 0
+          - _config.router_settings.max_fallbacks | int == llm_router_max_fallbacks | int
+          # With no cloud rung the primary capability has no external chain
+          # to hand a busy slot to, so it must never be zeroed: it is a name
+          # the Hermes agents call and waits out a busy slot (honouring the upstream's
           # Retry-After) instead of returning the 429. ANTI-VACUITY: the
           # retry-policy map must exist and hold the local leg at zero, or the
           # comparison is trivially true over an absent map. The input that
           # would slip through a weaker guard is a render with no
           # model_group_retry_policy at all.
           - _config.router_settings.model_group_retry_policy | length > 0
-          - llm_router_local_fallback_groups | first in _config.router_settings.model_group_retry_policy
+          - hermes_brain_model in _config.router_settings.model_group_retry_policy
+          - llm_router_small_model in _config.router_settings.model_group_retry_policy
           - >-
-            _config.router_settings.model_group_retry_policy[llm_router_local_fallback_groups | first]
+            _config.router_settings.model_group_retry_policy[llm_router_small_model]
               .RateLimitErrorRetries | int == 0
           - llm_router_hermes_rate_limit_retries | int > 0
           - >-
             _config.router_settings.model_group_retry_policy[hermes_brain_model]
               .RateLimitErrorRetries | int == llm_router_hermes_rate_limit_retries | int
           - _cloud_models | length == 0
-          - _hermes_router.litellm_params.model == _hermes_registry_entry.litellm_model_name
-          - _hermes_router.litellm_params.complexity_router_config.tiers.SIMPLE == llm_router_d1_auto_simple_group
-          - _hermes_router.litellm_params.complexity_router_config.tiers.MEDIUM == llm_router_d1_auto_medium_group
-          - _hermes_router.litellm_params.complexity_router_config.tiers.COMPLEX == llm_router_d1_auto_complex_group
-          - _hermes_router.litellm_params.complexity_router_config.tiers.REASONING == llm_router_d1_auto_reasoning_group
+          - >-
+            _hermes_router.litellm_params.model
+            == (_hermes_registry_entry.provider ~ '/' ~ _hermes_registry_entry.upstream_model_id)
         fail_msg: >-
-          Hermes must complexity-route over available D1 classes and advertise
-          only the local fallback when provider credentials are
-          absent. Got fallback={{ _config.router_settings.fallbacks | default([]) }},
+          Hermes must use the primary capability and advertise only local
+          fallbacks when provider credentials are absent. Got fallback={{ _hermes_fallback }},
           cloud={{ _cloud_models }}.
-        success_msg: "Hermes auto-routing follows available D1 classes and stays on-prem without provider credentials"
+        success_msg: "The primary capability stays on its local chain without provider credentials."
       vars:
         _cloud_models: >-
           {{ _config.model_list
@@ -112,29 +120,11 @@
         _hermes_router: >-
           {{ _config.model_list
              | selectattr('model_name', 'equalto', hermes_brain_model) | first }}
+        _hermes_fallback: >-
+          {{ _config.router_settings.fallbacks
+             | selectattr(hermes_brain_model, 'defined') | list }}
         _hermes_registry_entry: >-
           {{ llm_router_model_registry
-             | selectattr('client_model_id', 'equalto', hermes_brain_model) | first }}
-        _local_groups: >-
-          {{ llm_router_model_registry | selectattr('tier', 'equalto', 'hermes-local')
-             | map(attribute='route_group') | unique | list }}
-        # The cross-modality fail-fast entries (58-review-roles.yml) render
-        # unconditionally, credentials or not, so the credential-free fixture
-        # still carries them after the local-only entry. PLUS `free`'s own
-        # unconditional entry (config.yaml.j2) — empty, same fail-fast
-        # treatment as the loop above, kept as its own literal since it is
-        # not part of llm_router_cross_modality_fail_fast_names.
-        _expected_fallbacks: >-
-          {%- set ns = namespace(items=[{hermes_brain_model:
-                _local_groups | reject('equalto', llm_router_d1_auto_initial_group) | list}]) -%}
-          {%- for _group in llm_router_hermes_default_fallback_chain -%}
-          {%- set ns.items = ns.items + [{_group: llm_router_hermes_own_fallback_by_group[_group]}] -%}
-          {%- endfor -%}
-          {%- for _name in llm_router_cross_modality_fail_fast_names -%}
-          {%- set ns.items = ns.items + [{_name: []}] -%}
-          {%- endfor -%}
-          {%- for _name in llm_router_local_only_fail_fast_names -%}
-          {%- set ns.items = ns.items + [{_name: []}] -%}
-          {%- endfor -%}
-          {%- set ns.items = ns.items + [{'free': []}] -%}
-          {{ ns.items }}
+             | selectattr('serving_role', 'defined')
+             | selectattr('serving_role', 'equalto', 'primary') | first }}
+        _local_groups: "{{ llm_router_d1_rungs_by_class['local'] }}"

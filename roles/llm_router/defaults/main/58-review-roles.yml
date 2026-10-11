@@ -29,18 +29,17 @@ llm_router_default_fallbacks: "{{ llm_router_d1_ladder_groups }}"
 # ladder above — cross-modality errors an embedding/OCR failure has no
 # business paying for, at chat-ladder latency and, for codex-api, spend.
 #
-# PLUS `free-zdrless`, the retaining half of the standalone `free` /
-# `free-zdrless` pair (model-list-free.yaml.j2): it fails fast the same
-# way embed/ocr do. `free` is NOT in this set — it renders its own
-# explicit empty entry directly in config.yaml.j2 (never reachable from
-# `free-zdrless`, by design: the hindsight key that calls `free` must
-# never reach a retaining rung).
+# These groups fail fast rather than falling through to the chat fallback
+# ladder, because chat and embedding/OCR requests are different modalities.
 llm_router_cross_modality_fail_fast_names: >-
-  {{ ['embed', 'ocr', 'free-zdrless'] + [llm_router_embedding_model] }}
+  {%- set _groups = [llm_router_embedding_model, llm_router_ocr_model] -%}
+  {%- set _aliases = llm_router_model_group_aliases | dict2items
+       | selectattr('value', 'in', _groups) | map(attribute='key') | list -%}
+  {{ (_groups + _aliases) | unique | list }}
 
-# Every role seeded with an empty fallback list (55-roles.yml) — `review-local`,
-# `fast-gpu` — is a caller that explicitly wants NO external rung ever, local
-# backend up or down. Same short-circuit mechanism as the cross-modality
+# Every role seeded with an empty fallback list (55-roles.yml) is a caller that
+# explicitly wants NO external rung ever, local backend up or down. The same
+# short-circuit mechanism as the cross-modality
 # names above, but a different reason: not another modality. Derived from the
 # role rows rather than typed, so a new empty-fallback role can never be left
 # on default_fallbacks (the DB record alone does not stop it: LiteLLM consults
@@ -88,7 +87,7 @@ llm_router_local_only_chains: >-
 #
 # ZDR: a group that is ALSO one of the caller-typed entry points
 # (llm_router_zdr_entry_point_names, 37-fallback-entry-points.yml) drops the
-# free-zdrless segment from its own tail too, same rule config.yaml.j2
+# retaining free segment from its own tail too, same rule config.yaml.j2
 # already applies to every entry point's ladder — a rung promising no data
 # leaves the network must never fall through to one making no such promise.
 # One dict, built by index rather than hand-listed pairs, keyed by every
@@ -102,10 +101,6 @@ llm_router_hermes_own_fallback_by_group: >-
   {%- for _group in _chain -%}
   {%- set _idx = _chain.index(_group) -%}
   {%- set _tail = _chain[_idx + 1 :] | list -%}
-  {%- if llm_router_vllm_medium_route_enabled | bool
-        and _group == llm_router_vllm_medium_model -%}
-  {%- set _tail = ([llm_router_primary_large_model] + _tail) | unique | list -%}
-  {%- endif -%}
   {%- if _group in llm_router_zdr_asserted_group_names -%}
   {%- set _tail = _tail | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list -%}
   {%- endif -%}
@@ -125,18 +120,30 @@ llm_router_chain_groups_with_own_tail: >-
 # the local head already ends on a terminal rung.
 # `review-private` may leave the estate only for the CI Luna subscription
 # group. It is credential-gated and excluded from shared fallback ladders.
-# The local rungs both review chains start with, behind the role's own first
-# rung. While the GPU route is active that first rung (55-roles.yml) is the
-# medium deployment, so the fast GPU rung is rung 2 and the primary large local
-# model rung 3. While the route is inactive the chains are unchanged.
-_llm_router_review_local_head: >-
-  {{ [llm_router_hermes_local_4080_id, llm_router_primary_large_model]
-     if llm_router_vllm_medium_route_enabled | bool
-     else [llm_router_primary_model] }}
-_llm_router_review_oss_chain: >-
-  {%- set _chain = _llm_router_review_local_head -%}
+# Stable aliases have independent fallback keys because LiteLLM resolves the
+# typed name before its model-group alias. Keep each review chain explicit.
+llm_router_review_aliases: >-
+  {%- set ns = namespace(aliases={}) -%}
+  {%- for _scope in ['local', 'oss', 'private'] -%}
+  {%- set _alias = llm_router_model_group_aliases | dict2items
+       | selectattr('key', 'match', '^review-.*' ~ _scope ~ '$')
+       | map(attribute='key') | first -%}
+  {%- set _discard = ns.aliases.update({_scope: _alias}) -%}
+  {%- endfor -%}
+  {{ ns.aliases }}
+llm_router_review_local_fallback_groups: >-
+  {{ llm_router_d1_rungs_by_class['local']
+     | reject('equalto', llm_router_primary_model) | list }}
+llm_router_review_oss_chain: >-
+  {%- set _chain = llm_router_review_local_fallback_groups -%}
   {{ _chain + (llm_router_external_paid_rungs
                if _chain[-1] not in llm_router_external_terminal_rungs
                else []) }}
-_llm_router_review_private_chain: >-
-  {{ _llm_router_review_local_head + llm_router_ci_luna_groups }}
+llm_router_review_private_chain: >-
+  {{ llm_router_review_local_fallback_groups + llm_router_ci_luna_groups }}
+llm_router_review_local_chain: >-
+  {{ llm_router_review_local_fallback_groups }}
+llm_router_entry_point_fallback_overrides: >-
+  {{ {llm_router_review_aliases.local: llm_router_review_local_chain,
+      llm_router_review_aliases.oss: llm_router_review_oss_chain,
+      llm_router_review_aliases.private: llm_router_review_private_chain} }}

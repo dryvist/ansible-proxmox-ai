@@ -1,19 +1,5 @@
 ---
-# Split out of test_review_roles.yml (#854 CI: that file was already at the
-# per-file token budget — #842 split test_review_oss_context_window_order.yml
-# out of it for the same reason). Owns the CI review key scopes and the
-# local-only event-flow key boundaries.
-#
-# `enforce_fallback_model_access` (37-fallback-entry-points.yml) re-checks a
-# fallback target against the calling key's `models` on every hop, so a key
-# scoped to the role name alone is refused the instant its own chain hands
-# over — 59-key-scopes.yml exists precisely to widen past that. This asserts
-# the widening actually happened (each role's chain is a subset of its key's
-# models), not only that no unrelated group leaked in.
-#
-# Run (from the REPO ROOT):
-#   ansible-playbook tests/llm_router/test_review_key_scopes.yml -i localhost, -c local
-- name: Verify the CI review keys widen past their role name
+- name: Verify CI keys use capabilities and retain their cloud permissions
   hosts: localhost
   gather_facts: false
   vars:
@@ -31,98 +17,84 @@
       github_actions_oss_llm_router_key: sk-fixture-gha-oss
       github_actions_ci_fix_llm_router_key: sk-fixture-ci-fix
       github_actions_pr_review_llm_router_key: sk-fixture-pr-review
+    bao_local_llm_secrets: {}
+    llm_router_oss_ci_key_enabled: true
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
-    llm_router_subdomain: "pve.example.test"
+    llm_router_subdomain: pve.example.test
     llm_router_master_key: sk-test-master
     llm_router_llm_large_bearer: test-bearer-token
     ai_router_request_timeout_seconds: 2400
-    ai_stream_read_timeout_seconds: 1800
-    ai_router_retry_after_seconds: 2
-    ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
-    hindsight_retain_model: qwen3-4b
-    hermes_goal_judge_model: judge
-    bao_local_llm_secrets:
-      OPENROUTER_API_KEY: sk-or-fixture
-      OPENROUTER_HERMES_KEY: sk-orh-fixture
-      OPENAI_API_KEY: sk-oa-fixture
+    hermes_brain_model: "{{ llm_router_primary_model }}"
+    hindsight_retain_model: "{{ llm_router_small_model }}"
   tasks:
-    - name: Load the role defaults as they ship
+    - name: Load role defaults and the model registry
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
 
-    - name: Load the fabric model registry the way the converge does
+    - name: Load registry projections
       ansible.builtin.include_role:
         name: llm_router
         tasks_from: registry.yml
 
-    # include_vars loads the role default (false) as a host fact, which
-    # outranks a play var: model a logged-in node so the Codex subscription
-    # rung (codex-subscription) actually joins review-private's chain.
-    - name: Model a node that holds a ChatGPT login
-      ansible.builtin.set_fact:
-        llm_router_chatgpt_auth_file_present: true
-
-    - name: Note the review roles' rendered fallback chains
-      ansible.builtin.set_fact:
-        _public: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-oss') | first }}"
-        _private: "{{ llm_router_role_deployments | selectattr('role', 'equalto', 'review-private') | first }}"
-
-    # The keys are large Jinja expressions, and a vars: entry re-renders on
-    # every reference. Render them once here; the asserts select from the result.
-    - name: Render the virtual keys and role deployments once
-      ansible.builtin.set_fact:
-        _virtual_keys: "{{ llm_router_virtual_keys }}"
-        _role_deployments: "{{ llm_router_role_deployments }}"
-
-    - name: The CI keys are scoped to exactly their review role
+    - name: Private CI reaches local capabilities, its review aliases and CI Luna, and no cloud class
       ansible.builtin.assert:
         quiet: true
         that:
-          # First scope is the role; the rest is its chain.
-          - _gha.models[0] == 'review-private'
-          - "'review-oss' not in _gha.models"
-          - _gha_oss.models[0] == 'review-oss'
-          - "'review-private' not in _gha_oss.models"
-          # POSITIVE side of the contract above: assert the widening
-          # actually happened rather than only that no unrelated group
-          # leaked in.
-          - _public.fallbacks | difference(_gha_oss.models) | length == 0
-          - _private.fallbacks | difference(_gha.models) | length == 0
-          # review-private is the privacy boundary #845 enforces: its key
-          # must never carry an OpenRouter rung.
-          - _gha.models | select('match', '.*openrouter.*') | list | length == 0
-        fail_msg: "gha={{ _gha.models }} gha_oss={{ _gha_oss.models }}"
-        success_msg: "gha={{ _gha.models }} gha_oss={{ _gha_oss.models }}"
+          - _gha.models[:3] == _capabilities
+          - _gha.allowed_classes == ['local']
+          - _gha.models | difference(_capabilities) | sort == (_gha_aliases + llm_router_ci_luna_groups) | sort
+          - _gha.models | intersect(_review_aliases) | sort == _gha_aliases | sort
+          - _gha.models | intersect(_cloud_groups) | difference(llm_router_ci_luna_groups) | length == 0
+          - llm_router_external_free_rungs | intersect(_gha.models) | length == 0
+          - llm_router_ci_luna_groups | difference(_gha.models) | length == 0
+          - _review_aliases | map('extract', _aliases) | unique | list == [llm_router_primary_model]
+          - _review_aliases | length == 3
+        fail_msg: "gha={{ _gha.models }} classes={{ _gha.allowed_classes }}"
       vars:
-        _gha: "{{ _virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
-        _gha_oss: "{{ _virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
+        _capabilities: "{{ [llm_router_small_model, llm_router_primary_model, llm_router_large_model] }}"
+        _gha_aliases: "{{ [llm_router_review_aliases.private, llm_router_review_aliases.local] }}"
+        _cloud_groups: >-
+          {{ ['sub', 'paid-zdr', 'free', 'retains']
+             | map('extract', llm_router_d1_rungs_by_class) | flatten | unique | list }}
+        _aliases: "{{ llm_router_model_group_aliases }}"
+        _review_aliases: >-
+          {{ _aliases | dict2items | selectattr('key', 'match', '^review-')
+             | map(attribute='key') | list }}
+        _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
 
-    - name: The event flows stay on the local role and retain flow attribution
+    - name: Public CI reaches its review alias and the groups that alias walks, nothing wider
       ansible.builtin.assert:
         quiet: true
         that:
-          - _ci_fix.models == ['review-local', _local_review.model]
-          - _pr_review.models == ['review-local', _local_review.model]
-          - _ci_fix.models_authoritative | bool
-          - _pr_review.models_authoritative | bool
+          - _gha_oss.models[0] == llm_router_review_aliases.oss
+          - >-
+            _gha_oss.models
+            == ([llm_router_review_aliases.oss, llm_router_primary_model]
+                + llm_router_review_oss_chain) | unique | list
+          - llm_router_review_aliases.private not in _gha_oss.models
+          - llm_router_review_aliases.local not in _gha_oss.models
+          - llm_router_ci_luna_groups | intersect(_gha_oss.models) | length == 0
+          - _gha_oss.sensitivity_tag == '&sensitivity:public'
+        fail_msg: "gha-oss={{ _gha_oss.models }}"
+      vars:
+        _gha_oss: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
+
+    - name: Event-specific local keys keep their medium capability and trace metadata
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _ci_fix.models == [llm_router_primary_model]
+          - _pr_review.models == [llm_router_primary_model]
+          - _ci_fix.allowed_classes == ['local']
+          - _pr_review.allowed_classes == ['local']
           - _ci_fix.tags == ['&zdr', '!free', '!retains', '&local']
           - _pr_review.tags == ['&zdr', '!free', '!retains', '&local']
-          - _ci_fix.router_settings.enable_tag_filtering | bool
-          - _pr_review.router_settings.enable_tag_filtering | bool
           - _ci_fix.metadata.trace_defaults.agent_flow == 'ci-failure-fixer'
           - _ci_fix.metadata.trace_defaults.agent_trigger == 'workflow_run'
           - _pr_review.metadata.trace_defaults.agent_flow == 'pr-review-responder'
           - _pr_review.metadata.trace_defaults.agent_trigger == 'review-event'
-          - _local_review.fallbacks | length == 0
-        fail_msg: >-
-          ci_fix={{ _ci_fix.models }} pr_review={{ _pr_review.models }}
-          review_local.fallbacks={{ _local_review.fallbacks }}
-        success_msg: >-
-          ci_fix={{ _ci_fix.models }} pr_review={{ _pr_review.models }}
-          review_local.fallbacks={{ _local_review.fallbacks }}
+        fail_msg: "ci-fix={{ _ci_fix }} pr-review={{ _pr_review }}"
       vars:
-        _ci_fix: "{{ _virtual_keys | selectattr('alias', 'equalto', 'github-actions-ci-fix') | first }}"
-        _pr_review: "{{ _virtual_keys | selectattr('alias', 'equalto', 'github-actions-pr-review') | first }}"
-        _local_review: "{{ _role_deployments | selectattr('role', 'equalto', 'review-local') | first }}"
+        _ci_fix: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-ci-fix') | first }}"
+        _pr_review: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-pr-review') | first }}"

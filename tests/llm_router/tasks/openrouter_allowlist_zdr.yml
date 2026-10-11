@@ -48,32 +48,18 @@
       {%- endfor -%}
       {{ ns.bad }}
 
-- name: Every enabled OpenRouter role param carries the registry ZDR flag
+- name: OpenRouter deployments stay outside the local role target projection
   ansible.builtin.assert:
     quiet: true
     that:
-      - _role_zdr_mismatches | length == 0
+      - _role_external_targets | length == 0
     fail_msg: >-
-      Role params are missing or misstate zero_data_retention for
-      {{ _role_zdr_mismatches }}.
+      Cloud egress targets {{ _role_external_targets }} entered the local
+      capability-role projection. Cloud reachability belongs to explicit key
+      scopes; deployment ZDR is checked against the rendered allowlist above.
     success_msg: >-
-      all {{ _role_zdr_checked }} enabled OpenRouter role params carry the
-      ZDR flag declared by their registry entries
+      OpenRouter egress remains outside local capability role targets.
   vars:
-    _role_zdr_checked: >-
-      {{ llm_router_registry_enabled
-         | selectattr('tier', 'equalto', 'openrouter') | list | length }}
-    _role_zdr_mismatches: >-
-      {%- set ns = namespace(bad=[]) -%}
-      {%- for m in llm_router_registry_enabled
-            | selectattr('tier', 'equalto', 'openrouter') -%}
-      {%- set _expected = m.zero_data_retention | default(false) | bool -%}
-      {%- set _actual = _llm_router_role_params.get(m.client_model_id, {})
-            .get('extra_body', {})
-            .get('provider', {})
-            .get('zdr', none) -%}
-      {%- if _actual is none or (_actual | bool) != _expected -%}
-      {%- set ns.bad = ns.bad + [m.client_model_id] -%}
-      {%- endif -%}
-      {%- endfor -%}
-      {{ ns.bad }}
+    _role_external_targets: >-
+      {{ _llm_router_role_params.keys() | list
+         | intersect(_registry_or) }}

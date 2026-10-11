@@ -31,6 +31,13 @@
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
     bao_local_llm_secrets: {}
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
@@ -42,56 +49,36 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
     - name: Produce the fully credentialed render with the tier off (runs the whole assert chain)
       ansible.builtin.import_tasks: tasks/credentialed_render.yml
 
-    - name: Nothing only the tier owns renders, and nothing else is lost
+    - name: Switching off vLLM removes its backend while the CPU small member remains
       ansible.builtin.assert:
         quiet: true
         that:
           # ANTI-VACUITY: the switch has something to remove, and something it
           # must leave alone. A registry with no tier-only names would pass
           # every check below while proving nothing.
-          - _tier_only_names | length > 0
-          - _shared_names | length > 0
-          - _rendered_names | intersect(_tier_only_names) | length == 0
-          # Exact tokens, not substrings: no fallback chain, retry policy or
-          # alias in router_settings may still name a rung the proxy no longer
-          # serves.
-          - _settings_tokens | intersect(_tier_only_names) | length == 0
-          # The light-tier siblings of the shared names keep rendering.
-          - _shared_names | difference(_rendered_names) | length == 0
           - llm_router_vllm_models | length == 0
           - llm_router_hermes_local_models | length == 0
-          - llm_router_local_fallback_groups | length == 0
-          # The DB roles keep a catalogued target: the seed asserts it against
-          # this set, and creates a role only once that target is live.
-          - llm_router_hermes_local_4080_id in llm_router_registry_enabled_route_names
-          - llm_router_hermes_local_4080_id in (llm_router_role_deployments | map(attribute='model') | list)
+          - llm_router_small_model in _rendered_names
+          - _cpu_small | length > 0
+          - _vllm_backend | length == 0
+          - llm_router_small_model in llm_router_local_fallback_groups
         fail_msg: >-
-          With llm_router_llm_vllm_enabled false the router must serve none of
-          the names only the vllm / hermes-local tiers own
-          ({{ _tier_only_names | join(', ') }}) and keep the names a light-tier
-          sibling also owns ({{ _shared_names | join(', ') }}). Rendered
-          tier-only: {{ _rendered_names | intersect(_tier_only_names) }};
-          named in router_settings: {{ _settings_tokens | intersect(_tier_only_names) }};
-          shared names missing: {{ _shared_names | difference(_rendered_names) }}.
+          With llm_router_llm_vllm_enabled false the vLLM deployment must be
+          absent while the CPU member keeps the small capability live.
         success_msg: >-
-          Tier off: {{ _tier_only_names | length }} tier-only names are gone from the
-          render and router_settings, {{ _shared_names | length }} shared names still render.
+          vLLM is off and the CPU-backed small capability still renders.
       vars:
-        _tier_names: >-
-          {{ llm_router_registry_enabled | selectattr('tier', 'in', ['vllm', 'hermes-local'])
-             | map(attribute='client_model_id') | unique | list }}
-        _other_names: >-
-          {{ llm_router_registry_enabled | rejectattr('tier', 'in', ['vllm', 'hermes-local'])
-             | map(attribute='client_model_id') | unique | list }}
-        _tier_only_names: "{{ _tier_names | difference(_other_names) }}"
-        _shared_names: "{{ _tier_names | intersect(_other_names) }}"
+        _cpu_small: >-
+          {{ _config.model_list | selectattr('model_name', 'equalto', llm_router_small_model)
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_cpu_9b_backend_urls[0]) | list }}
+        _vllm_backend: >-
+          {{ _config.model_list | selectattr('model_name', 'equalto', llm_router_small_model)
+             | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url) | list }}
         _rendered_names: "{{ _config.model_list | map(attribute='model_name') | unique | list }}"
-        _settings_tokens: >-
-          {{ _config.router_settings | to_json | regex_findall('"([^"]+)"') | unique | list }}

@@ -29,8 +29,8 @@ remains in `ansible-proxmox-apps`' git log (`git log --follow <path>`).
   the playbooks (the only literal it accepts is one the inventory itself
   assigns as a consumer selection), and when any other role, the inventory or
   a test names an upstream-only id instead of the client-facing name.**
-  **Alias rule (hard): consumer-facing model aliases (`ai-default`,
-  `ai-deep-analysis`, `claude-*`, any future tier name) live ONLY in
+  **Alias rule (hard): consumer-facing model aliases (`hermes-default`,
+  `subagent`, `review-*`, any future tier name) live ONLY in
   `llm_router_model_group_aliases` (rendered as LiteLLM
   `router_settings.model_group_alias`). Registering an alias as its own
   `model_list` deployment entry — duplicating a physical entry's

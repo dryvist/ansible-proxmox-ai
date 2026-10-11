@@ -62,12 +62,12 @@
           'seeded': ns.seeded | list, 'win': ns2.win,
           'seeded_models': dict(ns.seeded | list | zip(ns.seeded.values() | map(attribute='model'))),
           'fb_keys': ns.fb | list,
-          'default': rs.default_fallbacks | default([]),
+          'fallback_chain': rs.default_fallbacks | default([]),
           'rungs': out.rungs, 'primary_win': out.primary_win} }}
 
 # Names the role itself declares fail-fast, read from role data, never typed:
 # the cross-modality and local-only lists (58-review-roles.yml), plus every
-# ladder terminal — a hermes-default chain group with no admissible rung left
+# ladder terminal — a medium chain group with no admissible rung left
 # after it (the chain's own tail, minus every ZDR-unasserted rung for a
 # ZDR-asserted group). The terminals are recomputed here from the chain and
 # the ZDR sets rather than read off llm_router_hermes_own_fallback_by_group,
@@ -97,6 +97,8 @@
          | reject('in', _fail_fast_exempt) | sort }}
     # (b) A primary needs ONE rung in its general chain at least as wide as
     # itself; narrower rungs earlier in the chain are fine, litellm walks on.
+    # Explicit entry-point overrides may intentionally contain only narrower
+    # rungs; their rendered chain is checked against the declared override.
     # A rung that resolves to the primary's own group adds no capacity and
     # does not count. Otherwise the primary passes only when it is DOWNSTREAM
     # of every other served group at least as wide: the group lists it in its
@@ -110,7 +112,7 @@
       {%- set peers = _routing.win | dict2items | rejectattr('value', 'none')
             | rejectattr('key', 'in', llm_router_cross_modality_fail_fast_names)
             | rejectattr('key', 'in', _routing.seeded) | list -%}
-      {%- set all_chains = (_routing.rungs.values() | map(attribute='general') | list) + [_routing.default] -%}
+      {%- set all_chains = (_routing.rungs.values() | map(attribute='general') | list) + [_routing.fallback_chain] -%}
       {%- for n, r in _routing.rungs.items() if r.general | length > 0 -%}
       {%- set own = _routing.aliases.get(n, n) -%}
       {%- set own_group = (_routing.seeded_models.get(own, own)) -%}
@@ -140,7 +142,9 @@
       {%- set _ = not_upstream.append(g) -%}
       {%- endif -%}
       {%- endfor -%}
-      {%- if (rung_wins | select('>=', pw | int) | list | length == 0) and not_upstream | length > 0 -%}
+      {%- if (rung_wins | select('>=', pw | int) | list | length == 0)
+            and not_upstream | length > 0
+            and n not in llm_router_context_window_no_wider_entry_points -%}
       {%- set ns.bad = ns.bad + [n ~ ' (' ~ pw ~ '; widest rung ' ~ (rung_wins | max | default('none'))
             ~ '; wider, never ahead of it: ' ~ (not_upstream | join(', ')) ~ ')'] -%}
       {%- endif -%}
@@ -155,6 +159,14 @@
       {%- endfor -%}
       {%- endfor -%}
       {{ ns.bad | unique | sort }}
+    _entry_override_mismatches: >-
+      {%- set ns = namespace(bad=[]) -%}
+      {%- for name, chain in llm_router_entry_point_fallback_overrides.items() -%}
+      {%- if (_routing.rungs.get(name, {})).get('general', []) != chain -%}
+      {%- set ns.bad = ns.bad + [name] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.bad | sort }}
 
 - name: Every routable name has a served fallback ladder that reaches a wide-enough rung
   ansible.builtin.assert:
@@ -165,12 +177,13 @@
       - _routing.groups | length > 1
       - _routing.aliases | length > 0
       - _routing.fb_keys | length > 0
-      - _routing.default | length > 0
+      - _routing.fallback_chain | length > 0
       - _routing.win | dict2items | rejectattr('value', 'none') | list | length > 0
       - _fail_fast_exempt | length > 0
       # THE CONTRACTS.
       - _no_rung | length == 0
       - _no_wide_rung | length == 0
+      - _entry_override_mismatches | length == 0
       - _dangling | length == 0
     fail_msg: >-
       (a) {{ _no_rung | length }} routable name(s) outside the role's
@@ -180,10 +193,13 @@
       a rung as wide as itself, with a wider served group that no rendered
       chain tries before it, as
       'name (window; widest rung; wider, never ahead of it)': {{ _no_wide_rung }}.
+      Rendered explicit overrides that differ from their declared chains:
+      {{ _entry_override_mismatches }}.
       (c) {{ _dangling | length }} rung(s) naming no served model group:
       {{ _dangling }}.
     success_msg: >-
       All {{ _routing.names | length }} routable names
       ({{ _routing.groups | length }} groups, {{ _routing.aliases | length }}
       aliases, {{ _routing.seeded | length }} seeded roles; {{ _fail_fast_exempt | length }}
-      declared fail-fast) reach a served rung at least as wide as themselves.
+      declared fail-fast; explicit narrow overrides checked exactly) reach a
+      served rung at least as wide as themselves.

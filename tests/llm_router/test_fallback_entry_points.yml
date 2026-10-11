@@ -1,17 +1,17 @@
 ---
-# Every name a caller can type for the primary must carry a fallback chain AND
-# a context-window escape, and the depth budget must cover the whole rendered
-# map rather than one chain of it.
+# Every name a caller can type for the primary must carry a fallback chain,
+# with a context-window escape whenever its chain has a wider reachable rung.
+# The depth budget must cover the whole rendered map rather than one chain.
 #
-# WHY BOTH MAPS, ALWAYS TOGETHER. LiteLLM looks both maps up under the model
+# WHY THE MAPS ARE CHECKED TOGETHER. LiteLLM looks both maps up under the model
 # name AS TYPED, with a plain string match and no alias resolution first
 # (model_group_alias resolves below the fallback handler). So an alias inherits
 # nothing from the id it points at. And the two maps fail in opposite
 # directions: a missing `fallbacks` key just means no chain, but a key missing
 # from a `context_window_fallbacks` map that EXISTS makes an oversize request
 # terminal there, with no fall-through to the ordinary map — whereas no map at
-# all would fall through. Adding a name to one map and not the other therefore
-# buys a fallback chain and pays for it with a new terminal failure.
+# all would fall through. A name with a wider reachable target needs its escape
+# entry; a constrained chain with no wider target has no useful escape.
 #
 # The ZDR-ladder and wider-escape checks over these same rendered maps live in
 # test_fallback_zdr_and_escape.yml — split out to stay under the per-file
@@ -41,7 +41,7 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
@@ -53,7 +53,7 @@
     # the proxy actually advertises) plus the registry's servable-id projection.
     # Asserting against llm_router_entry_point_names itself would only prove the
     # template copied that var faithfully, not that the var covers every name.
-    - name: Every servable id and every rendered alias is keyed in both maps
+    - name: Every servable id and rendered alias has its applicable entry-point maps
       ansible.builtin.assert:
         quiet: true
         that:
@@ -72,33 +72,31 @@
           - _cwf_keys | length > 0
           # THE CONTRACT.
           - _entry_points | difference(_fallback_keys) | length == 0
-          - _entry_points | difference(_cwf_keys) | length == 0
-          # Entry-point chains target the SAME six-segment ladder
-          # hermes-default uses (minus each entry's own name) and never
-          # hermes-default itself: an escalated call must not re-enter the
-          # chain that named it. (Cycle safety itself rests on
-          # attempted_targets, not on this — but re-entry would burn the
-          # shared depth budget for nothing.)
+          - _escape_entry_points | difference(_cwf_keys) | length == 0
+          - llm_router_cross_modality_fail_fast_names | intersect(_cwf_keys) | length == 0
+          - llm_router_context_window_no_wider_entry_points | intersect(_cwf_keys) | length == 0
+          # Entry-point chains target the primary's ladder. The primary is a
+          # valid rung for other names, while each entry point must exclude
+          # its own name and resolved alias target to prevent a self-cycle.
           - _entry_point_targets | length > 0
-          - "'hermes-default' not in _entry_point_targets"
+          - _entry_point_reentries | length == 0
           - >-
             _entry_point_targets
             | difference(llm_router_hermes_default_fallback_chain)
             | length == 0
         fail_msg: >-
-          Every servable id and every advertised alias must appear as a key in
-          BOTH router_settings.fallbacks and context_window_fallbacks, because
-          neither map resolves an alias before looking the name up, and a name
-          with no key makes a failure arriving under it terminal. Expected
-          names: {{ _entry_points }}. Missing a fallback chain:
-          {{ _entry_points | difference(_fallback_keys) }}. Missing a
-          context-window escape (these make an oversize request terminal rather
-          than falling through): {{ _entry_points | difference(_cwf_keys) }}.
+          Every entry point must have a fallback entry, and every chat entry
+          point with a wider target must have a context-window escape. Cross-modality names must
+          have no chat escape. Expected names: {{ _entry_points }}. Missing a
+          fallback chain: {{ _entry_points | difference(_fallback_keys) }}.
+          Missing a context-window escape:
+          {{ _escape_entry_points | difference(_cwf_keys) }}.
+          Unexpected cross-modality escapes:
+          {{ llm_router_cross_modality_fail_fast_names | intersect(_cwf_keys) }}.
           Entry-point targets: {{ _entry_point_targets }}.
         success_msg: >-
-          All {{ _entry_points | length }} typeable names
-          ({{ _entry_points | join(', ') }}) carry a fallback chain and a
-          context-window escape into the six-segment ladder.
+          All {{ _entry_points | length }} typeable names have their
+          modality-appropriate fallback and context-window entries.
       vars:
         _rendered_aliases: >-
           {{ _config.router_settings.model_group_alias | default({}) | list }}
@@ -106,6 +104,9 @@
           {{ llm_router_all_servable_models | reject('equalto', llm_router_primary_model) | list }}
         _entry_points: >-
           {{ (llm_router_all_servable_models + _rendered_aliases) | unique | list }}
+        _escape_entry_points: >-
+          {{ _entry_points | difference(llm_router_cross_modality_fail_fast_names)
+             | difference(llm_router_context_window_no_wider_entry_points) }}
         _fallback_keys: >-
           {{ _config.router_settings.fallbacks
              | map('dict2items') | flatten | map(attribute='key') | list }}
@@ -117,14 +118,25 @@
              | map('dict2items') | flatten
              | selectattr('key', 'in', _entry_points)
              | map(attribute='value') | flatten | unique | list }}
+        _entry_point_reentries: >-
+          {%- set ns = namespace(names=[]) -%}
+          {%- for pair in (_config.router_settings.fallbacks
+                | map('dict2items') | flatten)
+                if pair.key in _entry_points -%}
+          {%- set _target = llm_router_model_group_aliases.get(pair.key, pair.key) -%}
+          {%- if pair.key in pair.value or _target in pair.value -%}
+          {%- set ns.names = ns.names + [pair.key] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.names }}
 
     # THE EXACT-MATCH CASE the subset check above cannot catch: a rung
     # dropped from an entry point's own chain still passes "every target is
     # IN the D1 ladder" (a subset relation), so EVERY rendered alias gets
-    # pinned to the exact ordered tail for its entry point. Strict ZDR aliases
-    # lose every unasserted rung, and aliases to the auto-router also skip its
-    # initial rung (see config.yaml.j2).
-    - name: Every alias carries the full segmented ladder, in order, minus itself
+    # pinned to its exact ordered override or default tail. Strict ZDR aliases
+    # lose unasserted default rungs; aliases to the auto-router skip its first
+    # rung (see config.yaml.j2).
+    - name: Every alias carries its exact configured fallback chain
       ansible.builtin.assert:
         quiet: true
         that:
@@ -132,11 +144,11 @@
           - _rendered_aliases | length > 0
           - _mismatched_aliases | length == 0
         fail_msg: >-
-          Alias fallback target(s) must equal the D1 class ladder tail for
-          their entry point. Mismatched: {{ _mismatched_aliases }}.
+          Alias fallback target(s) must equal their explicit chain or the D1
+          class ladder tail. Mismatched: {{ _mismatched_aliases }}.
         success_msg: >-
-          All {{ _rendered_aliases | length }} aliases carry the full
-          segmented ladder in order.
+          All {{ _rendered_aliases | length }} aliases carry their full
+          configured ladder in order.
       vars:
         # Task-level vars do not carry across tasks — re-derived here rather
         # than assumed present from the earlier task's own vars block.
@@ -152,12 +164,17 @@
         _mismatched_aliases: >-
           {%- set ns = namespace(bad=[]) -%}
           {%- for alias in _rendered_aliases -%}
-          {%- set _expected = llm_router_hermes_default_fallback_chain | reject('equalto', alias) | list -%}
-          {%- if alias in llm_router_zdr_entry_point_names -%}
+          {%- set _target = llm_router_model_group_aliases.get(alias, alias) -%}
+          {%- set _expected = llm_router_entry_point_fallback_overrides.get(
+                alias, llm_router_hermes_default_fallback_chain
+                | reject('equalto', alias) | reject('equalto', _target) | list) -%}
+          {%- if alias in llm_router_zdr_entry_point_names
+                and alias not in llm_router_entry_point_fallback_overrides -%}
           {%- set _expected = _expected | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list -%}
           {%- endif -%}
-          {%- if llm_router_model_group_aliases.get(alias, alias) == 'hermes-default' -%}
-          {%- set _expected = _expected | reject('equalto', llm_router_d1_auto_initial_group) | list -%}
+          {%- if alias in (llm_router_cross_modality_fail_fast_names
+                            + llm_router_local_only_fail_fast_names) -%}
+          {%- set _expected = [] -%}
           {%- endif -%}
           {%- if (_fallbacks_by_key[alias] | default([])) != _expected -%}
           {%- set ns.bad = ns.bad + [alias ~ ': expected=' ~ (_expected | string)

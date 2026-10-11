@@ -4,7 +4,7 @@
 #
 # WHY THIS TEST EXISTS. Background health checks are on by default now
 # (defaults/main/50-servable.yml), but every single-slot-backed deployment
-# (large + standby: llama-swap; fast + light: llama-server router mode)
+# (large + standby: llama-swap; small + light: llama-server router mode)
 # sets model_info.disable_background_health_check
 # so a probe never spawns/evicts a single-slot resident model. A future edit to
 # the template could silently drop that flag from one tier and reintroduce the
@@ -36,7 +36,7 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 40
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
@@ -77,8 +77,11 @@
           are excluded from probing ({{ _swap_backed_names | join(', ') }}).
       vars:
         _swap_backed_names: >-
-          {{ (llm_router_large_models | map(attribute='client_model_id') | list)
-             + (llm_router_light_models | map(attribute='client_model_id') | list) }}
+          {%- set ns = namespace(names=[]) -%}
+          {%- for entry in llm_router_large_models + llm_router_light_models -%}
+          {%- set ns.names = ns.names + [entry.route_group | default(entry.client_model_id)] -%}
+          {%- endfor -%}
+          {{ ns.names | unique | list }}
         # A model_name can be shared between the vllm tier and the light tier
         # on purpose (llm-models.d/20-light.yml's CPU-failover pattern: same
         # client_model_id, GPU-vs-CPU order within the name) — so selecting by
@@ -118,7 +121,7 @@
           The vLLM tier ({{ _vllm_entries | length }} deployment(s)) remains
           probeable.
       vars:
-        _vllm_names: "{{ llm_router_vllm_models | map(attribute='client_model_id') | list }}"
+        _vllm_names: "{{ llm_router_vllm_models | map(attribute='route_group') | unique | list }}"
         # Scoped to entries actually calling the vllm api_base, not just
         # sharing a vllm model_name: a name can also carry a light-tier
         # instance (the CPU-failover pattern above), and that instance

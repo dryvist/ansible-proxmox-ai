@@ -47,27 +47,6 @@
 # rather than terminating — better than terminal, not a working OCR fallback.
 # The free rung's upstream is a vision-capable model and may in fact serve such
 # a request; that is unverified and not relied on.
-# The shared route alias and canonical best-role alias follow the GPU-first
-# route while it is active. Other aliases keep their registry targets.
-llm_router_primary_route_fallback_aliases: >-
-  {%- set ns = namespace(aliases=[llm_router_vllm_medium_route_alias]) -%}
-  {%- if llm_router_vllm_medium_route_enabled | bool -%}
-  {%- set ns.aliases = ns.aliases + llm_router_primary_registry_aliases -%}
-  {%- endif -%}
-  {{ ns.aliases | unique | list if llm_router_vllm_medium_route_enabled | bool else [] }}
-llm_router_primary_registry_aliases: >-
-  {{ llm_router_registry_enabled
-     | selectattr('serving_role', 'defined')
-     | selectattr('serving_role', 'equalto', 'primary')
-     | map(attribute='stable_aliases') | flatten
-     | select('in', (llm_roles.roles | dict2items | map(attribute='key') | list))
-     | list }}
-llm_router_primary_route_fallbacks: >-
-  {%- set ns = namespace(out={}) -%}
-  {%- for alias in llm_router_primary_route_fallback_aliases -%}
-  {%- set _ = ns.out.update({alias: [llm_router_primary_large_model]}) -%}
-  {%- endfor -%}
-  {{ ns.out }}
 llm_router_entry_point_names: >-
   {{ ((llm_router_all_servable_models
        | reject('in', llm_router_ci_luna_groups | default([])) | list)
@@ -82,7 +61,10 @@ llm_router_zdr_entry_point_names: >-
   {%- set _out = [] -%}
   {%- for _name in llm_router_entry_point_names -%}
   {%- set _target = llm_router_model_group_aliases.get(_name, _name) -%}
-  {%- if _target in llm_router_zdr_asserted_group_names -%}
+  {%- set _override = llm_router_entry_point_fallback_overrides.get(_name) -%}
+  {%- if _target in llm_router_zdr_asserted_group_names
+        and (_override is none
+             or _override | difference(llm_router_zdr_asserted_group_names) | length == 0) -%}
   {%- set _discard = _out.append(_name) -%}
   {%- endif -%}
   {%- endfor -%}
@@ -126,22 +108,41 @@ llm_router_zdr_entry_point_names: >-
 # bound governs how far NESTED chains may descend — which is where the
 # entry-point and per-group chains live.
 #
-# Covers the Hermes-chain names only. The DB-seeded role chains
-# (review-oss/review-private/cheap/fast/subagent/judge, seeded via
-# /fallback) render outside this file and are not counted here, so a role
-# chain longer than this bound is silently truncated with no signal.
+# The union includes every DB-seeded role name, its selected capability, and
+# its declared fallback targets. Per-capability member retargets are counted
+# separately because LiteLLM adds one attempt for each later deployment order.
 #
 # Still a fallback bound, not a retry budget; same-provider retries stay zero.
+llm_router_database_role_chain_names: >-
+  {%- set ns = namespace(names=[]) -%}
+  {%- for role in llm_router_role_deployments -%}
+  {%- set ns.names = ns.names + [role.role, role.model] + (role.fallbacks | list) -%}
+  {%- endfor -%}
+  {{ ns.names | unique | list }}
 llm_router_fallback_target_names: >-
   {{ (llm_router_hermes_default_fallback_chain
-      + ([llm_router_primary_large_model]
-         if llm_router_vllm_medium_route_enabled | bool else [])
       + ([llm_router_primary_model]
          if (llm_router_hermes_cloud_only_fallback_groups
              + llm_router_opencode_fallback_groups
-             + llm_router_openrouter_free_groups) | length > 0 else []))
+             + llm_router_openrouter_free_groups) | length > 0 else [])
+      + llm_router_database_role_chain_names
+      + (llm_router_entry_point_fallback_overrides.values() | flatten | list))
      | unique | list }}
-llm_router_max_fallbacks: "{{ llm_router_fallback_target_names | length }}"
+llm_router_capability_order_retarget_count: >-
+  {%- set ns = namespace(count=0) -%}
+  {%- for group in llm_router_capability_registry_members
+        | map(attribute='route_group') | unique | list -%}
+  {%- set orders = llm_router_capability_registry_members
+        | selectattr('route_group', 'equalto', group)
+        | map(attribute='order') | unique | list -%}
+  {%- if orders | length > 1 -%}
+  {%- set ns.count = ns.count + orders | length - 1 -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.count }}
+llm_router_max_fallbacks: >-
+  {{ llm_router_fallback_target_names | length
+     + llm_router_capability_order_retarget_count | int }}
 
 # Opt-in since litellm 1.102.0 (litellm/proxy/auth/fallback_model_access.py,
 # wired at proxy_server.py via fallback_access_check=router_fallback_access_check

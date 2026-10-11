@@ -77,11 +77,13 @@ def test_hermes_inference_paths_use_the_declared_alias() -> None:
     # model uses the active primary until the serving host is rebuilt.
     routine_parked = role_is_parked(registry, "routine")
     judge_backend = effective_backend_for_role(registry, "routine")
-    hermes_selector = group_vars["hermes_brain_model"]
-    assert "llm_router_gpu_profiles_enabled" in hermes_selector
-    assert "llm_router_gpu_model_aliases_by_profile" in hermes_selector
-    assert "llm_active_profile" in hermes_selector
-    assert "hermes-default" in hermes_selector
+    # Hermes names the primary entry's capability group; which hardware serves
+    # it is the group's deployment order, not a selector here.
+    assert group_vars["hermes_brain_model"] == next(
+        entry["route_group"]
+        for entry in registry
+        if entry.get("enabled") and entry.get("serving_role") == "primary"
+    )
     # The judge normally rides its distinct routine model. During the explicit
     # parked state it shares the active primary until the serving host is rebuilt.
     assert group_vars["hermes_goal_judge_model"] == "judge"

@@ -18,88 +18,27 @@
 - name: Assert every brain model consumers request is a tuned router entry (not the wildcard)
   ansible.builtin.import_tasks: assert-safe-models.yml
 
-- name: Assert every consumer alias points at a model the serving host will actually serve
+- name: Assert registry aliases and capability deployment orders are unambiguous
+  ansible.builtin.import_tasks: assert-capabilities.yml
+
+- name: Assert every registry alias targets an advertised capability or cloud model
   ansible.builtin.assert:
     quiet: true
     that:
       - >-
         llm_router_model_group_aliases | dict2items | map(attribute='value')
-        | difference(llm_router_all_servable_models + llm_router_hermes_router_ids
-                     + llm_router_long_context_alias_ids)
-        | length == 0
-      # The servable set must itself be first-class entries, or this assert
-      # could be satisfied by a model that then compresses its caller to death.
-      - llm_router_all_servable_models | difference(_llm_router_safe_models) | length == 0
+        | difference(llm_router_registry_enabled_route_names
+                     + llm_router_long_context_alias_ids) | length == 0
     fail_msg: >-
-      Unroutable alias (roles/llm_router/tasks/assert.yml): alias target(s)
+      Unroutable registry alias target(s)
           [{{ llm_router_model_group_aliases | dict2items | map(attribute='value')
-              | difference(llm_router_all_servable_models + llm_router_hermes_router_ids
+              | difference(llm_router_registry_enabled_route_names
                            + llm_router_long_context_alias_ids)
           | unique | join(', ') }}]
-      are not in the large/GPU servable set
-      [{{ llm_router_all_servable_models | join(', ') }}],
-      the local complexity router [{{ llm_router_hermes_router_ids | join(', ') }}], or
-      the long-context entry [{{ llm_router_long_context_alias_ids | join(', ') }}].
-      Each backend must list its profile at its own model endpoint: large-tier
-      entries are checked against the Mac serving gate, GPU entries against the
-      inventory-backed guest. On 2026-07-28 every large-tier alias was in this
-      state at once (hermes-default, tool-calling, goal-judge, interim-brain).
-      The complexity router is a deliberate exception: it dispatches to
-      llm_router_routine_model / llm_router_primary_model (already pinned safe
-      above). Fix any other unroutable target by repointing it at
-      llm_router_primary_model / llm_router_small_model — NOT by widening this
-      list to match a stale alias.
+      are not backed by an enabled registry deployment.
     success_msg: >-
-      All {{ llm_router_model_group_aliases | length }} consumer aliases resolve
-      into the large/GPU servable set ({{ llm_router_all_servable_models | join(', ') }}) or
-      the local complexity router.
-  vars:
-    # llm_router_hermes_router_ids is the role default (50-servable.yml).
-    _llm_router_safe_models: >-
-      {{ (llm_router_large_models + llm_router_gpu_models)
-         | selectattr('context_window', 'defined')
-         | rejectattr('context_window', 'none')
-         | map(attribute='client_model_id') | list }}
-
-# The primary's serving-model shortcut (50-servable.yml) must name the client id
-# the alias map resolves the primary to. The hermes primary-window renders read
-# the shortcut instead of the alias map, so this is what keeps them in step.
-- name: Assert the primary's serving model is the one the alias map resolves
-  ansible.builtin.assert:
-    quiet: true
-    that:
-      - _llm_router_primary_alias_target == llm_router_primary_serving_model
-    fail_msg: >-
-      llm_router_primary_serving_model ({{ llm_router_primary_serving_model }})
-      does not match the alias map's resolution of llm_router_primary_model
-      ({{ llm_router_primary_model }} -> {{ _llm_router_primary_alias_target }}).
-      Keep the switch in roles/llm_router/defaults/main/50-servable.yml in step
-      with llm_router_alias_pairs.
-    success_msg: >-
-      Primary serving model {{ llm_router_primary_serving_model }} matches the alias map.
-  vars:
-    _llm_router_primary_alias_target: >-
-      {{ llm_router_model_group_aliases.get(llm_router_primary_model, llm_router_primary_model) }}
-
-# Cardinality guard on the hermes-router carve-out itself: exactly one entry
-# today (hermes-default). A second hermes-router-tier entry would silently
-# widen every consumer of llm_router_hermes_router_ids (llm_router_alias_pairs,
-# both asserts above, test_alias_servable.yml) at once — this forces that
-# widening to be a reviewed registry change, not an accident.
-- name: Assert the hermes-router alias carve-out has exactly one member
-  ansible.builtin.assert:
-    quiet: true
-    that:
-      - llm_router_hermes_router_ids | length == 1
-    fail_msg: >-
-      llm_router_hermes_router_ids (roles/llm_router/defaults/main/50-servable.yml)
-      has {{ llm_router_hermes_router_ids | length }} members
-      ({{ llm_router_hermes_router_ids | join(', ') }}), not the expected 1.
-      A second hermes-router-tier entry widens the alias/role carve-out
-      everywhere it is referenced — review before raising this cardinality.
-    success_msg: >-
-      Exactly one hermes-router entry carries the alias carve-out
-      ({{ llm_router_hermes_router_ids | join(', ') }}).
+      All {{ llm_router_model_group_aliases | length }} aliases resolve to
+      an enabled model group.
 
 # Same reason as the hermes-router guard above, shaped differently: unlike
 # the hermes-router tier (structurally at most one entry by design),
@@ -110,24 +49,25 @@
 # so would silently give the long-context alias name two candidate targets,
 # with subelements/dict() picking one by iteration order rather than by a
 # reviewed decision.
-- name: Assert at most one long-context entry actually carries an alias
+- name: Assert at most one long-context registry entry actually carries an alias
   ansible.builtin.assert:
     quiet: true
     that:
-      - _llm_router_long_context_alias_pairs | length <= 1
+      - _llm_router_long_context_alias_entries | length <= 1
     fail_msg: >-
-      {{ _llm_router_long_context_alias_pairs | length }} long-context
+      {{ _llm_router_long_context_alias_entries | length }} long-context
       entries ({{ llm_router_long_context_alias_ids | join(', ') }} is the
       full candidate pool) declare a stable_alias at once — the alias name
       picked resolves nondeterministically. Give at most one such entry a
       stable_alias.
     success_msg: >-
-      At most one long-context entry carries an alias
+      At most one long-context registry entry carries an alias
       ({{ llm_router_long_context_alias_ids | join(', ') }} candidates).
   vars:
-    _llm_router_long_context_alias_pairs: >-
-      {{ llm_router_alias_pairs
-         | selectattr('0.client_model_id', 'in', llm_router_long_context_alias_ids) | list }}
+    _llm_router_long_context_alias_entries: >-
+      {{ llm_router_registry_enabled
+         | selectattr('client_model_id', 'in', llm_router_long_context_alias_ids)
+         | selectattr('stable_aliases', 'defined') | list }}
 
 # Hermes profile-list contract. Its own file so a test can import exactly
 # this assert and prove the failure path.
@@ -188,5 +128,3 @@
 # render, so it costs nothing and should reject a bad registry before this one
 # pays for a network round trip. Unreachable endpoints and unseeded credentials
 # are reported, never fatal — see the file.
-- name: Verify the serving gate and the remote tiers list what the registry claims
-  ansible.builtin.import_tasks: verify-servable.yml

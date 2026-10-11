@@ -35,7 +35,7 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
@@ -94,14 +94,15 @@
         _local_registry_names: >-
           {{ llm_router_registry_enabled
              | selectattr('tier', 'in', llm_router_local_registry_tiers)
-             | map(attribute='client_model_id') | unique | list }}
+             | selectattr('route_group', 'defined')
+             | map(attribute='route_group') | unique | list }}
         _asserted_zdr_cloud_names: >-
           {{ llm_router_registry_enabled
              | rejectattr('tier', 'in', llm_router_local_registry_tiers)
              | selectattr('zero_data_retention', 'defined')
              | selectattr('zero_data_retention', 'truthy')
-             | rejectattr('client_model_id', 'in', _free_names)
-             | map(attribute='client_model_id') | unique | list }}
+             | selectattr('route_group', 'defined')
+             | map(attribute='route_group') | unique | list }}
 
     - name: Assert the original key retains the full ladder
       ansible.builtin.assert:
@@ -114,4 +115,7 @@
         success_msg: >-
           hermes-default retains non-ZDR access; chain={{ _hermes_public_test_chain }}
       vars:
-        _public: "{{ _hermes_private_test_keys | selectattr('alias', 'equalto', 'hermes-default') | first }}"
+        _public: >-
+          {{ _hermes_private_test_keys | selectattr('alias', 'equalto',
+             (_llm_router_hermes_profile_keys | selectattr('alias', 'search', '-default$')
+              | map(attribute='alias') | first)) | first }}

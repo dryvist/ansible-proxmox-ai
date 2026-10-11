@@ -1,5 +1,5 @@
 ---
-- name: Verify auto-router tiers preserve sensitivity tags and Hermes fallbacks
+- name: Verify capability aliases preserve sensitivity scopes and fallback chains
   hosts: localhost
   gather_facts: false
   vars:
@@ -38,7 +38,7 @@
     ai_router_retry_after_seconds: 2
     ai_ingress_response_header_timeout_seconds: 120
     hermes_agent_identity: hermes
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hermes_goal_judge_model: judge
     hindsight_retain_model: qwen3-4b
   tasks:
@@ -55,104 +55,65 @@
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
-    - name: Every auto-router target resolves to class-tagged deployments
+    - name: Capability aliases do not create duplicate model-list deployments
       ansible.builtin.assert:
         quiet: true
         that:
-          - _router_targets | length > 0
-          - _missing_targets | length == 0
-          - _untagged_targets | length == 0
-          - _bad_auto_router_sensitivity | length == 0
+          - llm_router_model_group_aliases.auto == llm_router_primary_model
+          - llm_router_model_group_aliases[_hermes_default_alias] == llm_router_primary_model
+          - _medium_deployments | length > 0
+          - _medium_orders | unique | length == _medium_orders | length
+          - _complexity_router_entries | length == 0
+          - _legacy_deployments | length == 0
         fail_msg: >-
-          auto-router missing targets={{ _missing_targets }}, untagged={{ _untagged_targets }},
-          sensitivity={{ _bad_auto_router_sensitivity }}
-        success_msg: "Auto-router tiers resolve to tagged deployments and preserve their sensitivity constraints."
+          aliases={{ llm_router_model_group_aliases }},
+          medium orders={{ _medium_orders }}, legacy entries={{ _legacy_deployments }}
+        success_msg: "Transitional aliases resolve to the medium capability without duplicate deployments."
       vars:
-        _deployment_rows: >-
+        _hermes_default_alias: >-
+          {{ _llm_router_hermes_profile_keys
+             | selectattr('alias', 'search', '-default$')
+             | map(attribute='alias') | first }}
+        _medium_deployments: >-
           {{ _config.model_list
-             | selectattr('litellm_params.model', 'defined')
-             | rejectattr('litellm_params.complexity_router_config', 'defined') | list }}
-        _auto_routers: >-
+             | selectattr('model_name', 'equalto', llm_router_primary_model) | list }}
+        _medium_orders: "{{ _medium_deployments | map(attribute='litellm_params.order') | list }}"
+        _complexity_router_entries: >-
           {{ _config.model_list
              | selectattr('litellm_params.complexity_router_config', 'defined') | list }}
-        _router_targets: >-
-          {%- set ns = namespace(targets=[]) -%}
-          {%- for r in _auto_routers -%}
-          {%- set _router = r.litellm_params.complexity_router_config | default({}) -%}
-          {%- set _tiers = _router.tiers | default({}) -%}
-          {%- set ns.targets = ns.targets + (_tiers.values() | list) -%}
-          {%- set _default = _router.default_model | default(none) -%}
-          {%- if _default is not none -%}
-          {%- set ns.targets = ns.targets + [_default] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.targets | unique | list }}
-        _missing_targets: >-
-          {%- set ns = namespace(names=[]) -%}
-          {%- for name in _router_targets -%}
-          {%- if _deployment_rows | selectattr('model_name', 'equalto', name) | list | length == 0 -%}
-          {%- set ns.names = ns.names + [name] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.names }}
-        _untagged_targets: >-
-          {%- set ns = namespace(names=[]) -%}
-          {%- for name in _router_targets -%}
-          {%- set _rows = _deployment_rows | selectattr('model_name', 'equalto', name) | list -%}
-          {%- if _rows | length > 0 and (_rows | rejectattr('litellm_params.tags', 'defined') | list | length > 0) -%}
-          {%- set ns.names = ns.names + [name] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.names }}
-        _bad_auto_router_sensitivity: >-
-          {%- set ns = namespace(names=[]) -%}
-          {%- for r in _auto_routers -%}
-          {%- set _tags = r.litellm_params.tags | default([]) -%}
-          {%- if r.model_name in (llm_router_hermes_virtual_models | map(attribute='client_model_id') | list) -%}
-          {%- if ['sensitivity:public', 'sensitivity:sensitive', 'sensitivity:pii'] | difference(_tags) | length > 0 -%}
-          {%- set ns.names = ns.names + [r.model_name ~ ':' ~ (_tags | string)] -%}
-          {%- endif -%}
-          {%- elif 'sensitivity:public' not in _tags
-                or 'sensitivity:sensitive' in _tags or 'sensitivity:pii' in _tags -%}
-          {%- set ns.names = ns.names + [r.model_name ~ ':' ~ (_tags | string)] -%}
-          {%- endif -%}
-          {%- endfor -%}
-          {{ ns.names }}
+        _legacy_deployments: >-
+          {{ _config.model_list | selectattr('model_name', 'in', ['auto', _hermes_default_alias]) | list }}
 
     - name: Hermes defaults to sensitive while an explicitly public key stays public
       ansible.builtin.assert:
         quiet: true
         that:
+          - _hermes_key.alias == _hermes_default_alias
           - _hermes_key.sensitivity_tag == '&sensitivity:sensitive'
           - _public_key.sensitivity_tag == '&sensitivity:public'
-          - "'review-oss' in _public_key.models"
-          - _fallback == (llm_router_d1_ladder_groups | reject('equalto', llm_router_d1_auto_initial_group) | list)
+          - llm_router_primary_model in _hermes_key.models
+          - "'medium' in _public_key.models"
+          - _fallback == _expected_fallback
           - _fallback | length > 0
+          - _fallback | intersect(llm_router_zdr_unasserted_terminal_rungs) | length == 0
           - llm_router_hermes_default_fallback_chain | difference(_hermes_key.models) | length == 0
-          - _hermes_auto_targets | unique | length >= 3
-          - _hermes_auto_tier_classes.values() | unique | sort == ['local', 'paid-zdr', 'sub']
-          - _hermes_auto_tier_classes['SIMPLE'] == 'sub'
-          - _hermes_auto_tier_classes['MEDIUM'] == 'local'
-          - _hermes_auto_tier_classes['COMPLEX'] == 'paid-zdr'
-          - _hermes_auto_tier_classes['REASONING'] == 'paid-zdr'
         fail_msg: >-
           Hermes sensitivity={{ _hermes_key.sensitivity_tag }},
           public sensitivity={{ _public_key.sensitivity_tag }} fallback={{ _fallback }}
         success_msg: >-
           Hermes defaults to sensitive; the explicit public key remains public and the Hermes ladder is scoped.
       vars:
-        _hermes_key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'hermes-default') | first }}"
+        _hermes_default_alias: >-
+          {{ _llm_router_hermes_profile_keys
+             | selectattr('alias', 'search', '-default$')
+             | map(attribute='alias') | first }}
+        _hermes_key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', _hermes_default_alias) | first }}"
         _public_key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
-        _auto: "{{ _config.model_list | selectattr('model_name', 'equalto', 'hermes-default') | first }}"
-        _hermes_auto_targets: >-
-          {{ (_auto.litellm_params.complexity_router_config.tiers.values() | list)
-             + [_auto.litellm_params.complexity_router_config.default_model] }}
-        _hermes_auto_tier_classes: >-
-          {{ dict(_auto.litellm_params.complexity_router_config.tiers.items()
-                  | map('first')
-                  | zip(_auto.litellm_params.complexity_router_config.tiers.values()
-                       | map('extract', llm_router_d1_group_class_by_name))) }}
         _fallback: >-
           {{ _config.router_settings.fallbacks
-             | selectattr('hermes-default', 'defined')
-             | map(attribute='hermes-default') | first }}
+             | selectattr('medium', 'defined')
+             | map(attribute='medium') | first }}
+        _expected_fallback: >-
+          {{ llm_router_d1_ladder_groups[
+               llm_router_d1_ladder_groups.index(llm_router_d1_auto_initial_group) + 1:]
+             | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list }}

@@ -31,7 +31,7 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 40
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
@@ -62,7 +62,7 @@
       ansible.builtin.set_fact:
         _config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
 
-    - name: Every alias still carries a fallback and a context-window escape
+    - name: Routable aliases keep their escape while cross-modality names fail fast
       ansible.builtin.assert:
         quiet: true
         that:
@@ -73,17 +73,22 @@
           - _rendered_aliases | length > 0
           - _fallback_keys | length > 0
           - _cwf_keys | length > 0
-          - _rendered_aliases | difference(_fallback_keys) | length == 0
-          - _rendered_aliases | difference(_cwf_keys) | length == 0
+          - _routable_aliases | difference(_fallback_keys) | length == 0
+          - _aliases_needing_escape | difference(_cwf_keys) | length == 0
+          - _cross_modality_aliases | difference(_fallback_keys) | length == 0
+          - _cross_modality_aliases | intersect(_cwf_keys) | length == 0
+          - llm_router_context_window_no_wider_entry_points | intersect(_cwf_keys) | length == 0
         fail_msg: >-
-          With only OPENCODE_API_KEY seeded, every advertised alias must
-          still carry both a fallbacks entry and a context_window_fallbacks
-          entry. Missing fallbacks: {{ _rendered_aliases | difference(_fallback_keys) }}.
-          Missing context-window escapes:
-          {{ _rendered_aliases | difference(_cwf_keys) }}.
+          With only OPENCODE_API_KEY seeded, each chat alias must carry both a
+          fallback entry; chat aliases with a wider target also need a
+          context-window escape. Embedding and OCR names must keep their
+          fail-fast entries and stay out of chat escapes.
+          Missing fallbacks: {{ _routable_aliases | difference(_fallback_keys) }}.
+          Missing context-window escapes: {{ _aliases_needing_escape | difference(_cwf_keys) }}.
         success_msg: >-
-          OpenCode-only credential state keeps all
-          {{ _rendered_aliases | length }} aliases fallback-capable.
+          OpenCode-only credential state keeps {{ _routable_aliases | length }}
+          chat aliases fallback-capable and {{ _cross_modality_aliases | length }}
+          cross-modality names fail-fast.
       vars:
         _rendered_aliases: >-
           {{ _config.router_settings.model_group_alias | default({}) | list }}
@@ -93,3 +98,9 @@
         _cwf_keys: >-
           {{ _config.router_settings.context_window_fallbacks | default([])
              | map('dict2items') | flatten | map(attribute='key') | list }}
+        _cross_modality_aliases: >-
+          {{ _rendered_aliases | intersect(llm_router_cross_modality_fail_fast_names) }}
+        _routable_aliases: "{{ _rendered_aliases | difference(_cross_modality_aliases) }}"
+        _aliases_needing_escape: >-
+          {{ _routable_aliases
+             | difference(llm_router_context_window_no_wider_entry_points) }}

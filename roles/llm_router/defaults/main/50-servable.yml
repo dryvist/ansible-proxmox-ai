@@ -9,8 +9,8 @@
 #
 # Which means an alias pointing anywhere outside this set is not "slightly
 # stale", it is UNROUTABLE. Measured 2026-07-28 against the live gate, before
-# any shared definition existed: hermes-default, tool-calling, goal-judge and
-# interim-brain ALL returned 404 — every consumer alias at once, because the
+# any shared definition existed: hermes-default, goal-judge and
+# every other consumer alias ALL returned 404 — every consumer alias at once, because the
 # alias map and the serving host's enabled set had no common source. It stayed
 # invisible while llama-swap still grafted disabled ids onto the resident
 # (Hermes was answered by a model nobody selected); nix-ai#1441 removed that
@@ -30,63 +30,51 @@
 # produces a 404 instead of an answer. Counts are deliberately not written here
 # — a number in a comment is the first thing to go stale.
 #
-# The primary/routine/small/ocr projections below read the canonical role map
-# (`llm_roles`, dryvist.homelab.llm_roles, loaded by tasks/registry.yml):
-# roles best/fast/small/ocr -> the model each names -> that model's id, which
-# is the entry's client_model_id. tasks/assert-llm-roles.yml holds the registry
-# to the same map, so a model the map names but the registry lacks fails the
-# converge rather than a lookup here.
+# Capability names and aliases are projections of registry route_group and
+# stable_aliases. The role selectors use serving_role / embedding metadata.
+llm_router_capability_names: >-
+  {{ llm_router_model_registry
+     | selectattr('tier', 'in', llm_router_local_registry_tiers)
+     | selectattr('route_group', 'defined')
+     | map(attribute='route_group') | unique | list }}
 llm_router_primary_large_model: >-
-  {{ llm_roles.models[llm_roles.roles.best.model].id }}
+  {{ (llm_router_registry_enabled | selectattr('serving_role', 'defined')
+      | selectattr('serving_role', 'equalto', 'primary') | first).route_group }}
+llm_router_large_model: >-
+  {{ (llm_router_registry_enabled | selectattr('serving_role', 'defined')
+      | selectattr('serving_role', 'equalto', 'large') | first).route_group }}
 llm_router_primary_model: >-
-  {{ llm_router_vllm_medium_route_alias
-     if llm_router_vllm_medium_route_enabled | bool
-     else llm_router_primary_large_model }}
-# The client model id llm_router_primary_model resolves to, kept beside it so the
-# medium/large switch is written once. The alias map must agree with it; the
-# assert in tasks/assert.yml checks that.
+  {{ llm_router_primary_large_model }}
+# The physical registry entry whose window backs the default route.
 llm_router_primary_serving_model: >-
-  {{ llm_router_vllm_medium_model if llm_router_vllm_medium_route_enabled | bool
-     else llm_router_primary_large_model }}
-# The small tier: judge/trivial work, normally cross-family to the primary
-# (user decision 2026-07-28 — concurrency belongs to the largest accurate
-# model). If its mapped entry is parked, use the active primary until rebuild.
-# See the registry for the cold-load caveat: servable does not mean pre-loaded.
+  {{ (llm_router_registry_enabled | selectattr('serving_role', 'defined')
+      | selectattr('serving_role', 'equalto', 'primary') | first).client_model_id }}
 llm_router_small_model: >-
-  {%- set _model = llm_roles.models[llm_roles.roles.small.model].id -%}
-  {{ _model if _model in llm_router_servable_models else llm_router_primary_large_model }}
-# The routine tier follows the mapped fast model while it is actively servable.
-# A parked model falls back to the active primary until its host is rebuilt.
+  {{ (llm_router_model_registry | selectattr('tier', 'equalto', 'vllm') | first).route_group }}
 llm_router_routine_model: >-
-  {%- set _model = llm_roles.models[llm_roles.roles.fast.model].id -%}
-  {{ _model if _model in llm_router_servable_models else llm_router_primary_large_model }}
+  {{ llm_router_small_model }}
 llm_router_servable_models: >-
-  {{ llm_router_registry_enabled | selectattr('servable', 'defined')
-     | selectattr('servable') | selectattr('tier', 'equalto', 'local-large')
-     | map(attribute='client_model_id') | list }}
+  {{ ((llm_router_registry_enabled | selectattr('servable', 'defined')
+       | selectattr('servable') | rejectattr('tier', 'equalto', 'vllm') | list)
+      + (llm_router_vllm_models | selectattr('servable', 'defined')
+         | selectattr('servable') | list))
+     | map(attribute='route_group') | unique | reject('equalto', none) | list }}
 # The Pro6000 is served by its own inventory-backed endpoint, not the Mac
 # large-tier gate. Keep its checked set separate and combine only for routing.
 llm_router_gpu_servable_models: >-
   {{ llm_router_gpu_models | selectattr('servable', 'defined')
-     | selectattr('servable') | map(attribute='client_model_id') | list }}
+     | selectattr('servable') | map(attribute='route_group') | unique | list }}
 llm_router_all_servable_models: >-
-  {{ (llm_router_servable_models + llm_router_gpu_servable_models) | unique | list }}
+  {{ (llm_router_servable_models + llm_router_gpu_servable_models) | unique
+     | reject('equalto', none) | list }}
 
-# Stable consumer role names come from each registry entry's `stable_aliases`.
-# Aliases carry no deployment configuration; each resolves to one physical
-# model_list entry in the combined large/GPU servable set. While the GPU primary
-# route is active, the canonical best-role alias follows that route and its
-# fallback entry gives the Mac primary as its next rung.
-#
-# The hermes-router tier's enabled entries, with a real context window —
-# the SOLE derivation of this carve-out. tasks/assert.yml (both asserts) and
-# tests/llm_router/test_alias_servable.yml reference this var rather than
-# re-deriving it, so the carve-out can only ever mean one thing.
+# Aliases carry no deployment configuration. Their targets are route groups,
+# never physical model ids.
 llm_router_hermes_router_ids: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'hermes-router')
      | selectattr('context_window', 'defined') | rejectattr('context_window', 'none')
      | map(attribute='client_model_id') | list }}
-llm_router_auto_router_model: "{{ llm_router_hermes_router_ids | first }}"
+llm_router_auto_router_model: ""
 
 # OpenRouter candidates for long-context requests and the retained legacy
 # fallback. Only an explicit zero_data_retention assertion qualifies; a missing
@@ -100,59 +88,23 @@ llm_router_long_context_alias_ids: >-
       | selectattr('zero_data_retention') | list)
      | map(attribute='client_model_id') | list }}
 
-# SERVABLE ENTRIES, plus the hermes-router tier and the long-context
-# carve-out, ONLY. A static model_group_alias is subject to the two asserts
-# in tasks/assert.yml: its target must be in the servable set (or one of the
-# two named carve-outs) and must carry a real context window (hermes-router
-# and long-context are each individually exempted there). Roles that target
-# the hermes-router are rendered as aliases; other non-alias role names are
-# seeded into the router database (tasks/seed-roles.yml). The hermes-router
-# and long-context tiers are admitted alongside `servable` (not folded into
-# it) because `servable` means "the serving host will answer for this id
-# directly" and neither ever does — the complexity router dispatches locally,
-# and the long-context entry is a remote paid OpenRouter model. Adding either
-# to `servable` itself would corrupt llm_router_servable_models and the
-# verify-servable probe (2026-07-28).
-#
-# `fast` and `cheap` target the complexity router, so they are rendered as
-# aliases and old DB rows are retired by tasks/retire-role-deployments.yml.
-# `judge`/`embed`/`ocr` remain database-seeded roles. GPU profiles are excluded
-# until the profile switch activates them; the primary role alias then follows
-# the shared route, while the other aliases retain their own targets.
+# Every enabled servable entry contributes only its route_group. GPU entries
+# join this set only while their inventory profile is active.
 llm_router_alias_pairs: >-
   {%- set ns = namespace(pairs=[]) -%}
   {%- set _entries = ((llm_router_registry_enabled | selectattr('servable', 'defined')
        | selectattr('servable') | list)
-      + (llm_router_registry_enabled | selectattr('tier', 'defined')
-         | selectattr('tier', 'equalto', 'hermes-router') | list)
       + (llm_router_registry_enabled
          | selectattr('client_model_id', 'in', llm_router_long_context_alias_ids) | list)) -%}
   {%- for _entry in _entries | selectattr('stable_aliases', 'defined') -%}
   {%- for _alias in _entry.stable_aliases -%}
-  {%- if _entry.client_model_id != llm_router_vllm_medium_model
-        or _alias != llm_router_vllm_medium_route_alias
-        or llm_router_vllm_medium_route_enabled | bool -%}
-  {%- set _target = _entry -%}
-  {%- if _alias in llm_router_primary_route_fallback_aliases -%}
-  {%- set _target = llm_router_vllm_medium_route_models | first -%}
-  {%- endif -%}
-  {%- set ns.pairs = ns.pairs + [[_target, _alias]] -%}
-  {%- endif -%}
+  {%- set ns.pairs = ns.pairs + [[_entry.route_group | default(_entry.client_model_id), _alias]] -%}
   {%- endfor -%}
   {%- endfor -%}
   {{ ns.pairs }}
 llm_router_model_group_aliases: >-
   {{ dict(llm_router_alias_pairs | map(attribute=1)
-          | zip(llm_router_alias_pairs | map(attribute=0)
-                | map(attribute='client_model_id')))
-     | combine(llm_router_auto_router_role_aliases) }}
-llm_router_auto_router_role_aliases: >-
-  {%- set ns = namespace(aliases={}) -%}
-  {%- for role in llm_router_role_deployments
-       if role.model == llm_router_auto_router_model -%}
-  {%- set _ = ns.aliases.update({role.role: role.model}) -%}
-  {%- endfor -%}
-  {{ ns.aliases }}
+          | zip(llm_router_alias_pairs | map(attribute=0))) }}
 
 
 # Background health checks send REAL test requests to every deployment — on the

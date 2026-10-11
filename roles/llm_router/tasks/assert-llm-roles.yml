@@ -49,35 +49,40 @@
       Registry matches the role map ({{ llm_roles.models | length }} models,
       {{ llm_roles.roles | length }} roles).
   vars:
+    _llm_roles_selected_ids: >-
+      {{ [llm_roles.roles.best.model, llm_roles.roles.fast.model,
+          llm_roles.roles.small.model, llm_roles.roles.ocr.model]
+         | map('extract', llm_roles.models) | map(attribute='id') | unique | list }}
     _llm_roles_servable_ids: >-
       {{ (llm_roles.hosts.server.resident + llm_roles.hosts.server.swap)
          | map('extract', llm_roles.models) | map(attribute='id')
-         | select('in', _llm_roles_router_model_ids) | unique | list }}
+         | select('in', _llm_roles_selected_ids) | unique | list }}
     _llm_roles_router_model_ids: >-
-      {{ [
-           llm_roles.models[llm_roles.roles.best.model].id,
-           llm_roles.models[llm_roles.roles.fast.model].id,
-           llm_roles.models[llm_roles.roles.small.model].id,
-           llm_roles.models[llm_roles.roles.ocr.model].id
-         ] | unique | list }}
+      {{ _llm_roles_selected_ids }}
     _llm_roles_entries: >-
-      {{ llm_router_large_models | selectattr('servable', 'defined')
-         | selectattr('servable') | list }}
+      {{ llm_router_model_registry | selectattr('servable', 'defined')
+         | selectattr('servable')
+         | selectattr('catalog_model_name', 'defined')
+         | selectattr('catalog_model_name', 'in', _llm_roles_router_model_ids) | list }}
     _llm_roles_parked_entries: >-
       {{ llm_router_model_registry | selectattr('tier', 'equalto', 'local-large')
          | selectattr('enabled', 'equalto', false)
-         | selectattr('standby', 'defined') | selectattr('standby') | list }}
+         | selectattr('standby', 'defined') | selectattr('standby')
+         | selectattr('catalog_model_name', 'defined')
+         | selectattr('catalog_model_name', 'in', _llm_roles_router_model_ids) | list }}
     _llm_roles_known_entries: "{{ _llm_roles_entries + _llm_roles_parked_entries }}"
-    _llm_roles_parked_ids: >-
-      {{ _llm_roles_parked_entries | map(attribute='client_model_id') | list }}
+    _llm_roles_known_ids: >-
+      {{ _llm_roles_known_entries | selectattr('catalog_model_name', 'defined')
+         | map(attribute='catalog_model_name') | unique | list }}
     _llm_roles_unmatched: >-
       {{ _llm_roles_router_model_ids
-         | difference(_llm_roles_known_entries | map(attribute='client_model_id') | list) | list }}
+         | difference(_llm_roles_known_ids) | list }}
     _llm_roles_concurrency_drift: >-
       {%- set ns = namespace(out=[]) -%}
       {%- for m in llm_roles.models.values() if m.id in _llm_roles_router_model_ids -%}
       {%- for e in _llm_roles_known_entries
-            if e.client_model_id == m.id
+            if e.catalog_model_name == m.id
+               and (e.max_parallel_source | default('catalog')) != 'registry'
                and (e.max_parallel_requests | default(none))
                    != llm_router_catalog_concurrency_by_id[m.id] -%}
       {%- set ns.out = ns.out + [m.id] -%}
@@ -85,10 +90,11 @@
       {%- endfor -%}
       {{ ns.out }}
     _llm_roles_servable_extra: >-
-      {{ llm_router_servable_models | difference(_llm_roles_servable_ids) | list }}
+      {{ _llm_roles_entries | map(attribute='catalog_model_name')
+         | difference(_llm_roles_servable_ids) | list }}
     _llm_roles_servable_missing: >-
       {{ _llm_roles_servable_ids
-         | difference(llm_router_servable_models + _llm_roles_parked_ids) | list }}
+         | difference(_llm_roles_known_ids) | list }}
     _llm_roles_dangling: >-
       {{ llm_roles.roles.values() | map(attribute='model') | reject('none')
          | difference(llm_roles.models.keys() | list) | list }}

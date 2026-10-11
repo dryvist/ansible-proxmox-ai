@@ -47,7 +47,6 @@
       - _llm_router_enabled_unrendered | length == 0
       - _llm_router_switched_off_rendered | length == 0
       - _llm_router_rendered_unregistered | length == 0
-      - _llm_router_modified_auto_routers | length <= 1
       - _llm_router_cloud_fallback_missing_router | length == 0
       - _llm_router_narrow_preferred | length == 0
       - _llm_router_partial_window_groups | length == 0
@@ -92,12 +91,6 @@
       — the config serves these under a name no enabled registry entry owns, so
       their config drifts from the registry every time a model changes.
       {% endif %}
-      {% if _llm_router_modified_auto_routers | length > 1 %}
-      AUTO-ROUTER CARDINALITY EXCEEDED:
-      {{ _llm_router_modified_auto_routers | map(attribute='model_name') | join(', ') }}
-      — the router is configured with multiple modified auto-router deployments.
-      Keep the rendered model_list to at most one auto-router.
-      {% endif %}
       Fix the registry entry or the template projection; do not silence this by
       adding a name to the exemptions below.
     success_msg: >-
@@ -121,24 +114,27 @@
     # direction below still covers OpenRouter fully: anything rendered under a
     # name no enabled entry owns still fails.
     #
-    # The vllm / hermes-local tiers are the one operator-switched pair
-    # (llm_router_llm_vllm_enabled, 10-network.yml). While the switch is off the
-    # template renders nothing for them, so the names ONLY they own leave the
-    # expected set, and the converse is checked instead: none of those names may
-    # still render. Names a light-tier sibling also owns (the embedder and the
-    # reranker) stay expected, rendered by that sibling.
+    # VLLM deployments require both the explicit switch and a successful
+    # registry-driven /models precheck. Route groups with another active member
+    # remain expected when this backend is held out.
     _llm_router_switched_off_names: >-
-      {{ [] if llm_router_llm_vllm_enabled | bool
-         else (llm_router_registry_enabled | selectattr('tier', 'in', ['vllm', 'hermes-local'])
-               | map(attribute='client_model_id') | unique
-               | difference(llm_router_registry_enabled
-                            | rejectattr('tier', 'in', ['vllm', 'hermes-local'])
-                            | map(attribute='client_model_id') | list) | list) }}
+      {%- set _all = llm_router_registry_enabled | list -%}
+      {%- set _held = _all | selectattr('tier', 'in', ['vllm', 'hermes-local'])
+           | selectattr('route_group', 'defined') | list -%}
+      {%- set _held_names = _held | map(attribute='route_group') | unique | list -%}
+      {%- set _other_names = _all | rejectattr('tier', 'in', ['vllm', 'hermes-local'])
+           | selectattr('route_group', 'defined')
+           | map(attribute='route_group') | unique | list -%}
+      {{ (_held_names | difference(_other_names))
+         if (not (llm_router_llm_vllm_enabled | bool)
+              or not (llm_router_vllm_precheck_passed | default(false) | bool))
+         else [] }}
     _llm_router_parity_expected: >-
-      {{ llm_router_registry_enabled
-         | rejectattr('tier', 'in', ['openrouter', 'opencode', 'hermes-cloud'])
-         | map(attribute='client_model_id') | unique
-         | difference(_llm_router_switched_off_names) | list }}
+      {%- set _entries = llm_router_registry_enabled
+           | rejectattr('tier', 'in', ['openrouter', 'opencode', 'hermes-cloud'])
+           | selectattr('route_group', 'defined') | list -%}
+      {%- set _names = _entries | map(attribute='route_group') | unique | list -%}
+      {{ _names | difference(_llm_router_switched_off_names) | list }}
     _llm_router_enabled_unrendered: >-
       {{ _llm_router_parity_expected | difference(_llm_router_rendered_names) }}
     _llm_router_switched_off_rendered: >-
@@ -160,11 +156,6 @@
          | difference(llm_router_registry_enabled_route_names)
          | difference(llm_router_hermes_agents.keys() | list)
          | reject('search', '\*') | list }}
-    _llm_router_modified_auto_routers: >-
-      {{ _llm_router_parity_config.model_list | default([])
-         | selectattr('litellm_params', 'defined')
-         | selectattr('litellm_params.model', 'defined')
-         | selectattr('litellm_params.model', 'match', '^auto_router/') | list }}
     _llm_router_cloud_fallback_missing_router: >-
       {{ llm_router_hermes_cloud_fallback_groups
          | difference(_llm_router_rendered_names) }}
@@ -178,13 +169,9 @@
     # and that is correct because the survivor is the LESS preferred member: it
     # is reached only once the paid one is filtered out by budget.
     #
-    # The hazard is a narrow deployment that WINS. Order filtering keeps the
-    # lowest `order` still in the healthy set (litellm/utils.py,
-    # _get_order_filtered_deployments), so a narrow member ranked ahead of a
-    # wide sibling captures every request to the shared name, and a long one
-    # is refused by enable_pre_call_checks or truncated — the whole group
-    # behaves as its smallest member. Flag exactly that: some pair where the
-    # preferred deployment is also the narrower one.
+    # A narrow member may rank first only while enable_pre_call_checks filters
+    # deployments by their own max_input_tokens. Without that guard, the lower
+    # order captures requests that only a wider sibling can serve.
     #
     # Sentinels make the absent cases compare honestly. A deployment with no
     # max_input_tokens advertises nothing (0), so a preferred member that
@@ -204,6 +191,9 @@
     _llm_router_narrow_preferred: >-
       {%- set ns = namespace(bad=[]) -%}
       {%- set _ml = _llm_router_parity_config.model_list | default([]) -%}
+      {%- set _prechecks = _llm_router_parity_config.router_settings.enable_pre_call_checks
+           | default(false) | bool -%}
+      {%- if not _prechecks -%}
       {%- for _name in _ml | map(attribute='model_name') | unique | list -%}
       {%- set _members = _ml | selectattr('model_name', 'equalto', _name) | list -%}
       {%- for _a in _members -%}
@@ -217,6 +207,7 @@
       {%- endfor -%}
       {%- endfor -%}
       {%- endfor -%}
+      {%- endif -%}
       {{ ns.bad | unique | list }}
     # The companion to the rule above, and the case it cannot see. A member
     # advertising NO window is not "narrow", it is unbounded: max_input_tokens

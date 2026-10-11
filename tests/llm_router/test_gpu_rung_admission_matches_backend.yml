@@ -29,7 +29,7 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 40
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
   tasks:
@@ -46,33 +46,44 @@
       ansible.builtin.include_vars:
         file: "{{ playbook_dir }}/../../inventory/group_vars/llm_vllm_group.yml"
 
+    - name: Model an enabled endpoint and its successful pre-render probe
+      ansible.builtin.set_fact:
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+
     - name: Run the serving role's catalog and preset guards
       ansible.builtin.include_role:
         name: llama_cpp
         tasks_from: guards.yml
 
-    - name: The serving parallelism resolves from every GPU model's catalog row
+    - name: The serving process parallelism is an inventory setting
       ansible.builtin.assert:
         quiet: true
         that:
           - _catalog_models | length == llama_cpp_catalog_lookup_names | length
-          - _catalog_models | rejectattr('max_parallel_requests', 'defined') | list | length == 0
-          - >-
-            llama_cpp_parallel | int
-            == (_catalog_models | map(attribute='max_parallel_requests') | map('int') | min)
+          - llama_cpp_parallel | int > 0
+          - llm_router_vllm_models | length == 1
         fail_msg: >-
-          inventory/group_vars/llm_vllm_group.yml must derive its server
-          parallelism from every served model's max_parallel_requests value.
+          inventory/group_vars/llm_vllm_group.yml must declare the single
+          process parallelism that both llama-server and the router consume.
       vars:
         _catalog_models: >-
-          {{ llm_model_catalog_models
-             | selectattr('name', 'in', llama_cpp_catalog_lookup_names) | list }}
+          {%- set ns = namespace(models=[]) -%}
+          {%- for model in llm_model_catalog_models -%}
+          {%- if model.name in llama_cpp_catalog_lookup_names
+                or (model.aliases | default([])
+                    | intersect(llama_cpp_catalog_lookup_names) | length > 0) -%}
+          {%- set ns.models = ns.models + [model] -%}
+          {%- endif -%}
+          {%- endfor -%}
+          {{ ns.models }}
+        _registry_members: "{{ llm_router_vllm_models }}"
 
     - name: Read the serving group's catalog-derived parallelism
       ansible.builtin.set_fact:
         _vllm_parallel: "{{ llama_cpp_parallel | int }}"
 
-    - name: Add the synthetic GPU guest with catalog-derived serving parallelism
+    - name: Add the synthetic GPU guest with inventory serving parallelism
       ansible.builtin.add_host:
         name: serving-fixture
         groups: llm_vllm_group
@@ -87,7 +98,7 @@
       ansible.builtin.set_fact:
         _config: "{{ _rendered_config | from_yaml }}"
 
-    - name: Select the vLLM-tier and hermes-local-4080 deployments
+    - name: Select the 4080 capability deployments
       ansible.builtin.set_fact:
         _gpu_deployments: >-
           {{ _config.model_list
@@ -108,30 +119,29 @@
       ansible.builtin.assert:
         quiet: true
         that:
-          - llm_router_llm_vllm_base_url == 'http://serving-fixture.example.test:10434/v1'
+          - >-
+            llm_router_llm_vllm_base_url
+            == 'http://' ~ groups['llm_vllm_group'][0] ~ '.' ~ llm_router_apex_domain
+            ~ ':' ~ (llm_router_light_port | string) ~ '/v1'
         success_msg: The vLLM endpoint follows its inventory member and the configured API port.
 
-    - name: Every GPU-rung deployment's max_parallel_requests equals its catalog value
+    - name: Every GPU-rung deployment's max_parallel_requests equals the serving process value
       ansible.builtin.assert:
         quiet: true
         that:
           - _mismatched | length == 0
         fail_msg: >-
           {{ _mismatched }} rendered max_parallel_requests that disagrees with
-          the corresponding shared catalog-backed registry entry.
+          the serving process setting.
         success_msg: >-
           All {{ _gpu_deployments | length }} GPU-rung deployment(s) match
-          their catalog values.
+          the serving process setting.
       vars:
         _mismatched: >-
           {%- set ns = namespace(out=[]) -%}
           {%- for rendered in _gpu_deployments -%}
-          {%- set source_matches = (llm_router_vllm_models + llm_router_hermes_local_models)
-                | selectattr('client_model_id', 'equalto', rendered.model_name)
-                | list -%}
-          {%- if source_matches | length != 1
-                or rendered.litellm_params.max_parallel_requests | int
-                != source_matches[0].max_parallel_requests | int -%}
+          {%- if rendered.litellm_params.max_parallel_requests | int
+                != llama_cpp_parallel | int -%}
           {%- set ns.out = ns.out + [rendered.model_name] -%}
           {%- endif -%}
           {%- endfor -%}

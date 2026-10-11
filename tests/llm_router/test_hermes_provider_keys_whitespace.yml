@@ -20,6 +20,13 @@
           ollama_api: 11434
           otel_traces_http: 4318
           redis_default: 6379
+        llm_cpu_scaler:
+          tags:
+            nine_b: fixture-cpu-small
+      containers:
+        cpu-fixture:
+          ip: 127.0.0.1
+          tags: [fixture-cpu-small]
     bao_local_llm_secrets: {}
     ai_default_model: "{{ llm_router_primary_model }}"
     llm_large_serving_host: llm-large
@@ -31,19 +38,12 @@
     ai_stream_read_timeout_seconds: 1800
     ai_router_retry_after_seconds: 40
     ai_ingress_response_header_timeout_seconds: 120
-    hermes_brain_model: hermes-default
+    hermes_brain_model: medium
     hindsight_retain_model: qwen3-4b
     hermes_goal_judge_model: judge
     # Registry-derived expectations, built from llm_router_model_registry
     # directly rather than from the credentialed projection the render uses.
-    _local_groups: >-
-      {%- set ns = namespace(g=[]) -%}
-      {%- for m in llm_router_model_registry | selectattr('enabled')
-                   | selectattr('tier', 'equalto', 'hermes-local') -%}
-      {%- set g = m.fallback_group | default(m.route_group) -%}
-      {%- if g not in ns.g -%}{%- set ns.g = ns.g + [g] -%}{%- endif -%}
-      {%- endfor -%}
-      {{ ns.g }}
+    _local_groups: "{{ llm_router_d1_rungs_by_class['local'] }}"
   tasks:
     - name: Load the role defaults as they ship
       ansible.builtin.include_vars:
@@ -84,16 +84,19 @@
         quiet: true
         that:
           - llm_router_hermes_default_fallback_chain == _local_groups
-          - _local_groups | length == 1
-          - _fallback_chain | length == 0
+          - _local_groups | length > 0
+          - _fallback_chain | length > 0
+          - _fallback_chain | difference(_local_groups) | length == 0
           - _fallback_targets | difference(_local_groups) | length == 0
           # No cloud rung means nowhere wider to escape to for anything
           # ORDINARY -- an empty map would not be "no map" to LiteLLM, it
           # would take the escape branch and fall back to nothing, hiding
-          # the real error. The map is never fully absent any more: `free`
-          # renders its own explicit empty entry here unconditionally, same
-          # fail-fast treatment as embed/ocr.
-          - "_config.router_settings.context_window_fallbacks == [{'free': []}]"
+          # the real error. Retired router names must not be recreated as
+          # empty entries; the current cross-modality and role fail-fast names
+          # are covered by their own contracts.
+          - >-
+            _config.router_settings.context_window_fallbacks
+            | selectattr('free', 'defined') | list | length == 0
           - _cloud_models | length == 0
           - _openrouter_egress | length == 0
           - _opencode_deployments | length == 0
@@ -118,8 +121,9 @@
                           llm_router_opencode_base_url) | list }}
         _fallback_chain: >-
           {{ _config.router_settings.fallbacks
-             | selectattr('hermes-default', 'defined')
-             | map(attribute='hermes-default') | flatten }}
+             | map('dict2items') | flatten
+             | selectattr('key', 'equalto', hermes_brain_model)
+             | map(attribute='value') | first }}
         _fallback_targets: >-
           {{ _config.router_settings.fallbacks
              | map('dict2items') | flatten | map(attribute='value')

@@ -55,7 +55,8 @@ llm_router_context_window_escape_groups: >-
   {%- endif -%}
   {%- endfor -%}
   {%- for target in llm_router_entry_point_names -%}
-  {%- if target and target not in ns.groups -%}
+  {%- if target and target not in ns.groups
+        and target not in llm_router_cross_modality_fail_fast_names -%}
   {%- set ns.groups = ns.groups + [target] -%}
   {%- endif -%}
   {%- endfor -%}
@@ -65,12 +66,27 @@ llm_router_context_window_escape_groups: >-
 # not "no map", and LiteLLM would take the empty branch and fall back to
 # nowhere instead of surfacing the real error. The escape target is every
 # wider-than-primary rung the six-segment chain can hold, not only the
-# hermes-cloud tier: an OpenCode or free-zdrless rung serves an over-long
+# hermes-cloud tier: an OpenCode or free rung serves an over-long
 # request exactly as well as an alibaba/gemini/openrouter one does.
 llm_router_context_window_wider_groups: >-
   {{ (llm_router_hermes_cloud_only_fallback_groups
       + llm_router_opencode_fallback_groups
       + llm_router_openrouter_free_groups) | unique | list }}
+
+# Explicit entry-point overrides can intentionally stop at narrower rungs.
+# CI Luna is wider but only belongs to the private review chain, so include it
+# in the override projection without adding it to shared entry-point escapes.
+llm_router_context_window_override_wider_groups: >-
+  {{ (llm_router_context_window_wider_groups + llm_router_ci_luna_groups)
+     | unique | list }}
+llm_router_context_window_no_wider_entry_points: >-
+  {%- set ns = namespace(names=[]) -%}
+  {%- for _name, _chain in llm_router_entry_point_fallback_overrides.items() -%}
+  {%- if _chain | intersect(llm_router_context_window_override_wider_groups) | length == 0 -%}
+  {%- set ns.names = ns.names + [_name] -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.names }}
 #
 # fast/subagent (55-roles.yml) ADD TWO MORE KEYS here — a DIFFERENT failure
 # mode from the block above. Those two DB-seeded roles' ORDINARY fallback
@@ -84,35 +100,17 @@ llm_router_context_window_wider_groups: >-
 # adding a new one — an oversized subagent call must still reach the
 # >200k-context rung, not fail outright the way ordinary contention now does.
 #
-# Gated on `long`'s underlying entry actually being CREDENTIALED, not merely
-# on it existing in the registry (llm_router_long_context_alias_ids is a
-# registry-only fact and says nothing about whether OPENROUTER_API_KEY
-# resolved) — the same distinction llm_router_context_window_wider_groups
-# above already draws for the provider-scoped map, via each `_credentialed`
-# projection. Missing this the first time round rendered a reference to a
-# model_group_alias entry with no live deployment behind it whenever no
-# OpenRouter credential was seeded at all (caught by
-# test_hermes_provider_keys_whitespace.yml).
-llm_router_long_context_credentialed: >-
-  {%- set _ns = namespace(live=false) -%}
-  {%- for m in llm_router_registry_enabled
-        | selectattr('client_model_id', 'in', llm_router_long_context_alias_ids) -%}
-  {%- set _key = llm_router_resolved_credentials.get(m.credential_env, '') -%}
-  {%- if _key | length > 0 -%}
-  {%- set _ns.live = true -%}
-  {%- endif -%}
-  {%- endfor -%}
-  {{ _ns.live }}
 llm_router_context_window_fallbacks: >-
   {%- set ns = namespace(pairs=[]) -%}
-  {%- if llm_router_context_window_wider_groups | length > 0 -%}
+  {%- if llm_router_context_window_wider_groups | length > 0
+        or llm_router_entry_point_fallback_overrides | length > 0 -%}
   {%- for group in llm_router_context_window_escape_groups -%}
-  {%- set ns.pairs = ns.pairs + [{group: llm_router_context_window_wider_groups}] -%}
-  {%- endfor -%}
+  {%- set _override = llm_router_entry_point_fallback_overrides.get(group) -%}
+  {%- set _wider = (_override | intersect(llm_router_context_window_override_wider_groups))
+        if _override is not none else llm_router_context_window_wider_groups -%}
+  {%- if _wider | length > 0 -%}
+  {%- set ns.pairs = ns.pairs + [{group: _wider}] -%}
   {%- endif -%}
-  {%- if llm_router_long_context_credentialed | bool -%}
-  {%- for _role in llm_router_long_context_escape_roles -%}
-  {%- set ns.pairs = ns.pairs + [{_role: [llm_router_model_group_aliases.long]}] -%}
   {%- endfor -%}
   {%- endif -%}
   {#- Every non-local chain group's OWN ordinary fallback entry
@@ -135,8 +133,7 @@ llm_router_context_window_fallbacks: >-
       ordinary fallbacks (router.py::async_function_with_fallbacks, litellm
       1.98.0), so a role with external rungs but no key here dead-ends. -#}
   {%- set _local = llm_router_local_fallback_groups + [llm_router_primary_model] + llm_router_all_servable_models -%}
-  {%- for d in llm_router_role_deployments
-        if d.role not in llm_router_long_context_escape_roles -%}
+  {%- for d in llm_router_role_deployments -%}
   {%- set _wider = d.fallbacks | reject('in', _local) | list -%}
   {%- if _wider | length > 0 -%}
   {%- set ns.pairs = ns.pairs + [{d.role: _wider}] -%}
