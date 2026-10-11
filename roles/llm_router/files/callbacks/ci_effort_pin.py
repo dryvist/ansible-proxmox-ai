@@ -5,6 +5,8 @@ import logging
 from litellm.integrations.custom_logger import CustomLogger
 
 _CI_KEY_ALIASES = frozenset({"github-actions"})
+_THINKING_OFF_ALIASES = _CI_KEY_ALIASES | {"github-actions-oss"}
+_THINKING_OFF_MODELS = frozenset({"review-local", "review-private", "review-oss"})
 _SERVED_CALL_TYPES = frozenset(
     {
         "completion",
@@ -271,9 +273,24 @@ def pin_request(data, call_type, body):
     return data
 
 
+def default_thinking_off(data, call_type):
+    model = data.get("model")
+    if _ROUTE_FAMILIES.get(call_type) != "chat" or not isinstance(model, str) or model not in _THINKING_OFF_MODELS:
+        return
+    extra = data.setdefault("extra_body", {}) if data.get("extra_body") is None else data["extra_body"]
+    template = extra.get("chat_template_kwargs") if isinstance(extra, dict) else False
+    if template is None:
+        template = extra["chat_template_kwargs"] = {}
+    if isinstance(template, dict):
+        template.setdefault("enable_thinking", False)
+
+
 class CiEffortPin(CustomLogger):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type: str):
-        if getattr(user_api_key_dict, "key_alias", None) not in _CI_KEY_ALIASES:
+        alias = getattr(user_api_key_dict, "key_alias", None)
+        if alias not in _CI_KEY_ALIASES:
+            if alias in _THINKING_OFF_ALIASES:
+                default_thinking_off(data, call_type)
             return data
         if call_type not in _SERVED_CALL_TYPES:
             return "The CI key serves chat, Responses and Anthropic messages requests only."
@@ -287,7 +304,9 @@ class CiEffortPin(CustomLogger):
         for model in (body.get("model"), data.get("model")):
             if model is not None and (not isinstance(model, str) or "," in model):
                 return "The CI key must select one model per request."
-        return pin_request(data, call_type, body)
+        pinned = pin_request(data, call_type, body)
+        default_thinking_off(pinned, call_type)
+        return pinned
 
 
 proxy_handler_instance = CiEffortPin()
