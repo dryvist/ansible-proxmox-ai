@@ -1,30 +1,6 @@
-"""Keep the CI review key on its three model routes at the effort each deployment declares.
+"""Pin the CI key to fields needed by the served client routes."""
 
-Registered from litellm_settings.callbacks: "ci_effort_pin.proxy_handler_instance"
-
-LiteLLM treats a request-level reasoning_effort as the portable override of a
-deployment's own effort, so a request made with the CI key could change the
-effort of the CI-only Luna deployment that review-private falls back to. For
-the CI key this callback:
-
-- serves chat completions, the Responses API with its compact pass (Codex
-  jobs) and the Anthropic messages route (Claude jobs) and rejects every other
-  call type, notably the Responses WebSocket, whose frames carry their own
-  model and reasoning;
-- drops every effort carrier (reasoning_effort, thinking, reasoning,
-  output_config), additional_drop_params (which can remove the deployment's own
-  effort), client-supplied fallback lists (whose dict entries carry extra
-  request fields), router_settings_override (which the router copies
-  fallback lists out of when the request has none), custom_llm_provider
-  (which would point another provider's login at a local rung) and response_id
-  (an unsigned id that makes the compact route pick any deployment);
-- keeps only chat_template_kwargs from extra_body (the local rungs' thinking
-  toggle), so a Responses body cannot name a replacement model there.
-
-Every other key is untouched. The model is not rewritten here: the key's model
-allow-list already bounds which groups, and so which deployments, the key can
-name, and a repo test forbids a callback that assigns `model`.
-"""
+import logging
 
 from litellm.integrations.custom_logger import CustomLogger
 
@@ -41,32 +17,255 @@ _SERVED_CALL_TYPES = frozenset(
         "aanthropic_messages",
     }
 )
-_DROPPED_FIELDS = (
-    "reasoning_effort",
-    "thinking",
-    "reasoning",
-    "output_config",
-    "additional_drop_params",
-    "fallbacks",
-    "context_window_fallbacks",
-    "content_policy_fallbacks",
-    "router_settings_override",
-    "_router_weights",
-    "custom_llm_provider",
-    "response_id",
+_ROUTE_FAMILIES = {
+    "completion": "chat",
+    "acompletion": "chat",
+    "responses": "responses",
+    "aresponses": "responses",
+    "compact_responses": "responses",
+    "acompact_responses": "responses",
+    "anthropic_messages": "anthropic",
+    "aanthropic_messages": "anthropic",
+}
+_ALLOWED_FIELDS = {
+    "chat": frozenset(
+        {
+            "model",
+            "messages",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "max_completion_tokens",
+            "seed",
+            "user",
+            "stream",
+            "stream_options",
+            "response_format",
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+            "stop",
+            "extra_body",
+        }
+    ),
+    "responses": frozenset(
+        {
+            "model",
+            "input",
+            "instructions",
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+            "include",
+            "store",
+            "stream",
+            "prompt_cache_key",
+            "client_metadata",
+            "max_output_tokens",
+            "temperature",
+            "user",
+        }
+    ),
+    "anthropic": frozenset(
+        {
+            "model",
+            "messages",
+            "system",
+            "max_tokens",
+            "stream",
+            "tools",
+            "tool_choice",
+            "temperature",
+            "top_p",
+            "top_k",
+            "stop_sequences",
+            "context_management",
+            "safeguards",
+        }
+    ),
+}
+_ALWAYS_KEPT = frozenset(
+    {"metadata", "litellm_metadata", "litellm_trace_id", "litellm_session_id", "drop_params"}
 )
+_KNOWN_CARRIERS = frozenset(
+    {
+        "reasoning_effort",
+        "thinking",
+        "reasoning",
+        "output_config",
+        "previous_response_id",
+        "response_id",
+        "api_key",
+        "fallbacks",
+        "context_window_fallbacks",
+        "content_policy_fallbacks",
+        "router_settings_override",
+        "priority",
+        "prompt_id",
+        "allowed_model_region",
+        "cache",
+        "caching",
+        "ttl",
+        "num_retries",
+        "timeout",
+        "extra_headers",
+        "headers",
+        "provider_specific_header",
+        "disable_fallbacks",
+        "tags",
+        "service_tier",
+        "text",
+    }
+)
+_CLIENT_TOOL_TYPES = frozenset({"function", "custom", "namespace"})
 _EXTRA_BODY_KEPT = frozenset({"chat_template_kwargs"})
+_PROVIDER_HEADERS = frozenset({"anthropic-version", "anthropic-beta"})
+_LOG = logging.getLogger("LiteLLM Proxy")
+_INVALID_SNAPSHOT = "The CI key request body snapshot is missing or invalid."
 
 
-def pin_request(data):
-    """Return the request body without effort carriers, fallback lists or foreign extra_body keys."""
-    for field in _DROPPED_FIELDS:
-        data.pop(field, None)
-    extra_body = data.pop("extra_body", None)
-    if isinstance(extra_body, dict):
-        kept = {k: v for k, v in extra_body.items() if k in _EXTRA_BODY_KEPT}
+def _inherited_tags(metadata):
+    inherited = metadata.get("inherited_tags", [])
+    return inherited if isinstance(inherited, (list, tuple)) else []
+
+
+def _pin_tags(metadata):
+    inherited = _inherited_tags(metadata)
+    for field in ("tags", "caller_tags"):
+        tags = metadata.get(field)
+        if isinstance(tags, (list, tuple)):
+            # Keep only tags inherited from proxy key/team policy; client tags are routing hints.
+            kept = [tag for tag in tags if tag in inherited]
+            metadata[field] = kept if field == "tags" or isinstance(tags, list) else tuple(kept)
+    requester = metadata.get("requester_metadata")
+    if isinstance(requester, dict):
+        requester.pop("tags", None)
+
+
+def _pin_metadata(data, body, family):
+    metadata = data.get("metadata")
+    if "metadata" not in body or metadata is not body["metadata"] or not isinstance(metadata, dict):
+        return
+    if family == "anthropic":
+        for key in list(metadata):
+            if key != "user_id":
+                metadata.pop(key)
+        return
+    if family == "responses":
+        data.pop("metadata", None)
+        return
+
+    had_tags = isinstance(metadata.get("tags"), (list, tuple))
+    kept_tags = [tag for tag in metadata["tags"] if tag in _inherited_tags(metadata)] if had_tags else None
+    client = metadata.get("requester_metadata")
+    if isinstance(client, dict):
+        for key, value in client.items():
+            if key not in {"headers", "user_id"} and metadata.get(key) == value:
+                metadata.pop(key, None)
+    _pin_tags(metadata)
+    if had_tags:
+        metadata["tags"] = kept_tags
+
+
+def _sanitize_client_fields(data, body, allowed):
+    if "extra_body" in body:
+        extra_body = data.get("extra_body")
+        if isinstance(extra_body, dict):
+            kept = {key: value for key, value in extra_body.items() if key in _EXTRA_BODY_KEPT}
+            template = kept.get("chat_template_kwargs")
+            if isinstance(template, dict):
+                template = {
+                    key: value
+                    for key, value in template.items()
+                    if key == "enable_thinking" and isinstance(value, bool)
+                }
+                if template:
+                    kept["chat_template_kwargs"] = template
+                else:
+                    kept.pop("chat_template_kwargs", None)
+            else:
+                kept.pop("chat_template_kwargs", None)
+            if kept:
+                data["extra_body"] = kept
+            else:
+                data.pop("extra_body", None)
+        else:
+            data.pop("extra_body", None)
+    if "stream_options" in body and "stream_options" in allowed:
+        options = data.get("stream_options")
+        kept = (
+            {"include_usage": options["include_usage"]}
+            if isinstance(options, dict) and "include_usage" in options
+            else {}
+        )
         if kept:
-            data["extra_body"] = kept
+            data["stream_options"] = kept
+        else:
+            data.pop("stream_options", None)
+    if "tools" in allowed and "tools" in body and data.get("tools") is not None:
+        tools = data["tools"]
+        if isinstance(tools, list):
+            # Keep only client-defined tool types and untyped tools.
+            data["tools"] = [
+                tool
+                for tool in tools
+                if not isinstance(tool, dict)
+                or "type" not in tool
+                or (isinstance(tool["type"], str) and tool["type"] in _CLIENT_TOOL_TYPES)
+            ]
+        else:
+            data.pop("tools", None)
+
+
+def _sanitize_transport_fields(data, request):
+    names = request.get("credential_fields")
+    if not isinstance(names, (tuple, list)):
+        names = ("api_key", "headers", "provider_specific_header")
+    for name in names:
+        if name in {"api_key", "headers"}:
+            data.pop(name, None)
+    value = data.get("provider_specific_header")
+    if value is None:
+        return
+    entries = value if isinstance(value, (tuple, list)) else [value]
+    cleaned = []
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("extra_headers"), dict):
+            data.pop("provider_specific_header", None)
+            return
+        headers = {
+            k: v for k, v in entry["extra_headers"].items() if isinstance(k, str) and k.lower() in _PROVIDER_HEADERS
+        }
+        if headers:
+            cleaned.append({**entry, "extra_headers": headers})
+    if cleaned:
+        data["provider_specific_header"] = cleaned if isinstance(value, (tuple, list)) else cleaned[0]
+    else:
+        data.pop("provider_specific_header", None)
+
+
+def pin_request(data, call_type, body):
+    family = _ROUTE_FAMILIES[call_type]
+    allowed = _ALLOWED_FIELDS[family] | _ALWAYS_KEPT
+    unknown = []
+    for key in body:
+        if key not in allowed and key != "extra_body" and data.get(key) is body[key]:
+            data.pop(key, None)
+            if key not in _KNOWN_CARRIERS:
+                unknown.append(key)
+    if unknown:
+        _LOG.warning(
+            "CI key alias %s call type %s dropped unknown request keys: %s",
+            "github-actions",
+            call_type,
+            ", ".join(sorted(unknown)),
+        )
+    _sanitize_client_fields(data, body, _ALLOWED_FIELDS[family])
+    _pin_metadata(data, body, family)
+    for key in ("metadata", "litellm_metadata"):
+        value = data.get(key)
+        if isinstance(value, dict):
+            _pin_tags(value)
     return data
 
 
@@ -75,9 +274,17 @@ class CiEffortPin(CustomLogger):
         if getattr(user_api_key_dict, "key_alias", None) not in _CI_KEY_ALIASES:
             return data
         if call_type not in _SERVED_CALL_TYPES:
-            # A returned string is rejected as a 400 by the proxy.
             return "The CI key serves chat, Responses and Anthropic messages requests only."
-        return pin_request(data)
+        request = data.get("proxy_server_request")
+        body = request.get("body") if isinstance(request, dict) else None
+        if not isinstance(body, dict):
+            return _INVALID_SNAPSHOT
+        _sanitize_transport_fields(data, request)
+        model = body.get("model")
+        live_model = data.get("model")
+        if (isinstance(model, str) and "," in model) or (isinstance(live_model, str) and "," in live_model):
+            return "The CI key must select one model per request."
+        return pin_request(data, call_type, body)
 
 
 proxy_handler_instance = CiEffortPin()
