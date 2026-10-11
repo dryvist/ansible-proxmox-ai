@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import re
+import subprocess
 from pathlib import Path
 
 import jinja2
@@ -94,13 +95,47 @@ def test_userspace_install_is_userspace_only_and_pinned():
     assert installs[0]["name"] == (
         "nvidia-driver-pinning-{{ nvidia_gpu_guest_nvidia_userspace_version }}"
     )
-    assert installs[1]["name"] == [
-        "nvidia-vulkan-icd={{ nvidia_gpu_guest_nvidia_userspace_version }}-1",
-        "libcuda1={{ nvidia_gpu_guest_nvidia_userspace_version }}-1",
-        "nvidia-driver-cuda={{ nvidia_gpu_guest_nvidia_userspace_version }}-*",
+    environment = jinja2.Environment()
+    environment.filters["regex_replace"] = lambda value, pattern, repl: re.sub(pattern, repl, value)
+    rendered = environment.from_string(installs[1]["name"]).render(
+        nvidia_gpu_guest_nvidia_userspace_version="595.91.07",
+        nvidia_gpu_guest_stale_nvidia_packages={"stdout_lines": ["nvidia-driver", "libcuda1"]},
+    )
+    assert yaml.safe_load(rendered) == [
+        "nvidia-vulkan-icd=595.91.07-*",
+        "libcuda1=595.91.07-*",
+        "nvidia-driver-cuda=595.91.07-*",
+        "nvidia-driver=595.91.07-*",
     ]
     assert installs[1]["install_recommends"] is False
     assert installs[1]["allow_downgrade"] is True
+
+
+def test_stale_package_scan_selects_every_installed_package_at_another_version(tmp_path):
+    # Shape of a guest left with a newer userspace than the host module.
+    fixture = tmp_path / "dpkg.txt"
+    fixture.write_text(
+        "ii nvidia-driver 610.57.04-1\n"
+        "ii nvidia-kernel-support 610.57.04-1\n"
+        "ii libnvidia-ml1 610.57.04-1\n"
+        "ii libcuda1 595.91.07-1\n"
+        "rc nvidia-powerd 610.57.04-1\n"
+        "ii nvidia-container-toolkit 1.17.8-1\n"
+        "ii libvulkan1 1.4.309.0-1\n"
+        "ii curl 8.14.1-2\n",
+        encoding="utf-8",
+    )
+    scan = next(
+        task for task in _load(USERSPACE_TASKS)
+        if task.get("name") == "List installed NVIDIA packages at another driver version"
+    )
+    command = jinja2.Environment().from_string(scan["ansible.builtin.shell"]).render(
+        nvidia_gpu_guest_nvidia_userspace_version="595.91.07"
+    )
+    command = re.sub(r"dpkg-query -W -f='[^']*'", f"cat {fixture}", command)
+    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=True)
+
+    assert result.stdout.split() == ["nvidia-driver", "nvidia-kernel-support", "libnvidia-ml1"]
 
 
 def test_shared_gpu_role_keeps_userspace_and_cuda_in_common_setup():

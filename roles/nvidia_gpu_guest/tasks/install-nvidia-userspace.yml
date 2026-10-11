@@ -57,12 +57,30 @@
     update_cache: true
   environment: "{{ llamacpp_release_proxy_environment }}"
 
+# Packages from one driver release (N.N.N with a 3-digit major) move files
+# between each other, so a partial downgrade fails in dpkg. Every installed
+# package at another driver version goes into the same transaction as the
+# required set.
+- name: List installed NVIDIA packages at another driver version
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    dpkg-query -W -f='${db:Status-Abbrev} ${Package} ${Version}\n'
+    | awk -v want='{{ nvidia_gpu_guest_nvidia_userspace_version }}-'
+    '$1 == "ii" && $2 ~ /nvidia|libcuda|libnv/
+    && $3 ~ /^[0-9][0-9][0-9][.][0-9]+[.][0-9]+-/ && index($3, want) != 1 {print $2}'
+  args:
+    executable: /bin/bash
+  register: nvidia_gpu_guest_stale_nvidia_packages
+  changed_when: false
+
 - name: Install CUDA, nvidia-smi, and Vulkan userspace at the host version
   ansible.builtin.apt:
-    name:
-      - "nvidia-vulkan-icd={{ nvidia_gpu_guest_nvidia_userspace_version }}-1"
-      - "libcuda1={{ nvidia_gpu_guest_nvidia_userspace_version }}-1"
-      - "nvidia-driver-cuda={{ nvidia_gpu_guest_nvidia_userspace_version }}-*"
+    name: >-
+      {{ (['nvidia-vulkan-icd', 'libcuda1', 'nvidia-driver-cuda']
+          + nvidia_gpu_guest_stale_nvidia_packages.stdout_lines)
+         | unique
+         | map('regex_replace', '$', '=' ~ nvidia_gpu_guest_nvidia_userspace_version ~ '-*')
+         | list }}
     state: present
     install_recommends: false
     allow_downgrade: true
