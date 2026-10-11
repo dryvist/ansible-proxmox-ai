@@ -48,11 +48,10 @@ scripts/run-ansible.sh playbooks/llm-serving-gpu-engines.yml -i inventory/hosts.
 
 ## What it does
 
-- Installs the NVIDIA userspace (`libcuda1`, `nvidia-driver-cuda` for `nvidia-smi`)
-  from the vendor apt repository at `llm_gpu_serving_nvidia_userspace_version`, with
-  the vendor's version-pinning package and no kernel module or DKMS. The version
-  must equal the host driver exactly. The step is skipped when `nvidia-smi`
-  already reports that version. Debian guests only.
+- Installs NVIDIA userspace (`nvidia-vulkan-icd`, `libcuda1`, and
+  `nvidia-driver-cuda` for `nvidia-smi`) from the vendor apt repository, pinned
+  to the host module version read from `/proc/driver/nvidia/version`. No kernel
+  module or DKMS is installed. Debian guests only.
 - Installs a Renovate-pinned uv binary and creates a dedicated Python virtual environment.
 - Installs the Renovate-pinned `hf` CLI with uv under the supplied model cache; uv's package, Python, and tool caches use that same directory.
 - Links `vllm` and `hf` into `/usr/local/bin` so campaign preflights find them without a venv path.
@@ -142,7 +141,6 @@ profile's floor; `tasks/assert-profile-floors.yml` fails the role otherwise.
 | `llm_profiles` | Per-profile engine and serving settings |
 | `llm_gpu_serving_model_cache_mount_path` | Writable local model-cache directory supplied for the target |
 | `llm_gpu_serving_model_origin_mount_path` | Optional shared origin mount; when empty, models download straight into the local cache |
-| `llm_gpu_serving_nvidia_userspace_version` | Guest NVIDIA userspace version; equals the host driver version |
 | `llm_gpu_serving_uv_version` | Pinned uv installer version, tracked by Renovate |
 | `llm_gpu_serving_huggingface_hub_version` | Pinned Hugging Face CLI package version, tracked by Renovate |
 | `llm_gpu_serving_vllm_version` | Pinned vLLM package version, tracked by Renovate |
