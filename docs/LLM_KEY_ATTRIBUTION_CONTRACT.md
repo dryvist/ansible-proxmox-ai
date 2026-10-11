@@ -60,10 +60,10 @@ value — with one caveat noted where checked:
 | `hindsight` | free only | local | `zdr: true` by construction — enforced structurally, not tagged |
 | `prometheus-scrape` | none (metrics only) | n/a | scrape auth, not a chat consumer |
 | `zammad` | cheap | local | AI provider integration |
-| `github-actions` | review-private, review-local | local | CI, private repos |
+| `github-actions` | small, medium, large, review-private, review-local, CI Luna | local | CI, private repos |
 | `github-actions-oss` | review-oss | local | CI, public repos |
 | `opencode` \| `raycast` \| `codex` \| `cursor` \| `claude-code` | full | subscription | one key per **app**, shared across every host that runs it |
-| `litellm-local` | fast, fast-gpu | local | one workstation's local proxy |
+| `litellm-local` | small, medium, large | local | one workstation's local proxy |
 | `hermes-<profile>` | per-profile | subscription (`default`) / local (named) | one key per Hermes operating profile |
 
 **Confirmed shared-across-device today:** `codex`, `cursor`, `raycast`,

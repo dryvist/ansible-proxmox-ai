@@ -159,7 +159,7 @@ converge never overwrites an edit made in the UI — `rebuild` (below) is the
 exception.
 
 Full detail — the two rules a seeded fallback rung must satisfy, the
-`fast`/`subagent`/`fast-gpu` roles and how each is scoped, and how to swap a
+seeded `judge` and `recorder` roles and how each is scoped, and how to swap a
 role by hand or through the Admin UI — moved to
 [`docs/LLM_ROUTER_ROLES.md`](../../docs/LLM_ROUTER_ROLES.md).
 
