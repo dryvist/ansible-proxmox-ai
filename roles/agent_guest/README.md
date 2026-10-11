@@ -83,7 +83,7 @@ can express.
 Regenerate after upstream changes:
 
 ```sh
-nix eval github:dryvist/nix-ai#lib.profiles.autonomous.residualDeny --json
+nix eval "github:dryvist/nix-ai?ref=vN#lib.profiles.autonomous.residualDeny" --json
 ```
 
 The mirror is the **one source list**, not nix-ai's five rendered files: the
