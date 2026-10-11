@@ -120,16 +120,9 @@ llm_router_chain_groups_with_own_tail: >-
   {{ llm_router_hermes_own_fallback_by_group | dict2items
      | selectattr('value') | map(attribute='key') | list }}
 
-# REVIEW ROLES — `review-oss` starts local and overflows to the Z.ai
-# pair (33-zai.yml) — still no free rung (see above) — and, if the pair
-# itself fails (both members busy, or the paid member's plan/quota is
-# exhausted), on to the same paid terminal every other public chain ends
-# in. That escape is a single conditional, not a hand-appended list: it
-# fires only when the chain's own last rung is not already one of
-# llm_router_external_terminal_rungs, so a chain that already ends in a
-# subscription/paid rung (subagent/fast/judge/cheap above) is untouched,
-# and review-oss stops escaping the moment its own terminal changes to
-# something already covered.
+# REVIEW ROLES — `review-oss` starts local and continues through the paid
+# terminal rungs. The terminal check prevents appending a second copy when
+# the local head already ends on a terminal rung.
 # `review-private` may leave the estate only for the CI Luna subscription
 # group. It is credential-gated and excluded from shared fallback ladders.
 # The local rungs both review chains start with, behind the role's own first
@@ -141,10 +134,9 @@ _llm_router_review_local_head: >-
      if llm_router_vllm_medium_route_enabled | bool
      else [llm_router_primary_model] }}
 _llm_router_review_oss_chain: >-
-  {%- set _chain = _llm_router_review_local_head + llm_router_zai_groups -%}
+  {%- set _chain = _llm_router_review_local_head -%}
   {{ _chain + (llm_router_external_paid_rungs
-               if (_chain | length > 1
-                   and _chain[-1] not in llm_router_external_terminal_rungs)
+               if _chain[-1] not in llm_router_external_terminal_rungs
                else []) }}
 _llm_router_review_private_chain: >-
   {{ _llm_router_review_local_head + llm_router_ci_luna_groups }}

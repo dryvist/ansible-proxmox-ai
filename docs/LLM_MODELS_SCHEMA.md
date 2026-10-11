@@ -37,7 +37,7 @@ Required on every entry:
                     a per-node login file credentials it).
   tier              `local-large` | `light` | `cpu-moe` | `cpu-9b` | `vllm` |
                     `opencode` | `hermes-router` | `hermes-cloud` |
-                    `openrouter` | `zai`. Selects the deployment shape; light entries
+                    `openrouter`. Selects the deployment shape; light entries
                     become two same-name deployments (GPU + CPU standby);
                     cpu-moe and cpu-9b each become two same-name deployments
                       against the CPU pool instances (warm + scaled).
