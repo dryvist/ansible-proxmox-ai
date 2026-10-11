@@ -120,6 +120,8 @@ _KNOWN_CARRIERS = frozenset(
 _CLIENT_TOOL_TYPES = frozenset({"function", "custom", "namespace"})
 _EXTRA_BODY_KEPT = frozenset({"chat_template_kwargs"})
 _PROVIDER_HEADERS = frozenset({"anthropic-version", "anthropic-beta"})
+# LiteLLM copies these from x-litellm-* request headers after the body snapshot, so the snapshot never lists them.
+_HEADER_CARRIERS = ("num_retries", "timeout", "stream_timeout", "keepalive_seconds", "client_side_timeout")
 _LOG = logging.getLogger("LiteLLM Proxy")
 _INVALID_SNAPSHOT = "The CI key request body snapshot is missing or invalid."
 
@@ -280,10 +282,11 @@ class CiEffortPin(CustomLogger):
         if not isinstance(body, dict):
             return _INVALID_SNAPSHOT
         _sanitize_transport_fields(data, request)
-        model = body.get("model")
-        live_model = data.get("model")
-        if (isinstance(model, str) and "," in model) or (isinstance(live_model, str) and "," in live_model):
-            return "The CI key must select one model per request."
+        for name in _HEADER_CARRIERS:
+            data.pop(name, None)
+        for model in (body.get("model"), data.get("model")):
+            if model is not None and (not isinstance(model, str) or "," in model):
+                return "The CI key must select one model per request."
         return pin_request(data, call_type, body)
 
 
