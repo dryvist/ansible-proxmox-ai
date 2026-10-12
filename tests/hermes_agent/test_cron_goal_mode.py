@@ -17,7 +17,6 @@ from typing import Any
 
 import pytest
 import yaml
-from jinja2 import Environment
 
 from conftest import (
     KANBAN_GOAL_FINALIZE_TEMPLATE,
@@ -29,6 +28,7 @@ from conftest import (
     _task,
     role_defaults,
 )
+from _role_files import render_hermes_runtime_unit
 
 
 REPLACE_TASK = "Route the cron conversation through the goal-mode runner"
@@ -239,20 +239,7 @@ def test_allowlist_default_is_exactly_the_splunk_triage_job() -> None:
 
 
 def test_gateway_unit_exports_the_allowlist_and_budget() -> None:
-    template = (ROLE_ROOT / "templates" / "hermes-gateway.service.j2").read_text()
-    env = Environment(autoescape=False)  # noqa: S701
-    # `comment` is an ansible filter, absent from bare Jinja2. Stubbed rather
-    # than stripped from the template, so the unit renders as it really is.
-    env.filters["comment"] = lambda text, *a, **kw: "\n".join(
-        f"# {line}" for line in str(text).splitlines()
-    )
-    rendered = env.from_string(template).render(
-        hermes_agent_user="hermes",
-        hermes_agent_hermes_home="/home/hermes/.hermes",
-        hermes_agent_gateway_cmd="/usr/bin/true",
-        hermes_agent_cron_goal_mode_jobs=["splunk-triage"],
-        hermes_agent_kanban_goal_max_turns=8,
-    )
+    rendered = render_hermes_runtime_unit(ROLE_ROOT, "hermes-gateway.service.j2")
     assert "Environment=HERMES_CRON_GOAL_JOBS=splunk-triage" in rendered
     assert "Environment=HERMES_CRON_GOAL_MAX_TURNS=8" in rendered
 
