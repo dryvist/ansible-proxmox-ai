@@ -2,6 +2,8 @@
 # Managed LiteLLM proxy config. Models derive from llm-models.yml; credentials
 # resolve only through the systemd EnvironmentFile.
 {% include 'model-list.yaml.j2' %}
+{# One evaluation: each lookup of the variable would rebuild the whole map. #}
+{% set _fallback_map = llm_router_fallback_map %}
 router_settings:
   routing_strategy: {{ llm_router_routing_strategy }}
   enable_tag_filtering: {{ llm_router_enable_tag_filtering | bool | to_json }}
@@ -36,23 +38,23 @@ router_settings:
   # duplicate local attempt is advertised.
   fallbacks:
 {% for _group in llm_router_hermes_default_fallback_chain %}
-    - {{ _group }}: {{ llm_router_hermes_own_fallback_by_group[_group] | to_json }}
+    - {{ _group }}: {{ _fallback_map[_group] | to_json }}
 {% endfor %}
   # Embedding and OCR have no same-modality fallback chain.
 {% for _name in llm_router_cross_modality_fail_fast_names %}
-    - {{ _name | to_json }}: []
+    - {{ _name | to_json }}: {{ _fallback_map[_name] | to_json }}
 {% endfor %}
   # Local-only roles: no fallbacks, no default ladder — fail fast rather
   # than ever reach a hosted deployment.
 {% for _name in llm_router_local_only_fail_fast_names %}
-    - {{ _name | to_json }}: []
+    - {{ _name | to_json }}: {{ _fallback_map[_name] | to_json }}
 {% endfor %}
   # Local-only roles that keep a local rung (the GPU route first, then the
   # routine model): their whole chain is local, so it is written out here as
   # well as seeded, and no hosted ladder can apply even if the seeded record is
   # absent.
 {% for _name, _chain in llm_router_local_only_chains.items() %}
-    - {{ _name | to_json }}: {{ _chain | to_json }}
+    - {{ _name | to_json }}: {{ _fallback_map[_name] | to_json }}
 {% endfor %}
 {% if llm_router_context_window_wider_groups | length > 0
       or llm_router_entry_point_fallback_overrides | length > 0 %}
@@ -71,15 +73,7 @@ router_settings:
 {% if _name not in llm_router_hermes_default_fallback_chain
       and _name not in llm_router_cross_modality_fail_fast_names
       and _name not in llm_router_local_only_fail_fast_names %}
-{% set _target = llm_router_model_group_aliases.get(_name, _name) %}
-{% set _chain = llm_router_entry_point_fallback_overrides.get(
-  _name, llm_router_hermes_default_fallback_chain
-    | reject('equalto', _name) | reject('equalto', _target) | list) %}
-{% if _name in llm_router_zdr_entry_point_names
-      and _name not in llm_router_entry_point_fallback_overrides %}
-{% set _chain = _chain | reject('in', llm_router_zdr_unasserted_terminal_rungs) | list %}
-{% endif %}
-    - {{ _name | to_json }}: {{ _chain | to_json }}
+    - {{ _name | to_json }}: {{ _fallback_map[_name] | to_json }}
 {% endif %}
 {% endfor %}
 {% endif %}

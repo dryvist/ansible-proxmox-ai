@@ -69,6 +69,18 @@
           {{ (openbao_secrets_domains | selectattr('name', 'equalto', 'apps') | first).paths
              | select('mapping') | list }}
 
+    - name: Model a node with its ChatGPT login present
+      ansible.builtin.set_fact:
+        llm_router_chatgpt_auth_file_present: true
+
+    # Resolved once: every variable is re-evaluated on each reference, and the
+    # settings entry builds the whole fallback map.
+    - name: Resolve the CI keys and their router settings once
+      ansible.builtin.set_fact:
+        _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
+        _gha_oss: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
+        _ci_settings: "{{ llm_router_review_key_router_settings }}"
+
     - name: The CI keys use capabilities and grant only their declared cloud groups
       ansible.builtin.assert:
         quiet: true
@@ -78,17 +90,16 @@
           - llm_router_review_aliases.local in _gha.models
           - llm_router_review_aliases.oss not in _gha.models
           - llm_router_ci_luna_groups | difference(_gha.models) | length == 0
+          - _gha.router_settings_ref == 'private'
+          - _ci_settings.private.model_group_alias == llm_router_model_group_aliases
           - llm_router_review_aliases.oss in _gha_oss.models
           - llm_router_review_aliases.private not in _gha_oss.models
           - llm_router_review_aliases.local not in _gha_oss.models
           - llm_router_ci_luna_groups | intersect(_gha_oss.models) | length == 0
-      vars:
-        _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
-        _gha_oss: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions-oss') | first }}"
-
-    - name: Model a node with its ChatGPT login present
-      ansible.builtin.set_fact:
-        llm_router_chatgpt_auth_file_present: true
+          - _gha_oss.router_settings_ref == 'oss'
+          - _ci_settings.oss.model_group_alias == llm_router_model_group_aliases
+          - llm_router_review_private_chain | intersect(llm_router_external_paid_rungs) | length == 0
+          - llm_router_review_oss_chain | intersect(llm_router_external_paid_rungs) | length > 0
 
     - name: Render the credentialed model and fallback graph
       ansible.builtin.set_fact:
@@ -102,6 +113,37 @@
              | zip(_credentialed_config.router_settings.fallbacks
                | map('dict2items') | flatten | map(attribute='value'))) }}
 
+    - name: Map each CI key's effective fallback chains
+      ansible.builtin.set_fact:
+        _gha_fallback_map: >-
+          {{ dict(_ci_settings.private.fallbacks
+             | map('dict2items') | flatten | map(attribute='key')
+             | zip(_ci_settings.private.fallbacks
+               | map('dict2items') | flatten | map(attribute='value'))) }}
+        _gha_oss_fallback_map: >-
+          {{ dict(_ci_settings.oss.fallbacks
+             | map('dict2items') | flatten | map(attribute='key')
+             | zip(_ci_settings.oss.fallbacks
+               | map('dict2items') | flatten | map(attribute='value'))) }}
+
+    # The global medium chain starts with the local rungs and never names the CI
+    # subscription groups; each CI key's own list swaps in its tail.
+    - name: Each CI key carries its own medium tail and the global one names no CI group
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _global_medium[:llm_router_review_local_chain | length] == llm_router_review_local_chain
+          - _global_medium | intersect(llm_router_ci_luna_groups) | length == 0
+          - _gha_fallback_map[llm_router_primary_model] == llm_router_review_private_chain
+          - _gha_oss_fallback_map[llm_router_primary_model] == llm_router_review_oss_chain
+          - _gha_fallback_map[llm_router_primary_model] != _global_medium
+          - _gha_oss_fallback_map[llm_router_primary_model] != _global_medium
+        fail_msg: >-
+          global={{ _global_medium }} private={{ _gha_fallback_map[llm_router_primary_model] }}
+          public={{ _gha_oss_fallback_map[llm_router_primary_model] }}
+      vars:
+        _global_medium: "{{ _credentialed_fallback_map[llm_router_primary_model] }}"
+
     - name: Resolve the private CI key's fallback reachability through its allowlist
       ansible.builtin.set_fact:
         _gha_paid_reachable: >-
@@ -111,7 +153,7 @@
           {%- for _ in range(0, key.models | length + 1) -%}
           {%- set _next = namespace(models=ns.reachable) -%}
           {%- for name in ns.reachable -%}
-          {%- set targets = _credentialed_fallback_map.get(
+          {%- set targets = _gha_fallback_map.get(
                name, _credentialed_config.router_settings.default_fallbacks | default([])) -%}
           {%- if targets is string -%}{%- set targets = [targets] -%}{%- endif -%}
           {%- if name in llm_router_model_group_aliases -%}
@@ -141,8 +183,6 @@
         fail_msg: >-
           reachable paid groups={{ _gha_paid_reachable
           | intersect(llm_router_external_paid_rungs) }}
-      vars:
-        _gha: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'github-actions') | first }}"
 
     # Whitespace, never absent: an absent field falls through to the RUNNER's
     # environment (test_hermes_provider_keys.yml has the same fixture rule).

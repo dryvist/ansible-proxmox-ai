@@ -60,8 +60,8 @@ def test_zdr_true_registry_entries_name_the_provider_source() -> None:
                 )
 
 
-def test_virtual_key_tags_are_create_only() -> None:
-    """Routing tags seed on create; the required sensitivity class also reconciles."""
+def test_virtual_key_settings_reconcile_only_when_referenced() -> None:
+    """Key settings seed on create and reconcile only for keys naming a settings entry."""
     seed_file = REPO_ROOT / "roles/llm_router/tasks/seed-keys.yml"
     tasks = yaml.load(seed_file.read_text(), Loader=_Permissive)
     by_name = {task.get("name"): task for task in tasks}
@@ -78,7 +78,9 @@ def test_virtual_key_tags_are_create_only() -> None:
     reconcile_expr = compute["ansible.builtin.set_fact"]["_llm_router_key_updates"]
     assert "item.tags" not in reconcile_expr
     assert "_sensitivity_tag" in reconcile_expr
-    assert "router_settings" not in reconcile_expr
+    assert "llm_router_review_key_router_settings[_k.router_settings_ref]" in reconcile_expr
+    assert "_router_settings_changed" in reconcile_expr
+    assert "combine({'router_settings': _router_settings_target})" in reconcile_expr
 
     update = policy_by_name["Reconcile caller policy for live keys that changed"]
     assert update["ansible.builtin.uri"]["body"] == "{{ item.body }}"
