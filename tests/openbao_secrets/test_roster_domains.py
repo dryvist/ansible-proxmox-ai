@@ -10,6 +10,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DOMAIN_DEFAULTS = REPO_ROOT / "roles/openbao_secrets/defaults/main/10-domains.yml"
 ROSTER_DEFAULTS = REPO_ROOT / "roles/openbao_secrets/defaults/main/11-roster-domains.yml"
 AGENT_DEFAULTS = REPO_ROOT / "inventory/group_vars/hermes_agent_group/00-agent-settings.yml"
+FETCH_DOMAIN_TASKS = REPO_ROOT / "roles/openbao_secrets/tasks/fetch_domain.yml"
+ROLE_TASKS = REPO_ROOT / "roles/openbao_secrets/tasks/main.yml"
 ROSTER = {"splunk-heimdall": {"owns": ["splunk"]}}
 
 
@@ -40,8 +42,46 @@ def test_roster_agent_gets_its_paths_and_owned_mcp_paths():
                 "apps/splunk-heimdall-gw",
                 "ai/mcp/splunk",
             ],
+            "required": True,
         }
     ]
+
+
+def test_optional_fetch_skip_does_not_apply_to_required_domains():
+    tasks = yaml.safe_load(FETCH_DOMAIN_TASKS.read_text(encoding="utf-8"))
+    skip_task = next(
+        task for task in tasks if task["name"].startswith("Report a deliberately optional")
+    )
+    fail_task = next(
+        task for task in tasks if task["name"].startswith("Fail on missing credentials")
+    )
+
+    assert any(
+        "not (openbao_domain.required | default(false))" in condition
+        for condition in skip_task["when"]
+    )
+    assert any(
+        "or (openbao_domain.required | default(false))" in condition
+        for condition in fail_task["when"]
+    )
+
+
+def test_roster_name_cannot_collide_with_a_static_domain():
+    defaults = yaml.safe_load(DOMAIN_DEFAULTS.read_text(encoding="utf-8"))
+    tasks = yaml.safe_load(ROLE_TASKS.read_text(encoding="utf-8"))
+    assertion = next(
+        task["ansible.builtin.assert"]
+        for task in tasks
+        if "ansible.builtin.assert" in task
+    )
+    overlap = NativeEnvironment().from_string(
+        "{{ " + assertion["that"][0] + " }}"
+    ).render(
+        _openbao_secrets_static_domains=defaults["_openbao_secrets_static_domains"],
+        ai_agents={"hermes-private": {}},
+    )
+
+    assert overlap is False
 
 
 def test_roster_domain_is_selected_by_the_container_identity():
