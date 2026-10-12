@@ -106,6 +106,81 @@
     - name: Check the full rendered config against catalog limits
       ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-catalog-render-agreement.yml"
 
+    - name: Locate the registered vllm small-capability member
+      ansible.builtin.set_fact:
+        _fixture_vllm_member: >-
+          {{ llm_router_registry_enabled
+             | selectattr('tier', 'equalto', 'vllm') | first }}
+
+    - name: Give the rendered small deployment a deliberately wrong upstream
+      ansible.builtin.set_fact:
+        _fixture_vllm_upstream: >-
+          {{ _fixture_vllm_member.litellm_model_name
+             | default(_fixture_vllm_member.provider ~ '/' ~ _fixture_vllm_member.upstream_model_id) }}
+        _fixture_wrong_vllm_upstream: >-
+          {{ (_fixture_vllm_member.litellm_model_name
+              | default(_fixture_vllm_member.provider ~ '/' ~ _fixture_vllm_member.upstream_model_id))
+             ~ '-wrong' }}
+
+    - name: Render only that wrong upstream under the small capability
+      ansible.builtin.set_fact:
+        _llm_router_parity_config:
+          model_list: >-
+            {%- set ns = namespace(rows=[]) -%}
+            {%- for deployment in _llm_router_parity_config.model_list
+                if deployment.model_name == _fixture_vllm_member.route_group
+                and deployment.litellm_params.model != _fixture_vllm_upstream -%}
+            {%- set ns.rows = ns.rows + [deployment] -%}
+            {%- endfor -%}
+            {{ ns.rows + [{
+                 'model_name': _fixture_vllm_member.route_group,
+                 'litellm_params': {'model': _fixture_wrong_vllm_upstream}
+               }] }}
+        llm_router_llm_vllm_enabled: true
+        llm_router_vllm_precheck_passed: true
+
+    - name: Prove the fixture renders small without the vllm upstream
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - >-
+            _llm_router_parity_config.model_list
+            | selectattr('model_name', 'equalto', _fixture_vllm_member.route_group)
+            | list | length > 0
+          - >-
+            _llm_router_parity_config.model_list
+            | selectattr('model_name', 'equalto', _fixture_vllm_member.route_group)
+            | selectattr('litellm_params.model', 'equalto', _fixture_vllm_upstream)
+            | list | length == 0
+
+    - name: Reject an active probe-gated rung with the wrong rendered upstream
+      block:
+        - name: Assert catalog agreement for the active wrong-upstream fixture
+          ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-catalog-render-agreement.yml"
+      rescue:
+        - name: Record the expected active-rung assertion failure
+          ansible.builtin.set_fact:
+            _fixture_vllm_render_failed: true
+            _fixture_vllm_render_failure: "{{ ansible_failed_result.msg | default('') }}"
+
+    - name: Prove the active wrong-upstream failure names the vllm member
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _fixture_vllm_render_failed | default(false) | bool
+          - _fixture_vllm_member.client_model_id in _fixture_vllm_render_failure
+        fail_msg: >-
+          The catalog render assertion did not reject the active wrong upstream
+          for {{ _fixture_vllm_member.client_model_id }}.
+
+    - name: Exempt that same member only when the vllm rung is switched off
+      ansible.builtin.set_fact:
+        llm_router_llm_vllm_enabled: false
+        llm_router_vllm_precheck_passed: false
+
+    - name: Assert catalog agreement for the switched-off wrong-upstream fixture
+      ansible.builtin.import_tasks: "{{ _role_dir }}/tasks/assert-catalog-render-agreement.yml"
+
     - name: Select the legacy physical ids still returned by the serving gate
       ansible.builtin.set_fact:
         _fixture_legacy_gate_models: >-
