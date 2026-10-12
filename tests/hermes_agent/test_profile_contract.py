@@ -140,7 +140,7 @@ def test_profile_env_lists_never_grant_a_forbidden_credential_section() -> None:
 def test_profile_mcp_lists_never_grant_a_forbidden_server() -> None:
     forbidden_mcp = {
         "splunk-admin": {"codex", "context7", "vikunja", "nautobot"},
-        "homelab-admin": {"splunk", "codex", "context7"},
+        "homelab-admin": {"splunk", "codex", "context7", "vikunja"},
         "github-maint": {"splunk", "codex", "context7", "vikunja", "nautobot"},
     }
     for profile in _profiles():
@@ -151,6 +151,21 @@ def test_profile_mcp_lists_never_grant_a_forbidden_server() -> None:
             f"profile {profile['name']!r} mcp list {sorted(granted)} grants "
             f"forbidden server(s) {sorted(overlap)}"
         )
+
+
+def test_orchestrator_is_the_only_profile_with_vikunja() -> None:
+    profiles = _profiles()
+    orchestrator = next(p for p in profiles if p["name"] == "orchestrator")
+
+    assert orchestrator["description"] == (
+        "Kanban decomposition and assignment owner; the only profile that reads the Vikunja backlog"
+    )
+    assert orchestrator["mcp"] == ["vikunja", "docs"]
+    assert orchestrator["env"] == []
+    assert orchestrator["skills"] == []
+    assert all("vikunja" not in p["mcp"] for p in profiles if p is not orchestrator)
+    assert _defaults()["hermes_agent_kanban_orchestrator_profile"] == "orchestrator"
+    assert _defaults()["hermes_agent_kanban_eligible_label"] == "hermes-eligible"
 
 
 def test_profile_skill_lists_never_grant_a_forbidden_skill() -> None:
