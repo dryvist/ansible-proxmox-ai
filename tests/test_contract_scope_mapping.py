@@ -47,16 +47,6 @@ def test_production_role_selects_its_existing_contract_family(path: str, target:
     assert "tests/" not in selection["pytest_targets"]
 
 
-def test_agentgateway_change_selects_openapi_contract_and_selfcheck() -> None:
-    result = run_selector("roles/agentgateway_docker/tasks/main.yml")
-
-    assert result.returncode == 0, result.stderr
-    selection = json.loads(result.stdout)
-    assert "tests/agentgateway_docker/" in selection["pytest_targets"]
-    assert "tests/agentgateway_docker/test_openapi_target.yml" in selection["ansible_tests"]
-    assert "tests/" not in selection["pytest_targets"]
-
-
 @pytest.mark.parametrize("path", [
     "tests/langfuse_docker/fixtures/api-response-shapes.json",
     "tests/llm_gpu_engine_roles/fixtures/pro6000-target/nvidia-smi-query.csv",

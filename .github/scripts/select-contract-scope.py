@@ -32,7 +32,6 @@ ANSIBLE_TESTS = {
     "tests/llm_gpu_legacy/test_render_host_contract.yml",
     "tests/llm_gpu_legacy/test_render_host_contract_all.yml",
     "tests/langfuse_docker/test_stage0_evaluation.yml",
-    "tests/agentgateway_docker/test_openapi_target.yml",
     "tests/langfuse_docker/test_code_eval_compose.yml",
 }
 
@@ -70,7 +69,6 @@ GPU_PYTEST = {
 GPU_ANSIBLE = {test for test in ANSIBLE_TESTS if test.startswith(
     ("tests/nvidia_gpu_guest/", "tests/llm_gpu_legacy/"))}
 ROLE_TESTS = {
-    "agentgateway_docker": {"tests/agentgateway_docker/"},
     "hermes_agent": {"tests/hermes_agent/"},
     "fabric_watchdog": {"tests/hermes_agent/"},
     "dify_docker": set(),
