@@ -17,8 +17,11 @@
       {{ (lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml).model_list
          | map(attribute='model_name') | unique | list }}
     _small_group: >-
-      {{ (llm_router_model_registry | selectattr('tier', 'equalto', 'vllm') | first).route_group }}
-    _key_grants: "{{ llm_router_virtual_keys | map(attribute='models') | flatten | unique | list }}"
+      {{ llm_router_small_capability_name }}
+    _key_grants: >-
+      {{ llm_router_virtual_keys | rejectattr('alias', 'equalto', 'hindsight')
+         | map(attribute='models') | flatten | unique | list }}
+    _hindsight_models: "{{ (llm_router_virtual_keys | selectattr('alias', 'equalto', 'hindsight') | first).models }}"
 
 - name: Name the capability groups this converge does not render
   ansible.builtin.set_fact:
@@ -45,6 +48,15 @@
       vllm={{ _vllm_on }}: unrendered {{ _unrendered_capabilities }}; alias
       targets {{ llm_router_model_group_aliases.values() | list | unique }};
       key grants naming them {{ _key_grants | intersect(_unrendered_capabilities) }}.
+
+- name: Assert the ZDR-isolated hindsight key stays on the small capability and fails closed
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _hindsight_models == [_small_group]
+    fail_msg: >-
+      vllm={{ _vllm_on }}: hindsight key names {{ _hindsight_models }}; it must name only
+      {{ _small_group }}, never the fallback {{ llm_router_small_model }}.
 
 - name: Run the role's required-brain assert
   ansible.builtin.include_tasks: "{{ _role_dir }}/tasks/assert-safe-models.yml"
