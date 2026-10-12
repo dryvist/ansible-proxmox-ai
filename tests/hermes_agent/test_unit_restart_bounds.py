@@ -15,7 +15,13 @@ import re
 from pathlib import Path
 
 import pytest
-from _role_files import role_defaults_text, role_tasks, role_tasks_text, template_text
+from _role_files import (
+    render_hermes_runtime_unit,
+    role_defaults_text,
+    role_tasks,
+    role_tasks_text,
+    template_text,
+)
 from _shell_harness_shared import (
     defaults_of,
     headers_of,
@@ -40,6 +46,8 @@ LONG_RUNNING = [
 
 
 def _unit(name: str) -> str:
+    if name in LONG_RUNNING[:2]:
+        return render_hermes_runtime_unit(ROLE, name)
     return (TEMPLATES / name).read_text()
 
 

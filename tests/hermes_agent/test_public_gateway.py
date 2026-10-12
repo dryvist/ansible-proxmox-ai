@@ -5,7 +5,7 @@ from pathlib import Path
 import yaml
 from jinja2 import Environment, FileSystemLoader
 
-from _role_files import role_defaults, role_tasks, template_text
+from _role_files import render_hermes_runtime_unit, role_defaults, role_tasks, template_text
 
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
 DEFAULTS = role_defaults(ROLE)
@@ -143,8 +143,8 @@ def test_converge_wiring_and_model_assert():
 
 
 def test_default_gateway_unit_keeps_its_own_boundary():
-    unit = template_text(ROLE, "hermes-gateway.service.j2")
-    assert "HERMES_TRUST_BOUNDARY={{ hermes_agent_github_trust_boundary_default }}" in unit
+    unit = render_hermes_runtime_unit(ROLE, "hermes-gateway.service.j2")
+    assert "Environment=HERMES_TRUST_BOUNDARY=private" in unit
 
 
 def test_relay_env_points_public_events_at_the_public_gateway_port():
