@@ -13,6 +13,26 @@
 # statically and inherits this file's own tag/check-mode contract instead of
 # gating on a separate include condition.
 
+- name: Gather mount facts for the roster agent home assertion
+  ansible.builtin.setup:
+    gather_subset:
+      - mounts
+  when:
+    - hermes_agent_id in (ai_agents | default({}))
+    - ansible_mounts is not defined
+  changed_when: false
+
+- name: Assert the roster agent home is a dedicated mount point
+  ansible.builtin.assert:
+    that:
+      - >-
+        (ansible_mounts | default([])
+         | selectattr('mount', 'equalto', hermes_agent_home)
+         | list | length) > 0
+    fail_msg: >-
+      Roster agent home {{ hermes_agent_home }} must be a dedicated mount point.
+  when: hermes_agent_id in (ai_agents | default({}))
+
 - name: Resolve and require the managed Slack credential pair
   ansible.builtin.import_tasks: slack_credentials.yml
 
