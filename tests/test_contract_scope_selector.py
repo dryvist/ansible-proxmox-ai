@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import runpy
 import subprocess
@@ -10,6 +11,11 @@ import pytest
 
 SELECTOR = Path(__file__).parents[1] / ".github/scripts/select-contract-scope.py"
 CI_GATE = Path(__file__).parents[1] / ".github/workflows/ci-gate.yml"
+sys.path.insert(0, str(SELECTOR.parent))
+router_shards_module = importlib.import_module("router_shards")
+router_shard_target = router_shards_module.router_shard_target
+router_weight = router_shards_module.router_weight
+
 # The router matrix as the selector generates it from the workflow.
 GENERATED_MATRIX = runpy.run_path(str(SELECTOR))["llm_router_matrix"]()
 ROUTER_SHARDS = runpy.run_path(str(SELECTOR))["router_shards"]
@@ -240,11 +246,11 @@ def test_router_shards_pack_topics_and_split_only_oversized_topics() -> None:
     paths.extend(f"tests/llm_router/test_topic{index}_contract.yml" for index in range(14))
     shards = ROUTER_SHARDS([[path] for path in paths])
     alpha = [shard for shard in shards if "alpha " in shard["name"]]
-    counts = [len(shard["playbooks"].split()) for shard in shards]
 
     assert len(shards) <= 16
     assert len(alpha) == 2
     assert {shard["name"].split(", ", 1)[0] for shard in alpha} == {"alpha 1/2", "alpha 2/2"}
     assert any(", " in shard["name"] for shard in shards)
-    assert max(counts) - min(counts) <= 1
+    assert max(sum(router_weight(path) for path in shard["playbooks"].split())
+               for shard in shards) <= router_shard_target([[path] for path in paths])
     assert sorted(router_paths(shards)) == sorted(paths)
