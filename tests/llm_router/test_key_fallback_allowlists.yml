@@ -68,21 +68,99 @@
              | zip(_config.router_settings.fallbacks | default([])
                | map('dict2items') | flatten | map(attribute='value'))) }}
 
+    # Resolved once: each reference re-evaluates the variable, and the settings
+    # entries build the whole fallback map.
+    - name: Resolve the keys and the named router settings once
+      ansible.builtin.set_fact:
+        _virtual_keys: "{{ llm_router_virtual_keys }}"
+        _key_settings: "{{ llm_router_review_key_router_settings }}"
+
+    - name: Map the effective fallback chains for each key
+      ansible.builtin.set_fact:
+        _fallback_map_by_key: >-
+          {%- set out = namespace(maps={}) -%}
+          {%- for key in _virtual_keys -%}
+          {%- set settings = _key_settings[key.router_settings_ref]
+               if key.router_settings_ref is defined else key.router_settings | default({}) -%}
+          {%- set entries = settings.fallbacks
+               | default(_config.router_settings.fallbacks | default([]), true) -%}
+          {%- set current = dict(entries | map('dict2items') | flatten
+               | map(attribute='key') | zip(entries | map('dict2items')
+                 | flatten | map(attribute='value'))) -%}
+          {%- set _ = out.maps.update({key.alias: current}) -%}
+          {%- endfor -%}
+          {{ out.maps }}
+
     - name: Select keys whose allowlists name no cloud group
       ansible.builtin.set_fact:
         _local_scope_keys: >-
           {%- set ns = namespace(keys=[]) -%}
-          {%- for key in llm_router_virtual_keys
+          {%- for key in _virtual_keys
                if (key.models | default([]) | intersect(_cloud_groups) | length == 0) -%}
           {%- set _ = ns.keys.append(key) -%}
           {%- endfor -%}
           {{ ns.keys }}
 
+    - name: Select non-CI keys without a cloud grant, whose medium path must remain local
+      ansible.builtin.set_fact:
+        _non_ci_medium_keys: >-
+          {{ _local_scope_keys
+             | rejectattr('alias', 'in', ['github-actions', 'github-actions-oss']) | list }}
+
+    - name: Resolve each non-CI key's authorized medium fallback path
+      ansible.builtin.set_fact:
+        _non_ci_medium_paths: >-
+          {%- set out = namespace(paths={}) -%}
+          {%- for key in _non_ci_medium_keys -%}
+          {%- set allowed = key.models | default([]) | list -%}
+          {%- set starts = [llm_router_primary_model]
+               if allowed | length == 0 or '*' in allowed
+                  or llm_router_primary_model in allowed else [] -%}
+          {%- set ns = namespace(names=starts) -%}
+          {%- for _ in range(0, starts | length + 1) -%}
+          {%- set _next = namespace(names=ns.names) -%}
+          {%- for name in ns.names -%}
+          {%- set targets = _fallback_map_by_key[key.alias].get(
+               name, _config.router_settings.default_fallbacks | default([])) -%}
+          {%- if targets is string -%}{%- set targets = [targets] -%}{%- endif -%}
+          {%- if name in llm_router_model_group_aliases -%}
+          {%- set targets = targets + [llm_router_model_group_aliases[name]] -%}
+          {%- endif -%}
+          {%- for target in targets
+               if (allowed | length == 0 or '*' in allowed or target in allowed)
+                  and target not in _next.names -%}
+          {%- set _ = _next.names.append(target) -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {%- set ns.names = _next.names -%}
+          {%- endfor -%}
+          {%- set _ = out.paths.update({key.alias: ns.names}) -%}
+          {%- endfor -%}
+          {{ out.paths }}
+
+    - name: Add a key whose fallback names a disallowed paid target
+      ansible.builtin.set_fact:
+        _fallback_probe_keys: >-
+          {{ _local_scope_keys + [{
+             'alias': 'negative-control',
+             'models': [llm_router_primary_model],
+             'router_settings': {
+               'fallbacks': [{llm_router_primary_model: [llm_router_external_paid_rungs | first]}]
+             }
+          }] }}
+
+    - name: Add the negative control's effective fallback chains
+      ansible.builtin.set_fact:
+        _fallback_map_by_key: >-
+          {{ _fallback_map_by_key | combine({
+             'negative-control': {llm_router_primary_model: [llm_router_external_paid_rungs | first]}
+          }) }}
+
     - name: Resolve every authorized fallback hop for each selected key
       ansible.builtin.set_fact:
         _reachable_by_key: >-
           {%- set out = namespace(keys={}) -%}
-          {%- for key in _local_scope_keys -%}
+          {%- for key in _fallback_probe_keys -%}
           {%- set starts = key.models | default([]) | unique | list -%}
           {%- if starts | length == 0 or '*' in starts -%}
           {%- set starts = (starts + _cloud_groups) | unique | list -%}
@@ -91,7 +169,7 @@
           {%- for _ in range(0, starts | length + 1) -%}
           {%- set _next = namespace(names=ns.names) -%}
           {%- for name in ns.names -%}
-          {%- set targets = _fallback_map.get(
+          {%- set targets = _fallback_map_by_key[key.alias].get(
                name, _config.router_settings.default_fallbacks | default([])) -%}
           {%- if targets is string -%}{%- set targets = [targets] -%}{%- endif -%}
           {%- if name in llm_router_model_group_aliases -%}
@@ -115,9 +193,17 @@
           - _cloud_groups | length > 0
           - llm_router_external_paid_rungs | length > 0
           - _local_scope_keys | length > 0
-          - _reachable_by_key | length == _local_scope_keys | length
+          - _reachable_by_key | length == _fallback_probe_keys | length
           - "'qwen-code' in _reachable_by_key"
           - _reachable_by_key['qwen-code'] | intersect(_cloud_groups) | length == 0
+          - >-
+            _fallback_map[llm_router_primary_model][:llm_router_review_local_chain | length]
+            == llm_router_review_local_chain
+          - _non_ci_medium_paths | length == _non_ci_medium_keys | length
+          - _non_ci_medium_paths.values() | flatten | intersect(_cloud_groups) | length == 0
+          - _fallback_map_by_key['negative-control'][llm_router_primary_model]
+            | intersect(llm_router_external_paid_rungs) | length > 0
+          - _reachable_by_key['negative-control'] | intersect(llm_router_external_paid_rungs) | length == 0
           - >-
             _reachable_by_key.values() | flatten
             | intersect(_cloud_groups) | length == 0

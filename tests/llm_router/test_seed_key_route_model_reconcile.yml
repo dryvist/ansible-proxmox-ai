@@ -1,7 +1,7 @@
 ---
 # Regression/contract test for reconcile-seeded-key-policy.yml's key diff:
-# MCP permissions, models, and sensitivity reconcile in every mode; routes
-# and other metadata remain rebuild-only, with one update per changed key.
+# MCP permissions, models, sensitivity, and referenced router
+# settings reconcile in every mode; routes and other metadata remain rebuild-only.
 #
 # Run (from the REPO ROOT):
 #   ansible-playbook tests/llm_router/test_seed_key_route_model_reconcile.yml -i localhost, -c local
@@ -39,6 +39,11 @@
     #     substitutes for a MISSING key, so an unguarded null here used to
     #     raise in the difference() call below instead of being treated as [].
     #   - null-routes: same null-vs-missing gap, for `allowed_routes` instead.
+    #   - authoritative-router-settings: the key names a settings entry
+    #     (router_settings_ref); the seed owns those settings and updates them
+    #     without minting a replacement key.
+    #   - operator-router-settings: inline settings with no reference remain
+    #     untouched by this reconciler.
     llm_router_existing_keys:
       json:
         keys:
@@ -74,6 +79,19 @@
             models: [fixture-small]
             metadata: {tags: ['&sensitivity:sensitive']}
             object_permission: {mcp_servers: [no-mcp-servers]}
+          - key_alias: authoritative-router-settings
+            models: [fixture-small]
+            metadata: {app: authoritative-router-settings, tier: local, tags: ['&sensitivity:sensitive']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
+            router_settings: {fallbacks: [{fixture-small: [fixture-embed]}]}
+          - key_alias: operator-router-settings
+            models: [fixture-small]
+            metadata: {app: operator-router-settings, tier: local, tags: ['&sensitivity:sensitive']}
+            object_permission: {mcp_servers: [no-mcp-servers]}
+            router_settings: {fallbacks: [{fixture-small: [fixture-large]}]}
+
+    llm_router_review_key_router_settings:
+      fixture: {fallbacks: [{fixture-small: [fixture-large]}]}
 
     llm_router_virtual_keys:
       - alias: steady
@@ -107,6 +125,16 @@
         value: "sk-{{ 'g' * 20 }}"
         models: [fixture-small]
         object_permission: {mcp_servers: [zammad, slack]}
+      - alias: authoritative-router-settings
+        value: "sk-{{ 'h' * 20 }}"
+        models: [fixture-small]
+        models_authoritative: false
+        router_settings_ref: fixture
+      - alias: operator-router-settings
+        value: "sk-{{ 'i' * 20 }}"
+        models: [fixture-small]
+        models_authoritative: false
+        router_settings: {fallbacks: [{fixture-small: [fixture-embed]}]}
 
     # Hand-set, not extracted: this helper's own expression already has
     # dedicated coverage in test_seed_key_live_aliases.yml. Every live
@@ -120,6 +148,8 @@
       - null-models
       - null-routes
       - mcp-reader
+      - authoritative-router-settings
+      - operator-router-settings
 
   tasks:
     - name: Extract the real create-only permission payload from seed-keys.yml
@@ -154,6 +184,8 @@
           - "\"default([], true)\" in _diff_expr"
           - "'object_permission' in _diff_expr"
           - "'_permission_changed' in _diff_expr"
+          - "'_router_settings_changed' in _diff_expr"
+          - "'_router_settings_target' in _diff_expr"
         fail_msg: >-
           Could not find the fail-safe attribute lookups in the policy task
           under the task name {{ _diff_task_name }} — this test's
@@ -195,19 +227,23 @@
         # warning (removed in 2.23), not a no-op.
         _llm_router_key_updates: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
 
-    - name: Assert only the six genuinely-changed keys are updated, each exactly once
+    - name: Assert only the seven genuinely-changed keys are updated, each exactly once
       ansible.builtin.assert:
         quiet: true
         that:
           - _llm_router_key_updates | map(attribute='alias') | sort
-            == ['authoritative-narrow', 'malformed-live', 'mcp-reader', 'null-models', 'null-routes', 'widened-routes']
+            == [
+              'authoritative-narrow', 'authoritative-router-settings',
+              'malformed-live', 'mcp-reader', 'null-models', 'null-routes',
+              'widened-routes'
+            ]
         fail_msg: >-
-          Expected exactly the six changed aliases, got
+          Expected exactly the seven changed aliases, got
           {{ _llm_router_key_updates | map(attribute='alias') | list }}.
           steady must be absent (nothing differs); live-only must be absent
           (no seed entry names it — current behavior preserved).
 
-    - name: Assert the route-changed key's body carries BOTH fields in one call
+    - name: Assert the route-changed key's body carries its route policy
       ansible.builtin.assert:
         quiet: true
         that:
@@ -215,10 +251,23 @@
           - _widened.body.models == ['fixture-small']
           - "_widened.body.object_permission == {'mcp_servers': ['no-mcp-servers']}"
           - _widened.body.metadata.tags == ['ui-edited', '&sensitivity:sensitive']
-          - "'router_settings' not in _widened.body"
         fail_msg: "widened-routes body: {{ _widened.body }}"
       vars:
         _widened: "{{ _llm_router_key_updates | selectattr('alias', 'equalto', 'widened-routes') | first }}"
+
+    - name: Assert only referenced router settings are reconciled
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _router_settings_update.body.router_settings == llm_router_review_key_router_settings.fixture
+          - _router_settings_update.body.key == _authoritative_seed.value
+          - _llm_router_key_updates | selectattr('alias', 'equalto', 'operator-router-settings') | list | length == 0
+        fail_msg: "authoritative router settings update: {{ _router_settings_update.body }}"
+      vars:
+        _authoritative_seed: >-
+          {{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'authoritative-router-settings') | first }}
+        _router_settings_update: >-
+          {{ _llm_router_key_updates | selectattr('alias', 'equalto', 'authoritative-router-settings') | first }}
 
     - name: Assert an MCP grant is reconciled for the intended caller only
       ansible.builtin.assert:
@@ -273,7 +322,7 @@
       ansible.builtin.set_fact:
         _llm_router_key_updates_second_run: "{{ lookup('ansible.builtin.template', _diff_template_file.path) }}"
       vars:
-        # The live snapshot AFTER the six updates above would have landed:
+        # The live snapshot AFTER the seven updates above would have landed:
         # every seed entry now matches live on both fields.
         llm_router_existing_keys:
           json:
@@ -310,6 +359,16 @@
                 models: [fixture-small]
                 metadata: {app: mcp-reader, tier: local, tags: ['&sensitivity:sensitive']}
                 object_permission: {mcp_servers: [zammad, slack]}
+              - key_alias: authoritative-router-settings
+                models: [fixture-small]
+                metadata: {app: authoritative-router-settings, tier: local, tags: ['&sensitivity:sensitive']}
+                object_permission: {mcp_servers: [no-mcp-servers]}
+                router_settings: {fallbacks: [{fixture-small: [fixture-large]}]}
+              - key_alias: operator-router-settings
+                models: [fixture-small]
+                metadata: {app: operator-router-settings, tier: local, tags: ['&sensitivity:sensitive']}
+                object_permission: {mcp_servers: [no-mcp-servers]}
+                router_settings: {fallbacks: [{fixture-small: [fixture-large]}]}
 
     - name: Assert the idempotent second run finds nothing left to change
       ansible.builtin.assert:
