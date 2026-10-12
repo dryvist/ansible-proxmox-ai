@@ -37,6 +37,42 @@ def test_hermes_agent_role_selects_its_role_tests() -> None:
     assert selection["llm_router_playbooks"] == []
 
 
+def test_hermes_agent_group_vars_select_only_the_tests_that_read_them() -> None:
+    result = run_selector("inventory/group_vars/hermes_agent_group/00-agent-settings.yml")
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    assert "tests/" not in selection["pytest_targets"]
+    assert {"tests/hermes_agent/", "tests/openbao_secrets/test_roster_domains.py"} <= set(selection["pytest_targets"])
+    assert selection["ansible_tests"] == ["tests/openbao_secrets/test_hermes_domain_view.yml"]
+    assert selection["llm_router_playbooks"] == [{"name": "hermes", "playbooks": "tests/llm_router/test_hermes_agents.yml"}]
+    assert selection["run_inventory"]
+    assert not selection["run_selector_checks"]
+
+
+def test_hermes_agent_change_set_selects_only_the_router_reader() -> None:
+    result = run_selector(
+        "inventory/group_vars/hermes_agent_group/00-agent-settings.yml",
+        "roles/hermes_agent/defaults/main/100-splunk.yml",
+        "roles/hermes_agent/templates/config-profile.yaml.j2",
+        "roles/hermes_agent/templates/config.yaml.j2",
+        "roles/hermes_agent/templates/hermes-env-profile.j2",
+        "roles/hermes_agent/templates/hermes-env.j2",
+        "tests/hermes_agent/test_owned_mcp_servers.py",
+        "tests/hermes_agent/test_profile_contract.py",
+        "tests/openbao_secrets/test_hermes_domain_view.yml",
+    )
+
+    assert result.returncode == 0, result.stderr
+    selection = json.loads(result.stdout)
+    assert "tests/" not in selection["pytest_targets"]
+    assert "tests/hermes_agent/" in selection["pytest_targets"]
+    assert "tests/openbao_secrets/test_roster_domains.py" in selection["pytest_targets"]
+    assert selection["ansible_tests"] == ["tests/openbao_secrets/test_hermes_domain_view.yml"]
+    assert selection["llm_router_playbooks"] == [{"name": "hermes", "playbooks": "tests/llm_router/test_hermes_agents.yml"}]
+    assert selection["run_inventory"]
+
+
 def test_changed_llm_router_playbook_selects_its_matrix_entry() -> None:
     result = run_selector("tests/llm_router/test_review_key_scopes.yml")
 
@@ -130,8 +166,12 @@ def test_nix_ai_pin_roles_are_mapped_without_contracts() -> None:
     assert selection["ansible_tests"] == []
 
 
-def test_llm_router_role_paths_select_the_complete_router_contract() -> None:
-    result = run_selector("roles/llm_router/tasks/main.yml")
+@pytest.mark.parametrize("path", [
+    "roles/llm_router/tasks/main.yml",
+    "roles/llm_router/defaults/main/59-key-scopes.yml",
+])
+def test_llm_router_role_paths_select_the_complete_router_contract(path: str) -> None:
+    result = run_selector(path)
 
     assert result.returncode == 0, result.stderr
     selection = json.loads(result.stdout)
