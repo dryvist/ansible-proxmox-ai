@@ -1,0 +1,103 @@
+---
+- name: Verify the llama.cpp release install previews safely in check mode
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    llama_cpp_server_check:
+      rc: 1
+    llama_cpp_asset_marker_stat:
+      stat:
+        exists: false
+    llama_cpp_llamacpp_asset_name: llama-check-mode-fixture.tar.gz
+    llama_cpp_llamacpp_asset_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    llamacpp_release_tag: check-mode-fixture
+    llama_cpp_user: llama-check-mode-test
+    llama_cpp_group: llama-check-mode-test
+
+  tasks:
+    - name: Set the isolated path for the child check-mode run
+      ansible.builtin.set_fact:
+        llama_cpp_check_mode_root: "/tmp/llama-cpp-check-mode-{{ lookup('pipe', 'uuidgen') }}"
+      when: not ansible_check_mode
+
+    - name: Invoke this test in check mode when called normally
+      ansible.builtin.command:
+        argv:
+          - ansible-playbook
+          - "{{ playbook_dir }}/_install_release_check_mode.yml"
+          - --check
+          - -i
+          - localhost,
+          - -c
+          - local
+          - -e
+          - "llama_cpp_check_mode_root={{ llama_cpp_check_mode_root }}"
+      register: llama_cpp_check_mode_run
+      changed_when: false
+      failed_when: false
+      when: not ansible_check_mode
+
+    - name: Set an isolated path for a direct check-mode run
+      ansible.builtin.set_fact:
+        llama_cpp_check_mode_root: "/tmp/llama-cpp-check-mode-{{ lookup('pipe', 'uuidgen') }}"
+      when: llama_cpp_check_mode_root is not defined
+
+    - name: Set the install and marker paths under the isolated path
+      ansible.builtin.set_fact:
+        llama_cpp_install_dir: "{{ llama_cpp_check_mode_root }}/install"
+        llama_cpp_llamacpp_asset_marker: "{{ llama_cpp_check_mode_root }}/asset-name"
+      when: ansible_check_mode
+
+    - name: Require check mode before exercising the release install
+      ansible.builtin.assert:
+        that: ansible_check_mode
+        fail_msg: "Run this test playbook with ansible-playbook --check."
+      when: ansible_check_mode
+
+    - name: Include the release install
+      ansible.builtin.include_tasks: ../../roles/llama_cpp/tasks/install-release.yml
+      when: ansible_check_mode
+
+    - name: Inspect the install directory after check mode
+      ansible.builtin.stat:
+        path: "{{ llama_cpp_install_dir }}"
+      register: llama_cpp_check_mode_install_stat
+      when: ansible_check_mode
+
+    - name: Assert check mode previews without creating install files
+      ansible.builtin.assert:
+        that:
+          - ansible_check_mode
+          - llama_cpp_install_preview is defined
+          - llama_cpp_install_preview.msg is search(llama_cpp_llamacpp_asset_name)
+          - llama_cpp_install_preview.msg is search(llama_cpp_llamacpp_asset_sha256)
+          - llama_cpp_install_preview.msg is search(llamacpp_release_tag)
+          - llama_cpp_install_preview.msg is search(llama_cpp_install_dir)
+          - llama_cpp_extract_tmp.path is not defined
+          - not llama_cpp_check_mode_install_stat.stat.exists
+        fail_msg: >-
+          The release install check-mode preview did not run cleanly or
+          created content under the install directory.
+        success_msg: >-
+          The check-mode preview ran without a tempfile path or install
+          directory.
+      when: ansible_check_mode
+
+    - name: Remove the isolated check-mode path
+      ansible.builtin.file:
+        path: "{{ llama_cpp_check_mode_root }}"
+        state: absent
+      when:
+        - not ansible_check_mode
+        - llama_cpp_check_mode_root is defined
+
+    - name: Assert the check-mode child play passed
+      ansible.builtin.assert:
+        that:
+          - llama_cpp_check_mode_run.rc | default(1) == 0
+          - "'failed=0' in (llama_cpp_check_mode_run.stdout | default(''))"
+        fail_msg: >-
+          The child check-mode play did not complete successfully:
+          {{ llama_cpp_check_mode_run.stderr | default('') }}
+      when: not ansible_check_mode
