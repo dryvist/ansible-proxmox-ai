@@ -59,6 +59,12 @@ def test_chat_call_to_a_review_role_gets_thinking_off_at_top_level(handler, alia
 
 
 @pytest.mark.parametrize("alias", KEYS)
+def test_chat_call_to_the_medium_capability_gets_thinking_off_at_top_level(handler, alias):
+    out = call(handler, alias, {"model": "medium", "messages": []})
+    assert out == {"model": "medium", "messages": [], "chat_template_kwargs": THINKING_OFF}
+
+
+@pytest.mark.parametrize("alias", KEYS)
 @pytest.mark.parametrize("enabled", [True, False])
 def test_client_choice_in_extra_body_is_kept_and_not_duplicated(handler, alias, enabled):
     extra = {"chat_template_kwargs": {"enable_thinking": enabled}}
@@ -120,8 +126,9 @@ def test_other_models_are_untouched(handler, alias, model):
 
 
 @pytest.mark.parametrize("alias", ["open-webui", "github-actions-ci-fix", None])
-def test_other_keys_are_untouched(handler, alias):
-    data = {"model": LOCAL, "messages": []}
+@pytest.mark.parametrize("model", [LOCAL, "medium"])
+def test_other_keys_are_untouched(handler, alias, model):
+    data = {"model": model, "messages": []}
     assert call(handler, alias, dict(data)) == data
 
 
