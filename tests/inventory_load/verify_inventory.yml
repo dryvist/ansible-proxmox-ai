@@ -29,6 +29,7 @@
           - "'langfuse' in groups['langfuse_group']"
           - "'phoenix' in groups['phoenix_group']"
           - "'agentgateway' in groups['agentgateway_group']"
+          - groups['hermes_agent_group'] | sort == ['hermes-agent']
           - "'dify' in groups['dify_group']"
           - "'dify' in groups['ai_orchestration_group']"
           - "'squid' in groups['squid_group']"
@@ -78,6 +79,10 @@
       ansible.builtin.assert:
         that:
           - hostvars['hermes-agent'].hostname == 'hermes-agent'
+          - hostvars['hermes-agent'].hermes_agent_identity == 'hermes'
+          - hostvars['hermes-agent'].ai_agents == {}
+          - hostvars['hermes-agent'].ai_agent_by_container == {}
+          - hostvars['hermes-agent'].ai_agent_owner == {}
           # ssh-override guest: direct ssh to its own FQDN, not the node
           - hostvars['hermes-agent'].ansible_host == 'hermes-agent.example.com'
           - hostvars['hermes-agent'].ansible_connection == 'ssh'
@@ -119,3 +124,52 @@
           container_models_mount_path must carry tofu's published
           containers[*].models_mount_path for a guest that has one, and an
           empty string (never a stale default) for a guest that does not.
+
+- name: Verify empty and populated agent rosters preserve legacy host identity
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_become: false
+    roster_fixture:
+      roster-test:
+        container: open-webui
+        hostname: roster-test.example.com
+        display: Roster Test
+        purpose: Inventory fixture
+        owns: [fixture-system]
+        router_key_class: standard
+  tasks:
+    - name: Add an explicit empty roster to the fixture
+      ansible.builtin.set_fact:
+        tofu_data: "{{ tofu_data | combine({'agents': {}}) }}"
+
+    - name: Reapply inventory projection with an empty roster
+      ansible.builtin.import_tasks: ../../inventory/load_tofu/add_lxc_host_inventory.yml
+
+    - name: Assert an empty roster leaves legacy groups and identity unchanged
+      ansible.builtin.assert:
+        that:
+          - groups['hermes_agent_group'] | sort == ['hermes-agent']
+          - hostvars['hermes-agent'].hermes_agent_identity == 'hermes'
+
+    - name: Add a fixture roster entry for an untagged container
+      ansible.builtin.set_fact:
+        tofu_data: "{{ tofu_data | combine({'agents': roster_fixture}) }}"
+
+    - name: Reapply inventory projection with the populated roster
+      ansible.builtin.import_tasks: ../../inventory/load_tofu/add_lxc_host_inventory.yml
+
+    - name: Propagate the populated roster to its fixture host
+      ansible.builtin.set_fact:
+        tofu_data: "{{ tofu_data }}"
+      delegate_to: open-webui
+      delegate_facts: true
+
+    - name: Assert the roster binds its container to its agent identity
+      ansible.builtin.assert:
+        that:
+          - "'open-webui' in groups['hermes_agent_group']"
+          - hostvars['open-webui'].hermes_agent_identity == 'roster-test'
+          - hostvars['hermes-agent'].hermes_agent_identity == 'hermes'
+          - hostvars['open-webui'].ai_agent_by_container['open-webui'] == 'roster-test'
+          - hostvars['open-webui'].ai_agent_owner['fixture-system'] == 'roster-test'
