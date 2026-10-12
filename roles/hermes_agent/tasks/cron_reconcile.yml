@@ -107,6 +107,8 @@
   become_user: "{{ hermes_agent_user }}"
   register: hermes_agent_active_cron_list
   changed_when: false
+  # Read-only; a check run needs the live value to preview active cron state.
+  check_mode: false
   # Always needed now: pausing the three now-superseded *-v2 crons below
   # (zammad/github/summary) is unconditional, not a staged-rollout toggle.
 
@@ -222,11 +224,15 @@
   become: true
   become_user: "{{ hermes_agent_user }}"
   register: hermes_agent_pause_disabled
-  changed_when: hermes_agent_pause_disabled.rc == 0
-  failed_when: hermes_agent_pause_disabled.rc != 0 and 'not found' not in hermes_agent_pause_disabled.stdout
+  changed_when: not ansible_check_mode and hermes_agent_pause_disabled.rc == 0
+  failed_when: >-
+    not ansible_check_mode
+    and hermes_agent_pause_disabled.rc != 0
+    and 'not found' not in hermes_agent_pause_disabled.stdout
   loop: "{{ hermes_agent_direct_cron_jobs | selectattr('enabled', 'defined') | rejectattr('enabled') | list }}"
   loop_control:
     label: "{{ item.name }}"
+  when: not ansible_check_mode
 
 # Wired-memory-ceiling trajectory watch (see defaults/main/102-wired-trajectory.yml
 # for the full precondition). hermes_agent_wired_trajectory_enabled is false
@@ -293,6 +299,8 @@
   when: hermes_agent_cron_failure_deliver | length > 0
   register: hermes_agent_failure_deliver_coverage
   changed_when: false
+  # Read-only; a check run needs the live value to preview cron policy.
+  check_mode: false
 
 - name: Assert every scheduled cron job carries a failure_deliver override
   ansible.builtin.assert:

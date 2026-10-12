@@ -38,6 +38,8 @@
         executable: /bin/bash
       register: hermes_agent_gateway_procs
       changed_when: false
+      # Read-only; a check run needs the live value to preview gateway process health.
+      check_mode: false
       failed_when: >-
         hermes_agent_gateway_procs.stdout_lines | length != 1
         or (hermes_agent_gateway_procs.stdout_lines[0] | split)[1] != '1'
@@ -60,6 +62,8 @@
         -n {{ hermes_agent_verify_journal_lines }} --no-pager -o cat
       register: hermes_agent_gateway_journal
       changed_when: false
+      # Read-only; a check run needs the live value to preview the gateway journal.
+      check_mode: false
 
     - name: Gate — the journal shows no fatal config-rejection lines
       ansible.builtin.assert:
@@ -116,6 +120,8 @@
       delay: "{{ hermes_agent_verify_probe_delay }}"
       until: hermes_agent_hindsight_recall_probe.rc == 0
       changed_when: false
+      # Read-only; a check run needs the live value to preview Hindsight readiness.
+      check_mode: false
       when: hermes_agent_memory_provider == 'hindsight'
 
     # One REAL end-to-end probe: force a tool call through the router at the
@@ -181,6 +187,7 @@
           function.name). This is the outage signature — invalid/empty tool calls
           from a mis-wired brain (wrong parser, null context, unroutable alias).
         success_msg: "Brain returned a valid tool call ({{ hermes_agent_model }})."
+      when: not ansible_check_mode
 
     # Inbound job-submission API (api_server platform), only when the key is
     # seeded: the platform must be listening (health 200 on the guest) AND must
@@ -191,6 +198,8 @@
         url: "http://127.0.0.1:{{ hermes_agent_api_server_port }}/health"
         method: GET
       register: hermes_agent_api_health
+      # Read-only; a check run needs the live value to preview API health.
+      check_mode: false
       retries: "{{ hermes_agent_verify_probe_retries }}"
       delay: "{{ hermes_agent_verify_probe_delay }}"
       until: hermes_agent_api_health.status | default(0) == 200
@@ -219,11 +228,14 @@
         follow_redirects: none
         status_code: 302
       register: hermes_agent_dashboard_probe
+      # Read-only; a check run needs the live value to preview dashboard authentication.
+      check_mode: false
       retries: "{{ hermes_agent_verify_probe_retries }}"
       delay: "{{ hermes_agent_verify_probe_delay }}"
       until: hermes_agent_dashboard_probe.status | default(0) == 302
       failed_when: false
-      when: hermes_agent_dashboard_enabled | bool
+      when:
+        - hermes_agent_dashboard_enabled | bool
 
     - name: Gate — the dashboard redirect targets the self-hosted auth login
       ansible.builtin.assert:
@@ -246,7 +258,9 @@
           200 here means authentication is not in front of the dashboard — the
           exact "Frontend not built" outage shape this gate exists to catch.
         success_msg: "Dashboard redirects unauthenticated requests to auth login."
-      when: hermes_agent_dashboard_enabled | bool
+      when:
+        - hermes_agent_dashboard_enabled | bool
+        - not ansible_check_mode
 
   rescue:
     - name: Verification gate failed — fail loudly with a rollback recipe
@@ -269,6 +283,8 @@
   become_user: "{{ hermes_agent_user }}"
   register: hermes_agent_memory_status
   changed_when: false
+  # Read-only; a check run needs the live value to preview memory status.
+  check_mode: false
   failed_when: false
 
 # Plain `debug: var: stdout_lines` was silent telemetry in practice: it prints

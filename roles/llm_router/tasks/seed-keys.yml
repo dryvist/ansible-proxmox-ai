@@ -61,6 +61,8 @@
       Authorization: "Bearer {{ llm_router_master_key }}"
     timeout: "{{ llm_router_seed_request_timeout }}"
   register: llm_router_existing_keys
+  # Read-only; a check run needs the live value to preview key reconciliation.
+  check_mode: false
 
 # ROTATION. Once minted, a key's `key` value is a LiteLLM primary identifier —
 # there is no "update the value" endpoint — so rotation is delete-then-mint,
@@ -86,7 +88,9 @@
       key_aliases: "{{ llm_router_rotate_key_aliases | default([]) }}"
     status_code: [200, 201]
     timeout: "{{ llm_router_seed_request_timeout }}"
-  when: (llm_router_rotate_key_aliases | default([]) | length) > 0
+  when:
+    - (llm_router_rotate_key_aliases | default([]) | length) > 0
+    - not ansible_check_mode
   no_log: true
 
 # Re-read after a rotation delete, so the alias(es) just removed above are
@@ -107,13 +111,17 @@
       Authorization: "Bearer {{ llm_router_master_key }}"
     timeout: "{{ llm_router_seed_request_timeout }}"
   register: _llm_router_existing_keys_after_rotation
-  when: (llm_router_rotate_key_aliases | default([]) | length) > 0
+  when:
+    - (llm_router_rotate_key_aliases | default([]) | length) > 0
+    - not ansible_check_mode
   no_log: true
 
 - name: Keep the first read when no rotation ran
   ansible.builtin.set_fact:
     llm_router_existing_keys: "{{ _llm_router_existing_keys_after_rotation }}"
-  when: (llm_router_rotate_key_aliases | default([]) | length) > 0
+  when:
+    - (llm_router_rotate_key_aliases | default([]) | length) > 0
+    - not ansible_check_mode
 
 # CREATE, idempotently. seed-keys.yml used to pre-compute an "unseeded"
 # subset from the /key/list read above and mint only that subset — fragile,
@@ -189,7 +197,8 @@
     label: "{{ item.alias }}"
   register: _llm_router_key_generate_result
   failed_when: >-
-    _llm_router_key_generate_result.status not in [200, 201]
+    not ansible_check_mode
+    and _llm_router_key_generate_result.status not in [200, 201]
     and 'already exists' not in
       (_llm_router_key_generate_result.json.error.message | default(''))
   no_log: true
