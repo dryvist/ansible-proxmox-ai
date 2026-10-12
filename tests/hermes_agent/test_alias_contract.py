@@ -39,7 +39,7 @@ def test_registry_capabilities_and_transitional_aliases_are_single_sourced() -> 
     projected_aliases = set(aliases)
     assert projected_aliases.isdisjoint(excluded_non_servable_aliases)
     assert declared_aliases == projected_aliases | excluded_non_servable_aliases
-    assert len(aliases) == 14, aliases
+    assert len(aliases) == 12, aliases
     assert set(aliases.values()) <= capabilities
 
     defaults = role_defaults(REPO_ROOT / "roles" / "llm_router")
