@@ -22,7 +22,8 @@ SPLUNK_FALLBACK = "example-splunk-token"
 def _gateway_key_field(identity: str) -> str:
     defaults = yaml.safe_load((ROLE_ROOT / "defaults" / "main" / "165-owned-mcp.yml").read_text())
     return Environment().from_string(defaults["hermes_agent_gateway_key_field"]).render(
-        hermes_agent_id=identity
+        hermes_agent_id=identity,
+        ai_agent_gateway_key_fields={"example-agent": GATEWAY_KEY_FIELD},
     )
 
 

@@ -6,6 +6,15 @@
 # converge), and deploys the single agentgateway container via Docker Compose.
 # The gateway is stateless: recovery = re-apply the LXC + re-run this role.
 
+- name: Validate that every roster agent has a gateway API key
+  ansible.builtin.assert:
+    that:
+      - item.value | length > 0
+    fail_msg: "No agentgateway key is available for roster agent {{ item.key }}."
+  loop: "{{ agentgateway_docker_roster_keys | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
 - name: Create agentgateway data directory
   ansible.builtin.file:
     path: "{{ agentgateway_docker_data_dir }}"
@@ -19,11 +28,10 @@
     src: config.yaml.j2
     dest: "{{ agentgateway_docker_data_dir }}/config.yaml"
     owner: root
-    group: root
-    # ponytail: 0644 — the distroless image runs nonroot and must read the
-    # ro-mounted config; today it holds no secrets. When backendAuth keys land,
-    # switch to 0640 + the container uid as group (or move keys to env).
-    mode: "0644"
+    # Roster keys are readable by the gateway's nonroot group only.
+    group: "{{ agentgateway_docker_container_gid if agentgateway_docker_roster_keys | length > 0 else 'root' }}"
+    mode: "{{ '0640' if agentgateway_docker_roster_keys | length > 0 else '0644' }}"
+  no_log: true
   notify: Restart agentgateway
 
 - name: Deploy docs-search MCP server script
