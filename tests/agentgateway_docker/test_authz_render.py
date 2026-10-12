@@ -81,6 +81,7 @@ def _render(
         "agentgateway_docker_nautobot_mcp_enabled": True,
         "agentgateway_docker_nautobot_read_token": "example-nautobot-token",
         "agentgateway_docker_nautobot_mcp_port": 8003,
+        "agentgateway_docker_nautobot_openapi_enabled": False,
         "agentgateway_docker_a2a_targets": [
             {"path_prefix": "/a2a/test/", "host": "http://langgraph.example.com:5000"}
         ],
