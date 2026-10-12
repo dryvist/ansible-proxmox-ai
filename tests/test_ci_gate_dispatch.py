@@ -22,6 +22,10 @@ def run_selector(*paths: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run([sys.executable, str(SELECTOR), *paths], check=False, capture_output=True, text=True)
 
 
+def router_paths(shards: list[dict[str, str]]) -> list[str]:
+    return [path for shard in shards for path in shard["playbooks"].split()]
+
+
 def test_full_suite_covers_main_and_develop_pushes_and_promotion_prs() -> None:
     workflow = CI_GATE.read_text()
 
@@ -38,7 +42,10 @@ def test_full_suite_covers_main_and_develop_pushes_and_promotion_prs() -> None:
     matrix_edit = json.loads(run_selector(".github/workflows/_llm-router-contract.yml").stdout)
     full = json.loads(run_selector("--full").stdout)
     assert matrix_edit["run_selector_checks"]
-    assert set(matrix_edit["llm_router_playbooks"]) == set(full["llm_router_playbooks"])
+    assert matrix_edit["llm_router_playbooks"] == full["llm_router_playbooks"]
+    assert len(full["llm_router_playbooks"]) <= 16
+    assert sorted(router_paths(full["llm_router_playbooks"])) == sorted(
+        path for entry in GENERATED_MATRIX for path in entry)
     assert "tests/test_contract_scope_selector.py" in workflow
 
 
@@ -69,7 +76,10 @@ def test_actual_scope_step_dispatches_full_or_focused(
     assert selected["full_suite"] == str(expected_full).lower()
     targets = json.loads(selected["pytest_targets"])
     assert targets == (["tests/"] if expected_full else ["tests/test_contract_scope_selector.py"])
-    assert len(json.loads(selected["llm_router_playbooks"])) == (len(GENERATED_MATRIX) if expected_full else 0)
+    shards = json.loads(selected["llm_router_playbooks"])
+    assert len(shards) <= 16
+    assert bool(shards) is expected_full
+    assert all(set(shard) == {"name", "playbooks"} for shard in shards)
 
 
 @pytest.mark.parametrize(("event", "ref", "base", "allows_skips"), [
