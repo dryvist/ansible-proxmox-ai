@@ -1,27 +1,41 @@
 ---
-# One vllm rung state for test_small_capability_fallback.yml (_vllm_on).
-- name: Set the vllm rung state
+# One availability state for test_small_capability_fallback.yml (_small_case).
+- name: Set the local rung and active GPU profile state
   ansible.builtin.set_fact:
-    llm_router_llm_vllm_enabled: "{{ _vllm_on }}"
-    llm_router_vllm_precheck_passed: "{{ _vllm_on }}"
+    llm_router_llm_vllm_enabled: "{{ _small_case.vllm_on }}"
+    llm_router_vllm_precheck_passed: "{{ _small_case.vllm_on }}"
+    llm_router_gpu_profiles_enabled: "{{ _small_case.gpu_on }}"
+    llm_active_profile: medium-a
     llm_router_llm_vllm_base_url: "http://localhost:10434/v1"
+    llm_router_llm_gpu_base_url: "http://localhost:10434/v1"
 
 - name: Load the registry through the role task
   ansible.builtin.include_role:
     name: llm_router
     tasks_from: registry.yml
 
-- name: Render the model names and capture the projections
+- name: Render the config once for this availability state
   ansible.builtin.set_fact:
-    _rendered_names: >-
-      {{ (lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml).model_list
-         | map(attribute='model_name') | unique | list }}
-    _small_group: >-
-      {{ llm_router_small_capability_name }}
+    _rendered_config: "{{ lookup('template', _role_dir ~ '/templates/config.yaml.j2') | from_yaml }}"
+
+- name: Capture capability, alias, and key projections from the render
+  ansible.builtin.set_fact:
+    _rendered_names: "{{ _rendered_config.model_list | map(attribute='model_name') | unique | list }}"
+    _small_group: "{{ llm_router_small_capability_name }}"
     _key_grants: >-
       {{ llm_router_virtual_keys | rejectattr('alias', 'equalto', 'hindsight')
          | map(attribute='models') | flatten | unique | list }}
-    _hindsight_models: "{{ (llm_router_virtual_keys | selectattr('alias', 'equalto', 'hindsight') | first).models }}"
+    _hindsight_key: "{{ llm_router_virtual_keys | selectattr('alias', 'equalto', 'hindsight') | first }}"
+    _small_gpu_members: >-
+      {{ _rendered_config.model_list
+         | selectattr('model_name', 'equalto', llm_router_small_capability_name)
+         | selectattr('model_info.profile', 'defined')
+         | selectattr('model_info.profile', 'equalto', llm_active_profile) | list }}
+    _small_vllm_members: >-
+      {{ _rendered_config.model_list
+         | selectattr('model_name', 'equalto', llm_router_small_capability_name)
+         | rejectattr('model_info.profile', 'defined')
+         | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_vllm_base_url) | list }}
 
 - name: Name the capability groups this converge does not render
   ansible.builtin.set_fact:
@@ -31,12 +45,21 @@
   ansible.builtin.assert:
     quiet: true
     that:
-      - (_small_group in _rendered_names) == (_vllm_on | bool)
-      - llm_router_small_model == (_small_group if _vllm_on | bool else llm_router_primary_large_model)
+      - (_small_group in _rendered_names) == _small_available
+      - llm_router_small_model == _expected_small_target
       - llm_router_small_model in _rendered_names
+      - not _small_available or _small_gpu_members | length == 1
+      - not _small_case.vllm_on | bool or _small_vllm_members | length == 1
+      - >-
+        _small_case.vllm_on | bool or not _small_case.gpu_on | bool
+        or (_small_gpu_members | length == 1
+            and _small_gpu_members[0].model_info.profile == llm_active_profile)
     fail_msg: >-
-      vllm={{ _vllm_on }}: small model {{ llm_router_small_model }}, rendered
-      {{ _rendered_names }}.
+      state={{ _small_case }}: small model {{ llm_router_small_model }}, rendered {{ _rendered_names }}.
+  vars:
+    _small_available: "{{ _small_case.vllm_on | bool or _small_case.gpu_on | bool }}"
+    _expected_small_target: >-
+      {{ _small_group if _small_available else llm_router_primary_large_model }}
 
 - name: Assert no alias target or key-scope grant names an unrendered capability
   ansible.builtin.assert:
@@ -44,18 +67,30 @@
     that:
       - llm_router_model_group_aliases.values() | list | difference(_rendered_names) | length == 0
       - _key_grants | intersect(_unrendered_capabilities) | length == 0
+      - llm_router_model_group_aliases.fast == _expected_small_target
+      - llm_router_model_group_aliases.cheap == _expected_small_target
+      - llm_router_model_group_aliases.judge == _expected_small_target
+      - llm_router_model_group_aliases.recorder == _expected_small_target
+      - llm_router_model_group_aliases['goal-judge'] == _expected_small_target
     fail_msg: >-
-      vllm={{ _vllm_on }}: unrendered {{ _unrendered_capabilities }}; alias
+      state={{ _small_case }}: unrendered {{ _unrendered_capabilities }}; alias
       targets {{ llm_router_model_group_aliases.values() | list | unique }};
       key grants naming them {{ _key_grants | intersect(_unrendered_capabilities) }}.
+  vars:
+    _small_available: "{{ _small_case.vllm_on | bool or _small_case.gpu_on | bool }}"
+    _expected_small_target: >-
+      {{ _small_group if _small_available else llm_router_primary_large_model }}
 
 - name: Assert the ZDR-isolated hindsight key stays on the small capability and fails closed
   ansible.builtin.assert:
     quiet: true
     that:
-      - _hindsight_models == [_small_group]
+      - _hindsight_key.models == [_small_group]
+      - "'&zdr' in _hindsight_key.tags"
+      - "'!free' in _hindsight_key.tags"
+      - "'!retains' in _hindsight_key.tags"
     fail_msg: >-
-      vllm={{ _vllm_on }}: hindsight key names {{ _hindsight_models }}; it must name only
+      state={{ _small_case }}: hindsight key names {{ _hindsight_key.models }}; it must name only
       {{ _small_group }}, never the fallback {{ llm_router_small_model }}.
 
 - name: Run the role's required-brain assert
@@ -68,7 +103,7 @@
       - _small_only_keys | length > 0
       - _small_only_keys | map(attribute='models') | flatten | unique | difference(_rendered_names) | length == 0
     fail_msg: >-
-      vllm={{ _vllm_on }}: small-only keys {{ _small_only_keys | map(attribute='alias') | list }}
+      state={{ _small_case }}: small-only keys {{ _small_only_keys | map(attribute='alias') | list }}
       name {{ _small_only_keys | map(attribute='models') | flatten | unique }}; rendered {{ _rendered_names }}.
   vars:
     _small_only_keys: "{{ llm_router_virtual_keys | selectattr('models', 'equalto', [llm_router_small_model]) | list }}"

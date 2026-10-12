@@ -1,8 +1,6 @@
 ---
-# The small capability renders only while a deployment serves it. With the vllm
-# rung on, routine callers, the small aliases and the key scopes name it. With
-# the rung off they name the primary capability instead, so no alias target,
-# key-scope grant or required brain names a group the router does not render.
+# The small capability renders while either local GPU member serves it. With
+# neither GPU rung available, routine callers fall back to the primary group.
 # The ZDR-isolated hindsight key is the exception: it keeps the small
 # capability and fails closed rather than follow the fallback.
 #
@@ -10,7 +8,7 @@
 #   PROXMOX_SUBDOMAIN=pve.example.test \
 #     ansible-playbook tests/llm_router/test_small_capability_fallback.yml -i localhost, -c local
 
-- name: Verify the small capability with the vllm rung on and off
+- name: Verify small through either GPU rung and fail closed when neither serves it
   hosts: localhost
   gather_facts: false
   vars:
@@ -44,8 +42,17 @@
       ansible.builtin.include_vars:
         dir: "{{ _role_dir }}/defaults/main"
 
-    - name: Check each vllm rung state
+    - name: Add a synthetic primary GPU server for this render-only contract
+      ansible.builtin.add_host:
+        name: llm-gpu-small-fixture
+        groups: llm_gpu_group
+        ansible_connection: local
+
+    - name: Check the 4080, primary GPU, and fully unavailable cases
       ansible.builtin.include_tasks: tasks/small_capability_case.yml
-      loop: [true, false]
+      loop:
+        - {vllm_on: true, gpu_on: true}
+        - {vllm_on: false, gpu_on: true}
+        - {vllm_on: false, gpu_on: false}
       loop_control:
-        loop_var: _vllm_on
+        loop_var: _small_case

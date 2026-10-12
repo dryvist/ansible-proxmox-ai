@@ -7,6 +7,24 @@
 # CPU pool so this proxy never advertises a backend without a tofu-tagged host.
 llm_router_gpu_models: >-
   {{ llm_router_registry_enabled | selectattr('tier', 'equalto', 'gpu') | list }}
+# A physical profile may serve a second capability group. Its fixed share is
+# deducted from the primary group's catalogued admission before both render.
+llm_router_gpu_capability_members: >-
+  {%- set ns = namespace(entries=[]) -%}
+  {%- for model in llm_router_gpu_models -%}
+  {%- set shares = model.additional_capability_memberships | default([]) -%}
+  {%- if shares | length > 0 -%}
+  {%- set reserved = shares | map(attribute='max_parallel_requests') | map('int') | sum -%}
+  {%- set ns.entries = ns.entries + [model | combine({
+        'max_parallel_requests': model.max_parallel_requests | int - reserved})] -%}
+  {%- else -%}
+  {%- set ns.entries = ns.entries + [model] -%}
+  {%- endif -%}
+  {%- for share in shares -%}
+  {%- set ns.entries = ns.entries + [model | combine(share)] -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {{ ns.entries }}
 llm_router_vllm_medium_registry_entry: >-
   {{ llm_router_model_registry | selectattr('tier', 'equalto', 'gpu')
      | selectattr('profile', 'equalto', 'medium-a') | first }}

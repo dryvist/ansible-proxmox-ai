@@ -33,9 +33,7 @@
       Capability deployment orders are unique across {{ _llm_router_capability_groups | length }} groups.
   vars:
     _llm_router_capability_registry: >-
-      {{ llm_router_model_registry
-         | selectattr('tier', 'in', llm_router_local_registry_tiers)
-         | selectattr('route_group', 'defined') | list }}
+      {{ llm_router_capability_registry_members }}
     _llm_router_capability_groups: >-
       {{ _llm_router_capability_registry | map(attribute='route_group') | unique | list }}
     _llm_router_capability_order_errors: >-
@@ -43,9 +41,53 @@
       {%- for group in _llm_router_capability_groups -%}
       {%- set members = _llm_router_capability_registry
             | selectattr('route_group', 'equalto', group) | list -%}
-      {%- set orders = members | map(attribute='order', default=none) | list -%}
+      {%- set profiles = namespace(names=['always']) -%}
+      {%- for member in members -%}
+      {%- if member.profile is defined and member.profile not in profiles.names -%}
+      {%- set profiles.names = profiles.names + [member.profile] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- for profile in profiles.names -%}
+      {%- set active = members | selectattr('profile', 'undefined') | list -%}
+      {%- if profile != 'always' -%}
+      {%- set active = active + (members | selectattr('profile', 'defined')
+            | selectattr('profile', 'equalto', profile) | list) -%}
+      {%- endif -%}
+      {%- set orders = active | map(attribute='order', default=none) | list -%}
       {%- if none in orders or orders | unique | length != orders | length -%}
-      {%- set ns.errors = ns.errors + [group] -%}
+      {%- set ns.errors = ns.errors + [group ~ ':' ~ profile] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.errors }}
+
+- name: Assert secondary memberships reserve bounded physical admission
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - _llm_router_capability_share_errors | length == 0
+    fail_msg: >-
+      Secondary capability memberships must reserve a positive, bounded share
+      from one GPU profile: {{ _llm_router_capability_share_errors }}.
+    success_msg: Every secondary capability share fits inside its GPU profile admission.
+  vars:
+    _llm_router_capability_share_errors: >-
+      {%- set ns = namespace(errors=[]) -%}
+      {%- for model in llm_router_model_registry -%}
+      {%- set shares = model.additional_capability_memberships | default([]) -%}
+      {%- if shares | length > 0 -%}
+      {%- set invalid = namespace(value=false, reserve=0) -%}
+      {%- for share in shares -%}
+      {%- set invalid.reserve = invalid.reserve + (share.max_parallel_requests | default(0) | int) -%}
+      {%- if share.route_group is not defined or share.order is not defined
+            or (share.max_parallel_requests | default(0) | int) <= 0 -%}
+      {%- set invalid.value = true -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- if model.tier != 'gpu' or model.max_parallel_requests is not defined
+            or invalid.value or invalid.reserve >= (model.max_parallel_requests | default(0) | int) -%}
+      {%- set ns.errors = ns.errors + [model.client_model_id] -%}
+      {%- endif -%}
       {%- endif -%}
       {%- endfor -%}
       {{ ns.errors }}

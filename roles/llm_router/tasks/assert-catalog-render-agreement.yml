@@ -60,12 +60,19 @@
       {%- set rendered_models = _llm_router_parity_config.model_list | default([]) -%}
       {%- set local_tiers = ['local-large', 'light', 'vllm', 'hermes-local', 'cpu-moe', 'cpu-9b'] -%}
       {%- for model in llm_router_registry_enabled -%}
+      {%- if model.tier == 'gpu' -%}
+      {%- set deployments = rendered_models | selectattr('model_info.profile', 'defined')
+            | selectattr('model_info.profile', 'equalto', model.profile)
+            | selectattr('litellm_params.api_base', 'equalto', llm_router_llm_gpu_base_url) | list -%}
+      {%- else -%}
       {%- set model_name = model.route_group | default(model.client_model_id) -%}
-      {%- set deployments = rendered_models | selectattr('model_name', 'equalto', model_name) | list -%}
+      {%- set deployments = rendered_models | selectattr('model_name', 'equalto', model_name)
+            | rejectattr('model_info.profile', 'defined') | list -%}
       {%- set profile_endpoints = {'llama_cpp_vulkan': llm_router_llm_vllm_base_url | default(none)} -%}
       {%- set expected_endpoint = profile_endpoints.get(model.catalog_profile_name, none) -%}
       {%- if expected_endpoint is not none -%}
       {%- set deployments = deployments | selectattr('litellm_params.api_base', 'equalto', expected_endpoint) | list -%}
+      {%- endif -%}
       {%- endif -%}
       {%- for deployment in deployments -%}
       {%- if model.context_window is defined -%}
@@ -88,7 +95,7 @@
       {%- endif -%}
       {%- endif -%}
       {%- endif -%}
-      {%- if model.max_parallel_requests is defined -%}
+      {%- if model.max_parallel_requests is defined and model.tier != 'gpu' -%}
       {%- set actual_parallel = deployment.litellm_params.max_parallel_requests | default(none) -%}
       {%- if actual_parallel is none or actual_parallel | int != model.max_parallel_requests | int -%}
       {%- set ns.errors = ns.errors + [
@@ -116,6 +123,16 @@
       ] -%}
       {%- endif -%}
       {%- endfor -%}
+      {%- if model.tier == 'gpu' and model.max_parallel_requests is defined -%}
+      {%- set actual_parallel = deployments | map(attribute='litellm_params.max_parallel_requests')
+            | map('int') | sum -%}
+      {%- if actual_parallel != model.max_parallel_requests | int -%}
+      {%- set ns.errors = ns.errors + [
+        model.client_model_id ~ ' physical max_parallel_requests=' ~ (actual_parallel | string)
+        ~ ', expected ' ~ (model.max_parallel_requests | string)
+      ] -%}
+      {%- endif -%}
+      {%- endif -%}
       {%- endfor -%}
       {%- endfor -%}
       {{ ns.errors | to_json }}

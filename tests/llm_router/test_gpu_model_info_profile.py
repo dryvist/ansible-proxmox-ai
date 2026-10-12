@@ -42,7 +42,7 @@ def _render(models: list[dict]) -> list[dict]:
         delegation_hints=lambda model: "",
     )
     text = env.get_template("model-list-gpu.yaml.j2").render(
-        llm_router_gpu_models=models,
+        llm_router_gpu_capability_members=models,
         llm_router_deployment_tags_by_entry={f"{m['client_model_id']}|{m['tier']}": [] for m in models},
         llm_router_llm_gpu_base_url="http://placeholder/v1",
         llm_router_light_api_key="placeholder",
@@ -63,6 +63,26 @@ def test_each_profile_renders_its_name_into_model_info():
         assert len(rendered) == 1
         assert rendered[0]["model_info"]["profile"] == entry["profile"]
         assert rendered[0]["model_name"] == entry.get("route_group", entry["client_model_id"])
+
+
+def test_shared_profile_capability_members_keep_one_backend_and_split_admission():
+    entry = next(model for model in _entries() if model["profile"] == "medium-a")
+    share = entry["additional_capability_memberships"][0]
+    deployments = _render(
+        [
+            {**entry, "max_parallel_requests": entry["max_parallel_requests"] - share["max_parallel_requests"]},
+            {**entry, **share},
+        ]
+    )
+
+    assert [deployment["model_name"] for deployment in deployments] == [
+        entry["route_group"],
+        share["route_group"],
+    ]
+    assert sum(
+        deployment["litellm_params"]["max_parallel_requests"] for deployment in deployments
+    ) == entry["max_parallel_requests"]
+    assert {deployment["model_info"]["profile"] for deployment in deployments} == {entry["profile"]}
 
 
 def test_a_deployment_without_a_profile_renders_no_profile_marker():

@@ -151,17 +151,24 @@ llm_router_hermes_local_4080_id: >-
 llm_router_capability_members: >-
   {{ (llm_router_large_models + llm_router_light_models
       + llm_router_cpu_moe_models + llm_router_cpu_9b_models
-      + llm_router_vllm_models + llm_router_gpu_models)
+      + llm_router_vllm_models + llm_router_gpu_capability_members)
      | selectattr('route_group', 'defined')
      | sort(attribute='order') | list }}
 # The capability names a deployment renders under in this converge.
 llm_router_rendered_capability_names: >-
   {{ llm_router_capability_members | map(attribute='route_group') | unique | list }}
 llm_router_capability_registry_members: >-
-  {{ llm_router_model_registry
-     | selectattr('tier', 'in', llm_router_local_registry_tiers)
-     | selectattr('route_group', 'defined')
-     | sort(attribute='order') | list }}
+  {%- set ns = namespace(entries=[]) -%}
+  {%- for model in llm_router_model_registry
+        | selectattr('tier', 'in', llm_router_local_registry_tiers) -%}
+  {%- if model.route_group is defined -%}
+  {%- set ns.entries = ns.entries + [model] -%}
+  {%- endif -%}
+  {%- for share in model.additional_capability_memberships | default([]) -%}
+  {%- set ns.entries = ns.entries + [model | combine(share)] -%}
+  {%- endfor -%}
+  {%- endfor -%}
+  {{ ns.entries | sort(attribute='order') }}
 
 # The SAME prefill-derived cap model-list.yaml.j2 applies to every
 # vllm/hermes-local deployment: the smaller of the context window and what
@@ -214,5 +221,14 @@ llm_router_registry_enabled_route_names: >-
             and (m.tier != 'vllm' or llm_router_vllm_precheck_passed | default(false) | bool)) -%}
   {%- set ns.names = ns.names + [m.route_group | default(m.client_model_id)] -%}
   {%- endif -%}
+  {%- endfor -%}
+  {{ (ns.names + llm_router_registry_enabled_additional_route_names) | unique | list }}
+
+llm_router_registry_enabled_additional_route_names: >-
+  {%- set ns = namespace(names=[]) -%}
+  {%- for model in llm_router_registry_enabled -%}
+  {%- for membership in model.additional_capability_memberships | default([]) -%}
+  {%- set ns.names = ns.names + [membership.route_group] -%}
+  {%- endfor -%}
   {%- endfor -%}
   {{ ns.names | unique | list }}

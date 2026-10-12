@@ -63,6 +63,14 @@
           - llm_router_gpu_models[0].order | int == 1
           - _medium_members | length == 2
           - _medium_members | map(attribute='litellm_params.order') | map('int') | sort == [1, 2]
+          - _small_members | length == 2
+          - _small_members | map(attribute='litellm_params.order') | map('int') | sort == [1, 2]
+          - _gpu_small_members | length == 1
+          - _profile_deployments | length == 2
+          - >-
+            _profile_deployments | map(attribute='litellm_params.max_parallel_requests')
+            | map('int') | sum == llm_router_gpu_models[0].max_parallel_requests | int
+          - _profile_deployments | selectattr('litellm_params.max_parallel_requests', 'equalto', 4) | list | length == 1
           - llm_router_model_group_aliases.values() | select('equalto', llm_router_primary_model) | list | length > 0
           - llm_router_gpu_profile_aliases | length == 0
         fail_msg: "medium capability members={{ _medium_members }}"
@@ -70,6 +78,17 @@
         _medium_members: >-
           {{ _medium_config.model_list
              | selectattr('model_name', 'equalto', llm_router_primary_model) | list }}
+        _small_members: >-
+          {{ _medium_config.model_list
+             | selectattr('model_name', 'equalto', llm_router_small_capability_name) | list }}
+        _gpu_small_members: >-
+          {{ _small_members
+             | selectattr('model_info.profile', 'defined')
+             | selectattr('model_info.profile', 'equalto', llm_active_profile) | list }}
+        _profile_deployments: >-
+          {{ _medium_config.model_list
+             | selectattr('model_info.profile', 'defined')
+             | selectattr('model_info.profile', 'equalto', llm_active_profile) | list }}
 
     - name: Select the small profile and render its same-name member pair
       ansible.builtin.set_fact:
@@ -88,6 +107,10 @@
           - llm_router_gpu_models[0].order | int == 2
           - _small_members | length == 2
           - _small_members | map(attribute='litellm_params.order') | map('int') | sort == [1, 2]
+          - _profile_deployments | length == 1
+          - >-
+            _profile_deployments | map(attribute='litellm_params.max_parallel_requests')
+            | map('int') | sum == llm_router_gpu_models[0].max_parallel_requests | int
           - >-
             _vllm_entry.litellm_params.max_parallel_requests | int
             == llm_router_gpu_models[0].max_parallel_requests | int
@@ -96,6 +119,10 @@
         _small_members: >-
           {{ _small_config.model_list
              | selectattr('model_name', 'equalto', llm_router_small_model) | list }}
+        _profile_deployments: >-
+          {{ _small_config.model_list
+             | selectattr('model_info.profile', 'defined')
+             | selectattr('model_info.profile', 'equalto', llm_active_profile) | list }}
         _vllm_entry: >-
           {{ _small_members
              | selectattr('litellm_params.order', 'equalto', llm_router_gpu_models[0].order)

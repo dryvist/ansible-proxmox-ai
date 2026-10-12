@@ -185,6 +185,15 @@ def test_router_admission_supports_load_sweep_and_engine_slots() -> None:
 
     assert caps["medium-a"] == 64
 
+    medium_a = next(entry for entry in entries if entry["profile"] == "medium-a")
+    shares = medium_a["additional_capability_memberships"]
+    assert shares == [
+        {"route_group": "small", "order": 2, "max_parallel_requests": 4}
+    ]
+    assert medium_a["max_parallel_requests"] - sum(
+        share["max_parallel_requests"] for share in shares
+    ) > 0
+
 
 def test_router_consumes_the_shared_gpu_profile_projection() -> None:
     defaults = yaml.safe_load(REGISTRY_DEFAULTS.read_text(encoding="utf-8"))
