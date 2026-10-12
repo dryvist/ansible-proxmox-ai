@@ -62,13 +62,17 @@
       {%- for model in llm_router_registry_enabled -%}
       {%- set model_name = model.route_group | default(model.client_model_id) -%}
       {%- set upstream_model = model.litellm_model_name | default(model.provider ~ '/' ~ model.upstream_model_id) -%}
-      {%- set deployments = rendered_models
-            | selectattr('model_name', 'equalto', model_name)
-            | selectattr('litellm_params.model', 'equalto', upstream_model) | list -%}
+      {%- set named_deployments = rendered_models | selectattr('model_name', 'equalto', model_name) | list -%}
+      {%- set deployments = named_deployments | selectattr('litellm_params.model', 'equalto', upstream_model) | list -%}
       {%- set profile_endpoints = {'llama_cpp_vulkan': llm_router_llm_vllm_base_url | default(none)} -%}
       {%- set expected_endpoint = profile_endpoints.get(model.catalog_profile_name | default(''), none) -%}
       {%- if expected_endpoint is not none -%}
       {%- set deployments = deployments | selectattr('litellm_params.api_base', 'equalto', expected_endpoint) | list -%}
+      {%- endif -%}
+      {%- if named_deployments and not deployments and not (model.probe_before_render | default(false) | bool) -%}
+      {%- set ns.errors = ns.errors + [
+        model.client_model_id ~ ' has no rendered ' ~ model_name ~ ' deployment for ' ~ upstream_model
+      ] -%}
       {%- endif -%}
       {%- for deployment in deployments -%}
       {%- if model.context_window is defined -%}
