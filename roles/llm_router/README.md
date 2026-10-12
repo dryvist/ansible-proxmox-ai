@@ -8,8 +8,8 @@ so the backend topology is swappable with no app change.
 
 ## Installation
 
-The role installs the pinned proxy extra litellm[proxy]==1.104.2; release-specific
-behavior is verified against that pin.
+The role installs the `litellm[proxy]` extra pinned in `defaults/main/00-identity.yml`;
+release-specific behavior is verified against that pin.
 
 Ships with the `ansible-proxmox-apps` repo; no external install. Wired into
 `playbooks/site.yml` against `llm_router_group` (guests tagged `llm-router` in the
@@ -175,7 +175,7 @@ reconcile only in `rebuild`. See
 - **`initial`** (default) — the converge seeds `router_settings` into the
   database only the first time, when no row exists yet
   (`tasks/probe-router-settings.yml`, a read-only `psql` check —
-  confirmed against 1.102.0; recheck the endpoint after the 1.104.0 proxy
+  confirmed against an older release; recheck the endpoint after the proxy
   refactor). Once a row
   exists, a converge leaves it alone; `tasks/sync-router-settings.yml` is
   skipped.
@@ -186,7 +186,7 @@ reconcile only in `rebuild`. See
   back to `initial`.
 
 The historical startup merge, UI write, and cross-pool propagation facts were
-verified against LiteLLM 1.102.0; 1.104.0 refactored proxy internals, so
+verified against an older LiteLLM release; a later release refactored proxy internals, so
 revalidate those details before relying on them. They are documented in
 [`docs/LLM_ROUTER_SETTINGS_SEED_MODE.md`](../../docs/LLM_ROUTER_SETTINGS_SEED_MODE.md).
 
