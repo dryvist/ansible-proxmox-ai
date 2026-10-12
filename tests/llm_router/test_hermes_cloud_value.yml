@@ -47,7 +47,7 @@
           {%- set ns.groups = ns.groups + [m.route_group] -%}
           {%- set _members = (llm_router_hermes_cloud_models_credentialed
                 | selectattr('route_group', 'equalto', m.route_group)
-                | sort(attribute='input_cost_per_token')
+                | sort(attribute='route_rank')
                 | map(attribute='client_model_id') | list) -%}
           {%- set ns.rows = ns.rows + [{'group': m.route_group, 'members': _members}] -%}
           {%- endif -%}
@@ -63,7 +63,7 @@
               groups: "{{ llm_router_hermes_cloud_paid_groups }}"
               members: >-
                 {{ llm_router_hermes_cloud_models_credentialed
-                   | selectattr('input_cost_per_token', 'defined')
+                   | selectattr('price_class', 'equalto', 'paid')
                    | rejectattr('hermes_chain', 'defined')
                    | rejectattr('review_private_only', 'defined')
                    | map(attribute='client_model_id') | list }}
@@ -71,14 +71,13 @@
               groups: "{{ llm_router_hermes_cloud_free_groups }}"
               members: >-
                 {{ llm_router_hermes_cloud_models_credentialed
-                   | rejectattr('input_cost_per_token', 'defined')
-                   | rejectattr('subscription', 'defined')
+                   | selectattr('price_class', 'equalto', 'free')
                    | map(attribute='client_model_id') | list }}
             subscription:
               groups: "{{ llm_router_hermes_cloud_subscription_groups }}"
               members: >-
                 {{ llm_router_hermes_cloud_models_credentialed
-                   | selectattr('subscription', 'defined')
+                   | selectattr('price_class', 'equalto', 'subscription')
                    | rejectattr('review_private_only', 'defined')
                    | map(attribute='client_model_id') | list }}
           d1:
@@ -217,19 +216,17 @@
           # that handler raises on every success event from any deployment it
           # does not manage, leaving the request's span half-closed.
           #
-          # The policy the tripwire guards is unchanged — real prices, cheaper
+          # The policy the tripwire guards is unchanged — the explicitly ranked
           # final-resort model first. It is now asserted directly: the key must
           # be ABSENT (so reintroducing the mechanism trips this), and the two
-          # final-resort deployments must appear in ascending input price, read
-          # from their own litellm_params rather than restated as literals.
+          # final-resort deployments must appear in registry rank order.
           - "'routing_groups' not in _config.router_settings"
           - _final_resort | length > 0
           - _final_resort | length == _registry_final_resort | length
           - >-
-            _final_resort | map(attribute='litellm_params.input_cost_per_token')
-            | map('float') | list | sort
-            == _final_resort | map(attribute='litellm_params.input_cost_per_token')
-               | map('float') | list
+            _final_resort | map(attribute='litellm_params.model') | list
+            == _registry_final_resort | sort(attribute='route_rank')
+               | map(attribute='litellm_model_name') | list
         fail_msg: >-
           Hermes cloud policy drifted: chain={{ _fallback_chain }},
           cloud_count={{ _cloud_models | length }}, monthly={{ _monthly_total }},
@@ -302,8 +299,7 @@
         # Paid credentialed hermes-cloud registry entries, counted from the registry.
         _registry_paid_cloud: >-
           {{ llm_router_hermes_cloud_models_credentialed
-             | selectattr('input_cost_per_token', 'defined')
-             | rejectattr('input_cost_per_token', 'in', [0, '0', '0.0'])
+             | selectattr('price_class', 'equalto', 'paid')
              | map(attribute='client_model_id') | select('match', '^hermes-cloud-') | list }}
         _registry_final_resort: >-
           {{ llm_router_hermes_cloud_models_credentialed

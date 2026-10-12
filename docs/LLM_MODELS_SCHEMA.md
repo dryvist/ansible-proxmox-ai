@@ -57,9 +57,20 @@ Optional:
                       `enabled: false`; the registry/render parity test
                       enforces that it is absent from every rendered route.
   subscription        true marks a flat-rate rung with no per-token price that
-                      is NOT free (the chatgpt/ rung): it joins neither the
-                      free nor the paid segment. Ladder order is derived from
-                      the deployment class, not this flag alone.
+                      is NOT free. On `hermes-cloud`, it must agree with
+                      `price_class: subscription` and joins the subscription
+                      segment. The marker records provider identity; routing
+                      reads `price_class`.
+  price_class         `free` | `paid` | `subscription`. Required on every
+                      `hermes-cloud` entry with `route_group`, including
+                      disabled entries. It defines routing segments without
+                      depending on whether an accounting rate is present. The
+                      `subscription` marker, when present, must agree with
+                      this value; missing or unknown classes fail an assertion.
+  route_rank          Integer order within a `hermes-cloud` route group.
+                      Required with `price_class`; use gaps of ten for
+                      insertions. The existing `order` field orders deployments
+                      of the same capability and does not order route members.
   review_private_only true keeps a credentialed deployment out of shared
                       fallback ladders and broad key scopes; only the
                       review-private role can widen its CI key to that group.
@@ -117,12 +128,13 @@ Optional:
                       failover deployment when the role has a standby backend
                       URL configured.
   input_cost_per_token / output_cost_per_token
-                      Real USD/token list prices used by cost routing and spend
-                      accounting. Never alter these to encode preference. OMIT
-                      them on a flat-rate subscription tier rather than writing
-                      0: the marginal price there is not a number, and a
-                      literal zero would report the tier as free in spend
-                      accounting and rank it alongside genuinely free rungs.
+                      Optional accounting metadata passed through from
+                      LiteLLM's `model_prices_and_context_window.json`. These
+                      fields are not routing facts and must not be typed into
+                      the registry. Route preference uses `route_rank`; the
+                      free, paid and subscription split uses `price_class`.
+                      When an accounting rate is unavailable, omit the field
+                      instead of emitting zero.
   credential_env      One provider-level environment variable:
                       `OPENROUTER_API_KEY`, `GEMINI_API_KEY`,
                       `DASHSCOPE_API_KEY`, or `OPENCODE_API_KEY`. REQUIRED,
