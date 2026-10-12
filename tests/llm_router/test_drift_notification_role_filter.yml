@@ -1,0 +1,38 @@
+---
+# Include a safe production role task so Ansible loads the role's filter plugin
+# through its normal role path, then exercise the filter on comparator output.
+- name: Exercise router drift batching through the role plugin loader
+  hosts: localhost
+  gather_facts: false
+  vars:
+    llm_router_drift_key_git_file: roles/llm_router/defaults/main/56-virtual-keys.yml
+    _llm_router_drift_expected_keys: []
+    _llm_router_drift_live_keys: []
+    _llm_router_drift_expected_settings:
+      - name: router setting
+        git_file: roles/llm_router/templates/config.yaml.j2
+        expected:
+          routing_strategy: baseline
+        live:
+          routing_strategy: changed-value
+  tasks:
+    - name: Run the safe production comparator as a role task
+      ansible.builtin.include_role:
+        name: llm_router
+        tasks_from: drift-compare.yml
+
+    - name: Batch comparator results with the role filter
+      ansible.builtin.set_fact:
+        _test_drift_batches: >-
+          {{ _llm_router_drift_messages | drift_notification_batches }}
+
+    - name: Keep comparator findings intact and values sanitized
+      ansible.builtin.assert:
+        quiet: true
+        that:
+          - _llm_router_drift_messages | length == 1
+          - _test_drift_batches.messages | length == 1
+          - _test_drift_batches.oversized == []
+          - _test_drift_batches.messages[0].git_file == 'roles/llm_router/templates/config.yaml.j2'
+          - _test_drift_batches.messages[0].text is search('router setting routing_strategy')
+          - "'changed-value' not in (_test_drift_batches | to_json)"
