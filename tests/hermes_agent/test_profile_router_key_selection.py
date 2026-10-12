@@ -15,6 +15,7 @@ import pytest
 from jinja2 import Environment, FileSystemLoader, Undefined
 
 from conftest import ROLE_ROOT
+from _role_files import role_tasks
 
 
 def _mandatory(value, msg=""):
@@ -111,3 +112,45 @@ def test_rendered_env_never_carries_the_shared_master_key_variable() -> None:
     rendered = env.get_template("hermes-env.j2").render(**context)
     assert "ai_orchestration_model_api_key" not in rendered
     assert "SHARED-MASTER-KEY" not in rendered
+
+
+def test_empty_resolved_router_keys_fail_the_pre_env_asserts() -> None:
+    tasks = role_tasks(ROLE_ROOT)
+    default_assert = next(
+        task for task in tasks
+        if task["name"] == "Assert the resolved Hermes router key is a non-empty string"
+    )
+    assert default_assert["no_log"] is True
+    default_conditions = default_assert["ansible.builtin.assert"]["that"]
+    assert default_conditions == [
+        "hermes_agent_model_api_key is string",
+        "hermes_agent_model_api_key | length > 0",
+    ]
+    default_condition = Environment().compile_expression(
+        " and ".join(f"({condition})" for condition in default_conditions)
+    )
+    assert default_condition(hermes_agent_model_api_key="") is False
+    assert default_condition(hermes_agent_model_api_key="sk-owned-key") is True
+
+    profile_assert = next(
+        task for task in tasks
+        if task["name"] == "Assert each Hermes profile router key is a non-empty string"
+    )
+    assert profile_assert["no_log"] is True
+    profile_conditions = profile_assert["ansible.builtin.assert"]["that"]
+    profile_condition = Environment().compile_expression(
+        " and ".join(f"({condition})" for condition in profile_conditions)
+    )
+    assert profile_condition(item={"name": "orchestrator"}, bao_apps_secrets={}) is False
+    assert profile_condition(
+        item={"name": "orchestrator"},
+        bao_apps_secrets={"hermes_orchestrator_llm_router_key": "sk-owned-key"},
+    ) is True
+
+    config_tasks = (ROLE_ROOT / "tasks" / "config_and_content.yml").read_text()
+    assert config_tasks.index("Assert the resolved Hermes router key") < config_tasks.index(
+        "Deploy the Hermes secrets file (.env)"
+    )
+    assert config_tasks.index("Assert each Hermes profile router key") < config_tasks.index(
+        "Deploy the Hermes secrets file (.env)"
+    )

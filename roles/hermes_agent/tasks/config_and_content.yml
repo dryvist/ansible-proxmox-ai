@@ -63,12 +63,52 @@
           if hermes_agent_context_limits_file.stat.exists else {})
          | combine(hermes_agent_context_limits_override, recursive=true) }}
 
-# Every store's router key is mandatory at the template layer now
-# (hermes-env.j2 / hermes-env-profile.j2, defaults/main/20-brain-and-slack.yml)
-# — an unseeded hermes_<profile>_llm_router_key fails the converge loudly
-# right there, so the soft "fell back to the master key" warning this task
-# block used to render is no longer reachable and has been removed rather
-# than left as dead code.
+- name: Assert the resolved Hermes router key is a non-empty string
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - hermes_agent_model_api_key is string
+      - hermes_agent_model_api_key | length > 0
+    fail_msg: >-
+      hermes_agent_model_api_key must be a non-empty string. Seed
+      bao_apps_secrets[{{ ('hermes_default_llm_router_key' if hermes_agent_id == 'hermes'
+      else (hermes_agent_id | replace('-', '_')) ~ '_llm_router_key') | to_json }}].
+  no_log: true
+
+- name: Assert each Hermes profile router key is a non-empty string
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        bao_apps_secrets.get('hermes_' ~ (item.name | replace('-', '_')) ~ '_llm_router_key', '') is string
+      - >-
+        bao_apps_secrets.get('hermes_' ~ (item.name | replace('-', '_')) ~ '_llm_router_key', '') | length > 0
+    fail_msg: >-
+      Profile {{ item.name }} router key must be a non-empty string. Seed
+      bao_apps_secrets['hermes_{{ item.name | replace('-', '_') }}_llm_router_key'].
+  no_log: true
+  loop: "{{ hermes_agent_profiles }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Assert the public gateway router key is non-empty when enabled
+  ansible.builtin.assert:
+    quiet: true
+    that:
+      - >-
+        bao_apps_secrets.get(
+        'hermes_' ~ (hermes_agent_github_public_gateway_profile | replace('-', '_')) ~ '_llm_router_key', '') is string
+      - >-
+        bao_apps_secrets.get(
+        'hermes_' ~
+        (hermes_agent_github_public_gateway_profile | replace('-', '_')) ~
+        '_llm_router_key', '') | length > 0
+    fail_msg: >-
+      Public gateway router key must be a non-empty string. Seed
+      bao_apps_secrets['hermes_{{ hermes_agent_github_public_gateway_profile | replace('-', '_') }}_llm_router_key'].
+  no_log: true
+  when: hermes_agent_github_route_public_enabled | bool
+
 - name: Deploy the Hermes secrets file (.env)
   ansible.builtin.template:
     src: hermes-env.j2
