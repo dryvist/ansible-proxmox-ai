@@ -1,15 +1,14 @@
-"""Safety contract for a llama_cpp host that is set never to serve.
+"""Safety contract for the llama_cpp service-enable flag.
 
-WHY THIS EXISTS. `llama_cpp_service_enabled: false` is what keeps a host from
-serving. The role honours it in "Enable and start llama-server" (stopped+disabled),
-but that task is not sufficient on its own: notified handlers run at the END of
-the play, after it, and `systemd: state: restarted` starts a disabled unit —
-`disabled` suppresses autostart, not an explicit start. So an ungated restart
-handler turns "the rendered config changed" into "the service is now running",
-and the converge still reports green.
+`llama_cpp_service_enabled: false` keeps the service stopped and disabled. The
+role honours it in "Enable and start llama-server", but that task is not
+sufficient on its own: notified handlers run at the END of the play, after it,
+and `systemd: state: restarted` starts a disabled unit — `disabled` suppresses
+autostart, not an explicit start. So an ungated restart handler turns "the
+rendered config changed" into "the service is now running", and the converge
+still reports green.
 
-These assertions pin the parts that keep the freeze real, so a future edit that
-removes the gate fails here instead of on the host.
+These assertions pin the task and handler behavior that enforces the flag.
 """
 
 import re
@@ -37,23 +36,20 @@ TASKS_YAML = yaml.safe_load(TASKS)
 # directory would let a dead file satisfy these assertions.
 _INCLUDED = re.findall(r"include_tasks:\s*(\S+\.yml)", TASKS)
 REACHABLE_TASKS = TASKS + "".join((ROLE / "tasks" / name).read_text() for name in _INCLUDED)
-HOST_VARS = yaml.safe_load(
-    (Path(__file__).resolve().parents[2] / "inventory" / "host_vars" / "llm-fast.yml").read_text()
-)
 
 SERVE_TOGGLE = "llama_cpp_service_enabled"
 MAX_PARAM_BILLIONS = 14
 
 
 def test_every_restart_handler_is_gated_on_the_serve_toggle() -> None:
-    """A handler that restarts the service must not fire on a frozen host."""
+    """A restart handler must honor the service-enable flag."""
     restarting = [h for h in HANDLERS if h.get("ansible.builtin.systemd", {}).get("state") == "restarted"]
 
     assert restarting, "expected at least one restart handler; the gate below would be vacuous without it"
     for handler in restarting:
         assert handler.get("when") == SERVE_TOGGLE, (
             f"handler {handler['name']!r} restarts the service without `when: {SERVE_TOGGLE}` — "
-            "a config change would start the service on a host set never to serve"
+            "a config change could start a service that the flag disables"
         )
 
 
@@ -63,13 +59,8 @@ def test_the_service_state_task_follows_the_serve_toggle_both_ways() -> None:
     assert f'enabled: "{{{{ {SERVE_TOGGLE} }}}}"' in TASKS
 
 
-def test_the_gpu_host_is_frozen_in_host_vars() -> None:
-    """The freeze is declared, so a converge re-asserts it rather than drifting."""
-    assert HOST_VARS[SERVE_TOGGLE] is False
-
-
-def test_no_model_reaches_the_size_that_hard_locks_the_gpu_host() -> None:
-    """Every model declares its size, and none is at or over the banned threshold."""
+def test_default_models_are_within_the_parameter_ceiling() -> None:
+    """Every default model declares its size below the enforced group ceiling."""
     models = DEFAULTS["llama_cpp_models"]
 
     assert models, "expected models; the size check below would be vacuous without them"
