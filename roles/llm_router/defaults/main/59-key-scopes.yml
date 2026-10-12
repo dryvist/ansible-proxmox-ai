@@ -14,7 +14,10 @@
 # here avoids an order-dependent undefined value in include_vars dir.
 _llm_router_declared_virtual_keys: >-
   {{ _llm_router_hermes_profile_keys + _llm_router_static_virtual_keys
-     + _llm_router_target_virtual_keys + _llm_router_workstation_virtual_keys }}
+     + _llm_router_target_virtual_keys
+     + (_llm_router_workstation_virtual_keys
+        | map('combine', {'owner_filter': false}) | list)
+     + _llm_router_agent_keys }}
 
 # Names are declared before their OpenBao sources exist, but the create loop
 # sees only enabled keys. This projection drives the contract and report.
@@ -137,8 +140,16 @@ llm_router_virtual_keys: >-
   {%- set _purpose = (k.metadata | default({})).get('purpose', 'benchmark' if k.alias == 'benchmark' else 'live') -%}
   {%- set _permissions = k.object_permission
         | default(llm_router_mcp_default_object_permission) -%}
+  {%- if _permissions.mcp_servers is defined and k.owner_filter | default(true) -%}
+  {%- set _owned_elsewhere = ai_agent_owner | default({}) | dict2items
+        | rejectattr('value', 'equalto', k.alias) | map(attribute='key') | list -%}
+  {%- set _permissions = _permissions | combine({'mcp_servers':
+        _permissions.mcp_servers | reject('in', _owned_elsewhere) | list}, recursive=true) -%}
+  {%- endif -%}
+  {%- set _key = k | dict2items
+        | rejectattr('key', 'equalto', 'owner_filter') | items2dict -%}
   {%- set _sensitivity_tag = k.sensitivity_tag | default('&sensitivity:sensitive') -%}
-  {%- set _ = out.append(k | combine({
+  {%- set _ = out.append(_key | combine({
         'models': ns.models | unique | list,
         'sensitivity_tag': _sensitivity_tag,
         'object_permission': _permissions,
