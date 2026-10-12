@@ -21,10 +21,18 @@ open_webui_port: "{{ tofu_data.constants.service_ports.open_webui_web }}"
 # master key, env-sourced (SOPS/Doppler).
 open_webui_openai_api_base_url: "https://llm.{{ lookup('env', 'PROXMOX_SUBDOMAIN') }}/v1"
 open_webui_openai_api_key: "{{ lookup('env', 'OPEN_WEBUI_OPENAI_API_KEY') }}"
-# The chat box default follows the fabric-wide ai_default_model single source
-# (inventory/group_vars/all.yml) — the SAME value the Hermes Agent brain uses,
-# by construction. Change it there, never re-pin here.
-open_webui_default_model: "{{ ai_default_model }}"
+# OpenBao may still store the selected registry model id. The router now serves
+# its capability group, so resolve catalog ids and stable aliases through the
+# registry loaded by playbooks/site.yml before seeding Open WebUI.
+open_webui_model_name_map: >-
+  {%- set ns = namespace(names=llm_router_model_group_aliases | default({})) -%}
+  {%- for m in llm_router_capability_members | default([]) -%}
+  {%- if m.context_window is defined and m.context_window is not none -%}
+  {%- set _ = ns.names.update({m.client_model_id: m.route_group}) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ ns.names }}
+open_webui_default_model: "{{ open_webui_model_name_map.get(ai_default_model, ai_default_model) }}"
 
 # Public URL via Traefik — derived from the PROXMOX_SUBDOMAIN var (pve.<apex>),
 # never hardcoded. Matches the `llm` ingress entry in terraform-proxmox locals.tf.

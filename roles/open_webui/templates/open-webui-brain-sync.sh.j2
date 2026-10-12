@@ -28,6 +28,7 @@ ROUTER_BASE_URL="{{ open_webui_openai_api_base_url }}"
 ENV_FILE="/etc/open-webui.env"
 STATE_FILE="{{ open_webui_brain_sync_state_file }}"
 FALLBACK_MODEL="{{ open_webui_default_model }}"
+MODEL_NAME_MAP={{ open_webui_model_name_map | to_json | quote }}
 
 mkdir -p "{{ open_webui_brain_sync_state_dir }}"
 [[ -f "${STATE_FILE}" ]] || printf '%s\n' "${FALLBACK_MODEL}" > "${STATE_FILE}"
@@ -60,7 +61,9 @@ if [[ -z "${CANDIDATE}" ]]; then
   exit 0
 fi
 
-if [[ "${CANDIDATE}" == "${CURRENT}" ]]; then
+RESOLVED_CANDIDATE="$(jq -nr --arg candidate "${CANDIDATE}" \
+  --argjson model_map "${MODEL_NAME_MAP}" '$model_map[$candidate] // $candidate')"
+if [[ "${RESOLVED_CANDIDATE}" == "${CURRENT}" ]]; then
   exit 0 # no change
 fi
 
@@ -75,20 +78,20 @@ fi
 
 SAFE="$(curl -fsS --max-time 10 -H "Authorization: Bearer ${ROUTER_KEY}" \
   "${ROUTER_BASE_URL}/model/info" \
-  | jq -r --arg m "${CANDIDATE}" \
+  | jq -r --arg m "${RESOLVED_CANDIDATE}" \
     '[.data[]? | select(.model_name==$m) | select(.model_info.max_input_tokens != null)] | length > 0')"
 if [[ "${SAFE}" != "true" ]]; then
   logger -t open-webui-brain-sync "REJECTED ${CANDIDATE}: not a tuned router entry with a real context window (compress-death trap) -- staying on ${CURRENT}"
   exit 0
 fi
 
-sed -i "s|^DEFAULT_MODELS=.*|DEFAULT_MODELS=${CANDIDATE}|" "${ENV_FILE}"
+sed -i "s|^DEFAULT_MODELS=.*|DEFAULT_MODELS=${RESOLVED_CANDIDATE}|" "${ENV_FILE}"
 # sed -i replaces the file via a new inode owned by this (root) process —
 # restore the ansible-managed owner/mode (root:{{ open_webui_user }}, 0640).
 chown "root:{{ open_webui_user }}" "${ENV_FILE}"
 chmod 0640 "${ENV_FILE}"
 
-printf '%s\n' "${CANDIDATE}" > "${STATE_FILE}"
-logger -t open-webui-brain-sync "default model repointed ${CURRENT} -> ${CANDIDATE} (source: OpenBao secret/${BAO_PATH}); restarting open-webui"
+printf '%s\n' "${RESOLVED_CANDIDATE}" > "${STATE_FILE}"
+logger -t open-webui-brain-sync "default model repointed ${CURRENT} -> ${RESOLVED_CANDIDATE} (source: OpenBao secret/${BAO_PATH}); restarting open-webui"
 systemctl restart open-webui
 exit 0
