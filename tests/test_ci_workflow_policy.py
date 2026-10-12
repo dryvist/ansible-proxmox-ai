@@ -102,12 +102,32 @@ def test_promotion_timeout_is_sixty_only_for_same_repo_develop_into_main(
     assert _evaluate_timeout(PROMOTION_TIMEOUT, context) == expected
 
 
+# The one per-scenario exception: hermes_ui gets at least 25 minutes, never less than the caller's.
+HERMES_UI_TIMEOUT = (
+    "${{ (matrix.scenario == 'hermes_ui' && inputs.timeout_minutes < 25) && 25 || inputs.timeout_minutes }}"
+)
+
+
+@pytest.mark.parametrize(("scenario", "caller", "expected"), [
+    ("hermes_ui", 15, 25),
+    ("hermes_ui", 60, 60),
+    ("qdrant", 15, 15),
+    ("qdrant", 60, 60),
+])
+def test_hermes_ui_timeout_only_raises_hermes_ui(scenario: str, caller: int, expected: int) -> None:
+    context = {"matrix.scenario": scenario, "inputs.timeout_minutes": caller}
+    assert _evaluate_timeout(HERMES_UI_TIMEOUT, context) == expected
+
+
 @pytest.mark.parametrize("path", sorted(WORKFLOWS.glob("*.yml")), ids=lambda path: path.name)
 def test_every_runner_job_takes_the_promotion_timeout(path: Path) -> None:
     for name, job in yaml.safe_load(path.read_text())["jobs"].items():
         if "runs-on" in job and (path.name, name) != ("fix-installer-sha.yml", "fix"):
             value = " ".join(str(job.get("timeout-minutes")).split())
-            assert value in (PROMOTION_TIMEOUT, "${{ inputs.timeout_minutes }}"), f"{path.name}:{name}"
+            allowed = {PROMOTION_TIMEOUT, "${{ inputs.timeout_minutes }}"}
+            if (path.name, name) == ("_molecule.yml", "test"):
+                allowed = {HERMES_UI_TIMEOUT}
+            assert value in allowed, f"{path.name}:{name}"
 
 
 def test_reusable_calls_forward_the_timeout_input() -> None:
