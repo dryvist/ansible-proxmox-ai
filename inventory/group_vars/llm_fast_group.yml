@@ -1,14 +1,12 @@
 ---
-# Config for the light serving tier (llama-server on the GPU `llm-fast` guest).
+# Shared config for the light serving capability group.
 # Guests carry the `llm-fast` tag -> llm_fast_group (load_tofu.yml).
 
-# GPU build (RX 6800 / gfx1030 ROCm). One knob: the role derives llama_cpp_gpu
-# from this, so setting that boolean here as well would let the two disagree.
-# Use `cpu` on a future CPU-only `llm-light` standby guest to skip every GPU task.
+# Selects the llama.cpp build; backend-specific package, device, and runtime
+# tasks use this value.
 llama_cpp_gpu_backend: rocm
 
-# Mandatory (no role default). Host is frozen (host_vars/llm-fast.yml) but
-# the role's template still renders this, so it needs a value regardless.
+# Mandatory (no role default). The service template requires this value.
 llama_cpp_parallel: >-
   {{ (llm_model_catalog_models
       | selectattr('name', 'in', llama_cpp_catalog_lookup_names)
@@ -20,14 +18,8 @@ llama_cpp_parallel: >-
 # tier once, here, rather than the guard inferring it from group membership.
 llama_cpp_registry_tier: light
 
-# Resident-model cap for router mode, raised from the role default of 1 to
-# the honest count of what's declared below (4) — not a guess. The role
-# default already under-counted this group even before the two new entries:
-# defaults/main/00-core.yml's own comment claims the original pair
-# ("qwen3-4b" + "embeddings") "stay loaded together", but at the inherited
-# cap of 1 the second load would evict the first — tasks/verify-residency.yml
-# (gated on llama_cpp_service_enabled, so it only runs on llm-light; llm-fast
-# stays frozen) is what actually proves 4 fit rather than asserting it.
+# Resident-model cap for router mode. This group declares four models, and
+# tasks/verify-residency.yml checks that they remain resident when enabled.
 llama_cpp_models_max: 4
 
 # Restart the llama-server service on failure (Phase 9 systemd restart policy).
@@ -87,13 +79,10 @@ llama_cpp_catalog_lookup_names:
   - "{{ _llama_cpp_light_reranker_model_id }}"
 
 # Full override of defaults/main/00-core.yml's llama_cpp_models (Ansible
-# lists replace, they do not merge) — the light tier's original pair plus the
-# CPU-failover embedder/reranker for the 4080's vllm-tier bge-m3/
-# bge-reranker-v2-m3 (llm-models.d/30-local-gpu.yml). Moved here from
-# llm_cpu_9b_group.yml: that group's tag has no guest in the desired state
-# today (empty group), so it could never serve a failover for anything.
-# llm_fast_group (llm-fast GPU + llm-light CPU) already carries the
-# read-only shared models mount and runs on different nodes from the 4080.
+# lists replace, they do not merge). The embedder and reranker provide the CPU
+# failover for the bge-m3 pair in the vllm tier.
+# llm_fast_group includes llm-light and carries the read-only shared models
+# mount; it runs on a different node from the 4080.
 llama_cpp_models:
   - name: qwen3-4b
     aliases: []
