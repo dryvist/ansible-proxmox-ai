@@ -124,6 +124,36 @@
           - hermes_agent_api_server_key == 'private-api-key'
         fail_msg: private Hermes read another identity's OpenBao values.
 
+    - name: Assert an empty roster preserves the static domain list
+      tags: [owner-fetch-paths]
+      vars:
+        ai_agents: {}
+        ai_agent_owner: {}
+        _resolved_domains: "{{ openbao_secrets_domains }}"
+      ansible.builtin.assert:
+        that:
+          - _resolved_domains == _openbao_secrets_static_domains
+
+    - name: Assert an owner receives its MCP path and legacy domains drop it
+      tags: [owner-fetch-paths]
+      vars:
+        ai_agents:
+          splunk-heimdall:
+            owns: [splunk]
+        ai_agent_owner:
+          splunk: splunk-heimdall
+        _resolved_domains: "{{ openbao_secrets_domains }}"
+        _legacy_domains: >-
+          {{ _resolved_domains | rejectattr('name', 'equalto', 'splunk-heimdall') | list }}
+        _owner_domain: >-
+          {{ _resolved_domains | selectattr('name', 'equalto', 'splunk-heimdall') | first }}
+      ansible.builtin.assert:
+        that:
+          - >-
+            _legacy_domains | map(attribute='paths') | flatten
+            | select('equalto', 'ai/mcp/splunk') | list == []
+          - "'ai/mcp/splunk' in _owner_domain.paths"
+
     - name: Assert private Hermes uses only its identity-prefixed credential fallbacks
       vars:
         hermes_agent_identity: hermes-private
