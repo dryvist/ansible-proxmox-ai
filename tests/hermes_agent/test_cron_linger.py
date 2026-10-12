@@ -15,11 +15,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from _role_files import role_tasks_text
+from _role_files import render_hermes_runtime_unit, role_tasks_text
 
 ROLE = Path(__file__).resolve().parents[2] / "roles" / "hermes_agent"
 TASKS = role_tasks_text(ROLE)
-GATEWAY_UNIT = (ROLE / "templates" / "hermes-gateway.service.j2").read_text()
+GATEWAY_UNIT = render_hermes_runtime_unit(ROLE, "hermes-gateway.service.j2")
 
 
 def test_linger_is_enabled_for_the_hermes_user() -> None:
@@ -53,9 +53,8 @@ def test_gateway_unit_orders_after_the_user_session() -> None:
     start; without ordering, a cold boot can still start the gateway before
     user@<uid>.service is up.
     """
-    assert "user@{{ hermes_agent_uid }}.service" in GATEWAY_UNIT
-    assert "After=user@{{ hermes_agent_uid }}.service" in GATEWAY_UNIT
-    assert "Wants=user@{{ hermes_agent_uid }}.service" in GATEWAY_UNIT
+    assert "After=user@1001.service" in GATEWAY_UNIT
+    assert "Wants=user@1001.service" in GATEWAY_UNIT
 
 
 def test_hermes_agent_uid_is_derived_not_hardcoded() -> None:

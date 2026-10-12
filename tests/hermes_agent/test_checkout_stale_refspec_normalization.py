@@ -120,7 +120,7 @@ class NormalizeTaskShape(unittest.TestCase):
         normalize_idx = names.index(
             "Normalize the Hermes checkout's remote fetch refspec"
         )
-        pin_idx = names.index("Pin the Hermes checkout to the release tag")
+        pin_idx = names.index("Install the pinned Hermes runtime")
         self.assertLess(normalize_idx, pin_idx)
 
 

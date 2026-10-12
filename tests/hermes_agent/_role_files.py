@@ -58,6 +58,57 @@ def role_defaults_text(role_root: Path) -> str:
     )
 
 
+def hermes_runtime_role_root() -> Path:
+    """Return the Hermes runtime role installed from requirements.yml."""
+    root = (
+        Path.home()
+        / ".ansible/collections/ansible_collections/dryvist/ai_agents/roles/hermes_runtime"
+    )
+    assert root.is_dir(), "install requirements.yml before testing Hermes runtime units"
+    return root
+
+
+def render_hermes_runtime_unit(consumer_role: Path, template_name: str) -> str:
+    """Render a collection unit with the consumer's actual include_role vars."""
+    from jinja2 import Environment, StrictUndefined
+
+    include_task = next(
+        task
+        for task in yaml.safe_load((consumer_role / "tasks" / "main.yml").read_text())
+        if isinstance(task.get("ansible.builtin.include_role"), dict)
+        and task["ansible.builtin.include_role"].get("name")
+        == "dryvist.ai_agents.hermes_runtime"
+        and task["ansible.builtin.include_role"].get("tasks_from") == "units"
+    )
+    context = role_defaults(consumer_role)
+    context.update(hermes_agent_uid=1001, hermes_agent_dashboard_port=8080)
+    env = Environment(autoescape=False, undefined=StrictUndefined)
+    for key in (
+        "hermes_agent_hermes_home",
+        "hermes_agent_web_dist",
+        "hermes_agent_gateway_cmd",
+    ):
+        context[key] = env.from_string(context[key]).render(**context)
+
+    def render_value(value):
+        if isinstance(value, str):
+            return env.from_string(value).render(**context) if "{{" in value else value
+        if isinstance(value, list):
+            return [render_value(item) for item in value]
+        if isinstance(value, dict):
+            return {key: render_value(item) for key, item in value.items()}
+        return value
+
+    runtime_vars = {key: render_value(value) for key, value in include_task["vars"].items()}
+    runtime_vars["ansible_managed"] = "managed by test"
+    env.filters["bool"] = bool
+    env.filters["comment"] = lambda value, *args, **kwargs: "\n".join(
+        f"# {line}" for line in str(value).splitlines()
+    )
+    template = (hermes_runtime_role_root() / "templates" / template_name).read_text()
+    return env.from_string(template).render(**runtime_vars)
+
+
 _JINJA_INCLUDE_RE = re.compile(r"^[ \t]*\{%-?\s*include\s+'([^']+)'\s*-?%\}[ \t]*$", re.MULTILINE)
 
 
